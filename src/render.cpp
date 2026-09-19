@@ -1,12 +1,12 @@
 #include "nfsu/render.h"
 
+#include "nfsu/image.h"
+
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
 #include <cstring>
-#include <map>
 #include <new>
-#include <set>
 #include <sstream>
 #include <system_error>
 #include <utility>
@@ -427,274 +427,6 @@ std::size_t clip_triangle(
     return count;
 }
 
-namespace {
-
-// The distinct hashes a record claims, in the order info, hash table,
-// blob table.
-std::size_t claimed_hashes(const TextureRecord& record,
-                           std::array<std::uint32_t, 3>& out) {
-    std::size_t count = 0;
-    const std::uint32_t candidates[3] = {
-        record.hash, record.table_hash,
-        static_cast<std::uint32_t>(record.blob_entry[0]) |
-            (static_cast<std::uint32_t>(record.blob_entry[1]) << 8U) |
-            (static_cast<std::uint32_t>(record.blob_entry[2]) << 16U) |
-            (static_cast<std::uint32_t>(record.blob_entry[3]) << 24U)};
-    const std::size_t used = record.storage == TextureStorage::jdlz ? 3 : 2;
-    for (std::size_t i = 0; i < used; ++i) {
-        if (std::find(out.begin(), out.begin() + count, candidates[i]) ==
-            out.begin() + count) {
-            out[count++] = candidates[i];
-        }
-    }
-    return count;
-}
-
-// check_pairing is false only for decode_render_textures, whose callers
-// may pass hand-built packs without a file size or parse source.
-bool decode_sources(
-    const std::vector<RenderTextureSource>& sources,
-    bool check_pairing,
-    const RenderTextureLimits& limits,
-    RenderTextureSet& set,
-    std::string& error) {
-    set = RenderTextureSet{};
-    RenderTextureSet result;
-    const bool label = sources.size() > 1 ||
-                       (sources.size() == 1 && sources[0].packs.size() > 1);
-    // Hash -> earliest source that claims it.
-    std::map<std::uint32_t, std::size_t> claims;
-    try {
-        bool blocked = false;
-        for (std::size_t s = 0; s < sources.size(); ++s) {
-            const RenderTextureSource& source = sources[s];
-            if (blocked) {
-                result.blocked_sources.push_back(s);
-                continue;
-            }
-            if (source.bytes == nullptr) {
-                error = "texture source " + std::to_string(s) + " has no bytes";
-                return false;
-            }
-            for (std::size_t p = 0; p < source.packs.size(); ++p) {
-                const TexturePack* pack = source.packs[p];
-                if (pack == nullptr ||
-                    (check_pairing && (pack->parse_source != source.bytes->data() ||
-                                       pack->file_size != source.bytes->size()))) {
-                    error = "texture source " + std::to_string(s) + " pack " +
-                            std::to_string(p) +
-                            " was not parsed from the bytes of that source";
-                    return false;
-                }
-            }
-            bool complete = source.complete;
-            std::vector<std::uint32_t> source_claims;
-            for (std::size_t p = 0; p < source.packs.size(); ++p) {
-                const TexturePack& pack = *source.packs[p];
-                complete = complete && (!check_pairing || pack.tables_parsed);
-                for (const TextureRecord& record : pack.textures) {
-                    std::array<std::uint32_t, 3> hashes{};
-                    const std::size_t count = claimed_hashes(record, hashes);
-                    source_claims.insert(source_claims.end(), hashes.begin(),
-                                         hashes.begin() + count);
-                    bool shadowed = false;
-                    for (std::size_t k = 0; k < count && !shadowed; ++k) {
-                        const auto found = claims.find(hashes[k]);
-                        if (found != claims.end()) {
-                            result.shadowed.push_back(ShadowedTexture{
-                                hashes[k], s, p, record.index, found->second});
-                            shadowed = true;
-                        }
-                    }
-                    bool wanted = true;
-                    if (source.wanted != nullptr) {
-                        wanted = false;
-                        for (std::size_t k = 0; k < count && !wanted; ++k) {
-                            wanted = std::binary_search(source.wanted->begin(),
-                                                        source.wanted->end(), hashes[k]);
-                        }
-                    }
-                    if (shadowed) {
-                        // Claims no earlier source holds still block later
-                        // sources, so keep them resolving as unusable.
-                        for (std::size_t k = 0; k < count && wanted; ++k) {
-                            if (claims.find(hashes[k]) == claims.end()) {
-                                result.unusable_claims.push_back(
-                                    UnusableClaim{hashes[k], s, p, record.index});
-                            }
-                        }
-                        continue;
-                    }
-                    if (!wanted) {
-                        ++result.not_wanted;
-                        continue;
-                    }
-                    result.textures.emplace_back();
-                    RenderTexture& texture = result.textures.back();
-                    texture.hash = record.hash;
-                    texture.claims = hashes;
-                    texture.claim_count = count;
-                    texture.source = s;
-                    texture.pack = p;
-                    texture.record = record.index;
-                    if (!record.valid) {
-                        texture.problem = record.problem.empty()
-                                              ? "invalid texture record"
-                                              : record.problem;
-                        continue;
-                    }
-                    // The retained top level is width * height * 4 bytes;
-                    // both are at most 65535, so the product cannot
-                    // overflow 64 bits.
-                    const std::uint64_t retained =
-                        std::uint64_t{record.width} * record.height * 4U;
-                    if (retained > limits.max_total_bytes ||
-                        result.decoded_bytes > limits.max_total_bytes - retained) {
-                        error = "decoded textures would exceed " +
-                                std::to_string(limits.max_total_bytes) +
-                                " bytes at texture " + std::to_string(record.index) +
-                                (label ? " of source " + std::to_string(s) +
-                                             " pack " + std::to_string(p)
-                                       : std::string()) +
-                                " (" + std::to_string(result.decoded_bytes) +
-                                " retained, " + std::to_string(retained) + " more)";
-                        return false;
-                    }
-                    if (limits.before_allocate) {
-                        limits.before_allocate(retained);
-                    }
-                    const std::vector<unsigned char>& bytes = *source.bytes;
-                    std::vector<unsigned char> payload;
-                    std::size_t unused = 0;
-                    std::uint64_t top = 0;
-                    std::string problem;
-                    if (!texture_payload(bytes.data(), bytes.size(), record, payload,
-                                         unused, problem) ||
-                        !level_size(record.format, record.width, record.height, top) ||
-                        top > payload.size() ||
-                        !decode_level(record.format, record.width, record.height,
-                                      payload.data(), static_cast<std::size_t>(top),
-                                      texture.rgba, problem) ||
-                        texture.rgba.size() != retained) {
-                        texture.rgba.clear();
-                        texture.rgba.shrink_to_fit();
-                        texture.problem =
-                            problem.empty() ? "texture decode failed" : problem;
-                        continue;
-                    }
-                    texture.width = record.width;
-                    texture.height = record.height;
-                    texture.valid = true;
-                    result.decoded_bytes += retained;
-                }
-            }
-            // Claims of this source apply to later sources only.
-            for (const std::uint32_t hash : source_claims) {
-                claims.emplace(hash, s);
-            }
-            blocked = !complete;
-        }
-    } catch (const std::bad_alloc&) {
-        error = "out of memory while decoding textures (" +
-                std::to_string(result.decoded_bytes) + " bytes retained)";
-        return false;
-    }
-    set = std::move(result);
-    return true;
-}
-
-} // namespace
-
-bool decode_render_textures(
-    const std::vector<unsigned char>& bytes,
-    const TexturePack& pack,
-    const RenderTextureLimits& limits,
-    RenderTextureSet& set,
-    std::string& error) {
-    set = RenderTextureSet{};
-    std::vector<RenderTextureSource> sources;
-    try {
-        sources.resize(1);
-        sources[0].bytes = &bytes;
-        sources[0].packs.push_back(&pack);
-    } catch (const std::bad_alloc&) {
-        error = "out of memory while decoding textures (0 bytes retained)";
-        return false;
-    }
-    return decode_sources(sources, false, limits, set, error);
-}
-
-bool decode_render_texture_sources(
-    const std::vector<RenderTextureSource>& sources,
-    const RenderTextureLimits& limits,
-    RenderTextureSet& set,
-    std::string& error) {
-    return decode_sources(sources, true, limits, set, error);
-}
-
-bool RenderTexture::claims_hash(std::uint32_t value) const noexcept {
-    if (hash == value) {
-        return true;
-    }
-    const std::size_t used = std::min(claim_count, claims.size());
-    return std::find(claims.begin(), claims.begin() + used, value) !=
-           claims.begin() + used;
-}
-
-const char* binding_kind_name(BindingKind kind) noexcept {
-    switch (kind) {
-    case BindingKind::resolved: return "resolved";
-    case BindingKind::unresolved: return "unresolved";
-    case BindingKind::unusable: return "unusable";
-    case BindingKind::invalid_slot: return "invalid_slot";
-    }
-    return "unknown";
-}
-
-MaterialBinding resolve_material(
-    const Mesh& mesh,
-    const MeshMaterial& material,
-    const RenderTextureSet& textures) noexcept {
-    MaterialBinding binding;
-    if (material.texture_slot >= mesh.texture_hashes.size()) {
-        binding.kind = BindingKind::invalid_slot;
-        return binding;
-    }
-    binding.hash = mesh.texture_hashes[material.texture_slot];
-    std::size_t matches = 0;
-    std::size_t usable = 0;
-    for (std::size_t i = 0; i < textures.textures.size(); ++i) {
-        const RenderTexture& texture = textures.textures[i];
-        if (!texture.claims_hash(binding.hash)) {
-            continue;
-        }
-        ++matches;
-        const bool ok = texture.valid && texture.width > 0 &&
-                        texture.height > 0 &&
-                        texture.rgba.size() ==
-                            std::size_t{texture.width} * texture.height * 4U;
-        if (ok) {
-            ++usable;
-            binding.texture_index = i;
-        }
-    }
-    for (const UnusableClaim& claim : textures.unusable_claims) {
-        if (claim.hash == binding.hash) {
-            ++matches;
-            break;
-        }
-    }
-    if (matches == 0) {
-        binding.kind = BindingKind::unresolved;
-    } else if (matches == 1 && usable == 1) {
-        binding.kind = BindingKind::resolved;
-    } else {
-        binding.kind = BindingKind::unusable;
-        binding.texture_index = 0;
-    }
-    return binding;
-}
-
 void fallback_color(std::uint32_t hash, unsigned char (&rgba)[4]) noexcept {
     const std::uint32_t mixed = mix32(hash);
     rgba[0] = static_cast<unsigned char>(64U + (mixed & 0xFFU) * 160U / 256U);
@@ -1024,28 +756,8 @@ bool Rasterizer::fill(
     return true;
 }
 
-std::uint64_t count_unresolved_hashes(
-    const GeometryReport& geometry,
-    const RenderTextureSet& textures) {
-    std::set<std::uint32_t> hashes;
-    for (const Mesh& mesh : geometry.meshes) {
-        if (!mesh.valid) {
-            continue;
-        }
-        for (const MeshMaterial& material : mesh.materials) {
-            const MaterialBinding binding =
-                resolve_material(mesh, material, textures);
-            if (binding.kind == BindingKind::unresolved) {
-                hashes.insert(binding.hash);
-            }
-        }
-    }
-    return hashes.size();
-}
-
 bool render_scene(
-    const GeometryReport& geometry,
-    const RenderTextureSet& textures,
+    const PreparedCarScene& scene,
     const RenderOptions& options,
     const RenderLimits& limits,
     Frame& frame,
@@ -1058,17 +770,36 @@ bool render_scene(
                            error)) {
         return false;
     }
+    // Everything the loop below indexes is checked here, before the frame
+    // is allocated: mesh and texture handles, drawable ranges, texture
+    // sizes and the id range.
+    if (!validate_prepared_scene(scene, error)) {
+        error = "invalid prepared scene: " + error;
+        return false;
+    }
     std::uint64_t source_triangles = 0;
-    for (const Mesh& mesh : geometry.meshes) {
-        if (mesh.valid) {
-            source_triangles += mesh.triangles.size();
-        }
+    for (const PreparedMesh& mesh : scene.meshes) {
+        source_triangles += mesh.triangles.size();
     }
     if (source_triangles > limits.max_source_triangles ||
         source_triangles >= kNoTriangle) {
         error = "scene has " + std::to_string(source_triangles) +
                 " triangles; the limit is " +
                 std::to_string(limits.max_source_triangles);
+        return false;
+    }
+    const std::uint64_t submitted = prepared_draw_triangles(scene);
+    if (submitted > limits.max_submitted_triangles || submitted >= kNoTriangle) {
+        error = "scene draws " + std::to_string(submitted) +
+                " triangles; the limit is " +
+                std::to_string(limits.max_submitted_triangles);
+        return false;
+    }
+    std::vector<unsigned char> id_fallback;
+    try {
+        id_fallback.reserve(static_cast<std::size_t>(submitted));
+    } catch (const std::bad_alloc&) {
+        error = "not enough memory for the triangle table";
         return false;
     }
     if (!frame.reset(options.width, options.height, options.background, limits,
@@ -1079,90 +810,81 @@ bool render_scene(
     Vec3 light{kLightX, kLightY, kLightZ};
     normalize(light);
     Rasterizer rasterizer(frame, options, limits, stats);
-    std::vector<unsigned char> id_fallback;
-    id_fallback.reserve(static_cast<std::size_t>(source_triangles));
     std::uint32_t next_id = 0;
-    for (const Mesh& mesh : geometry.meshes) {
-        ++stats.meshes;
-        if (!mesh.valid) {
-            ++stats.meshes_skipped_invalid;
+    stats.meshes = scene.meshes.size() + scene.skipped_invalid_meshes.size();
+    stats.meshes_skipped_invalid = scene.skipped_invalid_meshes.size();
+    stats.meshes_rendered = scene.meshes.size();
+    stats.unresolved_hashes = scene.unresolved_hashes.size();
+    for (const PreparedDraw& draw : scene.draws) {
+        ++stats.material_groups;
+        if (!draw.drawable) {
+            ++stats.groups_invalid;
             continue;
         }
-        ++stats.meshes_rendered;
-        const std::uint64_t index_total = std::uint64_t{mesh.triangles.size()} * 3U;
-        for (const MeshMaterial& material : mesh.materials) {
-            ++stats.material_groups;
-            const MaterialBinding binding = resolve_material(mesh, material, textures);
-            const std::uint64_t first = material.first_index;
-            const std::uint64_t count = material.index_count;
-            if (binding.kind == BindingKind::invalid_slot || first % 3 != 0 ||
-                count % 3 != 0 || first > index_total || count > index_total - first) {
-                ++stats.groups_invalid;
+        const PreparedMesh& mesh = scene.meshes[draw.mesh];
+        const std::uint64_t first = draw.first_index;
+        const std::uint64_t count = draw.index_count;
+        RasterMaterial raster;
+        switch (draw.binding) {
+        case BindingKind::resolved:
+            ++stats.groups_resolved;
+            raster.texture = &scene.textures[draw.texture];
+            break;
+        case BindingKind::unresolved:
+            ++stats.groups_unresolved;
+            break;
+        default:
+            ++stats.groups_unusable;
+            break;
+        }
+        fallback_color(draw.texture_hash, raster.fallback);
+
+        for (std::uint64_t t = first / 3; t < (first + count) / 3; ++t) {
+            const std::uint32_t id = next_id++;
+            const MeshTriangle& triangle = mesh.triangles[static_cast<std::size_t>(t)];
+            ++stats.triangles_submitted;
+            id_fallback.push_back(raster.texture == nullptr ? 1 : 0);
+            ++(raster.texture == nullptr ? stats.triangles_fallback
+                                         : stats.triangles_resolved);
+            const std::uint16_t indices[3] = {triangle.a, triangle.b, triangle.c};
+            if (indices[0] >= mesh.vertices.size() ||
+                indices[1] >= mesh.vertices.size() ||
+                indices[2] >= mesh.vertices.size()) {
+                ++stats.triangles_bad_index;
                 continue;
             }
-            RasterMaterial raster;
-            switch (binding.kind) {
-            case BindingKind::resolved:
-                ++stats.groups_resolved;
-                raster.texture = &textures.textures[binding.texture_index];
-                break;
-            case BindingKind::unresolved:
-                ++stats.groups_unresolved;
-                break;
-            default:
-                ++stats.groups_unusable;
-                break;
+            ClipVertex clip[3];
+            Vec3 world[3];
+            for (int k = 0; k < 3; ++k) {
+                const MeshVertex& source = mesh.vertices[indices[k]];
+                world[k] = {source.px, source.py, -static_cast<double>(source.pz)};
+                clip[k] = project_point(camera, world[k]);
+                clip[k].u = source.u;
+                clip[k].v = source.v;
+                clip[k].r = source.color[0];
+                clip[k].g = source.color[1];
+                clip[k].b = source.color[2];
+                clip[k].a = source.color[3];
             }
-            fallback_color(binding.hash, raster.fallback);
-
-            for (std::uint64_t t = first / 3; t < (first + count) / 3; ++t) {
-                const std::uint32_t id = next_id++;
-                const MeshTriangle& triangle = mesh.triangles[static_cast<std::size_t>(t)];
-                ++stats.triangles_submitted;
-                id_fallback.push_back(raster.texture == nullptr ? 1 : 0);
-                ++(raster.texture == nullptr ? stats.triangles_fallback
-                                             : stats.triangles_resolved);
-                const std::uint16_t indices[3] = {triangle.a, triangle.b, triangle.c};
-                if (indices[0] >= mesh.vertices.size() ||
-                    indices[1] >= mesh.vertices.size() ||
-                    indices[2] >= mesh.vertices.size()) {
-                    ++stats.triangles_bad_index;
-                    continue;
+            Vec3 normal = cross(sub(world[1], world[0]), sub(world[2], world[0]));
+            const bool has_normal = normalize(normal);
+            if (!has_normal) {
+                ++stats.triangles_degenerate_source;
+            }
+            raster.shade = 256;
+            if (options.shading == ShadingMode::flat && has_normal) {
+                if (dot(normal, sub(camera.eye, world[0])) < 0.0) {
+                    normal = {-normal.x, -normal.y, -normal.z};
                 }
-                ClipVertex clip[3];
-                Vec3 world[3];
-                for (int k = 0; k < 3; ++k) {
-                    const MeshVertex& source = mesh.vertices[indices[k]];
-                    world[k] = {source.px, source.py, -static_cast<double>(source.pz)};
-                    clip[k] = project_point(camera, world[k]);
-                    clip[k].u = source.u;
-                    clip[k].v = source.v;
-                    clip[k].r = source.color[0];
-                    clip[k].g = source.color[1];
-                    clip[k].b = source.color[2];
-                    clip[k].a = source.color[3];
-                }
-                Vec3 normal = cross(sub(world[1], world[0]), sub(world[2], world[0]));
-                const bool has_normal = normalize(normal);
-                if (!has_normal) {
-                    ++stats.triangles_degenerate_source;
-                }
-                raster.shade = 256;
-                if (options.shading == ShadingMode::flat && has_normal) {
-                    if (dot(normal, sub(camera.eye, world[0])) < 0.0) {
-                        normal = {-normal.x, -normal.y, -normal.z};
-                    }
-                    const double k = 0.35 + 0.65 * std::max(0.0, dot(normal, light));
-                    raster.shade = static_cast<std::uint32_t>(
-                        std::floor(std::clamp(k, 0.0, 1.0) * 256.0 + 0.5));
-                }
-                if (!rasterizer.draw_triangle(clip, raster, id, error)) {
-                    return false;
-                }
+                const double k = 0.35 + 0.65 * std::max(0.0, dot(normal, light));
+                raster.shade = static_cast<std::uint32_t>(
+                    std::floor(std::clamp(k, 0.0, 1.0) * 256.0 + 0.5));
+            }
+            if (!rasterizer.draw_triangle(clip, raster, id, error)) {
+                return false;
             }
         }
     }
-    stats.unresolved_hashes = count_unresolved_hashes(geometry, textures);
 
     bool first_pixel = true;
     for (std::uint32_t y = 0; y < frame.height(); ++y) {

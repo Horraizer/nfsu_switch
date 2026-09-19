@@ -1,3 +1,4 @@
+#include "nfsu/image.h"
 #include "nfsu/texture.h"
 
 #include <algorithm>

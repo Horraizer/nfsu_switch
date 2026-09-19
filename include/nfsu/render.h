@@ -1,9 +1,7 @@
 #pragma once
 
-#include "nfsu/geometry.h"
-#include "nfsu/texture.h"
+#include "nfsu/scene.h"
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -116,166 +114,6 @@ std::size_t clip_triangle(
     double near_plane,
     ClipVertex (&out)[kMaxClipVertices]);
 
-// Decoded top level of one pack texture, rows top to bottom.
-struct RenderTexture {
-    // Info +36 of the record.
-    std::uint32_t hash = 0;
-    // The distinct hashes the record claims (see record_claims_hash), in
-    // the order info +36, hash table +0, blob table +0; the first
-    // claim_count entries are used. Set by the decode functions. They
-    // differ from hash only for an invalid record. Hand-built textures may
-    // leave claim_count 0; hash always counts as claimed.
-    std::array<std::uint32_t, 3> claims{};
-    std::size_t claim_count = 0;
-    std::uint32_t width = 0;
-    std::uint32_t height = 0;
-    std::vector<unsigned char> rgba;
-    bool valid = false;
-    std::string problem;
-    // Provenance: caller source index, pack index within that source and
-    // TextureRecord::index.
-    std::size_t source = 0;
-    std::size_t pack = 0;
-    std::size_t record = 0;
-
-    // True if value is hash or one of the first claim_count claims.
-    bool claims_hash(std::uint32_t value) const noexcept;
-};
-
-// A record left out of the set because an earlier source already claims
-// one of its hashes (see record_claims_hash).
-struct ShadowedTexture {
-    std::uint32_t hash = 0;
-    std::size_t source = 0;
-    std::size_t pack = 0;
-    std::size_t record = 0;
-    // The earliest source that claims the hash.
-    std::size_t by_source = 0;
-};
-
-// A hash claimed by a shadowed record that no earlier source claims. The
-// record is not in the set, but its claim still blocks later sources, so
-// resolve_material reports the hash as unusable.
-struct UnusableClaim {
-    std::uint32_t hash = 0;
-    std::size_t source = 0;
-    std::size_t pack = 0;
-    std::size_t record = 0;
-};
-
-// Entries in source, pack and record order. A single pack gives one entry
-// per texture, in pack order.
-struct RenderTextureSet {
-    std::vector<RenderTexture> textures;
-    // Sum of RenderTexture::rgba sizes.
-    std::uint64_t decoded_bytes = 0;
-    // In source, pack and record order.
-    std::vector<ShadowedTexture> shadowed;
-    // In source, pack and record order, then claim order
-    // (RenderTexture::claims). At most two per shadowed record.
-    std::vector<UnusableClaim> unusable_claims;
-    // Sources not used at all because an earlier source is incomplete.
-    std::vector<std::size_t> blocked_sources;
-    // Records skipped because none of their claimed hashes is in the
-    // source's wanted list.
-    std::uint64_t not_wanted = 0;
-};
-
-struct RenderTextureLimits {
-    // Upper bound on the RGBA8 bytes of all retained top levels together.
-    std::uint64_t max_total_bytes = 128ULL * 1024ULL * 1024ULL;
-    // Test hook, called with the byte count of each retained top level
-    // before it is decoded. It may throw std::bad_alloc to simulate an
-    // allocation failure.
-    std::function<void(std::uint64_t)> before_allocate;
-};
-
-// Decodes the top level of every valid texture into set.
-//
-// A texture whose own data is bad (invalid record, JDLZ or level error) is
-// kept with valid == false and a problem message; materials using it are
-// drawn with the fallback. That is not a failure of the call.
-//
-// The call fails, returning false with error set and set left empty, only
-// for a fatal condition: retaining the next texture would exceed
-// limits.max_total_bytes (checked before that allocation), or an
-// allocation failed (std::bad_alloc is caught).
-bool decode_render_textures(
-    const std::vector<unsigned char>& bytes,
-    const TexturePack& pack,
-    const RenderTextureLimits& limits,
-    RenderTextureSet& set,
-    std::string& error);
-
-// One file of texture packs. bytes and packs must outlive the call, and
-// every pack must have been parsed from exactly this buffer:
-// TexturePack::parse_source must equal bytes->data() and file_size must
-// equal bytes->size(), otherwise the call fails. The buffer must not have
-// been reallocated or resized since parsing. Hand-built packs set both
-// fields once their buffer has its final size.
-struct RenderTextureSource {
-    const std::vector<unsigned char>* bytes = nullptr;
-    std::vector<const TexturePack*> packs;
-    // False if the source may hold records that packs do not list (for
-    // example TexturePackSet::complete == false); a pack whose tables were
-    // not read (TexturePack::tables_parsed == false) counts the same.
-    bool complete = true;
-    // If set, sorted ascending: only records that claim at least one listed
-    // hash are kept. Others are counted in RenderTextureSet::not_wanted.
-    // They still claim their hashes for precedence.
-    const std::vector<std::uint32_t>* wanted = nullptr;
-};
-
-// Decodes several sources into one set, in caller order: source i has
-// priority over every later source. Rules:
-// - A record of source i whose hashes (record_claims_hash) are all
-//   unclaimed by sources 0..i-1 is decoded as by decode_render_textures;
-//   otherwise it is left out and listed in shadowed. A claim by an invalid
-//   record counts too, so a bad higher-priority record makes its hash
-//   unusable instead of falling back to a lower-priority one.
-// - A shadowed record still claims all its hashes for later sources. Each
-//   of them that no earlier source claims is listed in unusable_claims
-//   (if the record passes the wanted filter), so it resolves as unusable
-//   rather than unresolved.
-// - Records of one source never shadow each other: duplicates inside a
-//   source, also across its packs, stay in the set and resolve_material
-//   reports them as unusable. This includes an invalid record whose
-//   hashes disagree: it is kept with all its claims, so every hash it
-//   claims is unusable in that source.
-// - After an incomplete source, no later source is used; they are listed
-//   in blocked_sources.
-// - limits.max_total_bytes bounds all sources together, and a fatal error
-//   leaves set empty, as for decode_render_textures.
-// With one source that holds one pack and no wanted list the result equals
-// decode_render_textures for that pack.
-bool decode_render_texture_sources(
-    const std::vector<RenderTextureSource>& sources,
-    const RenderTextureLimits& limits,
-    RenderTextureSet& set,
-    std::string& error);
-
-enum class BindingKind {
-    // A texture matches when it claims the hash (RenderTexture::claims_hash).
-    resolved,      // exactly one usable pack texture matches
-    unresolved,    // no pack texture or unusable claim matches
-    unusable,      // several or only invalid pack textures match, or an
-                   // entry of RenderTextureSet::unusable_claims does
-    invalid_slot   // the texture slot is outside the mesh hash list
-};
-
-const char* binding_kind_name(BindingKind kind) noexcept;
-
-struct MaterialBinding {
-    BindingKind kind = BindingKind::unresolved;
-    std::uint32_t hash = 0;
-    std::size_t texture_index = 0;  // valid for resolved only
-};
-
-MaterialBinding resolve_material(
-    const Mesh& mesh,
-    const MeshMaterial& material,
-    const RenderTextureSet& textures) noexcept;
-
 // Deterministic fallback color for a hash that is not drawn with a texture.
 // Channels are in 64..223 and alpha is 255.
 void fallback_color(std::uint32_t hash, unsigned char (&rgba)[4]) noexcept;
@@ -316,6 +154,8 @@ struct RenderLimits {
     std::uint64_t max_pixels = 16777216;
     std::uint64_t max_source_triangles = 1U << 22;
     std::uint64_t max_raster_triangles = 1U << 24;
+    // Triangles over all drawable ranges (ranges may overlap).
+    std::uint64_t max_submitted_triangles = 1U << 24;
     std::uint64_t max_pixel_tests = 1ULL << 32;
 };
 
@@ -425,22 +265,20 @@ private:
     RenderStats& stats_;
 };
 
-// Renders every valid mesh and every material index range in source order.
-// Triangle ids are the running source triangle number. Fails before
-// allocating if the options or limits are invalid.
+// Renders the drawable draws of a prepared scene in draw order (selected
+// meshes in source order, material records in record order) with the
+// binding fixed at preparation; it never looks up a texture hash. Triangle
+// ids are the running number of submitted triangles. The scene is checked
+// with validate_prepared_scene, and the options and limits are checked,
+// before the frame is allocated, so a rejected scene leaves frame
+// untouched. Vertex indices are checked per triangle (bad_index).
 bool render_scene(
-    const GeometryReport& geometry,
-    const RenderTextureSet& textures,
+    const PreparedCarScene& scene,
     const RenderOptions& options,
     const RenderLimits& limits,
     Frame& frame,
     RenderStats& stats,
     std::string& error);
-
-// Counts unique unresolved hashes over valid meshes.
-std::uint64_t count_unresolved_hashes(
-    const GeometryReport& geometry,
-    const RenderTextureSet& textures);
 
 struct FrameWriteResult {
     std::string error;

@@ -1,4 +1,8 @@
+#include "nfsu/geometry.h"
+#include "nfsu/image.h"
 #include "nfsu/render.h"
+#include "nfsu/texture.h"
+#include "nfsu/texture_decode.h"
 
 #include <chrono>
 #include <cmath>
@@ -835,11 +839,20 @@ nfsu::MeshVertex vertex(float px, float py, float pz, float u = 0.0F, float v = 
 }
 
 nfsu::MeshMaterial material_range(std::uint32_t first, std::uint32_t count,
-                                  std::uint32_t slot) {
+                                   std::uint32_t slot) {
     nfsu::MeshMaterial material;
     material.first_index = first;
     material.index_count = count;
     material.texture_slot = slot;
+    const auto store = [](unsigned char* out, std::uint32_t value) {
+        out[0] = static_cast<unsigned char>(value);
+        out[1] = static_cast<unsigned char>(value >> 8U);
+        out[2] = static_cast<unsigned char>(value >> 16U);
+        out[3] = static_cast<unsigned char>(value >> 24U);
+    };
+    store(material.raw + 12, material.index_count);
+    store(material.raw + 28, material.texture_slot);
+    store(material.raw + 52, material.first_index);
     return material;
 }
 
@@ -897,6 +910,17 @@ nfsu::RenderOptions scene_options() {
     return options;
 }
 
+// The all-meshes profile; tests/scene_tests.cpp covers selection.
+nfsu::PreparedCarScene prepare_all(const nfsu::GeometryReport& geometry,
+                                   const nfsu::RenderTextureSet& textures) {
+    nfsu::PreparedCarScene scene;
+    std::string error;
+    check(nfsu::prepare_car_scene(geometry, textures, nfsu::MeshSelection{},
+                                  nfsu::SceneLimits{}, scene, error),
+          "prepare all meshes: " + error);
+    return scene;
+}
+
 void test_bindings() {
     const nfsu::RenderTextureSet set = synthetic_textures();
     nfsu::Mesh mesh;
@@ -914,14 +938,14 @@ void test_bindings() {
 }
 
 void test_scene() {
-    const nfsu::GeometryReport geometry = synthetic_scene();
-    const nfsu::RenderTextureSet textures = synthetic_textures();
+    const nfsu::PreparedCarScene scene =
+        prepare_all(synthetic_scene(), synthetic_textures());
     nfsu::RenderOptions options = scene_options();
     const nfsu::RenderLimits limits;
     nfsu::Frame frame;
     nfsu::RenderStats stats;
     std::string error;
-    check(nfsu::render_scene(geometry, textures, options, limits, frame, stats, error),
+    check(nfsu::render_scene(scene, options, limits, frame, stats, error),
           "scene render: " + error);
     check(stats.meshes == 2 && stats.meshes_rendered == 1 &&
               stats.meshes_skipped_invalid == 1, "scene meshes");
@@ -963,7 +987,7 @@ void test_scene() {
 
     // Unlit so that the exact fallback colors are visible.
     options.shading = nfsu::ShadingMode::none;
-    check(nfsu::render_scene(geometry, textures, options, limits, frame, stats, error),
+    check(nfsu::render_scene(scene, options, limits, frame, stats, error),
           "unlit scene");
     bool saw_fallback = false;
     for (std::size_t i = 0; i < frame.ids().size(); ++i) {
@@ -980,8 +1004,8 @@ void test_scene() {
 }
 
 void test_golden_and_rerender() {
-    const nfsu::GeometryReport geometry = synthetic_scene();
-    const nfsu::RenderTextureSet textures = synthetic_textures();
+    const nfsu::PreparedCarScene scene =
+        prepare_all(synthetic_scene(), synthetic_textures());
     const nfsu::RenderOptions options = scene_options();
     const nfsu::RenderLimits limits;
     nfsu::Frame first;
@@ -989,8 +1013,8 @@ void test_golden_and_rerender() {
     nfsu::RenderStats s1;
     nfsu::RenderStats s2;
     std::string error;
-    check(nfsu::render_scene(geometry, textures, options, limits, first, s1, error) &&
-              nfsu::render_scene(geometry, textures, options, limits, second, s2, error),
+    check(nfsu::render_scene(scene, options, limits, first, s1, error) &&
+              nfsu::render_scene(scene, options, limits, second, s2, error),
           "rerender");
     const std::string a = tga_bytes(first);
     const std::string b = tga_bytes(second);
@@ -1022,30 +1046,30 @@ void test_limits() {
     check(!frame.reset(11, 10, bg, limits, error), "custom pixel cap");
     check(frame.reset(10, 10, bg, limits, error), "at the pixel cap accepted");
 
-    const nfsu::GeometryReport geometry = synthetic_scene();
-    const nfsu::RenderTextureSet textures = synthetic_textures();
+    const nfsu::PreparedCarScene scene =
+        prepare_all(synthetic_scene(), synthetic_textures());
     nfsu::RenderOptions options = scene_options();
     nfsu::RenderStats stats;
     nfsu::Frame fresh;
     nfsu::RenderLimits tight;
     tight.max_source_triangles = 4;
-    check(!nfsu::render_scene(geometry, textures, options, tight, fresh, stats, error),
+    check(!nfsu::render_scene(scene, options, tight, fresh, stats, error),
           "triangle cap");
     check(fresh.width() == 0, "triangle cap fails before allocating");
 
     tight = nfsu::RenderLimits{};
     tight.max_pixel_tests = 10;
-    check(!nfsu::render_scene(geometry, textures, options, tight, fresh, stats, error) &&
+    check(!nfsu::render_scene(scene, options, tight, fresh, stats, error) &&
               error.find("pixel test") != std::string::npos,
           "pixel test cap");
 
     tight = nfsu::RenderLimits{};
     tight.max_raster_triangles = 1;
-    check(!nfsu::render_scene(geometry, textures, options, tight, fresh, stats, error),
+    check(!nfsu::render_scene(scene, options, tight, fresh, stats, error),
           "raster triangle cap");
 
     options.camera.pitch_deg = 95.0;
-    check(!nfsu::render_scene(geometry, textures, options, nfsu::RenderLimits{}, fresh,
+    check(!nfsu::render_scene(scene, options, nfsu::RenderLimits{}, fresh,
                               stats, error), "invalid camera rejected");
 }
 

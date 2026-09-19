@@ -9,7 +9,7 @@ and writes it as a TGA screenshot. The screenshot is the acceptance
 artifact. There is no window and no platform graphics API.
 
 ```text
-nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> <out.tga> [--shared-textures FILE]... [options]
+nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> <out.tga> [--shared-textures FILE]... [--mesh-index N | --mesh-name NAME]... [options]
 ```
 
 | Option | Range | Default |
@@ -27,9 +27,11 @@ nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> <out.tga> [--shared-textures FILE]... 
 | `--vertex-color` | flag | off |
 | `--cull MODE` | `none`, `back`, `front` | `none` |
 | `--shading MODE` | `flat`, `none` | `flat` |
+| `--mesh-index N` | 0..4294967295 decimal, repeatable | none (all meshes) |
+| `--mesh-name NAME` | 1..28 printable ASCII bytes, repeatable | none (all meshes) |
 
 Each option may be given once, except `--shared-textures` (at most 8
-times). Numbers are parsed with `std::from_chars`
+times) and the mesh selectors (see below). Numbers are parsed with `std::from_chars`
 and must be consumed completely and be finite. Anything else is a usage
 error (exit 1). An output path that exists or names an input is refused
 before loading (exit 1). Rendering or writing failures exit with 2. If the frame is
@@ -78,8 +80,8 @@ before loading.
   and no later source is used. A readable file without any pack root is
   complete: it claims nothing, but it is still reported as an issue. Later sources are reported
   as `blocked`.
-- Shared sources decode only records that claim a hash a valid mesh
-  material uses (`wanted_hashes`). The other records still claim their
+- Shared sources decode only records that claim a hash a selected mesh
+  material uses (`wanted_hashes`; every valid mesh without selectors). The other records still claim their
   hashes. The car's pack is decoded in full, as before.
 - One budget covers everything decoded: at most 128 MiB of retained RGBA8
   over all sources together, checked before each allocation. A budget
@@ -110,6 +112,104 @@ pack alone. Problems in shared sources are printed on stderr as `texture
 source N [pack P] issue at ...`. The exit code is 3 if any source reported
 an issue.
 
+## Mesh selection and the prepared scene
+
+The renderer does not read `GeometryReport` or `RenderTextureSet`.
+`prepare_car_scene` (`include/nfsu/scene.h`, library `nfsu_scene`) turns
+them into a `PreparedCarScene` once, and `render_scene` draws only that
+scene. The prepared-scene layer has no file, path, `TexturePack`, BUN, JDLZ
+or command-line API; source/pack/record numbers are opaque provenance. Its
+public header uses only the
+in-memory mesh types in `include/nfsu/mesh.h`, not the geometry file API.
+The separate `nfsu_texture_decode` library (`include/nfsu/texture_decode.h`)
+turns parsed packs into `RenderTextureSet`; a frontend links it while CPU
+and GPU backends only consume `PreparedCarScene`. TGA writing is likewise
+the independent `nfsu_image` utility, not part of texture-pack decoding.
+
+Selection:
+
+- No selector is the explicit profile `all meshes`: every valid mesh in
+  source order, invalid meshes skipped and listed
+  (`skipped_invalid_meshes`). Its stdout, stderr and TGA are
+  byte-identical to the previous version.
+- `--mesh-index N` selects the mesh at position N of the geometry report
+  (the index printed by `nfsu_probe meshes`). `--mesh-name NAME` selects
+  the one mesh whose stored name equals NAME byte for byte,
+  case-sensitively. They may be repeated and mixed. Any selector switches
+  to an `explicit subset`.
+- All selectors are resolved before any texture file is read. The
+  selection is rejected, with exit 1 and nothing written, for: more than
+  256 selectors or more than 16384 name bytes (both checked while
+  parsing, before a selector is stored), an index that is not plain
+  decimal, has more than 10 digits or is past the last mesh, an empty
+  name, a name longer than 28 bytes or with a byte outside 0x20..0x7E, a
+  name no mesh has, a name more than one mesh has (for example
+  `240SX_KIT00_LEFT_SIDE_MIRRO`, stored three times), an invalid mesh, and
+  the same mesh selected twice by any combination. Selectors are checked
+  in command-line order and the first problem is reported, numbering
+  selectors from 0.
+- Selected meshes are always drawn in ascending source position, whatever
+  the selector order, so triangle ids and depth ties do not depend on it.
+- Shared sources decode only hashes used by the selected meshes
+  (`wanted_hashes`).
+- For an explicit subset stdout gains, before the statistics, `selection:
+  explicit subset, K of M meshes, S selectors` and one `selected: mesh I
+  name "NAME" by selector J (index|name)` line per mesh in source order.
+  The `meshes` statistic then counts the selected meshes only.
+- Neither profile is the game's stock car. Installed-part and LOD
+  selection are not decoded (see `docs/CAR_SCENE.md`); an explicit subset
+  is a diagnostic view chosen by the user.
+
+`PreparedCarScene` holds, in deterministic order:
+
+- `profile`, the `selectors` as given, `source_mesh_count` and
+  `skipped_invalid_meshes`;
+- `meshes`: per selected mesh its source position, stored name, the
+  selector that chose it, source material count, and copies of its vertices
+  and triangles (three u16 indices each);
+- `draws`: one `PreparedDraw` per material record of each selected mesh,
+  in mesh then record order, with the mesh handle, material index, first
+  index, index count, texture slot, texture hash, `BindingKind`, texture
+  handle and its source, pack and record (resolved only), secondary slot,
+  flags, record offset, bounds, the untouched 60-byte record, and
+  `drawable`. A group with an invalid slot or an index range that is not a
+  multiple of 3 inside the mesh index stream is kept with `drawable ==
+  false`, counted as invalid and never drawn, as before;
+- `textures`: one copy of each resolved texture, in order of first use,
+  addressed by the draw's texture handle;
+- `unresolved_hashes`: the distinct hashes of unresolved groups of the
+  selected meshes, ascending (the `unresolved hashes` statistic).
+
+That is everything a GPU backend needs: upload each mesh's vertices and
+index stream and each texture, then issue `index_count` indices from
+`first_index` per drawable draw, with the texture handle or the fallback
+color of `texture_hash`.
+
+Lifetime: the scene owns every byte a backend reads. Nothing in it points
+into the `GeometryReport` or `RenderTextureSet`, so those may be changed,
+reallocated or destroyed after preparation without any effect; the tests
+change the hash list, clear every source buffer and destroy both sources,
+and the frame stays byte-identical. The cost is one copy of the selected
+geometry (about 4 MiB for all 240SX meshes) and of the resolved textures,
+bounded by the scene limits below.
+
+Validation: preparation checks the selection, every count against the
+scene limits with overflow-safe additions before copying, every index
+range, and the resolved texture index; it catches `std::bad_alloc` and
+leaves the scene empty on any failure. It then runs
+`validate_prepared_scene` on its result. The scene's fields are public, so
+`render_scene` treats it as untrusted and runs `validate_prepared_scene`
+again before allocating the frame: profile and selector references,
+semantic selector provenance, complete all-mesh source coverage, exactly
+one ordered draw per source material, agreement between every decoded
+material field and its raw 60-byte record, the derived `drawable` flag and
+unresolved-hash set, binding/provenance consistency, texture handles in
+first-use order with no unused texture, texture sizes (`width * height * 4`
+without overflow), and a drawn triangle total below 2^32 - 1. A scene that
+fails is refused before a new frame is allocated. Vertex indices inside
+triangles are checked per triangle while drawing and counted as `bad_index`,
+as for source data.
+
 ## Frames and camera
 
 - World frame: `world = (px, py, -pz)`, Y up, right-handed, source triangle
@@ -138,12 +238,14 @@ an issue.
 
 ## Pipeline
 
-1. Every valid mesh is drawn in file order, and every material record in
-   record order. Invalid meshes are skipped and counted. A material record
-   is drawn only if its index range is a multiple of 3 inside the mesh
-   index stream and its texture slot is inside the mesh hash list.
-   Otherwise the group is counted as invalid and skipped. Each triangle
-   gets an id: the running number of submitted triangles.
+1. The prepared draws are drawn in order: selected meshes in file order,
+   and every material record in record order. With no selector, invalid
+   meshes are skipped and counted. A draw is drawn only if it is
+   `drawable`: its index range is a multiple of 3 inside the mesh index
+   stream and its texture slot is inside the mesh hash list. Otherwise the
+   group is counted as invalid and skipped. The texture binding is the one
+   fixed at preparation. Each triangle gets an id: the running number of
+   submitted triangles.
 2. Indices are checked against the vertex count again. Triangles with
    repeated indices or zero world-space area are kept and counted
    (`degenerate_source`). They go through the pipeline and produce no
@@ -248,8 +350,12 @@ All limits are checked before allocation or before the work starts:
 
 - frame 1..8192 per axis and at most 16777216 pixels (16 bytes per pixel:
   RGBA8, f64 depth, u32 id; at most 256 MiB)
-- at most 2^22 source triangles and 2^24 raster triangles
+- at most 2^22 source triangles, 2^24 submitted triangles (over all
+  drawable ranges, which may overlap) and 2^24 raster triangles
 - at most 2^32 pixel tests per frame
+- prepared scene (`SceneLimits`): at most 256 selectors and 16384 selector
+  name bytes, 65536 draws, 2^22 vertices, 2^22 triangles, 2^24 triangles
+  over all drawable ranges and 128 MiB of copied texture RGBA8
 - camera values as in the option table
 - decoded textures: at most 128 MiB of retained RGBA8 top levels in total,
   over all texture sources (`RenderTextureLimits::max_total_bytes`)
@@ -257,7 +363,9 @@ All limits are checked before allocation or before the work starts:
   each at most 256 MiB, and at most 512 MiB read for `TEXTURES.BIN` and all
   shared files together, checked before each file is read
 
-Exceeding a limit returns an error. There is no partial screenshot.
+Exceeding a limit returns an error. There is no partial screenshot: the
+TGA is written only after preparation and rendering succeeded, and a
+selection error exits before any texture is read.
 
 Texture decoding (`decode_render_textures`) separates two kinds of problem:
 
@@ -395,6 +503,31 @@ Observed:
   depth statistics are the same as the local-only run, because the
   geometry and camera are the same. 148173 pixels drawn, 118557 of them
   fallback (144209 without GLOBALB).
+
+After the prepared-scene change both commands above were run twice each
+without selectors. The TGA hashes and all counts are the ones listed, and
+stdout and stderr are byte-identical to the previous build.
+
+### Explicit subset
+
+A diagnostic subset, not the stock car, with the same default options and
+GLOBALB.BUN, selectors given out of source order:
+
+```text
+nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> build/shots/s.tga --shared-textures <GLOBAL/GLOBALB.BUN> --mesh-name 240SX_KITW01_BODY_A --mesh-index 4 --mesh-name 240SX_STYLE01_BRAKELIGHT_A --mesh-index 0
+```
+
+- Selected, in source order: mesh 0 `240SX_STYLE15_SPOILER_A` (selector
+  3), mesh 4 `240SX_STYLE14_HOOD_A` (selector 1), mesh 83
+  `240SX_STYLE01_BRAKELIGHT_A` (selector 2), mesh 91
+  `240SX_KITW01_BODY_A` (selector 0).
+- Two runs gave byte-identical TGA files and reports: 3686418 bytes,
+  SHA-256
+  `E82F3F5EE3CD508E582697BBD148FC5C83090982D12CABBE6586619BFDF52004`.
+- 14 material groups (8 resolved, 6 unresolved), 1 unresolved hash, 2952
+  triangles (539 textured, 2413 fallback), 127804 pixels drawn (96654
+  fallback). 9 hashes were wanted from GLOBALB and 4 of its textures
+  decoded.
 
 ### Inferred
 
