@@ -34,8 +34,16 @@ std::string describe(const MeshSelector& selector, std::size_t position) {
     std::string text = "selector " + std::to_string(position) + " (";
     if (selector.kind == MeshSelectorKind::index) {
         text += "index " + std::to_string(selector.index);
-    } else {
+    } else if (selector.kind == MeshSelectorKind::name) {
         text += "name " + quoted(selector.name);
+    } else if (selector.kind == MeshSelectorKind::hash) {
+        static const char kHex[] = "0123456789ABCDEF";
+        text += "hash 0x";
+        for (int shift = 28; shift >= 0; shift -= 4) {
+            text += kHex[(selector.hash >> shift) & 0x0FU];
+        }
+    } else {
+        text += "unknown";
     }
     return text + ")";
 }
@@ -133,6 +141,7 @@ const char* mesh_selector_kind_name(MeshSelectorKind kind) noexcept {
     switch (kind) {
     case MeshSelectorKind::index: return "index";
     case MeshSelectorKind::name: return "name";
+    case MeshSelectorKind::hash: return "hash";
     }
     return "unknown";
 }
@@ -230,9 +239,9 @@ bool resolve_mesh_selection(
             const MeshSelector& selector = selectors[s];
             std::size_t found = 0;
             if (selector.kind == MeshSelectorKind::index) {
-                if (!selector.name.empty()) {
+                if (!selector.name.empty() || selector.hash != 0) {
                     error = describe(selector, s) +
-                            ": an index selector must not carry a name";
+                            ": an index selector must not carry a name or hash";
                     return false;
                 }
                 if (selector.index >= geometry.meshes.size()) {
@@ -242,9 +251,9 @@ bool resolve_mesh_selection(
                 }
                 found = static_cast<std::size_t>(selector.index);
             } else if (selector.kind == MeshSelectorKind::name) {
-                if (selector.index != 0) {
+                if (selector.index != 0 || selector.hash != 0) {
                     error = describe(selector, s) +
-                            ": a name selector must not carry an index";
+                            ": a name selector must not carry an index or hash";
                     return false;
                 }
                 if (selector.name.empty()) {
@@ -279,6 +288,47 @@ bool resolve_mesh_selection(
                             std::to_string(matches) + " meshes have it (first " +
                             std::to_string(found) + " and " + std::to_string(second) +
                             ")";
+                    return false;
+                }
+            } else if (selector.kind == MeshSelectorKind::hash) {
+                if (selector.index != 0 || !selector.name.empty()) {
+                    error = describe(selector, s) +
+                            ": a hash selector must not carry an index or name";
+                    return false;
+                }
+                if (!geometry.mesh_directory_valid) {
+                    error = describe(selector, s) +
+                            ": verified mesh hash directory is unavailable";
+                    return false;
+                }
+                std::size_t matches = 0;
+                std::size_t second = 0;
+                for (std::size_t i = 0; i < geometry.meshes.size(); ++i) {
+                    const Mesh& mesh = geometry.meshes[i];
+                    if (!mesh.has_directory_entry) {
+                        error = describe(selector, s) +
+                                ": verified mesh hash directory is incomplete";
+                        return false;
+                    }
+                    if (mesh.directory_hash == selector.hash) {
+                        if (matches == 0) {
+                            found = i;
+                        } else if (matches == 1) {
+                            second = i;
+                        }
+                        ++matches;
+                    }
+                }
+                if (matches == 0) {
+                    error = describe(selector, s) +
+                            ": no mesh has this directory hash";
+                    return false;
+                }
+                if (matches > 1) {
+                    error = describe(selector, s) + ": hash is ambiguous, " +
+                            std::to_string(matches) + " meshes have it (first " +
+                            std::to_string(found) + " and " +
+                            std::to_string(second) + ")";
                     return false;
                 }
             } else {
@@ -386,6 +436,10 @@ bool prepare_car_scene(
             PreparedMesh& prepared = result.meshes.back();
             prepared.source_index = selected[k];
             prepared.name = mesh.name;
+            prepared.directory_hash = mesh.directory_hash;
+            prepared.directory_offset = mesh.directory_offset;
+            prepared.directory_size = mesh.directory_size;
+            prepared.has_directory_entry = mesh.has_directory_entry;
             prepared.selector = subset ? selected_by[k] : kNoHandle;
             prepared.material_count = mesh.materials.size();
             prepared.vertices = mesh.vertices;
@@ -518,6 +572,16 @@ bool validate_scene(const PreparedCarScene& scene, std::string& error) {
                     " is not in ascending source order inside the source";
             return false;
         }
+        if ((!mesh.has_directory_entry &&
+             (mesh.directory_hash != 0 || mesh.directory_offset != 0 ||
+              mesh.directory_size != 0)) ||
+            (mesh.has_directory_entry &&
+             (mesh.directory_size < 8 ||
+              mesh.directory_offset > UINT64_MAX - mesh.directory_size))) {
+            error = "prepared mesh " + std::to_string(i) +
+                    " has invalid mesh directory provenance";
+            return false;
+        }
         if (std::binary_search(scene.skipped_invalid_meshes.begin(),
                                scene.skipped_invalid_meshes.end(), mesh.source_index)) {
             error = "prepared mesh " + std::to_string(i) + " is also listed as skipped";
@@ -532,17 +596,27 @@ bool validate_scene(const PreparedCarScene& scene, std::string& error) {
             }
             const MeshSelector& selector = scene.selectors[mesh.selector];
             if (selector.kind == MeshSelectorKind::index) {
-                if (selector.index != mesh.source_index || !selector.name.empty()) {
+                if (selector.index != mesh.source_index || !selector.name.empty() ||
+                    selector.hash != 0) {
                     error = "prepared mesh " + std::to_string(i) +
                             " does not match its index selector";
                     return false;
                 }
             } else if (selector.kind == MeshSelectorKind::name) {
                 if (selector.index != 0 || selector.name != mesh.name ||
+                    selector.hash != 0 ||
                     selector.name.empty() || selector.name.size() > kMeshNameSize ||
                     !printable_name(selector.name)) {
                     error = "prepared mesh " + std::to_string(i) +
                             " does not match its name selector";
+                    return false;
+                }
+            } else if (selector.kind == MeshSelectorKind::hash) {
+                if (selector.index != 0 || !selector.name.empty() ||
+                    !mesh.has_directory_entry ||
+                    selector.hash != mesh.directory_hash) {
+                    error = "prepared mesh " + std::to_string(i) +
+                            " does not match its hash selector";
                     return false;
                 }
             } else {

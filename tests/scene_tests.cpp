@@ -25,6 +25,10 @@ constexpr std::uint32_t kHashA = 0xA000000AU;  // one usable texture
 constexpr std::uint32_t kHashB = 0xB000000BU;  // in no texture
 constexpr std::uint32_t kHashC = 0xC000000CU;  // two textures: unusable
 constexpr std::uint32_t kHashE = 0xE000000EU;  // in no texture
+constexpr std::uint32_t kMeshHashBody = 0x01020304U;
+constexpr std::uint32_t kMeshHashBroken = 0x11121314U;
+constexpr std::uint32_t kMeshHashWheel = 0x21222324U;
+constexpr std::uint32_t kMeshHashDup = 0x31323334U;
 
 nfsu::MeshVertex vertex(float px, float py, float pz, float u, float v) {
     nfsu::MeshVertex out;
@@ -121,6 +125,16 @@ nfsu::GeometryReport scene_geometry() {
     dup_b.texture_hashes = {kHashB};
     dup_b.materials = {material(0, 6, 0, 8)};
     report.meshes.push_back(dup_b);
+    const std::uint32_t hashes[] = {kMeshHashBody, kMeshHashBroken,
+                                    kMeshHashWheel, kMeshHashDup, kMeshHashDup};
+    for (std::size_t i = 0; i < report.meshes.size(); ++i) {
+        nfsu::Mesh& mesh = report.meshes[i];
+        mesh.directory_hash = hashes[i];
+        mesh.directory_offset = 0x200U + i * 0x100U;
+        mesh.directory_size = 0x80U;
+        mesh.has_directory_entry = true;
+    }
+    report.mesh_directory_valid = true;
     return report;
 }
 
@@ -161,6 +175,13 @@ nfsu::MeshSelector by_name(const std::string& name) {
     nfsu::MeshSelector selector;
     selector.kind = nfsu::MeshSelectorKind::name;
     selector.name = name;
+    return selector;
+}
+
+nfsu::MeshSelector by_hash(std::uint32_t hash) {
+    nfsu::MeshSelector selector;
+    selector.kind = nfsu::MeshSelectorKind::hash;
+    selector.hash = hash;
     return selector;
 }
 
@@ -221,7 +242,8 @@ bool same_scene(const nfsu::PreparedCarScene& a, const nfsu::PreparedCarScene& b
     for (std::size_t i = 0; i < a.selectors.size(); ++i) {
         if (a.selectors[i].kind != b.selectors[i].kind ||
             a.selectors[i].index != b.selectors[i].index ||
-            a.selectors[i].name != b.selectors[i].name) {
+            a.selectors[i].name != b.selectors[i].name ||
+            a.selectors[i].hash != b.selectors[i].hash) {
             return false;
         }
     }
@@ -229,6 +251,10 @@ bool same_scene(const nfsu::PreparedCarScene& a, const nfsu::PreparedCarScene& b
         const nfsu::PreparedMesh& x = a.meshes[i];
         const nfsu::PreparedMesh& y = b.meshes[i];
         if (x.source_index != y.source_index || x.name != y.name ||
+            x.directory_hash != y.directory_hash ||
+            x.directory_offset != y.directory_offset ||
+            x.directory_size != y.directory_size ||
+            x.has_directory_entry != y.has_directory_entry ||
             x.selector != y.selector || x.material_count != y.material_count ||
             x.vertices.size() != y.vertices.size() ||
             x.triangles.size() != y.triangles.size() ||
@@ -344,6 +370,14 @@ void test_selection() {
     check(mesh_positions(scene) == std::vector<std::size_t>({2}) &&
               scene.meshes[0].name == "WHEEL", "name selection result");
 
+    check(prepare(geometry, textures, selection_of({by_hash(kMeshHashWheel)}),
+                  scene, error),
+          "hash selection: " + error);
+    check(mesh_positions(scene) == std::vector<std::size_t>({2}) &&
+              scene.meshes[0].directory_hash == kMeshHashWheel &&
+              scene.meshes[0].has_directory_entry,
+          "hash selection result");
+
     // Mixed and out of order: source order, provenance kept per mesh.
     nfsu::PreparedCarScene mixed;
     check(prepare(geometry, textures,
@@ -427,17 +461,22 @@ void test_selection_errors() {
     rejects(selection_of({by_name("body")}), "no mesh has this name", "case-sensitive name");
     rejects(selection_of({by_name("")}), "empty", "empty name");
     rejects(selection_of({by_name("DUP")}), "ambiguous", "duplicate stored name");
+    rejects(selection_of({by_hash(0xFFFFFFFFU)}), "no mesh has", "unknown hash");
+    rejects(selection_of({by_hash(kMeshHashDup)}), "ambiguous", "duplicate hash");
     rejects(selection_of({by_name(std::string("BODY\0X", 6))}), "printable",
             "embedded NUL");
     rejects(selection_of({by_name(std::string(nfsu::kMeshNameSize + 1, 'A'))}), "printable",
             "name longer than any stored name");
     rejects(selection_of({by_index(1)}), "invalid", "invalid mesh by index");
     rejects(selection_of({by_name("BROKEN")}), "invalid", "invalid mesh by name");
+    rejects(selection_of({by_hash(kMeshHashBroken)}), "invalid", "invalid mesh by hash");
     rejects(selection_of({by_index(0), by_index(0)}), "already selected", "index twice");
     rejects(selection_of({by_name("WHEEL"), by_name("WHEEL")}), "already selected",
             "name twice");
     rejects(selection_of({by_index(2), by_name("WHEEL")}), "already selected by selector 0",
             "index and name of one mesh");
+    rejects(selection_of({by_hash(kMeshHashWheel), by_index(2)}),
+            "already selected by selector 0", "hash and index of one mesh");
     nfsu::MeshSelector index_with_name = by_index(0);
     index_with_name.name = "BODY";
     rejects(selection_of({index_with_name}), "must not carry a name",
@@ -446,6 +485,22 @@ void test_selection_errors() {
     name_with_index.index = 1;
     rejects(selection_of({name_with_index}), "must not carry an index",
             "name selector with index");
+    nfsu::MeshSelector hash_with_name = by_hash(kMeshHashBody);
+    hash_with_name.name = "BODY";
+    rejects(selection_of({hash_with_name}), "must not carry", "hash selector with name");
+    nfsu::MeshSelector index_with_hash = by_index(0);
+    index_with_hash.hash = kMeshHashBody;
+    rejects(selection_of({index_with_hash}), "must not carry", "index selector with hash");
+    nfsu::GeometryReport no_directory = geometry;
+    no_directory.mesh_directory_valid = false;
+    std::vector<std::size_t> positions;
+    std::string no_directory_error;
+    check(!nfsu::resolve_mesh_selection(no_directory,
+                                        selection_of({by_hash(kMeshHashBody)}),
+                                        nfsu::SceneLimits{}, positions, nullptr,
+                                        no_directory_error) &&
+              no_directory_error.find("unavailable") != std::string::npos,
+          "hash selector requires a verified directory");
     nfsu::MeshSelector bogus = by_index(0);
     bogus.kind = static_cast<nfsu::MeshSelectorKind>(9);
     rejects(selection_of({bogus}), "unknown selector kind", "unknown selector kind");
@@ -830,6 +885,20 @@ void test_hostile_scene() {
     scene = named;
     scene.selectors[0].index = 1;
     refused(scene, "name selector carries an index");
+
+    nfsu::PreparedCarScene hashed;
+    check(prepare(geometry, scene_textures(),
+                  selection_of({by_hash(kMeshHashBody)}), hashed, error),
+          "hash-selector hostile base: " + error);
+    scene = hashed;
+    scene.selectors[0].hash = kMeshHashWheel;
+    refused(scene, "hash selector points at another mesh");
+    scene = hashed;
+    scene.meshes[0].directory_hash = kMeshHashWheel;
+    refused(scene, "prepared mesh hash changed");
+    scene = hashed;
+    scene.selectors[0].name = "BODY";
+    refused(scene, "hash selector carries a name");
 
     nfsu::RenderTextureSet two_textures = scene_textures();
     two_textures.textures.push_back(texture(kHashE, 2, 77));

@@ -22,6 +22,8 @@ namespace {
 
 constexpr std::uint32_t kNfsuGeometryId = 0x80134000U;
 
+std::string hex32(std::uint32_t value);
+
 std::uint16_t read_u16_le(const unsigned char* bytes) {
     return static_cast<std::uint16_t>(bytes[0]) |
            static_cast<std::uint16_t>(bytes[1] << 8U);
@@ -277,6 +279,14 @@ int run_meshes(const fs::path& path) {
                   << "vertices=" << mesh.declared_vertex_count << ' '
                   << "faces=" << mesh.declared_face_count << ' '
                   << "offset=" << mesh.offset << ' '
+                  << "directory="
+                  << (mesh.has_directory_entry ? hex32(mesh.directory_hash) : "none")
+                  << ' ';
+        if (mesh.has_directory_entry) {
+            std::cout << "range=" << mesh.directory_offset << '+'
+                      << mesh.directory_size << ' ';
+        }
+        std::cout
                   << (mesh.name.empty() ? "<unnamed>" : mesh.name) << '\n';
         if (mesh.valid) {
             total_vertices += mesh.vertices.size();

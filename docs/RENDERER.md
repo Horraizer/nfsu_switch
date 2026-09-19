@@ -9,7 +9,7 @@ and writes it as a TGA screenshot. The screenshot is the acceptance
 artifact. There is no window and no platform graphics API.
 
 ```text
-nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> <out.tga> [--shared-textures FILE]... [--mesh-index N | --mesh-name NAME]... [options]
+nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> <out.tga> [--shared-textures FILE]... [--mesh-index N | --mesh-name NAME | --mesh-hash HEX]... [options]
 ```
 
 | Option | Range | Default |
@@ -29,6 +29,7 @@ nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> <out.tga> [--shared-textures FILE]... 
 | `--shading MODE` | `flat`, `none` | `flat` |
 | `--mesh-index N` | 0..4294967295 decimal, repeatable | none (all meshes) |
 | `--mesh-name NAME` | 1..28 printable ASCII bytes, repeatable | none (all meshes) |
+| `--mesh-hash HEX` | 1..8 hex digits, optional `0x`, repeatable | none (all meshes) |
 
 Each option may be given once, except `--shared-textures` (at most 8
 times) and the mesh selectors (see below). Numbers are parsed with `std::from_chars`
@@ -135,8 +136,10 @@ Selection:
 - `--mesh-index N` selects the mesh at position N of the geometry report
   (the index printed by `nfsu_probe meshes`). `--mesh-name NAME` selects
   the one mesh whose stored name equals NAME byte for byte,
-  case-sensitively. They may be repeated and mixed. Any selector switches
-  to an `explicit subset`.
+  case-sensitively. `--mesh-hash HEX` selects the one mesh with that
+  verified 0x00134003/0x00134004 directory hash; the optional prefix is
+  `0x` or `0X`. They may be repeated and mixed. Any selector switches to
+  an `explicit subset`.
 - All selectors are resolved before any texture file is read. The
   selection is rejected, with exit 1 and nothing written, for: more than
   256 selectors or more than 16384 name bytes (both checked while
@@ -145,7 +148,9 @@ Selection:
   name, a name longer than 28 bytes or with a byte outside 0x20..0x7E, a
   name no mesh has, a name more than one mesh has (for example
   `240SX_KIT00_LEFT_SIDE_MIRRO`, stored three times), an invalid mesh, and
-  the same mesh selected twice by any combination. Selectors are checked
+  a malformed hex hash, an unavailable or incomplete verified directory,
+  a hash no mesh has, a hash more than one mesh has, and the same mesh
+  selected twice by any combination. Selectors are checked
   in command-line order and the first problem is reported, numbering
   selectors from 0.
 - Selected meshes are always drawn in ascending source position, whatever
@@ -154,7 +159,7 @@ Selection:
   (`wanted_hashes`).
 - For an explicit subset stdout gains, before the statistics, `selection:
   explicit subset, K of M meshes, S selectors` and one `selected: mesh I
-  name "NAME" by selector J (index|name)` line per mesh in source order.
+  name "NAME" by selector J (index|name|hash)` line per mesh in source order.
   The `meshes` statistic then counts the selected meshes only.
 - Neither profile is the game's stock car. Installed-part and LOD
   selection are not decoded (see `docs/CAR_SCENE.md`); an explicit subset
@@ -164,9 +169,10 @@ Selection:
 
 - `profile`, the `selectors` as given, `source_mesh_count` and
   `skipped_invalid_meshes`;
-- `meshes`: per selected mesh its source position, stored name, the
-  selector that chose it, source material count, and copies of its vertices
-  and triangles (three u16 indices each);
+- `meshes`: per selected mesh its source position, stored name, verified
+  directory hash/range when present, the selector that chose it, source
+  material count, and copies of its vertices and triangles (three u16
+  indices each);
 - `draws`: one `PreparedDraw` per material record of each selected mesh,
   in mesh then record order, with the mesh handle, material index, first
   index, index count, texture slot, texture hash, `BindingKind`, texture

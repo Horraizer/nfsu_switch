@@ -184,11 +184,9 @@ Orientation in the sample, using the named source fields:
 - 0x00134B02 bytes +32..+59 apart from the first index. The +32 slot looks
   like an index into 0x00134013, but that is not verified.
 - 0x00134013, 0x00134017, 0x00134018, 0x00134019, 0x0013401A.
-- Unverified leads from read-only research, not used by the parser:
-  0x00134011 `+16` may be a hash of the mesh name; 0x00134003 and 0x00134004
-  may be tables of mesh name hashes and mesh container offsets.
-- The header container 0x80134001 and its children, and the second
-  top-level container 0x80034020.
+- 0x00134011 `+16` may be a hash of the mesh name.
+- The meanings of 0x00134002 and 0x80134008 in the header container, and
+  the second top-level container 0x80034020.
 - The color byte order (RGBA vs BGRA) and meaning. Colors are decoded but
   not exported. In the sample most are grey (R = G = B); see
   `docs/RENDERER.md`.
@@ -211,6 +209,15 @@ Orientation in the sample, using the named source fields:
   only that mesh invalid, with a message naming the mesh index, name, chunk
   ID and file offset; parsing continues with the next mesh because the
   parent bounds are still intact.
+- In each geometry root, if a 0x80134001 header is present, it must contain exactly one
+  0x00134003 table of 8-byte `(hash, 0)` records and one 0x00134004 table
+  of 20-byte `(hash, absolute container offset, total container size, 0, 0)`
+  records. Counts and hashes must agree, every range must exactly name one
+  direct 0x80134010 child of that same root, and every mesh in the root must
+  be named once. Directory provenance is attached only after that complete
+  pair passes all checks. Hash selection is enabled only when every
+  encountered directory validates and every parsed mesh in the file has
+  verified provenance.
 - A mesh needs exactly one 0x00134011, 0x00134012, 0x80134100, 0x00134900,
   0x00134B01, 0x00134B02 and 0x00134B03. All other chunks are skipped.
 - 0x00134012 must hold exactly `(0x00134011 +25) * 8` bytes, and every

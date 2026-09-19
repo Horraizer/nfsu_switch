@@ -13,6 +13,9 @@ namespace nfsu {
 
 // Chunk IDs used by NFSU car GEOMETRY.BIN files. See docs/FORMATS.md.
 constexpr std::uint32_t kGeometryRootId = 0x80134000U;
+constexpr std::uint32_t kGeometryHeaderId = 0x80134001U;
+constexpr std::uint32_t kMeshHashTableId = 0x00134003U;
+constexpr std::uint32_t kMeshDirectoryId = 0x00134004U;
 constexpr std::uint32_t kMeshContainerId = 0x80134010U;
 constexpr std::uint32_t kMeshMetadataId = 0x00134011U;
 constexpr std::uint32_t kTextureListId = 0x00134012U;
@@ -39,6 +42,8 @@ constexpr std::size_t kFaceCountOffset = 36;
 constexpr std::size_t kVertexCountOffset = 52;
 constexpr std::size_t kVertexStride = 36;
 constexpr std::size_t kFaceStride = 6;
+constexpr std::size_t kMeshHashRecordSize = 8;
+constexpr std::size_t kMeshDirectoryRecordSize = 20;
 
 // Texture binding. 0x00134012 is a list of (u32 texture hash, u32 0)
 // entries whose count is the byte at kTextureListCountOffset in the
@@ -68,6 +73,9 @@ struct GeometryReport {
     std::uint64_t file_size = 0;
     std::vector<Mesh> meshes;
     std::vector<GeometryIssue> issues;
+    // True only when every encountered directory validates and every parsed
+    // mesh received an entry from the pair in its owning geometry root.
+    bool mesh_directory_valid = false;
 
     bool ok() const noexcept { return issues.empty(); }
     std::size_t valid_mesh_count() const noexcept;

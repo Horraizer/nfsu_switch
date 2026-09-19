@@ -53,6 +53,12 @@ struct Mesh {
     std::size_t index = 0;
     std::string name;
     std::uint64_t offset = 0;
+    // Verified 0x00134003/0x00134004 directory entry. The range repeats
+    // this mesh container's absolute offset and total size.
+    std::uint32_t directory_hash = 0;
+    std::uint64_t directory_offset = 0;
+    std::uint64_t directory_size = 0;
+    bool has_directory_entry = false;
     std::int32_t declared_vertex_count = 0;
     std::int32_t declared_face_count = 0;
     // Absolute source offsets of aligned records and their padding lengths;

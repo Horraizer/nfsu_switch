@@ -8,6 +8,7 @@
 #include <exception>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <new>
 #include <sstream>
 #include <system_error>
@@ -117,19 +118,28 @@ public:
         std::vector<RawChunk> top;
         // Chunks listed before a structural error are fully in bounds, so
         // they are still processed; the error itself is already reported.
-        list_children(0, size_, "top level", top);
+        const bool top_structure_ok = list_children(0, size_, "top level", top);
 
         bool found_root = false;
+        bool directories_ok = top_structure_ok;
         for (const RawChunk& chunk : top) {
             if (chunk.id == kGeometryRootId) {
                 found_root = true;
-                parse_root(chunk);
+                if (!parse_root(chunk)) {
+                    directories_ok = false;
+                }
             }
         }
         if (!found_root) {
             add_issue(0, "no geometry root chunk " +
                              format_chunk_id(kGeometryRootId) +
                              " found at top level");
+        }
+
+        report_.mesh_directory_valid = directories_ok && !report_.meshes.empty();
+        for (const Mesh& mesh : report_.meshes) {
+            report_.mesh_directory_valid =
+                report_.mesh_directory_valid && mesh.has_directory_entry;
         }
     }
 
@@ -191,27 +201,254 @@ private:
         return true;
     }
 
-    void parse_root(const RawChunk& root) {
+    bool parse_root(const RawChunk& root) {
         std::vector<RawChunk> children;
-        list_children(
+        const bool root_structure_ok = list_children(
             root.payload_offset,
             root.payload_offset + root.payload_size,
             "geometry root at offset " + std::to_string(root.offset),
             children);
 
+        const std::size_t mesh_begin = report_.meshes.size();
+        std::vector<RawChunk> hash_tables;
+        std::vector<RawChunk> directories;
+        std::size_t header_count = 0;
+        bool header_structure_ok = root_structure_ok;
+        bool mesh_limit_reported = false;
+
         for (const RawChunk& chunk : children) {
+            if (chunk.id == kGeometryHeaderId) {
+                ++header_count;
+                std::vector<RawChunk> header_children;
+                if (!list_children(chunk.payload_offset,
+                                   chunk.payload_offset + chunk.payload_size,
+                                   "geometry header at offset " +
+                                       std::to_string(chunk.offset),
+                                   header_children)) {
+                    header_structure_ok = false;
+                }
+                for (const RawChunk& child : header_children) {
+                    if (child.id == kMeshHashTableId) {
+                        hash_tables.push_back(child);
+                    } else if (child.id == kMeshDirectoryId) {
+                        directories.push_back(child);
+                    }
+                }
+                continue;
+            }
             if (chunk.id != kMeshContainerId) {
                 continue;
             }
             if (report_.meshes.size() >= limits_.max_meshes) {
-                std::ostringstream text;
-                text << "mesh limit " << limits_.max_meshes
-                     << " exceeded; remaining meshes ignored";
-                add_issue(chunk.offset, text.str());
-                return;
+                if (!mesh_limit_reported) {
+                    std::ostringstream text;
+                    text << "mesh limit " << limits_.max_meshes
+                         << " exceeded; remaining meshes ignored";
+                    add_issue(chunk.offset, text.str());
+                    mesh_limit_reported = true;
+                }
+                header_structure_ok = false;
+                continue;
             }
             parse_mesh(chunk);
         }
+        return parse_mesh_directory(root, mesh_begin, report_.meshes.size(),
+                                    hash_tables, directories, header_count,
+                                    header_structure_ok);
+    }
+
+    bool parse_mesh_directory(const RawChunk& owning_root,
+                              std::size_t mesh_begin,
+                              std::size_t mesh_end,
+                              const std::vector<RawChunk>& hash_tables,
+                              const std::vector<RawChunk>& directories,
+                              std::size_t header_count,
+                              bool structure_ok) {
+        if (header_count == 0 && hash_tables.empty() && directories.empty()) {
+            return structure_ok;
+        }
+        bool valid = structure_ok;
+        if (header_count != 1) {
+            add_issue(owning_root.offset, "expected exactly one " +
+                             format_chunk_id(kGeometryHeaderId) +
+                             " geometry header, found " +
+                             std::to_string(header_count));
+            valid = false;
+        }
+        if (hash_tables.size() != 1) {
+            add_issue(owning_root.offset, "expected exactly one " +
+                             format_chunk_id(kMeshHashTableId) +
+                             " mesh hash table, found " +
+                             std::to_string(hash_tables.size()));
+            valid = false;
+        }
+        if (directories.size() != 1) {
+            add_issue(owning_root.offset, "expected exactly one " +
+                             format_chunk_id(kMeshDirectoryId) +
+                             " mesh directory, found " +
+                             std::to_string(directories.size()));
+            valid = false;
+        }
+        if (hash_tables.size() != 1 || directories.size() != 1) {
+            return false;
+        }
+
+        const RawChunk& hashes = hash_tables.front();
+        const RawChunk& directory = directories.front();
+        if (hashes.payload_size % kMeshHashRecordSize != 0) {
+            add_issue(hashes.offset, chunk_label(hashes) +
+                                         " payload is not a whole number of 8-byte records");
+            valid = false;
+        }
+        if (directory.payload_size % kMeshDirectoryRecordSize != 0) {
+            add_issue(directory.offset,
+                      chunk_label(directory) +
+                          " payload is not a whole number of 20-byte records");
+            valid = false;
+        }
+        if (!valid) {
+            return false;
+        }
+
+        const std::size_t hash_count = static_cast<std::size_t>(
+            hashes.payload_size / kMeshHashRecordSize);
+        const std::size_t directory_count = static_cast<std::size_t>(
+            directory.payload_size / kMeshDirectoryRecordSize);
+        if (hash_count != directory_count) {
+            add_issue(directory.offset,
+                      "mesh directory record count " +
+                          std::to_string(directory_count) +
+                          " does not match mesh hash table record count " +
+                          std::to_string(hash_count));
+            valid = false;
+        }
+        const std::size_t root_mesh_count = mesh_end - mesh_begin;
+        if (directory_count != root_mesh_count) {
+            add_issue(directory.offset,
+                      "mesh directory record count " +
+                          std::to_string(directory_count) +
+                          " does not match geometry root mesh count " +
+                          std::to_string(root_mesh_count));
+            valid = false;
+        }
+        if (!valid) {
+            return false;
+        }
+
+        std::map<std::uint64_t, std::size_t> mesh_by_offset;
+        for (std::size_t i = mesh_begin; i < mesh_end; ++i) {
+            mesh_by_offset.emplace(report_.meshes[i].offset, i);
+        }
+        struct Entry {
+            std::uint32_t hash = 0;
+            std::uint64_t offset = 0;
+            std::uint64_t size = 0;
+            std::size_t mesh = 0;
+        };
+        std::vector<Entry> entries;
+        entries.reserve(directory_count);
+        std::vector<bool> covered(root_mesh_count, false);
+        const std::uint64_t root_end =
+            owning_root.payload_offset + owning_root.payload_size;
+        for (std::size_t i = 0; i < directory_count; ++i) {
+            const std::uint64_t hash_at =
+                hashes.payload_offset + i * kMeshHashRecordSize;
+            const std::uint64_t entry_at =
+                directory.payload_offset + i * kMeshDirectoryRecordSize;
+            const std::uint32_t hash = read_u32_le(data_ + hash_at);
+            const std::uint32_t directory_hash = read_u32_le(data_ + entry_at);
+            const std::uint64_t offset = read_u32_le(data_ + entry_at + 4);
+            const std::uint64_t total_size = read_u32_le(data_ + entry_at + 8);
+            if (read_u32_le(data_ + hash_at + 4) != 0) {
+                add_issue(hash_at + 4,
+                          "mesh hash table record " + std::to_string(i) +
+                              " has a nonzero reserved word");
+                valid = false;
+            }
+            if (read_u32_le(data_ + entry_at + 12) != 0 ||
+                read_u32_le(data_ + entry_at + 16) != 0) {
+                add_issue(entry_at + 12,
+                          "mesh directory record " + std::to_string(i) +
+                              " has a nonzero reserved word");
+                valid = false;
+            }
+            if (hash != directory_hash) {
+                add_issue(entry_at,
+                          "mesh directory record " + std::to_string(i) +
+                              " hash does not match the mesh hash table");
+                valid = false;
+            }
+            if (total_size < kHeaderSize || offset > size_ ||
+                total_size > size_ - offset) {
+                add_issue(entry_at + 4,
+                          "mesh directory record " + std::to_string(i) +
+                              " range is outside the file");
+                valid = false;
+                continue;
+            }
+            if (offset < owning_root.payload_offset || offset > root_end ||
+                total_size > root_end - offset) {
+                add_issue(entry_at + 4,
+                          "mesh directory record " + std::to_string(i) +
+                              " range is outside its geometry root");
+                valid = false;
+                continue;
+            }
+            if (read_u32_le(data_ + offset) != kMeshContainerId) {
+                add_issue(entry_at + 4,
+                          "mesh directory record " + std::to_string(i) +
+                              " does not point to a mesh container");
+                valid = false;
+                continue;
+            }
+            const std::uint64_t actual_size =
+                kHeaderSize + read_u32_le(data_ + offset + 4);
+            if (actual_size != total_size) {
+                add_issue(entry_at + 8,
+                          "mesh directory record " + std::to_string(i) +
+                              " size does not match the mesh container");
+                valid = false;
+                continue;
+            }
+            const auto found = mesh_by_offset.find(offset);
+            if (found == mesh_by_offset.end()) {
+                add_issue(entry_at + 4,
+                          "mesh directory record " + std::to_string(i) +
+                              " points to an unparsed mesh container");
+                valid = false;
+                continue;
+            }
+            const std::size_t local_mesh = found->second - mesh_begin;
+            if (covered[local_mesh]) {
+                add_issue(entry_at + 4,
+                          "mesh directory records point to mesh " +
+                              std::to_string(found->second) + " more than once");
+                valid = false;
+                continue;
+            }
+            covered[local_mesh] = true;
+            entries.push_back(Entry{hash, offset, total_size, found->second});
+        }
+        for (std::size_t i = 0; i < covered.size(); ++i) {
+            if (!covered[i]) {
+                const std::size_t mesh = mesh_begin + i;
+                add_issue(report_.meshes[mesh].offset,
+                          "mesh " + std::to_string(mesh) +
+                              " has no mesh directory record");
+                valid = false;
+            }
+        }
+        if (!valid) {
+            return false;
+        }
+        for (const Entry& entry : entries) {
+            Mesh& mesh = report_.meshes[entry.mesh];
+            mesh.directory_hash = entry.hash;
+            mesh.directory_offset = entry.offset;
+            mesh.directory_size = entry.size;
+            mesh.has_directory_entry = true;
+        }
+        return true;
     }
 
     std::string mesh_context(const Mesh& mesh) const {
