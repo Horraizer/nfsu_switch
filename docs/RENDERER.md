@@ -297,14 +297,16 @@ as for source data.
    in the report as `flip_v 1`.
 10. Alpha policy: there is no blending. The default cutoff is 0, so every
     texel's decoded RGB is drawn opaquely and texel alpha is ignored.
-    Written pixels always get alpha 255. The material flags that would say
-    which materials use alpha test or blending are not decoded, so this
-    neutral default hides nothing. `--alpha-cutoff N` (for example 128) is
-    a diagnostic: a textured fragment whose texel alpha is below N is
+    Written pixels always get alpha 255. Texture-info bytes +85/+86 now
+    identify the retail alpha-test and blend states, but transparent draw
+    ordering and complete technique selection are not recovered. The CPU
+    renderer therefore does not apply them yet. `--alpha-cutoff N` (for
+    example 128) is a diagnostic: a textured fragment whose texel alpha is below N is
     discarded before the depth test. This covers DXT1 punch-through
     (alpha 0), DXT3 4-bit alpha and A8R8G8B8. With a cutoff, glass and
     other translucent parts come out either opaque or absent. Treat alpha
-    testing as diagnostic until flags and blending are decoded.
+    testing as diagnostic until ordered blending is implemented. See
+    `docs/MATERIALS.md`; geometry flags must not be guessed as alpha state.
 11. Color: texel RGB, optionally times the vertex color bytes 0..2
     (`(c * vc + 127) / 255`, `--vertex-color`), then times the flat shade
     factor `(c * k + 128) >> 8`. With `--shading flat` (default),

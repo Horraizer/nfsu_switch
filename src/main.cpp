@@ -416,6 +416,14 @@ int run_textures(const fs::path& path) {
                   << " size=" << texture.data_size
                   << " blob=" << texture.blob_offset << '+' << texture.blob_size
                   << " info=" << texture.info_offset
+                  << " alpha_test="
+                  << (nfsu::texture_alpha_test_enabled(texture) ? 1 : 0)
+                  << "(" << static_cast<unsigned int>(texture.alpha_test_mode)
+                  << ") alpha_blend="
+                  << nfsu::texture_alpha_blend_name(
+                         nfsu::texture_alpha_blend(texture))
+                  << '(' << static_cast<unsigned int>(texture.alpha_blend_mode)
+                  << ')'
                   << " name_hash=" << name_hash_status(texture) << ' '
                   << texture.name << '\n';
     }
@@ -471,6 +479,14 @@ int run_pack_set(const fs::path& path) {
                       << " virtual=" << texture.virtual_offset
                       << " data=" << texture.blob_offset << '+' << texture.blob_size
                       << " info=" << texture.info_offset
+                      << " alpha_test="
+                      << (nfsu::texture_alpha_test_enabled(texture) ? 1 : 0)
+                      << "(" << static_cast<unsigned int>(texture.alpha_test_mode)
+                      << ") alpha_blend="
+                      << nfsu::texture_alpha_blend_name(
+                             nfsu::texture_alpha_blend(texture))
+                      << '(' << static_cast<unsigned int>(texture.alpha_blend_mode)
+                      << ')'
                       << " name_hash=" << name_hash_status(texture) << ' '
                       << texture.name << '\n';
         }

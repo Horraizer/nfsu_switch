@@ -389,7 +389,10 @@ Texture info table 0x33310004 (124-byte records):
 | 79 | u8[2] | zero |
 | 81 | u8 | 0 x75, 5 x44, unknown |
 | 82 | u8[2] | zero |
-| 84 | u32 | 0x01000000 x66, 0x00010200 x18, 0x00010201 x16, 0x00020201 x10, 0x01000001 x7, 0x01000100 x1, 0x01020001 x1, unknown |
+| 84 | u8 | 0 or 1 in the sample, unknown |
+| 85 | u8 | alpha-test mode: only 1 enables `GREATER 0xAA`; 0 or 2 disables it |
+| 86 | u8 | blend mode: 0 disabled, 1 source-over, 2 additive |
+| 87 | u8 | 0 or 1 in the sample, unknown |
 | 88 | u32 | 0x100 |
 | 92 | u32 | zero |
 | 96 | u32 | 0x01000000 |
@@ -596,6 +599,9 @@ remain outside this structural claim.
   and every match must stay inside the output.
 - Raw info, format and blob records are kept in `TextureRecord`, so fields
   that are still unknown are preserved.
+- Info bytes +85 and +86 are also exposed as `alpha_test_mode` and
+  `alpha_blend_mode`. Their executable trace, D3D states and retail counts
+  are in `docs/MATERIALS.md`.
 - Every hash field (info +36, hash table +0, blob table +0) is read before
   the first check, so a record rejected for its name still reports the
   hashes it claims (`record_claims_hash`). Viewer precedence and material
@@ -818,8 +824,9 @@ matches texture 18 at 5744.
 ### Unknown
 
 - How the unresolved texture hashes are resolved at runtime, the exact object
-  types selected by 0x00134013, and the rendering semantics of the material
-  flags (shader, blending, environment mapping or damage state).
+  types selected by 0x00134013, and stable names for the untraced material
+  flag bits. Alpha state, effect parameters and the proven 0x80/0x100
+  branches are bounded in `docs/MATERIALS.md`.
 
 ### UV origin (from `nfsu_viewer`)
 

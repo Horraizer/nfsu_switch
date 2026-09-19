@@ -125,8 +125,10 @@ validated against a documented range. The same inputs and options always
 give a byte-identical file. Textures that are in none of the given sources
 are drawn with a hash-colored checker and counted; another texture is never
 substituted for them. By default texel alpha is ignored and decoded RGB is
-drawn opaquely, because material flags and blending are not decoded yet;
-`--alpha-cutoff 128` is a diagnostic alpha test. Decoded textures are
+drawn opaquely. The retail texture alpha-test and blend selectors are
+decoded, but transparent draw ordering is not, so the CPU renderer does not
+apply them yet; `--alpha-cutoff 128` is a diagnostic alpha test. See
+`docs/MATERIALS.md`. Decoded textures are
 capped at 128 MiB in total, over all sources together. The viewer never overwrites an existing file:
 it creates `<out>.partial` exclusively and publishes it with a no-replace
 rename (Windows) or `link` (POSIX), and it refuses to write on other
