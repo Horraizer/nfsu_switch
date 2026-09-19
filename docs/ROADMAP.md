@@ -17,6 +17,15 @@
   and TGA screenshot (`nfsu_viewer`, `docs/RENDERER.md`). An interactive
   GPU window is still to do.
 
+## M1.5: Complete car asset scene
+
+- Decode embedded and raw shared texture packs with explicit source priority.
+- Resolve shared car materials while preserving source provenance.
+- Build a backend-neutral prepared draw list for the CPU and deko3d renderers.
+- Recover installed-part and LOD selection before calling a profile stock.
+- Track retail evidence and remaining unknowns in
+  [`CAR_SCENE.md`](CAR_SCENE.md).
+
 ## M2: Track slice
 
 - Decode one `STREAM*.BUN` region.
