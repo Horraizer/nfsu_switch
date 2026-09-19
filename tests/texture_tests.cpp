@@ -140,6 +140,7 @@ struct TexSpec {
     std::optional<std::uint32_t> top_size;
     std::optional<Bytes> blob;          // replaces the literal JDLZ blob
     std::optional<std::uint32_t> table_hash;
+    std::optional<std::uint32_t> virtual_offset;  // raw packs: info +48
 };
 
 struct PackOptions {
@@ -147,6 +148,10 @@ struct PackOptions {
     bool corrupt_prefix = false;
     std::optional<std::uint32_t> hash_table_size;
     std::optional<std::uint32_t> info_table_size;
+    // Raw storage as in GLOBALB.BUN: no blob table, chains stored
+    // uncompressed at data_start + info +48, which starts at raw_base.
+    bool raw = false;
+    std::uint32_t raw_base = 0;
 };
 
 struct PackLayout {
@@ -166,9 +171,9 @@ unsigned char log2_of(std::uint32_t value) {
     return result;
 }
 
-PackLayout build_pack(const std::vector<TexSpec>& specs, const PackOptions& options = {}) {
-    PackLayout layout;
-    Writer w;
+// Appends one pack root to w; offsets in layout are absolute in w.
+void write_pack(Writer& w, const std::vector<TexSpec>& specs, const PackOptions& options,
+                PackLayout& layout) {
     if (options.leading_pad != 0) {
         w.leaf(0x00000000U, Bytes(options.leading_pad - 8, 0));
     }
@@ -198,21 +203,24 @@ PackLayout build_pack(const std::vector<TexSpec>& specs, const PackOptions& opti
     }
     w.leaf(nfsu::kTextureHashTableId, hash_table);
 
-    w.begin(nfsu::kTextureBlobTableId);
-    for (std::size_t i = 0; i < specs.size(); ++i) {
-        layout.blob_entry_offsets.push_back(w.size());
-        Bytes entry;
-        append_u32(entry, hashes[i]);
-        append_u32(entry, 0); // patched below
-        append_u32(entry, 0);
-        append_u32(entry, 0x100);
-        append_u32(entry, 0);
-        w.append(entry);
+    if (!options.raw) {
+        w.begin(nfsu::kTextureBlobTableId);
+        for (std::size_t i = 0; i < specs.size(); ++i) {
+            layout.blob_entry_offsets.push_back(w.size());
+            Bytes entry;
+            append_u32(entry, hashes[i]);
+            append_u32(entry, 0); // patched below
+            append_u32(entry, 0);
+            append_u32(entry, 0x100);
+            append_u32(entry, 0);
+            w.append(entry);
+        }
+        w.end();
     }
-    w.end();
 
     Bytes info_table;
-    std::uint32_t virtual_offset = 0;
+    std::uint32_t virtual_offset = options.raw ? options.raw_base : 0;
+    std::vector<std::uint32_t> virtual_offsets;
     for (std::size_t i = 0; i < specs.size(); ++i) {
         const TexSpec& spec = specs[i];
         Bytes record(124, 0);
@@ -221,9 +229,12 @@ PackLayout build_pack(const std::vector<TexSpec>& specs, const PackOptions& opti
         put_u32(record, 40, 0x001A93CFU);
         const std::uint32_t size =
             spec.data_size.value_or(static_cast<std::uint32_t>(spec.pixels.size()));
-        put_u32(record, 48, virtual_offset);
-        virtual_offset = (virtual_offset + size + 127U) & ~127U;
-        put_u32(record, 52, virtual_offset);
+        const std::uint32_t at = spec.virtual_offset.value_or(virtual_offset);
+        virtual_offsets.push_back(at);
+        put_u32(record, 48, at);
+        virtual_offset = (at + size + 127U) & ~127U;
+        // Raw packs: +52 is a palette offset in GLOBALB, never an end.
+        put_u32(record, 52, options.raw ? 0x00ABCDEFU : virtual_offset);
         put_u32(record, 56, size);
         std::uint64_t top = 0;
         nfsu::PixelFormat format = nfsu::PixelFormat::dxt1;
@@ -278,20 +289,87 @@ PackLayout build_pack(const std::vector<TexSpec>& specs, const PackOptions& opti
     if (options.corrupt_prefix && layout.data_prefix != 0) {
         w.bytes()[layout.data_payload_offset] = 0x00;
     }
-    for (std::size_t i = 0; i < specs.size(); ++i) {
-        const Bytes blob = specs[i].blob.value_or(jdlz_literals(specs[i].pixels, i % 3));
-        layout.blob_offsets.push_back(w.size());
-        put_u32(w.bytes(), layout.blob_entry_offsets[i] + 4,
-                static_cast<std::uint32_t>(w.size()));
-        put_u32(w.bytes(), layout.blob_entry_offsets[i] + 8,
-                static_cast<std::uint32_t>(blob.size()));
-        w.append(blob);
+    if (options.raw) {
+        // Zero-filled span with every chain copied to its virtual offset.
+        const std::size_t start = w.size();
+        std::size_t extent = options.raw_base;
+        for (std::size_t i = 0; i < specs.size(); ++i) {
+            extent = std::max(extent, virtual_offsets[i] + specs[i].pixels.size());
+        }
+        w.append(Bytes(extent, 0));
+        for (std::size_t i = 0; i < specs.size(); ++i) {
+            layout.blob_offsets.push_back(start + virtual_offsets[i]);
+            std::copy(specs[i].pixels.begin(), specs[i].pixels.end(),
+                      w.bytes().begin() + static_cast<std::ptrdiff_t>(start + virtual_offsets[i]));
+        }
+    } else {
+        for (std::size_t i = 0; i < specs.size(); ++i) {
+            const Bytes blob = specs[i].blob.value_or(jdlz_literals(specs[i].pixels, i % 3));
+            layout.blob_offsets.push_back(w.size());
+            put_u32(w.bytes(), layout.blob_entry_offsets[i] + 4,
+                    static_cast<std::uint32_t>(w.size()));
+            put_u32(w.bytes(), layout.blob_entry_offsets[i] + 8,
+                    static_cast<std::uint32_t>(blob.size()));
+            w.append(blob);
+        }
+        w.append(Bytes(3, 0));
     }
-    w.append(Bytes(3, 0));
     w.end(); // data chunk
     w.end(); // data container
     w.end(); // root
+}
+
+PackLayout build_pack(const std::vector<TexSpec>& specs, const PackOptions& options = {}) {
+    PackLayout layout;
+    Writer w;
+    write_pack(w, specs, options, layout);
     w.leaf(0x00000000U, Bytes(16, 0));
+    layout.bytes = w.bytes();
+    return layout;
+}
+
+struct BunLayout {
+    Bytes bytes;
+    std::vector<PackLayout> packs;       // in root offset order
+    std::vector<std::size_t> roots;
+    std::size_t middle_container = 0;    // header of the depth-1 container of pack 1
+    std::set<std::size_t> top_ends;      // end offsets of top-level chunks
+};
+
+// A BUN-like file: an unrelated leaf, raw pack 0 at the top level, raw pack
+// 1 two containers deep, JDLZ pack 2 one container deep, trailing padding.
+BunLayout build_bun(const std::vector<TexSpec>& a, const std::vector<TexSpec>& b,
+                    const std::vector<TexSpec>& c) {
+    BunLayout layout;
+    layout.packs.resize(3);
+    Writer w;
+    w.leaf(0x00135200U, Bytes(160, 0x5A));
+    layout.top_ends.insert(w.size());
+    PackOptions raw;
+    raw.raw = true;
+    raw.raw_base = 256;
+    layout.roots.push_back(w.size());
+    write_pack(w, a, raw, layout.packs[0]);
+    layout.top_ends.insert(w.size());
+    w.leaf(0x00000000U, Bytes(24, 0));
+    layout.top_ends.insert(w.size());
+    layout.middle_container = w.size();
+    w.begin(0x80034602U);
+    w.leaf(0x00034603U, Bytes(12, 1));
+    w.begin(0x80034700U);
+    raw.raw_base = 0;
+    layout.roots.push_back(w.size());
+    write_pack(w, b, raw, layout.packs[1]);
+    w.end();
+    w.end();
+    layout.top_ends.insert(w.size());
+    w.begin(0x80134000U);
+    w.leaf(0x00134002U, Bytes(4, 2));
+    layout.roots.push_back(w.size());
+    write_pack(w, c, PackOptions{}, layout.packs[2]);
+    w.end();
+    layout.top_ends.insert(w.size());
+    w.leaf(0x00000000U, Bytes(64, 0));
     layout.bytes = w.bytes();
     return layout;
 }
@@ -987,6 +1065,420 @@ void test_writers() {
     }
 }
 
+bool set_has_issue(const nfsu::TexturePackSet& set, const std::string& text) {
+    for (const nfsu::TextureIssue& issue : set.issues) {
+        if (issue.message.find(text) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void dump_set(const nfsu::TexturePackSet& set) {
+    for (const nfsu::TextureIssue& issue : set.issues) {
+        std::cerr << "  set issue at " << issue.offset << ": " << issue.message << '\n';
+    }
+    for (std::size_t p = 0; p < set.packs.size(); ++p) {
+        for (const nfsu::TextureIssue& issue : set.packs[p].issues) {
+            std::cerr << "  pack " << p << " issue at " << issue.offset << ": "
+                      << issue.message << '\n';
+        }
+    }
+}
+
+std::string describe(const nfsu::TexturePackSet& set) {
+    std::ostringstream text;
+    text << set.complete << '|';
+    for (const nfsu::TextureIssue& issue : set.issues) {
+        text << issue.offset << ':' << issue.message << '|';
+    }
+    for (const nfsu::TexturePack& pack : set.packs) {
+        text << "pack " << pack.root_offset << '|';
+        for (const nfsu::TextureIssue& issue : pack.issues) {
+            text << issue.offset << ':' << issue.message << '|';
+        }
+        for (const nfsu::TextureRecord& texture : pack.textures) {
+            text << texture.index << ',' << texture.hash << ',' << texture.valid << ','
+                 << texture.blob_offset << '|';
+        }
+    }
+    return text.str();
+}
+
+nfsu::TexturePackSet parse_set(const Bytes& bytes, const nfsu::TextureLimits& limits = {}) {
+    return nfsu::parse_texture_pack_set(bytes.data(), bytes.size(), limits);
+}
+
+std::vector<TexSpec> bun_a() { return {dxt1_spec("GA1"), dxt3_spec(), argb_spec()}; }
+std::vector<TexSpec> bun_b() { return {dxt1_spec("GB1")}; }
+std::vector<TexSpec> bun_c() { return {dxt1_spec("GC1")}; }
+
+void test_pack_set() {
+    const BunLayout bun = build_bun(bun_a(), bun_b(), bun_c());
+    const nfsu::TexturePackSet set = parse_set(bun.bytes);
+    if (!set.ok()) {
+        dump_set(set);
+    }
+    check(set.ok() && set.complete && set.packs.size() == 3U, "three packs found");
+    if (set.packs.size() != 3U) {
+        return;
+    }
+    for (std::size_t p = 0; p < 3; ++p) {
+        check(set.packs[p].root_offset == bun.roots[p], "root offset " + std::to_string(p));
+        check(set.packs[p].parse_source == bun.bytes.data(),
+              "parse source of pack " + std::to_string(p));
+    }
+    const nfsu::TexturePack& a = set.packs[0];
+    check(a.storage == nfsu::TextureStorage::raw && a.tables_parsed &&
+              set.packs[1].storage == nfsu::TextureStorage::raw &&
+              set.packs[2].storage == nfsu::TextureStorage::jdlz,
+          "storage kinds");
+    check(a.valid_texture_count() == 3U && a.data_start % 128U == 0U &&
+              a.data_start == bun.packs[0].data_payload_offset + bun.packs[0].data_prefix,
+          "raw pack data start");
+    const std::vector<TexSpec> specs = bun_a();
+    for (std::size_t i = 0; i < a.textures.size(); ++i) {
+        const nfsu::TextureRecord& texture = a.textures[i];
+        check(texture.storage == nfsu::TextureStorage::raw &&
+                  texture.blob_offset == bun.packs[0].blob_offsets[i] &&
+                  texture.blob_size == texture.data_size && texture.virtual_end == 0x00ABCDEFU,
+              "raw record " + std::to_string(i) + " maps to data_start + info +48");
+        Bytes payload;
+        std::size_t unused = 99;
+        std::string error;
+        check(nfsu::texture_payload(bun.bytes.data(), bun.bytes.size(), texture, payload,
+                                    unused, error) &&
+                  payload == specs[i].pixels && unused == 0U,
+              "raw payload " + std::to_string(i) + " " + error);
+    }
+    // 256-byte base, then DXT1 (8) at 256, DXT3 (32) at 384, ARGB (20) at 512.
+    check(a.textures[0].virtual_offset == 256U && a.textures[2].virtual_offset == 512U &&
+              a.raw_extent == 532U,
+          "raw extent is the largest virtual end");
+    check(set.packs[2].valid_texture_count() == 1U && set.packs[2].raw_extent == 0U,
+          "nested JDLZ pack");
+
+    // Decoding a raw DXT3 chain gives the same pixels as the JDLZ pack.
+    Bytes raw_rgba;
+    Bytes jdlz_rgba;
+    {
+        std::string error;
+        Bytes payload;
+        std::size_t unused = 0;
+        nfsu::texture_payload(bun.bytes.data(), bun.bytes.size(), a.textures[1], payload,
+                              unused, error);
+        nfsu::decode_level(nfsu::PixelFormat::dxt3, 8, 4, payload.data(), payload.size(),
+                           raw_rgba, error);
+        const PackLayout standalone = build_pack({dxt3_spec()});
+        const nfsu::TexturePack pack = parse(standalone.bytes);
+        nfsu::texture_payload(standalone.bytes.data(), standalone.bytes.size(),
+                              pack.textures[0], payload, unused, error);
+        nfsu::decode_level(nfsu::PixelFormat::dxt3, 8, 4, payload.data(), payload.size(),
+                           jdlz_rgba, error);
+    }
+    check(!raw_rgba.empty() && raw_rgba == jdlz_rgba, "raw and JDLZ storage decode alike");
+
+    // Deterministic results and order.
+    check(describe(parse_set(bun.bytes)) == describe(set), "pack set parse is deterministic");
+
+    // Every pack also parses on its own at its root, with the same records.
+    for (std::size_t p = 0; p < 3; ++p) {
+        const nfsu::TexturePack alone =
+            nfsu::parse_texture_pack_at(bun.bytes.data(), bun.bytes.size(), bun.roots[p]);
+        check(alone.ok() && alone.textures.size() == set.packs[p].textures.size(),
+              "parse_texture_pack_at " + std::to_string(p));
+    }
+
+    // The standalone parser keeps its rules: a raw pack is not accepted.
+    const nfsu::TexturePack standalone = parse(bun.bytes);
+    check(has_issue(standalone, "expected exactly one 0x33310003 chunk, found 0") &&
+              standalone.textures.empty(),
+          "standalone parser still requires a blob table");
+
+    // A standalone TEXTURES.BIN gives the same pack through the set parser.
+    const PackLayout single = build_pack({dxt1_spec("A"), dxt3_spec(), argb_spec()});
+    const nfsu::TexturePack direct = parse(single.bytes);
+    const nfsu::TexturePackSet wrapped = parse_set(single.bytes);
+    bool same = wrapped.ok() && wrapped.packs.size() == 1U &&
+                wrapped.packs[0].textures.size() == direct.textures.size();
+    for (std::size_t i = 0; same && i < direct.textures.size(); ++i) {
+        const nfsu::TextureRecord& x = direct.textures[i];
+        const nfsu::TextureRecord& y = wrapped.packs[0].textures[i];
+        same = x.hash == y.hash && x.valid == y.valid && x.blob_offset == y.blob_offset &&
+               x.blob_size == y.blob_size && x.storage == y.storage && x.info == y.info;
+    }
+    check(same, "set parser matches parse_texture_pack on TEXTURES.BIN");
+}
+
+void test_pack_set_malformed() {
+    const BunLayout bun = build_bun(bun_a(), bun_b(), bun_c());
+    {
+        // Truncation at every byte is reported and never crashes, except
+        // at the end of a top-level chunk after the first root, which
+        // leaves a shorter valid file.
+        std::size_t valid_cuts = 0;
+        for (std::size_t cut = 0; cut < bun.bytes.size(); ++cut) {
+            const Bytes bytes(bun.bytes.begin(), bun.bytes.begin() + static_cast<std::ptrdiff_t>(cut));
+            const bool ok = parse_set(bytes).ok();
+            valid_cuts += ok ? 1U : 0U;
+            if (ok != (bun.top_ends.count(cut) != 0 && cut > bun.roots[0])) {
+                check(false, "truncated BUN at " + std::to_string(cut));
+            }
+        }
+        check(valid_cuts == 4U, "exactly the four top-level boundaries after a root are valid");
+    }
+    {
+        // The depth-1 container claims one byte more than its parent holds:
+        // it is reported and skipped, the rest of the top level is not
+        // reachable either, but the earlier root is still parsed.
+        Bytes bytes = bun.bytes;
+        put_u32(bytes, bun.middle_container + 4,
+                static_cast<std::uint32_t>(bytes.size() - bun.middle_container - 8 + 1));
+        const nfsu::TexturePackSet set = parse_set(bytes);
+        check(!set.complete && set.packs.size() == 1U && set.packs[0].root_offset == bun.roots[0] &&
+                  set_has_issue(set, "top level: chunk 0x80034602 at offset " +
+                                         std::to_string(bun.middle_container)),
+              "overrunning container reported, earlier root kept");
+    }
+    {
+        // A child overrunning its container: that container's rest is
+        // skipped, the parent's later siblings are still walked.
+        Bytes bytes = bun.bytes;
+        const std::size_t child = bun.middle_container + 8;  // 0x00034603
+        put_u32(bytes, child + 4, 0x7FFFFFF0U);
+        const nfsu::TexturePackSet set = parse_set(bytes);
+        check(!set.complete && set.packs.size() == 2U &&
+                  set.packs[1].root_offset == bun.roots[2] &&
+                  set_has_issue(set, "chunk 0x00034603 at offset " + std::to_string(child) +
+                                         " declares 2147483632 payload bytes"),
+              "sibling after a broken container is still searched");
+    }
+    {
+        nfsu::TextureLimits limits;
+        limits.max_depth = 1;
+        const nfsu::TexturePackSet set = parse_set(bun.bytes, limits);
+        check(!set.complete && set.packs.size() == 2U &&
+                  set_has_issue(set, "chunk 0x80034700 at offset") &&
+                  set_has_issue(set, "is nested deeper than the limit 1; not searched"),
+              "depth limit reported");
+    }
+    {
+        nfsu::TextureLimits limits;
+        limits.max_walk_chunks = 3;
+        const nfsu::TexturePackSet set = parse_set(bun.bytes, limits);
+        check(!set.complete && set_has_issue(set, "root search chunk limit 3 exceeded"),
+              "walk chunk limit");
+    }
+    {
+        nfsu::TextureLimits limits;
+        limits.max_packs = 2;
+        const nfsu::TexturePackSet set = parse_set(bun.bytes, limits);
+        check(!set.complete && set.packs.size() == 2U &&
+                  set_has_issue(set, "texture pack limit 2 exceeded"),
+              "pack limit");
+    }
+    {
+        nfsu::TextureLimits limits;
+        limits.max_set_textures = 3;
+        const nfsu::TexturePackSet set = parse_set(bun.bytes, limits);
+        check(!set.complete && set.packs.size() == 2U &&
+                  set_has_issue(set, "texture packs hold 4 records after the root at offset " +
+                                         std::to_string(bun.roots[1]) + "; limit is 3"),
+              "record limit over the set");
+    }
+    {
+        // Deep nesting does not recurse: 10000 nested containers.
+        Writer w;
+        for (int i = 0; i < 10000; ++i) {
+            w.begin(0x80000001U);
+        }
+        w.leaf(0x00000001U, Bytes(4, 0));
+        for (int i = 0; i < 10000; ++i) {
+            w.end();
+        }
+        nfsu::TextureLimits limits;
+        limits.max_depth = 20000;
+        const nfsu::TexturePackSet set = parse_set(w.bytes(), limits);
+        check(set.complete && set.packs.empty() &&
+                  set_has_issue(set, "no 0xB3300000 texture pack root found"),
+              "deep nesting walked iteratively");
+    }
+    {
+        // A root inside a root is not a separate pack.
+        Writer w;
+        w.begin(nfsu::kTexturePackRootId);
+        PackLayout inner;
+        write_pack(w, bun_b(), PackOptions{}, inner);
+        w.end();
+        const nfsu::TexturePackSet set = parse_set(w.bytes());
+        check(set.packs.size() == 1U && set.packs[0].root_offset == 0U,
+              "no descent into a root");
+    }
+    {
+        const nfsu::TexturePack none =
+            nfsu::parse_texture_pack_at(bun.bytes.data(), bun.bytes.size(), bun.bytes.size() - 4);
+        check(has_issue(none, "leaves no room for a chunk header"), "root offset past the end");
+        const nfsu::TexturePack wrong =
+            nfsu::parse_texture_pack_at(bun.bytes.data(), bun.bytes.size(), 0);
+        check(has_issue(wrong, "chunk 0x00135200 at offset 0 is not a 0xB3300000"),
+              "root offset at another chunk");
+        Bytes bytes(bun.bytes.begin(), bun.bytes.begin() + static_cast<std::ptrdiff_t>(bun.roots[0] + 64));
+        const nfsu::TexturePack cut =
+            nfsu::parse_texture_pack_at(bytes.data(), bytes.size(), bun.roots[0]);
+        check(has_issue(cut, "remain in the file") && !cut.tables_parsed, "root overruns the file");
+        check(has_issue(nfsu::parse_texture_pack_at(nullptr, 8, 0), "null input"), "null root input");
+    }
+    {
+        const nfsu::TexturePackSet set = nfsu::parse_texture_pack_set(nullptr, 8);
+        check(set_has_issue(set, "null input") && !set.complete, "null set input");
+    }
+}
+
+// A raw pack as the only content of a file.
+nfsu::TexturePack parse_raw(const std::vector<TexSpec>& specs, PackLayout* out = nullptr) {
+    PackOptions options;
+    options.raw = true;
+    const PackLayout layout = build_pack(specs, options);
+    if (out != nullptr) {
+        *out = layout;
+    }
+    return nfsu::parse_texture_pack_at(layout.bytes.data(), layout.bytes.size(), 0);
+}
+
+void test_raw_records() {
+    {
+        PackLayout layout;
+        parse_raw({dxt1_spec("A"), dxt1_spec("FAR")}, &layout);
+        Bytes bytes = layout.bytes;
+        put_u32(bytes, layout.info_offsets[1] + 48, 0xFFFFFF80U);
+        const nfsu::TexturePack pack =
+            nfsu::parse_texture_pack_at(bytes.data(), bytes.size(), 0);
+        check(pack.textures.size() == 2U && pack.textures[0].valid && !pack.textures[1].valid &&
+                  has_issue(pack, "raw data at virtual offset 4294967168 with 8 bytes is outside"),
+              "virtual offset near 2^32 rejected");
+    }
+    {
+        TexSpec odd = dxt1_spec("ODD");
+        odd.virtual_offset = 136;
+        const nfsu::TexturePack pack = parse_raw({dxt1_spec("A"), odd});
+        check(pack.textures.size() == 2U && !pack.textures[1].valid &&
+                  has_issue(pack, "virtual offset 136 at info +48 is not a multiple of 128"),
+              "unaligned virtual offset rejected");
+    }
+    {
+        // Ends one byte past the payload: the builder's span ends at 136.
+        PackLayout layout;
+        TexSpec tail = dxt1_spec("TAIL");
+        tail.virtual_offset = 128;
+        parse_raw({dxt1_spec("A"), tail}, &layout);
+        Bytes bytes = layout.bytes;
+        put_u32(bytes, layout.info_offsets[1] + 48, 256);
+        const nfsu::TexturePack pack =
+            nfsu::parse_texture_pack_at(bytes.data(), bytes.size(), 0);
+        check(pack.textures.size() == 2U && pack.textures[0].valid && !pack.textures[1].valid &&
+                  has_issue(pack, "raw data at virtual offset 256 with 8 bytes is outside the "
+                                  "texture data range"),
+              "range past the payload end rejected");
+    }
+    {
+        // B starts inside A; C touches A's end and stays valid.
+        TexSpec a = argb_spec();
+        TexSpec b = dxt1_spec("B");
+        b.virtual_offset = 0;
+        TexSpec c = dxt1_spec("C");
+        c.virtual_offset = 128;
+        const nfsu::TexturePack pack = parse_raw({a, b, c});
+        check(pack.textures.size() == 3U && !pack.textures[0].valid && !pack.textures[1].valid &&
+                  pack.textures[2].valid &&
+                  pack.textures[0].problem.find("raw data at file offset") == 0U &&
+                  pack.textures[0].problem.find("overlaps the data of 1 textures: 1") !=
+                      std::string::npos,
+              "raw overlap invalidates both participants");
+        bool offset_ok = false;
+        for (const nfsu::TextureIssue& issue : pack.issues) {
+            offset_ok = offset_ok || (issue.message.find("overlaps") != std::string::npos &&
+                                      issue.offset == pack.textures[0].info_offset + 48);
+        }
+        check(offset_ok, "raw overlap issue points at info +48");
+    }
+    {
+        // P8 (observed in GLOBALB) is unsupported; its neighbours are not.
+        TexSpec p8 = dxt1_spec("PALETTED");
+        p8.format_code = 0x08;
+        p8.d3d_format = 0x29;
+        const nfsu::TexturePack pack = parse_raw({dxt1_spec("A"), p8, argb_spec()});
+        check(pack.textures.size() == 3U && pack.valid_texture_count() == 2U &&
+                  !pack.textures[1].valid &&
+                  has_issue(pack, "unsupported format: code 0x8 at info +74 with D3D format "
+                                  "0x00000029"),
+              "unsupported raw format isolated");
+    }
+    {
+        TexSpec wrong = dxt1_spec("WRONG");
+        wrong.table_hash = 0x0BADF00DU;
+        const nfsu::TexturePack pack = parse_raw({dxt1_spec("A"), wrong});
+        check(pack.textures.size() == 2U && !pack.textures[1].valid &&
+                  has_issue(pack, "differs from hash table 0x0BADF00D") &&
+                  !has_issue(pack, "blob table"),
+              "raw hash table mismatch");
+        check(nfsu::record_claims_hash(pack.textures[1], 0x0BADF00DU) &&
+                  nfsu::record_claims_hash(pack.textures[1], nfsu::bin_hash("WRONG")),
+              "an invalid record claims its info and table hashes");
+    }
+    {
+        // A record rejected for its name still reports its hash.
+        TexSpec unnamed = dxt1_spec("X");
+        unnamed.name = std::string(24, 'N');
+        unnamed.hash = 0x12345678U;
+        const nfsu::TexturePack pack = parse_raw({unnamed});
+        check(pack.textures.size() == 1U && !pack.textures[0].valid &&
+                  pack.textures[0].hash == 0x12345678U &&
+                  nfsu::record_claims_hash(pack.textures[0], 0x12345678U),
+              "hash read before the name check");
+    }
+    {
+        TexSpec first = dxt1_spec("DUP");
+        TexSpec second = dxt1_spec("DUP");
+        second.virtual_offset = 128;
+        const nfsu::TexturePack pack = parse_raw({first, second});
+        check(pack.valid_texture_count() == 2U &&
+                  has_issue(pack, "texture 1 repeats hash " ),
+              "duplicate hash inside a raw pack");
+    }
+    {
+        // Duplicates across packs of one file are set issues, in order.
+        TexSpec dup = dxt1_spec("GA1");
+        const BunLayout bun = build_bun(bun_a(), {dup}, {dxt1_spec("GA1")});
+        const nfsu::TexturePackSet set = parse_set(bun.bytes);
+        std::ostringstream first;
+        first << "pack 1 texture 0 repeats hash 0x" << std::uppercase << std::hex;
+        first.width(8);
+        first.fill('0');
+        first << nfsu::bin_hash("GA1") << " of pack 0 texture 0";
+        check(set.packs.size() == 3U && set.issues.size() == 2U &&
+                  set.issues[0].message.find(first.str()) == 0U &&
+                  set.issues[1].message.find("pack 2 texture 0 repeats hash") == 0U &&
+                  set.issues[1].message.find("of pack 1 texture 0") != std::string::npos &&
+                  set.complete && !set.ok(),
+              "cross-pack duplicates reported in order");
+    }
+    {
+        // texture_payload refuses a raw record whose size disagrees.
+        const nfsu::TexturePack pack = parse_raw({dxt1_spec("A")});
+        PackLayout layout;
+        parse_raw({dxt1_spec("A")}, &layout);
+        nfsu::TextureRecord record = pack.textures[0];
+        record.blob_size = 4;
+        Bytes payload;
+        std::size_t unused = 0;
+        std::string error;
+        check(!nfsu::texture_payload(layout.bytes.data(), layout.bytes.size(), record, payload,
+                                     unused, error) &&
+                  error.find("raw data size 4 differs") != std::string::npos && payload.empty(),
+              "raw payload size mismatch refused");
+    }
+}
+
 Bytes read_file(const fs::path& path) {
     std::ifstream stream(path, std::ios::binary);
     return Bytes(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
@@ -1134,11 +1626,24 @@ void test_export_safety() {
     // File loading.
     std::vector<unsigned char> bytes;
     const nfsu::TexturePack loaded = nfsu::load_texture_pack(input, bytes);
-    check(loaded.valid_texture_count() == 3U && bytes == good.bytes, "load from file");
+    check(loaded.valid_texture_count() == 3U && bytes == good.bytes &&
+              loaded.parse_source == bytes.data(),
+          "load from file");
+    std::vector<unsigned char> set_bytes;
+    const nfsu::TexturePackSet loaded_set = nfsu::load_texture_pack_set(input, set_bytes);
+    check(loaded_set.complete && loaded_set.packs.size() == 1U &&
+              loaded_set.packs[0].valid_texture_count() == 3U &&
+              loaded_set.packs[0].parse_source == set_bytes.data(),
+          "load set from file");
     nfsu::TextureLimits limits;
     limits.max_file_size = 16;
-    check(has_issue(nfsu::load_texture_pack(input, bytes, limits), "limit is 16"),
+    const nfsu::TexturePack too_big = nfsu::load_texture_pack(input, bytes, limits);
+    check(has_issue(too_big, "limit is 16") && too_big.parse_source == nullptr &&
+              bytes.empty(),
           "file size limit");
+    check(set_has_issue(nfsu::load_texture_pack_set(input, set_bytes, limits), "limit is 16") &&
+              set_bytes.empty(),
+          "set file size limit is checked before reading");
     check(read_file(input) == good.bytes, "input unchanged");
 
     fs::remove_all(root, error);
@@ -1160,6 +1665,9 @@ int main() {
     test_block_decoding();
     test_writers();
     test_export_safety();
+    test_pack_set();
+    test_pack_set_malformed();
+    test_raw_records();
 
     if (g_failures != 0) {
         std::cerr << g_failures << " texture test failures\n";

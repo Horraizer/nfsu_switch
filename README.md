@@ -28,6 +28,7 @@ build/nfsu_probe chunks X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN 64
 build/nfsu_probe meshes X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN
 build/nfsu_probe obj X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN build/240sx.obj
 build/nfsu_probe textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN
+build/nfsu_probe pack-set X:/Games/NFSU/GLOBAL/GLOBALB.BUN
 build/nfsu_probe export-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN build/tex tga
 build/nfsu_probe export-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN build/dds dds
 build/nfsu_probe texture-bindings X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games/NFSU/Cars/240SX/TEXTURES.BIN
@@ -49,6 +50,9 @@ overwrite anything. If it fails, it tries to remove the files it created,
 and it names any file it could not remove.
 `texture-bindings` lists every mesh material record with its texture slot,
 its texture hash and the pack texture that hash resolves to.
+`pack-set` finds every texture pack in a file, including packs nested in a
+BUN such as `GLOBAL/GLOBALB.BUN`, and lists their metadata and records.
+It never decodes or writes pixel data.
 
 ## Reference viewer
 
@@ -59,19 +63,30 @@ graphics library:
 ```text
 build/nfsu_viewer X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games/NFSU/Cars/240SX/TEXTURES.BIN build/240sx.tga
 build/nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> build/front.tga --yaw 0 --pitch 5 --distance 3 --width 800 --height 600
+build/nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> build/shared.tga --shared-textures X:/Games/NFSU/GLOBAL/GLOBALB.BUN
 ```
+
+Textures come only from files named on the command line. The car's
+`TEXTURES.BIN` is searched first. Each `--shared-textures FILE` (the only
+option that may be repeated) is searched after it, in the order given. A
+hash is taken from the first source that has any record for it, even an
+unusable one, so a broken car texture is never silently replaced by a
+shared one. At most 8 shared files are accepted, and at most 512 MiB is
+read for `TEXTURES.BIN` and all shared files together (each file at most
+256 MiB); a file that would exceed the total is refused before it is read.
+See `docs/RENDERER.md`.
 
 The camera orbits `--target X,Y,Z` at `--distance`, with `--yaw` (0 = front,
 90 = right side) and `--pitch` (positive = from above) in degrees. Other
 options are `--fov`, `--near`, `--far`, `--flip-v`, `--alpha-cutoff`,
 `--vertex-color`, `--cull` and `--shading`. Every numeric argument is
 validated against a documented range. The same inputs and options always
-give a byte-identical file. Textures that are not in the car's pack are
-drawn with a hash-colored checker and counted; a local texture is never
+give a byte-identical file. Textures that are in none of the given sources
+are drawn with a hash-colored checker and counted; another texture is never
 substituted for them. By default texel alpha is ignored and decoded RGB is
 drawn opaquely, because material flags and blending are not decoded yet;
 `--alpha-cutoff 128` is a diagnostic alpha test. Decoded textures are
-capped at 128 MiB in total. The viewer never overwrites an existing file:
+capped at 128 MiB in total, over all sources together. The viewer never overwrites an existing file:
 it creates `<out>.partial` exclusively and publishes it with a no-replace
 rename (Windows) or `link` (POSIX), and it refuses to write on other
 platforms.

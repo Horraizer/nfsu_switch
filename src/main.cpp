@@ -418,6 +418,65 @@ int run_textures(const fs::path& path) {
     return pack.ok() ? 0 : 3;
 }
 
+// Metadata only: never decodes or writes pixel data.
+int run_pack_set(const fs::path& path) {
+    std::vector<unsigned char> bytes;
+    const nfsu::TexturePackSet set = nfsu::load_texture_pack_set(path, bytes);
+    std::cout << "file: " << path.string() << '\n';
+    std::cout << "bytes: " << set.file_size << '\n';
+    std::cout << "packs: " << set.packs.size() << " complete "
+              << (set.complete ? 1 : 0) << '\n';
+    for (std::size_t p = 0; p < set.packs.size(); ++p) {
+        const nfsu::TexturePack& pack = set.packs[p];
+        std::cout << "pack " << p << ": root " << pack.root_offset << " storage "
+                  << nfsu::texture_storage_name(pack.storage) << " name "
+                  << pack.pack_name << " version " << pack.header_version
+                  << " hash " << hex32(pack.pack_hash) << " path "
+                  << pack.pack_path << " (path hash "
+                  << (nfsu::bin_hash(pack.pack_path) == pack.pack_hash ? "matches"
+                                                                       : "differs")
+                  << ")\n";
+        std::cout << "  data payload: offset " << pack.data_payload_offset
+                  << " size " << pack.data_payload_size << " prefix "
+                  << pack.data_prefix_bytes << " start " << pack.data_start;
+        if (pack.storage == nfsu::TextureStorage::raw) {
+            std::cout << " raw_extent " << pack.raw_extent;
+        }
+        std::cout << '\n';
+        std::cout << "  textures: " << pack.textures.size() << " valid "
+                  << pack.valid_texture_count() << " issues "
+                  << pack.issues.size() << '\n';
+        for (const nfsu::TextureRecord& texture : pack.textures) {
+            std::cout << "  " << std::setw(4) << std::setfill(' ')
+                      << texture.index << ' '
+                      << (texture.valid ? "ok     " : "invalid") << ' '
+                      << hex32(texture.hash) << ' ' << std::left << std::setw(8)
+                      << nfsu::pixel_format_name(texture.format) << std::right
+                      << " code=0x" << std::hex << std::uppercase
+                      << static_cast<unsigned int>(texture.format_code)
+                      << std::dec << ' ' << texture.width << 'x' << texture.height
+                      << " mips=" << static_cast<unsigned int>(texture.mip_count)
+                      << " size=" << texture.data_size
+                      << " virtual=" << texture.virtual_offset
+                      << " data=" << texture.blob_offset << '+' << texture.blob_size
+                      << " info=" << texture.info_offset
+                      << " name_hash=" << name_hash_status(texture) << ' '
+                      << texture.name << '\n';
+        }
+    }
+    for (const nfsu::TextureIssue& issue : set.issues) {
+        std::cerr << "texture set issue at " << issue.offset << ": "
+                  << issue.message << '\n';
+    }
+    for (std::size_t p = 0; p < set.packs.size(); ++p) {
+        for (const nfsu::TextureIssue& issue : set.packs[p].issues) {
+            std::cerr << "pack " << p << " issue at " << issue.offset << ": "
+                      << issue.message << '\n';
+        }
+    }
+    return set.ok() ? 0 : 3;
+}
+
 int run_export_textures(
     const fs::path& input,
     const fs::path& output_dir,
@@ -524,6 +583,7 @@ void print_usage() {
         << "  nfsu_probe meshes <GEOMETRY.BIN>\n"
         << "  nfsu_probe obj <GEOMETRY.BIN> <output.obj>\n"
         << "  nfsu_probe textures <TEXTURES.BIN>\n"
+        << "  nfsu_probe pack-set <file>   (metadata of every texture pack, e.g. in a BUN)\n"
         << "  nfsu_probe export-textures <TEXTURES.BIN> <output-dir> [tga|dds]\n"
         << "  nfsu_probe texture-bindings <GEOMETRY.BIN> <TEXTURES.BIN>\n";
 }
@@ -564,6 +624,9 @@ int main(int argc, char** argv) {
     }
     if (command == "textures") {
         return run_textures(fs::path(argv[2]));
+    }
+    if (command == "pack-set") {
+        return run_pack_set(fs::path(argv[2]));
     }
     if (command == "export-textures") {
         if (argc < 4) {

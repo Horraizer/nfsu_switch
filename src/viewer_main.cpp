@@ -2,9 +2,11 @@
 #include "nfsu/render.h"
 #include "nfsu/texture.h"
 
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
@@ -17,10 +19,24 @@ namespace fs = std::filesystem;
 
 namespace {
 
+// Bounds on texture input held in memory, in addition to the 256 MiB per
+// file limit of TextureLimits: at most this many --shared-textures files,
+// and at most this many bytes read for the car's pack plus all of them.
+constexpr std::size_t kMaxSharedTextureSources = 8;
+constexpr std::uint64_t kMaxTextureInputBytes = 512ULL * 1024ULL * 1024ULL;
+
 void print_usage() {
     std::cout
         << "Usage:\n"
         << "  nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> <out.tga> [options]\n"
+        << "Texture sources, in priority order:\n"
+        << "  <TEXTURES.BIN>       the car's own pack, always first\n"
+        << "  --shared-textures F  a file of texture packs searched after it, for\n"
+        << "                       example GLOBAL/GLOBALB.BUN; may be repeated, each\n"
+        << "                       ranking below the ones before it. No file is\n"
+        << "                       ever searched unless it is named here. At most\n"
+        << "                       8 files; each at most 256 MiB, and at most\n"
+        << "                       512 MiB read for <TEXTURES.BIN> and all of them.\n"
         << "Options (each at most once):\n"
         << "  --width N            1..8192, default 1280\n"
         << "  --height N           1..8192, default 720 (at most 16777216 pixels)\n"
@@ -81,12 +97,35 @@ std::string format_rgba(const unsigned char (&rgba)[4]) {
            std::to_string(rgba[2]) + "," + std::to_string(rgba[3]);
 }
 
+std::string hex32(std::uint32_t value) {
+    char buffer[16];
+    std::snprintf(buffer, sizeof(buffer), "0x%08X", static_cast<unsigned int>(value));
+    return buffer;
+}
+
 // Returns 0 on success, otherwise the exit code after printing an error.
-int parse_options(int argc, char** argv, nfsu::RenderOptions& options) {
+int parse_options(
+    int argc,
+    char** argv,
+    nfsu::RenderOptions& options,
+    std::vector<fs::path>& shared) {
     const nfsu::RenderLimits limits;
     std::set<std::string> seen;
     for (int i = 4; i < argc; ++i) {
         const std::string name = argv[i];
+        if (name == "--shared-textures") {
+            if (i + 1 >= argc) {
+                std::cerr << "error: missing value for " << name << '\n';
+                return 1;
+            }
+            if (shared.size() >= kMaxSharedTextureSources) {
+                std::cerr << "error: at most " << kMaxSharedTextureSources
+                          << " --shared-textures files are allowed\n";
+                return 1;
+            }
+            shared.emplace_back(argv[++i]);
+            continue;
+        }
         if (!seen.insert(name).second) {
             std::cerr << "error: option given twice: " << name << '\n';
             return 1;
@@ -222,21 +261,35 @@ int main(int argc, char** argv) {
     const fs::path output_path(argv[3]);
 
     nfsu::RenderOptions options;
-    const int parse_result = parse_options(argc, argv, options);
+    std::vector<fs::path> shared_paths;
+    const int parse_result = parse_options(argc, argv, options, shared_paths);
     if (parse_result != 0) {
         return parse_result;
     }
+    std::vector<fs::path> inputs = {geometry_path, texture_path};
+    inputs.insert(inputs.end(), shared_paths.begin(), shared_paths.end());
 
     // Fail early; write_frame_tga repeats these checks before writing.
     {
         std::error_code error;
         fs::path partial = output_path;
         partial += ".partial";
-        for (const fs::path& source : {geometry_path, texture_path}) {
+        for (const fs::path& source : inputs) {
             if (fs::equivalent(source, output_path, error) ||
                 fs::equivalent(source, partial, error)) {
                 std::cerr << "error: output path must differ from every input file\n";
                 return 1;
+            }
+        }
+        // A texture source named twice would only shadow itself.
+        for (std::size_t i = 0; i < shared_paths.size(); ++i) {
+            for (std::size_t j = 1; j < i + 2; ++j) {
+                if (fs::equivalent(shared_paths[i], inputs[j], error)) {
+                    std::cerr << "error: shared texture source " << (i + 1)
+                              << " names the same file as texture source "
+                              << (j - 1) << '\n';
+                    return 1;
+                }
             }
         }
         if (fs::exists(fs::symlink_status(output_path, error))) {
@@ -256,29 +309,109 @@ int main(int argc, char** argv) {
         std::cerr << "texture issue at " << issue.offset << ": "
                   << issue.message << '\n';
     }
+    // Shared source k is texture source k; the car's pack is source 0.
+    // Both vectors are sized once, so the pointers below stay valid.
+    std::vector<std::vector<unsigned char>> shared_bytes(shared_paths.size());
+    std::vector<nfsu::TexturePackSet> shared_sets(shared_paths.size());
+    // Each file is refused before it is read if it would take the bytes
+    // read so far past kMaxTextureInputBytes. The car's pack is at most
+    // 256 MiB, so read_bytes never exceeds the limit.
+    std::uint64_t read_bytes = bytes.size();
+    for (std::size_t i = 0; i < shared_paths.size(); ++i) {
+        nfsu::TextureLimits source_limits;
+        const std::uint64_t remaining = kMaxTextureInputBytes - read_bytes;
+        source_limits.max_file_size = std::min(source_limits.max_file_size, remaining);
+        shared_sets[i] =
+            nfsu::load_texture_pack_set(shared_paths[i], shared_bytes[i], source_limits);
+        read_bytes += shared_bytes[i].size();
+        const nfsu::TexturePackSet& set = shared_sets[i];
+        if (shared_bytes[i].empty() && set.file_size > remaining &&
+            remaining < nfsu::TextureLimits{}.max_file_size) {
+            std::cerr << "texture source " << (i + 1) << " not read: "
+                      << (kMaxTextureInputBytes - remaining)
+                      << " texture input bytes already read, total limit is "
+                      << kMaxTextureInputBytes << '\n';
+        }
+        for (const nfsu::TextureIssue& issue : set.issues) {
+            std::cerr << "texture source " << (i + 1) << " issue at "
+                      << issue.offset << ": " << issue.message << '\n';
+        }
+        for (std::size_t p = 0; p < set.packs.size(); ++p) {
+            for (const nfsu::TextureIssue& issue : set.packs[p].issues) {
+                std::cerr << "texture source " << (i + 1) << " pack " << p
+                          << " issue at " << issue.offset << ": "
+                          << issue.message << '\n';
+            }
+        }
+    }
     if (geometry.valid_mesh_count() == 0) {
         std::cerr << "error: no valid meshes to render\n";
         return 2;
     }
     nfsu::RenderTextureSet textures;
+    std::vector<std::uint32_t> wanted;
     {
         std::string error;
-        if (!nfsu::decode_render_textures(bytes, pack, nfsu::RenderTextureLimits{},
-                                          textures, error)) {
+        bool decoded_ok = false;
+        if (shared_paths.empty()) {
+            decoded_ok = nfsu::decode_render_textures(
+                bytes, pack, nfsu::RenderTextureLimits{}, textures, error);
+        } else {
+            // Shared sources decode only hashes that a valid mesh uses, so
+            // unrelated textures do not count against the shared budget.
+            for (const nfsu::Mesh& mesh : geometry.meshes) {
+                if (!mesh.valid) {
+                    continue;
+                }
+                for (const nfsu::MeshMaterial& material : mesh.materials) {
+                    if (material.texture_slot < mesh.texture_hashes.size()) {
+                        wanted.push_back(mesh.texture_hashes[material.texture_slot]);
+                    }
+                }
+            }
+            std::sort(wanted.begin(), wanted.end());
+            wanted.erase(std::unique(wanted.begin(), wanted.end()), wanted.end());
+
+            std::vector<nfsu::RenderTextureSource> sources(1 + shared_paths.size());
+            sources[0].bytes = &bytes;
+            // A pack that could not be read has no records to offer.
+            if (pack.parse_source == bytes.data() && pack.file_size == bytes.size()) {
+                sources[0].packs.push_back(&pack);
+            }
+            sources[0].complete = pack.tables_parsed;
+            for (std::size_t i = 0; i < shared_paths.size(); ++i) {
+                nfsu::RenderTextureSource& source = sources[i + 1];
+                source.bytes = &shared_bytes[i];
+                for (const nfsu::TexturePack& shared_pack : shared_sets[i].packs) {
+                    source.packs.push_back(&shared_pack);
+                }
+                source.complete = shared_sets[i].complete;
+                source.wanted = &wanted;
+            }
+            decoded_ok = nfsu::decode_render_texture_sources(
+                sources, nfsu::RenderTextureLimits{}, textures, error);
+        }
+        if (!decoded_ok) {
             std::cerr << "error: " << error << '\n';
             return 2;
         }
     }
     for (const nfsu::RenderTexture& texture : textures.textures) {
         if (!texture.valid && !texture.problem.empty()) {
+            if (texture.source != 0) {
+                std::cerr << "texture source " << texture.source << " pack "
+                          << texture.pack << " texture " << texture.record << ' ';
+            }
             std::cerr << "texture " << std::hex << texture.hash << std::dec
                       << " drawn with fallback: " << texture.problem << '\n';
         }
     }
     std::size_t decoded = 0;
+    std::uint64_t decoded_bytes = 0;
     for (const nfsu::RenderTexture& texture : textures.textures) {
-        if (texture.valid) {
+        if (texture.valid && texture.source == 0) {
             ++decoded;
+            decoded_bytes += texture.rgba.size();
         }
     }
 
@@ -293,8 +426,7 @@ int main(int argc, char** argv) {
     }
 
     nfsu::FrameWriteResult write;
-    if (!nfsu::write_frame_tga(frame, output_path, {geometry_path, texture_path},
-                               write)) {
+    if (!nfsu::write_frame_tga(frame, output_path, inputs, write)) {
         std::cerr << "error: " << write.error << '\n';
         return 2;
     }
@@ -307,8 +439,54 @@ int main(int argc, char** argv) {
     std::cout << "textures: bytes " << pack.file_size << " records "
               << pack.textures.size() << " valid " << pack.valid_texture_count()
               << " decoded " << decoded << " decoded_bytes "
-              << textures.decoded_bytes << " issues " << pack.issues.size()
+              << decoded_bytes << " issues " << pack.issues.size()
               << '\n';
+    bool sources_ok = true;
+    if (!shared_paths.empty()) {
+        for (std::size_t i = 0; i < shared_sets.size(); ++i) {
+            const nfsu::TexturePackSet& set = shared_sets[i];
+            std::size_t records = 0;
+            std::size_t valid = 0;
+            std::size_t issues = set.issues.size();
+            for (const nfsu::TexturePack& shared_pack : set.packs) {
+                records += shared_pack.textures.size();
+                valid += shared_pack.valid_texture_count();
+                issues += shared_pack.issues.size();
+            }
+            std::size_t source_decoded = 0;
+            std::uint64_t source_bytes = 0;
+            for (const nfsu::RenderTexture& texture : textures.textures) {
+                if (texture.valid && texture.source == i + 1) {
+                    ++source_decoded;
+                    source_bytes += texture.rgba.size();
+                }
+            }
+            sources_ok = sources_ok && set.ok();
+            std::cout << "texture source " << (i + 1) << ": bytes " << set.file_size
+                      << " packs " << set.packs.size() << " records " << records
+                      << " valid " << valid << " decoded " << source_decoded
+                      << " decoded_bytes " << source_bytes << " issues " << issues
+                      << " complete " << (set.complete ? 1 : 0) << '\n';
+        }
+        std::cout << "texture sources: decoded_bytes " << textures.decoded_bytes
+                  << " wanted_hashes " << wanted.size() << " not_wanted "
+                  << textures.not_wanted << " shadowed " << textures.shadowed.size()
+                  << " blocked " << textures.blocked_sources.size() << '\n';
+        for (const nfsu::ShadowedTexture& shadow : textures.shadowed) {
+            std::cout << "shadowed: hash " << hex32(shadow.hash) << " source "
+                      << shadow.source << " pack " << shadow.pack << " texture "
+                      << shadow.record << " by source " << shadow.by_source << '\n';
+        }
+        for (const nfsu::UnusableClaim& claim : textures.unusable_claims) {
+            std::cout << "unusable claim: hash " << hex32(claim.hash) << " source "
+                      << claim.source << " pack " << claim.pack << " texture "
+                      << claim.record << '\n';
+        }
+        for (const std::size_t blocked : textures.blocked_sources) {
+            std::cout << "blocked: source " << blocked
+                      << " (an earlier source is incomplete)\n";
+        }
+    }
     std::cout << "frame: " << frame.width() << 'x' << frame.height()
               << " background " << format_rgba(options.background) << '\n';
     std::cout << "camera: yaw " << format_double(options.camera.yaw_deg)
@@ -329,5 +507,5 @@ int main(int argc, char** argv) {
               << nfsu::shading_mode_name(options.shading) << '\n';
     print_stats(stats);
     std::cout << "wrote: " << output_path.filename().u8string() << '\n';
-    return geometry.ok() && pack.ok() ? 0 : 3;
+    return geometry.ok() && pack.ok() && sources_ok ? 0 : 3;
 }

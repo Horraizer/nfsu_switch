@@ -40,6 +40,14 @@ std::uint32_t bin_hash(const std::string& text) noexcept;
 
 enum class PixelFormat { unsupported, dxt1, dxt3, a8r8g8b8 };
 
+// How a record's mip chain is stored in the file. Standalone TEXTURES.BIN
+// packs have a 0x33310003 blob table and JDLZ blobs. Packs embedded in a BUN
+// (observed: GLOBAL/GLOBALB.BUN) have no blob table; their chains are
+// stored uncompressed and located through info +48. See docs/FORMATS.md.
+enum class TextureStorage { jdlz, raw };
+
+const char* texture_storage_name(TextureStorage storage) noexcept;
+
 const char* pixel_format_name(PixelFormat format) noexcept;
 
 // Byte size of one level. DXT1 is 8 bytes and DXT3 16 bytes per 4x4 block,
@@ -75,10 +83,12 @@ struct TextureRecord {
     // True when the name uses all 23 characters of its field; such names may
     // be truncated, so the name hash may not match.
     bool name_field_full = false;
-    std::uint32_t hash = 0;
+    std::uint32_t hash = 0;            // info +36
     std::uint32_t class_hash = 0;      // info +40
     std::uint32_t virtual_offset = 0;  // info +48
-    std::uint32_t virtual_end = 0;     // info +52
+    // info +52. TEXTURES.BIN: align_up(+48 + +56, 128). Embedded GLOBALB
+    // packs: a palette offset, not an end (see docs/FORMATS.md).
+    std::uint32_t virtual_end = 0;
     std::uint32_t data_size = 0;       // info +56, all mip levels
     std::uint32_t top_level_size = 0;  // info +64
     std::uint16_t width = 0;           // info +68
@@ -90,13 +100,26 @@ struct TextureRecord {
     std::uint32_t d3d_format = 0;      // format record +20
     PixelFormat format = PixelFormat::unsupported;
 
-    std::uint64_t blob_offset = 0;     // blob entry +4, absolute
-    std::uint32_t blob_size = 0;       // blob entry +8
+    TextureStorage storage = TextureStorage::jdlz;
+    // jdlz: blob entry +4 (absolute) and +8. raw: absolute file offset of
+    // the uncompressed chain (pack data_start + virtual_offset) and
+    // data_size; the blob entry is then all zero.
+    std::uint64_t blob_offset = 0;
+    std::uint32_t blob_size = 0;
     std::uint32_t jdlz_decompressed_size = 0;
 
     bool valid = false;
     std::string problem;
+
+    // Hash table entry i, +0. The info, hash table and blob table hashes
+    // are all read before any check, so an invalid record still names every
+    // hash it claims (see record_claims_hash).
+    std::uint32_t table_hash = 0;
 };
+
+// True if any hash field of the record (info +36, hash table +0, or blob
+// table +0 for JDLZ storage) equals hash, valid or not.
+bool record_claims_hash(const TextureRecord& texture, std::uint32_t hash) noexcept;
 
 struct TextureIssue {
     std::uint64_t offset = 0;
@@ -109,10 +132,27 @@ struct TextureLimits {
     std::size_t max_textures = 4096;
     std::uint32_t max_dimension = 4096;
     std::uint32_t max_decompressed_size = 64U * 1024U * 1024U;
+    // parse_texture_pack_set only: container nesting depth below the top
+    // level, chunk headers read by the root search (max_chunks still
+    // applies inside each pack), roots, and records over all packs.
+    std::size_t max_depth = 32;
+    std::size_t max_walk_chunks = 1U << 20;
+    std::size_t max_packs = 256;
+    std::size_t max_set_textures = 16384;
 };
 
 struct TexturePack {
     std::uint64_t file_size = 0;
+    // Non-owning identity of the buffer the pack was parsed from: the data
+    // pointer given to parse_texture_pack or parse_texture_pack_at (and so
+    // by the set and load entry points), even if parsing then failed. It is
+    // compared, never dereferenced, and it identifies that buffer only while
+    // the caller keeps it alive and unmodified in size and address. Null if
+    // no parser ran (for example a file that could not be read).
+    const unsigned char* parse_source = nullptr;
+    // Absolute offset of the 0xB3300000 chunk header.
+    std::uint64_t root_offset = 0;
+    TextureStorage storage = TextureStorage::jdlz;
     std::uint64_t header_offset = 0;
     std::uint32_t header_version = 0;
     std::string pack_name;
@@ -121,6 +161,17 @@ struct TexturePack {
     std::uint64_t data_payload_offset = 0;
     std::uint64_t data_payload_size = 0;
     std::uint64_t data_prefix_bytes = 0;
+    // data_payload_offset + data_prefix_bytes: the first 128-byte aligned
+    // absolute offset of the 0x33320002 payload.
+    std::uint64_t data_start = 0;
+    // Raw storage: max(info +48 + info +56) over all records, valid or not.
+    // Observed equal to data_payload_size - data_prefix_bytes in both
+    // GLOBALB packs, a cross-check that the base mapping is right. Not
+    // enforced.
+    std::uint64_t raw_extent = 0;
+    // True once the record tables were read: textures then lists every
+    // record of the pack. False means the pack's hashes are unknown.
+    bool tables_parsed = false;
     std::vector<TextureRecord> textures;
     std::vector<TextureIssue> issues;
 
@@ -130,10 +181,64 @@ struct TexturePack {
 
 // Parses an in-memory TEXTURES.BIN image. Never throws for malformed input.
 // A texture whose own records are inconsistent is kept with valid == false
-// and a problem message; table-level errors are reported in issues.
+// and a problem message; table-level errors are reported in issues. The
+// image must hold exactly one top-level 0xB3300000 root with a 0x33310003
+// blob table (JDLZ storage).
 TexturePack parse_texture_pack(
     const unsigned char* data,
     std::size_t size,
+    const TextureLimits& limits = TextureLimits{});
+
+// Parses the 0xB3300000 chunk whose header is at root_offset, in place.
+// Every offset in the result is absolute in data. With exactly one
+// 0x33310003 the pack is parsed as by parse_texture_pack. Without one it is
+// parsed as a raw pack:
+//   - record i maps to [data_start + info +48, ... + info +56);
+//   - info +48 must be a multiple of 128;
+//   - the range must lie inside the 0x33320002 payload after its prefix;
+//   - ranges of valid records must not share a byte (all participants are
+//     invalidated, as for JDLZ blobs).
+// Observed in both GLOBALB.BUN packs and verified there by comparing each
+// stored mip level 1 with a box filter of level 0; tested on synthetic
+// data. That "no 0x33310003" always means raw storage is a hypothesis.
+// info +52 is not checked for raw packs. See docs/FORMATS.md.
+TexturePack parse_texture_pack_at(
+    const unsigned char* data,
+    std::size_t size,
+    std::uint64_t root_offset,
+    const TextureLimits& limits = TextureLimits{});
+
+// Every texture pack root in one file, in ascending root offset order.
+struct TexturePackSet {
+    std::uint64_t file_size = 0;
+    std::vector<TexturePack> packs;
+    // Walk problems, a missing root, limits and hashes repeated across
+    // packs. Problems inside a pack stay in that pack's issues.
+    std::vector<TextureIssue> issues;
+    // True when the whole file was searched and every root was parsed up
+    // to its record tables, so packs lists every record of the file.
+    bool complete = false;
+
+    bool ok() const noexcept;
+};
+
+// Finds every 0xB3300000 root in a chunk file (for example a BUN) and
+// parses each with parse_texture_pack_at, in ascending offset order. The
+// walk is iterative (an explicit stack, no recursion): it descends into
+// chunks with bit 31 set, up to limits.max_depth levels below the top
+// level, never into a root itself. A child that does not fit its parent is
+// reported, the rest of that parent is skipped, and the walk continues
+// with the parent's own siblings. No bytes are copied. A file without any
+// root is an issue. Parsing stops with an issue once the packs hold more
+// than limits.max_set_textures records.
+TexturePackSet parse_texture_pack_set(
+    const unsigned char* data,
+    std::size_t size,
+    const TextureLimits& limits = TextureLimits{});
+
+TexturePackSet load_texture_pack_set(
+    const std::filesystem::path& path,
+    std::vector<unsigned char>& bytes,
     const TextureLimits& limits = TextureLimits{});
 
 // Reads the whole file read-only into bytes and parses it.
@@ -154,7 +259,8 @@ bool jdlz_decompress(
     std::size_t& unused_input,
     std::string& error);
 
-// Decompresses the full mip chain of a valid texture from the file image.
+// Returns the full mip chain of a valid texture from the file image:
+// JDLZ-decompressed, or copied unchanged for raw storage (unused_input 0).
 bool texture_payload(
     const unsigned char* data,
     std::size_t size,
