@@ -284,15 +284,6 @@ bool decode_level(
     std::vector<unsigned char>& rgba,
     std::string& error);
 
-// Writes an uncompressed 32-bit TGA (image type 2, top-left origin, 8 alpha
-// bits). rgba must hold width * height * 4 bytes; dimensions 1..65535.
-bool write_tga(
-    std::ostream& output,
-    std::uint32_t width,
-    std::uint32_t height,
-    const std::vector<unsigned char>& rgba,
-    std::string& error);
-
 // Writes a DDS header followed by the payload bytes unchanged. payload must
 // be exactly mip_chain_size bytes.
 bool write_dds(

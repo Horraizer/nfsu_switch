@@ -25,6 +25,9 @@
 - Decode embedded and raw shared texture packs with explicit source priority.
 - Resolve shared car materials while preserving source provenance.
 - Build a backend-neutral prepared draw list for the CPU and deko3d renderers.
+  `PreparedCarScene` (`include/nfsu/scene.h`) is in place with an all-meshes
+  profile and explicit mesh subsets, and the CPU renderer consumes it; the
+  deko3d backend is still to do.
 - Recover installed-part and LOD selection before calling a profile stock.
 - Track retail evidence and remaining unknowns in
   [`CAR_SCENE.md`](CAR_SCENE.md).

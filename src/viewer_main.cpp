@@ -1,6 +1,7 @@
 #include "nfsu/geometry.h"
 #include "nfsu/render.h"
 #include "nfsu/texture.h"
+#include "nfsu/texture_decode.h"
 
 #include <algorithm>
 #include <charconv>
@@ -13,6 +14,7 @@
 #include <set>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -53,7 +55,30 @@ void print_usage() {
         << "                       alpha and is diagnostic only (e.g. 128)\n"
         << "  --vertex-color       multiply by vertex color bytes 0..2\n"
         << "  --cull MODE          none (default), back or front\n"
-        << "  --shading MODE       flat (default) or none\n";
+        << "  --shading MODE       flat (default) or none\n"
+        << "Mesh selection (repeatable, may be mixed; default: all meshes):\n"
+        << "  --mesh-index N       the mesh at source position N\n"
+        << "  --mesh-name NAME     the one mesh whose stored name is exactly NAME\n"
+        << "                       Selected meshes are drawn in source order. At\n"
+        << "                       most 256 selectors and 16384 name bytes. A\n"
+        << "                       selection is a diagnostic subset, not a decoded\n"
+        << "                       game car assembly.\n";
+}
+
+// Printable ASCII; quote, backslash and other bytes as \xHH.
+std::string quoted(const std::string& text) {
+    std::string out = "\"";
+    for (const char ch : text) {
+        const unsigned char byte = static_cast<unsigned char>(ch);
+        if (byte >= 0x20U && byte <= 0x7EU && ch != '"' && ch != '\\') {
+            out += ch;
+        } else {
+            char buffer[8];
+            std::snprintf(buffer, sizeof(buffer), "\\x%02X", static_cast<unsigned int>(byte));
+            out += buffer;
+        }
+    }
+    return out + "\"";
 }
 
 bool parse_double(const std::string& text, double& value) {
@@ -108,11 +133,51 @@ int parse_options(
     int argc,
     char** argv,
     nfsu::RenderOptions& options,
-    std::vector<fs::path>& shared) {
+    std::vector<fs::path>& shared,
+    nfsu::MeshSelection& selection) {
     const nfsu::RenderLimits limits;
+    const nfsu::SceneLimits scene_limits;
+    std::size_t selector_text = 0;
     std::set<std::string> seen;
     for (int i = 4; i < argc; ++i) {
         const std::string name = argv[i];
+        if (name == "--mesh-index" || name == "--mesh-name") {
+            if (i + 1 >= argc) {
+                std::cerr << "error: missing value for " << name << '\n';
+                return 1;
+            }
+            // Both bounds are checked before the selector is stored.
+            if (selection.selectors.size() >= scene_limits.max_selectors) {
+                std::cerr << "error: at most " << scene_limits.max_selectors
+                          << " mesh selectors are allowed\n";
+                return 1;
+            }
+            const char* value = argv[++i];
+            nfsu::MeshSelector selector;
+            if (name == "--mesh-index") {
+                std::uint64_t index = 0;
+                // At most 10 digits fit below 2^32; longer text is refused
+                // before it is copied.
+                if (std::strlen(value) > 10 || !parse_uint(value, UINT32_MAX, index)) {
+                    std::cerr << "error: invalid value for " << name << '\n';
+                    return 1;
+                }
+                selector.kind = nfsu::MeshSelectorKind::index;
+                selector.index = index;
+            } else {
+                const std::size_t length = std::strlen(value);
+                if (length > scene_limits.max_selector_text_bytes - selector_text) {
+                    std::cerr << "error: mesh names exceed "
+                              << scene_limits.max_selector_text_bytes << " bytes\n";
+                    return 1;
+                }
+                selector_text += length;
+                selector.kind = nfsu::MeshSelectorKind::name;
+                selector.name.assign(value, length);
+            }
+            selection.selectors.push_back(std::move(selector));
+            continue;
+        }
         if (name == "--shared-textures") {
             if (i + 1 >= argc) {
                 std::cerr << "error: missing value for " << name << '\n';
@@ -262,7 +327,8 @@ int main(int argc, char** argv) {
 
     nfsu::RenderOptions options;
     std::vector<fs::path> shared_paths;
-    const int parse_result = parse_options(argc, argv, options, shared_paths);
+    nfsu::MeshSelection selection;
+    const int parse_result = parse_options(argc, argv, options, shared_paths, selection);
     if (parse_result != 0) {
         return parse_result;
     }
@@ -302,6 +368,17 @@ int main(int argc, char** argv) {
     for (const nfsu::GeometryIssue& issue : geometry.issues) {
         std::cerr << "geometry issue at " << issue.offset << ": "
                   << issue.message << '\n';
+    }
+    // Selection errors are usage errors, found before any texture is read.
+    const nfsu::SceneLimits scene_limits;
+    std::vector<std::size_t> selected;
+    {
+        std::string error;
+        if (!nfsu::resolve_mesh_selection(geometry, selection, scene_limits, selected,
+                                          nullptr, error)) {
+            std::cerr << "error: mesh selection: " << error << '\n';
+            return 1;
+        }
     }
     std::vector<unsigned char> bytes;
     const nfsu::TexturePack pack = nfsu::load_texture_pack(texture_path, bytes);
@@ -357,12 +434,11 @@ int main(int argc, char** argv) {
             decoded_ok = nfsu::decode_render_textures(
                 bytes, pack, nfsu::RenderTextureLimits{}, textures, error);
         } else {
-            // Shared sources decode only hashes that a valid mesh uses, so
-            // unrelated textures do not count against the shared budget.
-            for (const nfsu::Mesh& mesh : geometry.meshes) {
-                if (!mesh.valid) {
-                    continue;
-                }
+            // Shared sources decode only hashes that a selected mesh uses,
+            // so unrelated textures do not count against the shared budget.
+            // Without selectors these are all valid meshes.
+            for (const std::size_t index : selected) {
+                const nfsu::Mesh& mesh = geometry.meshes[index];
                 for (const nfsu::MeshMaterial& material : mesh.materials) {
                     if (material.texture_slot < mesh.texture_hashes.size()) {
                         wanted.push_back(mesh.texture_hashes[material.texture_slot]);
@@ -415,12 +491,19 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Material lookup happens here, once; the renderer reads the scene only.
+    nfsu::PreparedCarScene scene;
+    std::string error;
+    if (!nfsu::prepare_car_scene(geometry, textures, selection, scene_limits, scene,
+                                 error)) {
+        std::cerr << "error: " << error << '\n';
+        return 2;
+    }
+
     nfsu::Frame frame;
     nfsu::RenderStats stats;
     const nfsu::RenderLimits limits;
-    std::string error;
-    if (!nfsu::render_scene(geometry, textures, options, limits, frame, stats,
-                            error)) {
+    if (!nfsu::render_scene(scene, options, limits, frame, stats, error)) {
         std::cerr << "error: " << error << '\n';
         return 2;
     }
@@ -505,6 +588,18 @@ int main(int argc, char** argv) {
               << " vertex_color " << (options.vertex_color ? 1 : 0) << " cull "
               << nfsu::cull_mode_name(options.cull) << " shading "
               << nfsu::shading_mode_name(options.shading) << '\n';
+    // The all-meshes report is unchanged; only an explicit subset is listed.
+    if (scene.profile == nfsu::SelectionProfile::explicit_subset) {
+        std::cout << "selection: " << nfsu::selection_profile_name(scene.profile)
+                  << ", " << scene.meshes.size() << " of " << scene.source_mesh_count
+                  << " meshes, " << scene.selectors.size() << " selectors\n";
+        for (const nfsu::PreparedMesh& mesh : scene.meshes) {
+            const nfsu::MeshSelector& selector = scene.selectors[mesh.selector];
+            std::cout << "selected: mesh " << mesh.source_index << " name "
+                      << quoted(mesh.name) << " by selector " << mesh.selector << " ("
+                      << nfsu::mesh_selector_kind_name(selector.kind) << ")\n";
+        }
+    }
     print_stats(stats);
     std::cout << "wrote: " << output_path.filename().u8string() << '\n';
     return geometry.ok() && pack.ok() && sources_ok ? 0 : 3;

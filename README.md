@@ -64,17 +64,38 @@ graphics library:
 build/nfsu_viewer X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games/NFSU/Cars/240SX/TEXTURES.BIN build/240sx.tga
 build/nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> build/front.tga --yaw 0 --pitch 5 --distance 3 --width 800 --height 600
 build/nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> build/shared.tga --shared-textures X:/Games/NFSU/GLOBAL/GLOBALB.BUN
+build/nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> build/part.tga --mesh-name 240SX_KITW01_BODY_A --mesh-index 4
 ```
 
 Textures come only from files named on the command line. The car's
-`TEXTURES.BIN` is searched first. Each `--shared-textures FILE` (the only
-option that may be repeated) is searched after it, in the order given. A
+`TEXTURES.BIN` is searched first. Each `--shared-textures FILE` is searched
+after it, in the order given. A
 hash is taken from the first source that has any record for it, even an
 unusable one, so a broken car texture is never silently replaced by a
 shared one. At most 8 shared files are accepted, and at most 512 MiB is
 read for `TEXTURES.BIN` and all shared files together (each file at most
 256 MiB); a file that would exceed the total is refused before it is read.
 See `docs/RENDERER.md`.
+
+By default every valid mesh is drawn (the "all meshes" profile), so every
+kit and style variant overlaps. `--mesh-index N` (source position) and
+`--mesh-name NAME` (exact, case-sensitive stored name) select an explicit
+subset instead; both may be repeated and mixed, at most 256 selectors and
+16384 name bytes. Selected meshes are always drawn in source order. An
+out-of-range index, an unknown, empty or ambiguous name, or a mesh selected
+twice is a usage error (exit 1) and nothing is written. Neither profile is
+the game's stock car: which parts the game installs is not decoded yet
+(see `docs/CAR_SCENE.md`).
+
+Selection and material lookup happen once, in `prepare_car_scene`
+(`include/nfsu/scene.h`). It builds a self-contained `PreparedCarScene`
+that owns copies of the selected vertices, triangles and resolved textures
+and holds one validated draw per material group. The CPU renderer draws
+only that scene and never looks up a texture hash; a future deko3d backend
+is meant to consume the same draw list. Parsed texture packs become
+`RenderTextureSet` through the separate backend-neutral
+`nfsu_texture_decode` library, so neither backend depends on the other's
+implementation.
 
 The camera orbits `--target X,Y,Z` at `--distance`, with `--yaw` (0 = front,
 90 = right side) and `--pitch` (positive = from above) in degrees. Other
