@@ -505,6 +505,8 @@ private:
         texture.height_log2 = info[73];
         texture.format_code = info[74];
         texture.mip_count = info[78];
+        texture.alpha_test_mode = info[85];
+        texture.alpha_blend_mode = info[86];
         texture.d3d_format = read_u32_le(texture.format_record.data() + 20);
         const bool raw = texture.storage == TextureStorage::raw;
         const std::uint32_t listed_hash = read_u32_le(data_ + hash_offset);
@@ -1058,6 +1060,32 @@ bool record_claims_hash(const TextureRecord& texture, std::uint32_t hash) noexce
     return texture.hash == hash || texture.table_hash == hash ||
            (texture.storage == TextureStorage::jdlz &&
             read_u32_le(texture.blob_entry.data()) == hash);
+}
+
+bool texture_alpha_test_enabled(const TextureRecord& texture) noexcept {
+    return texture.alpha_test_mode == 1U;
+}
+
+TextureAlphaBlend texture_alpha_blend(const TextureRecord& texture) noexcept {
+    if (texture.alpha_blend_mode == 0U) {
+        return TextureAlphaBlend::disabled;
+    }
+    if (texture.alpha_blend_mode == 2U) {
+        return TextureAlphaBlend::additive;
+    }
+    return TextureAlphaBlend::source_over;
+}
+
+const char* texture_alpha_blend_name(TextureAlphaBlend blend) noexcept {
+    switch (blend) {
+    case TextureAlphaBlend::disabled:
+        return "disabled";
+    case TextureAlphaBlend::source_over:
+        return "source-over";
+    case TextureAlphaBlend::additive:
+        return "additive";
+    }
+    return "unknown";
 }
 
 std::size_t TexturePack::valid_texture_count() const noexcept {

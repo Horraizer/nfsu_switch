@@ -42,6 +42,10 @@ std::uint32_t bin_hash(const std::string& text) noexcept;
 
 enum class PixelFormat { unsupported, dxt1, dxt3, a8r8g8b8, p8 };
 
+// Runtime blend state selected by texture-info byte +86. The retail draw
+// path treats every non-zero value except 2 as source-over blending.
+enum class TextureAlphaBlend { disabled, source_over, additive };
+
 // How a record's mip chain is stored in the file. Standalone TEXTURES.BIN
 // packs have a 0x33310003 blob table and JDLZ blobs. Packs embedded in a BUN
 // (observed: GLOBAL/GLOBALB.BUN) have no blob table; their chains are
@@ -101,6 +105,12 @@ struct TextureRecord {
     std::uint8_t height_log2 = 0;      // info +73
     std::uint8_t format_code = 0;      // info +74
     std::uint8_t mip_count = 0;        // info +78
+    // The game enables alpha test only when +85 == 1, using GREATER and
+    // reference 0xAA. Other observed values leave it disabled.
+    std::uint8_t alpha_test_mode = 0;  // info +85
+    // 0 disables blending, 2 selects SRCALPHA/ONE, and every other non-zero
+    // value selects SRCALPHA/INVSRCALPHA.
+    std::uint8_t alpha_blend_mode = 0; // info +86
     std::uint32_t d3d_format = 0;      // format record +20
     PixelFormat format = PixelFormat::unsupported;
 
@@ -120,6 +130,12 @@ struct TextureRecord {
     // hash it claims (see record_claims_hash).
     std::uint32_t table_hash = 0;
 };
+
+bool texture_alpha_test_enabled(const TextureRecord& texture) noexcept;
+
+TextureAlphaBlend texture_alpha_blend(const TextureRecord& texture) noexcept;
+
+const char* texture_alpha_blend_name(TextureAlphaBlend blend) noexcept;
 
 // True if any hash field of the record (info +36, hash table +0, or blob
 // table +0 for JDLZ storage) equals hash, valid or not.

@@ -136,6 +136,8 @@ struct TexSpec {
     std::optional<std::uint8_t> width_log2;
     std::optional<std::uint8_t> height_log2;
     std::uint8_t mips = 1;
+    std::uint8_t alpha_test_mode = 0;
+    std::uint8_t alpha_blend_mode = 0;
     Bytes pixels;                       // decompressed chain
     std::optional<std::uint32_t> data_size;
     std::optional<std::uint32_t> top_size;
@@ -281,6 +283,8 @@ void write_pack(Writer& w, const std::vector<TexSpec>& specs, const PackOptions&
         record[74] = spec.format_code;
         record[78] = spec.mips;
         put_u32(record, 84, 0x01000000U);
+        record[85] = spec.alpha_test_mode;
+        record[86] = spec.alpha_blend_mode;
         layout.info_offsets.push_back(0); // patched after append
         info_table.insert(info_table.end(), record.begin(), record.end());
     }
@@ -588,6 +592,54 @@ void test_valid_pack() {
                   unused == expected_unused,
               "payload of texture " + std::to_string(texture.index) + " " + error);
     }
+}
+
+void test_alpha_state() {
+    TexSpec opaque = dxt1_spec("OPAQUE");
+
+    TexSpec tested = dxt1_spec("TESTED");
+    tested.alpha_test_mode = 1;
+    tested.alpha_blend_mode = 1;
+
+    TexSpec additive = dxt1_spec("ADDITIVE");
+    additive.alpha_test_mode = 2;
+    additive.alpha_blend_mode = 2;
+
+    TexSpec other = dxt1_spec("OTHER");
+    other.alpha_test_mode = 0xFF;
+    other.alpha_blend_mode = 0xFF;
+
+    const PackLayout layout = build_pack({opaque, tested, additive, other});
+    const nfsu::TexturePack pack = parse(layout.bytes);
+    check(pack.ok() && pack.textures.size() == 4U, "alpha-state fixture parses");
+    if (pack.textures.size() != 4U) {
+        return;
+    }
+
+    check(!nfsu::texture_alpha_test_enabled(pack.textures[0]) &&
+              pack.textures[0].alpha_test_mode == 0U &&
+              nfsu::texture_alpha_blend(pack.textures[0]) ==
+                  nfsu::TextureAlphaBlend::disabled,
+          "disabled alpha state");
+    check(nfsu::texture_alpha_test_enabled(pack.textures[1]) &&
+              pack.textures[1].alpha_test_mode == 1U &&
+              pack.textures[1].alpha_blend_mode == 1U &&
+              nfsu::texture_alpha_blend(pack.textures[1]) ==
+                  nfsu::TextureAlphaBlend::source_over,
+          "alpha test and source-over state");
+    check(!nfsu::texture_alpha_test_enabled(pack.textures[2]) &&
+              pack.textures[2].alpha_test_mode == 2U &&
+              nfsu::texture_alpha_blend(pack.textures[2]) ==
+                  nfsu::TextureAlphaBlend::additive,
+          "mode 2 alpha test stays disabled and blend is additive");
+    check(!nfsu::texture_alpha_test_enabled(pack.textures[3]) &&
+              pack.textures[3].alpha_test_mode == 0xFFU &&
+              pack.textures[3].alpha_blend_mode == 0xFFU &&
+              nfsu::texture_alpha_blend(pack.textures[3]) ==
+                  nfsu::TextureAlphaBlend::source_over &&
+              std::string(nfsu::texture_alpha_blend_name(
+                  nfsu::texture_alpha_blend(pack.textures[3]))) == "source-over",
+          "unknown raw modes are preserved and follow the retail branches");
 }
 
 void test_alignment_sweep() {
@@ -1870,6 +1922,7 @@ void test_export_safety() {
 int main() {
     test_hash();
     test_valid_pack();
+    test_alpha_state();
     test_alignment_sweep();
     test_truncation_and_overflow();
     test_nested_and_chained_overlap();

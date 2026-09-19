@@ -460,10 +460,11 @@ contain at any LOD, so a stock car there has no spoiler at all.
   and plate positions, and the damage states the draw code reads.
 - The exact per-pixel blend equations, palette-channel interpretation and
   mip-generation rules used when composing `DUMMY_SKIN1`.
-- The rendering semantics of material flags and material/effect objects,
-  including environment maps, decals, blending, and alpha behavior. The
-  former "secondary texture slot" is now verified as a separate 0x00134013
-  material-key slot; see `docs/FORMATS.md`.
+- Transparent draw ordering, technique selection, the untraced material-flag
+  bits, and whether any decal class needs behavior beyond its generic effect
+  object. Texture alpha state and the proven environment coefficient gates
+  are bounded in `docs/MATERIALS.md`. The former "secondary texture slot" is
+  a separate 0x00134013 material-key slot; see `docs/FORMATS.md`.
 - The identities of six hashes absent from the surveyed packs.
 - The 24-byte track vertex field layout.
 
