@@ -19,6 +19,7 @@ constexpr std::uint32_t kMeshDirectoryId = 0x00134004U;
 constexpr std::uint32_t kMeshContainerId = 0x80134010U;
 constexpr std::uint32_t kMeshMetadataId = 0x00134011U;
 constexpr std::uint32_t kTextureListId = 0x00134012U;
+constexpr std::uint32_t kMaterialKeyListId = 0x00134013U;
 constexpr std::uint32_t kGeometryContainerId = 0x80134100U;
 constexpr std::uint32_t kGeometryMetadataId = 0x00134900U;
 constexpr std::uint32_t kVertexBufferId = 0x00134B01U;
@@ -45,13 +46,15 @@ constexpr std::size_t kFaceStride = 6;
 constexpr std::size_t kMeshHashRecordSize = 8;
 constexpr std::size_t kMeshDirectoryRecordSize = 20;
 
-// Texture binding. 0x00134012 is a list of (u32 texture hash, u32 0)
-// entries whose count is the byte at kTextureListCountOffset in the
-// 0x00134011 payload. 0x00134B02 holds material records of
+// Material binding. 0x00134012 contains texture hashes and 0x00134013
+// contains material/effect key hashes; both use (u32 hash, u32 0) entries
+// with count bytes in 0x00134011. 0x00134B02 holds material records of
 // kMaterialRecordSize bytes after 0x11 padding to kMaterialDataAlignment;
 // their count is the i32 at kMaterialCountOffset in the 0x00134900 record.
 constexpr std::size_t kTextureListCountOffset = 25;
 constexpr std::size_t kTextureListEntrySize = 8;
+constexpr std::size_t kMaterialKeyListCountOffset = 26;
+constexpr std::size_t kMaterialKeyListEntrySize = 8;
 constexpr std::size_t kMaterialCountOffset = 16;
 constexpr std::uint64_t kMaterialDataAlignment = 16;
 struct GeometryIssue {

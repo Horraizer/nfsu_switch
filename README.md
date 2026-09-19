@@ -49,7 +49,8 @@ levels unchanged, after a DDS header. File names are
 overwrite anything. If it fails, it tries to remove the files it created,
 and it names any file it could not remove.
 `texture-bindings` lists every mesh material record with its texture slot,
-its texture hash and the pack texture that hash resolves to.
+texture hash, resolved pack texture, material-key slot and material-key hash.
+Its summary also inventories the material flags and material-key usage.
 `pack-set` finds every texture pack in a file, including packs nested in a
 BUN such as `GLOBAL/GLOBALB.BUN`, and lists their metadata and records.
 It never decodes or writes pixel data.

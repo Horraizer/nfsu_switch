@@ -161,8 +161,10 @@ remain unknown.
 - The exact runtime car-state and installed-part data layout.
 - The stock 240SX part selection and LOD distance thresholds.
 - The composition of `240SX_SKIN1`, car color, vinyl, and mask layers.
-- The role of material flags, secondary texture slots, environment maps,
-  decals, blending, and alpha behavior.
+- The rendering semantics of material flags and material/effect objects,
+  including environment maps, decals, blending, and alpha behavior. The
+  former "secondary texture slot" is now verified as a separate 0x00134013
+  material-key slot; see `docs/FORMATS.md`.
 - The identities of six hashes absent from the surveyed packs.
 - The 24-byte track vertex field layout.
 

@@ -12,7 +12,7 @@ constexpr std::size_t kMaterialRecordSize = 60;
 
 // One decoded material record: a run of triangle indices drawn with one
 // texture. Raw offsets: +0 bounds min, +12 index count, +16 bounds max,
-// +28 texture slot, +32 secondary slot, +52 first index and +56 flags.
+// +28 texture slot, +32 material-key slot, +52 first index and +56 flags.
 // The raw bytes preserve every field whose meaning is still unknown.
 struct MeshMaterial {
     std::uint64_t offset = 0;
@@ -20,7 +20,9 @@ struct MeshMaterial {
     float bounds_max[3] = {0.0F, 0.0F, 0.0F};
     std::uint32_t index_count = 0;
     std::uint32_t texture_slot = 0;
-    std::uint32_t secondary_slot = 0;
+    // Index into Mesh::material_key_hashes, or 0xFF for no entry. The game
+    // reads the low byte; the other three bytes are zero in the sample.
+    std::uint32_t material_key_slot = 0;
     std::uint32_t first_index = 0;
     std::uint32_t flags = 0;
     unsigned char raw[kMaterialRecordSize] = {};
@@ -71,12 +73,15 @@ struct Mesh {
     std::uint64_t face_prefix_bytes = 0;
     std::uint64_t face_tail_bytes = 0;
     std::uint64_t texture_list_offset = 0;
+    std::uint64_t material_key_list_offset = 0;
     std::uint64_t material_data_offset = 0;
     std::uint64_t material_prefix_bytes = 0;
     std::int32_t declared_material_count = 0;
     std::vector<MeshVertex> vertices;
     std::vector<MeshTriangle> triangles;
     std::vector<std::uint32_t> texture_hashes;
+    // 0x00134013 material/effect keys resolved to runtime objects by the game.
+    std::vector<std::uint32_t> material_key_hashes;
     std::vector<MeshMaterial> materials;
     bool valid = false;
 };

@@ -544,6 +544,11 @@ int run_texture_bindings(const fs::path& geometry_path, const fs::path& texture_
     std::size_t records = 0;
     std::size_t resolved = 0;
     std::map<std::uint32_t, std::size_t> unresolved;
+    std::map<std::uint32_t, std::size_t> flag_counts;
+    std::map<std::uint32_t, std::size_t> material_key_slot_counts;
+    std::map<std::uint32_t, std::size_t> material_key_counts;
+    std::size_t material_key_bound = 0;
+    std::size_t material_key_none = 0;
     for (const nfsu::Mesh& mesh : geometry.meshes) {
         if (!mesh.valid) {
             continue;
@@ -552,15 +557,33 @@ int run_texture_bindings(const fs::path& geometry_path, const fs::path& texture_
             const nfsu::MeshMaterial& material = mesh.materials[i];
             const std::uint32_t hash = mesh.texture_hashes[material.texture_slot];
             ++records;
+            ++flag_counts[material.flags];
+            ++material_key_slot_counts[material.material_key_slot];
+            if (material.material_key_slot == 0xFFU) {
+                ++material_key_none;
+            } else {
+                ++material_key_bound;
+                ++material_key_counts[
+                    mesh.material_key_hashes[material.material_key_slot]];
+            }
             std::cout << std::setw(4) << std::setfill(' ') << mesh.index << ' '
                       << mesh.name << " material " << i << " @"
                       << material.offset << " indices " << material.first_index
                       << '+' << material.index_count << " slot "
-                      << material.texture_slot << " hash " << hex32(hash)
-                      << " @" << (mesh.texture_list_offset +
-                                  material.texture_slot *
-                                      nfsu::kTextureListEntrySize)
-                      << " -> ";
+                       << material.texture_slot << " hash " << hex32(hash)
+                       << " @" << (mesh.texture_list_offset +
+                                   material.texture_slot *
+                                       nfsu::kTextureListEntrySize)
+                       << " material_key_slot " << material.material_key_slot;
+            if (material.material_key_slot != 0xFFU) {
+                std::cout << " material_key "
+                          << hex32(mesh.material_key_hashes[
+                                 material.material_key_slot]);
+            } else {
+                std::cout << " none";
+            }
+            std::cout << " flags " << hex32(material.flags)
+                       << " -> ";
             const auto found = by_hash.find(hash);
             if (found == by_hash.end()) {
                 std::cout << "not in pack\n";
@@ -580,6 +603,21 @@ int run_texture_bindings(const fs::path& geometry_path, const fs::path& texture_
     std::cout << "resolved in pack: " << resolved << '\n';
     std::cout << "unresolved hashes: " << unresolved.size() << '\n';
     for (const auto& [hash, count] : unresolved) {
+        std::cout << "  " << hex32(hash) << " x" << count << '\n';
+    }
+    std::cout << "material flag values: " << flag_counts.size() << '\n';
+    for (const auto& [flags, count] : flag_counts) {
+        std::cout << "  " << hex32(flags) << " x" << count << '\n';
+    }
+    std::cout << "material-key bindings: bound " << material_key_bound
+              << " none " << material_key_none << '\n';
+    std::cout << "material-key slot values: "
+              << material_key_slot_counts.size() << '\n';
+    for (const auto& [slot, count] : material_key_slot_counts) {
+        std::cout << "  " << slot << " x" << count << '\n';
+    }
+    std::cout << "material-key hashes: " << material_key_counts.size() << '\n';
+    for (const auto& [hash, count] : material_key_counts) {
         std::cout << "  " << hex32(hash) << " x" << count << '\n';
     }
     return geometry.ok() && pack.ok() ? 0 : 3;

@@ -43,7 +43,7 @@ omitted):
   0x80134010  mesh container, 400 in the sample
     0x00134011  mesh metadata, 176 bytes in every sample mesh
     0x00134012  texture hash list, 8 to 88 bytes (multiples of 8)
-    0x00134013  unknown hash list, 8 to 56 bytes (multiples of 8)
+    0x00134013  material-key list, 8 to 56 bytes (multiples of 8)
     0x80134100  geometry container, exactly one per mesh
       0x00134900  geometry metadata
       0x00134B01  vertex buffer
@@ -55,8 +55,8 @@ omitted):
 ```
 
 Every one of the 400 mesh containers holds exactly one of each of
-0x00134011, 0x00134012, 0x80134100, 0x00134900, 0x00134B01, 0x00134B02 and
-0x00134B03.
+0x00134011, 0x00134012, 0x00134013, 0x80134100, 0x00134900, 0x00134B01,
+0x00134B02 and 0x00134B03.
 
 Mesh metadata 0x00134011:
 
@@ -64,11 +64,23 @@ Mesh metadata 0x00134011:
   Names are truncated to 27 characters (for example
   `240SX_DECAL_LEFT_QUARTER_RE`).
 - `+25` (u8) is the number of 0x00134012 entries in every sample mesh.
+- `+26` (u8) is the number of 0x00134013 entries in every sample mesh.
 
 Texture hash list 0x00134012:
 
 - `payload_size / 8` entries of (u32 LE texture hash, u32 LE 0). The second
   word is 0 in every entry of the sample.
+
+Material-key list 0x00134013:
+
+- `payload_size / 8` entries of (u32 LE key hash, u32 LE resolved pointer).
+  The on-disk second word is 0 in all 1078 sample entries. The game resolves
+  each hash against its material/effect object registry and writes the object
+  pointer into the second word at runtime.
+- The 400 sample lists contain 1 to 7 entries. All 36 distinct hashes are
+  referenced by at least one material. Exact `bin_hash` matches to tokens in
+  `speed.exe` include `DECAL`, `BRAKELIGHT`, `INTERIOR`, `WINDSHIELD`,
+  `BOTTOM`, `ENGINE` and `MIRROR`.
 
 Alignment prefix: in 0x00134900, 0x00134B01, 0x00134B02 and 0x00134B03 the
 record data
@@ -106,7 +118,7 @@ Material records 0x00134B02 (60 bytes each, 1242 in the sample):
 | 12 | u32 | index count, a multiple of 3 |
 | 16 | f32[3] | bounds maximum (not interpreted) |
 | 28 | u32 | texture slot: index into this mesh's 0x00134012 list |
-| 32 | u32 | unknown slot (see Unknown) |
+| 32 | u8 + u8[3] | material-key slot into 0x00134013, or 0xFF for none; high bytes are zero in the sample |
 | 36 | u8[16] | unknown, kept raw |
 | 52 | u32 | first index into the 0x00134B03 index stream |
 | 56 | u32 | flags, unknown, kept raw |
@@ -114,6 +126,23 @@ Material records 0x00134B02 (60 bytes each, 1242 in the sample):
 In every sample mesh the records are in order, each first index equals the
 sum of the previous index counts, the counts add up to exactly
 `3 * face_count`, and every texture slot is below the 0x00134012 entry count.
+Of 1242 material-key slots, 1241 are valid for their mesh's 0x00134013 list
+and one is the 0xFF sentinel. There are no invalid slots.
+
+The retail executable confirms that these are separate bindings. It loads
+0x00134012 into the mesh table at +0x2C and 0x00134013 into the table at
++0x3C. The draw path reads material byte +28 to select the former and byte
++32 to select the latter; +32 == 0xFF leaves the material/effect object null.
+This was checked against `speed.exe` SHA-256
+`C0FAD450912952F53809A54690D235AA8B4E25B9F46650693C7CBEE1B4C074B7`.
+
+Eight flag values occur in the 1242 sample records: 0x00000000 (2),
+0x00004080 (4), 0x00004180 (922), 0x0000C180 (6), 0x00014080 (19),
+0x00014180 (263), 0x00018000 (3), and 0x0001C180 (23). The executable tests
+bits 0x80 and 0x100 in the material/effect path. It also uses bit 0 to bypass
+a bounds-related test and, when matrix data exists, to upload constants from
+the 16 bytes at material +33..+48. No sample 240SX record has bit 0, so the
+skinning interpretation and the remaining flag semantics are not yet proven.
 
 Vertex buffer 0x00134B01:
 
@@ -179,11 +208,10 @@ Orientation in the sample, using the named source fields:
 
 ### Unknown
 
-- All other fields of 0x00134011 (147 bytes before the name besides +25) and
+- All other fields of 0x00134011 (146 bytes before the name besides +25/+26) and
   of the 64-byte 0x00134900 record apart from the three counts.
-- 0x00134B02 bytes +32..+59 apart from the first index. The +32 slot looks
-  like an index into 0x00134013, but that is not verified.
-- 0x00134013, 0x00134017, 0x00134018, 0x00134019, 0x0013401A.
+- 0x00134B02 bytes +33..+51 and the exact meanings of the flags at +56.
+- 0x00134017, 0x00134018, 0x00134019, 0x0013401A.
 - 0x00134011 `+16` may be a hash of the mesh name.
 - The meanings of 0x00134002 and 0x80134008 in the header container, and
   the second top-level container 0x80034020.
@@ -705,8 +733,9 @@ matches texture 18 at 5744.
 
 ### Unknown
 
-- How the unresolved hashes are resolved at runtime, and what 0x00134013
-  and the material flags select (shader, blending or damage state).
+- How the unresolved texture hashes are resolved at runtime, the exact object
+  types selected by 0x00134013, and the rendering semantics of the material
+  flags (shader, blending, environment mapping or damage state).
 
 ### UV origin (from `nfsu_viewer`)
 
