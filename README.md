@@ -44,7 +44,8 @@ valid texture and writes it to the output directory. `tga` writes the
 decoded top level as a 32-bit TGA. `dds` writes the decompressed data of all
 levels unchanged, after a DDS header. File names are
 `t<index>_<hash>_<name>`, so they stay unique. The export refuses to
-overwrite anything, and removes its own files if it fails.
+overwrite anything. If it fails, it tries to remove the files it created,
+and it names any file it could not remove.
 `texture-bindings` lists every mesh material record with its texture slot,
 its texture hash and the pack texture that hash resolves to.
 

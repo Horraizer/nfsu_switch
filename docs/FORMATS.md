@@ -473,7 +473,12 @@ wrong level order would not produce this match.
 
   Otherwise the texture is kept with `valid = false` and a message naming
   the texture, the record offset and the field offset.
-- Overlapping blobs invalidate both textures. Duplicate hashes are reported
+- Blob overlap is checked for every pair of otherwise valid textures, not
+  only for neighbors in offset order, so a blob that contains several others
+  is compared with each of them. Blobs `[offset, offset + size)` overlap when
+  they share a byte; touching blobs do not. Every texture in any overlap is
+  invalidated with one issue listing the number of partners and the 8
+  smallest partner indices. Duplicate hashes are reported
   as issues, since hash lookups become ambiguous, but the textures stay
   exportable.
 - Decompression happens only on export. The output must be filled exactly,
@@ -498,8 +503,15 @@ wrong level order would not produce this match.
   unique for duplicate and truncated names.
 - All target names are checked before anything is written. If any target
   exists or is the input file, nothing is written. Each file is written as
-  `<name>.partial` and renamed when complete. After any failure, all files
-  written by the run are removed.
+  `<name>.partial` and renamed when complete. Just before the rename the
+  target is checked again, and a target that appeared during the export is
+  not replaced. A narrow race between that check and the rename remains.
+- After any failure, the export tries to remove every file it created
+  (completed targets and its own `.partial` file) and never touches other
+  files. It continues after a failed removal. The error message states
+  "removed all N" only if every file is gone. Otherwise it says "removed K
+  of N" and lists the paths that could not be removed, which are also
+  returned in `TextureExportResult::not_removed`.
 - Sample results (119 files each, byte-identical across runs): the SHA-256
   of the sorted `name hash` manifest is
   `40DF8D3293818129603216E618C84B184E6502450803A16052A88175B726D593`

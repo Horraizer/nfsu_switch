@@ -471,6 +471,90 @@ void test_alignment_sweep() {
           "bad data prefix rejected");
 }
 
+
+// Copies the blobs of textures 1 and 2 to the given offsets relative to the
+// blob of texture 0 and points the blob table at the copies. Texture 0 has
+// 100 unused trailing bytes, so the copies can sit inside it; header checks
+// still pass for every texture on its own.
+Bytes relocate_blobs(std::size_t b_at, std::size_t c_at, std::size_t& base) {
+    TexSpec a = dxt1_spec("A");
+    a.blob = jdlz_literals(a.pixels, 100);
+    TexSpec b = dxt1_spec("B");
+    b.blob = jdlz_literals(b.pixels);
+    TexSpec c = dxt1_spec("C");
+    c.blob = jdlz_literals(c.pixels);
+    const PackLayout layout = build_pack({a, b, c});
+    Bytes bytes = layout.bytes;
+    base = layout.blob_offsets[0];
+    const std::size_t targets[2] = {b_at, c_at};
+    const Bytes* blobs[2] = {&*b.blob, &*c.blob};
+    for (std::size_t i = 0; i < 2; ++i) {
+        std::copy(blobs[i]->begin(), blobs[i]->end(), bytes.begin() + base + targets[i]);
+        put_u32(bytes, layout.blob_entry_offsets[i + 1] + 4,
+                static_cast<std::uint32_t>(base + targets[i]));
+    }
+    return bytes;
+}
+
+void test_nested_and_chained_overlap() {
+    {
+        // A = [0, 126) contains B = [30, 56) and C = [60, 86); B and C are
+        // disjoint, so a neighbor-only check would miss A/C.
+        std::size_t base = 0;
+        const Bytes bytes = relocate_blobs(30, 60, base);
+        const nfsu::TexturePack pack = parse(bytes);
+        if (pack.textures.size() != 3U) {
+            check(false, "nested fixture");
+            return;
+        }
+        check(pack.textures[0].blob_size == 126U && pack.textures[1].blob_size == 26U,
+              "nested fixture sizes");
+        check(!pack.textures[0].valid && !pack.textures[1].valid && !pack.textures[2].valid,
+              "nested overlap invalidates A, B and C");
+        check(pack.textures[0].problem ==
+                  "JDLZ blob at file offset " + std::to_string(base) +
+                      " (126 bytes) overlaps the blobs of 2 textures: 1, 2",
+              "container lists both partners: " + pack.textures[0].problem);
+        check(pack.textures[1].problem.find("overlaps the blobs of 1 textures: 0") !=
+                      std::string::npos &&
+                  pack.textures[2].problem.find("overlaps the blobs of 1 textures: 0") !=
+                      std::string::npos,
+              "contained blobs name only the container");
+        std::size_t overlap_issues = 0;
+        for (const nfsu::TextureIssue& issue : pack.issues) {
+            overlap_issues += issue.message.find("overlaps") != std::string::npos ? 1U : 0U;
+        }
+        check(overlap_issues == 3U, "one overlap issue per texture");
+        const nfsu::TexturePack again = parse(bytes);
+        bool same = again.issues.size() == pack.issues.size();
+        for (std::size_t i = 0; same && i < pack.issues.size(); ++i) {
+            same = again.issues[i].offset == pack.issues[i].offset &&
+                   again.issues[i].message == pack.issues[i].message;
+        }
+        check(same, "overlap diagnostics are deterministic");
+    }
+    {
+        // Chain: A = [0, 126), B = [110, 136), C = [130, 156). A/B and B/C
+        // overlap, A/C do not.
+        std::size_t base = 0;
+        const nfsu::TexturePack pack = parse(relocate_blobs(110, 130, base));
+        check(pack.textures.size() == 3U && pack.valid_texture_count() == 0U,
+              "chain invalidates every member");
+        if (pack.textures.size() == 3U) {
+            check(pack.textures[0].problem.find("of 1 textures: 1") != std::string::npos &&
+                      pack.textures[1].problem.find("of 2 textures: 0, 2") != std::string::npos &&
+                      pack.textures[2].problem.find("of 1 textures: 1") != std::string::npos,
+                  "chain partners are exact");
+        }
+    }
+    {
+        // Adjacent blobs share no byte and stay valid.
+        std::size_t base = 0;
+        const nfsu::TexturePack pack = parse(relocate_blobs(126, 152, base));
+        check(pack.ok() && pack.valid_texture_count() == 3U, "touching blobs are not overlaps");
+    }
+}
+
 void test_truncation_and_overflow() {
     const PackLayout layout = build_pack({dxt1_spec("A"), dxt3_spec()});
     for (std::size_t cut = 0; cut < layout.bytes.size(); cut += 7) {
@@ -513,8 +597,9 @@ void test_truncation_and_overflow() {
         check(parse(twins.bytes).ok(), "twin blobs are valid apart");
         const nfsu::TexturePack pack = parse(bytes);
         check(!pack.ok() && pack.valid_texture_count() == 0U &&
-                  has_issue(pack, "overlaps the blob of texture"),
-              "overlapping blobs rejected");
+                  has_issue(pack, "overlaps the blobs of 1 textures: 1") &&
+                  has_issue(pack, "overlaps the blobs of 1 textures: 0"),
+              "identical starts rejected");
     }
     {
         PackOptions options;
@@ -986,7 +1071,9 @@ void test_export_safety() {
     nfsu::TextureExportResult failed;
     check(!nfsu::export_textures(bad.bytes, bad_pack, input, root / "out4",
                                  nfsu::ExportFormat::dds, failed) &&
-              failed.error.find("removed 2 files") != std::string::npos && failed.files.empty(),
+              failed.error.find("removed all 2 files created by this export") !=
+                  std::string::npos &&
+              failed.files.empty() && failed.not_removed.empty(),
           "failed export reports cleanup: " + failed.error);
     std::size_t leftover = 0;
     for (const auto& entry : fs::directory_iterator(root / "out4")) {
@@ -994,6 +1081,48 @@ void test_export_safety() {
         ++leftover;
     }
     check(leftover == 0U, "failed export leaves no files");
+
+    // A failed export into a directory with an unrelated file keeps it.
+    fs::create_directories(root / "out6", error);
+    const fs::path unrelated = root / "out6" / "unrelated.txt";
+    {
+        std::ofstream stream(unrelated, std::ios::binary);
+        stream.write("keep", 4);
+    }
+    nfsu::TextureExportResult failed_again;
+    check(!nfsu::export_textures(bad.bytes, bad_pack, input, root / "out6",
+                                 nfsu::ExportFormat::tga, failed_again) &&
+              read_file(unrelated) == marker,
+          "rollback never touches pre-existing files");
+
+    // Rollback attempts every path and reports the ones it could not
+    // remove. A non-empty directory stands in for an undeletable file.
+    {
+        const fs::path dir = root / "rollback";
+        fs::create_directories(dir / "stuck", error);
+        const fs::path first_file = dir / "a.tga";
+        const fs::path last_file = dir / "c.tga";
+        for (const fs::path& path : {first_file, last_file, dir / "stuck" / "x"}) {
+            std::ofstream stream(path, std::ios::binary);
+            stream.write("x", 1);
+        }
+        std::string summary;
+        const std::vector<fs::path> failures = nfsu::rollback_created_files(
+            {first_file, dir / "stuck", last_file, dir / "already_gone.tga"}, summary);
+        check(failures == std::vector<fs::path>{dir / "stuck"},
+              "only the undeletable path is reported");
+        check(!fs::exists(first_file) && !fs::exists(last_file),
+              "removal continues after a failure");
+        check(summary.find("removed 3 of 4 files created by this export; could not remove: ") ==
+                      0U &&
+                  summary.find("stuck") != std::string::npos &&
+                  summary.find("removed all") == std::string::npos,
+              "summary is honest: " + summary);
+        std::string empty_summary;
+        check(nfsu::rollback_created_files({}, empty_summary).empty() &&
+                  empty_summary == "removed all 0 files created by this export",
+              "empty rollback");
+    }
 
     nfsu::TextureExportResult dds;
     check(nfsu::export_textures(good.bytes, pack, input, root / "out5", nfsu::ExportFormat::dds,
@@ -1023,6 +1152,7 @@ int main() {
     test_valid_pack();
     test_alignment_sweep();
     test_truncation_and_overflow();
+    test_nested_and_chained_overlap();
     test_malformed_records();
     test_unsupported_formats();
     test_duplicates_and_naming();

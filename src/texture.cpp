@@ -8,6 +8,7 @@
 #include <fstream>
 #include <limits>
 #include <new>
+#include <optional>
 #include <sstream>
 #include <system_error>
 #include <utility>
@@ -599,6 +600,12 @@ private:
         }
     }
 
+    // Finds every pair of valid textures whose blobs [offset, offset + size)
+    // share a byte, then invalidates each participant once, listing all of
+    // its partners in ascending index order. Pairs are found by sorting on
+    // (offset, index) and, for each blob, scanning later blobs while they
+    // start before its end, so a containing blob is compared with every
+    // blob inside it, not only its sorted neighbor.
     void check_blob_overlap() {
         std::vector<std::size_t> order;
         for (const TextureRecord& texture : pack_.textures) {
@@ -607,20 +614,63 @@ private:
             }
         }
         std::sort(order.begin(), order.end(), [this](std::size_t a, std::size_t b) {
-            return pack_.textures[a].blob_offset < pack_.textures[b].blob_offset;
+            const std::uint64_t oa = pack_.textures[a].blob_offset;
+            const std::uint64_t ob = pack_.textures[b].blob_offset;
+            return oa != ob ? oa < ob : a < b;
         });
-        for (std::size_t i = 1; i < order.size(); ++i) {
-            TextureRecord& previous = pack_.textures[order[i - 1]];
-            TextureRecord& current = pack_.textures[order[i]];
-            if (current.blob_offset - previous.blob_offset < previous.blob_size) {
-                std::ostringstream text;
-                text << "JDLZ blob at file offset " << current.blob_offset
-                     << " overlaps the blob of texture " << previous.index;
-                reject(current, current.blob_entry_offset + 4, text.str());
-                previous.valid = false;
-                previous.problem = "blob overlaps texture " +
-                                   std::to_string(current.index);
+
+        // Memory stays bounded when many blobs overlap: each texture keeps a
+        // partner count and only its kListed smallest partner indices.
+        constexpr std::size_t kListed = 8;
+        struct Partners {
+            std::size_t count = 0;
+            std::vector<std::size_t> smallest;
+
+            void add(std::size_t index) {
+                ++count;
+                smallest.insert(
+                    std::upper_bound(smallest.begin(), smallest.end(), index),
+                    index);
+                if (smallest.size() > kListed) {
+                    smallest.pop_back();
+                }
             }
+        };
+        std::vector<Partners> partners(pack_.textures.size());
+        for (std::size_t i = 0; i < order.size(); ++i) {
+            const TextureRecord& first = pack_.textures[order[i]];
+            std::uint64_t end = 0;
+            if (!checked_add(first.blob_offset, first.blob_size, end)) {
+                // Unreachable for bounds-checked blobs; fail closed.
+                end = std::numeric_limits<std::uint64_t>::max();
+            }
+            for (std::size_t j = i + 1; j < order.size(); ++j) {
+                const TextureRecord& second = pack_.textures[order[j]];
+                if (second.blob_offset >= end) {
+                    break;
+                }
+                partners[first.index].add(second.index);
+                partners[second.index].add(first.index);
+            }
+        }
+
+        for (std::size_t index = 0; index < partners.size(); ++index) {
+            const Partners& list = partners[index];
+            if (list.count == 0) {
+                continue;
+            }
+            TextureRecord& texture = pack_.textures[index];
+            std::ostringstream text;
+            text << "JDLZ blob at file offset " << texture.blob_offset << " ("
+                 << texture.blob_size << " bytes) overlaps the blobs of "
+                 << list.count << " textures: ";
+            for (std::size_t k = 0; k < list.smallest.size(); ++k) {
+                text << (k == 0 ? "" : ", ") << list.smallest[k];
+            }
+            if (list.count > list.smallest.size()) {
+                text << " and " << (list.count - list.smallest.size()) << " more";
+            }
+            reject(texture, texture.blob_entry_offset + 4, text.str());
         }
     }
 
@@ -1203,17 +1253,22 @@ bool path_exists(const fs::path& path) {
     return status.type() != fs::file_type::not_found;
 }
 
-void remove_quietly(const fs::path& path) {
+// Removes a file this export created; returns false if it is still there.
+bool remove_created(const fs::path& path) {
     std::error_code error;
     fs::remove(path, error);
+    return !path_exists(path);
 }
 
+// On failure, leftover is set to a .partial file this call created and could
+// not remove.
 bool write_one(
     const std::vector<unsigned char>& bytes,
     const TextureRecord& texture,
     const fs::path& target,
     ExportFormat format,
     ExportedTexture& exported,
+    std::optional<fs::path>& leftover,
     std::string& error) {
     std::vector<unsigned char> payload;
     std::size_t unused = 0;
@@ -1254,15 +1309,29 @@ bool write_one(
         if (error.empty()) {
             error = "failed to write " + partial.filename().string();
         }
-        remove_quietly(partial);
+        if (!remove_created(partial)) {
+            leftover = partial;
+        }
         return false;
     }
 
+    // rename replaces an existing target on some platforms, so re-check just
+    // before it; a file that appeared since planning is left untouched.
+    if (path_exists(target)) {
+        error = "target appeared during export, not replaced: " +
+                target.filename().string();
+        if (!remove_created(partial)) {
+            leftover = partial;
+        }
+        return false;
+    }
     std::error_code rename_error;
     fs::rename(partial, target, rename_error);
     if (rename_error) {
         error = "failed to rename " + partial.filename().string();
-        remove_quietly(partial);
+        if (!remove_created(partial)) {
+            leftover = partial;
+        }
         return false;
     }
     exported.index = texture.index;
@@ -1272,6 +1341,30 @@ bool write_one(
 }
 
 } // namespace
+
+std::vector<std::filesystem::path> rollback_created_files(
+    const std::vector<std::filesystem::path>& created,
+    std::string& summary) {
+    std::vector<fs::path> failed;
+    for (const fs::path& path : created) {
+        if (!remove_created(path)) {
+            failed.push_back(path);
+        }
+    }
+    const std::size_t removed = created.size() - failed.size();
+    if (failed.empty()) {
+        summary = "removed all " + std::to_string(created.size()) +
+                  " files created by this export";
+    } else {
+        summary = "removed " + std::to_string(removed) + " of " +
+                  std::to_string(created.size()) +
+                  " files created by this export; could not remove:";
+        for (const fs::path& path : failed) {
+            summary += " " + path.u8string();
+        }
+    }
+    return failed;
+}
 
 bool export_textures(
     const std::vector<unsigned char>& bytes,
@@ -1320,15 +1413,23 @@ bool export_textures(
 
     for (const auto& [texture, target] : plan) {
         ExportedTexture exported;
+        std::optional<fs::path> leftover;
         std::string message;
-        if (!write_one(bytes, *texture, target, format, exported, message)) {
-            result.error = "texture " + std::to_string(texture->index) + ": " +
-                           message + "; removed " +
-                           std::to_string(result.files.size()) +
-                           " files written by this export";
+        if (!write_one(bytes, *texture, target, format, exported, leftover,
+                       message)) {
+            // Only files created by this call: completed targets and a
+            // .partial that write_one could not remove.
+            std::vector<fs::path> created;
             for (const ExportedTexture& file : result.files) {
-                remove_quietly(file.path);
+                created.push_back(file.path);
             }
+            if (leftover) {
+                created.push_back(*leftover);
+            }
+            std::string summary;
+            result.not_removed = rollback_created_files(created, summary);
+            result.error = "texture " + std::to_string(texture->index) + ": " +
+                           message + "; " + summary;
             result.files.clear();
             return false;
         }
