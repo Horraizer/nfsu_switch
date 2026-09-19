@@ -93,7 +93,7 @@ std::uint32_t float_bits(float value) noexcept {
 bool raw_matches_draw(const PreparedDraw& draw) noexcept {
     if (read_u32_le(draw.raw.data() + 12) != draw.index_count ||
         read_u32_le(draw.raw.data() + 28) != draw.texture_slot ||
-        read_u32_le(draw.raw.data() + 32) != draw.secondary_slot ||
+        read_u32_le(draw.raw.data() + 32) != draw.material_key_slot ||
         read_u32_le(draw.raw.data() + 52) != draw.first_index ||
         read_u32_le(draw.raw.data() + 56) != draw.flags) {
         return false;
@@ -455,7 +455,7 @@ bool prepare_car_scene(
                 draw.texture_slot = material.texture_slot;
                 draw.texture_hash = binding.hash;
                 draw.binding = binding.kind;
-                draw.secondary_slot = material.secondary_slot;
+                draw.material_key_slot = material.material_key_slot;
                 draw.flags = material.flags;
                 draw.record_offset = material.offset;
                 std::copy(std::begin(material.bounds_min), std::end(material.bounds_min),

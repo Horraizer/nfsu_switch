@@ -176,7 +176,7 @@ Selection:
 - `draws`: one `PreparedDraw` per material record of each selected mesh,
   in mesh then record order, with the mesh handle, material index, first
   index, index count, texture slot, texture hash, `BindingKind`, texture
-  handle and its source, pack and record (resolved only), secondary slot,
+  handle and its source, pack and record (resolved only), material-key slot,
   flags, record offset, bounds, the untouched 60-byte record, and
   `drawable`. A group with an invalid slot or an index range that is not a
   multiple of 3 inside the mesh index stream is kept with `drawable ==
@@ -549,8 +549,10 @@ nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> build/shots/s.tga --shared-textures <G
 
 ### Unknown
 
-- How the game combines vertex colors, material flags and the unknown
-  material fields (blending, glass, decals, environment maps).
+- How the game combines vertex colors, material flags and material/effect
+  objects (blending, glass, decals, environment maps). The material-key slot
+  and 0xFF sentinel are decoded, but the selected object's render behavior is
+  not yet reproduced.
 - Which kit and style meshes the game draws together. The reference view
   draws all of them.
 - Whether translucent materials are alpha-tested or blended in game. The

@@ -216,7 +216,7 @@ struct PreparedDraw {
     std::size_t texture_source = 0;
     std::size_t texture_pack = 0;
     std::size_t texture_record = 0;
-    std::uint32_t secondary_slot = 0;
+    std::uint32_t material_key_slot = 0;
     std::uint32_t flags = 0;
     std::uint64_t record_offset = 0;
     float bounds_min[3] = {0.0F, 0.0F, 0.0F};

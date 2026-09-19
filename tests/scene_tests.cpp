@@ -60,7 +60,7 @@ nfsu::MeshMaterial material(std::uint32_t first, std::uint32_t count,
     out.first_index = first;
     out.index_count = count;
     out.texture_slot = slot;
-    out.secondary_slot = 0x100U + tag;
+    out.material_key_slot = 0x100U + tag;
     out.flags = 0x5000U + tag;
     out.offset = 0x1000U + tag;
     for (int k = 0; k < 3; ++k) {
@@ -76,7 +76,7 @@ nfsu::MeshMaterial material(std::uint32_t first, std::uint32_t count,
     }
     store_u32(out.raw + 12, out.index_count);
     store_u32(out.raw + 28, out.texture_slot);
-    store_u32(out.raw + 32, out.secondary_slot);
+    store_u32(out.raw + 32, out.material_key_slot);
     store_u32(out.raw + 52, out.first_index);
     store_u32(out.raw + 56, out.flags);
     return out;
@@ -223,7 +223,7 @@ bool same_draw(const nfsu::PreparedDraw& a, const nfsu::PreparedDraw& b) {
            a.binding == b.binding && a.texture == b.texture &&
            a.texture_source == b.texture_source && a.texture_pack == b.texture_pack &&
            a.texture_record == b.texture_record &&
-           a.secondary_slot == b.secondary_slot && a.flags == b.flags &&
+           a.material_key_slot == b.material_key_slot && a.flags == b.flags &&
            a.record_offset == b.record_offset &&
            std::memcmp(a.bounds_min, b.bounds_min, sizeof(a.bounds_min)) == 0 &&
            std::memcmp(a.bounds_max, b.bounds_max, sizeof(a.bounds_max)) == 0 &&
@@ -638,7 +638,7 @@ void test_bindings_and_records() {
         check(draw.material_index == m && draw.first_index == source.first_index &&
                   draw.index_count == source.index_count &&
                   draw.texture_slot == source.texture_slot &&
-                  draw.secondary_slot == source.secondary_slot &&
+                  draw.material_key_slot == source.material_key_slot &&
                   draw.flags == source.flags && draw.record_offset == source.offset,
               "record fields copied");
         check(std::memcmp(draw.raw.data(), source.raw, nfsu::kMaterialRecordSize) == 0 &&

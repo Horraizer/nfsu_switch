@@ -121,6 +121,7 @@ struct MaterialSpec {
     std::uint32_t first_index = 0;
     std::uint32_t index_count = 0;
     std::uint32_t texture_slot = 0;
+    std::uint32_t material_key_slot = 0;
 };
 
 struct MeshSpec {
@@ -129,14 +130,19 @@ struct MeshSpec {
     std::vector<std::uint16_t> indices;
     std::optional<std::int32_t> declared_vertices;
     std::optional<std::int32_t> declared_faces;
-    // Payload size of the ignored chunk 0x00134013; shifts every later file
-    // offset.
-    std::size_t unknown_13_size = 8;
     // 0x00134012 texture list and the count byte at 0x00134011 +25.
     std::vector<std::uint32_t> texture_hashes = {0xCAFEF00DU};
     std::optional<unsigned char> texture_count_byte;
     std::uint32_t texture_second_word = 0;
     bool include_texture_list = true;
+    // 0x00134013 material-key list and the count byte at 0x00134011 +26.
+    std::vector<std::uint32_t> material_key_hashes = {0x0BADF00DU};
+    std::optional<unsigned char> material_key_count_byte;
+    std::uint32_t material_key_second_word = 0;
+    std::size_t material_key_extra = 0;
+    bool include_material_key_list = true;
+    // An ignored sibling chunk used to shift later records in alignment tests.
+    std::size_t alignment_shift_size = 0;
     // Default: one material covering every index with texture slot 0.
     std::optional<std::vector<MaterialSpec>> materials;
     std::optional<std::int32_t> declared_materials;
@@ -166,6 +172,7 @@ struct MeshLayout {
     std::size_t face_prefix = 0;
     std::size_t face_tail = 0;
     std::size_t texture_list_offset = 0;
+    std::size_t material_key_list_offset = 0;
     std::size_t material_payload_offset = 0;
     std::size_t material_data_offset = 0;
     std::size_t material_prefix = 0;
@@ -204,6 +211,8 @@ void write_mesh(Writer& w, const MeshSpec& spec, MeshLayout& layout) {
     }
     mesh_metadata[25] = spec.texture_count_byte.value_or(
         static_cast<unsigned char>(spec.texture_hashes.size()));
+    mesh_metadata[26] = spec.material_key_count_byte.value_or(
+        static_cast<unsigned char>(spec.material_key_hashes.size()));
     w.leaf(nfsu::kMeshMetadataId, mesh_metadata);
     if (spec.include_texture_list) {
         Bytes list;
@@ -214,7 +223,19 @@ void write_mesh(Writer& w, const MeshSpec& spec, MeshLayout& layout) {
         layout.texture_list_offset = w.size() + 8;
         w.leaf(nfsu::kTextureListId, list);
     }
-    w.leaf(0x00134013U, Bytes(spec.unknown_13_size, 0));
+    if (spec.include_material_key_list) {
+        Bytes list;
+        for (std::uint32_t hash : spec.material_key_hashes) {
+            append_u32(list, hash);
+            append_u32(list, spec.material_key_second_word);
+        }
+        list.insert(list.end(), spec.material_key_extra, 0);
+        layout.material_key_list_offset = w.size() + 8;
+        w.leaf(nfsu::kMaterialKeyListId, list);
+    }
+    if (spec.alignment_shift_size != 0) {
+        w.leaf(0x00134017U, Bytes(spec.alignment_shift_size, 0));
+    }
 
     w.begin(nfsu::kGeometryContainerId);
 
@@ -281,7 +302,7 @@ void write_mesh(Writer& w, const MeshSpec& spec, MeshLayout& layout) {
         Bytes record(60, 0);
         put_u32(record, 12, material.index_count);
         put_u32(record, 28, material.texture_slot);
-        put_u32(record, 32, 0xABU);
+        put_u32(record, 32, material.material_key_slot);
         put_u32(record, 52, material.first_index);
         put_u32(record, 56, 0x4180U);
         w.append(record);
@@ -454,6 +475,7 @@ bool layout_matches(const nfsu::Mesh& mesh, const MeshLayout& layout) {
            mesh.face_prefix_bytes == layout.face_prefix &&
            mesh.face_tail_bytes == layout.face_tail &&
            mesh.texture_list_offset == layout.texture_list_offset &&
+           mesh.material_key_list_offset == layout.material_key_list_offset &&
            mesh.material_data_offset == layout.material_data_offset &&
            mesh.material_prefix_bytes == layout.material_prefix &&
            mesh.material_data_offset % 16U == 0U &&
@@ -635,16 +657,16 @@ void test_mesh_directory() {
 }
 
 void test_alignment_sweep() {
-    // Shifting the 0x00134013 size moves every later record across all
-    // residues, including records that need no prefix at all.
+    // An ignored sibling chunk moves every later record across all residues,
+    // including records that need no prefix at all.
     bool saw_zero_metadata_prefix = false;
     bool saw_zero_vertex_prefix = false;
     bool saw_zero_face_prefix = false;
     for (std::size_t shift = 0; shift <= 256; shift += 4) {
         MeshSpec quad = quad_spec();
-        quad.unknown_13_size = shift;
+        quad.alignment_shift_size = shift;
         MeshSpec tri = triangle_spec();
-        tri.unknown_13_size = shift + 4;
+        tri.alignment_shift_size = shift + 4;
         // The face prefix depends only on the vertex and material counts
         // because vertex data is 128-byte aligned and material data 16-byte
         // aligned; two 60-byte materials put the faces on a 16-byte boundary
@@ -652,7 +674,7 @@ void test_alignment_sweep() {
         MeshSpec five = quad_spec();
         five.vertices.push_back(five.vertices[0]);
         five.materials = std::vector<MaterialSpec>{{0, 3, 0}, {3, 3, 0}};
-        five.unknown_13_size = shift;
+        five.alignment_shift_size = shift;
         const Fixture fixture = build({quad, tri, five});
         const nfsu::GeometryReport report = parse(fixture.bytes);
         bool ok = report.ok() && report.valid_mesh_count() == 3U;
@@ -779,9 +801,16 @@ void expect_mesh_rejected(const MeshSpec& spec, const std::string& needle,
                           const std::string& label) {
     const nfsu::GeometryReport report =
         parse(build({spec, triangle_spec()}).bytes);
+    const bool data_cleared =
+        report.meshes.empty() ||
+        (report.meshes[0].vertices.empty() &&
+         report.meshes[0].triangles.empty() &&
+         report.meshes[0].texture_hashes.empty() &&
+         report.meshes[0].material_key_hashes.empty() &&
+         report.meshes[0].materials.empty());
     const bool ok = !report.ok() && report.meshes.size() == 2U &&
                     !report.meshes[0].valid && report.meshes[1].valid &&
-                    has_issue(report, needle);
+                    has_issue(report, needle) && data_cleared;
     if (!ok) {
         std::cerr << "case '" << label << "' expected issue containing '"
                   << needle << "'\n";
@@ -945,7 +974,9 @@ void test_bad_contents() {
 void test_materials() {
     MeshSpec spec = quad_spec();
     spec.texture_hashes = {0x11111111U, 0x4B6F3195U};
-    spec.materials = std::vector<MaterialSpec>{{0, 3, 1}, {3, 3, 0}};
+    spec.material_key_hashes = {0x22222222U, 0xAABBCCDDU};
+    spec.materials =
+        std::vector<MaterialSpec>{{0, 3, 1, 1}, {3, 3, 0, 0xFFU}};
     const Fixture fixture = build({spec, triangle_spec()});
     const nfsu::GeometryReport report = parse(fixture.bytes);
     if (!report.ok()) {
@@ -962,18 +993,22 @@ void test_materials() {
     check(mesh.texture_hashes.size() == 2U &&
               mesh.texture_hashes[1] == 0x4B6F3195U,
           "texture list");
+    check(mesh.material_key_hashes.size() == 2U &&
+              mesh.material_key_hashes[1] == 0xAABBCCDDU,
+          "material-key list");
     if (mesh.materials.size() == 2U) {
         const nfsu::MeshMaterial& first = mesh.materials[0];
         check(first.texture_slot == 1U && first.index_count == 3U &&
                   first.first_index == 0U && first.flags == 0x4180U &&
-                  first.secondary_slot == 0xABU,
+                  first.material_key_slot == 1U,
               "first material fields");
         check(first.offset == fixture.meshes[0].material_data_offset &&
                   first.raw[28] == 1U,
               "first material offset and raw bytes");
         check(mesh.materials[1].first_index == 3U &&
+                  mesh.materials[1].material_key_slot == 0xFFU &&
                   mesh.materials[1].offset == first.offset + 60U,
-              "second material");
+              "second material and no-entry sentinel");
         check(mesh.texture_hashes[first.texture_slot] == 0x4B6F3195U,
               "material resolves to a texture hash");
     }
@@ -997,6 +1032,36 @@ void test_bad_materials() {
         spec.include_texture_list = false;
         expect_mesh_rejected(spec, "expected exactly one 0x00134012 chunk, found 0",
                              "missing texture list");
+    }
+    {
+        MeshSpec spec = quad_spec();
+        spec.include_material_key_list = false;
+        expect_mesh_rejected(spec, "expected exactly one 0x00134013 chunk, found 0",
+                             "missing material-key list");
+    }
+    {
+        MeshSpec spec = quad_spec();
+        spec.material_key_extra = 4;
+        expect_mesh_rejected(spec, "not a multiple of 8",
+                             "material-key list partial entry");
+    }
+    {
+        MeshSpec spec = quad_spec();
+        spec.material_key_count_byte = 2;
+        expect_mesh_rejected(spec, "material-key count byte at file offset",
+                             "material-key count byte mismatch");
+    }
+    {
+        MeshSpec spec = quad_spec();
+        spec.material_key_second_word = 1;
+        expect_mesh_rejected(spec, "non-zero second word",
+                             "material-key list second word");
+    }
+    {
+        MeshSpec spec = quad_spec();
+        spec.materials = std::vector<MaterialSpec>{{0, 6, 0, 1}};
+        expect_mesh_rejected(spec, "material-key slot 1 is neither 0xFF",
+                             "material-key slot out of range");
     }
     {
         MeshSpec spec = quad_spec();

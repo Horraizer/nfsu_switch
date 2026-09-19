@@ -467,6 +467,7 @@ private:
         mesh.vertices.clear();
         mesh.triangles.clear();
         mesh.texture_hashes.clear();
+        mesh.material_key_hashes.clear();
         mesh.materials.clear();
         return false;
     }
@@ -540,12 +541,15 @@ private:
 
         // Unknown chunks are intentionally skipped.
         RawChunk texture_list;
+        RawChunk material_key_list;
         RawChunk geometry_metadata;
         RawChunk vertex_buffer;
         RawChunk material_buffer;
         RawChunk face_buffer;
         if (!find_single(mesh, children, kTextureListId, container.offset,
                          texture_list) ||
+            !find_single(mesh, children, kMaterialKeyListId, container.offset,
+                         material_key_list) ||
             !find_single(mesh, parts, kGeometryMetadataId, geometry.offset,
                          geometry_metadata) ||
             !find_single(mesh, parts, kVertexBufferId, geometry.offset,
@@ -562,6 +566,7 @@ private:
             !parse_faces(mesh, face_buffer) ||
             !validate_indices(mesh, face_buffer) ||
             !parse_texture_list(mesh, metadata, texture_list) ||
+            !parse_material_key_list(mesh, metadata, material_key_list) ||
             !parse_materials(mesh, material_buffer)) {
             return false;
         }
@@ -669,6 +674,53 @@ private:
         return true;
     }
 
+    // 0x00134013: (u32 hash, u32 0) entries. Material record byte +32
+    // selects one entry; 0xFF means that the material has no entry.
+    bool parse_material_key_list(
+        Mesh& mesh,
+        const RawChunk& mesh_metadata,
+        const RawChunk& list) {
+        std::ostringstream text;
+        if (mesh_metadata.payload_size <= kMaterialKeyListCountOffset) {
+            text << chunk_label(mesh_metadata) << " is too small to hold the"
+                 << " material-key count byte at payload offset "
+                 << kMaterialKeyListCountOffset;
+            return fail(mesh, mesh_metadata.offset, text.str());
+        }
+        const std::uint64_t declared =
+            data_[mesh_metadata.payload_offset + kMaterialKeyListCountOffset];
+        if (list.payload_size % kMaterialKeyListEntrySize != 0) {
+            text << chunk_label(list) << " payload is " << list.payload_size
+                 << " bytes, not a multiple of " << kMaterialKeyListEntrySize;
+            return fail(mesh, list.offset, text.str());
+        }
+        std::uint64_t expected = 0;
+        if (!checked_mul(declared, kMaterialKeyListEntrySize, expected) ||
+            list.payload_size != expected) {
+            text << chunk_label(list) << " payload is " << list.payload_size
+                 << " bytes but the material-key count byte at file offset "
+                 << (mesh_metadata.payload_offset +
+                     kMaterialKeyListCountOffset)
+                 << " is " << declared << " (" << expected << " bytes)";
+            return fail(mesh, list.offset, text.str());
+        }
+        mesh.material_key_list_offset = list.payload_offset;
+        const unsigned char* cursor = data_ + list.payload_offset;
+        mesh.material_key_hashes.reserve(static_cast<std::size_t>(declared));
+        for (std::uint64_t i = 0; i < declared;
+             ++i, cursor += kMaterialKeyListEntrySize) {
+            if (read_u32_le(cursor + 4) != 0U) {
+                text << chunk_label(list) << " entry " << i
+                     << " has a non-zero second word at file offset "
+                     << (list.payload_offset +
+                         i * kMaterialKeyListEntrySize + 4);
+                return fail(mesh, list.offset, text.str());
+            }
+            mesh.material_key_hashes.push_back(read_u32_le(cursor));
+        }
+        return true;
+    }
+
     // 0x00134B02: material records. Index runs must be contiguous from 0,
     // multiples of 3, cover every face exactly once, and reference an
     // existing texture list entry.
@@ -704,7 +756,7 @@ private:
             }
             material.index_count = read_u32_le(cursor + 12);
             material.texture_slot = read_u32_le(cursor + 28);
-            material.secondary_slot = read_u32_le(cursor + 32);
+            material.material_key_slot = read_u32_le(cursor + 32);
             material.first_index = read_u32_le(cursor + 52);
             material.flags = read_u32_le(cursor + 56);
 
@@ -727,6 +779,14 @@ private:
                 text << "texture slot " << material.texture_slot
                      << " is outside the " << mesh.texture_hashes.size()
                      << "-entry texture list";
+                return fail(mesh, buffer.offset, text.str());
+            }
+            if (material.material_key_slot != 0xFFU &&
+                material.material_key_slot >= mesh.material_key_hashes.size()) {
+                text << "material-key slot " << material.material_key_slot
+                     << " is neither 0xFF nor inside the "
+                     << mesh.material_key_hashes.size()
+                     << "-entry material-key list";
                 return fail(mesh, buffer.offset, text.str());
             }
             next_index += material.index_count;
