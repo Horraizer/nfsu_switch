@@ -495,24 +495,24 @@ Observed:
 - Two runs gave byte-identical TGA files: 3686418 bytes, SHA-256
   `0F7FBEE24178ED35AD46EA05F02C8151D7642AE2E71FDEB6CA235DA7585EBF7B`.
   The reports differed only in the output file name.
-- Source 1: 2 packs, 83 records, 67 valid, complete. The 16 invalid
-  records are the P8 textures (unsupported format), reported as 16 issues,
-  so the exit code is 3. 61 distinct hashes are used by valid meshes. 8
-  GLOBALB textures were decoded (409600 bytes, 10847232 in total with the
-  car's pack), 75 records were not wanted, and none were shadowed or
-  blocked.
+- Source 1: 2 packs, 83 records, all valid, complete, with no issues. The
+  parser accepts the 16 P8 records and can extract their index chains and
+  palettes, but none of their hashes is wanted by this geometry. 61 distinct
+  hashes are used by valid meshes. 8 GLOBALB textures were decoded (409600
+  bytes, 10847232 in total with the car's pack), 75 records were not wanted,
+  and none were shadowed or blocked. The command exits 0.
 - 518 material groups resolved (174 from the car's pack, 344 from
   GLOBALB), 724 unresolved, 0 unusable. 17 unresolved hashes remain; the
-  most used is 0x77A20245 (`240SX_SKIN1`, the body skin, not in either
-  file).
+  most used is 0x77A20245 (`240SX_SKIN1`, the formatted body-skin fallback,
+  not in either file).
 - Triangles: 17892 textured (8000 + 9892), 60850 fallback. Coverage and
   depth statistics are the same as the local-only run, because the
   geometry and camera are the same. 148173 pixels drawn, 118557 of them
   fallback (144209 without GLOBALB).
 
-After the prepared-scene change both commands above were run twice each
-without selectors. The TGA hashes and all counts are the ones listed, and
-stdout and stderr are byte-identical to the previous build.
+After P8 structural support, the command was run again without selectors.
+Its TGA hash remains the one listed above; the source report now counts all
+83 GLOBALB records as valid.
 
 ### Explicit subset
 

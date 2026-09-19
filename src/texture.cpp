@@ -25,7 +25,11 @@ constexpr unsigned char kAlignmentByte = 0x11U;
 constexpr std::uint8_t kFormatCodeA8R8G8B8 = 0x20U;
 constexpr std::uint8_t kFormatCodeDxt1 = 0x22U;
 constexpr std::uint8_t kFormatCodeDxt3 = 0x24U;
+constexpr std::uint8_t kFormatCodeP8Mask = 0x08U;
+constexpr std::uint8_t kFormatCodeP8Color = 0x80U;
+constexpr std::uint8_t kFormatCodeP8Custom = 0x81U;
 constexpr std::uint32_t kD3dFormatA8R8G8B8 = 21U;
+constexpr std::uint32_t kD3dFormatP8 = 41U;
 constexpr std::uint32_t kFourccDxt1 = 0x31545844U; // "DXT1"
 constexpr std::uint32_t kFourccDxt3 = 0x33545844U; // "DXT3"
 
@@ -493,6 +497,7 @@ private:
         texture.virtual_offset = read_u32_le(info + 48);
         texture.virtual_end = read_u32_le(info + 52);
         texture.data_size = read_u32_le(info + 56);
+        texture.palette_size = read_u32_le(info + 60);
         texture.top_level_size = read_u32_le(info + 64);
         texture.width = read_u16_le(info + 68);
         texture.height = read_u16_le(info + 70);
@@ -559,6 +564,11 @@ private:
         if (code == kFormatCodeA8R8G8B8 && d3d == kD3dFormatA8R8G8B8) {
             return PixelFormat::a8r8g8b8;
         }
+        if ((code == kFormatCodeP8Mask || code == kFormatCodeP8Color ||
+             code == kFormatCodeP8Custom) &&
+            d3d == kD3dFormatP8) {
+            return PixelFormat::p8;
+        }
         return PixelFormat::unsupported;
     }
 
@@ -608,6 +618,12 @@ private:
                  << limits_.max_decompressed_size;
             return reject(texture, texture.info_offset + 56, text.str());
         }
+        if (texture.format == PixelFormat::p8 &&
+            texture.palette_size != kP8PaletteSize) {
+            text << "P8 palette size at info +60 is " << texture.palette_size
+                 << "; expected " << kP8PaletteSize;
+            return reject(texture, texture.info_offset + 60, text.str());
+        }
         return true;
     }
 
@@ -637,11 +653,37 @@ private:
         }
         texture.jdlz_decompressed_size = read_u32_le(blob + 8);
         const std::uint32_t compressed = read_u32_le(blob + 12);
-        if (texture.jdlz_decompressed_size != texture.data_size ||
+        std::uint64_t expected = texture.data_size;
+        if (texture.format == PixelFormat::p8 &&
+            (!align_up(expected, kTextureDataAlignment, expected) ||
+             !checked_add(expected, texture.palette_size, expected))) {
+            return reject(texture, texture.blob_offset + 8,
+                          "P8 JDLZ decompressed size overflows");
+        }
+        if (texture.format == PixelFormat::p8) {
+            std::uint64_t palette_offset = 0;
+            std::uint64_t virtual_palette = 0;
+            if (!align_up(texture.data_size, kTextureDataAlignment,
+                          palette_offset) ||
+                !checked_add(texture.virtual_offset, palette_offset,
+                             virtual_palette) ||
+                virtual_palette != texture.virtual_end) {
+                text << "P8 palette virtual offset at info +52 is "
+                     << texture.virtual_end << "; expected "
+                     << virtual_palette;
+                return reject(texture, texture.info_offset + 52, text.str());
+            }
+        }
+        if (expected > limits_.max_decompressed_size) {
+            text << "JDLZ decompressed size " << expected
+                 << " exceeds the limit " << limits_.max_decompressed_size;
+            return reject(texture, texture.blob_offset + 8, text.str());
+        }
+        if (texture.jdlz_decompressed_size != expected ||
             compressed != texture.blob_size) {
             text << "JDLZ header sizes " << texture.jdlz_decompressed_size
                  << "/" << compressed << " at file offset " << texture.blob_offset
-                 << " differ from info data size " << texture.data_size
+                 << " differ from expected decompressed size " << expected
                  << " / blob table size " << texture.blob_size;
             return reject(texture, texture.blob_offset + 8, text.str());
         }
@@ -672,6 +714,24 @@ private:
                  << " texture data range " << begin << ".." << end
                  << " (" << (end - begin) << " bytes)";
             return reject(texture, texture.info_offset + 48, text.str());
+        }
+        if (texture.format == PixelFormat::p8) {
+            std::uint64_t palette_start = 0;
+            std::uint64_t palette_stop = 0;
+            if (!checked_add(begin, texture.virtual_end, palette_start) ||
+                !checked_add(palette_start, texture.palette_size,
+                             palette_stop) ||
+                palette_stop > end) {
+                text << "raw P8 palette at virtual offset "
+                     << texture.virtual_end << " with "
+                     << texture.palette_size << " bytes is outside the"
+                     << " texture data range " << begin << ".." << end;
+                return reject(texture, texture.info_offset + 52, text.str());
+            }
+            if (palette_start < stop && start < palette_stop) {
+                return reject(texture, texture.info_offset + 52,
+                              "raw P8 palette overlaps its index chain");
+            }
         }
         texture.blob_offset = start;
         texture.blob_size = texture.data_size;
@@ -709,12 +769,11 @@ private:
         }
     }
 
-    // Finds every pair of valid textures whose blobs [offset, offset + size)
-    // share a byte, then invalidates each participant once, listing all of
-    // its partners in ascending index order. Pairs are found by sorting on
-    // (offset, index) and, for each blob, scanning later blobs while they
-    // start before its end, so a containing blob is compared with every
-    // blob inside it, not only its sorted neighbor.
+    // Finds every pair of valid textures whose stored resources share a
+    // byte, then invalidates each participant once. JDLZ resources are the
+    // blobs. Raw resources are index chains plus the separately addressed
+    // P8 palettes. Partners stay unique even if two resources of the same
+    // pair overlap.
     void check_blob_overlap() {
         std::vector<std::size_t> order;
         for (const TextureRecord& texture : pack_.textures) {
@@ -746,6 +805,8 @@ private:
             }
         };
         std::vector<Partners> partners(pack_.textures.size());
+        std::vector<bool> p8_resource_overlap(pack_.textures.size(), false);
+        std::vector<bool> p8_palette_overlap(pack_.textures.size(), false);
         for (std::size_t i = 0; i < order.size(); ++i) {
             const TextureRecord& first = pack_.textures[order[i]];
             std::uint64_t end = 0;
@@ -763,6 +824,66 @@ private:
             }
         }
 
+        if (pack_.storage == TextureStorage::raw) {
+            const auto overlaps = [](std::uint64_t a_begin, std::uint64_t a_size,
+                                     std::uint64_t b_begin, std::uint64_t b_size) {
+                std::uint64_t a_end = 0;
+                std::uint64_t b_end = 0;
+                return checked_add(a_begin, a_size, a_end) &&
+                       checked_add(b_begin, b_size, b_end) &&
+                       a_begin < b_end && b_begin < a_end;
+            };
+            for (std::size_t i = 0; i < pack_.textures.size(); ++i) {
+                const TextureRecord& first = pack_.textures[i];
+                if (!first.valid) {
+                    continue;
+                }
+                const bool first_p8 = first.format == PixelFormat::p8;
+                const std::uint64_t first_palette =
+                    pack_.data_start + first.virtual_end;
+                for (std::size_t j = i + 1; j < pack_.textures.size(); ++j) {
+                    const TextureRecord& second = pack_.textures[j];
+                    if (!second.valid) {
+                        continue;
+                    }
+                    const bool second_p8 = second.format == PixelFormat::p8;
+                    const std::uint64_t second_palette =
+                        pack_.data_start + second.virtual_end;
+                    const bool chain_overlap =
+                        overlaps(first.blob_offset, first.blob_size,
+                                 second.blob_offset, second.blob_size);
+                    const bool first_palette_second_chain =
+                        first_p8 &&
+                        overlaps(first_palette, first.palette_size,
+                                 second.blob_offset, second.blob_size);
+                    const bool second_palette_first_chain =
+                        second_p8 &&
+                        overlaps(second_palette, second.palette_size,
+                                 first.blob_offset, first.blob_size);
+                    const bool palette_overlap =
+                        first_p8 && second_p8 &&
+                        overlaps(first_palette, first.palette_size,
+                                 second_palette, second.palette_size);
+                    if (!first_palette_second_chain &&
+                        !second_palette_first_chain && !palette_overlap) {
+                        continue;
+                    }
+                    p8_resource_overlap[i] = true;
+                    p8_resource_overlap[j] = true;
+                    p8_palette_overlap[i] = p8_palette_overlap[i] ||
+                                            first_palette_second_chain ||
+                                            palette_overlap;
+                    p8_palette_overlap[j] = p8_palette_overlap[j] ||
+                                            second_palette_first_chain ||
+                                            palette_overlap;
+                    if (!chain_overlap) {
+                        partners[i].add(j);
+                        partners[j].add(i);
+                    }
+                }
+            }
+        }
+
         for (std::size_t index = 0; index < partners.size(); ++index) {
             const Partners& list = partners[index];
             if (list.count == 0) {
@@ -771,10 +892,16 @@ private:
             TextureRecord& texture = pack_.textures[index];
             const bool raw = texture.storage == TextureStorage::raw;
             std::ostringstream text;
-            text << (raw ? "raw data at file offset " : "JDLZ blob at file offset ")
-                 << texture.blob_offset << " (" << texture.blob_size
-                 << " bytes) overlaps the " << (raw ? "data" : "blobs")
-                 << " of " << list.count << " textures: ";
+            if (raw && p8_resource_overlap[index]) {
+                text << "raw index data or P8 palette overlaps the resources of ";
+            } else {
+                text << (raw ? "raw data at file offset "
+                             : "JDLZ blob at file offset ")
+                     << texture.blob_offset << " (" << texture.blob_size
+                     << " bytes) overlaps the " << (raw ? "data" : "blobs")
+                     << " of ";
+            }
+            text << list.count << " textures: ";
             for (std::size_t k = 0; k < list.smallest.size(); ++k) {
                 text << (k == 0 ? "" : ", ") << list.smallest[k];
             }
@@ -782,7 +909,9 @@ private:
                 text << " and " << (list.count - list.smallest.size()) << " more";
             }
             reject(texture,
-                   raw ? texture.info_offset + 48 : texture.blob_entry_offset + 4,
+                   raw ? texture.info_offset +
+                             (p8_palette_overlap[index] ? 52U : 48U)
+                       : texture.blob_entry_offset + 4,
                    text.str());
         }
     }
@@ -866,6 +995,8 @@ const char* pixel_format_name(PixelFormat format) noexcept {
         return "DXT3";
     case PixelFormat::a8r8g8b8:
         return "A8R8G8B8";
+    case PixelFormat::p8:
+        return "P8";
     case PixelFormat::unsupported:
         break;
     }
@@ -893,6 +1024,8 @@ bool level_size(
         std::uint64_t pixels = 0;
         return checked_mul(width, height, pixels) && checked_mul(pixels, 4U, out);
     }
+    case PixelFormat::p8:
+        return checked_mul(width, height, out);
     case PixelFormat::unsupported:
         break;
     }
@@ -1420,8 +1553,12 @@ bool texture_payload(
     const TextureRecord& texture,
     std::vector<unsigned char>& payload,
     std::size_t& unused_input,
-    std::string& error) {
+    std::string& error,
+    P8Palette* p8_palette) {
     payload.clear();
+    if (p8_palette != nullptr) {
+        p8_palette->fill(0);
+    }
     if (!texture.valid) {
         error = "texture " + std::to_string(texture.index) + " is not valid";
         return false;
@@ -1442,11 +1579,63 @@ bool texture_payload(
         const unsigned char* begin =
             data + static_cast<std::size_t>(texture.blob_offset);
         payload.assign(begin, begin + texture.blob_size);
+        if (texture.format == PixelFormat::p8 && p8_palette != nullptr) {
+            if (texture.blob_offset < texture.virtual_offset) {
+                error = "P8 raw palette base underflows";
+                payload.clear();
+                return false;
+            }
+            const std::uint64_t base =
+                texture.blob_offset - texture.virtual_offset;
+            std::uint64_t palette_offset = 0;
+            if (!checked_add(base, texture.virtual_end, palette_offset) ||
+                palette_offset > size || kP8PaletteSize > size - palette_offset) {
+                error = "P8 raw palette is outside the input buffer";
+                payload.clear();
+                return false;
+            }
+            std::copy_n(data + static_cast<std::size_t>(palette_offset),
+                        kP8PaletteSize, p8_palette->begin());
+        }
         return true;
     }
-    if (!jdlz_decompress(data + texture.blob_offset, texture.blob_size,
-                         texture.data_size, payload, unused_input, error)) {
+    std::uint64_t decompressed_size = texture.data_size;
+    if (texture.format == PixelFormat::p8 &&
+        (!align_up(decompressed_size, kTextureDataAlignment,
+                   decompressed_size) ||
+         !checked_add(decompressed_size, kP8PaletteSize,
+                      decompressed_size))) {
+        error = "P8 JDLZ decompressed size overflows";
         return false;
+    }
+    if (decompressed_size > std::numeric_limits<std::size_t>::max() ||
+        !jdlz_decompress(data + texture.blob_offset, texture.blob_size,
+                         static_cast<std::size_t>(decompressed_size), payload,
+                         unused_input, error)) {
+        return false;
+    }
+    if (texture.format == PixelFormat::p8) {
+        std::uint64_t palette_offset = 0;
+        if (!align_up(texture.data_size, kTextureDataAlignment,
+                      palette_offset) ||
+            palette_offset > payload.size() ||
+            kP8PaletteSize > payload.size() - palette_offset) {
+            error = "P8 JDLZ palette layout is outside the decompressed data";
+            payload.clear();
+            return false;
+        }
+        if (!std::all_of(payload.begin() + texture.data_size,
+                         payload.begin() + static_cast<std::size_t>(palette_offset),
+                         [](unsigned char byte) { return byte == 0; })) {
+            error = "P8 JDLZ padding before the palette is not zero";
+            payload.clear();
+            return false;
+        }
+        if (p8_palette != nullptr) {
+            std::copy_n(payload.begin() + static_cast<std::size_t>(palette_offset),
+                        kP8PaletteSize, p8_palette->begin());
+        }
+        payload.resize(texture.data_size);
     }
     if (payload.size() != texture.data_size) {
         error = "decompressed size differs from the info record";
@@ -1479,6 +1668,10 @@ bool decode_level(
                 std::to_string(width) + "x" + std::to_string(height) +
                 " needs exactly " + std::to_string(expected) +
                 " bytes, got " + std::to_string(size);
+        return false;
+    }
+    if (format == PixelFormat::p8) {
+        error = "P8 level requires a 256-entry palette";
         return false;
     }
 
@@ -1546,6 +1739,10 @@ bool write_dds(
         error = "DDS payload is " + std::to_string(size) + " bytes; " +
                 std::to_string(mip_count) + " levels need " +
                 std::to_string(total);
+        return false;
+    }
+    if (format == PixelFormat::p8) {
+        error = "P8 DDS export requires a 256-entry palette";
         return false;
     }
 

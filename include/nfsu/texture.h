@@ -29,6 +29,8 @@ constexpr std::size_t kTextureInfoRecordSize = 124;
 constexpr std::size_t kTextureFormatRecordSize = 32;
 constexpr std::size_t kTextureNameOffset = 12;
 constexpr std::size_t kTextureNameSize = 24;
+constexpr std::size_t kP8PaletteSize = 256U * 4U;
+using P8Palette = std::array<unsigned char, kP8PaletteSize>;
 
 // Compressed blobs start at the first absolute file offset inside the
 // 0x33320002 payload that is a multiple of this; the bytes before it are 0x11.
@@ -38,7 +40,7 @@ constexpr std::size_t kJdlzHeaderSize = 16;
 // NFS string hash: h = 0xFFFFFFFF, then h = h * 33 + byte (mod 2^32).
 std::uint32_t bin_hash(const std::string& text) noexcept;
 
-enum class PixelFormat { unsupported, dxt1, dxt3, a8r8g8b8 };
+enum class PixelFormat { unsupported, dxt1, dxt3, a8r8g8b8, p8 };
 
 // How a record's mip chain is stored in the file. Standalone TEXTURES.BIN
 // packs have a 0x33310003 blob table and JDLZ blobs. Packs embedded in a BUN
@@ -52,7 +54,8 @@ const char* pixel_format_name(PixelFormat format) noexcept;
 
 // Byte size of one level. DXT1 is 8 bytes and DXT3 16 bytes per 4x4 block,
 // max(1, ceil(w / 4)) * max(1, ceil(h / 4)) blocks; A8R8G8B8 is 4 bytes per
-// pixel. Returns false for unsupported formats, zero dimensions or overflow.
+// pixel and P8 is one palette index per pixel. Returns false for unsupported
+// formats, zero dimensions or overflow.
 bool level_size(
     PixelFormat format,
     std::uint32_t width,
@@ -90,6 +93,7 @@ struct TextureRecord {
     // packs: a palette offset, not an end (see docs/FORMATS.md).
     std::uint32_t virtual_end = 0;
     std::uint32_t data_size = 0;       // info +56, all mip levels
+    std::uint32_t palette_size = 0;    // info +60, 1024 for observed P8
     std::uint32_t top_level_size = 0;  // info +64
     std::uint16_t width = 0;           // info +68
     std::uint16_t height = 0;          // info +70
@@ -201,7 +205,9 @@ TexturePack parse_texture_pack(
 // Observed in both GLOBALB.BUN packs and verified there by comparing each
 // stored mip level 1 with a box filter of level 0; tested on synthetic
 // data. That "no 0x33310003" always means raw storage is a hypothesis.
-// info +52 is not checked for raw packs. See docs/FORMATS.md.
+// Raw P8 info +52 must address its in-range palette; raw index and palette
+// resources must not overlap. The field is not checked for other raw formats.
+// See docs/FORMATS.md.
 TexturePack parse_texture_pack_at(
     const unsigned char* data,
     std::size_t size,
@@ -261,20 +267,25 @@ bool jdlz_decompress(
 
 // Returns the full mip chain of a valid texture from the file image:
 // JDLZ-decompressed, or copied unchanged for raw storage (unused_input 0).
+// P8 JDLZ blobs append zero padding to 128 bytes and a 1024-byte palette;
+// the returned payload excludes both, and p8_palette receives the palette
+// when requested. Raw P8 palettes are read through info +52 when requested.
 bool texture_payload(
     const unsigned char* data,
     std::size_t size,
     const TextureRecord& texture,
     std::vector<unsigned char>& payload,
     std::size_t& unused_input,
-    std::string& error);
+    std::string& error,
+    P8Palette* p8_palette = nullptr);
 
 // Decodes one level to RGBA8, rows top to bottom as stored. DXT edge blocks
 // are cropped. size must equal level_size exactly. DXT endpoints are
 // expanded from 5/6 bits by bit replication; interpolated colors use integer
 // (2a + b) / 3 and (a + b) / 2 on the expanded values; DXT1 uses 3-color
 // mode with transparent black when color0 <= color1. A8R8G8B8 is stored as
-// little-endian u32 ARGB, i.e. bytes B, G, R, A, and is reordered only.
+// little-endian u32 ARGB, i.e. bytes B, G, R, A, and is reordered only. P8
+// is refused because the level does not carry its required 256-entry palette.
 bool decode_level(
     PixelFormat format,
     std::uint32_t width,

@@ -220,7 +220,19 @@ void write_pack(Writer& w, const std::vector<TexSpec>& specs, const PackOptions&
     }
 
     Bytes info_table;
-    std::uint32_t virtual_offset = options.raw ? options.raw_base : 0;
+    std::uint32_t raw_palette_bytes = 0;
+    if (options.raw) {
+        for (const TexSpec& spec : specs) {
+            if (spec.format_code == 0x08 || spec.format_code == 0x80 ||
+                spec.format_code == 0x81) {
+                raw_palette_bytes +=
+                    static_cast<std::uint32_t>(nfsu::kP8PaletteSize);
+            }
+        }
+    }
+    std::uint32_t virtual_offset =
+        options.raw ? std::max(options.raw_base, raw_palette_bytes) : 0;
+    std::uint32_t raw_palette_offset = 0;
     std::vector<std::uint32_t> virtual_offsets;
     for (std::size_t i = 0; i < specs.size(); ++i) {
         const TexSpec& spec = specs[i];
@@ -231,18 +243,34 @@ void write_pack(Writer& w, const std::vector<TexSpec>& specs, const PackOptions&
         const std::uint32_t size =
             spec.data_size.value_or(static_cast<std::uint32_t>(spec.pixels.size()));
         const std::uint32_t at = spec.virtual_offset.value_or(virtual_offset);
+        const bool p8 = spec.format_code == 0x08 || spec.format_code == 0x80 ||
+                        spec.format_code == 0x81;
         virtual_offsets.push_back(at);
         put_u32(record, 48, at);
         virtual_offset = (at + size + 127U) & ~127U;
-        // Raw packs: +52 is a palette offset in GLOBALB, never an end.
-        put_u32(record, 52, options.raw ? 0x00ABCDEFU : virtual_offset);
+        // Raw P8 packs use +52 as a palette offset from data_start. For
+        // other raw formats the field is deliberately arbitrary and ignored.
+        put_u32(record, 52, options.raw ? (p8 ? raw_palette_offset : 0x00ABCDEFU)
+                                        : virtual_offset);
         put_u32(record, 56, size);
+        put_u32(record, 60, p8 ? static_cast<std::uint32_t>(nfsu::kP8PaletteSize) : 0U);
+        if (p8) {
+            if (options.raw) {
+                raw_palette_offset +=
+                    static_cast<std::uint32_t>(nfsu::kP8PaletteSize);
+            } else {
+                virtual_offset += static_cast<std::uint32_t>(nfsu::kP8PaletteSize);
+            }
+        }
         std::uint64_t top = 0;
         nfsu::PixelFormat format = nfsu::PixelFormat::dxt1;
         if (spec.format_code == 0x24) {
             format = nfsu::PixelFormat::dxt3;
         } else if (spec.format_code == 0x20) {
             format = nfsu::PixelFormat::a8r8g8b8;
+        } else if (spec.format_code == 0x08 || spec.format_code == 0x80 ||
+                   spec.format_code == 0x81) {
+            format = nfsu::PixelFormat::p8;
         }
         nfsu::level_size(format, spec.width, spec.height, top);
         put_u32(record, 64, spec.top_size.value_or(static_cast<std::uint32_t>(top)));
@@ -293,7 +321,8 @@ void write_pack(Writer& w, const std::vector<TexSpec>& specs, const PackOptions&
     if (options.raw) {
         // Zero-filled span with every chain copied to its virtual offset.
         const std::size_t start = w.size();
-        std::size_t extent = options.raw_base;
+        std::size_t extent = std::max<std::size_t>(options.raw_base,
+                                                   raw_palette_bytes);
         for (std::size_t i = 0; i < specs.size(); ++i) {
             extent = std::max(extent, virtual_offsets[i] + specs[i].pixels.size());
         }
@@ -426,6 +455,26 @@ TexSpec argb_spec() {
     return spec;
 }
 
+TexSpec p8_spec(const std::string& name, std::uint8_t code = 0x08U) {
+    TexSpec spec;
+    spec.name = name;
+    spec.format_code = code;
+    spec.d3d_format = 0x29U;
+    spec.width = 4;
+    spec.height = 4;
+    spec.mips = 1;
+    for (unsigned char i = 0; i < 16; ++i) {
+        spec.pixels.push_back(i);
+    }
+    Bytes stored = spec.pixels;
+    stored.resize(128, 0);
+    for (std::size_t i = 0; i < nfsu::kP8PaletteSize; ++i) {
+        stored.push_back(static_cast<unsigned char>(i & 0xFFU));
+    }
+    spec.blob = jdlz_literals(stored);
+    return spec;
+}
+
 nfsu::TexturePack parse(const Bytes& bytes, const nfsu::TextureLimits& limits = {}) {
     return nfsu::parse_texture_pack(bytes.data(), bytes.size(), limits);
 }
@@ -468,12 +517,15 @@ void test_hash() {
 }
 
 void test_valid_pack() {
-    const PackLayout layout = build_pack({dxt1_spec("DXT1_TEX"), dxt3_spec(), argb_spec()});
+    const PackLayout layout = build_pack({dxt1_spec("DXT1_TEX"), dxt3_spec(),
+                                          argb_spec(), p8_spec("P8_MASK"),
+                                          p8_spec("P8_COLOR", 0x80U),
+                                          p8_spec("P8_CUSTOM", 0x81U)});
     const nfsu::TexturePack pack = parse(layout.bytes);
     if (!pack.ok()) {
         dump_issues(pack);
     }
-    check(pack.ok() && pack.valid_texture_count() == 3U, "valid pack");
+    check(pack.ok() && pack.valid_texture_count() == 6U, "valid pack");
     check(pack.pack_name == "CARTEXTURES" && pack.pack_path == "Test\\Pack.tpk" &&
               pack.pack_hash == nfsu::bin_hash("Test\\Pack.tpk") &&
               pack.header_version == 4U,
@@ -481,7 +533,7 @@ void test_valid_pack() {
     check(pack.data_payload_offset == layout.data_payload_offset &&
               pack.data_prefix_bytes == layout.data_prefix,
           "data payload location");
-    if (pack.textures.size() != 3U) {
+    if (pack.textures.size() != 6U) {
         return;
     }
     const nfsu::TextureRecord& dxt3 = pack.textures[1];
@@ -502,6 +554,27 @@ void test_valid_pack() {
     check(argb.format == nfsu::PixelFormat::a8r8g8b8 && argb.mip_count == 2 &&
               argb.data_size == 20 && argb.top_level_size == 16,
           "argb fields");
+    check(pack.textures[3].format == nfsu::PixelFormat::p8 &&
+              pack.textures[3].data_size == 16 &&
+              pack.textures[3].palette_size == nfsu::kP8PaletteSize &&
+              pack.textures[4].format == nfsu::PixelFormat::p8 &&
+              pack.textures[4].format_code == 0x80U &&
+              pack.textures[5].format == nfsu::PixelFormat::p8 &&
+              pack.textures[5].format_code == 0x81U,
+          "all observed P8 format codes");
+    {
+        Bytes payload;
+        nfsu::P8Palette palette{};
+        std::size_t unused = 0;
+        std::string error;
+        check(nfsu::texture_payload(layout.bytes.data(), layout.bytes.size(),
+                                    pack.textures[3], payload, unused, error,
+                                    &palette) &&
+                  payload == p8_spec("EXPECTED").pixels &&
+                  palette[0] == 0U && palette[1] == 1U &&
+                  palette[255] == 255U && palette[256] == 0U,
+              "P8 payload strips padding and returns palette: " + error);
+    }
 
     for (const nfsu::TextureRecord& texture : pack.textures) {
         Bytes payload;
@@ -509,8 +582,10 @@ void test_valid_pack() {
         std::string error;
         const bool ok = nfsu::texture_payload(layout.bytes.data(), layout.bytes.size(),
                                               texture, payload, unused, error);
+        const std::size_t expected_unused =
+            texture.format == nfsu::PixelFormat::p8 ? 0U : texture.index % 3U;
         check(ok && payload.size() == texture.data_size &&
-                  unused == texture.index % 3,
+                  unused == expected_unused,
               "payload of texture " + std::to_string(texture.index) + " " + error);
     }
 }
@@ -795,6 +870,30 @@ void test_malformed_records() {
         expect_texture_rejected(spec, "JDLZ header sizes 9/", "JDLZ size mismatch");
     }
     {
+        TexSpec spec = p8_spec("P8_JSIZE");
+        put_u32(*spec.blob, 8, static_cast<std::uint32_t>(spec.pixels.size()));
+        expect_texture_rejected(spec, "differ from expected decompressed size 1152",
+                                "P8 JDLZ includes aligned palette data");
+    }
+    {
+        const PackLayout layout = build_pack({p8_spec("P8_PALETTE_SIZE")});
+        Bytes bytes = layout.bytes;
+        put_u32(bytes, layout.info_offsets[0] + 60, 512);
+        const nfsu::TexturePack pack = parse(bytes);
+        check(pack.textures.size() == 1U && !pack.textures[0].valid &&
+                  has_issue(pack, "P8 palette size at info +60 is 512; expected 1024"),
+              "P8 palette size field checked");
+    }
+    {
+        const PackLayout layout = build_pack({p8_spec("P8_PALETTE_OFFSET")});
+        Bytes bytes = layout.bytes;
+        put_u32(bytes, layout.info_offsets[0] + 52, 64);
+        const nfsu::TexturePack pack = parse(bytes);
+        check(pack.textures.size() == 1U && !pack.textures[0].valid &&
+                  has_issue(pack, "P8 palette virtual offset at info +52 is 64; expected 128"),
+              "P8 palette offset field checked");
+    }
+    {
         TexSpec spec = dxt1_spec("SHORT");
         spec.blob = Bytes{'J', 'D', 'L', 'Z'};
         expect_texture_rejected(spec, "smaller than its 16-byte header", "short blob");
@@ -823,11 +922,22 @@ void test_unsupported_formats() {
     check(!nfsu::decode_level(nfsu::PixelFormat::unsupported, 4, 4, data.data(), data.size(),
                               rgba, error),
           "unsupported decode refused");
+    const Bytes indices(16, 0);
+    check(!nfsu::decode_level(nfsu::PixelFormat::p8, 4, 4, indices.data(), indices.size(),
+                              rgba, error) &&
+              error == "P8 level requires a 256-entry palette" && rgba.empty(),
+          "P8 decode requires a palette");
     std::ostringstream output;
     check(!nfsu::write_dds(output, nfsu::PixelFormat::unsupported, 4, 4, 1, data.data(),
                            data.size(), error) &&
               output.str().empty(),
           "unsupported DDS refused");
+    std::ostringstream p8_output;
+    check(!nfsu::write_dds(p8_output, nfsu::PixelFormat::p8, 4, 4, 1,
+                           indices.data(), indices.size(), error) &&
+              error == "P8 DDS export requires a 256-entry palette" &&
+              p8_output.str().empty(),
+          "P8 DDS requires a palette");
 }
 
 void test_duplicates_and_naming() {
@@ -952,12 +1062,18 @@ void test_block_decoding() {
     check(nfsu::level_size(nfsu::PixelFormat::dxt1, 1, 1, size) && size == 8U, "1x1 DXT1");
     check(nfsu::level_size(nfsu::PixelFormat::dxt3, 5, 3, size) && size == 32U, "5x3 DXT3");
     check(nfsu::level_size(nfsu::PixelFormat::a8r8g8b8, 3, 2, size) && size == 24U, "ARGB");
+    check(nfsu::level_size(nfsu::PixelFormat::p8, 512, 512, size) &&
+              size == 262144U,
+          "512x512 P8");
     check(!nfsu::level_size(nfsu::PixelFormat::dxt1, 0, 4, size), "zero width");
     check(nfsu::mip_chain_size(nfsu::PixelFormat::dxt1, 256, 256, 6, size) && size == 0xAAA0U,
           "retail 256x256 DXT1 6-level size");
     check(nfsu::mip_chain_size(nfsu::PixelFormat::a8r8g8b8, 512, 512, 7, size) &&
               size == 0x155500U,
           "retail 512x512 ARGB 7-level size");
+    check(nfsu::mip_chain_size(nfsu::PixelFormat::p8, 512, 512, 7, size) &&
+              size == 349504U,
+          "retail 512x512 P8 7-level size");
     // 8x2, 4x1, 2x1, 1x1: 2 + 1 + 1 + 1 blocks.
     check(nfsu::mip_chain_size(nfsu::PixelFormat::dxt1, 8, 2, 4, size) && size == 40U,
           "non-square chain clamps at 1");
@@ -1403,16 +1519,114 @@ void test_raw_records() {
         check(offset_ok, "raw overlap issue points at info +48");
     }
     {
-        // P8 (observed in GLOBALB) is unsupported; its neighbours are not.
-        TexSpec p8 = dxt1_spec("PALETTED");
-        p8.format_code = 0x08;
-        p8.d3d_format = 0x29;
+        // P8 payloads are structurally valid without decoding their palette.
+        TexSpec p8 = p8_spec("PALETTED");
         const nfsu::TexturePack pack = parse_raw({dxt1_spec("A"), p8, argb_spec()});
-        check(pack.textures.size() == 3U && pack.valid_texture_count() == 2U &&
-                  !pack.textures[1].valid &&
-                  has_issue(pack, "unsupported format: code 0x8 at info +74 with D3D format "
-                                  "0x00000029"),
-              "unsupported raw format isolated");
+        check(pack.ok() && pack.textures.size() == 3U &&
+                  pack.valid_texture_count() == 3U && pack.textures[1].valid &&
+                  pack.textures[1].format == nfsu::PixelFormat::p8,
+              "raw P8 payload accepted");
+    }
+    {
+        PackOptions options;
+        options.raw = true;
+        const PackLayout layout = build_pack({p8_spec("RAW_P8_RANGE")}, options);
+        Bytes bytes = layout.bytes;
+        put_u32(bytes, layout.info_offsets[0] + 52, 0xFFFFFF00U);
+        const nfsu::TexturePack pack =
+            nfsu::parse_texture_pack_at(bytes.data(), bytes.size(), 0);
+        check(pack.textures.size() == 1U && !pack.textures[0].valid &&
+                  has_issue(pack, "raw P8 palette at virtual offset"),
+              "raw P8 palette range checked");
+    }
+    {
+        PackOptions options;
+        options.raw = true;
+        const PackLayout layout =
+            build_pack({p8_spec("RAW_P8_A"), p8_spec("RAW_P8_B")}, options);
+        Bytes bytes = layout.bytes;
+        put_u32(bytes, layout.info_offsets[1] + 52, 0);
+        const nfsu::TexturePack pack =
+            nfsu::parse_texture_pack_at(bytes.data(), bytes.size(), 0);
+        check(pack.textures.size() == 2U && pack.valid_texture_count() == 0U &&
+                  pack.issues.size() == 2U &&
+                  pack.issues[0].offset == layout.info_offsets[0] + 52U &&
+                  pack.issues[1].offset == layout.info_offsets[1] + 52U &&
+                  has_issue(pack, "raw index data or P8 palette overlaps the resources of 1 textures"),
+              "shared raw P8 palette invalidates both owners");
+    }
+    {
+        TexSpec large = argb_spec();
+        large.name = "LARGE_RAW";
+        large.width = 32;
+        large.height = 32;
+        large.mips = 1;
+        large.pixels.assign(32U * 32U * 4U, 0x55U);
+        PackOptions options;
+        options.raw = true;
+        const PackLayout layout = build_pack({p8_spec("RAW_P8"), large}, options);
+        Bytes bytes = layout.bytes;
+        put_u32(bytes, layout.info_offsets[0] + 52, 1152);
+        const nfsu::TexturePack pack =
+            nfsu::parse_texture_pack_at(bytes.data(), bytes.size(), 0);
+        check(pack.textures.size() == 2U && pack.valid_texture_count() == 0U &&
+                  pack.issues.size() == 2U &&
+                  pack.issues[0].offset == layout.info_offsets[0] + 52U &&
+                  pack.issues[1].offset == layout.info_offsets[1] + 48U &&
+                  has_issue(pack, "raw index data or P8 palette overlaps the resources of 1 textures"),
+              "raw P8 palette overlap invalidates another index chain");
+    }
+    {
+        // GLOBALB stores a raw P8 palette at data_start + info +52, before
+        // the independently addressed index chain at data_start + info +48.
+        TexSpec p8 = p8_spec("RAW_P8");
+        PackOptions options;
+        options.raw = true;
+        options.raw_base = static_cast<std::uint32_t>(nfsu::kP8PaletteSize);
+        const PackLayout layout = build_pack({p8}, options);
+        Bytes bytes = layout.bytes;
+        put_u32(bytes, layout.info_offsets[0] + 52, 0);
+        const std::size_t data_start =
+            layout.blob_offsets[0] - nfsu::kP8PaletteSize;
+        for (std::size_t i = 0; i < nfsu::kP8PaletteSize; ++i) {
+            bytes[data_start + i] = static_cast<unsigned char>(i & 0xFFU);
+        }
+        const nfsu::TexturePack pack =
+            nfsu::parse_texture_pack_at(bytes.data(), bytes.size(), 0);
+        Bytes payload;
+        nfsu::P8Palette palette{};
+        std::size_t unused = 99;
+        std::string error;
+        check(pack.ok() && pack.textures.size() == 1U &&
+                  nfsu::texture_payload(bytes.data(), bytes.size(), pack.textures[0],
+                                        payload, unused, error, &palette) &&
+                  payload == p8.pixels && unused == 0U && palette[0] == 0U &&
+                  palette[1] == 1U && palette[1023] == 255U,
+              "raw P8 payload and palette offsets: " + error);
+    }
+    {
+        TexSpec p8 = p8_spec("P8_BAD_PADDING");
+        Bytes stored = p8.pixels;
+        stored.resize(128, 0);
+        stored[p8.pixels.size()] = 1;
+        stored.insert(stored.end(), nfsu::kP8PaletteSize, 0x5AU);
+        p8.blob = jdlz_literals(stored);
+        const PackLayout layout = build_pack({p8});
+        const nfsu::TexturePack pack = parse(layout.bytes);
+        Bytes payload;
+        nfsu::P8Palette palette;
+        palette.fill(0xFFU);
+        std::size_t unused = 0;
+        std::string error;
+        check(pack.ok() && pack.textures.size() == 1U &&
+                  !nfsu::texture_payload(layout.bytes.data(), layout.bytes.size(),
+                                         pack.textures[0], payload, unused, error,
+                                         &palette) &&
+                  payload.empty() &&
+                  error == "P8 JDLZ padding before the palette is not zero" &&
+                  std::all_of(palette.begin(), palette.end(),
+                              [](unsigned char value) { return value == 0; }),
+              "non-zero P8 palette padding rejected");
     }
     {
         TexSpec wrong = dxt1_spec("WRONG");

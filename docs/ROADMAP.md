@@ -13,8 +13,10 @@
 - Decode vertex and index buffers.
 - Decode `TEXTURES.BIN` texture packs.
 - Decode the embedded texture packs of `GLOBAL/GLOBALB.BUN` and resolve
-  shared car textures from explicit, ordered sources. The body skin
-  (`240SX_SKIN1`), vinyls and P8 palette textures are still to do.
+  shared car textures from explicit, ordered sources. Runtime body-skin
+  composition into `DUMMY_SKIN1` is still to do; `%s_SKIN1` is the static
+  fallback. P8 vinyl index chains and palettes are now structurally
+  extracted without guessing the blend.
 - Export diagnostic meshes and images.
 - Render one complete car on desktop: deterministic CPU reference renderer
   and TGA screenshot (`nfsu_viewer`, `docs/RENDERER.md`). An interactive

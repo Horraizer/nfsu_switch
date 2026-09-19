@@ -69,7 +69,7 @@ resolves 174 groups. The other 1068 groups use the following 25 hashes:
 | `0x69C032B9` | 42 | `GRILL_01` | `GLOBALB.BUN` raw TPK |
 | `0x69C032BA` | 17 | `GRILL_02` | `GLOBALB.BUN` raw TPK |
 | `0x721AFF7C` | 87 | `CARBONFIBRE` | `GLOBALB.BUN` raw TPK |
-| `0x77A20245` | 637 | `240SX_SKIN1` | Absent from surveyed packs; runtime skin inference |
+| `0x77A20245` | 637 | `240SX_SKIN1` | Formatted static fallback; active target is `DUMMY_SKIN1` |
 | `0x7B220DDF` | 12 | Unknown | Not found in surveyed packs |
 | `0x910E6654` | 18 | `DUMMY_DECAL1` | Name-based runtime decal inference |
 | `0x910E6655` | 10 | `DUMMY_DECAL2` | Name-based runtime decal inference |
@@ -128,6 +128,113 @@ same next-offset meaning as it does in the compressed-pack path. Reserved
 prefixes correlate with P8 palettes: 16 P8 records reserve 16384 bytes and one
 P8 record reserves 1024 bytes.
 
+## Body-skin composition inputs
+
+`bin_hash("240SX_SKIN1")` is 0x77A20245. That hash is referenced by 637
+geometry material groups, but no static texture record with that hash exists
+in the surveyed installation. The literal name is also absent. Executable
+evidence below identifies it as a formatted static fallback name, not as the
+writable target of the customization compositor.
+
+The 240SX car-local pack (SHA-256
+`725DC56CB4807FF8E8E96F1D667F5FDF8DC5ADE3C7D06E759FC62E7DEEFDF6BA`)
+contains six composition-adjacent A8R8G8B8 inputs. Each is 512x512 with 7
+mip levels:
+
+| Hash | Stored name | Info offset | Blob offset + size |
+| --- | --- | ---: | ---: |
+| `0x3980CD22` | `240SX_DOORLINE_KIT` | 6240 | 75966 + 72925 |
+| `0x580576DB` | `240SX_DOORLINE` | 8596 | 206612 + 68192 |
+| `0x699B6846` | `240SX_DOORLINE_MASK` | 9588 | 285115 + 28988 |
+| `0x9D21E7D1` | `240SX_DOORLINE_WIDEBODY` | 11572 | 365908 + 68194 |
+| `0xB13AC2ED` | `240SX_DOORLINE_KIT_MASK` | 12812 | 486812 + 29845 |
+| `0xBFD2E2FC` | `240SX_DOORLINE_WIDEBODY_MASK` (stored name truncated) | 13432 | 532628 + 26747 |
+
+`Cars/240SX/VINYLS.BIN` contains 436 P8 base vinyls and exactly 436 P8
+masks. Every base has one hash-proven `<base>_MASK` partner. Codes 0x80 and
+0x81 use at most 16 and 64 palette entries respectively; mask code 0x08 can
+use all 256. The parser now extracts the seven-level index chain and its
+separate 1024-byte palette for all 872 records. See `docs/FORMATS.md` for
+the exact JDLZ layout and retail hash.
+
+`GLOBALB.BUN` also exposes customization names `VINYL_L1_COLOR01..10`,
+`VINYL_L2_COLOR01..20`, `VINYL_L3_COLOR01..30` and `CUSTOMPAINT_*` in its
+0x00034606 data, plus top-level `CUSTOMPAINT_1..20` and `SKIN` material
+records. These are observed selection/control inputs, not texture records.
+Their values and their mapping to palette entries remain unknown.
+The 0x00135200 `CUSTOMPAINT_1..20` records have headers at 2184..5376 and
+names at 2212..5404; `SKIN` has header 17136 and name 17164. The 0x00034606
+payload begins at 1797568; its L3, L2 and L1 color-name ranges are
+1807225..1807718, 1807735..1808058 and 1808075..1808228 respectively.
+
+The evidence therefore supports these source roles without yet supporting a
+blend formula:
+
+1. Car-local `TEXTURES.BIN` supplies the selected doorline/mask variants.
+2. Car-local `VINYLS.BIN` supplies a selected indexed vinyl and its paired
+   mask.
+3. Runtime customization state supplies base/special paints, four vinyl
+   layers and optional four-slot color remaps.
+4. Active customization writes a dummy runtime target selected through
+   `RideInfo+0x444`; when that override is zero the render path falls back to
+   the formatted `%s_SKIN1` hash.
+
+Exact palette recoloring, mask arithmetic, alpha rules, per-pixel blend
+equations and mip generation for the final skin are still unknown. The
+project must not claim a faithful body compositor until those are recovered.
+
+### Executable composition path
+
+The reference executable is `speed.exe`, SHA-256
+`C0FAD450912952F53809A54690D235AA8B4E25B9F46650693C7CBEE1B4C074B7`,
+PE32 with image base 0x00400000. The body compositor is at VA 0x005A9CE0
+(file offset 0x001A9CE0), with a direct call at 0x0058BE57.
+
+The render-info setup formats `%s_SKIN1`, `%s_SKIN1B` and `GLOBAL_SKIN1` at
+0x00580B2B, 0x00580B6E and 0x00580BA6. At 0x00580C37..0x00580C67 it chooses
+`RideInfo+0x444` when non-zero, otherwise the `%s_SKIN1` hash. Initialization
+at 0x004C4230 writes `bin_hash("DUMMY_SKIN1") = 0x530B82B0` to +0x444.
+The compositor reads that target hash, finds the writable texture and exits
+without work if either the hash or texture is absent.
+
+The same function requires the installed `BASE_PAINT` part. It reads `RED`,
+`GREEN`, `BLUE` and `GLOSS` attributes and packs them as 0xGGBBGGRR, which is
+`RED, GREEN, BLUE, GLOSS` in little-endian memory. `PAINT_ENGINE`,
+`PAINT_SPOILER`, `PAINT_BRAKE` and `PAINT_EXHAUST` provide four optional
+special colors and fall back to the base color. `PAINT_RIM` is handled by a
+separate wheel compositor at 0x005AA800.
+
+The body function builds a compact list in this order, omitting absent or
+unresolved entries:
+
+1. Optional hood/spoiler vinyl.
+2. `VINYL_LAYER0`.
+3. `VINYL_LAYER1`.
+4. `VINYL_LAYER2`.
+5. `VINYL_LAYER3`.
+6. Doorline.
+
+Helper 0x005A9B50 reads each installed vinyl part's `TEXTURE` attribute and
+hashes `<car-name>_<TEXTURE-value>`. `NUMCOLOURS` is mandatory. A non-zero
+`REMAP` enables up to four `VINYL_COLOUR<n>_<slot>` values. Missing slots use
+the byte-lane sentinels 0x000000FF, 0x0000FF00, 0x00FF0000 and 0xFF000000.
+The doorline helper at 0x005A96B0 selects `_DOORLINE_WIDEBODY`,
+`_DOORLINE_KIT` or `_DOORLINE` from the installed wide-body and body-kit
+parts.
+
+For every non-zero source hash, the composer continues the same multiply-by-
+33 hash with `_MASK`, looks up both source and mask, and skips the layer if
+either is absent. This directly explains the one-to-one base/mask inventory
+in `VINYLS.BIN` and the three car-local doorline pairs.
+
+The lookup at 0x005461C0 walks a global texture-bucket list and moves a hit
+to the front. Car `TEXTURES.BIN` is requested before `VINYLS.BIN`, but lookup
+priority becomes stateful/MRU after hits; it is not a permanent two-file
+priority rule. The executable evidence establishes target selection, inputs,
+layer order and paired-mask lookup. It does not yet establish the exact
+per-pixel blend equations or palette-channel meaning, so no compositor is
+implemented from guesses.
+
 ## Track geometry lead
 
 The large `STREAML1R*.BUN` files form valid bounded chunk trees. Their meshes
@@ -160,7 +267,8 @@ remain unknown.
 
 - The exact runtime car-state and installed-part data layout.
 - The stock 240SX part selection and LOD distance thresholds.
-- The composition of `240SX_SKIN1`, car color, vinyl, and mask layers.
+- The exact per-pixel blend equations, palette-channel interpretation and
+  mip-generation rules used when composing `DUMMY_SKIN1`.
 - The rendering semantics of material flags and material/effect objects,
   including environment maps, decals, blending, and alpha behavior. The
   former "secondary texture slot" is now verified as a separate 0x00134013
