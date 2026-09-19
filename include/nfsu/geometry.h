@@ -13,10 +13,11 @@ namespace nfsu {
 constexpr std::uint32_t kGeometryRootId = 0x80134000U;
 constexpr std::uint32_t kMeshContainerId = 0x80134010U;
 constexpr std::uint32_t kMeshMetadataId = 0x00134011U;
+constexpr std::uint32_t kTextureListId = 0x00134012U;
 constexpr std::uint32_t kGeometryContainerId = 0x80134100U;
 constexpr std::uint32_t kGeometryMetadataId = 0x00134900U;
 constexpr std::uint32_t kVertexBufferId = 0x00134B01U;
-constexpr std::uint32_t kUnknownB02Id = 0x00134B02U;
+constexpr std::uint32_t kMaterialBufferId = 0x00134B02U;
 constexpr std::uint32_t kFaceBufferId = 0x00134B03U;
 
 constexpr std::size_t kMeshNameSize = 28;
@@ -38,6 +39,33 @@ constexpr std::size_t kFaceCountOffset = 36;
 constexpr std::size_t kVertexCountOffset = 52;
 constexpr std::size_t kVertexStride = 36;
 constexpr std::size_t kFaceStride = 6;
+
+// Texture binding. 0x00134012 is a list of (u32 texture hash, u32 0)
+// entries whose count is the byte at kTextureListCountOffset in the
+// 0x00134011 payload. 0x00134B02 holds material records of
+// kMaterialRecordSize bytes after 0x11 padding to kMaterialDataAlignment;
+// their count is the i32 at kMaterialCountOffset in the 0x00134900 record.
+constexpr std::size_t kTextureListCountOffset = 25;
+constexpr std::size_t kTextureListEntrySize = 8;
+constexpr std::size_t kMaterialCountOffset = 16;
+constexpr std::uint64_t kMaterialDataAlignment = 16;
+constexpr std::size_t kMaterialRecordSize = 60;
+
+// One 0x00134B02 record: a run of triangle indices drawn with one texture.
+// Offsets: +0 f32[3] bounds min, +12 u32 index count, +16 f32[3] bounds max,
+// +28 u32 texture slot, +32 u32 unknown slot, +52 u32 first index,
+// +56 u32 flags. The raw record keeps every other byte.
+struct MeshMaterial {
+    std::uint64_t offset = 0;
+    float bounds_min[3] = {0.0F, 0.0F, 0.0F};
+    float bounds_max[3] = {0.0F, 0.0F, 0.0F};
+    std::uint32_t index_count = 0;
+    std::uint32_t texture_slot = 0;
+    std::uint32_t secondary_slot = 0;
+    std::uint32_t first_index = 0;
+    std::uint32_t flags = 0;
+    unsigned char raw[kMaterialRecordSize] = {};
+};
 
 // Vertex fields are named by source semantics. The file stores them in the
 // order px, pz, py, nx, nz, ny, color[4], u, v.
@@ -75,8 +103,15 @@ struct Mesh {
     std::uint64_t face_data_offset = 0;
     std::uint64_t face_prefix_bytes = 0;
     std::uint64_t face_tail_bytes = 0;
+    std::uint64_t texture_list_offset = 0;
+    std::uint64_t material_data_offset = 0;
+    std::uint64_t material_prefix_bytes = 0;
+    std::int32_t declared_material_count = 0;
     std::vector<MeshVertex> vertices;
     std::vector<MeshTriangle> triangles;
+    // 0x00134012 texture hashes, indexed by MeshMaterial::texture_slot.
+    std::vector<std::uint32_t> texture_hashes;
+    std::vector<MeshMaterial> materials;
     bool valid = false;
 };
 
@@ -92,6 +127,7 @@ struct GeometryLimits {
     // uint16 indices cannot address more than 65536 vertices.
     std::int32_t max_vertices_per_mesh = 65536;
     std::int32_t max_faces_per_mesh = 1 << 20;
+    std::int32_t max_materials_per_mesh = 4096;
 };
 
 struct GeometryReport {
