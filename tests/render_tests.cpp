@@ -1182,6 +1182,446 @@ void test_texture_decode() {
           "default aggregate limit 128 MiB");
 }
 
+// One texture source built by hand: raw 4x4 A8R8G8B8 records whose 64
+// bytes all equal a fill value, so the decoded RGBA equals the fill.
+struct HandSource {
+    std::vector<unsigned char> bytes;
+    std::vector<nfsu::TexturePack> packs;
+    bool complete = true;
+    const std::vector<std::uint32_t>* wanted = nullptr;
+
+    nfsu::TextureRecord& add(std::size_t pack, std::uint32_t hash, unsigned char fill,
+                             bool valid = true) {
+        if (packs.size() <= pack) {
+            packs.resize(pack + 1);
+        }
+        nfsu::TextureRecord record;
+        record.index = packs[pack].textures.size();
+        record.storage = nfsu::TextureStorage::raw;
+        record.hash = hash;
+        record.table_hash = hash;
+        record.valid = valid;
+        record.problem = valid ? "" : "synthetic invalid record";
+        record.format = nfsu::PixelFormat::a8r8g8b8;
+        record.width = 4;
+        record.height = 4;
+        record.mip_count = 1;
+        record.data_size = 64;
+        record.top_level_size = 64;
+        record.blob_offset = bytes.size();
+        record.blob_size = 64;
+        bytes.insert(bytes.end(), 64, fill);
+        packs[pack].textures.push_back(record);
+        return packs[pack].textures.back();
+    }
+
+    // Call after the last add, once bytes has its final size and address:
+    // fixes the parse source and file size the pairing check uses.
+    nfsu::RenderTextureSource view() {
+        nfsu::RenderTextureSource source;
+        source.bytes = &bytes;
+        for (nfsu::TexturePack& pack : packs) {
+            pack.parse_source = bytes.data();
+            pack.file_size = bytes.size();
+            pack.tables_parsed = true;
+            source.packs.push_back(&pack);
+        }
+        source.complete = complete;
+        source.wanted = wanted;
+        return source;
+    }
+};
+
+bool decode_sources(std::vector<HandSource>& hand, nfsu::RenderTextureSet& set,
+                    std::string& error,
+                    const nfsu::RenderTextureLimits& limits = nfsu::RenderTextureLimits{}) {
+    std::vector<nfsu::RenderTextureSource> sources;
+    for (HandSource& source : hand) {
+        sources.push_back(source.view());
+    }
+    return nfsu::decode_render_texture_sources(sources, limits, set, error);
+}
+
+nfsu::MaterialBinding bind(const nfsu::RenderTextureSet& set, std::uint32_t hash) {
+    nfsu::Mesh mesh;
+    mesh.texture_hashes = {hash};
+    return nfsu::resolve_material(mesh, material_range(0, 3, 0), set);
+}
+
+void test_texture_sources() {
+    constexpr std::uint32_t kA = 0xA0000001U;
+    constexpr std::uint32_t kB = 0xB0000002U;
+    constexpr std::uint32_t kC = 0xC0000003U;
+    constexpr std::uint32_t kD = 0xD0000004U;
+    std::string error;
+    {
+        // The earlier source wins; provenance and the shadow list are exact.
+        std::vector<HandSource> hand(2);
+        hand[0].add(0, kA, 1);
+        hand[1].add(0, kB, 3);
+        hand[1].add(0, kA, 2);
+        nfsu::RenderTextureSet set;
+        check(decode_sources(hand, set, error), "two sources decode: " + error);
+        check(set.textures.size() == 2U && set.decoded_bytes == 128U,
+              "shadowed record is not decoded");
+        if (set.textures.size() == 2U) {
+            check(set.textures[0].source == 0 && set.textures[0].hash == kA &&
+                      set.textures[1].source == 1 && set.textures[1].pack == 0 &&
+                      set.textures[1].record == 0 && set.textures[1].hash == kB,
+                  "provenance in source, pack, record order");
+        }
+        check(set.shadowed.size() == 1U && set.shadowed[0].hash == kA &&
+                  set.shadowed[0].source == 1 && set.shadowed[0].pack == 0 &&
+                  set.shadowed[0].record == 1 && set.shadowed[0].by_source == 0,
+              "shadow entry");
+        const nfsu::MaterialBinding a = bind(set, kA);
+        const nfsu::MaterialBinding b = bind(set, kB);
+        check(a.kind == nfsu::BindingKind::resolved &&
+                  set.textures[a.texture_index].rgba[0] == 1 &&
+                  b.kind == nfsu::BindingKind::resolved &&
+                  set.textures[b.texture_index].source == 1,
+              "hash resolves from the highest-priority source that has it");
+        nfsu::RenderTextureSet again;
+        decode_sources(hand, again, error);
+        check(again.textures.size() == set.textures.size() &&
+                  again.shadowed.size() == set.shadowed.size() &&
+                  again.textures[1].rgba == set.textures[1].rgba,
+              "multi-source decode is deterministic");
+
+        // Reversing the order reverses the choice.
+        std::swap(hand[0], hand[1]);
+        check(decode_sources(hand, set, error) &&
+                  set.textures[bind(set, kA).texture_index].rgba[0] == 2 &&
+                  set.shadowed.size() == 1U && set.shadowed[0].source == 1,
+              "caller order defines priority");
+    }
+    {
+        // An invalid higher-priority record makes the hash unusable; the
+        // lower-priority valid record is not used.
+        std::vector<HandSource> hand(2);
+        hand[0].add(0, kA, 1, false);
+        hand[1].add(0, kA, 2);
+        nfsu::RenderTextureSet set;
+        check(decode_sources(hand, set, error) && set.textures.size() == 1U &&
+                  bind(set, kA).kind == nfsu::BindingKind::unusable &&
+                  set.shadowed.size() == 1U,
+              "no silent fallback from an invalid record");
+    }
+    {
+        // A record whose info hash is wrong still claims its table hash.
+        std::vector<HandSource> hand(2);
+        nfsu::TextureRecord& broken = hand[0].add(0, 0x99999999U, 1, false);
+        broken.table_hash = kA;
+        hand[1].add(0, kA, 2);
+        nfsu::RenderTextureSet set;
+        check(decode_sources(hand, set, error) &&
+                  bind(set, kA).kind == nfsu::BindingKind::unusable &&
+                  bind(set, 0x99999999U).kind == nfsu::BindingKind::unusable &&
+                  set.shadowed.size() == 1U && set.shadowed[0].hash == kA,
+              "table hash claim blocks the lower source");
+        check(set.textures.size() == 1U && set.textures[0].hash == 0x99999999U &&
+                  set.textures[0].claim_count == 2U && set.textures[0].claims[0] == 0x99999999U &&
+                  set.textures[0].claims[1] == kA,
+              "retained record keeps every distinct claim");
+    }
+    {
+        // A valid kA in source 0, an invalid record claiming {kB, kA} in
+        // source 1 and a valid kB in source 2. The source 1 record is
+        // shadowed by kA, but its kB claim stays unusable and still
+        // shadows source 2.
+        std::vector<HandSource> hand(3);
+        hand[0].add(0, kA, 1);
+        nfsu::TextureRecord& broken = hand[1].add(0, kB, 2, false);
+        broken.table_hash = kA;
+        hand[2].add(0, kB, 3);
+        nfsu::RenderTextureSet set;
+        check(decode_sources(hand, set, error) && set.textures.size() == 1U &&
+                  set.textures[0].source == 0 && bind(set, kA).kind == nfsu::BindingKind::resolved &&
+                  bind(set, kB).kind == nfsu::BindingKind::unusable,
+              "partially shadowed claim stays unusable");
+        check(set.shadowed.size() == 2U && set.shadowed[0].hash == kA &&
+                  set.shadowed[0].source == 1 && set.shadowed[0].by_source == 0 &&
+                  set.shadowed[1].hash == kB && set.shadowed[1].source == 2 &&
+                  set.shadowed[1].by_source == 1,
+              "lower kB is shadowed by the partially shadowed record");
+        check(set.unusable_claims.size() == 1U && set.unusable_claims[0].hash == kB &&
+                  set.unusable_claims[0].source == 1 && set.unusable_claims[0].pack == 0 &&
+                  set.unusable_claims[0].record == 0,
+              "unusable claim provenance");
+
+        // Without the lower source kB is still unusable.
+        hand.pop_back();
+        check(decode_sources(hand, set, error) && set.textures.size() == 1U &&
+                  bind(set, kA).kind == nfsu::BindingKind::resolved &&
+                  bind(set, kB).kind == nfsu::BindingKind::unusable &&
+                  set.unusable_claims.size() == 1U && set.shadowed.size() == 1U,
+              "unusable claim without a lower source");
+
+        // A fatal failure after the claim was recorded leaves it out too.
+        std::vector<HandSource> fatal = hand;
+        fatal[1].add(0, kC, 5);
+        nfsu::RenderTextureLimits limits;
+        limits.max_total_bytes = 64;
+        check(!decode_sources(fatal, set, error, limits) && set.textures.empty() &&
+                  set.shadowed.empty() && set.unusable_claims.empty(),
+              "fatal failure leaves unusable claims empty");
+
+        // If source 0 already owns kA and kB, the record is fully shadowed
+        // and both hashes resolve from source 0.
+        std::vector<HandSource> owned(3);
+        owned[0].add(0, kA, 1);
+        owned[0].add(0, kB, 4);
+        nfsu::TextureRecord& both = owned[1].add(0, kB, 2, false);
+        both.table_hash = kA;
+        owned[2].add(0, kB, 3);
+        check(decode_sources(owned, set, error) && set.textures.size() == 2U &&
+                  set.unusable_claims.empty() && set.shadowed.size() == 2U &&
+                  set.shadowed[0].hash == kB && set.shadowed[0].by_source == 0 &&
+                  set.shadowed[1].by_source == 0 &&
+                  bind(set, kA).kind == nfsu::BindingKind::resolved &&
+                  bind(set, kB).kind == nfsu::BindingKind::resolved &&
+                  set.textures[bind(set, kB).texture_index].rgba[0] == 4,
+              "fully shadowed record adds no unusable claim");
+    }
+    {
+        // Several unusable claims: source, pack, record, then claim order,
+        // and the same on every run. A same-source valid kD collides with
+        // the claim.
+        std::vector<HandSource> hand(2);
+        hand[0].add(0, kA, 1);
+        nfsu::TextureRecord& three = hand[1].add(0, kC, 2, false);
+        three.storage = nfsu::TextureStorage::jdlz;
+        three.table_hash = kD;
+        three.blob_entry[0] = 0x01;
+        three.blob_entry[3] = 0xA0;
+        nfsu::TextureRecord& two = hand[1].add(1, 0x99999999U, 3, false);
+        two.table_hash = kA;
+        hand[1].add(1, kD, 4);
+        nfsu::RenderTextureSet set;
+        nfsu::RenderTextureSet again;
+        check(decode_sources(hand, set, error) && decode_sources(hand, again, error),
+              "unusable claim order decodes: " + error);
+        const std::vector<std::uint32_t> hashes = {kC, kD, 0x99999999U};
+        const std::vector<std::size_t> packs = {0, 0, 1};
+        const std::vector<std::size_t> records = {0, 0, 0};
+        bool ordered = set.unusable_claims.size() == 3U &&
+                       again.unusable_claims.size() == 3U;
+        for (std::size_t i = 0; ordered && i < 3U; ++i) {
+            const nfsu::UnusableClaim& x = set.unusable_claims[i];
+            const nfsu::UnusableClaim& y = again.unusable_claims[i];
+            ordered = x.hash == hashes[i] && x.source == 1 && x.pack == packs[i] &&
+                      x.record == records[i] && y.hash == x.hash && y.source == x.source &&
+                      y.pack == x.pack && y.record == x.record;
+        }
+        check(ordered, "unusable claims are ordered and deterministic");
+        check(set.textures.size() == 2U && bind(set, kA).kind == nfsu::BindingKind::resolved &&
+                  bind(set, kC).kind == nfsu::BindingKind::unusable &&
+                  bind(set, kD).kind == nfsu::BindingKind::unusable &&
+                  bind(set, 0x99999999U).kind == nfsu::BindingKind::unusable,
+              "unusable claim collides with a valid record of its source");
+
+        // A wanted list that names none of the record's claims skips them.
+        const std::vector<std::uint32_t> wanted = {kD};
+        hand[1].wanted = &wanted;
+        check(decode_sources(hand, set, error) && set.unusable_claims.size() == 2U &&
+                  set.unusable_claims[0].hash == kC && set.unusable_claims[1].hash == kD &&
+                  bind(set, 0x99999999U).kind == nfsu::BindingKind::unresolved,
+              "unwanted shadowed record adds no unusable claim");
+    }
+    {
+        // A mismatched record and a valid record for kA in one source: kA
+        // is ambiguous there, never resolved from the valid record.
+        std::vector<HandSource> hand(1);
+        nfsu::TextureRecord& broken = hand[0].add(0, kB, 1, false);
+        broken.table_hash = kA;
+        hand[0].add(0, kA, 2);
+        nfsu::RenderTextureSet set;
+        check(decode_sources(hand, set, error) && set.textures.size() == 2U &&
+                  bind(set, kA).kind == nfsu::BindingKind::unusable &&
+                  bind(set, kB).kind == nfsu::BindingKind::unusable,
+              "mismatched claim collides with a valid record in one source");
+
+        // With a wanted list naming only kA the mismatched record is kept,
+        // because one of its claims is wanted.
+        const std::vector<std::uint32_t> wanted = {kA};
+        hand[0].wanted = &wanted;
+        check(decode_sources(hand, set, error) && set.textures.size() == 2U &&
+                  set.not_wanted == 0U &&
+                  bind(set, kA).kind == nfsu::BindingKind::unusable,
+              "wanted filter keeps a record for any claimed hash");
+
+        // The same with the valid record in a later pack and the claim in
+        // the JDLZ blob table instead of the hash table.
+        std::vector<HandSource> jdlz(1);
+        nfsu::TextureRecord& blob_claim = jdlz[0].add(0, kB, 1, false);
+        blob_claim.storage = nfsu::TextureStorage::jdlz;
+        blob_claim.table_hash = kB;
+        blob_claim.blob_entry[0] = 0x01;
+        blob_claim.blob_entry[3] = 0xA0;
+        jdlz[0].add(1, kA, 2);
+        jdlz[0].wanted = &wanted;
+        check(decode_sources(jdlz, set, error) && set.textures.size() == 2U &&
+                  bind(set, kA).kind == nfsu::BindingKind::unusable,
+              "blob table claim collides across packs of one source");
+    }
+    {
+        // Duplicates inside one source, also across its packs, stay
+        // ambiguous.
+        std::vector<HandSource> hand(2);
+        hand[0].add(0, kA, 1);
+        hand[1].add(0, kC, 2);
+        hand[1].add(1, kC, 3);
+        nfsu::RenderTextureSet set;
+        check(decode_sources(hand, set, error) && set.textures.size() == 3U &&
+                  bind(set, kC).kind == nfsu::BindingKind::unusable && set.shadowed.empty(),
+              "duplicate across packs of one source is unusable");
+    }
+    {
+        // After an incomplete source nothing later is used.
+        std::vector<HandSource> hand(3);
+        hand[0].add(0, kA, 1);
+        hand[0].complete = false;
+        hand[1].add(0, kB, 2);
+        hand[2].add(0, kC, 3);
+        nfsu::RenderTextureSet set;
+        check(decode_sources(hand, set, error) && set.textures.size() == 1U &&
+                  set.blocked_sources == std::vector<std::size_t>{1, 2} &&
+                  bind(set, kB).kind == nfsu::BindingKind::unresolved,
+              "incomplete source blocks later sources");
+
+        std::vector<nfsu::RenderTextureSource> sources;
+        hand[0].complete = true;
+        for (HandSource& source : hand) {
+            sources.push_back(source.view());
+        }
+        hand[0].packs[0].tables_parsed = false;
+        check(nfsu::decode_render_texture_sources(sources, nfsu::RenderTextureLimits{}, set,
+                                                  error) &&
+                  set.blocked_sources == std::vector<std::size_t>{1, 2},
+              "a pack without tables makes its source incomplete");
+    }
+    {
+        // One aggregate budget over all sources, exact to the byte.
+        std::vector<HandSource> hand(2);
+        hand[0].add(0, kA, 1);
+        hand[1].add(0, kB, 2);
+        nfsu::RenderTextureLimits limits;
+        limits.max_total_bytes = 127;
+        nfsu::RenderTextureSet set;
+        set.decoded_bytes = 5;
+        check(!decode_sources(hand, set, error, limits) &&
+                  error.find("exceed 127 bytes at texture 0 of source 1 pack 0 (64 retained, "
+                             "64 more)") != std::string::npos &&
+                  set.textures.empty() && set.decoded_bytes == 0,
+              "aggregate budget across sources: " + error);
+        limits.max_total_bytes = 128;
+        check(decode_sources(hand, set, error, limits) && set.decoded_bytes == 128,
+              "budget met exactly");
+
+        limits = nfsu::RenderTextureLimits{};
+        int calls = 0;
+        limits.before_allocate = [&](std::uint64_t) {
+            if (++calls == 2) {
+                throw std::bad_alloc();
+            }
+        };
+        check(!decode_sources(hand, set, error, limits) &&
+                  error.find("out of memory") != std::string::npos && set.textures.empty(),
+              "allocation failure in the second source leaves the set empty");
+    }
+    {
+        // Unwanted records are not decoded but still claim their hashes.
+        const std::vector<std::uint32_t> wanted = {kB, kD};
+        std::vector<HandSource> hand(3);
+        hand[0].add(0, kA, 1);
+        hand[1].add(0, kB, 2);
+        hand[1].add(0, kC, 3);
+        hand[1].wanted = &wanted;
+        hand[2].add(0, kC, 4);
+        hand[2].add(0, kD, 5);
+        hand[2].wanted = &wanted;
+        nfsu::RenderTextureSet set;
+        check(decode_sources(hand, set, error) && set.textures.size() == 3U &&
+                  set.not_wanted == 1U && set.shadowed.size() == 1U &&
+                  set.shadowed[0].hash == kC && set.shadowed[0].by_source == 1 &&
+                  bind(set, kC).kind == nfsu::BindingKind::unresolved &&
+                  bind(set, kD).kind == nfsu::BindingKind::resolved,
+              "wanted filter keeps precedence claims");
+    }
+    {
+        // Packs must come from the bytes they are paired with.
+        std::vector<HandSource> hand(1);
+        hand[0].add(0, kA, 1);
+        std::vector<nfsu::RenderTextureSource> sources = {hand[0].view()};
+        hand[0].packs[0].file_size = 1;
+        nfsu::RenderTextureSet set;
+        check(!nfsu::decode_render_texture_sources(sources, nfsu::RenderTextureLimits{}, set,
+                                                   error) &&
+                  error == "texture source 0 pack 0 was not parsed from the bytes of that source",
+              "mispaired pack refused");
+
+        // A parsed pack paired with an unrelated buffer of the same size
+        // and content is refused; its own buffer is accepted.
+        const std::vector<unsigned char> parsed_bytes(64, 0);
+        const std::vector<unsigned char> unrelated(parsed_bytes);
+        const nfsu::TexturePack parsed =
+            nfsu::parse_texture_pack(parsed_bytes.data(), parsed_bytes.size());
+        check(parsed.parse_source == parsed_bytes.data() &&
+                  parsed.file_size == unrelated.size(),
+              "parser records its source buffer");
+        nfsu::RenderTextureSource same_size;
+        same_size.bytes = &unrelated;
+        same_size.packs.push_back(&parsed);
+        check(!nfsu::decode_render_texture_sources({same_size}, nfsu::RenderTextureLimits{},
+                                                   set, error) &&
+                  error == "texture source 0 pack 0 was not parsed from the bytes of that source",
+              "same-size unrelated buffer refused");
+        same_size.bytes = &parsed_bytes;
+        check(nfsu::decode_render_texture_sources({same_size}, nfsu::RenderTextureLimits{},
+                                                  set, error) &&
+                  set.textures.empty() && set.blocked_sources.empty(),
+              "the parsed buffer itself is accepted: " + error);
+        sources[0].bytes = nullptr;
+        check(!nfsu::decode_render_texture_sources(sources, nfsu::RenderTextureLimits{}, set,
+                                                   error) &&
+                  error == "texture source 0 has no bytes",
+              "null bytes refused");
+        sources.clear();
+        check(nfsu::decode_render_texture_sources(sources, nfsu::RenderTextureLimits{}, set,
+                                                  error) &&
+                  set.textures.empty(),
+              "no sources is an empty set");
+    }
+    {
+        // One source with one pack equals decode_render_textures.
+        std::vector<unsigned char> bytes;
+        nfsu::TexturePack pack = decode_pack(bytes);
+        nfsu::RenderTextureSet old_set;
+        nfsu::RenderTextureSet new_set;
+        check(nfsu::decode_render_textures(bytes, pack, nfsu::RenderTextureLimits{}, old_set,
+                                           error),
+              "single pack decode");
+        pack.parse_source = bytes.data();
+        pack.file_size = bytes.size();
+        pack.tables_parsed = true;
+        nfsu::RenderTextureSource source;
+        source.bytes = &bytes;
+        source.packs.push_back(&pack);
+        check(nfsu::decode_render_texture_sources({source}, nfsu::RenderTextureLimits{},
+                                                  new_set, error),
+              "single source decode");
+        bool same = old_set.textures.size() == new_set.textures.size() &&
+                    old_set.decoded_bytes == new_set.decoded_bytes;
+        for (std::size_t i = 0; same && i < old_set.textures.size(); ++i) {
+            const nfsu::RenderTexture& x = old_set.textures[i];
+            const nfsu::RenderTexture& y = new_set.textures[i];
+            same = x.hash == y.hash && x.valid == y.valid && x.rgba == y.rgba &&
+                   x.problem == y.problem && x.width == y.width && y.record == i;
+        }
+        check(same, "one source equals decode_render_textures");
+    }
+}
+
 void test_alpha_default() {
     check(nfsu::RenderOptions{}.alpha_cutoff == 0, "default alpha cutoff is 0");
     nfsu::RenderTexture texture = make_texture(1, 1);
@@ -1408,6 +1848,7 @@ int main() {
     test_golden_and_rerender();
     test_limits();
     test_texture_decode();
+    test_texture_sources();
     test_alpha_default();
     test_scratch_dir();
     test_write();

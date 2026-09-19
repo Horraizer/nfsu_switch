@@ -487,6 +487,130 @@ wrong level order would not produce this match.
   and every match must stay inside the output.
 - Raw info, format and blob records are kept in `TextureRecord`, so fields
   that are still unknown are preserved.
+- Every hash field (info +36, hash table +0, blob table +0) is read before
+  the first check, so a record rejected for its name still reports the
+  hashes it claims (`record_claims_hash`). Viewer precedence and material
+  lookup rely on this.
+- Every parser entry point records the address of the input buffer in
+  `TexturePack::parse_source`. It is only an identity for pairing a pack
+  with its bytes, valid while the caller keeps that buffer alive and
+  unchanged in size and address; it is never dereferenced.
+
+## Embedded texture packs (GLOBAL/GLOBALB.BUN)
+
+Reference sample:
+
+- File: `GLOBAL/GLOBALB.BUN`
+- Size: 2361176 bytes
+- SHA-256: `39DF38FAC2BE7CA0F0D0A92E0113CAAEDA5B1C60E14436C612B3D0874AFC8DB9`
+
+### Observed
+
+The generic chunk walk of the file is clean, and the maximum depth is 3.
+Two 0xB3300000 roots sit at the top level, between unrelated chunks
+(0x00135200 records before them; 0x80134000, 0x00034600 and others after
+them) and 0x00000000 padding:
+
+```text
+23424   0xB3300000  pack 0, 893624
+24        0xB3310000  info container 12456: 0x33310001, 0x33310002,
+                      0x33310004, 0x33310005 (no 0x33310003)
+          0xB3320000  data container 881080: 0x33320001, padding 80,
+                      0x33320002 payload 36104, 880952 bytes
+921216  0xB3300000  pack 1, 751800
+          0xB3310000  info container 1468 (no 0x33310003)
+          0xB3320000  data container 750264: 0x33320002 payload 922888,
+                      750136 bytes
+```
+
+The byte sequence of the 0x33310003 id occurs nowhere in the file.
+
+| | Pack 0 | Pack 1 |
+| --- | --- | --- |
+| Header version, name | 4, `GLOBAL` | 4, `GLOBAL` |
+| Path | `Global\GlobalTextures.tpk` | `Global\GlobalTexturesPC.tpk` |
+| Hash = `bin_hash(path)` = 0x33320001 +12 | 0x383E2E5E | 0x8C37F6B1 |
+| Records | 75 | 8 |
+| 0x11 prefix to 128-byte alignment | 120 (data start 36224) | 120 (data start 923008) |
+| max(+48 + +56) | 880832 = payload - prefix | 750016 = payload - prefix |
+
+- Formats (info +74 / format record +20): pack 0 has DXT1 x35, DXT3 x19,
+  A8R8G8B8 x5 and 16 records with code 0x08 and D3DFORMAT 0x29 (P8,
+  1 byte per pixel). Pack 1 has DXT3 x6, A8R8G8B8 x1 and DXT1 x1.
+- +48 is sorted in table order, is a multiple of 128, and each record
+  starts at `align_up(previous +48 + +56, 128)`. The gaps are zero bytes.
+  Pack 0 starts at 16384, pack 1 at 0.
+- +52 is not an end offset here. In pack 0, P8 records have +52 = 0, 1024,
+  ..., 15360 and +60 = 1024. Every other record has +60 = 0 and +52 equal
+  to the running sum of the palette sizes before it. In pack 1 +52 is 0.
+- The first 16384 bytes after the pack 0 prefix are referenced only by P8
+  records, as 1024-byte blocks at `data_start + +52`.
+- No hash repeats inside a pack, across the two packs, or between them and
+  the 240SX `TEXTURES.BIN`.
+- The eight shared 240SX textures are all in pack 0, none of them P8:
+  `INTERCOOLER` 0x427B4565, `DRIVER` 0x5799E60B, `DUMMY_TIRE_4LOD`
+  0x5C920FB0, `GRILL_01` 0x69C032B9, `GRILL_02` 0x69C032BA, `CARBONFIBRE`
+  0x721AFF7C, `CARBOTTOM` 0xBD1F0E0A and `REAR_DEFROSTER` 0xD195BE56.
+
+### Verified
+
+- Each record's chain is stored uncompressed at `data_start + +48`, levels
+  largest first. Check: for 63 valid records with at least 2 levels and
+  8 pixels per side, level 1 was decoded with `nfsu::decode_level` and
+  compared with a 2x2 box filter of level 0. Mean absolute errors per
+  channel are 0.00 to 11.21 (22.46 for the checkerboard `DEFAULTTEXTURE`).
+  The eight 240SX textures give 0.67 to 8.20, and the same check with
+  the base moved by 128 bytes either way gives 5.92 to 87.49. Two
+  low-contrast 32 and 64 pixel textures come out slightly lower when
+  shifted (7.03 against 7.54, 4.55 against 4.77); the rest are lower or
+  equal unshifted.
+- The earlier reading of pack 0 as a "16384-byte virtual base" before the
+  chain is wrong: offsets are not rebased, the region is the P8 palettes.
+
+### Inferred
+
+- A pack without 0x33310003 stores its chains raw. Header version 4 is the
+  same in both kinds of file, so there might be another flag.
+- The 128-byte alignment could be absolute or relative to the root. Both
+  roots are 128-aligned, so the data cannot tell them apart.
+- P8 palettes are 256 B, G, R, A entries. This is not decoded or tested.
+
+### Unknown
+
+- Whether other BUN files nest roots deeper. The parser accepts any depth
+  up to its limit.
+- Info +77 and format record +8, both 1 only for P8 records.
+
+## Texture pack set rules (`nfsu::parse_texture_pack_set`)
+
+- The whole file is read into memory once (limit 256 MiB). Packs are parsed
+  in place and no bytes are copied.
+- Roots are found by an iterative depth-first walk with an explicit stack.
+  It descends into every chunk with bit 31 set, up to 32 levels, but never
+  into a 0xB3300000 root. Limits: 1048576 chunk headers for the search,
+  256 roots, 16384 records over all packs. Inside a pack the per-pack limits
+  above still apply.
+- A child that does not fit its parent is reported, the rest of that parent
+  is skipped, and the walk continues with the parent's own siblings. Any
+  walk problem or pack whose tables were not read makes the set
+  incomplete (`TexturePackSet::complete == false`).
+- Each root is parsed by `parse_texture_pack_at`. With a 0x33310003 table
+  it follows the rules above. Without one it is a raw pack:
+  - The hash table entry must equal the info hash, with a zero second
+    word.
+  - Format, dimension, log2, mip count, +56 and +64 checks are the same.
+  - +48 must be a multiple of 128, and `[data_start + +48, ... + +56)` must
+    lie inside the 0x33320002 payload. The arithmetic is 64-bit.
+  - +52 is not checked.
+  - Ranges of valid records must not share a byte. Every participant is
+    invalidated, as for JDLZ blobs.
+  - Unsupported formats, including P8, invalidate only their record.
+  - `raw_extent` = max(+48 + +56) over all records is reported, not
+    enforced.
+- Duplicate hashes inside a pack are pack issues. A hash that one pack
+  repeats from an earlier pack of the same file is a set issue.
+- `parse_texture_pack` (standalone `TEXTURES.BIN`) is unchanged. It still
+  needs exactly one top-level root and a 0x33310003 table.
 
 ## Diagnostic texture export (`nfsu_probe export-textures`)
 
@@ -566,11 +690,11 @@ matches texture 18 at 5744.
 ### Inferred
 
 - The 25 unresolved hashes are textures from other packs or textures
-  supplied at runtime. Read-only research found some of them in
-  `GLOBAL/GLOBALB.BUN`, and others match hashes of names such as
-  `240SX_SKIN1` (0x77A20245), `CARBOTTOM` (0xBD1F0E0A) and `CARBONFIBRE`
-  (0x721AFF7C). This was not verified by this tool and is out of scope for
-  this pack.
+  supplied at runtime. Eight of them are in `GLOBAL/GLOBALB.BUN` pack 0
+  (verified, see "Embedded texture packs"), among them `CARBOTTOM`
+  (0xBD1F0E0A) and `CARBONFIBRE` (0x721AFF7C). The largest remaining one,
+  0x77A20245, matches `bin_hash("240SX_SKIN1")`. It is in neither file and
+  is probably composed at runtime.
 
 ### Unknown
 

@@ -3,12 +3,13 @@
 `nfsu_render` is a dependency-free CPU rasterizer written in portable C++17.
 It is the deterministic reference for later GPU and deko3d backends: the
 same inputs and options give a byte-identical frame. `nfsu_viewer` loads
-`GEOMETRY.BIN` and `TEXTURES.BIN` through `nfsu_core`, renders one frame
+`GEOMETRY.BIN`, `TEXTURES.BIN` and any explicitly named shared texture
+files through `nfsu_core`, renders one frame
 and writes it as a TGA screenshot. The screenshot is the acceptance
 artifact. There is no window and no platform graphics API.
 
 ```text
-nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> <out.tga> [options]
+nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> <out.tga> [--shared-textures FILE]... [options]
 ```
 
 | Option | Range | Default |
@@ -27,7 +28,8 @@ nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> <out.tga> [options]
 | `--cull MODE` | `none`, `back`, `front` | `none` |
 | `--shading MODE` | `flat`, `none` | `flat` |
 
-Each option may be given once. Numbers are parsed with `std::from_chars`
+Each option may be given once, except `--shared-textures` (at most 8
+times). Numbers are parsed with `std::from_chars`
 and must be consumed completely and be finite. Anything else is a usage
 error (exit 1). An output path that exists or names an input is refused
 before loading (exit 1). Rendering or writing failures exit with 2. If the frame is
@@ -37,6 +39,76 @@ The report on stdout is deterministic. It contains no paths except the
 output file name and no timings. It covers the input counts, frame size and
 background, every camera value, the eye position, every option (including
 `flip_v`) and all statistics below.
+
+## Texture sources and precedence
+
+Texture source 0 is the car's `TEXTURES.BIN`. Each `--shared-textures
+FILE` adds the next source, in command-line order. No other file is ever
+read, and no directory is scanned. A shared file may hold any number of
+texture packs, for example the two packs in `GLOBAL/GLOBALB.BUN` (see
+`docs/FORMATS.md`). A shared file named twice, or naming the car's pack, is
+a usage error (exit 1). An output path equal to any source is refused
+before loading.
+
+`decode_render_texture_sources` builds one texture set with these rules
+(tested with synthetic sources in `tests/render_tests.cpp`):
+
+- A record claims every hash it carries: info +36, hash table +0 and, with
+  JDLZ storage, blob table +0. Invalid records claim their hashes too.
+- A record of a later source that claims a hash already claimed by an
+  earlier source is left out and listed as shadowed. The earlier record
+  wins even if it is invalid or cannot be decoded. The hash is then
+  `unusable` and drawn with the fallback, never silently taken from a
+  lower-priority source.
+- A shadowed record still claims all its hashes for later sources. If it
+  claims hashes no earlier source claims (an invalid record whose hash
+  fields disagree), each of those is listed in
+  `RenderTextureSet::unusable_claims` with its source, pack and record,
+  and resolves as `unusable`, whether or not a later source has it. This
+  applies only if the record passes the wanted filter below.
+- Records inside one source never shadow each other. The same hash twice
+  in one source, including across two packs of one BUN, is `unusable`, as
+  before. Each kept texture carries every distinct hash its record claims
+  (`RenderTexture::claims`, at most three), and a material matches a
+  texture through any of them. An invalid record whose hash fields
+  disagree therefore makes each of its hashes `unusable` in its source,
+  even if a valid record there has one of them.
+- A source that may hold records it could not list (a walk problem, a
+  limit, an unreadable file, or a pack whose tables failed) is incomplete,
+  and no later source is used. A readable file without any pack root is
+  complete: it claims nothing, but it is still reported as an issue. Later sources are reported
+  as `blocked`.
+- Shared sources decode only records that claim a hash a valid mesh
+  material uses (`wanted_hashes`). The other records still claim their
+  hashes. The car's pack is decoded in full, as before.
+- One budget covers everything decoded: at most 128 MiB of retained RGBA8
+  over all sources together, checked before each allocation. A budget
+  failure names the texture, source and pack.
+- Every pack must have been parsed from the exact buffer it is paired
+  with: `TexturePack::parse_source` must equal the buffer address and
+  `file_size` its size, otherwise decoding fails.
+
+Texture input read into memory is bounded too. At most 8
+`--shared-textures` files are accepted (a ninth is a usage error, exit 1,
+before anything is loaded). Each file is at most 256 MiB, and the car's
+`TEXTURES.BIN` plus all shared files together are at most 512 MiB. Before
+each shared file is read, its per-file limit is lowered to what remains of
+the 512 MiB, so a file that would exceed the total is refused without being
+read. It is then reported on stderr and as a source issue, the source is
+incomplete, later sources are blocked, and the exit code is 3, as for any
+unreadable source.
+
+Without `--shared-textures` the viewer calls `decode_render_textures` as
+before. Its stdout, stderr and TGA are byte-identical to the previous
+version. With shared sources, stdout gains per-source lines (`texture
+source N: bytes, packs, records, valid, decoded, decoded_bytes, issues,
+complete`), a `texture sources:` summary (total decoded bytes,
+`wanted_hashes`, `not_wanted`, `shadowed`, `blocked`), and one line per
+shadowed or blocked record and per unusable claim (`unusable claim: hash
+H source S pack P texture R`, in source, pack, record and claim order). The `textures:` line still describes the car's
+pack alone. Problems in shared sources are printed on stderr as `texture
+source N [pack P] issue at ...`. The exit code is 3 if any source reported
+an issue.
 
 ## Frames and camera
 
@@ -129,9 +201,9 @@ background, every camera value, the eye position, every option (including
     world-space geometric normal of the source triangle turned toward the
     eye, and `L = normalize(0.35, 0.85, 0.40)`. With `--shading none`,
     k = 256.
-12. Fallback material: a group whose hash is not in the pack (`unresolved`),
-    or that matches several or only invalid pack textures (`unusable`), is
-    never drawn with a local texture. It uses a hash-derived color:
+12. Fallback material: a group whose hash is in no source (`unresolved`),
+    or that matches several or only invalid textures of the winning source
+    (`unusable`), is never drawn with another texture. It uses a hash-derived color:
     channels are `64 + byte * 160 / 256` of a 32-bit integer mix of the
     hash, in 64..223. An 8-per-UV-unit checker at 3/4 brightness marks it
     visibly as a placeholder. Fallback fragments are opaque.
@@ -179,8 +251,11 @@ All limits are checked before allocation or before the work starts:
 - at most 2^22 source triangles and 2^24 raster triangles
 - at most 2^32 pixel tests per frame
 - camera values as in the option table
-- decoded textures: at most 128 MiB of retained RGBA8 top levels in total
-  (`RenderTextureLimits::max_total_bytes`)
+- decoded textures: at most 128 MiB of retained RGBA8 top levels in total,
+  over all texture sources (`RenderTextureLimits::max_total_bytes`)
+- texture input files (`nfsu_viewer`): at most 8 `--shared-textures` files,
+  each at most 256 MiB, and at most 512 MiB read for `TEXTURES.BIN` and all
+  shared files together, checked before each file is read
 
 Exceeding a limit returns an error. There is no partial screenshot.
 
@@ -290,13 +365,45 @@ Both were unchanged after rendering.
   45680 are `FF FF FF FF`, 38560 are `00 00 00 FF`, and the most common
   other values are greys with R = G = B.
 
+### With GLOBALB.BUN as a shared source
+
+Command, with the same default options:
+
+```text
+nfsu_viewer <CARS/240SX/GEOMETRY.BIN> <CARS/240SX/TEXTURES.BIN> build/shots/g.tga --shared-textures <GLOBAL/GLOBALB.BUN>
+```
+
+Observed:
+
+- GLOBALB.BUN is 2361176 bytes, SHA-256
+  `39DF38FAC2BE7CA0F0D0A92E0113CAAEDA5B1C60E14436C612B3D0874AFC8DB9`. All
+  three inputs were unchanged after rendering.
+- Two runs gave byte-identical TGA files: 3686418 bytes, SHA-256
+  `0F7FBEE24178ED35AD46EA05F02C8151D7642AE2E71FDEB6CA235DA7585EBF7B`.
+  The reports differed only in the output file name.
+- Source 1: 2 packs, 83 records, 67 valid, complete. The 16 invalid
+  records are the P8 textures (unsupported format), reported as 16 issues,
+  so the exit code is 3. 61 distinct hashes are used by valid meshes. 8
+  GLOBALB textures were decoded (409600 bytes, 10847232 in total with the
+  car's pack), 75 records were not wanted, and none were shadowed or
+  blocked.
+- 518 material groups resolved (174 from the car's pack, 344 from
+  GLOBALB), 724 unresolved, 0 unusable. 17 unresolved hashes remain; the
+  most used is 0x77A20245 (`240SX_SKIN1`, the body skin, not in either
+  file).
+- Triangles: 17892 textured (8000 + 9892), 60850 fallback. Coverage and
+  depth statistics are the same as the local-only run, because the
+  geometry and camera are the same. 148173 pixels drawn, 118557 of them
+  fallback (144209 without GLOBALB).
+
 ### Inferred
 
 - Raw UVs with a top-left texture origin, rows as decoded, are correct for
   this car. This matches the Direct3D convention, so `--flip-v` stays off.
 - Most visible surfaces are fallback-colored because the body skin
-  (0x77A20245), underside (0xBD1F0E0A), carbon (0x721AFF7C) and other
-  shared textures live outside this pack.
+  (0x77A20245) and other shared textures live outside the car's pack.
+  With GLOBALB.BUN the underside (0xBD1F0E0A), carbon (0x721AFF7C) and six
+  more resolve. The body skin still does not.
 - Vertex colors look like a grey mask or baked term rather than a color
   tint. Multiplying by them would turn about 39% of vertices black, so
   `--vertex-color` is off by default.

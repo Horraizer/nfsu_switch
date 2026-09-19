@@ -4,6 +4,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <new>
 #include <set>
 #include <sstream>
@@ -426,62 +427,172 @@ std::size_t clip_triangle(
     return count;
 }
 
-bool decode_render_textures(
-    const std::vector<unsigned char>& bytes,
-    const TexturePack& pack,
+namespace {
+
+// The distinct hashes a record claims, in the order info, hash table,
+// blob table.
+std::size_t claimed_hashes(const TextureRecord& record,
+                           std::array<std::uint32_t, 3>& out) {
+    std::size_t count = 0;
+    const std::uint32_t candidates[3] = {
+        record.hash, record.table_hash,
+        static_cast<std::uint32_t>(record.blob_entry[0]) |
+            (static_cast<std::uint32_t>(record.blob_entry[1]) << 8U) |
+            (static_cast<std::uint32_t>(record.blob_entry[2]) << 16U) |
+            (static_cast<std::uint32_t>(record.blob_entry[3]) << 24U)};
+    const std::size_t used = record.storage == TextureStorage::jdlz ? 3 : 2;
+    for (std::size_t i = 0; i < used; ++i) {
+        if (std::find(out.begin(), out.begin() + count, candidates[i]) ==
+            out.begin() + count) {
+            out[count++] = candidates[i];
+        }
+    }
+    return count;
+}
+
+// check_pairing is false only for decode_render_textures, whose callers
+// may pass hand-built packs without a file size or parse source.
+bool decode_sources(
+    const std::vector<RenderTextureSource>& sources,
+    bool check_pairing,
     const RenderTextureLimits& limits,
     RenderTextureSet& set,
     std::string& error) {
     set = RenderTextureSet{};
     RenderTextureSet result;
+    const bool label = sources.size() > 1 ||
+                       (sources.size() == 1 && sources[0].packs.size() > 1);
+    // Hash -> earliest source that claims it.
+    std::map<std::uint32_t, std::size_t> claims;
     try {
-        result.textures.resize(pack.textures.size());
-        for (std::size_t i = 0; i < pack.textures.size(); ++i) {
-            const TextureRecord& record = pack.textures[i];
-            RenderTexture& texture = result.textures[i];
-            texture.hash = record.hash;
-            if (!record.valid) {
-                texture.problem = record.problem.empty() ? "invalid texture record"
-                                                         : record.problem;
+        bool blocked = false;
+        for (std::size_t s = 0; s < sources.size(); ++s) {
+            const RenderTextureSource& source = sources[s];
+            if (blocked) {
+                result.blocked_sources.push_back(s);
                 continue;
             }
-            // The retained top level is width * height * 4 bytes; both are
-            // at most 65535, so the product cannot overflow 64 bits.
-            const std::uint64_t retained =
-                std::uint64_t{record.width} * record.height * 4U;
-            if (retained > limits.max_total_bytes ||
-                result.decoded_bytes > limits.max_total_bytes - retained) {
-                error = "decoded textures would exceed " +
-                        std::to_string(limits.max_total_bytes) +
-                        " bytes at texture " + std::to_string(record.index) +
-                        " (" + std::to_string(result.decoded_bytes) +
-                        " retained, " + std::to_string(retained) + " more)";
+            if (source.bytes == nullptr) {
+                error = "texture source " + std::to_string(s) + " has no bytes";
                 return false;
             }
-            if (limits.before_allocate) {
-                limits.before_allocate(retained);
+            for (std::size_t p = 0; p < source.packs.size(); ++p) {
+                const TexturePack* pack = source.packs[p];
+                if (pack == nullptr ||
+                    (check_pairing && (pack->parse_source != source.bytes->data() ||
+                                       pack->file_size != source.bytes->size()))) {
+                    error = "texture source " + std::to_string(s) + " pack " +
+                            std::to_string(p) +
+                            " was not parsed from the bytes of that source";
+                    return false;
+                }
             }
-            std::vector<unsigned char> payload;
-            std::size_t unused = 0;
-            std::uint64_t top = 0;
-            std::string problem;
-            if (!texture_payload(bytes.data(), bytes.size(), record, payload,
-                                 unused, problem) ||
-                !level_size(record.format, record.width, record.height, top) ||
-                top > payload.size() ||
-                !decode_level(record.format, record.width, record.height,
-                              payload.data(), static_cast<std::size_t>(top),
-                              texture.rgba, problem) ||
-                texture.rgba.size() != retained) {
-                texture.rgba.clear();
-                texture.rgba.shrink_to_fit();
-                texture.problem = problem.empty() ? "texture decode failed" : problem;
-                continue;
+            bool complete = source.complete;
+            std::vector<std::uint32_t> source_claims;
+            for (std::size_t p = 0; p < source.packs.size(); ++p) {
+                const TexturePack& pack = *source.packs[p];
+                complete = complete && (!check_pairing || pack.tables_parsed);
+                for (const TextureRecord& record : pack.textures) {
+                    std::array<std::uint32_t, 3> hashes{};
+                    const std::size_t count = claimed_hashes(record, hashes);
+                    source_claims.insert(source_claims.end(), hashes.begin(),
+                                         hashes.begin() + count);
+                    bool shadowed = false;
+                    for (std::size_t k = 0; k < count && !shadowed; ++k) {
+                        const auto found = claims.find(hashes[k]);
+                        if (found != claims.end()) {
+                            result.shadowed.push_back(ShadowedTexture{
+                                hashes[k], s, p, record.index, found->second});
+                            shadowed = true;
+                        }
+                    }
+                    bool wanted = true;
+                    if (source.wanted != nullptr) {
+                        wanted = false;
+                        for (std::size_t k = 0; k < count && !wanted; ++k) {
+                            wanted = std::binary_search(source.wanted->begin(),
+                                                        source.wanted->end(), hashes[k]);
+                        }
+                    }
+                    if (shadowed) {
+                        // Claims no earlier source holds still block later
+                        // sources, so keep them resolving as unusable.
+                        for (std::size_t k = 0; k < count && wanted; ++k) {
+                            if (claims.find(hashes[k]) == claims.end()) {
+                                result.unusable_claims.push_back(
+                                    UnusableClaim{hashes[k], s, p, record.index});
+                            }
+                        }
+                        continue;
+                    }
+                    if (!wanted) {
+                        ++result.not_wanted;
+                        continue;
+                    }
+                    result.textures.emplace_back();
+                    RenderTexture& texture = result.textures.back();
+                    texture.hash = record.hash;
+                    texture.claims = hashes;
+                    texture.claim_count = count;
+                    texture.source = s;
+                    texture.pack = p;
+                    texture.record = record.index;
+                    if (!record.valid) {
+                        texture.problem = record.problem.empty()
+                                              ? "invalid texture record"
+                                              : record.problem;
+                        continue;
+                    }
+                    // The retained top level is width * height * 4 bytes;
+                    // both are at most 65535, so the product cannot
+                    // overflow 64 bits.
+                    const std::uint64_t retained =
+                        std::uint64_t{record.width} * record.height * 4U;
+                    if (retained > limits.max_total_bytes ||
+                        result.decoded_bytes > limits.max_total_bytes - retained) {
+                        error = "decoded textures would exceed " +
+                                std::to_string(limits.max_total_bytes) +
+                                " bytes at texture " + std::to_string(record.index) +
+                                (label ? " of source " + std::to_string(s) +
+                                             " pack " + std::to_string(p)
+                                       : std::string()) +
+                                " (" + std::to_string(result.decoded_bytes) +
+                                " retained, " + std::to_string(retained) + " more)";
+                        return false;
+                    }
+                    if (limits.before_allocate) {
+                        limits.before_allocate(retained);
+                    }
+                    const std::vector<unsigned char>& bytes = *source.bytes;
+                    std::vector<unsigned char> payload;
+                    std::size_t unused = 0;
+                    std::uint64_t top = 0;
+                    std::string problem;
+                    if (!texture_payload(bytes.data(), bytes.size(), record, payload,
+                                         unused, problem) ||
+                        !level_size(record.format, record.width, record.height, top) ||
+                        top > payload.size() ||
+                        !decode_level(record.format, record.width, record.height,
+                                      payload.data(), static_cast<std::size_t>(top),
+                                      texture.rgba, problem) ||
+                        texture.rgba.size() != retained) {
+                        texture.rgba.clear();
+                        texture.rgba.shrink_to_fit();
+                        texture.problem =
+                            problem.empty() ? "texture decode failed" : problem;
+                        continue;
+                    }
+                    texture.width = record.width;
+                    texture.height = record.height;
+                    texture.valid = true;
+                    result.decoded_bytes += retained;
+                }
             }
-            texture.width = record.width;
-            texture.height = record.height;
-            texture.valid = true;
-            result.decoded_bytes += retained;
+            // Claims of this source apply to later sources only.
+            for (const std::uint32_t hash : source_claims) {
+                claims.emplace(hash, s);
+            }
+            blocked = !complete;
         }
     } catch (const std::bad_alloc&) {
         error = "out of memory while decoding textures (" +
@@ -490,6 +601,44 @@ bool decode_render_textures(
     }
     set = std::move(result);
     return true;
+}
+
+} // namespace
+
+bool decode_render_textures(
+    const std::vector<unsigned char>& bytes,
+    const TexturePack& pack,
+    const RenderTextureLimits& limits,
+    RenderTextureSet& set,
+    std::string& error) {
+    set = RenderTextureSet{};
+    std::vector<RenderTextureSource> sources;
+    try {
+        sources.resize(1);
+        sources[0].bytes = &bytes;
+        sources[0].packs.push_back(&pack);
+    } catch (const std::bad_alloc&) {
+        error = "out of memory while decoding textures (0 bytes retained)";
+        return false;
+    }
+    return decode_sources(sources, false, limits, set, error);
+}
+
+bool decode_render_texture_sources(
+    const std::vector<RenderTextureSource>& sources,
+    const RenderTextureLimits& limits,
+    RenderTextureSet& set,
+    std::string& error) {
+    return decode_sources(sources, true, limits, set, error);
+}
+
+bool RenderTexture::claims_hash(std::uint32_t value) const noexcept {
+    if (hash == value) {
+        return true;
+    }
+    const std::size_t used = std::min(claim_count, claims.size());
+    return std::find(claims.begin(), claims.begin() + used, value) !=
+           claims.begin() + used;
 }
 
 const char* binding_kind_name(BindingKind kind) noexcept {
@@ -516,7 +665,7 @@ MaterialBinding resolve_material(
     std::size_t usable = 0;
     for (std::size_t i = 0; i < textures.textures.size(); ++i) {
         const RenderTexture& texture = textures.textures[i];
-        if (texture.hash != binding.hash) {
+        if (!texture.claims_hash(binding.hash)) {
             continue;
         }
         ++matches;
@@ -527,6 +676,12 @@ MaterialBinding resolve_material(
         if (ok) {
             ++usable;
             binding.texture_index = i;
+        }
+    }
+    for (const UnusableClaim& claim : textures.unusable_claims) {
+        if (claim.hash == binding.hash) {
+            ++matches;
+            break;
         }
     }
     if (matches == 0) {

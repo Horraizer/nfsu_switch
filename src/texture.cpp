@@ -137,6 +137,7 @@ public:
         TexturePack& pack)
         : data_(data), size_(size), limits_(limits), pack_(pack) {}
 
+    // Standalone TEXTURES.BIN: exactly one top-level root, JDLZ storage.
     void run() {
         if (size_ < kHeaderSize) {
             add_issue(0, "file is smaller than a chunk header (8 bytes)");
@@ -148,7 +149,46 @@ public:
         if (!find_single(top, kTexturePackRootId, 0, "top level", root)) {
             return;
         }
+        parse_root(root, false);
+    }
 
+    // The root whose header is at root_offset; the blob table is optional.
+    void run_at(std::uint64_t root_offset) {
+        pack_.root_offset = root_offset;
+        if (root_offset > size_ || size_ - root_offset < kHeaderSize) {
+            std::ostringstream text;
+            text << "root offset " << root_offset
+                 << " leaves no room for a chunk header in " << size_
+                 << " bytes";
+            add_issue(root_offset, text.str());
+            return;
+        }
+        RawChunk root;
+        root.offset = root_offset;
+        root.id = read_u32_le(data_ + root_offset);
+        root.payload_size = read_u32_le(data_ + root_offset + 4);
+        root.payload_offset = root_offset + kHeaderSize;
+        if (root.id != kTexturePackRootId) {
+            add_issue(root_offset, chunk_label(root) + " is not a " +
+                                       format_chunk_id(kTexturePackRootId) +
+                                       " texture pack root");
+            return;
+        }
+        if (root.payload_size > size_ - root.payload_offset) {
+            std::ostringstream text;
+            text << chunk_label(root) << " declares " << root.payload_size
+                 << " payload bytes but only "
+                 << (size_ - root.payload_offset) << " remain in the file";
+            add_issue(root_offset, text.str());
+            return;
+        }
+        ++chunk_count_;
+        parse_root(root, true);
+    }
+
+private:
+    void parse_root(const RawChunk& root, bool allow_raw) {
+        pack_.root_offset = root.offset;
         std::vector<RawChunk> sections;
         if (!list_children(root.payload_offset,
                            root.payload_offset + root.payload_size,
@@ -184,12 +224,18 @@ public:
         RawChunk data_chunk;
         const std::string info_context = chunk_label(info);
         const std::string data_context = chunk_label(data);
+        const bool raw =
+            allow_raw && std::none_of(tables.begin(), tables.end(),
+                                      [](const RawChunk& chunk) {
+                                          return chunk.id == kTextureBlobTableId;
+                                      });
+        pack_.storage = raw ? TextureStorage::raw : TextureStorage::jdlz;
         if (!find_single(tables, kTexturePackHeaderId, info.offset,
                          info_context, header) ||
             !find_single(tables, kTextureHashTableId, info.offset,
                          info_context, hashes) ||
-            !find_single(tables, kTextureBlobTableId, info.offset,
-                         info_context, blob_table) ||
+            (!raw && !find_single(tables, kTextureBlobTableId, info.offset,
+                                  info_context, blob_table)) ||
             !find_single(tables, kTextureInfoTableId, info.offset,
                          info_context, info_table) ||
             !find_single(tables, kTextureFormatTableId, info.offset,
@@ -205,14 +251,16 @@ public:
             return;
         }
         parse_data_header(data_header);
-        if (!parse_tables(hashes, blob_table, info_table, format_table)) {
+        if (!parse_tables(hashes, raw ? nullptr : &blob_table, info_table,
+                          format_table)) {
             return;
         }
+        pack_.tables_parsed = true;
         check_duplicate_hashes();
         check_blob_overlap();
+        compute_raw_extent();
     }
 
-private:
     void add_issue(std::uint64_t offset, std::string message) {
         pack_.issues.push_back(TextureIssue{offset, std::move(message)});
     }
@@ -349,6 +397,7 @@ private:
         pack_.data_payload_offset = chunk.payload_offset;
         pack_.data_payload_size = chunk.payload_size;
         pack_.data_prefix_bytes = aligned - chunk.payload_offset;
+        pack_.data_start = aligned;
         return true;
     }
 
@@ -369,9 +418,10 @@ private:
         return true;
     }
 
+    // blob_table is null for raw storage.
     bool parse_tables(
         const RawChunk& hashes,
-        const RawChunk& blob_table,
+        const RawChunk* blob_table,
         const RawChunk& info_table,
         const RawChunk& format_table) {
         if (hashes.payload_size % kTextureHashRecordSize != 0) {
@@ -389,7 +439,8 @@ private:
             add_issue(hashes.offset, text.str());
             return false;
         }
-        if (!check_table_size(blob_table, count, kTextureBlobRecordSize) ||
+        if ((blob_table != nullptr &&
+             !check_table_size(*blob_table, count, kTextureBlobRecordSize)) ||
             !check_table_size(info_table, count, kTextureInfoRecordSize) ||
             !check_table_size(format_table, count, kTextureFormatRecordSize)) {
             return false;
@@ -401,8 +452,6 @@ private:
             texture.index = i;
             const std::uint64_t hash_offset =
                 hashes.payload_offset + i * kTextureHashRecordSize;
-            texture.blob_entry_offset =
-                blob_table.payload_offset + i * kTextureBlobRecordSize;
             texture.info_offset =
                 info_table.payload_offset + i * kTextureInfoRecordSize;
             texture.format_offset =
@@ -411,9 +460,15 @@ private:
                         kTextureInfoRecordSize);
             std::memcpy(texture.format_record.data(),
                         data_ + texture.format_offset, kTextureFormatRecordSize);
-            std::memcpy(texture.blob_entry.data(),
-                        data_ + texture.blob_entry_offset,
-                        kTextureBlobRecordSize);
+            if (blob_table != nullptr) {
+                texture.blob_entry_offset =
+                    blob_table->payload_offset + i * kTextureBlobRecordSize;
+                std::memcpy(texture.blob_entry.data(),
+                            data_ + texture.blob_entry_offset,
+                            kTextureBlobRecordSize);
+            } else {
+                texture.storage = TextureStorage::raw;
+            }
             parse_texture(texture, hash_offset);
         }
         return true;
@@ -435,12 +490,8 @@ private:
 
     bool parse_texture(TextureRecord& texture, std::uint64_t hash_offset) {
         const unsigned char* info = texture.info.data();
-        std::string error;
-        if (!read_fixed_string(info + kTextureNameOffset, kTextureNameSize,
-                               texture.name, error)) {
-            return reject(texture, texture.info_offset, "name: " + error);
-        }
-        texture.name_field_full = texture.name.size() == kTextureNameSize - 1;
+        // Every field is read before the first check, so that a rejected
+        // record still reports each hash it claims.
         texture.hash = read_u32_le(info + 36);
         texture.class_hash = read_u32_le(info + 40);
         texture.virtual_offset = read_u32_le(info + 48);
@@ -454,16 +505,35 @@ private:
         texture.format_code = info[74];
         texture.mip_count = info[78];
         texture.d3d_format = read_u32_le(texture.format_record.data() + 20);
-        texture.blob_offset = read_u32_le(texture.blob_entry.data() + 4);
-        texture.blob_size = read_u32_le(texture.blob_entry.data() + 8);
-
+        const bool raw = texture.storage == TextureStorage::raw;
         const std::uint32_t listed_hash = read_u32_le(data_ + hash_offset);
-        const std::uint32_t blob_hash = read_u32_le(texture.blob_entry.data());
-        if (listed_hash != texture.hash || blob_hash != texture.hash) {
-            return reject(texture, hash_offset,
-                          "hash " + hex32(texture.hash) +
-                              " differs from hash table " + hex32(listed_hash) +
-                              " or blob table " + hex32(blob_hash));
+        texture.table_hash = listed_hash;
+        if (!raw) {
+            texture.blob_offset = read_u32_le(texture.blob_entry.data() + 4);
+            texture.blob_size = read_u32_le(texture.blob_entry.data() + 8);
+        }
+
+        std::string error;
+        if (!read_fixed_string(info + kTextureNameOffset, kTextureNameSize,
+                               texture.name, error)) {
+            return reject(texture, texture.info_offset, "name: " + error);
+        }
+        texture.name_field_full = texture.name.size() == kTextureNameSize - 1;
+        if (raw) {
+            if (listed_hash != texture.hash) {
+                return reject(texture, hash_offset,
+                              "hash " + hex32(texture.hash) +
+                                  " differs from hash table " +
+                                  hex32(listed_hash));
+            }
+        } else {
+            const std::uint32_t blob_hash = read_u32_le(texture.blob_entry.data());
+            if (listed_hash != texture.hash || blob_hash != texture.hash) {
+                return reject(texture, hash_offset,
+                              "hash " + hex32(texture.hash) +
+                                  " differs from hash table " + hex32(listed_hash) +
+                                  " or blob table " + hex32(blob_hash));
+            }
         }
         if (read_u32_le(data_ + hash_offset + 4) != 0U) {
             return reject(texture, hash_offset + 4,
@@ -479,7 +549,8 @@ private:
                  << " at format record +20";
             return reject(texture, texture.info_offset + 74, text.str());
         }
-        return check_dimensions(texture) && check_blob(texture);
+        return check_dimensions(texture) &&
+               (raw ? check_raw(texture) : check_blob(texture));
     }
 
     static PixelFormat classify_format(std::uint8_t code, std::uint32_t d3d) {
@@ -582,6 +653,48 @@ private:
         return true;
     }
 
+    // Raw storage: the chain is [data_start + +48, + +56). +48 is a
+    // multiple of 128 in every observed record. +52 is not an end offset in
+    // embedded packs and is not checked. All arithmetic is 64-bit.
+    bool check_raw(TextureRecord& texture) {
+        std::ostringstream text;
+        if (texture.virtual_offset % kTextureDataAlignment != 0) {
+            text << "raw data virtual offset " << texture.virtual_offset
+                 << " at info +48 is not a multiple of "
+                 << kTextureDataAlignment;
+            return reject(texture, texture.info_offset + 48, text.str());
+        }
+        const std::uint64_t begin = pack_.data_start;
+        const std::uint64_t end =
+            pack_.data_payload_offset + pack_.data_payload_size;
+        std::uint64_t start = 0;
+        std::uint64_t stop = 0;
+        if (!checked_add(begin, texture.virtual_offset, start) ||
+            !checked_add(start, texture.data_size, stop) || stop > end) {
+            text << "raw data at virtual offset " << texture.virtual_offset
+                 << " with " << texture.data_size << " bytes is outside the"
+                 << " texture data range " << begin << ".." << end
+                 << " (" << (end - begin) << " bytes)";
+            return reject(texture, texture.info_offset + 48, text.str());
+        }
+        texture.blob_offset = start;
+        texture.blob_size = texture.data_size;
+        texture.valid = true;
+        return true;
+    }
+
+    void compute_raw_extent() {
+        if (pack_.storage != TextureStorage::raw) {
+            return;
+        }
+        // Every record, valid or not: both fields are u32, so the sum fits.
+        for (const TextureRecord& texture : pack_.textures) {
+            pack_.raw_extent = std::max<std::uint64_t>(
+                pack_.raw_extent,
+                std::uint64_t{texture.virtual_offset} + texture.data_size);
+        }
+    }
+
     void check_duplicate_hashes() {
         std::vector<std::pair<std::uint32_t, std::size_t>> order;
         for (const TextureRecord& texture : pack_.textures) {
@@ -660,17 +773,21 @@ private:
                 continue;
             }
             TextureRecord& texture = pack_.textures[index];
+            const bool raw = texture.storage == TextureStorage::raw;
             std::ostringstream text;
-            text << "JDLZ blob at file offset " << texture.blob_offset << " ("
-                 << texture.blob_size << " bytes) overlaps the blobs of "
-                 << list.count << " textures: ";
+            text << (raw ? "raw data at file offset " : "JDLZ blob at file offset ")
+                 << texture.blob_offset << " (" << texture.blob_size
+                 << " bytes) overlaps the " << (raw ? "data" : "blobs")
+                 << " of " << list.count << " textures: ";
             for (std::size_t k = 0; k < list.smallest.size(); ++k) {
                 text << (k == 0 ? "" : ", ") << list.smallest[k];
             }
             if (list.count > list.smallest.size()) {
                 text << " and " << (list.count - list.smallest.size()) << " more";
             }
-            reject(texture, texture.blob_entry_offset + 4, text.str());
+            reject(texture,
+                   raw ? texture.info_offset + 48 : texture.blob_entry_offset + 4,
+                   text.str());
         }
     }
 
@@ -808,6 +925,12 @@ bool mip_chain_size(
     return true;
 }
 
+bool record_claims_hash(const TextureRecord& texture, std::uint32_t hash) noexcept {
+    return texture.hash == hash || texture.table_hash == hash ||
+           (texture.storage == TextureStorage::jdlz &&
+            read_u32_le(texture.blob_entry.data()) == hash);
+}
+
 std::size_t TexturePack::valid_texture_count() const noexcept {
     std::size_t count = 0;
     for (const TextureRecord& texture : textures) {
@@ -824,6 +947,7 @@ TexturePack parse_texture_pack(
     const TextureLimits& limits) {
     TexturePack pack;
     pack.file_size = size;
+    pack.parse_source = data;
     if (data == nullptr && size != 0) {
         pack.issues.push_back(TextureIssue{0, "null input buffer"});
         return pack;
@@ -848,50 +972,343 @@ TexturePack parse_texture_pack(
     return pack;
 }
 
-TexturePack load_texture_pack(
-    const std::filesystem::path& path,
-    std::vector<unsigned char>& bytes,
-    const TextureLimits& limits) {
-    TexturePack pack;
-    bytes.clear();
+namespace {
 
+// Reads the whole file read-only into bytes. Returns an empty string on
+// success, otherwise the reason; file_size is set once it is known.
+std::string read_whole_file(
+    const std::filesystem::path& path,
+    std::uint64_t max_file_size,
+    std::vector<unsigned char>& bytes,
+    std::uint64_t& file_size) {
+    bytes.clear();
+    file_size = 0;
     std::error_code size_error;
-    const std::uintmax_t file_size = std::filesystem::file_size(path, size_error);
+    const std::uintmax_t size = std::filesystem::file_size(path, size_error);
     if (size_error) {
-        pack.issues.push_back(TextureIssue{0, "failed to read file size"});
-        return pack;
+        return "failed to read file size";
     }
-    pack.file_size = file_size;
-    if (file_size > limits.max_file_size ||
-        file_size > std::numeric_limits<std::size_t>::max() ||
-        file_size > static_cast<std::uintmax_t>(
-                        std::numeric_limits<std::streamsize>::max())) {
+    file_size = size;
+    if (size > max_file_size || size > std::numeric_limits<std::size_t>::max() ||
+        size > static_cast<std::uintmax_t>(
+                   std::numeric_limits<std::streamsize>::max())) {
         std::ostringstream text;
-        text << "file is " << file_size << " bytes; limit is "
-             << limits.max_file_size;
-        pack.issues.push_back(TextureIssue{0, text.str()});
-        return pack;
+        text << "file is " << size << " bytes; limit is " << max_file_size;
+        return text.str();
     }
 
     std::ifstream stream(path, std::ios::binary);
     if (!stream) {
-        pack.issues.push_back(TextureIssue{0, "failed to open file"});
-        return pack;
+        return "failed to open file";
     }
     try {
-        bytes.resize(static_cast<std::size_t>(file_size));
+        bytes.resize(static_cast<std::size_t>(size));
     } catch (const std::exception&) {
-        pack.issues.push_back(TextureIssue{0, "out of memory while reading file"});
-        return pack;
+        return "out of memory while reading file";
     }
     if (!bytes.empty() &&
         !stream.read(reinterpret_cast<char*>(bytes.data()),
                      static_cast<std::streamsize>(bytes.size()))) {
         bytes.clear();
-        pack.issues.push_back(TextureIssue{0, "failed to read whole file"});
+        return "failed to read whole file";
+    }
+    return {};
+}
+
+// Checks shared by the in-memory entry points; returns false with an issue.
+bool check_buffer(
+    const unsigned char* data,
+    std::size_t size,
+    const TextureLimits& limits,
+    std::vector<TextureIssue>& issues) {
+    if (data == nullptr && size != 0) {
+        issues.push_back(TextureIssue{0, "null input buffer"});
+        return false;
+    }
+    if (size > limits.max_file_size) {
+        std::ostringstream text;
+        text << "buffer is " << size << " bytes; limit is "
+             << limits.max_file_size;
+        issues.push_back(TextureIssue{0, text.str()});
+        return false;
+    }
+    return true;
+}
+
+// Collects the offsets of every 0xB3300000 root. Containers are walked
+// depth first in file order with an explicit stack of pending ranges.
+class RootWalker {
+public:
+    RootWalker(
+        const unsigned char* data,
+        std::uint64_t size,
+        const TextureLimits& limits,
+        std::vector<std::uint64_t>& roots,
+        std::vector<TextureIssue>& issues)
+        : data_(data), size_(size), limits_(limits), roots_(roots),
+          issues_(issues) {}
+
+    void run() {
+        std::vector<Range> pending;
+        pending.push_back(Range{0, size_, 0, false, RawChunk{}});
+        while (!pending.empty() && !stopped_) {
+            const Range range = pending.back();
+            pending.pop_back();
+            walk(range, pending);
+        }
+    }
+
+private:
+    struct Range {
+        std::uint64_t begin = 0;
+        std::uint64_t end = 0;
+        std::size_t depth = 0;
+        bool has_owner = false;
+        RawChunk owner;
+    };
+
+    void add_issue(std::uint64_t offset, std::string message) {
+        issues_.push_back(TextureIssue{offset, std::move(message)});
+    }
+
+    void walk(const Range& range, std::vector<Range>& pending) {
+        const std::string context =
+            range.has_owner ? chunk_label(range.owner) : "top level";
+        std::vector<Range> children;
+        std::uint64_t offset = range.begin;
+        while (offset < range.end) {
+            if (range.end - offset < kHeaderSize) {
+                std::ostringstream text;
+                text << context << ": " << (range.end - offset)
+                     << " trailing bytes are smaller than a chunk header";
+                add_issue(offset, text.str());
+                break;
+            }
+            if (chunk_count_ >= limits_.max_walk_chunks) {
+                std::ostringstream text;
+                text << context << ": root search chunk limit "
+                     << limits_.max_walk_chunks << " exceeded";
+                add_issue(offset, text.str());
+                stopped_ = true;
+                return;
+            }
+            RawChunk chunk;
+            chunk.offset = offset;
+            chunk.id = read_u32_le(data_ + offset);
+            chunk.payload_size = read_u32_le(data_ + offset + 4);
+            chunk.payload_offset = offset + kHeaderSize;
+            if (chunk.payload_size > range.end - chunk.payload_offset) {
+                // No reliable next offset: skip the rest of this parent.
+                std::ostringstream text;
+                text << context << ": " << chunk_label(chunk) << " declares "
+                     << chunk.payload_size << " payload bytes but only "
+                     << (range.end - chunk.payload_offset)
+                     << " remain in its parent";
+                add_issue(offset, text.str());
+                break;
+            }
+            ++chunk_count_;
+            if (chunk.id == kTexturePackRootId) {
+                if (roots_.size() >= limits_.max_packs) {
+                    std::ostringstream text;
+                    text << context << ": texture pack limit "
+                         << limits_.max_packs << " exceeded";
+                    add_issue(offset, text.str());
+                    stopped_ = true;
+                    return;
+                }
+                roots_.push_back(offset);
+            } else if ((chunk.id & 0x80000000U) != 0 && chunk.payload_size != 0) {
+                if (range.depth >= limits_.max_depth) {
+                    std::ostringstream text;
+                    text << context << ": " << chunk_label(chunk)
+                         << " is nested deeper than the limit "
+                         << limits_.max_depth << "; not searched";
+                    add_issue(offset, text.str());
+                } else {
+                    children.push_back(Range{
+                        chunk.payload_offset,
+                        chunk.payload_offset + chunk.payload_size,
+                        range.depth + 1, true, chunk});
+                }
+            }
+            offset = chunk.payload_offset + chunk.payload_size;
+        }
+        // Reverse, so the first child is walked next.
+        pending.insert(pending.end(), children.rbegin(), children.rend());
+    }
+
+    const unsigned char* data_;
+    std::uint64_t size_;
+    const TextureLimits& limits_;
+    std::vector<std::uint64_t>& roots_;
+    std::vector<TextureIssue>& issues_;
+    std::size_t chunk_count_ = 0;
+    bool stopped_ = false;
+};
+
+// Reports each hash that a pack repeats from an earlier pack of the set.
+// Repeats inside one pack are already issues of that pack.
+void check_cross_pack_hashes(TexturePackSet& set) {
+    struct Entry {
+        std::uint32_t hash;
+        std::size_t pack;
+        std::size_t index;
+        bool operator<(const Entry& other) const {
+            if (hash != other.hash) return hash < other.hash;
+            if (pack != other.pack) return pack < other.pack;
+            return index < other.index;
+        }
+    };
+    std::vector<Entry> entries;
+    for (std::size_t p = 0; p < set.packs.size(); ++p) {
+        for (const TextureRecord& texture : set.packs[p].textures) {
+            entries.push_back(Entry{texture.hash, p, texture.index});
+        }
+    }
+    std::sort(entries.begin(), entries.end());
+    for (std::size_t i = 1; i < entries.size(); ++i) {
+        const Entry& previous = entries[i - 1];
+        const Entry& entry = entries[i];
+        if (entry.hash != previous.hash || entry.pack == previous.pack) {
+            continue;
+        }
+        const TextureRecord& texture = set.packs[entry.pack].textures[entry.index];
+        std::ostringstream text;
+        text << "pack " << entry.pack << " texture " << entry.index
+             << " repeats hash " << hex32(entry.hash) << " of pack "
+             << previous.pack << " texture " << previous.index
+             << "; hash lookups in this file are ambiguous";
+        set.issues.push_back(TextureIssue{texture.info_offset + 36, text.str()});
+    }
+}
+
+} // namespace
+
+const char* texture_storage_name(TextureStorage storage) noexcept {
+    switch (storage) {
+    case TextureStorage::jdlz:
+        return "jdlz";
+    case TextureStorage::raw:
+        return "raw";
+    }
+    return "unknown";
+}
+
+TexturePack load_texture_pack(
+    const std::filesystem::path& path,
+    std::vector<unsigned char>& bytes,
+    const TextureLimits& limits) {
+    TexturePack pack;
+    const std::string error =
+        read_whole_file(path, limits.max_file_size, bytes, pack.file_size);
+    if (!error.empty()) {
+        pack.issues.push_back(TextureIssue{0, error});
         return pack;
     }
     return parse_texture_pack(bytes.data(), bytes.size(), limits);
+}
+
+TexturePack parse_texture_pack_at(
+    const unsigned char* data,
+    std::size_t size,
+    std::uint64_t root_offset,
+    const TextureLimits& limits) {
+    TexturePack pack;
+    pack.file_size = size;
+    pack.parse_source = data;
+    pack.root_offset = root_offset;
+    if (!check_buffer(data, size, limits, pack.issues)) {
+        return pack;
+    }
+    try {
+        TextureParser parser(data, size, limits, pack);
+        parser.run_at(root_offset);
+    } catch (const std::bad_alloc&) {
+        pack.issues.push_back(
+            TextureIssue{0, "out of memory while parsing textures"});
+    } catch (const std::exception& error) {
+        pack.issues.push_back(
+            TextureIssue{0, std::string("texture parse failed: ") + error.what()});
+    }
+    return pack;
+}
+
+bool TexturePackSet::ok() const noexcept {
+    if (!issues.empty()) {
+        return false;
+    }
+    for (const TexturePack& pack : packs) {
+        if (!pack.ok()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+TexturePackSet parse_texture_pack_set(
+    const unsigned char* data,
+    std::size_t size,
+    const TextureLimits& limits) {
+    TexturePackSet set;
+    set.file_size = size;
+    if (!check_buffer(data, size, limits, set.issues)) {
+        return set;
+    }
+    try {
+        std::vector<std::uint64_t> roots;
+        RootWalker walker(data, size, limits, roots, set.issues);
+        walker.run();
+        bool complete = set.issues.empty();
+        // Depth-first order already is file order; sorting makes that
+        // independent of the walk.
+        std::sort(roots.begin(), roots.end());
+        if (roots.empty()) {
+            set.issues.push_back(TextureIssue{
+                0, "no " + format_chunk_id(kTexturePackRootId) +
+                       " texture pack root found"});
+        }
+        set.packs.reserve(roots.size());
+        std::size_t records = 0;
+        for (const std::uint64_t root : roots) {
+            TexturePack pack = parse_texture_pack_at(data, size, root, limits);
+            complete = complete && pack.tables_parsed;
+            records += pack.textures.size();
+            set.packs.push_back(std::move(pack));
+            if (records > limits.max_set_textures) {
+                std::ostringstream text;
+                text << "texture packs hold " << records
+                     << " records after the root at offset " << root
+                     << "; limit is " << limits.max_set_textures
+                     << "; later roots are not parsed";
+                set.issues.push_back(TextureIssue{root, text.str()});
+                complete = false;
+                break;
+            }
+        }
+        check_cross_pack_hashes(set);
+        set.complete = complete;
+    } catch (const std::bad_alloc&) {
+        set.packs.clear();
+        set.complete = false;
+        set.issues.push_back(
+            TextureIssue{0, "out of memory while parsing texture packs"});
+    }
+    return set;
+}
+
+TexturePackSet load_texture_pack_set(
+    const std::filesystem::path& path,
+    std::vector<unsigned char>& bytes,
+    const TextureLimits& limits) {
+    TexturePackSet set;
+    const std::string error =
+        read_whole_file(path, limits.max_file_size, bytes, set.file_size);
+    if (!error.empty()) {
+        set.issues.push_back(TextureIssue{0, error});
+        return set;
+    }
+    return parse_texture_pack_set(bytes.data(), bytes.size(), limits);
 }
 
 // JDLZ: after the header, two flag bytes are loaded whenever their shift
@@ -1017,6 +1434,19 @@ bool texture_payload(
         texture.blob_size > size - texture.blob_offset) {
         error = "texture blob is outside the input buffer";
         return false;
+    }
+    if (texture.storage == TextureStorage::raw) {
+        if (texture.blob_size != texture.data_size) {
+            error = "raw data size " + std::to_string(texture.blob_size) +
+                    " differs from the info data size " +
+                    std::to_string(texture.data_size);
+            return false;
+        }
+        unused_input = 0;
+        const unsigned char* begin =
+            data + static_cast<std::size_t>(texture.blob_offset);
+        payload.assign(begin, begin + texture.blob_size);
+        return true;
     }
     if (!jdlz_decompress(data + texture.blob_offset, texture.blob_size,
                          texture.data_size, payload, unused_input, error)) {
