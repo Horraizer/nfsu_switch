@@ -107,6 +107,22 @@ one uses at a LOD, are decoded (`nfsu_probe stock-parts`), but the viewer
 does not consume them yet, and part placement, paint and skin are still
 missing (see `docs/CAR_SCENE.md`).
 
+## Body-skin compositor reference
+
+`nfsu_body_skin` (`include/nfsu/body_skin.h`) is a bounded CPU reference for
+the game's runtime body-skin compositor. It is a library only: it has no CLI
+command, because feeding it real inputs needs the runtime customization
+state that the project does not build yet. It reproduces the weighted lane
+sum both composite paths share, the mask arithmetic, the colour remap, the
+target markers, and the palette the indexed path builds, for both target
+types the game dispatches on. Every bound the game leaves unchecked is
+refused with a message instead, and the colour quantizer the indexed path
+falls back to is not implemented and never guessed. Its API numbers byte
+lanes instead of naming channels, because the two paths store a colour with
+two lanes exchanged; which channel each lane carries is documented once, with
+its evidence. No pixel format is named anywhere, because no instruction names
+one. See `docs/BODY_SKIN.md`.
+
 Selection and material lookup happen once, in `prepare_car_scene`
 (`include/nfsu/scene.h`). It builds a self-contained `PreparedCarScene`
 that owns copies of the selected vertices, triangles and resolved textures

@@ -67,6 +67,25 @@ add_library(nfsu_texture_decode
 target_link_libraries(nfsu_texture_decode PUBLIC nfsu_scene nfsu_core)
 nfsu_enable_warnings(nfsu_texture_decode)
 
+# Body-skin pixel compositor reference. It depends on nothing but the
+# standard library, and it disables floating-point contraction so that the
+# traced truncation behaviour does not depend on FMA availability.
+add_library(nfsu_body_skin
+    src/body_skin.cpp
+)
+
+target_include_directories(nfsu_body_skin
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_compile_features(nfsu_body_skin PUBLIC cxx_std_17)
+nfsu_enable_warnings(nfsu_body_skin)
+if(MSVC)
+    target_compile_options(nfsu_body_skin PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_body_skin PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+
 # Deterministic CPU reference renderer. Floating-point contraction is
 # disabled so that results do not depend on FMA availability.
 add_library(nfsu_render
@@ -140,9 +159,18 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_car_parts_tests)
     add_test(NAME nfsu_car_parts_tests COMMAND nfsu_car_parts_tests)
 
+    add_executable(nfsu_body_skin_tests
+        tests/body_skin_tests.cpp
+    )
+
+    target_link_libraries(nfsu_body_skin_tests PRIVATE nfsu_body_skin)
+    nfsu_enable_warnings(nfsu_body_skin_tests)
+    add_test(NAME nfsu_body_skin_tests COMMAND nfsu_body_skin_tests)
+
     # A hung test is killed and reported as a failure.
     set_tests_properties(
         nfsu_chunk_tests nfsu_geometry_tests nfsu_texture_tests
         nfsu_render_tests nfsu_scene_tests nfsu_car_parts_tests
+        nfsu_body_skin_tests
         PROPERTIES TIMEOUT 60)
 endif()
