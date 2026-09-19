@@ -1,0 +1,1421 @@
+#include "nfsu/render.h"
+
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <iterator>
+#include <limits>
+#include <new>
+#include <random>
+#include <sstream>
+#include <string>
+#include <vector>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
+namespace fs = std::filesystem;
+
+namespace {
+
+int g_failures = 0;
+
+void check(bool condition, const std::string& message) {
+    if (!condition) {
+        std::cerr << "test failure: " << message << '\n';
+        ++g_failures;
+    }
+}
+
+std::uint64_t fnv1a64(const std::string& bytes) {
+    std::uint64_t hash = 0xCBF29CE484222325ULL;
+    for (unsigned char ch : bytes) {
+        hash ^= ch;
+        hash *= 0x100000001B3ULL;
+    }
+    return hash;
+}
+
+std::string tga_bytes(const nfsu::Frame& frame) {
+    std::ostringstream stream(std::ios::binary);
+    std::string error;
+    nfsu::write_tga(stream, frame.width(), frame.height(), frame.rgba(), error);
+    return stream.str();
+}
+
+std::string read_file(const fs::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(stream), {});
+}
+
+// File symlink at link pointing to target. MinGW's std::filesystem does not
+// implement create_symlink, so Windows uses CreateSymbolicLinkW with the
+// unprivileged flag (needs Developer Mode or the symlink privilege).
+void make_symlink(const fs::path& target, const fs::path& link, std::error_code& error) {
+    error.clear();
+#if defined(_WIN32)
+    constexpr DWORD kAllowUnprivileged = 0x2;
+    if (!CreateSymbolicLinkW(link.c_str(), target.c_str(), kAllowUnprivileged)) {
+        error = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+    }
+#else
+    fs::create_symlink(target, link, error);
+#endif
+}
+
+// Whether a directory entry exists at path, without following a final
+// symlink. MinGW's symlink_status follows links, so Windows asks the OS.
+bool entry_exists(const fs::path& path) {
+#if defined(_WIN32)
+    return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+#else
+    std::error_code error;
+    return fs::symlink_status(path, error).type() != fs::file_type::not_found;
+#endif
+}
+
+bool is_link(const fs::path& path) {
+#if defined(_WIN32)
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES &&
+           (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+#else
+    std::error_code error;
+    return fs::is_symlink(fs::symlink_status(path, error));
+#endif
+}
+
+bool is_real_directory(const fs::path& path) {
+#if defined(_WIN32)
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES &&
+           (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
+           (attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
+#else
+    std::error_code error;
+    return fs::symlink_status(path, error).type() == fs::file_type::directory;
+#endif
+}
+
+// Removes one directory entry itself; a symlink is removed, never its
+// target. Returns true if the entry is gone.
+bool remove_entry(const fs::path& path) {
+#if defined(_WIN32)
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        return true;
+    }
+    if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        RemoveDirectoryW(path.c_str());  // directory or directory link
+    } else {
+        DeleteFileW(path.c_str());       // file or file symlink
+    }
+#else
+    std::error_code error;
+    fs::remove(path, error);
+#endif
+    return !entry_exists(path);
+}
+
+// Removes a directory tree created by the tests without following links.
+// Names are collected before anything is removed; depth is capped.
+bool remove_tree(const fs::path& path, int depth) {
+    if (depth > 16) {
+        return false;
+    }
+    bool ok = true;
+    std::vector<fs::path> children;
+    std::error_code error;
+    for (fs::directory_iterator it(path, error), end; !error && it != end;
+         it.increment(error)) {
+        children.push_back(it->path());
+    }
+    if (error) {
+        ok = false;
+    }
+    for (const fs::path& child : children) {
+        if (is_real_directory(child)) {
+            ok = remove_tree(child, depth + 1) && ok;
+        } else {
+            ok = remove_entry(child) && ok;
+        }
+    }
+    return remove_entry(path) && ok;
+}
+
+// A fresh directory under the system temp directory. The name is only used
+// if create_directory reports that this call created it; an existing entry
+// is never reused or deleted. The destructor removes exactly that
+// directory, so cleanup also runs after failed checks.
+class ScratchDir {
+public:
+    ScratchDir() {
+        std::error_code error;
+        const fs::path base = fs::temp_directory_path(error);
+        if (error) {
+            return;
+        }
+        const std::uint64_t seed =
+            static_cast<std::uint64_t>(
+                std::chrono::steady_clock::now().time_since_epoch().count()) ^
+            (static_cast<std::uint64_t>(std::random_device{}()) << 32U);
+        for (std::uint64_t attempt = 0; attempt < 64; ++attempt) {
+            std::ostringstream name;
+            name << "nfsu_render_test_" << std::hex << seed << '_' << counter_++
+                 << '_' << attempt;
+            const fs::path candidate = base / name.str();
+            if (fs::create_directory(candidate, error) && !error) {
+                path_ = candidate;
+                return;
+            }
+            error.clear();
+        }
+    }
+    ScratchDir(const ScratchDir&) = delete;
+    ScratchDir& operator=(const ScratchDir&) = delete;
+    // Does not use fs::remove_all: MinGW's version follows symlinks for
+    // status and loops forever on a dangling link it cannot see. This
+    // removal never follows links and makes a single bounded pass.
+    ~ScratchDir() {
+        if (!path_.empty() && !remove_tree(path_, 0)) {
+            std::cerr << "warning: could not fully remove scratch directory "
+                      << path_.u8string() << '\n';
+        }
+    }
+
+    bool ok() const { return !path_.empty(); }
+    const fs::path& path() const { return path_; }
+
+private:
+    static inline std::uint64_t counter_ = 0;
+    fs::path path_;
+};
+
+// Frame, options and a rasterizer with an unlit, untextured default.
+struct Canvas {
+    nfsu::Frame frame;
+    nfsu::RenderOptions options;
+    nfsu::RenderLimits limits;
+    nfsu::RenderStats stats;
+    nfsu::RasterMaterial material;
+
+    Canvas(std::uint32_t width, std::uint32_t height) {
+        options.width = width;
+        options.height = height;
+        options.shading = nfsu::ShadingMode::none;
+        options.background[0] = 0;
+        options.background[1] = 0;
+        options.background[2] = 0;
+        options.background[3] = 0;
+        std::string error;
+        check(frame.reset(width, height, options.background, limits, error),
+              "canvas reset: " + error);
+        material.fallback_pattern = false;
+        material.fallback[0] = 200;
+        material.fallback[1] = 100;
+        material.fallback[2] = 50;
+    }
+
+    bool draw(const nfsu::ClipVertex (&v)[3], std::uint32_t id,
+              const nfsu::RasterMaterial* override_material = nullptr) {
+        nfsu::Rasterizer rasterizer(frame, options, limits, stats);
+        std::string error;
+        return rasterizer.draw_triangle(
+            v, override_material != nullptr ? *override_material : material, id,
+            error);
+    }
+
+    const unsigned char* pixel(std::uint32_t x, std::uint32_t y) const {
+        return &frame.rgba()[(std::size_t{y} * frame.width() + x) * 4U];
+    }
+
+    bool covered(std::uint32_t x, std::uint32_t y) const {
+        return frame.ids()[std::size_t{y} * frame.width() + x] != nfsu::kNoTriangle;
+    }
+
+    std::uint64_t covered_count() const {
+        std::uint64_t count = 0;
+        for (std::uint32_t id : frame.ids()) {
+            count += id != nfsu::kNoTriangle ? 1 : 0;
+        }
+        return count;
+    }
+};
+
+// Clip vertex for screen position (sx, sy) in pixels at depth z and w.
+nfsu::ClipVertex at(const Canvas& canvas, double sx, double sy,
+                    double z = 0.5, double w = 1.0) {
+    nfsu::ClipVertex v;
+    v.x = (2.0 * sx / canvas.frame.width() - 1.0) * w;
+    v.y = (1.0 - 2.0 * sy / canvas.frame.height()) * w;
+    v.z = z * w;
+    v.w = w;
+    return v;
+}
+
+nfsu::RenderTexture make_texture(std::uint32_t width, std::uint32_t height) {
+    nfsu::RenderTexture texture;
+    texture.width = width;
+    texture.height = height;
+    texture.valid = true;
+    texture.rgba.resize(std::size_t{width} * height * 4U);
+    for (std::uint32_t y = 0; y < height; ++y) {
+        for (std::uint32_t x = 0; x < width; ++x) {
+            unsigned char* p = &texture.rgba[(std::size_t{y} * width + x) * 4U];
+            p[0] = static_cast<unsigned char>(x & 0xFFU);
+            p[1] = static_cast<unsigned char>(y & 0xFFU);
+            p[2] = 77;
+            p[3] = 255;
+        }
+    }
+    return texture;
+}
+
+void test_trig() {
+    check(nfsu::det_sin_deg(0.0) == 0.0, "sin 0");
+    check(nfsu::det_cos_deg(0.0) == 1.0, "cos 0");
+    check(nfsu::det_sin_deg(90.0) == 1.0, "sin 90");
+    check(nfsu::det_cos_deg(90.0) == 0.0, "cos 90");
+    check(nfsu::det_sin_deg(-90.0) == -1.0, "sin -90");
+    check(nfsu::det_cos_deg(180.0) == -1.0, "cos 180");
+    check(nfsu::det_sin_deg(360.0 + 30.0) == nfsu::det_sin_deg(30.0), "sin periodic");
+    check(nfsu::det_cos_deg(-330.0) == nfsu::det_cos_deg(30.0), "cos periodic");
+    for (int d = -720; d <= 720; d += 7) {
+        const double r = d * 3.14159265358979323846 / 180.0;
+        check(std::fabs(nfsu::det_sin_deg(d) - std::sin(r)) < 1e-14,
+              "sin accuracy at " + std::to_string(d));
+        check(std::fabs(nfsu::det_cos_deg(d) - std::cos(r)) < 1e-14,
+              "cos accuracy at " + std::to_string(d));
+    }
+    check(nfsu::det_sin_deg(std::numeric_limits<double>::quiet_NaN()) == 0.0,
+          "sin of NaN is defined");
+}
+
+void test_camera() {
+    nfsu::OrbitCamera camera;
+    camera.target = {0.0, 0.0, 0.0};
+    camera.distance = 5.0;
+    camera.yaw_deg = 0.0;
+    camera.pitch_deg = 0.0;
+    nfsu::Vec3 eye = nfsu::orbit_eye(camera);
+    check(eye.x == 5.0 && eye.y == 0.0 && eye.z == 0.0, "yaw 0 eye on +X");
+    camera.yaw_deg = 90.0;
+    eye = nfsu::orbit_eye(camera);
+    check(eye.x == 0.0 && eye.y == 0.0 && eye.z == 5.0, "yaw 90 eye on +Z");
+    camera.yaw_deg = 0.0;
+    camera.pitch_deg = 30.0;
+    eye = nfsu::orbit_eye(camera);
+    check(std::fabs(eye.y - 2.5) < 1e-14 && eye.y > 0.0, "pitch 30 above");
+    camera.yaw_deg = 360.0;
+    const nfsu::Vec3 wrapped = nfsu::orbit_eye(camera);
+    camera.yaw_deg = 0.0;
+    const nfsu::Vec3 plain = nfsu::orbit_eye(camera);
+    check(wrapped.x == plain.x && wrapped.y == plain.y && wrapped.z == plain.z,
+          "yaw 360 equals yaw 0 exactly");
+
+    std::string error;
+    nfsu::OrbitCamera bad;
+    check(nfsu::validate_camera(bad, error), "default camera is valid");
+    bad.pitch_deg = 90.0;
+    check(!nfsu::validate_camera(bad, error), "pitch 90 rejected");
+    bad = nfsu::OrbitCamera{};
+    bad.pitch_deg = -89.0;
+    check(nfsu::validate_camera(bad, error), "pitch -89 accepted");
+    bad.distance = std::numeric_limits<double>::quiet_NaN();
+    check(!nfsu::validate_camera(bad, error), "NaN distance rejected");
+    bad = nfsu::OrbitCamera{};
+    bad.distance = 0.0;
+    check(!nfsu::validate_camera(bad, error), "zero distance rejected");
+    bad = nfsu::OrbitCamera{};
+    bad.near_plane = 2.0;
+    bad.far_plane = 2.0;
+    check(!nfsu::validate_camera(bad, error), "near == far rejected");
+    bad = nfsu::OrbitCamera{};
+    bad.fov_y_deg = 171.0;
+    check(!nfsu::validate_camera(bad, error), "fov 171 rejected");
+    bad = nfsu::OrbitCamera{};
+    bad.target.y = std::numeric_limits<double>::infinity();
+    check(!nfsu::validate_camera(bad, error), "infinite target rejected");
+    bad = nfsu::OrbitCamera{};
+    bad.yaw_deg = 1e9;
+    check(!nfsu::validate_camera(bad, error), "huge yaw rejected");
+
+    // Basis at yaw 0: looking down -X, screen right is -Z (the car's left
+    // side, as seen from in front of the car), screen up is +Y.
+    camera = nfsu::OrbitCamera{};
+    camera.target = {0.0, 0.0, 0.0};
+    camera.distance = 5.0;
+    camera.yaw_deg = 0.0;
+    camera.pitch_deg = 0.0;
+    nfsu::CameraFrame frame;
+    check(nfsu::make_camera_frame(camera, 100, 50, frame, error), "camera frame");
+    check(frame.forward.x == -1.0 && frame.forward.y == 0.0 &&
+              frame.forward.z == 0.0, "forward -X");
+    check(frame.right.x == 0.0 && frame.right.y == 0.0 && frame.right.z == -1.0,
+          "right -Z");
+    check(frame.up.x == 0.0 && frame.up.y == 1.0 && frame.up.z == 0.0, "up +Y");
+    check(!nfsu::make_camera_frame(camera, 0, 50, frame, error), "zero width rejected");
+
+    // yaw 90 looks at the right side from +Z: the car front (+X) is on the
+    // right of the screen.
+    camera.yaw_deg = 90.0;
+    check(nfsu::make_camera_frame(camera, 100, 100, frame, error), "yaw 90 frame");
+    const nfsu::ClipVertex front = nfsu::project_point(frame, {1.0, 0.0, 0.0});
+    check(front.x > 0.0, "yaw 90: +X projects right");
+    camera.yaw_deg = -90.0;
+    check(nfsu::make_camera_frame(camera, 100, 100, frame, error), "yaw -90 frame");
+    const nfsu::ClipVertex mirrored = nfsu::project_point(frame, {1.0, 0.0, 0.0});
+    check(mirrored.x < 0.0 && mirrored.x == -front.x,
+          "yaw -90 is the mirror view of yaw 90");
+}
+
+void test_projection() {
+    nfsu::OrbitCamera camera;
+    camera.target = {0.0, 0.0, 0.0};
+    camera.distance = 10.0;
+    camera.yaw_deg = 0.0;
+    camera.pitch_deg = 0.0;
+    camera.fov_y_deg = 90.0;
+    camera.near_plane = 1.0;
+    camera.far_plane = 101.0;
+    nfsu::CameraFrame frame;
+    std::string error;
+    check(nfsu::make_camera_frame(camera, 200, 100, frame, error), "projection frame");
+    check(std::fabs(frame.focal_y - 1.0) < 1e-15, "fov 90 focal 1");
+    check(std::fabs(frame.focal_x - 0.5) < 1e-15, "aspect 2:1 focal_x 0.5");
+
+    const nfsu::ClipVertex center = nfsu::project_point(frame, {0.0, 0.0, 0.0});
+    check(center.x == 0.0 && center.y == 0.0 && center.w == 10.0,
+          "target projects to the center at w = distance");
+    // 45 degrees up at distance 10: y / w = 1, the top edge of the frame.
+    const nfsu::ClipVertex top = nfsu::project_point(frame, {0.0, 10.0, 0.0});
+    check(std::fabs(top.y / top.w - 1.0) < 1e-14, "top edge at y/w = 1");
+    const nfsu::ClipVertex near_point = nfsu::project_point(frame, {9.0, 0.0, 0.0});
+    check(near_point.w == 1.0 && near_point.z == 0.0, "near plane depth 0");
+    const nfsu::ClipVertex far_point = nfsu::project_point(frame, {-91.0, 0.0, 0.0});
+    check(far_point.w == 101.0 && std::fabs(far_point.z / far_point.w - 1.0) < 1e-15,
+          "far plane depth 1");
+    const nfsu::ClipVertex mid = nfsu::project_point(frame, {0.0, 0.0, 0.0});
+    check(mid.z / mid.w > 0.0 && mid.z / mid.w < 1.0, "depth inside 0..1");
+}
+
+nfsu::ClipVertex clip_vertex(double x, double y, double w, double u = 0.0) {
+    nfsu::ClipVertex v;
+    v.x = x;
+    v.y = y;
+    v.z = 0.0;
+    v.w = w;
+    v.u = u;
+    return v;
+}
+
+void test_near_clipping() {
+    nfsu::ClipVertex out[nfsu::kMaxClipVertices];
+    const double near_plane = 1.0;
+    const nfsu::ClipVertex none[3] = {clip_vertex(0, 0, 0.5), clip_vertex(0.1, 0, 0.2),
+                                      clip_vertex(0, 0.1, -3.0)};
+    check(nfsu::clip_triangle(none, near_plane, out) == 0, "0 inside: rejected");
+
+    const nfsu::ClipVertex one[3] = {clip_vertex(0, 0, 3.0, 1.0),
+                                     clip_vertex(0.5, 0, 0.0, 0.0),
+                                     clip_vertex(0, 0.5, -1.0, 0.0)};
+    std::size_t count = nfsu::clip_triangle(one, near_plane, out);
+    check(count == 3, "1 inside: one triangle");
+    for (std::size_t i = 0; i < count; ++i) {
+        check(out[i].w >= near_plane, "1 inside: all w >= near");
+    }
+    // Edge from w=3 (u=1) to w=0 (u=0) crosses w=1 at t = 2/3.
+    check(std::fabs(out[1].w - 1.0) < 1e-15 && std::fabs(out[1].u - 1.0 / 3.0) < 1e-15,
+          "1 inside: attributes interpolated in clip space");
+
+    const nfsu::ClipVertex two[3] = {clip_vertex(0, 0, 3.0), clip_vertex(0.5, 0, 2.0),
+                                     clip_vertex(0, 0.5, 0.0)};
+    count = nfsu::clip_triangle(two, near_plane, out);
+    check(count == 4, "2 inside: quad (two triangles)");
+    for (std::size_t i = 0; i < count; ++i) {
+        check(out[i].w >= near_plane, "2 inside: all w >= near");
+    }
+
+    const nfsu::ClipVertex all[3] = {clip_vertex(0, 0, 3.0), clip_vertex(0.5, 0, 2.0),
+                                     clip_vertex(0, 0.5, 1.0)};
+    count = nfsu::clip_triangle(all, near_plane, out);
+    check(count == 3 && out[2].w == 1.0 && out[0].x == 0.0, "3 inside, w == near kept");
+
+    // A shared edge gives bit-identical intersections in both triangles,
+    // even though they traverse it in opposite directions.
+    const nfsu::ClipVertex p = clip_vertex(0.3, 0.1, 5.0, 0.25);
+    const nfsu::ClipVertex q = clip_vertex(-0.7, 0.2, 0.1, 0.75);
+    const nfsu::ClipVertex left[3] = {p, q, clip_vertex(0, 1.0, 4.0)};
+    const nfsu::ClipVertex right[3] = {q, p, clip_vertex(0, -1.0, 4.0)};
+    nfsu::ClipVertex out_left[nfsu::kMaxClipVertices];
+    nfsu::ClipVertex out_right[nfsu::kMaxClipVertices];
+    const std::size_t nl = nfsu::clip_triangle(left, near_plane, out_left);
+    const std::size_t nr = nfsu::clip_triangle(right, near_plane, out_right);
+    bool found = false;
+    for (std::size_t i = 0; i < nl; ++i) {
+        for (std::size_t j = 0; j < nr; ++j) {
+            if (out_left[i].w == near_plane && out_right[j].w == near_plane &&
+                out_left[i].x == out_right[j].x && out_left[i].y == out_right[j].y &&
+                out_left[i].u == out_right[j].u) {
+                found = true;
+            }
+        }
+    }
+    check(found, "shared edge intersection is identical");
+
+    // Guard band: huge x is clipped to |x| <= 8 w.
+    const nfsu::ClipVertex wide[3] = {clip_vertex(-1e30, 0, 1.0), clip_vertex(1e30, 0, 1.0),
+                                      clip_vertex(0, 1.0, 1.0)};
+    count = nfsu::clip_triangle(wide, near_plane, out);
+    check(count >= 3, "huge triangle survives the guard band");
+    for (std::size_t i = 0; i < count; ++i) {
+        check(std::fabs(out[i].x) <= nfsu::kGuardBand * out[i].w * (1.0 + 1e-12),
+              "guard band bound");
+    }
+    const nfsu::ClipVertex bad[3] = {clip_vertex(std::numeric_limits<double>::quiet_NaN(), 0, 2.0),
+                                     clip_vertex(0, 0, 2.0), clip_vertex(0, 1, 2.0)};
+    check(nfsu::clip_triangle(bad, near_plane, out) == 0, "NaN vertex rejected");
+}
+
+void test_viewport_bounds() {
+    Canvas canvas(13, 7);
+    // Covers far more than the frame in every direction.
+    const nfsu::ClipVertex big[3] = {at(canvas, -40, -40), at(canvas, 200, -40),
+                                     at(canvas, -40, 200)};
+    check(canvas.draw(big, 1), "big triangle drawn");
+    check(canvas.covered_count() == 13U * 7U, "big triangle covers the frame exactly");
+    check(canvas.stats.fragments == 13U * 7U, "no fragment outside the frame");
+
+    Canvas off(8, 8);
+    const nfsu::ClipVertex outside[3] = {at(off, 20, 1), at(off, 30, 1), at(off, 20, 7)};
+    check(off.draw(outside, 1), "offscreen triangle");
+    check(off.covered_count() == 0 && off.stats.pixel_tests == 0,
+          "offscreen triangle tests no pixels");
+
+    Canvas partial(8, 8);
+    const nfsu::ClipVertex half[3] = {at(partial, 4, -10), at(partial, 30, -10),
+                                      at(partial, 4, 30)};
+    check(partial.draw(half, 1), "partial triangle");
+    for (std::uint32_t y = 0; y < 8; ++y) {
+        for (std::uint32_t x = 0; x < 8; ++x) {
+            check(partial.covered(x, y) == (x >= 4), "partial triangle column rule");
+        }
+    }
+}
+
+void test_fill_rule_exact() {
+    // Right triangle (0,0) (8,0) (0,8): centers with i + j <= 6 are inside;
+    // centers on the hypotenuse (i + j == 7) belong to the right/bottom
+    // edge and are excluded.
+    Canvas canvas(8, 8);
+    const nfsu::ClipVertex tri[3] = {at(canvas, 0, 0), at(canvas, 0, 8), at(canvas, 8, 0)};
+    check(canvas.draw(tri, 1), "exact triangle");
+    const char* expected[8] = {
+        "#######.", "######..", "#####...", "####....",
+        "###.....", "##......", "#.......", "........"};
+    for (std::uint32_t y = 0; y < 8; ++y) {
+        for (std::uint32_t x = 0; x < 8; ++x) {
+            check(canvas.covered(x, y) == (expected[y][x] == '#'),
+                  "fill rule pixel " + std::to_string(x) + "," + std::to_string(y));
+        }
+    }
+    check(canvas.pixel(0, 0)[0] == 200 && canvas.pixel(0, 0)[1] == 100 &&
+              canvas.pixel(0, 0)[2] == 50 && canvas.pixel(0, 0)[3] == 255,
+          "fallback color written with alpha 255");
+    check(canvas.pixel(7, 7)[3] == 0, "background untouched");
+
+    // Horizontal edges on sample rows: top included, bottom excluded.
+    Canvas rows(8, 8);
+    const nfsu::ClipVertex r0[3] = {at(rows, 0, 2.5), at(rows, 0, 6.5), at(rows, 8, 6.5)};
+    const nfsu::ClipVertex r1[3] = {at(rows, 0, 2.5), at(rows, 8, 6.5), at(rows, 8, 2.5)};
+    check(rows.draw(r0, 1) && rows.draw(r1, 2), "row rectangle");
+    for (std::uint32_t y = 0; y < 8; ++y) {
+        check(rows.covered(3, y) == (y >= 2 && y <= 5), "row rule at y " + std::to_string(y));
+    }
+}
+
+void test_shared_edges() {
+    // Quad split along a diagonal through pixel centers: every pixel is
+    // covered exactly once.
+    for (int reverse = 0; reverse < 2; ++reverse) {
+        Canvas canvas(16, 16);
+        const nfsu::ClipVertex a = at(canvas, 0, 0);
+        const nfsu::ClipVertex b = at(canvas, 16, 0);
+        const nfsu::ClipVertex c = at(canvas, 16, 16);
+        const nfsu::ClipVertex d = at(canvas, 0, 16);
+        const nfsu::ClipVertex t0[3] = {a, b, c};
+        const nfsu::ClipVertex t1a[3] = {a, c, d};
+        const nfsu::ClipVertex t1b[3] = {a, d, c};
+        check(canvas.draw(t0, 1) && canvas.draw(reverse ? t1b : t1a, 2), "quad");
+        check(canvas.stats.fragments == 256, "quad: each pixel covered exactly once");
+        check(canvas.covered_count() == 256, "quad: no holes");
+    }
+
+    // Eight triangles fanned around the center of pixel (8, 8).
+    Canvas fan(16, 16);
+    const double cx = 8.5;
+    const double cy = 8.5;
+    const double ring[8][2] = {{2.5, 2.5}, {8.5, 1.0}, {14.5, 2.5}, {15.0, 8.5},
+                               {14.5, 14.5}, {8.5, 15.0}, {2.5, 14.5}, {1.0, 8.5}};
+    for (int i = 0; i < 8; ++i) {
+        const nfsu::ClipVertex t[3] = {at(fan, cx, cy), at(fan, ring[i][0], ring[i][1]),
+                                       at(fan, ring[(i + 1) % 8][0], ring[(i + 1) % 8][1])};
+        check(fan.draw(t, static_cast<std::uint32_t>(i)), "fan triangle");
+    }
+    check(fan.stats.fragments == fan.covered_count(), "fan: no pixel covered twice");
+    check(fan.covered(8, 8), "fan: center pixel covered");
+}
+
+void test_winding_and_culling() {
+    Canvas canvas(8, 8);
+    // Counter-clockwise as seen on screen: the source front face.
+    const nfsu::ClipVertex ccw[3] = {at(canvas, 1, 1), at(canvas, 1, 7), at(canvas, 7, 7)};
+    const nfsu::ClipVertex cw[3] = {at(canvas, 1, 1), at(canvas, 7, 7), at(canvas, 1, 7)};
+    check(canvas.draw(ccw, 1), "ccw");
+    check(canvas.stats.triangles_front == 1 && canvas.stats.triangles_back == 0,
+          "ccw is front");
+    const std::vector<unsigned char> image = canvas.frame.rgba();
+
+    Canvas other(8, 8);
+    check(other.draw(cw, 1), "cw");
+    check(other.stats.triangles_back == 1, "cw is back");
+    check(other.frame.rgba() == image, "both sides render identically without culling");
+
+    Canvas culled(8, 8);
+    culled.options.cull = nfsu::CullMode::back;
+    check(culled.draw(cw, 1) && culled.draw(ccw, 2), "cull back");
+    check(culled.stats.triangles_culled == 1 && culled.stats.triangles_rasterized == 1,
+          "cull back drops one");
+    check(culled.frame.rgba() == image, "cull back keeps the front face");
+
+    Canvas front(8, 8);
+    front.options.cull = nfsu::CullMode::front;
+    check(front.draw(ccw, 1), "cull front");
+    check(front.covered_count() == 0 && front.stats.triangles_culled == 1,
+          "cull front drops the front face");
+}
+
+void test_degenerate() {
+    Canvas canvas(8, 8);
+    const nfsu::ClipVertex line[3] = {at(canvas, 1, 1), at(canvas, 4, 4), at(canvas, 7, 7)};
+    const nfsu::ClipVertex point[3] = {at(canvas, 3, 3), at(canvas, 3, 3), at(canvas, 3, 3)};
+    const nfsu::ClipVertex tiny[3] = {at(canvas, 3.1, 3.1), at(canvas, 3.1, 3.2),
+                                      at(canvas, 3.2, 3.2)};
+    check(canvas.draw(line, 1) && canvas.draw(point, 2) && canvas.draw(tiny, 3),
+          "degenerate draws");
+    check(canvas.stats.triangles_degenerate_screen == 2, "line and point degenerate");
+    check(canvas.stats.triangles_rasterized == 1, "tiny triangle rasterized");
+    check(canvas.covered_count() == 0, "degenerate triangles draw nothing");
+}
+
+void test_depth_order() {
+    const auto render = [](bool swap) {
+        Canvas canvas(8, 8);
+        nfsu::RasterMaterial near_material = canvas.material;
+        near_material.fallback[0] = 10;
+        nfsu::RasterMaterial far_material = canvas.material;
+        far_material.fallback[0] = 250;
+        const nfsu::ClipVertex near_tri[3] = {at(canvas, 0, 0, 0.2), at(canvas, 0, 8, 0.2),
+                                              at(canvas, 8, 8, 0.2)};
+        const nfsu::ClipVertex far_tri[3] = {at(canvas, 0, 0, 0.7), at(canvas, 0, 8, 0.7),
+                                             at(canvas, 8, 0, 0.7)};
+        if (swap) {
+            canvas.draw(far_tri, 1, &far_material);
+            canvas.draw(near_tri, 2, &near_material);
+        } else {
+            canvas.draw(near_tri, 2, &near_material);
+            canvas.draw(far_tri, 1, &far_material);
+        }
+        return canvas.frame.rgba();
+    };
+    const std::vector<unsigned char> a = render(false);
+    const std::vector<unsigned char> b = render(true);
+    check(a == b, "depth result independent of draw order");
+    check(a[(2 * 8 + 1) * 4] == 10, "nearer triangle wins");
+    check(a[(1 * 8 + 5) * 4] == 250, "far triangle visible where uncovered");
+
+    // Equal depth: the larger id wins in any order.
+    const auto coplanar = [](bool swap) {
+        Canvas canvas(8, 8);
+        nfsu::RasterMaterial m5 = canvas.material;
+        m5.fallback[1] = 5;
+        nfsu::RasterMaterial m9 = canvas.material;
+        m9.fallback[1] = 9;
+        const nfsu::ClipVertex tri[3] = {at(canvas, 0, 0), at(canvas, 0, 8), at(canvas, 8, 8)};
+        if (swap) {
+            canvas.draw(tri, 9, &m9);
+            canvas.draw(tri, 5, &m5);
+        } else {
+            canvas.draw(tri, 5, &m5);
+            canvas.draw(tri, 9, &m9);
+        }
+        return canvas.frame.rgba();
+    };
+    const std::vector<unsigned char> c = coplanar(false);
+    check(c == coplanar(true), "coplanar tie independent of draw order");
+    check(c[(7 * 8 + 1) * 4 + 1] == 9, "coplanar tie: larger id wins");
+
+    // Beyond the far plane is discarded.
+    Canvas far_canvas(8, 8);
+    const nfsu::ClipVertex beyond[3] = {at(far_canvas, 0, 0, 1.5), at(far_canvas, 0, 8, 1.5),
+                                        at(far_canvas, 8, 8, 1.5)};
+    check(far_canvas.draw(beyond, 1), "beyond far");
+    check(far_canvas.covered_count() == 0 && far_canvas.stats.fragments_far_discarded > 0,
+          "beyond far discarded");
+}
+
+void test_perspective_uv() {
+    // Full-screen quad whose left edge is at w = 1 and right edge at w = 4,
+    // u from 0 to 1. Perspective-correct u at screen fraction s is
+    // (s / 4) / ((1 - s) + s / 4), not s.
+    Canvas canvas(64, 4);
+    const nfsu::RenderTexture texture = make_texture(256, 1);
+    nfsu::RasterMaterial material;
+    material.texture = &texture;
+    const nfsu::ClipVertex lt = clip_vertex(-1, 1, 1, 0);
+    const nfsu::ClipVertex lb = clip_vertex(-1, -1, 1, 0);
+    const nfsu::ClipVertex rt = clip_vertex(4, 4, 4, 1);
+    const nfsu::ClipVertex rb = clip_vertex(4, -4, 4, 1);
+    const nfsu::ClipVertex t0[3] = {lt, lb, rb};
+    const nfsu::ClipVertex t1[3] = {lt, rb, rt};
+    check(canvas.draw(t0, 1, &material) && canvas.draw(t1, 2, &material), "perspective quad");
+    for (std::uint32_t x = 0; x < 64; ++x) {
+        const double s = (x + 0.5) / 64.0;
+        const double u = (s / 4.0) / ((1.0 - s) + s / 4.0);
+        const int expected = static_cast<int>(std::floor(u * 256.0));
+        const int got = canvas.pixel(x, 1)[0];
+        check(std::abs(got - expected) <= 1,
+              "perspective u at column " + std::to_string(x) + ": got " +
+                  std::to_string(got) + " expected " + std::to_string(expected));
+    }
+    check(canvas.pixel(32, 1)[0] < 60, "middle is not affine (which would be 128)");
+}
+
+void test_uv_wrap_and_flip() {
+    const nfsu::RenderTexture texture = make_texture(4, 4);
+    const auto sample = [&](double u, double v, bool flip) {
+        Canvas canvas(4, 4);
+        canvas.options.flip_v = flip;
+        nfsu::RasterMaterial material;
+        material.texture = &texture;
+        nfsu::ClipVertex a = at(canvas, -2, -2);
+        nfsu::ClipVertex b = at(canvas, -2, 20);
+        nfsu::ClipVertex c = at(canvas, 20, -2);
+        for (nfsu::ClipVertex* p : {&a, &b, &c}) {
+            p->u = u;
+            p->v = v;
+        }
+        const nfsu::ClipVertex tri[3] = {a, b, c};
+        canvas.draw(tri, 1, &material);
+        return std::pair<int, int>(canvas.pixel(0, 0)[0], canvas.pixel(0, 0)[1]);
+    };
+    check(sample(0.1, 0.1, false) == std::pair<int, int>(0, 0), "in-range uv");
+    check(sample(0.6, 0.3, false) == std::pair<int, int>(2, 1), "in-range uv 2");
+    check(sample(-0.25, -0.75, false) == std::pair<int, int>(3, 1), "negative uv wraps");
+    check(sample(209.18, -39.68, false) == std::pair<int, int>(0, 1), "large uv wraps");
+    check(sample(1e20, -1e20, false) == std::pair<int, int>(0, 0), "huge uv wraps to 0");
+    check(sample(-1e-17, 2.1, false) == std::pair<int, int>(3, 0), "tiny negative u stays in range");
+    check(sample(0.1, 0.1, true) == std::pair<int, int>(0, 3), "flip v uses 1 - v");
+    check(sample(0.1, 0.9, true) == std::pair<int, int>(0, 0), "flip v 0.9");
+}
+
+void test_alpha() {
+    nfsu::RenderTexture texture = make_texture(2, 1);
+    texture.rgba[3] = 127;
+    texture.rgba[7] = 128;
+    const auto run = [&](std::uint8_t cutoff, nfsu::RenderStats& stats) {
+        Canvas canvas(2, 1);
+        canvas.options.alpha_cutoff = cutoff;
+        nfsu::RasterMaterial material;
+        material.texture = &texture;
+        nfsu::ClipVertex a = at(canvas, 0, -4);
+        nfsu::ClipVertex b = at(canvas, 0, 5);
+        nfsu::ClipVertex c = at(canvas, 2, -4);
+        nfsu::ClipVertex d = at(canvas, 2, 5);
+        a.u = b.u = 0.0;
+        c.u = d.u = 1.0;
+        const nfsu::ClipVertex t0[3] = {a, b, d};
+        const nfsu::ClipVertex t1[3] = {a, d, c};
+        canvas.draw(t0, 1, &material);
+        canvas.draw(t1, 2, &material);
+        stats = canvas.stats;
+        return std::pair<bool, bool>(canvas.covered(0, 0), canvas.covered(1, 0));
+    };
+    nfsu::RenderStats stats;
+    check(run(128, stats) == std::pair<bool, bool>(false, true), "alpha 127 discarded, 128 kept");
+    check(stats.fragments_alpha_discarded == 1, "alpha discard counted");
+    check(run(0, stats) == std::pair<bool, bool>(true, true), "cutoff 0 keeps all");
+    check(run(255, stats) == std::pair<bool, bool>(false, false), "cutoff 255 drops both");
+}
+
+void test_vertex_color_and_fallback() {
+    unsigned char c1[4];
+    unsigned char c2[4];
+    unsigned char c3[4];
+    nfsu::fallback_color(0x77A20245U, c1);
+    nfsu::fallback_color(0x77A20245U, c2);
+    nfsu::fallback_color(0xBD1F0E0AU, c3);
+    check(std::memcmp(c1, c2, 4) == 0, "fallback color deterministic");
+    check(std::memcmp(c1, c3, 3) != 0, "fallback colors differ per hash");
+    for (int k = 0; k < 3; ++k) {
+        check(c1[k] >= 64 && c1[k] <= 223 && c3[k] >= 64 && c3[k] <= 223,
+              "fallback channel range");
+    }
+    check(c1[3] == 255, "fallback opaque");
+
+    nfsu::RenderTexture white = make_texture(1, 1);
+    white.rgba = {255, 255, 255, 255};
+    const auto run = [&](bool vertex_color) {
+        Canvas canvas(2, 2);
+        canvas.options.vertex_color = vertex_color;
+        nfsu::RasterMaterial material;
+        material.texture = &white;
+        nfsu::ClipVertex a = at(canvas, -2, -2);
+        nfsu::ClipVertex b = at(canvas, -2, 9);
+        nfsu::ClipVertex c = at(canvas, 9, -2);
+        for (nfsu::ClipVertex* p : {&a, &b, &c}) {
+            p->r = 255;
+            p->g = 128;
+            p->b = 0;
+        }
+        const nfsu::ClipVertex tri[3] = {a, b, c};
+        canvas.draw(tri, 1, &material);
+        const unsigned char* p = canvas.pixel(1, 1);
+        return std::vector<int>{p[0], p[1], p[2]};
+    };
+    check(run(true) == std::vector<int>{255, 128, 0}, "vertex color modulates");
+    check(run(false) == std::vector<int>{255, 255, 255}, "vertex color off by default");
+
+    // Fallback checker: 8 cells per UV unit, darker cells at 3/4.
+    Canvas canvas(16, 1);
+    canvas.material.fallback_pattern = true;
+    nfsu::ClipVertex a = at(canvas, 0, -4);
+    nfsu::ClipVertex b = at(canvas, 0, 5);
+    nfsu::ClipVertex c = at(canvas, 16, -4);
+    nfsu::ClipVertex d = at(canvas, 16, 5);
+    c.u = d.u = 1.0;
+    const nfsu::ClipVertex t0[3] = {a, b, d};
+    const nfsu::ClipVertex t1[3] = {a, d, c};
+    canvas.draw(t0, 1);
+    canvas.draw(t1, 2);
+    check(canvas.pixel(0, 0)[0] == 200 && canvas.pixel(2, 0)[0] == 150 &&
+              canvas.pixel(4, 0)[0] == 200,
+          "fallback checker pattern");
+
+    // Flat shade factor.
+    Canvas shaded(2, 2);
+    shaded.material.shade = 128;
+    const nfsu::ClipVertex full[3] = {at(shaded, -2, -2), at(shaded, -2, 9), at(shaded, 9, -2)};
+    shaded.draw(full, 1);
+    check(shaded.pixel(0, 0)[0] == 100 && shaded.pixel(0, 0)[1] == 50 &&
+              shaded.pixel(0, 0)[2] == 25,
+          "shade 128 halves color");
+}
+
+nfsu::MeshVertex vertex(float px, float py, float pz, float u = 0.0F, float v = 0.0F) {
+    nfsu::MeshVertex out;
+    out.px = px;
+    out.py = py;
+    out.pz = pz;
+    out.u = u;
+    out.v = v;
+    out.color[0] = out.color[1] = out.color[2] = out.color[3] = 255;
+    return out;
+}
+
+nfsu::MeshMaterial material_range(std::uint32_t first, std::uint32_t count,
+                                  std::uint32_t slot) {
+    nfsu::MeshMaterial material;
+    material.first_index = first;
+    material.index_count = count;
+    material.texture_slot = slot;
+    return material;
+}
+
+// Two quads facing +X (the front) at source pz = +0.5 (the car's left
+// side) and pz = -0.5 (right side). Group 0 uses a pack texture, group 1 a
+// hash that is not in the pack.
+nfsu::GeometryReport synthetic_scene() {
+    nfsu::GeometryReport report;
+    nfsu::Mesh mesh;
+    mesh.index = 0;
+    mesh.name = "TEST_MESH";
+    mesh.valid = true;
+    mesh.vertices = {
+        vertex(0, 0, 0.1F, 0, 0), vertex(0, 1, 0.1F, 0, 1), vertex(0, 1, 0.9F, 1, 1),
+        vertex(0, 0, 0.9F, 1, 0),
+        vertex(0, 0, -0.9F, 0, 0), vertex(0, 1, -0.9F, 0, 1), vertex(0, 1, -0.1F, 1, 1),
+        vertex(0, 0, -0.1F, 1, 0)};
+    mesh.triangles = {{0, 1, 2}, {0, 2, 3}, {4, 5, 6}, {4, 6, 7}, {1, 1, 2}};
+    mesh.texture_hashes = {0x11111111U, 0x22222222U};
+    mesh.materials = {material_range(0, 6, 0), material_range(6, 9, 1)};
+    report.meshes.push_back(mesh);
+
+    nfsu::Mesh broken;
+    broken.index = 1;
+    broken.name = "BROKEN";
+    broken.valid = false;
+    report.meshes.push_back(broken);
+    return report;
+}
+
+nfsu::RenderTextureSet synthetic_textures() {
+    nfsu::RenderTextureSet set;
+    nfsu::RenderTexture a = make_texture(4, 4);
+    a.hash = 0x11111111U;
+    set.textures.push_back(a);
+    nfsu::RenderTexture dup = make_texture(2, 2);
+    dup.hash = 0x33333333U;
+    set.textures.push_back(dup);
+    set.textures.push_back(dup);
+    nfsu::RenderTexture invalid;
+    invalid.hash = 0x44444444U;
+    set.textures.push_back(invalid);
+    return set;
+}
+
+nfsu::RenderOptions scene_options() {
+    nfsu::RenderOptions options;
+    options.width = 32;
+    options.height = 24;
+    options.camera.target = {0.0, 0.5, 0.0};
+    options.camera.yaw_deg = 0.0;
+    options.camera.pitch_deg = 0.0;
+    options.camera.distance = 4.0;
+    options.camera.fov_y_deg = 40.0;
+    return options;
+}
+
+void test_bindings() {
+    const nfsu::RenderTextureSet set = synthetic_textures();
+    nfsu::Mesh mesh;
+    mesh.texture_hashes = {0x11111111U, 0x22222222U, 0x33333333U, 0x44444444U};
+    const auto kind = [&](std::uint32_t slot) {
+        return nfsu::resolve_material(mesh, material_range(0, 3, slot), set).kind;
+    };
+    check(kind(0) == nfsu::BindingKind::resolved, "hash in pack resolves");
+    check(nfsu::resolve_material(mesh, material_range(0, 3, 0), set).texture_index == 0,
+          "resolved index");
+    check(kind(1) == nfsu::BindingKind::unresolved, "hash not in pack unresolved");
+    check(kind(2) == nfsu::BindingKind::unusable, "duplicate hash unusable");
+    check(kind(3) == nfsu::BindingKind::unusable, "invalid texture unusable");
+    check(kind(4) == nfsu::BindingKind::invalid_slot, "slot out of range");
+}
+
+void test_scene() {
+    const nfsu::GeometryReport geometry = synthetic_scene();
+    const nfsu::RenderTextureSet textures = synthetic_textures();
+    nfsu::RenderOptions options = scene_options();
+    const nfsu::RenderLimits limits;
+    nfsu::Frame frame;
+    nfsu::RenderStats stats;
+    std::string error;
+    check(nfsu::render_scene(geometry, textures, options, limits, frame, stats, error),
+          "scene render: " + error);
+    check(stats.meshes == 2 && stats.meshes_rendered == 1 &&
+              stats.meshes_skipped_invalid == 1, "scene meshes");
+    check(stats.material_groups == 2 && stats.groups_resolved == 1 &&
+              stats.groups_unresolved == 1 && stats.unresolved_hashes == 1,
+          "scene groups");
+    check(stats.triangles_submitted == 5 && stats.triangles_resolved == 2 &&
+              stats.triangles_fallback == 3, "scene triangles");
+    check(stats.triangles_degenerate_source == 1 &&
+              stats.triangles_degenerate_screen == 1, "degenerate source triangle preserved");
+    check(stats.triangles_rasterized == 4, "scene rasterized");
+    check(stats.pixels_drawn > 0 && stats.pixels_fallback > 0 &&
+              stats.pixels_fallback < stats.pixels_drawn, "scene pixel split");
+
+    // Mapping world = (px, py, -pz): source +pz (textured, the car's left)
+    // is on the right of the screen when viewed from the front.
+    const auto owner = [&](std::uint32_t x, std::uint32_t y) {
+        return frame.ids()[std::size_t{y} * frame.width() + x];
+    };
+    bool left_fallback = true;
+    bool right_textured = true;
+    unsigned char fb[4];
+    nfsu::fallback_color(0x22222222U, fb);
+    for (std::uint32_t y = 0; y < frame.height(); ++y) {
+        for (std::uint32_t x = 0; x < frame.width(); ++x) {
+            const std::uint32_t id = owner(x, y);
+            if (id == nfsu::kNoTriangle) {
+                continue;
+            }
+            if (x < 16) {
+                left_fallback = left_fallback && id >= 2;
+            } else {
+                right_textured = right_textured && id < 2;
+            }
+        }
+    }
+    check(left_fallback, "unresolved group on the left uses the fallback");
+    check(right_textured, "source +pz appears on the right from the front");
+
+    // Unlit so that the exact fallback colors are visible.
+    options.shading = nfsu::ShadingMode::none;
+    check(nfsu::render_scene(geometry, textures, options, limits, frame, stats, error),
+          "unlit scene");
+    bool saw_fallback = false;
+    for (std::size_t i = 0; i < frame.ids().size(); ++i) {
+        if (frame.ids()[i] >= 2 && frame.ids()[i] != nfsu::kNoTriangle) {
+            const unsigned char* p = &frame.rgba()[i * 4U];
+            const bool base = p[0] == fb[0] && p[1] == fb[1] && p[2] == fb[2];
+            const bool dark = p[0] == fb[0] * 3 / 4 && p[1] == fb[1] * 3 / 4 &&
+                              p[2] == fb[2] * 3 / 4;
+            check(base || dark, "fallback pixel color");
+            saw_fallback = true;
+        }
+    }
+    check(saw_fallback, "fallback pixels present");
+}
+
+void test_golden_and_rerender() {
+    const nfsu::GeometryReport geometry = synthetic_scene();
+    const nfsu::RenderTextureSet textures = synthetic_textures();
+    const nfsu::RenderOptions options = scene_options();
+    const nfsu::RenderLimits limits;
+    nfsu::Frame first;
+    nfsu::Frame second;
+    nfsu::RenderStats s1;
+    nfsu::RenderStats s2;
+    std::string error;
+    check(nfsu::render_scene(geometry, textures, options, limits, first, s1, error) &&
+              nfsu::render_scene(geometry, textures, options, limits, second, s2, error),
+          "rerender");
+    const std::string a = tga_bytes(first);
+    const std::string b = tga_bytes(second);
+    check(a == b, "rerender is byte-identical");
+    check(a.size() == 18U + 32U * 24U * 4U, "golden size");
+    const std::uint64_t hash = fnv1a64(a);
+    // Locks the synthetic scene; the pixel rules themselves are checked
+    // exactly by the tests above.
+    constexpr std::uint64_t kGolden = 0x4CAD673A74594A3FULL;
+    if (hash != kGolden) {
+        std::cerr << "golden FNV-1a 64: 0x" << std::hex << hash << std::dec << '\n';
+    }
+    check(hash == kGolden, "golden synthetic screenshot hash");
+    check(s1.pixels_drawn == s2.pixels_drawn && s1.fragments == s2.fragments,
+          "rerender stats identical");
+}
+
+void test_limits() {
+    nfsu::Frame frame;
+    nfsu::RenderLimits limits;
+    const unsigned char bg[4] = {0, 0, 0, 0};
+    std::string error;
+    check(!frame.reset(0, 0, bg, limits, error), "0x0 rejected");
+    check(!frame.reset(8193, 1, bg, limits, error), "8193 wide rejected");
+    check(!frame.reset(1, 8193, bg, limits, error), "8193 high rejected");
+    check(!frame.reset(8192, 8192, bg, limits, error), "over the pixel cap rejected");
+    check(frame.width() == 0 && frame.rgba().empty(), "nothing allocated on rejection");
+    limits.max_pixels = 100;
+    check(!frame.reset(11, 10, bg, limits, error), "custom pixel cap");
+    check(frame.reset(10, 10, bg, limits, error), "at the pixel cap accepted");
+
+    const nfsu::GeometryReport geometry = synthetic_scene();
+    const nfsu::RenderTextureSet textures = synthetic_textures();
+    nfsu::RenderOptions options = scene_options();
+    nfsu::RenderStats stats;
+    nfsu::Frame fresh;
+    nfsu::RenderLimits tight;
+    tight.max_source_triangles = 4;
+    check(!nfsu::render_scene(geometry, textures, options, tight, fresh, stats, error),
+          "triangle cap");
+    check(fresh.width() == 0, "triangle cap fails before allocating");
+
+    tight = nfsu::RenderLimits{};
+    tight.max_pixel_tests = 10;
+    check(!nfsu::render_scene(geometry, textures, options, tight, fresh, stats, error) &&
+              error.find("pixel test") != std::string::npos,
+          "pixel test cap");
+
+    tight = nfsu::RenderLimits{};
+    tight.max_raster_triangles = 1;
+    check(!nfsu::render_scene(geometry, textures, options, tight, fresh, stats, error),
+          "raster triangle cap");
+
+    options.camera.pitch_deg = 95.0;
+    check(!nfsu::render_scene(geometry, textures, options, nfsu::RenderLimits{}, fresh,
+                              stats, error), "invalid camera rejected");
+}
+
+// Literal-only JDLZ blob, as in texture_tests: a flags1 byte of 0 before
+// every 8 literals and one flags2 byte at the start.
+std::vector<unsigned char> jdlz_literals(const std::vector<unsigned char>& data) {
+    std::vector<unsigned char> body;
+    for (std::size_t i = 0; i < data.size(); ++i) {
+        if (i % 8 == 0) {
+            body.push_back(0x00);
+            if (i == 0) {
+                body.push_back(0x00);
+            }
+        }
+        body.push_back(data[i]);
+    }
+    std::vector<unsigned char> blob = {'J', 'D', 'L', 'Z', 0x02, 0x10, 0x00, 0x00};
+    const std::uint32_t sizes[2] = {static_cast<std::uint32_t>(data.size()),
+                                    static_cast<std::uint32_t>(body.size() + 16)};
+    for (std::uint32_t value : sizes) {
+        for (unsigned int k = 0; k < 4; ++k) {
+            blob.push_back(static_cast<unsigned char>((value >> (8U * k)) & 0xFFU));
+        }
+    }
+    blob.insert(blob.end(), body.begin(), body.end());
+    return blob;
+}
+
+// A pack of A8R8G8B8 4x4 textures (64 retained bytes each) backed by
+// literal JDLZ blobs in bytes. Record 2 is an invalid record and record 3
+// has a corrupt blob; both must fall back without failing the call.
+nfsu::TexturePack decode_pack(std::vector<unsigned char>& bytes) {
+    nfsu::TexturePack pack;
+    bytes.clear();
+    for (std::size_t i = 0; i < 4; ++i) {
+        std::vector<unsigned char> pixels(64);
+        for (std::size_t p = 0; p < pixels.size(); ++p) {
+            pixels[p] = static_cast<unsigned char>(i * 16 + p);
+        }
+        std::vector<unsigned char> blob = jdlz_literals(pixels);
+        if (i == 3) {
+            // First flags1 byte: the first token becomes a match that
+            // reaches before the output start.
+            blob[16] = 0xFF;
+        }
+        nfsu::TextureRecord record;
+        record.index = i;
+        record.hash = 0x100U + static_cast<std::uint32_t>(i);
+        record.valid = i != 2;
+        record.problem = i == 2 ? "synthetic invalid record" : "";
+        record.format = nfsu::PixelFormat::a8r8g8b8;
+        record.width = 4;
+        record.height = 4;
+        record.mip_count = 1;
+        record.data_size = 64;
+        record.top_level_size = 64;
+        record.blob_offset = bytes.size();
+        record.blob_size = static_cast<std::uint32_t>(blob.size());
+        bytes.insert(bytes.end(), blob.begin(), blob.end());
+        pack.textures.push_back(record);
+    }
+    return pack;
+}
+
+void test_texture_decode() {
+    std::vector<unsigned char> bytes;
+    const nfsu::TexturePack pack = decode_pack(bytes);
+    nfsu::RenderTextureSet set;
+    std::string error;
+
+    // The budget is checked with each valid record's full top-level size
+    // before it is decoded, since a decode failure cannot be known in
+    // advance: records 0, 1 and 3 need 192 bytes. Record 3 then fails to
+    // decode and retains nothing, so 128 bytes stay retained.
+    nfsu::RenderTextureLimits limits;
+    limits.max_total_bytes = 191;
+    check(!nfsu::decode_render_textures(bytes, pack, limits, set, error) &&
+              error.find("at texture 3") != std::string::npos,
+          "one byte below the budget of all valid records is fatal");
+    limits.max_total_bytes = 192;
+    const bool decoded = nfsu::decode_render_textures(bytes, pack, limits, set, error);
+    check(decoded, "decode at the exact aggregate limit: " + error);
+    check(set.decoded_bytes == 128 && set.textures.size() == 4, "decoded bytes counted");
+    if (set.textures.size() != 4 || set.textures[0].rgba.size() != 64) {
+        return;
+    }
+    check(set.textures[0].valid && set.textures[1].valid, "valid textures decoded");
+    check(set.textures[0].rgba[0] == 2 && set.textures[0].rgba[2] == 0 &&
+              set.textures[0].rgba[3] == 3,
+          "A8R8G8B8 reordered to RGBA");
+    check(!set.textures[2].valid && set.textures[2].problem == "synthetic invalid record",
+          "invalid record falls back");
+    check(!set.textures[3].valid && !set.textures[3].problem.empty() &&
+              set.textures[3].rgba.empty(),
+          "corrupt blob falls back without retaining pixels");
+
+    // One byte less: fatal, before the allocation for record 1.
+    limits.max_total_bytes = 127;
+    std::vector<std::uint64_t> allocations;
+    limits.before_allocate = [&](std::uint64_t size) { allocations.push_back(size); };
+    set.decoded_bytes = 99;
+    check(!nfsu::decode_render_textures(bytes, pack, limits, set, error) &&
+              error.find("exceed 127") != std::string::npos,
+          "aggregate limit exceeded: " + error);
+    check(allocations.size() == 1 && allocations[0] == 64,
+          "limit checked before the second allocation");
+    check(set.textures.empty() && set.decoded_bytes == 0, "set empty after a fatal failure");
+
+    // A single texture larger than the limit is fatal too, not a fallback.
+    limits.max_total_bytes = 63;
+    limits.before_allocate = nullptr;
+    check(!nfsu::decode_render_textures(bytes, pack, limits, set, error),
+          "single texture over the limit");
+
+    // Allocation failure is caught and reported.
+    limits = nfsu::RenderTextureLimits{};
+    int calls = 0;
+    limits.before_allocate = [&](std::uint64_t) {
+        if (++calls == 2) {
+            throw std::bad_alloc();
+        }
+    };
+    check(!nfsu::decode_render_textures(bytes, pack, limits, set, error) &&
+              error.find("out of memory") != std::string::npos,
+          "bad_alloc caught: " + error);
+    check(set.textures.empty(), "set empty after allocation failure");
+
+    // Default limits accept the pack; the default is far above the retail
+    // 240SX total reported by nfsu_viewer.
+    check(nfsu::decode_render_textures(bytes, pack, nfsu::RenderTextureLimits{}, set, error) &&
+              set.decoded_bytes == 128,
+          "default limit");
+    check(nfsu::RenderTextureLimits{}.max_total_bytes == 128ULL * 1024ULL * 1024ULL,
+          "default aggregate limit 128 MiB");
+}
+
+void test_alpha_default() {
+    check(nfsu::RenderOptions{}.alpha_cutoff == 0, "default alpha cutoff is 0");
+    nfsu::RenderTexture texture = make_texture(1, 1);
+    texture.rgba = {90, 80, 70, 0};
+    Canvas canvas(2, 2);
+    nfsu::RasterMaterial material;
+    material.texture = &texture;
+    const nfsu::ClipVertex tri[3] = {at(canvas, -2, -2), at(canvas, -2, 9), at(canvas, 9, -2)};
+    canvas.draw(tri, 1, &material);
+    const unsigned char* p = canvas.pixel(1, 1);
+    check(p[0] == 90 && p[1] == 80 && p[2] == 70 && p[3] == 255,
+          "alpha 0 texel drawn opaquely with its decoded RGB by default");
+    check(canvas.stats.fragments_alpha_discarded == 0, "nothing discarded by default");
+}
+
+void test_write() {
+    const ScratchDir scratch;
+    check(scratch.ok(), "scratch directory created");
+    if (!scratch.ok()) {
+        return;
+    }
+    const fs::path root = scratch.path();
+    std::error_code error;
+    check(nfsu::frame_writer_supported(), "writer supported on this platform");
+
+    Canvas canvas(4, 3);
+    const nfsu::ClipVertex tri[3] = {at(canvas, 0, 0), at(canvas, 0, 3), at(canvas, 4, 3)};
+    canvas.draw(tri, 1);
+
+    const fs::path source = root / "GEOMETRY.BIN";
+    {
+        std::ofstream stream(source, std::ios::binary);
+        stream.write("source", 6);
+    }
+    const fs::path target = root / "frame.tga";
+    nfsu::FrameWriteResult result;
+    check(nfsu::write_frame_tga(canvas.frame, target, {source}, result),
+          "write frame: " + result.error);
+    check(read_file(target) == tga_bytes(canvas.frame), "written bytes match write_tga");
+    check(!fs::exists(root / "frame.tga.partial"), "no partial left");
+
+    check(!nfsu::write_frame_tga(canvas.frame, target, {source}, result) &&
+              result.error.find("refusing to overwrite") != std::string::npos,
+          "existing target refused");
+    check(read_file(target) == tga_bytes(canvas.frame), "existing target untouched");
+
+    check(!nfsu::write_frame_tga(canvas.frame, source, {source}, result),
+          "source overwrite refused");
+    check(read_file(source) == "source", "source untouched");
+    check(!nfsu::write_frame_tga(canvas.frame, root / "sub" / ".." / "GEOMETRY.BIN",
+                                 {source}, result),
+          "source overwrite via another spelling refused");
+
+    const fs::path second = root / "second.tga";
+    const fs::path stale = root / "second.tga.partial";
+    {
+        std::ofstream stream(stale, std::ios::binary);
+        stream.write("stale", 5);
+    }
+    check(!nfsu::write_frame_tga(canvas.frame, second, {source}, result) &&
+              result.error.find("temporary file already exists") != std::string::npos,
+          "existing partial refused");
+    check(read_file(stale) == "stale" && !fs::exists(second), "existing partial untouched");
+    fs::remove(stale, error);
+
+    // Failure after the partial file is complete: it is rolled back.
+    nfsu::FrameWriteResult aborted;
+    bool hook_saw_partial = false;
+    aborted.before_rename = [&](const fs::path& partial) {
+        // The writer holds the partial open without delete sharing, so only
+        // metadata is checked here.
+        std::error_code size_error;
+        hook_saw_partial = fs::file_size(partial, size_error) ==
+                               tga_bytes(canvas.frame).size() &&
+                           !size_error;
+        return false;
+    };
+    check(!nfsu::write_frame_tga(canvas.frame, second, {source}, aborted), "aborted write");
+    check(hook_saw_partial, "partial file complete before rename");
+    check(aborted.error.find("removed all 1") != std::string::npos,
+          "rollback reported: " + aborted.error);
+    check(aborted.not_removed.empty(), "nothing left behind");
+    check(!fs::exists(second) && !fs::exists(stale), "no target and no partial after rollback");
+
+    // A target that appears during the write is not replaced.
+    nfsu::FrameWriteResult raced;
+    raced.before_rename = [&](const fs::path&) {
+        std::ofstream stream(second, std::ios::binary);
+        stream.write("other", 5);
+        return true;
+    };
+    check(!nfsu::write_frame_tga(canvas.frame, second, {source}, raced) &&
+              raced.error.find("not replaced") != std::string::npos,
+          "late target not replaced");
+    check(read_file(second) == "other" && !fs::exists(stale), "late target untouched");
+
+    check(!nfsu::write_frame_tga(canvas.frame, root / "missing" / "x.tga", {source}, result),
+          "missing directory fails");
+    check(!fs::exists(root / "missing"), "missing directory not created");
+
+    nfsu::Frame empty;
+    check(!nfsu::write_frame_tga(empty, root / "empty.tga", {source}, result),
+          "empty frame refused");
+
+    // A symlink at the partial name, live or dangling, is never followed
+    // or replaced. Creating symlinks needs a privilege on some Windows
+    // setups; the case is skipped (and says so) when the OS refuses.
+    const fs::path victim = root / "victim.txt";
+    {
+        std::ofstream stream(victim, std::ios::binary);
+        stream.write("victim", 6);
+    }
+    const fs::path linked = root / "linked.tga";
+    const fs::path linked_partial = root / "linked.tga.partial";
+    std::error_code link_error;
+    make_symlink(victim, linked_partial, link_error);
+    if (link_error) {
+        std::cout << "note: symlink cases skipped (" << link_error.message() << ")\n";
+    } else {
+        check(!nfsu::write_frame_tga(canvas.frame, linked, {source}, result) &&
+                  result.error.find("temporary file already exists") != std::string::npos,
+              "symlink partial refused: " + result.error);
+        check(read_file(victim) == "victim", "symlink target untouched");
+        check(is_link(linked_partial) && !entry_exists(linked),
+              "symlink left in place, no target");
+        check(remove_entry(linked_partial) && read_file(victim) == "victim",
+              "symlink removed without touching its target");
+
+        const fs::path dangling = root / "dangling.tga";
+        const fs::path dangling_partial = root / "dangling.tga.partial";
+        const fs::path nowhere = root / "nowhere.bin";
+        make_symlink(nowhere, dangling_partial, link_error);
+        check(!link_error, "dangling symlink created");
+        check(!nfsu::write_frame_tga(canvas.frame, dangling, {source}, result) &&
+                  result.error.find("temporary file already exists") != std::string::npos,
+              "dangling symlink partial refused: " + result.error);
+        check(!entry_exists(nowhere) && !entry_exists(dangling) &&
+                  is_link(dangling_partial),
+              "dangling symlink not followed");
+        check(remove_entry(dangling_partial), "dangling symlink removed");
+
+        // A dangling symlink as the target is an existing entry: it is
+        // neither followed nor replaced.
+        const fs::path dangling_target = root / "dangling_target.tga";
+        const fs::path elsewhere = root / "elsewhere.bin";
+        make_symlink(elsewhere, dangling_target, link_error);
+        check(!link_error, "dangling target symlink created");
+        check(!nfsu::write_frame_tga(canvas.frame, dangling_target, {source}, result) &&
+                  result.error.find("refusing to overwrite") != std::string::npos,
+              "dangling symlink target refused: " + result.error);
+        check(is_link(dangling_target) && !entry_exists(elsewhere) &&
+                  !entry_exists(root / "dangling_target.tga.partial"),
+              "dangling symlink target untouched");
+
+        // Publication never replaces a dangling link that appears late.
+        const fs::path late = root / "late.tga";
+        nfsu::FrameWriteResult late_result;
+        late_result.before_rename = [&](const fs::path&) {
+            std::error_code late_error;
+            make_symlink(elsewhere, late, late_error);
+            return !late_error;
+        };
+        check(!nfsu::write_frame_tga(canvas.frame, late, {source}, late_result) &&
+                  late_result.error.find("not replaced") != std::string::npos,
+              "late dangling symlink target not replaced: " + late_result.error);
+        check(is_link(late) && !entry_exists(elsewhere) &&
+                  !entry_exists(root / "late.tga.partial") && late_result.not_removed.empty(),
+              "late dangling link untouched, partial rolled back");
+
+        // A symlink as the target is an existing entry and is refused.
+        const fs::path link_target = root / "link_target.tga";
+        make_symlink(victim, link_target, link_error);
+        check(!link_error, "target symlink created");
+        check(!nfsu::write_frame_tga(canvas.frame, link_target, {source}, result),
+              "symlink target refused");
+        check(read_file(victim) == "victim", "symlink target file untouched");
+    }
+}
+
+void test_scratch_dir() {
+    fs::path first_path;
+    {
+        const ScratchDir first;
+        const ScratchDir second;
+        check(first.ok() && second.ok(), "two scratch directories");
+        check(first.path() != second.path(), "scratch directories are distinct");
+        const std::string name = first.path().filename().u8string();
+        bool ascii = !name.empty();
+        for (char ch : name) {
+            ascii = ascii && static_cast<unsigned char>(ch) < 0x80U;
+        }
+        check(ascii, "scratch name is ASCII");
+        first_path = first.path();
+        std::ofstream stream(first.path() / "inner.txt", std::ios::binary);
+        stream.write("x", 1);
+        std::error_code error;
+        fs::create_directory(first.path() / "sub", error);
+        // Regression: a dangling link used to make cleanup spin forever.
+        make_symlink(first.path() / "missing.bin", first.path() / "sub" / "dangling", error);
+        make_symlink(first.path() / "inner.txt", first.path() / "live", error);
+    }
+    check(!entry_exists(first_path), "scratch directory removed on scope exit");
+}
+
+} // namespace
+
+int main() {
+    test_trig();
+    test_camera();
+    test_projection();
+    test_near_clipping();
+    test_viewport_bounds();
+    test_fill_rule_exact();
+    test_shared_edges();
+    test_winding_and_culling();
+    test_degenerate();
+    test_depth_order();
+    test_perspective_uv();
+    test_uv_wrap_and_flip();
+    test_alpha();
+    test_vertex_color_and_fallback();
+    test_bindings();
+    test_scene();
+    test_golden_and_rerender();
+    test_limits();
+    test_texture_decode();
+    test_alpha_default();
+    test_scratch_dir();
+    test_write();
+
+    if (g_failures != 0) {
+        std::cerr << g_failures << " render test(s) failed\n";
+        return 1;
+    }
+    std::cout << "render tests passed\n";
+    return 0;
+}
