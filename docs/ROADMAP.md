@@ -13,7 +13,9 @@
 - Decode vertex and index buffers.
 - Decode `TEXTURES.BIN` texture packs.
 - Export diagnostic meshes and images.
-- Render one complete car on desktop.
+- Render one complete car on desktop: deterministic CPU reference renderer
+  and TGA screenshot (`nfsu_viewer`, `docs/RENDERER.md`). An interactive
+  GPU window is still to do.
 
 ## M2: Track slice
 

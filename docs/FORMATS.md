@@ -190,9 +190,11 @@ Orientation in the sample, using the named source fields:
 - The header container 0x80134001 and its children, and the second
   top-level container 0x80034020.
 - The color byte order (RGBA vs BGRA) and meaning. Colors are decoded but
-  not exported.
-- The UV origin (top-left or bottom-left) and what the out-of-range UVs
-  mean (tiling, unused channels or other data).
+  not exported. In the sample most are grey (R = G = B); see
+  `docs/RENDERER.md`.
+- What the out-of-range UVs mean (tiling, unused channels or other data).
+  The reference renderer wraps them. The UV origin is resolved in "Mesh to
+  texture binding" below.
 - Whether other cars or other games in the series use multiple geometry
   containers per mesh, other strides, or other padding rules.
 - The meaning of the 43 triangles whose winding disagrees with their
@@ -574,4 +576,14 @@ matches texture 18 at 5744.
 
 - How the unresolved hashes are resolved at runtime, and what 0x00134013
   and the material flags select (shader, blending or damage state).
-- The UV origin. Textures were not overlaid on the meshes to confirm it.
+
+### UV origin (from `nfsu_viewer`)
+
+- Observed: on the front bumper, `240SX_BADGING` (texture 76, rows decoded
+  top to bottom) sampled with raw `(u, v)` shows "NISSAN" upright and
+  reading left to right. Sampled with `(u, 1 - v)`, the same area is
+  scrambled. The camera and command are in `docs/RENDERER.md`.
+- Inferred: v = 0 is the top row of the stored texture, as in Direct3D.
+  Raw UVs need no flip.
+- Unknown: whether every car and every material follows this. Only this car
+  was checked.

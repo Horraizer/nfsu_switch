@@ -9,7 +9,8 @@ PC installation is required for local research and testing.
 
 The first milestone is `nfsu_probe`, a read-only installation and chunk-format
 inspector. It validates the expected game layout and walks NFS chunk containers
-without loading whole asset files into memory.
+without loading whole asset files into memory. `nfsu_viewer` renders a decoded
+car to a screenshot with a portable CPU reference renderer.
 
 ## Build
 
@@ -49,9 +50,37 @@ and it names any file it could not remove.
 `texture-bindings` lists every mesh material record with its texture slot,
 its texture hash and the pack texture that hash resolves to.
 
+## Reference viewer
+
+`nfsu_viewer` renders a complete car with a deterministic CPU rasterizer
+and writes the frame as a TGA screenshot. It needs no window and no
+graphics library:
+
+```text
+build/nfsu_viewer X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games/NFSU/Cars/240SX/TEXTURES.BIN build/240sx.tga
+build/nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> build/front.tga --yaw 0 --pitch 5 --distance 3 --width 800 --height 600
+```
+
+The camera orbits `--target X,Y,Z` at `--distance`, with `--yaw` (0 = front,
+90 = right side) and `--pitch` (positive = from above) in degrees. Other
+options are `--fov`, `--near`, `--far`, `--flip-v`, `--alpha-cutoff`,
+`--vertex-color`, `--cull` and `--shading`. Every numeric argument is
+validated against a documented range. The same inputs and options always
+give a byte-identical file. Textures that are not in the car's pack are
+drawn with a hash-colored checker and counted; a local texture is never
+substituted for them. By default texel alpha is ignored and decoded RGB is
+drawn opaquely, because material flags and blending are not decoded yet;
+`--alpha-cutoff 128` is a diagnostic alpha test. Decoded textures are
+capped at 128 MiB in total. The viewer never overwrites an existing file:
+it creates `<out>.partial` exclusively and publishes it with a no-replace
+rename (Windows) or `link` (POSIX), and it refuses to write on other
+platforms.
+See `docs/RENDERER.md` for the camera, projection, clipping, fill, depth,
+sampling and alpha rules.
+
 All commands are read-only with respect to the game installation. Do not
-commit exported meshes or images; they are derived from copyrighted game
-data.
+commit exported meshes, images or screenshots; they are derived from
+copyrighted game data.
 
 ## Project direction
 
