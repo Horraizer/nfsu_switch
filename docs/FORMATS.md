@@ -128,8 +128,8 @@ Orientation in the sample, using the named source fields:
 - Meshes named `*_LEFT_*` average pz = +0.80, `*_RIGHT_*` average pz = -0.80.
 - Taking the cross product of each triangle's edges in source index order
   (a, b, c), in raw file slot order (px, pz, py), and dotting it with the sum
-  of its three vertex normals (same slot order): 78570 triangles are
-  positive, 42 negative and 130 have zero area.
+  of its three vertex normals (same slot order): 78569 triangles are
+  positive, 43 negative and 130 have zero area.
 
 ### Inferred
 
@@ -158,7 +158,7 @@ Orientation in the sample, using the named source fields:
   what the out-of-range UVs mean (tiling, unused channels or other data).
 - Whether other cars or other games in the series use multiple geometry
   containers per mesh, other strides, or other padding rules.
-- The meaning of the 42 triangles whose winding disagrees with their
+- The meaning of the 43 triangles whose winding disagrees with their
   normals (possibly thin or double-sided parts).
 
 ## Parser rules (`nfsu::parse_geometry`)
