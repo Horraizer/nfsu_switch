@@ -53,7 +53,10 @@ texture hash, resolved pack texture, material-key slot and material-key hash.
 Its summary also inventories the material flags and material-key usage.
 `pack-set` finds every texture pack in a file, including packs nested in a
 BUN such as `GLOBAL/GLOBALB.BUN`, and lists their metadata and records.
-It never decodes or writes pixel data.
+It never decodes or writes pixel data. Observed P8 records are parsed and
+their indexed mip chain and 1024-byte palette can be extracted through the
+library API. Diagnostic TGA and DDS export still refuses P8 because palette
+channel semantics and runtime skin composition are not yet implemented.
 
 ## Reference viewer
 

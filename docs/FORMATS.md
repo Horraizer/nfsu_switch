@@ -463,6 +463,69 @@ absolute difference is 0.015. Comparing against deliberately misaligned
 level-0 pixels gives 14.5. A wrong JDLZ decoder, a wrong level size or a
 wrong level order would not produce this match.
 
+### Standalone vinyl pack
+
+Reference sample:
+
+- File: `Cars/240SX/VINYLS.BIN`
+- Size: 15409440 bytes
+- SHA-256: `46099AF77F100C3E09EBDBF4813631FFE3188CDE411F79D570C01B076E4EA1E3`
+
+Physical chunk offsets are:
+
+| Chunk | Header | Payload | Payload bytes |
+| --- | ---: | ---: | ---: |
+| `0x33310001` | 24 | 32 | 124 |
+| `0x33310002` | 156 | 164 | 6976 |
+| `0x33310003` | 7140 | 7148 | 17440 |
+| `0x33310004` | 24588 | 24596 | 108128 |
+| `0x33310005` | 132724 | 132732 | 27904 |
+| `0x33320002` | 160896 | 160904 | 15244432 |
+
+The data payload has 120 prefix bytes; the first JDLZ blob starts at 161024.
+Representative records at both ends of each code range are:
+
+| Index | Code | Stored name | Info offset | Blob offset + size |
+| ---: | ---: | --- | ---: | ---: |
+| 0 | 0x08 | `240SX_TRIBAL5_MASK` | 24596 | 161024 + 21351 |
+| 871 | 0x08 | `240SX_FLAGS314_MASK` | 132600 | 15383463 + 21872 |
+| 2 | 0x80 | `240SX_FLAME10` | 24844 | 200609 + 11025 |
+| 867 | 0x80 | `240SX_STRIPE9` | 132104 | 15318967 + 8219 |
+| 197 | 0x81 | `240SX_CUSTOM1` | 49024 | 3107930 + 49054 |
+| 262 | 0x81 | `240SX_CUSTOM37` | 57084 | 5141640 + 18444 |
+
+The pack contains 872 valid 512x512 P8 textures with 7 levels. Every info
+record has +56 = 349504 and +60 = 1024. The P8 format pairs are code 0x08,
+0x80 or 0x81 at info +74 with D3DFORMAT 41 at format record +20:
+
+| Code | Count | Observed role | Used palette indices |
+| --- | ---: | --- | --- |
+| 0x08 | 436 | `<base>_MASK` | 0..255 |
+| 0x80 | 402 | ordinary vinyl base | 0..15 |
+| 0x81 | 34 | `CUSTOM*` vinyl base | 0..63 |
+
+There are 436 base records and 436 mask records. For every base hash there
+is exactly one `bin_hash(base_name + "_MASK")`; there are no missing or
+duplicate pairs. Eleven stored mask names are truncated by the 24-byte name
+field, but their full hashes still prove the pairing.
+
+The uncompressed JDLZ target is 350592 bytes for every record:
+
+```text
+[0, 349504)       P8 index mip chain, 512x512 through 8x8
+[349504, 349568)  zero alignment padding
+[349568, 350592)  1024-byte palette, 256 four-byte entries
+```
+
+Thus the target is `align_up(info +56, 128) + info +60`, not merely info
++56. Info +48 is `index * 350592`; +52 is +48 + 349568 and points at the
+palette inside the decompressed target. The next record's +48 equals the
+previous +52 + +60. All 872 padding ranges are zero. `texture_payload`
+verifies this layout, returns only the 349504 index bytes and can copy the
+palette separately. A retail pass extracted all 872 records without error.
+The channel meaning of the four palette bytes and the runtime blend formula
+remain outside this structural claim.
+
 ### Inferred
 
 - The JDLZ decoder is correct. This rests on the exact sizes, clean stream
@@ -479,10 +542,9 @@ wrong level order would not produce this match.
 
 - The 1 to 2 unused bytes at the end of every JDLZ blob.
 - The fields marked unknown above, including the second hash at info +40.
-- Whether other packs use other format codes (for example DXT5 or
-  paletted formats), other JDLZ header bytes or a pack root not at offset 0.
-  None of these is supported; unsupported formats are reported, never
-  guessed.
+- Whether other packs use other format codes (for example DXT5), other JDLZ
+  header bytes or a pack root not at offset 0. None of these is supported;
+  unsupported formats are reported, never guessed.
 - The DXT decoding rules below are the common reference rules. The game's
   hardware may round interpolated colors differently.
 
@@ -500,13 +562,15 @@ wrong level order would not produce this match.
   hashed tables.
 - A texture is valid only if every check passes:
   - The name is NUL-terminated printable ASCII.
-  - The format pair is one of the three observed pairs.
+  - The format pair is DXT1, DXT3, A8R8G8B8, or one of the observed P8
+    codes 0x08, 0x80 and 0x81 with D3DFORMAT 41.
   - The width and height equal `1 << log2` and are within the limits.
   - The mip count is `1..max(log2) + 1`.
   - +56 and +64 equal the computed sizes.
   - The blob lies inside 0x33320002, after the 0x11 prefix.
-  - The blob starts with `JDLZ 02 10 00 00`, and its header sizes equal +56
-    and the blob table size.
+  - The blob starts with `JDLZ 02 10 00 00`. Its compressed header size
+    equals the blob table size. The decompressed size equals +56, except
+    that P8 requires `align_up(+56, 128) + 1024` for padding and palette.
 
   Otherwise the texture is kept with `valid = false` and a message naming
   the texture, the record offset and the field offset.
@@ -608,7 +672,9 @@ The byte sequence of the 0x33310003 id occurs nowhere in the file.
   same in both kinds of file, so there might be another flag.
 - The 128-byte alignment could be absolute or relative to the root. Both
   roots are 128-aligned, so the data cannot tell them apart.
-- P8 palettes are 256 B, G, R, A entries. This is not decoded or tested.
+- The 16 P8 palettes are 1024-byte blocks of 256 four-byte entries. The
+  parser can return those raw bytes separately from the index chain. Their
+  channel interpretation is still inferred rather than used by rendering.
 
 ### Unknown
 
@@ -636,10 +702,13 @@ The byte sequence of the 0x33310003 id occurs nowhere in the file.
   - Format, dimension, log2, mip count, +56 and +64 checks are the same.
   - +48 must be a multiple of 128, and `[data_start + +48, ... + +56)` must
     lie inside the 0x33320002 payload. The arithmetic is 64-bit.
-  - +52 is not checked.
+  - For P8, +52 addresses a 1024-byte palette inside the data range. Raw
+    palettes and index chains must not overlap each other, including across
+    records. +52 is not checked for other formats.
   - Ranges of valid records must not share a byte. Every participant is
     invalidated, as for JDLZ blobs.
-  - Unsupported formats, including P8, invalidate only their record.
+  - Unsupported formats invalidate only their record. Observed P8 records
+    are accepted; `texture_payload` can return their raw palette separately.
   - `raw_extent` = max(+48 + +56) over all records is reported, not
     enforced.
 - Duplicate hashes inside a pack are pack issues. A hash that one pack
@@ -657,6 +726,9 @@ The byte sequence of the 0x33310003 id occurs nowhere in the file.
     DXT3 always uses 4-color mode, and its 4-bit alpha is scaled by 17.
   - Blocks at the image edge are cropped.
   - A8R8G8B8 pixels are reordered, not changed.
+  - P8 export is refused: the parser exposes its index chain and palette,
+    but the diagnostic exporters do not guess palette channels or runtime
+    composition.
 - `dds` writes a DDS header followed by the decompressed bytes of every
   level, unchanged. Use it to compare against other decoders.
 - File names are `t<index:4>_<HASH:8>_<name>.<ext>`, with characters
@@ -728,8 +800,10 @@ matches texture 18 at 5744.
   supplied at runtime. Eight of them are in `GLOBAL/GLOBALB.BUN` pack 0
   (verified, see "Embedded texture packs"), among them `CARBOTTOM`
   (0xBD1F0E0A) and `CARBONFIBRE` (0x721AFF7C). The largest remaining one,
-  0x77A20245, matches `bin_hash("240SX_SKIN1")`. It is in neither file and
-  is probably composed at runtime.
+  0x77A20245, matches `bin_hash("240SX_SKIN1")`. It is in neither file.
+  Executable evidence identifies it as the formatted static fallback; active
+  customization instead composes into the `RideInfo+0x444` override, normally
+  `DUMMY_SKIN1`. See `docs/CAR_SCENE.md`.
 
 ### Unknown
 
