@@ -1,5 +1,6 @@
 #include "nfsu/chunk.h"
 #include "nfsu/geometry.h"
+#include "nfsu/texture.h"
 
 #include <algorithm>
 #include <array>
@@ -338,13 +339,193 @@ int run_obj(const fs::path& input, const fs::path& output_path) {
     return report.ok() ? 0 : 3;
 }
 
+std::string hex32(std::uint32_t value) {
+    std::ostringstream text;
+    text << "0x" << std::uppercase << std::hex << std::setw(8)
+         << std::setfill('0') << value;
+    return text.str();
+}
+
+void print_texture_issues(const nfsu::TexturePack& pack) {
+    for (const nfsu::TextureIssue& issue : pack.issues) {
+        std::cerr << "texture issue at " << issue.offset << ": "
+                  << issue.message << '\n';
+    }
+}
+
+// "yes" or "no" when the name is complete; "n/a" when the name fills its
+// field and may be truncated, so a mismatch proves nothing.
+const char* name_hash_status(const nfsu::TextureRecord& texture) {
+    const bool match = nfsu::bin_hash(texture.name) == texture.hash;
+    if (match) {
+        return "yes";
+    }
+    return texture.name_field_full ? "n/a" : "no";
+}
+
+int run_textures(const fs::path& path) {
+    std::vector<unsigned char> bytes;
+    const nfsu::TexturePack pack = nfsu::load_texture_pack(path, bytes);
+    std::cout << "file: " << path.string() << '\n';
+    std::cout << "bytes: " << pack.file_size << '\n';
+    std::cout << "pack: " << pack.pack_name << " version "
+              << pack.header_version << " hash " << hex32(pack.pack_hash)
+              << " path " << pack.pack_path << " (path hash "
+              << (nfsu::bin_hash(pack.pack_path) == pack.pack_hash ? "matches"
+                                                                   : "differs")
+              << ")\n";
+    std::cout << "data payload: offset " << pack.data_payload_offset
+              << " size " << pack.data_payload_size << " prefix "
+              << pack.data_prefix_bytes << '\n';
+    std::cout << "textures: " << pack.textures.size() << '\n';
+    std::cout << "valid textures: " << pack.valid_texture_count() << '\n';
+
+    std::map<std::string, std::size_t> histogram;
+    std::size_t name_matches = 0;
+    std::size_t full_names = 0;
+    for (const nfsu::TextureRecord& texture : pack.textures) {
+        std::ostringstream key;
+        key << nfsu::pixel_format_name(texture.format) << ' ' << texture.width
+            << 'x' << texture.height << " mips "
+            << static_cast<unsigned int>(texture.mip_count);
+        ++histogram[key.str()];
+        if (nfsu::bin_hash(texture.name) == texture.hash) {
+            ++name_matches;
+        }
+        if (texture.name_field_full) {
+            ++full_names;
+        }
+        std::cout << std::setw(4) << std::setfill(' ') << texture.index << ' '
+                  << (texture.valid ? "ok     " : "invalid") << ' '
+                  << hex32(texture.hash) << ' '
+                  << std::left << std::setw(8)
+                  << nfsu::pixel_format_name(texture.format) << std::right
+                  << ' ' << texture.width << 'x' << texture.height
+                  << " mips=" << static_cast<unsigned int>(texture.mip_count)
+                  << " size=" << texture.data_size
+                  << " blob=" << texture.blob_offset << '+' << texture.blob_size
+                  << " info=" << texture.info_offset
+                  << " name_hash=" << name_hash_status(texture) << ' '
+                  << texture.name << '\n';
+    }
+    std::cout << "name hash matches: " << name_matches << '\n';
+    std::cout << "names filling the 23-character field: " << full_names << '\n';
+    for (const auto& [key, count] : histogram) {
+        std::cout << "format " << key << ": " << count << '\n';
+    }
+
+    print_texture_issues(pack);
+    return pack.ok() ? 0 : 3;
+}
+
+int run_export_textures(
+    const fs::path& input,
+    const fs::path& output_dir,
+    const std::string& mode) {
+    if (mode != "tga" && mode != "dds") {
+        std::cerr << "error: format must be tga or dds\n";
+        return 1;
+    }
+
+    std::vector<unsigned char> bytes;
+    const nfsu::TexturePack pack = nfsu::load_texture_pack(input, bytes);
+    print_texture_issues(pack);
+    if (pack.valid_texture_count() == 0) {
+        std::cerr << "error: no valid textures to export\n";
+        return 2;
+    }
+
+    nfsu::TextureExportResult result;
+    const bool exported = nfsu::export_textures(
+        bytes, pack, input, output_dir,
+        mode == "dds" ? nfsu::ExportFormat::dds : nfsu::ExportFormat::tga,
+        result);
+    for (std::size_t index : result.skipped) {
+        std::cerr << "skipped texture " << index << ": "
+                  << pack.textures[index].problem << '\n';
+    }
+    if (!exported) {
+        std::cerr << "error: " << result.error << '\n';
+        return 2;
+    }
+    for (const nfsu::ExportedTexture& file : result.files) {
+        const nfsu::TextureRecord& texture = pack.textures[file.index];
+        std::cout << "wrote " << file.path.filename().string() << ' '
+                  << nfsu::pixel_format_name(texture.format) << ' '
+                  << texture.width << 'x' << texture.height
+                  << " jdlz_unused_bytes=" << file.jdlz_unused_bytes << '\n';
+    }
+    std::cout << "exported: " << result.files.size() << " of "
+              << pack.textures.size() << '\n';
+    return pack.ok() ? 0 : 3;
+}
+
+int run_texture_bindings(const fs::path& geometry_path, const fs::path& texture_path) {
+    const nfsu::GeometryReport geometry = nfsu::load_geometry_file(geometry_path);
+    std::vector<unsigned char> bytes;
+    const nfsu::TexturePack pack = nfsu::load_texture_pack(texture_path, bytes);
+    print_geometry_issues(geometry);
+    print_texture_issues(pack);
+
+    std::map<std::uint32_t, std::vector<const nfsu::TextureRecord*>> by_hash;
+    for (const nfsu::TextureRecord& texture : pack.textures) {
+        by_hash[texture.hash].push_back(&texture);
+    }
+
+    std::size_t records = 0;
+    std::size_t resolved = 0;
+    std::map<std::uint32_t, std::size_t> unresolved;
+    for (const nfsu::Mesh& mesh : geometry.meshes) {
+        if (!mesh.valid) {
+            continue;
+        }
+        for (std::size_t i = 0; i < mesh.materials.size(); ++i) {
+            const nfsu::MeshMaterial& material = mesh.materials[i];
+            const std::uint32_t hash = mesh.texture_hashes[material.texture_slot];
+            ++records;
+            std::cout << std::setw(4) << std::setfill(' ') << mesh.index << ' '
+                      << mesh.name << " material " << i << " @"
+                      << material.offset << " indices " << material.first_index
+                      << '+' << material.index_count << " slot "
+                      << material.texture_slot << " hash " << hex32(hash)
+                      << " @" << (mesh.texture_list_offset +
+                                  material.texture_slot *
+                                      nfsu::kTextureListEntrySize)
+                      << " -> ";
+            const auto found = by_hash.find(hash);
+            if (found == by_hash.end()) {
+                std::cout << "not in pack\n";
+                ++unresolved[hash];
+            } else if (found->second.size() != 1) {
+                std::cout << "ambiguous (" << found->second.size()
+                          << " pack entries)\n";
+            } else {
+                const nfsu::TextureRecord& texture = *found->second.front();
+                std::cout << "texture " << texture.index << " @"
+                          << texture.info_offset << ' ' << texture.name << '\n';
+                ++resolved;
+            }
+        }
+    }
+    std::cout << "material records: " << records << '\n';
+    std::cout << "resolved in pack: " << resolved << '\n';
+    std::cout << "unresolved hashes: " << unresolved.size() << '\n';
+    for (const auto& [hash, count] : unresolved) {
+        std::cout << "  " << hex32(hash) << " x" << count << '\n';
+    }
+    return geometry.ok() && pack.ok() ? 0 : 3;
+}
+
 void print_usage() {
     std::cout
         << "Usage:\n"
         << "  nfsu_probe summary <game-root>\n"
         << "  nfsu_probe chunks <file> [display-limit]\n"
         << "  nfsu_probe meshes <GEOMETRY.BIN>\n"
-        << "  nfsu_probe obj <GEOMETRY.BIN> <output.obj>\n";
+        << "  nfsu_probe obj <GEOMETRY.BIN> <output.obj>\n"
+        << "  nfsu_probe textures <TEXTURES.BIN>\n"
+        << "  nfsu_probe export-textures <TEXTURES.BIN> <output-dir> [tga|dds]\n"
+        << "  nfsu_probe texture-bindings <GEOMETRY.BIN> <TEXTURES.BIN>\n";
 }
 
 } // namespace
@@ -380,6 +561,24 @@ int main(int argc, char** argv) {
             return 1;
         }
         return run_obj(fs::path(argv[2]), fs::path(argv[3]));
+    }
+    if (command == "textures") {
+        return run_textures(fs::path(argv[2]));
+    }
+    if (command == "export-textures") {
+        if (argc < 4) {
+            print_usage();
+            return 1;
+        }
+        return run_export_textures(fs::path(argv[2]), fs::path(argv[3]),
+                                   argc >= 5 ? std::string(argv[4]) : "tga");
+    }
+    if (command == "texture-bindings") {
+        if (argc < 4) {
+            print_usage();
+            return 1;
+        }
+        return run_texture_bindings(fs::path(argv[2]), fs::path(argv[3]));
     }
 
     print_usage();

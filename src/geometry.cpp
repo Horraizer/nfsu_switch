@@ -229,6 +229,8 @@ private:
         mesh.valid = false;
         mesh.vertices.clear();
         mesh.triangles.clear();
+        mesh.texture_hashes.clear();
+        mesh.materials.clear();
         return false;
     }
 
@@ -299,14 +301,20 @@ private:
                         "geometry container is malformed; mesh skipped");
         }
 
-        // 0x00134B02 and any other unknown chunks are intentionally skipped.
+        // Unknown chunks are intentionally skipped.
+        RawChunk texture_list;
         RawChunk geometry_metadata;
         RawChunk vertex_buffer;
+        RawChunk material_buffer;
         RawChunk face_buffer;
-        if (!find_single(mesh, parts, kGeometryMetadataId, geometry.offset,
+        if (!find_single(mesh, children, kTextureListId, container.offset,
+                         texture_list) ||
+            !find_single(mesh, parts, kGeometryMetadataId, geometry.offset,
                          geometry_metadata) ||
             !find_single(mesh, parts, kVertexBufferId, geometry.offset,
                          vertex_buffer) ||
+            !find_single(mesh, parts, kMaterialBufferId, geometry.offset,
+                         material_buffer) ||
             !find_single(mesh, parts, kFaceBufferId, geometry.offset,
                          face_buffer)) {
             return false;
@@ -315,7 +323,9 @@ private:
         if (!parse_counts(mesh, geometry_metadata) ||
             !parse_vertices(mesh, vertex_buffer) ||
             !parse_faces(mesh, face_buffer) ||
-            !validate_indices(mesh, face_buffer)) {
+            !validate_indices(mesh, face_buffer) ||
+            !parse_texture_list(mesh, metadata, texture_list) ||
+            !parse_materials(mesh, material_buffer)) {
             return false;
         }
 
@@ -370,11 +380,128 @@ private:
         const unsigned char* payload = data_ + record;
         mesh.declared_face_count = read_i32_le(payload + kFaceCountOffset);
         mesh.declared_vertex_count = read_i32_le(payload + kVertexCountOffset);
+        mesh.declared_material_count =
+            read_i32_le(payload + kMaterialCountOffset);
 
         return check_count(mesh, metadata, "vertex", mesh.declared_vertex_count,
                            limits_.max_vertices_per_mesh) &&
                check_count(mesh, metadata, "face", mesh.declared_face_count,
-                           limits_.max_faces_per_mesh);
+                           limits_.max_faces_per_mesh) &&
+               check_count(mesh, metadata, "material",
+                           mesh.declared_material_count,
+                           limits_.max_materials_per_mesh);
+    }
+
+    // 0x00134012: (u32 texture hash, u32 0) entries. The entry count is also
+    // stored as a byte in the 0x00134011 payload; both must agree.
+    bool parse_texture_list(
+        Mesh& mesh,
+        const RawChunk& mesh_metadata,
+        const RawChunk& list) {
+        std::ostringstream text;
+        if (mesh_metadata.payload_size <= kTextureListCountOffset) {
+            text << chunk_label(mesh_metadata) << " is too small to hold the"
+                 << " texture count byte at payload offset "
+                 << kTextureListCountOffset;
+            return fail(mesh, mesh_metadata.offset, text.str());
+        }
+        const std::uint64_t declared =
+            data_[mesh_metadata.payload_offset + kTextureListCountOffset];
+        std::uint64_t expected = 0;
+        if (!checked_mul(declared, kTextureListEntrySize, expected) ||
+            list.payload_size != expected) {
+            text << chunk_label(list) << " payload is " << list.payload_size
+                 << " bytes but the texture count byte at file offset "
+                 << (mesh_metadata.payload_offset + kTextureListCountOffset)
+                 << " is " << declared << " (" << expected << " bytes)";
+            return fail(mesh, list.offset, text.str());
+        }
+        mesh.texture_list_offset = list.payload_offset;
+        const unsigned char* cursor = data_ + list.payload_offset;
+        mesh.texture_hashes.reserve(static_cast<std::size_t>(declared));
+        for (std::uint64_t i = 0; i < declared;
+             ++i, cursor += kTextureListEntrySize) {
+            if (read_u32_le(cursor + 4) != 0U) {
+                text << chunk_label(list) << " entry " << i
+                     << " has a non-zero second word at file offset "
+                     << (list.payload_offset + i * kTextureListEntrySize + 4);
+                return fail(mesh, list.offset, text.str());
+            }
+            mesh.texture_hashes.push_back(read_u32_le(cursor));
+        }
+        return true;
+    }
+
+    // 0x00134B02: material records. Index runs must be contiguous from 0,
+    // multiples of 3, cover every face exactly once, and reference an
+    // existing texture list entry.
+    bool parse_materials(Mesh& mesh, const RawChunk& buffer) {
+        const auto count =
+            static_cast<std::size_t>(mesh.declared_material_count);
+        std::uint64_t data_size = 0;
+        std::uint64_t data_offset = 0;
+        std::uint64_t prefix = 0;
+        if (!checked_mul(count, kMaterialRecordSize, data_size)) {
+            return fail(mesh, buffer.offset, "material byte size overflows");
+        }
+        if (!locate_aligned(mesh, buffer, kMaterialDataAlignment, data_size, 0,
+                            std::to_string(count) + " material records of 60 bytes",
+                            data_offset, prefix)) {
+            return false;
+        }
+        mesh.material_data_offset = data_offset;
+        mesh.material_prefix_bytes = prefix;
+
+        const std::uint64_t index_total =
+            static_cast<std::uint64_t>(mesh.declared_face_count) * 3U;
+        std::uint64_t next_index = 0;
+        const unsigned char* cursor = data_ + data_offset;
+        mesh.materials.resize(count);
+        for (std::size_t i = 0; i < count; ++i, cursor += kMaterialRecordSize) {
+            MeshMaterial& material = mesh.materials[i];
+            material.offset = data_offset + i * kMaterialRecordSize;
+            std::memcpy(material.raw, cursor, kMaterialRecordSize);
+            for (std::size_t axis = 0; axis < 3; ++axis) {
+                material.bounds_min[axis] = read_f32_le(cursor + axis * 4);
+                material.bounds_max[axis] = read_f32_le(cursor + 16 + axis * 4);
+            }
+            material.index_count = read_u32_le(cursor + 12);
+            material.texture_slot = read_u32_le(cursor + 28);
+            material.secondary_slot = read_u32_le(cursor + 32);
+            material.first_index = read_u32_le(cursor + 52);
+            material.flags = read_u32_le(cursor + 56);
+
+            std::ostringstream text;
+            text << "material record " << i << " at file offset "
+                 << material.offset << " in " << chunk_label(buffer) << ": ";
+            if (material.first_index != next_index) {
+                text << "first index " << material.first_index
+                     << " is not the running total " << next_index;
+                return fail(mesh, buffer.offset, text.str());
+            }
+            if (material.index_count == 0 || material.index_count % 3U != 0 ||
+                material.index_count > index_total - next_index) {
+                text << "index count " << material.index_count
+                     << " is zero, not a multiple of 3, or exceeds the "
+                     << (index_total - next_index) << " remaining indices";
+                return fail(mesh, buffer.offset, text.str());
+            }
+            if (material.texture_slot >= mesh.texture_hashes.size()) {
+                text << "texture slot " << material.texture_slot
+                     << " is outside the " << mesh.texture_hashes.size()
+                     << "-entry texture list";
+                return fail(mesh, buffer.offset, text.str());
+            }
+            next_index += material.index_count;
+        }
+        if (next_index != index_total) {
+            std::ostringstream text;
+            text << chunk_label(buffer) << " material records cover "
+                 << next_index << " indices; the face count needs "
+                 << index_total;
+            return fail(mesh, buffer.offset, text.str());
+        }
+        return true;
     }
 
     bool check_count(

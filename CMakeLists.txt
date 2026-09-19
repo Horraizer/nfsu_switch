@@ -15,6 +15,7 @@ endfunction()
 add_library(nfsu_core
     src/chunk.cpp
     src/geometry.cpp
+    src/texture.cpp
 )
 
 target_include_directories(nfsu_core
@@ -50,4 +51,12 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_geometry_tests PRIVATE nfsu_core)
     nfsu_enable_warnings(nfsu_geometry_tests)
     add_test(NAME nfsu_geometry_tests COMMAND nfsu_geometry_tests)
+
+    add_executable(nfsu_texture_tests
+        tests/texture_tests.cpp
+    )
+
+    target_link_libraries(nfsu_texture_tests PRIVATE nfsu_core)
+    nfsu_enable_warnings(nfsu_texture_tests)
+    add_test(NAME nfsu_texture_tests COMMAND nfsu_texture_tests)
 endif()

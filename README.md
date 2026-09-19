@@ -26,6 +26,10 @@ build/nfsu_probe summary X:/Games/NFSU
 build/nfsu_probe chunks X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN 64
 build/nfsu_probe meshes X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN
 build/nfsu_probe obj X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN build/240sx.obj
+build/nfsu_probe textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN
+build/nfsu_probe export-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN build/tex tga
+build/nfsu_probe export-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN build/dds dds
+build/nfsu_probe texture-bindings X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games/NFSU/Cars/240SX/TEXTURES.BIN
 ```
 
 `meshes` lists every mesh with its name, vertex count, face count and
@@ -34,8 +38,20 @@ the given path. Both commands print precise diagnostics for malformed meshes
 and exit with status 3 if any issue was found. See `docs/FORMATS.md` for the
 decoded layout and the exact OBJ axis and winding conventions.
 
+`textures` lists every texture in a pack: hash, format, dimensions, mip
+count, record and blob offsets and name. `export-textures` decompresses each
+valid texture and writes it to the output directory. `tga` writes the
+decoded top level as a 32-bit TGA. `dds` writes the decompressed data of all
+levels unchanged, after a DDS header. File names are
+`t<index>_<hash>_<name>`, so they stay unique. The export refuses to
+overwrite anything. If it fails, it tries to remove the files it created,
+and it names any file it could not remove.
+`texture-bindings` lists every mesh material record with its texture slot,
+its texture hash and the pack texture that hash resolves to.
+
 All commands are read-only with respect to the game installation. Do not
-commit exported meshes; they are derived from copyrighted game data.
+commit exported meshes or images; they are derived from copyrighted game
+data.
 
 ## Project direction
 
