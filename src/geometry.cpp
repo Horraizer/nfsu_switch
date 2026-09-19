@@ -1,0 +1,816 @@
+#include "nfsu/geometry.h"
+
+#include "nfsu/chunk.h"
+
+#include <charconv>
+#include <cmath>
+#include <cstring>
+#include <exception>
+#include <fstream>
+#include <limits>
+#include <new>
+#include <sstream>
+#include <system_error>
+#include <utility>
+
+namespace nfsu {
+namespace {
+
+static_assert(std::numeric_limits<float>::is_iec559, "IEEE-754 float32 required");
+static_assert(sizeof(float) == 4, "32-bit float required");
+
+constexpr std::uint64_t kHeaderSize = 8;
+
+static_assert(kVertexCountOffset + 4 <= kGeometryMetadataSize,
+              "counts must lie inside the metadata record");
+
+struct RawChunk {
+    std::uint32_t id = 0;
+    std::uint64_t offset = 0;
+    std::uint64_t payload_offset = 0;
+    std::uint64_t payload_size = 0;
+};
+
+std::uint16_t read_u16_le(const unsigned char* bytes) {
+    return static_cast<std::uint16_t>(
+        static_cast<unsigned int>(bytes[0]) |
+        (static_cast<unsigned int>(bytes[1]) << 8U));
+}
+
+std::uint32_t read_u32_le(const unsigned char* bytes) {
+    return static_cast<std::uint32_t>(bytes[0]) |
+           (static_cast<std::uint32_t>(bytes[1]) << 8U) |
+           (static_cast<std::uint32_t>(bytes[2]) << 16U) |
+           (static_cast<std::uint32_t>(bytes[3]) << 24U);
+}
+
+std::int32_t read_i32_le(const unsigned char* bytes) {
+    const std::uint32_t bits = read_u32_le(bytes);
+    std::int32_t value = 0;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+float read_f32_le(const unsigned char* bytes) {
+    const std::uint32_t bits = read_u32_le(bytes);
+    float value = 0.0F;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+bool checked_mul(std::uint64_t a, std::uint64_t b, std::uint64_t& out) {
+    if (a != 0 && b > std::numeric_limits<std::uint64_t>::max() / a) {
+        return false;
+    }
+    out = a * b;
+    return true;
+}
+
+bool checked_add(std::uint64_t a, std::uint64_t b, std::uint64_t& out) {
+    if (b > std::numeric_limits<std::uint64_t>::max() - a) {
+        return false;
+    }
+    out = a + b;
+    return true;
+}
+
+// Rounds value up to a multiple of alignment (alignment > 0).
+bool align_up(std::uint64_t value, std::uint64_t alignment, std::uint64_t& out) {
+    const std::uint64_t remainder = value % alignment;
+    if (remainder == 0) {
+        out = value;
+        return true;
+    }
+    return checked_add(value, alignment - remainder, out);
+}
+
+std::string hex_byte(unsigned char value) {
+    static constexpr char digits[] = "0123456789ABCDEF";
+    std::string text = "0x";
+    text.push_back(digits[(value >> 4U) & 0x0FU]);
+    text.push_back(digits[value & 0x0FU]);
+    return text;
+}
+
+std::string chunk_label(const RawChunk& chunk) {
+    std::ostringstream text;
+    text << "chunk " << format_chunk_id(chunk.id) << " at offset "
+         << chunk.offset;
+    return text.str();
+}
+
+class GeometryParser {
+public:
+    GeometryParser(
+        const unsigned char* data,
+        std::uint64_t size,
+        const GeometryLimits& limits,
+        GeometryReport& report)
+        : data_(data), size_(size), limits_(limits), report_(report) {}
+
+    void run() {
+        if (size_ < kHeaderSize) {
+            add_issue(0, "file is smaller than a chunk header (8 bytes)");
+            return;
+        }
+
+        std::vector<RawChunk> top;
+        // Chunks listed before a structural error are fully in bounds, so
+        // they are still processed; the error itself is already reported.
+        list_children(0, size_, "top level", top);
+
+        bool found_root = false;
+        for (const RawChunk& chunk : top) {
+            if (chunk.id == kGeometryRootId) {
+                found_root = true;
+                parse_root(chunk);
+            }
+        }
+        if (!found_root) {
+            add_issue(0, "no geometry root chunk " +
+                             format_chunk_id(kGeometryRootId) +
+                             " found at top level");
+        }
+    }
+
+private:
+    void add_issue(std::uint64_t offset, std::string message) {
+        report_.issues.push_back(GeometryIssue{offset, std::move(message)});
+    }
+
+    // Lists the direct children of [begin, end). Returns false after
+    // reporting an issue if the sequence is malformed; out then holds the
+    // chunks that were read before the error.
+    bool list_children(
+        std::uint64_t begin,
+        std::uint64_t end,
+        const std::string& context,
+        std::vector<RawChunk>& out) {
+        if (begin > end || end > size_) {
+            add_issue(begin, context + ": invalid chunk range");
+            return false;
+        }
+
+        std::uint64_t offset = begin;
+        while (offset < end) {
+            if (end - offset < kHeaderSize) {
+                std::ostringstream text;
+                text << context << ": " << (end - offset)
+                     << " trailing bytes are smaller than a chunk header";
+                add_issue(offset, text.str());
+                return false;
+            }
+            if (chunk_count_ >= limits_.max_chunks) {
+                std::ostringstream text;
+                text << context << ": chunk limit " << limits_.max_chunks
+                     << " exceeded";
+                add_issue(offset, text.str());
+                return false;
+            }
+
+            RawChunk chunk;
+            chunk.offset = offset;
+            chunk.id = read_u32_le(data_ + offset);
+            chunk.payload_size = read_u32_le(data_ + offset + 4);
+            chunk.payload_offset = offset + kHeaderSize;
+            if (chunk.payload_size > end - chunk.payload_offset) {
+                std::ostringstream text;
+                text << context << ": " << chunk_label(chunk)
+                     << " declares " << chunk.payload_size
+                     << " payload bytes but only "
+                     << (end - chunk.payload_offset)
+                     << " remain in its parent";
+                add_issue(offset, text.str());
+                return false;
+            }
+
+            ++chunk_count_;
+            out.push_back(chunk);
+            offset = chunk.payload_offset + chunk.payload_size;
+        }
+        return true;
+    }
+
+    void parse_root(const RawChunk& root) {
+        std::vector<RawChunk> children;
+        list_children(
+            root.payload_offset,
+            root.payload_offset + root.payload_size,
+            "geometry root at offset " + std::to_string(root.offset),
+            children);
+
+        for (const RawChunk& chunk : children) {
+            if (chunk.id != kMeshContainerId) {
+                continue;
+            }
+            if (report_.meshes.size() >= limits_.max_meshes) {
+                std::ostringstream text;
+                text << "mesh limit " << limits_.max_meshes
+                     << " exceeded; remaining meshes ignored";
+                add_issue(chunk.offset, text.str());
+                return;
+            }
+            parse_mesh(chunk);
+        }
+    }
+
+    std::string mesh_context(const Mesh& mesh) const {
+        std::ostringstream text;
+        text << "mesh " << mesh.index;
+        if (!mesh.name.empty()) {
+            text << " '" << mesh.name << "'";
+        }
+        text << " (container at offset " << mesh.offset << ")";
+        return text.str();
+    }
+
+    bool fail(Mesh& mesh, std::uint64_t offset, const std::string& message) {
+        add_issue(offset, mesh_context(mesh) + ": " + message);
+        mesh.valid = false;
+        mesh.vertices.clear();
+        mesh.triangles.clear();
+        return false;
+    }
+
+    bool find_single(
+        Mesh& mesh,
+        const std::vector<RawChunk>& chunks,
+        std::uint32_t id,
+        std::uint64_t parent_offset,
+        RawChunk& out) {
+        std::size_t count = 0;
+        for (const RawChunk& chunk : chunks) {
+            if (chunk.id == id) {
+                if (count == 0) {
+                    out = chunk;
+                }
+                ++count;
+            }
+        }
+        if (count != 1) {
+            std::ostringstream text;
+            text << "expected exactly one " << format_chunk_id(id)
+                 << " chunk, found " << count;
+            return fail(mesh, parent_offset, text.str());
+        }
+        return true;
+    }
+
+    void parse_mesh(const RawChunk& container) {
+        Mesh mesh;
+        mesh.index = report_.meshes.size();
+        mesh.offset = container.offset;
+        parse_mesh_contents(container, mesh);
+        report_.meshes.push_back(std::move(mesh));
+    }
+
+    bool parse_mesh_contents(const RawChunk& container, Mesh& mesh) {
+        std::vector<RawChunk> children;
+        const bool structure_ok = list_children(
+            container.payload_offset,
+            container.payload_offset + container.payload_size,
+            mesh_context(mesh),
+            children);
+
+        RawChunk metadata;
+        if (!find_single(mesh, children, kMeshMetadataId, container.offset,
+                         metadata) ||
+            !parse_name(mesh, metadata)) {
+            return false;
+        }
+        if (!structure_ok) {
+            return fail(mesh, container.offset,
+                        "mesh container is malformed; mesh skipped");
+        }
+
+        RawChunk geometry;
+        if (!find_single(mesh, children, kGeometryContainerId, container.offset,
+                         geometry)) {
+            return false;
+        }
+
+        std::vector<RawChunk> parts;
+        if (!list_children(
+                geometry.payload_offset,
+                geometry.payload_offset + geometry.payload_size,
+                mesh_context(mesh) + " geometry container",
+                parts)) {
+            return fail(mesh, geometry.offset,
+                        "geometry container is malformed; mesh skipped");
+        }
+
+        // 0x00134B02 and any other unknown chunks are intentionally skipped.
+        RawChunk geometry_metadata;
+        RawChunk vertex_buffer;
+        RawChunk face_buffer;
+        if (!find_single(mesh, parts, kGeometryMetadataId, geometry.offset,
+                         geometry_metadata) ||
+            !find_single(mesh, parts, kVertexBufferId, geometry.offset,
+                         vertex_buffer) ||
+            !find_single(mesh, parts, kFaceBufferId, geometry.offset,
+                         face_buffer)) {
+            return false;
+        }
+
+        if (!parse_counts(mesh, geometry_metadata) ||
+            !parse_vertices(mesh, vertex_buffer) ||
+            !parse_faces(mesh, face_buffer) ||
+            !validate_indices(mesh, face_buffer)) {
+            return false;
+        }
+
+        mesh.valid = true;
+        return true;
+    }
+
+    bool parse_name(Mesh& mesh, const RawChunk& metadata) {
+        if (metadata.payload_size < kMeshNameSize) {
+            std::ostringstream text;
+            text << chunk_label(metadata) << " payload is "
+                 << metadata.payload_size << " bytes; need at least "
+                 << kMeshNameSize << " for the mesh name";
+            return fail(mesh, metadata.offset, text.str());
+        }
+
+        const unsigned char* name = data_ + metadata.payload_offset +
+                                    metadata.payload_size - kMeshNameSize;
+        std::size_t length = 0;
+        while (length < kMeshNameSize && name[length] != 0) {
+            ++length;
+        }
+        if (length == kMeshNameSize) {
+            return fail(mesh, metadata.offset,
+                        "mesh name in the final 28 bytes of " +
+                            chunk_label(metadata) + " is not NUL-terminated");
+        }
+        for (std::size_t i = 0; i < length; ++i) {
+            if (name[i] < 0x20U || name[i] > 0x7EU) {
+                std::ostringstream text;
+                text << "mesh name byte " << i << " is " << hex_byte(name[i])
+                     << "; expected printable ASCII";
+                return fail(mesh, metadata.offset, text.str());
+            }
+        }
+        mesh.name.assign(reinterpret_cast<const char*>(name), length);
+        return true;
+    }
+
+    bool parse_counts(Mesh& mesh, const RawChunk& metadata) {
+        std::uint64_t record = 0;
+        std::uint64_t prefix = 0;
+        if (!locate_aligned(mesh, metadata, kGeometryMetadataAlignment,
+                            kGeometryMetadataSize, 0,
+                            "one 64-byte geometry metadata record", record,
+                            prefix)) {
+            return false;
+        }
+        mesh.metadata_record_offset = record;
+        mesh.metadata_prefix_bytes = prefix;
+
+        const unsigned char* payload = data_ + record;
+        mesh.declared_face_count = read_i32_le(payload + kFaceCountOffset);
+        mesh.declared_vertex_count = read_i32_le(payload + kVertexCountOffset);
+
+        return check_count(mesh, metadata, "vertex", mesh.declared_vertex_count,
+                           limits_.max_vertices_per_mesh) &&
+               check_count(mesh, metadata, "face", mesh.declared_face_count,
+                           limits_.max_faces_per_mesh);
+    }
+
+    bool check_count(
+        Mesh& mesh,
+        const RawChunk& metadata,
+        const char* what,
+        std::int32_t count,
+        std::int32_t limit) {
+        std::ostringstream text;
+        if (count <= 0) {
+            text << what << " count " << count << " in " << chunk_label(metadata)
+                 << " is not positive";
+            return fail(mesh, metadata.offset, text.str());
+        }
+        if (count > limit) {
+            text << what << " count " << count << " in " << chunk_label(metadata)
+                 << " exceeds the limit of " << limit;
+            return fail(mesh, metadata.offset, text.str());
+        }
+        return true;
+    }
+
+    // The data of a buffer starts at the first file offset inside its payload
+    // that is a multiple of alignment. The bytes between the payload start
+    // and that offset must all be 0x11. The payload must then hold exactly
+    // data_size bytes of data followed by tail_size bytes of tail padding.
+    // Positions are never inferred by scanning for 0x11 bytes.
+    bool locate_aligned(
+        Mesh& mesh,
+        const RawChunk& buffer,
+        std::uint64_t alignment,
+        std::uint64_t data_size,
+        std::uint64_t tail_size,
+        const std::string& description,
+        std::uint64_t& data_offset,
+        std::uint64_t& prefix) {
+        std::uint64_t expected = 0;
+        if (!align_up(buffer.payload_offset, alignment, data_offset) ||
+            !checked_add(data_size, tail_size, expected) ||
+            !checked_add(expected, data_offset - buffer.payload_offset,
+                         expected)) {
+            return fail(mesh, buffer.offset,
+                        chunk_label(buffer) + ": expected size overflows");
+        }
+        prefix = data_offset - buffer.payload_offset;
+
+        if (buffer.payload_size != expected) {
+            std::ostringstream text;
+            text << chunk_label(buffer) << " payload is "
+                 << buffer.payload_size << " bytes but " << expected
+                 << " are expected: " << prefix
+                 << " bytes of 0x11 up to the " << alignment
+                 << "-byte aligned file offset " << data_offset << ", "
+                 << description << " (" << data_size << " bytes)";
+            if (tail_size != 0) {
+                text << " and " << tail_size << " zero tail bytes";
+            }
+            text << "; the declared count may be wrong";
+            return fail(mesh, buffer.offset, text.str());
+        }
+
+        const unsigned char* payload = data_ + buffer.payload_offset;
+        for (std::uint64_t i = 0; i < prefix; ++i) {
+            if (payload[i] != kAlignmentByte) {
+                std::ostringstream text;
+                text << chunk_label(buffer) << " alignment prefix byte " << i
+                     << " (file offset " << (buffer.payload_offset + i)
+                     << ") is " << hex_byte(payload[i]) << ", expected 0x11";
+                return fail(mesh, buffer.offset, text.str());
+            }
+        }
+        return true;
+    }
+
+    bool parse_vertices(Mesh& mesh, const RawChunk& buffer) {
+        const auto count = static_cast<std::size_t>(mesh.declared_vertex_count);
+        std::uint64_t data_size = 0;
+        std::uint64_t data_offset = 0;
+        std::uint64_t prefix = 0;
+        if (!checked_mul(count, kVertexStride, data_size)) {
+            return fail(mesh, buffer.offset, "vertex byte size overflows");
+        }
+        if (!locate_aligned(mesh, buffer, kVertexDataAlignment, data_size, 0,
+                            std::to_string(count) + " vertices of 36 bytes",
+                            data_offset, prefix)) {
+            return false;
+        }
+        mesh.vertex_data_offset = data_offset;
+        mesh.vertex_prefix_bytes = prefix;
+
+        const unsigned char* cursor = data_ + data_offset;
+        mesh.vertices.resize(count);
+        for (std::size_t i = 0; i < count; ++i, cursor += kVertexStride) {
+            MeshVertex& vertex = mesh.vertices[i];
+            vertex.px = read_f32_le(cursor + 0);
+            vertex.pz = read_f32_le(cursor + 4);
+            vertex.py = read_f32_le(cursor + 8);
+            vertex.nx = read_f32_le(cursor + 12);
+            vertex.nz = read_f32_le(cursor + 16);
+            vertex.ny = read_f32_le(cursor + 20);
+            std::memcpy(vertex.color, cursor + 24, sizeof(vertex.color));
+            vertex.u = read_f32_le(cursor + 28);
+            vertex.v = read_f32_le(cursor + 32);
+
+            const float values[] = {vertex.px, vertex.py, vertex.pz,
+                                    vertex.nx, vertex.ny, vertex.nz,
+                                    vertex.u,  vertex.v};
+            for (float value : values) {
+                if (!std::isfinite(value)) {
+                    std::ostringstream text;
+                    text << "vertex " << i << " in " << chunk_label(buffer)
+                         << " has a non-finite float";
+                    return fail(mesh, buffer.offset, text.str());
+                }
+            }
+        }
+        return true;
+    }
+
+    bool parse_faces(Mesh& mesh, const RawChunk& buffer) {
+        const auto count = static_cast<std::size_t>(mesh.declared_face_count);
+        std::uint64_t data_size = 0;
+        std::uint64_t data_offset = 0;
+        std::uint64_t prefix = 0;
+        if (!checked_mul(count, kFaceStride, data_size)) {
+            return fail(mesh, buffer.offset, "face byte size overflows");
+        }
+        // Face data is padded with zeros to a multiple of 4 bytes; with a
+        // 6-byte stride that is 2 bytes for odd face counts, else none.
+        const std::uint64_t remainder = data_size % kFaceTailAlignment;
+        const std::uint64_t tail =
+            remainder == 0 ? 0 : kFaceTailAlignment - remainder;
+        if (!locate_aligned(mesh, buffer, kFaceDataAlignment, data_size, tail,
+                            std::to_string(count) + " triangles of 6 bytes",
+                            data_offset, prefix)) {
+            return false;
+        }
+
+        const unsigned char* tail_bytes = data_ + data_offset + data_size;
+        for (std::uint64_t i = 0; i < tail; ++i) {
+            if (tail_bytes[i] != 0U) {
+                std::ostringstream text;
+                text << chunk_label(buffer) << " tail padding byte " << i
+                     << " (file offset " << (data_offset + data_size + i)
+                     << ") is " << hex_byte(tail_bytes[i]) << ", expected 0x00";
+                return fail(mesh, buffer.offset, text.str());
+            }
+        }
+        mesh.face_data_offset = data_offset;
+        mesh.face_prefix_bytes = prefix;
+        mesh.face_tail_bytes = tail;
+
+        const unsigned char* cursor = data_ + data_offset;
+        mesh.triangles.resize(count);
+        for (std::size_t i = 0; i < count; ++i, cursor += kFaceStride) {
+            MeshTriangle& triangle = mesh.triangles[i];
+            triangle.a = read_u16_le(cursor + 0);
+            triangle.b = read_u16_le(cursor + 2);
+            triangle.c = read_u16_le(cursor + 4);
+        }
+        return true;
+    }
+
+    bool validate_indices(Mesh& mesh, const RawChunk& buffer) {
+        const std::size_t vertex_count = mesh.vertices.size();
+        std::size_t bad = 0;
+        std::size_t first_triangle = 0;
+        std::uint16_t first_value = 0;
+        for (std::size_t i = 0; i < mesh.triangles.size(); ++i) {
+            const MeshTriangle& t = mesh.triangles[i];
+            for (std::uint16_t index : {t.a, t.b, t.c}) {
+                if (index >= vertex_count) {
+                    if (bad == 0) {
+                        first_triangle = i;
+                        first_value = index;
+                    }
+                    ++bad;
+                }
+            }
+        }
+        if (bad != 0) {
+            std::ostringstream text;
+            text << bad << " face indices in " << chunk_label(buffer)
+                 << " are out of range for " << vertex_count
+                 << " vertices; first is triangle " << first_triangle
+                 << " index " << first_value;
+            return fail(mesh, buffer.offset, text.str());
+        }
+        return true;
+    }
+
+    const unsigned char* data_;
+    std::uint64_t size_;
+    const GeometryLimits& limits_;
+    GeometryReport& report_;
+    std::size_t chunk_count_ = 0;
+};
+
+// Returns -value, but +0 instead of -0 so that zero prints as "0".
+float negate(float value) {
+    return 0.0F - value;
+}
+
+void append_float(std::string& line, float value) {
+    char buffer[64];
+    const std::to_chars_result result =
+        std::to_chars(buffer, buffer + sizeof(buffer), value);
+    line.push_back(' ');
+    line.append(buffer, result.ptr);
+}
+
+void append_index(std::string& line, std::uint64_t index) {
+    const std::string text = std::to_string(index);
+    line.push_back(' ');
+    line += text;
+    line.push_back('/');
+    line += text;
+    line.push_back('/');
+    line += text;
+}
+
+} // namespace
+
+std::size_t GeometryReport::valid_mesh_count() const noexcept {
+    std::size_t count = 0;
+    for (const Mesh& mesh : meshes) {
+        if (mesh.valid) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+GeometryReport parse_geometry(
+    const unsigned char* data,
+    std::size_t size,
+    const GeometryLimits& limits) {
+    GeometryReport report;
+    report.file_size = size;
+    if (data == nullptr && size != 0) {
+        report.issues.push_back(GeometryIssue{0, "null input buffer"});
+        return report;
+    }
+    if (size > limits.max_file_size) {
+        std::ostringstream text;
+        text << "buffer is " << size << " bytes; limit is "
+             << limits.max_file_size;
+        report.issues.push_back(GeometryIssue{0, text.str()});
+        return report;
+    }
+    try {
+        GeometryParser parser(data, size, limits, report);
+        parser.run();
+    } catch (const std::bad_alloc&) {
+        report.issues.push_back(
+            GeometryIssue{0, "out of memory while parsing geometry"});
+    } catch (const std::exception& error) {
+        report.issues.push_back(
+            GeometryIssue{0, std::string("geometry parse failed: ") + error.what()});
+    }
+    return report;
+}
+
+GeometryReport load_geometry_file(
+    const std::filesystem::path& path,
+    const GeometryLimits& limits) {
+    GeometryReport report;
+
+    std::error_code size_error;
+    const std::uintmax_t file_size = std::filesystem::file_size(path, size_error);
+    if (size_error) {
+        report.issues.push_back(GeometryIssue{0, "failed to read file size"});
+        return report;
+    }
+    report.file_size = file_size;
+    if (file_size > limits.max_file_size ||
+        file_size > std::numeric_limits<std::size_t>::max() ||
+        file_size > static_cast<std::uintmax_t>(
+                        std::numeric_limits<std::streamsize>::max())) {
+        std::ostringstream text;
+        text << "file is " << file_size << " bytes; limit is "
+             << limits.max_file_size;
+        report.issues.push_back(GeometryIssue{0, text.str()});
+        return report;
+    }
+
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) {
+        report.issues.push_back(GeometryIssue{0, "failed to open file"});
+        return report;
+    }
+
+    std::vector<unsigned char> bytes;
+    try {
+        bytes.resize(static_cast<std::size_t>(file_size));
+    } catch (const std::exception&) {
+        report.issues.push_back(
+            GeometryIssue{0, "out of memory while reading file"});
+        return report;
+    }
+    if (!bytes.empty() &&
+        !stream.read(reinterpret_cast<char*>(bytes.data()),
+                     static_cast<std::streamsize>(bytes.size()))) {
+        report.issues.push_back(GeometryIssue{0, "failed to read whole file"});
+        return report;
+    }
+
+    return parse_geometry(bytes.data(), bytes.size(), limits);
+}
+
+std::string obj_object_name(const Mesh& mesh) {
+    std::string index = std::to_string(mesh.index);
+    if (index.size() < 4) {
+        index.insert(0, 4 - index.size(), '0');
+    }
+    std::string name = "m" + index + "_";
+    if (mesh.name.empty()) {
+        return name + "unnamed";
+    }
+    for (char ch : mesh.name) {
+        const bool safe = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+                          (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' ||
+                          ch == '.';
+        name.push_back(safe ? ch : '_');
+    }
+    return name;
+}
+
+bool write_obj(
+    std::ostream& output,
+    const GeometryReport& report,
+    ObjExportStats& stats,
+    std::string& error) {
+    stats = ObjExportStats{};
+
+    // Validate everything first so that no partial OBJ is written for
+    // inconsistent input.
+    for (const Mesh& mesh : report.meshes) {
+        if (!mesh.valid) {
+            continue;
+        }
+        const std::size_t vertex_count = mesh.vertices.size();
+        if (vertex_count == 0 || mesh.triangles.empty()) {
+            error = "mesh " + std::to_string(mesh.index) +
+                    " is marked valid but has no vertices or faces";
+            return false;
+        }
+        for (std::size_t i = 0; i < mesh.triangles.size(); ++i) {
+            const MeshTriangle& t = mesh.triangles[i];
+            if (t.a >= vertex_count || t.b >= vertex_count ||
+                t.c >= vertex_count) {
+                error = "mesh " + std::to_string(mesh.index) + " triangle " +
+                        std::to_string(i) + " references a vertex outside 0.." +
+                        std::to_string(vertex_count - 1);
+                return false;
+            }
+        }
+    }
+
+    // See docs/FORMATS.md: z is negated to convert the left-handed px, py, pz
+    // frame to a right-handed one without mirroring the car. That reflection
+    // alone turns the source front faces counter-clockwise, so the source
+    // index order is kept.
+    output << "# nfsu_probe diagnostic OBJ export\n"
+           << "# axes: x = source px, y = source py, z = -source pz"
+              " (source float order px, pz, py)\n"
+           << "# winding: source triangle order (a, b, c) is kept\n"
+           << "# uv: vt u v = raw source u v (origin not confirmed)\n";
+
+    std::uint64_t base = 0;
+    std::string line;
+    for (const Mesh& mesh : report.meshes) {
+        if (!mesh.valid) {
+            continue;
+        }
+        const std::string name = obj_object_name(mesh);
+        output << "o " << name << "\ng " << name << '\n';
+
+        for (const MeshVertex& vertex : mesh.vertices) {
+            line = "v";
+            append_float(line, vertex.px);
+            append_float(line, vertex.py);
+            append_float(line, negate(vertex.pz));
+            output << line << '\n';
+        }
+        for (const MeshVertex& vertex : mesh.vertices) {
+            line = "vn";
+            append_float(line, vertex.nx);
+            append_float(line, vertex.ny);
+            append_float(line, negate(vertex.nz));
+            output << line << '\n';
+        }
+        for (const MeshVertex& vertex : mesh.vertices) {
+            line = "vt";
+            append_float(line, vertex.u);
+            append_float(line, vertex.v);
+            output << line << '\n';
+        }
+
+        for (const MeshTriangle& t : mesh.triangles) {
+            std::uint64_t a = 0;
+            std::uint64_t b = 0;
+            std::uint64_t c = 0;
+            if (!checked_add(base, std::uint64_t{t.a} + 1U, a) ||
+                !checked_add(base, std::uint64_t{t.b} + 1U, b) ||
+                !checked_add(base, std::uint64_t{t.c} + 1U, c)) {
+                error = "OBJ index overflow";
+                return false;
+            }
+            line = "f";
+            append_index(line, a);
+            append_index(line, b);
+            append_index(line, c);
+            output << line << '\n';
+        }
+
+        if (!checked_add(base, mesh.vertices.size(), base)) {
+            error = "OBJ vertex offset overflow";
+            return false;
+        }
+        ++stats.meshes;
+        stats.vertices = base;
+        stats.triangles += mesh.triangles.size();
+
+        if (!output) {
+            error = "failed to write OBJ output";
+            return false;
+        }
+    }
+
+    output.flush();
+    if (!output) {
+        error = "failed to write OBJ output";
+        return false;
+    }
+    return true;
+}
+
+} // namespace nfsu
