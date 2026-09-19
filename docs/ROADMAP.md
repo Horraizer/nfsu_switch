@@ -30,7 +30,11 @@
   `PreparedCarScene` (`include/nfsu/scene.h`) is in place with an all-meshes
   profile and explicit mesh subsets, and the CPU renderer consumes it; the
   deko3d backend is still to do.
-- Recover installed-part and LOD selection before calling a profile stock.
+- Installed-part and LOD selection are recovered: the car part database of
+  `GLOBALB.BUN`, the stock part set per slot, the per-LOD mesh hash of a
+  part and the fallback the game uses for a missing mesh
+  (`include/nfsu/car_parts.h`, `nfsu_probe stock-parts`). Turning that into
+  a render profile still needs part placement.
 - Track retail evidence and remaining unknowns in
   [`CAR_SCENE.md`](CAR_SCENE.md).
 

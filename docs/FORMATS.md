@@ -58,6 +58,16 @@ Every one of the 400 mesh containers holds exactly one of each of
 0x00134011, 0x00134012, 0x00134013, 0x80134100, 0x00134900, 0x00134B01,
 0x00134B02 and 0x00134B03.
 
+The two header tables are the runtime mesh index. `speed.exe` keeps the
+0x00134003 payload at +0x78 of its solid-list object (0x53ff5c) and
+binary-searches it by hash (0x540630, 8-byte entries, key first), so the
+hashes must be ascending: they are, strictly, in all 39 retail
+`GEOMETRY.BIN` files. The second word of each entry is 0 in the file and
+holds the loaded mesh pointer at runtime; it is written when the container
+is loaded (0x540201) and cleared when it is unloaded (0x5403d1). The
+0x00134004 ranges are what the loader streams. See "Car part database"
+below for the records that name these hashes.
+
 Mesh metadata 0x00134011:
 
 - The mesh name is the final 28 bytes of the payload, NUL-terminated ASCII.
@@ -821,3 +831,109 @@ matches texture 18 at 5744.
   Raw UVs need no flip.
 - Unknown: whether every car and every material follows this. Only this car
   was checked.
+
+## Car part database (GLOBAL/GLOBALB.BUN)
+
+Reference samples: `GLOBAL/GLOBALB.BUN` as above, and `speed.exe`, 3178496
+bytes, SHA-256
+`C0FAD450912952F53809A54690D235AA8B4E25B9F46650693C7CBEE1B4C074B7` (PE32,
+image base 0x400000, file offset equals RVA). Addresses below are
+`speed.exe` virtual addresses; offsets are decimal GLOBALB.BUN offsets.
+`nfsu_probe car-parts GLOBALB.BUN [CAR]` lists every record.
+
+### Observed
+
+One top-level 0x80034602 chunk at 1797512 (payload 303992) holds four
+children, in this order:
+
+| Chunk | Header offset | Payload size | Content |
+| --- | ---: | ---: | --- |
+| 0x00034603 | 1797520 | 32 | header |
+| 0x00034606 | 1797560 | 21248 | NUL-terminated display names |
+| 0x00034605 | 1818816 | 64904 | 8113 x 8-byte attributes (u32 key, u32 value) |
+| 0x00034604 | 1883728 | 217776 | 4537 x 48-byte part records |
+
+Header: +0, +4, +12, +20 and +28 are zero; +8 = 5; +16 = 4537 (record
+count); +24 = 8113 (attribute count). The loader at 0x57c927 finds the
+children by their sizes and never checks their ids. It overwrites +0 and
++4 with list links and +12, +20, +28 with pointers to the record,
+attribute and string tables, and appends the pack to the list headed at
+0x73ad40.
+
+Part record (0x00034604), little-endian:
+
+| Offset | Type | Meaning | Code evidence |
+| --- | --- | --- | --- |
+| +0x00 | u32 | display name offset into 0x00034606 | turned into a pointer at 0x57c98a |
+| +0x04 | u32 | car type hash, `bin_hash` of the CarTypeInfo +0x20 name | compared at 0x57ce7a; binary-search key (offset 4) at 0x57ce57 |
+| +0x08 | u32 | part name hash | compared at 0x57ce98 |
+| +0x0C | u32 | not decoded; paint records are grouped by it | switch at 0x57c9ec |
+| +0x10 | s8 | slot id (see `docs/CAR_SCENE.md`) | `movsx` compare at 0x57ce88 |
+| +0x11 | u8 | upgrade level | `movzx` compare at 0x57cea6 and 0x504670 |
+| +0x12 | u8 | not decoded; the wide-body number for slot 6 | `%s_WIDE%d_` argument at 0x57ed37 |
+| +0x13 | u8 | not decoded | |
+| +0x14 | u32 | first attribute index, pointer at runtime | converted at 0x57c99a when +0x1C != 0 |
+| +0x18 | u32 | second attribute index | converted at 0x57c9ad when +0x1E != 0 |
+| +0x1C | s16 | first attribute count | 0x57c991, 0x57eaca |
+| +0x1E | s16 | second attribute count | 0x57c9a6 |
+| +0x20 | 4 x u32 | model hashes for LOD A, B, C, D; 0 = none | read by the render-info constructor at 0x56a95d and the loader at 0x58b08b |
+
+- Records are sorted by +0x04, unsigned ascending, over 43 distinct car
+  type hashes. `bin_hash("ANY")` = 0x00009287, `bin_hash("BRAKES")` =
+  0x52EB02F7, `bin_hash("PLATES")` = 0x7326CF08 and
+  `bin_hash("240SX")` = 0x0150FB80 are among them.
+- Every slot id is in 0..119 and every attribute range is inside the
+  attribute table.
+- Display names are not restricted to printable ASCII: record 4075 (at
+  2079336) is `ACE` followed by a TAB.
+- 240SX: all 400 0x00134004 directory hashes of `Cars/240SX/GEOMETRY.BIN`
+  occur in the +0x20 fields of the 144 records with car type 0x0150FB80.
+  417 of their 426 nonzero model hashes equal `bin_hash` of the part name
+  (+0x08) extended with `_A` to `_D`. The exceptions: the engine records
+  of part names `240SX_STYLE01_ENGINE` to `240SX_STYLE03_ENGINE` carry the
+  models of `240SX_KIT00_ENGINE`, `240SX_STYLE01_ENGINE` and
+  `240SX_STYLE02_ENGINE`, and the three collision records (slot 119) carry
+  their own part name hash as the only model hash.
+
+Worked example, the stock 240SX spoiler (record 1360 at 1949016):
+
+| Field | Bytes | Value |
+| --- | --- | --- |
+| +0x00 | `3C 14 00 00` | 5180: `STOCK` at 1802748 |
+| +0x04 | `80 FB 50 01` | 0x0150FB80 = `bin_hash("240SX")` |
+| +0x08 | `C4 0F 5D AA` | 0xAA5D0FC4 = `bin_hash("240SX_KIT00_SPOILER")` |
+| +0x10, +0x11 | `0B 00` | slot 11 (SPOILER), level 0 |
+| +0x20 | `44 1D E0 B5` | 0xB5E01D44: mesh 256 `240SX_KIT00_SPOILER_A` at 3037696 |
+| +0x24 | `45 1D E0 B5` | 0xB5E01D45: mesh 257 `240SX_KIT00_SPOILER_B` |
+| +0x28 | `46 1D E0 B5` | 0xB5E01D46: mesh 258 `240SX_KIT00_SPOILER_C` |
+| +0x2C | `47 1D E0 B5` | 0xB5E01D47: in no 240SX directory record |
+
+### Lookup (0x57ce10 and 0x53e400)
+
+`find_car_part` reproduces the game's lookup on one pack. Keys are a car
+type hash (0 = any), a slot (-1 = any), a part name hash (0 = any), a
+previous record and an upgrade level (-1 = any). Without a previous
+record and with a car type hash, 0x53e400 binary-searches +0x04 with
+unsigned compares and then steps back to the first record of the
+equal-key run; the scan then returns the first record in file order that
+matches every key, and returns nothing at the first record of another
+car type. With a previous record the scan starts right after it. With
+car type 0 it starts at the first record. The game keeps a list of packs;
+GLOBALB.BUN has one, and the parser accepts exactly one.
+
+### Parser rules (`nfsu::parse_car_part_database`)
+
+- The whole file is read once (limit 256 MiB). Top-level chunks must tile
+  the file exactly; exactly one of them is 0x80034602.
+- The database must hold exactly 0x00034603, 0x00034606, 0x00034605 and
+  0x00034604 in this order, filling its payload.
+- Header: payload 32 bytes, version 5, the five runtime words zero.
+- Payload sizes must equal count x 8 (attributes) and count x 48
+  (records); limits 1048576 attributes and 65536 records.
+- Each record: name offset inside the string table and NUL-terminated
+  there (content kept byte for byte), slot id 0..119, attribute counts
+  not negative, and a nonzero count's range inside the attribute table.
+- Records must be sorted by +0x04, unsigned ascending, as the binary
+  search requires.
+- Any problem makes the database invalid (`CarPartDatabase::valid`), and
+  `find_car_part` and `select_stock_parts` then refuse it.
