@@ -161,9 +161,12 @@ Selection:
   explicit subset, K of M meshes, S selectors` and one `selected: mesh I
   name "NAME" by selector J (index|name|hash)` line per mesh in source order.
   The `meshes` statistic then counts the selected meshes only.
-- Neither profile is the game's stock car. Installed-part and LOD
-  selection are not decoded (see `docs/CAR_SCENE.md`); an explicit subset
-  is a diagnostic view chosen by the user.
+- Neither profile is the game's stock car. The stock part set, the mesh
+  each part uses at each LOD and the fallback for a missing mesh are
+  decoded (`nfsu::select_stock_parts`, `nfsu::resolve_part_models`, see
+  `docs/CAR_SCENE.md`), but this renderer does not consume them yet, and
+  part placement is still unknown; an explicit subset is a diagnostic view
+  chosen by the user.
 
 `PreparedCarScene` holds, in deterministic order:
 

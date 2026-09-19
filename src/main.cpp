@@ -1,3 +1,4 @@
+#include "nfsu/car_parts.h"
 #include "nfsu/chunk.h"
 #include "nfsu/geometry.h"
 #include "nfsu/texture.h"
@@ -623,6 +624,240 @@ int run_texture_bindings(const fs::path& geometry_path, const fs::path& texture_
     return geometry.ok() && pack.ok() ? 0 : 3;
 }
 
+void print_car_part_issues(const nfsu::CarPartDatabase& database) {
+    for (const nfsu::CarPartIssue& issue : database.issues) {
+        std::cerr << "car part issue at " << issue.offset << ": " << issue.message
+                  << '\n';
+    }
+}
+
+// Display names are raw bytes. Bytes outside printable ASCII, the quote and
+// the backslash are written as \xNN.
+std::string escaped_name(const std::string& name) {
+    static constexpr char digits[] = "0123456789ABCDEF";
+    std::string text;
+    for (const char ch : name) {
+        const auto byte = static_cast<unsigned char>(ch);
+        if (byte >= 0x20U && byte <= 0x7EU && ch != '\'' && ch != '\\') {
+            text.push_back(ch);
+        } else {
+            text += "\\x";
+            text.push_back(digits[byte >> 4U]);
+            text.push_back(digits[byte & 0x0FU]);
+        }
+    }
+    return text;
+}
+
+std::string lod_hashes(const nfsu::CarPartRecord& record) {
+    std::string text;
+    for (std::size_t lod = 0; lod < nfsu::kCarPartLodCount; ++lod) {
+        text += ' ';
+        text += static_cast<char>('A' + lod);
+        text += '=';
+        text += record.lod_mesh_hashes[lod] == 0 ? std::string("-")
+                                                 : hex32(record.lod_mesh_hashes[lod]);
+    }
+    return text;
+}
+
+void print_part_record(const nfsu::CarPartRecord& record) {
+    const char* slot_name = nfsu::car_slot_name(record.slot);
+    std::cout << std::setw(5) << std::setfill(' ') << record.index << " @"
+              << record.offset << " car=" << hex32(record.car_type_hash)
+              << " slot=" << record.slot << ' '
+              << (slot_name == nullptr ? "?" : slot_name)
+              << " level=" << static_cast<unsigned int>(record.upgrade_level)
+              << " b12=" << static_cast<unsigned int>(record.byte_12)
+              << " part=" << hex32(record.part_name_hash)
+              << " attributes=" << record.attribute_count << '+'
+              << record.second_attribute_count << lod_hashes(record) << " name='"
+              << escaped_name(record.name) << "'\n";
+}
+
+int run_car_parts(const fs::path& path, const std::string& car_type_name) {
+    const nfsu::CarPartDatabase database = nfsu::load_car_part_database(path);
+    std::cout << "file: " << path.string() << '\n';
+    std::cout << "bytes: " << database.file_size << '\n';
+    std::cout << "database: offset " << database.chunk_offset << " version "
+              << database.version << " valid " << (database.valid ? 1 : 0) << '\n';
+    std::cout << "records: " << database.records.size() << '\n';
+    std::cout << "attributes: " << database.attributes.size() << '\n';
+    std::map<std::uint32_t, std::size_t> car_types;
+    for (const nfsu::CarPartRecord& record : database.records) {
+        ++car_types[record.car_type_hash];
+    }
+    std::cout << "car type hashes: " << car_types.size() << '\n';
+    const bool filter = !car_type_name.empty();
+    const std::uint32_t wanted = nfsu::bin_hash(car_type_name);
+    if (filter) {
+        std::cout << "car type: " << car_type_name << ' ' << hex32(wanted) << '\n';
+    }
+    std::size_t listed = 0;
+    for (const nfsu::CarPartRecord& record : database.records) {
+        if (!filter || record.car_type_hash == wanted) {
+            print_part_record(record);
+            ++listed;
+        }
+    }
+    std::cout << "listed records: " << listed << '\n';
+    print_car_part_issues(database);
+    if (filter && listed == 0) {
+        std::cerr << "error: no record has car type '" << car_type_name << "'\n";
+        return 2;
+    }
+    return database.ok() ? 0 : 3;
+}
+
+// One mesh of a loaded geometry file, found by verified directory hash.
+struct MeshLocation {
+    std::size_t file = 0;
+    std::size_t mesh = 0;
+};
+
+int run_stock_parts(const fs::path& database_path,
+                    const std::string& car_type_name,
+                    const std::vector<fs::path>& geometry_paths) {
+    const nfsu::CarPartDatabase database = nfsu::load_car_part_database(database_path);
+    print_car_part_issues(database);
+    nfsu::StockParts parts;
+    std::string error;
+    if (!nfsu::select_stock_parts(database, car_type_name, parts, error)) {
+        std::cerr << "error: " << error << '\n';
+        return 2;
+    }
+
+    bool geometry_ok = true;
+    std::vector<nfsu::GeometryReport> geometry;
+    std::map<std::uint32_t, std::vector<MeshLocation>> by_hash;
+    for (std::size_t f = 0; f < geometry_paths.size(); ++f) {
+        geometry.push_back(nfsu::load_geometry_file(geometry_paths[f]));
+        const nfsu::GeometryReport& report = geometry.back();
+        print_geometry_issues(report);
+        std::cout << "geometry " << f << ": " << geometry_paths[f].string() << " meshes "
+                  << report.meshes.size() << " directory "
+                  << (report.mesh_directory_valid ? "verified" : "unavailable") << '\n';
+        if (!report.mesh_directory_valid) {
+            // Without it a missing hash would prove nothing.
+            std::cerr << "error: " << geometry_paths[f].string()
+                      << " has no verified mesh directory\n";
+            return 2;
+        }
+        geometry_ok = geometry_ok && report.ok();
+        for (std::size_t m = 0; m < report.meshes.size(); ++m) {
+            by_hash[report.meshes[m].directory_hash].push_back(MeshLocation{f, m});
+        }
+    }
+
+    std::cout << "car type: " << parts.car_type_name << ' ' << hex32(parts.car_type_hash)
+              << '\n';
+    // Ascending and unique, as the game's solid lookup needs.
+    std::vector<std::uint32_t> loaded;
+    loaded.reserve(by_hash.size());
+    for (const auto& [hash, locations] : by_hash) {
+        loaded.push_back(hash);
+    }
+    std::array<std::size_t, nfsu::kCarPartLodCount> named{};
+    std::array<std::size_t, nfsu::kCarPartLodCount> drawn{};
+    std::array<std::size_t, nfsu::kCarPartLodCount> fell_back{};
+    std::array<std::size_t, nfsu::kCarPartLodCount> invalid{};
+    std::array<std::size_t, nfsu::kCarPartLodCount> empty{};
+    std::size_t installed = 0;
+    std::size_t enabled = 0;
+    std::size_t without_model = 0;
+    for (std::size_t s = 0; s < nfsu::kCarSlotCount; ++s) {
+        const nfsu::StockPartSlot& slot = parts.slots[s];
+        if (slot.record == nfsu::kNoCarPart) {
+            continue;
+        }
+        ++installed;
+        const bool has_model = s < nfsu::kCarModelSlotCount;
+        if (!has_model) {
+            ++without_model;
+        }
+        const nfsu::CarPartRecord& record = database.records[slot.record];
+        std::cout << "slot " << std::setw(3) << std::setfill(' ') << s << ' '
+                  << nfsu::car_slot_name(static_cast<int>(s)) << ' '
+                  << nfsu::stock_part_rule_name(slot.rule) << ' '
+                  << (slot.enabled ? "enabled" : "disabled") << " record "
+                  << record.index << " level "
+                  << static_cast<unsigned int>(record.upgrade_level) << " part "
+                  << hex32(record.part_name_hash) << " name='"
+                  << escaped_name(record.name) << "'"
+                  << (has_model ? "" : " (no model: slot is outside 0..29)") << '\n';
+        if (slot.enabled) {
+            ++enabled;
+        }
+        std::array<nfsu::PartModel, nfsu::kCarPartLodCount> models{};
+        if (!geometry.empty() &&
+            !nfsu::resolve_part_models(record, loaded, models, error)) {
+            std::cerr << "error: " << error << '\n';
+            return 2;
+        }
+        for (std::size_t lod = 0; lod < nfsu::kCarPartLodCount; ++lod) {
+            const nfsu::PartModel& model = models[lod];
+            const std::uint32_t requested = record.lod_mesh_hashes[lod];
+            const bool counted = slot.enabled && has_model;
+            std::cout << "  " << static_cast<char>('A' + lod) << ' ';
+            if (requested == 0) {
+                std::cout << "none\n";
+                if (counted) {
+                    ++empty[lod];
+                }
+                continue;
+            }
+            std::cout << hex32(requested);
+            if (counted) {
+                ++named[lod];
+            }
+            if (geometry.empty()) {
+                std::cout << " not checked\n";
+                continue;
+            }
+            if (model.source == nfsu::PartModelSource::fallback) {
+                std::cout << " fallback " << hex32(model.hash);
+            }
+            if (!model.resolved) {
+                std::cout << (model.hash == 0 ? " absent, no fallback\n" : " absent\n");
+                if (counted) {
+                    ++empty[lod];
+                }
+                continue;
+            }
+            bool all_valid = true;
+            for (const MeshLocation& location : by_hash.find(model.hash)->second) {
+                const nfsu::Mesh& mesh = geometry[location.file].meshes[location.mesh];
+                std::cout << " geometry " << location.file << " mesh " << location.mesh
+                          << ' ' << mesh.name << (mesh.valid ? "" : " invalid");
+                all_valid = all_valid && mesh.valid;
+            }
+            if (by_hash.find(model.hash)->second.size() > 1) {
+                std::cout << " (ambiguous)";
+            }
+            std::cout << '\n';
+            if (counted) {
+                ++(all_valid ? drawn : invalid)[lod];
+                if (model.source == nfsu::PartModelSource::fallback) {
+                    ++fell_back[lod];
+                }
+            }
+        }
+    }
+    std::cout << "installed slots: " << installed << " enabled: " << enabled
+              << " without a model: " << without_model << '\n';
+    for (std::size_t lod = 0; lod < nfsu::kCarPartLodCount; ++lod) {
+        std::cout << "enabled slots with a model at LOD " << static_cast<char>('A' + lod)
+                  << ": named " << named[lod];
+        if (!geometry.empty()) {
+            std::cout << " drawn " << drawn[lod] << " (of them by fallback "
+                      << fell_back[lod] << ") invalid " << invalid[lod] << " empty "
+                      << empty[lod];
+        }
+        std::cout << '\n';
+    }
+    return database.ok() && geometry_ok ? 0 : 3;
+}
+
 void print_usage() {
     std::cout
         << "Usage:\n"
@@ -633,7 +868,9 @@ void print_usage() {
         << "  nfsu_probe textures <TEXTURES.BIN>\n"
         << "  nfsu_probe pack-set <file>   (metadata of every texture pack, e.g. in a BUN)\n"
         << "  nfsu_probe export-textures <TEXTURES.BIN> <output-dir> [tga|dds]\n"
-        << "  nfsu_probe texture-bindings <GEOMETRY.BIN> <TEXTURES.BIN>\n";
+        << "  nfsu_probe texture-bindings <GEOMETRY.BIN> <TEXTURES.BIN>\n"
+        << "  nfsu_probe car-parts <GLOBALB.BUN> [car-type]\n"
+        << "  nfsu_probe stock-parts <GLOBALB.BUN> <car-type> [GEOMETRY.BIN ...]\n";
 }
 
 } // namespace
@@ -690,6 +927,24 @@ int main(int argc, char** argv) {
             return 1;
         }
         return run_texture_bindings(fs::path(argv[2]), fs::path(argv[3]));
+    }
+    if (command == "car-parts") {
+        if (argc > 4) {
+            print_usage();
+            return 1;
+        }
+        return run_car_parts(fs::path(argv[2]), argc == 4 ? std::string(argv[3]) : "");
+    }
+    if (command == "stock-parts") {
+        if (argc < 4) {
+            print_usage();
+            return 1;
+        }
+        std::vector<fs::path> geometry;
+        for (int i = 4; i < argc; ++i) {
+            geometry.emplace_back(argv[i]);
+        }
+        return run_stock_parts(fs::path(argv[2]), std::string(argv[3]), geometry);
     }
 
     print_usage();

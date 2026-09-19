@@ -24,6 +24,7 @@ target_compile_features(nfsu_image PUBLIC cxx_std_17)
 nfsu_enable_warnings(nfsu_image)
 
 add_library(nfsu_core
+    src/car_parts.cpp
     src/chunk.cpp
     src/geometry.cpp
     src/texture.cpp
@@ -131,9 +132,17 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_scene_tests)
     add_test(NAME nfsu_scene_tests COMMAND nfsu_scene_tests)
 
+    add_executable(nfsu_car_parts_tests
+        tests/car_parts_tests.cpp
+    )
+
+    target_link_libraries(nfsu_car_parts_tests PRIVATE nfsu_core)
+    nfsu_enable_warnings(nfsu_car_parts_tests)
+    add_test(NAME nfsu_car_parts_tests COMMAND nfsu_car_parts_tests)
+
     # A hung test is killed and reported as a failure.
     set_tests_properties(
         nfsu_chunk_tests nfsu_geometry_tests nfsu_texture_tests
-        nfsu_render_tests nfsu_scene_tests
+        nfsu_render_tests nfsu_scene_tests nfsu_car_parts_tests
         PROPERTIES TIMEOUT 60)
 endif()

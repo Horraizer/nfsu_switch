@@ -32,6 +32,8 @@ build/nfsu_probe pack-set X:/Games/NFSU/GLOBAL/GLOBALB.BUN
 build/nfsu_probe export-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN build/tex tga
 build/nfsu_probe export-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN build/dds dds
 build/nfsu_probe texture-bindings X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games/NFSU/Cars/240SX/TEXTURES.BIN
+build/nfsu_probe car-parts X:/Games/NFSU/Global/GLOBALB.BUN 240SX
+build/nfsu_probe stock-parts X:/Games/NFSU/Global/GLOBALB.BUN 240SX X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games/NFSU/Cars/BRAKES/GEOMETRY.BIN X:/Games/NFSU/Cars/PLATES/GEOMETRY.BIN
 ```
 
 `meshes` lists every mesh with its name, vertex count, face count and
@@ -57,6 +59,16 @@ It never decodes or writes pixel data. Observed P8 records are parsed and
 their indexed mip chain and 1024-byte palette can be extracted through the
 library API. Diagnostic TGA and DDS export still refuses P8 because palette
 channel semantics and runtime skin composition are not yet implemented.
+`car-parts` parses the car part database of `GLOBAL/GLOBALB.BUN` and lists
+every part record: car type hash, slot, upgrade level, part name hash and
+the four per-LOD mesh hashes. A car type name lists only its records.
+`stock-parts` applies the game's stock-part rules to one car type and
+prints the chosen record per slot with each LOD mesh hash resolved against
+the `GEOMETRY.BIN` files given after the car type, including the mesh the
+game falls back to when the one a part names is missing. `car-parts`
+reports every structural problem and marks the database invalid;
+`stock-parts` refuses to run on such a database. See `docs/CAR_SCENE.md`
+for the evidence and for what a "stock" part set does and does not cover.
 
 ## Reference viewer
 
@@ -90,8 +102,10 @@ instead; all may be repeated and mixed, at most 256 selectors and
 out-of-range index, an unknown or ambiguous hash, an unknown, empty or
 ambiguous name, or a mesh selected twice is a usage error (exit 1) and
 nothing is written. Neither profile is
-the game's stock car: which parts the game installs is not decoded yet
-(see `docs/CAR_SCENE.md`).
+the game's stock car. Which parts the game installs, and which mesh each
+one uses at a LOD, are decoded (`nfsu_probe stock-parts`), but the viewer
+does not consume them yet, and part placement, paint and skin are still
+missing (see `docs/CAR_SCENE.md`).
 
 Selection and material lookup happen once, in `prepare_car_scene`
 (`include/nfsu/scene.h`). It builds a self-contained `PreparedCarScene`
