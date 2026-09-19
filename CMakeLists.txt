@@ -4,8 +4,17 @@ project(nfsu_switch LANGUAGES CXX)
 
 option(NFSU_BUILD_TESTS "Build unit tests" ON)
 
+function(nfsu_enable_warnings target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+endfunction()
+
 add_library(nfsu_core
     src/chunk.cpp
+    src/geometry.cpp
 )
 
 target_include_directories(nfsu_core
@@ -14,18 +23,14 @@ target_include_directories(nfsu_core
 )
 
 target_compile_features(nfsu_core PUBLIC cxx_std_17)
-
-if(MSVC)
-    target_compile_options(nfsu_core PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(nfsu_core PRIVATE -Wall -Wextra -Wpedantic)
-endif()
+nfsu_enable_warnings(nfsu_core)
 
 add_executable(nfsu_probe
     src/main.cpp
 )
 
 target_link_libraries(nfsu_probe PRIVATE nfsu_core)
+nfsu_enable_warnings(nfsu_probe)
 
 if(NFSU_BUILD_TESTS)
     include(CTest)
@@ -35,6 +40,14 @@ if(NFSU_BUILD_TESTS)
     )
 
     target_link_libraries(nfsu_chunk_tests PRIVATE nfsu_core)
+    nfsu_enable_warnings(nfsu_chunk_tests)
     add_test(NAME nfsu_chunk_tests COMMAND nfsu_chunk_tests)
-endif()
 
+    add_executable(nfsu_geometry_tests
+        tests/geometry_tests.cpp
+    )
+
+    target_link_libraries(nfsu_geometry_tests PRIVATE nfsu_core)
+    nfsu_enable_warnings(nfsu_geometry_tests)
+    add_test(NAME nfsu_geometry_tests COMMAND nfsu_geometry_tests)
+endif()

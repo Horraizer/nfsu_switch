@@ -1,0 +1,803 @@
+#include "nfsu/geometry.h"
+
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <initializer_list>
+#include <iostream>
+#include <limits>
+#include <optional>
+#include <sstream>
+#include <string>
+#include <vector>
+
+namespace fs = std::filesystem;
+
+namespace {
+
+using Bytes = std::vector<unsigned char>;
+
+int g_failures = 0;
+
+void check(bool condition, const std::string& message) {
+    if (!condition) {
+        std::cerr << "test failure: " << message << '\n';
+        ++g_failures;
+    }
+}
+
+void append_u16(Bytes& bytes, std::uint16_t value) {
+    bytes.push_back(static_cast<unsigned char>(value & 0xFFU));
+    bytes.push_back(static_cast<unsigned char>((value >> 8U) & 0xFFU));
+}
+
+void append_u32(Bytes& bytes, std::uint32_t value) {
+    bytes.push_back(static_cast<unsigned char>(value & 0xFFU));
+    bytes.push_back(static_cast<unsigned char>((value >> 8U) & 0xFFU));
+    bytes.push_back(static_cast<unsigned char>((value >> 16U) & 0xFFU));
+    bytes.push_back(static_cast<unsigned char>((value >> 24U) & 0xFFU));
+}
+
+void append_f32(Bytes& bytes, float value) {
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    append_u32(bytes, bits);
+}
+
+void put_u32(Bytes& bytes, std::size_t offset, std::uint32_t value) {
+    for (std::size_t i = 0; i < 4; ++i) {
+        bytes[offset + i] =
+            static_cast<unsigned char>((value >> (8U * i)) & 0xFFU);
+    }
+}
+
+void put_i32(Bytes& bytes, std::size_t offset, std::int32_t value) {
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    put_u32(bytes, offset, bits);
+}
+
+// Writes a chunk tree into one buffer. Buffer positions are absolute file
+// offsets, so alignment prefixes are computed exactly as the format does.
+class Writer {
+public:
+    std::size_t size() const { return bytes_.size(); }
+    Bytes& bytes() { return bytes_; }
+
+    void begin(std::uint32_t id) {
+        open_.push_back(bytes_.size());
+        append_u32(bytes_, id);
+        append_u32(bytes_, 0);
+    }
+
+    void end() {
+        const std::size_t header = open_.back();
+        open_.pop_back();
+        put_u32(bytes_, header + 4,
+                static_cast<std::uint32_t>(bytes_.size() - header - 8));
+    }
+
+    void leaf(std::uint32_t id, const Bytes& payload) {
+        begin(id);
+        append(payload);
+        end();
+    }
+
+    void append(const Bytes& payload) {
+        bytes_.insert(bytes_.end(), payload.begin(), payload.end());
+    }
+
+    // Appends 0x11 bytes up to the next multiple of alignment; returns the
+    // number of bytes written.
+    std::size_t pad_to(std::size_t alignment) {
+        std::size_t count = 0;
+        while (bytes_.size() % alignment != 0) {
+            bytes_.push_back(0x11U);
+            ++count;
+        }
+        return count;
+    }
+
+private:
+    Bytes bytes_;
+    std::vector<std::size_t> open_;
+};
+
+struct TestVertex {
+    float px, py, pz, nx, ny, nz, u, v;
+};
+
+enum class Corrupt { none, metadata_prefix, vertex_prefix, face_prefix };
+
+struct MeshSpec {
+    std::string name = "BODY";
+    std::vector<TestVertex> vertices;
+    std::vector<std::uint16_t> indices;
+    std::optional<std::int32_t> declared_vertices;
+    std::optional<std::int32_t> declared_faces;
+    // Payload size of chunk 0x00134012; shifts every later file offset.
+    std::size_t unknown_12_size = 8;
+    std::size_t metadata_size = 64;
+    unsigned char metadata_first_byte = 0x00U;
+    std::optional<Bytes> raw_metadata;
+    std::size_t vertex_extra = 0;
+    std::optional<std::size_t> face_tail;
+    unsigned char face_tail_byte = 0x00U;
+    Corrupt corrupt = Corrupt::none;
+    bool include_faces = true;
+    bool name_terminated = true;
+};
+
+struct MeshLayout {
+    std::size_t container_offset = 0;
+    std::size_t metadata_payload_offset = 0;
+    std::size_t metadata_record_offset = 0;
+    std::size_t metadata_prefix = 0;
+    std::size_t vertex_payload_offset = 0;
+    std::size_t vertex_data_offset = 0;
+    std::size_t vertex_prefix = 0;
+    std::size_t face_payload_offset = 0;
+    std::size_t face_data_offset = 0;
+    std::size_t face_prefix = 0;
+    std::size_t face_tail = 0;
+};
+
+struct Fixture {
+    Bytes bytes;
+    std::vector<MeshLayout> meshes;
+};
+
+void write_mesh(Writer& w, const MeshSpec& spec, MeshLayout& layout) {
+    layout.container_offset = w.size();
+    w.begin(nfsu::kMeshContainerId);
+
+    // Mesh metadata: 176 bytes, name in the final 28 bytes.
+    Bytes mesh_metadata(176, 0);
+    for (std::size_t i = 0; i < spec.name.size() && i < 28; ++i) {
+        mesh_metadata[176 - 28 + i] = static_cast<unsigned char>(spec.name[i]);
+    }
+    if (!spec.name_terminated) {
+        for (std::size_t i = spec.name.size(); i < 28; ++i) {
+            mesh_metadata[176 - 28 + i] = 'X';
+        }
+    }
+    w.leaf(nfsu::kMeshMetadataId, mesh_metadata);
+    w.leaf(0x00134012U, Bytes(spec.unknown_12_size, 0));
+
+    w.begin(nfsu::kGeometryContainerId);
+
+    const std::int32_t vertex_count = spec.declared_vertices.value_or(
+        static_cast<std::int32_t>(spec.vertices.size()));
+    const std::int32_t face_count = spec.declared_faces.value_or(
+        static_cast<std::int32_t>(spec.indices.size() / 3));
+
+    w.begin(nfsu::kGeometryMetadataId);
+    layout.metadata_payload_offset = w.size();
+    if (spec.raw_metadata) {
+        w.append(*spec.raw_metadata);
+    } else {
+        layout.metadata_prefix = w.pad_to(16);
+        layout.metadata_record_offset = w.size();
+        Bytes record(spec.metadata_size, 0);
+        if (!record.empty()) {
+            record[0] = spec.metadata_first_byte;
+        }
+        if (record.size() >= 56) {
+            put_i32(record, 36, face_count);
+            put_i32(record, 52, vertex_count);
+        }
+        w.append(record);
+        if (spec.corrupt == Corrupt::metadata_prefix &&
+            layout.metadata_prefix != 0) {
+            w.bytes()[layout.metadata_payload_offset] = 0x00U;
+        }
+    }
+    w.end();
+
+    w.begin(nfsu::kVertexBufferId);
+    layout.vertex_payload_offset = w.size();
+    layout.vertex_prefix = w.pad_to(128);
+    layout.vertex_data_offset = w.size();
+    Bytes vertices;
+    for (const TestVertex& v : spec.vertices) {
+        append_f32(vertices, v.px);
+        append_f32(vertices, v.pz);
+        append_f32(vertices, v.py);
+        append_f32(vertices, v.nx);
+        append_f32(vertices, v.nz);
+        append_f32(vertices, v.ny);
+        vertices.insert(vertices.end(), {0x10U, 0x20U, 0x30U, 0x40U});
+        append_f32(vertices, v.u);
+        append_f32(vertices, v.v);
+    }
+    vertices.insert(vertices.end(), spec.vertex_extra, 0x00U);
+    w.append(vertices);
+    if (spec.corrupt == Corrupt::vertex_prefix && layout.vertex_prefix != 0) {
+        w.bytes()[layout.vertex_payload_offset] = 0x00U;
+    }
+    w.end();
+
+    w.leaf(nfsu::kUnknownB02Id, Bytes(12, 0xABU));
+
+    if (spec.include_faces) {
+        w.begin(nfsu::kFaceBufferId);
+        layout.face_payload_offset = w.size();
+        layout.face_prefix = w.pad_to(16);
+        layout.face_data_offset = w.size();
+        Bytes faces;
+        for (std::uint16_t index : spec.indices) {
+            append_u16(faces, index);
+        }
+        layout.face_tail =
+            spec.face_tail.value_or(faces.size() % 4 == 0 ? 0 : 2);
+        faces.insert(faces.end(), layout.face_tail, spec.face_tail_byte);
+        w.append(faces);
+        if (spec.corrupt == Corrupt::face_prefix && layout.face_prefix != 0) {
+            w.bytes()[layout.face_payload_offset] = 0x00U;
+        }
+        w.end();
+    }
+
+    w.end(); // geometry container
+    w.end(); // mesh container
+}
+
+Fixture build(std::initializer_list<MeshSpec> specs) {
+    Fixture fixture;
+    Writer w;
+    w.begin(nfsu::kGeometryRootId);
+    w.leaf(0x00000000U, Bytes(4, 0));
+    for (const MeshSpec& spec : specs) {
+        MeshLayout layout;
+        write_mesh(w, spec, layout);
+        fixture.meshes.push_back(layout);
+        w.leaf(0x00000000U, Bytes());
+    }
+    w.end();
+    w.begin(0x80034020U);
+    w.leaf(0x00039200U, Bytes(4, 0));
+    w.end();
+    fixture.bytes = w.bytes();
+    return fixture;
+}
+
+MeshSpec quad_spec() {
+    MeshSpec spec;
+    spec.name = "BODY_A";
+    spec.vertices = {
+        {0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F},
+        {1.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 1.0F, 0.0F},
+        {1.0F, 0.0F, 2.0F, 0.0F, 1.0F, 0.0F, 1.0F, 1.0F},
+        {0.0F, 0.0F, 2.0F, 0.0F, 1.0F, 0.0F, 0.0F, 1.0F},
+    };
+    spec.indices = {0, 1, 2, 0, 2, 3};
+    return spec;
+}
+
+// One triangle: 6 bytes of face data, so a 2-byte zero tail follows.
+MeshSpec triangle_spec() {
+    MeshSpec spec;
+    spec.name = "WHEEL #1";
+    spec.vertices = {
+        {0.5F, -1.5F, 0.25F, 1.0F, 0.0F, 0.0F, 0.5F, 0.25F},
+        {0.5F, 1.5F, 0.25F, 1.0F, 0.0F, 0.0F, 0.75F, 0.5F},
+        {0.5F, 0.0F, 3.0F, 1.0F, 0.0F, 0.0F, 1.0F, 1.0F},
+    };
+    spec.indices = {0, 1, 2};
+    return spec;
+}
+
+nfsu::GeometryReport parse(const Bytes& bytes) {
+    return nfsu::parse_geometry(bytes.data(), bytes.size());
+}
+
+bool has_issue(const nfsu::GeometryReport& report, const std::string& text) {
+    for (const nfsu::GeometryIssue& issue : report.issues) {
+        if (issue.message.find(text) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void dump_issues(const nfsu::GeometryReport& report) {
+    for (const nfsu::GeometryIssue& issue : report.issues) {
+        std::cerr << "  issue at " << issue.offset << ": " << issue.message
+                  << '\n';
+    }
+}
+
+// Checks that parsed offsets match the fixture layout and the alignment
+// rules of the format.
+bool layout_matches(const nfsu::Mesh& mesh, const MeshLayout& layout) {
+    return mesh.metadata_record_offset == layout.metadata_record_offset &&
+           mesh.metadata_prefix_bytes == layout.metadata_prefix &&
+           mesh.vertex_data_offset == layout.vertex_data_offset &&
+           mesh.vertex_prefix_bytes == layout.vertex_prefix &&
+           mesh.face_data_offset == layout.face_data_offset &&
+           mesh.face_prefix_bytes == layout.face_prefix &&
+           mesh.face_tail_bytes == layout.face_tail &&
+           mesh.metadata_record_offset % 16U == 0U &&
+           mesh.vertex_data_offset % 128U == 0U &&
+           mesh.face_data_offset % 16U == 0U;
+}
+
+void test_valid_file() {
+    const Fixture fixture = build({quad_spec(), triangle_spec()});
+    const nfsu::GeometryReport report = parse(fixture.bytes);
+    if (!report.ok()) {
+        dump_issues(report);
+    }
+    check(report.ok(), "valid file reported issues");
+    check(report.meshes.size() == 2U, "valid file mesh count");
+    if (report.meshes.size() != 2U) {
+        return;
+    }
+
+    const nfsu::Mesh& quad = report.meshes[0];
+    check(quad.valid, "quad is valid");
+    check(quad.name == "BODY_A", "quad name");
+    check(quad.declared_vertex_count == 4, "quad vertex count");
+    check(quad.declared_face_count == 2, "quad face count");
+    check(layout_matches(quad, fixture.meshes[0]), "quad layout");
+    check(fixture.meshes[0].metadata_prefix != 0U &&
+              fixture.meshes[0].vertex_prefix != 0U &&
+              fixture.meshes[0].face_prefix != 0U,
+          "default fixture exercises non-empty prefixes");
+    check(quad.face_tail_bytes == 0U, "even face bytes have no tail");
+    check(quad.vertices.size() == 4U && quad.triangles.size() == 2U,
+          "quad buffers");
+    if (quad.vertices.size() == 4U) {
+        const nfsu::MeshVertex& v = quad.vertices[2];
+        check(v.px == 1.0F && v.py == 0.0F && v.pz == 2.0F,
+              "position source order px,pz,py");
+        check(v.nx == 0.0F && v.ny == 1.0F && v.nz == 0.0F,
+              "normal source order nx,nz,ny");
+        check(v.u == 1.0F && v.v == 1.0F, "uv");
+        check(v.color[0] == 0x10U && v.color[3] == 0x40U, "color bytes");
+    }
+
+    const nfsu::Mesh& tri = report.meshes[1];
+    check(tri.valid, "triangle is valid");
+    check(tri.name == "WHEEL #1", "triangle name");
+    check(layout_matches(tri, fixture.meshes[1]), "triangle layout");
+    check(tri.face_tail_bytes == 2U, "odd face bytes have a 2-byte tail");
+    check(nfsu::obj_object_name(tri) == "m0001_WHEEL__1", "object name");
+}
+
+void test_alignment_sweep() {
+    // Shifting the 0x00134012 size moves every later record across all
+    // residues, including records that need no prefix at all.
+    bool saw_zero_metadata_prefix = false;
+    bool saw_zero_vertex_prefix = false;
+    bool saw_zero_face_prefix = false;
+    for (std::size_t shift = 0; shift <= 256; shift += 4) {
+        MeshSpec quad = quad_spec();
+        quad.unknown_12_size = shift;
+        MeshSpec tri = triangle_spec();
+        tri.unknown_12_size = shift + 4;
+        // The face prefix depends only on the vertex count because vertex
+        // data is 128-byte aligned; 5 vertices put the faces on a 16-byte
+        // boundary with no prefix.
+        MeshSpec five = quad_spec();
+        five.vertices.push_back(five.vertices[0]);
+        five.unknown_12_size = shift;
+        const Fixture fixture = build({quad, tri, five});
+        const nfsu::GeometryReport report = parse(fixture.bytes);
+        bool ok = report.ok() && report.valid_mesh_count() == 3U;
+        for (std::size_t i = 0; ok && i < 3U; ++i) {
+            ok = layout_matches(report.meshes[i], fixture.meshes[i]);
+        }
+        if (!ok) {
+            dump_issues(report);
+        }
+        check(ok, "alignment sweep shift " + std::to_string(shift));
+        for (const MeshLayout& layout : fixture.meshes) {
+            saw_zero_metadata_prefix |= layout.metadata_prefix == 0U;
+            saw_zero_vertex_prefix |= layout.vertex_prefix == 0U;
+            saw_zero_face_prefix |= layout.face_prefix == 0U;
+        }
+    }
+    // The vertex payload always starts 8 bytes after the 16-byte aligned end
+    // of the metadata record, so its prefix is never empty (the retail
+    // sample agrees: 8 to 120 bytes).
+    check(saw_zero_metadata_prefix && saw_zero_face_prefix &&
+              !saw_zero_vertex_prefix,
+          "sweep covers already-aligned records");
+}
+
+void test_leading_0x11_data_does_not_shift() {
+    // The first metadata record byte and the first vertex byte are 0x11. A
+    // parser that scanned leading 0x11 bytes would start one byte late.
+    MeshSpec spec = quad_spec();
+    spec.metadata_first_byte = 0x11U;
+    std::uint32_t bits = 0x3F800011U;
+    std::memcpy(&spec.vertices[0].px, &bits, sizeof(bits));
+    const Fixture fixture = build({spec});
+    const MeshLayout& layout = fixture.meshes[0];
+    check(fixture.bytes[layout.metadata_record_offset] == 0x11U &&
+              fixture.bytes[layout.vertex_data_offset] == 0x11U &&
+              layout.metadata_prefix != 0U && layout.vertex_prefix != 0U,
+          "regression fixture has 0x11 right after both prefixes");
+
+    const nfsu::GeometryReport report = parse(fixture.bytes);
+    if (!report.ok()) {
+        dump_issues(report);
+    }
+    check(report.ok() && report.valid_mesh_count() == 1U,
+          "0x11 first data bytes parse");
+    if (report.meshes.size() == 1U && report.meshes[0].valid) {
+        const nfsu::Mesh& mesh = report.meshes[0];
+        check(layout_matches(mesh, layout), "0x11 first data bytes layout");
+        check(mesh.declared_vertex_count == 4 && mesh.declared_face_count == 2,
+              "counts read from the aligned record");
+        std::uint32_t parsed = 0;
+        std::memcpy(&parsed, &mesh.vertices[0].px, sizeof(parsed));
+        check(parsed == bits && mesh.vertices[3].pz == 2.0F,
+              "vertices read from the aligned offset");
+    }
+}
+
+void test_obj_output() {
+    const nfsu::GeometryReport report =
+        parse(build({quad_spec(), triangle_spec()}).bytes);
+    std::ostringstream output;
+    nfsu::ObjExportStats stats;
+    std::string error;
+    check(nfsu::write_obj(output, report, stats, error), "write_obj succeeded");
+    check(stats.meshes == 2U && stats.vertices == 7U && stats.triangles == 3U,
+          "obj stats");
+
+    const std::string expected =
+        "# nfsu_probe diagnostic OBJ export\n"
+        "# axes: x = source px, y = source py, z = -source pz"
+        " (source float order px, pz, py)\n"
+        "# winding: source triangle order (a, b, c) is kept\n"
+        "# uv: vt u v = raw source u v (origin not confirmed)\n"
+        "o m0000_BODY_A\ng m0000_BODY_A\n"
+        "v 0 0 0\nv 1 0 0\nv 1 0 -2\nv 0 0 -2\n"
+        "vn 0 1 0\nvn 0 1 0\nvn 0 1 0\nvn 0 1 0\n"
+        "vt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\n"
+        // Counter-clockwise around +y in the right-handed output, matching
+        // the vertex normals, as observed for real 240SX data.
+        "f 1/1/1 2/2/2 3/3/3\n"
+        "f 1/1/1 3/3/3 4/4/4\n"
+        "o m0001_WHEEL__1\ng m0001_WHEEL__1\n"
+        "v 0.5 -1.5 -0.25\nv 0.5 1.5 -0.25\nv 0.5 0 -3\n"
+        "vn 1 0 0\nvn 1 0 0\nvn 1 0 0\n"
+        "vt 0.5 0.25\nvt 0.75 0.5\nvt 1 1\n"
+        "f 5/5/5 6/6/6 7/7/7\n";
+    if (output.str() != expected) {
+        std::cerr << "actual OBJ:\n" << output.str();
+    }
+    check(output.str() == expected, "OBJ text is exact and deterministic");
+
+    std::ostringstream again;
+    check(nfsu::write_obj(again, report, stats, error) &&
+              again.str() == output.str(),
+          "OBJ output repeats identically");
+}
+
+void test_invalid_mesh_is_skipped_and_offsets_stay_correct() {
+    MeshSpec bad = quad_spec();
+    bad.indices = {0, 1, 9, 0, 2, 3};
+    const nfsu::GeometryReport report =
+        parse(build({bad, triangle_spec()}).bytes);
+    check(!report.ok(), "out of range index reported");
+    check(has_issue(report,
+                    "out of range for 4 vertices; first is triangle 0 index 9"),
+          "out of range diagnostic is precise");
+    check(report.meshes.size() == 2U && !report.meshes[0].valid &&
+              report.meshes[1].valid,
+          "parsing continued after invalid mesh");
+    check(report.meshes.empty() || report.meshes[0].vertices.empty(),
+          "invalid mesh holds no data");
+
+    std::ostringstream output;
+    nfsu::ObjExportStats stats;
+    std::string error;
+    check(nfsu::write_obj(output, report, stats, error), "partial export");
+    check(stats.meshes == 1U && stats.vertices == 3U, "partial export stats");
+    check(output.str().find("f 1/1/1 2/2/2 3/3/3\n") != std::string::npos,
+          "second mesh indices restart at one when first is skipped");
+    check(output.str().find("m0000") == std::string::npos,
+          "invalid mesh not exported");
+}
+
+void expect_mesh_rejected(const MeshSpec& spec, const std::string& needle,
+                          const std::string& label) {
+    const nfsu::GeometryReport report =
+        parse(build({spec, triangle_spec()}).bytes);
+    const bool ok = !report.ok() && report.meshes.size() == 2U &&
+                    !report.meshes[0].valid && report.meshes[1].valid &&
+                    has_issue(report, needle);
+    if (!ok) {
+        std::cerr << "case '" << label << "' expected issue containing '"
+                  << needle << "'\n";
+        dump_issues(report);
+    }
+    check(ok, label);
+}
+
+void test_bad_counts() {
+    {
+        MeshSpec spec = quad_spec();
+        spec.declared_vertices = 0;
+        expect_mesh_rejected(spec, "vertex count 0", "zero vertex count");
+    }
+    {
+        MeshSpec spec = quad_spec();
+        spec.declared_vertices = -5;
+        expect_mesh_rejected(spec, "vertex count -5 in", "negative vertex count");
+    }
+    {
+        MeshSpec spec = quad_spec();
+        spec.declared_faces = std::numeric_limits<std::int32_t>::min();
+        expect_mesh_rejected(spec, "face count -2147483648",
+                             "negative face count");
+    }
+    {
+        MeshSpec spec = quad_spec();
+        spec.declared_vertices = std::numeric_limits<std::int32_t>::max();
+        expect_mesh_rejected(spec, "exceeds the limit of 65536",
+                             "huge vertex count rejected before allocation");
+    }
+    {
+        MeshSpec spec = quad_spec();
+        spec.declared_faces = 0x7FFFFFF0;
+        expect_mesh_rejected(spec, "exceeds the limit", "huge face count");
+    }
+    {
+        MeshSpec spec = quad_spec();
+        spec.declared_vertices = 60000;
+        expect_mesh_rejected(spec, "60000 vertices of 36 bytes (2160000 bytes)",
+                             "vertex count larger than buffer");
+    }
+    {
+        MeshSpec spec = quad_spec();
+        spec.declared_vertices = 3;
+        expect_mesh_rejected(spec, "3 vertices of 36 bytes (108 bytes)",
+                             "vertex count smaller than buffer");
+    }
+    {
+        MeshSpec spec = quad_spec();
+        spec.declared_faces = 3;
+        expect_mesh_rejected(spec, "3 triangles of 6 bytes (18 bytes) and 2 zero",
+                             "face count larger than buffer");
+    }
+    {
+        MeshSpec spec = quad_spec();
+        spec.declared_faces = 1;
+        expect_mesh_rejected(spec, "1 triangles of 6 bytes (6 bytes) and 2 zero",
+                             "face count smaller than buffer");
+    }
+}
+
+void test_bad_layout() {
+    {
+        MeshSpec spec = quad_spec();
+        spec.metadata_size = 60;
+        expect_mesh_rejected(spec, "one 64-byte geometry metadata record",
+                             "short geometry metadata record");
+    }
+    {
+        MeshSpec spec = quad_spec();
+        spec.metadata_size = 72;
+        expect_mesh_rejected(spec, "one 64-byte geometry metadata record",
+                             "long geometry metadata record");
+    }
+    {
+        // Payload ends before the aligned record would even start.
+        MeshSpec spec = quad_spec();
+        spec.raw_metadata = Bytes(4, 0x11U);
+        expect_mesh_rejected(spec, "payload is 4 bytes but",
+                             "metadata shorter than its prefix");
+    }
+    {
+        MeshSpec spec = quad_spec();
+        spec.vertex_extra = 36;
+        expect_mesh_rejected(spec, "4 vertices of 36 bytes (144 bytes)",
+                             "extra bytes after vertices");
+    }
+    {
+        MeshSpec spec = triangle_spec();
+        spec.face_tail = 0;
+        expect_mesh_rejected(spec, "and 2 zero tail bytes",
+                             "missing tail after odd face bytes");
+    }
+    {
+        MeshSpec spec = quad_spec();
+        spec.face_tail = 2;
+        expect_mesh_rejected(spec, "2 triangles of 6 bytes (12 bytes);",
+                             "unexpected tail after even face bytes");
+    }
+    {
+        MeshSpec spec = triangle_spec();
+        spec.face_tail_byte = 0xEEU;
+        expect_mesh_rejected(spec, "tail padding byte 0", "non-zero tail");
+    }
+
+    const struct {
+        Corrupt corrupt;
+        const char* label;
+    } prefixes[] = {
+        {Corrupt::metadata_prefix, "bad metadata prefix byte"},
+        {Corrupt::vertex_prefix, "bad vertex prefix byte"},
+        {Corrupt::face_prefix, "bad face prefix byte"},
+    };
+    for (const auto& item : prefixes) {
+        MeshSpec spec = quad_spec();
+        spec.corrupt = item.corrupt;
+        const MeshLayout layout = build({spec}).meshes[0];
+        std::size_t offset = layout.metadata_payload_offset;
+        std::size_t prefix = layout.metadata_prefix;
+        if (item.corrupt == Corrupt::vertex_prefix) {
+            offset = layout.vertex_payload_offset;
+            prefix = layout.vertex_prefix;
+        } else if (item.corrupt == Corrupt::face_prefix) {
+            offset = layout.face_payload_offset;
+            prefix = layout.face_prefix;
+        }
+        check(prefix != 0U, std::string(item.label) + " precondition");
+        expect_mesh_rejected(
+            spec,
+            "alignment prefix byte 0 (file offset " + std::to_string(offset) +
+                ") is 0x00, expected 0x11",
+            item.label);
+    }
+}
+
+void test_bad_contents() {
+    {
+        MeshSpec spec = quad_spec();
+        spec.include_faces = false;
+        expect_mesh_rejected(spec, "expected exactly one 0x00134B03 chunk, found 0",
+                             "missing face buffer");
+    }
+    {
+        MeshSpec spec = quad_spec();
+        spec.name_terminated = false;
+        expect_mesh_rejected(spec, "not NUL-terminated", "unterminated name");
+    }
+    {
+        MeshSpec spec = quad_spec();
+        spec.name = "BAD\x01";
+        expect_mesh_rejected(spec, "byte 3 is 0x01", "non-printable name");
+    }
+    {
+        MeshSpec spec = quad_spec();
+        spec.vertices[1].py = std::numeric_limits<float>::quiet_NaN();
+        expect_mesh_rejected(spec, "vertex 1", "non-finite vertex");
+    }
+}
+
+void test_structural_errors() {
+    {
+        const nfsu::GeometryReport report = parse(Bytes());
+        check(!report.ok() && has_issue(report, "smaller than a chunk header"),
+              "empty input");
+    }
+    {
+        const nfsu::GeometryReport report = nfsu::parse_geometry(nullptr, 16);
+        check(!report.ok() && has_issue(report, "null input"), "null input");
+    }
+    {
+        Writer w;
+        w.leaf(0x80034020U, Bytes(8, 0));
+        const nfsu::GeometryReport report = parse(w.bytes());
+        check(!report.ok() && has_issue(report, "no geometry root chunk"),
+              "missing root");
+    }
+    {
+        // Mesh container claims more bytes than the root holds.
+        Fixture fixture = build({quad_spec()});
+        put_u32(fixture.bytes, fixture.meshes[0].container_offset + 4,
+                0x00100000U);
+        const nfsu::GeometryReport report = parse(fixture.bytes);
+        check(!report.ok() && has_issue(report, "remain in its parent"),
+              "oversized mesh container rejected");
+        check(report.valid_mesh_count() == 0U, "no mesh from broken container");
+    }
+    {
+        // Vertex buffer chunk claims more bytes than its geometry container.
+        Fixture fixture = build({quad_spec(), triangle_spec()});
+        put_u32(fixture.bytes, fixture.meshes[0].vertex_payload_offset - 4,
+                0x7FFFFFFFU);
+        const nfsu::GeometryReport report = parse(fixture.bytes);
+        check(!report.ok() && has_issue(report, "geometry container"),
+              "oversized vertex chunk rejected");
+        check(report.meshes.size() == 2U && !report.meshes[0].valid &&
+                  report.meshes[1].valid,
+              "sibling mesh survives broken geometry container");
+    }
+    {
+        // Truncate in the middle of the second mesh.
+        Bytes bytes = build({quad_spec(), triangle_spec()}).bytes;
+        bytes.resize(bytes.size() - 40);
+        const nfsu::GeometryReport report = parse(bytes);
+        check(!report.ok() && has_issue(report, "remain in its parent"),
+              "truncated file reported");
+        check(report.valid_mesh_count() == 0U,
+              "no meshes trusted from a truncated root");
+    }
+    {
+        nfsu::GeometryLimits limits;
+        limits.max_chunks = 5;
+        const Bytes bytes = build({quad_spec()}).bytes;
+        const nfsu::GeometryReport report =
+            nfsu::parse_geometry(bytes.data(), bytes.size(), limits);
+        check(has_issue(report, "chunk limit 5 exceeded"), "chunk limit");
+    }
+    {
+        nfsu::GeometryLimits limits;
+        limits.max_file_size = 16;
+        const Bytes bytes = build({quad_spec()}).bytes;
+        const nfsu::GeometryReport report =
+            nfsu::parse_geometry(bytes.data(), bytes.size(), limits);
+        check(has_issue(report, "limit is 16"), "memory buffer size limit");
+    }
+}
+
+void test_exporter_revalidates_indices() {
+    nfsu::GeometryReport report = parse(build({quad_spec()}).bytes);
+    if (report.meshes.empty() || report.meshes[0].triangles.size() < 2U) {
+        check(false, "fixture for exporter validation");
+        return;
+    }
+    report.meshes[0].triangles[1].c = 4;
+    std::ostringstream output;
+    nfsu::ObjExportStats stats;
+    std::string error;
+    check(!nfsu::write_obj(output, report, stats, error),
+          "exporter rejects out of range index");
+    check(error.find("triangle 1") != std::string::npos, "exporter diagnostic");
+    check(output.str().empty(), "exporter writes nothing on invalid input");
+}
+
+void test_file_loading() {
+    const fs::path path = fs::temp_directory_path() / "nfsu_geometry_test.bin";
+    const Bytes bytes = build({quad_spec()}).bytes;
+    {
+        std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+        stream.write(reinterpret_cast<const char*>(bytes.data()),
+                     static_cast<std::streamsize>(bytes.size()));
+        check(static_cast<bool>(stream), "write fixture file");
+    }
+    const nfsu::GeometryReport report = nfsu::load_geometry_file(path);
+    check(report.ok() && report.valid_mesh_count() == 1U, "load from file");
+
+    nfsu::GeometryLimits limits;
+    limits.max_file_size = 16;
+    const nfsu::GeometryReport limited = nfsu::load_geometry_file(path, limits);
+    check(has_issue(limited, "limit is 16"), "file size limit");
+
+    std::error_code error;
+    fs::remove(path, error);
+    const nfsu::GeometryReport missing = nfsu::load_geometry_file(path);
+    check(!missing.ok(), "missing file reported");
+}
+
+} // namespace
+
+int main() {
+    test_valid_file();
+    test_alignment_sweep();
+    test_leading_0x11_data_does_not_shift();
+    test_obj_output();
+    test_invalid_mesh_is_skipped_and_offsets_stay_correct();
+    test_bad_counts();
+    test_bad_layout();
+    test_bad_contents();
+    test_structural_errors();
+    test_exporter_revalidates_indices();
+    test_file_loading();
+
+    if (g_failures != 0) {
+        std::cerr << g_failures << " geometry test failures\n";
+        return 1;
+    }
+    std::cout << "geometry tests passed\n";
+    return 0;
+}

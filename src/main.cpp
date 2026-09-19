@@ -1,4 +1,5 @@
 #include "nfsu/chunk.h"
+#include "nfsu/geometry.h"
 
 #include <algorithm>
 #include <array>
@@ -253,11 +254,97 @@ int run_chunks(const fs::path& path, std::size_t display_limit) {
     return report.ok() ? 0 : 3;
 }
 
+void print_geometry_issues(const nfsu::GeometryReport& report) {
+    for (const nfsu::GeometryIssue& issue : report.issues) {
+        std::cerr << "geometry issue at " << issue.offset << ": "
+                  << issue.message << '\n';
+    }
+}
+
+int run_meshes(const fs::path& path) {
+    const nfsu::GeometryReport report = nfsu::load_geometry_file(path);
+    std::cout << "file: " << path.string() << '\n';
+    std::cout << "bytes: " << report.file_size << '\n';
+    std::cout << "meshes: " << report.meshes.size() << '\n';
+    std::cout << "valid meshes: " << report.valid_mesh_count() << '\n';
+
+    std::uint64_t total_vertices = 0;
+    std::uint64_t total_faces = 0;
+    for (const nfsu::Mesh& mesh : report.meshes) {
+        std::cout << std::setw(4) << std::setfill(' ') << mesh.index << ' '
+                  << (mesh.valid ? "ok     " : "invalid") << ' '
+                  << "vertices=" << mesh.declared_vertex_count << ' '
+                  << "faces=" << mesh.declared_face_count << ' '
+                  << "offset=" << mesh.offset << ' '
+                  << (mesh.name.empty() ? "<unnamed>" : mesh.name) << '\n';
+        if (mesh.valid) {
+            total_vertices += mesh.vertices.size();
+            total_faces += mesh.triangles.size();
+        }
+    }
+    std::cout << "valid vertices: " << total_vertices << '\n';
+    std::cout << "valid faces: " << total_faces << '\n';
+
+    print_geometry_issues(report);
+    return report.ok() ? 0 : 3;
+}
+
+bool same_file(const fs::path& a, const fs::path& b) {
+    std::error_code error;
+    if (fs::equivalent(a, b, error) && !error) {
+        return true;
+    }
+    const fs::path abs_a = fs::absolute(a, error).lexically_normal();
+    const fs::path abs_b = fs::absolute(b, error).lexically_normal();
+    return !error && abs_a == abs_b;
+}
+
+int run_obj(const fs::path& input, const fs::path& output_path) {
+    if (same_file(input, output_path)) {
+        std::cerr << "error: output path must differ from the input file\n";
+        return 1;
+    }
+
+    const nfsu::GeometryReport report = nfsu::load_geometry_file(input);
+    print_geometry_issues(report);
+    if (report.valid_mesh_count() == 0) {
+        std::cerr << "error: no valid meshes to export\n";
+        return 2;
+    }
+
+    std::ofstream output(output_path, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        std::cerr << "error: failed to open output file\n";
+        return 2;
+    }
+
+    nfsu::ObjExportStats stats;
+    std::string error;
+    const bool written = nfsu::write_obj(output, report, stats, error);
+    output.close();
+    if (!written || !output) {
+        std::cerr << "error: " << (error.empty() ? "OBJ write failed" : error)
+                  << '\n';
+        std::error_code remove_error;
+        fs::remove(output_path, remove_error);
+        return 2;
+    }
+
+    std::cout << "wrote: " << output_path.string() << '\n';
+    std::cout << "meshes exported: " << stats.meshes << " of "
+              << report.meshes.size() << '\n';
+    std::cout << "vertices: " << stats.vertices << '\n';
+    std::cout << "triangles: " << stats.triangles << '\n';
+    return report.ok() ? 0 : 3;
+}
+
 void print_usage() {
     std::cout
         << "Usage:\n"
         << "  nfsu_probe summary <game-root>\n"
-        << "  nfsu_probe chunks <file> [display-limit]\n";
+        << "  nfsu_probe chunks <file> [display-limit]\n"
+        << "  nfsu_probe meshes <GEOMETRY.BIN>\n"
+        << "  nfsu_probe obj <GEOMETRY.BIN> <output.obj>\n";
 }
 
 } // namespace
@@ -283,6 +370,16 @@ int main(int argc, char** argv) {
             }
         }
         return run_chunks(fs::path(argv[2]), limit);
+    }
+    if (command == "meshes") {
+        return run_meshes(fs::path(argv[2]));
+    }
+    if (command == "obj") {
+        if (argc < 4) {
+            print_usage();
+            return 1;
+        }
+        return run_obj(fs::path(argv[2]), fs::path(argv[3]));
     }
 
     print_usage();

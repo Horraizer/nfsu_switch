@@ -24,9 +24,18 @@ ctest --test-dir build --output-on-failure
 ```text
 build/nfsu_probe summary X:/Games/NFSU
 build/nfsu_probe chunks X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN 64
+build/nfsu_probe meshes X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN
+build/nfsu_probe obj X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN build/240sx.obj
 ```
 
-All commands are read-only with respect to the game installation.
+`meshes` lists every mesh with its name, vertex count, face count and
+validation status. `obj` writes all valid meshes to a diagnostic OBJ file at
+the given path. Both commands print precise diagnostics for malformed meshes
+and exit with status 3 if any issue was found. See `docs/FORMATS.md` for the
+decoded layout and the exact OBJ axis and winding conventions.
+
+All commands are read-only with respect to the game installation. Do not
+commit exported meshes; they are derived from copyrighted game data.
 
 ## Project direction
 
