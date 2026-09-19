@@ -64,7 +64,7 @@ graphics library:
 build/nfsu_viewer X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games/NFSU/Cars/240SX/TEXTURES.BIN build/240sx.tga
 build/nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> build/front.tga --yaw 0 --pitch 5 --distance 3 --width 800 --height 600
 build/nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> build/shared.tga --shared-textures X:/Games/NFSU/GLOBAL/GLOBALB.BUN
-build/nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> build/part.tga --mesh-name 240SX_KITW01_BODY_A --mesh-index 4
+build/nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> build/part.tga --mesh-name 240SX_KITW01_BODY_A --mesh-index 4 --mesh-hash 0x013953B3
 ```
 
 Textures come only from files named on the command line. The car's
@@ -79,11 +79,13 @@ See `docs/RENDERER.md`.
 
 By default every valid mesh is drawn (the "all meshes" profile), so every
 kit and style variant overlaps. `--mesh-index N` (source position) and
-`--mesh-name NAME` (exact, case-sensitive stored name) select an explicit
-subset instead; both may be repeated and mixed, at most 256 selectors and
+`--mesh-name NAME` (exact, case-sensitive stored name), and `--mesh-hash HEX`
+(verified 0x00134003/0x00134004 directory hash) select an explicit subset
+instead; all may be repeated and mixed, at most 256 selectors and
 16384 name bytes. Selected meshes are always drawn in source order. An
-out-of-range index, an unknown, empty or ambiguous name, or a mesh selected
-twice is a usage error (exit 1) and nothing is written. Neither profile is
+out-of-range index, an unknown or ambiguous hash, an unknown, empty or
+ambiguous name, or a mesh selected twice is a usage error (exit 1) and
+nothing is written. Neither profile is
 the game's stock car: which parts the game installs is not decoded yet
 (see `docs/CAR_SCENE.md`).
 

@@ -59,6 +59,7 @@ void print_usage() {
         << "Mesh selection (repeatable, may be mixed; default: all meshes):\n"
         << "  --mesh-index N       the mesh at source position N\n"
         << "  --mesh-name NAME     the one mesh whose stored name is exactly NAME\n"
+        << "  --mesh-hash HEX      the one mesh with this verified directory hash\n"
         << "                       Selected meshes are drawn in source order. At\n"
         << "                       most 256 selectors and 16384 name bytes. A\n"
         << "                       selection is a diagnostic subset, not a decoded\n"
@@ -95,6 +96,20 @@ bool parse_uint(const std::string& text, std::uint64_t max, std::uint64_t& value
     const auto result = std::from_chars(begin, end, value, 10);
     return !text.empty() && result.ec == std::errc{} && result.ptr == end &&
            value <= max;
+}
+
+bool parse_hex32(const char* text, std::uint32_t& value) {
+    const std::size_t length = std::strlen(text);
+    const char* begin = text;
+    if (length >= 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
+        begin += 2;
+    }
+    const char* end = text + length;
+    if (begin == end || end - begin > 8) {
+        return false;
+    }
+    const auto result = std::from_chars(begin, end, value, 16);
+    return result.ec == std::errc{} && result.ptr == end;
 }
 
 bool parse_vec3(const std::string& text, nfsu::Vec3& value) {
@@ -141,7 +156,8 @@ int parse_options(
     std::set<std::string> seen;
     for (int i = 4; i < argc; ++i) {
         const std::string name = argv[i];
-        if (name == "--mesh-index" || name == "--mesh-name") {
+        if (name == "--mesh-index" || name == "--mesh-name" ||
+            name == "--mesh-hash") {
             if (i + 1 >= argc) {
                 std::cerr << "error: missing value for " << name << '\n';
                 return 1;
@@ -164,7 +180,7 @@ int parse_options(
                 }
                 selector.kind = nfsu::MeshSelectorKind::index;
                 selector.index = index;
-            } else {
+            } else if (name == "--mesh-name") {
                 const std::size_t length = std::strlen(value);
                 if (length > scene_limits.max_selector_text_bytes - selector_text) {
                     std::cerr << "error: mesh names exceed "
@@ -174,6 +190,14 @@ int parse_options(
                 selector_text += length;
                 selector.kind = nfsu::MeshSelectorKind::name;
                 selector.name.assign(value, length);
+            } else {
+                std::uint32_t hash = 0;
+                if (!parse_hex32(value, hash)) {
+                    std::cerr << "error: invalid value for " << name << '\n';
+                    return 1;
+                }
+                selector.kind = nfsu::MeshSelectorKind::hash;
+                selector.hash = hash;
             }
             selection.selectors.push_back(std::move(selector));
             continue;

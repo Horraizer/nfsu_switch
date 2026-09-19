@@ -154,6 +154,7 @@ struct MeshSpec {
 
 struct MeshLayout {
     std::size_t container_offset = 0;
+    std::size_t container_size = 0;
     std::size_t metadata_payload_offset = 0;
     std::size_t metadata_record_offset = 0;
     std::size_t metadata_prefix = 0;
@@ -180,6 +181,11 @@ std::vector<MaterialSpec> materials_for(const MeshSpec& spec) {
 struct Fixture {
     Bytes bytes;
     std::vector<MeshLayout> meshes;
+    std::size_t hash_table_header_offset = 0;
+    std::size_t hash_table_payload_offset = 0;
+    std::size_t directory_header_offset = 0;
+    std::size_t directory_payload_offset = 0;
+    std::vector<std::size_t> root_directory_payload_offsets;
 };
 
 void write_mesh(Writer& w, const MeshSpec& spec, MeshLayout& layout) {
@@ -307,9 +313,10 @@ void write_mesh(Writer& w, const MeshSpec& spec, MeshLayout& layout) {
 
     w.end(); // geometry container
     w.end(); // mesh container
+    layout.container_size = w.size() - layout.container_offset;
 }
 
-Fixture build(std::initializer_list<MeshSpec> specs) {
+Fixture build(std::initializer_list<MeshSpec> specs, bool with_directory = false) {
     Fixture fixture;
     Writer w;
     w.begin(nfsu::kGeometryRootId);
@@ -320,10 +327,72 @@ Fixture build(std::initializer_list<MeshSpec> specs) {
         fixture.meshes.push_back(layout);
         w.leaf(0x00000000U, Bytes());
     }
+    if (with_directory) {
+        w.begin(nfsu::kGeometryHeaderId);
+        Bytes hashes;
+        Bytes directory;
+        for (std::size_t i = 0; i < fixture.meshes.size(); ++i) {
+            const std::uint32_t hash =
+                0xA0000000U + static_cast<std::uint32_t>(i);
+            append_u32(hashes, hash);
+            append_u32(hashes, 0);
+            append_u32(directory, hash);
+            append_u32(directory, static_cast<std::uint32_t>(
+                                      fixture.meshes[i].container_offset));
+            append_u32(directory, static_cast<std::uint32_t>(
+                                      fixture.meshes[i].container_size));
+            append_u32(directory, 0);
+            append_u32(directory, 0);
+        }
+        fixture.hash_table_header_offset = w.size();
+        fixture.hash_table_payload_offset = w.size() + 8;
+        w.leaf(nfsu::kMeshHashTableId, hashes);
+        fixture.directory_header_offset = w.size();
+        fixture.directory_payload_offset = w.size() + 8;
+        fixture.root_directory_payload_offsets.push_back(w.size() + 8);
+        w.leaf(nfsu::kMeshDirectoryId, directory);
+        w.end();
+    }
     w.end();
     w.begin(0x80034020U);
     w.leaf(0x00039200U, Bytes(4, 0));
     w.end();
+    fixture.bytes = w.bytes();
+    return fixture;
+}
+
+MeshSpec quad_spec();
+MeshSpec triangle_spec();
+
+Fixture build_two_directory_roots() {
+    Fixture fixture;
+    Writer w;
+    const MeshSpec specs[] = {quad_spec(), triangle_spec()};
+    for (std::size_t root = 0; root < 2; ++root) {
+        w.begin(nfsu::kGeometryRootId);
+        MeshLayout layout;
+        write_mesh(w, specs[root], layout);
+        fixture.meshes.push_back(layout);
+
+        const std::uint32_t hash =
+            0xC0000000U + static_cast<std::uint32_t>(root);
+        Bytes hashes;
+        append_u32(hashes, hash);
+        append_u32(hashes, 0);
+        Bytes directory;
+        append_u32(directory, hash);
+        append_u32(directory, static_cast<std::uint32_t>(layout.container_offset));
+        append_u32(directory, static_cast<std::uint32_t>(layout.container_size));
+        append_u32(directory, 0);
+        append_u32(directory, 0);
+
+        w.begin(nfsu::kGeometryHeaderId);
+        w.leaf(nfsu::kMeshHashTableId, hashes);
+        fixture.root_directory_payload_offsets.push_back(w.size() + 8);
+        w.leaf(nfsu::kMeshDirectoryId, directory);
+        w.end();
+        w.end();
+    }
     fixture.bytes = w.bytes();
     return fixture;
 }
@@ -434,6 +503,135 @@ void test_valid_file() {
     check(layout_matches(tri, fixture.meshes[1]), "triangle layout");
     check(tri.face_tail_bytes == 2U, "odd face bytes have a 2-byte tail");
     check(nfsu::obj_object_name(tri) == "m0001_WHEEL__1", "object name");
+}
+
+void test_mesh_directory() {
+    const Fixture fixture = build({quad_spec(), triangle_spec()}, true);
+    const nfsu::GeometryReport report = parse(fixture.bytes);
+    if (!report.ok()) {
+        dump_issues(report);
+    }
+    check(report.ok() && report.mesh_directory_valid,
+          "valid mesh directory accepted");
+    check(report.meshes.size() == 2U, "directory mesh count");
+    if (report.meshes.size() == 2U) {
+        for (std::size_t i = 0; i < report.meshes.size(); ++i) {
+            const nfsu::Mesh& mesh = report.meshes[i];
+            check(mesh.has_directory_entry &&
+                      mesh.directory_hash ==
+                          0xA0000000U + static_cast<std::uint32_t>(i) &&
+                      mesh.directory_offset == fixture.meshes[i].container_offset &&
+                      mesh.directory_size == fixture.meshes[i].container_size,
+                  "verified directory entry " + std::to_string(i));
+        }
+    }
+
+    const auto rejects = [&](Bytes bytes, const std::string& needle,
+                             const std::string& label) {
+        const nfsu::GeometryReport bad = parse(bytes);
+        check(!bad.mesh_directory_valid && has_issue(bad, needle), label);
+        bool attached = false;
+        for (const nfsu::Mesh& mesh : bad.meshes) {
+            attached = attached || mesh.has_directory_entry;
+        }
+        check(!attached, label + " is transactional");
+    };
+
+    Bytes bytes = fixture.bytes;
+    put_u32(bytes, fixture.hash_table_header_offset, 0x00134005U);
+    rejects(bytes, "mesh hash table, found 0", "missing hash table rejected");
+
+    bytes = fixture.bytes;
+    put_u32(bytes, fixture.directory_header_offset, 0x00134005U);
+    rejects(bytes, "mesh directory, found 0", "missing directory rejected");
+
+    bytes = fixture.bytes;
+    put_u32(bytes, fixture.directory_payload_offset + nfsu::kMeshDirectoryRecordSize,
+            0xB0000001U);
+    rejects(bytes, "hash does not match", "mismatched table hashes rejected");
+
+    bytes = fixture.bytes;
+    put_u32(bytes, fixture.hash_table_payload_offset + 4, 1U);
+    rejects(bytes, "nonzero reserved", "hash reserved word rejected");
+
+    bytes = fixture.bytes;
+    put_u32(bytes, fixture.directory_payload_offset + 4, 0xFFFFFFFFU);
+    rejects(bytes, "range is outside", "out of bounds directory range rejected");
+
+    bytes = fixture.bytes;
+    put_u32(bytes, fixture.directory_payload_offset + 8,
+            static_cast<std::uint32_t>(fixture.meshes[0].container_size - 1));
+    rejects(bytes, "size does not match", "wrong container size rejected");
+
+    bytes = fixture.bytes;
+    const std::size_t second =
+        fixture.directory_payload_offset + nfsu::kMeshDirectoryRecordSize;
+    put_u32(bytes, second + 4,
+            static_cast<std::uint32_t>(fixture.meshes[0].container_offset));
+    put_u32(bytes, second + 8,
+            static_cast<std::uint32_t>(fixture.meshes[0].container_size));
+    rejects(bytes, "more than once", "duplicate directory range rejected");
+
+    const Fixture two_roots = build_two_directory_roots();
+    const nfsu::GeometryReport two_report = parse(two_roots.bytes);
+    check(two_report.ok() && two_report.mesh_directory_valid &&
+              two_report.meshes.size() == 2U &&
+              two_report.meshes[0].directory_hash == 0xC0000000U &&
+              two_report.meshes[1].directory_hash == 0xC0000001U,
+          "two geometry roots keep independent directories");
+
+    bytes = two_roots.bytes;
+    put_u32(bytes, two_roots.root_directory_payload_offsets[0] + 4,
+            static_cast<std::uint32_t>(two_roots.meshes[1].container_offset));
+    put_u32(bytes, two_roots.root_directory_payload_offsets[0] + 8,
+            static_cast<std::uint32_t>(two_roots.meshes[1].container_size));
+    const nfsu::GeometryReport cross_root = parse(bytes);
+    check(!cross_root.mesh_directory_valid &&
+              has_issue(cross_root, "outside its geometry root") &&
+              cross_root.meshes.size() == 2U &&
+              !cross_root.meshes[0].has_directory_entry &&
+              cross_root.meshes[1].has_directory_entry,
+          "cross-root directory range rejected without harming the other root");
+
+    Bytes valid_plus_bad_empty = build({quad_spec()}, true).bytes;
+    Writer empty_root;
+    empty_root.begin(nfsu::kGeometryRootId);
+    empty_root.begin(nfsu::kGeometryHeaderId);
+    empty_root.leaf(nfsu::kMeshHashTableId, Bytes());
+    empty_root.end();
+    empty_root.end();
+    valid_plus_bad_empty.insert(valid_plus_bad_empty.end(),
+                                empty_root.bytes().begin(),
+                                empty_root.bytes().end());
+    const nfsu::GeometryReport bad_empty = parse(valid_plus_bad_empty);
+    check(!bad_empty.mesh_directory_valid &&
+              has_issue(bad_empty, "mesh directory, found 0") &&
+              bad_empty.meshes.size() == 1U &&
+              bad_empty.meshes[0].has_directory_entry,
+          "malformed empty root disables file-wide hash selection");
+
+    Bytes valid_plus_bad_root = build({quad_spec()}, true).bytes;
+    Writer bad_root;
+    bad_root.begin(nfsu::kGeometryRootId);
+    bad_root.append(Bytes(4, 0));
+    bad_root.end();
+    valid_plus_bad_root.insert(valid_plus_bad_root.end(),
+                               bad_root.bytes().begin(), bad_root.bytes().end());
+    const nfsu::GeometryReport malformed_root = parse(valid_plus_bad_root);
+    check(!malformed_root.mesh_directory_valid &&
+              has_issue(malformed_root, "trailing bytes are smaller") &&
+              malformed_root.meshes.size() == 1U &&
+              malformed_root.meshes[0].has_directory_entry,
+          "malformed no-directory root disables file-wide hash selection");
+
+    Bytes top_tail = build({quad_spec()}, true).bytes;
+    top_tail.insert(top_tail.end(), 4, 0);
+    const nfsu::GeometryReport malformed_top = parse(top_tail);
+    check(!malformed_top.mesh_directory_valid &&
+              has_issue(malformed_top, "top level: 4 trailing bytes") &&
+              malformed_top.meshes.size() == 1U &&
+              malformed_top.meshes[0].has_directory_entry,
+          "malformed top level disables file-wide hash selection");
 }
 
 void test_alignment_sweep() {
@@ -971,6 +1169,7 @@ void test_file_loading() {
 
 int main() {
     test_valid_file();
+    test_mesh_directory();
     test_alignment_sweep();
     test_leading_0x11_data_does_not_shift();
     test_obj_output();

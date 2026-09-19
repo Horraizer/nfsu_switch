@@ -24,6 +24,10 @@ longer contains.
 
 This makes `0x00134004` the byte-backed lookup table for selecting a mesh by
 hash. It does not, by itself, say which mesh is active for a particular car.
+The geometry parser now accepts the directory only when both tables agree,
+their reserved words are zero, and every stored range exactly covers one
+direct mesh container. `nfsu_probe meshes` reports the verified hash and
+range, and `nfsu_viewer --mesh-hash HEX` uses only this verified metadata.
 
 ## LOD evidence
 

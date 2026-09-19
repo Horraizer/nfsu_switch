@@ -113,8 +113,9 @@ MaterialBinding resolve_material(
 
 // One mesh selector. index is the position in GeometryReport::meshes
 // (parse_geometry sets Mesh::index to the same value). name is compared
-// byte for byte, case-sensitively, with Mesh::name.
-enum class MeshSelectorKind { index, name };
+// byte for byte, case-sensitively, with Mesh::name. hash is matched against
+// the verified 0x00134003/0x00134004 mesh directory.
+enum class MeshSelectorKind { index, name, hash };
 
 const char* mesh_selector_kind_name(MeshSelectorKind kind) noexcept;
 
@@ -122,6 +123,7 @@ struct MeshSelector {
     MeshSelectorKind kind = MeshSelectorKind::index;
     std::uint64_t index = 0;
     std::string name;
+    std::uint32_t hash = 0;
 };
 
 // No selectors: the "all meshes" profile, every valid mesh in source
@@ -157,8 +159,9 @@ struct SceneLimits {
 // too many selectors or too much name text (checked before anything is
 // allocated), an index outside the report, an empty name, a name with a
 // byte outside 0x20..0x7E or longer than kMeshNameSize, a name no mesh
-// has, a name more than one mesh has, a selected mesh that is invalid, and
-// the same mesh selected twice by any combination. Selectors are checked
+// has, a name more than one mesh has, an unavailable, unknown or ambiguous
+// verified directory hash, a selected mesh that is invalid, and the same
+// mesh selected twice by any combination. Selectors are checked
 // in the order given and the first problem is reported. On success
 // selected_by (if not null) receives, per result entry, the index of the
 // selector that chose it; it is empty for the all-meshes profile.
@@ -172,11 +175,16 @@ bool resolve_mesh_selection(
 
 constexpr std::size_t kNoHandle = std::numeric_limits<std::size_t>::max();
 
-// One selected mesh. The scene owns copies of the source vertices and
-// triangles; nothing refers back to the GeometryReport.
+// One selected mesh. The scene owns copies of the source vertices,
+// triangles and verified directory provenance; nothing refers back to the
+// GeometryReport.
 struct PreparedMesh {
     std::size_t source_index = 0;
     std::string name;
+    std::uint32_t directory_hash = 0;
+    std::uint64_t directory_offset = 0;
+    std::uint64_t directory_size = 0;
+    bool has_directory_entry = false;
     // Index into PreparedCarScene::selectors, kNoHandle for all meshes.
     std::size_t selector = kNoHandle;
     // Number of source material records. Validation requires exactly this
