@@ -54,7 +54,8 @@ agent: <model, and the session or subagent label>
 
 - Work only on the assigned Gitea issue and its explicit dependencies.
 - Use subagents when the assignment requests them, and say in the handoff what
-  each one found.
+  each one found. One that mutates a tree needs its own worktree; see Shared
+  checkout.
 - Keep retail game files strictly read-only.
 - Follow the ASCII-only artifact rule below.
 - A worker does not merge pull requests.
@@ -95,36 +96,46 @@ rules bind it too.
   `git push origin HEAD:<branch>`. Do not check the branch out to get a push
   target - two worktrees cannot hold the same branch, so that is the one thing
   the detached copy exists to avoid.
-- A subagent asked to mutate, build or revert gets its own detached worktree,
-  and its assignment names that path and the SHA to work from. The dispatcher
-  does not write to that worktree, and does not move the head the subagent is
-  measuring; if the head has to move, pin the SHA in the assignment and say so.
-  Both halves have already cost work. On issue #38 an adversarial subagent
+- A subagent asked to mutate, build or revert works only in a detached worktree
+  of its own, which the dispatcher creates, names in the assignment with the
+  SHA to work from, and removes once the subagent has reported. The dispatcher
+  does not write to that worktree, and does not move any head a subagent is
+  measuring: the pinned SHA is what leaves the dispatcher free to keep working,
+  and a subagent pointed at a branch has to be told before the branch moves.
+  Both directions have already cost work. On issue #38 an adversarial subagent
   aimed at the worker's own tree ran `git checkout --` during a mutation pass,
-  reverted two uncommitted files and overwrote a scratchpad script, and the
-  worker could not stop it because the subagent was a different owner. On
-  issue #39 the same collision ran the other way: the worker amended one
-  commit three times inside seven minutes - `8d8643a`, `ad0d944`, `7b7634f` -
-  while its subagent measured the branch, and the report had to be reconciled
-  against a head that had moved under it. Nothing enforces either half.
+  reverted two uncommitted files, overwrote a scratchpad script, and could not
+  be stopped. On issue #39 it ran the other way: the worker amended one commit
+  three times inside eight minutes - `8d8643a`, `ad0d944`, `7b7634f` - while
+  its subagent measured the branch, and the report had to be reconciled against
+  a head that had moved under it.
+- A finished subagent looks exactly like a working one, in both directions.
+  Apply the liveness test under Coordinator duties to the subagent's own
+  output, never to a directory above it, whose mtime moves with your own
+  activity. This branch's own adversarial pass showed an empty output file and
+  untouched artifacts across two samples, then delivered a full report four
+  minutes later. A pass that reported nothing is recorded as not performed: an
+  unread transcript is not assurance.
 - Never `git checkout` in the main working tree unless your own branch is the
   one already checked out there.
 - Re-read a shared file immediately before writing it if the write is not part
   of your branch. Another session may have changed it since you last looked.
 - Clean up only the files you created, by exact name. Never glob-delete in a
   shared scratch directory. A worktree you did not create is not yours to
-  remove either, even when it looks abandoned: leave it and name it in the
-  handoff. `git worktree prune` is forbidden outright - its usage line takes
-  no path argument, so it cannot be aimed at your own worktree, and it drops
-  every registered worktree whose directory git cannot see at that moment. In
-  a throwaway repository, renaming one worktree's directory away made
-  `git worktree prune` deregister it on the spot, and with the directory put
-  back `git status` inside it failed with `fatal: not a git repository`. On
-  temp paths that come and go, that is another session's worktree left unable
-  to run git, by a command someone ran to tidy up their own.
-- A stale local branch, a stale worktree and a stale process are three separate
-  hazards. Prove identity before acting on any of them: a pid can be reused, so
-  check the start time too.
+  remove either, even when it looks abandoned: leave it, and name it in the
+  handoff. `git worktree list` marks a dead entry `prunable` without touching
+  it. `git worktree prune` is forbidden outright - its usage line takes no path
+  argument, so it cannot be aimed at your own worktree, and it drops any
+  unlocked registered worktree whose directory git cannot see at that moment,
+  with no expiry delay. Reproduced in a throwaway repository: renaming a
+  worktree's directory away made `git worktree prune` deregister it on the
+  spot, and with the directory put back, `git status` inside it failed with
+  `fatal: not a git repository: (NULL)`. Only `git worktree lock` stops it,
+  nothing here is locked, and the worktrees here sit on temp paths that come
+  and go.
+- A stale local branch and a stale process are two separate hazards. Prove
+  identity before acting on either: a pid can be reused, so check the start
+  time too.
 
 ## ASCII-only artifact rule
 
@@ -353,9 +364,9 @@ routine status.
 
 ## What these rules actually cover
 
-Five failures shaped this document; five equal-weight rules would imply it
-closed five. It has mechanically closed none of them, and earlier drafts of
-this section claimed otherwise twice.
+Every failure that shaped this document is named below; one equal-weight rule
+each would imply it closed them all. It has mechanically closed none of them,
+and earlier drafts of this section claimed otherwise twice.
 
 The scope diff came closest, but what survives is a two-part discipline that
 still depends on the operator fetching first and reading the right ref - not a
