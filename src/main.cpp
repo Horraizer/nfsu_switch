@@ -1673,25 +1673,39 @@ int run_part_markers(const fs::path& path, const std::string& role_filter) {
 void print_usage();
 
 // The single registration point for an nfsu_probe command. One entry carries
-// the name main() dispatches on, the usage text print_usage() prints, and the
-// handler that runs the command, so a command cannot be dispatched without
-// being listed, or listed without being dispatched. Adding a command means
-// adding one entry here; tests/usage_commands.cmake checks the result from
-// outside, against the built program.
+// the name main() dispatches on, the rest of the usage line, and the handler
+// that runs the command.
+//
+// print_usage() composes the usage line out of `name`, so the listed name and
+// the dispatched name are the same bytes rather than two spellings a comment
+// asks a reader to keep in agreement: an entry cannot be dispatched without
+// being listed, and an entry that leaves `args` and `tail` empty is still
+// listed under its own name.
+//
+// Adding a command is an entry here plus the matching `build/nfsu_probe
+// <name>` line in README.md. tests/usage_commands.cmake enforces both from
+// outside: it reads the table out of this file, the listing out of the built
+// program, and the inventory out of the README, and requires all three sets
+// to be equal.
 struct Command {
     std::string_view name;
-    // One or more complete lines, each indented and newline-terminated. The
-    // first line of an entry starts with "  nfsu_probe <name>", because the
-    // usage check reads the command inventory back out of this text.
-    std::string_view usage;
+    // What follows the name on the usage line, such as " <game-root>". No
+    // leading "  nfsu_probe ", no trailing newline: print_usage() supplies
+    // both. Empty is allowed and still produces a listed line.
+    std::string_view args;
+    // Continuation lines printed under the usage line, each already indented
+    // and newline-terminated. Empty for a command that fits on one line. A
+    // line here is documentation only; the usage check reads the command
+    // inventory from the composed usage lines, never from this text.
+    std::string_view tail;
     int (*run)(int argc, char** argv);
 };
 
 // This order is the order print_usage() prints.
 const Command kCommands[] = {
-    {"summary", "  nfsu_probe summary <game-root>\n",
+    {"summary", " <game-root>", "",
      [](int, char** argv) { return run_summary(fs::path(argv[2])); }},
-    {"chunks", "  nfsu_probe chunks <file> [display-limit]\n",
+    {"chunks", " <file> [display-limit]", "",
      [](int argc, char** argv) {
          std::size_t limit = 128;
          if (argc >= 4) {
@@ -1704,9 +1718,9 @@ const Command kCommands[] = {
          }
          return run_chunks(fs::path(argv[2]), limit);
      }},
-    {"meshes", "  nfsu_probe meshes <GEOMETRY.BIN>\n",
+    {"meshes", " <GEOMETRY.BIN>", "",
      [](int, char** argv) { return run_meshes(fs::path(argv[2])); }},
-    {"obj", "  nfsu_probe obj <GEOMETRY.BIN> <output.obj>\n",
+    {"obj", " <GEOMETRY.BIN> <output.obj>", "",
      [](int argc, char** argv) {
          if (argc < 4) {
              print_usage();
@@ -1714,13 +1728,12 @@ const Command kCommands[] = {
          }
          return run_obj(fs::path(argv[2]), fs::path(argv[3]));
      }},
-    {"textures", "  nfsu_probe textures <TEXTURES.BIN>\n",
+    {"textures", " <TEXTURES.BIN>", "",
      [](int, char** argv) { return run_textures(fs::path(argv[2])); }},
     {"pack-set",
-     "  nfsu_probe pack-set <file>   (metadata of every texture pack, e.g. in a BUN)\n",
+     " <file>   (metadata of every texture pack, e.g. in a BUN)", "",
      [](int, char** argv) { return run_pack_set(fs::path(argv[2])); }},
-    {"export-textures",
-     "  nfsu_probe export-textures <TEXTURES.BIN> <output-dir> [tga|dds]\n",
+    {"export-textures", " <TEXTURES.BIN> <output-dir> [tga|dds]", "",
      [](int argc, char** argv) {
          if (argc < 4) {
              print_usage();
@@ -1729,8 +1742,7 @@ const Command kCommands[] = {
          return run_export_textures(fs::path(argv[2]), fs::path(argv[3]),
                                     argc >= 5 ? std::string(argv[4]) : "tga");
      }},
-    {"texture-bindings",
-     "  nfsu_probe texture-bindings <GEOMETRY.BIN> <TEXTURES.BIN>\n",
+    {"texture-bindings", " <GEOMETRY.BIN> <TEXTURES.BIN>", "",
      [](int argc, char** argv) {
          if (argc < 4) {
              print_usage();
@@ -1738,7 +1750,7 @@ const Command kCommands[] = {
          }
          return run_texture_bindings(fs::path(argv[2]), fs::path(argv[3]));
      }},
-    {"car-parts", "  nfsu_probe car-parts <GLOBALB.BUN> [car-type]\n",
+    {"car-parts", " <GLOBALB.BUN> [car-type]", "",
      [](int argc, char** argv) {
          if (argc > 4) {
              print_usage();
@@ -1747,8 +1759,7 @@ const Command kCommands[] = {
          return run_car_parts(fs::path(argv[2]),
                               argc == 4 ? std::string(argv[3]) : "");
      }},
-    {"stock-parts",
-     "  nfsu_probe stock-parts <GLOBALB.BUN> <car-type> [GEOMETRY.BIN ...]\n",
+    {"stock-parts", " <GLOBALB.BUN> <car-type> [GEOMETRY.BIN ...]", "",
      [](int argc, char** argv) {
          if (argc < 4) {
              print_usage();
@@ -1760,8 +1771,7 @@ const Command kCommands[] = {
          }
          return run_stock_parts(fs::path(argv[2]), std::string(argv[3]), geometry);
      }},
-    {"track-region",
-     "  nfsu_probe track-region <STREAM.BUN> <offset> <size> [TEXTURE.BIN ...]\n",
+    {"track-region", " <STREAM.BUN> <offset> <size> [TEXTURE.BIN ...]", "",
      [](int argc, char** argv) {
          if (argc < 5) {
              print_usage();
@@ -1783,7 +1793,7 @@ const Command kCommands[] = {
          }
          return run_track_region(fs::path(argv[2]), offset, size, textures);
      }},
-    {"car-placement", "  nfsu_probe car-placement <GLOBALB.BUN> [car-type]\n",
+    {"car-placement", " <GLOBALB.BUN> [car-type]", "",
      [](int argc, char** argv) {
          if (argc != 3 && argc != 4) {
              print_usage();
@@ -1792,7 +1802,7 @@ const Command kCommands[] = {
          return run_car_placement(fs::path(argv[2]),
                                   argc == 4 ? std::string(argv[3]) : "");
      }},
-    {"part-markers", "  nfsu_probe part-markers <GEOMETRY.BIN> [role]\n",
+    {"part-markers", " <GEOMETRY.BIN> [role]", "",
      [](int argc, char** argv) {
          if (argc != 3 && argc != 4) {
              print_usage();
@@ -1801,8 +1811,7 @@ const Command kCommands[] = {
          return run_part_markers(fs::path(argv[2]),
                                  argc == 4 ? std::string(argv[3]) : "");
      }},
-    {"body-skin-inputs",
-     "  nfsu_probe body-skin-inputs <car-name> <option>...\n"
+    {"body-skin-inputs", " <car-name> <option>...",
      "    --source <car-textures|car-vinyls|other> <FILE>   (repeatable,\n"
      "        in priority order; the first source claiming a hash wins)\n"
      "    --size <WIDTHxHEIGHT>   --target-texture <NAME>\n"
@@ -1819,7 +1828,8 @@ const Command kCommands[] = {
 void print_usage() {
     std::cout << "Usage:\n";
     for (const Command& command : kCommands) {
-        std::cout << command.usage;
+        std::cout << "  nfsu_probe " << command.name << command.args << "\n"
+                  << command.tail;
     }
 }
 

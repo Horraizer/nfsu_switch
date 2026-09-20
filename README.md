@@ -41,11 +41,15 @@ build/nfsu_probe body-skin-inputs 240SX --source car-textures X:/Games/NFSU/Cars
 ```
 
 Run `nfsu_probe` with no arguments to print the usage text. It lists every
-command the program accepts: a command is registered in one place that holds
-its name, its usage line and its handler together, and
-`tests/usage_commands.cmake` checks that from outside against the built
-program. A command that is not registered is named as unknown and refused
-with exit 1.
+command the program accepts: a command is registered in one place, the
+`kCommands` table in `src/main.cpp`, and its usage line is composed from the
+same name the program dispatches on, so a registered command is listed under
+that name whatever else its entry says. Adding a command is that one table
+entry plus its `build/nfsu_probe` line in the list above:
+`tests/usage_commands.cmake` reads the command inventory back out of the
+table, out of the built program's usage text and out of this file, and fails
+unless all three name the same commands. A command that is not registered is
+named as unknown and refused with exit 1.
 
 `meshes` lists every mesh with its name, vertex count, face count and
 validation status. `obj` writes all valid meshes to a diagnostic OBJ file at

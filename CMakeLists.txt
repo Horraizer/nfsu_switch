@@ -260,11 +260,17 @@ if(NFSU_BUILD_TESTS)
         PASS_REGULAR_EXPRESSION "--skin-dump must differ from the output file"
         FAIL_REGULAR_EXPRESSION "failed to read file size;no valid meshes")
 
-    # nfsu_probe registers a command in one place, so its usage text and its
-    # dispatch cannot disagree by construction. This runs the built program
-    # and checks that they do not: see tests/usage_commands.cmake.
+    # nfsu_probe registers a command in one place, and print_usage() composes
+    # the usage line out of the name main() dispatches on. This reads the
+    # command inventory back out of three independent places - the kCommands
+    # table in the source, the built program's usage text, and the README's
+    # run lines - and requires all three to be the same set, so a command
+    # added to one of them alone is named as missing from the others: see
+    # tests/usage_commands.cmake.
     add_test(NAME nfsu_probe_usage_commands
         COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp
+                -DREADME=${CMAKE_CURRENT_SOURCE_DIR}/README.md
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/usage_commands.cmake
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
