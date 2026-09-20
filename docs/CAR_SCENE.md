@@ -257,6 +257,17 @@ priority rule. The executable evidence establishes target selection, inputs,
 layer order and paired-mask lookup. The per-pixel work that follows is in
 [`BODY_SKIN.md`](BODY_SKIN.md).
 
+Issue #28 traced the gatherer itself to the instruction: the exact string
+each of the three name helpers builds, the multiply-by-33 continuation that
+forms a mask hash without building its string, which sources take
+`NUMCOLOURS` from a part and which take the constant `0x10`, the five paths
+that drop a source, the vinyl-layer de-duplication on part identity, the
+Direct3D lock protocol behind the pixel pointers, and the fact that no
+source dimension and no mip level is ever read. It also settles why one
+composite can mix a paletted vinyl with a 32-bit doorline. See
+[`SKIN_INPUTS.md`](SKIN_INPUTS.md), which supersedes the summary above
+wherever the two differ in detail.
+
 ## Track geometry lead
 
 The large `STREAML1R*.BUN` files form valid bounded chunk trees. Their meshes
@@ -356,13 +367,17 @@ database is in the same section.
   the stock spoiler names meshes that are absent at every LOD, and in
   SKYLINE it is slot 9, whose `TRUNK KIT00` record 4168 names
   0xABE49618, 19 and 1A, none of which `Cars/SKYLINE/GEOMETRY.BIN` has.
-- For CIVIC, ECLIPSE and SUPRA the command still exits 3, because the
-  geometry parser rejects a mesh in those files:
+- For CIVIC, ECLIPSE, SUPRA and TIBURON the command still exits 3, because
+  the geometry parser rejects a mesh in those files:
   `CIVIC_KIT13_REAR_BUMPER_A` has a zero-length material range,
-  `ECLIPSE_KIT00_SPOILER_D` has 0 vertices, and three SUPRA
-  `*_HEADLIGHT_C` meshes have a short vertex payload. Those are
-  pre-existing geometry issues, not part selection ones; the stock parts
-  of those cars still resolve.
+  `ECLIPSE_KIT00_SPOILER_D` declares 0 vertices and carries no `0x00134013`
+  material-key list, three SUPRA `*_HEADLIGHT_C` meshes have a short vertex
+  payload, and four TIBURON `*_BRAKELIGHT_` meshes carry no `0x00134013`
+  list although they declare geometry. Those nine meshes are every mesh the
+  parser rejects across the 39 `Cars/*/GEOMETRY.BIN` files. They are
+  pre-existing geometry issues, not part selection ones; the stock parts of
+  all four cars still resolve, TIBURON with 24 of its 24 slots drawn at
+  LOD A.
 
 ### Name construction
 
@@ -465,17 +480,26 @@ contain at any LOD, so a stock car there has no spoiler at all.
 - Whether a car's solids are always loaded before its CarRenderInfo is
   built. If they are not, the fallback hashes are latched, because the
   constructor overwrites the model's hash.
-- Wheels, exhausts and plates are placed at markers, and wheels are drawn
-  four times; none of that placement is decoded, so a stock part set is
-  not yet a renderable stock car.
+- Wheels are drawn four times. Issue #31 decoded where every installed
+  part is placed: the four wheel positions are static per-car data in
+  `GLOBALB.BUN`, the exhaust and the licence plate hang off named
+  attachment markers in geometry chunk `0x0013401A`, and every other
+  installed part is drawn at the car's own matrix. See
+  [`PART_PLACEMENT.md`](PART_PLACEMENT.md). The lateral term of the drawn
+  wheel matrix is still open there.
 
 ## Still unknown
 
 - The rest of the runtime car state: everything in RideInfo outside the
   part table at +0x44C, the counters at +0x62C and the enable bytes at
   +0x6A4.
-- Where each part is placed: markers, the four wheel instances, exhaust
-  and plate positions, and the damage states the draw code reads.
+- The damage states the draw code reads. Part placement itself is decoded
+  in [`PART_PLACEMENT.md`](PART_PLACEMENT.md): the four wheel positions
+  come from the car type table of `GLOBALB.BUN` and the exhaust and plate
+  from `0x0013401A` markers. What remains open there is the lateral term of
+  the drawn wheel matrix, three wheel fields whose readers are known but
+  whose arithmetic is not reproduced, and the consumers of the brakelight,
+  headlight, window and mirror marker lists.
 - The colour quantizer the indexed composite path falls back to, and any
   pixel-format name for either path ([`BODY_SKIN.md`](BODY_SKIN.md)).
 - Transparent draw ordering, technique selection, the untraced material-flag
@@ -487,7 +511,10 @@ contain at any LOD, so a stock car there has no spoiler at all.
 - The 24-byte track vertex field layout.
 
 A renderer may now build the stock part set for a car and the mesh list it
-uses at a given LOD (`nfsu_probe stock-parts`, `nfsu::select_stock_parts`).
-That is a decoded part and mesh selection, not a stock car: placement,
-paint, skin, vinyls and decal textures are still missing, so neither viewer
+uses at a given LOD (`nfsu_probe stock-parts`, `nfsu::select_stock_parts`),
+and it may read where each part goes (`nfsu_probe car-placement`,
+`nfsu_probe part-markers`, `nfsu::derive_cullable_part_placements`,
+`nfsu::car_marker_placement`). That is a decoded part and mesh selection
+plus placement, not a stock car: paint, skin, vinyls and decal textures are
+still missing, and nothing consumes the placement yet, so neither viewer
 profile may be labelled the stock car.

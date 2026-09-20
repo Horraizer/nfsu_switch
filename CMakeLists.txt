@@ -27,6 +27,7 @@ add_library(nfsu_core
     src/car_parts.cpp
     src/chunk.cpp
     src/geometry.cpp
+    src/part_placement.cpp
     src/texture.cpp
 )
 
@@ -92,6 +93,16 @@ else()
     target_compile_options(nfsu_body_skin PRIVATE -ffp-contract=off -fno-fast-math)
 endif()
 
+# Body-skin input assembly: turns an explicit customization selection and
+# parsed texture packs into an owned BodySkinRequest. It sits between the
+# pack reader and the compositor and depends on both.
+add_library(nfsu_skin_inputs
+    src/skin_inputs.cpp
+)
+
+target_link_libraries(nfsu_skin_inputs PUBLIC nfsu_core nfsu_body_skin)
+nfsu_enable_warnings(nfsu_skin_inputs)
+
 # Deterministic CPU reference renderer. Floating-point contraction is
 # disabled so that results do not depend on FMA availability.
 add_library(nfsu_render
@@ -111,7 +122,8 @@ add_executable(nfsu_probe
     src/main.cpp
 )
 
-target_link_libraries(nfsu_probe PRIVATE nfsu_core nfsu_track nfsu_texture_decode)
+target_link_libraries(nfsu_probe
+    PRIVATE nfsu_core nfsu_track nfsu_texture_decode nfsu_skin_inputs)
 nfsu_enable_warnings(nfsu_probe)
 
 add_executable(nfsu_viewer
@@ -181,6 +193,14 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_track_tests)
     add_test(NAME nfsu_track_tests COMMAND nfsu_track_tests)
 
+    add_executable(nfsu_part_placement_tests
+        tests/part_placement_tests.cpp
+    )
+
+    target_link_libraries(nfsu_part_placement_tests PRIVATE nfsu_core)
+    nfsu_enable_warnings(nfsu_part_placement_tests)
+    add_test(NAME nfsu_part_placement_tests COMMAND nfsu_part_placement_tests)
+
     add_executable(nfsu_body_skin_tests
         tests/body_skin_tests.cpp
     )
@@ -189,10 +209,19 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_body_skin_tests)
     add_test(NAME nfsu_body_skin_tests COMMAND nfsu_body_skin_tests)
 
+    add_executable(nfsu_skin_inputs_tests
+        tests/skin_inputs_tests.cpp
+    )
+
+    target_link_libraries(nfsu_skin_inputs_tests PRIVATE nfsu_skin_inputs)
+    nfsu_enable_warnings(nfsu_skin_inputs_tests)
+    add_test(NAME nfsu_skin_inputs_tests COMMAND nfsu_skin_inputs_tests)
+
     # A hung test is killed and reported as a failure.
     set_tests_properties(
         nfsu_chunk_tests nfsu_geometry_tests nfsu_texture_tests
         nfsu_render_tests nfsu_scene_tests nfsu_car_parts_tests
-        nfsu_track_tests nfsu_body_skin_tests
+        nfsu_track_tests nfsu_part_placement_tests nfsu_body_skin_tests
+        nfsu_skin_inputs_tests
         PROPERTIES TIMEOUT 60)
 endif()

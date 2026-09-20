@@ -35,6 +35,9 @@ build/nfsu_probe texture-bindings X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games
 build/nfsu_probe car-parts X:/Games/NFSU/Global/GLOBALB.BUN 240SX
 build/nfsu_probe stock-parts X:/Games/NFSU/Global/GLOBALB.BUN 240SX X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games/NFSU/Cars/BRAKES/GEOMETRY.BIN X:/Games/NFSU/Cars/PLATES/GEOMETRY.BIN
 build/nfsu_probe track-region X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN
+build/nfsu_probe car-placement X:/Games/NFSU/Global/GLOBALB.BUN 240SX
+build/nfsu_probe part-markers X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN exhaust
+build/nfsu_probe body-skin-inputs 240SX --source car-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN --source car-vinyls X:/Games/NFSU/Cars/240SX/VINYLS.BIN --source other X:/Games/NFSU/Cars/TEXTURES.BIN --target-texture DUMMY_SKIN1 --vinyl 0 TRIBAL5 16 no-remap --doorline plain --base 200 30 30 128 --assemble
 ```
 
 `meshes` lists every mesh with its name, vertex count, face count and
@@ -60,6 +63,19 @@ It never decodes or writes pixel data. Observed P8 records are parsed and
 their indexed mip chain and 1024-byte palette can be extracted through the
 library API. Diagnostic TGA and DDS export still refuses P8 because palette
 channel semantics and runtime skin composition are not yet implemented.
+`car-placement` parses the car type table of `GLOBAL/GLOBALB.BUN` and
+prints, per car type, its name, class, geometry paths and brand, the four
+wheel records with their file offsets, and the 14 placements the game
+derives from them, each with the table its source indices belong to.
+`part-markers` lists every `0x0013401A` attachment marker of a
+`GEOMETRY.BIN` with its resolved name, role, translation and the local
+placement the exhaust and licence-plate draw paths build from it; an
+optional role argument filters the listing. It reports only meshes that
+validated, and prints how many it skipped, so a mesh rejected after its
+marker chunk parsed contributes nothing. Between them, the wheels and
+brakes come from the car type table and the exhaust and plate from markers,
+while every other installed part is drawn at the car's own matrix. See
+`docs/PART_PLACEMENT.md`.
 `car-parts` parses the car part database of `GLOBAL/GLOBALB.BUN` and lists
 every part record: car type hash, slot, upgrade level, part name hash and
 the four per-LOD mesh hashes. A car type name lists only its records.
@@ -115,17 +131,17 @@ instead; all may be repeated and mixed, at most 256 selectors and
 out-of-range index, an unknown or ambiguous hash, an unknown, empty or
 ambiguous name, or a mesh selected twice is a usage error (exit 1) and
 nothing is written. Neither profile is
-the game's stock car. Which parts the game installs, and which mesh each
-one uses at a LOD, are decoded (`nfsu_probe stock-parts`), but the viewer
-does not consume them yet, and part placement, paint and skin are still
-missing (see `docs/CAR_SCENE.md`).
+the game's stock car. Which parts the game installs, which mesh each one
+uses at a LOD (`nfsu_probe stock-parts`), where the four wheels go and which
+parts hang off an attachment marker (`nfsu_probe car-placement`,
+`nfsu_probe part-markers`) are decoded, but the viewer does not consume any
+of it yet, and paint and skin are still missing (see `docs/CAR_SCENE.md` and
+`docs/PART_PLACEMENT.md`).
 
 ## Body-skin compositor reference
 
 `nfsu_body_skin` (`include/nfsu/body_skin.h`) is a bounded CPU reference for
-the game's runtime body-skin compositor. It is a library only: it has no CLI
-command, because feeding it real inputs needs the runtime customization
-state that the project does not build yet. It reproduces the weighted lane
+the game's runtime body-skin compositor. It reproduces the weighted lane
 sum both composite paths share, the mask arithmetic, the colour remap, the
 target markers, and the palette the indexed path builds, for both target
 types the game dispatches on. Every bound the game leaves unchecked is
@@ -135,6 +151,19 @@ lanes instead of naming channels, because the two paths store a colour with
 two lanes exchanged; which channel each lane carries is documented once, with
 its evidence. No pixel format is named anywhere, because no instruction names
 one. See `docs/BODY_SKIN.md`.
+
+`nfsu_skin_inputs` (`include/nfsu/skin_inputs.h`) feeds it. It takes an
+explicit customization selection - which vinyl each of the four layers
+uses with its `NUMCOLOURS` and `REMAP` colors, which hood/spoiler and
+doorline variant is installed, and the five paint colors - and turns it
+into a `BodySkinRequest` whose every buffer the result owns. It invents no
+customization state: where the game itself substitutes a value, the
+substitution is optional and reported back. It resolves each source and its
+exact `_MASK` partner out of read-only parsed packs, keeps every raw
+identifier it saw, converts only in the three cases retail evidence proves,
+and refuses the rest. `nfsu_probe body-skin-inputs` prints the whole
+assembled layer list with its provenance and writes nothing. See
+`docs/SKIN_INPUTS.md`.
 
 Selection and material lookup happen once, in `prepare_car_scene`
 (`include/nfsu/scene.h`). It builds a self-contained `PreparedCarScene`
@@ -154,10 +183,20 @@ validated against a documented range. The same inputs and options always
 give a byte-identical file. Textures that are in none of the given sources
 are drawn with a hash-colored checker and counted; another texture is never
 substituted for them. By default texel alpha is ignored and decoded RGB is
-drawn opaquely. The retail texture alpha-test and blend selectors are
-decoded, but transparent draw ordering is not, so the CPU renderer does not
-apply them yet; `--alpha-cutoff 128` is a diagnostic alpha test. See
-`docs/MATERIALS.md`. Decoded textures are
+drawn opaquely, and `--alpha-cutoff 128` is a diagnostic alpha test.
+
+`--material-state retail` applies the car material render state recovered
+in `docs/MATERIALS.md`: the texture-info alpha test with its GREATER 0xAA
+rule, the texture-info blend selection, the retail draw queue order, and
+the flag-controlled coefficient gates. The retail order is recovered, not
+guessed: the queue buckets a material by two more texture-info bytes,
+batches by texture inside a bucket and keeps depth writes on for blended
+car draws. The undecoded coefficients are explicit options
+(`--material-alpha`, `--environment`, `--environment-color`,
+`--environment-global`) whose defaults make the environment term vanish and
+leave the alpha lane at the identity, which is an assumption and not a
+retail value. The renderer never supplies a retail value for one. `off` is the default and
+its frame is byte for byte what it was before the option existed. Decoded textures are
 capped at 128 MiB in total, over all sources together. The viewer never overwrites an existing file:
 it creates `<out>.partial` exclusively and publishes it with a no-replace
 rename (Windows) or `link` (POSIX), and it refuses to write on other

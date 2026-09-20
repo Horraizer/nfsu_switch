@@ -505,6 +505,8 @@ private:
         texture.height_log2 = info[73];
         texture.format_code = info[74];
         texture.mip_count = info[78];
+        texture.layer_order = info[81];
+        texture.layer_group = info[84];
         texture.alpha_test_mode = info[85];
         texture.alpha_blend_mode = info[86];
         texture.d3d_format = read_u32_le(texture.format_record.data() + 20);
@@ -1064,6 +1066,15 @@ bool record_claims_hash(const TextureRecord& texture, std::uint32_t hash) noexce
 
 bool texture_alpha_test_enabled(const TextureRecord& texture) noexcept {
     return texture.alpha_test_mode == 1U;
+}
+
+int texture_draw_layer(const TextureRecord& texture) noexcept {
+    const int layer = (texture.layer_group != 0U ? 8 : 0) +
+                      static_cast<int>(static_cast<std::int8_t>(texture.layer_order));
+    if (layer < 0) {
+        return 0;
+    }
+    return layer < kTextureDrawLayerCount ? layer : kTextureDrawLayerCount - 1;
 }
 
 TextureAlphaBlend texture_alpha_blend(const TextureRecord& texture) noexcept {

@@ -127,6 +127,57 @@ bool RenderTexture::usable() const noexcept {
            std::uint64_t{rgba.size()} == pixels * 4U;
 }
 
+bool render_alpha_test_enabled(std::uint8_t alpha_test_mode) noexcept {
+    return alpha_test_mode == 1U;
+}
+
+int render_draw_layer(std::uint8_t layer_group, std::uint8_t layer_order) noexcept {
+    const int layer = (layer_group != 0U ? 8 : 0) +
+                      static_cast<int>(static_cast<std::int8_t>(layer_order));
+    if (layer < 0) {
+        return 0;
+    }
+    return layer < kRenderDrawLayerCount ? layer : kRenderDrawLayerCount - 1;
+}
+
+RenderBlendMode render_blend_mode_of(std::uint8_t alpha_blend_mode) noexcept {
+    if (alpha_blend_mode == 0U) {
+        return RenderBlendMode::disabled;
+    }
+    if (alpha_blend_mode == 2U) {
+        return RenderBlendMode::additive;
+    }
+    return RenderBlendMode::source_over;
+}
+
+const char* render_blend_mode_name(RenderBlendMode mode) noexcept {
+    switch (mode) {
+    case RenderBlendMode::disabled: return "disabled";
+    case RenderBlendMode::source_over: return "source-over";
+    case RenderBlendMode::additive: return "additive";
+    }
+    return "unknown";
+}
+
+MaterialCoefficientGates material_coefficient_gates(
+    std::uint32_t flags, bool environment_enabled) noexcept {
+    // The traced upload zeros whole coefficient vectors; it never mixes
+    // groups. Flag bits are used only as the branch conditions the retail
+    // code tests, and are given no name here.
+    constexpr std::uint32_t kEnvironmentBranchBit = 0x00000100U;
+    constexpr std::uint32_t kLightingBranchBit = 0x00000080U;
+    MaterialCoefficientGates gates;
+    if ((flags & kEnvironmentBranchBit) == 0U || !environment_enabled) {
+        gates.environment = false;
+        return gates;
+    }
+    if ((flags & kLightingBranchBit) == 0U) {
+        gates.diffuse = false;
+        gates.specular = false;
+    }
+    return gates;
+}
+
 const char* binding_kind_name(BindingKind kind) noexcept {
     switch (kind) {
     case BindingKind::resolved: return "resolved";

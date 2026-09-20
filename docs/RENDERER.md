@@ -27,12 +27,20 @@ nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> <out.tga> [--shared-textures FILE]... 
 | `--vertex-color` | flag | off |
 | `--cull MODE` | `none`, `back`, `front` | `none` |
 | `--shading MODE` | `flat`, `none` | `flat` |
+| `--material-state MODE` | `off`, `retail` | `off` |
+| `--material-alpha MIN,RANGE` | each 0..16 | 1,0 |
+| `--environment MIN,RANGE,POWER` | MIN and RANGE 0..16, POWER a whole 0..64 | 0,0,1 |
+| `--environment-color R,G,B` | each a whole 0..255 | 0,0,0 |
+| `--environment-global STATE` | `on`, `off` | `on` |
 | `--mesh-index N` | 0..4294967295 decimal, repeatable | none (all meshes) |
 | `--mesh-name NAME` | 1..28 printable ASCII bytes, repeatable | none (all meshes) |
 | `--mesh-hash HEX` | 1..8 hex digits, optional `0x`, repeatable | none (all meshes) |
 
 Each option may be given once, except `--shared-textures` (at most 8
-times) and the mesh selectors (see below). Numbers are parsed with `std::from_chars`
+times) and the mesh selectors (see below). `--material-alpha`,
+`--environment`, `--environment-color` and `--environment-global` are
+refused without `--material-state retail`, because they would otherwise be
+silent no-ops. Numbers are parsed with `std::from_chars`
 and must be consumed completely and be finite. Anything else is a usage
 error (exit 1). An output path that exists or names an input is refused
 before loading (exit 1). Rendering or writing failures exit with 2. If the frame is
@@ -248,7 +256,11 @@ as for source data.
 ## Pipeline
 
 1. The prepared draws are drawn in order: selected meshes in file order,
-   and every material record in record order. With no selector, invalid
+   and every material record in record order. With `--material-state
+   retail` they are reordered into the retail draw queue order described
+   under "Draw order" below; every group is still drawn exactly once, so
+   the submitted triangles and every counter are unchanged and only the
+   triangle ids move with the groups. With no selector, invalid
    meshes are skipped and counted. A draw is drawn only if it is
    `drawable`: its index range is a multiple of 3 inside the mesh index
    stream and its texture slot is inside the mesh hash list. Otherwise the
@@ -295,18 +307,19 @@ as for source data.
    Negative and large UVs wrap. A non-finite coordinate samples texel 0.
    UVs are raw by default. `--flip-v` samples `(u, 1 - v)` and is printed
    in the report as `flip_v 1`.
-10. Alpha policy: there is no blending. The default cutoff is 0, so every
-    texel's decoded RGB is drawn opaquely and texel alpha is ignored.
-    Written pixels always get alpha 255. Texture-info bytes +85/+86 now
-    identify the retail alpha-test and blend states, but transparent draw
-    ordering and complete technique selection are not recovered. The CPU
-    renderer therefore does not apply them yet. `--alpha-cutoff N` (for
-    example 128) is a diagnostic: a textured fragment whose texel alpha is below N is
+10. Alpha policy. `--material-state off`, the default, is the historical
+    behaviour: there is no blending, every texel's decoded RGB is drawn
+    opaquely and texel alpha reaches nothing but `--alpha-cutoff`. Written
+    pixels always get alpha 255, in both modes. `--alpha-cutoff N` (for
+    example 128) is a diagnostic in either mode: a textured fragment whose
+    texel alpha is below N is
     discarded before the depth test. This covers DXT1 punch-through
     (alpha 0), DXT3 4-bit alpha and A8R8G8B8. With a cutoff, glass and
-    other translucent parts come out either opaque or absent. Treat alpha
-    testing as diagnostic until ordered blending is implemented. See
-    `docs/MATERIALS.md`; geometry flags must not be guessed as alpha state.
+    other translucent parts come out either opaque or absent.
+    `--material-state retail` additionally applies the state recovered in
+    `docs/MATERIALS.md`; see "Retail material state" below. In both modes,
+    geometry flags are never guessed as alpha state: the alpha test and the
+    blend come from the bound texture-info record and from nothing else.
 11. Color: texel RGB, optionally times the vertex color bytes 0..2
     (`(c * vc + 127) / 255`, `--vertex-color`), then times the flat shade
     factor `(c * k + 128) >> 8`. With `--shading flat` (default),
@@ -359,8 +372,8 @@ as for source data.
 
 All limits are checked before allocation or before the work starts:
 
-- frame 1..8192 per axis and at most 16777216 pixels (16 bytes per pixel:
-  RGBA8, f64 depth, u32 id; at most 256 MiB)
+- frame 1..8192 per axis and at most 16777216 pixels (17 bytes per pixel:
+  RGBA8, f64 depth, u32 id and the u8 blended mark; at most 272 MiB)
 - at most 2^22 source triangles, 2^24 submitted triangles (over all
   drawable ranges, which may overlap) and 2^24 raster triangles
 - at most 2^32 pixel tests per frame
@@ -394,6 +407,205 @@ Texture decoding (`decode_render_textures`) separates two kinds of problem:
 
 The retail 240SX pack retains 10437632 bytes.
 
+## Retail material state
+
+`--material-state retail` applies the material render state that
+`docs/MATERIALS.md` recovers, and only that. Everything below is either a
+traced rule or an explicitly bounded reference decision; nothing is
+inferred from an untraced material flag.
+
+### Where the state comes from
+
+The retail draw path reads the alpha test, the blend and the draw queue row
+from the 124-byte texture-info record of the bound texture, not from the
+geometry material record. The reference does the same: `RenderTexture`
+carries the four raw bytes info +81, +84, +85 and +86 unchanged,
+`prepare_car_scene` copies them with the texture, and the renderer reads
+them off the draw's own bound texture. A group whose binding is
+`unresolved`, `unusable` or `invalid_slot` has no bound record, therefore no
+proven state; it stays opaque and unblended and takes row 0. The fallback
+checker is never alpha-tested and never blended.
+
+Raw values are kept raw. Each decoded rule lives in one place
+(`render_alpha_test_enabled`, `render_blend_mode_of` and `render_draw_layer`
+in the prepared-scene layer, mirroring `texture_alpha_test_enabled`,
+`texture_alpha_blend` and `texture_draw_layer` in the pack reader); tests
+check the alpha and blend decoders agree on all 256 byte values and the row
+decoders on all 65536 pairs.
+
+The only material-record field the retail state reads is `flags`, and only
+as the two branch conditions of the coefficient gates. The untouched
+60-byte record and every other decoded field are carried and never
+interpreted.
+
+### Alpha test
+
+Enabled only when +85 == 1. The comparison is `D3DCMP_GREATER` against
+`D3DRS_ALPHAREF` 0xAA, so a fragment survives only when its source alpha is
+strictly above 0xAA. It is applied before the depth test and counted in
+`alpha_discarded`, the same counter `--alpha-cutoff` uses. A textured
+fragment must pass both tests; with the default cutoff 0 only the retail
+test can reject anything.
+
+### Blending
+
++86 selects the blend: 0 none, 2 `SRCALPHA`/`ONE`, every other nonzero
+value `SRCALPHA`/`INVSRCALPHA`. In 0..255 integers, with `a` the source
+alpha and `d` the destination channel:
+
+```text
+source-over: (src * a + d * (255 - a) + 127) / 255
+additive:    min(255, (src * a + 127) / 255 + d)
+```
+
+The destination alpha stays 255: the frame is an opaque screenshot and no
+traced state makes the car write a meaningful destination alpha.
+
+The source alpha is the texel alpha times the effect's `diffuse_scale.w`,
+which is an undecoded material coefficient. `--material-alpha MIN,RANGE`
+supplies it as `MIN + vdotn * RANGE`; its default 1,0 is the identity, and
+the reference never invents a retail value for it. The one case where the
+retail value is known is a closed diffuse gate, which zeros the whole
+`DiffuseMin` and `DiffuseRange` vectors including their W lane; the source
+alpha is then 0 whatever `--material-alpha` says.
+
+### Draw order
+
+Blending is the one part of the state that depends on the order draws reach
+the frame, so the order is fixed before blending is enabled. It is not a
+policy the reference chose: it is the order the retail draw queue produces,
+recovered in `docs/MATERIALS.md`.
+
+The retail queue is a fixed 16 by 7 table of buckets. A material is
+appended to the row its texture's info bytes +84 and +81 select and the
+column its effect selects, and the table is later walked row by row, each
+bucket draining in the order it was filled. Every material of one car uses
+the same effect, so the column is constant and the order reduces to three
+rules:
+
+1. ascending row, `8 * (info[+84] != 0) + (signed) info[+81]`;
+2. inside a row, the textures in the order each was first used, because the
+   queue keeps one entry per texture and a later material with the same
+   texture joins the entry the first one opened;
+3. inside a texture, the material records in record order.
+
+`nfsu_render` reproduces that with a stable sort of the prepared draws by
+(row, first use of the texture). Rule 3 then falls out of the sort being
+stable, because the prepared order is already mesh source order and then
+record order. A group with no resolved texture has no row of its own and
+takes row 0, which is the row a record with both bytes zero selects.
+
+Two details of the reproduction are reference decisions, recorded here
+rather than claimed as retail:
+
+- First use is established by every group, including one that is not
+  drawable. The retail append has no drawable test either, so this is the
+  closer match, but no case was constructed where the two differ.
+- A group with no resolved texture is placed in row 0 and forms its own
+  texture group unless another unresolved group names the same hash. Retail
+  always has a texture-info record, so it never reaches this case.
+
+Two consequences are worth stating because they are not what a renderer
+would choose on its own:
+
+- The row comes from the texture, not from whether the material blends. An
+  opaque texture can sit in a later row than a blended one, and the 240SX
+  pack does exactly that: its rows are 0 (67 opaque records), 5 (18 blended),
+  8 (8 records, 7 of them opaque) and 13 (26 blended).
+- A blended car draw writes depth. `SetRenderState(D3DRS_ZWRITEENABLE,
+  TRUE)` is on both the opaque and the blended branch for the car effect;
+  the FALSE store is reachable only for a non-car effect. So a blended
+  surface does occlude whatever is drawn after it and is farther away, and
+  the reference does the same.
+
+Rule 2 and the depth writes both make the frame depend on the order, which
+is why the order had to be recovered before blending was enabled rather
+than chosen. What makes the frame right is that the order is the retail
+one, not that the frame is insensitive to it.
+
+`blend: ... overlap O` reports how much transparency actually stacks: it
+counts every blended fragment written onto a pixel a blended fragment had
+already written. It is a diagnostic, not a proof of order independence.
+With depth writes on, the order also decides which blended fragments reach
+the frame at all - a blended draw in front of a later blended one rejects
+it outright - so `O == 0` does not by itself mean a different order would
+give the same frame.
+
+The default "all meshes" profile draws every kit and style variant at once,
+so it stacks transparent surfaces the game would never install together and
+`O` is large. That is a property of the profile, not of the ordering.
+
+### The fragment, in order
+
+A backend reproducing a frame needs the exact chain. For a textured
+fragment that survives both alpha tests and the depth test:
+
+1. `c = texel.rgb`, and with `--vertex-color`, `c = (c * vc + 127) / 255`.
+2. `c = (c * shade + 128) >> 8`, clamped to 255, where `shade` is the flat
+   shade factor of step 11 above. With a closed diffuse gate this step
+   yields 0 instead, because the effect's whole output is zero.
+3. The environment term is added to `c` and the sum is clamped to 255. It
+   is added after the shade, so the reference's diagnostic shading does not
+   scale it; only the texel alpha and the coefficients do.
+4. The blend runs last, with `c` as `src` and the frame as `d`.
+5. The frame's alpha byte is set to 255 and the depth and the owning
+   triangle id are written.
+
+The source alpha used in step 4, and in the alpha test before it, is the
+texel alpha times the alpha lane, never the shaded or environment-modified
+colour.
+
+### Coefficient and environment gates
+
+The traced coefficient upload zeros whole coefficient vectors before the
+effect sees them, on two branch conditions of the material record flags.
+`material_coefficient_gates(flags, environment_enabled)` reproduces exactly
+those two branches and reports which of the diffuse, specular and
+environment groups survive. It names no flag bit, and nothing else in the
+renderer reads `PreparedDraw::flags`.
+
+`--environment-global off` stands for the runtime global the upload also
+tests.
+
+The reference models the environment group and the alpha lane of the
+diffuse group, because it models neither the effect's harmonic diffuse
+lighting nor its specular term. A closed diffuse gate therefore zeros the
+source alpha, and with it the environment term, which the identity below
+scales by `diffuse_scale.w`. When the environment gate keeps the group and
+the diffuse gate is open, a textured fragment gains
+
+```text
+environment_term[k] =
+    4 * diffuse_scale.w * environment_color[k] *
+    (EnvmapMin[k] + pow(vdotn, EnvmapPower) * EnvmapRange[k]) *
+    texel_alpha / 255
+```
+
+rounded to the nearest integer and clamped, which is the effect's
+environment identity written in 0..255 units. `--environment MIN,RANGE,POWER`
+and `--environment-color R,G,B` supply `EnvmapMin`, `EnvmapRange`,
+`EnvmapPower` and the cube sample. Their defaults make the term zero. The
+alpha lane's default 1,0 does not vanish: it is the identity, which is an
+assumption about an undecoded coefficient, not a retail value.
+
+Two reference decisions are recorded here rather than claimed as retail:
+
+- The effect evaluates `vdotn` per vertex from the stored vertex normal.
+  The reference evaluates it once per triangle, from the geometric face
+  normal turned toward the eye and the direction from the triangle's first
+  vertex to the eye. That is the same flat model the shade factor uses, and
+  the same facing test.
+- `EnvmapPower` is a float in the effect. The reference accepts only a
+  whole number and evaluates it by repeated multiplication, so the frame
+  never depends on a C library `pow()`.
+
+### What the retail state does not change
+
+With `--material-state off` nothing above runs: the frame, the report and
+every counter are byte for byte what an earlier build produces. The
+material coefficient options are refused in that mode, so the default can
+never be changed by them by accident.
+
 ## Determinism
 
 - Arithmetic is IEEE double, with `FLT_EVAL_METHOD == 0` enforced at
@@ -420,6 +632,13 @@ triangles sent to coverage), `raster_pieces` (fan triangles), `pixel tests`,
 `depth_failed`, `written`, `pixels drawn` (pixels owning a triangle),
 `fallback` (drawn pixels owned by fallback triangles) and `drawn bounds`
 (inclusive).
+
+With `--material-state retail` three more lines follow: `draw rows:` with
+one count per draw queue row, in row order, over the drawable groups;
+`material groups: alpha_tested B blended C`; and `blend: fragments F
+overlap O pixels P`. Nothing is printed for them in the default mode, so
+the report of a run that does not select the retail state is byte for byte
+what it was before the option existed.
 
 ## Retail 240SX reference screenshot
 
@@ -554,15 +773,17 @@ nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> build/shots/s.tga --shared-textures <G
 
 ### Unknown
 
-- How the game combines vertex colors, material flags and material/effect
-  objects (blending, glass, decals, environment maps). The material-key slot
-  and 0xFF sentinel are decoded, but the selected object's render behavior is
-  not yet reproduced.
+- How the game combines vertex colors and the material/effect objects. The
+  material-key slot and 0xFF sentinel are decoded and the flag-controlled
+  coefficient gates are reproduced, but the coefficient values themselves,
+  the harmonic lighting and the environment cube map are not decoded, so
+  the effect's diffuse and specular terms are not reproduced at all.
 - Which kit and style meshes the game draws together. The reference view
-  draws all of them.
-- Whether translucent materials are alpha-tested or blended in game. The
-  reference draws decoded RGB opaquely by default, and its alpha test is
-  diagnostic only.
+  draws all of them, which is also why the transparent overlap count is
+  large on that view.
+- Which of the three `car.efx` techniques a draw uses, and the per-draw
+  cull mode the retail path sets from the blend byte, which the reference
+  records but does not apply (`docs/MATERIALS.md`).
 - Whether the POSIX writer branch behaves as designed. It was not built or
   run here.
 - Coplanar decal meshes resolve their depth ties by triangle id. The game

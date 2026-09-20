@@ -138,6 +138,8 @@ struct TexSpec {
     std::uint8_t mips = 1;
     std::uint8_t alpha_test_mode = 0;
     std::uint8_t alpha_blend_mode = 0;
+    std::uint8_t layer_order = 0;
+    std::uint8_t layer_group = 0;
     Bytes pixels;                       // decompressed chain
     std::optional<std::uint32_t> data_size;
     std::optional<std::uint32_t> top_size;
@@ -283,6 +285,8 @@ void write_pack(Writer& w, const std::vector<TexSpec>& specs, const PackOptions&
         record[74] = spec.format_code;
         record[78] = spec.mips;
         put_u32(record, 84, 0x01000000U);
+        record[81] = spec.layer_order;
+        record[84] = spec.layer_group;
         record[85] = spec.alpha_test_mode;
         record[86] = spec.alpha_blend_mode;
         layout.info_offsets.push_back(0); // patched after append
@@ -608,6 +612,13 @@ void test_alpha_state() {
     TexSpec other = dxt1_spec("OTHER");
     other.alpha_test_mode = 0xFF;
     other.alpha_blend_mode = 0xFF;
+    other.layer_order = 0xFF;
+    other.layer_group = 0xFF;
+
+    // The retail 240SX pack uses exactly these four (+84, +81) pairs.
+    tested.layer_order = 5;
+    additive.layer_order = 5;
+    additive.layer_group = 1;
 
     const PackLayout layout = build_pack({opaque, tested, additive, other});
     const nfsu::TexturePack pack = parse(layout.bytes);
@@ -640,6 +651,14 @@ void test_alpha_state() {
               std::string(nfsu::texture_alpha_blend_name(
                   nfsu::texture_alpha_blend(pack.textures[3]))) == "source-over",
           "unknown raw modes are preserved and follow the retail branches");
+    check(nfsu::texture_draw_layer(pack.textures[0]) == 0 &&
+              nfsu::texture_draw_layer(pack.textures[1]) == 5 &&
+              nfsu::texture_draw_layer(pack.textures[2]) == 13,
+          "the draw queue row comes from info +84 and +81");
+    check(pack.textures[3].layer_order == 0xFFU &&
+              pack.textures[3].layer_group == 0xFFU &&
+              nfsu::texture_draw_layer(pack.textures[3]) == 7,
+          "a signed row offset of -1 lands in row 7 and the bytes are kept");
 }
 
 void test_alignment_sweep() {

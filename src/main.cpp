@@ -1,6 +1,8 @@
 #include "nfsu/car_parts.h"
 #include "nfsu/chunk.h"
 #include "nfsu/geometry.h"
+#include "nfsu/part_placement.h"
+#include "nfsu/skin_inputs.h"
 #include "nfsu/texture.h"
 #include "nfsu/texture_decode.h"
 #include "nfsu/track.h"
@@ -15,6 +17,8 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -467,6 +471,10 @@ int run_textures(const fs::path& path) {
                          nfsu::texture_alpha_blend(texture))
                   << '(' << static_cast<unsigned int>(texture.alpha_blend_mode)
                   << ')'
+                  << " layer=" << nfsu::texture_draw_layer(texture)
+                  << '(' << static_cast<unsigned int>(texture.layer_group)
+                  << ',' << static_cast<unsigned int>(texture.layer_order)
+                  << ')'
                   << " name_hash=" << name_hash_status(texture) << ' '
                   << texture.name << '\n';
     }
@@ -529,6 +537,10 @@ int run_pack_set(const fs::path& path) {
                       << nfsu::texture_alpha_blend_name(
                              nfsu::texture_alpha_blend(texture))
                       << '(' << static_cast<unsigned int>(texture.alpha_blend_mode)
+                      << ')'
+                      << " layer=" << nfsu::texture_draw_layer(texture)
+                      << '(' << static_cast<unsigned int>(texture.layer_group)
+                      << ',' << static_cast<unsigned int>(texture.layer_order)
                       << ')'
                       << " name_hash=" << name_hash_status(texture) << ' '
                       << texture.name << '\n';
@@ -1105,6 +1117,558 @@ int run_track_region(
     return report.ok() ? 0 : 3;
 }
 
+// ---------------------------------------------------------------------------
+// body-skin-inputs: read-only diagnostics for the assembled layer list.
+// It opens only the files named on the command line, and it writes nothing.
+// ---------------------------------------------------------------------------
+
+struct LoadedSkinSource {
+    std::vector<unsigned char> bytes;
+    nfsu::TexturePack pack;
+    std::string path;
+    nfsu::SkinSourceKind kind = nfsu::SkinSourceKind::other;
+};
+
+bool parse_u32_arg(const std::string& text, std::uint32_t limit, std::uint32_t& out) {
+    if (text.empty() || text.size() > 10) {
+        return false;
+    }
+    std::uint64_t value = 0;
+    for (const char c : text) {
+        if (c < '0' || c > '9') {
+            return false;
+        }
+        value = value * 10U + static_cast<std::uint64_t>(c - '0');
+        if (value > limit) {
+            return false;
+        }
+    }
+    out = static_cast<std::uint32_t>(value);
+    return true;
+}
+
+bool parse_size_arg(const std::string& text, std::uint32_t& width, std::uint32_t& height) {
+    const std::size_t x = text.find('x');
+    if (x == std::string::npos) {
+        return false;
+    }
+    return parse_u32_arg(text.substr(0, x), 65535U, width) &&
+           parse_u32_arg(text.substr(x + 1), 65535U, height);
+}
+
+bool parse_paint_args(char** argv, std::uint32_t& out) {
+    std::uint32_t channel[4] = {0, 0, 0, 0};
+    for (int i = 0; i < 4; ++i) {
+        if (!parse_u32_arg(argv[i], 255U, channel[i])) {
+            return false;
+        }
+    }
+    out = nfsu::skin_pack_paint(static_cast<std::uint8_t>(channel[0]),
+                                static_cast<std::uint8_t>(channel[1]),
+                                static_cast<std::uint8_t>(channel[2]),
+                                static_cast<std::uint8_t>(channel[3]));
+    return true;
+}
+
+bool parse_palette_arg(const std::string& text, std::optional<std::uint32_t>& out) {
+    if (text == "default") {
+        out.reset();
+        return true;
+    }
+    std::uint32_t value = 0;
+    if (!parse_u32_arg(text, 256U, value)) {
+        return false;
+    }
+    out = value;
+    return true;
+}
+
+void print_skin_provenance(const char* label, const nfsu::SkinTextureProvenance& found) {
+    std::cout << "    " << label << ": ";
+    if (!found.resolved) {
+        std::cout << "unresolved\n";
+        return;
+    }
+    std::cout << "source " << found.source_index << " pack " << found.pack_index << " ("
+              << nfsu::skin_source_kind_name(found.source_kind) << ") " << found.source_path
+              << '\n';
+    std::cout << "      pack " << found.pack_name << " root " << found.pack_root_offset
+              << " hash " << hex32(found.pack_hash) << '\n';
+    std::cout << "      record " << found.record_index << ' '
+              << (found.record_valid ? "ok" : "invalid") << " info " << hex32(found.record_hash)
+              << " table " << hex32(found.table_hash) << " blob " << hex32(found.blob_hash)
+              << '\n';
+    std::cout << "      name \"" << found.stored_name << "\" field_full "
+              << (found.stored_name_full ? 1 : 0) << " name_hash "
+              << (found.stored_name_matches ? "matches" : "differs") << '\n';
+    std::cout << "      format " << nfsu::pixel_format_name(found.format) << " code "
+              << static_cast<unsigned int>(found.format_code) << " d3d " << found.d3d_format
+              << ' ' << found.width << 'x' << found.height << " mips " << found.mip_count
+              << " data " << found.data_size << " palette_bytes " << found.record_palette_bytes
+              << " top " << found.top_level_size << '\n';
+    std::cout << "      storage " << nfsu::texture_storage_name(found.storage) << " info_offset "
+              << found.info_offset << " blob " << found.blob_offset << '+' << found.blob_size
+              << '\n';
+    if (!found.record_valid && !found.record_problem.empty()) {
+        std::cout << "      problem: " << found.record_problem << '\n';
+    }
+    for (const nfsu::SkinHashClaim& claim : found.also_claimed_by) {
+        std::cout << "      also claimed by source " << claim.source << " pack " << claim.pack
+                  << " record " << claim.record << '\n';
+    }
+}
+
+void print_skin_input(const nfsu::SkinInputLayerInfo& input) {
+    std::cout << "  " << nfsu::skin_source_role_name(input.role) << ": \"" << input.source_name
+              << "\" " << hex32(input.source_hash) << " mask \"" << input.mask_name << "\" "
+              << hex32(input.mask_hash) << '\n';
+    std::cout << "    numcolours " << input.palette_entries
+              << (input.palette_entries_defaulted ? " (defaulted)" : "") << " remap "
+              << (input.remap ? 1 : 0);
+    if (input.remap) {
+        std::cout << " colors";
+        for (std::size_t k = 0; k < input.remap_colors.size(); ++k) {
+            std::cout << ' ' << hex32(input.remap_colors[k])
+                      << (input.remap_color_defaulted[k] ? "*" : "");
+        }
+    }
+    std::cout << '\n';
+    print_skin_provenance("source", input.source);
+    print_skin_provenance("mask", input.mask);
+    if (!input.usable) {
+        std::cout << "    skipped (" << nfsu::skin_skip_reason_name(input.skip_reason)
+                  << "): " << input.skip_detail << '\n';
+        return;
+    }
+    std::cout << "    layer " << input.layer_index;
+    if (input.assembly) {
+        const nfsu::SkinAssembledLayerInfo& made = *input.assembly;
+        std::cout << " source_expanded " << (made.source_expanded ? 1 : 0) << " mask_expanded "
+                  << (made.mask_expanded ? 1 : 0) << " owned " << made.owned_bytes;
+        if (made.source_indices_used != 0) {
+            std::cout << " source_entries " << made.source_indices_used
+                      << (made.source_indices_exceed_palette ? " (over numcolours)" : "");
+        }
+        if (made.mask_indices_used != 0) {
+            std::cout << " mask_entries " << made.mask_indices_used;
+        }
+    }
+    std::cout << '\n';
+}
+
+void print_skin_plan(const nfsu::BodySkinInputPlan& plan) {
+    std::cout << "target: " << nfsu::skin_target_type_name(plan.target) << ' ' << plan.width
+              << 'x' << plan.height << '\n';
+    if (plan.target_hash) {
+        if (plan.target_texture.resolved) {
+            print_skin_provenance("target texture", plan.target_texture);
+        } else {
+            std::cout << "    target texture: " << hex32(*plan.target_hash)
+                      << " is in no source\n";
+        }
+    }
+    std::cout << "base color: " << hex32(plan.base_color) << '\n';
+    std::cout << "special colors:";
+    for (std::size_t k = 0; k < plan.special_colors.size(); ++k) {
+        std::cout << ' ' << hex32(plan.special_colors[k])
+                  << (plan.special_color_defaulted[k] ? "*" : "");
+    }
+    std::cout << "   (* = fell back to the base color)\n";
+    std::cout << "inputs: " << plan.inputs.size() << " selected, " << plan.usable_inputs
+              << " usable, " << plan.skipped_inputs << " skipped\n";
+    for (const nfsu::SkinInputLayerInfo& input : plan.inputs) {
+        print_skin_input(input);
+    }
+    if (plan.target == nfsu::SkinTargetType::type8) {
+        std::cout << "merged palette entries: " << plan.merged_palette_entries << " fits "
+                  << (plan.merged_palette_fits ? 1 : 0) << '\n';
+    }
+}
+
+int run_body_skin_inputs(int argc, char** argv) {
+    // argv[2] is the car name; every other input is an explicit option.
+    nfsu::BodySkinSelection selection;
+    selection.car_name = argv[2];
+    std::vector<std::unique_ptr<LoadedSkinSource>> loaded;
+    bool assemble = false;
+
+    for (int i = 3; i < argc;) {
+        const std::string option = argv[i];
+        const int left = argc - i - 1;
+        if (option == "--assemble") {
+            assemble = true;
+            i += 1;
+        } else if (option == "--size" && left >= 1) {
+            if (!parse_size_arg(argv[i + 1], selection.width, selection.height)) {
+                std::cerr << "bad --size, expected WIDTHxHEIGHT\n";
+                return 1;
+            }
+            i += 2;
+        } else if (option == "--target-texture" && left >= 1) {
+            selection.target_hash = nfsu::bin_hash(argv[i + 1]);
+            i += 2;
+        } else if (option == "--target" && left >= 1) {
+            const std::string value = argv[i + 1];
+            if (value == "type32") {
+                selection.target = nfsu::SkinTargetType::type32;
+            } else if (value == "type8") {
+                selection.target = nfsu::SkinTargetType::type8;
+            } else {
+                std::cerr << "bad --target, expected type32 or type8\n";
+                return 1;
+            }
+            i += 2;
+        } else if (option == "--source" && left >= 2) {
+            const std::string kind = argv[i + 1];
+            auto entry = std::unique_ptr<LoadedSkinSource>(new LoadedSkinSource());
+            if (kind == "car-textures") {
+                entry->kind = nfsu::SkinSourceKind::car_textures;
+            } else if (kind == "car-vinyls") {
+                entry->kind = nfsu::SkinSourceKind::car_vinyls;
+            } else if (kind == "other") {
+                entry->kind = nfsu::SkinSourceKind::other;
+            } else {
+                std::cerr << "bad --source kind, expected car-textures, car-vinyls or other\n";
+                return 1;
+            }
+            entry->path = argv[i + 2];
+            entry->pack = nfsu::load_texture_pack(fs::path(entry->path), entry->bytes);
+            loaded.push_back(std::move(entry));
+            i += 3;
+        } else if (option == "--hood" && left >= 1) {
+            nfsu::SkinHoodSpoilerSelection hood;
+            const std::string variant = argv[i + 1];
+            if (variant == "hood-spoiler") {
+                hood.variant = nfsu::SkinHoodSpoilerVariant::hood_and_spoiler;
+            } else if (variant == "hood") {
+                hood.variant = nfsu::SkinHoodSpoilerVariant::hood;
+            } else if (variant == "spoiler") {
+                hood.variant = nfsu::SkinHoodSpoilerVariant::spoiler;
+            } else {
+                std::cerr << "bad --hood variant, expected hood-spoiler, hood or spoiler\n";
+                return 1;
+            }
+            selection.hood_spoiler_vinyl = hood;
+            i += 2;
+        } else if (option == "--vinyl" && left >= 4) {
+            std::uint32_t index = 0;
+            if (!parse_u32_arg(argv[i + 1], 3U, index)) {
+                std::cerr << "bad --vinyl layer, expected 0..3\n";
+                return 1;
+            }
+            if (selection.vinyl_layers[index]) {
+                // Replacing it would silently drop any --vinyl-color
+                // already given for that layer.
+                std::cerr << "--vinyl names a layer that was already selected\n";
+                return 1;
+            }
+            nfsu::SkinVinylLayerSelection layer;
+            layer.texture = argv[i + 2];
+            if (!parse_palette_arg(argv[i + 3], layer.palette_size)) {
+                std::cerr << "bad --vinyl NUMCOLOURS, expected 0..256 or default\n";
+                return 1;
+            }
+            const std::string remap = argv[i + 4];
+            if (remap == "remap") {
+                layer.remap = true;
+            } else if (remap != "no-remap") {
+                std::cerr << "bad --vinyl remap flag, expected remap or no-remap\n";
+                return 1;
+            }
+            selection.vinyl_layers[index] = layer;
+            i += 5;
+        } else if (option == "--vinyl-color" && left >= 6) {
+            std::uint32_t index = 0;
+            std::uint32_t slot = 0;
+            if (!parse_u32_arg(argv[i + 1], 3U, index) || !parse_u32_arg(argv[i + 2], 3U, slot)) {
+                std::cerr << "bad --vinyl-color layer or slot, expected 0..3\n";
+                return 1;
+            }
+            if (!selection.vinyl_layers[index]) {
+                std::cerr << "--vinyl-color names a layer that was not selected\n";
+                return 1;
+            }
+            std::uint32_t color = 0;
+            if (!parse_paint_args(argv + i + 3, color)) {
+                std::cerr << "bad --vinyl-color channels, expected four 0..255 values\n";
+                return 1;
+            }
+            selection.vinyl_layers[index]->remap_colors[slot] = color;
+            i += 7;
+        } else if (option == "--doorline" && left >= 1) {
+            nfsu::SkinDoorlineSelection doorline;
+            const std::string variant = argv[i + 1];
+            if (variant == "plain") {
+                doorline.variant = nfsu::SkinDoorlineVariant::plain;
+            } else if (variant == "kit") {
+                doorline.variant = nfsu::SkinDoorlineVariant::body_kit;
+            } else if (variant == "widebody") {
+                doorline.variant = nfsu::SkinDoorlineVariant::wide_body;
+            } else {
+                std::cerr << "bad --doorline variant, expected plain, kit or widebody\n";
+                return 1;
+            }
+            selection.doorline = doorline;
+            i += 2;
+        } else if (option == "--base" && left >= 4) {
+            if (!parse_paint_args(argv + i + 1, selection.base_color)) {
+                std::cerr << "bad --base channels, expected four 0..255 values\n";
+                return 1;
+            }
+            i += 5;
+        } else if (option == "--special" && left >= 5) {
+            std::uint32_t slot = 0;
+            if (!parse_u32_arg(argv[i + 1], 3U, slot)) {
+                std::cerr << "bad --special slot, expected 0..3\n";
+                return 1;
+            }
+            std::uint32_t color = 0;
+            if (!parse_paint_args(argv + i + 2, color)) {
+                std::cerr << "bad --special channels, expected four 0..255 values\n";
+                return 1;
+            }
+            selection.special_colors[slot] = color;
+            i += 6;
+        } else {
+            std::cerr << "unknown or incomplete option: " << option << '\n';
+            return 1;
+        }
+    }
+
+    if (loaded.empty()) {
+        std::cerr << "at least one --source is required\n";
+        return 1;
+    }
+
+    std::vector<nfsu::SkinInputSource> sources;
+    bool sources_ok = true;
+    std::cout << "car: " << selection.car_name << '\n';
+    for (std::size_t s = 0; s < loaded.size(); ++s) {
+        const LoadedSkinSource& entry = *loaded[s];
+        std::cout << "source " << s << " (" << nfsu::skin_source_kind_name(entry.kind) << "): "
+                  << entry.path << " bytes " << entry.pack.file_size << " records "
+                  << entry.pack.textures.size() << " valid " << entry.pack.valid_texture_count()
+                  << " issues " << entry.pack.issues.size() << '\n';
+        if (!entry.pack.ok()) {
+            sources_ok = false;
+            print_texture_issues(entry.pack);
+        }
+        nfsu::SkinInputSource source;
+        source.bytes = &entry.bytes;
+        source.packs.push_back(&entry.pack);
+        source.kind = entry.kind;
+        source.path = entry.path;
+        sources.push_back(source);
+    }
+
+    const nfsu::SkinInputLimits limits;
+    std::string error;
+    if (!assemble) {
+        nfsu::BodySkinInputPlan plan;
+        if (!nfsu::plan_body_skin_inputs(selection, sources, limits, plan, error)) {
+            std::cerr << "plan failed: " << error << '\n';
+            return 3;
+        }
+        print_skin_plan(plan);
+        return (sources_ok && plan.skipped_inputs == 0) ? 0 : 3;
+    }
+
+    nfsu::AssembledSkinInputs assembled;
+    if (!nfsu::assemble_body_skin_inputs(selection, sources, limits, assembled, error)) {
+        std::cerr << "assembly failed: " << error << '\n';
+        return 3;
+    }
+    print_skin_plan(assembled.plan());
+    std::cout << "assembled: " << assembled.layer_count() << " layers, "
+              << assembled.owned_bytes() << " owned bytes\n";
+    for (std::size_t layer = 0; layer < assembled.layer_count(); ++layer) {
+        std::cout << "  layer " << layer << " from input " << assembled.input_of_layer(layer)
+                  << '\n';
+    }
+    if (!nfsu::validate_assembled_skin_inputs(assembled, error)) {
+        std::cerr << "assembled inputs failed validation: " << error << '\n';
+        return 3;
+    }
+    std::cout << "ownership validated\n";
+    return (sources_ok && assembled.plan().skipped_inputs == 0) ? 0 : 3;
+}
+
+void print_car_type_issues(const nfsu::CarTypeTable& table) {
+    for (const nfsu::CarTypeIssue& issue : table.issues) {
+        std::cerr << "issue at offset " << issue.offset << ": " << issue.message
+                  << '\n';
+    }
+}
+
+// Prints the wheel table of one car type and the 14 placements the
+// CarRenderInfo constructor derives from it. Read-only; writes nothing.
+int run_car_placement(const fs::path& path, const std::string& car_type_name) {
+    const nfsu::CarTypeTable table = nfsu::load_car_type_table(path);
+    std::cout << "file: " << path.string() << '\n';
+    std::cout << "bytes: " << table.file_size << '\n';
+    std::cout << "car type table: chunk offset " << table.chunk_offset
+              << " records at " << table.record_offset << " count "
+              << table.records.size() << " valid " << (table.valid ? 1 : 0) << '\n';
+    print_car_type_issues(table);
+    if (!table.ok()) {
+        std::cerr << "error: the car type table is not valid\n";
+        return 3;
+    }
+
+    std::vector<std::size_t> wanted;
+    if (car_type_name.empty()) {
+        for (const nfsu::CarTypeRecord& record : table.records) {
+            wanted.push_back(record.index);
+        }
+    } else {
+        const std::size_t found = nfsu::find_car_type(table, car_type_name);
+        if (found == nfsu::kNoCarType) {
+            std::cerr << "error: no car type is named '" << car_type_name << "'\n";
+            return 2;
+        }
+        wanted.push_back(found);
+    }
+
+    std::cout << std::fixed << std::setprecision(5);
+    for (const std::size_t index : wanted) {
+        const nfsu::CarTypeRecord& record = table.records[index];
+        std::cout << "car type " << record.index << ' ' << record.name
+                  << " class " << record.class_id << " offset " << record.offset
+                  << '\n';
+        std::cout << "  geometry '" << escaped_name(record.geometry_path)
+                  << "' compressed '" << escaped_name(record.compressed_path)
+                  << "' brand '" << escaped_name(record.brand_name) << "'\n";
+        for (std::size_t w = 0; w < nfsu::kCarWheelCount; ++w) {
+            const nfsu::CarWheelPlacement& wheel = record.wheels[w];
+            std::cout << "  wheel " << w << " offset " << wheel.offset
+                      << " pos " << wheel.longitudinal << ' ' << wheel.lateral
+                      << ' ' << wheel.vertical << " rolling-radius " << wheel.rolling_radius
+                      << " +0x14 " << wheel.value_14 << " +0x1C " << wheel.value_1c
+                      << " +0x20 " << wheel.value_20 << '\n';
+        }
+        std::array<nfsu::PartPlacement, nfsu::kCullableCarPartCount> placements;
+        std::string error;
+        if (!nfsu::derive_cullable_part_placements(record.wheels, placements, error)) {
+            std::cerr << "error: " << record.name << ": " << error << '\n';
+            return 3;
+        }
+        for (std::size_t p = 0; p < placements.size(); ++p) {
+            const nfsu::PartPlacement& placement = placements[p];
+            std::cout << "  part " << std::setw(2) << std::setfill(' ') << p << ' '
+                      << nfsu::cullable_car_part_name(
+                             static_cast<nfsu::CullableCarPart>(p))
+                      << " pos " << placement.position[0] << ' '
+                      << placement.position[1] << ' ' << placement.position[2]
+                      << " from " << nfsu::placement_source_name(placement.source);
+            // The source indices are printed with the table they index, so a
+            // reader cannot mistake the underneath entry's placement indices
+            // for wheel indices.
+            if (placement.source_count != 0) {
+                std::cout << ' '
+                          << nfsu::placement_index_space_name(placement.index_space)
+                          << " [";
+                for (std::size_t k = 0; k < placement.source_count; ++k) {
+                    std::cout << (k == 0 ? "" : " ") << placement.sources[k];
+                }
+                std::cout << ']';
+            }
+            if (placement.degenerate_plane) {
+                std::cout << " degenerate-plane";
+            }
+            std::cout << '\n';
+        }
+    }
+    std::cout << "listed car types: " << wanted.size() << '\n';
+    return 0;
+}
+
+// Lists the 0x0013401A attachment markers of every mesh of a geometry file
+// that validated, with each marker's resolved name, role, stored matrix and
+// the local placement the exhaust and plate draw paths build from it. A mesh
+// the parser rejected is skipped whole and only counted. Read-only; writes
+// nothing.
+int run_part_markers(const fs::path& path, const std::string& role_filter) {
+    const nfsu::GeometryReport report = nfsu::load_geometry_file(path);
+    print_geometry_issues(report);
+    std::cout << "file: " << path.string() << '\n';
+    std::cout << "bytes: " << report.file_size << '\n';
+    std::cout << "meshes: " << report.meshes.size() << '\n';
+
+    std::map<std::uint32_t, std::size_t> by_hash;
+    std::size_t chunks = 0;
+    std::size_t markers = 0;
+    std::size_t unnamed = 0;
+    std::size_t skipped = 0;
+    std::cout << std::fixed << std::setprecision(5);
+    for (const nfsu::Mesh& mesh : report.meshes) {
+        // A mesh the parser rejected is skipped whole, markers included. The
+        // parser already withdraws its marker state, so this only makes the
+        // rule visible here and counts what was left out; the diagnostic for
+        // each such mesh is in the issue list printed above.
+        if (!mesh.valid) {
+            ++skipped;
+            continue;
+        }
+        if (!mesh.has_marker_chunk) {
+            continue;
+        }
+        ++chunks;
+        bool printed_header = false;
+        for (const nfsu::MeshMarker& marker : mesh.markers) {
+            ++markers;
+            ++by_hash[marker.name_hash];
+            const char* name = nfsu::car_marker_name(marker.name_hash);
+            const nfsu::CarMarkerRole role = nfsu::car_marker_role(marker.name_hash);
+            if (name == nullptr) {
+                ++unnamed;
+            }
+            if (!role_filter.empty() &&
+                role_filter != nfsu::car_marker_role_name(role)) {
+                continue;
+            }
+            if (!printed_header) {
+                std::cout << "mesh " << mesh.index << " '" << escaped_name(mesh.name)
+                          << "' markers " << mesh.markers.size() << " at "
+                          << mesh.marker_data_offset << " (prefix "
+                          << mesh.marker_prefix_bytes << ")\n";
+                printed_header = true;
+            }
+            std::cout << "  marker " << hex32(marker.name_hash) << ' '
+                      << (name == nullptr ? "<name not recovered>" : name) << ' '
+                      << nfsu::car_marker_role_name(role) << " offset "
+                      << marker.offset << '\n';
+            std::cout << "    translation " << marker.translation(0) << ' '
+                      << marker.translation(1) << ' ' << marker.translation(2)
+                      << '\n';
+            float placement[16];
+            if (!nfsu::car_marker_placement(marker, placement)) {
+                std::cout << "    placement unavailable: the matrix is not finite\n";
+                continue;
+            }
+            for (std::size_t row = 0; row < 4; ++row) {
+                std::cout << "    placement row " << row;
+                for (std::size_t column = 0; column < 4; ++column) {
+                    std::cout << ' ' << placement[row * 4 + column];
+                }
+                std::cout << '\n';
+            }
+        }
+    }
+    std::cout << "meshes skipped as invalid: " << skipped << '\n';
+    std::cout << "marker chunks: " << chunks << '\n';
+    std::cout << "markers: " << markers << '\n';
+    std::cout << "distinct hashes: " << by_hash.size() << '\n';
+    std::cout << "markers whose name is not recovered: " << unnamed << '\n';
+    for (const auto& [hash, count] : by_hash) {
+        const char* name = nfsu::car_marker_name(hash);
+        std::cout << "  " << hex32(hash) << ' '
+                  << (name == nullptr ? "<name not recovered>" : name) << ' '
+                  << nfsu::car_marker_role_name(nfsu::car_marker_role(hash))
+                  << ' ' << count << '\n';
+    }
+    return report.ok() ? 0 : 3;
+}
+
 void print_usage() {
     std::cout
         << "Usage:\n"
@@ -1118,7 +1682,19 @@ void print_usage() {
         << "  nfsu_probe texture-bindings <GEOMETRY.BIN> <TEXTURES.BIN>\n"
         << "  nfsu_probe car-parts <GLOBALB.BUN> [car-type]\n"
         << "  nfsu_probe stock-parts <GLOBALB.BUN> <car-type> [GEOMETRY.BIN ...]\n"
-        << "  nfsu_probe track-region <STREAM.BUN> <offset> <size> [TEXTURE.BIN ...]\n";
+        << "  nfsu_probe track-region <STREAM.BUN> <offset> <size> [TEXTURE.BIN ...]\n"
+        << "  nfsu_probe car-placement <GLOBALB.BUN> [car-type]\n"
+        << "  nfsu_probe body-skin-inputs <car-name> <option>...\n"
+        << "    --source <car-textures|car-vinyls|other> <FILE>   (repeatable,\n"
+        << "        in priority order; the first source claiming a hash wins)\n"
+        << "    --size <WIDTHxHEIGHT>   --target-texture <NAME>\n"
+        << "    --target <type32|type8>   --assemble\n"
+        << "    --hood <hood-spoiler|hood|spoiler>\n"
+        << "    --vinyl <0-3> <TEXTURE> <NUMCOLOURS> <remap|no-remap>\n"
+        << "    --vinyl-color <0-3> <0-3> <R> <G> <B> <GLOSS>\n"
+        << "    --doorline <plain|kit|widebody>\n"
+        << "    --base <R> <G> <B> <GLOSS>\n"
+        << "    --special <0-3> <R> <G> <B> <GLOSS>\n";
 }
 
 } // namespace
@@ -1182,6 +1758,25 @@ int main(int argc, char** argv) {
             return 1;
         }
         return run_car_parts(fs::path(argv[2]), argc == 4 ? std::string(argv[3]) : "");
+    }
+    if (command == "car-placement") {
+        if (argc != 3 && argc != 4) {
+            print_usage();
+            return 1;
+        }
+        return run_car_placement(fs::path(argv[2]),
+                                 argc == 4 ? std::string(argv[3]) : "");
+    }
+    if (command == "part-markers") {
+        if (argc != 3 && argc != 4) {
+            print_usage();
+            return 1;
+        }
+        return run_part_markers(fs::path(argv[2]),
+                                argc == 4 ? std::string(argv[3]) : "");
+    }
+    if (command == "body-skin-inputs") {
+        return run_body_skin_inputs(argc, argv);
     }
     if (command == "stock-parts") {
         if (argc < 4) {
