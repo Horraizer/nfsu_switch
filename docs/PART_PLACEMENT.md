@@ -745,6 +745,13 @@ nothing for them, because of the lateral expression below, and the opt-in
 that places them at the culling placements marks every instance it
 produces as not exact.
 
+`nfsu_viewer --stock-car NAME` renders that profile, applying each instance
+transform ([`RENDERER.md`](RENDERER.md), "Instances"). The distinction
+survives into the picture: without `--place-wheels` the frame holds no
+wheel at all, and with it the stand-in copies are drawn but counted apart
+from the exact ones and named as a stand-in in the report, so nothing in
+the output presents a culling placement as the drawn matrix.
+
 ## Unknown
 
 - The lateral expression the wheel draw builds at

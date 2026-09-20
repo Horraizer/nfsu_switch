@@ -665,6 +665,28 @@ ClipVertex project_point(const CameraFrame& frame, const Vec3& world) noexcept {
     return out;
 }
 
+// The one placement rule. Its contract, its evidence and the one element
+// range it deliberately does not read are at its declaration and in
+// docs/RENDERER.md, "Instances". The null branch is the mapping this
+// renderer has always used, kept separate from the composition so that a
+// profile with no instances is byte-identical with every earlier build:
+// running the identity through the multiply would agree on every finite
+// vertex but for the sign of a zero component.
+Vec3 placed_vertex(const MeshVertex& vertex, const float* transform) noexcept {
+    if (transform == nullptr) {
+        return {vertex.px, vertex.py, -static_cast<double>(vertex.pz)};
+    }
+    const double slot[3] = {vertex.px, vertex.pz, vertex.py};
+    double moved[3];
+    for (int k = 0; k < 3; ++k) {
+        moved[k] = slot[0] * static_cast<double>(transform[k]) +
+                   slot[1] * static_cast<double>(transform[4 + k]) +
+                   slot[2] * static_cast<double>(transform[8 + k]) +
+                   static_cast<double>(transform[12 + k]);
+    }
+    return {moved[0], moved[2], -moved[1]};
+}
+
 std::size_t clip_triangle(
     const ClipVertex (&input)[3],
     double near_plane,
@@ -1139,15 +1161,21 @@ bool render_scene(
         error = "invalid prepared scene: " + error;
         return false;
     }
-    // This renderer draws every prepared mesh once in its own space. It
-    // does not apply PreparedInstance::transform, so it would draw the
-    // four wheels of a stock car on top of each other at the origin.
-    // Refusing is the honest answer until a backend consumes instances.
-    if (scene.profile == SelectionProfile::stock_car) {
-        error = "the CPU reference renderer does not place instances yet, so it "
-                "cannot draw the stock car profile";
+    // Which copies of each mesh are drawn, and in what order. The rule
+    // lives in the scene layer, next to the prepared scene it describes, so
+    // that prepared_triangle_ranges assigns exactly the ids the loop below
+    // hands out and an inspector or a second backend reproduces both.
+    PreparedMeshInstances copies;
+    if (!prepared_mesh_instances(scene, copies, error)) {
         return false;
     }
+    // A profile with no instances draws every mesh once in its own space,
+    // which is what this renderer has always done. That is deliberately not
+    // spelled as an identity transform: running the composition would be
+    // the identity map on every finite vertex but for the sign of a zero
+    // component, and the two single-source profiles must stay byte-identical
+    // with every earlier build.
+    const bool instanced = !scene.instances.empty();
     std::uint64_t source_triangles = 0;
     for (const PreparedMesh& mesh : scene.meshes) {
         source_triangles += mesh.triangles.size();
@@ -1177,8 +1205,15 @@ bool render_scene(
         return false;
     }
     std::vector<unsigned char> id_fallback;
+    // One mark per drawn copy, set by the draw loop when that copy actually
+    // submits a triangle, so the instance statistics below report what
+    // reached the frame rather than restating the scene. A profile with no
+    // instances has one copy per mesh, so the marks are indexed by mesh
+    // handle there and by instance position everywhere else.
+    std::vector<unsigned char> copy_drawn;
     try {
         id_fallback.reserve(static_cast<std::size_t>(submitted));
+        copy_drawn.assign(instanced ? scene.instances.size() : scene.meshes.size(), 0);
     } catch (const std::bad_alloc&) {
         error = "not enough memory for the triangle table";
         return false;
@@ -1279,88 +1314,124 @@ bool render_scene(
             (environment || coefficients.alpha_min != 1.0 ||
              coefficients.alpha_range != 0.0);
 
-        for (std::uint64_t t = first / 3; t < (first + count) / 3; ++t) {
-            const std::uint32_t id = next_id++;
-            const MeshTriangle& triangle = mesh.triangles[static_cast<std::size_t>(t)];
-            ++stats.triangles_submitted;
-            id_fallback.push_back(raster.texture == nullptr ? 1 : 0);
-            ++(raster.texture == nullptr ? stats.triangles_fallback
-                                         : stats.triangles_resolved);
-            const std::uint16_t indices[3] = {triangle.a, triangle.b, triangle.c};
-            if (indices[0] >= mesh.vertices.size() ||
-                indices[1] >= mesh.vertices.size() ||
-                indices[2] >= mesh.vertices.size()) {
-                ++stats.triangles_bad_index;
-                continue;
+        // One drawn copy per instance that names this group's mesh, in
+        // ascending instance order, so the group's triangles stay one
+        // contiguous id range whatever the draw order is. A profile with
+        // no instances draws the mesh once, in its own space. How many
+        // copies that is comes from PreparedMeshInstances::copies and from
+        // nowhere else, which is what keeps this loop and the id ranges
+        // prepared_triangle_ranges reports from ever disagreeing.
+        const std::size_t copy_first = copies.first[draw.mesh];
+        const std::uint64_t copy_count = copies.copies(draw.mesh);
+        for (std::uint64_t c = 0; c < copy_count; ++c) {
+            const std::size_t copy =
+                instanced ? copies.order[copy_first + static_cast<std::size_t>(c)]
+                          : draw.mesh;
+            const float* const transform =
+                instanced ? scene.instances[copy].transform : nullptr;
+            if ((first + count) / 3 > first / 3) {
+                copy_drawn[copy] = 1;
             }
-            ClipVertex clip[3];
-            Vec3 world[3];
-            for (int k = 0; k < 3; ++k) {
-                const MeshVertex& source = mesh.vertices[indices[k]];
-                world[k] = {source.px, source.py, -static_cast<double>(source.pz)};
-                clip[k] = project_point(camera, world[k]);
-                clip[k].u = source.u;
-                clip[k].v = source.v;
-                clip[k].r = source.color[0];
-                clip[k].g = source.color[1];
-                clip[k].b = source.color[2];
-                clip[k].a = source.color[3];
-            }
-            Vec3 normal = cross(sub(world[1], world[0]), sub(world[2], world[0]));
-            const bool has_normal = normalize(normal);
-            if (!has_normal) {
-                ++stats.triangles_degenerate_source;
-            }
-            // The eye-facing normal is shared by the flat shade factor and
-            // by the effect's vdotn, and the test is the one flat shading
-            // has always used.
-            if (has_normal && dot(normal, sub(camera.eye, world[0])) < 0.0) {
-                normal = {-normal.x, -normal.y, -normal.z};
-            }
-            raster.shade = 256;
-            if (options.shading == ShadingMode::flat && has_normal) {
-                const double k = 0.35 + 0.65 * std::max(0.0, dot(normal, light));
-                raster.shade = static_cast<std::uint32_t>(
-                    std::floor(std::clamp(k, 0.0, 1.0) * 256.0 + 0.5));
-            }
-            raster.alpha_scale = zero_alpha_lane ? 0.0 : 1.0;
-            raster.diffuse_zeroed = zero_alpha_lane;
-            raster.environment[0] = 0.0;
-            raster.environment[1] = 0.0;
-            raster.environment[2] = 0.0;
-            if (needs_view) {
-                // The effect evaluates vdotn per vertex from the stored
-                // normal; the reference evaluates it once per triangle from
-                // the geometric normal and the direction to the eye, the
-                // same flat model its shade factor uses.
-                double vdotn = 0.01;
-                if (has_normal) {
-                    Vec3 view = sub(camera.eye, world[0]);
-                    if (normalize(view)) {
-                        vdotn = std::max(0.01, dot(view, normal));
+            for (std::uint64_t t = first / 3; t < (first + count) / 3; ++t) {
+                const std::uint32_t id = next_id++;
+                const MeshTriangle& triangle = mesh.triangles[static_cast<std::size_t>(t)];
+                ++stats.triangles_submitted;
+                id_fallback.push_back(raster.texture == nullptr ? 1 : 0);
+                ++(raster.texture == nullptr ? stats.triangles_fallback
+                                             : stats.triangles_resolved);
+                const std::uint16_t indices[3] = {triangle.a, triangle.b, triangle.c};
+                if (indices[0] >= mesh.vertices.size() ||
+                    indices[1] >= mesh.vertices.size() ||
+                    indices[2] >= mesh.vertices.size()) {
+                    ++stats.triangles_bad_index;
+                    continue;
+                }
+                ClipVertex clip[3];
+                Vec3 world[3];
+                for (int k = 0; k < 3; ++k) {
+                    const MeshVertex& source = mesh.vertices[indices[k]];
+                    world[k] = placed_vertex(source, transform);
+                    clip[k] = project_point(camera, world[k]);
+                    clip[k].u = source.u;
+                    clip[k].v = source.v;
+                    clip[k].r = source.color[0];
+                    clip[k].g = source.color[1];
+                    clip[k].b = source.color[2];
+                    clip[k].a = source.color[3];
+                }
+                Vec3 normal = cross(sub(world[1], world[0]), sub(world[2], world[0]));
+                const bool has_normal = normalize(normal);
+                if (!has_normal) {
+                    ++stats.triangles_degenerate_source;
+                }
+                // The eye-facing normal is shared by the flat shade factor and
+                // by the effect's vdotn, and the test is the one flat shading
+                // has always used.
+                if (has_normal && dot(normal, sub(camera.eye, world[0])) < 0.0) {
+                    normal = {-normal.x, -normal.y, -normal.z};
+                }
+                raster.shade = 256;
+                if (options.shading == ShadingMode::flat && has_normal) {
+                    const double k = 0.35 + 0.65 * std::max(0.0, dot(normal, light));
+                    raster.shade = static_cast<std::uint32_t>(
+                        std::floor(std::clamp(k, 0.0, 1.0) * 256.0 + 0.5));
+                }
+                raster.alpha_scale = zero_alpha_lane ? 0.0 : 1.0;
+                raster.diffuse_zeroed = zero_alpha_lane;
+                raster.environment[0] = 0.0;
+                raster.environment[1] = 0.0;
+                raster.environment[2] = 0.0;
+                if (needs_view) {
+                    // The effect evaluates vdotn per vertex from the stored
+                    // normal; the reference evaluates it once per triangle from
+                    // the geometric normal and the direction to the eye, the
+                    // same flat model its shade factor uses.
+                    double vdotn = 0.01;
+                    if (has_normal) {
+                        Vec3 view = sub(camera.eye, world[0]);
+                        if (normalize(view)) {
+                            vdotn = std::max(0.01, dot(view, normal));
+                        }
+                    }
+                    const double alpha_scale =
+                        coefficients.alpha_min + vdotn * coefficients.alpha_range;
+                    raster.alpha_scale = alpha_scale;
+                    if (environment) {
+                        double envvdotn = 1.0;
+                        for (std::uint32_t e = 0; e < coefficients.environment_power; ++e) {
+                            envvdotn *= vdotn;
+                        }
+                        for (int k = 0; k < 3; ++k) {
+                            raster.environment[k] =
+                                4.0 * alpha_scale *
+                                static_cast<double>(coefficients.environment_color[k]) *
+                                (coefficients.environment_min[k] +
+                                 envvdotn * coefficients.environment_range[k]);
+                        }
                     }
                 }
-                const double alpha_scale =
-                    coefficients.alpha_min + vdotn * coefficients.alpha_range;
-                raster.alpha_scale = alpha_scale;
-                if (environment) {
-                    double envvdotn = 1.0;
-                    for (std::uint32_t e = 0; e < coefficients.environment_power; ++e) {
-                        envvdotn *= vdotn;
-                    }
-                    for (int k = 0; k < 3; ++k) {
-                        raster.environment[k] =
-                            4.0 * alpha_scale *
-                            static_cast<double>(coefficients.environment_color[k]) *
-                            (coefficients.environment_min[k] +
-                             envvdotn * coefficients.environment_range[k]);
-                    }
+                if (!rasterizer.draw_triangle(clip, raster, id, error)) {
+                    return false;
                 }
-            }
-            if (!rasterizer.draw_triangle(clip, raster, id, error)) {
-                return false;
             }
         }
+    }
+
+    // Drawn copies, counted from the marks the loop above set rather than
+    // from the scene, so a backend that skipped a copy reports fewer of
+    // them instead of describing a frame it did not draw. A copy of a mesh
+    // whose every material group is undrawable submits nothing and is not
+    // counted; the `meshes` line above still reports the mesh.
+    for (std::size_t i = 0; i < copy_drawn.size(); ++i) {
+        if (copy_drawn[i] == 0) {
+            continue;
+        }
+        ++stats.instances;
+        // A mesh drawn in its own authored space claims no placement, so a
+        // profile with no instances has no stand-in copy.
+        ++(!instanced || scene.instances[i].placement_exact
+               ? stats.instances_exact
+               : stats.instances_stand_in);
     }
 
     bool first_pixel = true;

@@ -51,8 +51,13 @@
   `PreparedCarScene` from the stock part set, the per-LOD meshes and the
   placement, with one instance per drawn copy. The wheel and the brake are
   opt-in and marked inexact because their drawn matrices are not
-  reproduced, and no backend applies instance transforms yet: the CPU
-  renderer refuses the profile instead of drawing it unplaced.
+  reproduced.
+- The CPU reference renderer draws that profile:
+  `nfsu_viewer --stock-car NAME` places every copy with its instance
+  transform, one copy per instance inside the retail draw order of the
+  material groups, and reports drawn copies apart from meshes and
+  stand-in placements apart from exact ones
+  ([`RENDERER.md`](RENDERER.md), "Instances").
 - The body-skin pixel compositor is recovered for both target types, with a
   bounded CPU reference (`include/nfsu/body_skin.h`,
   [`BODY_SKIN.md`](BODY_SKIN.md)). The RED/GREEN/BLUE/GLOSS lane mapping is
