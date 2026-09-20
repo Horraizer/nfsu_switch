@@ -477,7 +477,7 @@ skip the reader and prove nothing about a malformed file.
 | a record count the hash, info or format tables disagree on | a pack issue; `tables_parsed` stays false | **no** | `unresolved`: no record was ever listed |
 | a chain that starts outside the `0x33320002` payload, or a payload shorter than the chain a record declares | a pack issue at info +48; the record is invalid | yes | `unusable` |
 | a chain offset that is not a multiple of 128 | a pack issue at info +48; the record is invalid | yes | `unusable` |
-| a declared size that disagrees with the dimensions and mip count | a pack issue at info +56; the record is invalid | yes | `unusable` |
+| a declared top level (info +64) or total size (info +56) that disagrees with the dimensions and mip count | a pack issue at info +56; the record is invalid | yes | `unusable` |
 | a zero width or height | a pack issue at info +68; the record is invalid | yes | `unusable` |
 | one hash on two records of a pack, or of two packs of one file | a pack or set issue; **both records stay valid and both are kept** | yes | `unusable` |
 | no `0xB3300000` root anywhere in the file | a set issue | yes: it claims nothing | whatever a later source has |

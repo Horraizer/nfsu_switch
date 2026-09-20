@@ -2588,7 +2588,7 @@ void test_track_malformed_texture_pack() {
     };
 
     std::vector<Case> cases;
-    for (int variant = 0; variant < 5; ++variant) {
+    for (int variant = 0; variant < 6; ++variant) {
         PackSpec spec;
         spec.textures = {pack_texture(0xAAAA0001U, 0x11),
                          pack_texture(0xAAAA0002U, 0x22),
@@ -2603,16 +2603,21 @@ void test_track_malformed_texture_pack() {
             item.message = "info +64 is 16 and +56 is 20";
             break;
         case 1:
+            item.what = "a declared top level that does not match the dimensions";
+            spec.textures[1].top_level_size = 12;  // 2x2 A8R8G8B8 needs 16
+            item.message = "info +64 is 12 and +56 is 16";
+            break;
+        case 2:
             item.what = "a zero dimension";
             spec.textures[1].height = 0;
             item.message = "dimensions 2x0 are outside";
             break;
-        case 2:
+        case 3:
             item.what = "a chain that starts past the payload";
             spec.textures[1].virtual_offset = 0x40000U;
             item.message = "is outside the texture data range";
             break;
-        case 3:
+        case 4:
             item.what = "a chain that is not 128-byte aligned";
             spec.textures[1].virtual_offset = 4U;
             item.message = "is not a multiple of 128";
