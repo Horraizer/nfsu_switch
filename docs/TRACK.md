@@ -421,8 +421,13 @@ The sources a region resolves against are given explicitly, after the region
 selector, and **their command-line order is their priority**. No file is
 searched for and no directory is scanned. The decoder never compares two
 records' contents: when two sources carry one hash, the earlier source wins,
-and the later record is dropped whole and listed in
-`RenderTextureSet::shadowed`.
+and the later record supplies no pixels at all - not even for its other
+hashes - and is listed in `RenderTextureSet::shadowed`. It is not quite
+dropped: any hash it claims that no earlier source claims becomes an entry
+of `RenderTextureSet::unusable_claims`, which still blocks that hash in
+every later source. A raw record claims one hash when it is sound, because
+the reader refuses a raw record whose info +36 and hash-table word
+disagree; a refused one claims both, because both are read first.
 
 The rules are `decode_render_texture_sources`, stated in full in
 [`RENDERER.md`](RENDERER.md) under "Texture sources and precedence". Three
@@ -439,11 +444,20 @@ wrong:
   `--shared-textures` file a usage error; `track-region` reads it again as
   the next source, where the first copy shadows every record of the second.
   That is a wasted read, not a wrong answer.
-- A texture-source problem does not change the exit code. `track-region`
-  exits on the region report alone: `0` when the region parsed cleanly and
-  `3` when it did not. Source issues, shadowed records and blocked sources
-  are printed and nothing more, so a caller must read the output rather than
-  the status. The car viewer exits 3 for a source issue.
+- A texture-source *issue* does not change the exit code. `track-region`
+  chooses between `0` and `3` on the region report alone, so source issues,
+  shadowed records, blocked sources and records the reader refused are
+  printed and nothing more: the run below exits 0 with 220 issues on
+  standard error. The car viewer exits 3 for the same thing. A caller must
+  therefore read the output rather than the status.
+  A texture *failure* is different and does change it. `run_track_region`
+  returns 2 when `decode_render_texture_sources` fails and 2 again when
+  `prepare_track_region` fails, and both are reachable from the textures
+  alone: the 128 MiB `RenderTextureLimits::max_total_bytes` budget over all
+  sources, `TrackSceneLimits::max_texture_bytes` over the region's retained
+  copies, and an allocation failure in either. So the exit code is 0 or 3
+  on the region, 2 on a texture failure, and blind to every texture issue
+  short of one.
 
 What a `TrackDraw` ends up with:
 
@@ -466,11 +480,20 @@ that could have supplied it.
 
 ### Which malformations a source survives
 
-One row below makes a source incomplete, which stops every source behind it
-from being read at all. The rest leave the source complete and cost exactly
-the records they name. `tests/track_tests.cpp` builds each case as bytes and
-parses it with the real reader, because a hand-built `TexturePack` would
-skip the reader and prove nothing about a malformed file.
+Of the rows below, one makes a source incomplete, which stops every source
+behind it from being read at all. The rest leave the source complete and
+cost exactly the records they name. `tests/track_tests.cpp` builds each case
+as bytes and parses it with the real reader, because a hand-built
+`TexturePack` would skip the reader and prove nothing about a malformed
+file.
+
+The table is the tested boundary, not the whole of it. A source is also
+incomplete for any walk problem, for the `max_set_textures` overflow, and
+for any root whose parse returns before the record tables are read at all -
+a missing or repeated `0x33310002`, `0x33310004` or `0x33310005`, a pack
+header that is not 124 bytes, or a `0x33320002` whose alignment prefix is
+not all `0x11`. Each of those blocks the sources behind it exactly as the
+record-count row does.
 
 | In a source file | Reported as | Complete | The draw gets |
 | --- | --- | --- | --- |
@@ -501,22 +524,29 @@ command-line order decides which copy four draws use. Running each source
 alone says so twice over. Every row is
 `track-region Tracks/STREAML1RX.BUN 9728 784032` with the sources named:
 
-| Sources, in order | decoded | shadowed | skipped | resolved / unresolved |
+| Sources, in order | decoded | shadowed | skipped | resolved / unusable / unresolved |
 | --- | ---: | ---: | ---: | ---: |
-| `STREAML1RX_1099.BUN` | 7 | 0 | 63 | 108 / 6 |
-| `STREAML1RA.BUN` | 6 | 0 | 1630 | 11 / 103 |
-| `STREAML1RX_1099.BUN`, `STREAML1RA.BUN` | 9 | 54 | 1643 | 112 / 2 |
-| `STREAML1RA.BUN`, `STREAML1RX_1099.BUN` | 9 | 52 | 1645 | 112 / 2 |
-| `STREAML1RX_1099.BUN` twice | 7 | 70 | 63 | 108 / 6 |
+| `STREAML1RX_1099.BUN` | 7 | 0 | 63 | 108 / 0 / 6 |
+| `STREAML1RA.BUN` | 6 | 0 | 1630 | 11 / 0 / 103 |
+| `STREAML1RX_1099.BUN`, `STREAML1RA.BUN` | 9 | 54 | 1643 | 112 / 0 / 2 |
+| `STREAML1RA.BUN`, `STREAML1RX_1099.BUN` | 9 | 52 | 1645 | 112 / 0 / 2 |
+| `STREAML1RX_1099.BUN` twice | 7 | 70 | 63 | 108 / 0 / 6 |
+
+Every row also reports `unusable 0`, which the columns above leave out and
+which the step below needs. It says no hash of this region is claimed twice
+inside either file, so for these two files a wanted record and a wanted
+hash are the same thing - an assumption worth stating, because the very
+next paragraph is about a file that does repeat hashes inside itself.
 
 `decoded` counts wanted records that were kept, and the first source is
 never shadowed, so across rows 1 and 3 the second file contributes
 `9 - 7 = 2` of the 6 it contributes alone: four of its wanted records were
-shadowed. `skipped` confirms it from the other side, because a shadowed
-record is not also counted as skipped: `63 + 1630 - 1643 = 50` of the 54
-shadowed records would otherwise have been skipped as unwanted, leaving 4
-that were wanted. Row 4 gives the same 4 the other way round
-(`9 - 6 = 3` of `_1099`'s 7, and `63 + 1630 - 1645 = 48` of 52).
+shadowed, and by the paragraph above that is four hashes. `skipped`
+confirms it from the other side, because a shadowed record is not also
+counted as skipped: `63 + 1630 - 1643 = 50` of the 54 shadowed records
+would otherwise have been skipped as unwanted, leaving 4 that were wanted.
+Row 4 gives the same 4 the other way round (`9 - 6 = 3` of `_1099`'s 7, and
+`63 + 1630 - 1645 = 48` of 52).
 
 Both orders resolve 112 draws and decode 186368 bytes, so the collision
 decides which file four textures come from, not how many there are. Whether

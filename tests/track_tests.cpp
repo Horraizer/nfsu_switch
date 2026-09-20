@@ -2203,6 +2203,11 @@ constexpr std::uint32_t kAuto = 0xFFFFFFFFU;
 
 struct PackTexture {
     std::uint32_t hash = 0;
+    // The hash table word. kAuto writes hash, which is what a sound record
+    // holds. A raw record whose two disagree is refused (src/texture.cpp
+    // check in parse_texture), but both fields are read before that check,
+    // so the refused record still claims two hashes.
+    std::uint32_t table_hash = kAuto;
     std::uint16_t width = 2;
     std::uint16_t height = 2;
     unsigned char fill = 0;
@@ -2252,7 +2257,9 @@ void write_raw_texture_pack(Writer& w, const PackSpec& spec) {
                                    : spec.textures.size();
     Bytes hash_table;
     for (std::size_t i = 0; i < listed; ++i) {
-        append_u32(hash_table, spec.textures[i].hash);
+        const PackTexture& texture = spec.textures[i];
+        append_u32(hash_table, texture.table_hash == kAuto ? texture.hash
+                                                           : texture.table_hash);
         append_u32(hash_table, 0);
     }
     w.leaf(nfsu::kTextureHashTableId, hash_table);
@@ -2457,8 +2464,17 @@ void test_track_texture_source_collision() {
                   std::to_string(drawn_fill(prepared, 1)));
         check(drawn_fill(prepared, 0) == 0x11 && drawn_fill(prepared, 3) == 0x44,
               "the uncontested draws carry their own source's pixels");
-        check(prepared.textures.size() == 3,
-              "the shadowed record's pixels are not copied into the region");
+        check(set.textures.size() == 3 && prepared.textures.size() == 3,
+              "the shadowed record is not decoded and not copied");
+        for (const nfsu::RenderTexture& texture : set.textures) {
+            check(!(texture.source == 1 && texture.hash == 0xAAAA0002U),
+                  "no decoded texture is the shadowed record");
+        }
+        // A8: texture_pack and texture_record are not always 0 here, so a
+        // decoder that never wrote them would fail this.
+        check(prepared.draws.size() == 4 && prepared.draws[3].texture_pack == 0 &&
+                  prepared.draws[3].texture_record == 1,
+              "a resolved draw carries the record position inside its pack");
     }
     {
         // The same two files in the other order. Only the order changed, so
@@ -2470,14 +2486,16 @@ void test_track_texture_source_collision() {
             report, {b.source(&wanted), a.source(&wanted)}, set, prepared, error);
         check(ok, "the reversed region prepares: " + error);
         check(set.shadowed.size() == 1 && set.shadowed[0].hash == 0xAAAA0002U &&
-                  set.shadowed[0].source == 1 && set.shadowed[0].by_source == 0,
+                  set.shadowed[0].source == 1 && set.shadowed[0].pack == 0 &&
+                  set.shadowed[0].record == 1 && set.shadowed[0].by_source == 0,
               "reversing the order shadows the other record");
         check(prepared.cost.resolved_draws == 4,
               "every draw still resolves after the reversal");
         check(drawn_fill(prepared, 1) == 0x33 && drawn_fill(prepared, 2) == 0x33,
               "caller order decides the contested pixels, got " +
                   std::to_string(drawn_fill(prepared, 1)));
-        check(prepared.draws[1].texture_source == 0 &&
+        check(prepared.draws.size() == 4 &&
+                  prepared.draws[1].texture_source == 0 &&
                   prepared.draws[0].texture_source == 1,
               "provenance follows the reversed order");
     }
@@ -2506,16 +2524,19 @@ void test_track_texture_source_collision() {
         check(prepared.cost.unusable_draws == 2 &&
                   prepared.cost.resolved_draws == 2,
               "both draws that name the ambiguous hash are unusable");
-        check(prepared.draws[1].binding == nfsu::BindingKind::unusable &&
+        check(prepared.draws.size() == 4 &&
+                  prepared.draws[1].binding == nfsu::BindingKind::unusable &&
                   prepared.draws[1].texture == nfsu::kNoHandle &&
-                  prepared.draws[1].texture_source == 0 &&
-                  prepared.draws[1].texture_record == 0 &&
                   prepared.draws[1].drawable,
-              "an unusable draw names no texture and carries no provenance");
+              "an unusable draw is drawable and names no texture");
         check(prepared.unresolved_hashes.empty(),
               "an ambiguous hash is not an unresolved hash");
         check(drawn_fill(prepared, 1) == -1 && drawn_fill(prepared, 0) == 0x11,
               "the ambiguity is contained to the hash it belongs to");
+        check(prepared.draws.size() == 4 && prepared.draws[3].texture_pack == 1 &&
+                  prepared.draws[3].texture_record == 1 &&
+                  drawn_fill(prepared, 3) == 0x44,
+              "a draw resolved from the second pack of a source says so");
     }
     {
         // A later source cannot repair an ambiguity an earlier source
@@ -2531,8 +2552,213 @@ void test_track_texture_source_collision() {
             report, {both.source(&wanted), repair.source(&wanted)}, set, prepared,
             error);
         check(ok, "the repair-attempt region prepares: " + error);
+        check(set.blocked_sources.empty() && set.shadowed.size() == 2 &&
+                  set.shadowed[0].source == 1 && set.shadowed[1].source == 1,
+              "source 1 was read and both its records were shadowed");
         check(prepared.cost.unusable_draws == 2,
               "a later source does not resolve an earlier ambiguity");
+    }
+    {
+        // The wanted filter. A track source is filtered by the region's
+        // hashes, the first one included, which is the difference from the
+        // car viewer that docs/TRACK.md states first. A record claiming a
+        // hash the region does not name is never decoded, and it still
+        // claims that hash against later sources.
+        PackSpec extra;
+        extra.textures = {pack_texture(0xAAAA0001U, 0x11),
+                          pack_texture(0xAAAA0002U, 0x22),
+                          pack_texture(0xAAAA0003U, 0x44),
+                          pack_texture(0x0BADF00DU, 0x55)};
+        TextureFile file;
+        file.build({extra});
+        check(file.set.complete && file.set.packs[0].valid_texture_count() == 4,
+              "the wanted-filter fixture parses with four valid records");
+
+        nfsu::RenderTextureSet set;
+        nfsu::PreparedTrackRegion prepared;
+        std::string error;
+        const bool ok = decode_and_prepare(report, {file.source(&wanted)}, set,
+                                           prepared, error);
+        check(ok, "the wanted-filter region prepares: " + error);
+        check(set.not_wanted == 1 && set.textures.size() == 3,
+              "the unwanted record is not decoded, got not_wanted " +
+                  std::to_string(set.not_wanted) + " textures " +
+                  std::to_string(set.textures.size()));
+        check(set.decoded_bytes == 3U * 2U * 2U * 4U,
+              "only the wanted records cost any bytes");
+        for (const nfsu::RenderTexture& texture : set.textures) {
+            check(texture.hash != 0x0BADF00DU,
+                  "the unwanted hash is not in the set");
+        }
+
+        // With no wanted list the same file decodes all four, so the
+        // difference above is the filter and not the fixture.
+        nfsu::RenderTextureSource unfiltered = file.source(nullptr);
+        nfsu::RenderTextureSet all;
+        check(nfsu::decode_render_texture_sources(
+                  {unfiltered}, nfsu::RenderTextureLimits{}, all, error) &&
+                  all.textures.size() == 4 && all.not_wanted == 0,
+              "without a wanted list every record is decoded");
+    }
+    {
+        // An unwanted claim still shadows a later source. The record is
+        // never decoded, and the hash it holds is still taken.
+        PackSpec early;
+        early.textures = {pack_texture(0x0BADF00DU, 0x55)};
+        PackSpec late;
+        late.textures = {pack_texture(0x0BADF00DU, 0x66),
+                         pack_texture(0xAAAA0001U, 0x11)};
+        TextureFile first_file;
+        first_file.build({early});
+        TextureFile second_file;
+        second_file.build({late});
+        nfsu::RenderTextureSet set;
+        nfsu::PreparedTrackRegion prepared;
+        std::string error;
+        const bool ok = decode_and_prepare(
+            report, {first_file.source(&wanted), second_file.source(&wanted)}, set,
+            prepared, error);
+        check(ok, "the unwanted-claim region prepares: " + error);
+        check(set.not_wanted == 1 && set.textures.size() == 1 &&
+                  set.shadowed.size() == 1 && set.shadowed[0].source == 1 &&
+                  set.shadowed[0].hash == 0x0BADF00DU,
+              "a record the filter skipped still claims its hash");
+    }
+    {
+        // A raw record whose info +36 and hash-table word disagree is
+        // refused, but both fields are read first, so it claims two hashes.
+        // Shadowed on one of them, its other claim becomes an unusable
+        // claim: the third cause of an unusable binding that
+        // docs/TRACK.md lists, and the only one a single pack cannot
+        // otherwise produce.
+        PackSpec owner;
+        owner.textures = {pack_texture(0xAAAA0001U, 0x11)};
+        PackSpec liar;
+        liar.textures = {pack_texture(0xAAAA0002U, 0x22)};
+        liar.textures[0].table_hash = 0xAAAA0001U;
+        PackSpec rescuer;
+        rescuer.textures = {pack_texture(0xAAAA0002U, 0x33),
+                            pack_texture(0xAAAA0001U, 0x77)};
+
+        TextureFile a_file;
+        a_file.build({owner});
+        TextureFile b_file;
+        b_file.build({liar});
+        TextureFile c_file;
+        c_file.build({rescuer});
+        check(!b_file.set.packs.empty() &&
+                  b_file.set.packs[0].valid_texture_count() == 0 &&
+                  b_file.set.packs[0].textures.size() == 1 &&
+                  b_file.set.packs[0].textures[0].hash == 0xAAAA0002U &&
+                  b_file.set.packs[0].textures[0].table_hash == 0xAAAA0001U,
+              "the mismatched record is refused and still names both hashes");
+
+        nfsu::RenderTextureSet set;
+        nfsu::PreparedTrackRegion prepared;
+        std::string error;
+        const bool ok = decode_and_prepare(
+            report,
+            {a_file.source(&wanted), b_file.source(&wanted), c_file.source(&wanted)},
+            set, prepared, error);
+        check(ok, "the unusable-claim region prepares: " + error);
+        check(set.unusable_claims.size() == 1 &&
+                  set.unusable_claims[0].hash == 0xAAAA0002U &&
+                  set.unusable_claims[0].source == 1 &&
+                  set.unusable_claims[0].pack == 0 &&
+                  set.unusable_claims[0].record == 0,
+              "the second claim of a shadowed record is recorded, got " +
+                  std::to_string(set.unusable_claims.size()) + " claims");
+        check(prepared.cost.unusable_draws == 2 &&
+                  prepared.cost.resolved_draws == 1,
+              "the claim makes its hash unusable in the source behind it");
+        check(prepared.draws.size() == 4 &&
+                  prepared.draws[1].texture == nfsu::kNoHandle &&
+                  drawn_fill(prepared, 1) == -1,
+              "source 2's pixels are not substituted for the claimed hash");
+        check(prepared.unresolved_hashes.size() == 1 &&
+                  prepared.unresolved_hashes[0] == 0xAAAA0003U,
+              "only the hash nothing claims is unresolved");
+        // 0xAAAA0001 is claimed by source 0 and again by source 1, then
+        // repeated by source 2. by_source must name the earliest claimant.
+        check(set.shadowed.size() == 3 && set.shadowed[0].source == 1 &&
+                  set.shadowed[0].hash == 0xAAAA0001U &&
+                  set.shadowed[0].by_source == 0 &&
+                  set.shadowed[1].source == 2 &&
+                  set.shadowed[1].hash == 0xAAAA0002U &&
+                  set.shadowed[1].by_source == 1 &&
+                  set.shadowed[2].source == 2 &&
+                  set.shadowed[2].hash == 0xAAAA0001U &&
+                  set.shadowed[2].by_source == 0,
+              "by_source names the earliest source that claimed the hash");
+        check(set.textures.size() == 1 && set.textures[0].source == 0 &&
+                  drawn_fill(prepared, 0) == 0x11,
+              "only the earliest claimant supplies pixels");
+    }
+    {
+        // A record that could not be decoded still competes. One pack with
+        // a sound record and a malformed one on the same hash is ambiguous:
+        // the sound copy is not taken. This is the "matches" half of the
+        // resolve rule; the duplicate-hash case above only exercises the
+        // "usable" half, because there both copies are sound.
+        PackSpec mixed;
+        mixed.textures = {pack_texture(0xAAAA0001U, 0x11),
+                          pack_texture(0xAAAA0002U, 0x22),
+                          pack_texture(0xAAAA0002U, 0x33),
+                          pack_texture(0xAAAA0003U, 0x44)};
+        mixed.textures[2].data_size = 20;  // 2x2 A8R8G8B8 needs 16
+        TextureFile file;
+        file.build({mixed});
+        check(file.set.packs[0].valid_texture_count() == 3 &&
+                  file.set.packs[0].issues.size() == 2,
+              "one record is refused and the repeated hash is reported");
+
+        nfsu::RenderTextureSet set;
+        nfsu::PreparedTrackRegion prepared;
+        std::string error;
+        const bool ok = decode_and_prepare(report, {file.source(&wanted)}, set,
+                                           prepared, error);
+        check(ok, "the mixed-validity region prepares: " + error);
+        check(set.textures.size() == 4,
+              "the refused record is kept in the set and still claims");
+        check(prepared.cost.unusable_draws == 2 &&
+                  prepared.cost.resolved_draws == 2,
+              "a sound copy is not taken when a refused copy claims the hash");
+        check(drawn_fill(prepared, 1) == -1,
+              "the surviving copy's pixels are not used");
+    }
+    {
+        // An invalid record of an earlier source shadows a valid record of
+        // a later one, which is the paragraph docs/TRACK.md gives its own
+        // line. Source 0's only record is malformed; source 1 has a sound
+        // record for the same hash and never gets to supply it.
+        PackSpec broken_first;
+        broken_first.textures = {pack_texture(0xAAAA0002U, 0x22)};
+        broken_first.textures[0].virtual_offset = 0x40000U;
+        TextureFile early_file;
+        early_file.build({broken_first});
+        check(early_file.set.complete &&
+                  early_file.set.packs[0].valid_texture_count() == 0 &&
+                  early_file.set.packs[0].textures.size() == 1,
+              "a source of one refused record is still complete");
+
+        nfsu::RenderTextureSet set;
+        nfsu::PreparedTrackRegion prepared;
+        std::string error;
+        const bool ok = decode_and_prepare(
+            report, {early_file.source(&wanted), b.source(&wanted)}, set, prepared,
+            error);
+        check(ok, "the invalid-shadow region prepares: " + error);
+        check(set.blocked_sources.empty() && set.shadowed.size() == 1 &&
+                  set.shadowed[0].hash == 0xAAAA0002U &&
+                  set.shadowed[0].source == 1 && set.shadowed[0].by_source == 0,
+              "the sound later record is shadowed by the refused earlier one");
+        check(prepared.cost.unusable_draws == 2 &&
+                  drawn_fill(prepared, 1) == -1,
+              "no silent fallback to the lower-priority source");
+        check(prepared.draws.size() == 4 && prepared.draws[3].binding ==
+                                                nfsu::BindingKind::resolved &&
+                  drawn_fill(prepared, 3) == 0x44,
+              "the later source still supplies the hash nothing contested");
     }
     {
         // A source whose record tables could not be read is incomplete, so
@@ -2658,7 +2884,8 @@ void test_track_malformed_texture_pack() {
         check(ok, item.what + ": the region still prepares: " + error);
         // The refused record still claims its hash, so the hash is unusable
         // rather than unresolved: nothing is silently substituted for it.
-        check(prepared.draws[item.bad_draw].binding ==
+        check(prepared.draws.size() == 4 &&
+                  prepared.draws[item.bad_draw].binding ==
                       nfsu::BindingKind::unusable &&
                   prepared.draws[item.bad_draw].texture == nfsu::kNoHandle &&
                   prepared.draws[item.bad_draw].drawable,
