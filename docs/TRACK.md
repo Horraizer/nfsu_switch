@@ -12,9 +12,11 @@ This note covers exactly two things:
 2. one explicitly bounded region of one `Tracks/STREAM*.BUN` file, decoded
    end to end into a draw list with cost statistics.
 
-It deliberately stops there. Visibility groups, collision and the
-streaming tables that decide which region is resident are not decoded, and
-nothing here should be read as a claim about a complete track. The object
+It deliberately stops there. Collision and the streaming tables that
+decide which region is resident are not decoded, and nothing here should
+be read as a claim about a complete track. Visibility groups are decoded
+in [`TRACK_VISIBILITY.md`](TRACK_VISIBILITY.md), from the executable
+rather than from this container. The object
 directory, the instance transforms and the bounding tree that place this
 geometry in the world are decoded in
 [`TRACK_OBJECTS.md`](TRACK_OBJECTS.md), from the `0x80034100` chunk that
@@ -797,4 +799,5 @@ decoded partially. Two examples from the same installation:
   in [`TRACK_OBJECTS.md`](TRACK_OBJECTS.md).
 - Everything about streaming: which regions are resident together and what
   the `_NNNN` section numbers select. Nothing in this note decodes a
-  visibility group or collision.
+  visibility group or collision;
+  [`TRACK_VISIBILITY.md`](TRACK_VISIBILITY.md) decodes the first.

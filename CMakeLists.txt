@@ -68,6 +68,25 @@ add_library(nfsu_track
 target_link_libraries(nfsu_track PUBLIC nfsu_core nfsu_scene)
 nfsu_enable_warnings(nfsu_track)
 
+# Which scenery instances a camera can see: the recovered frustum test, the
+# bounding-tree traversal it drives and the explicit fallbacks. It is its
+# own target so that floating-point contraction can be disabled here without
+# changing how the parsers beside it are compiled: every decision this
+# library makes is a strict comparison of a plane distance against zero, so
+# a fused multiply-add would move a boundary case and the visible set with
+# it. See docs/TRACK_VISIBILITY.md.
+add_library(nfsu_track_visibility
+    src/track_visibility.cpp
+)
+
+target_link_libraries(nfsu_track_visibility PUBLIC nfsu_track)
+nfsu_enable_warnings(nfsu_track_visibility)
+if(MSVC)
+    target_compile_options(nfsu_track_visibility PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_track_visibility PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+
 # The stock-car profile of PreparedCarScene: the recovered stock part set,
 # its per-LOD mesh hashes and the recovered placement, turned into one
 # prepared draw list with an instance per drawn copy. It reads no files, so
@@ -148,8 +167,8 @@ add_executable(nfsu_probe
 )
 
 target_link_libraries(nfsu_probe
-    PRIVATE nfsu_core nfsu_track nfsu_texture_decode nfsu_skin_inputs
-            nfsu_stock_scene)
+    PRIVATE nfsu_core nfsu_track nfsu_track_visibility nfsu_texture_decode
+            nfsu_skin_inputs nfsu_stock_scene)
 nfsu_enable_warnings(nfsu_probe)
 
 # Backend-neutral interactive inspection state: the camera the pointer
@@ -281,6 +300,14 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_track_object_tests)
     add_test(NAME nfsu_track_object_tests COMMAND nfsu_track_object_tests)
 
+    add_executable(nfsu_track_visibility_tests
+        tests/track_visibility_tests.cpp
+    )
+
+    target_link_libraries(nfsu_track_visibility_tests PRIVATE nfsu_track_visibility)
+    nfsu_enable_warnings(nfsu_track_visibility_tests)
+    add_test(NAME nfsu_track_visibility_tests COMMAND nfsu_track_visibility_tests)
+
     add_executable(nfsu_part_placement_tests
         tests/part_placement_tests.cpp
     )
@@ -392,6 +419,7 @@ if(NFSU_BUILD_TESTS)
         nfsu_chunk_tests nfsu_geometry_tests nfsu_texture_tests
         nfsu_render_tests nfsu_scene_tests nfsu_car_parts_tests
         nfsu_track_tests nfsu_track_object_tests
+        nfsu_track_visibility_tests
         nfsu_part_placement_tests nfsu_body_skin_tests
         nfsu_stock_scene_tests
         nfsu_skin_inputs_tests nfsu_runtime_skin_tests nfsu_inspect_tests
