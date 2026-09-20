@@ -1497,7 +1497,5 @@ test("a file that grows while it is being sent is truncated to its declared leng
       );
     },
     { webRoot, logger },
-  );
-
-  await rm(webRoot, { recursive: true, force: true });
+  ).finally(() => rm(webRoot, { recursive: true, force: true }));
 });
