@@ -39,6 +39,8 @@ build/nfsu_probe track-region X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 17826
 build/nfsu_probe stock-scene X:/Games/NFSU/Global/GLOBALB.BUN 240SX A X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games/NFSU/Cars/BRAKES/GEOMETRY.BIN X:/Games/NFSU/Cars/PLATES/GEOMETRY.BIN --place-wheels
 build/nfsu_probe track-objects X:/Games/NFSU/Tracks/STREAML1RB.BUN 23011344 4168 23015540 178268
 build/nfsu_probe track-visibility X:/Games/NFSU/Tracks/STREAML1RB.BUN 23011344 4168 450 20 -80 900 20 -80 --far 60
+build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc
+build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc 783 -8.5
 build/nfsu_probe car-placement X:/Games/NFSU/Global/GLOBALB.BUN 240SX
 build/nfsu_probe part-markers X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN exhaust
 build/nfsu_probe body-skin-inputs 240SX --source car-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN --source car-vinyls X:/Games/NFSU/Cars/240SX/VINYLS.BIN --source other X:/Games/NFSU/Cars/TEXTURES.BIN --target-texture DUMMY_SKIN1 --vinyl 0 TRIBAL5 16 no-remap --doorline plain --base 200 30 30 128 --assemble
@@ -131,10 +133,26 @@ the explicit fallback for a caller that would rather draw the whole region
 than trust a visibility rule: it consults nothing at all, not the frustum
 and not the two gates whose retail inputs were never recovered, so
 `--mask` and `--screen-scale` cannot drop anything under it. The report
-names the policy each section was culled with. The zone layer that decides which sections are drawn is
-recovered as a rule, but the record layout inside its `0x80034150` chunk is
-not decoded here, so `--residency` defaults to every section in the region.
-See `docs/TRACK_VISIBILITY.md`.
+names the policy each section was culled with. The zone layer that decides
+which sections are drawn is recovered as a rule, but the record layout
+inside its `0x80034150` chunk is not decoded here, so `--residency`
+defaults to every section in the region. See `docs/TRACK_VISIBILITY.md`.
+`track-collision` decodes the static collision of one track. Collision is
+not in the `STREAM*.BUN` containers at all: those hold geometry, scenery,
+textures and animation and nothing else. It lives in
+`Tracks/TRACKB<NNNN>.lzc`, a JDLZ-compressed image whose five chunks are a
+polygon array, an index list, the leaf cells that slice that list, the
+quadtree over those cells and a bounding box. The command decompresses the
+file, parses the image, prints the counts and both bounding boxes, and
+refuses a malformed tree, an index that names no polygon, a cell whose
+polygons do not lie in it and a leaf the quadtree places somewhere other
+than the cell's own stored centre, each with an absolute offset into the
+decompressed image. It exits 3 if anything is refused. Given a column as
+`px pz` it also runs the three bounded queries against the decoded
+structure: the leaf cells that column touches, the polygons in a 16 by 16
+box around it, and a ray straight down. See `docs/TRACK_COLLISION.md` for
+the byte evidence, the retail code every record size comes from, the
+coordinate units and what is still unknown.
 `stock-parts` applies the game's stock-part rules to one car type and
 prints the chosen record per slot with each LOD mesh hash resolved against
 the `GEOMETRY.BIN` files given after the car type, including the mesh the

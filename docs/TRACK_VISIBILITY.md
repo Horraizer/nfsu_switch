@@ -686,9 +686,27 @@ whether their number yields a letter at all; and direct calls to
 `track_check_tree_containment` so that its own guard is not masked by
 `prepare_tree` refusing the same node a moment later.
 
-The suite went from 199 checks to 370. **All 81 mutations - 18, 36 and 27
-- are caught, with no survivor in any pass.** The 27 are the interesting
-number: they were found by someone who had not read the first two lists.
+**Pass four, 1 mutation, from that reviewer's close-out.** It removed only
+the three lines that write the normalized axis back into the options,
+leaving the `normalize3` call and the degenerate-axis issue in place. The
+suite stayed green at 370 checks while the retail numbers regressed to
+exactly the defect the previous round had fixed: 37, 28 and 28 for the
+same ray at three target distances. The regression test for that fix could
+not fail on the property it named, because the axis is read in exactly one
+place - the behind-the-camera reject - and every instance in the fixture
+was in front of the eye, so the dot product was positive whatever the
+axis's length. The screen-size eye now sits past the first instance of the
+row, which leaves one instance behind it, and removing those three lines
+now fails the suite.
+
+That one is worth more than its count. It was not a gap in coverage of the
+rule; it was a gap in the coverage of a fix, and the test guarding it read
+as though it closed the hole. Eleven assertions of that family were found
+in one round, one more in the next and this is the thirteenth.
+
+The suite went from 199 checks to 373. **All 82 mutations - 18, 36, 27 and
+1 - are caught, with no survivor in any pass.** The 28 written by someone
+who had not read the first two lists are the interesting number.
 
 
 ### The retail differential

@@ -159,7 +159,11 @@ bool track_frustum_look_at(const TrackCamera& camera, TrackFrustum& frustum) noe
 //   scale is the render context's value at +0xC0.
 //
 // With d = |position - eye| - radius, the result is
-// trunc(d <= radius ? (scale / d) * radius : scale). The association is the
+// trunc(d <= radius ? scale : (scale / d) * radius). Retail takes the
+// scale when d is at or below the radius and the division otherwise
+// (0x00445E92 `fcomp` / `test ah, 0x41` / `jne 0x445eab`, which jumps
+// straight to the truncation with the scale on the stack). The association
+// of the other arm is the retail one too,
 // retail one, 0x00445E9E fld / 0x00445EA4 fdiv / 0x00445EA8 fmul, and not
 // scale * radius / d: this library disables floating-point contraction
 // precisely because association order moves a boundary, so the two are not

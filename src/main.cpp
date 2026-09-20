@@ -7,6 +7,7 @@
 #include "nfsu/texture.h"
 #include "nfsu/texture_decode.h"
 #include "nfsu/track.h"
+#include "nfsu/track_collision.h"
 #include "nfsu/track_objects.h"
 #include "nfsu/track_scene.h"
 #include "nfsu/track_visibility.h"
@@ -1135,6 +1136,139 @@ int run_track_region(
 // same way. The two need not be the same bytes, because a section commonly
 // names meshes that stream in with another one.
 // ---------------------------------------------------------------------------
+// track-collision: polygons printed before the listing is summarized.
+constexpr std::size_t kCollisionPolygonListLimit = 16;
+
+void print_collision_polygon(
+    const nfsu::TrackCollisionPolygon& polygon,
+    const char* prefix) {
+    std::cout << prefix << std::setw(6) << std::setfill(' ') << polygon.index
+              << " at " << polygon.offset << " corners";
+    for (std::size_t c = 0; c < nfsu::kCollisionPolygonCorners; ++c) {
+        std::cout << " (" << polygon.corner[c][0] << ", " << polygon.corner[c][1]
+                  << ", " << polygon.corner[c][2] << ")";
+    }
+    std::cout << "\n";
+}
+
+int run_track_collision(
+    const fs::path& path,
+    bool has_probe,
+    double probe_slot0,
+    double probe_slot1) {
+    std::vector<unsigned char> image;
+    const nfsu::TrackCollisionReport report =
+        nfsu::load_track_collision(path, image);
+
+    std::cout << "file: " << path.string() << '\n';
+    std::cout << "file size: " << report.file_size << " image bytes "
+              << image.size() << " unused packed bytes "
+              << report.cost.unused_packed_bytes << '\n';
+
+    const nfsu::TrackCollisionCost& cost = report.cost;
+    std::cout << "collision: " << (report.valid ? "valid" : "refused")
+              << " chunks " << cost.chunks << " polygons " << cost.polygons
+              << " cells " << cost.cells << " indices " << cost.indices
+              << " nodes " << cost.tree_nodes << '\n';
+    std::cout << "cost: source polygon bytes " << cost.source_polygon_bytes
+              << " cell bytes " << cost.source_cell_bytes << " index bytes "
+              << cost.source_index_bytes << " node bytes "
+              << cost.source_tree_bytes << '\n';
+    std::cout << "cost: cell polygon pairs " << cost.cell_polygon_pairs
+              << " unreferenced polygons " << cost.unreferenced_polygons
+              << " saturated vertical " << cost.saturated_vertical_polygons
+              << " degenerate corners " << cost.degenerate_corner_polygons
+              << '\n';
+    if (cost.has_bounds) {
+        std::cout << "stored bounds: px " << cost.stored_min[0] << " .. "
+                  << cost.stored_max[0] << " pz " << cost.stored_min[1] << " .. "
+                  << cost.stored_max[1] << " py " << cost.stored_min[2] << " .. "
+                  << cost.stored_max[2] << '\n';
+        std::cout << "corner bounds: px " << cost.corner_min[0] << " .. "
+                  << cost.corner_max[0] << " pz " << cost.corner_min[1] << " .. "
+                  << cost.corner_max[1] << " py " << cost.corner_min[2] << " .. "
+                  << cost.corner_max[2] << '\n';
+    }
+
+    for (const nfsu::TrackIssue& issue : report.issues) {
+        std::cerr << "collision issue at " << issue.offset << ": "
+                  << issue.message << '\n';
+    }
+    if (!report.valid) {
+        return 3;
+    }
+
+    std::size_t listed = 0;
+    for (const nfsu::TrackCollisionPolygon& polygon : report.polygons) {
+        if (listed >= kCollisionPolygonListLimit) {
+            std::cout << "  ... " << (report.polygons.size() - listed)
+                      << " more polygons not listed\n";
+            break;
+        }
+        ++listed;
+        print_collision_polygon(polygon, "  ");
+    }
+
+    if (!has_probe) {
+        std::cout << "probe: no column given; no query was run\n";
+        return 0;
+    }
+
+    const float slot0 = static_cast<float>(probe_slot0);
+    const float slot1 = static_cast<float>(probe_slot1);
+    std::cout << "probe column: px " << slot0 << " pz " << slot1 << '\n';
+
+    std::vector<std::size_t> cells;
+    if (nfsu::query_track_collision_cells(report, slot0, slot1, slot0, slot1,
+                                          cells)) {
+        std::cout << "probe cells: " << cells.size() << '\n';
+        for (std::size_t cell : cells) {
+            std::cout << "  cell " << cell << " at ("
+                      << report.cells[cell].center[0] << ", "
+                      << report.cells[cell].center[1] << ") polygons "
+                      << report.cells[cell].index_count << '\n';
+        }
+    } else {
+        std::cout << "probe cells: the query was refused\n";
+    }
+
+    const float box_min[3] = {slot0 - 8.0F, slot1 - 8.0F, -1000.0F};
+    const float box_max[3] = {slot0 + 8.0F, slot1 + 8.0F, 1000.0F};
+    std::vector<std::size_t> found;
+    if (nfsu::query_track_collision_box(report, box_min, box_max, found)) {
+        std::cout << "probe box: 16 by 16 column, polygons " << found.size()
+                  << '\n';
+        listed = 0;
+        for (std::size_t index : found) {
+            if (listed >= kCollisionPolygonListLimit) {
+                std::cout << "  ... " << (found.size() - listed)
+                          << " more polygons not listed\n";
+                break;
+            }
+            ++listed;
+            print_collision_polygon(report.polygons[index], "  ");
+        }
+    } else {
+        std::cout << "probe box: the query was refused\n";
+    }
+
+    // Straight down the column, from above every retail track and past the
+    // bottom of every one of them.
+    const float origin[3] = {slot0, slot1, 1000.0F};
+    const float direction[3] = {0.0F, 0.0F, -1.0F};
+    nfsu::TrackCollisionHit hit;
+    if (nfsu::query_track_collision_ray(report, origin, direction, 2000.0F,
+                                        hit)) {
+        std::cout << "probe ray: polygon " << hit.polygon << " triangle "
+                  << hit.triangle << " distance " << hit.distance << " point ("
+                  << hit.point[0] << ", " << hit.point[1] << ", " << hit.point[2]
+                  << ")\n";
+    } else {
+        std::cout << "probe ray: nothing under the column\n";
+    }
+    return 0;
+}
+
 int run_track_objects(
     const fs::path& path,
     std::uint64_t offset,
@@ -2386,6 +2520,33 @@ const Command kCommands[] = {
              }
          }
          return run_track_visibility(fs::path(argv[2]), offset, size, args);
+     }},
+    {"track-collision", " <TRACKB####.lzc> [px pz]", "",
+     [](int argc, char** argv) {
+         if (argc != 3 && argc != 5) {
+             print_usage();
+             return 1;
+         }
+         double slot0 = 0.0;
+         double slot1 = 0.0;
+         if (argc == 5) {
+             try {
+                 std::size_t used0 = 0;
+                 std::size_t used1 = 0;
+                 const std::string first(argv[3]);
+                 const std::string second(argv[4]);
+                 slot0 = std::stod(first, &used0);
+                 slot1 = std::stod(second, &used1);
+                 if (used0 != first.size() || used1 != second.size()) {
+                     std::cerr << "error: px and pz must be numbers\n";
+                     return 1;
+                 }
+             } catch (const std::exception&) {
+                 std::cerr << "error: px and pz must be numbers\n";
+                 return 1;
+             }
+         }
+         return run_track_collision(fs::path(argv[2]), argc == 5, slot0, slot1);
      }},
     {"car-placement", " <GLOBALB.BUN> [car-type]", "",
      [](int argc, char** argv) {

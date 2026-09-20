@@ -1092,6 +1092,21 @@ void test_containment_entry_count_guard() {
                   std::string::npos,
           "and the check names it rather than clamping and walking on");
 
+    // The guard has two halves and a count of nine only exercises one. A
+    // node that declares no entry bounds nothing, and dropping the zero
+    // half would leave the loop running over no entry and reporting the
+    // node as contained.
+    nfsu::TrackObjectReport empty = parse_row_region();
+    empty.sections[0].nodes[1].entry_count = 0;
+    std::vector<nfsu::TrackIssue> empty_issues;
+    check_eq_u64(
+        nfsu::track_check_tree_containment(empty.sections[0], &empty_issues),
+        1, "an entry count of zero is one containment failure too");
+    check(empty_issues.size() == 1 &&
+              empty_issues[0].message.find("entry count 0 is outside 1 to 5") !=
+                  std::string::npos,
+          "and the check names the zero half as well");
+
     // The unmodified section raises nothing, so the assertion above is
     // about the count and not about the fixture.
     const nfsu::TrackObjectReport sound = parse_row_region();
@@ -1416,12 +1431,25 @@ void test_screen_forward_length_is_ignored() {
     const nfsu::TrackFrustum frustum =
         frustum_or_fail(axis_camera(1000.0F), "forward length");
 
+    // The axis appears in track_screen_size_level in exactly one place:
+    // the behind-the-camera reject, which compares dot(position - eye,
+    // forward) against -radius. For an instance in front of the eye that
+    // dot product is positive and its magnitude never matters, so a
+    // fixture where every instance is ahead cannot see the normalization
+    // at all. The screen-size eye is therefore put past the first instance
+    // of the row - it is a separate option from the camera, so the frustum
+    // is unchanged - which leaves instance 0 five units behind it, inside
+    // the radius of 9 and kept at unit length, and outside it as soon as
+    // the axis is longer than one.
     std::vector<std::size_t> first;
     const float lengths[3] = {1.0F, 450.0F, 45000.0F};
     for (std::size_t i = 0; i < 3; ++i) {
         nfsu::TrackCullOptions options;
         options.use_screen_size = true;
         options.screen_scale = 100.0F;
+        options.screen_eye[0] = 105.0F;
+        options.screen_eye[1] = 0.0F;
+        options.screen_eye[2] = 0.0F;
         options.screen_forward[0] = lengths[i];
         options.screen_forward[1] = 0.0F;
         options.screen_forward[2] = 0.0F;
@@ -1430,9 +1458,17 @@ void test_screen_forward_length_is_ignored() {
         check(report.ok(), "a non-unit forward axis is not an error");
         if (i == 0) {
             first = visible_indices(report);
-            check(!first.empty(),
-                  "the size gate must select something, or this compares two "
-                  "empty sets");
+            // Instance 0 is the one behind the eye, and it is the whole
+            // point of this case: without it every dot product is positive
+            // and the three runs agree for a reason that has nothing to do
+            // with normalization.
+            check(std::find(first.begin(), first.end(),
+                            static_cast<std::size_t>(0)) != first.end(),
+                  "the instance behind the screen-size eye is kept at unit "
+                  "length");
+            check(first.size() > 1,
+                  "and others ahead of it are kept too, so this is not a "
+                  "one-element comparison");
         } else {
             check(visible_indices(report) == first,
                   "the visible set does not depend on the forward axis's "

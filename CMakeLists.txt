@@ -58,9 +58,13 @@ nfsu_enable_warnings(nfsu_scene)
 # geometry, and the prepared draw list with its cost statistics. The
 # parsers (src/track.cpp and src/track_objects.cpp) use only nfsu_core; the
 # prepared region (src/track_scene.cpp) also uses the backend-neutral
-# scene layer for material binding.
+# scene layer for material binding. src/track_collision.cpp is the
+# static collision of one track, which is a separate container in a
+# separate file and shares nothing with the render path but the chunk
+# grammar and the coordinate frame.
 add_library(nfsu_track
     src/track.cpp
+    src/track_collision.cpp
     src/track_objects.cpp
     src/track_scene.cpp
 )
@@ -291,6 +295,14 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_track_tests PRIVATE nfsu_track nfsu_texture_decode)
     nfsu_enable_warnings(nfsu_track_tests)
     add_test(NAME nfsu_track_tests COMMAND nfsu_track_tests)
+
+    add_executable(nfsu_track_collision_tests
+        tests/track_collision_tests.cpp
+    )
+
+    target_link_libraries(nfsu_track_collision_tests PRIVATE nfsu_track)
+    nfsu_enable_warnings(nfsu_track_collision_tests)
+    add_test(NAME nfsu_track_collision_tests COMMAND nfsu_track_collision_tests)
 
     add_executable(nfsu_track_object_tests
         tests/track_object_tests.cpp
