@@ -185,9 +185,12 @@ blend formula:
    `RideInfo+0x444`; when that override is zero the render path falls back to
    the formatted `%s_SKIN1` hash.
 
-Exact palette recoloring, mask arithmetic, alpha rules, per-pixel blend
-equations and mip generation for the final skin are still unknown. The
-project must not claim a faithful body compositor until those are recovered.
+Issue #23 recovered the per-pixel work that consumes these inputs: the two
+composite routines, the weighted lane sum they share, the mask arithmetic,
+the REMAP application, the target markers and the palette the indexed path
+builds, and the channel each byte lane carries. See
+[`BODY_SKIN.md`](BODY_SKIN.md). What remains open there is the colour
+quantizer the indexed path falls back to, and any pixel-format name.
 
 ### Executable composition path
 
@@ -203,27 +206,41 @@ at 0x004C4230 writes `bin_hash("DUMMY_SKIN1") = 0x530B82B0` to +0x444.
 The compositor reads that target hash, finds the writable texture and exits
 without work if either the hash or texture is absent.
 
-The same function requires the installed `BASE_PAINT` part. It reads `RED`,
-`GREEN`, `BLUE` and `GLOSS` attributes and packs them as 0xGGBBGGRR, which is
+The same function requires a part in the `BASE_PAINT` slot (slot 30 of the
+table at 0x6f0970; the records that fill it belong to the `GLOSS`, `METAL`
+and `PEARL` families, and no record is named `BASE_PAINT`). It reads the
+`RED`, `GREEN`, `BLUE` and `GLOSS` attributes and packs them as
+`(GLOSS<<24) | (BLUE<<16) | (GREEN<<8) | RED`, which is
 `RED, GREEN, BLUE, GLOSS` in little-endian memory. `PAINT_ENGINE`,
 `PAINT_SPOILER`, `PAINT_BRAKE` and `PAINT_EXHAUST` provide four optional
 special colors and fall back to the base color. `PAINT_RIM` is handled by a
 separate wheel compositor at 0x005AA800.
 
-The body function builds a compact list in this order, omitting absent or
-unresolved entries:
+The body function walks eight source indexes in this order and appends a
+record for each one that resolves, so the list is compact:
 
-1. Optional hood/spoiler vinyl.
-2. `VINYL_LAYER0`.
-3. `VINYL_LAYER1`.
-4. `VINYL_LAYER2`.
-5. `VINYL_LAYER3`.
-6. Doorline.
+1. Index 0: optional hood/spoiler vinyl.
+2. Index 1: `VINYL_LAYER0`.
+3. Index 2: `VINYL_LAYER1`.
+4. Index 3: `VINYL_LAYER2`.
+5. Index 4: `VINYL_LAYER3`.
+6. Index 5: doorline.
+7. Indexes 6 and 7: nothing.
+
+0x005A9ED3 clears all 0x1A0 bytes first, and the five failure paths jump
+past the record cursor and the counter at 0x005AA1D4, so unfilled records
+stay zeroed and the count is the number that resolved
+([`BODY_SKIN.md`](BODY_SKIN.md)).
 
 Helper 0x005A9B50 reads each installed vinyl part's `TEXTURE` attribute and
-hashes `<car-name>_<TEXTURE-value>`. `NUMCOLOURS` is mandatory. A non-zero
-`REMAP` enables up to four `VINYL_COLOUR<n>_<slot>` values. Missing slots use
-the byte-lane sentinels 0x000000FF, 0x0000FF00, 0x00FF0000 and 0xFF000000.
+hashes `<car-name>_<TEXTURE-value>`. `NUMCOLOURS` is mandatory and is the source
+palette's entry count: 16 on 494 retail records and 64 on 40, matching the
+two vinyl format codes. A non-zero `REMAP` enables the colour remap, whose
+colours come from the parts in slots `VINYL_COLOUR<layer>_0` through `_3`
+(slots 42..57 of the table at 0x6f0970, read at 0x005AA126). Only the first
+three are ever used. A missing slot `j` contributes `0xFF << (8 * j)`
+(0x005AA1A7), that is 0x000000FF, 0x0000FF00, 0x00FF0000 and 0xFF000000,
+which makes the remap an exact identity on the three colour channels.
 The doorline helper at 0x005A96B0 selects `_DOORLINE_WIDEBODY`,
 `_DOORLINE_KIT` or `_DOORLINE` from the installed wide-body and body-kit
 parts.
@@ -237,9 +254,8 @@ The lookup at 0x005461C0 walks a global texture-bucket list and moves a hit
 to the front. Car `TEXTURES.BIN` is requested before `VINYLS.BIN`, but lookup
 priority becomes stateful/MRU after hits; it is not a permanent two-file
 priority rule. The executable evidence establishes target selection, inputs,
-layer order and paired-mask lookup. It does not yet establish the exact
-per-pixel blend equations or palette-channel meaning, so no compositor is
-implemented from guesses.
+layer order and paired-mask lookup. The per-pixel work that follows is in
+[`BODY_SKIN.md`](BODY_SKIN.md).
 
 ## Track geometry lead
 
@@ -458,8 +474,8 @@ contain at any LOD, so a stock car there has no spoiler at all.
   +0x6A4.
 - Where each part is placed: markers, the four wheel instances, exhaust
   and plate positions, and the damage states the draw code reads.
-- The exact per-pixel blend equations, palette-channel interpretation and
-  mip-generation rules used when composing `DUMMY_SKIN1`.
+- The colour quantizer the indexed composite path falls back to, and any
+  pixel-format name for either path ([`BODY_SKIN.md`](BODY_SKIN.md)).
 - Transparent draw ordering, technique selection, the untraced material-flag
   bits, and whether any decal class needs behavior beyond its generic effect
   object. Texture alpha state and the proven environment coefficient gates
