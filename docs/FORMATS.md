@@ -50,7 +50,7 @@ omitted):
       0x00134B02  material records
       0x00134B03  face (index) buffer
     0x00134017, 0x00134018, 0x00134019  unknown, in 115 meshes
-    0x0013401A  unknown, in 60 meshes
+    0x0013401A  attachment markers, in 60 meshes
 0x80034020  second top-level container (0x00039200, 0x00039201, 0x00039202)
 ```
 
@@ -221,7 +221,8 @@ Orientation in the sample, using the named source fields:
 - All other fields of 0x00134011 (146 bytes before the name besides +25/+26) and
   of the 64-byte 0x00134900 record apart from the three counts.
 - 0x00134B02 bytes +33..+51 and the exact meanings of the flags at +56.
-- 0x00134017, 0x00134018, 0x00134019, 0x0013401A.
+- 0x00134017, 0x00134018 and 0x00134019. 0x0013401A is decoded; see
+  "Attachment markers" below.
 - 0x00134011 `+16` may be a hash of the mesh name.
 - The meanings of 0x00134002 and 0x80134008 in the header container, and
   the second top-level container 0x80034020.
@@ -839,6 +840,48 @@ matches texture 18 at 5744.
 - Unknown: whether every car and every material follows this. Only this car
   was checked.
 
+## Attachment markers (GEOMETRY.BIN chunk 0x0013401A)
+
+Optional, at most one per mesh. In the 37 car files that are
+retail-original, 2092 meshes carry one, holding 4216 records in total, and
+every chunk holds at least one record. Counting `Cars/LANCER` and
+`Cars/PEUGOT`, which carry an `NFS-CarToolkit` header instead of the retail
+source path, the totals are 2860 chunks and 4461 records, and the 647 empty
+chunks are all theirs. Those are the records in the files; a parser that
+skips invalid meshes reports one chunk and two records fewer, because
+`Cars/CIVIC` mesh 286 fails a later check. `docs/PART_PLACEMENT.md` has the
+detail. The loader is `speed.exe` 0x5400e3, which stores the
+aligned table at solid +0x80 and the record count in the byte at solid
++0x1B.
+
+Records start at the first absolute file offset in the payload that is a
+multiple of 16, after 0x11 filler, exactly as the other aligned records do.
+The count is `(payload_size - filler) / 80`, computed at 0x540104 by a
+reciprocal multiply whose divisor is exactly 80. It is stored with
+`mov byte [ebx+0x1b], dl` and read back with `movsx`, so only counts up to
+127 behave as written; the most any retail chunk holds is 18.
+
+| Offset | Type | Meaning |
+| --- | --- | --- |
+| +0x00 | u32 | `bin_hash` of the marker name |
+| +0x04 | u32[3] | zero in all 4216 retail-original records; uninitialised in the two rewritten files |
+| +0x10 | f32[16] | row-major 4x4 matrix; row 3 is the translation |
+
+The translation is in the same raw slot order as a vertex (longitudinal,
+lateral, vertical). The exhaust and licence-plate draw paths use the matrix
+as `quarter_turn * matrix`; the quarter turn and the full list of 24
+recovered marker names are in
+[`PART_PLACEMENT.md`](PART_PLACEMENT.md), which also records which parts a
+marker places and which are drawn at the car's own matrix instead.
+
+Parser rules (`nfsu::parse_geometry`): at most one chunk per mesh, 0x11
+filler up to the 16-byte boundary, the remaining payload a whole number of
+80-byte records, at most 127 records because the game truncates the count to
+a byte and every reader sign-extends it again, and every matrix element
+finite. The three reserved words are kept raw
+and never checked. A mesh that fails any of these is skipped with a
+diagnostic, like any other geometry failure.
+
 ## Car part database (GLOBAL/GLOBALB.BUN)
 
 Reference samples: `GLOBAL/GLOBALB.BUN` as above, and `speed.exe`, 3178496
@@ -944,3 +987,81 @@ GLOBALB.BUN has one, and the parser accepts exactly one.
   search requires.
 - Any problem makes the database invalid (`CarPartDatabase::valid`), and
   `find_car_part` and `select_stock_parts` then refuse it.
+
+## Car type table (GLOBAL/GLOBALB.BUN)
+
+Reference samples as in "Car part database" above. `nfsu_probe
+car-placement GLOBALB.BUN [CAR]` prints the whole table. The evidence, the
+placement the game derives from it, and every remaining unknown are in
+[`PART_PLACEMENT.md`](PART_PLACEMENT.md); only the layout is repeated here.
+
+### Observed
+
+One top-level 0x00034600 chunk at 1678848 with a 112568-byte payload. The
+loader (0x57c8b0) aligns the payload up to 16 bytes and then walks a
+hard-coded 35 records of 0xC90 bytes:
+
+| Item | Offset | Size |
+| --- | ---: | ---: |
+| chunk header | 1678848 | 8 |
+| 0x11 alignment filler | 1678856 | 8 |
+| 35 x 0xC90 records | 1678864 | 112560 |
+
+The records end exactly at the payload end. The filler is the same 0x11
+byte the geometry chunks use, and the alignment is relative to the start of
+the file, as it is there.
+
+Fields decoded in a record:
+
+| Offset | Type | Meaning |
+| --- | --- | --- |
+| +0x000 | char[0x20] | car name, NUL-terminated |
+| +0x020 | char[0x20] | lookup name; equal to +0x000 in all 35 records |
+| +0x040 | char[0x20] | geometry path, e.g. `CARS\240SX\GEOMETRY.BIN` |
+| +0x060 | char[0x20] | the same path with the `.LZC` extension |
+| +0x0C0 | char[0x20] | brand name, e.g. `NISSAN` |
+| +0x110 | byte[0x2B0] | setup sub-object; 0x575960 copies it per car instance |
+| +0x120 | 4 x 0x30 | the four wheel records, below |
+| +0xC54 | u32 | class: 0 for the 20 racers, 2 for the 15 traffic vehicles |
+
+One 0x30-byte wheel record:
+
+| Offset | Type | Meaning |
+| --- | --- | --- |
+| +0x00 | f32 | longitudinal, positive forward |
+| +0x04 | f32 | lateral, positive toward the car's left |
+| +0x08 | f32 | vertical, positive up |
+| +0x0C | u32 | zero in all 140 retail records |
+| +0x10 | f32 | wheel radius |
+| +0x14 | f32 | equal within an axle; meaning unknown |
+| +0x18 | u32 | the record's own index, 0..3 |
+| +0x1C | f32 | mirrors the sign of +0x04; meaning unknown |
+| +0x20 | f32 | mirrors the sign of +0x04; meaning unknown |
+| +0x24 | u32[3] | zero in all 140 retail records |
+
+Index 0 is the front left wheel, 1 the front right, 2 the rear right and 3
+the rear left. The frame is the same right-handed frame the geometry file
+uses in raw slot order (px, pz, py). Both claims are proven in
+[`PART_PLACEMENT.md`](PART_PLACEMENT.md), not assumed.
+
+### Parser rules (`nfsu::parse_car_type_table`)
+
+- The image must be at most `CarTypeLimits::max_file_size`, 256 MiB by
+  default. Both entry points apply it: `load_car_type_table` before it reads
+  the file, and `parse_car_type_table` before it parses an image the caller
+  already has.
+- The whole file is read once. Top-level chunks must tile the file exactly;
+  exactly one of them is 0x00034600.
+- The record array starts at the first 16-byte boundary at or after the
+  payload, and every byte before it in the payload must be 0x11.
+- The payload must hold all 35 records after the filler. The game would
+  read past the chunk instead, because its record count is hard-coded.
+- Each of the five string fields must be NUL-terminated inside its 0x20
+  bytes, non-empty and printable ASCII, and the two name fields must be
+  equal.
+- Each wheel record's stored index must equal its position, its four
+  reserved words must be zero, and all seven of its float fields must be
+  finite: +0x00, +0x04, +0x08, +0x10, +0x14, +0x1C and +0x20, each of which
+  has a traced reader.
+- Any problem makes the table invalid (`CarTypeTable::valid`), and
+  `find_car_type` then refuses it.
