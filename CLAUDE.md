@@ -215,7 +215,12 @@ affect. Report each command and its result verbatim in the handoff.
 
 A change that touches nothing in a row does not have to run that row. A gate
 that cannot run is a blocker, not a note. Configuring a build directory, or
-exporting a token the gate itself needs, is part of running the gate.
+exporting a token the gate itself needs, is part of running the gate. A second
+configuration - a Release build beside the default one - goes in a sibling
+directory whose name starts with `build`. `.gitignore` covers those at the
+repository root, along with `out` and `cmake-build-*`; a name outside that set
+is not ignored, and `git add -A` then stages the whole build tree, binaries
+included.
 
 Three environment requirements are part of the gates, not excuses:
 
