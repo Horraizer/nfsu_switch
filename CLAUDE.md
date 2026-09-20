@@ -54,14 +54,17 @@ agent: <model, and the session or subagent label>
 
 - Work only on the assigned Gitea issue and its explicit dependencies.
 - Use subagents when the assignment requests them, and say in the handoff what
-  each one found.
+  each one found. One that mutates or measures a tree needs its own worktree;
+  see Shared checkout.
 - Keep retail game files strictly read-only.
 - Follow the ASCII-only artifact rule below.
 - A worker does not merge pull requests.
 
 ## Shared checkout
 
-Several sessions share one repository, and more than one is routinely live.
+Several sessions share one repository, and more than one is routinely live. A
+subagent is a second writer whose writes its dispatcher does not see until they
+have already landed, so these rules bind it too.
 
 - Resolve remote-tracking refs, not local branches, for any work that is not
   your own. A fetch updates `origin/<branch>` and leaves the local branch where
@@ -89,19 +92,56 @@ Several sessions share one repository, and more than one is routinely live.
   it, and to no seat by default. Any other session, in any seat, takes its own
   copy with `git worktree add --detach <temp path> <sha>`, works there, and
   removes it when finished. A detached worktree still completes the worker
-  handoff: commit there and push with an explicit refspec,
-  `git push origin HEAD:<branch>`. Do not check the branch out to get a push
-  target - two worktrees cannot hold the same branch, so that is the one thing
-  the detached copy exists to avoid.
+  handoff: commit there and push with a fully qualified refspec,
+  `git push origin HEAD:refs/heads/<branch>`. The short `HEAD:<branch>` form
+  fails from a detached HEAD the first time, because git will not guess a
+  namespace for a branch the remote does not have yet. Do not check the branch
+  out to get a push target - two worktrees cannot hold the same branch, so that
+  is the one thing the detached copy exists to avoid.
+- A subagent asked to mutate, build, measure or revert works only in a detached
+  worktree of its own, which the dispatcher creates, names in the assignment
+  with the SHA to work from, and removes once the subagent has reported. The
+  dispatcher does not write to that worktree, and does not move any head a
+  subagent is measuring: the pinned SHA is what leaves the dispatcher free to
+  keep working, and a subagent pointed at a branch has to be told before the
+  branch moves.
+  Both directions have already cost work. On issue #38 an adversarial subagent
+  aimed at the worker's own tree ran `git checkout --` during a mutation pass,
+  reverted two uncommitted files, overwrote a scratchpad script, and produced
+  no report. On issue #39 it ran the other way: the worker amended one commit
+  three times inside eight minutes - `8d8643a`, `ad0d944`, `7b7634f` - while
+  its subagent measured the branch, and the report had to be reconciled against
+  a head that had moved under it. A dispatcher can stop its own subagent -
+  `TaskStop` ends a backgrounded one by name or id - but not one another
+  session dispatched, and no stop recalls a write that has already landed.
+- A finished subagent looks exactly like a working one, in both directions.
+  Apply the liveness test under Coordinator duties to the subagent's own
+  output, never to a directory above it, whose mtime moves with your own
+  activity. This branch's own adversarial pass showed an empty output file and
+  untouched artifacts across two samples, then delivered a full report four
+  minutes later. An idle sample is not a finished subagent: the report is the
+  only signal that it is done, and it arrives on its own. A pass that reported
+  nothing is recorded as not performed: an unread transcript is not assurance.
 - Never `git checkout` in the main working tree unless your own branch is the
   one already checked out there.
 - Re-read a shared file immediately before writing it if the write is not part
   of your branch. Another session may have changed it since you last looked.
 - Clean up only the files you created, by exact name. Never glob-delete in a
-  shared scratch directory.
-- A stale local branch, a stale worktree and a stale process are three separate
-  hazards. Prove identity before acting on any of them: a pid can be reused, so
-  check the start time too.
+  shared scratch directory. A worktree you did not create is not yours to
+  remove either, even when it looks abandoned: leave it, and name it in the
+  handoff. `git worktree list` marks a dead entry `prunable` without touching
+  it. `git worktree prune` is forbidden outright - its usage line takes no path
+  argument, so it cannot be aimed at your own worktree, and it drops any
+  unlocked registered worktree whose directory git cannot see at that moment,
+  with no expiry delay. Reproduced in a throwaway repository: renaming a
+  worktree's directory away made `git worktree prune` deregister it on the
+  spot, and with the directory put back, `git status` inside it failed with
+  `fatal: not a git repository: (NULL)`. Only `git worktree lock` stops it,
+  nothing here is locked, and the worktrees here sit on temp paths that come
+  and go.
+- A stale local branch and a stale process are two separate hazards. Prove
+  identity before acting on either: a pid can be reused, so check the start
+  time too.
 
 ## ASCII-only artifact rule
 
@@ -335,9 +375,10 @@ routine status.
 
 ## What these rules actually cover
 
-Four failures shaped this document; four equal-weight rules would imply it
-closed four. It has mechanically closed none of them, and earlier drafts of
-this section claimed otherwise twice.
+The failures named below are the ones these rules were written against; one
+equal-weight rule each would imply it closed them all. It has mechanically
+closed none of them, and earlier drafts of this section claimed otherwise
+twice.
 
 The scope diff came closest, but what survives is a two-part discipline that
 still depends on the operator fetching first and reading the right ref - not a
@@ -350,7 +391,10 @@ section above now allows. Re-review only codifies a loop the previous protocol
 already implied, and that loop had already caught the launcher fix that stopped
 an unowned process. Silent truncation has no rule of its own and leans on the
 same general reviewer duty that missed it the first time. The surviving mutant
-has no rule at all, and no gate here runs mutation testing.
+has no rule at all, and no gate here runs mutation testing. The subagent
+worktree rule is the least enforced of the set: git does not refuse a second
+writer in one tree, and nothing notices a head that moved under a measurement,
+so both incidents behind it were found only by reading the damage afterwards.
 
 Weigh these rules by what they mechanically prevent, and treat a rule that
 names a command as a claim to reproduce rather than a closure to trust.
