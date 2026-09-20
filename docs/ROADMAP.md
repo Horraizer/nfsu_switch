@@ -113,11 +113,13 @@
   the six-plane box test, the bounding-tree prune it drives and the
   per-instance gates (`include/nfsu/track_visibility.h`, `nfsu_probe
   track-visibility`, [`TRACK_VISIBILITY.md`](TRACK_VISIBILITY.md)). The
-  zone layer that picks which sections are drawn is recovered as a rule,
-  but the record layout inside its `0x80034150` chunk is not decoded yet,
-  so residency defaults to an explicit draw-every-section fallback. The
-  chunk itself is reachable: every `Tracks/*.lzc` carries one once
-  `nfsu::jdlz_decompress` has opened the container. Static collision is
+  zone layer that picks which sections are drawn is recovered as a rule
+  and its data is decoded: the four children of the `0x80034150` chunk
+  every `Tracks/*.lzc` carries, and the crossing test that picks one zone
+  from a camera position (`include/nfsu/track_zones.h`, `nfsu_probe
+  track-zones`, [`TRACK_ZONES.md`](TRACK_ZONES.md)). Residency still
+  defaults to the explicit draw-every-section fallback, because a caller
+  that has read no zone file has no zone to consult. Static collision is
   still to do.
 - Measure CPU, memory, and draw-call costs.
 
