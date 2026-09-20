@@ -376,6 +376,100 @@ void check_hit(
                            (want ? "inside" : "outside"));
 }
 
+std::uint32_t float_bits(float value) {
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+void test_float32_crossing_is_bit_exact() {
+    // Two things this project declares load-bearing and nothing tested.
+    //
+    // The crossing coordinate at 0x00567A3B to 0x00567A4F is
+    //   v[i].s0 + (p.s1 - v[i].s1) * (v[j].s0 - v[i].s0) / (v[j].s1 - v[i].s1)
+    // and both of these change it in float32 without changing it in real
+    // arithmetic:
+    //
+    //   * associating as (a - b) * ((c - d) / (e - f)) instead of
+    //     ((a - b) * (c - d)) / (e - f). This is the invariant
+    //     include/nfsu/track_visibility.h and include/nfsu/track_zones.h
+    //     both name in prose, and the one the -ffp-contract=off flag in
+    //     CMakeLists.txt exists to protect. An independent review measured
+    //     the two associations disagreeing on 20.8 per cent of sampled
+    //     edges and flipping containment for 571 of 51288 on-edge points of
+    //     real retail geometry;
+    //   * anchoring on v[j] instead of v[i], which is what taking the next
+    //     vertex rather than the previous one does. The same review
+    //     measured 1082 of those 51288 points flipping. Retail seeds the
+    //     predecessor with the last vertex (0x005679E3 `lea edx, [eax*8]`
+    //     with eax = count - 1), so v[i] is the anchor.
+    //
+    // Each fixture below is a trapezoid whose far side is a vertical edge
+    // at slot0 = 10000: two vertices sharing an slot0 make that crossing
+    // exactly 10000 under every variant, because the run is exactly zero.
+    // So the parity turns on the one sensitive edge, and the point sits one
+    // float32 ulp from the crossing that edge computes - inside the gap
+    // between the two spellings, and on the far side of it for the other.
+    //
+    // The literals are 9 significant digits, which is what round trips a
+    // float32, and the test asserts the bit patterns before using them so
+    // that a compiler which parsed them differently fails here and says so
+    // rather than failing an answer later.
+    const float assoc[4][2] = {{77.9329987F, 9.38199997F},
+                               {470.721008F, 36.3390007F},
+                               {10000.0F, 36.3390007F},
+                               {10000.0F, 9.38199997F}};
+    const float assoc_point[2] = {127.2118F, 12.7639999F};
+    check(float_bits(assoc[1][0]) == 0x43EB5C4AU &&
+              float_bits(assoc[1][1]) == 0x42115B23U,
+          "the association fixture's sensitive vertex round tripped");
+    check(float_bits(assoc_point[0]) == 0x42FE6C71U &&
+              float_bits(assoc_point[1]) == 0x414C3958U,
+          "the association fixture's point round tripped");
+    // Shipped: the sensitive edge crosses at 127.211823, which is above the
+    // point, so it toggles, the far edge toggles too, and the parity is
+    // even. The other association crosses at 127.211792, below the point,
+    // which leaves the parity odd and the answer inside.
+    check(!nfsu::point_in_track_zone_polygon(assoc_point, &assoc[0][0], 4),
+          "association order: the shipped spelling puts the point outside");
+
+    const float orient[4][2] = {{-450.014008F, -488.470001F},
+                                {435.5F, 468.86499F},
+                                {10000.0F, 468.86499F},
+                                {10000.0F, -488.470001F}};
+    const float orient_point[2] = {169.707535F, 181.514999F};
+    check(float_bits(orient_point[0]) == 0x4329B521U &&
+              float_bits(orient_point[1]) == 0x433583D7U,
+          "the orientation fixture's point round tripped");
+    // Shipped: anchored on v[i], the sensitive edge crosses below the point
+    // and does not toggle, so the far edge alone leaves the parity odd.
+    // Anchored on v[j] it crosses above the point and the parity is even.
+    check(nfsu::point_in_track_zone_polygon(orient_point, &orient[0][0], 4),
+          "edge orientation: the shipped anchor puts the point inside");
+
+    // Neither fixture may be measuring noise: away from the boundary every
+    // spelling has to agree, or the two assertions above would be pinning
+    // an accident of these coordinates rather than the rule.
+    const float far_left[2] = {-5000.0F, 12.7639999F};
+    const float inside_far[2] = {5000.0F, 12.7639999F};
+    const float far_right[2] = {20000.0F, 12.7639999F};
+    check(!nfsu::point_in_track_zone_polygon(far_left, &assoc[0][0], 4),
+          "association fixture: far to the left is outside");
+    check(nfsu::point_in_track_zone_polygon(inside_far, &assoc[0][0], 4),
+          "association fixture: well inside is inside");
+    check(!nfsu::point_in_track_zone_polygon(far_right, &assoc[0][0], 4),
+          "association fixture: past the far edge is outside");
+    const float o_left[2] = {-5000.0F, 181.514999F};
+    const float o_in[2] = {5000.0F, 181.514999F};
+    const float o_right[2] = {20000.0F, 181.514999F};
+    check(!nfsu::point_in_track_zone_polygon(o_left, &orient[0][0], 4),
+          "orientation fixture: far to the left is outside");
+    check(nfsu::point_in_track_zone_polygon(o_in, &orient[0][0], 4),
+          "orientation fixture: well inside is inside");
+    check(!nfsu::point_in_track_zone_polygon(o_right, &orient[0][0], 4),
+          "orientation fixture: past the far edge is outside");
+}
+
 void test_polygon_basic() {
     const std::vector<std::pair<float, float>> unit = {
         {0.0F, 0.0F}, {10.0F, 0.0F}, {10.0F, 10.0F}, {0.0F, 10.0F}};
@@ -591,6 +685,16 @@ void test_parse_valid() {
     check(report.section_lists[0].sections.size() == 128,
           "the track list keeps all 128 slots");
     check(report.section_lists[0].sections[0] == 704, "track list entry 0");
+    // Slot 0 sits at the array offset under any stride, so asserting it
+    // alone pins nothing about the stride. Slots 1 and 2 are what make the
+    // 2 in `kTrackZoneListSectionOffset + 2 * s` load-bearing: halving it
+    // reads slot 1 from offset 17, which straddles the two halfwords.
+    // 0x00444A42 `add edx, 2` and the `rep movsw` at 0x00444BCD both give
+    // a two-byte stride.
+    check(report.section_lists[0].sections[1] == 705, "track list entry 1");
+    check(report.section_lists[0].sections[2] == 706, "track list entry 2");
+    check(report.section_lists[0].sections[3] == 0,
+          "the track list slot past its count");
     check(report.section_lists[1].chunk_id == kExtraListChunk,
           "the 0x00034154 record is reported second");
     check(report.section_lists[1].sections.size() == 8,
@@ -1394,6 +1498,23 @@ void test_zone_residency() {
     check_list(residency.zone_sections, {100, 101, 110, 111},
                "the negative entry is dropped and the order is kept");
 
+    // The boundary itself. 0x004464B3 is `test eax, eax` / `jl`, which
+    // drops a strictly negative entry and keeps zero, so the rule has two
+    // sides and -7 exercises neither of them. -1 is the largest value the
+    // rule drops and 0 the smallest it keeps; without both, `<= 0` and
+    // `< -1` are as good as `< 0`. No retail zone list can reach either,
+    // because corpus entries run 100 to 2524, so this is the only thing
+    // that can hold the boundary in place.
+    ImageSpec edge = two_zone_spec();
+    edge.zones[0].sections = {-1, 0, 100};
+    const nfsu::TrackZoneReport edge_report = parse(build_image(edge));
+    check(edge_report.valid, "the boundary image must parse");
+    nfsu::TrackResidency at_edge;
+    check(nfsu::track_zone_residency(edge_report, 0, at_edge),
+          "the boundary zone fills a residency");
+    check_list(at_edge.zone_sections, {0, 100},
+               "residency: -1 is dropped and 0 is kept");
+
     check(!nfsu::track_zone_residency(report, 99, residency),
           "an index past the end is refused");
     check(!nfsu::track_zone_residency(report, report.zones.size(), residency),
@@ -1542,6 +1663,17 @@ void test_zone_draw_list() {
     check_list(nfsu::track_zone_draw_list(report, 0, with_wrapped),
                {2601, 2650, 2699, 100, 101, 110, 111},
                "a negative entry is skipped before residency, not by it");
+
+    // The draw list carries its own copy of the drop rule, so it needs its
+    // own pair at the boundary: -1 is the largest value dropped, 0 the
+    // smallest kept. 65535 is what -1 becomes if it is not dropped.
+    ImageSpec edge = two_zone_spec();
+    edge.zones[0].sections = {-1, 0, 100};
+    const nfsu::TrackZoneReport edge_report = parse(build_image(edge));
+    check(edge_report.valid, "the draw-list boundary image must parse");
+    check_list(nfsu::track_zone_draw_list(edge_report, 0, {0, 100, 65535}),
+               {0, 100},
+               "draw list: -1 is dropped and 0 is kept");
 }
 
 void test_zone_draw_list_band_edges_and_caps() {
@@ -1948,6 +2080,7 @@ void test_empty_zone_list_still_names_the_chunk() {
 int main() {
     test_constants();
     test_polygon_basic();
+    test_float32_crossing_is_bit_exact();
     test_polygon_boundaries();
     test_polygon_winding_and_shape();
     test_polygon_counts();
