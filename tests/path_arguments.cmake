@@ -207,19 +207,37 @@ endif()
 # the very defect it was proposed to close. Measured on that tree: the grep
 # returned nothing and rule B below names the line.
 #
-#   A  a path temporary built straight from argv, fs::path(argv[2]). No
-#      exclusion for a line that also uses the conversion, because two
-#      conversions on one line is a shape this file already has and one of
-#      them can be reverted alone.
+#   A  a path temporary built straight from argv, fs::path(argv[2]) or
+#      fs::path{argv[2]}. No exclusion for a line that also uses the
+#      conversion, because two conversions on one line is a shape this
+#      file already has and one of them can be reverted alone.
 #   B  a path declared or assigned from argv in one statement,
-#      "fs::path x(argv[3])" or "fs::path x = argv[3]", on a line that does
-#      not use the conversion. The exclusion is what keeps the three real
-#      declarations in src/viewer_main.cpp from reading as offences.
+#      "fs::path x(argv[3])", "fs::path x{argv[3]}" or "fs::path x =
+#      argv[3]", on a line that does not use the conversion. The exclusion
+#      is what keeps the three real declarations in src/viewer_main.cpp
+#      from reading as offences.
 #   C  emplace_back or push_back taking argv directly. Three sites read
 #      exactly that before this branch - the stock-parts, stock-scene and
 #      track-region lists - and a vector of paths builds its elements from
 #      the raw bytes without naming a path type anywhere on the line, so
 #      neither A nor B can see it.
+#
+# A brace counts wherever a parenthesis does in A and B, and that is the
+# second thing a review got past this gate: "const fs::path extra{argv[3]}"
+# was silent through all three rules while the suite stayed green over a
+# live 0xC0000409. It is the house style rather than an exotic spelling -
+# src/main.cpp has "std::array<const char*, 5> units{" at line 107 - so it
+# had to be one character class rather than a note. Widening a class is
+# also how the false positive below arrived, so the surface was measured
+# again afterwards rather than reasoned about: a corpus of 26 ordinary
+# lines from these two sources and 9 offending ones, run through the rules
+# as shipped, gives 9 caught and 26 silent.
+#
+# Three false positives went with it, all of them ordinary code a person
+# would write here. argv now has to be subscripted, so an identifier that
+# merely starts with those four letters - argv_count, argv_path - is not
+# an offence. String literals are stripped with the comments, so
+# std::cout << "fs::path(argv[2])" is not one either.
 #
 # What none of them catches, stated rather than left to be discovered:
 # argv[k] handed straight to a function whose parameter is a path, such as
@@ -227,7 +245,16 @@ endif()
 # earlier line. Both name no path type at the point argv appears, and no
 # predicate over one line of text can tell either from an ordinary call or
 # an ordinary assignment. What covers them is the position loop below, for
-# every position a template drives, and the counter for a site removed.
+# every position a template drives, and the counter for a site removed. A
+# review built both and confirmed that reading: the call fails on the
+# position loop at a driven position and is silent at an undriven one.
+#
+# And what rule C cannot do, because it is the price of what rule C is
+# for. It is blind to the element type by design, so it fires on a vector
+# of strings as readily as on a vector of paths. Narrowing it would give
+# back the three sites it exists to see. The message it prints says both
+# halves instead, so that an author storing strings is not told to convert
+# one to a path - which is what happened to the review that found this.
 function(nfsu_forbid_raw_paths path)
     file(READ "${path}" text)
     # Semicolons escaped before the split, or every one in the C++ would
@@ -235,40 +262,89 @@ function(nfsu_forbid_raw_paths path)
     string(REPLACE ";" "\\;" escaped "${text}")
     string(REGEX REPLACE "\r?\n" ";" lines "${escaped}")
     set(path_type "(fs|std::filesystem)::path")
+    # An opening brace counts wherever a parenthesis does. A review added
+    # "const fs::path extra{argv[3]};" to a command and every rule below
+    # was silent while the suite stayed green over a live 0xC0000409, and
+    # that is not an exotic spelling: src/main.cpp initialises with braces
+    # already, "std::array<const char*, 5> units{" at line 107 among
+    # others. An author writing it is writing the house style.
+    set(opener "[({]")
+    set(opener_or_assign "[({=]")
+    # argv has to be subscripted. Without this an identifier that merely
+    # starts with those four letters - argv_count, argv_path - reads as an
+    # offence, and a gate that reports ordinary code is a gate someone
+    # deletes. Every real spelling this catches indexes the vector.
+    set(indexed "argv[ \t]*\\[")
     set(offences "")
     set(number 0)
     foreach(line IN LISTS lines)
         math(EXPR number "${number}+1")
-        # A line comment can name any of these in prose. Block comments are
-        # not stripped, and there is none in either source.
+        # A line comment or a string literal can name any of these in
+        # prose, and one of them did: std::cout << "fs::path(argv[2])"
+        # read as an offence before the literal was stripped. Block
+        # comments are not stripped, and there is none in either source.
         string(REGEX REPLACE "//.*$" "" code "${line}")
+        string(REGEX REPLACE "\"[^\"]*\"" "" code "${code}")
+        # Each branch appends its own advice lines, one list element per
+        # printed line. Not one string built from several arguments: that
+        # makes a CMake list, and the join below turns its separators into
+        # newlines in the middle of a sentence. Measured, by printing one.
+        # For the same reason no advice here contains a semicolon.
         set(offence "")
-        if(code MATCHES "${path_type}[ \t]*\\([ \t]*argv")
+        set(advice "")
+        if(code MATCHES "${path_type}[ \t]*${opener}[ \t]*${indexed}")
             set(offence "builds a path straight from argv")
+            set(advice "use nfsu::argument_path(argv[k]) here")
         elseif(code MATCHES
-               "${path_type}[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*[(=][^\;]*argv"
+               "${path_type}[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*${opener_or_assign}[^\;]*${indexed}"
                AND NOT code MATCHES "nfsu::argument_path")
             set(offence "declares a path from argv")
-        elseif(code MATCHES "(emplace_back|push_back)[ \t]*\\([ \t]*argv")
-            set(offence "builds a vector element straight from argv")
+            set(advice "use nfsu::argument_path(argv[k]) here")
+        elseif(code MATCHES "(emplace_back|push_back)[ \t]*\\([ \t]*${indexed}")
+            # Deliberately blind to the element type, which is the whole
+            # reason this rule exists: three sites in src/main.cpp built a
+            # vector of paths from the raw bytes and named no path type on
+            # the line, so neither rule above could see them. The cost is
+            # that it cannot see a vector of strings either, and a review
+            # built one - names.push_back(argv[k]) with no path anywhere -
+            # and was told to convert a std::string to a path, which is a
+            # type error. The rule stays and the advice says both halves,
+            # because a rule that cannot tell them apart should say what it
+            # does know and leave the author to choose.
+            set(offence "hands argv straight to a container")
+            set(advice "this gate cannot see the element type from one line")
         endif()
         if(NOT offence STREQUAL "")
             string(STRIP "${code}" trimmed)
             list(APPEND offences "  ${path}:${number}: ${trimmed}")
-            list(APPEND offences "      ${offence}")
+            list(APPEND offences "      ${offence} - ${advice}")
+            if(offence STREQUAL "hands argv straight to a container")
+                list(APPEND offences
+                     "      a container of paths wants nfsu::argument_path(argv[k])")
+                list(APPEND offences
+                     "      a container of strings wants argv[k] assigned to a named")
+                list(APPEND offences
+                     "      std::string first and that pushed, the way")
+                list(APPEND offences
+                     "      src/viewer_main.cpp already does. Nothing here is asking")
+                list(APPEND offences
+                     "      you to convert a string to a path")
+            endif()
         endif()
     endforeach()
     if(NOT offences STREQUAL "")
         string(REPLACE ";" "\n" listing "${offences}")
         message(FATAL_ERROR
-            "an argument reaches a std::filesystem::path without the "
+            "an argument is stored without going through the "
             "conversion:\n${listing}\n"
-            "That is the defect issue #87 reported: on Windows the argument "
-            "vector arrives in the active ANSI code page and that "
-            "constructor reads it as UTF-8, so it throws out of a main() "
-            "that catches nothing. Use nfsu::argument_path instead, and add "
-            "the new position to the template list or the viewer cases "
-            "below, so that something drives a non-ASCII path through it.")
+            "Each line above says what to do about it. The defect behind "
+            "this gate is issue #87: on Windows the argument vector arrives "
+            "in the active ANSI code page and the std::filesystem::path "
+            "constructor reads it as UTF-8, so a path built straight from "
+            "argv throws out of a main() that catches nothing. When the "
+            "argument is routed through the conversion, add its position to "
+            "the template list or the viewer cases below, so that something "
+            "drives a non-ASCII path through it.")
     endif()
 endfunction()
 
