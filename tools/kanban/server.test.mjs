@@ -1074,6 +1074,10 @@ test("the raw and decoded passes leave one documented gap, and it is where READM
   // `%61`. Neither pass can see it, and the text is returned unchanged.
   assert.equal(scrubSecrets("x %61%2cb y", "a%2cb"), "x %61%2cb y");
   assert.equal(scrubSecrets("%78%41y", "x%41y"), "%78%41y");
+  // The other side of that boundary, which is the half a reader is likeliest
+  // to widen back to "never mixed": the token's own `%` arriving as `%25`
+  // means decoding regenerates `%2c`, so this mixed form is still redacted.
+  assert.equal(scrubSecrets("x a%252cb y", "a%2cb"), "x [redacted] y", "a mixed form the decode still reaches");
 
   // Decoding is per byte, so a character in U+0080..U+00FF is matched in its
   // single-byte percent form as well as literally -- wider than a code-point
