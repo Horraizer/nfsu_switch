@@ -21,14 +21,9 @@ that was not told is a worker.
 
 ## Independence
 
-The reviewer used to be a different vendor's model. That was never independence
-by construction: any reviewer reading the same handoff, description and
-repository conventions inherits the worker's framing of what the change is for
-and which tests matter, which is most of the correlated-failure surface. What a
-different vendor bought was decorrelated training priors - different blind
-spots on language semantics and API misuse - real, but far narrower than it
-sounds. One model family now fills every seat, so independence here is entirely
-procedural, and the rules below bind.
+The reviewer used to be a different vendor's model. One model family now fills
+every seat, so independence here is entirely procedural, and the rules below
+bind.
 
 - A reviewer must not be the session or the subagent that wrote the change.
 - A reviewer reaches its own verdict from the diff, the repository and the
@@ -68,17 +63,24 @@ agent: <model, and the session or subagent label>
 
 Several sessions share one repository, and more than one is routinely live.
 
-- Resolve `origin/main`, never the local `main`. A fetch updates the
-  remote-tracking ref and leaves the local branch where it was, so the local
-  one goes stale without warning.
-- Measure a branch's scope with a three-dot diff. `git diff A..B` reports every
-  file that differs between the two tips, so any ref that has moved past the
-  merge base drags in files the branch never touched. `origin/main` moves too:
-  while this document was under review the two-dot form listed 17 files, then
-  23 an hour later as `origin/main` moved again, against the 1 file the branch
-  had actually changed throughout. Comparing against a fresher ref does not fix
-  a two-dot diff; only the three-dot form, which diffs against the merge base,
-  does.
+- Resolve remote-tracking refs, never local branches. A fetch updates
+  `origin/<branch>` and leaves the local branch where it was, so the local one
+  goes stale without warning. `main` is not a special case: a session that
+  commits and pushes from a detached worktree, as the bullet below requires,
+  never moves its own local branch ref either.
+- Measure a branch's scope with `git diff --name-only origin/main...<head>`.
+  Both halves are load-bearing, and neither one alone closes the hazard. A
+  two-dot diff reports every file that differs between the two tips, so a ref
+  that has moved past the merge base drags in files the branch never touched.
+  The three-dot form is not immune, because it diffs against
+  `merge-base(LEFT, RIGHT)`: a left-hand ref that predates the branch point
+  becomes the merge base itself, and the three-dot answer collapses onto the
+  two-dot one. Measured on this document's own branch, head `5867238`, which
+  changed 1 file, with local `main` at `15ef449` and `origin/main` at
+  `7cb6bd0`, 42 commits ahead of it: `main..5867238` reported 56 files,
+  `main...5867238` reported 56, and `origin/main..5867238` reported 23. Only
+  `origin/main...5867238` reported 1. Fetch first, then use the three-dot
+  form against the remote-tracking ref.
 - The main working tree belongs to whichever session's branch is checked out in
   it, and to no seat by default. Any other session, in any seat, takes its own
   copy with `git worktree add --detach <temp path> <sha>`, works there, and
@@ -120,24 +122,35 @@ request descriptions explicitly. Write the attribution line in plain ASCII. If a
 non-ASCII character reaches a description or a comment anyway, patch it out and
 say so in the handoff rather than leaving it.
 
-Scan with:
+Scan with, in Bash, from the repository root:
 
-```powershell
-git -c core.quotepath=false ls-tree -r --name-only HEAD | Select-String -Pattern '[^\x20-\x7E]'
-git cat-file blob HEAD:<path> | Select-String -Pattern '[^\x09\x0A\x0D\x20-\x7E]'
+```bash
+git -c core.quotepath=false ls-tree -r --name-only HEAD | LC_ALL=C grep -nP '[^\x20-\x7E]'
+LC_ALL=C git grep -n -P '[^\x09\x0A\x0D\x20-\x7E]' HEAD -- .
 ```
+
+On a clean tree both print nothing and exit 1. The second reads every tracked
+blob in the commit, so it replaces any per-path scan; do not add `-I`, which
+silently skips a tracked binary file, and a tracked binary file is a violation
+of this rule rather than an exemption from it.
 
 `core.quotepath=false` is not optional. Git's default C-quotes a non-ASCII name
 into pure-ASCII octal escapes, so the pattern never matches and the scan
 silently passes a repository that violates the rule.
 
-Scan blob bytes directly. Redirecting a blob to a temp file through PowerShell
-writes it back with a UTF-8 byte order mark that was never in the blob, and
-what happens next depends on the scanner: a byte-level scan reports a
-three-byte violation it created itself, while `Select-String` consumes the mark
-as an encoding declaration and reports nothing at all. Neither answer describes
-the repository. Pipe `git cat-file blob` into the pattern and the mark never
-exists.
+Run the scan in Bash, not PowerShell. PowerShell decodes a native command's
+output before any pattern sees it, and that decoder consumes a leading UTF-8
+byte order mark as an encoding declaration rather than passing it through. A
+blob of `EF BB BF 68 69 0A` piped into `Select-String` arrives as the two
+characters `hi` and reports no match, while a mid-file `D0 9F` in the same
+pipeline is reported correctly. A PowerShell scan is therefore blind to
+precisely the bytes this paragraph is about, and a run that passes proves
+nothing unless the blob it measured actually carried a mark. `grep` under Bash
+sees the bytes and reports both. Do not redirect a blob to a temp file through
+PowerShell either: it is written back with a byte order mark that was never in
+the blob, so a byte-level scan then reports a three-byte violation it created
+itself. Read the blob from `git`, scan it in Bash, and the mark is neither
+invented nor swallowed.
 
 Check text before you post it, not only before you commit it. A comment body
 assembled in a PowerShell double-quoted here-string passes backticks to the
@@ -177,8 +190,9 @@ A differential comparison fails in a way the rows above do not: neither side
 produces a real answer and the comparison reports agreement. A binary that
 cannot load its libraries exits with no output, so every invocation matches
 every other; a run that refuses to overwrite leftover artifacts leaves the
-previous run's files on disk, so the hashes match. Asserting non-empty output
-catches neither, because an error line is not empty. Delete prior outputs by
+previous run's files on disk, so the hashes match. Asserting non-empty console
+output catches the first and misses the second, because the refusal prints an
+error line and an error line is not empty. Delete prior outputs by
 exact name first, then confirm that both sides wrote this run's artifact and
 that neither printed an error line.
 
@@ -261,9 +275,13 @@ The coordinator is the only seat that merges. Before merging it confirms:
   coordinator's own detached worktree at `origin/main` with the head under
   review merged into it, and remove the worktree afterwards;
 - the change's scope matches its issue, measured with
-  `git diff --name-only origin/main...<head>`. The three-dot form is the
-  requirement, not the ref: it diffs against the merge base, so the answer
-  stays correct however far `origin/main` has moved since the branch started.
+  `git diff --name-only origin/main...<head>` after a fetch. The three-dot
+  form and the freshly fetched ref are both required; Shared checkout above
+  measures what each one gets wrong on its own. Prefer this over resolving the
+  merge base into a variable and feeding it to a two-dot diff. Both give the
+  same answer, but this is one command with no intermediate value to capture,
+  quote or let go stale, so it reads and behaves identically in every shell and
+  harness.
 
 After merging, the coordinator moves the issue to `state/done`, closes it, and
 deletes nothing the owner has not agreed to delete.
@@ -271,10 +289,10 @@ deletes nothing the owner has not agreed to delete.
 Merges are sequenced, not batched. Every merge into `main` invalidates every
 other open branch that appends to the same files. The contended set drifts, so
 measure it rather than trusting a list: count how often each path appears in
-the first-parent diff of each pull request merge on `origin/main`. On
-2026-09-20 that gave `README.md` at 17, `src/main.cpp` at 12, `CMakeLists.txt`,
-`docs/CAR_SCENE.md`, `docs/FORMATS.md` and `docs/ROADMAP.md` tied at 11, and
-`docs/RENDERER.md` at 10.
+the first-parent diff of each pull request merge on `origin/main`. No list is
+printed here, because the one this document originally carried had already
+gone stale, in both its counts and its ordering, by the time the document was
+reviewed on the same day.
 
 A coordinator that dispatches work it cannot be notified about is not
 coordinating. In-process subagents report back on their own; a separate session,
@@ -307,14 +325,24 @@ routine status.
 ## What these rules actually cover
 
 Four failures shaped this document; four equal-weight rules would imply it
-closed four. It closed about one. The three-dot scope diff comes closest to a
-mechanical closure, because it names a command form whose output cannot contain
-a file the branch did not change. It reached that only on the second attempt:
-the `origin/main` rule it replaced closed nothing, since the same wrong answer
-was still reachable while obeying it, and this document's own review reproduced
-it at 17 files against 1. Re-review only codifies a loop the previous protocol
-already implied, and that loop had already caught the launcher fix that stopped
-an unowned process. Silent truncation has no rule of its own and leans on the
-same general reviewer duty that missed it the first time. The surviving mutant
-has no rule at all, and no gate here runs mutation testing. Weigh these rules by
-what they mechanically prevent.
+closed four. It has mechanically closed none of them, and earlier drafts of
+this section claimed otherwise twice.
+
+The scope diff came closest, and it took three rounds of review to state
+correctly: written from impression, then corrected to name the wrong
+comparison, then over-corrected into a claim that the three-dot form alone
+cannot report a file the branch did not change. A stale left-hand ref
+disproves that in one command, which is what Shared checkout now records. What
+survives is a two-part discipline that still depends on the operator fetching
+first and reading the right ref - not a command form that is safe however it
+is invoked. The ASCII gate has the same shape: the scan this document
+prescribed for two rounds was blind to a leading byte order mark, so the rule
+was sound while the gate that enforced it was not, and a passing run proved
+nothing. Re-review only codifies a loop the previous protocol already implied,
+and that loop had already caught the launcher fix that stopped an unowned
+process. Silent truncation has no rule of its own and leans on the same
+general reviewer duty that missed it the first time. The surviving mutant has
+no rule at all, and no gate here runs mutation testing.
+
+Weigh these rules by what they mechanically prevent, and treat a rule that
+names a command as a claim to reproduce rather than a closure to trust.
