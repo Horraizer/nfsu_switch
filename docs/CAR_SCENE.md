@@ -280,9 +280,11 @@ Sampled payload arithmetic consistently gives a 24-byte track vertex stride.
 For one mesh, `(5560 - 88) / 228 = 24`, where 88 bytes are the aligned prefix
 and 228 is the declared vertex count.
 
-The field meanings inside that 24-byte record are not established here. Track
-vertex decoding must remain separate from car-vertex decoding until fixtures
-and retail samples prove those fields.
+That lead is now resolved. The 24-byte layout, the `0x00134900 +12`
+vertex-format word that selects it, the rest of the track container's
+differences from a car root, and one explicitly bounded decoded region are
+in [`TRACK.md`](TRACK.md). Track vertex decoding stays in its own module
+(`include/nfsu/track.h`); the car parser is unchanged.
 
 ## Installed parts (issue #17)
 

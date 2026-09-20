@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <locale>
 #include <sstream>
 #include <utility>
 
@@ -135,7 +136,10 @@ ChunkReport inspect_chunk_file(
 }
 
 std::string format_chunk_id(std::uint32_t id) {
+    // The classic locale keeps the text independent of any locale a host
+    // application may have installed globally.
     std::ostringstream output;
+    output.imbue(std::locale::classic());
     output << "0x" << std::uppercase << std::hex << std::setw(8)
            << std::setfill('0') << id;
     return output.str();
