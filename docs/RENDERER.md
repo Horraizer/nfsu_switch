@@ -6,10 +6,16 @@ same inputs and options give a byte-identical frame. `nfsu_viewer` loads
 `GEOMETRY.BIN`, `TEXTURES.BIN` and any explicitly named shared texture
 files through `nfsu_core`, renders one frame
 and writes it as a TGA screenshot. The screenshot is the acceptance
-artifact. There is no window and no platform graphics API.
+artifact. The render itself uses no window and no platform graphics API.
+
+`--interactive` adds a desktop window over the same prepared scene, after
+the screenshot has been written and the report printed
+([`INSPECTOR.md`](INSPECTOR.md)). It is a diagnostic on top of this
+renderer, not a second one: without the flag none of its code runs, and a
+frame it shows is a frame this renderer produced.
 
 ```text
-nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> <out.tga> [--shared-textures FILE]... [--mesh-index N | --mesh-name NAME | --mesh-hash HEX]... [--skin-car NAME [--skin-* ...]] [options]
+nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> <out.tga> [--shared-textures FILE]... [--mesh-index N | --mesh-name NAME | --mesh-hash HEX]... [--skin-car NAME [--skin-* ...]] [--interactive] [options]
 ```
 
 | Option | Range | Default |
@@ -35,6 +41,7 @@ nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> <out.tga> [--shared-textures FILE]... 
 | `--mesh-index N` | 0..4294967295 decimal, repeatable | none (all meshes) |
 | `--mesh-name NAME` | 1..28 printable ASCII bytes, repeatable | none (all meshes) |
 | `--mesh-hash HEX` | 1..8 hex digits, optional `0x`, repeatable | none (all meshes) |
+| `--interactive` | flag; needs a window backend | off |
 
 The `--skin-*` options are listed in
 [`RUNTIME_SKIN.md`](RUNTIME_SKIN.md) and summarized under "Runtime body
@@ -581,6 +588,20 @@ rules:
 stable, because the prepared order is already mesh source order and then
 record order. A group with no resolved texture has no row of its own and
 takes row 0, which is the row a record with both bytes zero selects.
+
+The sort itself is `prepared_draw_order` in the scene layer
+(`include/nfsu/scene.h`), not in the rasterizer, because the order is a
+property of the prepared scene and of the material state and nothing about
+it is specific to a CPU. `render_scene` calls it, and so does anything that
+has to reproduce the triangle ids this render assigns: ids are the running
+number of submitted triangles over that order, which
+`prepared_triangle_ranges` turns into one id range per drawable group. That
+is what lets the inspection window name the group that drew a pixel
+([`INSPECTOR.md`](INSPECTOR.md)), and what a deko3d backend has to follow to
+get the same. Moving it changed no frame: a `nfsu_viewer` built at the
+previous head produces an identical TGA, stdout, stderr and exit code for
+the default options, for `--material-state retail` with coefficients, for a
+runtime skin composite and for a mesh subset with the other render options.
 
 Two details of the reproduction are reference decisions, recorded here
 rather than claimed as retail:

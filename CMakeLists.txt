@@ -138,11 +138,52 @@ target_link_libraries(nfsu_probe
     PRIVATE nfsu_core nfsu_track nfsu_texture_decode nfsu_skin_inputs)
 nfsu_enable_warnings(nfsu_probe)
 
+# Backend-neutral interactive inspection state: the camera the pointer
+# drives, the selected material group, the diagnostic views and the overlay
+# text. It opens no window and calls no operating system, so it is tested
+# headlessly and a deko3d backend reuses it unchanged.
+add_library(nfsu_inspect
+    src/inspect.cpp
+)
+
+# Backend-neutral is about the windowing API, not about this link: the
+# state is declared in terms of RenderOptions, RenderLimits and OrbitCamera,
+# which live in nfsu_render, so the library carries a link-time dependency on
+# the CPU rasterizer even though it never calls render_scene. A deko3d
+# backend links it and submits its own frames; moving those three types into
+# a smaller target is the only thing that would drop the dependency, and
+# nothing needs that yet.
+target_link_libraries(nfsu_inspect PUBLIC nfsu_render)
+nfsu_enable_warnings(nfsu_inspect)
+
+# The desktop window that drives it. Exactly one backend is compiled: the
+# Win32 one, which needs nothing but user32 and gdi32, or a stub that fails
+# closed everywhere else. This is the only file in the project that talks to
+# a windowing API. src/inspect_window_common.cpp is the arithmetic every
+# backend shares and calls no operating system, so it is always compiled.
+if(WIN32)
+    set(NFSU_INSPECT_WINDOW_SOURCE src/inspect_window_win32.cpp)
+else()
+    set(NFSU_INSPECT_WINDOW_SOURCE src/inspect_window_none.cpp)
+endif()
+
+add_library(nfsu_inspect_window
+    src/inspect_window_common.cpp
+    ${NFSU_INSPECT_WINDOW_SOURCE}
+)
+
+target_link_libraries(nfsu_inspect_window PUBLIC nfsu_inspect)
+if(WIN32)
+    target_link_libraries(nfsu_inspect_window PRIVATE user32 gdi32)
+endif()
+nfsu_enable_warnings(nfsu_inspect_window)
+
 add_executable(nfsu_viewer
     src/viewer_main.cpp
 )
 
-target_link_libraries(nfsu_viewer PRIVATE nfsu_render nfsu_texture_decode nfsu_runtime_skin)
+target_link_libraries(nfsu_viewer
+    PRIVATE nfsu_render nfsu_texture_decode nfsu_runtime_skin nfsu_inspect_window)
 nfsu_enable_warnings(nfsu_viewer)
 
 if(NFSU_BUILD_TESTS)
@@ -238,6 +279,19 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_runtime_skin_tests)
     add_test(NAME nfsu_runtime_skin_tests COMMAND nfsu_runtime_skin_tests)
 
+    # The inspection state, headlessly: the id table against frames the CPU
+    # renderer actually produced, the camera under hostile input, the
+    # commands, picking, the diagnostic views and the overlay text. It links
+    # the window backend too, but only to check that it refuses what it
+    # should; no test opens a window, which would wait for a person.
+    add_executable(nfsu_inspect_tests
+        tests/inspect_tests.cpp
+    )
+
+    target_link_libraries(nfsu_inspect_tests PRIVATE nfsu_inspect_window)
+    nfsu_enable_warnings(nfsu_inspect_tests)
+    add_test(NAME nfsu_inspect_tests COMMAND nfsu_inspect_tests)
+
     # The viewer refuses a --skin-dump that names the screenshot before it
     # reads an input or writes a byte, so the refusal can be exercised with
     # no input files at all. Two spellings of one path that does not exist
@@ -279,7 +333,7 @@ if(NFSU_BUILD_TESTS)
         nfsu_chunk_tests nfsu_geometry_tests nfsu_texture_tests
         nfsu_render_tests nfsu_scene_tests nfsu_car_parts_tests
         nfsu_track_tests nfsu_part_placement_tests nfsu_body_skin_tests
-        nfsu_skin_inputs_tests nfsu_runtime_skin_tests
+        nfsu_skin_inputs_tests nfsu_runtime_skin_tests nfsu_inspect_tests
         nfsu_viewer_dump_alias nfsu_probe_usage_commands
         PROPERTIES TIMEOUT 60)
 endif()

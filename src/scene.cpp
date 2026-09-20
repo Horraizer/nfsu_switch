@@ -858,4 +858,160 @@ bool validate_prepared_scene(const PreparedCarScene& scene, std::string& error) 
     }
 }
 
+bool prepared_draw_order(
+    const PreparedCarScene& scene,
+    bool retail_order,
+    std::vector<std::uint32_t>& order,
+    std::vector<unsigned char>* layers,
+    std::string& error) {
+    order.clear();
+    if (layers != nullptr) {
+        layers->clear();
+    }
+    // order holds one u32 per group, so a scene with more groups than a u32
+    // can index could not be ordered at all.
+    if (scene.draws.size() >= 0xFFFFFFFFULL) {
+        error = "scene has " + std::to_string(scene.draws.size()) +
+                " material groups; too many to order";
+        return false;
+    }
+    std::vector<unsigned char> layer;
+    try {
+        order.resize(scene.draws.size());
+        layer.assign(scene.draws.size(), 0);
+    } catch (const std::bad_alloc&) {
+        error = "not enough memory for the draw order tables";
+        order.clear();
+        return false;
+    }
+    for (std::size_t i = 0; i < order.size(); ++i) {
+        order[i] = static_cast<std::uint32_t>(i);
+    }
+    if (retail_order) {
+        // See the declaration for what the retail queue does and why the
+        // stable sort below reproduces it.
+        std::vector<std::uint32_t> group;
+        try {
+            group.assign(scene.draws.size(), 0);
+            std::map<std::pair<std::size_t, std::uint32_t>, std::uint32_t> first_use;
+            std::uint32_t next_group = 0;
+            for (std::size_t i = 0; i < scene.draws.size(); ++i) {
+                const PreparedDraw& draw = scene.draws[i];
+                std::pair<std::size_t, std::uint32_t> key{kNoHandle, draw.texture_hash};
+                if (draw.binding == BindingKind::resolved &&
+                    draw.texture < scene.textures.size()) {
+                    const RenderTexture& texture = scene.textures[draw.texture];
+                    layer[i] = static_cast<unsigned char>(
+                        render_draw_layer(texture.layer_group, texture.layer_order));
+                    key = {draw.texture, 0U};
+                }
+                const auto inserted = first_use.emplace(key, next_group);
+                if (inserted.second) {
+                    ++next_group;
+                }
+                group[i] = inserted.first->second;
+            }
+        } catch (const std::bad_alloc&) {
+            error = "not enough memory for the draw order tables";
+            order.clear();
+            return false;
+        }
+        std::stable_sort(order.begin(), order.end(),
+                         [&layer, &group](std::uint32_t a, std::uint32_t b) {
+                             if (layer[a] != layer[b]) {
+                                 return layer[a] < layer[b];
+                             }
+                             return group[a] < group[b];
+                         });
+    }
+    if (layers != nullptr) {
+        try {
+            *layers = layer;
+        } catch (const std::bad_alloc&) {
+            error = "not enough memory for the draw order tables";
+            order.clear();
+            layers->clear();
+            return false;
+        }
+    }
+    return true;
+}
+
+bool prepared_triangle_ranges(
+    const PreparedCarScene& scene,
+    const std::vector<std::uint32_t>& order,
+    std::vector<PreparedTriangleRange>& ranges,
+    std::string& error) {
+    ranges.clear();
+    if (order.size() != scene.draws.size()) {
+        error = "the draw order holds " + std::to_string(order.size()) +
+                " entries for " + std::to_string(scene.draws.size()) +
+                " material groups";
+        return false;
+    }
+    std::vector<unsigned char> seen;
+    try {
+        seen.assign(scene.draws.size(), 0);
+    } catch (const std::bad_alloc&) {
+        error = "not enough memory for the triangle range table";
+        return false;
+    }
+    std::uint64_t next_id = 0;
+    try {
+        for (const std::uint32_t d : order) {
+            if (d >= scene.draws.size() || seen[d] != 0) {
+                error = "the draw order is not a permutation of the material groups";
+                ranges.clear();
+                return false;
+            }
+            seen[d] = 1;
+            const PreparedDraw& draw = scene.draws[d];
+            if (!draw.drawable) {
+                continue;
+            }
+            // A drawable group has an index count that is a multiple of
+            // three; validate_prepared_scene has already checked it.
+            const std::uint64_t count = draw.index_count / 3U;
+            if (count == 0) {
+                continue;
+            }
+            if (next_id + count >= 0xFFFFFFFFULL) {
+                error = "prepared draws hold 2^32 - 1 or more triangles";
+                ranges.clear();
+                return false;
+            }
+            PreparedTriangleRange range;
+            range.first_id = static_cast<std::uint32_t>(next_id);
+            range.count = static_cast<std::uint32_t>(count);
+            range.draw = d;
+            ranges.push_back(range);
+            next_id += count;
+        }
+    } catch (const std::bad_alloc&) {
+        error = "not enough memory for the triangle range table";
+        ranges.clear();
+        return false;
+    }
+    return true;
+}
+
+std::size_t find_prepared_triangle(
+    const std::vector<PreparedTriangleRange>& ranges,
+    std::uint32_t id) noexcept {
+    std::size_t low = 0;
+    std::size_t high = ranges.size();
+    while (low < high) {
+        const std::size_t middle = low + (high - low) / 2;
+        const PreparedTriangleRange& range = ranges[middle];
+        if (id < range.first_id) {
+            high = middle;
+        } else if (id - range.first_id >= range.count) {
+            low = middle + 1;
+        } else {
+            return range.draw;
+        }
+    }
+    return kNoHandle;
+}
+
 } // namespace nfsu
