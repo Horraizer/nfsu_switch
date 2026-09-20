@@ -209,7 +209,7 @@ std::vector<std::size_t> mesh_positions(const nfsu::PreparedCarScene& scene) {
 
 bool empty_scene(const nfsu::PreparedCarScene& scene) {
     return scene.profile == nfsu::SelectionProfile::all_meshes &&
-           scene.selectors.empty() && scene.source_mesh_count == 0 &&
+           scene.selectors.empty() && scene.source_mesh_counts.empty() &&
            scene.skipped_invalid_meshes.empty() && scene.meshes.empty() &&
            scene.draws.empty() && scene.textures.empty() &&
            scene.unresolved_hashes.empty();
@@ -232,7 +232,7 @@ bool same_draw(const nfsu::PreparedDraw& a, const nfsu::PreparedDraw& b) {
 
 bool same_scene(const nfsu::PreparedCarScene& a, const nfsu::PreparedCarScene& b) {
     if (a.profile != b.profile || a.selectors.size() != b.selectors.size() ||
-        a.source_mesh_count != b.source_mesh_count ||
+        a.source_mesh_counts != b.source_mesh_counts ||
         a.skipped_invalid_meshes != b.skipped_invalid_meshes ||
         a.meshes.size() != b.meshes.size() || a.draws.size() != b.draws.size() ||
         a.textures.size() != b.textures.size() ||
@@ -327,7 +327,9 @@ void test_all_meshes() {
     check(scene.profile == nfsu::SelectionProfile::all_meshes &&
               std::string(nfsu::selection_profile_name(scene.profile)) == "all meshes",
           "all-meshes profile");
-    check(scene.selectors.empty() && scene.source_mesh_count == 5, "all-meshes sources");
+    check(scene.selectors.empty() &&
+              scene.source_mesh_counts == std::vector<std::size_t>({5}),
+          "all-meshes sources");
     check(mesh_positions(scene) == std::vector<std::size_t>({0, 2, 3, 4}),
           "every valid mesh in source order");
     check(scene.skipped_invalid_meshes == std::vector<std::size_t>({1}),
@@ -335,6 +337,10 @@ void test_all_meshes() {
     check(scene.meshes[1].name == "WHEEL" && scene.meshes[0].selector == nfsu::kNoHandle,
           "mesh identity");
     check(scene.draws.size() == 8, "one draw per material group");
+    // The stock car profile owns instances; the two profiles this layer
+    // resolves place nothing and carry none.
+    check(scene.instances.empty() && scene.meshes[0].source == 0,
+          "the all-meshes profile carries no instance");
     std::vector<std::size_t> resolved;
     nfsu::resolve_mesh_selection(geometry, nfsu::MeshSelection{}, nfsu::SceneLimits{},
                                  resolved, nullptr, error);
@@ -738,6 +744,35 @@ void test_lifetime() {
 
 // A scene changed after preparation is refused before the frame is
 // allocated, never read out of bounds.
+// A stock car scene carries transforms this renderer does not apply, so it
+// is refused rather than drawn in the wrong place. The profile is set by
+// hand here: building one needs the part database layer above this test.
+void test_renderer_refuses_unplaced_instances() {
+    const nfsu::GeometryReport geometry = scene_geometry();
+    nfsu::PreparedCarScene scene;
+    std::string error;
+    check(prepare(geometry, scene_textures(), selection_of({by_index(0)}), scene, error),
+          "stock refusal base: " + error);
+    scene.profile = nfsu::SelectionProfile::stock_car;
+    scene.selectors.clear();
+    scene.meshes[0].selector = nfsu::kNoHandle;
+    nfsu::PreparedInstance instance;
+    instance.mesh = 0;
+    instance.mesh_hash = scene.meshes[0].directory_hash;
+    scene.instances.push_back(instance);
+    check(nfsu::validate_prepared_scene(scene, error),
+          "a hand-built stock scene validates: " + error);
+    nfsu::Frame frame;
+    nfsu::RenderStats stats;
+    std::string message;
+    check(!nfsu::render_scene(scene, options(), nfsu::RenderLimits{}, frame, stats,
+                              message),
+          "the renderer refuses the stock car profile");
+    check(message.find("does not place instances") != std::string::npos,
+          "the refusal says why: " + message);
+    check(frame.width() == 0 && frame.rgba().empty(), "the refusal allocates no frame");
+}
+
 void test_hostile_scene() {
     const nfsu::GeometryReport geometry = scene_geometry();
     nfsu::PreparedCarScene good;
@@ -993,6 +1028,7 @@ int main() {
     test_bindings_and_records();
     test_determinism();
     test_lifetime();
+    test_renderer_refuses_unplaced_instances();
     test_hostile_scene();
     test_failure_leaves_outputs_empty();
 

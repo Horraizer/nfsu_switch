@@ -35,6 +35,7 @@ build/nfsu_probe texture-bindings X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games
 build/nfsu_probe car-parts X:/Games/NFSU/Global/GLOBALB.BUN 240SX
 build/nfsu_probe stock-parts X:/Games/NFSU/Global/GLOBALB.BUN 240SX X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games/NFSU/Cars/BRAKES/GEOMETRY.BIN X:/Games/NFSU/Cars/PLATES/GEOMETRY.BIN
 build/nfsu_probe track-region X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN
+build/nfsu_probe stock-scene X:/Games/NFSU/Global/GLOBALB.BUN 240SX A X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games/NFSU/Cars/BRAKES/GEOMETRY.BIN X:/Games/NFSU/Cars/PLATES/GEOMETRY.BIN --place-wheels
 build/nfsu_probe car-placement X:/Games/NFSU/Global/GLOBALB.BUN 240SX
 build/nfsu_probe part-markers X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN exhaust
 build/nfsu_probe body-skin-inputs 240SX --source car-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN --source car-vinyls X:/Games/NFSU/Cars/240SX/VINYLS.BIN --source other X:/Games/NFSU/Cars/TEXTURES.BIN --target-texture DUMMY_SKIN1 --vinyl 0 TRIBAL5 16 no-remap --doorline plain --base 200 30 30 128 --assemble
@@ -98,6 +99,17 @@ game falls back to when the one a part names is missing. `car-parts`
 reports every structural problem and marks the database invalid;
 `stock-parts` refuses to run on such a database. See `docs/CAR_SCENE.md`
 for the evidence and for what a "stock" part set does and does not cover.
+`stock-scene` goes one step further and builds the whole assembly: the
+stock part set, the mesh each slot draws at the LOD given as `A`, `B`, `C`
+or `D`, and where each drawn copy goes. It reports all 120 slots with the
+reason any of them draws nothing, the attachment markers it collected, and
+the prepared mesh, material-group and instance counts. `--front-end`
+selects the pass whose brake model is LOD A instead of LOD B. The wheel
+and the brake are reported as `placement unreproduced` and drawn by
+nothing unless `--place-wheels` opts in to the culling placements, because
+the drawn wheel matrix is not reproduced by this project; see
+`docs/PART_PLACEMENT.md`. No texture file is read, so every material group
+is reported unresolved.
 
 ## Reference viewer
 
@@ -131,13 +143,15 @@ instead; all may be repeated and mixed, at most 256 selectors and
 16384 name bytes. Selected meshes are always drawn in source order. An
 out-of-range index, an unknown or ambiguous hash, an unknown, empty or
 ambiguous name, or a mesh selected twice is a usage error (exit 1) and
-nothing is written. Neither profile is
-the game's stock car. Which parts the game installs, which mesh each one
-uses at a LOD (`nfsu_probe stock-parts`), where the four wheels go and which
-parts hang off an attachment marker (`nfsu_probe car-placement`,
-`nfsu_probe part-markers`) are decoded, but the viewer does not consume any
-of it yet, and paint and skin are still missing (see `docs/CAR_SCENE.md` and
-`docs/PART_PLACEMENT.md`).
+nothing is written. Neither viewer profile is
+the game's stock car. That assembly is a third `PreparedCarScene` profile,
+built by `nfsu::prepare_stock_car_scene` and printed by `nfsu_probe
+stock-scene`, but the viewer does not offer it: the CPU renderer draws
+each prepared mesh in its own space and does not apply the instance
+transforms the profile carries, so it refuses that profile rather than
+draw a car's four wheels at the origin. Paint and skin are still the
+caller's explicit selection (see `docs/CAR_SCENE.md`,
+`docs/PART_PLACEMENT.md` and `docs/RENDERER.md`).
 
 ## Body-skin compositor reference
 

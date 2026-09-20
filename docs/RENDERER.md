@@ -256,21 +256,26 @@ Selection:
   explicit subset, K of M meshes, S selectors` and one `selected: mesh I
   name "NAME" by selector J (index|name|hash)` line per mesh in source order.
   The `meshes` statistic then counts the selected meshes only.
-- Neither profile is the game's stock car. The stock part set, the mesh
-  each part uses at each LOD and the fallback for a missing mesh are
-  decoded (`nfsu::select_stock_parts`, `nfsu::resolve_part_models`, see
-  `docs/CAR_SCENE.md`), but this renderer does not consume them yet, and
-  part placement is still unknown; an explicit subset is a diagnostic view
-  chosen by the user.
+- Neither of these two profiles is the game's stock car, and neither
+  places anything: they name meshes and each mesh is drawn once in its own
+  space. An explicit subset is a diagnostic view chosen by the user.
+- The stock car is a third profile, `stock car`, built one layer up by
+  `prepare_stock_car_scene` (`include/nfsu/stock_scene.h`, library
+  `nfsu_stock_scene`) out of the recovered part set, the per-LOD mesh
+  hashes and the recovered placement. See "The stock car profile" below.
+  `render_scene` refuses it, because this renderer does not apply instance
+  transforms.
 
 `PreparedCarScene` holds, in deterministic order:
 
-- `profile`, the `selectors` as given, `source_mesh_count` and
-  `skipped_invalid_meshes`;
-- `meshes`: per selected mesh its source position, stored name, verified
-  directory hash/range when present, the selector that chose it, source
-  material count, and copies of its vertices and triangles (three u16
-  indices each);
+- `profile`, the `selectors` as given, `source_mesh_counts` (one entry per
+  geometry source, in source order; the two single-source profiles hold
+  exactly one) and `skipped_invalid_meshes`;
+- `meshes`: per selected mesh its geometry source and position inside that
+  source, stored name, verified directory hash/range when present, the
+  selector that chose it, source material count, and copies of its
+  vertices and triangles (three u16 indices each). The list ascends in
+  (source, position);
 - `draws`: one `PreparedDraw` per material record of each selected mesh,
   in mesh then record order, with the mesh handle, material index, first
   index, index count, texture slot, texture hash, `BindingKind`, texture
@@ -282,7 +287,12 @@ Selection:
 - `textures`: one copy of each resolved texture, in order of first use,
   addressed by the draw's texture handle;
 - `unresolved_hashes`: the distinct hashes of unresolved groups of the
-  selected meshes, ascending (the `unresolved hashes` statistic).
+  selected meshes, ascending (the `unresolved hashes` statistic);
+- `instances`: the drawn copies, empty for every profile but the stock
+  car. Each names a prepared mesh, a row-major 4x4 transform in the
+  geometry file's raw slot frame, whether that transform is the one the
+  retail draw path applies (`placement_exact`), and opaque provenance:
+  part slot, LOD index, copy number and mesh hash.
 
 That is everything a GPU backend needs: upload each mesh's vertices and
 index stream and each texture, then issue `index_count` indices from
@@ -309,10 +319,54 @@ one ordered draw per source material, agreement between every decoded
 material field and its raw 60-byte record, the derived `drawable` flag and
 unresolved-hash set, binding/provenance consistency, texture handles in
 first-use order with no unused texture, texture sizes (`width * height * 4`
-without overflow), and a drawn triangle total below 2^32 - 1. A scene that
+without overflow), a drawn triangle total below 2^32 - 1, and instances
+that name a prepared mesh with a finite transform and a hash that mesh
+has, leave no prepared mesh of a stock car undrawn, and appear on no other
+profile. A scene that
 fails is refused before a new frame is allocated. Vertex indices inside
 triangles are checked per triangle while drawing and counted as `bad_index`,
 as for source data.
+
+### The stock car profile
+
+`prepare_stock_car_scene` takes the two `GLOBALB.BUN` tables, the loaded
+geometry files in load order, a car type name, a car-wide LOD index and the
+pass, and produces one `PreparedCarScene` plus a `StockSceneReport` that
+describes all 120 slots. Every rule it applies was traced in `speed.exe`;
+the evidence is in `docs/CAR_SCENE.md` ("Installed parts") and
+`docs/PART_PLACEMENT.md`, and this section only says what the profile does
+with it.
+
+- The installed set is `select_stock_parts`, its enable bytes included. A
+  slot outside 0..29 gets no model, and a disabled slot is not drawn.
+- The mesh of a slot is `resolve_part_models` at the slot's LOD, so the
+  constructor's fallback for a missing mesh applies. A mesh no loaded
+  source holds, and a mesh whose source holds it but which failed
+  geometry validation, are both reported and drawn by nothing.
+- The LOD is the requested one for every generic slot and for the mirrors,
+  which draw at LOD A and B only; LOD A for the exhaust and the licence
+  plate; LOD A or B for the brake, by the pass; and `min(lod, 2)` for the
+  wheel.
+- Placement: every body part draws at the identity, that is at the car's
+  own matrix. The exhaust and the licence plate draw one copy per
+  collected marker, at `car_marker_quarter_turn() * marker matrix`; the
+  markers are collected exactly as `0x0056BDB0` collects them, over the
+  LOD A models of the enabled slots 0..29 in slot then record order. A
+  part with no marker of its role is not drawn.
+- The wheel and the brake are **not placed by default**. The drawn wheel
+  and brake matrices are not reproduced by this project
+  (`docs/PART_PLACEMENT.md`, "The drawn wheel and brake matrices"), so both
+  slots report `placement unreproduced` and contribute nothing.
+  `place_wheels_from_culling_table` opts in to four copies each at the
+  culling placements of `derive_cullable_part_placements`, with
+  `placement_exact` false on every instance it produces.
+- Several slots may name one mesh. It is prepared once and drawn once per
+  slot, which is also how the wheel's four copies share one mesh.
+
+`nfsu_probe stock-scene` prints the whole report. For the retail 240SX at
+LOD A with `--place-wheels`, all 24 slots that can have a model draw, from
+24 meshes over `Cars/240SX`, `Cars/BRAKES` and `Cars/PLATES`, in 30
+instances; the counts per LOD are in `docs/CAR_SCENE.md`.
 
 ## Frames and camera
 
