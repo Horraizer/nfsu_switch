@@ -2524,7 +2524,8 @@ const Command kCommands[] = {
                  return 1;
              }
          }
-         return run_track_visibility(fs::path(argv[2]), offset, size, args);
+         return run_track_visibility(nfsu::argument_path(argv[2]), offset, size,
+                                     args);
      }},
     {"track-collision", " <TRACKB####.lzc> [px pz]", "",
      [](int argc, char** argv) {
