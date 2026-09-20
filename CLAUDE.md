@@ -61,7 +61,9 @@ agent: <model, and the session or subagent label>
 
 ## Shared checkout
 
-Several sessions share one repository, and more than one is routinely live.
+Several sessions share one repository, and more than one is routinely live. A
+subagent is a second writer its dispatcher cannot see or stop mid-run, so these
+rules bind it too.
 
 - Resolve remote-tracking refs, not local branches, for any work that is not
   your own. A fetch updates `origin/<branch>` and leaves the local branch where
@@ -93,12 +95,33 @@ Several sessions share one repository, and more than one is routinely live.
   `git push origin HEAD:<branch>`. Do not check the branch out to get a push
   target - two worktrees cannot hold the same branch, so that is the one thing
   the detached copy exists to avoid.
+- A subagent asked to mutate, build or revert gets its own detached worktree,
+  and its assignment names that path and the SHA to work from. The dispatcher
+  does not write to that worktree, and does not move the head the subagent is
+  measuring; if the head has to move, pin the SHA in the assignment and say so.
+  Both halves have already cost work. On issue #38 an adversarial subagent
+  aimed at the worker's own tree ran `git checkout --` during a mutation pass,
+  reverted two uncommitted files and overwrote a scratchpad script, and the
+  worker could not stop it because the subagent was a different owner. On
+  issue #39 the same collision ran the other way: the worker amended one
+  commit three times inside seven minutes - `8d8643a`, `ad0d944`, `7b7634f` -
+  while its subagent measured the branch, and the report had to be reconciled
+  against a head that had moved under it. Nothing enforces either half.
 - Never `git checkout` in the main working tree unless your own branch is the
   one already checked out there.
 - Re-read a shared file immediately before writing it if the write is not part
   of your branch. Another session may have changed it since you last looked.
 - Clean up only the files you created, by exact name. Never glob-delete in a
-  shared scratch directory.
+  shared scratch directory. A worktree you did not create is not yours to
+  remove either, even when it looks abandoned: leave it and name it in the
+  handoff. `git worktree prune` is forbidden outright - its usage line takes
+  no path argument, so it cannot be aimed at your own worktree, and it drops
+  every registered worktree whose directory git cannot see at that moment. In
+  a throwaway repository, renaming one worktree's directory away made
+  `git worktree prune` deregister it on the spot, and with the directory put
+  back `git status` inside it failed with `fatal: not a git repository`. On
+  temp paths that come and go, that is another session's worktree left unable
+  to run git, by a command someone ran to tidy up their own.
 - A stale local branch, a stale worktree and a stale process are three separate
   hazards. Prove identity before acting on any of them: a pid can be reused, so
   check the start time too.
@@ -330,8 +353,8 @@ routine status.
 
 ## What these rules actually cover
 
-Four failures shaped this document; four equal-weight rules would imply it
-closed four. It has mechanically closed none of them, and earlier drafts of
+Five failures shaped this document; five equal-weight rules would imply it
+closed five. It has mechanically closed none of them, and earlier drafts of
 this section claimed otherwise twice.
 
 The scope diff came closest, but what survives is a two-part discipline that
@@ -345,7 +368,10 @@ section above now allows. Re-review only codifies a loop the previous protocol
 already implied, and that loop had already caught the launcher fix that stopped
 an unowned process. Silent truncation has no rule of its own and leans on the
 same general reviewer duty that missed it the first time. The surviving mutant
-has no rule at all, and no gate here runs mutation testing.
+has no rule at all, and no gate here runs mutation testing. The subagent
+worktree rule is the least enforced of the set: git does not refuse a second
+writer in one tree, and nothing notices a head that moved under a measurement,
+so both incidents behind it were found only by reading the damage afterwards.
 
 Weigh these rules by what they mechanically prevent, and treat a rule that
 names a command as a claim to reproduce rather than a closure to trust.
