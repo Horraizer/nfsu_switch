@@ -68,12 +68,25 @@ agent: <model, and the session or subagent label>
 
 Several sessions share one repository, and more than one is routinely live.
 
-- Resolve `origin/main`, never the local `main`. The local branch goes stale
-  without warning, and a scope diff against it reports files never touched.
+- Resolve `origin/main`, never the local `main`. A fetch updates the
+  remote-tracking ref and leaves the local branch where it was, so the local
+  one goes stale without warning.
+- Measure a branch's scope with a three-dot diff. `git diff A..B` reports every
+  file that differs between the two tips, so any ref that has moved past the
+  merge base drags in files the branch never touched. `origin/main` moves too:
+  while this document was under review the two-dot form listed 17 files, then
+  23 an hour later as `origin/main` moved again, against the 1 file the branch
+  had actually changed throughout. Comparing against a fresher ref does not fix
+  a two-dot diff; only the three-dot form, which diffs against the merge base,
+  does.
 - The main working tree belongs to whichever session's branch is checked out in
   it, and to no seat by default. Any other session, in any seat, takes its own
   copy with `git worktree add --detach <temp path> <sha>`, works there, and
-  removes it when finished.
+  removes it when finished. A detached worktree still completes the worker
+  handoff: commit there and push with an explicit refspec,
+  `git push origin HEAD:<branch>`. Do not check the branch out to get a push
+  target - two worktrees cannot hold the same branch, so that is the one thing
+  the detached copy exists to avoid.
 - Never `git checkout` in the main working tree unless your own branch is the
   one already checked out there.
 - Re-read a shared file immediately before writing it if the write is not part
@@ -111,7 +124,7 @@ Scan with:
 
 ```powershell
 git -c core.quotepath=false ls-tree -r --name-only HEAD | Select-String -Pattern '[^\x20-\x7E]'
-git show HEAD:<path> | Select-String -Pattern '[^\x09\x0A\x0D\x20-\x7E]'
+git cat-file blob HEAD:<path> | Select-String -Pattern '[^\x09\x0A\x0D\x20-\x7E]'
 ```
 
 `core.quotepath=false` is not optional. Git's default C-quotes a non-ASCII name
@@ -119,8 +132,12 @@ into pure-ASCII octal escapes, so the pattern never matches and the scan
 silently passes a repository that violates the rule.
 
 Scan blob bytes directly. Redirecting a blob to a temp file through PowerShell
-writes it back with a UTF-8 byte order mark, so every file reports a three-byte
-violation the scan itself created. Pipe `git cat-file blob` into the pattern.
+writes it back with a UTF-8 byte order mark that was never in the blob, and
+what happens next depends on the scanner: a byte-level scan reports a
+three-byte violation it created itself, while `Select-String` consumes the mark
+as an encoding declaration and reports nothing at all. Neither answer describes
+the repository. Pipe `git cat-file blob` into the pattern and the mark never
+exists.
 
 Check text before you post it, not only before you commit it. A comment body
 assembled in a PowerShell double-quoted here-string passes backticks to the
@@ -155,6 +172,15 @@ Three environment requirements are part of the gates, not excuses:
   `KANBAN_PORT` and say so rather than reporting the conflict as a pass. Run it
   in its own shell: `KANBAN_SMOKE` set in your interactive session stays set,
   and the next launch from that session silently becomes a smoke run.
+
+A differential comparison fails in a way the rows above do not: neither side
+produces a real answer and the comparison reports agreement. A binary that
+cannot load its libraries exits with no output, so every invocation matches
+every other; a run that refuses to overwrite leftover artifacts leaves the
+previous run's files on disk, so the hashes match. Asserting non-empty output
+catches neither, because an error line is not empty. Delete prior outputs by
+exact name first, then confirm that both sides wrote this run's artifact and
+that neither printed an error line.
 
 ## Required handoff
 
@@ -234,7 +260,10 @@ The coordinator is the only seat that merges. Before merging it confirms:
   pass on the merged result, not only on the branch. Test that in the
   coordinator's own detached worktree at `origin/main` with the head under
   review merged into it, and remove the worktree afterwards;
-- the change's scope matches its issue, measured against `origin/main`.
+- the change's scope matches its issue, measured with
+  `git diff --name-only origin/main...<head>`. The three-dot form is the
+  requirement, not the ref: it diffs against the merge base, so the answer
+  stays correct however far `origin/main` has moved since the branch started.
 
 After merging, the coordinator moves the issue to `state/done`, closes it, and
 deletes nothing the owner has not agreed to delete.
@@ -278,12 +307,14 @@ routine status.
 ## What these rules actually cover
 
 Four failures shaped this document; four equal-weight rules would imply it
-closed four. It closed about one. The `origin/main` rule above mechanically
-prevents the stale-main scope diff. Re-review only codifies a loop the previous
-protocol already implied, and that loop had already caught the launcher fix
-that stopped an unowned process. Silent truncation has no rule of its own and
-leans on the same general reviewer duty that missed it the first time. The
-surviving mutant has no rule at all, and no gate here runs mutation testing.
-Weigh these rules by what they mechanically prevent: a protocol that overstates
-its own effectiveness is the same defect class as a document that overstates
-what the code does.
+closed four. It closed about one. The three-dot scope diff comes closest to a
+mechanical closure, because it names a command form whose output cannot contain
+a file the branch did not change. It reached that only on the second attempt:
+the `origin/main` rule it replaced closed nothing, since the same wrong answer
+was still reachable while obeying it, and this document's own review reproduced
+it at 17 files against 1. Re-review only codifies a loop the previous protocol
+already implied, and that loop had already caught the launcher fix that stopped
+an unowned process. Silent truncation has no rule of its own and leans on the
+same general reviewer duty that missed it the first time. The surviving mutant
+has no rule at all, and no gate here runs mutation testing. Weigh these rules by
+what they mechanically prevent.
