@@ -131,6 +131,62 @@ constexpr double kLightX = 0.35;
 constexpr double kLightY = 0.85;
 constexpr double kLightZ = 0.40;
 
+// Whether the renderer applies the retail material render state recovered
+// in docs/MATERIALS.md.
+enum class MaterialStateMode {
+    // Every draw is opaque. Texel alpha reaches nothing but the diagnostic
+    // alpha_cutoff, and there is no blending. This is what the renderer has
+    // always done and it stays the default, so a frame rendered without
+    // selecting the retail state is byte for byte the frame of any earlier
+    // build.
+    off,
+    // Apply the proven state: the texture-info alpha test and its GREATER
+    // 0xAA rule, the texture-info blend selection, the flag-controlled
+    // coefficient gates, and the bounded transparent draw order. State is
+    // taken only from a draw's own resolved texture; a draw with no
+    // resolved texture has no proven state and stays opaque.
+    retail
+};
+
+// "off" or "retail".
+const char* material_state_mode_name(MaterialStateMode mode) noexcept;
+
+// Explicit values for the car-effect coefficients the retail data does not
+// yet yield. Nothing here is a retail value and the renderer never invents
+// one: the coefficient objects, the harmonic lighting and the EnvMapTex
+// cube map are all still undecoded (docs/MATERIALS.md). The defaults make
+// every term vanish, so selecting MaterialStateMode::retail alone changes
+// no coefficient. Supplying values is a diagnostic.
+struct MaterialCoefficients {
+    // diffuse_scale.w = alpha_min + vdotn * alpha_range. The effect uses it
+    // as the output alpha scale and as the environment term scale. The
+    // defaults 1 and 0 leave the source alpha equal to the texel alpha,
+    // which is the identity, not a claim about the retail coefficient.
+    double alpha_min = 1.0;
+    double alpha_range = 0.0;
+    // EnvmapMin and EnvmapRange, per channel, and the constant colour used
+    // in place of a cube-map sample. All-zero min and range mean no term.
+    double environment_min[3] = {0.0, 0.0, 0.0};
+    double environment_range[3] = {0.0, 0.0, 0.0};
+    unsigned char environment_color[3] = {0, 0, 0};
+    // EnvmapPower. The effect stores a float exponent; the reference takes
+    // only a whole number and evaluates it by repeated multiplication, so
+    // the frame does not depend on a C library pow().
+    std::uint32_t environment_power = 1;
+    // Stands for the runtime global the coefficient upload also tests
+    // before it keeps the environment vectors.
+    bool environment_enabled = true;
+};
+
+constexpr double kMaxMaterialCoefficient = 16.0;
+constexpr std::uint32_t kMaxEnvironmentPower = 64;
+
+// Checks that every coefficient is finite, that alpha_min, alpha_range and
+// the environment vectors are in 0..kMaxMaterialCoefficient, and that
+// environment_power is at most kMaxEnvironmentPower.
+bool validate_material_coefficients(
+    const MaterialCoefficients& coefficients, std::string& error);
+
 struct RenderOptions {
     std::uint32_t width = 1280;
     std::uint32_t height = 720;
@@ -145,6 +201,11 @@ struct RenderOptions {
     bool vertex_color = false;
     CullMode cull = CullMode::none;
     ShadingMode shading = ShadingMode::flat;
+    // Off by default; see MaterialStateMode. The alpha_cutoff above stays a
+    // separate diagnostic, and with the retail state selected a textured
+    // fragment must pass both tests.
+    MaterialStateMode material_state = MaterialStateMode::off;
+    MaterialCoefficients coefficients;
     unsigned char background[4] = {40, 44, 52, 255};
 };
 
@@ -159,8 +220,9 @@ struct RenderLimits {
     std::uint64_t max_pixel_tests = 1ULL << 32;
 };
 
-// Bytes allocated per frame pixel: RGBA8, f64 depth, u32 triangle id.
-constexpr std::uint64_t kFrameBytesPerPixel = 16;
+// Bytes allocated per frame pixel: RGBA8, f64 depth, u32 triangle id and
+// the u8 blended mark.
+constexpr std::uint64_t kFrameBytesPerPixel = 17;
 
 struct RenderStats {
     std::uint64_t meshes = 0;
@@ -171,6 +233,10 @@ struct RenderStats {
     std::uint64_t groups_unresolved = 0;
     std::uint64_t groups_unusable = 0;
     std::uint64_t groups_invalid = 0;
+    // Drawable groups the retail material state gave an alpha test or a
+    // blend. Both stay 0 with MaterialStateMode::off.
+    std::uint64_t groups_alpha_tested = 0;
+    std::uint64_t groups_blended = 0;
     std::uint64_t unresolved_hashes = 0;
     std::uint64_t triangles_submitted = 0;
     std::uint64_t triangles_resolved = 0;
@@ -191,8 +257,17 @@ struct RenderStats {
     std::uint64_t fragments_far_discarded = 0;
     std::uint64_t fragments_depth_failed = 0;
     std::uint64_t fragments_written = 0;
+    // Fragments written by a blended draw, and those of them that landed on
+    // a pixel a blended draw had already written. The second counter reports
+    // how much transparency stacks in the frame. It is a diagnostic, not a
+    // proof of order independence: a blended draw writes depth, as the
+    // retail path does, so the draw order also decides which later blended
+    // fragments are rejected outright. See docs/RENDERER.md.
+    std::uint64_t fragments_blended = 0;
+    std::uint64_t fragments_blend_overlap = 0;
     std::uint64_t pixels_drawn = 0;
     std::uint64_t pixels_fallback = 0;
+    std::uint64_t pixels_blended = 0;
     // Bounds of drawn pixels, inclusive; valid when pixels_drawn > 0.
     std::uint32_t min_x = 0;
     std::uint32_t min_y = 0;
@@ -210,6 +285,11 @@ public:
     const std::vector<double>& depth() const noexcept { return depth_; }
     // Id of the triangle that owns each pixel, kNoTriangle if none.
     const std::vector<std::uint32_t>& ids() const noexcept { return ids_; }
+    // 1 where a blended fragment has been written, 0 elsewhere. Always 0
+    // with MaterialStateMode::off.
+    const std::vector<unsigned char>& blended() const noexcept {
+        return blended_;
+    }
 
     // Validates the size against the limits before allocating.
     bool reset(
@@ -226,15 +306,31 @@ private:
     std::vector<unsigned char> rgba_;
     std::vector<double> depth_;
     std::vector<std::uint32_t> ids_;
+    std::vector<unsigned char> blended_;
 };
 
-// Per-triangle material state for the rasterizer.
+// Per-triangle material state for the rasterizer. Everything below the
+// shade factor is the retail material state; its defaults are the opaque
+// state, so a caller that does not set them gets the historical behaviour.
 struct RasterMaterial {
     const RenderTexture* texture = nullptr;  // null draws the fallback
     unsigned char fallback[4] = {255, 255, 255, 255};
     // Flat shade factor 0..256 applied to RGB.
     std::uint32_t shade = 256;
     bool fallback_pattern = true;
+    // Discard a textured fragment unless its source alpha is strictly
+    // above alpha_ref (D3DCMP_GREATER).
+    bool alpha_test = false;
+    std::uint8_t alpha_ref = kRenderAlphaRef;
+    RenderBlendMode blend = RenderBlendMode::disabled;
+    // Source alpha is the texel alpha times this factor, rounded and
+    // clamped to 0..255. 1 is the identity.
+    double alpha_scale = 1.0;
+    // Environment term for this triangle, in 0..255 units per channel and
+    // already scaled by everything but the texel alpha; the fragment adds
+    // environment[k] * texel_alpha / 255. Zero unless the environment gate
+    // keeps the term. It is added to textured fragments only.
+    double environment[3] = {0.0, 0.0, 0.0};
 };
 
 class Rasterizer {

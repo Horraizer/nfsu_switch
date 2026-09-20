@@ -427,6 +427,10 @@ int run_textures(const fs::path& path) {
                          nfsu::texture_alpha_blend(texture))
                   << '(' << static_cast<unsigned int>(texture.alpha_blend_mode)
                   << ')'
+                  << " layer=" << nfsu::texture_draw_layer(texture)
+                  << '(' << static_cast<unsigned int>(texture.layer_group)
+                  << ',' << static_cast<unsigned int>(texture.layer_order)
+                  << ')'
                   << " name_hash=" << name_hash_status(texture) << ' '
                   << texture.name << '\n';
     }
@@ -489,6 +493,10 @@ int run_pack_set(const fs::path& path) {
                       << nfsu::texture_alpha_blend_name(
                              nfsu::texture_alpha_blend(texture))
                       << '(' << static_cast<unsigned int>(texture.alpha_blend_mode)
+                      << ')'
+                      << " layer=" << nfsu::texture_draw_layer(texture)
+                      << '(' << static_cast<unsigned int>(texture.layer_group)
+                      << ',' << static_cast<unsigned int>(texture.layer_order)
                       << ')'
                       << " name_hash=" << name_hash_status(texture) << ' '
                       << texture.name << '\n';

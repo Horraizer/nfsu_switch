@@ -153,10 +153,19 @@ validated against a documented range. The same inputs and options always
 give a byte-identical file. Textures that are in none of the given sources
 are drawn with a hash-colored checker and counted; another texture is never
 substituted for them. By default texel alpha is ignored and decoded RGB is
-drawn opaquely. The retail texture alpha-test and blend selectors are
-decoded, but transparent draw ordering is not, so the CPU renderer does not
-apply them yet; `--alpha-cutoff 128` is a diagnostic alpha test. See
-`docs/MATERIALS.md`. Decoded textures are
+drawn opaquely, and `--alpha-cutoff 128` is a diagnostic alpha test.
+
+`--material-state retail` applies the car material render state recovered
+in `docs/MATERIALS.md`: the texture-info alpha test with its GREATER 0xAA
+rule, the texture-info blend selection, the retail draw queue order, and
+the flag-controlled coefficient gates. The retail order is recovered, not
+guessed: the queue buckets a material by two more texture-info bytes,
+batches by texture inside a bucket and keeps depth writes on for blended
+car draws. The undecoded coefficients are explicit options
+(`--material-alpha`, `--environment`, `--environment-color`,
+`--environment-global`) whose defaults make every term vanish, and the
+renderer never supplies a retail value for one. `off` is the default and
+its frame is byte for byte what it was before the option existed. Decoded textures are
 capped at 128 MiB in total, over all sources together. The viewer never overwrites an existing file:
 it creates `<out>.partial` exclusively and publishes it with a no-replace
 rename (Windows) or `link` (POSIX), and it refuses to write on other
