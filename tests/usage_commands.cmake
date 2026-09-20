@@ -2,7 +2,9 @@
 # src/main.cpp. An entry holds the dispatch name, the rest of the usage line
 # and the handler, and print_usage() composes the usage line out of the same
 # `name` field main() dispatches on, so a registered command is listed under
-# its own name whether or not its author wrote any usage text at all.
+# its own name whether or not its author wrote any usage text at all. It also
+# terminates a `tail` that does not terminate itself, so that usage line
+# starts a line of its own whatever the entry before it printed.
 #
 # That construction is what this check measures, rather than trusting it. The
 # check takes three inventories from three places that a half-finished
@@ -179,6 +181,15 @@ split_lines("${usage}" usage_lines)
 # The whole first word after the prefix is captured, not just the part of it
 # that looks like a name, so a name outside name_pattern is reported instead
 # of being silently trimmed to a prefix of itself.
+#
+# print_usage() opens a line with "  nfsu_probe " for every entry in the table
+# and for nothing else, so every such line has to yield a name here. A line
+# that opens one and then names nothing - an entry whose `name` is empty, or
+# begins with a space - is a hard error rather than a line this loop passes
+# over: passing over it would take the entry out of `listed` while leaving it
+# dispatched, which is the one defect the three inventories exist to catch and
+# the one they cannot catch by comparison, because an entry the table reader
+# also cannot see is missing from both sides at once.
 set(listed "")
 foreach(line IN LISTS usage_lines)
     if(line MATCHES "^  nfsu_probe ([^ ]+)")
@@ -193,6 +204,12 @@ foreach(line IN LISTS usage_lines)
             message(FATAL_ERROR "the usage text lists '${name}' more than once")
         endif()
         list(APPEND listed "${name}")
+    elseif(line MATCHES "^  nfsu_probe")
+        message(FATAL_ERROR
+            "the usage text has a command line that names no command: "
+            "'${line}'. An entry in the kCommands table has an empty name, or "
+            "one that starts with a space, so nothing can list or document "
+            "it under the name it is dispatched by.\n${usage}")
     endif()
 endforeach()
 

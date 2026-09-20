@@ -1693,10 +1693,12 @@ struct Command {
     // leading "  nfsu_probe ", no trailing newline: print_usage() supplies
     // both. Empty is allowed and still produces a listed line.
     std::string_view args;
-    // Continuation lines printed under the usage line, each already indented
-    // and newline-terminated. Empty for a command that fits on one line. A
-    // line here is documentation only; the usage check reads the command
-    // inventory from the composed usage lines, never from this text.
+    // Continuation lines printed under the usage line, each already indented.
+    // Empty for a command that fits on one line. print_usage() terminates a
+    // last line that does not terminate itself, so a missing trailing newline
+    // here cannot run the next entry's usage line onto this text. A line here
+    // is documentation only; the usage check reads the command inventory from
+    // the composed usage lines, never from this text.
     std::string_view tail;
     int (*run)(int argc, char** argv);
 };
@@ -1830,6 +1832,16 @@ void print_usage() {
     for (const Command& command : kCommands) {
         std::cout << "  nfsu_probe " << command.name << command.args << "\n"
                   << command.tail;
+        // A `tail` whose last line is unterminated would otherwise leave the
+        // next entry's usage line glued to the end of it, where nothing reads
+        // it as a usage line any more and the entry drops out of the listing
+        // without dropping out of the dispatch. Terminating it here is what
+        // makes "one entry, one usage line of its own" hold for every entry
+        // however its text was written, rather than for every entry whose
+        // author remembered.
+        if (!command.tail.empty() && command.tail.back() != '\n') {
+            std::cout << '\n';
+        }
     }
 }
 
