@@ -1108,8 +1108,8 @@ int main(int argc, char** argv) {
             return 2;
         }
         nfsu::SkinMarkerCache markers;
-        if (!nfsu::compose_runtime_skin(skin_inputs, target_surface, markers, skin_texture,
-                                        skin_error)) {
+        if (!nfsu::compose_runtime_skin(sources, skin_inputs, target_surface, markers,
+                                        skin_texture, skin_error)) {
             std::cerr << "error: skin composite: " << skin_error << '\n';
             return 2;
         }
@@ -1280,6 +1280,13 @@ int main(int argc, char** argv) {
         }
         for (const nfsu::UnusableClaim& claim : skin_binding.displaced_claims) {
             std::cout << "skin displaced claim: hash " << hex32(claim.hash) << " source "
+                      << claim.source << " pack " << claim.pack << " texture "
+                      << claim.record << '\n';
+        }
+        // A displaced record may have claimed hashes this run never bound.
+        // Those are kept as unusable claims, so they are reported too.
+        for (const nfsu::UnusableClaim& claim : skin_binding.preserved_claims) {
+            std::cout << "skin preserved claim: hash " << hex32(claim.hash) << " source "
                       << claim.source << " pack " << claim.pack << " texture "
                       << claim.record << '\n';
         }

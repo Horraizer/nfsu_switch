@@ -438,7 +438,7 @@ bool run_pipeline(const nfsu::BodySkinSelection& selection,
         return false;
     }
     nfsu::SkinMarkerCache markers;
-    return nfsu::compose_runtime_skin(assembled, surface, markers, skin, error);
+    return nfsu::compose_runtime_skin(sources, assembled, surface, markers, skin, error);
 }
 
 // ---------------------------------------------------------------------------
@@ -662,6 +662,250 @@ void test_target_surface() {
     check(surface.pixels.empty(), "a refused payload leaves no pixels");
 }
 
+// The pack that holds the target must still be paired with the bytes the
+// read takes its payload from: parsed from exactly that buffer, at exactly
+// that size, with its record tables read. Without that pairing a buffer
+// substituted for one of the same size is decoded under the provenance of a
+// record it does not hold.
+void test_target_surface_pairing() {
+    Fixture fixture = make_fixture();
+    bool planned = false;
+    const nfsu::SkinTextureProvenance target =
+        resolve_target(fixture.sources, fixture_selection(), planned);
+    check(planned, "the pairing fixture plan succeeds");
+
+    // Another image of exactly the same size holding different pixels. Every
+    // offset the record carries still lands inside it, so nothing the read
+    // bounds-checks would catch this; what is wrong is that these are not
+    // the bytes the pack was parsed from.
+    const Bytes substituted = build_pack({argb_ramp(kTargetName, 0x01020304U)});
+    check_size(substituted.size(), fixture.shared->bytes.size(),
+               "the substituted image is exactly the same size");
+    check(substituted != fixture.shared->bytes,
+          "the substituted image is not the original");
+
+    std::vector<nfsu::SkinInputSource> substituted_sources = fixture.sources;
+    substituted_sources[2].bytes = &substituted;
+    nfsu::SkinTargetSurface surface;
+    std::string error;
+    check(!nfsu::read_skin_target_surface(substituted_sources, target,
+                                          nfsu::SkinInputLimits{}, surface, error),
+          "a source whose bytes were substituted is refused");
+    check(error.find("not parsed from the bytes") != std::string::npos,
+          "the refusal names the pairing rule");
+    check(surface.pixels.empty(), "nothing was read from the substituted bytes");
+    check(!surface.identity.resolved, "a refused read carries no identity");
+
+    // Not a vacuous refusal: parsed properly, those same bytes hold a
+    // different level 0, so accepting them would have composited pixels the
+    // provenance does not describe.
+    auto rogue = make_source({argb_ramp(kTargetName, 0x01020304U)});
+    std::vector<nfsu::SkinInputSource> rogue_sources = fixture.sources;
+    rogue_sources[2] = source_of(*rogue, nfsu::SkinSourceKind::other, "shared-1");
+    const nfsu::SkinTextureProvenance rogue_target =
+        resolve_target(rogue_sources, fixture_selection(), planned);
+    check(planned, "the substituted image plans on its own sources");
+    nfsu::SkinTargetSurface rogue_surface;
+    check(nfsu::read_skin_target_surface(rogue_sources, rogue_target,
+                                         nfsu::SkinInputLimits{}, rogue_surface, error),
+          "the substituted image reads on its own sources: " + error);
+    check(rogue_surface.pixels != target_pixels(),
+          "the substituted image really holds other pixels");
+
+    // The same buffer at a size the pack was not parsed at.
+    nfsu::TexturePack resized = fixture.shared->pack;
+    resized.file_size += 1;
+    std::vector<nfsu::SkinInputSource> resized_sources = fixture.sources;
+    resized_sources[2].packs[0] = &resized;
+    check(!nfsu::read_skin_target_surface(resized_sources, target,
+                                          nfsu::SkinInputLimits{}, surface, error),
+          "a pack whose file size is not the source's is refused");
+    check(error.find("not parsed from the bytes") != std::string::npos,
+          "the size refusal names the pairing rule");
+
+    // A pack whose record tables were never read: its records are unknown,
+    // so nothing may be located in it.
+    nfsu::TexturePack unparsed = fixture.shared->pack;
+    unparsed.tables_parsed = false;
+    std::vector<nfsu::SkinInputSource> unparsed_sources = fixture.sources;
+    unparsed_sources[2].packs[0] = &unparsed;
+    check(!nfsu::read_skin_target_surface(unparsed_sources, target,
+                                          nfsu::SkinInputLimits{}, surface, error),
+          "a pack whose record tables were not parsed is refused");
+    check(error.find("record tables") != std::string::npos,
+          "the refusal names the unparsed tables");
+
+    // A pack no parser ever ran on, paired with an empty buffer. Both
+    // sides of the pointer comparison would be null and both sizes zero,
+    // so without the earlier check this would pass the pairing and two
+    // unrelated sources would carry the same identity.
+    const Bytes nothing;
+    nfsu::TexturePack unparsed_pack;
+    unparsed_pack.tables_parsed = true;
+    unparsed_pack.textures = fixture.shared->pack.textures;
+    nfsu::SkinInputSource empty_source;
+    empty_source.bytes = &nothing;
+    empty_source.packs.push_back(&unparsed_pack);
+    empty_source.kind = nfsu::SkinSourceKind::other;
+    empty_source.path = "shared-1";
+    std::vector<nfsu::SkinInputSource> empty_sources = fixture.sources;
+    empty_sources[2] = empty_source;
+    check(!nfsu::read_skin_target_surface(empty_sources, target, nfsu::SkinInputLimits{},
+                                          surface, error),
+          "a source with no parsed bytes is refused");
+    check(error.find("no parsed bytes") != std::string::npos,
+          "the refusal says the source has no parsed bytes");
+    check(!nfsu::skin_target_identity(empty_sources, target).resolved,
+          "a source with no parsed bytes yields no identity");
+
+    // The untouched fixture still reads, so the refusals above are the
+    // pairing checks and not something broken in the fixture.
+    check(nfsu::read_skin_target_surface(fixture.sources, target,
+                                         nfsu::SkinInputLimits{}, surface, error),
+          "the paired source still reads: " + error);
+    check(surface.identity.resolved, "a successful read carries its identity");
+    check(nfsu::same_skin_target(surface.identity,
+                                 nfsu::skin_target_identity(fixture.sources, target)),
+          "the identity is the record the provenance names");
+    check(surface.identity.source_bytes == fixture.shared->bytes.data(),
+          "the identity names the buffer the pixels were read from");
+    check_size(surface.identity.source_byte_size, fixture.shared->bytes.size(),
+               "and the size that buffer was parsed at");
+    check(!nfsu::skin_target_identity(substituted_sources, target).resolved,
+          "an unpaired source yields no identity");
+}
+
+// Two valid records of the same format and the same size are
+// indistinguishable once their level 0 is in a vector, so the surface has
+// to say which record it came from and the composite has to check it.
+void test_swapped_target() {
+    const char* const kOtherName = "DUMMY_SKIN2";
+    std::vector<std::uint32_t> other_pixels = target_pixels();
+    for (std::size_t i = nfsu::kSkinMarkerSurface.size(); i < other_pixels.size(); ++i) {
+        other_pixels[i] = 0xBF00FF00U;
+    }
+    Fixture fixture = make_fixture();
+    fixture.shared = make_source({argb_spec(kTargetName, target_pixels()),
+                                  argb_spec(kOtherName, other_pixels)});
+    fixture.sources[2] =
+        source_of(*fixture.shared, nfsu::SkinSourceKind::other, "shared-1");
+
+    // Inputs assembled for DUMMY_SKIN1.
+    const nfsu::SkinInputLimits limits;
+    std::string error;
+    nfsu::AssembledSkinInputs assembled;
+    check(nfsu::assemble_body_skin_inputs(fixture_selection(), fixture.sources, limits,
+                                          assembled, error),
+          "the swap fixture assembles: " + error);
+
+    // The surface of DUMMY_SKIN2, which is valid, the same size and proves
+    // the same path, so nothing but the identity separates the two.
+    nfsu::BodySkinSelection other_selection = fixture_selection();
+    other_selection.target_hash = nfsu::bin_hash(kOtherName);
+    bool planned = false;
+    const nfsu::SkinTextureProvenance other_target =
+        resolve_target(fixture.sources, other_selection, planned);
+    check(planned, "the second target plans");
+    nfsu::SkinTargetSurface other_surface;
+    check(nfsu::read_skin_target_surface(fixture.sources, other_target, limits,
+                                         other_surface, error),
+          "the second target surface is read: " + error);
+    check(other_surface.choice.proven &&
+              other_surface.choice.path == nfsu::SkinTargetType::type32,
+          "the second target proves the same path");
+    check_u32(other_surface.width, assembled.request().width,
+              "the two targets are the same width");
+    check_u32(other_surface.height, assembled.request().height,
+              "the two targets are the same height");
+    check(!nfsu::same_skin_target(other_surface.identity,
+                                  nfsu::skin_target_identity(
+                                      fixture.sources,
+                                      assembled.plan().target_texture)),
+          "the two targets are different records");
+
+    nfsu::SkinMarkerCache markers;
+    nfsu::RuntimeSkin swapped;
+    check(!nfsu::compose_runtime_skin(fixture.sources, assembled, other_surface, markers,
+                                      swapped, error),
+          "a surface read from another record is refused");
+    check(error.find("was not read from the record") != std::string::npos,
+          "the refusal says the surface is not the assembled target");
+    check(swapped.rgba.empty(), "a refused swap produces no pixels");
+
+    // The matching pair still composes, so the check refuses the swap and
+    // nothing else.
+    nfsu::SkinTargetSurface own;
+    check(nfsu::read_skin_target_surface(fixture.sources, assembled.plan().target_texture,
+                                         limits, own, error),
+          "the assembled target's own surface is read: " + error);
+    check(own.pixels != other_surface.pixels,
+          "the two targets really hold different pixels");
+    nfsu::SkinMarkerCache own_markers;
+    nfsu::RuntimeSkin composed;
+    check(nfsu::compose_runtime_skin(fixture.sources, assembled, own, own_markers,
+                                     composed, error),
+          "the matching pair composes: " + error);
+    check_u32(composed.target_hash, target_hash(),
+              "the composite is labelled with its own target");
+
+    // A surface whose identity was never filled, which is what a hand-built
+    // one carries, is refused rather than trusted.
+    nfsu::SkinTargetSurface anonymous = own;
+    anonymous.identity = nfsu::SkinTargetIdentity{};
+    nfsu::SkinMarkerCache anonymous_markers;
+    nfsu::RuntimeSkin refused;
+    check(!nfsu::compose_runtime_skin(fixture.sources, assembled, anonymous,
+                                      anonymous_markers, refused, error),
+          "a surface with no identity is refused");
+
+    // The swap that needs no second record: one record, two source lists.
+    // `rogue` holds the same two textures under the same names at the same
+    // sizes, so its pack has exactly the same layout and every field the
+    // provenance carries matches; only the pixels, and the buffer they live
+    // in, differ. Without the buffer in the identity this composite would
+    // succeed and bind the rogue pixels under the fixture's target hash.
+    auto rogue = make_source({argb_spec(kTargetName, other_pixels),
+                              argb_spec(kOtherName, target_pixels())});
+    std::vector<nfsu::SkinInputSource> rogue_sources = fixture.sources;
+    rogue_sources[2] = source_of(*rogue, nfsu::SkinSourceKind::other, "shared-1");
+    bool rogue_planned = false;
+    const nfsu::SkinTextureProvenance rogue_target =
+        resolve_target(rogue_sources, fixture_selection(), rogue_planned);
+    check(rogue_planned, "the rogue list plans");
+    nfsu::SkinTargetSurface rogue_surface;
+    check(nfsu::read_skin_target_surface(rogue_sources, rogue_target, limits,
+                                         rogue_surface, error),
+          "the rogue list reads its own target: " + error);
+    check(rogue_surface.pixels != own.pixels,
+          "the rogue target really holds other pixels");
+    check(nfsu::same_skin_target(rogue_surface.identity,
+                                 nfsu::skin_target_identity(rogue_sources, rogue_target)),
+          "the rogue surface matches its own list");
+    nfsu::SkinMarkerCache rogue_markers;
+    nfsu::RuntimeSkin rogue_skin;
+    check(!nfsu::compose_runtime_skin(fixture.sources, assembled, rogue_surface,
+                                      rogue_markers, rogue_skin, error),
+          "a surface read from another source list is refused");
+    check(error.find("different source lists") != std::string::npos,
+          "the refusal names the two lists");
+    check(rogue_skin.rgba.empty(), "a refused cross-list surface produces no pixels");
+
+    // The check is symmetric: naming the rogue list while handing over the
+    // fixture's own surface is refused as well, so it is the pair that has
+    // to agree and not one side of it.
+    //
+    // What this does not prove, because the layer does not check it: that
+    // `sources` is the list `assembled` was built from. Only the target
+    // record is re-located in it, and the layer pixels the composite uses
+    // are buffers `assembled` owns, so a list differing anywhere but the
+    // target changes nothing. See the header.
+    nfsu::SkinMarkerCache other_list_markers;
+    nfsu::RuntimeSkin other_list_skin;
+    check(!nfsu::compose_runtime_skin(rogue_sources, assembled, own, other_list_markers,
+                                      other_list_skin, error),
+          "naming the rogue list with the fixture's own surface is refused");
+}
+
 // ---------------------------------------------------------------------------
 // Composition
 // ---------------------------------------------------------------------------
@@ -732,7 +976,8 @@ void test_compose() {
     mismatched.height = 8;
     nfsu::RuntimeSkin refused;
     nfsu::SkinMarkerCache fresh;
-    check(!nfsu::compose_runtime_skin(assembled, mismatched, fresh, refused, error),
+    check(!nfsu::compose_runtime_skin(fixture.sources, assembled, mismatched, fresh,
+                                      refused, error),
           "a target of other dimensions is refused");
     check(refused.rgba.empty(), "a refused composite leaves no pixels");
 
@@ -740,7 +985,8 @@ void test_compose() {
     nfsu::SkinTargetSurface unproven = surface;
     unproven.choice = nfsu::SkinTargetChoice{};
     unproven.choice.reason = "test";
-    check(!nfsu::compose_runtime_skin(assembled, unproven, fresh, refused, error),
+    check(!nfsu::compose_runtime_skin(fixture.sources, assembled, unproven, fresh,
+                                      refused, error),
           "an unproven target is refused");
 }
 
@@ -1064,6 +1310,183 @@ void test_binding_displaces() {
           "the reported index names the texture that claims the bound hash");
 }
 
+// What a material slot naming `hash` would resolve to in `set`, which is
+// the behaviour a binding must not change for a hash it never named.
+nfsu::BindingKind binding_of(const nfsu::RenderTextureSet& set, std::uint32_t hash) {
+    nfsu::Mesh mesh;
+    mesh.texture_hashes = {hash};
+    nfsu::MeshMaterial slot;
+    slot.texture_slot = 0;
+    return nfsu::resolve_material(mesh, slot, set).kind;
+}
+
+// A record whose three hash fields disagree claims all three (see
+// RenderTexture::claims). One bound hash among them takes the whole record
+// away, so the other two have to be kept as unusable claims or they would
+// silently stop matching anything.
+void test_binding_preserves_claims() {
+    const nfsu::RuntimeSkin skin = fixture_skin();
+    const std::uint32_t alias = 0x33333333U;
+    const std::uint32_t other = 0x44444444U;
+
+    nfsu::RenderTextureSet set;
+    set.textures.push_back(pack_texture(0x11111111U, 2, 7, 0));
+    nfsu::RenderTexture multi = pack_texture(alias, 2, 9, 1);
+    // claims are in the order info +36, hash table +0, blob table +0.
+    // info +36 is an unbound hash, which RenderTexture::hash repeats
+    // because it is that same field; the hash table holds the bound one and
+    // the blob table a second unbound one. Only body_hash() is bound.
+    multi.claims[0] = alias;
+    multi.claims[1] = body_hash();
+    multi.claims[2] = other;
+    multi.claim_count = 3;
+    multi.valid = false;
+    multi.problem = "three disagreeing hash fields";
+    multi.pack = 3;
+    multi.record = 5;
+    set.textures.push_back(multi);
+    set.decoded_bytes = rgba_sum(set);
+
+    check(binding_of(set, alias) == nfsu::BindingKind::unusable,
+          "the first unbound alias is unusable before the binding");
+    check(binding_of(set, other) == nfsu::BindingKind::unusable,
+          "the second unbound alias is unusable before the binding");
+    check(binding_of(set, body_hash()) == nfsu::BindingKind::unusable,
+          "the bound hash is unusable before the binding");
+
+    nfsu::RuntimeSkinBinding binding;
+    std::string error;
+    check(nfsu::bind_runtime_skin(skin, {skin.target_hash, body_hash()}, 4, set, binding,
+                                  error),
+          "the skin binds over a multi-claim record: " + error);
+    check_size(binding.displaced.size(), 1U, "the multi-claim record is displaced");
+    check_u32(binding.displaced[0].hash, body_hash(),
+              "it is displaced under the bound hash it claimed");
+    // Two, not three: info +36 and the hash table name the same hash, and
+    // one hash is one claim.
+    check_size(binding.preserved_claims.size(), 2U,
+               "both unbound claims are preserved, the repeated one once");
+    if (binding.preserved_claims.size() == 2U) {
+        check_u32(binding.preserved_claims[0].hash, alias,
+                  "the record's own hash comes first");
+        check_u32(binding.preserved_claims[1].hash, other, "then the remaining claim");
+        check_size(binding.preserved_claims[0].source, 1U, "the preserved claim's source");
+        check_size(binding.preserved_claims[0].pack, 3U, "the preserved claim's pack");
+        check_size(binding.preserved_claims[0].record, 5U, "the preserved claim's record");
+    } else {
+        check(false, "the preserved claims cannot be inspected");
+    }
+    check_size(set.unusable_claims.size(), 2U, "the preserved claims are in the set");
+
+    // The point of keeping them: a hash this binding never named resolves
+    // exactly as it did before.
+    check(binding_of(set, alias) == nfsu::BindingKind::unusable,
+          "the first unbound alias is still unusable after the binding");
+    check(binding_of(set, other) == nfsu::BindingKind::unusable,
+          "the second unbound alias is still unusable after the binding");
+    check(binding_of(set, body_hash()) == nfsu::BindingKind::resolved,
+          "the bound hash now resolves to the generated texture");
+    check(binding_of(set, skin.target_hash) == nfsu::BindingKind::resolved,
+          "the target hash resolves to the generated texture");
+    check(binding_of(set, 0x11111111U) == nfsu::BindingKind::resolved,
+          "the unrelated pack texture still resolves");
+    check(binding_of(set, 0x55555555U) == nfsu::BindingKind::unresolved,
+          "a hash nothing ever claimed is still unresolved");
+    check(set.decoded_bytes == rgba_sum(set),
+          "decoded_bytes still sums the retained textures");
+
+    // A hash the retained claim list already covers is not preserved a
+    // second time: one entry per hash is what the decode leaves, and
+    // resolve_material counts the claim list once however many entries
+    // hold the hash.
+    nfsu::RenderTextureSet already;
+    nfsu::RenderTexture covered = multi;
+    already.textures.push_back(covered);
+    already.unusable_claims.push_back(nfsu::UnusableClaim{alias, 9, 9, 9});
+    already.decoded_bytes = rgba_sum(already);
+    nfsu::RuntimeSkinBinding no_duplicate;
+    check(nfsu::bind_runtime_skin(skin, {skin.target_hash, body_hash()}, 4, already,
+                                  no_duplicate, error),
+          "the skin binds over a record whose claim is already held: " + error);
+    check_size(no_duplicate.preserved_claims.size(), 1U,
+               "only the hash the list did not already hold is preserved");
+    if (!no_duplicate.preserved_claims.empty()) {
+        check_u32(no_duplicate.preserved_claims[0].hash, other,
+                  "and it is the one that was not held");
+    }
+    check_size(already.unusable_claims.size(), 2U, "the claim list holds each hash once");
+    check(binding_of(already, alias) == nfsu::BindingKind::unusable,
+          "the already-held hash is still unusable");
+    check(binding_of(already, other) == nfsu::BindingKind::unusable,
+          "the newly preserved hash is unusable");
+
+    // Two removed records claiming one unbound hash give it one entry too.
+    nfsu::RenderTextureSet twice;
+    nfsu::RenderTexture first = pack_texture(body_hash(), 2, 9, 1);
+    first.claims[0] = body_hash();
+    first.claims[1] = other;
+    first.claim_count = 2;
+    first.valid = false;
+    nfsu::RenderTexture second = pack_texture(skin.target_hash, 2, 9, 2);
+    second.claims[0] = skin.target_hash;
+    second.claims[1] = other;
+    second.claim_count = 2;
+    second.valid = false;
+    twice.textures.push_back(first);
+    twice.textures.push_back(second);
+    twice.decoded_bytes = rgba_sum(twice);
+    check(binding_of(twice, other) == nfsu::BindingKind::unusable,
+          "the shared unbound hash is unusable before the binding");
+    nfsu::RuntimeSkinBinding shared_hash;
+    check(nfsu::bind_runtime_skin(skin, {skin.target_hash, body_hash()}, 4, twice,
+                                  shared_hash, error),
+          "the skin binds over two records sharing an unbound hash: " + error);
+    check_size(shared_hash.displaced.size(), 2U, "both records are displaced");
+    check_size(shared_hash.preserved_claims.size(), 1U,
+               "the shared unbound hash is preserved once");
+    check(binding_of(twice, other) == nfsu::BindingKind::unusable,
+          "the shared unbound hash is still unusable");
+
+    // A record all of whose claims are bound leaves nothing behind.
+    nfsu::RenderTextureSet all_bound;
+    nfsu::RenderTexture both = pack_texture(skin.target_hash, 2, 9, 1);
+    both.claims[0] = skin.target_hash;
+    both.claims[1] = body_hash();
+    both.claim_count = 2;
+    both.valid = false;
+    all_bound.textures.push_back(both);
+    all_bound.decoded_bytes = rgba_sum(all_bound);
+    nfsu::RuntimeSkinBinding nothing_kept;
+    check(nfsu::bind_runtime_skin(skin, {skin.target_hash, body_hash()}, 4, all_bound,
+                                  nothing_kept, error),
+          "a record whose every claim is bound binds: " + error);
+    check(nothing_kept.preserved_claims.empty(),
+          "a record with no unbound claim preserves nothing");
+    check(all_bound.unusable_claims.empty(), "and adds nothing to the set");
+
+    // A refused binding preserves nothing either, because it changes
+    // nothing at all. The set carries both a claimant and existing claims,
+    // so there is something for a refusal to have damaged.
+    nfsu::RenderTextureSet untouched;
+    untouched.textures.push_back(multi);
+    untouched.unusable_claims.push_back(nfsu::UnusableClaim{alias, 7, 7, 7});
+    untouched.unusable_claims.push_back(nfsu::UnusableClaim{body_hash(), 8, 8, 8});
+    untouched.decoded_bytes = rgba_sum(untouched);
+    nfsu::RuntimeSkinBinding refused;
+    check(!nfsu::bind_runtime_skin(skin, {body_hash()}, 4, untouched, refused, error),
+          "a malformed hash list is still refused");
+    check(refused.preserved_claims.empty(), "a refused binding preserves nothing");
+    check_size(untouched.textures.size(), 1U,
+               "a refused binding leaves the textures alone");
+    check_size(untouched.unusable_claims.size(), 2U,
+               "a refused binding leaves the claims alone");
+    check(untouched.unusable_claims[0].hash == alias &&
+              untouched.unusable_claims[1].hash == body_hash(),
+          "a refused binding leaves the claim list in order");
+    check(untouched.decoded_bytes == rgba_sum(untouched),
+          "a refused binding leaves decoded_bytes alone");
+}
+
 // ---------------------------------------------------------------------------
 // The prepared scene
 // ---------------------------------------------------------------------------
@@ -1225,12 +1648,15 @@ void test_prepared_scene() {
 int main() {
     test_target_path();
     test_target_surface();
+    test_target_surface_pairing();
+    test_swapped_target();
     test_compose();
     test_source_priority();
     test_fallback();
     test_missing_target();
     test_binding_rules();
     test_binding_displaces();
+    test_binding_preserves_claims();
     test_prepared_scene();
     if (g_failures != 0) {
         std::cerr << g_failures << " failure(s)\n";

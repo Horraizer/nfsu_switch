@@ -22,6 +22,12 @@ std::string hex32(std::uint32_t value) {
     return buffer;
 }
 
+// The size of RenderTexture::claims. A record answers to its own hash
+// field as well, which RenderTexture::claims_hash also counts, so one more
+// slot than this holds every hash one texture can answer to.
+constexpr std::size_t kClaimSlots =
+    std::tuple_size<decltype(RenderTexture::claims)>::value;
+
 std::uint32_t read_u32_le(const unsigned char* data) noexcept {
     return static_cast<std::uint32_t>(data[0]) |
            (static_cast<std::uint32_t>(data[1]) << 8U) |
@@ -29,20 +35,158 @@ std::uint32_t read_u32_le(const unsigned char* data) noexcept {
            (static_cast<std::uint32_t>(data[3]) << 24U);
 }
 
-// The record the provenance names, or null when the source list is not the
-// one the provenance was resolved against.
-const TextureRecord* record_at(
+// The identity of a record located in a source list, filled from the
+// record, its pack and its source. Every field is a copy, so neither side
+// of the comparison below derives anything.
+SkinTargetIdentity identity_of(
+    std::size_t source_index,
+    std::size_t pack_index,
+    const SkinInputSource& source,
+    const TexturePack& pack,
+    const TextureRecord& record) noexcept {
+    SkinTargetIdentity out;
+    out.resolved = true;
+    out.source_index = source_index;
+    out.pack_index = pack_index;
+    // locate_target has already refused a source with no bytes, so this
+    // pointer is neither null nor the data() of an empty vector.
+    out.source_bytes = source.bytes->data();
+    out.source_byte_size = source.bytes->size();
+    out.pack_root_offset = pack.root_offset;
+    out.pack_hash = pack.pack_hash;
+    out.record_index = record.index;
+    out.record_hash = record.hash;
+    out.table_hash = record.table_hash;
+    out.info_offset = record.info_offset;
+    out.storage = record.storage;
+    out.format = record.format;
+    out.format_code = record.format_code;
+    out.d3d_format = record.d3d_format;
+    out.width = record.width;
+    out.height = record.height;
+    out.mip_count = record.mip_count;
+    out.data_size = record.data_size;
+    out.palette_bytes = record.palette_size;
+    out.top_level_size = record.top_level_size;
+    out.blob_offset = record.blob_offset;
+    out.blob_size = record.blob_size;
+    return out;
+}
+
+// The identity a provenance states, which is everything but the buffer: a
+// provenance is a position and a shape, and does not carry the bytes it was
+// resolved against.
+SkinTargetIdentity provenance_identity(const SkinTextureProvenance& target) noexcept {
+    SkinTargetIdentity out;
+    if (!target.resolved) {
+        return out;
+    }
+    out.resolved = true;
+    out.source_index = target.source_index;
+    out.pack_index = target.pack_index;
+    out.pack_root_offset = target.pack_root_offset;
+    out.pack_hash = target.pack_hash;
+    out.record_index = target.record_index;
+    out.record_hash = target.record_hash;
+    out.table_hash = target.table_hash;
+    out.info_offset = target.info_offset;
+    out.storage = target.storage;
+    out.format = target.format;
+    out.format_code = target.format_code;
+    out.d3d_format = target.d3d_format;
+    out.width = target.width;
+    out.height = target.height;
+    out.mip_count = target.mip_count;
+    out.data_size = target.data_size;
+    out.palette_bytes = target.record_palette_bytes;
+    out.top_level_size = target.top_level_size;
+    out.blob_offset = target.blob_offset;
+    out.blob_size = target.blob_size;
+    return out;
+}
+
+// Everything but the buffer, for the two sides that are known to share one.
+bool same_record(const SkinTargetIdentity& a, const SkinTargetIdentity& b) noexcept {
+    return a.resolved && b.resolved && a.source_index == b.source_index &&
+           a.pack_index == b.pack_index && a.pack_root_offset == b.pack_root_offset &&
+           a.pack_hash == b.pack_hash && a.record_index == b.record_index &&
+           a.record_hash == b.record_hash && a.table_hash == b.table_hash &&
+           a.info_offset == b.info_offset && a.storage == b.storage &&
+           a.format == b.format && a.format_code == b.format_code &&
+           a.d3d_format == b.d3d_format && a.width == b.width && a.height == b.height &&
+           a.mip_count == b.mip_count && a.data_size == b.data_size &&
+           a.palette_bytes == b.palette_bytes && a.top_level_size == b.top_level_size &&
+           a.blob_offset == b.blob_offset && a.blob_size == b.blob_size;
+}
+
+std::string describe_identity(const SkinTargetIdentity& identity) {
+    if (!identity.resolved) {
+        return "no record";
+    }
+    // The pack root offset and the buffer size are in here because two
+    // identities can differ in nothing else: two genuine roots parsed from
+    // one file share a pack index, and two source lists share everything
+    // but the buffer.
+    return "source " + std::to_string(identity.source_index) + " pack " +
+           std::to_string(identity.pack_index) + " at " +
+           std::to_string(identity.pack_root_offset) + " record " +
+           std::to_string(identity.record_index) + " hash " +
+           hex32(identity.record_hash) + " code " + hex8(identity.format_code) + " " +
+           std::to_string(identity.width) + "x" + std::to_string(identity.height) +
+           " of a " + std::to_string(identity.source_byte_size) + " byte source";
+}
+
+// The record the provenance names, with its identity, or null with `error`
+// set when this source list is not the one the provenance was resolved
+// against. `identity` is left unresolved on every failure.
+const TextureRecord* locate_target(
     const std::vector<SkinInputSource>& sources,
-    const SkinTextureProvenance& target) noexcept {
+    const SkinTextureProvenance& target,
+    SkinTargetIdentity& identity,
+    std::string& error) {
+    identity = SkinTargetIdentity{};
+    const char* const not_here =
+        "the target provenance does not name a record of these sources";
     if (target.source_index >= sources.size()) {
+        error = not_here;
         return nullptr;
     }
     const SkinInputSource& source = sources[target.source_index];
     if (source.bytes == nullptr || target.pack_index >= source.packs.size()) {
+        error = not_here;
         return nullptr;
     }
     const TexturePack* pack = source.packs[target.pack_index];
     if (pack == nullptr) {
+        error = not_here;
+        return nullptr;
+    }
+    // The bytes the payload is read from must be the ones the pack was
+    // parsed from, at the size it was parsed at, and the pack's record
+    // tables must have been read. The first two are the pairing rule
+    // plan_body_skin_inputs and decode_sources both enforce; the third is
+    // required by plan_body_skin_inputs, while decode_sources instead
+    // treats it as an incomplete source. This read needs all three: a
+    // buffer substituted for one of the same size stays inside every bound
+    // that texture_payload checks, so it would be decoded through offsets
+    // that describe a different file, under the provenance of a record that
+    // file does not hold.
+    // A pack with no parse source is one no parser ever ran on, and an
+    // empty buffer has a data() that is null or unusable. Either would make
+    // the pairing below compare null against null and pass, which would let
+    // two unrelated sources carry the same identity.
+    if (pack->parse_source == nullptr || source.bytes->empty()) {
+        error = "the target source has no parsed bytes";
+        return nullptr;
+    }
+    if (pack->parse_source != source.bytes->data() ||
+        pack->file_size != source.bytes->size()) {
+        error = "the target source's pack was not parsed from the bytes of that source";
+        return nullptr;
+    }
+    if (!pack->tables_parsed) {
+        error = "the target source's pack has no parsed record tables, so its records "
+                "are unknown";
         return nullptr;
     }
     const TextureRecord* found = nullptr;
@@ -65,21 +209,43 @@ const TextureRecord* record_at(
     // identifiers: a re-encoded variant of the same pack keeps the name and
     // the fixed-stride info-record offset, so a record of another format
     // would otherwise be read with the level size of the one the path was
-    // chosen from.
-    if (found == nullptr || found->hash != target.record_hash ||
-        found->info_offset != target.info_offset || found->format != target.format ||
-        found->format_code != target.format_code ||
-        found->d3d_format != target.d3d_format || found->width != target.width ||
-        found->height != target.height || found->data_size != target.data_size ||
-        found->storage != target.storage || found->blob_offset != target.blob_offset ||
-        found->blob_size != target.blob_size ||
-        found->mip_count != target.mip_count) {
+    // chosen from. The comparison is the same SkinTargetIdentity
+    // compose_runtime_skin makes between a surface and the assembled
+    // target, so the two cannot drift apart.
+    //
+    // The buffer is not compared here, because both sides of this
+    // comparison come from the same source list by construction. It is
+    // carried out of here instead, so that compose_runtime_skin can compare
+    // it against a surface that may have been read from another list.
+    if (found == nullptr) {
+        error = not_here;
         return nullptr;
     }
+    const SkinTargetIdentity located =
+        identity_of(target.source_index, target.pack_index, source, *pack, *found);
+    if (!same_record(located, provenance_identity(target))) {
+        error = not_here;
+        return nullptr;
+    }
+    identity = located;
     return found;
 }
 
 } // namespace
+
+SkinTargetIdentity skin_target_identity(
+    const std::vector<SkinInputSource>& sources,
+    const SkinTextureProvenance& target) {
+    SkinTargetIdentity out;
+    std::string ignored;
+    locate_target(sources, target, out, ignored);
+    return out;
+}
+
+bool same_skin_target(const SkinTargetIdentity& a, const SkinTargetIdentity& b) noexcept {
+    return same_record(a, b) && a.source_bytes == b.source_bytes &&
+           a.source_byte_size == b.source_byte_size;
+}
 
 bool choose_skin_target_path(const SkinTextureProvenance& target, SkinTargetChoice& choice) {
     choice = SkinTargetChoice{};
@@ -138,9 +304,11 @@ bool read_skin_target_surface(
         out = SkinTargetSurface{};
         return false;
     }
-    const TextureRecord* record = record_at(sources, target);
+    std::string located;
+    SkinTargetIdentity identity;
+    const TextureRecord* record = locate_target(sources, target, identity, located);
     if (record == nullptr) {
-        error = "the target provenance does not name a record of these sources";
+        error = located;
         out = SkinTargetSurface{};
         return false;
     }
@@ -222,10 +390,15 @@ bool read_skin_target_surface(
     }
     out.width = record->width;
     out.height = record->height;
+    // The identity of the record actually located, buffer included, so the
+    // surface carries where its pixels came from and compose_runtime_skin
+    // can refuse one that is not the assembled target's.
+    out.identity = identity;
     return true;
 }
 
 bool compose_runtime_skin(
+    const std::vector<SkinInputSource>& sources,
     const AssembledSkinInputs& inputs,
     const SkinTargetSurface& target,
     SkinMarkerCache& markers,
@@ -241,6 +414,27 @@ bool compose_runtime_skin(
         // Unreachable while choose_skin_target_path only ever proves the
         // type-32 path; kept so the refusal is a message and not a crash.
         error = "only the type-32 composite produces pixels whose lane order is proven";
+        return false;
+    }
+    // Pixels in a vector carry no provenance, so without this two valid
+    // same-sized type-32 records are interchangeable and the composite
+    // would label and bind one target's pixels as the other's. The target
+    // is re-located in `sources` rather than taken from the plan, so the
+    // comparison includes the buffer and decides a file and not a position.
+    SkinTargetIdentity wanted;
+    std::string located;
+    if (locate_target(sources, inputs.plan().target_texture, wanted, located) ==
+        nullptr) {
+        error = "the assembled inputs name no record of these sources: " + located;
+        return false;
+    }
+    if (!same_skin_target(target.identity, wanted)) {
+        error = "the target surface was not read from the record the assembled inputs "
+                "resolved: the surface holds " + describe_identity(target.identity) +
+                ", the inputs name " + describe_identity(wanted);
+        if (same_record(target.identity, wanted)) {
+            error += "; the same position in two different source lists";
+        }
         return false;
     }
     if (inputs.target() != target.choice.path) {
@@ -352,6 +546,37 @@ bool bind_runtime_skin(
             return std::find(hashes.begin(), hashes.end(), value) != hashes.end();
         };
 
+        // The claim list is rebuilt whole rather than edited in place: the
+        // claims that stay, in the order they were in, then the unbound
+        // claims of the records being removed. It replaces
+        // set.unusable_claims through a noexcept swap below, so the live
+        // list is never left half-rewritten and nothing reserves on it.
+        //
+        // It is built first because the texture scan below needs to know
+        // which hashes it already covers.
+        std::vector<UnusableClaim> kept_claims;
+        std::vector<UnusableClaim> displaced_claims;
+        for (const UnusableClaim& claim : set.unusable_claims) {
+            if (bound(claim.hash)) {
+                displaced_claims.push_back(claim);
+            } else {
+                kept_claims.push_back(claim);
+            }
+        }
+        const auto already_claimed = [&kept_claims, &binding](std::uint32_t value) {
+            for (const UnusableClaim& claim : kept_claims) {
+                if (claim.hash == value) {
+                    return true;
+                }
+            }
+            for (const UnusableClaim& claim : binding.preserved_claims) {
+                if (claim.hash == value) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
         // Collected before anything is changed, so a throw here leaves the
         // set exactly as it was.
         std::vector<std::size_t> remove_textures;
@@ -373,15 +598,44 @@ bool bind_runtime_skin(
             remove_textures.push_back(i);
             displaced.push_back(DisplacedTexture{claimed, texture.source, texture.pack,
                                                  texture.record, texture.usable()});
-        }
-        std::vector<std::size_t> remove_claims;
-        std::vector<UnusableClaim> displaced_claims;
-        for (std::size_t i = 0; i < set.unusable_claims.size(); ++i) {
-            if (bound(set.unusable_claims[i].hash)) {
-                remove_claims.push_back(i);
-                displaced_claims.push_back(set.unusable_claims[i]);
+            // One bound hash takes the whole record away, and a record
+            // whose three hash fields disagree claims all three. The hashes
+            // this binding never named are kept as unusable claims, the
+            // way the decode keeps the claims of a record it leaves out,
+            // so that resolve_material still reports them `unusable`
+            // instead of silently turning them into `unresolved`.
+            std::array<std::uint32_t, kClaimSlots + 1U> answered{};
+            std::size_t answered_count = 0;
+            const auto remember = [&answered, &answered_count](std::uint32_t value) {
+                for (std::size_t k = 0; k < answered_count; ++k) {
+                    if (answered[k] == value) {
+                        return;
+                    }
+                }
+                answered[answered_count] = value;
+                ++answered_count;
+            };
+            // RenderTexture::hash always counts as claimed, then the first
+            // claim_count entries of claims; duplicates among them name one
+            // hash, not two.
+            remember(texture.hash);
+            const std::size_t used = std::min(texture.claim_count, texture.claims.size());
+            for (std::size_t k = 0; k < used; ++k) {
+                remember(texture.claims[k]);
+            }
+            for (std::size_t k = 0; k < answered_count; ++k) {
+                // One entry per hash, which is what the decode leaves: a
+                // hash the retained list already covers goes on matching
+                // without a second entry, and resolve_material counts the
+                // claim list once however many entries hold that hash.
+                if (!bound(answered[k]) && !already_claimed(answered[k])) {
+                    binding.preserved_claims.push_back(UnusableClaim{
+                        answered[k], texture.source, texture.pack, texture.record});
+                }
             }
         }
+        kept_claims.insert(kept_claims.end(), binding.preserved_claims.begin(),
+                           binding.preserved_claims.end());
 
         RenderTexture generated;
         generated.hash = hashes[0];
@@ -412,11 +666,8 @@ bool bind_runtime_skin(
             const std::size_t i = remove_textures[k - 1];
             set.textures.erase(set.textures.begin() + static_cast<std::ptrdiff_t>(i));
         }
-        for (std::size_t k = remove_claims.size(); k > 0; --k) {
-            const std::size_t i = remove_claims[k - 1];
-            set.unusable_claims.erase(set.unusable_claims.begin() +
-                                      static_cast<std::ptrdiff_t>(i));
-        }
+        // noexcept, and the only change the claim list sees.
+        set.unusable_claims.swap(kept_claims);
         // Recomputed rather than adjusted, so the field keeps meaning
         // exactly what it is documented to mean.
         set.decoded_bytes = 0;

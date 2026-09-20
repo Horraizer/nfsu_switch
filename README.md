@@ -145,10 +145,15 @@ so the marker scan sees it, runs the proven composite and converts the
 result to RGBA8 with the same byte mapping a decoded A8R8G8B8 level gets.
 It then binds the generated texture into a `RenderTextureSet` under an
 explicit list of hashes, removing and reporting every pack record that
-claimed one, so a prepared scene resolves those material groups to it. No
-pack is modified and nothing is parsed twice. `nfsu_viewer --skin-car NAME`
-drives it; without that option nothing in this chain runs and the viewer's
-output is byte-identical to before. See `docs/RUNTIME_SKIN.md`.
+claimed one - and keeping every hash such a record also claimed that was
+not bound, so those hashes do not silently stop matching anything - so a
+prepared scene resolves those material groups to it. The surface it
+composes carries the record and the buffer it was read from, and the
+composite is given the source list and checks both against it, so one
+target's pixels cannot be bound as another's. No pack is modified and
+nothing is parsed twice. `nfsu_viewer --skin-car NAME` drives it; without
+that option nothing in this chain runs and the viewer's output is
+byte-identical to before. See `docs/RUNTIME_SKIN.md`.
 
 Selection and material lookup happen once, in `prepare_car_scene`
 (`include/nfsu/scene.h`). It builds a self-contained `PreparedCarScene`

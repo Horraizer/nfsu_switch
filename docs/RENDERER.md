@@ -115,10 +115,13 @@ source N: bytes, packs, records, valid, decoded, decoded_bytes, issues,
 complete`), a `texture sources:` summary (total decoded bytes,
 `wanted_hashes`, `not_wanted`, `shadowed`, `blocked`), and one line per
 shadowed or blocked record and per unusable claim (`unusable claim: hash
-H source S pack P texture R`, in source, pack, record and claim order). The `textures:` line still describes the car's
-pack alone. Problems in shared sources are printed on stderr as `texture
-source N [pack P] issue at ...`. The exit code is 3 if any source reported
-an issue.
+H source S pack P texture R`, in source, pack, record and claim order as
+the decode left it; a runtime-skin binding appends its preserved claims
+after those, so with `--skin-car` the tail of the block may be out of that
+order and repeats the `skin preserved claim:` lines). The `textures:` line
+still describes the car's pack alone. Problems in shared sources are
+printed on stderr as `texture source N [pack P] issue at ...`. The exit
+code is 3 if any source reported an issue.
 
 ## Runtime body skin
 
@@ -156,6 +159,13 @@ naming one of the bound hashes resolves to it.
   the generated texture is the single claimant `resolve_material` needs.
   No pack is modified and `RenderTextureSet::shadowed` is left alone,
   because it records what the decode did.
+- A removed record may have claimed hashes this run never bound, which one
+  whose three hash fields disagree does. Those hashes are appended to
+  `RenderTextureSet::unusable_claims` and reported, so they go on resolving
+  as `unusable` instead of silently becoming `unresolved`. They are
+  appended, not merged in order, so the `unusable claim:` block prints them
+  last; they appear there as well as on their own `skin preserved claim:`
+  line, because that block describes the set the scene is prepared from.
 - The per-source decode counts on stdout are taken before binding, so they
   keep describing the decode.
 - `--skin-dump FILE` writes the generated texture as a TGA through the same
@@ -168,10 +178,11 @@ actually searched (a file whose packs the assembly layer would refuse is
 left out, reported on stderr, and makes the exit code 3), then `skin:`,
 `skin target:`, `skin paint:`, one `skin input` line
 per selected source index, one `skin bound:` line per hash, one `skin
-displaced:` or `skin displaced claim:` line per record the binding removed,
-`skin generated:` and, with a dump, `skin dump:`. A selected input that did
-not resolve is reported with its skip reason, is not fatal, and makes the
-exit code 3.
+displaced:` or `skin displaced claim:` line per record the binding
+removed, one `skin preserved claim:` line per hash a removed record
+claimed that was not bound, `skin generated:` and, with a dump, `skin
+dump:`. A selected input that did not resolve is reported with its skip
+reason, is not fatal, and makes the exit code 3.
 
 ## Mesh selection and the prepared scene
 

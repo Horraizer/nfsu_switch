@@ -111,6 +111,56 @@ produced and then re-checks that record's raw identifiers against it, so a
 provenance from a different source list is refused rather than silently
 composited from the wrong pixels.
 
+Locating it is not enough on its own, because the payload is read from the
+*source's* bytes while the offsets come from the *pack's* records. The pack
+that holds the target must therefore still be paired with those bytes -
+`parse_source` the same buffer, `file_size` the same size, `tables_parsed`
+true. The first two are the rule `plan_body_skin_inputs` and
+`decode_render_texture_sources` both enforce over their own sources; the
+third is required by `plan_body_skin_inputs`, while
+`decode_render_texture_sources` treats it as an incomplete source instead.
+A *different* buffer put in the source's place, even one of exactly the
+same size, stays inside every bound that `texture_payload` checks, so
+nothing else would catch it: it would simply be decoded through offsets
+that describe a different file, under the provenance of a record that file
+does not hold. Nothing is read out of bounds; what is read is the wrong
+file.
+
+What the pairing cannot see is a caller overwriting the contents of the
+same live buffer. It compares address and size, exactly as
+`TexturePack::parse_source` does, and that field's own contract already
+scopes itself to a buffer the caller keeps unmodified. Seeing through that
+would mean hashing the file, which nothing in the traced behaviour asks
+for; a caller that rewrites a pack's bytes under it has already broken
+every layer below this one.
+
+What the read returns therefore carries where it came from. A
+`SkinTargetSurface` holds a `SkinTargetIdentity`: the source, pack and
+record it was read from, every identifier that decides which bytes are read
+and how, and the buffer they were read from. `compose_runtime_skin` takes
+the source list too, re-locates the record the assembled inputs resolved in
+it, and refuses unless the two identities are equal. Without that, two
+valid records of the same format and the same size are interchangeable once
+their level 0 is in a vector, and one target's pixels could be composited,
+labelled and bound as another's.
+
+The source list `compose_runtime_skin` is given is not checked to be the
+one the inputs were assembled from, and does not need to be. Only the
+target record is re-located in it, and every pixel the composite reads from
+the inputs lives in a buffer the `AssembledSkinInputs` owns, so a list that
+differs anywhere but the target changes nothing the composite produces.
+What has to agree is the surface and the target record, and that is what is
+compared.
+
+The buffer is the part that makes this decide a file rather than a
+position. Every other field is an index into the caller's source list or a
+shape, and a second list holding a pack of the same layout at the same
+index has all of them - which a re-encoded copy of a file, or a synthetic
+pack built to the same shape, is. Only `SkinInputSource::bytes`, compared
+and never dereferenced exactly as `TexturePack::parse_source` is,
+distinguishes them. That is why an identity is complete only when it was
+built against a source list, and why `skin_target_identity` takes one.
+
 ## 4. Binding: the priority rule
 
 This is a policy, not a trace.
@@ -126,6 +176,28 @@ is what makes it the single claimant, which is what `resolve_material`
 needs: two claimants of one hash are `unusable`, never a winner.
 `RenderTextureSet::shadowed` is left alone, because it records what the
 decode did and the decode is not changed by this.
+
+Removal is per record, not per hash, and a record can claim up to three
+(`RenderTexture::claims`). One bound hash among them takes the whole record
+away, so the hashes this binding never named would stop matching anything
+at all. Each of them is therefore appended to
+`RenderTextureSet::unusable_claims` and reported in
+`binding.preserved_claims`, which is what the decode already does for a
+record it leaves out whose claims still block. One entry per hash, as the
+decode leaves: a hash the retained list already covers is not added again,
+and neither is one an earlier removal in the same binding already
+contributed.
+
+For a set the decode produced, that leaves resolution for those hashes
+exactly as it was. The decode gives a record distinct claims only when its
+three hash fields disagree, which is also what makes it invalid, so every
+hash it claims already resolves as `unusable` and goes on doing so. The one
+case where this is not an identity is a hand-built texture that is usable
+and claims several hashes: its unbound hashes move from `resolved` to
+`unusable`. That is the honest report once the pixels they resolved to have
+left the set, and it is nearer than the `unresolved` dropping them would
+give, but it is not the same answer, so it is written down here rather than
+claimed away.
 
 Nothing is mutated in any pack. The generated texture carries the
 provenance source index the caller gives it, `pack` and `record` zero, and
@@ -258,7 +330,7 @@ the viewer exit 3, the same way a pack issue does.
 
 Clean Release build with `-Wall -Wextra -Wpedantic`, no warnings. Full
 `ctest`: 9 of 9, including the new `nfsu_runtime_skin_tests`
-(`tests/runtime_skin_tests.cpp`, synthetic packs only, 167 checks). It
+(`tests/runtime_skin_tests.cpp`, synthetic packs only, 254 checks). It
 covers the path table for A8R8G8B8, P8 and DXT1 targets and for an absent
 one; the target surface for both proven conversions; the byte mapping
 checked against a direct `composite_body_skin_32` call rather than against
@@ -271,6 +343,35 @@ of an unusable claim, with `decoded_bytes` checked against an expectation
 computed independently of the implementation; a bind of the maximum three
 hashes; and a `prepare_car_scene` that resolves the body group only once
 the skin is bound.
+
+Three of those cases are the defects the Codex review found, and each is
+asserted the way it would actually go wrong:
+
+- A source whose bytes were replaced by another image of *exactly* the same
+  size, plus a pack whose `file_size` is not its source's, one whose record
+  tables were never read, and one no parser ever ran on paired with an empty
+  buffer, where both sides of the pointer comparison would be null. The test
+  also reads the substituted image through its own properly parsed sources
+  and checks that its level 0 is different, so the refusal is not a vacuous
+  one.
+- A malformed record claiming one bound hash and two unbound ones, with
+  `resolve_material` asked what each hash resolves to before and after the
+  binding. Both unbound hashes stay `unusable`; the bound one becomes
+  `resolved`; a hash nothing ever claimed stays `unresolved`. The record's
+  own hash field repeats one of the claims, so the count also proves one
+  hash is preserved once. Then the two ways a hash could be preserved
+  twice and is not: one the retained claim list already covers, and one two
+  removed records share.
+- Two targets in one pack, both valid A8R8G8B8, both 4 x 4, differing only
+  in their background pixels. Composing the assembled inputs of one against
+  the surface of the other is refused, while the matching pair still
+  composes and a surface whose identity was never filled is refused as
+  well. Then the swap that needs no second record: a second source list
+  whose pack holds the same two textures under the same names at the same
+  sizes, so every field the provenance carries matches and only the pixels
+  and the buffer differ. Composing a surface read from that list against
+  inputs assembled from the first is refused, and so is composing the first
+  list's surface while naming the second list.
 
 One case is worth naming, because it is the defect an independent review
 found. `read_skin_target_surface` locates its record through the provenance
@@ -325,6 +426,44 @@ bytes are not valid UTF-8, and the previous commit aborts identically for
 `GEOMETRY.BIN`, the output and `--shared-textures`. The new file options
 reach the same constructor, so they inherit it. Fixing it means changing
 how every existing path argument is handled, which is outside this change.
+
+### Independent review, second round
+
+A third review, by Codex on the finished branch, confirmed three more
+defects. All three are fixed above and are covered by the tests just
+described.
+
+1. `read_skin_target_surface` accepted bytes the pack was never parsed
+   from. `record_at` compared record metadata but not `parse_source`,
+   `file_size` or `tables_parsed`, so a same-sized substituted buffer was
+   decoded under the original provenance. The pairing rule the assembly and
+   decode layers already apply is now applied here too.
+2. Binding one hash could remove unrelated aliases. A malformed record
+   retains up to three distinct claims, and removing it for one bound hash
+   dropped the others, changing what they resolve to. Every unbound claim
+   is now kept as an `UnusableClaim` and reported.
+3. Composition did not prove the target surface belonged to the assembled
+   target. Two valid same-sized type-32 surfaces could be swapped,
+   producing one target's pixels labelled and bound as the other's. The
+   surface now carries a `SkinTargetIdentity` and `compose_runtime_skin`
+   compares it with `plan().target_texture`.
+
+Nothing outside those three was changed. On the read-only 240SX smoke
+render below, run at the previous commit and at this one on the same
+inputs, writing the same file name in separate directories, the screenshot
+and the generated texture are byte-identical, as are stdout, stderr and the
+exit code:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `render.tga`, 640x360 | `10D51A935C31759F5C61E331A911213710BEEBBD34D550C07C5A27C37FF7DFE1` |
+| generated texture, 512x512 | `D70C4756B1D174082C9F50E2381A76300273408B40E2AE8EF95A20385589FFCF` |
+
+A run that actually displaces a record, `--skin-bind 240SX_DOORLINE`
+(displacing `source 0 pack 0 texture 41 usable 1`), is byte-identical
+across the two commits as well, and prints no `skin preserved claim:` line:
+a valid retail record's three hash fields agree, so it claims one hash and
+there is nothing to preserve.
 
 ### Unchanged behaviour without the options
 
