@@ -100,6 +100,34 @@ struct ClipVertex {
 
 ClipVertex project_point(const CameraFrame& frame, const Vec3& world) noexcept;
 
+// Where one source vertex lands in the Y-up world frame above, for one
+// drawn copy. `transform` is a PreparedInstance::transform, or null for a
+// mesh drawn once in its own space, which is what a profile with no
+// instances asks for.
+//
+// With no transform the mapping is `world = (px, py, -pz)`, the one this
+// renderer has always used, so a profile with no instances produces the
+// frames of every earlier build bit for bit. With one, the vertex is
+// written in the raw slot frame (longitudinal, lateral, vertical) =
+// (px, pz, py), multiplied as a row vector by the row-major matrix, and
+// mapped back:
+//
+//   slot  = (px, pz, py)
+//   moved = slot * transform          (row 3 is the translation)
+//   world = (moved[0], moved[2], -moved[1])
+//
+// Only the affine part is read: elements 3, 7, 11 and 15, the fourth
+// column of the row-vector convention, are not. Every transform this
+// project produces leaves that column at (0, 0, 0, 1), where reading it
+// would change nothing, and a placement that did not would be a projective
+// part transform the retail draw path has never been seen to use. See
+// docs/RENDERER.md, "Instances", for the evidence and for that divergence.
+//
+// This is the one rule for the placement; render_scene draws with it and
+// Inspector::world_bounds measures with it, so an overlay can never
+// describe a position the frame does not show.
+Vec3 placed_vertex(const MeshVertex& vertex, const float* transform) noexcept;
+
 // Guard band: clip-space x and y are clipped to [-g w, g w].
 constexpr double kGuardBand = 8.0;
 constexpr std::size_t kMaxClipVertices = 9;
@@ -230,6 +258,24 @@ struct RenderStats {
     std::uint64_t meshes = 0;
     std::uint64_t meshes_rendered = 0;
     std::uint64_t meshes_skipped_invalid = 0;
+    // Copies that actually submitted a triangle, so 30 instances of 24
+    // meshes never reads as 30 meshes. It is counted from the draw loop and
+    // not from the scene: a copy of a mesh whose every material group is
+    // undrawable submits nothing and is not counted here, although
+    // meshes_rendered still counts the mesh. For the stock car a copy is a
+    // PreparedInstance; for a profile that carries no instances each mesh
+    // is one copy, drawn in its own space.
+    std::uint64_t instances = 0;
+    // Of those, the copies whose PreparedInstance::placement_exact is set
+    // and the copies where it is not. A profile with no instances counts
+    // every mesh as exact: its own authored space is where the mesh is,
+    // and no placement is being claimed for it. instances_stand_in counts
+    // copies the profile placed from a documented stand-in rather than
+    // from the transform the retail draw path applies, so a frame with a
+    // nonzero count shows at least one part in a position the project has
+    // not reproduced.
+    std::uint64_t instances_exact = 0;
+    std::uint64_t instances_stand_in = 0;
     std::uint64_t material_groups = 0;
     std::uint64_t groups_resolved = 0;
     std::uint64_t groups_unresolved = 0;
@@ -380,10 +426,26 @@ private:
 // before the frame is allocated, so a rejected scene leaves frame
 // untouched. Vertex indices are checked per triangle (bad_index).
 //
-// Each prepared mesh is drawn once, in its own space: this renderer does
-// not apply PreparedInstance::transform, so it refuses a scene whose
-// profile is SelectionProfile::stock_car rather than draw a car's four
-// wheels on top of each other at the origin.
+// A prepared mesh is drawn once per instance that names it, in ascending
+// instance order, with PreparedInstance::transform applied. A profile that
+// carries no instances draws each of its meshes exactly once in its own
+// space, by the same arithmetic as before instances existed, so its frames
+// are unchanged byte for byte.
+//
+// The composition. PreparedInstance::transform is row-major in the
+// geometry file's raw slot frame (longitudinal, lateral, vertical) =
+// (px, pz, py), row-vector, and this renderer's world frame is Y-up
+// (px, py, -pz). A vertex is therefore placed as
+//
+//   slot  = (v.px, v.pz, v.py)
+//   moved = slot * transform          (row-vector, row 3 is the translation)
+//   world = (moved[0], moved[2], -moved[1])
+//
+// and the camera then looks at that world position. The instance transform
+// is applied before the camera and after nothing: the scene holds one car
+// at the car's own matrix, which is the identity here, so a body part's
+// identity transform leaves the vertex exactly where the per-mesh path put
+// it. docs/RENDERER.md states the evidence for each half.
 bool render_scene(
     const PreparedCarScene& scene,
     const RenderOptions& options,

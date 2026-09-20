@@ -287,7 +287,11 @@ private:
     }
     bool rebuild_order(std::string& error);
     // Bounds of the drawn vertices of one group, or of every prepared mesh
-    // when draw is kNoHandle, in world coordinates. False when the range
+    // when draw is kNoHandle, in world coordinates. Every drawn copy of
+    // the mesh is measured, each through its own instance transform, so
+    // the box describes what is on screen and not where the mesh was
+    // authored; a scene with no instances measures one copy in its own
+    // space, exactly as before instances existed. False when the range
     // holds no usable vertex.
     bool world_bounds(
         std::size_t draw, Vec3& minimum, Vec3& maximum) const noexcept;
@@ -307,6 +311,11 @@ private:
     std::size_t selected_draw_ = kNoHandle;
     std::vector<std::uint32_t> order_;
     std::vector<PreparedTriangleRange> ranges_;
+    // The drawn copies of every prepared mesh, built with the order and
+    // the id table so that world_bounds allocates nothing. Empty without a
+    // scene; a scene with no instances leaves every list empty, which
+    // world_bounds reads as one copy per mesh drawn in its own space.
+    PreparedMeshInstances instances_;
 };
 
 } // namespace nfsu

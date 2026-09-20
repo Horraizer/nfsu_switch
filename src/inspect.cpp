@@ -240,17 +240,27 @@ bool Inspector::reset(
 bool Inspector::rebuild_order(std::string& error) {
     order_.clear();
     ranges_.clear();
+    instances_ = PreparedMeshInstances{};
     if (scene_ == nullptr) {
         return true;
+    }
+    // Built here, beside the order and the id table, so that world_bounds
+    // can measure every drawn copy without allocating: the overlay asks it
+    // for the bounds once a frame.
+    if (!prepared_mesh_instances(*scene_, instances_, error)) {
+        instances_ = PreparedMeshInstances{};
+        return false;
     }
     const bool retail = options_.material_state == MaterialStateMode::retail;
     if (!prepared_draw_order(*scene_, retail, order_, nullptr, error)) {
         order_.clear();
+        instances_ = PreparedMeshInstances{};
         return false;
     }
     if (!prepared_triangle_ranges(*scene_, order_, ranges_, error)) {
         order_.clear();
         ranges_.clear();
+        instances_ = PreparedMeshInstances{};
         return false;
     }
     return true;
@@ -404,9 +414,10 @@ bool Inspector::world_bounds(
         return false;
     }
     bool any = false;
-    const auto take = [&](const MeshVertex& vertex) {
-        // The world frame of the renderer: world = (px, py, -pz).
-        const Vec3 world{vertex.px, vertex.py, -static_cast<double>(vertex.pz)};
+    const auto take = [&](const MeshVertex& vertex, const float* transform) {
+        // placed_vertex is the renderer's own placement rule, so the box
+        // can never describe a position the frame does not show.
+        const Vec3 world = placed_vertex(vertex, transform);
         if (!any) {
             minimum = world;
             maximum = world;
@@ -420,11 +431,34 @@ bool Inspector::world_bounds(
         maximum.y = std::max(maximum.y, world.y);
         maximum.z = std::max(maximum.z, world.z);
     };
-    if (draw == kNoHandle) {
-        for (const PreparedMesh& mesh : scene_->meshes) {
-            for (const MeshVertex& vertex : mesh.vertices) {
-                take(vertex);
+    // Every drawn copy of one prepared mesh, each with the transform that
+    // places it. A scene with no instances has one copy per mesh, drawn in
+    // its own space, which is the null transform.
+    const bool instanced = !scene_->instances.empty();
+    const auto for_each_copy = [&](std::size_t handle, auto&& visit) {
+        if (!instanced) {
+            visit(static_cast<const float*>(nullptr));
+            return;
+        }
+        if (handle + 1 >= instances_.first.size()) {
+            return;
+        }
+        for (std::uint32_t k = instances_.first[handle];
+             k < instances_.first[handle + 1] && k < instances_.order.size(); ++k) {
+            const std::uint32_t which = instances_.order[k];
+            if (which < scene_->instances.size()) {
+                visit(scene_->instances[which].transform);
             }
+        }
+    };
+    if (draw == kNoHandle) {
+        for (std::size_t m = 0; m < scene_->meshes.size(); ++m) {
+            const PreparedMesh& mesh = scene_->meshes[m];
+            for_each_copy(m, [&](const float* transform) {
+                for (const MeshVertex& vertex : mesh.vertices) {
+                    take(vertex, transform);
+                }
+            });
         }
         return any;
     }
@@ -441,15 +475,17 @@ bool Inspector::world_bounds(
     const std::uint64_t first = prepared.first_index / 3U;
     const std::uint64_t last = (std::uint64_t{prepared.first_index} +
                                 prepared.index_count) / 3U;
-    for (std::uint64_t t = first; t < last && t < mesh.triangles.size(); ++t) {
-        const MeshTriangle& triangle = mesh.triangles[static_cast<std::size_t>(t)];
-        const std::uint16_t indices[3] = {triangle.a, triangle.b, triangle.c};
-        for (const std::uint16_t index : indices) {
-            if (index < mesh.vertices.size()) {
-                take(mesh.vertices[index]);
+    for_each_copy(prepared.mesh, [&](const float* transform) {
+        for (std::uint64_t t = first; t < last && t < mesh.triangles.size(); ++t) {
+            const MeshTriangle& triangle = mesh.triangles[static_cast<std::size_t>(t)];
+            const std::uint16_t indices[3] = {triangle.a, triangle.b, triangle.c};
+            for (const std::uint16_t index : indices) {
+                if (index < mesh.vertices.size()) {
+                    take(mesh.vertices[index], transform);
+                }
             }
         }
-    }
+    });
     return any;
 }
 

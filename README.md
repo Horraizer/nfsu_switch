@@ -168,17 +168,32 @@ instead; all may be repeated and mixed, at most 256 selectors and
 16384 name bytes. Selected meshes are always drawn in source order. An
 out-of-range index, an unknown or ambiguous hash, an unknown, empty or
 ambiguous name, or a mesh selected twice is a usage error (exit 1) and
-nothing is written. Neither profile is the game's stock car, and neither is
-the third `PreparedCarScene` profile: that one is this project's
-reproduction of the stock assembly as far as it is decoded, built by
-`nfsu::prepare_stock_car_scene` and printed by `nfsu_probe stock-scene`,
-and `docs/CAR_SCENE.md` says what a "stock" part set does and does not
-cover. The viewer does not offer it either: the CPU renderer draws each
-prepared mesh in its own space and does not apply the instance transforms
-the profile carries, so it refuses that profile rather than draw a car's
-four wheels at the origin. Paint and skin are still the caller's explicit
-selection (see `docs/CAR_SCENE.md`, `docs/PART_PLACEMENT.md` and
-`docs/RENDERER.md`).
+nothing is written. Neither of those two profiles is the game's stock car:
+they name meshes, and each named mesh is drawn once in its own space.
+
+`--stock-car NAME` draws the third `PreparedCarScene` profile instead:
+this project's reproduction of the stock assembly as far as it is decoded,
+built by `nfsu::prepare_stock_car_scene`, with every part where the
+recovered placement puts it. It needs `--stock-parts <GLOBALB.BUN>`, which
+holds both the part database and the car type table, and one
+`--stock-geometry FILE` per geometry file beyond the car's own.
+`--stock-lod A|B|C|D`, `--stock-pass world|front-end` and `--place-wheels`
+are the three choices the profile takes. It cannot be combined with the
+mesh selectors above.
+
+```text
+build/nfsu_viewer X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games/NFSU/Cars/240SX/TEXTURES.BIN build/stock.tga --shared-textures X:/Games/NFSU/Global/GLOBALB.BUN --shared-textures X:/Games/NFSU/Cars/TEXTURES.BIN --stock-car 240SX --stock-parts X:/Games/NFSU/Global/GLOBALB.BUN --stock-geometry X:/Games/NFSU/Cars/BRAKES/GEOMETRY.BIN --stock-geometry X:/Games/NFSU/Cars/PLATES/GEOMETRY.BIN
+```
+
+The report then lists every installed slot with what became of it, the
+drawn copies apart from the meshes (`instances: N exact E stand_in S`) and
+whether the wheels were placed. Without `--place-wheels` the wheel and
+brake slots report `placement unreproduced` and put nothing in the frame;
+with it they draw four copies each at the culling placements, which are a
+documented stand-in and not the matrix the game draws them with, and the
+report says so. `docs/CAR_SCENE.md` says what a "stock" part set does and
+does not cover; paint and skin are still the caller's explicit selection
+(see `docs/PART_PLACEMENT.md` and `docs/RENDERER.md`).
 
 `--interactive` opens a desktop window on the same prepared scene once the
 screenshot has been written and the report printed:

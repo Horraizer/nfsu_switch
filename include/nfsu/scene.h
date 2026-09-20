@@ -440,12 +440,59 @@ bool prepare_car_scene(
 // and semantic selectors, ascending unique meshes inside their sources, one
 // ordered draw per material, raw-record agreement, derived flags and hashes,
 // binding and texture provenance, first-use texture handles, texture sizes,
-// a drawn triangle total below 2^32 - 1, and instances that name a prepared
-// mesh with a finite transform and leave no prepared mesh undrawn. Vertex
-// indices inside triangles are checked by backends per triangle.
+// a drawn triangle total below 2^32 - 1 both per group and over every
+// instance copy of it, and instances that name a prepared mesh with a
+// finite transform and leave no prepared mesh undrawn. Vertex indices
+// inside triangles are checked by backends per triangle.
 bool validate_prepared_scene(const PreparedCarScene& scene, std::string& error);
 
-// Triangles over all drawable ranges; only meaningful for a valid scene.
+// The drawn copies of every prepared mesh, in one table. The copies of
+// prepared mesh m are order[k] for k in [first[m], first[m + 1]), each an
+// index into PreparedCarScene::instances, ascending. first holds
+// meshes.size() + 1 entries and order holds one entry per instance.
+//
+// A profile that carries no instances gets an empty list for every mesh,
+// which a backend reads as the rule PreparedInstance documents: the mesh is
+// drawn once, in its own space, exactly as it was before instances existed.
+// That is not the same as the identity transform reaching the vertex
+// arithmetic, and a backend must keep the two apart to stay byte-identical
+// with builds that predate instances.
+struct PreparedMeshInstances {
+    std::vector<std::uint32_t> first;
+    std::vector<std::uint32_t> order;
+    // False when the scene carried no instance at all, which is what makes
+    // copies() answer 1 rather than 0 below.
+    bool instanced = false;
+
+    // Drawn copies of prepared mesh `mesh`: the instances that name it, or
+    // 1 for a scene with none. 0 for a handle outside the prepared meshes.
+    //
+    // This is the single rule for how many times a mesh is drawn. Nothing
+    // may restate it: render_scene submits this many copies of each group,
+    // prepared_triangle_ranges sizes each id range by it and
+    // prepared_draw_triangles totals it, so two of them disagreeing would
+    // put a pixel's id on the wrong material group.
+    std::uint64_t copies(std::size_t mesh) const noexcept;
+};
+
+// Builds that table. Fails on a scene with 2^32 - 1 or more instances, on
+// an instance whose mesh handle is outside the prepared meshes, and on an
+// allocation failure; both members are left empty then. It does not
+// validate the rest of the scene: validate_prepared_scene belongs before
+// it.
+bool prepared_mesh_instances(
+    const PreparedCarScene& scene,
+    PreparedMeshInstances& instances,
+    std::string& error);
+
+// Triangles over all drawable ranges, counting one copy per instance of
+// the drawing mesh: a group of a mesh with four instances submits its
+// triangles four times. A profile with no instances draws each mesh once,
+// so the total is unchanged there. Only meaningful for a valid scene.
+//
+// Returns UINT64_MAX when the total overflows and when the per-mesh
+// instance counts could not be allocated. Both answers are above every
+// limit a caller checks it against, so a caller refuses in either case.
 std::uint64_t prepared_draw_triangles(const PreparedCarScene& scene) noexcept;
 
 // The order a backend submits the prepared material groups in, as indices
@@ -486,6 +533,13 @@ bool prepared_draw_order(
 // first_id + count - 1. The CPU renderer does exactly that and writes the
 // id of the owning triangle into Frame::ids(), so a pixel's id locates the
 // group that drew it.
+//
+// One group submits one copy per instance of its mesh, the copies in
+// ascending instance order and the group's triangles in index order inside
+// each copy, so count is the group's triangles times that instance count
+// and the whole group still occupies one contiguous id range. A pixel's id
+// therefore locates the group directly and the copy as
+// (id - first_id) / (count / instances).
 struct PreparedTriangleRange {
     std::uint32_t first_id = 0;
     std::uint32_t count = 0;
@@ -494,9 +548,11 @@ struct PreparedTriangleRange {
 
 // One range per drawable group, in submission order, so first_id ascends
 // and the ranges are contiguous from 0. A group that is not drawable
-// submits nothing and gets no range. Fails when order is not a permutation
-// of the scene's groups, when the drawable groups hold 2^32 - 1 or more
-// triangles, and on an allocation failure; ranges is left empty then.
+// submits nothing and gets no range, and neither does a group whose mesh
+// has no instance to draw it. Fails when order is not a permutation of the
+// scene's groups, when the instance table cannot be built, when the
+// drawable groups hold 2^32 - 1 or more triangles over all their copies,
+// and on an allocation failure; ranges is left empty then.
 bool prepared_triangle_ranges(
     const PreparedCarScene& scene,
     const std::vector<std::uint32_t>& order,

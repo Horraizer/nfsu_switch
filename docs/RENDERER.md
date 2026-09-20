@@ -270,8 +270,9 @@ Selection:
   `prepare_stock_car_scene` (`include/nfsu/stock_scene.h`, library
   `nfsu_stock_scene`) out of the recovered part set, the per-LOD mesh
   hashes and the recovered placement. See "The stock car profile" below.
-  `render_scene` refuses it, because this renderer does not apply instance
-  transforms.
+  `render_scene` draws it, one copy per instance, with the transform each
+  instance carries; "Instances" below states the composition and what the
+  frame does and does not claim.
 
 `PreparedCarScene` holds, in deterministic order:
 
@@ -326,7 +327,8 @@ one ordered draw per source material, agreement between every decoded
 material field and its raw 60-byte record, the derived `drawable` flag and
 unresolved-hash set, binding/provenance consistency, texture handles in
 first-use order with no unused texture, texture sizes (`width * height * 4`
-without overflow), a drawn triangle total below 2^32 - 1, and instances
+without overflow), a drawn triangle total below 2^32 - 1 both per group
+and over every copy the instances ask for, and instances
 that name a prepared mesh with a finite transform and a hash that mesh
 has, leave no prepared mesh of a stock car undrawn, and appear on no other
 profile. A scene that
@@ -374,6 +376,157 @@ with it.
 LOD A with `--place-wheels`, all 24 slots that can have a model draw, from
 24 meshes over `Cars/240SX`, `Cars/BRAKES` and `Cars/PLATES`, in 30
 instances; the counts per LOD are in `docs/CAR_SCENE.md`.
+
+`nfsu_viewer --stock-car NAME` renders that profile. It needs
+`--stock-parts <GLOBALB.BUN>`, which holds both tables, and one
+`--stock-geometry FILE` per geometry file beyond the car's own;
+`--stock-lod`, `--stock-pass` and `--place-wheels` are the three choices
+the profile takes. It cannot be combined with `--mesh-index`,
+`--mesh-name` or `--mesh-hash`: only one of the two can be the scene.
+
+The report then carries, before the usual statistics and only for this
+profile: one `stock geometry N:` line per source with its mesh count and
+whether its directory is verified; `stock:` with the car type name, hash,
+record, LOD and pass; one `stock slot` line per installed slot with its
+outcome, and for a drawn slot its LOD, geometry source, mesh, placement
+mechanism and copy count; `stock slots:` with the installed, with-model,
+drawn, fallback and marker totals; `stock wheels:` saying whether the
+wheel and brake slots were drawn and, when they were, that the culling
+placements they used are a stand-in; `stock wheel plane: degenerate` when
+the four wheel centres do not span a plane; and `stock absent hash:` /
+`stock ambiguous hash:` lines for the hashes no source holds and the
+hashes more than one source holds.
+
+### Instances
+
+An instance is one drawn copy of a prepared mesh. A profile that carries
+none draws each of its meshes exactly once, in the space the mesh was
+authored in, which is what this renderer did before instances existed and
+what it still does, by the same arithmetic. That is not spelled as an
+identity transform on purpose: running the composition below would be the
+identity map on every finite vertex except for the sign of a zero
+component, and the two single-source profiles have to stay byte-identical
+with every earlier build. The three reference hashes at the end of this
+document are the check, and they reproduce.
+
+**The composition.** `PreparedInstance::transform` is applied in the raw
+slot frame, as a row vector, and the result is then mapped into the world
+frame the camera works in:
+
+```text
+slot  = (v.px, v.pz, v.py)
+moved = slot * transform            (row vector; row 3 is the translation)
+world = (moved[0], moved[2], -moved[1])
+```
+
+Each half of that is a fact already established elsewhere in this project,
+not a choice made here:
+
+- The transform and the vertex live in one frame. `docs/FORMATS.md`
+  ("Attachment markers") records that a marker matrix's translation "is in
+  the same raw slot order as a vertex (longitudinal, lateral, vertical)",
+  and `docs/PART_PLACEMENT.md` records that the three wheel-record floats
+  `0x5693d0` copies are in "the same right-handed frame the geometry file
+  uses in raw slot order", with the evidence for each of the three signs.
+  The vertex's slot order is `docs/FORMATS.md`'s 36-byte layout: `px` at
+  +0, `pz` at +4, `py` at +8. So the multiply happens in that frame, on a
+  vector built in that order, and not in the renderer's world frame.
+- The multiply is by rows. `nfsu::multiply_placement_matrix` reproduces
+  the retail multiply at `0x005AC69C`, which is row-major with the
+  row-vector convention, and `car_marker_placement` composes
+  `quarter_turn * marker` in that convention. A column-vector reading of
+  the same 16 floats transposes every rotation.
+- The slot-to-world map is the renderer's own, `world = (px, py, -pz)`,
+  under "Frames and camera" below. Applying it after the multiply rather
+  than before is what keeps an identity transform equal to the unplaced
+  path, and it is the only order in which the matrix acts in the frame it
+  was authored in.
+- Nothing is composed on the outside. The scene holds one car, and the
+  car's own world matrix is the identity here, so a body part's identity
+  transform leaves it exactly where the per-mesh path put it. A second car,
+  or a car placed on a track, would multiply that matrix in on the outside;
+  nothing in this project produces one yet.
+
+One thing the renderer reads less of than the type promises: only the
+affine part. `PreparedInstance::transform` is a 4x4, and
+`multiply_placement_matrix` multiplies all sixteen elements, but
+`placed_vertex` never reads elements 3, 7, 11 and 15 - the fourth column of
+the row-vector convention - and so never divides by a `w`. Every transform
+this project produces leaves that column at `(0, 0, 0, 1)`, where reading
+it would change nothing: `identity_matrix` and `translation_matrix` write
+it, and `car_marker_placement` preserves it for every marker record in the
+retail 240SX. A marker whose matrix had a nonzero element 11 would survive
+the quarter turn as a projective part placement, and this renderer would
+place it as though it were affine rather than refuse it. No such record
+was found, the retail draw path has not been seen to use one, and
+validating the column would refuse a whole car for one odd marker, so the
+divergence is recorded here rather than closed.
+
+Confirmation from the data, which is the check and not the proof: the
+240SX wheel table gives the four culling placements longitudinal
++1.39/-1.04878, lateral +-0.73 and vertical +0.08, while the car's own
+meshes span px -2.09..2.48, pz +-0.935 and py -0.31..1.11
+(`docs/FORMATS.md`). Placed by the rule above, the four wheel copies land
+under the four arches. Read as `(x, y, z)` in the world frame instead, the
+same four numbers would put two copies 0.73 above the car and two 0.73
+below it, all four within 0.08 of the centre line.
+`tests/scene_tests.cpp` pins each component separately, by rendering an
+instance that moves one component against a geometry whose vertices carry
+the same move, and requiring the two frames to be equal byte for byte; a
+shear case does the same for the row-vector convention.
+
+**Draw order.** The order is a property of the material groups, not of the
+instances: the retail queue holds materials, and "Draw order" below
+recovers how it is filled and drained. So the group order stays exactly
+what it was, and each group submits one copy per instance of its mesh,
+in ascending instance order, inside its own place in that order. A group
+of a four-instance wheel is drawn four times in a row, and no instance
+splits the queue. The alternative - instances outside, groups inside -
+would draw a whole part, transparent groups included, before the next
+part's opaque ones, which is not what the queue does. A copy is a
+different position, not a different material, and the retail queue has no
+row for a position.
+
+None of this changes a profile that carries no instances: it submits one
+copy of each group, so it reaches `prepared_draw_order`, the id numbering
+and the rasterizer exactly as it did before.
+
+**Triangle ids.** Ids stay the running number of submitted triangles over
+that order, so a group's copies share one contiguous range and
+`prepared_triangle_ranges` reports `count` as the group's triangles times
+its mesh's instance count. A pixel's id therefore still names the group
+that drew it, which is what the inspection window picks
+([`INSPECTOR.md`](INSPECTOR.md)), and the copy is
+`(id - first_id) / (count / instances)`. `prepared_draw_triangles` counts
+the copies too, so the submitted-triangle limit bounds the work actually
+done rather than the work of one copy each.
+
+**Statistics.** `instances` counts the drawn copies next to `meshes`, so
+30 instances of 24 meshes cannot be read as 30 meshes. It is counted from
+the draw loop and not from the scene: a copy is counted when it actually
+submits a triangle, so a backend that skipped a copy reports fewer of them
+rather than describing a frame it did not draw, and a copy of a mesh whose
+every material group is undrawable is not counted at all while `meshes`
+still reports the mesh. It splits into `exact` and `stand_in`: a copy is a
+stand-in when the profile could not derive the transform the retail draw
+path applies and placed it from a documented substitute instead. A profile
+with no instances counts each mesh as one exact copy, because a mesh drawn
+in its own authored space is not a placement claim at all. The viewer
+prints the line for the stock car only, so every other report is byte for
+byte what it was.
+
+**What the frame does not claim.** With `--place-wheels` the wheel and
+brake copies are stand-ins, and the render says so three times: the slot
+lines report the placement as `wheel table`, `stock wheels:` names the
+culling placements as a stand-in and not the matrix the game draws them
+with, and `instances:` counts them apart. The picture shows what those
+matrices give and nothing more: the lateral component is a term
+`docs/PART_PLACEMENT.md` traces but does not reproduce, and the spin and
+steering angles, the half turn wheels 0 and 3 take and the `(1, -1, 1, 1)`
+reflection brakes 0 and 3 take are not there at all, which shows in the
+render as one side's copies facing the wrong way. Without the option
+neither slot contributes a copy, and the frame holds no wheel at all rather
+than a wheel in a place this project cannot defend.
 
 ## Frames and camera
 
@@ -795,6 +948,14 @@ triangles sent to coverage), `raster_pieces` (fan triangles), `pixel tests`,
 `fallback` (drawn pixels owned by fallback triangles) and `drawn bounds`
 (inclusive).
 
+With `--stock-car` one more line follows the block above: `instances: N
+exact E stand_in S`, the copies of those meshes that actually submitted a
+triangle and how many of them the profile placed from a stand-in. It is
+printed for that profile only, where a mesh can have several copies; every
+other profile draws each mesh once, so the line would add nothing there
+and is left out to keep those reports unchanged. The `stock ...` lines
+that precede it are described under "The stock car profile".
+
 With `--material-state retail` three more lines follow: `draw rows:` with
 one count per draw queue row, in row order, over the drawable groups;
 `material groups: alpha_tested B blended C`; and `blend: fragments F
@@ -920,6 +1081,59 @@ nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> build/shots/s.tga --shared-textures <G
   triangles (539 textured, 2413 fallback), 127804 pixels drawn (96654
   fallback). 9 hashes were wanted from GLOBALB and 4 of its textures
   decoded.
+
+### Retail 240SX stock car
+
+The stock assembly rather than a diagnostic view: every installed part at
+LOD A, each where the recovered placement puts it. Same default options,
+three geometry sources and two shared texture sources:
+
+```text
+nfsu_viewer <CARS/240SX/GEOMETRY.BIN> <CARS/240SX/TEXTURES.BIN> build/shots/stock.tga --shared-textures <GLOBAL/GLOBALB.BUN> --shared-textures <CARS/TEXTURES.BIN> --stock-car 240SX --stock-parts <GLOBAL/GLOBALB.BUN> --stock-geometry <CARS/BRAKES/GEOMETRY.BIN> --stock-geometry <CARS/PLATES/GEOMETRY.BIN>
+```
+
+Observed:
+
+- Two runs in separate processes gave byte-identical TGA files, reports
+  and empty standard error: 3686418 bytes, SHA-256
+  `D68419B0CBB63BE7A209E5CC82BD94F681304C36D187B01C8D8DB240B0DD4E0F`. The
+  reports differed only in the output file name. All five inputs were
+  unchanged after rendering.
+- 25 slots are installed, 24 of them have a model and 22 draw: every body
+  part at the car's own matrix, the exhaust and the licence plate at their
+  markers, and the wheel and brake slots reported `placement unreproduced`
+  and drawing nothing. 16 markers were collected, one exhaust and one
+  licence plate among them.
+- 22 meshes over the three sources, 74 material groups (15 resolved, 59
+  unresolved, 0 unusable, 0 invalid), 12 unresolved hashes, and
+  `instances: 22 exact 22 stand_in 0`.
+- 4025 triangles submitted (498 textured, 3527 fallback), 110866 pixels
+  drawn of which 107050 are fallback, drawn bounds x 390..973, y 232..545.
+- Against the all-meshes reference at the top of this section, which draws
+  400 meshes and 78742 triangles: one kit, one style and one of each light
+  and decal, so nothing overlaps. The image is one car.
+- 22 texture hashes were wanted. 4 came from GLOBALB.BUN; `Cars/TEXTURES.BIN`
+  holds 353 records and claims none of them. Most visible surfaces are
+  still fallback-colored, for the reason the all-meshes run gives: the body
+  skin is composed at runtime and needs `--skin-car`. Adding
+  `--skin-car 240SX --skin-vinyls <CARS/240SX/VINYLS.BIN> --skin-doorline
+  plain --skin-base 30 60 160 128 --material-state retail` takes the same
+  74 groups to 47 resolved and the 4025 triangles to 3792 textured, and
+  leaves 33795 fallback pixels of 110866.
+
+With `--place-wheels` added, the wheel and brake slots draw four copies
+each from the culling placements:
+
+- 24 slots draw, from 24 meshes, in 30 instances: `instances: 30 exact 22
+  stand_in 8`. 79 material groups (20 resolved), 6137 triangles submitted,
+  116748 pixels drawn, drawn bounds x 390..973, y 232..552. SHA-256
+  `FD6727333A94803A97FD26282CD89DF6F3D3295E0231F4A871A1B14089D28CE9`.
+- The four copies of each land under the four arches, which is the
+  confirmation recorded under "Instances" above. They are a stand-in: the
+  near-side wheels are drawn unmirrored, because the mirroring the retail
+  draw applies is part of the matrix this project did not reproduce. The
+  report says so on its `stock wheels:` and `instances:` lines, and the 8
+  stand-in copies are exactly the two slots' four copies each.
 
 ### Runtime body skin
 

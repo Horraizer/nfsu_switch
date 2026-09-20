@@ -126,6 +126,23 @@ arrive later without reopening any of this:
   numbering against frames the renderer actually produced. A deko3d backend
   that submits the groups in `prepared_draw_order` and numbers the triangles
   it submits from 0 gets every control, view and overlay line for free.
+- A stock car draws each group once per instance of its mesh, so a group's
+  copies share one contiguous id range and picking is unchanged: the range
+  `prepared_triangle_ranges` reports is the group's triangles times its
+  mesh's instance count, and a pixel's id still names the group that drew
+  it rather than the copy. `PreparedMeshInstances::copies` is the one rule
+  for how many copies a backend submits, and
+  `prepared_mesh_instances` for which ones and in what order
+  ([`RENDERER.md`](RENDERER.md), "Instances").
+- Framing and the world-bounds overlay line are not unchanged, and had to
+  be taught the transforms. They measure the box the selection occupies,
+  which is a position and not an id, so a placed part would otherwise be
+  framed where its mesh was authored and not where it is drawn - the
+  exhaust of a retail 240SX sits about 2.3 units from its authored origin,
+  far enough that framing it would put it off screen. `Inspector` builds
+  the instance table beside the id table and measures every drawn copy
+  through `placed_vertex`, the same rule `render_scene` draws with, so the
+  overlay cannot report a box the frame does not show.
 
 Nothing in the inspector is part of the deterministic reference. The
 screenshot path does not call it, and no interactive state can reach a
