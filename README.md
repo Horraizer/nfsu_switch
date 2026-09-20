@@ -38,6 +38,7 @@ build/nfsu_probe stock-parts X:/Games/NFSU/Global/GLOBALB.BUN 240SX X:/Games/NFS
 build/nfsu_probe track-region X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN
 build/nfsu_probe stock-scene X:/Games/NFSU/Global/GLOBALB.BUN 240SX A X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games/NFSU/Cars/BRAKES/GEOMETRY.BIN X:/Games/NFSU/Cars/PLATES/GEOMETRY.BIN --place-wheels
 build/nfsu_probe track-objects X:/Games/NFSU/Tracks/STREAML1RB.BUN 23011344 4168 23015540 178268
+build/nfsu_probe track-visibility X:/Games/NFSU/Tracks/STREAML1RB.BUN 23011344 4168 450 20 -80 900 20 -80 --far 60
 build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc
 build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc 783 -8.5
 build/nfsu_probe car-placement X:/Games/NFSU/Global/GLOBALB.BUN 240SX
@@ -119,6 +120,23 @@ also resolves every object mesh hash against that region's geometry and
 cross-checks each instance's stored box against the mesh it places; a hash
 another section carries is reported unresolved rather than treated as an
 error. See `docs/TRACK_OBJECTS.md`.
+`track-visibility` answers which of those instances one camera can see. It
+takes the same bounded region, an eye and a target in the world frame of
+`docs/FORMATS.md`, and an optional field of view, aspect, near and far
+plane, and applies the rule recovered from `speed.exe`: a six-plane box
+test over the bounding tree, which prunes a subtree whose node box is
+outside and stops testing under one that is wholly inside, then the
+per-instance gates. It verifies before pruning that every node box
+contains the boxes below it, and a section that fails falls back to testing
+every instance box with an issue saying so. `--policy draw-everything` is
+the explicit fallback for a caller that would rather draw the whole region
+than trust a visibility rule: it consults nothing at all, not the frustum
+and not the two gates whose retail inputs were never recovered, so
+`--mask` and `--screen-scale` cannot drop anything under it. The report
+names the policy each section was culled with. The zone layer that decides
+which sections are drawn is recovered as a rule, but the record layout
+inside its `0x80034150` chunk is not decoded here, so `--residency`
+defaults to every section in the region. See `docs/TRACK_VISIBILITY.md`.
 `track-collision` decodes the static collision of one track. Collision is
 not in the `STREAM*.BUN` containers at all: those hold geometry, scenery,
 textures and animation and nothing else. It lives in

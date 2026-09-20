@@ -15,9 +15,11 @@ note decodes what decides *where* that geometry goes:
 4. the 24-byte bounding tree that indexes the instances of a section.
 
 It deliberately stops there. Which sections are resident together, what
-the streaming tables do with a section number, visibility beyond the
-bounding tree, and collision are still not decoded, and nothing here
-should be read as a claim about a complete track.
+the streaming tables do with a section number, and collision are still
+not decoded, and nothing here should be read as a claim about a complete
+track. What the game draws from these records, and the visibility rule
+that walks the bounding tree, are decoded in
+[`TRACK_VISIBILITY.md`](TRACK_VISIBILITY.md).
 
 Reference samples for this document:
 
@@ -177,8 +179,8 @@ One 72-byte record per object. Object 0 of section 303, at 23013320:
 | Offset | Type | Field |
 | --- | --- | --- |
 | 0, 4, 8, 12, 16, 20 | u32 | six mesh name hashes |
-| 24 | u32 | flags |
-| 28 | u32 | flags |
+| 24 | u32 | flags; read as two int16 at draw time, see below |
+| 28 | u32 | flags; read as two int16 at draw time, see below |
 | 32 | u32 | zero in all 9681 records |
 | 36 .. 56 | u32[6] | written by the loader, zero on disk |
 | 60 | u32 | zero in 9673 of 9681 records, 1 in eight |
@@ -235,8 +237,11 @@ any other hash and never resolves them.
 to 10000.0. 2295 of them hold exactly 10000.0, stored as `00 40 1C 46` =
 `0x461C4000`, and those 2295 are exactly the records at or above 9000,
 which is the size a skybox-sized object would need; the rest scale with
-the object, so the field is named `radius`. No instruction that reads it
-was traced, so that name is the only claim made.
+the object, so the field is named `radius`. `speed.exe` 0x00445F3B adds
+it to the constant 4.0 at 0x006B780C and passes the sum to the
+screen-size function at 0x00445E10 as the radius around the instance
+position, which is what settles the name;
+[`TRACK_VISIBILITY.md`](TRACK_VISIBILITY.md) carries that trace.
 
 ## The instance record (`0x00034103`)
 
@@ -619,18 +624,31 @@ build/nfsu_probe chunks X:/Games/NFSU/Tracks/STREAML1RB.BUN 100000
 
 ## Unknown
 
-- Every bit of `0x00034102 +24` and `+28`, and of the instance flags at
-  `+14` except bit 0x10, which the loader sets and clears.
+- Every bit of `0x00034102 +24` and `+28` as flag words. The draw path
+  reads those eight bytes as four int16 and compares each against a
+  screen-size level to pick a mesh slot (0x00445FC0), so this note keeps
+  them raw and [`TRACK_VISIBILITY.md`](TRACK_VISIBILITY.md) carries that
+  reading and its census.
+- Every bit of the instance flags at `+14` except bit 0x10, which the
+  loader sets and clears, and the low byte, which 0x00445EE6 exclusive-ORs
+  with 0x60 and masks against a render byte to skip an instance.
 - `0x00034102 +60`, which is 1 in eight of 9681 records and zero in the
   rest.
-- What selects among the six mesh slots at draw time, and what distance or
-  state the choice depends on.
+- What the four int16 at `0x00034102 +24` and the two at `+32` mean
+  exactly. 0x00445FC0 compares each against the screen-size level of
+  0x00445E10 and takes the first slot that passes, so they behave like
+  per-slot thresholds; the projection scale that level depends on was not
+  recovered.
 - What `0x72923C81` names. It is skipped by the loader beside the
   `SKYDOME` hash but matches no mesh in the installation.
 - The exporter's exact rounding rule for a node box, which leaves 0 or 1
   unit of slack over the boxes below it.
-- Everything about streaming: which sections are resident together, what
-  the global table at 0x0072A008 is walked for, and why `Z` sections are
-  linked at the head of the section list while every other letter is
-  linked at the tail.
-- Collision, and any visibility beyond the bounding tree.
+- Everything about streaming: which sections are resident together, and
+  what puts a section into the global table at 0x0072A008 in the first
+  place. The draw path indexes that table by section number
+  (0x004465E9) and always draws numbers 2600 to 2699, which are the `Z`
+  sections the loader links at the head of the list; see
+  [`TRACK_VISIBILITY.md`](TRACK_VISIBILITY.md).
+- Collision. Visibility is decoded in
+  [`TRACK_VISIBILITY.md`](TRACK_VISIBILITY.md), which reads the bounding
+  tree this note decodes.
