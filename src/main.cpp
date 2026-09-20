@@ -4,6 +4,9 @@
 #include "nfsu/part_placement.h"
 #include "nfsu/skin_inputs.h"
 #include "nfsu/texture.h"
+#include "nfsu/texture_decode.h"
+#include "nfsu/track.h"
+#include "nfsu/track_scene.h"
 
 #include <algorithm>
 #include <array>
@@ -27,7 +30,47 @@ namespace {
 
 constexpr std::uint32_t kNfsuGeometryId = 0x80134000U;
 
+// track-region: meshes printed before the listing is summarized, and the
+// total bytes read for all texture sources of one run.
+constexpr std::size_t kTrackMeshListLimit = 64;
+constexpr std::uint64_t kMaxTrackTextureInputBytes = 512ULL * 1024ULL * 1024ULL;
+
 std::string hex32(std::uint32_t value);
+
+// Decimal, or hexadecimal with a leading "0x" or "0X". The whole argument
+// must be consumed and the value must fit in 64 bits.
+bool parse_u64(const std::string& text, std::uint64_t& out) {
+    if (text.empty()) {
+        return false;
+    }
+    int base = 10;
+    std::size_t start = 0;
+    if (text.size() > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
+        base = 16;
+        start = 2;
+    }
+    for (std::size_t i = start; i < text.size(); ++i) {
+        const unsigned char ch = static_cast<unsigned char>(text[i]);
+        const bool digit = ch >= '0' && ch <= '9';
+        const bool hex = base == 16 && ((ch >= 'a' && ch <= 'f') ||
+                                        (ch >= 'A' && ch <= 'F'));
+        if (!digit && !hex) {
+            return false;
+        }
+    }
+    try {
+        std::size_t used = 0;
+        const unsigned long long value =
+            std::stoull(text.substr(start), &used, base);
+        if (used != text.size() - start) {
+            return false;
+        }
+        out = static_cast<std::uint64_t>(value);
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
 
 std::uint16_t read_u16_le(const unsigned char* bytes) {
     return static_cast<std::uint16_t>(bytes[0]) |
@@ -886,6 +929,194 @@ int run_stock_parts(const fs::path& database_path,
     return database.ok() && geometry_ok ? 0 : 3;
 }
 
+// Decodes one explicitly selected, bounded region of a track STREAM
+// container. The offset and the size come from the caller; nothing is
+// scanned and no other byte of the file is read. Texture sources are
+// searched in the order given, as everywhere else in this tool.
+int run_track_region(
+    const fs::path& path,
+    std::uint64_t offset,
+    std::uint64_t size,
+    const std::vector<fs::path>& texture_paths) {
+    std::vector<unsigned char> region_bytes;
+    nfsu::TrackRegionSelector selector;
+    selector.offset = offset;
+    selector.size = size;
+    const nfsu::TrackRegionReport report =
+        nfsu::load_track_region(path, selector, region_bytes);
+
+    std::cout << "file: " << path.string() << '\n';
+    std::cout << "file size: " << report.file_size << '\n';
+    std::cout << "region: offset " << report.region.offset << " size "
+              << report.region.size << " bytes read " << region_bytes.size()
+              << '\n';
+    std::cout << "chunks: " << report.cost.chunks
+              << " geometry roots: " << report.cost.geometry_roots << '\n';
+    std::cout << "meshes: " << report.meshes.size() << " valid "
+              << report.valid_mesh_count() << " empty "
+              << report.cost.empty_meshes << " hash table "
+              << (report.mesh_table_valid ? "verified" : "unverified") << '\n';
+
+    std::size_t listed = 0;
+    for (const nfsu::TrackMesh& mesh : report.meshes) {
+        if (listed >= kTrackMeshListLimit) {
+            std::cout << "  ... " << (report.meshes.size() - listed)
+                      << " more meshes not listed\n";
+            break;
+        }
+        ++listed;
+        const char* state =
+            mesh.valid ? "ok     " : (mesh.empty ? "empty  " : "invalid");
+        std::cout << "  " << std::setw(4) << std::setfill(' ') << mesh.index
+                  << ' ' << state << ' ' << hex32(mesh.mesh_hash) << ' '
+                  << (mesh.name.empty() ? std::string("<unnamed>") : mesh.name)
+                  << '\n';
+        std::cout << "       container " << mesh.offset << " format "
+                  << hex32(mesh.vertex_format_flags) << " stride "
+                  << mesh.vertex_stride << " vertices "
+                  << mesh.declared_vertex_count << " triangles "
+                  << mesh.declared_face_count << " materials "
+                  << mesh.declared_material_count << " textures "
+                  << mesh.texture_hashes.size() << " keys "
+                  << mesh.material_key_hashes.size() << '\n';
+        std::cout << "       vertex data " << mesh.vertex_data_offset
+                  << " prefix " << mesh.vertex_prefix_bytes << " index data "
+                  << mesh.face_data_offset << " prefix "
+                  << mesh.face_prefix_bytes << " tail " << mesh.face_tail_bytes
+                  << '\n';
+    }
+
+    for (const nfsu::TrackIssue& issue : report.issues) {
+        std::cerr << "region issue at " << issue.offset << ": " << issue.message
+                  << '\n';
+    }
+
+    const nfsu::TrackRegionCost& cost = report.cost;
+    std::cout << "cost: region bytes " << cost.region_bytes << " chunks "
+              << cost.chunks << " vertices " << cost.vertices << " triangles "
+              << cost.triangles << " materials " << cost.materials << '\n';
+    std::cout << "cost: source vertex bytes " << cost.source_vertex_bytes
+              << " source index bytes " << cost.source_index_bytes
+              << " decoded vertex bytes " << cost.decoded_vertex_bytes
+              << " decoded index bytes " << cost.decoded_index_bytes << '\n';
+    std::cout << "cost: distinct texture hashes "
+              << cost.distinct_texture_hashes << " largest mesh vertices "
+              << cost.largest_mesh_vertices << " triangles "
+              << cost.largest_mesh_triangles << '\n';
+    if (cost.has_bounds) {
+        std::cout << "bounds: px " << cost.bounds_min[0] << " .. "
+                  << cost.bounds_max[0] << " py " << cost.bounds_min[1] << " .. "
+                  << cost.bounds_max[1] << " pz " << cost.bounds_min[2] << " .. "
+                  << cost.bounds_max[2] << '\n';
+    }
+
+    if (texture_paths.empty()) {
+        std::cout << "textures: no source given; materials are not resolved\n";
+        return report.ok() ? 0 : 3;
+    }
+    if (report.valid_mesh_count() == 0) {
+        std::cerr << "error: the region has no valid mesh to resolve\n";
+        return report.ok() ? 2 : 3;
+    }
+
+    // Only the hashes this region names are decoded, so an unrelated
+    // texture in a source never costs anything here.
+    const std::vector<std::uint32_t> wanted =
+        nfsu::track_region_texture_hashes(report);
+    // Both vectors are sized once, so the pointers taken below stay valid.
+    std::vector<std::vector<unsigned char>> source_bytes(texture_paths.size());
+    std::vector<nfsu::TexturePackSet> sets(texture_paths.size());
+    std::uint64_t read_bytes = 0;
+    for (std::size_t i = 0; i < texture_paths.size(); ++i) {
+        nfsu::TextureLimits source_limits;
+        const std::uint64_t remaining = kMaxTrackTextureInputBytes - read_bytes;
+        source_limits.max_file_size =
+            std::min(source_limits.max_file_size, remaining);
+        sets[i] = nfsu::load_texture_pack_set(texture_paths[i], source_bytes[i],
+                                              source_limits);
+        read_bytes += source_bytes[i].size();
+        // "size" is what the file holds; "read" is what this run took,
+        // which is 0 when the source was refused before it was read.
+        std::cout << "texture source " << i << ": " << texture_paths[i].string()
+                  << " size " << sets[i].file_size << " read "
+                  << source_bytes[i].size() << " packs " << sets[i].packs.size()
+                  << " complete " << (sets[i].complete ? 1 : 0) << '\n';
+        for (const nfsu::TextureIssue& issue : sets[i].issues) {
+            std::cerr << "texture source " << i << " issue at " << issue.offset
+                      << ": " << issue.message << '\n';
+        }
+        for (std::size_t p = 0; p < sets[i].packs.size(); ++p) {
+            for (const nfsu::TextureIssue& issue : sets[i].packs[p].issues) {
+                std::cerr << "texture source " << i << " pack " << p
+                          << " issue at " << issue.offset << ": "
+                          << issue.message << '\n';
+            }
+        }
+    }
+
+    std::vector<nfsu::RenderTextureSource> sources(texture_paths.size());
+    for (std::size_t i = 0; i < texture_paths.size(); ++i) {
+        sources[i].bytes = &source_bytes[i];
+        for (const nfsu::TexturePack& pack : sets[i].packs) {
+            sources[i].packs.push_back(&pack);
+        }
+        sources[i].complete = sets[i].complete;
+        sources[i].wanted = &wanted;
+    }
+
+    nfsu::RenderTextureSet textures;
+    std::string error;
+    if (!nfsu::decode_render_texture_sources(
+            sources, nfsu::RenderTextureLimits{}, textures, error)) {
+        std::cerr << "error: " << error << '\n';
+        return 2;
+    }
+    for (const nfsu::RenderTexture& texture : textures.textures) {
+        if (!texture.valid && !texture.problem.empty()) {
+            std::cerr << "texture " << hex32(texture.hash) << " (source "
+                      << texture.source << " pack " << texture.pack
+                      << " record " << texture.record
+                      << ") unusable: " << texture.problem << '\n';
+        }
+    }
+    std::cout << "textures: wanted " << wanted.size() << " decoded "
+              << textures.textures.size() << " bytes " << textures.decoded_bytes
+              << " shadowed " << textures.shadowed.size() << " unusable claims "
+              << textures.unusable_claims.size() << " skipped "
+              << textures.not_wanted << '\n';
+    for (const std::size_t blocked : textures.blocked_sources) {
+        std::cerr << "texture source " << blocked
+                  << " not searched: an earlier source is incomplete\n";
+    }
+
+    nfsu::PreparedTrackRegion prepared;
+    if (!nfsu::prepare_track_region(report, textures, nfsu::TrackSceneLimits{},
+                                    prepared, error)) {
+        std::cerr << "error: " << error << '\n';
+        return 2;
+    }
+    const nfsu::TrackDrawCost& draw_cost = prepared.cost;
+    std::cout << "draws: " << draw_cost.draws << " drawable "
+              << draw_cost.drawable_draws << " resolved "
+              << draw_cost.resolved_draws << " unresolved "
+              << draw_cost.unresolved_draws << " unusable "
+              << draw_cost.unusable_draws << " invalid slot "
+              << draw_cost.invalid_slot_draws << '\n';
+    std::cout << "draw cost: vertex buffer bytes "
+              << draw_cost.vertex_buffer_bytes << " index buffer bytes "
+              << draw_cost.index_buffer_bytes << " drawn triangles "
+              << draw_cost.drawn_triangles << " largest draw "
+              << draw_cost.largest_draw_triangles << " texture binds "
+              << draw_cost.texture_binds << '\n';
+    std::cout << "draw cost: textures " << draw_cost.textures
+              << " texture bytes " << draw_cost.texture_bytes
+              << " unresolved hashes " << draw_cost.unresolved_hashes << '\n';
+    for (const std::uint32_t hash : prepared.unresolved_hashes) {
+        std::cout << "  unresolved " << hex32(hash) << '\n';
+    }
+    return report.ok() ? 0 : 3;
+}
+
 // ---------------------------------------------------------------------------
 // body-skin-inputs: read-only diagnostics for the assembled layer list.
 // It opens only the files named on the command line, and it writes nothing.
@@ -1451,6 +1682,7 @@ void print_usage() {
         << "  nfsu_probe texture-bindings <GEOMETRY.BIN> <TEXTURES.BIN>\n"
         << "  nfsu_probe car-parts <GLOBALB.BUN> [car-type]\n"
         << "  nfsu_probe stock-parts <GLOBALB.BUN> <car-type> [GEOMETRY.BIN ...]\n"
+        << "  nfsu_probe track-region <STREAM.BUN> <offset> <size> [TEXTURE.BIN ...]\n"
         << "  nfsu_probe car-placement <GLOBALB.BUN> [car-type]\n"
         << "  nfsu_probe body-skin-inputs <car-name> <option>...\n"
         << "    --source <car-textures|car-vinyls|other> <FILE>   (repeatable,\n"
@@ -1556,6 +1788,27 @@ int main(int argc, char** argv) {
             geometry.emplace_back(argv[i]);
         }
         return run_stock_parts(fs::path(argv[2]), std::string(argv[3]), geometry);
+    }
+    if (command == "track-region") {
+        if (argc < 5) {
+            print_usage();
+            return 1;
+        }
+        std::uint64_t offset = 0;
+        std::uint64_t size = 0;
+        if (!parse_u64(std::string(argv[3]), offset)) {
+            std::cerr << "error: offset must be a decimal or 0x integer\n";
+            return 1;
+        }
+        if (!parse_u64(std::string(argv[4]), size)) {
+            std::cerr << "error: size must be a decimal or 0x integer\n";
+            return 1;
+        }
+        std::vector<fs::path> textures;
+        for (int i = 5; i < argc; ++i) {
+            textures.emplace_back(argv[i]);
+        }
+        return run_track_region(fs::path(argv[2]), offset, size, textures);
     }
 
     print_usage();

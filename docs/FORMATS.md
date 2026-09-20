@@ -840,6 +840,18 @@ matches texture 18 at 5744.
 - Unknown: whether every car and every material follows this. Only this car
   was checked.
 
+## Track geometry (Tracks/STREAM*.BUN)
+
+Track containers reuse the chunk ids above, but a track geometry root is
+not the same shape as a car one: it has no `0x00134004` mesh directory,
+its `0x00134011` is an aligned 176-byte record, its two hash lists appear
+only when their count byte is non-zero, and its vertex buffer holds
+24-byte vertices selected by a per-mesh vertex-format word at
+`0x00134900 +12`. The byte and executable evidence, the parser rules and
+one explicitly bounded decoded retail region are in
+[`TRACK.md`](TRACK.md). `nfsu::parse_geometry` is unchanged and still
+decodes only the 36-byte car layout.
+
 ## Attachment markers (GEOMETRY.BIN chunk 0x0013401A)
 
 Optional, at most one per mesh. In the 37 car files that are
