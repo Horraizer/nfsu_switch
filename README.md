@@ -10,7 +10,8 @@ PC installation is required for local research and testing.
 The first milestone is `nfsu_probe`, a read-only installation and chunk-format
 inspector. It validates the expected game layout and walks NFS chunk containers
 without loading whole asset files into memory. `nfsu_viewer` renders a decoded
-car to a screenshot with a portable CPU reference renderer.
+car to a screenshot with a portable CPU reference renderer, and with
+`--interactive` opens a desktop window on the same scene for inspection.
 
 ## Build
 
@@ -40,6 +41,17 @@ build/nfsu_probe car-placement X:/Games/NFSU/Global/GLOBALB.BUN 240SX
 build/nfsu_probe part-markers X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN exhaust
 build/nfsu_probe body-skin-inputs 240SX --source car-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN --source car-vinyls X:/Games/NFSU/Cars/240SX/VINYLS.BIN --source other X:/Games/NFSU/Cars/TEXTURES.BIN --target-texture DUMMY_SKIN1 --vinyl 0 TRIBAL5 16 no-remap --doorline plain --base 200 30 30 128 --assemble
 ```
+
+Run `nfsu_probe` with no arguments to print the usage text. It lists every
+command the program accepts: a command is registered in one place, the
+`kCommands` table in `src/main.cpp`, and its usage line is composed from the
+same name the program dispatches on, so a registered command is listed under
+that name whatever else its entry says. Adding a command is that one table
+entry plus its `build/nfsu_probe` line in the list above:
+`tests/usage_commands.cmake` reads the command inventory back out of the
+table, out of the built program's usage text and out of this file, and fails
+unless all three name the same commands. A command that is not registered is
+named as unknown and refused with exit 1.
 
 `meshes` lists every mesh with its name, vertex count, face count and
 validation status. `obj` writes all valid meshes to a diagnostic OBJ file at
@@ -114,7 +126,7 @@ is reported unresolved.
 ## Reference viewer
 
 `nfsu_viewer` renders a complete car with a deterministic CPU rasterizer
-and writes the frame as a TGA screenshot. It needs no window and no
+and writes the frame as a TGA screenshot. Rendering needs no window and no
 graphics library:
 
 ```text
@@ -154,6 +166,22 @@ the profile carries, so it refuses that profile rather than draw a car's
 four wheels at the origin. Paint and skin are still the caller's explicit
 selection (see `docs/CAR_SCENE.md`, `docs/PART_PLACEMENT.md` and
 `docs/RENDERER.md`).
+
+`--interactive` opens a desktop window on the same prepared scene once the
+screenshot has been written and the report printed:
+
+```text
+build/nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> build/240sx.tga --shared-textures X:/Games/NFSU/GLOBAL/GLOBALB.BUN --interactive
+```
+
+Left drag orbits, right drag pans, the wheel zooms and a click selects the
+material group under the pointer and reports its mesh, record fields, bound
+texture and retail render state. `V` cycles the shaded, per-group, per-mesh
+and depth views, `O` cycles the overlay. Without the flag nothing of it
+runs: the TGA, the report and the exit code are unchanged. The window is
+Win32 and GDI, with no external dependency, and every rule it follows lives
+in a backend-neutral layer a deko3d renderer will reuse. See
+`docs/INSPECTOR.md`.
 
 ## Body-skin compositor reference
 

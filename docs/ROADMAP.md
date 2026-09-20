@@ -20,8 +20,11 @@
   palettes are structurally extracted without guessing the blend.
 - Export diagnostic meshes and images.
 - Render one complete car on desktop: deterministic CPU reference renderer
-  and TGA screenshot (`nfsu_viewer`, `docs/RENDERER.md`). An interactive
-  GPU window is still to do.
+  and TGA screenshot (`nfsu_viewer`, `docs/RENDERER.md`), and an interactive
+  desktop window over the same prepared scene with camera orbit, pan and
+  zoom, mesh and material inspection and diagnostic views
+  (`nfsu_viewer --interactive`, [`INSPECTOR.md`](INSPECTOR.md)). The window
+  is Win32 and GDI over the CPU renderer; a GPU one is still to do.
 
 ## M1.5: Complete car asset scene
 
@@ -70,6 +73,15 @@
   code; the usage text is the one thing that changed for every invocation.
   Which customization a car actually has is still the caller's to state: no
   part database is read here.
+- The prepared scene can now be inspected by hand
+  (`nfsu_viewer --interactive`, [`INSPECTOR.md`](INSPECTOR.md)). A click
+  names the material group that drew a pixel, with its mesh, record fields,
+  bound texture and the retail render state that texture selects, and the
+  draws, meshes and depth views show how the car is cut up. The rule that
+  makes a pixel locatable - the submission order and the triangle
+  numbering - moved into the scene layer as `prepared_draw_order` and
+  `prepared_triangle_ranges`, so the deko3d backend inherits picking rather
+  than reimplementing it. No frame changed.
 - Track retail evidence and remaining unknowns in
   [`CAR_SCENE.md`](CAR_SCENE.md).
 

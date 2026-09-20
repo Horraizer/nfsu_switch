@@ -448,4 +448,67 @@ bool validate_prepared_scene(const PreparedCarScene& scene, std::string& error);
 // Triangles over all drawable ranges; only meaningful for a valid scene.
 std::uint64_t prepared_draw_triangles(const PreparedCarScene& scene) noexcept;
 
+// The order a backend submits the prepared material groups in, as indices
+// into PreparedCarScene::draws.
+//
+// With retail_order false it is the prepared order 0, 1, 2, ...: mesh order
+// and then material record order. With retail_order true it is the order
+// the retail draw queue produces.
+//
+// The retail queue is a fixed table of buckets indexed by a row taken from
+// the bound texture and a column taken from the effect. Every material of
+// one car uses the same effect, so the column is constant and the row alone
+// selects the bucket. Inside a bucket the queue holds one entry per
+// texture, placed where that texture was first used, and each entry holds
+// its materials in record order; the table is then walked by ascending row
+// and drained in place. Ordering the prepared draws by (row, first use of
+// the texture) with a stable sort reproduces that exactly. A group with no
+// resolved texture has no row of its own and takes row 0, the row a record
+// with both bytes zero selects.
+//
+// layers, when not null, receives the draw queue row of every draw, indexed
+// by prepared position and not by position in order. Every row is 0 with
+// retail_order false, which assigns no rows.
+//
+// The scene is read as given, so validate_prepared_scene belongs before it.
+// It fails only on a scene with 2^32 - 1 or more groups and on an
+// allocation failure, and leaves both outputs empty then.
+bool prepared_draw_order(
+    const PreparedCarScene& scene,
+    bool retail_order,
+    std::vector<std::uint32_t>& order,
+    std::vector<unsigned char>* layers,
+    std::string& error);
+
+// The triangle ids of one drawable group. A backend that submits the groups
+// in the order above, numbering every triangle it submits from 0, gives the
+// triangles of the group at prepared position draw the ids first_id ..
+// first_id + count - 1. The CPU renderer does exactly that and writes the
+// id of the owning triangle into Frame::ids(), so a pixel's id locates the
+// group that drew it.
+struct PreparedTriangleRange {
+    std::uint32_t first_id = 0;
+    std::uint32_t count = 0;
+    std::uint32_t draw = 0;
+};
+
+// One range per drawable group, in submission order, so first_id ascends
+// and the ranges are contiguous from 0. A group that is not drawable
+// submits nothing and gets no range. Fails when order is not a permutation
+// of the scene's groups, when the drawable groups hold 2^32 - 1 or more
+// triangles, and on an allocation failure; ranges is left empty then.
+bool prepared_triangle_ranges(
+    const PreparedCarScene& scene,
+    const std::vector<std::uint32_t>& order,
+    std::vector<PreparedTriangleRange>& ranges,
+    std::string& error);
+
+// The prepared position of the group that submitted triangle id, or
+// kNoHandle when no range holds it. Binary search over ranges exactly as
+// prepared_triangle_ranges leaves them; any other order gives a wrong
+// answer rather than an error.
+std::size_t find_prepared_triangle(
+    const std::vector<PreparedTriangleRange>& ranges,
+    std::uint32_t id) noexcept;
+
 } // namespace nfsu

@@ -1,4 +1,6 @@
 #include "nfsu/geometry.h"
+#include "nfsu/inspect.h"
+#include "nfsu/inspect_window.h"
 #include "nfsu/render.h"
 #include "nfsu/runtime_skin.h"
 #include "nfsu/texture.h"
@@ -58,6 +60,14 @@ void print_usage() {
         << "  --vertex-color       multiply by vertex color bytes 0..2\n"
         << "  --cull MODE          none (default), back or front\n"
         << "  --shading MODE       flat (default) or none\n"
+        << "Interactive inspection (docs/INSPECTOR.md). Without it nothing below\n"
+        << "runs and the screenshot, the report and the exit code are unchanged:\n"
+        << "  --interactive        after writing the screenshot and printing the\n"
+        << "                       report, open a desktop window on the same\n"
+        << "                       prepared scene: orbit, pan and zoom the camera,\n"
+        << "                       click a material group to inspect it, and switch\n"
+        << "                       the diagnostic view and overlay. The screenshot\n"
+        << "                       is written first and is never affected.\n"
         << "Retail material state (docs/MATERIALS.md). Every option below\n"
         << "the first one needs --material-state retail:\n"
         << "  --material-state M   off (default) or retail. retail applies the\n"
@@ -546,7 +556,8 @@ int parse_options(
     nfsu::RenderOptions& options,
     std::vector<fs::path>& shared,
     nfsu::MeshSelection& selection,
-    SkinOptions& skin) {
+    SkinOptions& skin,
+    bool& interactive) {
     const nfsu::RenderLimits limits;
     const nfsu::SceneLimits scene_limits;
     std::size_t selector_text = 0;
@@ -635,6 +646,18 @@ int parse_options(
         }
         if (name == "--vertex-color") {
             options.vertex_color = true;
+            continue;
+        }
+        if (name == "--interactive") {
+            // Refused here, before any file is opened, on a build with no
+            // window backend: an option that silently did nothing would be
+            // worse than a usage error.
+            if (!nfsu::inspection_window_supported()) {
+                std::cerr << "error: --interactive needs a desktop window backend "
+                             "and this build has none\n";
+                return 1;
+            }
+            interactive = true;
             continue;
         }
         static const std::set<std::string> valued = {
@@ -840,8 +863,9 @@ int main(int argc, char** argv) {
     std::vector<fs::path> shared_paths;
     nfsu::MeshSelection selection;
     SkinOptions skin;
+    bool interactive = false;
     const int parse_result =
-        parse_options(argc, argv, options, shared_paths, selection, skin);
+        parse_options(argc, argv, options, shared_paths, selection, skin, interactive);
     if (parse_result != 0) {
         return parse_result;
     }
@@ -1448,5 +1472,29 @@ int main(int argc, char** argv) {
                   << stats.pixels_blended << '\n';
     }
     std::cout << "wrote: " << output_path.filename().u8string() << '\n';
+    // Everything above is what a headless run does, in the order it has
+    // always done it: the screenshot is on disk and the whole report is on
+    // stdout before the window opens. Without --interactive nothing below
+    // runs, so the TGA, stdout, stderr and the exit code of every other
+    // invocation are byte for byte what they were.
+    if (interactive) {
+        std::cout << "interactive: backend "
+                  << nfsu::inspection_window_backend_name() << '\n';
+        // The window renders the same prepared scene with the same options
+        // the screenshot was rendered with; it reads no file and writes
+        // none, so the inputs stay untouched while it is open.
+        nfsu::Inspector inspector;
+        std::string inspect_error;
+        if (!inspector.reset(scene, options, limits, inspect_error)) {
+            std::cerr << "error: inspector: " << inspect_error << '\n';
+            return 2;
+        }
+        nfsu::InspectionWindowOptions window;
+        window.title = "nfsu car inspector";
+        if (!nfsu::run_inspection_window(inspector, window, inspect_error)) {
+            std::cerr << "error: inspection window: " << inspect_error << '\n';
+            return 2;
+        }
+    }
     return geometry.ok() && pack.ok() && sources_ok && skin_ok ? 0 : 3;
 }

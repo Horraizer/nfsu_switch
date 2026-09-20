@@ -7,7 +7,6 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
-#include <map>
 #include <new>
 #include <sstream>
 #include <system_error>
@@ -1178,70 +1177,30 @@ bool render_scene(
         return false;
     }
     std::vector<unsigned char> id_fallback;
-    // The order the groups are drawn in. With MaterialStateMode::off it is
-    // the prepared order, as it has always been; with the retail state it
-    // is the order the retail draw queue produces.
-    std::vector<std::uint32_t> order;
     try {
         id_fallback.reserve(static_cast<std::size_t>(submitted));
-        order.resize(scene.draws.size());
     } catch (const std::bad_alloc&) {
         error = "not enough memory for the triangle table";
         return false;
     }
-    for (std::size_t i = 0; i < order.size(); ++i) {
-        order[i] = static_cast<std::uint32_t>(i);
+    // The order the groups are drawn in. With MaterialStateMode::off it is
+    // the prepared order, as it has always been; with the retail state it
+    // is the order the retail draw queue produces. The rule itself lives in
+    // prepared_draw_order, next to the prepared scene it orders, so that an
+    // inspector or a second backend reproduces the triangle ids assigned
+    // below instead of restating the queue.
+    const bool retail_order = options.material_state == MaterialStateMode::retail;
+    std::vector<std::uint32_t> order;
+    std::vector<unsigned char> layer;
+    if (!prepared_draw_order(scene, retail_order, order, &layer, error)) {
+        return false;
     }
-    if (options.material_state == MaterialStateMode::retail) {
-        // The retail queue is a fixed table of buckets indexed by a row
-        // taken from the bound texture and a column taken from the effect.
-        // Every material of one car uses the same effect, so the column is
-        // constant and the row alone selects the bucket. Inside a bucket
-        // the queue holds one entry per texture, placed where that texture
-        // was first used, and each entry holds its materials in record
-        // order; the table is then walked by ascending row and drained in
-        // place. Ordering the prepared draws by (row, first use of the
-        // texture) with a stable sort reproduces that exactly. A group with
-        // no resolved texture has no row of its own and takes row 0, the
-        // row a record with both bytes zero selects.
-        std::vector<unsigned char> layer;
-        std::vector<std::uint32_t> group;
-        std::map<std::pair<std::size_t, std::uint32_t>, std::uint32_t> first_use;
-        try {
-            layer.assign(scene.draws.size(), 0);
-            group.assign(scene.draws.size(), 0);
-            std::uint32_t next_group = 0;
-            for (std::size_t i = 0; i < scene.draws.size(); ++i) {
-                const PreparedDraw& draw = scene.draws[i];
-                std::pair<std::size_t, std::uint32_t> key{kNoHandle, draw.texture_hash};
-                if (draw.binding == BindingKind::resolved) {
-                    const RenderTexture& texture = scene.textures[draw.texture];
-                    layer[i] = static_cast<unsigned char>(
-                        render_draw_layer(texture.layer_group, texture.layer_order));
-                    key = {draw.texture, 0U};
-                }
-                const auto inserted = first_use.emplace(key, next_group);
-                if (inserted.second) {
-                    ++next_group;
-                }
-                group[i] = inserted.first->second;
-            }
-        } catch (const std::bad_alloc&) {
-            error = "not enough memory for the draw order tables";
-            return false;
-        }
+    if (retail_order) {
         for (std::size_t i = 0; i < scene.draws.size(); ++i) {
             if (scene.draws[i].drawable) {
                 ++stats.draw_rows[layer[i]];
             }
         }
-        std::stable_sort(order.begin(), order.end(),
-                         [&layer, &group](std::uint32_t a, std::uint32_t b) {
-                             if (layer[a] != layer[b]) {
-                                 return layer[a] < layer[b];
-                             }
-                             return group[a] < group[b];
-                         });
     }
 
     if (!frame.reset(options.width, options.height, options.background, limits,
