@@ -6,6 +6,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <new>
 #include <sstream>
@@ -243,17 +244,282 @@ std::uint32_t mix32(std::uint32_t x) noexcept {
     return x;
 }
 
-bool same_file(const fs::path& a, const fs::path& b) {
-    std::error_code error;
-    if (fs::equivalent(a, b, error) && !error) {
-        return true;
+// ---------------------------------------------------------------------------
+// Comparing two paths that need not exist
+//
+// The writers below refuse a target that names a source, and the viewer
+// refuses a dump that names the screenshot. Both are asked about paths that
+// do not exist yet, where fs::equivalent answers nothing, so the names are
+// compared instead - and every spelling of one name has to reach one form,
+// or the guard passes a pair it was written to refuse.
+// ---------------------------------------------------------------------------
+
+using PathChar = fs::path::value_type;
+using PathText = fs::path::string_type;
+
+PathChar lower_ascii(PathChar value) noexcept {
+    if (value >= PathChar('A') && value <= PathChar('Z')) {
+        return static_cast<PathChar>(value - PathChar('A') + PathChar('a'));
     }
-    const fs::path abs_a = fs::absolute(a, error).lexically_normal();
+    return value;
+}
+
+PathText flip_ascii_case(const PathText& text) {
+    PathText out = text;
+    for (PathChar& value : out) {
+        if (value >= PathChar('a') && value <= PathChar('z')) {
+            value = static_cast<PathChar>(value - PathChar('a') + PathChar('A'));
+        } else if (value >= PathChar('A') && value <= PathChar('Z')) {
+            value = static_cast<PathChar>(value - PathChar('A') + PathChar('a'));
+        }
+    }
+    return out;
+}
+
+// Whether the two spellings differ in nothing but case.
+//
+// On Windows the question is asked of the OS, because the names this
+// program compares are not all ASCII - this repository is checked out under
+// a Cyrillic path - and NTFS folds far more than A-Z.
+// CompareStringOrdinal with bIgnoreCase is the ordinal, locale-independent
+// fold Win32 name lookup uses. Elsewhere, and if that call fails, only
+// A-Z is folded: folding beyond it is the filesystem's own table, which
+// this cannot read, so two names differing only outside ASCII are compared
+// exactly and may be let through on a filesystem that would fold them.
+bool same_name_nocase(const PathText& a, const PathText& b) noexcept {
+#if defined(NFSU_WRITER_WINDOWS)
+    const std::size_t cap = static_cast<std::size_t>(std::numeric_limits<int>::max());
+    if (a.size() <= cap && b.size() <= cap) {
+        const int result =
+            CompareStringOrdinal(a.c_str(), static_cast<int>(a.size()), b.c_str(),
+                                 static_cast<int>(b.size()), TRUE);
+        if (result != 0) {
+            return result == CSTR_EQUAL;
+        }
+    }
+#endif
+    if (a.size() != b.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (lower_ascii(a[i]) != lower_ascii(b[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool is_separator(PathChar value) noexcept {
+    return value == PathChar('/') || value == PathChar('\\');
+}
+
+// The Windows extended-length prefix, removed so that the path underneath
+// it reaches the same form as the plain spelling of the same file. This
+// standard library does not parse it, and fs::absolute turns
+// "\\?\C:\dir\out.tga" into "C:\?\C:\dir\out.tga", which would hide the
+// alias between the two spellings entirely.
+fs::path strip_extended_prefix(const fs::path& path) {
+#if defined(NFSU_WRITER_WINDOWS)
+    const PathText& text = path.native();
+    if (text.size() >= 4 && is_separator(text[0]) && is_separator(text[1]) &&
+        text[2] == PathChar('?') && is_separator(text[3])) {
+        const PathText rest = text.substr(4);
+        if (rest.size() >= 4 && same_name_nocase(rest.substr(0, 3), PathText(L"UNC")) &&
+            is_separator(rest[3])) {
+            PathText unc(2, PathChar('\\'));
+            unc += rest.substr(4);
+            return fs::path(unc);
+        }
+        return fs::path(rest);
+    }
+#endif
+    return path;
+}
+
+// "\\server\share\..." - absolute, but not to this standard library, which
+// parses no root name for it. The device namespace "\\.\" and the extended
+// prefix "\\?\" are not this.
+bool is_unc(const fs::path& path) noexcept {
+    const PathText& text = path.native();
+    return text.size() >= 3 && is_separator(text[0]) && is_separator(text[1]) &&
+           !is_separator(text[2]) && text[2] != PathChar('?') && text[2] != PathChar('.');
+}
+
+// The one form every spelling of this path reaches: absolute first, then
+// normalized.
+//
+// fs::weakly_canonical alone is not enough, and getting that wrong is how a
+// generated texture can be published at the screenshot's path. It
+// canonicalizes the longest prefix that exists and normalizes the rest, so
+// for "out.tga", where nothing exists, it returns the relative "out.tga",
+// while for "./out.tga" the "." does exist and it returns an absolute path.
+// The two spellings of one name then compare unequal. Making the path
+// absolute first removes that difference: "." and ".." collapse the same
+// way whether or not the components around them exist.
+//
+// What it does not reach: on this Windows toolchain weakly_canonical
+// dereferences no junction and no directory symbolic link, so two paths
+// through different links to one directory stay different here. Neither is
+// an 8.3 short name the same file as its long name, nor a second drive
+// letter (subst, a mapped share) the same as the first. Those are
+// disclosed in the header rather than claimed away.
+fs::path absolute_name(const fs::path& raw) {
+    const fs::path path = strip_extended_prefix(raw);
+    std::error_code error;
+    if (is_unc(path)) {
+        // Already absolute. fs::absolute would put the current drive in
+        // front of it, which both hides the alias between two spellings of
+        // one network path and invents one between a network path and an
+        // unrelated local path. Only the normalization applies; the leading
+        // pair of separators is put back because lexically_normal keeps one.
+        const fs::path body = fs::path(path.native().substr(1)).lexically_normal();
+        PathText out(1, PathChar('\\'));
+        out += body.native();
+        return fs::path(out);
+    }
+    fs::path absolute = fs::absolute(path, error);
+    if (error) {
+        absolute = path;
+    }
+    const fs::path canonical = fs::weakly_canonical(absolute, error);
+    if (error) {
+        return absolute.lexically_normal();
+    }
+    return canonical;
+}
+
+// The deepest ancestor of the path that exists and is a directory, or an
+// empty path when none does. That directory is the one that would hold the
+// file, so it is the one whose name matching decides whether two spellings
+// differing only in case are one file.
+fs::path existing_directory(const fs::path& path) {
+    std::error_code error;
+    fs::path probe = path.parent_path();
+    while (!probe.empty()) {
+        if (fs::is_directory(probe, error)) {
+            return probe;
+        }
+        const fs::path parent = probe.parent_path();
+        if (parent == probe) {
+            break;
+        }
+        probe = parent;
+    }
+    return {};
+}
+
+// Asks the directory itself: take a name it already holds, spell it with
+// the ASCII case flipped, and see whether the directory still answers to
+// it. That is the exact question - does *this* directory match names
+// without regard to case. It is read-only in the sense that matters:
+// entries are listed and resolved, and nothing is created, opened for
+// writing or changed.
+//
+// An entry the filesystem will not resolve - a dangling symbolic link, a
+// junction whose target is gone - is skipped, and that is load-bearing.
+// fs::equivalent fails for such an entry for a reason that has nothing to
+// do with case, and taking that failure for an answer reports a
+// case-folding volume as case-sensitive: one dangling junction sorting
+// first in the output directory would be enough to let a dump named like
+// the screenshot through.
+//
+// `answered` is false when the directory cannot be listed, or holds no name
+// with an ASCII letter that the filesystem will resolve.
+bool entries_ignore_case(const fs::path& directory, bool& answered) {
+    answered = false;
+    if (directory.empty()) {
+        return false;
+    }
+    std::error_code error;
+    fs::directory_iterator entry(directory, fs::directory_options::skip_permission_denied,
+                                 error);
     if (error) {
         return false;
     }
-    const fs::path abs_b = fs::absolute(b, error).lexically_normal();
-    return !error && abs_a == abs_b;
+    const fs::directory_iterator end;
+    // Bounded, because only the first usable entry is needed and a
+    // directory can be very large.
+    for (std::size_t seen = 0; entry != end && seen < 64; entry.increment(error), ++seen) {
+        if (error) {
+            return false;
+        }
+        const PathText name = entry->path().filename().native();
+        const PathText flipped = flip_ascii_case(name);
+        if (flipped == name) {
+            continue;
+        }
+        std::error_code status_error;
+        const fs::file_status status = fs::status(entry->path(), status_error);
+        if (status_error || !fs::exists(status)) {
+            continue;
+        }
+        std::error_code compare_error;
+        answered = true;
+        return fs::equivalent(entry->path(), directory / flipped, compare_error) &&
+               !compare_error;
+    }
+    return false;
+}
+
+// The same question asked of the directory's own name instead of its
+// contents, for a directory that is empty or holds only digits. It answers
+// for the parent, which is the nearest filesystem there is to ask; a
+// component with no ASCII letter is skipped upwards, and a Windows drive
+// letter is the last resort. `answered` is false when nothing in the path
+// can be spelled two ways.
+bool components_ignore_case(const fs::path& directory, bool& answered) {
+    answered = false;
+    std::error_code error;
+    fs::path probe = directory;
+    while (!probe.empty()) {
+        const PathText name = probe.filename().native();
+        const PathText flipped = flip_ascii_case(name);
+        if (flipped != name) {
+            answered = true;
+            return fs::equivalent(probe, probe.parent_path() / flipped, error) && !error;
+        }
+        const fs::path parent = probe.parent_path();
+        if (parent == probe) {
+            break;
+        }
+        probe = parent;
+    }
+    const PathText root = directory.root_name().native();
+    const PathText flipped_root = flip_ascii_case(root);
+    if (!root.empty() && flipped_root != root) {
+        answered = true;
+        fs::path other(flipped_root);
+        other += directory.root_directory();
+        return fs::equivalent(directory.root_path(), other, error) && !error;
+    }
+    return false;
+}
+
+// Whether the filesystem that would hold this path matches names without
+// regard to case. When neither probe can be answered - an empty directory
+// whose path holds no ASCII letter anywhere - the answer is yes, because
+// this decides a refusal: refusing two spellings that may be one file costs
+// the caller a rename, while letting them through costs a file published
+// at a name the caller did not ask for.
+//
+// Case sensitivity is a property of a volume, not of a single directory, on
+// every filesystem this runs on. Where one directory departs from its
+// volume - the per-directory flag Windows sets for WSL, which makes a
+// directory case-sensitive on a volume that is not - the entry probe
+// answers for that directory, and only the fallback answers for the volume
+// instead, which refuses a pair it could have allowed.
+bool names_ignore_case(const fs::path& path) {
+    const fs::path directory = existing_directory(path);
+    bool answered = false;
+    const bool by_entry = entries_ignore_case(directory, answered);
+    if (answered) {
+        return by_entry;
+    }
+    const bool by_component = components_ignore_case(directory, answered);
+    if (answered) {
+        return by_component;
+    }
+    return true;
 }
 
 // True unless the path is known not to exist. A symlink counts as an entry
@@ -1371,6 +1637,34 @@ private:
 
 } // namespace
 
+bool same_file_path(const std::filesystem::path& a, const std::filesystem::path& b) {
+    // Every caller uses this to refuse, and neither write_rgba_tga nor the
+    // viewer has a handler, so nothing is allowed out. An allocation that
+    // throws while comparing two paths answers "one file", which refuses
+    // the pair: the direction that cannot publish a file at a name the
+    // caller did not ask for.
+    try {
+        std::error_code error;
+        if (fs::equivalent(a, b, error) && !error) {
+            return true;
+        }
+        const fs::path left = absolute_name(a);
+        const fs::path right = absolute_name(b);
+        if (left == right) {
+            return true;
+        }
+        // One spelling but for case. That is one file wherever the
+        // filesystem folds case, so the filesystem is asked rather than
+        // guessed at.
+        if (!same_name_nocase(left.native(), right.native())) {
+            return false;
+        }
+        return names_ignore_case(left);
+    } catch (...) {
+        return true;
+    }
+}
+
 bool frame_writer_supported() noexcept {
 #if defined(NFSU_WRITER_WINDOWS) || defined(NFSU_WRITER_POSIX)
     return true;
@@ -1390,10 +1684,27 @@ bool write_frame_tga(
         result.error = "frame is empty";
         return false;
     }
+    return write_rgba_tga(frame.width(), frame.height(), frame.rgba(), target, sources,
+                          result);
+}
+
+bool write_rgba_tga(
+    std::uint32_t width,
+    std::uint32_t height,
+    const std::vector<unsigned char>& rgba,
+    const std::filesystem::path& target,
+    const std::vector<std::filesystem::path>& sources,
+    FrameWriteResult& result) {
+    result.error.clear();
+    result.not_removed.clear();
+    if (width == 0 || height == 0) {
+        result.error = "image is empty";
+        return false;
+    }
     fs::path partial = target;
     partial += ".partial";
     for (const fs::path& source : sources) {
-        if (same_file(source, target) || same_file(source, partial)) {
+        if (same_file_path(source, target) || same_file_path(source, partial)) {
             result.error = "output path must differ from every input file";
             return false;
         }
@@ -1415,8 +1726,7 @@ bool write_frame_tga(
         std::ostringstream stream(std::ios::binary);
         std::string error;
         try {
-            if (!write_tga(stream, frame.width(), frame.height(), frame.rgba(),
-                           error)) {
+            if (!write_tga(stream, width, height, rgba, error)) {
                 result.error = error;
                 return false;
             }

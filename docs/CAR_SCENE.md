@@ -142,6 +142,10 @@ in the surveyed installation. The literal name is also absent. Executable
 evidence below identifies it as a formatted static fallback name, not as the
 writable target of the customization compositor.
 
+`nfsu_viewer --skin-car` composes the runtime target and binds the generated
+texture under that hash as well, which is what puts pixels on those 637
+groups; see [`RUNTIME_SKIN.md`](RUNTIME_SKIN.md).
+
 The 240SX car-local pack (SHA-256
 `725DC56CB4807FF8E8E96F1D667F5FDF8DC5ADE3C7D06E759FC62E7DEEFDF6BA`)
 contains six composition-adjacent A8R8G8B8 inputs. Each is 512x512 with 7
@@ -515,6 +519,8 @@ uses at a given LOD (`nfsu_probe stock-parts`, `nfsu::select_stock_parts`),
 and it may read where each part goes (`nfsu_probe car-placement`,
 `nfsu_probe part-markers`, `nfsu::derive_cullable_part_placements`,
 `nfsu::car_marker_placement`). That is a decoded part and mesh selection
-plus placement, not a stock car: paint, skin, vinyls and decal textures are
-still missing, and nothing consumes the placement yet, so neither viewer
-profile may be labelled the stock car.
+plus placement, not a stock car: decal textures are still missing, nothing
+consumes the placement yet, and the paint, skin and vinyls the viewer can
+now compose are the caller's explicit selection rather than a car's own
+customization state, so neither viewer profile may be labelled the stock
+car.

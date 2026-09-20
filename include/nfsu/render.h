@@ -397,14 +397,57 @@ struct FrameWriteResult {
     std::function<bool(const std::filesystem::path&)> before_rename;
 };
 
+// True when the two paths name one file, for paths that need not exist.
+//
+// It is the comparison every "this output must differ from that file"
+// refusal in this project rests on, and it is asked mostly about paths that
+// do not exist yet: an output, a temporary "<target>.partial", a generated
+// texture dump. fs::equivalent answers only for paths that both exist, so
+// it is tried first and the names are compared when it cannot:
+//
+// - Both sides are made absolute before they are normalized. Normalizing
+//   alone leaves a bare "out.tga" relative and "./out.tga" absolute, and
+//   the two then compare unequal although they name one file.
+// - "." and ".." are removed. Symbolic links are resolved wherever the
+//   standard library resolves them, which on this Windows toolchain is
+//   nowhere: fs::weakly_canonical dereferences no junction and no directory
+//   symbolic link there, so two paths reaching one directory through
+//   different links stay different.
+// - On Windows the extended-length prefix "\\?\" is removed and a
+//   "\\server\share" path is left absolute, because this standard library
+//   parses neither as a root and fs::absolute would otherwise rewrite both
+//   onto the current drive.
+// - Two spellings that differ only in case are one file wherever the
+//   filesystem folds case. The filesystem is asked, read-only, by spelling
+//   a name it already holds with the case flipped and seeing whether it
+//   still answers; nothing is created, opened for writing or changed. When
+//   it cannot be asked, the answer is that they are one file, because this
+//   decides a refusal. The fold itself is the OS ordinal fold on Windows
+//   and A-Z elsewhere.
+//
+// What it does not see, and therefore lets through: a junction or symbolic
+// link in the middle of the path (above), an 8.3 short name against its
+// long name, a second drive letter for one directory (subst, a mapped
+// share), a network path against the local path for the same file, and
+// case folding outside ASCII on a platform whose standard library is not
+// asked. It also compares names and not contents: two hard links to a file
+// that exists are equivalent, but two names for a file that does not exist
+// yet can only be compared as names.
+//
+// It does not throw. Every caller uses it to refuse and none has a handler,
+// so an allocation that throws while comparing answers "one file", which is
+// the direction that cannot publish a file at a name the caller did not
+// ask for.
+bool same_file_path(const std::filesystem::path& a, const std::filesystem::path& b);
+
 // True when write_frame_tga has exclusive-create and no-replace primitives
 // on this platform (Windows and POSIX). Elsewhere it fails closed.
 bool frame_writer_supported() noexcept;
 
 // Writes the frame as a TGA through write_tga, never replacing any
 // existing file:
-// - A target equal to any source path is refused, and an existing target
-//   is refused up front.
+// - A target that names any source path, compared with same_file_path, is
+//   refused, and an existing target is refused up front.
 // - "<target>.partial" is created exclusively and without following a
 //   symlink or reparse point at that name (Windows CreateFileW CREATE_NEW
 //   with FILE_FLAG_OPEN_REPARSE_POINT; POSIX open O_CREAT | O_EXCL |
@@ -420,6 +463,18 @@ bool frame_writer_supported() noexcept;
 // what could not be removed.
 bool write_frame_tga(
     const Frame& frame,
+    const std::filesystem::path& target,
+    const std::vector<std::filesystem::path>& sources,
+    FrameWriteResult& result);
+
+// The same write, for an RGBA8 image that is not a rendered frame, for
+// example a generated texture. rgba must hold exactly width * height * 4
+// bytes. Every rule above applies unchanged, including the refusal to
+// replace an existing target.
+bool write_rgba_tga(
+    std::uint32_t width,
+    std::uint32_t height,
+    const std::vector<unsigned char>& rgba,
     const std::filesystem::path& target,
     const std::vector<std::filesystem::path>& sources,
     FrameWriteResult& result);
