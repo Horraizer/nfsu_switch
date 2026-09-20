@@ -111,6 +111,15 @@ MaterialBinding resolve_material(
     const MeshMaterial& material,
     const RenderTextureSet& textures) noexcept;
 
+// The same resolution against an explicit texture-hash list. The Mesh
+// overload calls this one with Mesh::texture_hashes; decoders that build no
+// Mesh (the bounded track region, include/nfsu/track.h) pass their own list.
+// Behaviour is identical for identical lists.
+MaterialBinding resolve_material(
+    const std::vector<std::uint32_t>& texture_hashes,
+    const MeshMaterial& material,
+    const RenderTextureSet& textures) noexcept;
+
 // One mesh selector. index is the position in GeometryReport::meshes
 // (parse_geometry sets Mesh::index to the same value). name is compared
 // byte for byte, case-sensitively, with Mesh::name. hash is matched against

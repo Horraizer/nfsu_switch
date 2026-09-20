@@ -158,12 +158,19 @@ MaterialBinding resolve_material(
     const Mesh& mesh,
     const MeshMaterial& material,
     const RenderTextureSet& textures) noexcept {
+    return resolve_material(mesh.texture_hashes, material, textures);
+}
+
+MaterialBinding resolve_material(
+    const std::vector<std::uint32_t>& texture_hashes,
+    const MeshMaterial& material,
+    const RenderTextureSet& textures) noexcept {
     MaterialBinding binding;
-    if (material.texture_slot >= mesh.texture_hashes.size()) {
+    if (material.texture_slot >= texture_hashes.size()) {
         binding.kind = BindingKind::invalid_slot;
         return binding;
     }
-    binding.hash = mesh.texture_hashes[material.texture_slot];
+    binding.hash = texture_hashes[material.texture_slot];
     std::size_t matches = 0;
     std::size_t usable = 0;
     for (std::size_t i = 0; i < textures.textures.size(); ++i) {

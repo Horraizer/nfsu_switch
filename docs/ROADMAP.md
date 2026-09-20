@@ -44,8 +44,16 @@
 
 ## M2: Track slice
 
-- Decode one `STREAM*.BUN` region.
-- Resolve track textures and materials.
+- Decode one `STREAM*.BUN` region. The 24-byte track vertex, the
+  per-mesh vertex-format field that selects it, and one explicitly
+  bounded region of `Tracks/STREAML1RB.BUN` are decoded end to end
+  (`include/nfsu/track.h`, `nfsu_probe track-region`,
+  [`TRACK.md`](TRACK.md)). Object instances, transforms and the
+  streaming tables are still to do.
+- Resolve track textures and materials. The bounded region resolves
+  against explicit ordered track texture sources through the same
+  `RenderTextureSet` the car scene uses; per-material effect state is
+  still to do.
 - Add visibility, camera, and static collision.
 - Measure CPU, memory, and draw-call costs.
 

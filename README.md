@@ -34,6 +34,7 @@ build/nfsu_probe export-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN build/dds
 build/nfsu_probe texture-bindings X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games/NFSU/Cars/240SX/TEXTURES.BIN
 build/nfsu_probe car-parts X:/Games/NFSU/Global/GLOBALB.BUN 240SX
 build/nfsu_probe stock-parts X:/Games/NFSU/Global/GLOBALB.BUN 240SX X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games/NFSU/Cars/BRAKES/GEOMETRY.BIN X:/Games/NFSU/Cars/PLATES/GEOMETRY.BIN
+build/nfsu_probe track-region X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN
 ```
 
 `meshes` lists every mesh with its name, vertex count, face count and
@@ -62,6 +63,18 @@ channel semantics and runtime skin composition are not yet implemented.
 `car-parts` parses the car part database of `GLOBAL/GLOBALB.BUN` and lists
 every part record: car type hash, slot, upgrade level, part name hash and
 the four per-LOD mesh hashes. A car type name lists only its records.
+`track-region` decodes one explicitly selected byte range of a track
+`STREAM*.BUN` container: a file, an absolute offset and a length, nothing
+scanned and no other byte of the file read. It lists every mesh with its
+vertex-format word and stride, reports every structural problem with an
+absolute file offset, prints deterministic geometry and draw-list cost
+statistics, and, when texture files are named after the length, resolves
+the region's materials against them in the order given. Only the texture
+hashes the region actually uses are decoded. It exits 3 if the region has
+any problem. Track meshes use a 24-byte vertex; a mesh whose vertex-format
+word selects the 36-byte or 60-byte retail layout is refused by name
+rather than guessed at. See `docs/TRACK.md` for the byte evidence, the
+decoded retail region and the read-only acceptance procedure.
 `stock-parts` applies the game's stock-part rules to one car type and
 prints the chosen record per slot with each LOD mesh hash resolved against
 the `GEOMETRY.BIN` files given after the car type, including the mesh the
