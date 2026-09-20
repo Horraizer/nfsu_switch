@@ -189,6 +189,20 @@ the drawn wheel matrix is not reproduced by this project; see
 `docs/PART_PLACEMENT.md`. No texture file is read, so every material group
 is reported unresolved.
 
+Both programs take paths that are not ASCII, including a game installation
+or a build directory under a directory whose name is Cyrillic, Greek or
+Japanese. On Windows they refuse exactly two spellings, each with a
+diagnostic naming the argument and an exit status of 1 before any file is
+opened: an argument whose bytes do not decode in the process's active ANSI
+code page, and an argument holding `?` outside a leading `\\?\`
+extended-length prefix, which Windows writes in place of every character
+that code page cannot express and which is reserved in a Windows file name
+either way. Nothing is refused on other platforms. See
+`docs/PATH_ARGUMENTS.md` for what that second rule does and does not
+prevent, and for why this is not the ASCII-only rule in `CLAUDE.md`: that
+one is about tracked files and Git metadata, not about where the checkout
+lives.
+
 ## Reference viewer
 
 `nfsu_viewer` renders a complete car with a deterministic CPU rasterizer

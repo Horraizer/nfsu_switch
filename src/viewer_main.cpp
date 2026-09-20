@@ -1,4 +1,5 @@
 #include "nfsu/car_parts.h"
+#include "nfsu/arg_path.h"
 #include "nfsu/geometry.h"
 #include "nfsu/inspect.h"
 #include "nfsu/inspect_window.h"
@@ -401,7 +402,7 @@ int parse_skin_option(
         if (argv[i + 1][0] == '\0') {
             return bad();
         }
-        skin.vinyls = fs::path(argv[i + 1]);
+        skin.vinyls = nfsu::argument_path(argv[i + 1]);
         skin.has_vinyls = true;
         i += 2;
         return 1;
@@ -413,7 +414,7 @@ int parse_skin_option(
         if (argv[i + 1][0] == '\0') {
             return bad();
         }
-        skin.dump = fs::path(argv[i + 1]);
+        skin.dump = nfsu::argument_path(argv[i + 1]);
         skin.has_dump = true;
         i += 2;
         return 1;
@@ -692,7 +693,7 @@ int parse_options(
                           << " --shared-textures files are allowed\n";
                 return 1;
             }
-            shared.emplace_back(argv[++i]);
+            shared.push_back(nfsu::argument_path(argv[++i]));
             continue;
         }
         if (name == "--stock-geometry") {
@@ -710,7 +711,7 @@ int parse_options(
                 std::cerr << "error: invalid value for " << name << '\n';
                 return 1;
             }
-            stock.geometry.emplace_back(argv[++i]);
+            stock.geometry.push_back(nfsu::argument_path(argv[++i]));
             continue;
         }
         if (!seen.insert(name).second) {
@@ -852,7 +853,7 @@ int parse_options(
         } else if (name == "--stock-parts") {
             stock.any_option = true;
             ok = !value.empty();
-            stock.parts = fs::path(value);
+            stock.parts = nfsu::argument_path(value.c_str());
             stock.has_parts = ok;
         } else if (name == "--stock-lod") {
             stock.any_option = true;
@@ -983,9 +984,21 @@ int main(int argc, char** argv) {
         print_usage();
         return 1;
     }
-    const fs::path geometry_path(argv[1]);
-    const fs::path texture_path(argv[2]);
-    const fs::path output_path(argv[3]);
+    // Before anything is parsed, opened or written. Every argument goes
+    // through the same check, not only the three below and the path-valued
+    // options: the rest are option names, numbers and retail texture, mesh
+    // and car names, and none of those has a spelling this refuses.
+    // docs/PATH_ARGUMENTS.md says what is accepted and what is not.
+    {
+        std::string argument_error;
+        if (!nfsu::check_arguments(argc, argv, 1, argument_error)) {
+            std::cerr << "error: " << argument_error << '\n';
+            return 1;
+        }
+    }
+    const fs::path geometry_path = nfsu::argument_path(argv[1]);
+    const fs::path texture_path = nfsu::argument_path(argv[2]);
+    const fs::path output_path = nfsu::argument_path(argv[3]);
 
     nfsu::RenderOptions options;
     std::vector<fs::path> shared_paths;
