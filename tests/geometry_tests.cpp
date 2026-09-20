@@ -1,5 +1,7 @@
 #include "nfsu/geometry.h"
 
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -124,6 +126,16 @@ struct MaterialSpec {
     std::uint32_t material_key_slot = 0;
 };
 
+// One synthetic 0x0013401A record.
+struct TestMarker {
+    std::uint32_t name_hash = 0xBCF8A18BU;  // bin_hash("LEFT_EXHAUST")
+    std::array<std::uint32_t, 3> reserved{};
+    std::array<float, 16> matrix{{1.0F, 0.0F, 0.0F, 0.0F,
+                                  0.0F, 1.0F, 0.0F, 0.0F,
+                                  0.0F, 0.0F, 1.0F, 0.0F,
+                                  0.0F, 0.0F, 0.0F, 1.0F}};
+};
+
 struct MeshSpec {
     std::string name = "BODY";
     std::vector<TestVertex> vertices;
@@ -141,6 +153,16 @@ struct MeshSpec {
     std::uint32_t material_key_second_word = 0;
     std::size_t material_key_extra = 0;
     bool include_material_key_list = true;
+    // 0x0013401A attachment markers. The chunk is omitted unless
+    // include_marker_list is set; most retail meshes have none.
+    bool include_marker_list = false;
+    std::vector<TestMarker> markers;
+    // Extra bytes appended after the marker records, which breaks the stride.
+    std::size_t marker_extra = 0;
+    // Emit the marker chunk twice.
+    bool duplicate_marker_list = false;
+    // Overwrite the first alignment filler byte with something other than 0x11.
+    bool corrupt_marker_prefix = false;
     // An ignored sibling chunk used to shift later records in alignment tests.
     std::size_t alignment_shift_size = 0;
     // Default: one material covering every index with texture slot 0.
@@ -176,6 +198,9 @@ struct MeshLayout {
     std::size_t material_payload_offset = 0;
     std::size_t material_data_offset = 0;
     std::size_t material_prefix = 0;
+    std::size_t marker_payload_offset = 0;
+    std::size_t marker_data_offset = 0;
+    std::size_t marker_prefix = 0;
 };
 
 std::vector<MaterialSpec> materials_for(const MeshSpec& spec) {
@@ -232,6 +257,31 @@ void write_mesh(Writer& w, const MeshSpec& spec, MeshLayout& layout) {
         list.insert(list.end(), spec.material_key_extra, 0);
         layout.material_key_list_offset = w.size() + 8;
         w.leaf(nfsu::kMaterialKeyListId, list);
+    }
+    for (int copy = 0; copy < (spec.duplicate_marker_list ? 2 : 1); ++copy) {
+        if (!spec.include_marker_list) {
+            break;
+        }
+        w.begin(nfsu::kMarkerListId);
+        layout.marker_payload_offset = w.size();
+        layout.marker_prefix = w.pad_to(nfsu::kMarkerDataAlignment);
+        layout.marker_data_offset = w.size();
+        for (const TestMarker& marker : spec.markers) {
+            Bytes record;
+            append_u32(record, marker.name_hash);
+            for (std::uint32_t word : marker.reserved) {
+                append_u32(record, word);
+            }
+            for (float element : marker.matrix) {
+                append_f32(record, element);
+            }
+            w.append(record);
+        }
+        w.append(Bytes(spec.marker_extra, 0));
+        if (spec.corrupt_marker_prefix && layout.marker_prefix != 0) {
+            w.bytes()[layout.marker_payload_offset] = 0x00U;
+        }
+        w.end();
     }
     if (spec.alignment_shift_size != 0) {
         w.leaf(0x00134017U, Bytes(spec.alignment_shift_size, 0));
@@ -1207,7 +1257,176 @@ void test_exporter_revalidates_indices() {
     check(output.str().empty(), "exporter writes nothing on invalid input");
 }
 
+void test_markers() {
+    // A mesh with no marker chunk: the common retail case.
+    {
+        const nfsu::GeometryReport report = parse(build({quad_spec()}).bytes);
+        check(report.ok(), "mesh without markers parses");
+        if (!report.meshes.empty()) {
+            check(!report.meshes[0].has_marker_chunk, "no marker chunk reported");
+            check(report.meshes[0].markers.empty(), "no markers decoded");
+            check(report.meshes[0].marker_data_offset == 0, "no marker offset");
+        }
+    }
+
+    // Two markers, the retail shape of 240SX_KIT15_REAR_BUMPER_A.
+    {
+        MeshSpec spec = quad_spec();
+        spec.include_marker_list = true;
+        TestMarker exhaust;
+        exhaust.name_hash = 0xBCF8A18BU;  // LEFT_EXHAUST
+        exhaust.matrix = {{0.0F, 0.0F, 1.0F, 0.0F,
+                           0.0F, 1.0F, 0.0F, 0.0F,
+                           -1.0F, 0.0F, 0.0F, 0.0F,
+                           -1.98311F, 0.48212F, 0.03986F, 1.0F}};
+        TestMarker plate;
+        plate.name_hash = 0xC805F7E0U;  // REAR_LICENSE_PLATE
+        plate.matrix[12] = -2.02408F;
+        plate.matrix[13] = 0.00062F;
+        plate.matrix[14] = 0.31001F;
+        spec.markers = {exhaust, plate};
+        const Fixture fixture = build({spec});
+        const nfsu::GeometryReport report = parse(fixture.bytes);
+        check(report.ok(), "mesh with two markers parses");
+        if (report.meshes.empty() || report.meshes[0].markers.size() != 2U) {
+            check(false, "two markers decoded");
+            return;
+        }
+        const nfsu::Mesh& mesh = report.meshes[0];
+        check(mesh.has_marker_chunk, "marker chunk reported");
+        check(mesh.marker_data_offset == fixture.meshes[0].marker_data_offset,
+              "marker data offset");
+        check(mesh.marker_prefix_bytes == fixture.meshes[0].marker_prefix,
+              "marker prefix");
+        check(mesh.marker_data_offset % nfsu::kMarkerDataAlignment == 0,
+              "marker records are 16-byte aligned");
+        check(mesh.markers[0].name_hash == 0xBCF8A18BU, "marker 0 hash");
+        check(mesh.markers[1].name_hash == 0xC805F7E0U, "marker 1 hash");
+        check(mesh.markers[0].offset == mesh.marker_data_offset, "marker 0 offset");
+        check(mesh.markers[1].offset ==
+                  mesh.marker_data_offset + nfsu::kMarkerRecordSize,
+              "marker 1 offset");
+        check(std::fabs(mesh.markers[0].translation(0) + 1.98311F) < 1e-5F,
+              "marker 0 translation 0");
+        check(std::fabs(mesh.markers[0].translation(1) - 0.48212F) < 1e-5F,
+              "marker 0 translation 1");
+        check(std::fabs(mesh.markers[0].translation(2) - 0.03986F) < 1e-5F,
+              "marker 0 translation 2");
+        check(std::fabs(mesh.markers[1].translation(2) - 0.31001F) < 1e-5F,
+              "marker 1 translation 2");
+    }
+
+    // An empty marker chunk. 647 retail chunks hold no record.
+    {
+        MeshSpec spec = quad_spec();
+        spec.include_marker_list = true;
+        const nfsu::GeometryReport report = parse(build({spec}).bytes);
+        check(report.ok(), "empty marker chunk parses");
+        if (!report.meshes.empty()) {
+            check(report.meshes[0].has_marker_chunk,
+                  "empty marker chunk is still reported");
+            check(report.meshes[0].markers.empty(),
+                  "empty marker chunk has no records");
+        }
+    }
+
+    // A payload that is not a whole number of records.
+    for (std::size_t extra : {std::size_t{1}, std::size_t{16},
+                              nfsu::kMarkerRecordSize - 1}) {
+        MeshSpec spec = quad_spec();
+        spec.include_marker_list = true;
+        spec.markers = {TestMarker{}};
+        spec.marker_extra = extra;
+        const nfsu::GeometryReport report = parse(build({spec}).bytes);
+        check(has_issue(report, "not a multiple of the 80-byte marker record"),
+              "marker stride with " + std::to_string(extra) + " extra bytes");
+        check(report.valid_mesh_count() == 0U,
+              "a bad marker stride skips the mesh");
+    }
+
+    // Filler that is not 0x11.
+    {
+        MeshSpec spec = quad_spec();
+        spec.include_marker_list = true;
+        spec.markers = {TestMarker{}};
+        spec.corrupt_marker_prefix = true;
+        const Fixture fixture = build({spec});
+        if (fixture.meshes[0].marker_prefix != 0) {
+            const nfsu::GeometryReport report = parse(fixture.bytes);
+            check(has_issue(report, "alignment prefix byte"),
+                  "marker filler byte is checked");
+        }
+    }
+
+    // Two marker chunks in one mesh.
+    {
+        MeshSpec spec = quad_spec();
+        spec.include_marker_list = true;
+        spec.markers = {TestMarker{}};
+        spec.duplicate_marker_list = true;
+        const nfsu::GeometryReport report = parse(build({spec}).bytes);
+        check(has_issue(report, "expected at most one"),
+              "a duplicate marker chunk is refused");
+    }
+
+    // A matrix element that is not a number.
+    for (std::size_t element : {std::size_t{0}, std::size_t{12}, std::size_t{15}}) {
+        for (int kind = 0; kind < 2; ++kind) {
+            MeshSpec spec = quad_spec();
+            spec.include_marker_list = true;
+            TestMarker marker;
+            marker.matrix[element] = kind == 0
+                                         ? std::numeric_limits<float>::quiet_NaN()
+                                         : std::numeric_limits<float>::infinity();
+            spec.markers = {marker};
+            const nfsu::GeometryReport report = parse(build({spec}).bytes);
+            check(has_issue(report, "is not finite"),
+                  "marker matrix element " + std::to_string(element) +
+                      " must be finite");
+            check(report.valid_mesh_count() == 0U,
+                  "a non-finite marker matrix skips the mesh");
+        }
+    }
+
+    // The reserved words are kept raw, not required to be zero: 245 of the
+    // 4461 retail markers hold uninitialised bytes there.
+    {
+        MeshSpec spec = quad_spec();
+        spec.include_marker_list = true;
+        TestMarker marker;
+        marker.reserved = {{0x11223344U, 0x55667788U, 0x99AABBCCU}};
+        spec.markers = {marker};
+        const nfsu::GeometryReport report = parse(build({spec}).bytes);
+        check(report.ok(), "non-zero reserved marker words are accepted");
+        if (!report.meshes.empty() && report.meshes[0].markers.size() == 1U) {
+            check(report.meshes[0].markers[0].reserved[0] == 0x11223344U,
+                  "reserved word 0 is kept");
+            check(report.meshes[0].markers[0].reserved[2] == 0x99AABBCCU,
+                  "reserved word 2 is kept");
+        }
+    }
+
+    // A marker chunk does not disturb the records that follow it.
+    {
+        MeshSpec spec = quad_spec();
+        spec.include_marker_list = true;
+        spec.markers = {TestMarker{}, TestMarker{}, TestMarker{}};
+        const Fixture fixture = build({spec});
+        const nfsu::GeometryReport report = parse(fixture.bytes);
+        check(report.ok(), "three markers plus geometry parse");
+        if (!report.meshes.empty()) {
+            const nfsu::Mesh& mesh = report.meshes[0];
+            check(mesh.vertex_data_offset == fixture.meshes[0].vertex_data_offset,
+                  "vertex offset survives a marker chunk");
+            check(mesh.face_data_offset == fixture.meshes[0].face_data_offset,
+                  "face offset survives a marker chunk");
+            check(mesh.vertices.size() == 4U, "vertices still decoded");
+        }
+    }
+}
+
 void test_file_loading() {
+
     const fs::path path = fs::temp_directory_path() / "nfsu_geometry_test.bin";
     const Bytes bytes = build({quad_spec()}).bytes;
     {
@@ -1246,6 +1465,7 @@ int main() {
     test_bad_materials();
     test_structural_errors();
     test_exporter_revalidates_indices();
+    test_markers();
     test_file_loading();
 
     if (g_failures != 0) {

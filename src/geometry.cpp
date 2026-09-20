@@ -496,6 +496,108 @@ private:
         return true;
     }
 
+    // Returns false only when the id occurs more than once. `found` stays
+    // false when it does not occur at all, which is the normal case for the
+    // optional marker chunk.
+    bool find_optional(
+        Mesh& mesh,
+        const std::vector<RawChunk>& chunks,
+        std::uint32_t id,
+        std::uint64_t parent_offset,
+        RawChunk& out,
+        bool& found) {
+        std::size_t count = 0;
+        for (const RawChunk& chunk : chunks) {
+            if (chunk.id == id) {
+                if (count == 0) {
+                    out = chunk;
+                }
+                ++count;
+            }
+        }
+        if (count > 1) {
+            std::ostringstream text;
+            text << "expected at most one " << format_chunk_id(id)
+                 << " chunk, found " << count;
+            return fail(mesh, parent_offset, text.str());
+        }
+        found = count == 1;
+        return true;
+    }
+
+    // 0x0013401A. The game aligns the payload up to 16 bytes, stores that
+    // address as the marker table and derives the record count as
+    // (payload_size - filler) / 80 into a byte (0x005400EA..0x0054010E).
+    bool parse_markers(Mesh& mesh, const RawChunk& list) {
+        std::uint64_t data_offset = 0;
+        if (!align_up(list.payload_offset, kMarkerDataAlignment, data_offset)) {
+            return fail(mesh, list.offset,
+                        chunk_label(list) + ": aligned offset overflows");
+        }
+        const std::uint64_t prefix = data_offset - list.payload_offset;
+        if (list.payload_size < prefix) {
+            std::ostringstream text;
+            text << chunk_label(list) << " payload is " << list.payload_size
+                 << " bytes, fewer than the " << prefix
+                 << " needed to reach the " << kMarkerDataAlignment
+                 << "-byte aligned file offset " << data_offset;
+            return fail(mesh, list.offset, text.str());
+        }
+        const std::uint64_t record_bytes = list.payload_size - prefix;
+        if (record_bytes % kMarkerRecordSize != 0) {
+            std::ostringstream text;
+            text << chunk_label(list) << " holds " << record_bytes
+                 << " bytes after " << prefix << " of 0x11, which is not a "
+                 << "multiple of the " << kMarkerRecordSize
+                 << "-byte marker record";
+            return fail(mesh, list.offset, text.str());
+        }
+        const unsigned char* payload = data_ + list.payload_offset;
+        for (std::uint64_t i = 0; i < prefix; ++i) {
+            if (payload[i] != kAlignmentByte) {
+                std::ostringstream text;
+                text << chunk_label(list) << " alignment prefix byte " << i
+                     << " (file offset " << (list.payload_offset + i)
+                     << ") is " << hex_byte(payload[i]) << ", expected 0x11";
+                return fail(mesh, list.offset, text.str());
+            }
+        }
+        const std::uint64_t count = record_bytes / kMarkerRecordSize;
+        if (count > kMaxMarkersPerMesh) {
+            std::ostringstream text;
+            text << chunk_label(list) << " declares " << count
+                 << " markers; the game stores the count in a byte, so at most "
+                 << kMaxMarkersPerMesh << " are reachable";
+            return fail(mesh, list.offset, text.str());
+        }
+
+        mesh.has_marker_chunk = true;
+        mesh.marker_data_offset = data_offset;
+        mesh.marker_prefix_bytes = prefix;
+        mesh.markers.reserve(static_cast<std::size_t>(count));
+        for (std::uint64_t i = 0; i < count; ++i) {
+            const unsigned char* record =
+                data_ + data_offset + i * kMarkerRecordSize;
+            MeshMarker marker;
+            marker.offset = data_offset + i * kMarkerRecordSize;
+            marker.name_hash = read_u32_le(record);
+            for (std::size_t w = 0; w < marker.reserved.size(); ++w) {
+                marker.reserved[w] = read_u32_le(record + 4 + 4 * w);
+            }
+            for (std::size_t e = 0; e < 16; ++e) {
+                marker.matrix[e] = read_f32_le(record + 16 + 4 * e);
+                if (!std::isfinite(marker.matrix[e])) {
+                    std::ostringstream text;
+                    text << chunk_label(list) << " marker " << i
+                         << " matrix element " << e << " is not finite";
+                    return fail(mesh, marker.offset, text.str());
+                }
+            }
+            mesh.markers.push_back(marker);
+        }
+        return true;
+    }
+
     void parse_mesh(const RawChunk& container) {
         Mesh mesh;
         mesh.index = report_.meshes.size();
@@ -539,7 +641,7 @@ private:
                         "geometry container is malformed; mesh skipped");
         }
 
-        // Unknown chunks are intentionally skipped.
+        // Remaining unknown chunks are intentionally skipped.
         RawChunk texture_list;
         RawChunk material_key_list;
         RawChunk geometry_metadata;
@@ -558,6 +660,16 @@ private:
                          material_buffer) ||
             !find_single(mesh, parts, kFaceBufferId, geometry.offset,
                          face_buffer)) {
+            return false;
+        }
+
+        RawChunk marker_list;
+        bool has_markers = false;
+        if (!find_optional(mesh, children, kMarkerListId, container.offset,
+                           marker_list, has_markers)) {
+            return false;
+        }
+        if (has_markers && !parse_markers(mesh, marker_list)) {
             return false;
         }
 

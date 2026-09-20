@@ -34,6 +34,8 @@ build/nfsu_probe export-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN build/dds
 build/nfsu_probe texture-bindings X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games/NFSU/Cars/240SX/TEXTURES.BIN
 build/nfsu_probe car-parts X:/Games/NFSU/Global/GLOBALB.BUN 240SX
 build/nfsu_probe stock-parts X:/Games/NFSU/Global/GLOBALB.BUN 240SX X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games/NFSU/Cars/BRAKES/GEOMETRY.BIN X:/Games/NFSU/Cars/PLATES/GEOMETRY.BIN
+build/nfsu_probe car-placement X:/Games/NFSU/Global/GLOBALB.BUN 240SX
+build/nfsu_probe part-markers X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN exhaust
 build/nfsu_probe body-skin-inputs 240SX --source car-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN --source car-vinyls X:/Games/NFSU/Cars/240SX/VINYLS.BIN --source other X:/Games/NFSU/Cars/TEXTURES.BIN --target-texture DUMMY_SKIN1 --vinyl 0 TRIBAL5 16 no-remap --doorline plain --base 200 30 30 128 --assemble
 ```
 
@@ -60,6 +62,16 @@ It never decodes or writes pixel data. Observed P8 records are parsed and
 their indexed mip chain and 1024-byte palette can be extracted through the
 library API. Diagnostic TGA and DDS export still refuses P8 because palette
 channel semantics and runtime skin composition are not yet implemented.
+`car-placement` parses the car type table of `GLOBAL/GLOBALB.BUN` and
+prints, per car type, its name, class, geometry paths and brand, the four
+wheel records with their file offsets, and the 14 placements the game
+derives from them. `part-markers` lists every `0x0013401A` attachment marker
+of a `GEOMETRY.BIN` with its resolved name, role, translation and the local
+placement the exhaust and licence-plate draw paths build from it; an
+optional role argument filters the listing. Between them, the wheels and
+brakes come from the car type table and the exhaust and plate from markers,
+while every other installed part is drawn at the car's own matrix. See
+`docs/PART_PLACEMENT.md`.
 `car-parts` parses the car part database of `GLOBAL/GLOBALB.BUN` and lists
 every part record: car type hash, slot, upgrade level, part name hash and
 the four per-LOD mesh hashes. A car type name lists only its records.
@@ -103,10 +115,12 @@ instead; all may be repeated and mixed, at most 256 selectors and
 out-of-range index, an unknown or ambiguous hash, an unknown, empty or
 ambiguous name, or a mesh selected twice is a usage error (exit 1) and
 nothing is written. Neither profile is
-the game's stock car. Which parts the game installs, and which mesh each
-one uses at a LOD, are decoded (`nfsu_probe stock-parts`), but the viewer
-does not consume them yet, and part placement, paint and skin are still
-missing (see `docs/CAR_SCENE.md`).
+the game's stock car. Which parts the game installs, which mesh each one
+uses at a LOD (`nfsu_probe stock-parts`), where the four wheels go and which
+parts hang off an attachment marker (`nfsu_probe car-placement`,
+`nfsu_probe part-markers`) are decoded, but the viewer does not consume any
+of it yet, and paint and skin are still missing (see `docs/CAR_SCENE.md` and
+`docs/PART_PLACEMENT.md`).
 
 ## Body-skin compositor reference
 

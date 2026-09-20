@@ -20,6 +20,9 @@ constexpr std::uint32_t kMeshContainerId = 0x80134010U;
 constexpr std::uint32_t kMeshMetadataId = 0x00134011U;
 constexpr std::uint32_t kTextureListId = 0x00134012U;
 constexpr std::uint32_t kMaterialKeyListId = 0x00134013U;
+// Attachment markers. Optional: 2860 of the 9408 retail meshes carry one,
+// and 647 of those chunks hold no record. See docs/PART_PLACEMENT.md.
+constexpr std::uint32_t kMarkerListId = 0x0013401AU;
 constexpr std::uint32_t kGeometryContainerId = 0x80134100U;
 constexpr std::uint32_t kGeometryMetadataId = 0x00134900U;
 constexpr std::uint32_t kVertexBufferId = 0x00134B01U;
@@ -57,6 +60,15 @@ constexpr std::size_t kMaterialKeyListCountOffset = 26;
 constexpr std::size_t kMaterialKeyListEntrySize = 8;
 constexpr std::size_t kMaterialCountOffset = 16;
 constexpr std::uint64_t kMaterialDataAlignment = 16;
+
+// Marker records start at the first absolute offset in the payload that is a
+// multiple of kMarkerDataAlignment, after kAlignmentByte filler, exactly as
+// the other aligned records do. 0x005400EA..0x0054010E derives the count as
+// (payload_size - filler) / kMarkerRecordSize and stores it in a byte, so a
+// chunk can hold at most kMaxMarkersPerMesh records.
+constexpr std::size_t kMarkerRecordSize = 80;
+constexpr std::uint64_t kMarkerDataAlignment = 16;
+constexpr std::size_t kMaxMarkersPerMesh = 255;
 struct GeometryIssue {
     std::uint64_t offset = 0;
     std::string message;
