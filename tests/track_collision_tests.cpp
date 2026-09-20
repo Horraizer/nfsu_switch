@@ -29,6 +29,10 @@ constexpr std::size_t kCellRecord = 16;
 constexpr std::size_t kNodeRecord = 8;
 constexpr std::int16_t kSaturation = 32512;
 constexpr float kCellSquare = 32.0F;
+// The JDLZ container refills a literal flag byte and a match flag
+// byte before a step runs, so a decompressor that stops on a full
+// output leaves at most that pair of bytes behind.
+constexpr std::size_t kMaxUnusedPacked = 2;
 
 
 int g_failures = 0;
@@ -1483,19 +1487,22 @@ void test_load() {
     }
     {
         // Exactly the two flag bytes the cap allows must still be
-        // accepted, or the cap is one tighter than it is documented to be.
+        // accepted, and one byte more must not be, or the cap is not
+        // the width it is documented to have. The padding below comes
+        // from kMaxUnusedPacked, this file's own literal, and not from
+        // the published constant it is checked against: an image built
+        // out of that constant would move with it and neither
+        // assertion could see the change.
         std::vector<unsigned char> probe_out;
         const nfsu::TrackCollisionReport probe = nfsu::load_track_collision(
             packed_path, probe_out, nfsu::TrackCollisionLimits{});
         check(probe.valid, "load: the packed file parses before padding");
         const std::uint64_t spare = probe.cost.unused_packed_bytes;
-        check(spare <= nfsu::kCollisionMaxUnusedPackedBytes,
-              "load: the encoder leaves no more than the cap");
+        check(spare <= kMaxUnusedPacked,
+              "load: the encoder leaves no more than the flag byte pair");
         Bytes exact = packed;
         exact.insert(exact.end(),
-                     static_cast<std::size_t>(
-                         nfsu::kCollisionMaxUnusedPackedBytes - spare),
-                     0);
+                     static_cast<std::size_t>(kMaxUnusedPacked - spare), 0);
         write_u32(exact, kJdlzPackedSizeOffset,
                   static_cast<std::uint32_t>(exact.size()));
         const std::filesystem::path exact_path = dir / "exact.lzc";
@@ -1508,11 +1515,35 @@ void test_load() {
                   (report.issues.empty()
                        ? std::string()
                        : " (" + report.issues[0].message + ")"));
-        check(report.cost.unused_packed_bytes ==
-                  nfsu::kCollisionMaxUnusedPackedBytes,
-              "load: and the count is reported as the cap");
+        check(report.cost.unused_packed_bytes == kMaxUnusedPacked,
+              "load: and the count is reported as the flag byte pair");
+
+        // One byte past the pair. The sixteen-byte tail below refuses
+        // a leftover nothing could mistake for flag bytes; this is the
+        // first leftover that is over the cap at all, and it is the
+        // assertion a cap widened by one has to get past.
+        Bytes over = exact;
+        over.push_back(0);
+        write_u32(over, kJdlzPackedSizeOffset,
+                  static_cast<std::uint32_t>(over.size()));
+        const std::filesystem::path over_path = dir / "over.lzc";
+        check(write_file(over_path, over),
+              "load: the over-padded file was written");
+        std::vector<unsigned char> over_out;
+        const nfsu::TrackCollisionReport over_report =
+            nfsu::load_track_collision(over_path, over_out,
+                                       nfsu::TrackCollisionLimits{});
+        check(!over_report.valid,
+              "load: one unused packed byte past the flag byte pair is "
+              "refused");
+        check(has_text(over_report.issues, "packed bytes unused"),
+              "load: the leftover past the pair is named" +
+                  (over_report.issues.empty()
+                       ? std::string()
+                       : " (got \"" + over_report.issues[0].message + "\")"));
         std::error_code rm;
         std::filesystem::remove(exact_path, rm);
+        std::filesystem::remove(over_path, rm);
     }
     {
         // More packed bytes left over than a flag byte pair needs.
@@ -1575,6 +1606,8 @@ void test_load() {
 // -------------------------------------------------------------------
 
 void test_constants() {
+    check(nfsu::kCollisionMaxUnusedPackedBytes == kMaxUnusedPacked,
+          "constant: at most a flag byte pair may be left unused");
     check(nfsu::kCollisionRecordAlignment == kAlignment,
           "constant: the record alignment is 16");
     check(nfsu::kCollisionFillerByte == kFiller,
