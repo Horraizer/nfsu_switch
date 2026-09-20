@@ -48,8 +48,25 @@
 #
 # That defect was an accident. Git glued a handler into main() and nobody was
 # prompted to look, which is what makes an auto-merge the dangerous route.
-# The checks below are built for that: a handler that lands in main() carries
-# a comparison into main(), and a comparison in main() is what they refuse.
+# The checks below are built for that one thing, and that is the whole of
+# what they are: a handler auto-merged into main() carries a comparison into
+# main() against a lowercase hyphenated name, and that is caught, through an
+# alias or not.
+#
+# They are NOT a proof that the kCommands table is the only dispatch path,
+# and no green run should be read as one. An independent review wrote 40
+# second-dispatch mutants into main(), built and ran every one, and this gate
+# caught 25. The same review wrote 42 honest edits and 30 passed. Those two
+# numbers are the honest summary of this file: it is a tripwire for one
+# accident, with a false-negative rate around a third and a false-positive
+# rate around a quarter, not a barrier.
+#
+# This file is a stopgap. Issue #94 replaces it with a structural check: if
+# main() delegates to one small function whose body is the table loop, the
+# gate stops classifying lines and starts pinning them, and there is no room
+# in main() for an alias binding because there is no room in main() for
+# anything. Prefer that. What is below is what could be done without
+# changing src/main.cpp, which #82 does not scope.
 #
 #   the shape of main()  argv[1] is read in main() and bound by a line this
 #                        file can name the variable from; main() loops over
@@ -57,9 +74,11 @@
 #                        a value is either that loop's comparison against an
 #                        entry's own `name`, or a comparison whose strings
 #                        are all spelled as options, or a line that does not
-#                        touch the command name at all. Any other selection
-#                        in main() is refused, including one on a name no
-#                        table entry could carry;
+#                        name the bound variable or argv[1]. That last test
+#                        is textual, so it is a stand-in for "this line
+#                        selects on the command name" rather than a decision
+#                        about it, and one ordinary line defeats the
+#                        stand-in. See the alias bullet below;
 #   the name literals    every command-shaped string literal in src/main.cpp
 #                        is either a registered command or is refused, by
 #                        name, by the built program under each of several
@@ -69,9 +88,10 @@
 #
 # They are not an adversarial barrier, and nothing here should be read as
 # claiming they are. An earlier draft of this comment said they caught every
-# shape tried against them but one. Two reviews then got nine shapes past
-# them, and the first needed no obfuscation at all. Seven of those nine are
-# closed now. These are not, and each one was built and runs:
+# shape tried against them but one. Four reviews have now got past them, and
+# the first shape needed no obfuscation at all. Each round has closed the
+# spelling it was shown and left the next one an ordinary line deeper. These
+# are what is open, and each one was built and runs:
 #
 #   * a helper in another translation unit. The literal is plain and the
 #     reaching line in main() compares nothing:
@@ -91,6 +111,32 @@
 #     The two literals are collected separately, both are refused, and the
 #     compiler still sees one name.
 #   * a name assembled at run time, compared in a helper outside main().
+#   * a comparison against a local copy of argv[1], under a name no table
+#     entry could carry. Two ordinary lines, both inside main(), directly
+#     after the dispatch loop:
+#         std::string_view alias(argv[1]);
+#         if (alias == "Dump-State") { ... }
+#     The comparison line names neither the bound variable nor argv[1], so
+#     the third branch of the rule accepts it, and "Dump-State" is not a
+#     name_pattern-shaped literal, so the probe below never asks the program
+#     about it. Nothing sees it. Measured: the handler runs while this check
+#     exits 0 and prints "one binding and one table comparison in main()"
+#     over a main() that has two of each. All five spellings that the direct
+#     form now refuses - Dump-State, dump_state, dump.state, DUMPSTATE,
+#     dump/state - are reachable this way, and so is `alias = command`
+#     instead of `alias(argv[1])`.
+#
+#     What still catches the accident this file exists for is the name, not
+#     the shape: the same alias with a lowercase hyphenated name is refused,
+#     by `code_names` on the comparison line and again by the literal probe.
+#     Measured both ways.
+#   * the same, with the name hoisted out of the comparison:
+#         static constexpr const char* kHidden = "Dump-State";
+#         if (alias == kHidden) { ... }
+#     The comparison line then carries no string literal at all. Round three
+#     of this file refused every literal-free comparison in main(); the
+#     third branch of the rule no longer does, which is a deliberate trade
+#     recorded at that branch.
 #
 # One honest edit is refused on purpose rather than accommodated. A switch
 # spelled without a leading hyphen - `if (command == "/?")` - fails here,
@@ -98,6 +144,13 @@
 # this file has no way to tell from an option. Accepting `/?` is accepting
 # `dump/state`, which is the shape this hatch was found passing. Spell a
 # switch with a hyphen, or register it as a command.
+#
+# That refusal was put to an independent reviewer as a judgement rather than
+# a measurement, and upheld: this program spells every option it has with a
+# leading `--`, and `nfsu_probe /?` never reaches a branch after the dispatch
+# loop anyway, because main() refuses argc 2 at its first guard. If it ever
+# bites, an explicit allowlist of switch spellings is the cheap answer, and
+# the reviewer agreed with not adding one before a case needs it.
 #
 # The marker list this file uses is an enumeration of the ways someone
 # thought of. A map lookup through .at() and a three-way comparison were
@@ -631,6 +684,16 @@ foreach(raw_line IN LISTS source_lines)
             # forbids a leading hyphen, so it cannot be a table entry, and a
             # rule with no legal way to satisfy it is a rule the next person
             # who needs one deletes.
+            #
+            # The test is over every literal on the line, so a one-line body
+            # carrying a non-option string fails it:
+            #     if (command == "--help") { std::cerr << "usage\n"; return 0; }
+            # refuses a --help line while the message tells the author that
+            # --help is allowed. Round three accepted it, because "usage\n"
+            # carries a backslash and so failed name_pattern too. Nothing in
+            # src/ is written that way - there is not one one-line `if` body
+            # in any of its .cpp files - so this is left standing rather than
+            # paid for with a fourth branch.
         elseif(NOT selects_on_command AND code_names EQUAL 0)
             # This line selects on something that is not the command name and
             # compares against nothing a command could be named, so it is not
@@ -639,6 +702,26 @@ foreach(raw_line IN LISTS source_lines)
             # the first, an alias of the command name would pass; without the
             # second, a comparison against a command name by way of a local
             # copy would.
+            #
+            # What this branch gave up, deliberately and worth knowing before
+            # anyone tightens it. Round three's hatch required
+            # `code_strings GREATER 0`, so a selection line carrying no
+            # string literal at all could never take it and always reached
+            # the FATAL below. That refused every literal-free comparison in
+            # main(), which closed the hoisted-constant shape
+            #     static constexpr const char* kHidden = "Dump-State";
+            #     if (alias == kHidden) { ... }
+            # and also refused `const int rc = argc - 3; if (rc != 0)`, an
+            # entirely ordinary line and a real false positive. This branch
+            # buys the second and pays for it with the first.
+            #
+            # Restoring `code_strings GREATER 0` is not the fix: it
+            # reinstates that false positive. `selects_on_command` is a
+            # textual test for two identifiers, and no predicate over one
+            # line of text can tell an identifier that holds the command
+            # name from one that does not - that is a dataflow question and
+            # this is a line-at-a-time reader. Issue #94 is where that is
+            # answered.
         else()
             message(FATAL_ERROR
                 "main() in ${SOURCE} has a second dispatch path:\n"
