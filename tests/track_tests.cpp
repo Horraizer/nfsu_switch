@@ -2,6 +2,8 @@
 #include "nfsu/track_scene.h"
 
 #include "nfsu/geometry.h"
+#include "nfsu/texture.h"
+#include "nfsu/texture_decode.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -2168,6 +2170,563 @@ void test_validate_prepared_region_rejects_tampering() {
     check(still_valid, "the untouched region still validates: " + error);
 }
 
+// ---------------------------------------------------------------------------
+// Texture sources for a region.
+//
+// These fixtures build a texture pack as bytes and let the real reader parse
+// it, so a malformation travels the whole path a retail file travels:
+// parse_texture_pack_set, then decode_render_texture_sources, then
+// prepare_track_region. A hand-built TexturePack would skip the reader and
+// prove nothing about a malformed file.
+//
+// Only the raw storage layout is emitted, because every retail track texture
+// pack lacks 0x33310003 (docs/TRACK.md, "Observed"). Every texture is
+// A8R8G8B8 with one level and all four bytes of every texel equal, so one
+// decoded byte names the pack the pixels came from.
+
+unsigned char log2_of(std::uint32_t value) {
+    unsigned char result = 0;
+    while ((1U << result) < value) {
+        ++result;
+    }
+    return result;
+}
+
+void put_u16(Bytes& bytes, std::size_t offset, std::uint16_t value) {
+    bytes[offset] = static_cast<unsigned char>(value & 0xFFU);
+    bytes[offset + 1] = static_cast<unsigned char>((value >> 8U) & 0xFFU);
+}
+
+// Written into an override field to mean "write the value the record should
+// hold". No correct field value in these fixtures is ever this large.
+constexpr std::uint32_t kAuto = 0xFFFFFFFFU;
+
+struct PackTexture {
+    std::uint32_t hash = 0;
+    std::uint16_t width = 2;
+    std::uint16_t height = 2;
+    unsigned char fill = 0;
+    // Overrides for the three info fields a malformed record gets wrong. A
+    // record with an overridden virtual offset is never filled with pixels:
+    // every use of that override puts the chain outside the payload or off
+    // its alignment, so the record is refused before anything reads it.
+    std::uint32_t virtual_offset = kAuto;  // info +48
+    std::uint32_t data_size = kAuto;       // info +56
+    std::uint32_t top_level_size = kAuto;  // info +64
+};
+
+PackTexture pack_texture(std::uint32_t hash, unsigned char fill) {
+    PackTexture texture;
+    texture.hash = hash;
+    texture.fill = fill;
+    return texture;
+}
+
+struct PackSpec {
+    std::vector<PackTexture> textures;
+    // Writes one hash-table entry fewer than there are info records, so the
+    // tables disagree on the record count and parse_tables gives up before
+    // it sets tables_parsed.
+    bool short_hash_table = false;
+    // Ends the 0x33320002 payload one byte before the last declared chain
+    // ends, so that chain runs past the data the file holds.
+    bool truncate_last_chain = false;
+    // Writes an unrelated leaf instead of a pack root.
+    bool no_root = false;
+};
+
+void write_raw_texture_pack(Writer& w, const PackSpec& spec) {
+    w.begin(nfsu::kTexturePackRootId);
+    w.begin(nfsu::kTextureInfoContainerId);
+
+    const std::string path = "Location1\\Test.tpk";
+    Bytes header(nfsu::kTexturePackHeaderSize, 0);
+    put_u32(header, 0, 4);
+    std::memcpy(&header[4], "TRACK", 5);
+    std::memcpy(&header[32], path.data(), path.size());
+    put_u32(header, 96, nfsu::bin_hash(path));
+    w.leaf(nfsu::kTexturePackHeaderId, header);
+
+    const std::size_t listed = spec.short_hash_table && !spec.textures.empty()
+                                   ? spec.textures.size() - 1
+                                   : spec.textures.size();
+    Bytes hash_table;
+    for (std::size_t i = 0; i < listed; ++i) {
+        append_u32(hash_table, spec.textures[i].hash);
+        append_u32(hash_table, 0);
+    }
+    w.leaf(nfsu::kTextureHashTableId, hash_table);
+
+    // Chain offsets inside the data payload, 128-byte aligned as the format
+    // requires. The payload is sized to hold every chain an un-overridden
+    // record claims.
+    std::vector<std::uint32_t> offsets;
+    std::vector<std::uint32_t> sizes;
+    std::uint32_t next = 0;
+    std::uint32_t last_end = 0;
+    for (const PackTexture& texture : spec.textures) {
+        const std::uint32_t bytes =
+            static_cast<std::uint32_t>(texture.width) * texture.height * 4U;
+        const std::uint32_t at =
+            texture.virtual_offset == kAuto ? next : texture.virtual_offset;
+        offsets.push_back(at);
+        sizes.push_back(bytes);
+        if (texture.virtual_offset == kAuto) {
+            last_end = at + bytes;
+        }
+        next = (next + bytes + 127U) & ~127U;
+    }
+
+    Bytes info_table;
+    for (std::size_t i = 0; i < spec.textures.size(); ++i) {
+        const PackTexture& texture = spec.textures[i];
+        Bytes record(nfsu::kTextureInfoRecordSize, 0);
+        const std::string name = "T" + std::to_string(i);
+        std::memcpy(&record[nfsu::kTextureNameOffset], name.data(), name.size());
+        put_u32(record, 36, texture.hash);
+        put_u32(record, 48, offsets[i]);
+        put_u32(record, 56,
+                texture.data_size == kAuto ? sizes[i] : texture.data_size);
+        put_u32(record, 64,
+                texture.top_level_size == kAuto ? sizes[i]
+                                                : texture.top_level_size);
+        put_u16(record, 68, texture.width);
+        put_u16(record, 70, texture.height);
+        record[72] = log2_of(texture.width);
+        record[73] = log2_of(texture.height);
+        record[74] = 0x20;  // A8R8G8B8
+        record[78] = 1;     // one level
+        info_table.insert(info_table.end(), record.begin(), record.end());
+    }
+    w.leaf(nfsu::kTextureInfoTableId, info_table);
+
+    Bytes format_table;
+    for (std::size_t i = 0; i < spec.textures.size(); ++i) {
+        Bytes record(nfsu::kTextureFormatRecordSize, 0);
+        put_u32(record, 20, 21);  // D3DFMT_A8R8G8B8
+        format_table.insert(format_table.end(), record.begin(), record.end());
+    }
+    w.leaf(nfsu::kTextureFormatTableId, format_table);
+    w.end();  // info container
+
+    w.begin(nfsu::kTextureDataContainerId);
+    Bytes data_header(24, 0);
+    put_u32(data_header, 8, 1);
+    put_u32(data_header, 12, nfsu::bin_hash(path));
+    w.leaf(nfsu::kTextureDataHeaderId, data_header);
+    w.begin(nfsu::kTextureDataId);
+    while (w.at() % nfsu::kTextureDataAlignment != 0) {
+        w.bytes().push_back(0x11);
+    }
+    const std::size_t start = w.size();
+    std::uint32_t extent = next;
+    if (spec.truncate_last_chain && last_end != 0) {
+        extent = last_end - 1U;
+    }
+    w.append(Bytes(extent, 0));
+    for (std::size_t i = 0; i < spec.textures.size(); ++i) {
+        if (spec.textures[i].virtual_offset != kAuto ||
+            offsets[i] + sizes[i] > extent) {
+            continue;
+        }
+        std::fill_n(
+            w.bytes().begin() + static_cast<std::ptrdiff_t>(start + offsets[i]),
+            sizes[i], spec.textures[i].fill);
+    }
+    w.end();  // data chunk
+    w.end();  // data container
+    w.end();  // root
+}
+
+// One texture file and the pack set parsed from it. Build it once and leave
+// it alone: decode_render_texture_sources pairs every pack with the exact
+// buffer address and size it was parsed from, so copying or moving a built
+// file, or touching its bytes, breaks that pairing.
+struct TextureFile {
+    Bytes bytes;
+    nfsu::TexturePackSet set;
+
+    void build(const std::vector<PackSpec>& packs) {
+        Writer w(0);
+        for (const PackSpec& spec : packs) {
+            if (spec.no_root) {
+                w.leaf(0x00135200U, Bytes(32, 0x5A));
+                continue;
+            }
+            write_raw_texture_pack(w, spec);
+        }
+        bytes = w.bytes();
+        set = nfsu::parse_texture_pack_set(bytes.data(), bytes.size());
+    }
+
+    nfsu::RenderTextureSource source(
+        const std::vector<std::uint32_t>* wanted) const {
+        nfsu::RenderTextureSource view;
+        view.bytes = &bytes;
+        for (const nfsu::TexturePack& pack : set.packs) {
+            view.packs.push_back(&pack);
+        }
+        view.complete = set.complete;
+        view.wanted = wanted;
+        return view;
+    }
+};
+
+bool decode_and_prepare(
+    const nfsu::TrackRegionReport& report,
+    const std::vector<nfsu::RenderTextureSource>& sources,
+    nfsu::RenderTextureSet& set,
+    nfsu::PreparedTrackRegion& prepared,
+    std::string& error) {
+    return nfsu::decode_render_texture_sources(
+               sources, nfsu::RenderTextureLimits{}, set, error) &&
+           nfsu::prepare_track_region(report, set, nfsu::TrackSceneLimits{},
+                                      prepared, error) &&
+           nfsu::validate_prepared_track_region(prepared, error);
+}
+
+// The first decoded byte of the texture a draw is bound to, or -1 when the
+// draw has none. Every texel of a fixture texture holds the same byte, so
+// this names the pack the pixels came from.
+int drawn_fill(const nfsu::PreparedTrackRegion& prepared, std::size_t draw) {
+    if (draw >= prepared.draws.size() ||
+        prepared.draws[draw].texture == nfsu::kNoHandle ||
+        prepared.draws[draw].texture >= prepared.textures.size()) {
+        return -1;
+    }
+    const nfsu::RenderTexture& texture =
+        prepared.textures[prepared.draws[draw].texture];
+    return texture.rgba.empty() ? -1 : static_cast<int>(texture.rgba[0]);
+}
+
+// Two sources that both carry a hash the region names. Nothing in the track
+// path compares content: the earliest source in the caller's order wins, the
+// later record is dropped and listed as shadowed, and reversing the order
+// changes the pixels the prepared region carries. Draw order for the fixture
+// is (A slot 0) 0xAAAA0001, (A slot 1) 0xAAAA0002, (B slot 0) 0xAAAA0002,
+// (B slot 1) 0xAAAA0003.
+void test_track_texture_source_collision() {
+    Bytes region;
+    const nfsu::TrackRegionReport report = two_mesh_region(region);
+    const std::vector<std::uint32_t> wanted =
+        nfsu::track_region_texture_hashes(report);
+    check(wanted.size() == 3 && wanted[0] == 0xAAAA0001U &&
+              wanted[1] == 0xAAAA0002U && wanted[2] == 0xAAAA0003U,
+          "the fixture region names three hashes, ascending");
+
+    PackSpec first;
+    first.textures = {pack_texture(0xAAAA0001U, 0x11),
+                      pack_texture(0xAAAA0002U, 0x22)};
+    PackSpec second;
+    second.textures = {pack_texture(0xAAAA0002U, 0x33),
+                       pack_texture(0xAAAA0003U, 0x44)};
+
+    TextureFile a;
+    a.build({first});
+    TextureFile b;
+    b.build({second});
+    check(a.set.ok() && a.set.complete && a.set.packs.size() == 1 &&
+              a.set.packs[0].valid_texture_count() == 2 && b.set.ok() &&
+              b.set.complete && b.set.packs[0].valid_texture_count() == 2,
+          "both collision fixtures parse cleanly");
+
+    {
+        nfsu::RenderTextureSet set;
+        nfsu::PreparedTrackRegion prepared;
+        std::string error;
+        const bool ok = decode_and_prepare(
+            report, {a.source(&wanted), b.source(&wanted)}, set, prepared, error);
+        check(ok, "the two-source region prepares: " + error);
+        check(set.shadowed.size() == 1 && set.shadowed[0].hash == 0xAAAA0002U &&
+                  set.shadowed[0].source == 1 && set.shadowed[0].pack == 0 &&
+                  set.shadowed[0].record == 0 && set.shadowed[0].by_source == 0,
+              "the later record is shadowed, with its provenance");
+        check(set.unusable_claims.empty() && set.blocked_sources.empty(),
+              "a fully shadowed record adds no unusable claim");
+        check(prepared.cost.resolved_draws == 4 &&
+                  prepared.cost.unusable_draws == 0 &&
+                  prepared.unresolved_hashes.empty(),
+              "every draw resolves from one of the two sources");
+        check(prepared.draws.size() == 4 &&
+                  prepared.draws[1].texture_source == 0 &&
+                  prepared.draws[2].texture_source == 0 &&
+                  prepared.draws[3].texture_source == 1,
+              "the contested hash binds to source 0, the other to source 1");
+        check(drawn_fill(prepared, 1) == 0x22 && drawn_fill(prepared, 2) == 0x22,
+              "the contested draws carry source 0's pixels, got " +
+                  std::to_string(drawn_fill(prepared, 1)));
+        check(drawn_fill(prepared, 0) == 0x11 && drawn_fill(prepared, 3) == 0x44,
+              "the uncontested draws carry their own source's pixels");
+        check(prepared.textures.size() == 3,
+              "the shadowed record's pixels are not copied into the region");
+    }
+    {
+        // The same two files in the other order. Only the order changed, so
+        // any difference below is the precedence rule and nothing else.
+        nfsu::RenderTextureSet set;
+        nfsu::PreparedTrackRegion prepared;
+        std::string error;
+        const bool ok = decode_and_prepare(
+            report, {b.source(&wanted), a.source(&wanted)}, set, prepared, error);
+        check(ok, "the reversed region prepares: " + error);
+        check(set.shadowed.size() == 1 && set.shadowed[0].hash == 0xAAAA0002U &&
+                  set.shadowed[0].source == 1 && set.shadowed[0].by_source == 0,
+              "reversing the order shadows the other record");
+        check(prepared.cost.resolved_draws == 4,
+              "every draw still resolves after the reversal");
+        check(drawn_fill(prepared, 1) == 0x33 && drawn_fill(prepared, 2) == 0x33,
+              "caller order decides the contested pixels, got " +
+                  std::to_string(drawn_fill(prepared, 1)));
+        check(prepared.draws[1].texture_source == 0 &&
+                  prepared.draws[0].texture_source == 1,
+              "provenance follows the reversed order");
+    }
+    {
+        // Two packs of one file claim the hash. Records inside one source
+        // never shadow each other, so both are kept and the hash becomes
+        // ambiguous: the draws stay drawable on the fallback, and an
+        // ambiguous hash is not an unresolved one.
+        TextureFile both;
+        both.build({first, second});
+        check(both.set.packs.size() == 2 && both.set.complete,
+              "a file with two packs is still complete");
+        check(!both.set.ok() && both.set.issues.size() == 1 &&
+                  both.set.issues[0].message.find("repeats hash 0xAAAA0002") !=
+                      std::string::npos,
+              "the reader reports the ambiguity as a set issue");
+
+        nfsu::RenderTextureSet set;
+        nfsu::PreparedTrackRegion prepared;
+        std::string error;
+        const bool ok = decode_and_prepare(report, {both.source(&wanted)}, set,
+                                           prepared, error);
+        check(ok, "the ambiguous-source region prepares: " + error);
+        check(set.shadowed.empty() && set.textures.size() == 4,
+              "records inside one source do not shadow each other");
+        check(prepared.cost.unusable_draws == 2 &&
+                  prepared.cost.resolved_draws == 2,
+              "both draws that name the ambiguous hash are unusable");
+        check(prepared.draws[1].binding == nfsu::BindingKind::unusable &&
+                  prepared.draws[1].texture == nfsu::kNoHandle &&
+                  prepared.draws[1].texture_source == 0 &&
+                  prepared.draws[1].texture_record == 0 &&
+                  prepared.draws[1].drawable,
+              "an unusable draw names no texture and carries no provenance");
+        check(prepared.unresolved_hashes.empty(),
+              "an ambiguous hash is not an unresolved hash");
+        check(drawn_fill(prepared, 1) == -1 && drawn_fill(prepared, 0) == 0x11,
+              "the ambiguity is contained to the hash it belongs to");
+    }
+    {
+        // A later source cannot repair an ambiguity an earlier source
+        // created: its record is shadowed by the earlier claims.
+        TextureFile both;
+        both.build({first, second});
+        TextureFile repair;
+        repair.build({second});
+        nfsu::RenderTextureSet set;
+        nfsu::PreparedTrackRegion prepared;
+        std::string error;
+        const bool ok = decode_and_prepare(
+            report, {both.source(&wanted), repair.source(&wanted)}, set, prepared,
+            error);
+        check(ok, "the repair-attempt region prepares: " + error);
+        check(prepared.cost.unusable_draws == 2,
+              "a later source does not resolve an earlier ambiguity");
+    }
+    {
+        // A source whose record tables could not be read is incomplete, so
+        // no later source is used at all and every hash is unresolved. The
+        // decoder reaches that on its own: the caller's complete flag is set
+        // here and the pack's tables_parsed still overrides it.
+        PackSpec broken;
+        broken.textures = {pack_texture(0xAAAA0001U, 0x11),
+                           pack_texture(0xAAAA0002U, 0x22)};
+        broken.short_hash_table = true;
+        TextureFile bad;
+        bad.build({broken});
+        check(!bad.set.packs.empty() && !bad.set.packs[0].tables_parsed &&
+                  bad.set.packs[0].textures.empty() && !bad.set.complete,
+              "a table count mismatch stops the reader before the records");
+
+        nfsu::RenderTextureSource lying = bad.source(&wanted);
+        lying.complete = true;
+        nfsu::RenderTextureSet set;
+        nfsu::PreparedTrackRegion prepared;
+        std::string error;
+        const bool ok = decode_and_prepare(report, {lying, b.source(&wanted)}, set,
+                                           prepared, error);
+        check(ok, "the blocked-source region prepares: " + error);
+        check(set.blocked_sources.size() == 1 && set.blocked_sources[0] == 1,
+              "an incomplete source blocks every later source");
+        check(set.textures.empty() && prepared.cost.unresolved_draws == 4 &&
+                  prepared.unresolved_hashes.size() == 3,
+              "nothing resolves behind an incomplete source");
+    }
+}
+
+// Which malformations the reader refuses and which it accepts. Each pack
+// carries all three hashes the region names with one record malformed, so a
+// containment failure shows as a changed count for the other two. Every
+// malformation below leaves the source complete, which is what lets a later
+// source still be read; the one that does not is the table count mismatch in
+// test_track_texture_source_collision.
+void test_track_malformed_texture_pack() {
+    Bytes region;
+    const nfsu::TrackRegionReport report = two_mesh_region(region);
+    const std::vector<std::uint32_t> wanted =
+        nfsu::track_region_texture_hashes(report);
+
+    struct Case {
+        std::string what;
+        PackSpec spec;
+        std::string message;
+        // The draw the malformed record's hash belongs to, and how many
+        // draws lose their texture because of it.
+        std::size_t bad_draw;
+        std::uint64_t unusable;
+    };
+
+    std::vector<Case> cases;
+    for (int variant = 0; variant < 5; ++variant) {
+        PackSpec spec;
+        spec.textures = {pack_texture(0xAAAA0001U, 0x11),
+                         pack_texture(0xAAAA0002U, 0x22),
+                         pack_texture(0xAAAA0003U, 0x44)};
+        Case item;
+        item.bad_draw = 1;
+        item.unusable = 2;
+        switch (variant) {
+        case 0:
+            item.what = "a declared size that does not match the dimensions";
+            spec.textures[1].data_size = 20;  // 2x2 A8R8G8B8 needs 16
+            item.message = "info +64 is 16 and +56 is 20";
+            break;
+        case 1:
+            item.what = "a zero dimension";
+            spec.textures[1].height = 0;
+            item.message = "dimensions 2x0 are outside";
+            break;
+        case 2:
+            item.what = "a chain that starts past the payload";
+            spec.textures[1].virtual_offset = 0x40000U;
+            item.message = "is outside the texture data range";
+            break;
+        case 3:
+            item.what = "a chain that is not 128-byte aligned";
+            spec.textures[1].virtual_offset = 4U;
+            item.message = "is not a multiple of 128";
+            break;
+        default:
+            item.what = "a payload truncated below the last declared chain";
+            spec.truncate_last_chain = true;
+            item.message = "is outside the texture data range";
+            item.bad_draw = 3;
+            item.unusable = 1;
+            break;
+        }
+        item.spec = spec;
+        cases.push_back(item);
+    }
+
+    for (const Case& item : cases) {
+        TextureFile file;
+        file.build({item.spec});
+        check(!file.set.packs.empty() && file.set.packs[0].tables_parsed &&
+                  file.set.complete,
+              item.what + ": the reader still reads the record tables");
+        check(file.set.packs[0].issues.size() == 1 &&
+                  file.set.packs[0].issues[0].message.find(item.message) !=
+                      std::string::npos,
+              item.what + ": the reader names the record, got " +
+                  (file.set.packs[0].issues.empty()
+                       ? std::string("no issue")
+                       : file.set.packs[0].issues[0].message));
+        check(file.set.packs[0].valid_texture_count() == 2,
+              item.what + ": exactly the malformed record is refused");
+
+        nfsu::RenderTextureSet set;
+        nfsu::PreparedTrackRegion prepared;
+        std::string error;
+        const bool ok = decode_and_prepare(report, {file.source(&wanted)}, set,
+                                           prepared, error);
+        check(ok, item.what + ": the region still prepares: " + error);
+        // The refused record still claims its hash, so the hash is unusable
+        // rather than unresolved: nothing is silently substituted for it.
+        check(prepared.draws[item.bad_draw].binding ==
+                      nfsu::BindingKind::unusable &&
+                  prepared.draws[item.bad_draw].texture == nfsu::kNoHandle &&
+                  prepared.draws[item.bad_draw].drawable,
+              item.what + ": the draw falls back rather than resolving");
+        check(prepared.unresolved_hashes.empty(),
+              item.what + ": a refused record still claims its hash");
+        check(prepared.cost.unusable_draws == item.unusable &&
+                  prepared.cost.resolved_draws == 4 - item.unusable,
+              item.what + ": the other hashes are unaffected");
+    }
+
+    {
+        // A duplicate hash inside one pack is accepted at the record level:
+        // both records stay valid and both are kept. The ambiguity surfaces
+        // only as an unusable binding.
+        PackSpec spec;
+        spec.textures = {pack_texture(0xAAAA0001U, 0x11),
+                         pack_texture(0xAAAA0002U, 0x22),
+                         pack_texture(0xAAAA0002U, 0x33),
+                         pack_texture(0xAAAA0003U, 0x44)};
+        TextureFile file;
+        file.build({spec});
+        check(file.set.complete && file.set.packs[0].tables_parsed &&
+                  file.set.packs[0].valid_texture_count() == 4,
+              "a repeated hash leaves every record valid");
+        check(file.set.packs[0].issues.size() == 1 &&
+                  file.set.packs[0].issues[0].message.find(
+                      "repeats hash 0xAAAA0002") != std::string::npos,
+              "the repeated hash is reported as a pack issue");
+
+        nfsu::RenderTextureSet set;
+        nfsu::PreparedTrackRegion prepared;
+        std::string error;
+        const bool ok = decode_and_prepare(report, {file.source(&wanted)}, set,
+                                           prepared, error);
+        check(ok, "the repeated-hash region prepares: " + error);
+        check(set.textures.size() == 4 && set.shadowed.empty(),
+              "both records of the repeated hash are kept");
+        check(prepared.cost.unusable_draws == 2 &&
+                  prepared.unresolved_hashes.empty(),
+              "a repeated hash is unusable, not unresolved");
+    }
+    {
+        // A readable file with no pack root claims nothing and stays
+        // complete, so a later source is read and resolves everything.
+        PackSpec empty;
+        empty.no_root = true;
+        TextureFile none;
+        none.build({empty});
+        check(none.set.complete && none.set.packs.empty() &&
+                  none.set.issues.size() == 1,
+              "a file without a pack root is complete but reported");
+
+        PackSpec all;
+        all.textures = {pack_texture(0xAAAA0001U, 0x11),
+                        pack_texture(0xAAAA0002U, 0x22),
+                        pack_texture(0xAAAA0003U, 0x44)};
+        TextureFile good;
+        good.build({all});
+        nfsu::RenderTextureSet set;
+        nfsu::PreparedTrackRegion prepared;
+        std::string error;
+        const bool ok = decode_and_prepare(
+            report, {none.source(&wanted), good.source(&wanted)}, set, prepared,
+            error);
+        check(ok, "the rootless-source region prepares: " + error);
+        check(set.blocked_sources.empty() && prepared.cost.resolved_draws == 4,
+              "a rootless source does not block the source behind it");
+        check(drawn_fill(prepared, 1) == 0x22,
+              "the later source supplies the pixels");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -2202,6 +2761,8 @@ int main() {
     test_decode_bookkeeping_does_not_change_the_region();
     test_prepared_region_limits();
     test_validate_prepared_region_rejects_tampering();
+    test_track_texture_source_collision();
+    test_track_malformed_texture_pack();
 
     if (g_failures != 0) {
         std::cerr << g_failures << " track test failures of " << g_checks

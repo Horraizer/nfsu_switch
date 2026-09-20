@@ -376,10 +376,11 @@ to the cost statistics.
 a `PreparedTrackRegion`: copies of the valid meshes, one `TrackDraw` per
 `0x00134B02` record in mesh and record order, one copy of each resolved
 texture in order of first use, and the cost statistics below. Material
-binding uses the same `nfsu::resolve_material` the car scene uses, so
-ordered source precedence, shadowing and unusable claims behave exactly as
-`docs/RENDERER.md` describes for cars. Invalid meshes and empty meshes are
-recorded separately and never drawn.
+binding uses the same `nfsu::resolve_material` the car scene uses; the
+section after this one states the source precedence, the collision
+outcomes and the malformed-source boundary for a region, which differ from
+the car viewer in three ways. Invalid meshes and empty meshes are recorded
+separately and never drawn.
 
 `validate_prepared_track_region` re-checks every invariant a backend would
 rely on: ascending unique meshes inside the source and disjoint from both
@@ -413,6 +414,118 @@ Cost statistics, all deterministic:
 - texture binds, the number of times a backend walking the draws in this
   order and binding only on a change would call `SetTexture`, counting
   every unresolved or unusable group as one shared fallback binding.
+
+## Texture sources for a region
+
+The sources a region resolves against are given explicitly, after the region
+selector, and **their command-line order is their priority**. No file is
+searched for and no directory is scanned. The decoder never compares two
+records' contents: when two sources carry one hash, the earlier source wins,
+and the later record is dropped whole and listed in
+`RenderTextureSet::shadowed`.
+
+The rules are `decode_render_texture_sources`, stated in full in
+[`RENDERER.md`](RENDERER.md) under "Texture sources and precedence". Three
+things differ for a region, and reading that section alone gets each of them
+wrong:
+
+- **Every** track source is filtered by the region's wanted hashes
+  (`nfsu::track_region_texture_hashes`), the first one included. The car
+  viewer decodes its source 0, the car's own `TEXTURES.BIN`, in full. A
+  record of a track source that claims no wanted hash is never decoded,
+  which is why the other 362 records of `STREAML1RB_1210.BUN` cost nothing
+  below. It still claims its hashes against later sources.
+- A source named twice is accepted. The car viewer makes a repeated
+  `--shared-textures` file a usage error; `track-region` reads it again as
+  the next source, where the first copy shadows every record of the second.
+  That is a wasted read, not a wrong answer.
+- A texture-source problem does not change the exit code. `track-region`
+  exits on the region report alone: `0` when the region parsed cleanly and
+  `3` when it did not. Source issues, shadowed records and blocked sources
+  are printed and nothing more, so a caller must read the output rather than
+  the status. The car viewer exits 3 for a source issue.
+
+What a `TrackDraw` ends up with:
+
+| The hash the material's slot names is | binding | `texture` | provenance |
+| --- | --- | --- | --- |
+| carried by exactly one usable record, in the earliest source that claims it | `resolved` | the first-use handle | that record's source, pack and record |
+| carried by two or more kept records, or only by records that could not be decoded, or by an entry of `unusable_claims` | `unusable` | `kNoHandle` | none, all three fields 0 |
+| claimed by no source at all | `unresolved` | `kNoHandle` | none |
+| outside the mesh's own hash list | `invalid_slot` | `kNoHandle` | none |
+
+Only `unresolved` hashes reach `PreparedTrackRegion::unresolved_hashes`. An
+ambiguous hash is deliberately not one of them: something on disk claims it,
+so the region must not report it missing, and it must not be drawn from a
+guess either. Both kinds stay `drawable` and share the one fallback binding.
+
+A record's contents never break a tie and never promote a lower-priority
+source. An invalid record of an earlier source still shadows a valid record
+of a later one, and the hash is `unusable` rather than taken from the file
+that could have supplied it.
+
+### Which malformations a source survives
+
+One row below makes a source incomplete, which stops every source behind it
+from being read at all. The rest leave the source complete and cost exactly
+the records they name. `tests/track_tests.cpp` builds each case as bytes and
+parses it with the real reader, because a hand-built `TexturePack` would
+skip the reader and prove nothing about a malformed file.
+
+| In a source file | Reported as | Complete | The draw gets |
+| --- | --- | --- | --- |
+| a record count the hash, info or format tables disagree on | a pack issue; `tables_parsed` stays false | **no** | `unresolved`: no record was ever listed |
+| a chain that starts outside the `0x33320002` payload, or a payload shorter than the chain a record declares | a pack issue at info +48; the record is invalid | yes | `unusable` |
+| a chain offset that is not a multiple of 128 | a pack issue at info +48; the record is invalid | yes | `unusable` |
+| a declared size that disagrees with the dimensions and mip count | a pack issue at info +56; the record is invalid | yes | `unusable` |
+| a zero width or height | a pack issue at info +68; the record is invalid | yes | `unusable` |
+| one hash on two records of a pack, or of two packs of one file | a pack or set issue; **both records stay valid and both are kept** | yes | `unusable` |
+| no `0xB3300000` root anywhere in the file | a set issue | yes: it claims nothing | whatever a later source has |
+
+The repeated hash is the row that surprises. The reader reports it and keeps
+both records, because nothing tells it which one the game would take, and no
+later stage resolves it either: it becomes an `unusable` binding and a
+fallback-coloured draw. An incomplete source is the only one that costs
+anything beyond its own records.
+
+### What the retail corpus does
+
+Collisions are not hypothetical here, so the synthetic tests pin a rule the
+installation exercises. The two-source command below reports `shadowed 54`,
+and `STREAML1RA.BUN` on its own holds 220 distinct hashes that appear in
+more than one of its 141 packs, one `repeats hash ... ambiguous` line each
+on standard error.
+
+Four of the region's eleven wanted hashes are carried by both files, so the
+command-line order decides which copy four draws use. Running each source
+alone says so twice over. Every row is
+`track-region Tracks/STREAML1RX.BUN 9728 784032` with the sources named:
+
+| Sources, in order | decoded | shadowed | skipped | resolved / unresolved |
+| --- | ---: | ---: | ---: | ---: |
+| `STREAML1RX_1099.BUN` | 7 | 0 | 63 | 108 / 6 |
+| `STREAML1RA.BUN` | 6 | 0 | 1630 | 11 / 103 |
+| `STREAML1RX_1099.BUN`, `STREAML1RA.BUN` | 9 | 54 | 1643 | 112 / 2 |
+| `STREAML1RA.BUN`, `STREAML1RX_1099.BUN` | 9 | 52 | 1645 | 112 / 2 |
+| `STREAML1RX_1099.BUN` twice | 7 | 70 | 63 | 108 / 6 |
+
+`decoded` counts wanted records that were kept, and the first source is
+never shadowed, so across rows 1 and 3 the second file contributes
+`9 - 7 = 2` of the 6 it contributes alone: four of its wanted records were
+shadowed. `skipped` confirms it from the other side, because a shadowed
+record is not also counted as skipped: `63 + 1630 - 1643 = 50` of the 54
+shadowed records would otherwise have been skipped as unwanted, leaving 4
+that were wanted. Row 4 gives the same 4 the other way round
+(`9 - 6 = 3` of `_1099`'s 7, and `63 + 1630 - 1645 = 48` of 52).
+
+Both orders resolve 112 draws and decode 186368 bytes, so the collision
+decides which file four textures come from, not how many there are. Whether
+the two copies hold the same pixels was not measured: comparing them means
+writing decoded retail pixels somewhere, and nothing here may hold those.
+
+The last row is the repeated-source case: naming one file twice shadows all
+70 of its records the second time and changes nothing else. Both commands
+exit 0.
 
 ## The decoded region
 
@@ -487,9 +600,12 @@ material records, 11 distinct texture hashes. Nine resolve and two do not:
 `XW_OILLINKFENCEA_1B_00_DEIN`. Neither hash exists in any texture pack of
 the installation, so they are left unresolved rather than substituted.
 114 draws, 112 resolved and 2 unresolved, 109 texture binds, 650976 vertex
-buffer bytes and 103596 index buffer bytes. The second source reports
-ambiguous hashes of its own; those records are shadowed and the run still
-succeeds.
+buffer bytes and 103596 index buffer bytes. The second source reports 220
+ambiguous hashes of its own on standard error, and 54 of its records are
+shadowed by the first source. Neither stops the run. Four of the eleven
+wanted hashes are carried by both sources, so the order they are named in
+decides which file four of these draws take their pixels from; "Texture
+sources for a region" above measures that.
 
 ### Whole-corpus check
 
@@ -615,6 +731,10 @@ decoded partially. Two examples from the same installation:
 - All 7110099 track indices are below their mesh's vertex count.
 - Every track texture pack lacks `0x33310003`, so all of them use the raw
   storage path recovered in issue #7.
+- Texture hashes collide across and inside source files. `Tracks/STREAML1RA.BUN`
+  holds 220 distinct hashes that appear in more than one of its 141 packs,
+  and 54 of its records repeat a hash of `Tracks/STREAML1RX_1099.BUN`. A
+  collision is ordinary in this corpus rather than an edge case.
 
 ## Inferred
 
