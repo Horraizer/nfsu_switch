@@ -39,6 +39,8 @@ build/nfsu_probe track-region X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 17826
 build/nfsu_probe stock-scene X:/Games/NFSU/Global/GLOBALB.BUN 240SX A X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games/NFSU/Cars/BRAKES/GEOMETRY.BIN X:/Games/NFSU/Cars/PLATES/GEOMETRY.BIN --place-wheels
 build/nfsu_probe track-objects X:/Games/NFSU/Tracks/STREAML1RB.BUN 23011344 4168 23015540 178268
 build/nfsu_probe track-visibility X:/Games/NFSU/Tracks/STREAML1RB.BUN 23011344 4168 450 20 -80 900 20 -80 --far 60
+build/nfsu_probe track-zones X:/Games/NFSU/Tracks/TRACKB1301.lzc
+build/nfsu_probe track-zones X:/Games/NFSU/Tracks/TRACKB1301.lzc 0 -1200
 build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc
 build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc 783 -8.5
 build/nfsu_probe car-placement X:/Games/NFSU/Global/GLOBALB.BUN 240SX
@@ -134,9 +136,18 @@ than trust a visibility rule: it consults nothing at all, not the frustum
 and not the two gates whose retail inputs were never recovered, so
 `--mask` and `--screen-scale` cannot drop anything under it. The report
 names the policy each section was culled with. The zone layer that decides
-which sections are drawn is recovered as a rule, but the record layout
-inside its `0x80034150` chunk is not decoded here, so `--residency`
-defaults to every section in the region. See `docs/TRACK_VISIBILITY.md`.
+which sections are drawn is recovered as a rule and its data is decoded by
+`track-zones` below; `--zones` with `--zone-point` hands the residency
+straight to it, and `--residency` still defaults to every section in the
+region so that a caller who names no zone data gets the explicit fallback.
+See `docs/TRACK_VISIBILITY.md`.
+`track-zones` decodes that data: the `0x80034150` chunk of one
+`Tracks/TRACKB<NNNN>.lzc`, whose four children are the zone polygons, the
+zones with the section list each one draws, and two further section lists
+keyed by the track number. Given a world point in the two horizontal raw
+slots it also runs the recovered point-in-polygon test and names the zone
+that holds it, or reports that the camera is in none, which is the case
+retail's no-zone rule exists for. See `docs/TRACK_ZONES.md`.
 `track-collision` decodes the static collision of one track. Collision is
 not in the `STREAM*.BUN` containers at all: those hold geometry, scenery,
 textures and animation and nothing else. It lives in

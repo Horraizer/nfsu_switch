@@ -55,11 +55,11 @@ constexpr std::uint32_t kTrackAlwaysResidentLast = 2699;
 constexpr std::uint32_t kTrackNoZoneSubIndexLimit = 10;
 
 // 0x00446AB4 `cmp dword ptr [eax], 0x80034150`: the chunk id of the
-// visibility-zone container, which builds the polygon list at 0x0077A930.
-// No file carries this chunk at its top level as it lies on disk; every
+// visibility-zone container, whose five list heads start at 0x0077A930. No
+// file carries this chunk at its top level as it lies on disk; every
 // Tracks/*.lzc carries one once nfsu::jdlz_decompress has opened the
-// container, and it is the record layout inside it that is not decoded
-// here. See docs/TRACK_VISIBILITY.md.
+// container. nfsu/track_zones.h decodes the records inside it and fills a
+// TrackResidency from them; see docs/TRACK_ZONES.md.
 constexpr std::uint32_t kTrackVisibilityZoneId = 0x80034150U;
 
 // One plane of the retail frustum, in the raw file slot order: a point p is
@@ -163,8 +163,8 @@ bool track_frustum_look_at(const TrackCamera& camera, TrackFrustum& frustum) noe
 // scale when d is at or below the radius and the division otherwise
 // (0x00445E92 `fcomp` / `test ah, 0x41` / `jne 0x445eab`, which jumps
 // straight to the truncation with the scale on the stack). The association
-// of the other arm is the retail one too,
-// retail one, 0x00445E9E fld / 0x00445EA4 fdiv / 0x00445EA8 fmul, and not
+// of the other arm is the retail one too, 0x00445E9E fld / 0x00445EA4 fdiv
+// / 0x00445EA8 fmul, and not
 // scale * radius / d: this library disables floating-point contraction
 // precisely because association order moves a boundary, so the two are not
 // interchangeable here.
@@ -227,14 +227,17 @@ enum class TrackResidencyRule {
     // 0x00446473 to 0x004464D6: sections 2600 to 2699 first, then the
     // caller's zone list in its own order. A number the region does not
     // hold is skipped, exactly as a null entry of the global table at
-    // 0x0072A008 is skipped.
+    // 0x0072A008 is skipped. nfsu::track_zone_residency in
+    // nfsu/track_zones.h fills the list from the game's own zone data.
     zone_list,
 };
 
 struct TrackResidency {
     TrackResidencyRule rule = TrackResidencyRule::every_section;
     // Read only under TrackResidencyRule::zone_list. Retail holds at most
-    // 64 of these in one zone record (0x00446C10 `cmp edx, 0x40`).
+    // 64 of these in one zone record (0x00446C10 `cmp edx, 0x40`, and
+    // (148 - 20) / 2 is the same 64). nfsu::track_zone_residency fills it
+    // from a decoded 0x00034152 record.
     std::vector<std::uint32_t> zone_sections;
 };
 
