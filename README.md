@@ -128,8 +128,10 @@ per-instance gates. It verifies before pruning that every node box
 contains the boxes below it, and a section that fails falls back to testing
 every instance box with an issue saying so. `--policy draw-everything` is
 the explicit fallback for a caller that would rather draw the whole region
-than trust a visibility rule, and the report names the policy each section
-was culled with. The zone layer that decides which sections are drawn is
+than trust a visibility rule: it consults nothing at all, not the frustum
+and not the two gates whose retail inputs were never recovered, so
+`--mask` and `--screen-scale` cannot drop anything under it. The report
+names the policy each section was culled with. The zone layer that decides which sections are drawn is
 recovered as a rule, but the record layout inside its `0x80034150` chunk is
 not decoded here, so `--residency` defaults to every section in the region.
 See `docs/TRACK_VISIBILITY.md`.

@@ -32,6 +32,15 @@ void check_eq_u64(std::uint64_t got, std::uint64_t want, const std::string& what
                            std::to_string(got));
 }
 
+void check_near(float got, float want, const std::string& what) {
+    ++g_checks;
+    if (!(std::fabs(got - want) <= 1e-5F)) {
+        std::cerr << "test failure: " << what << ": expected " << want
+                  << ", got " << got << '\n';
+        ++g_failures;
+    }
+}
+
 std::string join(const std::vector<std::size_t>& values) {
     std::string out = "[";
     for (std::size_t i = 0; i < values.size(); ++i) {
@@ -293,6 +302,86 @@ SectionSpec row_section(std::uint32_t number = 303) {
     return spec;
 }
 
+// One root over `count` instances, each a cube of half extent 5 at world
+// x = 100 * (i + 1). count must not exceed the five entry slots a node
+// record holds.
+SectionSpec small_section(std::uint32_t number, int count) {
+    SectionSpec spec;
+    spec.number = number;
+    NodeSpec root;
+    root.entry_count = static_cast<std::uint16_t>(count);
+    for (int i = 0; i < count; ++i) {
+        const int centre = 100 * (i + 1);
+        InstanceSpec instance;
+        instance.bounds_min[0] = static_cast<std::int16_t>(centre - 5);
+        instance.bounds_min[1] = -5;
+        instance.bounds_min[2] = -5;
+        instance.bounds_max[0] = static_cast<std::int16_t>(centre + 5);
+        instance.bounds_max[1] = 5;
+        instance.bounds_max[2] = 5;
+        instance.position[0] = static_cast<float>(centre);
+        spec.instances.push_back(instance);
+        root.entries[i] = static_cast<std::int16_t>(i);
+    }
+    root.bounds_min[0] = 95;
+    root.bounds_min[1] = -5;
+    root.bounds_min[2] = -5;
+    root.bounds_max[0] = static_cast<std::int16_t>(100 * count + 5);
+    root.bounds_max[1] = 5;
+    root.bounds_max[2] = 5;
+    spec.nodes.push_back(root);
+    return spec;
+}
+
+// The same eight instances, but three levels deep instead of two:
+// node 0 -> {node 1, node 2}, node 1 -> {node 3, instance 0},
+// node 3 -> {1, 2, 3}, node 2 -> {4, 5, 6, 7}. A two-level tree cannot
+// tell a fold that accumulates from the leaves up from one that does not,
+// because the two orders agree there.
+SectionSpec deep_section() {
+    SectionSpec spec = row_section();
+    spec.nodes.clear();
+
+    NodeSpec root;
+    root.bounds_min[0] = 95;
+    root.bounds_min[1] = -5;
+    root.bounds_min[2] = -5;
+    root.bounds_max[0] = 805;
+    root.bounds_max[1] = 5;
+    root.bounds_max[2] = 5;
+    root.entry_count = 2;
+    root.entries[0] = -1;
+    root.entries[1] = -2;
+
+    NodeSpec near_group = root;
+    near_group.bounds_max[0] = 405;
+    near_group.entry_count = 2;
+    near_group.entries[0] = -3;
+    near_group.entries[1] = 0;
+
+    NodeSpec far_group = root;
+    far_group.bounds_min[0] = 495;
+    far_group.bounds_max[0] = 805;
+    far_group.entry_count = 4;
+    for (int i = 0; i < 4; ++i) {
+        far_group.entries[i] = static_cast<std::int16_t>(4 + i);
+    }
+
+    NodeSpec inner = root;
+    inner.bounds_min[0] = 195;
+    inner.bounds_max[0] = 405;
+    inner.entry_count = 3;
+    for (int i = 0; i < 3; ++i) {
+        inner.entries[i] = static_cast<std::int16_t>(1 + i);
+    }
+
+    spec.nodes.push_back(root);
+    spec.nodes.push_back(near_group);
+    spec.nodes.push_back(far_group);
+    spec.nodes.push_back(inner);
+    return spec;
+}
+
 constexpr std::uint64_t kBase = 23011344;
 
 nfsu::TrackObjectReport parse_sections(const std::vector<SectionSpec>& specs) {
@@ -430,6 +519,120 @@ void test_box_test_classes() {
     check(nfsu::track_classify_box(deep, past_near_min, past_near_max) ==
               nfsu::TrackBoxClass::inside,
           "a box past the near plane and short of the far one is inside");
+}
+
+// The six planes of the reference camera, written out. Every earlier test
+// observes the frustum only through a classification, which cannot tell a
+// permuted normal from a correct one, cannot tell tan(fov) from
+// tan(fov / 2), and cannot tell the horizontal half-angle from the
+// vertical one while every box sits outside both. This pins all of it,
+// including which plane is which: a handedness flip swaps left with right
+// and bottom with top, leaving the six-plane set identical and every
+// classification unchanged, so only a per-index comparison catches it.
+//
+// eye at the world origin, looking along +X, up +Y, 60 degrees vertical,
+// aspect 4:3, near 1, far 1000. half_v = tan(30 deg) = 0.57735 and
+// half_h = half_v * 4 / 3 = 0.76980. Normals are in the raw slot order
+// (px, pz, py) of docs/FORMATS.md:286, so the world normal (nx, ny, nz)
+// appears here as (nx, -nz, ny).
+void test_frustum_planes() {
+    const nfsu::TrackFrustum f =
+        frustum_or_fail(axis_camera(1000.0F), "plane values");
+
+    const float want[6][4] = {
+        // near: world +X through (1, 0, 0).
+        {1.0F, 0.0F, 0.0F, -1.0F},
+        // far: world -X through (1000, 0, 0).
+        {-1.0F, 0.0F, 0.0F, 1000.0F},
+        // left and right, through the eye. 0.6099943 = h / sqrt(1 + h*h)
+        // and 0.7924058 = 1 / sqrt(1 + h*h) with h = 0.7698004, so the pair
+        // moves if the aspect ratio does.
+        {0.6099943F, -0.7924058F, 0.0F, 0.0F},
+        {0.6099943F, 0.7924058F, 0.0F, 0.0F},
+        // bottom and top. 0.5 and 0.8660254 come from half_v = 0.57735,
+        // so the pair moves if the field of view stops being halved.
+        {0.5F, 0.0F, 0.8660254F, 0.0F},
+        {0.5F, 0.0F, -0.8660254F, 0.0F},
+    };
+    const char* names[6] = {"near", "far", "left", "right", "bottom", "top"};
+    for (std::size_t i = 0; i < nfsu::kTrackFrustumPlanes; ++i) {
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            check_near(f.planes[i].normal[axis], want[i][axis],
+                       std::string("the ") + names[i] + " plane's normal slot " +
+                           std::to_string(axis));
+        }
+        check_near(f.planes[i].d, want[i][3],
+                   std::string("the ") + names[i] + " plane's constant");
+    }
+
+    // Every normal is unit length, which the classification relies on only
+    // through the radius term but which a dropped normalize3 would break.
+    for (std::size_t i = 0; i < nfsu::kTrackFrustumPlanes; ++i) {
+        const float* n = f.planes[i].normal;
+        check_near(std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]), 1.0F,
+                   std::string("the ") + names[i] + " plane's normal is unit");
+    }
+}
+
+// The band between the two half-angles. At this camera the horizontal
+// half-angle is 0.76980 and the vertical is 0.57735, so at px 100 a box
+// 65 units off axis is inside the horizontal cone and outside the vertical
+// one. A box at 400, which is what every other test uses, is outside both,
+// which is why those cannot tell the two apart.
+void test_half_angles_differ() {
+    const nfsu::TrackFrustum f =
+        frustum_or_fail(axis_camera(1000.0F), "half angles");
+
+    const float pz_min[3] = {95.0F, 65.0F, -5.0F};
+    const float pz_max[3] = {105.0F, 85.0F, 5.0F};
+    check(nfsu::track_classify_box(f, pz_min, pz_max) ==
+              nfsu::TrackBoxClass::intersecting,
+          "65 units off axis on pz is inside the horizontal half-angle");
+
+    const float py_min[3] = {95.0F, -5.0F, 65.0F};
+    const float py_max[3] = {105.0F, 5.0F, 85.0F};
+    check(nfsu::track_classify_box(f, py_min, py_max) ==
+              nfsu::TrackBoxClass::outside,
+          "65 units off axis on py is outside the vertical half-angle");
+
+    // A box straddling the top plane. The top plane is the only one whose
+    // raw normal is negative on slot 2, so it is the only place the
+    // absolute value in the radius term changes an answer: without it the
+    // term subtracts instead of adding, the box looks smaller than it is
+    // and a crossing box is reported outside.
+    const float straddle_min[3] = {95.0F, -5.0F, 50.0F};
+    const float straddle_max[3] = {105.0F, 5.0F, 70.0F};
+    check(nfsu::track_classify_box(f, straddle_min, straddle_max) ==
+              nfsu::TrackBoxClass::intersecting,
+          "a box straddling the top plane is crossing, which needs the "
+          "absolute value on the slot-2 radius term");
+}
+
+// Both comparisons in track_classify_box are strict, and the library
+// disables floating-point contraction on the strength of that. These two
+// boxes sit exactly on the two boundaries, so relaxing either < to <=
+// changes an answer.
+void test_classify_boundaries() {
+    const nfsu::TrackFrustum f =
+        frustum_or_fail(axis_camera(450.0F), "boundaries");
+
+    // Far plane at px 450. Centre 455, extent 5: distance + radius is
+    // exactly 0, so the box is not outside, only crossing.
+    const float touch_min[3] = {450.0F, -5.0F, -5.0F};
+    const float touch_max[3] = {460.0F, 5.0F, 5.0F};
+    check(nfsu::track_classify_box(f, touch_min, touch_max) ==
+              nfsu::TrackBoxClass::intersecting,
+          "a box whose near corner rests on the far plane is crossing, not "
+          "outside");
+
+    // Centre 445, extent 5: distance - radius is exactly 0, so the box is
+    // inside, not crossing.
+    const float flush_min[3] = {440.0F, -5.0F, -5.0F};
+    const float flush_max[3] = {450.0F, 5.0F, 5.0F};
+    check(nfsu::track_classify_box(f, flush_min, flush_max) ==
+              nfsu::TrackBoxClass::inside,
+          "a box whose far corner rests on the far plane is inside, not "
+          "crossing");
 }
 
 void test_fixture_parses() {
@@ -596,6 +799,10 @@ void test_draw_everything_ignores_the_frustum() {
     check(report.ok(), "the fallback must raise no issue");
     check_visible(report, {0, 1, 2, 3, 4, 5, 6, 7},
                   "the fallback draws the whole section in instance order");
+    for (const nfsu::TrackVisibleInstance& item : report.visible) {
+        check(item.node_index == 0,
+              "a policy that walks no tree reports no node");
+    }
     check_eq_u64(report.stats.node_tests, 0, "the fallback tests no node");
     check_eq_u64(report.stats.instance_tests, 0, "the fallback tests no box");
     check(!report.sections.empty() &&
@@ -613,6 +820,56 @@ void test_draw_everything_ignores_the_frustum() {
                  "the fallback still counts the section it considered");
 }
 
+// The fallback's contract is unconditional, so it has to hold with the
+// gates armed. Both of these gates take a retail input this project did not
+// recover, which is exactly why a fallback that still applied them could
+// drop an instance for a value it invented.
+void test_draw_everything_ignores_the_gates() {
+    const nfsu::TrackObjectReport objects = parse_row_region();
+    const nfsu::TrackFrustum frustum =
+        frustum_or_fail(axis_camera(1000.0F), "fallback gates");
+
+    // 0x60 masks out every instance of this fixture under the retail rule,
+    // and does so under the two culling policies.
+    nfsu::TrackCullOptions masked;
+    masked.instance_mask = 0x60U;
+    const nfsu::TrackCullReport tree =
+        cull_track_region(objects, frustum, masked);
+    check_visible(tree, {}, "the mask empties the tree policy");
+
+    masked.policy = nfsu::TrackCullPolicy::draw_everything;
+    const nfsu::TrackCullReport report =
+        cull_track_region(objects, frustum, masked);
+    check_visible(report, {0, 1, 2, 3, 4, 5, 6, 7},
+                  "the fallback draws everything with the mask armed");
+    check_eq_u64(report.stats.instances_culled_by_mask, 0,
+                 "the fallback culls nothing by mask");
+
+    // The screen-size gate drops half the row under the tree policy.
+    nfsu::TrackCullOptions sized;
+    sized.use_screen_size = true;
+    sized.screen_scale = 100.0F;
+    sized.screen_forward[0] = 1.0F;
+    sized.screen_forward[1] = 0.0F;
+    sized.screen_forward[2] = 0.0F;
+    const nfsu::TrackCullReport sized_tree =
+        cull_track_region(objects, frustum, sized);
+    check_eq_u64(sized_tree.stats.instances_culled_by_size, 4,
+                 "the size gate drops four under the tree policy");
+
+    sized.policy = nfsu::TrackCullPolicy::draw_everything;
+    const nfsu::TrackCullReport sized_report =
+        cull_track_region(objects, frustum, sized);
+    check_visible(sized_report, {0, 1, 2, 3, 4, 5, 6, 7},
+                  "the fallback draws everything with the size gate armed");
+    check_eq_u64(sized_report.stats.instances_culled_by_size, 0,
+                 "the fallback culls nothing by size");
+    for (const nfsu::TrackVisibleInstance& item : sized_report.visible) {
+        check(item.screen_level == 0,
+              "the fallback reports no level, because it computed none");
+    }
+}
+
 // The flat policy tests every instance and prunes nothing, so it finds the
 // same set as the tree whenever the tree is sound. Run over the same four
 // cameras the tree was run over.
@@ -627,6 +884,10 @@ void test_flat_policy_agrees_with_the_tree() {
         const nfsu::TrackCullReport a = cull_track_region(objects, frustum);
         const nfsu::TrackCullReport b =
             cull_track_region(objects, frustum, flat);
+        for (const nfsu::TrackVisibleInstance& item : b.visible) {
+            check(item.node_index == 0,
+                  "the flat policy walks no tree and reports no node");
+        }
         std::vector<std::size_t> tree_set = visible_indices(a);
         std::vector<std::size_t> flat_set = visible_indices(b);
         std::sort(tree_set.begin(), tree_set.end());
@@ -715,6 +976,90 @@ void test_containment_failure_changes_the_answer() {
     check(named_above,
           "the issue names the overshoot on the maximum side too");
 
+    // Every axis, not just px. The check makes six comparisons per entry
+    // and only two of them were ever violated above, so a loop that ran
+    // over one axis, or an axis-name table in the wrong order, would pass
+    // everything so far.
+    const char* axis_name[3] = {"px", "pz", "py"};
+    for (std::size_t axis = 1; axis < 3; ++axis) {
+        nfsu::TrackObjectReport low = parse_row_region();
+        low.sections[0].nodes[1].bounds_min[axis] = -4;
+        const nfsu::TrackCullReport low_report =
+            cull_track_region(low, frustum);
+        check(!low_report.ok(),
+              std::string("an overshoot below on ") + axis_name[axis] +
+                  " must be reported");
+        bool named_low = false;
+        for (const nfsu::TrackIssue& issue : low_report.issues) {
+            if (issue.message.find(std::string("reaches 1 units below the "
+                                               "node box on ") +
+                                   axis_name[axis]) != std::string::npos) {
+                named_low = true;
+            }
+        }
+        check(named_low,
+              std::string("the issue names one unit below on ") +
+                  axis_name[axis]);
+
+        nfsu::TrackObjectReport high = parse_row_region();
+        high.sections[0].nodes[1].bounds_max[axis] = 4;
+        const nfsu::TrackCullReport high_report =
+            cull_track_region(high, frustum);
+        check(!high_report.ok(),
+              std::string("an overshoot above on ") + axis_name[axis] +
+                  " must be reported");
+        bool named_high = false;
+        for (const nfsu::TrackIssue& issue : high_report.issues) {
+            if (issue.message.find(std::string("reaches 1 units above the "
+                                               "node box on ") +
+                                   axis_name[axis]) != std::string::npos) {
+                named_high = true;
+            }
+        }
+        check(named_high,
+              std::string("the issue names one unit above on ") +
+                  axis_name[axis]);
+    }
+
+    // One unit, not a hundred. 38468 of the 220260 retail axis comparisons
+    // sit at exactly one unit of slack, so a check that tolerated a single
+    // unit would still pass every other assertion in this suite while
+    // being wrong on the densest part of the corpus.
+    nfsu::TrackObjectReport unit = parse_row_region();
+    unit.sections[0].nodes[1].bounds_min[0] = 96;
+    const nfsu::TrackCullReport unit_report = cull_track_region(unit, frustum);
+    check(!unit_report.ok(), "a one-unit overshoot must be reported");
+    check_eq_u64(unit_report.stats.sections_degraded, 1,
+                 "a one-unit overshoot degrades the section");
+    bool named_unit = false;
+    for (const nfsu::TrackIssue& issue : unit_report.issues) {
+        if (issue.message.find("reaches 1 units below the node box on px") !=
+            std::string::npos) {
+            named_unit = true;
+        }
+    }
+    check(named_unit, "the issue names the single unit");
+
+    // A child node escaping its parent, rather than an instance. Both
+    // containment tests above resolve to an instance entry, so the branch
+    // that resolves a negative entry was never exercised.
+    nfsu::TrackObjectReport child = parse_row_region();
+    child.sections[0].nodes[0].bounds_max[0] = 804;
+    const nfsu::TrackCullReport child_report =
+        cull_track_region(child, frustum);
+    check(!child_report.ok(),
+          "a child node escaping its parent must be reported");
+    check_eq_u64(child_report.stats.sections_degraded, 1,
+                 "a child node escaping its parent degrades the section");
+    bool named_child = false;
+    for (const nfsu::TrackIssue& issue : child_report.issues) {
+        if (issue.message.find("node 2 reaches 1 units above the node box on "
+                               "px") != std::string::npos) {
+            named_child = true;
+        }
+    }
+    check(named_child, "the issue names the child node");
+
     // The unmodified tree must not trip the check, or the check would be
     // reporting on the fixture rather than on the mutation.
     const nfsu::TrackObjectReport sound = parse_row_region();
@@ -722,6 +1067,38 @@ void test_containment_failure_changes_the_answer() {
         cull_track_region(sound, frustum);
     check(sound_report.ok() && sound_report.policy_held,
           "the unmodified fixture must not report a containment failure");
+}
+
+// track_check_tree_containment is a public entry point of its own, and its
+// entry-count guard is what keeps it inside the five slots the record
+// holds. Reached through cull_track_region the guard is invisible, because
+// prepare_tree refuses the same node a moment later with the same words;
+// called directly, only the guard can produce this message.
+void test_containment_entry_count_guard() {
+    nfsu::TrackObjectReport objects = parse_row_region();
+    check(objects.valid_section_count() == 1, "the fixture must parse first");
+    if (objects.sections.empty()) {
+        return;
+    }
+    objects.sections[0].nodes[1].entry_count = 9;
+
+    std::vector<nfsu::TrackIssue> issues;
+    const std::size_t failures =
+        nfsu::track_check_tree_containment(objects.sections[0], &issues);
+    check_eq_u64(failures, 1,
+                 "an entry count outside 1 to 5 is one containment failure");
+    check(issues.size() == 1 &&
+              issues[0].message.find("entry count 9 is outside 1 to 5") !=
+                  std::string::npos,
+          "and the check names it rather than clamping and walking on");
+
+    // The unmodified section raises nothing, so the assertion above is
+    // about the count and not about the fixture.
+    const nfsu::TrackObjectReport sound = parse_row_region();
+    std::vector<nfsu::TrackIssue> none;
+    check_eq_u64(nfsu::track_check_tree_containment(sound.sections[0], &none),
+                 0, "the unmodified fixture is contained");
+    check(none.empty(), "and raises no issue");
 }
 
 // A tree that is not a tree cannot be walked, and must fall back rather
@@ -785,6 +1162,24 @@ void test_broken_trees_degrade() {
                      "an out-of-range instance degrades the section");
     }
     {
+        // One instance named twice and another named never. The entry
+        // count still equals the instance count, so a walk that counted
+        // entries instead of marking instances would see nothing wrong and
+        // would silently drop the unnamed one.
+        nfsu::TrackObjectReport objects = parse_row_region();
+        objects.sections[0].nodes[1].entries[3] = 0;
+        const nfsu::TrackCullReport report =
+            cull_track_region(objects, frustum);
+        check(!report.ok(), "a duplicated instance entry must be reported");
+        check(names(report, "instance 0 is reached more than once"),
+              "the issue names the instance, not just a count");
+        check_eq_u64(report.stats.sections_degraded, 1,
+                     "a duplicated instance entry degrades the section");
+        check_visible(report, {0, 1, 2, 3, 4, 5, 6, 7},
+                      "the degraded section offers the instance the tree "
+                      "dropped");
+    }
+    {
         // An instance no node names would never be drawn under the tree.
         nfsu::TrackObjectReport objects = parse_row_region();
         objects.sections[0].nodes[1].entry_count = 3;
@@ -813,6 +1208,26 @@ void test_broken_trees_degrade() {
                       "the degraded section still offers every instance");
     }
     {
+        // The same entry count, reached through prepare_tree rather than
+        // through the containment check. With containment off, prepare_tree's
+        // own guard is the only thing standing between the walk and
+        // entries[5..8], which the record does not have.
+        nfsu::TrackObjectReport objects = parse_row_region();
+        objects.sections[0].nodes[1].entry_count = 9;
+        nfsu::TrackCullOptions options;
+        options.verify_containment = false;
+        const nfsu::TrackCullReport report =
+            cull_track_region(objects, frustum, options);
+        check(!report.ok(),
+              "prepare_tree must refuse an entry count past five on its own");
+        check(names(report, "entry count 9 is outside 1 to 5"),
+              "and name the count and the bound");
+        check_eq_u64(report.stats.sections_degraded, 1,
+                     "the section degrades without the containment check");
+        check_visible(report, {0, 1, 2, 3, 4, 5, 6, 7},
+                      "and still offers every instance");
+    }
+    {
         // A traversal that would need more pending nodes than the limit.
         nfsu::TrackObjectReport objects = parse_row_region();
         nfsu::TrackCullOptions options;
@@ -839,8 +1254,14 @@ void test_instance_mask() {
           "a zero mask masks nothing");
     check(nfsu::track_instance_masked_out(0x0000U, 0x60U),
           "a zero flags word raises both bias bits");
+    // The mask is a byte, so no bit of the flags word above bit 7 can ever
+    // reach the result. That is a property of the parameter's type rather
+    // than of an expression, which is why nothing here can pin it: an
+    // explicit "& 0xFF" on the flags word would be an equivalent mutant.
+    // What this case does pin is that the bias is applied to the low byte
+    // and that a set high half does not leak into it.
     check(!nfsu::track_instance_masked_out(0xFF60U, 0xFFU),
-          "only the low byte of the flags word takes part");
+          "a set high half of the flags word does not reach the result");
 
     const nfsu::TrackObjectReport objects = parse_row_region();
     const nfsu::TrackFrustum frustum =
@@ -854,8 +1275,37 @@ void test_instance_mask() {
                   "0x60");
     check_eq_u64(report.stats.instances_culled_by_mask, 8,
                  "mask culled instances");
-    check_eq_u64(report.stats.instance_tests, 0,
-                 "the mask is applied before the box test");
+
+    // Gate order, which the camera above cannot show: at far 1000 the root
+    // classifies inside, so no instance is box-tested whatever the order
+    // is. At far 150 node 1 crosses, so its four instances would be tested
+    // if the box came first.
+    const nfsu::TrackFrustum crossing =
+        frustum_or_fail(axis_camera(150.0F), "mask before box");
+    const nfsu::TrackCullReport ordered =
+        cull_track_region(objects, crossing, options);
+    check_eq_u64(ordered.stats.instances_culled_by_mask, 4,
+                 "the four instances the traversal reaches are masked out");
+    check_eq_u64(ordered.stats.instance_tests, 0,
+                 "0x00445EE9 runs before 0x00445F04: nothing is box-tested");
+
+    // And the size gate after the box test, not before. With this scale
+    // every instance of the near group fails the size gate, so the two
+    // orders attribute the same four instances to different counters.
+    nfsu::TrackCullOptions sized;
+    sized.use_screen_size = true;
+    sized.screen_scale = 20.0F;
+    sized.screen_forward[0] = 1.0F;
+    sized.screen_forward[1] = 0.0F;
+    sized.screen_forward[2] = 0.0F;
+    const nfsu::TrackCullReport after =
+        cull_track_region(objects, crossing, sized);
+    check_visible(after, {}, "nothing survives both gates");
+    check_eq_u64(after.stats.instance_tests, 4, "all four are box-tested");
+    check_eq_u64(after.stats.instances_culled_by_box, 3,
+                 "three fail the box test first");
+    check_eq_u64(after.stats.instances_culled_by_size, 1,
+                 "and only the survivor reaches the size gate");
 }
 
 void test_screen_size_level() {
@@ -892,6 +1342,25 @@ void test_screen_size_level() {
     check(nfsu::track_screen_size_level(eye, forward, 100.0F, just_behind,
                                         10.0F) == 100,
           "a point behind the camera by less than the radius is kept");
+
+    // Exactly on the behind-the-camera boundary. 0x00445E58 continues when
+    // the dot product equals the negated radius, so equality is kept.
+    const float on_boundary[3] = {-10.0F, 0.0F, 0.0F};
+    check(nfsu::track_screen_size_level(eye, forward, 100.0F, on_boundary,
+                                        10.0F) == 100,
+          "a point exactly one radius behind the camera is kept, not "
+          "rejected");
+
+    // Exactly on the other boundary, distance == radius. The scale and the
+    // radius are chosen so that the two branches disagree in float:
+    // (1000 / 15) * 15 is 999.99994, which truncates to 999, while the
+    // branch retail takes yields the scale itself. Most pairs, 100 and 10
+    // among them, round back exactly and would pin nothing.
+    const float flush[3] = {30.0F, 0.0F, 0.0F};
+    check(nfsu::track_screen_size_level(eye, forward, 1000.0F, flush, 15.0F) ==
+              1000,
+          "distance exactly equal to the radius takes the scale, not the "
+          "division");
 
     const float nan_point[3] = {std::nanf(""), 0.0F, 0.0F};
     check(nfsu::track_screen_size_level(eye, forward, 100.0F, nan_point,
@@ -936,6 +1405,57 @@ void test_screen_size_gate() {
                  "the gate is off unless a scale is supplied");
     check_eq_u64(ungated.stats.instances_culled_by_size, 0,
                  "no instance is size-culled with the gate off");
+}
+
+// The forward axis names a direction. Retail's is a camera basis vector
+// and is unit length, and the behind-the-camera reject compares a dot
+// product against -radius, so a longer vector would move that boundary and
+// the visible set with it.
+void test_screen_forward_length_is_ignored() {
+    const nfsu::TrackObjectReport objects = parse_row_region();
+    const nfsu::TrackFrustum frustum =
+        frustum_or_fail(axis_camera(1000.0F), "forward length");
+
+    std::vector<std::size_t> first;
+    const float lengths[3] = {1.0F, 450.0F, 45000.0F};
+    for (std::size_t i = 0; i < 3; ++i) {
+        nfsu::TrackCullOptions options;
+        options.use_screen_size = true;
+        options.screen_scale = 100.0F;
+        options.screen_forward[0] = lengths[i];
+        options.screen_forward[1] = 0.0F;
+        options.screen_forward[2] = 0.0F;
+        const nfsu::TrackCullReport report =
+            cull_track_region(objects, frustum, options);
+        check(report.ok(), "a non-unit forward axis is not an error");
+        if (i == 0) {
+            first = visible_indices(report);
+            check(!first.empty(),
+                  "the size gate must select something, or this compares two "
+                  "empty sets");
+        } else {
+            check(visible_indices(report) == first,
+                  "the visible set does not depend on the forward axis's "
+                  "length (" + std::to_string(static_cast<int>(lengths[i])) +
+                      ")");
+        }
+    }
+
+    // A zero axis names no direction at all. The gate is refused rather
+    // than run on it, and the run says so.
+    nfsu::TrackCullOptions zero;
+    zero.use_screen_size = true;
+    zero.screen_scale = 100.0F;
+    zero.screen_forward[0] = 0.0F;
+    zero.screen_forward[1] = 0.0F;
+    zero.screen_forward[2] = 0.0F;
+    const nfsu::TrackCullReport report =
+        cull_track_region(objects, frustum, zero);
+    check(!report.ok(), "a zero forward axis must be reported");
+    check_eq_u64(report.stats.instances_culled_by_size, 0,
+                 "a zero forward axis disables the gate rather than culling");
+    check_eq_u64(report.stats.instances_visible, 8,
+                 "and the run still produces a superset");
 }
 
 void test_residency_rules() {
@@ -1037,6 +1557,133 @@ void test_residency_rules() {
     }
 }
 
+// Three sections that differ in the two summary fields every fixture
+// section above shares. Without these, forcing summary.instances to 8 or
+// summary.has_letter to true passes the whole suite.
+void test_summary_identity() {
+    std::vector<SectionSpec> specs;
+    specs.push_back(small_section(303, 3));
+    specs.push_back(row_section(1210));
+    // 0x0044580E gives 0x40 + 2700 / 100 = 0x5B, which is not a letter, so
+    // this is the one retail-shaped number that produces has_letter false.
+    specs.push_back(small_section(2700, 5));
+    const nfsu::TrackObjectReport objects = parse_sections(specs);
+    check(objects.ok() && objects.valid_section_count() == 3,
+          "the mixed fixture must parse");
+    const nfsu::TrackFrustum frustum =
+        frustum_or_fail(axis_camera(4000.0F), "summary identity");
+    const nfsu::TrackCullReport report = cull_track_region(objects, frustum);
+
+    check(report.sections.size() == 3 && report.sections[0].instances == 3 &&
+              report.sections[1].instances == 8 &&
+              report.sections[2].instances == 5,
+          "each summary carries its own instance count, and they differ");
+    check(report.sections.size() == 3 && report.sections[0].has_letter &&
+              report.sections[1].has_letter &&
+              !report.sections[2].has_letter,
+          "a section number that yields no letter says so");
+    check(report.sections.size() == 3 && report.sections[0].letter == 'C' &&
+              report.sections[1].letter == 'L',
+          "and the other two carry theirs");
+    check_eq_u64(report.stats.instances_visible, 16,
+                 "3 + 8 + 5 instances are visible");
+}
+
+// Every name the acceptance block in docs/TRACK_VISIBILITY.md quotes. A
+// renamed policy or class would leave the paper describing output the
+// program no longer prints.
+void test_names_are_stable() {
+    check(std::string(nfsu::track_cull_policy_name(
+              nfsu::TrackCullPolicy::retail_tree)) == "retail-tree",
+          "retail-tree keeps its name");
+    check(std::string(nfsu::track_cull_policy_name(
+              nfsu::TrackCullPolicy::flat_instance_test)) ==
+              "flat-instance-test",
+          "flat-instance-test keeps its name");
+    check(std::string(nfsu::track_cull_policy_name(
+              nfsu::TrackCullPolicy::draw_everything)) == "draw-everything",
+          "draw-everything keeps its name");
+    check(std::string(nfsu::track_box_class_name(
+              nfsu::TrackBoxClass::outside)) == "outside",
+          "outside keeps its name");
+    check(std::string(nfsu::track_box_class_name(
+              nfsu::TrackBoxClass::intersecting)) == "intersecting",
+          "intersecting keeps its name");
+    check(std::string(nfsu::track_box_class_name(
+              nfsu::TrackBoxClass::inside)) == "inside",
+          "inside keeps its name");
+
+    // The default is the retail-derived cap, and the header derives it
+    // from the 0x174-byte frame at 0x00446146 plus the three pushes after
+    // it. Nothing else in the suite reads it.
+    check(nfsu::TrackCullLimits{}.max_pending_nodes == 64,
+          "the pending-node limit defaults to the retail cap of 64");
+}
+
+// A three-level tree. prepare_tree folds each node's subtree count into its
+// parent in reverse pre-order so that a child is complete before its parent
+// is folded; on a two-level tree the forward and reverse orders agree, so
+// every other test in this suite passes either way.
+void test_deep_tree_accounting() {
+    const nfsu::TrackObjectReport objects =
+        parse_sections(std::vector<SectionSpec>{deep_section()});
+    check(objects.ok() && objects.valid_section_count() == 1,
+          "the three-level fixture must parse");
+
+    // A camera looking the other way puts the root outside, so the whole
+    // tree is pruned in one step and instances_pruned has to be the total.
+    nfsu::TrackCamera camera = axis_camera(1000.0F);
+    camera.target[0] = -1.0F;
+    const nfsu::TrackFrustum frustum = frustum_or_fail(camera, "deep tree");
+    const nfsu::TrackCullReport report = cull_track_region(objects, frustum);
+    check(report.ok(), "the three-level cull must raise no issue");
+    check_visible(report, {}, "a camera facing away sees nothing");
+    check_eq_u64(report.stats.nodes_culled, 1, "the root alone is culled");
+    check_eq_u64(report.stats.instances_visited, 0, "nothing is visited");
+    check_eq_u64(report.stats.instances_pruned, 8,
+                 "the root's subtree count reaches three levels down");
+
+    // And the same tree seen head on still reaches every instance.
+    const nfsu::TrackFrustum ahead =
+        frustum_or_fail(axis_camera(1000.0F), "deep tree ahead");
+    const nfsu::TrackCullReport all = cull_track_region(objects, ahead);
+    check_eq_u64(all.stats.instances_visited + all.stats.instances_pruned, 8,
+                 "visited plus pruned is the instance count either way");
+    check_eq_u64(all.stats.instances_visible, 8, "all eight are visible");
+}
+
+// Only a caller-built section can name an object the directory does not
+// hold. Falling back to a zero radius without a word would make the
+// instance look smaller than it is and cull it.
+void test_object_index_out_of_range() {
+    nfsu::TrackObjectReport objects = parse_row_region();
+    objects.sections[0].instances[0].object_index = 99;
+    const nfsu::TrackFrustum frustum =
+        frustum_or_fail(axis_camera(1000.0F), "object index");
+
+    // Without the size gate nothing reads the object, so nothing is said.
+    const nfsu::TrackCullReport quiet = cull_track_region(objects, frustum);
+    check(quiet.ok(), "an unread object index is not an error");
+
+    nfsu::TrackCullOptions options;
+    options.use_screen_size = true;
+    options.screen_scale = 100.0F;
+    options.screen_forward[0] = 1.0F;
+    options.screen_forward[1] = 0.0F;
+    options.screen_forward[2] = 0.0F;
+    const nfsu::TrackCullReport report =
+        cull_track_region(objects, frustum, options);
+    check(!report.ok(), "an object index the gate needs must be reported");
+    bool named = false;
+    for (const nfsu::TrackIssue& issue : report.issues) {
+        if (issue.message.find("object index 99 is outside the directory") !=
+            std::string::npos) {
+            named = true;
+        }
+    }
+    check(named, "the issue names the index and the directory");
+}
+
 void test_degenerate_cameras() {
     nfsu::TrackFrustum frustum;
     nfsu::TrackCamera camera = axis_camera(1000.0F);
@@ -1135,6 +1782,9 @@ void test_determinism() {
 int main() {
     test_coordinate_map();
     test_box_test_classes();
+    test_frustum_planes();
+    test_half_angles_differ();
+    test_classify_boundaries();
     test_fixture_parses();
     test_camera_sees_everything();
     test_camera_prunes_far_group();
@@ -1143,13 +1793,20 @@ int main() {
     test_instance_box_can_cross();
     test_visit_accounting();
     test_draw_everything_ignores_the_frustum();
+    test_draw_everything_ignores_the_gates();
     test_flat_policy_agrees_with_the_tree();
     test_containment_failure_changes_the_answer();
+    test_containment_entry_count_guard();
     test_broken_trees_degrade();
     test_instance_mask();
     test_screen_size_level();
     test_screen_size_gate();
+    test_screen_forward_length_is_ignored();
     test_residency_rules();
+    test_summary_identity();
+    test_names_are_stable();
+    test_deep_tree_accounting();
+    test_object_index_out_of_range();
     test_degenerate_cameras();
     test_invalid_sections_are_skipped();
     test_determinism();

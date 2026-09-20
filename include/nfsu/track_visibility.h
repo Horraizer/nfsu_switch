@@ -159,9 +159,22 @@ bool track_frustum_look_at(const TrackCamera& camera, TrackFrustum& frustum) noe
 //   scale is the render context's value at +0xC0.
 //
 // With d = |position - eye| - radius, the result is
-// trunc(d <= radius ? scale : scale * radius / d), and 0 when
-// dot(position - eye, forward) is at or below -radius, which is the
-// behind-the-camera reject at 0x00445E58.
+// trunc(d <= radius ? (scale / d) * radius : scale). The association is the
+// retail one, 0x00445E9E fld / 0x00445EA4 fdiv / 0x00445EA8 fmul, and not
+// scale * radius / d: this library disables floating-point contraction
+// precisely because association order moves a boundary, so the two are not
+// interchangeable here.
+//
+// The result is 0 when dot(position - eye, forward) is strictly below
+// -radius. 0x00445E54 `fcompp` against the negated radius is followed by
+// `test ah, 0x41` and `jne`, which continues when C0 or C3 is set, that is
+// when -radius is below or equal to the dot product, so equality is kept
+// rather than rejected.
+//
+// forward must be unit length, as retail's camera basis axis at render
+// context +0xB0 is. cull_track_region normalizes what a caller gives it;
+// this function does not, because it reproduces the retail arithmetic and
+// retail does not normalize here either.
 //
 // scale is read from the render context and this project has not recovered
 // it, so a caller must supply one; TrackCullOptions leaves the gate off.
@@ -172,13 +185,17 @@ int track_screen_size_level(
     const float position[3],
     float radius) noexcept;
 
-// 0x00445EDA to 0x00445EEB: the low byte of (flags ^ 0x60) is ANDed with a
-// byte of the render context and a non-zero result skips the instance.
+// 0x00445EDA to 0x00445EEB: `mov dl, byte ptr [edi + 0x84]` then
+// `test dl, al` on the low byte of (flags ^ 0x60), and a non-zero result
+// skips the instance. The test is 8-bit on both sides, which is why mask is
+// a std::uint8_t here: the byte restriction lives in that type rather than
+// in an explicit AND, and masking the flags word with 0xFF as well would be
+// an expression no input could distinguish.
 inline bool track_instance_masked_out(
     std::uint32_t instance_flags,
     std::uint8_t mask) noexcept {
     const std::uint32_t biased = instance_flags ^ kTrackInstanceMaskBias;
-    return ((biased & 0xFFU) & static_cast<std::uint32_t>(mask)) != 0U;
+    return (biased & static_cast<std::uint32_t>(mask)) != 0U;
 }
 
 // 0x00446473: a section the drawn set always carries when a zone is active.
@@ -222,10 +239,15 @@ enum class TrackCullPolicy {
     // The recovered rule: walk the bounding tree, prune a subtree whose
     // node box is outside, and stop testing under a node that is inside.
     retail_tree,
-    // The explicit fallback. No frustum is consulted at all: every instance
-    // of every resident section is visible, in section and instance order.
-    // This is not what the game does, and a report produced under it says
-    // so in TrackSectionCull::policy_used.
+    // The explicit fallback. Nothing is consulted at all: not the frustum,
+    // not the flags mask, not the screen-size level. Every instance of
+    // every resident section is visible, in section and instance order,
+    // whatever instance_mask and screen_scale are set to. That is the whole
+    // point of it: the mask byte and the projection scale are retail inputs
+    // this project has not recovered, so a fallback that still applied them
+    // could drop an instance for a value it invented. This is not what the
+    // game does, and a report produced under it says so in
+    // TrackSectionCull::policy_used.
     draw_everything,
     // Test every instance box and never prune on a node. Exact for the
     // stored instance boxes however the tree is shaped, and what
@@ -234,11 +256,15 @@ enum class TrackCullPolicy {
 };
 
 struct TrackCullLimits {
-    // Retail's traversal stack lives between [esp+0x40] and the top of a
-    // 0x174-byte frame, which leaves room for 64 codes and 61 node
-    // pointers. The exact retail cap is inferred from that frame; this one
-    // is the project's own, and a traversal that needs more is refused with
-    // an issue rather than allowed to grow without bound.
+    // Retail's traversal stack lives between [esp+0x40] and the top of the
+    // frame 0x00446146 reserves. That frame is 0x174 bytes and the three
+    // pushes at 0x00446152, 0x00446153 and 0x00446154 come after it, and
+    // every [esp+N] in the function is relative to the post-push esp, so
+    // the top is at +0x180: the codes run +0x40 to +0x80 and the node
+    // pointers +0x80 to +0x180, which is 64 of each. The exact retail cap
+    // is inferred from that frame rather than read from an instruction;
+    // this one is the project's own, and a traversal that needs more is
+    // refused with an issue rather than allowed to grow without bound.
     std::size_t max_pending_nodes = 64;
 };
 
@@ -248,15 +274,22 @@ struct TrackCullOptions {
     TrackCullLimits limits;
     // The render context's mask byte. Zero, the default, masks nothing.
     // Retail's value was not recovered, so the default set is a superset of
-    // the retail one on this gate.
+    // the retail one on this gate. Ignored entirely under
+    // TrackCullPolicy::draw_everything.
     std::uint8_t instance_mask = 0;
     // The screen-size gate of 0x00445F34. Off by default because its scale
     // was not recovered; a set produced with it off is a superset of the
-    // retail one on this gate too.
+    // retail one on this gate too. Ignored entirely under
+    // TrackCullPolicy::draw_everything.
     bool use_screen_size = false;
     float screen_scale = 0.0F;
     // The eye and forward axis track_screen_size_level needs, in the raw
-    // slot order. Read only when use_screen_size is true.
+    // slot order. Read only when use_screen_size is true. screen_forward
+    // need not be unit length: cull_track_region normalizes it, because
+    // otherwise its magnitude would move the behind-the-camera boundary and
+    // a vector that only names a direction would change the answer. A
+    // forward axis that cannot be normalized disables the gate and raises
+    // an issue.
     float screen_eye[3] = {0.0F, 0.0F, 0.0F};
     float screen_forward[3] = {0.0F, 0.0F, 1.0F};
     // Check, before pruning on it, that every node box contains the box of

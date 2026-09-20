@@ -270,7 +270,14 @@ and a render context on the stack, and returns 0, 1 or 2.
 the image. `edx` starts at 1 and the loop runs while it is at or below 6,
 with the plane pointer advancing 16 bytes each turn, so there are exactly
 six planes of four floats: three at `+0`, `+4`, `+8` and a constant at
-`+12`. The plane array starts at `[[context + 0x80] + 0xC4]`.
+`+12`. **The plane array starts at `[[context + 0x80] + 0xC0]`, not at
+`+0xC4`.** 0x0040DB82 loads `+0xC4`, but the loop body reads `[ecx - 4]`
+first (0x0040DBDD and 0x0040DBFD), so `ecx` points at each plane's second
+float and plane 0 occupies `+0xC0` to `+0xCF`. The six span `+0xC0` to
+`+0x11F`. A reimplementation that took `+0xC4` as plane 0's first field
+would read `n1`, `n2`, `d` and the next plane's `n0` as one plane. The
+scale the screen-size gate reads at context `+0xC0` (below) is a different
+structure: that one is `[context + 0xC0]`, not `[[context + 0x80] + 0xC0]`.
 
 So the classification is the standard centre-and-extent test:
 
@@ -340,10 +347,14 @@ must do:
    it is also the third independent confirmation of the 24-byte node
    stride.
 
-The retail stack lives between `[esp + 0x40]` and the top of a 0x174-byte
-frame, which leaves room for 64 codes and 61 node pointers.
-`TrackCullLimits::max_pending_nodes` defaults to 64; the exact retail cap
-is inferred from that frame rather than read from an instruction.
+The retail stack lives between `[esp + 0x40]` and the top of the frame
+0x00446146 reserves. That frame is 0x174 bytes and the three pushes at
+0x00446152, 0x00446153 and 0x00446154 come after it, and every `[esp + N]`
+in the function is relative to the post-push `esp`, so the top is at
+`+0x180`: the codes run `+0x40` to `+0x80` and the node pointers `+0x80` to
+`+0x180`, which is **64 of each**. `TrackCullLimits::max_pending_nodes`
+defaults to 64 to match. The cap is inferred from that frame rather than
+read from an instruction.
 
 ### Does containment actually hold?
 
@@ -351,9 +362,14 @@ It has to, or rule 3 above silently drops geometry. Measured over the
 whole corpus, independently of this repository's C++ decoder, by walking
 the 593 sections' bytes directly: **7588 nodes, 29715 instances, 36710
 parent-to-entry relations, 220260 axis comparisons, and not one
-overshoot.** The largest slack in the tight direction is 0 units, which
-occurs 42339 times, and -1 occurs 38468 times; every other slack is more
-negative still.
+overshoot.** Slack here is room to spare, measured the way the code
+measures it in `track_check_tree_containment`: `child_min - node_min` and
+`node_max - child_max`, so a non-negative value means contained and a
+negative one is an overshoot. On that convention the minimum is 0,
+occurring 42339 times, the next value is +1, occurring 38468 times, the
+maximum is 8939, and **no comparison is negative**. The two counts that
+matter for a culler are the small ones: a sixth of the corpus sits exactly
+one unit from failing.
 
 **That is a property of this retail data, not a guarantee of the format.**
 Nothing in the 24-byte node record requires a parent box to contain its
@@ -453,7 +469,16 @@ shortcut again, one level down.
 
 The radius is object record `+68` plus the 4.0 at `0x006B780C`. The result
 is a projected-size number, and 0x00445F4E drops the instance when it is 1
-or less. **This is where `TRACK_OBJECTS.md`'s `radius` name is settled:**
+or less.
+
+**The forward axis must be unit length.** The behind-the-camera reject
+compares a dot product against `-radius`, which only means "behind by more
+than the radius" for a unit vector; retail's is a camera basis axis at
+context `+0xB0` and is unit by construction. `cull_track_region` normalizes
+whatever a caller hands it, once, before any section is walked, so a
+parameter that names only a direction cannot change the answer by its
+magnitude. An axis that cannot be normalized disables the gate and raises
+an issue rather than silently skewing the set. **This is where `TRACK_OBJECTS.md`'s `radius` name is settled:**
 that note recorded that no instruction reading `+68` had been traced, and
 0x00445F3B is the instruction. The scale at context `+0xC0` is not
 recovered, so `TrackCullOptions::use_screen_size` is off by default and
@@ -543,7 +568,7 @@ the report in.
 | `TrackCullPolicy` | What it does |
 | --- | --- |
 | `retail_tree` | The recovered rule: verify containment, walk the tree, prune, then the instance gates. The default. |
-| `draw_everything` | **The explicit fallback.** The frustum is not consulted at all; every instance of every resident section is visible, in instance order. Not what the game does, and the report says so on every section it culled. |
+| `draw_everything` | **The explicit fallback.** Nothing is consulted at all: not the frustum, not the flags mask, not the screen-size level. Every instance of every resident section is visible, in instance order, whatever `instance_mask` and `screen_scale` are set to. Not what the game does, and the report says so on every section it culled. |
 | `flat_instance_test` | Test every instance box, prune nothing. Exact for the stored boxes whatever the tree looks like, and what `retail_tree` degrades into. |
 
 A section degrades to `flat_instance_test`, with an issue, when
@@ -551,7 +576,8 @@ A section degrades to `flat_instance_test`, with an issue, when
 - a node box does not contain the box of an entry below it,
 - an entry names a node or an instance that is out of range,
 - a node is reached more than once, so the tree is not a tree,
-- the tree does not name every instance, or
+- the tree names an instance more than once, or does not name every
+  instance, or
 - the traversal would need more pending nodes than the limit.
 
 `TrackCullReport::policy_held` is false when any section degraded, and
@@ -588,66 +614,89 @@ exists because the fourth cannot tell the class an instance box tested as
 from the class it inherited - at 150 the surviving instance is wholly
 inside, and only at 100 does it straddle the plane itself.
 
-**Fifty-four mutations** of the implementation were each applied alone,
-built and run. Eighteen cover the recovered rule itself, and all eighteen
-were caught from the start:
+Three mutation passes have now been run against this suite, and they are
+counted separately because they measure different things. A pass written
+by the author of a test suite is weak evidence about that suite: it tends
+to mutate what the tests already name.
+
+**Pass one, 18 mutations, written with the implementation.** Each one
+changes the recovered rule itself. All 18 were caught from the start.
 
 ```text
-caught  children in entry order instead of reverse             1 failure
-caught  test every node, never inherit the inside code         1 failure
-caught  never prune an outside node                           20 failures
-caught  skip the containment check                             5 failures
-caught  reject on the near corner instead of the far one      20 failures
-caught  never test an instance box                            15 failures
-caught  emit instances in reverse order under the flat policy  6 failures
-caught  drop the 0x60 instance-flags bias                      7 failures
-caught  draw at screen level 1                                 4 failures
-caught  round the screen level instead of truncating           4 failures
-caught  drop the radius bias                                   3 failures
-caught  keep the sign of pz in the world map                   3 failures
-caught  widen the always-resident band by one                  1 failure
-caught  use 100 instead of 10 for the no-zone sub-index        5 failures
-caught  let the fallback consult the frustum                   2 failures
-caught  accept a far plane at the near plane                   4 failures
-caught  count a pruned subtree as one instance                 6 failures
-caught  let an unreachable instance through the tree walk      3 failures
+children in entry order instead of reverse    never test an instance box
+test every node, never inherit the inside     emit instances in reverse
+never prune an outside node                     order under the flat policy
+skip the containment check                    drop the 0x60 flags bias
+reject on the near corner, not the far one    draw at screen level 1
+round the screen level instead of truncating  drop the radius bias
+keep the sign of pz in the world map          widen the 26xx band by one
+use 100 for the no-zone sub-index             let the fallback see the
+count a pruned subtree as one instance          frustum and the gates
+let an unreachable instance through           accept far at the near plane
 ```
 
-A second batch of thirty-six aimed at the reporting surface, the plane set
-and the branches the first batch never reached. **Eleven of those thirty-
-six survived the first time**, which means eleven behaviours the suite
-named were not pinned by it:
+**Pass two, 36 mutations, written afterwards against the reporting
+surface, the plane set and the branches pass one never reached. Eleven
+survived.** Seven report fields were never read back
+(`sections_considered`, `summary.visible`, `summary.instances`,
+`summary.letter`, `has_letter`, `requested_policy`, `instance_class`); the
+entry-count upper bound and the containment check's maximum side were
+never violated; and two of the six frustum planes could be replaced by
+another with nothing noticing. The fixture was symmetric about pz and py
+and every camera looked along +X past a single off-axis box, so one side
+plane was ever exercised and the near plane was never isolated from the
+far one.
 
-```text
-sections_considered never counted      requested_policy left at the default
-summary.visible never counted          summary.letter never copied
-instance_class always inside           has_letter never copied
-summary.instances never set            entry-count upper bound dropped
-bottom plane duplicated onto top       containment high side ignored
-far plane duplicated onto near
-```
+**Pass three, 27 mutations, written by an independent reviewer of this
+branch who did not see the suite's own mutation lists.** That reviewer
+wrote 101, discarded 3 as no-op or equivalent, ran 98, and reported these
+27 as surviving. They fell into groups this suite had systematically
+missed:
 
-Three are worth naming, because they were not oversights of one kind. The
-fixture is symmetric about pz and py and every camera looked along +X past
-a single off-axis box, so **four of the six planes were interchangeable**
-as far as the suite could tell: one side plane was ever exercised, and the
-near plane was never isolated from the far one. The containment check
-makes two comparisons per axis and only the minimum side was ever
-violated, so **half of it was untested**. And every instance that survived
-a cull was wholly inside, so **`instance_class` never differed from the
-code it inherited**.
+| Group | Count | What the suite could not see |
+| --- | ---: | --- |
+| frustum construction | 6 | the world-to-raw permutation, the aspect ratio, the halving of the field of view, the handedness |
+| the box test | 4 | both strict comparisons, and the absolute value on two of the three radius terms |
+| the containment check | 6 | pz, py, child-node entries, a one-unit overshoot, the entry-count guard, the axis-name table |
+| ordering and limits | 4 | the gate order, the subtree fold on a tree deeper than two, the pending-node default |
+| screen size | 2 | both boundaries, where the two branches meet |
+| the report surface | 5 | `node_index` under a policy that walks no tree, three stable names, two constant-valued summary fields |
 
-The fixes are four off-axis boxes rather than one, a second camera whose
-near plane is 200 so that a box in front of it is rejected by nothing
-else, a camera at far 100 whose surviving instance straddles the plane, a
-containment mutation on the maximum side, an entry count of 9 against the
-five slots the record holds, and assertions on the per-section summary
-fields. The suite went from 199 checks to 224, and all fifty-four
-mutations are now caught with no survivor.
+The band between the two half-angles is the clearest case. At the
+fixture's camera the horizontal half-angle is 0.76980 and the vertical is
+0.57735, and every off-axis box in the suite sat at 400, outside both. A
+box at 65 is crossing on pz and outside on py, and that single pair of
+boxes is what separates the two angles. The other structural gap was the
+fixture's depth: a two-level tree cannot tell a subtree fold that
+accumulates from the leaves up from one that does not, because the two
+orders agree there.
+
+What closed them: a test that writes out all 24 numbers of the six planes
+for a reference camera and compares them per index, so a permuted normal,
+a wrong aspect, an unhalved field of view and a handedness flip each move
+a number and each name a different plane; two boxes in the band between
+the half-angles; two boxes resting exactly on the two comparison
+boundaries, which is also the first test that sits on the boundary the
+`-ffp-contract=off` flag exists to protect; a box straddling the top
+plane, the only plane whose raw normal is negative on slot 2; containment
+overshoots on all three axes, above and below, at one unit rather than a
+hundred, and on a child node rather than an instance; a three-level tree;
+a three-section fixture whose sections differ in instance count and in
+whether their number yields a letter at all; and direct calls to
+`track_check_tree_containment` so that its own guard is not masked by
+`prepare_tree` refusing the same node a moment later.
+
+The suite went from 199 checks to 370. **All 81 mutations - 18, 36 and 27
+- are caught, with no survivor in any pass.** The 27 are the interesting
+number: they were found by someone who had not read the first two lists.
+
 
 ### The retail differential
 
-Over the two regions below and 864 cameras - four eye positions along the
+Over two regions of `Tracks/STREAML1RB.BUN` - the single section at
+offset 23011344 size 4168 that the acceptance block below uses, and the
+two-section region at offset 0 size 177232 that `TRACK_OBJECTS.md` decodes
+- and 864 cameras - four eye positions along the
 section, three depths, two heights, three far planes and six directions -
 `retail_tree` and `flat_instance_test` selected exactly the same instances
 every time: 0 mismatches and 0 failed runs. 382 of those cameras had a
@@ -727,7 +776,7 @@ build/nfsu_probe chunks X:/Games/NFSU/Tracks/STREAML1RB.BUN 100000
   each carries exactly one `0x80034150`, of 1216 to 29424 bytes, holding
   `0x00034151`, `0x00034152`, `0x00034153` and `0x00034154` in that order
   in all 31.
-- The box test is six planes of four floats at `[[context + 0x80] + 0xC4]`,
+- The box test is six planes of four floats at `[[context + 0x80] + 0xC0]`,
   centre-and-extent, returning 0 outside, 1 crossing and 2 inside, with
   0.5 at 0x006CC7DC and 0.0 at 0x006CC7A4.
 - The tree walk is a last-in-first-out stack seeded with node 0 and code 1;
@@ -757,9 +806,9 @@ build/nfsu_probe chunks X:/Games/NFSU/Tracks/STREAML1RB.BUN 100000
 - Bits 0x0800 and 0x1000 of the render mask word at context `+0x84` are
   extra render passes, because each one substitutes a single fixed mesh
   slot for the whole chain.
-- Retail's traversal stack holds at most 61 nodes, from the size of the
-  0x174-byte frame at 0x00446146 and the two stack bases at `[esp+0x40]`
-  and `[esp+0x80]`. No instruction bounds it.
+- Retail's traversal stack holds at most 64 nodes and 64 codes, from the
+  0x174-byte frame at 0x00446146, the three pushes after it and the two
+  stack bases at `[esp+0x40]` and `[esp+0x80]`. No instruction bounds it.
 - The 26xx band being both always drawn and linked at the head of the
   section list means the letter `Z` sections are the always-resident set.
 
@@ -776,7 +825,7 @@ build/nfsu_probe chunks X:/Games/NFSU/Tracks/STREAML1RB.BUN 100000
   be reproduced with a retail value.
 - The scale at context `+0xC0`, so gate 3 cannot be reproduced with a
   retail value.
-- How the six planes at `[[context + 0x80] + 0xC4]` are built, and whether
+- How the six planes at `[[context + 0x80] + 0xC0]` are built, and whether
   they are ever anything but a symmetric perspective frustum.
 - What the two objects whose `+28` second word reads 27008 are for.
 - Whether the letter range `A` to `T` at 0x00446BF0 bounds the track

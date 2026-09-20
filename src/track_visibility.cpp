@@ -105,6 +105,11 @@ TreePrep prepare_tree(
     prep.subtree_instances.assign(node_count, 0);
     std::vector<std::size_t> parent(node_count, kNoParent);
     std::vector<bool> seen(node_count, false);
+    // The instance side needs its own seen vector, not a counter. A tree
+    // that names one instance twice and another never has exactly as many
+    // instance entries as instances, so counting alone cannot tell the two
+    // apart and the walk would silently drop the unnamed one.
+    std::vector<bool> seen_instance(instance_count, false);
     std::vector<std::size_t> order;
     order.reserve(node_count);
     std::vector<std::size_t> stack;
@@ -175,6 +180,17 @@ TreePrep prepare_tree(
                                   " instances");
                     return prep;
                 }
+                if (seen_instance[instance]) {
+                    add_issue(issues, node.offset,
+                              "section " + std::to_string(section.number) +
+                                  " node " + std::to_string(index) + " entry " +
+                                  std::to_string(slot) + ": instance " +
+                                  std::to_string(instance) +
+                                  " is reached more than once, so the tree is "
+                                  "not a tree and cannot be walked");
+                    return prep;
+                }
+                seen_instance[instance] = true;
                 ++prep.subtree_instances[index];
                 ++prep.reachable_instances;
             }
@@ -421,10 +437,22 @@ std::size_t track_check_tree_containment(
     static const char* kAxisName[3] = {"px", "pz", "py"};
     for (std::size_t index = 0; index < section.nodes.size(); ++index) {
         const TrackBoundNode& node = section.nodes[index];
-        const std::uint32_t used =
-            node.entry_count > kSceneryBoundNodeEntries
-                ? static_cast<std::uint32_t>(kSceneryBoundNodeEntries)
-                : node.entry_count;
+        // The record holds five entry slots, so a count outside 1 to 5 is
+        // reported rather than silently clamped: clamping would read the
+        // right bytes for the wrong reason, and a caller-built node with a
+        // count of nine would otherwise look contained.
+        if (node.entry_count == 0 ||
+            node.entry_count > kSceneryBoundNodeEntries) {
+            ++failures;
+            add_issue(issues, node.offset,
+                      "section " + std::to_string(section.number) + " node " +
+                          std::to_string(index) + ": entry count " +
+                          std::to_string(node.entry_count) +
+                          " is outside 1 to " +
+                          std::to_string(kSceneryBoundNodeEntries));
+            continue;
+        }
+        const std::uint32_t used = node.entry_count;
         for (std::uint32_t slot = 0; slot < used; ++slot) {
             const std::int16_t entry = node.entries[slot];
             const std::int16_t* child_min = nullptr;
@@ -537,12 +565,20 @@ void emit_instance(
     const TrackFrustum& frustum,
     const TrackCullOptions& options,
     bool use_frustum,
+    bool apply_gates,
     TrackCullReport& report,
     TrackSectionCull& summary) {
     const TrackInstance& instance = section.instances[instance_index];
     ++report.stats.instances_visited;
 
-    if (track_instance_masked_out(instance.flags, options.instance_mask)) {
+    // apply_gates is false only under TrackCullPolicy::draw_everything,
+    // which consults nothing at all. The flags mask and the screen-size
+    // level are retail gates whose own inputs were not recovered, so a
+    // fallback that still ran them could drop an instance for a value this
+    // project invented, which is the one thing the fallback exists to
+    // rule out.
+    if (apply_gates &&
+        track_instance_masked_out(instance.flags, options.instance_mask)) {
         ++report.stats.instances_culled_by_mask;
         return;
     }
@@ -562,10 +598,23 @@ void emit_instance(
     }
 
     int level = 0;
-    if (options.use_screen_size) {
+    if (apply_gates && options.use_screen_size) {
         const TrackObject* object = nullptr;
         if (instance.object_index < section.objects.size()) {
             object = &section.objects[instance.object_index];
+        } else {
+            // Only a caller-built section reaches this: parse_track_objects
+            // refuses an instance whose object index is outside its own
+            // directory. Falling back to a zero radius silently would make
+            // the instance look smaller than it is and cull it.
+            report.issues.push_back(TrackIssue{
+                instance.offset,
+                "section " + std::to_string(section.number) + " instance " +
+                    std::to_string(instance_index) + ": object index " +
+                    std::to_string(instance.object_index) +
+                    " is outside the directory of " +
+                    std::to_string(section.objects.size()) +
+                    " objects, so the screen-size gate has no radius for it"});
         }
         const float radius =
             (object != nullptr ? object->radius : 0.0F) + kTrackRadiusBias;
@@ -597,13 +646,15 @@ void cull_section_flat(
     const TrackFrustum& frustum,
     const TrackCullOptions& options,
     bool use_frustum,
+    bool apply_gates,
     TrackCullReport& report,
     TrackSectionCull& summary) {
     for (std::size_t i = 0; i < section.instances.size(); ++i) {
         emit_instance(section, section_index, i, 0,
                       use_frustum ? TrackBoxClass::intersecting
                                   : TrackBoxClass::inside,
-                      frustum, options, use_frustum, report, summary);
+                      frustum, options, use_frustum, apply_gates, report,
+                      summary);
     }
 }
 
@@ -663,7 +714,8 @@ void cull_section_tree(
             } else {
                 emit_instance(section, section_index,
                               static_cast<std::size_t>(entry), current.node,
-                              code, frustum, options, true, report, summary);
+                              code, frustum, options, true, true, report,
+                              summary);
             }
         }
     }
@@ -674,9 +726,31 @@ void cull_section_tree(
 TrackCullReport cull_track_region(
     const TrackObjectReport& objects,
     const TrackFrustum& frustum,
-    const TrackCullOptions& options) {
+    const TrackCullOptions& in_options) {
     TrackCullReport report;
-    report.requested_policy = options.policy;
+    report.requested_policy = in_options.policy;
+
+    // Retail's axis at render context +0xB0 is a camera basis vector and is
+    // therefore unit length, and track_screen_size_level compares a dot
+    // product against -radius, which only means "behind by more than the
+    // radius" for a unit axis. A caller that hands in a direction of some
+    // other length would otherwise get a visible set that depends on how
+    // long the vector is, so the length is taken out here, once.
+    TrackCullOptions options = in_options;
+    if (options.use_screen_size) {
+        float axis[3] = {options.screen_forward[0], options.screen_forward[1],
+                         options.screen_forward[2]};
+        if (!normalize3(axis)) {
+            report.issues.push_back(TrackIssue{
+                0, "the screen-size gate needs a non-zero finite forward "
+                   "axis; it is disabled for this run"});
+            options.use_screen_size = false;
+        } else {
+            options.screen_forward[0] = axis[0];
+            options.screen_forward[1] = axis[1];
+            options.screen_forward[2] = axis[2];
+        }
+    }
 
     for (std::size_t i = 0; i < objects.sections.size(); ++i) {
         const TrackSection& section = objects.sections[i];
@@ -702,13 +776,13 @@ TrackCullReport cull_track_region(
         ++report.stats.sections_resident;
 
         if (options.policy == TrackCullPolicy::draw_everything) {
-            cull_section_flat(section, i, frustum, options, false, report,
-                              summary);
+            cull_section_flat(section, i, frustum, options, false, false,
+                              report, summary);
             report.sections.push_back(summary);
             continue;
         }
         if (options.policy == TrackCullPolicy::flat_instance_test) {
-            cull_section_flat(section, i, frustum, options, true, report,
+            cull_section_flat(section, i, frustum, options, true, true, report,
                               summary);
             report.sections.push_back(summary);
             continue;
@@ -736,7 +810,8 @@ TrackCullReport cull_track_region(
 
         TreePrep prep;
         if (!degrade) {
-            const std::size_t before = report.issues.size();
+            // prepare_tree returns as soon as it raises an issue, so
+            // prep.usable being false is the only signal needed here.
             prep = prepare_tree(section, options.limits, &report.issues);
             if (!prep.usable) {
                 report.issues.push_back(TrackIssue{
@@ -747,8 +822,6 @@ TrackCullReport cull_track_region(
                         track_cull_policy_name(
                             TrackCullPolicy::flat_instance_test)});
                 degrade = true;
-            } else if (report.issues.size() != before) {
-                degrade = true;
             }
         }
 
@@ -756,7 +829,7 @@ TrackCullReport cull_track_region(
             summary.policy_used = TrackCullPolicy::flat_instance_test;
             ++report.stats.sections_degraded;
             report.policy_held = false;
-            cull_section_flat(section, i, frustum, options, true, report,
+            cull_section_flat(section, i, frustum, options, true, true, report,
                               summary);
         } else {
             cull_section_tree(section, i, prep, frustum, options, report,
@@ -767,8 +840,8 @@ TrackCullReport cull_track_region(
 
     // The id exists only so a diagnostic can name the chunk this project
     // cannot read; see docs/TRACK_VISIBILITY.md.
-    if (options.residency.rule == TrackResidencyRule::zone_list &&
-        options.residency.zone_sections.empty()) {
+    if (in_options.residency.rule == TrackResidencyRule::zone_list &&
+        in_options.residency.zone_sections.empty()) {
         report.issues.push_back(TrackIssue{
             0, "a zone list was requested with no section in it; the record "
                "layout inside the visibility-zone chunk " +
