@@ -63,11 +63,13 @@ agent: <model, and the session or subagent label>
 
 Several sessions share one repository, and more than one is routinely live.
 
-- Resolve remote-tracking refs, never local branches. A fetch updates
-  `origin/<branch>` and leaves the local branch where it was, so the local one
-  goes stale without warning. `main` is not a special case: a session that
-  commits and pushes from a detached worktree, as the bullet below requires,
-  never moves its own local branch ref either.
+- Resolve remote-tracking refs, not local branches, for any work that is not
+  your own. A fetch updates `origin/<branch>` and leaves the local branch where
+  it was, so the local one goes stale without warning. The one exception is your
+  own branch between your commit and your push, where your local ref is the
+  fresher of the two. `main` is not an exception: a session that commits and
+  pushes from a detached worktree, as the worktree bullet below requires, never
+  moves its own local branch ref either.
 - Measure a branch's scope with `git diff --name-only origin/main...<head>`.
   Both halves are load-bearing, and neither one alone closes the hazard. A
   two-dot diff reports every file that differs between the two tips, so a ref
@@ -76,11 +78,13 @@ Several sessions share one repository, and more than one is routinely live.
   `merge-base(LEFT, RIGHT)`: a left-hand ref that predates the branch point
   becomes the merge base itself, and the three-dot answer collapses onto the
   two-dot one. Measured on this document's own branch, head `5867238`, which
-  changed 1 file, with local `main` at `15ef449` and `origin/main` at
-  `7cb6bd0`, 42 commits ahead of it: `main..5867238` reported 56 files,
-  `main...5867238` reported 56, and `origin/main..5867238` reported 23. Only
-  `origin/main...5867238` reported 1. Fetch first, then use the three-dot
-  form against the remote-tracking ref.
+  changed 1 file, with local `main` at `15ef449` and `origin/main` then at
+  `7cb6bd0`, 42 commits ahead of it: `15ef449..5867238` reported 56 files,
+  `15ef449...5867238` reported 56, and `7cb6bd0..5867238` reported 23. Only
+  `7cb6bd0...5867238` reported 1. Both sides are pinned to SHAs so those four
+  numbers still reproduce; spelled against the live `origin/main` they drift as
+  it moves, which is the same staleness the bullet is about. Fetch first, then
+  use the three-dot form against the remote-tracking ref.
 - The main working tree belongs to whichever session's branch is checked out in
   it, and to no seat by default. Any other session, in any seat, takes its own
   copy with `git worktree add --detach <temp path> <sha>`, works there, and
@@ -130,9 +134,16 @@ LC_ALL=C git grep -n -P '[^\x09\x0A\x0D\x20-\x7E]' HEAD -- .
 ```
 
 On a clean tree both print nothing and exit 1. The second reads every tracked
-blob in the commit, so it replaces any per-path scan; do not add `-I`, which
-silently skips a tracked binary file, and a tracked binary file is a violation
-of this rule rather than an exemption from it.
+regular-file blob in the commit, so it replaces any per-path scan; do not add
+`-I`, which silently skips a tracked binary file, and a tracked binary file is
+a violation of this rule rather than an exemption from it.
+
+Mode `120000` and `160000` entries - symlinks and submodules - are forbidden
+here, and that prohibition is what makes the second command's coverage
+complete. `git grep` over a tree does not search a `120000` blob even when the
+pathspec names it directly, yet a symlink target is blob content like any
+other. Nothing enforces the prohibition automatically; a violation shows in the
+mode column of `git ls-tree -r HEAD`.
 
 `core.quotepath=false` is not optional. Git's default C-quotes a non-ASCII name
 into pure-ASCII octal escapes, so the pattern never matches and the scan
@@ -140,17 +151,12 @@ silently passes a repository that violates the rule.
 
 Run the scan in Bash, not PowerShell. PowerShell decodes a native command's
 output before any pattern sees it, and that decoder consumes a leading UTF-8
-byte order mark as an encoding declaration rather than passing it through. A
-blob of `EF BB BF 68 69 0A` piped into `Select-String` arrives as the two
-characters `hi` and reports no match, while a mid-file `D0 9F` in the same
-pipeline is reported correctly. A PowerShell scan is therefore blind to
-precisely the bytes this paragraph is about, and a run that passes proves
-nothing unless the blob it measured actually carried a mark. `grep` under Bash
-sees the bytes and reports both. Do not redirect a blob to a temp file through
-PowerShell either: it is written back with a byte order mark that was never in
+byte order mark as an encoding declaration: a blob of `EF BB BF 68 69 0A` piped
+into `Select-String` arrives as the two characters `hi` and reports no match, so
+a ported scan cannot see a leading mark at all. Do not stage a blob through a
+PowerShell temp file either - it is written back with a mark that was never in
 the blob, so a byte-level scan then reports a three-byte violation it created
-itself. Read the blob from `git`, scan it in Bash, and the mark is neither
-invented nor swallowed.
+itself.
 
 Check text before you post it, not only before you commit it. A comment body
 assembled in a PowerShell double-quoted here-string passes backticks to the
@@ -328,21 +334,18 @@ Four failures shaped this document; four equal-weight rules would imply it
 closed four. It has mechanically closed none of them, and earlier drafts of
 this section claimed otherwise twice.
 
-The scope diff came closest, and it took three rounds of review to state
-correctly: written from impression, then corrected to name the wrong
-comparison, then over-corrected into a claim that the three-dot form alone
-cannot report a file the branch did not change. A stale left-hand ref
-disproves that in one command, which is what Shared checkout now records. What
-survives is a two-part discipline that still depends on the operator fetching
-first and reading the right ref - not a command form that is safe however it
-is invoked. The ASCII gate has the same shape: the scan this document
-prescribed for two rounds was blind to a leading byte order mark, so the rule
-was sound while the gate that enforced it was not, and a passing run proved
-nothing. Re-review only codifies a loop the previous protocol already implied,
-and that loop had already caught the launcher fix that stopped an unowned
-process. Silent truncation has no rule of its own and leans on the same
-general reviewer duty that missed it the first time. The surviving mutant has
-no rule at all, and no gate here runs mutation testing.
+The scope diff came closest, but what survives is a two-part discipline that
+still depends on the operator fetching first and reading the right ref - not a
+command form that is safe however it is invoked. The ASCII gate had the same
+shape: the scan this document prescribed for two rounds was blind to a leading
+byte order mark, so the rule was sound while the gate that enforced it was not,
+and a passing run proved nothing. That gate is the one thing this commit does
+replace - the scan above catches a leading mark, over the entry modes the
+section above now allows. Re-review only codifies a loop the previous protocol
+already implied, and that loop had already caught the launcher fix that stopped
+an unowned process. Silent truncation has no rule of its own and leans on the
+same general reviewer duty that missed it the first time. The surviving mutant
+has no rule at all, and no gate here runs mutation testing.
 
 Weigh these rules by what they mechanically prevent, and treat a rule that
 names a command as a claim to reproduce rather than a closure to trust.
