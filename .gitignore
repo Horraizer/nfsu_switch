@@ -1,4 +1,7 @@
-/build/
+# Out-of-source build directories, root-anchored so nothing nested is caught.
+/build*/
+/out/
+/cmake-build-*/
 /.cache/
 *.user
 *.log
