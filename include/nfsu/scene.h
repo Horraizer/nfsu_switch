@@ -80,10 +80,11 @@ struct RenderTextureSet {
     std::vector<ShadowedTexture> shadowed;
     // As the decode leaves it: in source, pack and record order, then claim
     // order (RenderTexture::claims), at most two per shadowed record. A
-    // later pass may add to it - bind_runtime_skin appends the unbound
-    // claims of the records it removes - so a set that has been bound into
-    // holds those at the end, out of that order. Nothing reads the order;
-    // resolve_material scans the whole list.
+    // later pass may rewrite it - bind_runtime_skin removes every entry
+    // whose hash it binds and appends the unbound claims of the textures it
+    // removes - so a set that has been bound into is missing the bound
+    // hashes and holds the preserved ones at the end, out of that order.
+    // Nothing reads the order; resolve_material scans the whole list.
     std::vector<UnusableClaim> unusable_claims;
     // Sources not used at all because an earlier source is incomplete.
     std::vector<std::size_t> blocked_sources;

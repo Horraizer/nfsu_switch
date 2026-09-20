@@ -98,12 +98,22 @@ bool choose_skin_target_path(const SkinTextureProvenance& target, SkinTargetChoi
 //
 // The record fields are the ones that decide which bytes the read takes and
 // how it reads them: where the record is, where its payload is, how it is
-// stored, what format it is and how large. What SkinTextureProvenance also
-// carries and this does not - the two other hashes the record claims, the
-// stored name, the validity text, the pack and source labels - decides none
-// of that. Neither do info +48 and +52, which texture_payload reads for a
-// raw P8 palette and the provenance does not carry at all; within one file
-// info_offset already names one record.
+// stored, what format it is and how large. Two of the three hashes a record
+// claims are here as well - `record_hash` from info +36 and `table_hash`
+// from the hash table - because they are identifiers the provenance carries
+// and comparing them costs nothing. What SkinTextureProvenance also carries
+// and this does not - the third claimed hash, the one the blob table holds,
+// the stored name, the validity text, the pack and source labels - decides
+// none of that. Neither do info +48 and +52, which texture_payload reads
+// for a raw P8 palette and the provenance does not carry at all; within one
+// file info_offset already names one record.
+//
+// Every field here is compared, and the comparison is pinned: same_record
+// in src/runtime_skin.cpp reads its left side through a structured binding,
+// which has to name exactly as many members as this struct has, so a field
+// added here does not compile until it has been decided about there.
+// tests/runtime_skin_tests.cpp changes each field in turn and asserts the
+// result is not the same target.
 //
 // `source_bytes` is what makes it more than a position. Every other field
 // is an index into the caller's source list or a shape, and a re-encoded
@@ -147,8 +157,12 @@ struct SkinTargetIdentity {
 // when those sources hold that record, with the pack paired with its
 // source's bytes and its record tables read, and with every identifier the
 // provenance carries still matching - that is, under exactly the conditions
-// read_skin_target_surface will read it. Otherwise `resolved` is false and
-// the identity matches nothing.
+// under which read_skin_target_surface locates a record. It is the lookup
+// that is shared, not the whole read: the read goes on to require a proven
+// format, a nonzero size within the limits, a computable level size and a
+// readable payload, so a resolved identity does not say that reading the
+// record will succeed. Otherwise `resolved` is false and the identity
+// matches nothing.
 SkinTargetIdentity skin_target_identity(
     const std::vector<SkinInputSource>& sources,
     const SkinTextureProvenance& target);
@@ -199,9 +213,13 @@ struct SkinTargetSurface {
 // through that would mean hashing the file, which nothing here has a reason
 // to do.
 //
-// Fails, leaving `out` empty, on an unproven format, a provenance these
-// sources do not pair with or do not hold, a target the limits refuse, a
-// payload that cannot be read, or an allocation that threw.
+// Fails, leaving `out` empty, when choose_skin_target_path proves no path -
+// an unresolved target, a record that does not validate, or a format no
+// traced dispatch composites - on a provenance these sources do not pair
+// with or do not hold, on a record with a zero dimension, on a target the
+// pixel, payload or total-byte limits refuse, on a record with no
+// computable level size, on a payload that cannot be read or is shorter
+// than its own level 0, or on an allocation that threw.
 bool read_skin_target_surface(
     const std::vector<SkinInputSource>& sources,
     const SkinTextureProvenance& target,
@@ -250,14 +268,20 @@ struct RuntimeSkin {
 // composite_body_skin_32 documents: an invalid cache makes the untouched
 // target be scanned and the cache filled, a valid one is trusted.
 //
-// Fails, leaving `out` empty, when `sources` does not hold the record
-// `inputs` resolved its target hash to, when `target` was not read from
-// that record - compared as a SkinTargetIdentity, because same-sized
+// Fails, leaving `out` empty, when the target surface proves no compositor
+// path or proves one other than type-32, when `sources` does not hold the
+// record `inputs` resolved its target hash to, when `target` was not read
+// from that record - compared as a SkinTargetIdentity, because same-sized
 // surfaces of the same format are otherwise interchangeable and the result
 // would be one target's pixels labelled and bound as another's - when the
-// assembled inputs were not built for the path the target proves, when
-// their dimensions are not the target's, or when the composite itself
-// refuses.
+// assembled inputs were not built for the path the target proves, when they
+// name no target hash, when their dimensions are not the target's, when the
+// target has a zero dimension or holds fewer pixels than its own
+// dimensions, when the composite itself refuses or returns a pixel count
+// that is not the target's, or when an allocation threw. The last means
+// std::bad_alloc and std::length_error are caught here and reported as a
+// refusal rather than let out, which read_skin_target_surface and
+// bind_runtime_skin also do and also say.
 bool compose_runtime_skin(
     const std::vector<SkinInputSource>& sources,
     const AssembledSkinInputs& inputs,
@@ -314,12 +338,23 @@ struct RuntimeSkinBinding {
 //
 // Priority, stated once because it is a policy and not a trace: the
 // generated texture outranks every pack source for every hash it is bound
-// to. Each entry of RenderTextureSet::textures that claims one of them is
-// removed and reported in `binding.displaced`, and each matching
-// RenderTextureSet::unusable_claims entry is removed and reported in
-// `binding.displaced_claims`; only then is the generated texture appended.
-// That is what makes it the single claimant, which is what resolve_material
-// requires: two claimants of one hash are `unusable`, never a winner.
+// to. When this returns true, each entry of RenderTextureSet::textures that
+// claimed one of them has been removed and reported in
+// `binding.displaced`, each matching RenderTextureSet::unusable_claims
+// entry has been removed and reported in `binding.displaced_claims`, and
+// the generated texture is the last entry of the set. That is what makes it
+// the single claimant, which is what resolve_material requires: two
+// claimants of one hash are `unusable`, never a winner.
+//
+// Within the call the generated texture is appended first and the displaced
+// entries are erased after it, which is the opposite order. The append is
+// the one mutation that allocates, so taking it first means a failed
+// allocation has changed nothing yet; erasing first would be no worse,
+// because vector::erase keeps the capacity and the append that followed
+// could not reallocate, so this is the order the code takes and not a rule
+// the guarantee rests on. The end state is the same either way, and
+// `binding.texture_index` is where the texture ended up once the erasures
+// are done.
 //
 // Removal is per record, not per hash, and a record can claim up to three
 // of them. One bound hash among those takes the whole record away, so the

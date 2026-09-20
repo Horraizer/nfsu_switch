@@ -106,17 +106,36 @@ SkinTargetIdentity provenance_identity(const SkinTextureProvenance& target) noex
 }
 
 // Everything but the buffer, for the two sides that are known to share one.
+//
+// The left side is read through a structured binding, which has to name
+// exactly as many members as the struct has, so a field added to
+// SkinTargetIdentity does not compile until it has been decided about here.
+// That is deliberate: an incomplete comparison here is the one failure that
+// makes no noise at all - one target's pixels composited, labelled and
+// bound as another's - and it is the defect this layer has already had
+// twice, first from comparing only the name hash and the info offset, then
+// from an identity that was a position and not a file.
 bool same_record(const SkinTargetIdentity& a, const SkinTargetIdentity& b) noexcept {
-    return a.resolved && b.resolved && a.source_index == b.source_index &&
-           a.pack_index == b.pack_index && a.pack_root_offset == b.pack_root_offset &&
-           a.pack_hash == b.pack_hash && a.record_index == b.record_index &&
-           a.record_hash == b.record_hash && a.table_hash == b.table_hash &&
-           a.info_offset == b.info_offset && a.storage == b.storage &&
-           a.format == b.format && a.format_code == b.format_code &&
-           a.d3d_format == b.d3d_format && a.width == b.width && a.height == b.height &&
-           a.mip_count == b.mip_count && a.data_size == b.data_size &&
-           a.palette_bytes == b.palette_bytes && a.top_level_size == b.top_level_size &&
-           a.blob_offset == b.blob_offset && a.blob_size == b.blob_size;
+    const auto& [resolved, source_index, pack_index, pack_root_offset, pack_hash,
+                 record_index, record_hash, table_hash, info_offset, storage, format,
+                 format_code, d3d_format, width, height, mip_count, data_size,
+                 palette_bytes, top_level_size, blob_offset, blob_size, source_bytes,
+                 source_byte_size] = a;
+    // The buffer is the one part this comparison leaves out, on purpose;
+    // same_skin_target adds it. Named here only so the binding above stays
+    // exhaustive.
+    static_cast<void>(source_bytes);
+    static_cast<void>(source_byte_size);
+    return resolved && b.resolved && source_index == b.source_index &&
+           pack_index == b.pack_index && pack_root_offset == b.pack_root_offset &&
+           pack_hash == b.pack_hash && record_index == b.record_index &&
+           record_hash == b.record_hash && table_hash == b.table_hash &&
+           info_offset == b.info_offset && storage == b.storage && format == b.format &&
+           format_code == b.format_code && d3d_format == b.d3d_format &&
+           width == b.width && height == b.height && mip_count == b.mip_count &&
+           data_size == b.data_size && palette_bytes == b.palette_bytes &&
+           top_level_size == b.top_level_size && blob_offset == b.blob_offset &&
+           blob_size == b.blob_size;
 }
 
 std::string describe_identity(const SkinTargetIdentity& identity) {

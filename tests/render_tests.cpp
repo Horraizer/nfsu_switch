@@ -1661,6 +1661,259 @@ void test_alpha_default() {
     check(canvas.stats.fragments_alpha_discarded == 0, "nothing discarded by default");
 }
 
+// nfsu::same_file_path, the one comparison every "this output must differ
+// from that file" refusal rests on. It is asked mostly about paths that do
+// not exist yet, where fs::equivalent answers nothing at all, so what it
+// does with the names is the whole guard.
+//
+// Whether two names differing only in case are one file is a property of
+// the filesystem, so this test measures it here rather than asking the code
+// under test: it creates one file and looks for it under the other case.
+void test_same_file_path() {
+    const ScratchDir scratch;
+    check(scratch.ok(), "scratch directory created for the path comparison");
+    if (!scratch.ok()) {
+        return;
+    }
+    const fs::path root = scratch.path();
+    std::error_code error;
+
+    // Ground truth, measured rather than asked of the code under test: does
+    // this filesystem fold case?
+    //
+    // What that can prove is one-sided. Where the answer is yes, every
+    // "== folds_case" below reads as "== true", and a comparison that
+    // always answered yes for a case alias would pass just as well; the
+    // half that separates the two runs on a case-sensitive filesystem. The
+    // assertions are written against the measurement, not against this
+    // machine, so that they do the separating wherever they can.
+    {
+        std::ofstream stream(root / "CaseProbe.bin", std::ios::binary);
+        stream.write("probe", 5);
+    }
+    // Asserted under its own spelling first: a probe file that was never
+    // created would otherwise read as "this filesystem is case-sensitive"
+    // and quietly invert every expectation below.
+    check(fs::exists(root / "CaseProbe.bin", error), "the case probe file was created");
+    const bool folds_case = fs::exists(root / "caseprobe.bin", error) && !error;
+
+    // The defect this test exists for. Two spellings of one path that does
+    // not exist: a bare relative name, and the same name written "./".
+    // fs::weakly_canonical on its own returns the relative name for the
+    // first - nothing in it exists, so it degrades to lexically_normal -
+    // and an absolute path for the second, because "." does exist. Compared
+    // without making both absolute first they are unequal, and the guard
+    // that refuses a generated-texture dump named like the screenshot does
+    // not fire: the dump is written first, so the caller gets the dump at
+    // the screenshot's path and a failed run.
+    //
+    // These name nothing that is ever created. They are deliberately
+    // relative to the working directory, because that is the only shape in
+    // which the two spellings normalize differently.
+    const fs::path bare("nfsu_same_path_probe.tga");
+    const fs::path dotted("./nfsu_same_path_probe.tga");
+    if (fs::exists(bare, error) || fs::exists(fs::path("nfsu_same_path_probe2.tga"),
+                                              error)) {
+        // Nothing here ever creates these, so something else did. They
+        // would be compared by fs::equivalent instead of by name, which is
+        // not what this case is about.
+        std::cout << "note: relative path cases skipped (a probe name is taken)\n";
+    } else {
+        check(nfsu::same_file_path(bare, dotted),
+              "a relative name and the same name written \"./\" are one file");
+        check(nfsu::same_file_path(dotted, bare), "and the comparison is symmetric");
+        check(nfsu::same_file_path(bare, fs::absolute(bare, error)),
+              "a relative name and its absolute spelling are one file");
+        check(!nfsu::same_file_path(bare, fs::path("nfsu_same_path_probe2.tga")),
+              "two different relative names are not");
+    }
+
+    // The same, inside a directory that does exist, plus "." and ".."
+    // components around names that do not.
+    const fs::path absent = root / "absent.tga";
+    check(!fs::exists(absent, error), "the absolute probe path does not exist");
+    check(nfsu::same_file_path(absent, absent), "one spelling is itself");
+    check(nfsu::same_file_path(absent, root / "." / "absent.tga"),
+          "a \".\" component names the same file");
+    check(nfsu::same_file_path(absent, root / "nothing" / ".." / "absent.tga"),
+          "a \"..\" through a directory that does not exist names the same file");
+    check(!nfsu::same_file_path(absent, root / "absent2.tga"),
+          "two different names in one directory are not one file");
+    check(!nfsu::same_file_path(absent, root / "nothing" / "absent.tga"),
+          "the same name in another directory is not one file");
+    // Same length, one character apart, so the case fold cannot be what
+    // separates them.
+    check(!nfsu::same_file_path(absent, root / "absentXtga"),
+          "a name differing only outside the letters is not one file");
+
+    // Case aliases, against the measured answer. On a filesystem that folds
+    // case these are one file although neither exists, which is the second
+    // half of the same defect: "--skin-dump OUT.TGA" beside an "out.tga"
+    // screenshot.
+    check(nfsu::same_file_path(absent, root / "ABSENT.TGA") == folds_case,
+          "an upper-case spelling is one file exactly where case is folded");
+    check(nfsu::same_file_path(absent, root / "Absent.Tga") == folds_case,
+          "and so is a mixed-case spelling");
+    // A relative pair is decided by the working directory, which need not be
+    // on the same volume as the scratch directory, so its answer is
+    // measured where it applies. Nothing that already exists is touched:
+    // if the name is taken, or the directory cannot be written to, the case
+    // is skipped rather than guessed at or forced.
+    const fs::path cwd_probe("NfsuCasePathProbe.bin");
+    if (fs::exists(cwd_probe, error)) {
+        std::cout << "note: relative case alias skipped (the probe name is taken)\n";
+    } else {
+        {
+            std::ofstream stream(cwd_probe, std::ios::binary);
+            stream.write("probe", 5);
+        }
+        if (!fs::exists(cwd_probe, error)) {
+            std::cout << "note: relative case alias skipped (the working directory is "
+                         "not writable)\n";
+        } else {
+            const bool cwd_folds_case =
+                fs::exists(fs::path("nfsucasepathprobe.bin"), error) && !error;
+            check(fs::remove(cwd_probe, error) && !error,
+                  "the working-directory probe file was removed");
+            check(nfsu::same_file_path(fs::path("NFSU_SAME_PATH_PROBE.TGA"), bare) ==
+                      cwd_folds_case,
+                  "a relative case alias follows the working directory's answer");
+        }
+    }
+    // The directory that would hold the file does not exist either, so the
+    // answer comes from the nearest directory that does.
+    check(nfsu::same_file_path(root / "nothing" / "absent.tga",
+                               root / "NOTHING" / "ABSENT.TGA") == folds_case,
+          "a case alias under a directory that does not exist is decided too");
+
+    // Directories the entry probe cannot answer for: an empty one, and an
+    // empty one whose own name has no letter to flip either, so the walk up
+    // to the scratch directory's name is what answers.
+    const fs::path empty_dir = root / "emptydir";
+    const fs::path digits_dir = root / "123";
+    check(fs::create_directory(empty_dir, error) && !error, "empty directory created");
+    check(fs::create_directory(digits_dir, error) && !error, "digit directory created");
+    check(nfsu::same_file_path(empty_dir / "x.tga", empty_dir / "X.TGA") == folds_case,
+          "an empty directory still decides a case alias");
+    check(nfsu::same_file_path(digits_dir / "x.tga", digits_dir / "X.TGA") == folds_case,
+          "a directory with no letter in its name decides it from its parent");
+
+    // Paths that do exist: fs::equivalent answers, and the spellings above
+    // must not change that answer.
+    const fs::path present = root / "present.bin";
+    {
+        std::ofstream stream(present, std::ios::binary);
+        stream.write("present", 7);
+    }
+    const fs::path other = root / "other.bin";
+    {
+        std::ofstream stream(other, std::ios::binary);
+        stream.write("other", 5);
+    }
+    check(nfsu::same_file_path(present, root / "." / "present.bin"),
+          "an existing file is one file under a \".\" spelling");
+    check(nfsu::same_file_path(present, root / "emptydir" / ".." / "present.bin"),
+          "and under a \"..\" through a directory that does exist");
+    check(!nfsu::same_file_path(present, other), "two existing files are not one file");
+    check(nfsu::same_file_path(present, root / "PRESENT.BIN") == folds_case,
+          "an existing file under a case alias follows the filesystem");
+
+
+    // An entry the filesystem will not resolve says nothing about case, and
+    // taking it for an answer reports a case-folding volume as
+    // case-sensitive - which is the whole guard, gone, for one dangling
+    // junction sorting first in the output directory. The probe directory
+    // here holds exactly one entry and it dangles.
+    const fs::path dangling_dir = root / "adangling";
+    check(fs::create_directory(dangling_dir, error) && !error,
+          "dangling-probe directory created");
+    std::error_code dangling_error;
+    make_symlink(dangling_dir / "gone.bin", dangling_dir / "aaa_link", dangling_error);
+    if (dangling_error) {
+        std::cout << "note: dangling-entry case skipped (" << dangling_error.message()
+                  << ")\n";
+    } else {
+        check(entry_exists(dangling_dir / "aaa_link"), "the dangling link is listed");
+        check(!fs::exists(dangling_dir / "aaa_link", error),
+              "and does not resolve to anything");
+        check(nfsu::same_file_path(dangling_dir / "x.tga", dangling_dir / "X.TGA") ==
+                  folds_case,
+              "a directory whose only entry dangles still decides a case alias");
+        check(!nfsu::same_file_path(dangling_dir / "x.tga", dangling_dir / "y.tga"),
+              "and still separates two different names");
+    }
+
+#if defined(_WIN32)
+    // The extended-length prefix. This standard library does not parse it,
+    // so fs::absolute turns "\\?\C:\dir\out.tga" into "C:\?\C:\dir\out.tga"
+    // and the plain spelling of the same file compares different - a dump
+    // published at the screenshot's path again.
+    {
+        const fs::path plain = fs::absolute(absent, error);
+        fs::path extended(L"\\\\?\\");
+        extended += plain.native();
+        check(nfsu::same_file_path(extended, plain),
+              "an extended-length prefix names the same file as the plain spelling");
+        check(nfsu::same_file_path(plain, extended), "in both directions");
+        check(!nfsu::same_file_path(extended, fs::absolute(root / "absent2.tga", error)),
+              "and still separates two different names");
+    }
+
+    // A network path is absolute, but not to this standard library, which
+    // parses no root name for it. Left to fs::absolute it is rebased onto
+    // the current drive, which invents an alias with an unrelated local
+    // path and hides the one between two spellings of itself.
+    {
+        const fs::path unc(L"\\\\aserver\\ashare\\out.tga");
+        const fs::path dotted_unc(L"\\\\aserver\\ashare\\.\\out.tga");
+        const fs::path local(L"C:\\aserver\\ashare\\out.tga");
+        check(nfsu::same_file_path(unc, dotted_unc),
+              "two spellings of one network path are one file");
+        check(!nfsu::same_file_path(unc, local),
+              "a network path is not an unrelated local path");
+        fs::path extended_unc(L"\\\\?\\UNC\\aserver\\ashare\\out.tga");
+        check(nfsu::same_file_path(unc, extended_unc),
+              "and the extended spelling of it is the same file");
+    }
+
+    // Case folding beyond ASCII. NTFS folds it; the comparison asks the OS
+    // rather than its own A-Z table. The literals are escapes so that this
+    // file stays ASCII: U+0426 U+0415 U+041B U+042C and their lower case.
+    {
+        const fs::path upper_dir = root / fs::path(L"\x0426\x0415\x041B\x042C");
+        check(fs::create_directory(upper_dir, error) && !error,
+              "a non-ASCII directory was created");
+        const fs::path lower_dir = root / fs::path(L"\x0446\x0435\x043B\x044C");
+        const bool folds_beyond_ascii = fs::exists(lower_dir, error) && !error;
+        check(nfsu::same_file_path(upper_dir / "out.tga", lower_dir / "out.tga") ==
+                  folds_beyond_ascii,
+              "a non-ASCII case alias follows the filesystem");
+    }
+#endif
+
+    // The writers use the same comparison, so a target that names a source
+    // under any of those spellings is refused and nothing is written.
+    Canvas canvas(2, 2);
+    const nfsu::ClipVertex tri[3] = {at(canvas, 0, 0), at(canvas, 0, 2), at(canvas, 2, 2)};
+    canvas.draw(tri, 1);
+    nfsu::FrameWriteResult result;
+    const fs::path future = root / "future.tga";
+    check(!nfsu::write_frame_tga(canvas.frame, root / "." / "future.tga", {future},
+                                 result) &&
+              result.error.find("must differ") != std::string::npos,
+          "a target naming a source that does not exist yet is refused: " + result.error);
+    check(!fs::exists(future, error) && !fs::exists(root / "future.tga.partial", error),
+          "nothing was created by the refused write");
+    if (folds_case) {
+        check(!nfsu::write_frame_tga(canvas.frame, root / "FUTURE.TGA", {future},
+                                     result) &&
+                  result.error.find("must differ") != std::string::npos,
+              "a target naming a source under a case alias is refused");
+        check(!fs::exists(root / "FUTURE.TGA", error),
+              "and nothing was created by that refusal either");
+    }
+}
+
 void test_write() {
     const ScratchDir scratch;
     check(scratch.ok(), "scratch directory created");
@@ -1875,6 +2128,7 @@ int main() {
     test_texture_sources();
     test_alpha_default();
     test_scratch_dir();
+    test_same_file_path();
     test_write();
 
     if (g_failures != 0) {

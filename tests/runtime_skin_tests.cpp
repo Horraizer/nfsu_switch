@@ -4,7 +4,10 @@
 
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <new>
+#include <stdexcept>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -50,6 +53,59 @@ void check_size(std::size_t got, std::size_t want, const std::string& message) {
                   << '\n';
         ++g_failures;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Allocation-failure injection
+//
+// bind_runtime_skin promises that a failed binding leaves the texture set
+// exactly as it was. Every refusal it can reach by argument returns before
+// it starts, so the part of that promise that carries the weight - the
+// claim list rebuilt into a local and committed with a noexcept swap, and
+// the single push_back the set is mutated through - is only reachable by
+// making an allocation fail. The global operator new below counts
+// allocations and throws on the one asked for.
+//
+// It is armed immediately before the call and disarmed immediately after,
+// so nothing else in this file runs while it is armed, and it fires once
+// and disarms itself so that the handler catching the throw can build its
+// own error message.
+//
+// What it does not see: with a shared libstdc++, std::basic_string<char> is
+// an extern template instantiated inside the library, and its allocations
+// go to the library's own operator new rather than this one. So the
+// allocations failed here are the container allocations - 11 of them for
+// the fixture below - and not the string ones. That is enough for what this
+// test is about, because the set is mutated through containers; it is
+// written down so the count is not mistaken for "every allocation".
+// ---------------------------------------------------------------------------
+
+// 0 disarms; otherwise the 1-based allocation that will throw.
+std::size_t g_fail_allocation = 0;
+std::size_t g_allocations = 0;
+// Which exception it throws. std::length_error is not something an
+// allocation can really raise - a vector throws it before it allocates and
+// operator new never does - so it is injected only to reach the second
+// catch handler, and the test that uses it says so.
+bool g_fail_with_length_error = false;
+
+void* counted_allocate(std::size_t size) {
+    if (g_fail_allocation != 0) {
+        ++g_allocations;
+        if (g_allocations == g_fail_allocation) {
+            g_fail_allocation = 0;
+            if (g_fail_with_length_error) {
+                g_fail_with_length_error = false;
+                throw std::length_error("injected");
+            }
+            throw std::bad_alloc();
+        }
+    }
+    void* memory = std::malloc(size == 0 ? 1 : size);
+    if (memory == nullptr) {
+        throw std::bad_alloc();
+    }
+    return memory;
 }
 
 // ---------------------------------------------------------------------------
@@ -906,6 +962,119 @@ void test_swapped_target() {
           "naming the rogue list with the fixture's own surface is refused");
 }
 
+
+// Every field of SkinTargetIdentity, changed one at a time.
+//
+// same_skin_target is what keeps one target's pixels from being composited,
+// labelled and bound as another's, and a comparison that silently drops a
+// field goes on answering "the same target" for two that are not. The
+// negative cases in the tests above differ in several fields at once, so
+// none of them pins an individual field: with pack_root_offset, pack_hash,
+// storage, mip_count or palette_bytes deleted from the comparison the whole
+// suite still passed. Each case below differs in exactly one field.
+//
+// The names are bound from the struct itself. A structured binding must
+// name exactly as many as the struct has members, so a field added to
+// SkinTargetIdentity does not compile until it is named here and has a case
+// of its own - the same pin src/runtime_skin.cpp puts on the comparison.
+void test_identity_fields() {
+    Fixture fixture = make_fixture();
+    bool planned = false;
+    const nfsu::SkinTextureProvenance target =
+        resolve_target(fixture.sources, fixture_selection(), planned);
+    check(planned, "the identity fixture plans");
+    const nfsu::SkinTargetIdentity base =
+        nfsu::skin_target_identity(fixture.sources, target);
+    check(base.resolved, "the fixture identity resolves");
+    check(nfsu::same_skin_target(base, base), "an identity is itself");
+
+    nfsu::SkinTargetIdentity probe = base;
+    auto& [resolved, source_index, pack_index, pack_root_offset, pack_hash, record_index,
+           record_hash, table_hash, info_offset, storage, format, format_code,
+           d3d_format, width, height, mip_count, data_size, palette_bytes,
+           top_level_size, blob_offset, blob_size, source_bytes, source_byte_size] =
+        probe;
+
+    std::size_t fields = 0;
+    // Called with exactly one field of `probe` changed. It checks both
+    // directions, because a comparison that is not symmetric would be a
+    // defect of its own, and then puts the field back.
+    const auto differs = [&](const std::string& field) {
+        ++fields;
+        check(!nfsu::same_skin_target(base, probe),
+              "an identity differing only in " + field + " is not the same target");
+        check(!nfsu::same_skin_target(probe, base),
+              "an identity differing only in " + field + " is not the same either way");
+        probe = base;
+        check(nfsu::same_skin_target(base, probe),
+              "putting " + field + " back makes it the same target again");
+    };
+
+    resolved = false;
+    differs("resolved");
+    source_index = base.source_index + 1;
+    differs("source_index");
+    pack_index = base.pack_index + 1;
+    differs("pack_index");
+    pack_root_offset = base.pack_root_offset + 1;
+    differs("pack_root_offset");
+    pack_hash = base.pack_hash ^ 1U;
+    differs("pack_hash");
+    record_index = base.record_index + 1;
+    differs("record_index");
+    record_hash = base.record_hash ^ 1U;
+    differs("record_hash");
+    table_hash = base.table_hash ^ 1U;
+    differs("table_hash");
+    info_offset = base.info_offset + 1;
+    differs("info_offset");
+    storage = base.storage == nfsu::TextureStorage::jdlz ? nfsu::TextureStorage::raw
+                                                         : nfsu::TextureStorage::jdlz;
+    differs("storage");
+    format = base.format == nfsu::PixelFormat::a8r8g8b8 ? nfsu::PixelFormat::p8
+                                                        : nfsu::PixelFormat::a8r8g8b8;
+    differs("format");
+    format_code = static_cast<std::uint8_t>(base.format_code ^ 1U);
+    differs("format_code");
+    d3d_format = base.d3d_format ^ 1U;
+    differs("d3d_format");
+    width = base.width + 1;
+    differs("width");
+    height = base.height + 1;
+    differs("height");
+    mip_count = base.mip_count + 1;
+    differs("mip_count");
+    data_size = base.data_size + 1;
+    differs("data_size");
+    palette_bytes = base.palette_bytes + 1;
+    differs("palette_bytes");
+    top_level_size = base.top_level_size + 1;
+    differs("top_level_size");
+    blob_offset = base.blob_offset + 1;
+    differs("blob_offset");
+    blob_size = base.blob_size + 1;
+    differs("blob_size");
+    // The buffer half. It is a pointer that is compared and never
+    // dereferenced, so another live buffer of the same size is the case to
+    // make: a second source list holding a pack of the same layout at the
+    // same index differs in nothing else.
+    const nfsu::SkinInputSource& elsewhere = fixture.sources[0];
+    check(elsewhere.bytes != nullptr && elsewhere.bytes->data() != base.source_bytes,
+          "the second buffer is a different one");
+    source_bytes = elsewhere.bytes->data();
+    differs("source_bytes");
+    source_byte_size = base.source_byte_size + 1;
+    differs("source_byte_size");
+
+    check_size(fields, 23U, "every field of SkinTargetIdentity has a case");
+
+    // An unresolved identity matches nothing, including another unresolved
+    // one, so a hand-built surface cannot pass by leaving the identity out.
+    const nfsu::SkinTargetIdentity empty;
+    check(!nfsu::same_skin_target(empty, empty), "two unresolved identities do not match");
+    check(!nfsu::same_skin_target(base, empty), "a resolved identity does not match one");
+}
+
 // ---------------------------------------------------------------------------
 // Composition
 // ---------------------------------------------------------------------------
@@ -1191,6 +1360,21 @@ nfsu::RuntimeSkin fixture_skin() {
     return skin;
 }
 
+// Every field of RuntimeSkinBinding at its default.
+//
+// A refused binding reports nothing, and "nothing" has to mean the whole
+// struct: an index or a source left behind is a report of something that
+// did not happen, and the argument refusals return before the catch
+// handlers that reset it, so nothing else would put it back. The names are
+// bound from the struct, so a field added to RuntimeSkinBinding does not
+// compile until it has been decided about here.
+bool reports_nothing(const nfsu::RuntimeSkinBinding& binding) {
+    const auto& [hashes, texture_index, source, bytes, displaced, displaced_claims,
+                 preserved_claims] = binding;
+    return hashes.empty() && texture_index == 0 && source == 0 && bytes == 0 &&
+           displaced.empty() && displaced_claims.empty() && preserved_claims.empty();
+}
+
 void test_binding_rules() {
     const nfsu::RuntimeSkin skin = fixture_skin();
     nfsu::RenderTextureSet set;
@@ -1200,25 +1384,64 @@ void test_binding_rules() {
 
     nfsu::RuntimeSkinBinding binding;
     std::string error;
+    // Every refusal is checked by its message as well as by its answer.
+    // The message is what the viewer prints, so a branch that reported
+    // nothing would ship unnoticed, and two of these branches are otherwise
+    // indistinguishable from one another: {body_hash()} is a well-formed
+    // list of one hash that is simply not the target, and is not the
+    // malformed-size case it looks like.
     check(!nfsu::bind_runtime_skin(skin, {}, 1, set, binding, error),
           "an empty hash list is refused");
+    check(error.find("binds 1 to 3 hashes, got 0") != std::string::npos,
+          "the empty list says how many it takes: " + error);
+    check(reports_nothing(binding),
+          "and the empty refusal reports nothing");
     check(!nfsu::bind_runtime_skin(skin, {body_hash()}, 1, set, binding, error),
           "a list whose first hash is not the target is refused");
+    check(error.find("the first bound hash must be the target hash") != std::string::npos,
+          "the wrong first hash says so: " + error);
+    check(reports_nothing(binding),
+          "and the first refusal reports nothing");
+    check(error.find(hex(skin.target_hash)) != std::string::npos &&
+              error.find(hex(body_hash())) != std::string::npos,
+          "and names both the wanted and the given hash: " + error);
     check(!nfsu::bind_runtime_skin(skin, {skin.target_hash, body_hash(), body_hash()}, 1,
                                    set, binding, error),
           "a repeated hash is refused");
+    check(error.find("the bound hashes repeat " + hex(body_hash())) != std::string::npos,
+          "the repeat names the hash: " + error);
+    check(reports_nothing(binding),
+          "and the repeat refusal reports nothing");
     check(!nfsu::bind_runtime_skin(
               skin, {skin.target_hash, body_hash(), 0x1U, 0x2U}, 1, set, binding, error),
           "more than three hashes are refused");
+    check(error.find("binds 1 to 3 hashes, got 4") != std::string::npos,
+          "the overlong list says how many it got: " + error);
+    check(reports_nothing(binding),
+          "and the overlong refusal reports nothing");
     nfsu::RuntimeSkin empty;
     empty.target_hash = skin.target_hash;
     check(!nfsu::bind_runtime_skin(empty, {skin.target_hash}, 1, set, binding, error),
           "a skin with no pixels is refused");
+    check(error.find("zero dimension") != std::string::npos,
+          "the empty skin says which dimension rule it broke: " + error);
+    check(reports_nothing(binding),
+          "and the zero refusal reports nothing");
+    // A skin that has dimensions but not the pixels for them: the one
+    // refusal left, and the only one that reads skin.rgba.
+    nfsu::RuntimeSkin short_skin = skin;
+    short_skin.rgba.pop_back();
+    check(!nfsu::bind_runtime_skin(short_skin, {skin.target_hash}, 1, set, binding, error),
+          "a skin whose pixels do not match its dimensions is refused");
+    check(error.find("bytes, expected") != std::string::npos,
+          "the short skin says what it expected: " + error);
+    check(reports_nothing(binding),
+          "and the short refusal reports nothing");
     check_size(set.textures.size(), original.textures.size(),
               "a refused binding leaves the texture count alone");
     check(set.decoded_bytes == original.decoded_bytes,
           "a refused binding leaves decoded_bytes alone");
-    check(binding.hashes.empty(), "a refused binding reports nothing");
+    check(reports_nothing(binding), "a refused binding reports nothing");
 
     check(nfsu::bind_runtime_skin(skin, {skin.target_hash, body_hash()}, 4, set, binding,
                                   error),
@@ -1473,9 +1696,15 @@ void test_binding_preserves_claims() {
     untouched.unusable_claims.push_back(nfsu::UnusableClaim{body_hash(), 8, 8, 8});
     untouched.decoded_bytes = rgba_sum(untouched);
     nfsu::RuntimeSkinBinding refused;
+    // A well-formed list of one hash that is not the target. It takes the
+    // wrong-first-hash branch, not the list-size one, which is why the
+    // message is checked: without it the two are the same "false" and the
+    // case could drift onto the other branch unnoticed.
     check(!nfsu::bind_runtime_skin(skin, {body_hash()}, 4, untouched, refused, error),
-          "a malformed hash list is still refused");
-    check(refused.preserved_claims.empty(), "a refused binding preserves nothing");
+          "a first hash that is not the target is still refused here");
+    check(error.find("the first bound hash must be the target hash") != std::string::npos,
+          "and it is that branch and not the list size: " + error);
+    check(reports_nothing(refused), "a refused binding reports nothing at all");
     check_size(untouched.textures.size(), 1U,
                "a refused binding leaves the textures alone");
     check_size(untouched.unusable_claims.size(), 2U,
@@ -1485,6 +1714,176 @@ void test_binding_preserves_claims() {
           "a refused binding leaves the claim list in order");
     check(untouched.decoded_bytes == rgba_sum(untouched),
           "a refused binding leaves decoded_bytes alone");
+}
+
+
+// Deep equality, so that "the set is untouched" is a claim about the set
+// and not about its size.
+bool same_set(const nfsu::RenderTextureSet& a, const nfsu::RenderTextureSet& b) {
+    if (a.textures.size() != b.textures.size() ||
+        a.unusable_claims.size() != b.unusable_claims.size() ||
+        a.shadowed.size() != b.shadowed.size() ||
+        a.blocked_sources.size() != b.blocked_sources.size() ||
+        a.decoded_bytes != b.decoded_bytes || a.not_wanted != b.not_wanted) {
+        return false;
+    }
+    // Element-wise, not by size: a member rewritten at the same length is
+    // exactly what "untouched" has to exclude.
+    for (std::size_t i = 0; i < a.shadowed.size(); ++i) {
+        const nfsu::ShadowedTexture& x = a.shadowed[i];
+        const nfsu::ShadowedTexture& y = b.shadowed[i];
+        if (x.hash != y.hash || x.source != y.source || x.pack != y.pack ||
+            x.record != y.record || x.by_source != y.by_source) {
+            return false;
+        }
+    }
+    for (std::size_t i = 0; i < a.textures.size(); ++i) {
+        const nfsu::RenderTexture& x = a.textures[i];
+        const nfsu::RenderTexture& y = b.textures[i];
+        if (x.hash != y.hash || x.claims != y.claims || x.claim_count != y.claim_count ||
+            x.width != y.width || x.height != y.height || x.rgba != y.rgba ||
+            x.valid != y.valid || x.problem != y.problem || x.source != y.source ||
+            x.pack != y.pack || x.record != y.record) {
+            return false;
+        }
+    }
+    for (std::size_t i = 0; i < a.unusable_claims.size(); ++i) {
+        const nfsu::UnusableClaim& x = a.unusable_claims[i];
+        const nfsu::UnusableClaim& y = b.unusable_claims[i];
+        if (x.hash != y.hash || x.source != y.source || x.pack != y.pack ||
+            x.record != y.record) {
+            return false;
+        }
+    }
+    return a.blocked_sources == b.blocked_sources;
+}
+
+// The refusal the arguments cannot reach.
+//
+// Every check bind_runtime_skin makes on its arguments returns before it
+// touches anything, so none of them exercises what the "leaves the set
+// untouched" guarantee is actually about: the claim list rebuilt into a
+// local, the single push_back the set is mutated through, and the noexcept
+// swap that commits the list. Only an allocation that throws goes through
+// that machinery, so one is made to throw - at every allocation the call
+// makes, in turn.
+//
+// The set has something to lose at each of those points: a texture that
+// stays, two that are removed, each claiming an unbound hash that has to be
+// preserved, and an existing claim the rebuild has to carry over.
+//
+// It is also shaped so that the rebuilt list is longer than the live one,
+// which is what makes the commit itself a place a defect could hide:
+// assigning the rebuilt list over the live one instead of swapping it would
+// have to allocate, after the textures have already been changed. With a
+// rebuilt list no longer than the live one that assignment never allocates
+// and the two are indistinguishable.
+void test_binding_allocation_failure() {
+    const nfsu::RuntimeSkin skin = fixture_skin();
+    const std::uint32_t alias = 0x33333333U;
+    const std::uint32_t second_alias = 0x55555555U;
+
+    nfsu::RenderTextureSet baseline;
+    baseline.textures.push_back(pack_texture(0x11111111U, 2, 7, 0));
+    nfsu::RenderTexture multi = pack_texture(skin.target_hash, 2, 9, 1);
+    multi.claims[1] = alias;
+    multi.claim_count = 2;
+    multi.valid = false;
+    baseline.textures.push_back(multi);
+    nfsu::RenderTexture second = pack_texture(body_hash(), 2, 11, 2);
+    second.claims[1] = second_alias;
+    second.claim_count = 2;
+    second.valid = false;
+    baseline.textures.push_back(second);
+    baseline.unusable_claims.push_back(nfsu::UnusableClaim{0x22222222U, 1, 3, 7});
+    // The three members bind_runtime_skin has no business touching. They are
+    // given values so that "untouched" is a claim about their contents and
+    // not about three defaults that a wipe would leave looking the same.
+    baseline.shadowed.push_back(nfsu::ShadowedTexture{0x66666666U, 1, 2, 3, 0});
+    baseline.shadowed.push_back(nfsu::ShadowedTexture{0x77777777U, 2, 3, 4, 1});
+    baseline.blocked_sources.push_back(5);
+    baseline.not_wanted = 9;
+    baseline.decoded_bytes = rgba_sum(baseline);
+
+    // Built before the counter is armed: an initializer list at the call
+    // site would allocate outside the call and throw out of this test.
+    const std::vector<std::uint32_t> hashes = {skin.target_hash, body_hash()};
+
+    std::size_t refusals = 0;
+    bool bound = false;
+    for (std::size_t attempt = 1; attempt <= 256 && !bound; ++attempt) {
+        nfsu::RenderTextureSet probe = baseline;
+        nfsu::RuntimeSkinBinding binding;
+        std::string error;
+        bool ok = false;
+        bool escaped = false;
+        g_allocations = 0;
+        g_fail_allocation = attempt;
+        try {
+            ok = nfsu::bind_runtime_skin(skin, hashes, 4, probe, binding, error);
+        } catch (...) {
+            escaped = true;
+        }
+        g_fail_allocation = 0;
+        check(!escaped, "no exception escapes the binding at allocation " +
+                            std::to_string(attempt));
+        if (escaped) {
+            return;
+        }
+        if (ok) {
+            // The counter ran past the end of the call, so every allocation
+            // it makes has now been failed in turn.
+            bound = true;
+            check(!same_set(probe, baseline), "the binding that succeeded changed the set");
+            check(error.empty(), "a successful binding reports no error");
+            check_size(binding.preserved_claims.size(), 2U,
+                       "both unbound claims were preserved");
+            check_size(probe.unusable_claims.size(), 3U,
+                       "the committed claim list is longer than the one it replaced");
+            break;
+        }
+        ++refusals;
+        check(!error.empty(),
+              "an allocation failure is reported at allocation " + std::to_string(attempt));
+        check(error.find("out of memory") != std::string::npos ||
+                  error.find("larger than a vector can hold") != std::string::npos,
+              "and says it was an allocation: " + error);
+        check(same_set(probe, baseline),
+              "the set is byte-for-byte what it was at allocation " +
+                  std::to_string(attempt));
+        check(reports_nothing(binding),
+              "and the binding reports nothing at allocation " + std::to_string(attempt));
+    }
+    check(bound, "the binding succeeds once no allocation fails");
+    check(refusals > 0, "at least one allocation was made to fail");
+
+    // The other catch handler. Nothing reachable throws std::length_error
+    // here - a vector throws it before it allocates, and operator new never
+    // does - so it is injected where an allocation would throw. That pins
+    // the handler, its message and the rollback, not a reachable path.
+    {
+        nfsu::RenderTextureSet probe = baseline;
+        nfsu::RuntimeSkinBinding binding;
+        std::string error;
+        bool ok = true;
+        bool escaped = false;
+        g_allocations = 0;
+        g_fail_with_length_error = true;
+        g_fail_allocation = 1;
+        try {
+            ok = nfsu::bind_runtime_skin(skin, hashes, 4, probe, binding, error);
+        } catch (...) {
+            escaped = true;
+        }
+        g_fail_allocation = 0;
+        g_fail_with_length_error = false;
+        check(!escaped, "no std::length_error escapes the binding");
+        check(!ok, "an injected length_error refuses the binding");
+        check(error.find("larger than a vector can hold") != std::string::npos,
+              "and says the texture set is too large: " + error);
+        check(same_set(probe, baseline), "and leaves the set alone");
+        check(reports_nothing(binding), "and reports nothing");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1645,11 +2044,24 @@ void test_prepared_scene() {
 
 } // namespace
 
+// Replacing these replaces them for the whole test program, which is the
+// point: the allocations bind_runtime_skin makes are inside libstdc++
+// containers and there is no hook to reach them. Only the plain forms are
+// replaced; an over-aligned allocation keeps the library's own pair, which
+// stays consistent with itself.
+void* operator new(std::size_t size) { return counted_allocate(size); }
+void* operator new[](std::size_t size) { return counted_allocate(size); }
+void operator delete(void* memory) noexcept { std::free(memory); }
+void operator delete[](void* memory) noexcept { std::free(memory); }
+void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
+void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
+
 int main() {
     test_target_path();
     test_target_surface();
     test_target_surface_pairing();
     test_swapped_target();
+    test_identity_fields();
     test_compose();
     test_source_priority();
     test_fallback();
@@ -1657,6 +2069,7 @@ int main() {
     test_binding_rules();
     test_binding_displaces();
     test_binding_preserves_claims();
+    test_binding_allocation_failure();
     test_prepared_scene();
     if (g_failures != 0) {
         std::cerr << g_failures << " failure(s)\n";

@@ -208,26 +208,6 @@ std::string skin_provenance(const nfsu::SkinTextureProvenance& record) {
     return text;
 }
 
-// Compares two paths that need not exist yet. fs::equivalent only compares
-// files that do exist, so the normalized names are compared as well.
-bool same_name(const fs::path& left, const fs::path& right) {
-    std::error_code error;
-    if (fs::equivalent(left, right, error)) {
-        return true;
-    }
-    std::error_code left_error;
-    fs::path a = fs::weakly_canonical(left, left_error);
-    if (left_error) {
-        a = left.lexically_normal();
-    }
-    std::error_code right_error;
-    fs::path b = fs::weakly_canonical(right, right_error);
-    if (right_error) {
-        b = right.lexically_normal();
-    }
-    return a == b;
-}
-
 // Everything the runtime body skin needs, all of it stated on the command
 // line. The viewer invents no customization state: a vinyl layer, a
 // doorline variant, a hood/spoiler variant or a paint color that is not
@@ -783,13 +763,19 @@ int main(int argc, char** argv) {
     }
 
     // Fail early; write_frame_tga repeats these checks before writing.
+    //
+    // Every comparison here is nfsu::same_file_path, which answers for
+    // paths that do not exist yet: the output, its ".partial" and the dump
+    // are all names of files that are not there. Comparing only the ones
+    // that do exist would leave exactly the pairs this block exists to
+    // refuse uncompared.
     {
         std::error_code error;
         fs::path partial = output_path;
         partial += ".partial";
         for (const fs::path& source : inputs) {
-            if (fs::equivalent(source, output_path, error) ||
-                fs::equivalent(source, partial, error)) {
+            if (nfsu::same_file_path(source, output_path) ||
+                nfsu::same_file_path(source, partial)) {
                 std::cerr << "error: output path must differ from every input file\n";
                 return 1;
             }
@@ -797,7 +783,7 @@ int main(int argc, char** argv) {
         // A texture source named twice would only shadow itself.
         for (std::size_t i = 0; i < shared_paths.size(); ++i) {
             for (std::size_t j = 1; j < i + 2; ++j) {
-                if (fs::equivalent(shared_paths[i], inputs[j], error)) {
+                if (nfsu::same_file_path(shared_paths[i], inputs[j])) {
                     std::cerr << "error: shared texture source " << (i + 1)
                               << " names the same file as texture source "
                               << (j - 1) << '\n';
@@ -807,14 +793,15 @@ int main(int argc, char** argv) {
         }
         if (skin.has_vinyls) {
             for (std::size_t j = 0; j + 1 < inputs.size(); ++j) {
-                if (same_name(skin.vinyls, inputs[j])) {
+                if (nfsu::same_file_path(skin.vinyls, inputs[j])) {
                     std::cerr << "error: --skin-vinyls names the same file as another "
                                  "input\n";
                     return 1;
                 }
             }
             // The output does not exist yet, so it is compared by name too.
-            if (same_name(skin.vinyls, output_path) || same_name(skin.vinyls, partial)) {
+            if (nfsu::same_file_path(skin.vinyls, output_path) ||
+                nfsu::same_file_path(skin.vinyls, partial)) {
                 std::cerr << "error: output path must differ from every input file\n";
                 return 1;
             }
@@ -825,19 +812,27 @@ int main(int argc, char** argv) {
         }
         if (skin.has_dump) {
             // Neither the dump nor the render output exists yet, so
-            // fs::equivalent cannot compare them; same_name falls back to
-            // comparing the names. write_rgba_tga still refuses to replace
-            // anything.
+            // fs::equivalent cannot compare them and nfsu::same_file_path
+            // compares the names. What it sees through, and what it does
+            // not, is listed at its declaration; a spelling it lets through
+            // matters here more than anywhere else, because the dump is
+            // written after the composite and before the render, so the
+            // generated texture would be published at the screenshot's path
+            // and only then the render would fail. write_rgba_tga still
+            // refuses to replace anything, which is why nothing is ever
+            // lost, but the file the caller gets would be the wrong one.
             fs::path dump_partial = skin.dump;
             dump_partial += ".partial";
             for (const fs::path& source : inputs) {
-                if (same_name(source, skin.dump) || same_name(source, dump_partial)) {
+                if (nfsu::same_file_path(source, skin.dump) ||
+                    nfsu::same_file_path(source, dump_partial)) {
                     std::cerr << "error: --skin-dump must differ from every input file\n";
                     return 1;
                 }
             }
-            if (same_name(skin.dump, output_path) || same_name(skin.dump, partial) ||
-                same_name(dump_partial, output_path)) {
+            if (nfsu::same_file_path(skin.dump, output_path) ||
+                nfsu::same_file_path(skin.dump, partial) ||
+                nfsu::same_file_path(dump_partial, output_path)) {
                 std::cerr << "error: --skin-dump must differ from the output file\n";
                 return 1;
             }

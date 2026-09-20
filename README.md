@@ -149,11 +149,17 @@ claimed one - and keeping every hash such a record also claimed that was
 not bound, so those hashes do not silently stop matching anything - so a
 prepared scene resolves those material groups to it. The surface it
 composes carries the record and the buffer it was read from, and the
-composite is given the source list and checks both against it, so one
-target's pixels cannot be bound as another's. No pack is modified and
-nothing is parsed twice. `nfsu_viewer --skin-car NAME` drives it; without
-that option nothing in this chain runs and the viewer's output is
-byte-identical to before. See `docs/RUNTIME_SKIN.md`.
+composite is given the source list and checks both against it, so a surface
+read from another record - or from another list holding a pack of the same
+layout at the same index - is refused instead of being bound under the
+wrong hash. That identity ties coordinates and not content: a caller that
+rewrites the same live buffer, or replaces a surface's pixels while keeping
+its identity, is not seen, and `include/nfsu/runtime_skin.h` says so. No
+pack is modified and nothing is parsed twice. `nfsu_viewer --skin-car NAME`
+drives it; without that option nothing in this chain runs and a render is
+byte-identical to before on its TGA, stdout, stderr and exit code. The one
+thing that did change for every invocation is the usage text, which gained
+the new options. See `docs/RUNTIME_SKIN.md`.
 
 Selection and material lookup happen once, in `prepare_car_scene`
 (`include/nfsu/scene.h`). It builds a self-contained `PreparedCarScene`

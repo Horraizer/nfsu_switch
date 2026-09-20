@@ -206,10 +206,33 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_runtime_skin_tests)
     add_test(NAME nfsu_runtime_skin_tests COMMAND nfsu_runtime_skin_tests)
 
+    # The viewer refuses a --skin-dump that names the screenshot before it
+    # reads an input or writes a byte, so the refusal can be exercised with
+    # no input files at all. Two spellings of one path that does not exist
+    # is the case that used to get through: the dump is written before the
+    # render, so it would be published at the screenshot's path and the run
+    # would then fail. The dot-relative spelling is the half that behaves
+    # the same everywhere; the case-alias half depends on the filesystem and
+    # is checked in nfsu_render_tests against a measured answer.
+    add_test(NAME nfsu_viewer_dump_alias
+        COMMAND nfsu_viewer missing_geometry.bin missing_textures.bin
+                nfsu_dump_alias_probe.tga --skin-car PROBE
+                --skin-dump ./nfsu_dump_alias_probe.tga
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    # PASS_REGULAR_EXPRESSION makes CTest ignore the exit code, so the
+    # message alone would also pass for a viewer that printed the refusal
+    # and then carried on. FAIL_REGULAR_EXPRESSION is checked first and
+    # holds the other half: these are what the run prints once it gets past
+    # the guard and starts reading the inputs that do not exist.
+    set_tests_properties(nfsu_viewer_dump_alias PROPERTIES
+        PASS_REGULAR_EXPRESSION "--skin-dump must differ from the output file"
+        FAIL_REGULAR_EXPRESSION "failed to read file size;no valid meshes")
+
     # A hung test is killed and reported as a failure.
     set_tests_properties(
         nfsu_chunk_tests nfsu_geometry_tests nfsu_texture_tests
         nfsu_render_tests nfsu_scene_tests nfsu_car_parts_tests
         nfsu_body_skin_tests nfsu_skin_inputs_tests nfsu_runtime_skin_tests
+        nfsu_viewer_dump_alias
         PROPERTIES TIMEOUT 60)
 endif()

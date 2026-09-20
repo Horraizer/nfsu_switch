@@ -52,9 +52,10 @@
   the real target record, the result is bound into `RenderTextureSet` at a
   documented priority over every pack source, and `prepare_car_scene`
   resolves the body material groups to it. Without the `--skin-*` options
-  the viewer is byte-identical to before. Which customization a car
-  actually has is still the caller's to state: no part database is read
-  here.
+  a render is byte-identical to before on its TGA, stdout, stderr and exit
+  code; the usage text is the one thing that changed for every invocation.
+  Which customization a car actually has is still the caller's to state: no
+  part database is read here.
 - Track retail evidence and remaining unknowns in
   [`CAR_SCENE.md`](CAR_SCENE.md).
 

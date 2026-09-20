@@ -171,7 +171,15 @@ naming one of the bound hashes resolves to it.
 - `--skin-dump FILE` writes the generated texture as a TGA through the same
   no-replace protocol as the screenshot, after the composite and before the
   render. It is refused if it exists, names an input, or names the
-  screenshot.
+  screenshot or its `.partial`. "Names" there is `nfsu::same_file_path`
+  (`include/nfsu/render.h`), which compares paths that do not exist yet: it
+  makes both absolute before normalizing them, removes `.` and `..`, takes
+  off the Windows extended-length prefix, leaves a network path absolute,
+  and asks the filesystem - read-only - whether it folds case before
+  deciding that two spellings differing only in case are one file. What it
+  does not see is listed at its declaration. Because the dump is written
+  before the render, a spelling that got through would publish the
+  generated texture at the screenshot's path and then fail the render.
 
 stdout gains one `skin source I: <label>` line per skin input source
 actually searched (a file whose packs the assembly layer would refuse is
@@ -183,6 +191,14 @@ removed, one `skin preserved claim:` line per hash a removed record
 claimed that was not bound, `skin generated:` and, with a dump, `skin
 dump:`. A selected input that did not resolve is reported with its skip
 reason, is not fatal, and makes the exit code 3.
+
+The `source S` on these lines is not one numbering. `skin target:` and
+`skin input ...:` use the skin input source index the `skin source I:`
+legend defines, which counts `--skin-vinyls`; `skin displaced:`, `skin
+displaced claim:`, `skin preserved claim:` and `skin generated:` use the
+`RenderTextureSet` source index, which does not, and which for the
+generated texture is the synthetic index past the real sources.
+[`RUNTIME_SKIN.md`](RUNTIME_SKIN.md) spells both out.
 
 ## Mesh selection and the prepared scene
 

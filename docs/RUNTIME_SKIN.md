@@ -168,12 +168,19 @@ This is a policy, not a trace.
 > The generated texture outranks every pack source for every hash it is
 > bound to.
 
-`bind_runtime_skin` implements it by removal: every entry of
-`RenderTextureSet::textures` that claims a bound hash is removed and
-reported, every matching `RenderTextureSet::unusable_claims` entry is
-removed and reported, and only then is the generated texture appended. That
-is what makes it the single claimant, which is what `resolve_material`
-needs: two claimants of one hash are `unusable`, never a winner.
+`bind_runtime_skin` implements it by removal: when it returns true, every
+entry of `RenderTextureSet::textures` that claimed a bound hash has been
+removed and reported, every matching `RenderTextureSet::unusable_claims`
+entry has been removed and reported, and the generated texture is the last
+entry of the set. That is what makes it the single claimant, which is what
+`resolve_material` needs: two claimants of one hash are `unusable`, never a
+winner.
+
+Inside the call that happens in the opposite order - the generated texture
+is appended first and the displaced entries are erased after it - because
+the append is the one mutation that allocates, so doing it first means a
+failed allocation has changed nothing yet. The end state is the same, and
+it is the end state this priority rule is about.
 `RenderTextureSet::shadowed` is left alone, because it records what the
 decode did and the decode is not changed by this.
 
@@ -295,9 +302,61 @@ themselves are recorded in `nfsu/skin_inputs.h`.
 `--skin-dump` writes through the same no-replace protocol as the
 screenshot: `<file>.partial` is created exclusively and published with an
 operation that cannot replace an existing entry. It is refused up front if
-it exists, if it names an input, or if it names the screenshot. It is
-written after the composite and before the render, so a render failure
-still leaves the generated texture to look at.
+it exists, if it names an input, or if it names the screenshot or its
+`.partial`. That last refusal matters more than it looks: the dump is
+written after the composite and before the render, so a spelling that got
+through would publish the generated texture at the screenshot's path and
+only then fail the render, leaving the caller the wrong file at the name
+they asked for and a re-run that is refused until they delete it. Nothing
+would be lost - the exclusive-create and no-replace protocol holds
+throughout - but nothing they asked for would be there either.
+
+Comparing those paths is `nfsu::same_file_path` (`include/nfsu/render.h`),
+which every such refusal in the viewer and in the writers now goes through.
+The paths do not exist yet, so `std::filesystem::equivalent` answers
+nothing about them and the names have to be compared instead:
+
+- both sides are made absolute before they are normalized, because
+  `weakly_canonical` on its own leaves a bare `out.tga` relative - nothing
+  in it exists - while `./out.tga` comes back absolute, since `.` does, and
+  the two then compare unequal;
+- `.` and `..` are removed;
+- on Windows the extended-length prefix `\\?\` is removed and a
+  `\\server\share` path is left absolute, because this standard library
+  parses neither as a root and `fs::absolute` would otherwise rewrite both
+  onto the current drive - which hides the alias between two spellings of
+  one path and invents one between a network path and an unrelated local
+  path;
+- two spellings that differ only in case are one file wherever the
+  filesystem folds case, and the filesystem is asked rather than assumed:
+  read-only, by spelling a name the containing directory already holds with
+  the case flipped and seeing whether it still answers. Nothing is created,
+  opened for writing or changed. An entry the filesystem will not resolve -
+  a dangling symbolic link, a junction whose target is gone - is skipped,
+  because `fs::equivalent` fails for it for a reason that has nothing to do
+  with case and one such entry sorting first would otherwise report a
+  case-folding volume as case-sensitive. Where nothing can be asked at all,
+  the answer is that the two are one file, because this decides a refusal.
+  The fold is the OS ordinal fold on Windows, which matters because this
+  repository is checked out under a Cyrillic path, and A-Z elsewhere.
+
+What it does not see, and therefore lets through: a junction or a directory
+symbolic link in the middle of the path, because `fs::weakly_canonical`
+dereferences neither on this Windows toolchain; an 8.3 short name against
+its long name; a second drive letter for one directory (`subst`, a mapped
+share); a network path against the local path for the same file; and case
+folding outside ASCII where the standard library is not asked. Those are
+listed at the declaration rather than claimed away.
+
+`tests/render_tests.cpp` covers it against a case-folding answer it
+measures itself rather than asks the code for - including a probe directory
+whose only entry dangles, the extended-length prefix, a network path, and a
+non-ASCII case alias - and the CTest `nfsu_viewer_dump_alias` runs the
+viewer with the two spellings and needs no input files, because the refusal
+comes before the first read. What those case assertions cannot prove on a
+case-folding filesystem is the other half: with the measured answer `true`
+everywhere, a comparison that always said "one file" for a case alias would
+pass them too, and only a case-sensitive filesystem separates the two.
 
 ### Report
 
@@ -315,9 +374,36 @@ skin input <role>: source "<NAME>" 0x... [<provenance>] mask "<NAME>" 0x... [<pr
 skin bound: hash 0x... "<NAME>"
 skin displaced: hash 0x... source S pack P texture R usable 0|1
 skin displaced claim: hash 0x... source S pack P texture R
+skin preserved claim: hash 0x... source S pack P texture R
 skin generated: texture I source S bytes B
 skin dump: <file name>
 ```
+
+`skin preserved claim:` is one line per hash a removed pack texture claimed
+that this binding did not name; it is the line the claim-preservation rule
+above exists to produce, and the same hashes also appear in the
+`unusable claim:` block, because that block describes the set the scene is
+prepared from.
+
+**`source S` is two different numberings in this block**, which is worth
+knowing before reading a report:
+
+- `skin target:` and `skin input ...:` print the *skin input source* index,
+  the one the `skin source I: <label>` legend above them defines. Those
+  sources are the car's pack, then `--skin-vinyls` if it was given, then
+  each `--shared-textures` file.
+- `skin displaced:`, `skin displaced claim:`, `skin preserved claim:` and
+  `skin generated:` print the *`RenderTextureSet`* source index, which is
+  the car's pack and the `--shared-textures` files only - `VINYLS.BIN` is
+  never a material texture source - plus, for `skin generated:`, the
+  synthetic index one past the real ones that the caller gives the
+  generated texture.
+
+With `--skin-vinyls` the two are offset by one for every shared file, so
+the same number means different files on different lines. On the 240SX
+smoke render below they collide: `skin target: ... source 3` is `shared-2`
+in the skin legend, and `skin generated: ... source 3` is the synthetic
+index.
 
 An input that did not resolve is reported with its machine-readable skip
 reason and is not fatal: the composite goes on with the layers that did,
@@ -329,8 +415,9 @@ the viewer exit 3, the same way a pack issue does.
 ### Build and tests
 
 Clean Release build with `-Wall -Wextra -Wpedantic`, no warnings. Full
-`ctest`: 9 of 9, including the new `nfsu_runtime_skin_tests`
-(`tests/runtime_skin_tests.cpp`, synthetic packs only, 254 checks). It
+`ctest`: 10 of 10, including the new `nfsu_runtime_skin_tests`
+(`tests/runtime_skin_tests.cpp`, synthetic packs only, 413 checks) and the
+`nfsu_viewer_dump_alias` case described under `--skin-dump` above. It
 covers the path table for A8R8G8B8, P8 and DXT1 targets and for an absent
 one; the target surface for both proven conversions; the byte mapping
 checked against a direct `composite_body_skin_32` call rather than against
@@ -338,11 +425,37 @@ written-down numbers; determinism over repeated runs; source priority
 deciding which pixels are composited; a missing mask, a mis-sized record
 and a record whose stream cannot be decompressed each being skipped or
 refused with the right reason rather than being fatal; every binding
-refusal leaving the set untouched; displacement of a rival pack record and
-of an unusable claim, with `decoded_bytes` checked against an expectation
-computed independently of the implementation; a bind of the maximum three
-hashes; and a `prepare_car_scene` that resolves the body group only once
-the skin is bound.
+refusal leaving the set untouched and saying why, by its message and not
+only by its answer; displacement of a rival pack record and of an unusable
+claim, with `decoded_bytes` checked against an expectation computed
+independently of the implementation; a bind of the maximum three hashes;
+and a `prepare_car_scene` that resolves the body group only once the skin
+is bound.
+
+Two of those need saying separately, because neither is reachable from the
+arguments of the function it tests.
+
+`test_identity_fields` changes each of the 23 fields of
+`SkinTargetIdentity` in turn and asserts `same_skin_target` says the two
+are different targets, in both directions. Before it existed,
+`pack_root_offset`, `pack_hash`, `storage`, `mip_count` and
+`palette_bytes` could each be deleted from the comparison with the whole
+suite still passing, because every negative case differed in several
+fields at once. The field list is bound from the struct, so a field added
+to `SkinTargetIdentity` does not compile until it is named there - the
+same pin `same_record` carries in `src/runtime_skin.cpp`.
+
+`test_binding_allocation_failure` makes an allocation throw, at each
+allocation `bind_runtime_skin` makes in turn, through a global
+`operator new` replaced in that test program. Every refusal the arguments
+can reach returns before the function touches anything, so nothing else in
+the suite exercises what "leaves the set untouched" is actually about: the
+claim list rebuilt into a local, the single `push_back` the set is mutated
+through, and the `noexcept` swap that commits the list. The set it uses
+has a texture that stays, two that are removed, two claims to preserve and
+one to carry over, and the rebuilt list is longer than the one it
+replaces, so committing it by assignment rather than by swap would have to
+allocate after the textures had already changed - which the test catches.
 
 Three of those cases are the defects the Codex review found, and each is
 asserted the way it would actually go wrong:
@@ -465,6 +578,78 @@ across the two commits as well, and prints no `skin preserved claim:` line:
 a valid retail record's three hash fields agree, so it claims one hash and
 there is nothing to preserve.
 
+### Independent review, third round
+
+A third review, of the finished fixes, found no defect in any of them and
+one defect outside them, in code this branch introduced. It is fixed here.
+
+**`--skin-dump` could publish the generated texture at the screenshot's
+path.** The viewer's own path comparison used
+`std::filesystem::weakly_canonical` without making the two paths absolute
+first. For a path with no component that exists, that returns the relative
+name; for the same name written `./name`, the `.` does exist, so it returns
+an absolute path. The two compared unequal, the guard did not fire, and
+because the dump is written after the composite and before the render, the
+512x512 generated texture was created at the screenshot's path and the
+render then failed on it. Reproduced on retail inputs at the previous head:
+
+```text
+nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> out.tga --width 128 --height 96 \
+  --shared-textures <GLOBALB.BUN> --shared-textures <Cars/TEXTURES.BIN> \
+  --skin-car 240SX --skin-vinyls <VINYLS.BIN> --skin-dump ./out.tga
+error: refusing to overwrite out.tga
+exit 2, out.tga present, 1048594 bytes
+```
+
+`--skin-dump OUT.TGA` and `--skin-dump Out.Tga` did the same on this
+case-insensitive filesystem. Nothing was ever lost - the exclusive-create
+and no-replace protocol held throughout, and all five retail hashes were
+unchanged - but the caller got the wrong file at the name they asked for,
+an exit code of 2, and a re-run that was refused until they deleted it.
+
+The viewer no longer has a path comparison of its own. Every one of its
+path refusals, and the writers', now goes through
+`nfsu::same_file_path`, described under `--skin-dump` above. At this head
+each of the five spellings exits 1 and creates nothing.
+
+One behaviour changed beyond that defect, because the checks that used
+`std::filesystem::equivalent` alone now use the same comparison: two
+`--shared-textures` arguments that are different spellings of one file that
+*does not exist* are now refused up front as duplicates, where before they
+were both read, both failed, and the run continued to exit 3. The same
+holds for an output path equal to a texture or geometry path that does not
+exist. Every case where the files do exist behaves exactly as before.
+
+Two adversarial reviews of the fix itself came back with more, all
+addressed. One dangling junction in the output directory put the case half
+of the guard back exactly as it was, because the probe took a failure to
+resolve that entry for an answer. The Windows extended-length prefix and a
+network path were both rewritten onto the current drive by `fs::absolute`,
+which let `--skin-dump \\?\C:\dir\out.tga` through beside an `out.tga`
+screenshot and made a network path compare equal to an unrelated local one.
+Case folding stopped at A-Z although the filesystem folds more and this
+repository lives under a Cyrillic path. The comparison could throw out of a
+call site with no handler. And in the tests: the CTest passed a viewer that
+printed the refusal and carried on, "a refused binding reports nothing"
+looked at one field of seven, and "the set is untouched" compared
+`shadowed` by length alone and against a fixture where it was empty.
+
+The same review raised two gaps in the tests rather than in the code, both
+closed: no test pinned an individual field of `SkinTargetIdentity`, and no
+`bind_runtime_skin` test looked at `error` at all. Both are described under
+"Build and tests" above. It also listed documentation that claimed more
+than the code delivered; those sentences are corrected in place here, in
+this file, in `docs/RENDERER.md`, in `README.md`, in `docs/ROADMAP.md` and
+in the two headers.
+
+Two items from that review are deliberately not addressed here, because
+neither is a defect in what this branch set out to do and both change
+behaviour rather than describe it: `--skin-car NAME --skin-bind NAME_SKIN1`
+is diagnosed by `bind_runtime_skin` after the whole composite and exits 2,
+where both hashes are known at the end of `parse_options` and it could be
+an exit-1 usage error; and `error: --skin-car needs 1 values` is a grammar
+slip shared by every single-value skin option.
+
 ### Unchanged behaviour without the options
 
 `nfsu_viewer` built at the previous commit and at this one were run on the
@@ -522,7 +707,10 @@ Two runs of the same command produced byte-identical screenshots and
 byte-identical generated textures. Re-running with the dump file already
 present was refused (`refusing to overwrite the --skin-dump file`) and
 wrote nothing at all, including no screenshot. Naming the dump and the
-screenshot the same file was refused before anything was read.
+screenshot the same file was refused before anything was read - for the
+identical spelling, for `./<name>` against `<name>`, and, on this
+case-insensitive filesystem, for `<NAME>` against `<name>`. Each exits 1
+and creates nothing.
 
 The derived images were inspected and deleted. No retail data, derived
 texture, dump or screenshot is in this repository.
