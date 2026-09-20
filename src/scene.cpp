@@ -649,13 +649,108 @@ bool prepare_car_scene(
     return true;
 }
 
+std::uint64_t PreparedMeshInstances::copies(std::size_t mesh) const noexcept {
+    if (mesh + 1 >= first.size()) {
+        return 0;
+    }
+    if (!instanced) {
+        return 1;
+    }
+    return first[mesh + 1] - first[mesh];
+}
+
+bool prepared_mesh_instances(
+    const PreparedCarScene& scene,
+    PreparedMeshInstances& instances,
+    std::string& error) {
+    instances = PreparedMeshInstances{};
+    if (scene.instances.size() >= 0xFFFFFFFFULL) {
+        error = "scene has " + std::to_string(scene.instances.size()) +
+                " instances; too many to index";
+        return false;
+    }
+    try {
+        // Counting sort by mesh handle: one pass to count, a prefix sum,
+        // then one pass that appends each instance to its mesh. The second
+        // pass walks the instances in order, so every list ends up
+        // ascending in instance position.
+        instances.first.assign(scene.meshes.size() + 1, 0);
+        for (const PreparedInstance& instance : scene.instances) {
+            if (instance.mesh >= scene.meshes.size()) {
+                error = "prepared instance names mesh " +
+                        std::to_string(instance.mesh) + ", outside the " +
+                        std::to_string(scene.meshes.size()) + " prepared meshes";
+                instances = PreparedMeshInstances{};
+                return false;
+            }
+            ++instances.first[instance.mesh + 1];
+        }
+        for (std::size_t m = 0; m < scene.meshes.size(); ++m) {
+            instances.first[m + 1] += instances.first[m];
+        }
+        instances.order.assign(scene.instances.size(), 0);
+        std::vector<std::uint32_t> next = instances.first;
+        for (std::size_t i = 0; i < scene.instances.size(); ++i) {
+            instances.order[next[scene.instances[i].mesh]++] =
+                static_cast<std::uint32_t>(i);
+        }
+        instances.instanced = !scene.instances.empty();
+    } catch (const std::bad_alloc&) {
+        error = "not enough memory for the instance table";
+        instances = PreparedMeshInstances{};
+        return false;
+    }
+    return true;
+}
+
+namespace {
+
+// The copy count of every prepared mesh, through the one rule that owns
+// it: PreparedMeshInstances::copies. Nothing here counts instances on its
+// own, so a caller cannot drift from what render_scene submits. Returns
+// false on an allocation failure and on an instance handle outside the
+// prepared meshes, which every caller turns into a refusal.
+bool instance_counts(const PreparedCarScene& scene,
+                     std::vector<std::uint64_t>& counts) {
+    counts.clear();
+    PreparedMeshInstances instances;
+    std::string ignored;
+    if (!prepared_mesh_instances(scene, instances, ignored)) {
+        return false;
+    }
+    try {
+        counts.assign(scene.meshes.size(), 0);
+    } catch (const std::bad_alloc&) {
+        counts.clear();
+        return false;
+    }
+    for (std::size_t m = 0; m < counts.size(); ++m) {
+        counts[m] = instances.copies(m);
+    }
+    return true;
+}
+
+} // namespace
+
 std::uint64_t prepared_draw_triangles(const PreparedCarScene& scene) noexcept {
+    std::vector<std::uint64_t> counts;
+    if (!instance_counts(scene, counts)) {
+        // Above every limit a caller compares this against, so a caller
+        // refuses rather than rendering with a total it could not compute.
+        return UINT64_MAX;
+    }
     std::uint64_t total = 0;
     for (const PreparedDraw& draw : scene.draws) {
-        if (draw.drawable) {
-            const std::uint64_t add = draw.index_count / 3U;
-            total = add > UINT64_MAX - total ? UINT64_MAX : total + add;
+        if (!draw.drawable || draw.mesh >= counts.size()) {
+            continue;
         }
+        const std::uint64_t triangles = draw.index_count / 3U;
+        const std::uint64_t copies = counts[draw.mesh];
+        if (copies != 0 && triangles > UINT64_MAX / copies) {
+            return UINT64_MAX;
+        }
+        const std::uint64_t add = triangles * copies;
+        total = add > UINT64_MAX - total ? UINT64_MAX : total + add;
     }
     return total;
 }
@@ -987,6 +1082,37 @@ bool validate_scene(const PreparedCarScene& scene, std::string& error) {
             }
         }
     }
+    // The same 2^32 - 1 bound as the per-group total above, but over the
+    // copies a backend actually submits: one per instance of the drawing
+    // mesh. The per-group total is the special case of a profile with no
+    // instances, which draws each mesh once, and it is checked in the loop
+    // above so that a scene too large to index is refused before this
+    // allocates anything.
+    if (!scene.instances.empty()) {
+        std::vector<std::uint64_t> counts;
+        if (!instance_counts(scene, counts)) {
+            error = "out of memory while counting the instances of each mesh";
+            return false;
+        }
+        std::uint64_t submitted = 0;
+        for (const PreparedDraw& draw : scene.draws) {
+            if (!draw.drawable) {
+                continue;
+            }
+            const std::uint64_t triangles = draw.index_count / 3U;
+            const std::uint64_t copies = counts[draw.mesh];
+            if ((copies != 0 && triangles > 0xFFFFFFFFULL / copies) ||
+                triangles * copies > 0xFFFFFFFFULL - submitted) {
+                submitted = 0xFFFFFFFFULL;
+            } else {
+                submitted += triangles * copies;
+            }
+            if (submitted >= 0xFFFFFFFFULL) {
+                error = "prepared instances submit 2^32 - 1 or more triangles";
+                return false;
+            }
+        }
+    }
     return true;
 }
 
@@ -1093,9 +1219,14 @@ bool prepared_triangle_ranges(
         return false;
     }
     std::vector<unsigned char> seen;
+    std::vector<std::uint64_t> copies;
     try {
         seen.assign(scene.draws.size(), 0);
     } catch (const std::bad_alloc&) {
+        error = "not enough memory for the triangle range table";
+        return false;
+    }
+    if (!instance_counts(scene, copies)) {
         error = "not enough memory for the triangle range table";
         return false;
     }
@@ -1109,12 +1240,21 @@ bool prepared_triangle_ranges(
             }
             seen[d] = 1;
             const PreparedDraw& draw = scene.draws[d];
-            if (!draw.drawable) {
+            if (!draw.drawable || draw.mesh >= copies.size()) {
                 continue;
             }
             // A drawable group has an index count that is a multiple of
-            // three; validate_prepared_scene has already checked it.
-            const std::uint64_t count = draw.index_count / 3U;
+            // three; validate_prepared_scene has already checked it. The
+            // group is submitted once per instance of its mesh, so the
+            // copies share one contiguous range.
+            const std::uint64_t triangles = draw.index_count / 3U;
+            const std::uint64_t instances = copies[draw.mesh];
+            if (instances != 0 && triangles > 0xFFFFFFFFULL / instances) {
+                error = "prepared draws hold 2^32 - 1 or more triangles";
+                ranges.clear();
+                return false;
+            }
+            const std::uint64_t count = triangles * instances;
             if (count == 0) {
                 continue;
             }

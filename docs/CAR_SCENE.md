@@ -580,12 +580,18 @@ part set (`nfsu::select_stock_parts`), the per-LOD meshes
 (`nfsu::resolve_part_models`) and the placement
 (`nfsu::derive_cullable_part_placements`, `nfsu::car_marker_placement`).
 
-That is the decoded selection and placement assembled, and it is still not
-the whole stock car. The drawn wheel and brake matrices are not
-reproduced, so those two slots are opt-in and their instances are marked
-inexact; decal textures are still missing; no backend applies the instance
-transforms yet, and the CPU reference renderer refuses the profile rather
-than draw it unplaced; and the paint, skin and vinyls the viewer can
+The CPU reference renderer draws that list. `nfsu_viewer --stock-car NAME`
+places every copy with its instance transform;
+[`RENDERER.md`](RENDERER.md) states the composition and its evidence, what
+drawing several copies means for the retail draw order, and the statistics
+that keep drawn copies apart from meshes.
+
+That is the decoded selection and placement assembled and drawn, and it is
+still not the whole stock car. The drawn wheel and brake matrices are not
+reproduced, so those two slots are opt-in, the instances the opt-in
+produces are marked inexact, and every line of the render that mentions
+them says that the culling placement is a stand-in; decal textures are
+still missing; and the paint, skin and vinyls the viewer can
 compose are still the caller's explicit selection rather than a car's own
-customization state, so neither viewer profile may be labelled the stock
-car.
+customization state, so a render of this profile is the stock assembly
+this project has decoded and not the car the game draws.

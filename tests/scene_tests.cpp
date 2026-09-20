@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -831,33 +832,501 @@ void test_prepare_scene_meshes_contract() {
           "the selector error says so: " + error);
 }
 
-// A stock car scene carries transforms this renderer does not apply, so it
-// is refused rather than drawn in the wrong place. The profile is set by
-// hand here: building one needs the part database layer above this test.
-void test_renderer_refuses_unplaced_instances() {
-    const nfsu::GeometryReport geometry = scene_geometry();
+// The stock car profile carries one instance per drawn copy, and the
+// renderer places each copy with that instance's transform. The profile is
+// set by hand in these tests: building a real one needs the part database
+// layer above this test, and what is under test here is the renderer's half
+// of the contract, not the assembly.
+nfsu::PreparedCarScene hand_built_stock(
+    const nfsu::GeometryReport& geometry,
+    const nfsu::RenderTextureSet& textures,
+    const std::vector<nfsu::MeshSelector>& selectors,
+    const std::vector<nfsu::PreparedInstance>& instances,
+    std::string& error) {
     nfsu::PreparedCarScene scene;
-    std::string error;
-    check(prepare(geometry, scene_textures(), selection_of({by_index(0)}), scene, error),
-          "stock refusal base: " + error);
+    if (!prepare(geometry, textures, selection_of(selectors), scene, error)) {
+        return scene;
+    }
     scene.profile = nfsu::SelectionProfile::stock_car;
     scene.selectors.clear();
-    scene.meshes[0].selector = nfsu::kNoHandle;
-    nfsu::PreparedInstance instance;
-    instance.mesh = 0;
-    instance.mesh_hash = scene.meshes[0].directory_hash;
-    scene.instances.push_back(instance);
-    check(nfsu::validate_prepared_scene(scene, error),
-          "a hand-built stock scene validates: " + error);
+    for (nfsu::PreparedMesh& mesh : scene.meshes) {
+        mesh.selector = nfsu::kNoHandle;
+    }
+    scene.instances = instances;
+    return scene;
+}
+
+nfsu::PreparedInstance instance_at(std::size_t mesh, float longitudinal, float lateral,
+                                   float vertical) {
+    nfsu::PreparedInstance out;
+    out.mesh = mesh;
+    // Row-major, row-vector: row 3 is the translation, in the raw slot
+    // order (longitudinal, lateral, vertical).
+    out.transform[12] = longitudinal;
+    out.transform[13] = lateral;
+    out.transform[14] = vertical;
+    return out;
+}
+
+// One mesh whose coordinates are all dyadic with few significant bits, so
+// that the shifted copy below is exact in float and equals the renderer's
+// double arithmetic bit for bit. It is asymmetric in all three components,
+// so permuting them changes the image.
+nfsu::GeometryReport placement_geometry() {
+    nfsu::GeometryReport report;
+    nfsu::Mesh mesh;
+    mesh.index = 0;
+    mesh.name = "PART";
+    mesh.valid = true;
+    mesh.vertices = {vertex(0.0F, 0.0F, 0.0F, 0.0F, 0.0F),
+                     vertex(0.0F, 0.75F, 0.0F, 0.0F, 1.0F),
+                     vertex(0.5F, 0.75F, 0.5F, 1.0F, 1.0F),
+                     vertex(0.5F, 0.0F, 0.25F, 1.0F, 0.0F)};
+    mesh.triangles = {{0, 1, 2}, {0, 2, 3}};
+    mesh.texture_hashes = {kHashA};
+    mesh.materials = {material(0, 6, 0, 1)};
+    mesh.directory_hash = kMeshHashBody;
+    mesh.directory_offset = 0x200U;
+    mesh.directory_size = 0x80U;
+    mesh.has_directory_entry = true;
+    report.meshes.push_back(mesh);
+    report.mesh_directory_valid = true;
+    return report;
+}
+
+// The same geometry with every vertex moved in the raw slot frame. Every
+// sum here is exact, so a renderer that places an instance correctly gives
+// the two scenes the same frame down to the byte.
+nfsu::GeometryReport shifted_geometry(float longitudinal, float lateral,
+                                      float vertical) {
+    nfsu::GeometryReport report = placement_geometry();
+    for (nfsu::MeshVertex& v : report.meshes[0].vertices) {
+        v.px += longitudinal;
+        v.pz += lateral;
+        v.py += vertical;
+    }
+    return report;
+}
+
+// A whole-mesh copy of the first mesh, appended to a geometry report, so
+// that a scene with two meshes can be built without a second author.
+void append_shifted(nfsu::GeometryReport& report, float longitudinal, float lateral,
+                    float vertical) {
+    nfsu::Mesh copy = report.meshes[0];
+    copy.index = report.meshes.size();
+    copy.name = "PART" + std::to_string(copy.index);
+    copy.directory_hash = kMeshHashBody + static_cast<std::uint32_t>(copy.index);
+    copy.directory_offset = 0x200U + copy.index * 0x100U;
+    for (nfsu::MeshVertex& v : copy.vertices) {
+        v.px += longitudinal;
+        v.pz += lateral;
+        v.py += vertical;
+    }
+    report.meshes.push_back(copy);
+}
+
+nfsu::RenderOptions placement_options() {
+    nfsu::RenderOptions out;
+    out.width = 96;
+    out.height = 64;
+    out.camera.target = {0.25, 0.375, 0.0};
+    out.camera.yaw_deg = 20.0;
+    out.camera.pitch_deg = 12.0;
+    out.camera.distance = 3.0;
+    out.camera.fov_y_deg = 45.0;
+    return out;
+}
+
+bool render_ok(const nfsu::PreparedCarScene& scene, const nfsu::RenderOptions& options,
+               nfsu::Frame& frame, nfsu::RenderStats& stats, const std::string& label) {
+    std::string error;
+    const bool ok =
+        nfsu::render_scene(scene, options, nfsu::RenderLimits{}, frame, stats, error);
+    check(ok, label + ": " + error);
+    return ok;
+}
+
+// An instance transform composes with the camera exactly as moving the
+// vertices would: it is applied in the raw slot frame the geometry file and
+// every recovered placement use, as a row vector, and the result is mapped
+// into the renderer's Y-up world by the map an unplaced vertex takes. Each
+// case below moves one component on its own, so a renderer that permuted
+// the three would fail at least one of them.
+void test_instance_placement_convention() {
+    const nfsu::RenderTextureSet textures = scene_textures();
+    const nfsu::RenderOptions render_options = placement_options();
+    const struct {
+        const char* label;
+        float longitudinal;
+        float lateral;
+        float vertical;
+    } cases[] = {
+        {"identity", 0.0F, 0.0F, 0.0F},
+        {"longitudinal only", 0.25F, 0.0F, 0.0F},
+        {"lateral only", 0.0F, 0.5F, 0.0F},
+        {"vertical only", 0.0F, 0.0F, 0.375F},
+        {"all three", -0.5F, 0.25F, 0.125F},
+    };
+    for (const auto& one : cases) {
+        const std::string label = one.label;
+        std::string error;
+        const nfsu::GeometryReport authored =
+            shifted_geometry(one.longitudinal, one.lateral, one.vertical);
+        nfsu::PreparedCarScene moved_by_authoring;
+        check(prepare(authored, textures, selection_of({by_index(0)}),
+                      moved_by_authoring, error),
+              label + " authored: " + error);
+        const nfsu::GeometryReport origin = placement_geometry();
+        const nfsu::PreparedCarScene moved_by_instance = hand_built_stock(
+            origin, textures, {by_index(0)},
+            {instance_at(0, one.longitudinal, one.lateral, one.vertical)}, error);
+        check(nfsu::validate_prepared_scene(moved_by_instance, error),
+              label + " instanced scene validates: " + error);
+
+        nfsu::Frame authored_frame;
+        nfsu::Frame instanced_frame;
+        nfsu::RenderStats authored_stats;
+        nfsu::RenderStats instanced_stats;
+        if (!render_ok(moved_by_authoring, render_options, authored_frame,
+                       authored_stats, label + " authored render") ||
+            !render_ok(moved_by_instance, render_options, instanced_frame,
+                       instanced_stats, label + " instanced render")) {
+            continue;
+        }
+        // A blank frame would make any two runs agree, so the comparison is
+        // only worth anything with something drawn.
+        check(authored_stats.pixels_drawn > 100,
+              label + " authored draws enough pixels: " +
+                  std::to_string(authored_stats.pixels_drawn));
+        check(tga_bytes(instanced_frame) == tga_bytes(authored_frame),
+              label + ": placing the instance equals authoring the move");
+        check(instanced_stats.pixels_drawn == authored_stats.pixels_drawn &&
+                  instanced_stats.triangles_submitted ==
+                      authored_stats.triangles_submitted &&
+                  instanced_stats.min_x == authored_stats.min_x &&
+                  instanced_stats.max_y == authored_stats.max_y,
+              label + ": the statistics agree too");
+        check(instanced_stats.instances == 1 && instanced_stats.instances_exact == 1 &&
+                  instanced_stats.instances_stand_in == 0 &&
+                  instanced_stats.meshes_rendered == 1,
+              label + ": one instance of one mesh");
+        // A profile with no instances reports one drawn copy per mesh, so
+        // the two counts can be compared on any profile.
+        check(authored_stats.instances == 1 && authored_stats.instances_exact == 1,
+              label + ": an uninstanced mesh counts as one copy");
+    }
+
+    // The row-vector convention, which no translation can distinguish: a
+    // shear that writes the longitudinal component into the lateral one.
+    // Read as a column-vector multiply the same matrix would do the
+    // opposite, and this mesh has both components nonzero.
+    std::string error;
+    nfsu::GeometryReport sheared = placement_geometry();
+    const float k = 0.5F;
+    for (nfsu::MeshVertex& v : sheared.meshes[0].vertices) {
+        v.pz += v.px * k;
+    }
+    nfsu::PreparedCarScene authored_shear;
+    check(prepare(sheared, textures, selection_of({by_index(0)}), authored_shear, error),
+          "sheared authored: " + error);
+    nfsu::PreparedInstance shear = instance_at(0, 0.0F, 0.0F, 0.0F);
+    shear.transform[1] = k;  // row 0, column 1
+    const nfsu::PreparedCarScene instanced_shear =
+        hand_built_stock(placement_geometry(), textures, {by_index(0)}, {shear}, error);
+    nfsu::Frame authored_frame;
+    nfsu::Frame instanced_frame;
+    nfsu::RenderStats authored_stats;
+    nfsu::RenderStats instanced_stats;
+    if (render_ok(authored_shear, render_options, authored_frame, authored_stats,
+                  "sheared authored render") &&
+        render_ok(instanced_shear, render_options, instanced_frame, instanced_stats,
+                  "sheared instanced render")) {
+        check(authored_stats.pixels_drawn > 100, "the sheared part is visible");
+        check(tga_bytes(instanced_frame) == tga_bytes(authored_frame),
+              "transform element 1 moves the longitudinal component into the lateral "
+              "one, which is the row-vector convention");
+    }
+}
+
+// Several instances of one mesh, and the id ranges that let a pixel name
+// the group that drew it.
+void test_several_instances_of_one_mesh() {
+    const nfsu::RenderTextureSet textures = scene_textures();
+    const nfsu::RenderOptions render_options = placement_options();
+    const float left = 1.5F;
+    const float right = -1.5F;
+    std::string error;
+
+    nfsu::Frame one_frame;
+    nfsu::RenderStats one_stats;
+    const nfsu::PreparedCarScene one =
+        hand_built_stock(placement_geometry(), textures, {by_index(0)},
+                         {instance_at(0, 0.0F, 0.0F, 0.0F)}, error);
+    if (!render_ok(one, render_options, one_frame, one_stats, "one copy")) {
+        return;
+    }
+
+    nfsu::Frame left_frame;
+    nfsu::Frame right_frame;
+    nfsu::RenderStats left_stats;
+    nfsu::RenderStats right_stats;
+    const nfsu::PreparedCarScene left_only =
+        hand_built_stock(placement_geometry(), textures, {by_index(0)},
+                         {instance_at(0, 0.0F, left, 0.0F)}, error);
+    const nfsu::PreparedCarScene right_only =
+        hand_built_stock(placement_geometry(), textures, {by_index(0)},
+                         {instance_at(0, 0.0F, right, 0.0F)}, error);
+    if (!render_ok(left_only, render_options, left_frame, left_stats, "left copy") ||
+        !render_ok(right_only, render_options, right_frame, right_stats, "right copy")) {
+        return;
+    }
+
+    nfsu::PreparedCarScene both = hand_built_stock(
+        placement_geometry(), textures, {by_index(0)},
+        {instance_at(0, 0.0F, left, 0.0F), instance_at(0, 0.0F, right, 0.0F)}, error);
+    check(nfsu::validate_prepared_scene(both, error),
+          "two instances of one mesh validate: " + error);
+    nfsu::Frame both_frame;
+    nfsu::RenderStats both_stats;
+    if (!render_ok(both, render_options, both_frame, both_stats, "two copies")) {
+        return;
+    }
+    // The statistic is counted from the draw loop, so it is evidence that
+    // both copies were submitted rather than a restatement of the scene: a
+    // renderer that drew only the first copy would report one.
+    check(both_stats.meshes_rendered == 1 && both_stats.instances == 2 &&
+              both_stats.instances_exact == 2,
+          "two drawn copies of one mesh, counted as drawn: " +
+              std::to_string(both_stats.instances));
+    check(one_stats.instances == 1 && left_stats.instances == 1 &&
+              right_stats.instances == 1,
+          "one copy each reports one");
+    check(both_stats.triangles_submitted == 2 * one_stats.triangles_submitted,
+          "each copy submits the group again: " +
+              std::to_string(both_stats.triangles_submitted));
+    check(both_stats.pixels_drawn == left_stats.pixels_drawn + right_stats.pixels_drawn,
+          "both copies reach the frame: " + std::to_string(both_stats.pixels_drawn));
+    check(left_stats.pixels_drawn > 100 && right_stats.pixels_drawn > 100,
+          "each copy alone is visible");
+
+    // The two copies were placed apart, so the two-copy frame is exactly
+    // the two one-copy frames laid over the background.
+    const nfsu::RenderOptions defaults;
+    const std::vector<unsigned char> background(defaults.background,
+                                                defaults.background + 4);
+    const auto pixel_of = [](const std::vector<unsigned char>& rgba, std::size_t i) {
+        return std::vector<unsigned char>(rgba.begin() + i * 4, rgba.begin() + i * 4 + 4);
+    };
+    bool overlapped = false;
+    bool matched = true;
+    for (std::size_t p = 0; p * 4U < both_frame.rgba().size(); ++p) {
+        const std::vector<unsigned char> left_pixel = pixel_of(left_frame.rgba(), p);
+        const std::vector<unsigned char> right_pixel = pixel_of(right_frame.rgba(), p);
+        const std::vector<unsigned char> both_pixel = pixel_of(both_frame.rgba(), p);
+        const bool in_left = left_pixel != background;
+        const bool in_right = right_pixel != background;
+        overlapped = overlapped || (in_left && in_right);
+        const std::vector<unsigned char>& expected =
+            in_left ? left_pixel : (in_right ? right_pixel : background);
+        matched = matched && both_pixel == expected;
+    }
+    check(!overlapped, "the two copies do not overlap, so the union is exact");
+    check(matched, "the two-copy frame is the two one-copy frames together");
+
+    // Triangle ids: one contiguous range per group, covering every copy, so
+    // a pixel still names the group that drew it.
+    std::vector<std::uint32_t> order;
+    std::vector<nfsu::PreparedTriangleRange> ranges;
+    check(nfsu::prepared_draw_order(both, false, order, nullptr, error),
+          "draw order of an instanced scene: " + error);
+    check(nfsu::prepared_triangle_ranges(both, order, ranges, error),
+          "triangle ranges of an instanced scene: " + error);
+    std::uint32_t next = 0;
+    for (const nfsu::PreparedTriangleRange& range : ranges) {
+        check(range.first_id == next, "instanced ranges are contiguous");
+        check(range.count == 2 * (both.draws[range.draw].index_count / 3U),
+              "a range covers both copies of its group");
+        check(nfsu::find_prepared_triangle(ranges, range.first_id) == range.draw &&
+                  nfsu::find_prepared_triangle(
+                      ranges, range.first_id + range.count - 1) == range.draw,
+              "every id of the range names its group, copies included");
+        next += range.count;
+    }
+    check(next == nfsu::prepared_draw_triangles(both) &&
+              next == both_stats.triangles_submitted,
+          "the ranges cover exactly the triangles the renderer submitted: " +
+              std::to_string(next));
+
+    // End to end: every id the renderer actually wrote into the frame lands
+    // inside a range, and ids from the second copy reach it too. This is
+    // the pin that keeps the numbering here and the numbering inside
+    // render_scene from drifting apart; the inspection window picks a
+    // material group from exactly this lookup.
+    bool every_id_found = true;
+    bool second_copy_seen = false;
+    for (const std::uint32_t id : both_frame.ids()) {
+        if (id == nfsu::kNoTriangle) {
+            continue;
+        }
+        const std::size_t drew = nfsu::find_prepared_triangle(ranges, id);
+        every_id_found = every_id_found && drew != nfsu::kNoHandle &&
+                         drew < both.draws.size() && both.draws[drew].mesh == 0;
+        for (const nfsu::PreparedTriangleRange& range : ranges) {
+            if (id >= range.first_id && id - range.first_id >= range.count / 2U &&
+                id - range.first_id < range.count) {
+                second_copy_seen = true;
+            }
+        }
+    }
+    check(every_id_found, "every drawn pixel's id names a group of the drawn mesh");
+    check(second_copy_seen,
+          "pixels of the second copy carry ids from its half of the range");
+}
+
+// What a backend must never be handed, and what it does when it is.
+void test_instance_refusals() {
+    const nfsu::RenderTextureSet textures = scene_textures();
+    const nfsu::RenderOptions render_options = placement_options();
+    std::string error;
+    const auto refused = [&](const nfsu::PreparedCarScene& scene,
+                             const std::string& label, const std::string& expected) {
+        std::string message;
+        check(!nfsu::validate_prepared_scene(scene, message), label + " fails validation");
+        check(message.find(expected) != std::string::npos,
+              label + " names the reason: " + message);
+        nfsu::Frame frame;
+        nfsu::RenderStats stats;
+        message.clear();
+        check(!nfsu::render_scene(scene, render_options, nfsu::RenderLimits{}, frame,
+                                  stats, message),
+              label + " is refused by the renderer");
+        check(message.find(expected) != std::string::npos,
+              label + " refusal says why: " + message);
+        check(frame.width() == 0 && frame.rgba().empty(), label + " allocates no frame");
+    };
+
+    // A transform element that is not finite. Every element is tried, so a
+    // check that looked at the translation alone would fail here.
+    for (std::size_t element = 0; element < 16; ++element) {
+        nfsu::PreparedInstance broken = instance_at(0, 0.25F, 0.0F, 0.0F);
+        broken.transform[element] = element % 2 == 0
+                                        ? std::numeric_limits<float>::quiet_NaN()
+                                        : std::numeric_limits<float>::infinity();
+        refused(hand_built_stock(placement_geometry(), textures, {by_index(0)}, {broken},
+                                 error),
+                "instance transform element " + std::to_string(element),
+                "transform element that is not finite");
+    }
+
+    // An instance naming a mesh the scene does not have: one past the last
+    // and far beyond it.
+    const std::size_t handles[] = {std::size_t{1}, std::size_t{99}, nfsu::kNoHandle};
+    for (const std::size_t handle : handles) {
+        const nfsu::PreparedCarScene scene = hand_built_stock(
+            placement_geometry(), textures, {by_index(0)},
+            {instance_at(0, 0.0F, 0.0F, 0.0F), instance_at(handle, 0.0F, 0.0F, 0.0F)},
+            error);
+        refused(scene, "instance naming mesh " + std::to_string(handle),
+                "invalid mesh handle");
+        // The table the renderer builds refuses the same handle on its own,
+        // which is what keeps the id numbering from indexing out of range.
+        nfsu::PreparedMeshInstances table;
+        std::string message;
+        check(!nfsu::prepared_mesh_instances(scene, table, message) &&
+                  table.first.empty() && table.order.empty(),
+              "the instance table refuses mesh handle " + std::to_string(handle));
+    }
+
+    // A prepared mesh no instance draws. The geometry has two meshes and
+    // only the first is named.
+    nfsu::GeometryReport two = placement_geometry();
+    append_shifted(two, 0.0F, 1.5F, 0.0F);
+    refused(hand_built_stock(two, textures, {by_index(0), by_index(1)},
+                             {instance_at(0, 0.0F, 0.0F, 0.0F)}, error),
+            "a prepared mesh with no instance", "has no instance to draw it");
+    // The same two meshes with one instance each do render, so the refusal
+    // above is about the missing instance and not about the second mesh.
+    const nfsu::PreparedCarScene covered = hand_built_stock(
+        two, textures, {by_index(0), by_index(1)},
+        {instance_at(0, 0.0F, 0.0F, 0.0F), instance_at(1, 0.0F, 0.0F, 0.0F)}, error);
     nfsu::Frame frame;
     nfsu::RenderStats stats;
-    std::string message;
-    check(!nfsu::render_scene(scene, options(), nfsu::RenderLimits{}, frame, stats,
-                              message),
-          "the renderer refuses the stock car profile");
-    check(message.find("does not place instances") != std::string::npos,
-          "the refusal says why: " + message);
-    check(frame.width() == 0 && frame.rgba().empty(), "the refusal allocates no frame");
+    if (render_ok(covered, render_options, frame, stats, "two meshes, one copy each")) {
+        check(stats.meshes_rendered == 2 && stats.instances == 2,
+              "two meshes and two copies are counted apart");
+    }
+}
+
+// An opted-in stand-in placement is drawn, because the caller asked for it,
+// and counted apart from an exact one, because nothing in the output may
+// claim it is where the game puts the part.
+void test_stand_in_placements_are_counted() {
+    const nfsu::RenderTextureSet textures = scene_textures();
+    std::string error;
+    const nfsu::PreparedInstance exact = instance_at(0, 0.0F, 1.5F, 0.0F);
+    nfsu::PreparedInstance stand_in = instance_at(0, 0.0F, -1.5F, 0.0F);
+    stand_in.placement_exact = false;
+    const nfsu::PreparedCarScene scene = hand_built_stock(
+        placement_geometry(), textures, {by_index(0)}, {exact, stand_in}, error);
+    nfsu::Frame frame;
+    nfsu::RenderStats stats;
+    if (!render_ok(scene, placement_options(), frame, stats, "stand-in scene")) {
+        return;
+    }
+    check(stats.instances == 2 && stats.instances_exact == 1 &&
+              stats.instances_stand_in == 1,
+          "the stand-in copy is counted apart: exact " +
+              std::to_string(stats.instances_exact) + " stand_in " +
+              std::to_string(stats.instances_stand_in));
+    check(stats.instances_exact + stats.instances_stand_in == stats.instances,
+          "every drawn copy is one or the other");
+
+    // A copy that submits no triangle is not counted as drawn, in the two
+    // ways a group can submit none. The scene still carries the copies and
+    // the mesh is still reported, which is what stops the instance count
+    // from agreeing with the scene by construction.
+    const auto counts_nothing = [&](const nfsu::PreparedCarScene& scene,
+                                    const std::string& label) {
+        std::string message;
+        check(nfsu::validate_prepared_scene(scene, message),
+              label + " is still a valid scene: " + message);
+        nfsu::Frame frame;
+        nfsu::RenderStats stats;
+        if (!render_ok(scene, placement_options(), frame, stats, label)) {
+            return;
+        }
+        check(stats.meshes_rendered == 1 && stats.triangles_submitted == 0 &&
+                  stats.pixels_drawn == 0,
+              label + " submits nothing");
+        check(stats.instances == 0 && stats.instances_exact == 0 &&
+                  stats.instances_stand_in == 0,
+              label + " counts no drawn copy: " + std::to_string(stats.instances));
+    };
+
+    // An undrawable group: the draw loop never reaches the copies.
+    nfsu::PreparedCarScene undrawable = hand_built_stock(
+        placement_geometry(), textures, {by_index(0)}, {exact, stand_in}, error);
+    check(undrawable.draws.size() == 1, "the placement mesh has one material group");
+    undrawable.draws[0].drawable = false;
+    undrawable.draws[0].texture_slot = 9;  // outside the mesh hash list
+    undrawable.draws[0].texture_hash = 0;
+    undrawable.draws[0].binding = nfsu::BindingKind::invalid_slot;
+    undrawable.draws[0].texture = nfsu::kNoHandle;
+    undrawable.draws[0].texture_source = 0;
+    undrawable.draws[0].texture_pack = 0;
+    undrawable.draws[0].texture_record = 0;
+    undrawable.textures.clear();
+    undrawable.unresolved_hashes.clear();
+    store_u32(undrawable.draws[0].raw.data() + 28, undrawable.draws[0].texture_slot);
+    counts_nothing(undrawable, "a mesh whose only group is undrawable");
+
+    // A drawable group with an empty index range: the draw loop reaches
+    // every copy and submits no triangle for any of them.
+    nfsu::PreparedCarScene empty = hand_built_stock(
+        placement_geometry(), textures, {by_index(0)}, {exact, stand_in}, error);
+    empty.draws[0].index_count = 0;
+    store_u32(empty.draws[0].raw.data() + 12, 0);
+    counts_nothing(empty, "a mesh whose only group has no indices");
 }
 
 // A scene changed after preparation is refused before the frame is
@@ -1118,7 +1587,10 @@ int main() {
     test_determinism();
     test_lifetime();
     test_prepare_scene_meshes_contract();
-    test_renderer_refuses_unplaced_instances();
+    test_instance_placement_convention();
+    test_several_instances_of_one_mesh();
+    test_instance_refusals();
+    test_stand_in_placements_are_counted();
     test_hostile_scene();
     test_failure_leaves_outputs_empty();
 
