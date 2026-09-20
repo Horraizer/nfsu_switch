@@ -126,6 +126,20 @@ have already landed, so these rules bind it too.
   one already checked out there.
 - Re-read a shared file immediately before writing it if the write is not part
   of your branch. Another session may have changed it since you last looked.
+- Prefix every file you write into a shared scratch directory with the issue or
+  branch it belongs to and with something that identifies you: a subagent and
+  its dispatcher share the issue. A generic name has already cost work twice in
+  one day. On issue #87 a worker's helper script was overwritten by another
+  session's file of the same name, and the rerun a round later got the
+  replacement, which pointed at a different worktree; it failed on that path
+  rather than running, so nothing false was concluded, and that was luck - a
+  script pointing somewhere valid would have reported a clean mutation sweep
+  over a tree the session was not reviewing. The worker on issue #40 lost a
+  mutation script to another session mid-run.
+- Two rounds of one session reach for the same name, and nothing reserves it, so
+  read a scratch file back before you rerun it and confirm the paths inside it
+  are still your own: a stale file that reads plausibly is indistinguishable
+  from the one you left.
 - Clean up only the files you created, by exact name. Never glob-delete in a
   shared scratch directory. A worktree you did not create is not yours to
   remove either, even when it looks abandoned: leave it, and name it in the
