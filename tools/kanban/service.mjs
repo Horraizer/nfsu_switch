@@ -164,15 +164,21 @@ function tokenSpans(text, token) {
   // that contains a `%hh` sequence of its own, so its literal form is not in
   // `decoded` at all and only the raw pass above can see it.
   //
-  // That is also where the pair stops. Such a token is found whole-literal, by
-  // the raw pass, and whole-encoded, by this one -- but not mixed. The raw
-  // pass needs every character literal, so one other character arriving
-  // encoded leaves only this pass, which has already turned the token's own
-  // `%hh` into the byte it names: `a%2cb` inside `x %61%2cb y` survives both.
-  // Closing it means deciding which `%hh` in the text belongs to the token and
-  // which to the encoding, which the text does not say. A real Gitea token is
-  // `gta_` plus base32 and holds no `%`, so nothing reaches the gap without a
-  // malformed one; README records it rather than this pretending otherwise.
+  // That is also where the pair stops, but the gap is narrower than "anything
+  // mixed". This pass only loses the token's own `%hh` when that sequence
+  // reaches the text wholly literal; let any one of its three characters
+  // arrive encoded -- `a%252cb`, `a%%32cb`, `a%25%32cb` -- and decoding puts
+  // `%hh` back and the comparison matches. So a miss needs both passes to fail
+  // at once: one of the token's own decodable `%hh` sequences arriving wholly
+  // literal, which costs it this pass, and at least one token character
+  // arriving encoded, which costs it the raw pass above. `a%2cb` inside
+  // `x %61%2cb y` is that shape; of the 32 literal-or-encoded mixes of that
+  // token only three -- `%61%2cb`, `a%2c%62`, `%61%2c%62` -- reach the gap,
+  // and the other 29 are redacted. Closing it means deciding which `%hh` in
+  // the text belongs to the token and which to the encoding, which the text
+  // does not say. A real Gitea token is `gta_` plus base32 and holds no `%`,
+  // so nothing reaches the gap without a malformed one; README records it
+  // rather than this pretending otherwise.
   for (const at of occurrences(decoded, token)) {
     spans.push([origin[at], origin[at + token.length]]);
   }
@@ -336,11 +342,12 @@ export function createGiteaClient({
       return (await call(pathname, options)).payload;
     },
 
-    // Stops on an empty page, on a page that is shorter than the pages before
-    // it and satisfies X-Total-Count, or -- once the pages have stopped
-    // advancing at all -- on a row count that exactly matches the stated total.
-    // It must not stop on a short page by itself: Gitea clamps `limit` to its
-    // own maximum, so a short first page is the normal shape on a
+    // Stops on an empty page, or on a page that is shorter than the pages
+    // before it and satisfies X-Total-Count. Those two are the whole set: a
+    // sweep that stops advancing is a failure rather than a third terminator,
+    // and raises 502 below however exactly the rows in hand match the stated
+    // total. It must not stop on a short page by itself: Gitea clamps `limit`
+    // to its own maximum, so a short first page is the normal shape on a
     // conservatively configured instance and used to truncate the board.
     //
     // Offset pagination overlaps whenever rows are inserted or reordered

@@ -1058,13 +1058,16 @@ test("a token whose own characters are percent signs does not wedge the scrub", 
 });
 
 test("the raw and decoded passes leave one documented gap, and it is where README says", () => {
-  // The two passes are not a partition. A token that contains a `%hh` sequence
-  // of its own is found whole-literal, by the raw pass, and whole-encoded, by
-  // the decoded one -- but not mixed, because the raw pass needs every
-  // character literal and the decoded pass has already rewritten the token's
-  // own `%hh` into the byte it names. This pins the gap so that README stays
-  // true and so that a later change which closes it is noticed here rather
-  // than being discovered as a surprise.
+  // The two passes are not a partition. A token that contains a decodable
+  // `%hh` sequence of its own is found whole-literal, by the raw pass, and
+  // whole-encoded, by the decoded one, and is missed only where both fail at
+  // once: that sequence reaching the text wholly literal, which the decoded
+  // pass rewrites into the byte it names, while some other token character
+  // arrived encoded, which the raw pass needs literal. Most mixed arrivals are
+  // still redacted -- `a%252cb` decodes back to `a%2cb` -- so of the 32
+  // literal-or-encoded mixes of that token only three reach the gap. This pins
+  // the gap so that README stays true and so that a later change which closes
+  // it is noticed here rather than being discovered as a surprise.
   assert.equal(scrubSecrets("x a%2cb y", "a%2cb"), "x [redacted] y", "whole-literal is the raw pass");
   assert.equal(scrubSecrets("x %61%25%32%63%62 y", "a%2cb"), "x [redacted] y", "whole-encoded is the decoded pass");
   // The gap: the token's own `%2c` arrives literally while `a` arrives as
