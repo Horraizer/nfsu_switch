@@ -98,12 +98,13 @@ have already landed, so these rules bind it too.
   namespace for a branch the remote does not have yet. Do not check the branch
   out to get a push target - two worktrees cannot hold the same branch, so that
   is the one thing the detached copy exists to avoid.
-- A subagent asked to mutate, build or revert works only in a detached worktree
-  of its own, which the dispatcher creates, names in the assignment with the
-  SHA to work from, and removes once the subagent has reported. The dispatcher
-  does not write to that worktree, and does not move any head a subagent is
-  measuring: the pinned SHA is what leaves the dispatcher free to keep working,
-  and a subagent pointed at a branch has to be told before the branch moves.
+- A subagent asked to mutate, build, measure or revert works only in a detached
+  worktree of its own, which the dispatcher creates, names in the assignment
+  with the SHA to work from, and removes once the subagent has reported. The
+  dispatcher does not write to that worktree, and does not move any head a
+  subagent is measuring: the pinned SHA is what leaves the dispatcher free to
+  keep working, and a subagent pointed at a branch has to be told before the
+  branch moves.
   Both directions have already cost work. On issue #38 an adversarial subagent
   aimed at the worker's own tree ran `git checkout --` during a mutation pass,
   reverted two uncommitted files, overwrote a scratchpad script, and produced
