@@ -168,6 +168,27 @@ So two more texture-info bytes are draw state: `+81` and `+84`. The public
 `texture_draw_layer` / `render_draw_layer` hold the one decoded rule.
 `nfsu_probe textures` and `pack-set` print the row beside the raw pair.
 
+The retail code does not range-check the row, so an out-of-range `+81`
+would index outside the table. It never happens in the data read here. Over
+the 2073 records of the 39 car packs and the four global bundles:
+
+| Row | +84 | +81 | Records |
+| ---: | ---: | ---: | ---: |
+| 0 | 0 | 0 | 1104 |
+| 3 | 0 | 3 | 8 |
+| 5 | 0 | 5 | 359 |
+| 6 | 0 | 6 | 1 |
+| 8 | 1 | 0 | 124 |
+| 11 | 1 | 3 | 23 |
+| 12 | 1 | 4 | 1 |
+| 13 | 1 | 5 | 440 |
+| 14 | 1 | 6 | 12 |
+| 15 | 1 | 7 | 1 |
+
+`+81` is never negative and never above 7, and `+84` is only 0 or 1, so
+every row is inside 0..15 on its own. `nfsu_render` clamps anyway, because
+it must not reproduce an out-of-bounds index.
+
 ### One open slot per texture
 
 `0x40F1E9..0x40F1F5` reads the texture's open slot through
@@ -187,6 +208,14 @@ match in every pack read: 119 records and 3808 bytes in
 The open-slot pointer has exactly three writers: `0x40F222` and `0x40F128`
 set it on append, and `0x40F079` clears it when the flush finishes draining
 that slot. It is not cleared at the start of a flush and not per frame.
+
+The scope that batching therefore covers is one flush cycle. `0x40ED50` has
+14 call sites: 0x409623, 0x4096FF, 0x409724, 0x409763, 0x4097A4, 0x409867,
+0x409972, 0x409983, 0x4099AC, 0x409A55, 0x40ABD3, 0x40D2F1, 0x40D664 and
+0x40D9AB. None of them is inside the per-model material walk at
+0x40C890..0x40CB00, so no flush can split one car's materials and all of
+them share one fill. Whether a fill ever holds more than one car is not
+established here and does not matter for a single-car scene.
 Therefore, inside one queue fill, a material reuses its texture's slot even
 when other textures were submitted in between: the queue batches by
 texture over the whole fill, not over consecutive runs. A mismatched effect
@@ -257,8 +286,12 @@ The listing is contiguous; `0x40F51B` is a `mov`, which leaves the flags of
 | --- | --- | --- |
 | 0 | 5 | `CULLMODE = D3DCULL_NONE` (`0x40F4F2`), `ZWRITEENABLE = TRUE` (`0x40F504`) |
 | 0 | not 5 | `ZWRITEENABLE = TRUE` (`0x40F504`) |
-| nonzero | 5 | `CULLMODE = D3DCULL_CCW` (`0x40F524`), `ZWRITEENABLE = TRUE` (`0x40F536`) |
+| nonzero | 5 | `CULLMODE = D3DCULL_CW` (`0x40F524`), `ZWRITEENABLE = TRUE` (`0x40F536`) |
 | nonzero | not 5 | `ZWRITEENABLE = FALSE` (`0x40F543`) |
+
+The pushed cull values are the literals 1 at `0x40F4ED` and 2 at
+`0x40F51F`. `D3DCULL` is `NONE = 1`, `CW = 2`, `CCW = 3`, so the blended
+branch selects `CW`.
 
 **A blended car draw writes depth.** The `ZWRITEENABLE = FALSE` store is on
 the branch that requires the effect not to be the car effect. No shipped
@@ -405,11 +438,17 @@ six `SetVector` uploads read from (`lea edi` at 0x40FFBC, 0x40FFD7,
 `EnvmapMin.w` at 0x40FCFC and `EnvmapRange.w` at 0x40FD1C. Each vector is
 uploaded whole, so a zeroed W lane reaches the effect as such.
 
-That makes one consequence of the 0x80 branch exact even though the
-coefficient values are undecoded. `diffuse_scale.w` is
-`DiffuseMin.w + vdotn * DiffuseRange.w`, so with both zeroed it is zero
-whatever the object held, and by the two identities below the output alpha
-and the environment term are then zero as well.
+That makes the whole consequence of the 0x80 branch exact even though the
+coefficient values are undecoded. The vertex shader computes
+`OUT.diffuse_color = harmonic(normal) * diffuse_scale` and
+`OUT.specular_color.xyz = specular * specular_lum * specular_scale * 0.5`,
+and the pixel shader computes
+`output = 2 * diffuse_sample * IN.diffuse_color` with
+`output.rgb += 2 * diffuse_color.w * (specular_color + 2 * envmap_color)`.
+With `diffuse_scale` and `specular_scale` zero in every lane, every one of
+those terms is zero, so the effect writes `(0, 0, 0, 0)` whatever
+`HarmonicCoeff`, the texture and the remaining coefficients hold. Colour
+and alpha both vanish, not just the alpha.
 
 This proves branch effects, not friendly names for bits 0x80 and 0x100.
 
@@ -495,10 +534,10 @@ Observed, and applied by `nfsu_render --material-state retail`:
 
 Observed, and not applied, each with its reason:
 
-- the per-draw cull mode, `D3DCULL_NONE` when +86 is 0 and `D3DCULL_CCW`
+- the per-draw cull mode, `D3DCULL_NONE` when +86 is 0 and `D3DCULL_CW`
   when it is not. The reference draws both faces by default because 43
   source triangles of the 240SX wind against their normals, and mapping
-  `D3DCULL_CCW` onto its own screen-space winding needs the retail vertex
+  `D3DCULL_CW` onto its own screen-space winding needs the retail vertex
   and viewport convention proven first. `--cull` stays the diagnostic it
   was;
 - the `DEFAULTALPHA` skip, which no car material reaches;

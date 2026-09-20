@@ -118,9 +118,9 @@ bool decode_sources(
                     texture.source = s;
                     texture.pack = p;
                     texture.record = record.index;
-                    // Info +85 and +86 are read before the record is
-                    // checked, so they are carried even for a record that
-                    // is rejected below.
+                    // Info +81, +84, +85 and +86 are read before the
+                    // record is checked, so they are carried even for a
+                    // record that is rejected below.
                     texture.alpha_test_mode = record.alpha_test_mode;
                     texture.alpha_blend_mode = record.alpha_blend_mode;
                     texture.layer_order = record.layer_order;

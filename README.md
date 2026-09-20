@@ -163,8 +163,9 @@ guessed: the queue buckets a material by two more texture-info bytes,
 batches by texture inside a bucket and keeps depth writes on for blended
 car draws. The undecoded coefficients are explicit options
 (`--material-alpha`, `--environment`, `--environment-color`,
-`--environment-global`) whose defaults make every term vanish, and the
-renderer never supplies a retail value for one. `off` is the default and
+`--environment-global`) whose defaults make the environment term vanish and
+leave the alpha lane at the identity, which is an assumption and not a
+retail value. The renderer never supplies a retail value for one. `off` is the default and
 its frame is byte for byte what it was before the option existed. Decoded textures are
 capped at 128 MiB in total, over all sources together. The viewer never overwrites an existing file:
 it creates `<out>.partial` exclusively and publishes it with a no-replace

@@ -372,8 +372,8 @@ as for source data.
 
 All limits are checked before allocation or before the work starts:
 
-- frame 1..8192 per axis and at most 16777216 pixels (16 bytes per pixel:
-  RGBA8, f64 depth, u32 id; at most 256 MiB)
+- frame 1..8192 per axis and at most 16777216 pixels (17 bytes per pixel:
+  RGBA8, f64 depth, u32 id and the u8 blended mark; at most 272 MiB)
 - at most 2^22 source triangles, 2^24 submitted triangles (over all
   drawable ranges, which may overlap) and 2^24 raster triangles
 - at most 2^32 pixel tests per frame
@@ -495,6 +495,16 @@ stable, because the prepared order is already mesh source order and then
 record order. A group with no resolved texture has no row of its own and
 takes row 0, which is the row a record with both bytes zero selects.
 
+Two details of the reproduction are reference decisions, recorded here
+rather than claimed as retail:
+
+- First use is established by every group, including one that is not
+  drawable. The retail append has no drawable test either, so this is the
+  closer match, but no case was constructed where the two differ.
+- A group with no resolved texture is placed in row 0 and forms its own
+  texture group unless another unresolved group names the same hash. Retail
+  always has a texture-info record, so it never reaches this case.
+
 Two consequences are worth stating because they are not what a renderer
 would choose on its own:
 
@@ -525,6 +535,26 @@ The default "all meshes" profile draws every kit and style variant at once,
 so it stacks transparent surfaces the game would never install together and
 `O` is large. That is a property of the profile, not of the ordering.
 
+### The fragment, in order
+
+A backend reproducing a frame needs the exact chain. For a textured
+fragment that survives both alpha tests and the depth test:
+
+1. `c = texel.rgb`, and with `--vertex-color`, `c = (c * vc + 127) / 255`.
+2. `c = (c * shade + 128) >> 8`, clamped to 255, where `shade` is the flat
+   shade factor of step 11 above. With a closed diffuse gate this step
+   yields 0 instead, because the effect's whole output is zero.
+3. The environment term is added to `c` and the sum is clamped to 255. It
+   is added after the shade, so the reference's diagnostic shading does not
+   scale it; only the texel alpha and the coefficients do.
+4. The blend runs last, with `c` as `src` and the frame as `d`.
+5. The frame's alpha byte is set to 255 and the depth and the owning
+   triangle id are written.
+
+The source alpha used in step 4, and in the alpha test before it, is the
+texel alpha times the alpha lane, never the shaded or environment-modified
+colour.
+
 ### Coefficient and environment gates
 
 The traced coefficient upload zeros whole coefficient vectors before the
@@ -554,7 +584,9 @@ environment_term[k] =
 rounded to the nearest integer and clamped, which is the effect's
 environment identity written in 0..255 units. `--environment MIN,RANGE,POWER`
 and `--environment-color R,G,B` supply `EnvmapMin`, `EnvmapRange`,
-`EnvmapPower` and the cube sample. Their defaults make the term zero.
+`EnvmapPower` and the cube sample. Their defaults make the term zero. The
+alpha lane's default 1,0 does not vanish: it is the identity, which is an
+assumption about an undecoded coefficient, not a retail value.
 
 Two reference decisions are recorded here rather than claimed as retail:
 

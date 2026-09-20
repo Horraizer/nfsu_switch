@@ -736,23 +736,11 @@ int main(int argc, char** argv) {
     }
     print_stats(stats);
     if (options.material_state == nfsu::MaterialStateMode::retail) {
-        // The draw queue row of every drawable group, so the recovered
-        // order can be checked against the pack listing. Fixed width.
-        std::size_t rows[nfsu::kRenderDrawLayerCount] = {};
-        for (const nfsu::PreparedDraw& draw : scene.draws) {
-            if (!draw.drawable) {
-                continue;
-            }
-            int row = 0;
-            if (draw.binding == nfsu::BindingKind::resolved) {
-                const nfsu::RenderTexture& bound = scene.textures[draw.texture];
-                row = nfsu::render_draw_layer(bound.layer_group, bound.layer_order);
-            }
-            ++rows[row];
-        }
+        // The rows the renderer itself assigned, so the report can never
+        // describe an order other than the one that was drawn.
         std::cout << "draw rows:";
         for (int row = 0; row < nfsu::kRenderDrawLayerCount; ++row) {
-            std::cout << ' ' << rows[row];
+            std::cout << ' ' << stats.draw_rows[row];
         }
         std::cout << '\n';
         std::cout << "material groups: alpha_tested " << stats.groups_alpha_tested

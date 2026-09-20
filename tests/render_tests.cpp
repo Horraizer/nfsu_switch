@@ -1010,6 +1010,21 @@ void test_material_gates() {
           "the most common retail flag value keeps all three groups");
     check(gates(0x00018000U, true) == "ds-",
           "a retail flag value without the environment branch bit");
+    // The traced branch zeros the diffuse and the specular vectors
+    // together, so the two can never disagree.
+    bool paired = true;
+    for (int bit = 0; bit < 32 && paired; ++bit) {
+        for (int extra = 0; extra < 4; ++extra) {
+            const std::uint32_t flags =
+                (1U << bit) | (static_cast<std::uint32_t>(extra) * 0x80U);
+            for (int global = 0; global < 2; ++global) {
+                const nfsu::MaterialCoefficientGates g =
+                    nfsu::material_coefficient_gates(flags, global != 0);
+                paired = paired && g.diffuse == g.specular;
+            }
+        }
+    }
+    check(paired, "the diffuse and specular gates are always equal");
 }
 
 void test_material_alpha_test() {
@@ -1204,7 +1219,11 @@ constexpr std::uint32_t kOpaqueHash = 0x66666666U;
 // One mesh with two groups covering the same screen area. Group 0, first in
 // record order, is the quad in front; group 1 is the quad behind it. A
 // frame that blends correctly must therefore have drawn group 0 last.
-nfsu::GeometryReport blend_geometry(std::uint32_t flags) {
+nfsu::GeometryReport blend_geometry(std::uint32_t flags,
+                                    std::uint32_t back_flags = 0xFFFFFFFFU) {
+    if (back_flags == 0xFFFFFFFFU) {
+        back_flags = flags;
+    }
     nfsu::GeometryReport report;
     nfsu::Mesh mesh;
     mesh.index = 0;
@@ -1218,7 +1237,7 @@ nfsu::GeometryReport blend_geometry(std::uint32_t flags) {
     mesh.triangles = {{0, 1, 2}, {0, 2, 3}, {4, 5, 6}, {4, 6, 7}};
     mesh.texture_hashes = {kBlendHash, kOpaqueHash};
     mesh.materials = {material_range(0, 6, 0, flags),
-                      material_range(6, 6, 1, flags)};
+                      material_range(6, 6, 1, back_flags)};
     report.meshes.push_back(mesh);
     return report;
 }
@@ -1315,15 +1334,25 @@ void test_material_state_scene() {
     check(render(scene, half, half_stats) == std::vector<int>({150, 75, 101, 255}),
           "a constant alpha lane scales the source alpha");
 
-    // A closed diffuse gate zeros the alpha lane, so a source-over group
-    // contributes nothing and the group behind it shows unchanged.
+    // A closed diffuse gate zeros the effect's whole output. On the
+    // blended group in front that means it contributes nothing, so the
+    // ungated opaque group behind it shows unchanged.
     nfsu::RenderStats gated_stats;
-    const nfsu::PreparedCarScene gated =
-        prepare_all(blend_geometry(0x00000100U), blend_textures(1, 0));
-    check(render(gated, retail, gated_stats) == std::vector<int>({200, 100, 50, 255}),
-          "a zeroed alpha lane makes a source-over group contribute nothing");
+    const nfsu::PreparedCarScene gated_front =
+        prepare_all(blend_geometry(0x00000100U, 0), blend_textures(1, 0));
+    check(render(gated_front, retail, gated_stats) ==
+              std::vector<int>({200, 100, 50, 255}),
+          "a closed gate makes a source-over group contribute nothing");
     check(gated_stats.fragments_blended > 0,
           "the group is still blended, it just adds nothing");
+    // On the opaque group it means black, not the texel colour, because
+    // the effect writes zero whatever the undecoded coefficients hold.
+    nfsu::RenderStats gated_both_stats;
+    const nfsu::PreparedCarScene gated_both =
+        prepare_all(blend_geometry(0x00000100U), blend_textures(1, 0));
+    check(render(gated_both, retail, gated_both_stats) ==
+              std::vector<int>({0, 0, 0, 255}),
+          "a closed gate writes an opaque group black");
 
     // Both groups blended: the nearer one is drawn second, in the later
     // row, so it composites over the first and the overlap is counted.
@@ -1347,6 +1376,124 @@ void test_material_state_scene() {
           "the alpha-tested group discards fragments");
     check(pixel == std::vector<int>({200, 100, 50, 255}),
           "the quad behind shows through the failed alpha test");
+}
+
+// Three quads, one material group each, at px = depths[k] with texture
+// slot slots[k]. Larger px is nearer the camera. This is the fixture for
+// the two draw order rules a plain sort by row would not reproduce.
+nfsu::GeometryReport order_geometry(const float (&depths)[3],
+                                    const std::uint32_t (&slots)[3]) {
+    nfsu::GeometryReport report;
+    nfsu::Mesh mesh;
+    mesh.index = 0;
+    mesh.name = "ORDER_MESH";
+    mesh.valid = true;
+    for (int k = 0; k < 3; ++k) {
+        const float x = depths[k];
+        mesh.vertices.push_back(vertex(x, 0, -0.5F, 0, 0));
+        mesh.vertices.push_back(vertex(x, 1, -0.5F, 0, 1));
+        mesh.vertices.push_back(vertex(x, 1, 0.5F, 1, 1));
+        mesh.vertices.push_back(vertex(x, 0, 0.5F, 1, 0));
+        const std::uint16_t base = static_cast<std::uint16_t>(k * 4);
+        mesh.triangles.push_back({base, static_cast<std::uint16_t>(base + 1),
+                                  static_cast<std::uint16_t>(base + 2)});
+        mesh.triangles.push_back({base, static_cast<std::uint16_t>(base + 2),
+                                  static_cast<std::uint16_t>(base + 3)});
+        mesh.materials.push_back(
+            material_range(static_cast<std::uint32_t>(k * 6), 6, slots[k]));
+    }
+    mesh.texture_hashes = {kBlendHash, kOpaqueHash};
+    report.meshes.push_back(mesh);
+    return report;
+}
+
+// Two source-over textures in the same row, so nothing but the two order
+// rules inside a row can decide the composite.
+nfsu::RenderTextureSet order_textures() {
+    nfsu::RenderTextureSet set;
+    nfsu::RenderTexture a = make_texture(1, 1);
+    a.hash = kBlendHash;
+    a.rgba = {0, 0, 255, 128};
+    a.alpha_blend_mode = 1;
+    a.layer_order = 5;
+    set.textures.push_back(a);
+    nfsu::RenderTexture b = make_texture(1, 1);
+    b.hash = kOpaqueHash;
+    b.rgba = {255, 0, 0, 200};
+    b.alpha_blend_mode = 1;
+    b.layer_order = 5;
+    set.textures.push_back(b);
+    return set;
+}
+
+void test_draw_order_rules() {
+    nfsu::RenderOptions retail = blend_options();
+    retail.material_state = nfsu::MaterialStateMode::retail;
+    const std::size_t centre =
+        (std::size_t{retail.height / 2} * retail.width + retail.width / 2) * 4U;
+    const auto composite = [&](const float (&depths)[3],
+                               const std::uint32_t (&slots)[3]) {
+        nfsu::Frame frame;
+        nfsu::RenderStats stats;
+        std::string error;
+        check(nfsu::render_scene(
+                  prepare_all(order_geometry(depths, slots), order_textures()),
+                  retail, nfsu::RenderLimits{}, frame, stats, error),
+              "draw order render: " + error);
+        if (frame.rgba().size() < centre + 4U) {
+            return std::vector<int>();
+        }
+        return std::vector<int>({frame.rgba()[centre], frame.rgba()[centre + 1],
+                                 frame.rgba()[centre + 2]});
+    };
+
+    // Rule 2, textures batch in first-use order inside a row. Groups 0 and
+    // 2 share texture A, so the queue draws them together where A was
+    // first used and texture B last: A, A, B. All three quads are
+    // coplanar, so nothing but the order can decide the composite. Over a
+    // black frame that is (0,0,128), then (0,0,192), then (200,0,41).
+    // Submitting in plain record order, A, B, A, would give (100,0,142).
+    const float coplanar[3] = {0.0F, 0.0F, 0.0F};
+    const std::uint32_t a_b_a[3] = {0, 1, 0};
+    check(composite(coplanar, a_b_a) == std::vector<int>({200, 0, 41}),
+          "textures batch in first-use order inside a row");
+
+    // Rule 3, inside one texture the material records keep their order.
+    // Groups 0 and 1 are both texture A, the first farther than the
+    // second, and group 2 is texture B behind both. In record order the
+    // far quad blends first and the near one over it, giving (0,0,192);
+    // the reverse order would let the near quad write depth and reject the
+    // far one, leaving (0,0,128). B is rejected by depth in either case.
+    const float far_near_behind[3] = {0.0F, 1.0F, -1.0F};
+    const std::uint32_t a_a_b[3] = {0, 0, 1};
+    check(composite(far_near_behind, a_a_b) == std::vector<int>({0, 0, 192}),
+          "material records keep their order inside one texture");
+
+    // The row histogram reports what was drawn: three groups, all in row 5.
+    nfsu::Frame frame;
+    nfsu::RenderStats stats;
+    std::string error;
+    check(nfsu::render_scene(
+              prepare_all(order_geometry(coplanar, a_b_a), order_textures()),
+              retail, nfsu::RenderLimits{}, frame, stats, error),
+          "row histogram render: " + error);
+    check(stats.draw_rows[5] == 3, "three drawable groups in row 5");
+    std::uint64_t other_rows = 0;
+    for (int row = 0; row < nfsu::kRenderDrawLayerCount; ++row) {
+        other_rows += row == 5 ? 0 : stats.draw_rows[row];
+    }
+    check(other_rows == 0, "no group in any other row");
+    nfsu::RenderOptions off = blend_options();
+    nfsu::RenderStats off_stats;
+    check(nfsu::render_scene(
+              prepare_all(order_geometry(coplanar, a_b_a), order_textures()),
+              off, nfsu::RenderLimits{}, frame, off_stats, error),
+          "row histogram off render: " + error);
+    std::uint64_t off_rows = 0;
+    for (int row = 0; row < nfsu::kRenderDrawLayerCount; ++row) {
+        off_rows += off_stats.draw_rows[row];
+    }
+    check(off_rows == 0, "material state off assigns no rows");
 }
 
 void test_draw_layer_order() {
@@ -2383,6 +2530,7 @@ int main() {
     test_material_coefficient_validation();
     test_material_state_scene();
     test_draw_layer_order();
+    test_draw_order_rules();
     test_environment_scene();
     test_vertex_color_and_fallback();
     test_bindings();

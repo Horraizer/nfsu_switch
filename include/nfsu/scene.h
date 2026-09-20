@@ -102,6 +102,9 @@ const char* render_blend_mode_name(RenderBlendMode mode) noexcept;
 // name for any flag bit is claimed, and nothing else may be derived from
 // the flags. environment_enabled stands for the runtime global the upload
 // also tests. See docs/MATERIALS.md.
+// The traced branch zeros the diffuse and the specular vectors together,
+// so diffuse and specular are always equal; they are kept apart because the
+// branch names two coefficient groups, and a test pins the equality.
 struct MaterialCoefficientGates {
     bool diffuse = true;
     bool specular = true;

@@ -801,7 +801,10 @@ bool Rasterizer::fill(
                         unsigned char* out = &frame_.rgba_[index * 4U];
                         for (int k = 0; k < 3; ++k) {
                             std::uint32_t value =
-                                std::min<std::uint32_t>(255U, (color[k] * shade + 128U) >> 8U);
+                                material.diffuse_zeroed
+                                    ? 0U
+                                    : std::min<std::uint32_t>(
+                                          255U, (color[k] * shade + 128U) >> 8U);
                             if (environment) {
                                 // 4 * diffuse_scale.w * envmap_sample *
                                 // (EnvmapMin + envvdotn * EnvmapRange), times
@@ -949,8 +952,13 @@ bool render_scene(
                 group[i] = inserted.first->second;
             }
         } catch (const std::bad_alloc&) {
-            error = "not enough memory for the triangle table";
+            error = "not enough memory for the draw order tables";
             return false;
+        }
+        for (std::size_t i = 0; i < scene.draws.size(); ++i) {
+            if (scene.draws[i].drawable) {
+                ++stats.draw_rows[layer[i]];
+            }
         }
         std::stable_sort(order.begin(), order.end(),
                          [&layer, &group](std::uint32_t a, std::uint32_t b) {
@@ -1082,6 +1090,7 @@ bool render_scene(
                     std::floor(std::clamp(k, 0.0, 1.0) * 256.0 + 0.5));
             }
             raster.alpha_scale = zero_alpha_lane ? 0.0 : 1.0;
+            raster.diffuse_zeroed = zero_alpha_lane;
             raster.environment[0] = 0.0;
             raster.environment[1] = 0.0;
             raster.environment[2] = 0.0;

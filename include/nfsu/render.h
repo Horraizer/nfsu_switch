@@ -155,8 +155,10 @@ const char* material_state_mode_name(MaterialStateMode mode) noexcept;
 // yet yield. Nothing here is a retail value and the renderer never invents
 // one: the coefficient objects, the harmonic lighting and the EnvMapTex
 // cube map are all still undecoded (docs/MATERIALS.md). The defaults make
-// every term vanish, so selecting MaterialStateMode::retail alone changes
-// no coefficient. Supplying values is a diagnostic.
+// the environment term vanish and leave the alpha lane at the identity 1,
+// which is an assumption and not a retail value; selecting
+// MaterialStateMode::retail alone therefore changes no coefficient.
+// Supplying values is a diagnostic.
 struct MaterialCoefficients {
     // diffuse_scale.w = alpha_min + vdotn * alpha_range. The effect uses it
     // as the output alpha scale and as the environment term scale. The
@@ -268,6 +270,9 @@ struct RenderStats {
     std::uint64_t pixels_drawn = 0;
     std::uint64_t pixels_fallback = 0;
     std::uint64_t pixels_blended = 0;
+    // Drawable groups per retail draw queue row, in row order. All zero
+    // with MaterialStateMode::off, which assigns no rows.
+    std::uint64_t draw_rows[kRenderDrawLayerCount] = {};
     // Bounds of drawn pixels, inclusive; valid when pixels_drawn > 0.
     std::uint32_t min_x = 0;
     std::uint32_t min_y = 0;
@@ -326,6 +331,12 @@ struct RasterMaterial {
     // Source alpha is the texel alpha times this factor, rounded and
     // clamped to 0..255. 1 is the identity.
     double alpha_scale = 1.0;
+    // The diffuse coefficient gate is closed. The traced upload then zeros
+    // every lane of DiffuseMin and DiffuseRange, which makes the whole
+    // effect output zero, colour as well as alpha, whatever the undecoded
+    // coefficients and lighting hold. The fragment is written black and
+    // contributes nothing through either blend.
+    bool diffuse_zeroed = false;
     // Environment term for this triangle, in 0..255 units per channel and
     // already scaled by everything but the texel alpha; the fragment adds
     // environment[k] * texel_alpha / 255. Zero unless the environment gate
