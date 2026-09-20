@@ -20,6 +20,14 @@ export const COLUMNS = [
   { id: "state/done", title: "Done", tone: "emerald" },
 ];
 
+export const DONE_COLUMN = "state/done";
+
+// Gitea marshals an empty label set as [], but older releases and some proxies
+// return null. Every reader goes through this so no call site has to remember.
+export function labelList(issue) {
+  return Array.isArray(issue?.labels) ? issue.labels : [];
+}
+
 export function isPullRequest(issue) {
   if (issue?.pull_request) {
     return true;
@@ -29,11 +37,10 @@ export function isPullRequest(issue) {
 
 export function issueColumn(issue) {
   if (issue?.state === "closed") {
-    return "state/done";
+    return DONE_COLUMN;
   }
 
-  const labels = Array.isArray(issue?.labels) ? issue.labels : [];
-  const stateLabel = labels
+  const stateLabel = labelList(issue)
     .map((label) => label?.name)
     .find((name) => STATE_LABELS.includes(name));
   return stateLabel ?? "state/backlog";
@@ -49,15 +56,17 @@ export function nextLabelIds(issue, targetLabel, labels) {
     throw new Error(`Missing Gitea label: ${targetLabel}`);
   }
 
-  const existing = Array.isArray(issue?.labels) ? issue.labels : [];
-  const retained = existing
+  const retained = labelList(issue)
     .filter((label) => !STATE_LABELS.includes(label.name))
     .map((label) => label.id);
   return [...retained, target.id];
 }
 
+export function targetStateFor(targetLabel) {
+  return targetLabel === DONE_COLUMN ? "closed" : "open";
+}
+
 export function normalizeIssue(issue) {
-  const labels = Array.isArray(issue.labels) ? issue.labels : [];
   return {
     number: issue.number,
     title: issue.title,
@@ -67,10 +76,28 @@ export function normalizeIssue(issue) {
     updatedAt: issue.updated_at,
     assignee: issue.assignee?.login ?? null,
     milestone: issue.milestone?.title ?? null,
-    labels: labels.map((label) => ({
+    labels: labelList(issue).map((label) => ({
       id: label.id,
       name: label.name,
       color: label.color,
     })),
   };
+}
+
+// The response for an accepted move is built from state the server already
+// knows, so a move that Gitea applied can never be reported as a failure by a
+// read-back that happens to fail afterwards.
+export function projectMovedIssue(issue, targetLabel, labels) {
+  const targetState = targetStateFor(targetLabel);
+  const retained = labelList(issue).filter((label) => !STATE_LABELS.includes(label.name));
+  const target = labels.find((label) => label.name === targetLabel);
+  return normalizeIssue({
+    ...issue,
+    state: targetState,
+    labels: [...retained, ...(target ? [target] : [])],
+  });
+}
+
+export function isValidIssueNumber(value) {
+  return Number.isSafeInteger(value) && value >= 1;
 }

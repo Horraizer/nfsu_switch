@@ -447,6 +447,15 @@ main {
   text-align: center;
 }
 
+/* A column whose Gitea label does not exist cannot accept a move. */
+.column.unavailable {
+  opacity: 0.55;
+}
+
+.column.unavailable .column-signal {
+  background: #4a5464;
+}
+
 .toast {
   position: fixed;
   z-index: 30;
