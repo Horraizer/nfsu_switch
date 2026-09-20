@@ -539,6 +539,17 @@ model, and draw 3 in 9 instances.
   installed part is drawn at the car's own matrix. See
   [`PART_PLACEMENT.md`](PART_PLACEMENT.md). The lateral term of the drawn
   wheel matrix is still open there.
+- Markers of a mesh that failed geometry validation are not collected here,
+  and the game would collect them. `parse_geometry` withdraws the marker
+  records of a mesh it rejects, so by the time the collector at 0x0056BDB0
+  is reproduced there is nothing left to collect for that mesh, while the
+  game reads the `0x0013401A` list without consulting the solid's validity.
+  Where this would bite, a slot whose exhaust or licence-plate marker lived
+  on a rejected mesh would be reported `no marker` instead of drawn. No
+  surveyed retail car reaches it: the collector reads each slot's LOD A
+  model, and the one rejected mesh in the survey - `ECLIPSE_KIT00_SPOILER_D`,
+  slot 11 at LOD D - is not a LOD A model, so ECLIPSE collects the same 27
+  markers at every LOD.
 
 ## Still unknown
 

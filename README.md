@@ -143,15 +143,17 @@ instead; all may be repeated and mixed, at most 256 selectors and
 16384 name bytes. Selected meshes are always drawn in source order. An
 out-of-range index, an unknown or ambiguous hash, an unknown, empty or
 ambiguous name, or a mesh selected twice is a usage error (exit 1) and
-nothing is written. Neither viewer profile is
-the game's stock car. That assembly is a third `PreparedCarScene` profile,
-built by `nfsu::prepare_stock_car_scene` and printed by `nfsu_probe
-stock-scene`, but the viewer does not offer it: the CPU renderer draws
-each prepared mesh in its own space and does not apply the instance
-transforms the profile carries, so it refuses that profile rather than
-draw a car's four wheels at the origin. Paint and skin are still the
-caller's explicit selection (see `docs/CAR_SCENE.md`,
-`docs/PART_PLACEMENT.md` and `docs/RENDERER.md`).
+nothing is written. Neither profile is the game's stock car, and neither is
+the third `PreparedCarScene` profile: that one is this project's
+reproduction of the stock assembly as far as it is decoded, built by
+`nfsu::prepare_stock_car_scene` and printed by `nfsu_probe stock-scene`,
+and `docs/CAR_SCENE.md` says what a "stock" part set does and does not
+cover. The viewer does not offer it either: the CPU renderer draws each
+prepared mesh in its own space and does not apply the instance transforms
+the profile carries, so it refuses that profile rather than draw a car's
+four wheels at the origin. Paint and skin are still the caller's explicit
+selection (see `docs/CAR_SCENE.md`, `docs/PART_PLACEMENT.md` and
+`docs/RENDERER.md`).
 
 ## Body-skin compositor reference
 

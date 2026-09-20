@@ -164,6 +164,18 @@ bool build_stock_scene(
         error = "a stock car scene needs at least one geometry source";
         return false;
     }
+    // Before the source list is walked, not after. prepare_scene_meshes
+    // checks the same limit, but it is called at the end, and everything
+    // between here and there is work proportional to the source list: this
+    // function validates every source and then builds the loaded-solid map
+    // over every mesh of every one of them. Refusing a list that is already
+    // over the limit costs one comparison; refusing it down there costs all
+    // of that first.
+    if (sources.size() > limits.max_sources) {
+        error = std::to_string(sources.size()) + " geometry sources; the limit is " +
+                std::to_string(limits.max_sources);
+        return false;
+    }
     for (std::size_t s = 0; s < sources.size(); ++s) {
         if (sources[s] == nullptr) {
             error = "geometry source " + std::to_string(s) + " is null";
@@ -284,7 +296,9 @@ bool build_stock_scene(
         const Mesh& mesh = sources[home.source]->meshes[home.index];
         if (!mesh.valid) {
             // The parser withdraws the markers of a mesh it rejected, so
-            // there is nothing to collect. The game would collect them.
+            // there is nothing to collect. The game would collect them:
+            // a known divergence, listed under "Still open after this
+            // slice" in docs/CAR_SCENE.md.
             continue;
         }
         for (std::size_t m = 0; m < mesh.markers.size(); ++m) {

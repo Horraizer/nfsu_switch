@@ -1423,7 +1423,8 @@ int main(int argc, char** argv) {
     if (scene.profile == nfsu::SelectionProfile::explicit_subset) {
         std::cout << "selection: " << nfsu::selection_profile_name(scene.profile)
                   << ", " << scene.meshes.size() << " of "
-                  << scene.source_mesh_counts.front() << " meshes, " << scene.selectors.size() << " selectors\n";
+                  << scene.source_mesh_counts.front() << " meshes, "
+                  << scene.selectors.size() << " selectors\n";
         for (const nfsu::PreparedMesh& mesh : scene.meshes) {
             const nfsu::MeshSelector& selector = scene.selectors[mesh.selector];
             std::cout << "selected: mesh " << mesh.source_index << " name "

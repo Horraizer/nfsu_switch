@@ -36,6 +36,11 @@ constexpr std::uint32_t kPlateA = 0x00008001U;
 constexpr std::uint32_t kMirrorA = 0x0000A001U;
 constexpr std::uint32_t kAbsentBase = 0x00009001U;
 constexpr std::uint32_t kAbsentSpoiler = 0x00009002U;
+// A requested hash and the fallback hash under it, both held by no source.
+// The retail pair they stand in for is consecutive the same way: GOLF slot
+// 11 SPOILER asks for 0xBE64804B and falls back to 0xBE64804C.
+constexpr std::uint32_t kAbsentTrunk = 0x00009003U;
+constexpr std::uint32_t kAbsentTrunkFallback = 0x00009004U;
 
 // Source mesh positions of the car file, in the order car_source builds
 // them.
@@ -257,6 +262,20 @@ bool prepare(const std::vector<const nfsu::GeometryReport*>& sources,
                                          report, error);
 }
 
+// prepare() with a part database of the caller's own, for a case that
+// needs a record stock_records() does not carry.
+bool prepare_records(const std::vector<RecordSpec>& records,
+                     const std::vector<const nfsu::GeometryReport*>& sources,
+                     const nfsu::StockSceneRequest& request,
+                     nfsu::PreparedCarScene& scene,
+                     nfsu::StockSceneReport& report,
+                     std::string& error) {
+    return nfsu::prepare_stock_car_scene(sources, nfsu::RenderTextureSet{},
+                                         build_database(records), build_car_types(),
+                                         request, nfsu::SceneLimits{}, scene, report,
+                                         error);
+}
+
 nfsu::StockSceneRequest request_at(std::size_t lod) {
     nfsu::StockSceneRequest request;
     request.car_type_name = kCar;
@@ -429,6 +448,47 @@ void test_fallback_lod() {
           "the mirror still draws at LOD B");
     check(slot_of(report, 15).lod == 0 && slot_of(report, 18).lod == 0,
           "the exhaust and the plate always take LOD A");
+}
+
+// A record whose requested hash is absent and whose fallback hash is absent
+// too. This is a live retail path, not a contrived one: eleven of the twenty
+// retail racers reach it, among them GOLF slot 11 SPOILER, which asks for
+// 0xBE64804B, falls back to 0xBE64804C and finds neither in any loaded
+// source, and SKYLINE slot 9 TRUNK with 0xABE49618 and 0xABE49619.
+//
+// It is also the only shape that reports the fallback hash as absent. A
+// fallback that resolves never reaches that branch, and a record that names
+// nothing at LOD B leaves the fallback at zero, which is what the spoiler of
+// stock_records() does - so every other case in this file would keep
+// passing if the fallback were dropped from the absent list.
+void test_absent_fallback() {
+    const nfsu::GeometryReport car = car_source();
+    const nfsu::GeometryReport brakes = brake_source();
+    const nfsu::GeometryReport plates = plate_source();
+    const std::vector<const nfsu::GeometryReport*> sources{&car, &brakes, &plates};
+    std::vector<RecordSpec> records = stock_records();
+    records.push_back({kCar.c_str(), 9, 0, "TESTCAR_TRUNK",
+                       {kAbsentTrunk, kAbsentTrunkFallback, 0, 0}, 0, 0});
+    nfsu::PreparedCarScene scene;
+    nfsu::StockSceneReport report;
+    std::string error;
+    check(prepare_records(records, sources, request_at(0), scene, report, error),
+          "absent fallback: " + error);
+    const nfsu::StockSlotReport& trunk = slot_of(report, 9);
+    check(trunk.outcome == nfsu::StockSlotOutcome::mesh_absent,
+          "a slot whose fallback is absent too draws nothing");
+    check(trunk.requested_hash == kAbsentTrunk && trunk.hash == kAbsentTrunkFallback &&
+              trunk.model == nfsu::PartModelSource::fallback,
+          "the slot still reports the fallback it could not resolve");
+    check(trunk.instance_count == 0, "an absent part places no instance");
+    // Both hashes. The requested one is what the record named and the
+    // fallback is what the game looks for next, so a caller tracking down
+    // which mesh is missing from a source needs the pair, not the half of
+    // it the record happens to spell out.
+    check(report.absent_hashes == std::vector<std::uint32_t>(
+                                      {kAbsentSpoiler, kAbsentTrunk,
+                                       kAbsentTrunkFallback}),
+          "the requested hash and the fallback hash are both reported absent");
 }
 
 void test_mirror_and_pass_lod_rules() {
@@ -685,10 +745,32 @@ void test_request_and_source_errors() {
     check(error.find("instances") != std::string::npos,
           "the limit error names instances: " + error);
     check(empty_outputs(scene, report), "a refused limit leaves both outputs empty");
+
+    // The source limit, and that it is checked before the source list is
+    // walked. The second entry here is null, which the per-source loop
+    // further down would refuse: naming the limit rather than the null
+    // source is what says the count was checked first, so an over-long
+    // list costs one comparison and not a pass over every mesh of every
+    // source in it.
+    nfsu::SceneLimits one_source;
+    one_source.max_sources = 1;
+    check(!prepare({&car, nullptr}, request_at(0), scene, report, error, one_source),
+          "the source limit is enforced");
+    check(error.find("geometry sources; the limit is 1") != std::string::npos,
+          "the limit is refused before the sources are read: " + error);
+    check(empty_outputs(scene, report), "a refused source limit leaves both outputs empty");
 }
 
 // validate_prepared_scene is a backend's guard against a scene that was
 // changed after it was prepared.
+//
+// Every case here names the guard it is aiming at and checks the reported
+// text, not just that some guard refused the scene. A tamper usually trips
+// more than one check, so a bare "it was refused" passes just as happily
+// when a later guard catches what an earlier one was meant to: removing the
+// instance mesh bound still leaves the no-instance check refusing this
+// scene, and the two non-stock-profile guards each refuse what the other
+// was written for. Naming the text is what makes one case pin one guard.
 void test_validation_rejects_tampering() {
     const nfsu::GeometryReport car = car_source();
     const nfsu::GeometryReport brakes = brake_source();
@@ -699,41 +781,59 @@ void test_validation_rejects_tampering() {
     std::string error;
     check(prepare(sources, request_at(0), prepared, report, error),
           "tamper base: " + error);
+    const auto refused = [&error](const nfsu::PreparedCarScene& scene,
+                                  const std::string& label,
+                                  const std::string& expected) {
+        error.clear();
+        check(!nfsu::validate_prepared_scene(scene, error), label + " is rejected");
+        check(error.find(expected) != std::string::npos,
+              label + " names '" + expected + "': " + error);
+    };
 
+    // The mesh handle is what indexes the drawn-mesh list a few lines
+    // further down, so this bound is the one whose loss is an out-of-bounds
+    // write rather than a wrong answer.
     nfsu::PreparedCarScene scene = prepared;
     scene.instances[0].mesh = scene.meshes.size();
-    check(!nfsu::validate_prepared_scene(scene, error),
-          "an instance outside the mesh list is rejected");
+    refused(scene, "an instance outside the mesh list", "invalid mesh handle");
 
     scene = prepared;
     scene.instances[0].transform[3] = std::numeric_limits<float>::quiet_NaN();
-    check(!nfsu::validate_prepared_scene(scene, error),
-          "a transform that is not finite is rejected");
+    refused(scene, "a transform that is not finite", "not finite");
 
     scene = prepared;
     scene.instances[0].mesh_hash = 0x12345678U;
-    check(!nfsu::validate_prepared_scene(scene, error),
-          "an instance hash that is not its mesh's is rejected");
+    refused(scene, "an instance hash that is not its mesh's",
+            "names a hash its prepared mesh does not have");
 
     scene = prepared;
     scene.instances.erase(scene.instances.begin());
-    check(!nfsu::validate_prepared_scene(scene, error),
-          "a prepared mesh with no instance is rejected");
+    refused(scene, "a prepared mesh with no instance", "has no instance to draw it");
+
+    // The two non-stock-profile guards, one at a time. A stock scene that
+    // only changes profile trips both, so each case here removes what the
+    // other guard looks at: no instances for the source-count guard, one
+    // source for the instance guard.
+    scene = prepared;
+    scene.profile = nfsu::SelectionProfile::all_meshes;
+    scene.instances.clear();
+    refused(scene, "several sources outside the stock profile",
+            "names several geometry sources");
 
     scene = prepared;
     scene.profile = nfsu::SelectionProfile::all_meshes;
-    check(!nfsu::validate_prepared_scene(scene, error),
-          "instances outside the stock profile are rejected");
+    scene.source_mesh_counts.resize(1);
+    refused(scene, "instances outside the stock profile", "carries instances");
 
     scene = prepared;
     scene.source_mesh_counts.resize(1);
-    check(!nfsu::validate_prepared_scene(scene, error),
-          "a mesh outside its source is rejected");
+    refused(scene, "a mesh outside its source",
+            "is not in ascending source order inside the source");
 
     scene = prepared;
     scene.skipped_invalid_meshes.push_back(1);
-    check(!nfsu::validate_prepared_scene(scene, error),
-          "the stock profile skips no meshes");
+    refused(scene, "a stock profile that skips a mesh",
+            "the stock car profile skips no meshes");
 }
 
 } // namespace
@@ -743,6 +843,7 @@ int main() {
     test_lod_a();
     test_duplicate_part();
     test_fallback_lod();
+    test_absent_fallback();
     test_mirror_and_pass_lod_rules();
     test_wheel_placement();
     test_marker_placement();

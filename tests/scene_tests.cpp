@@ -742,8 +742,95 @@ void test_lifetime() {
     check(same_scene(scene, snapshot), "scene unchanged");
 }
 
-// A scene changed after preparation is refused before the frame is
-// allocated, never read out of bounds.
+// prepare_scene_meshes is public API with an input contract its own callers
+// inside this library never violate: prepare_car_scene hands it refs it
+// resolved itself, and prepare_stock_car_scene hands it refs it built from
+// a part database. The guards exist for a caller that does neither, and
+// nothing above this function re-checks them - it does not run the prepared
+// scene through validate_prepared_scene, so what it accepts it returns.
+//
+// The bounds guard is the one whose loss is not a wrong answer: the mesh
+// lookup a few lines under it indexes both the source list and that
+// source's meshes with the values the guard just checked.
+void test_prepare_scene_meshes_contract() {
+    const nfsu::GeometryReport geometry = scene_geometry();
+    const nfsu::GeometryReport second = scene_geometry();
+    const std::vector<const nfsu::GeometryReport*> one{&geometry};
+    const std::vector<const nfsu::GeometryReport*> two{&geometry, &second};
+    const nfsu::RenderTextureSet textures = scene_textures();
+    nfsu::PreparedCarScene scene;
+    std::string error;
+    const auto prepare_refs =
+        [&](const std::vector<const nfsu::GeometryReport*>& sources,
+            const std::vector<nfsu::SceneMeshRef>& refs) {
+            error.clear();
+            return nfsu::prepare_scene_meshes(sources, refs, {}, textures,
+                                              nfsu::SceneLimits{}, scene, error);
+        };
+    const auto refused = [&](const std::vector<const nfsu::GeometryReport*>& sources,
+                             const std::vector<nfsu::SceneMeshRef>& refs,
+                             const std::string& label, const std::string& expected) {
+        check(!prepare_refs(sources, refs), label + " refused");
+        check(error.find(expected) != std::string::npos,
+              label + " names '" + expected + "': " + error);
+        check(empty_scene(scene), label + " leaves the scene empty");
+    };
+
+    // The contract held, so a refusal below is the guard talking and not the
+    // input being unusable for some other reason. Meshes 0, 2, 3 and 4 of
+    // scene_geometry() are valid; mesh 1 is the one that failed validation.
+    check(prepare_refs(one, {{0, 0}, {0, 2}, {0, 3}}), "in-contract input: " + error);
+    check(scene.meshes.size() == 3 && scene.source_mesh_counts.size() == 1,
+          "three meshes of one source");
+    check(prepare_refs(two, {{0, 0}, {0, 4}, {1, 2}}), "two sources: " + error);
+    check(scene.meshes.size() == 3 && scene.source_mesh_counts.size() == 2,
+          "meshes taken from both sources");
+
+    // The bounds guard, each half on its own.
+    refused(one, {{1, 0}}, "a source outside the source list",
+            "is outside its geometry source");
+    refused(two, {{2, 0}}, "a source past the last of two",
+            "is outside its geometry source");
+    refused(one, {{0, 5}}, "a mesh one past its source's last",
+            "is outside its geometry source");
+    refused(one, {{0, 0}, {0, 99}}, "a mesh far outside its source",
+            "is outside its geometry source");
+
+    // Strictly ascending in (source, index). A repeat would copy one mesh
+    // twice and a step backwards would reorder the draw list against the
+    // order the caller asked for.
+    refused(one, {{0, 2}, {0, 0}}, "meshes in descending index order",
+            "is not in ascending source and mesh order");
+    refused(one, {{0, 0}, {0, 0}}, "the same mesh named twice",
+            "is not in ascending source and mesh order");
+    refused(two, {{1, 0}, {0, 2}}, "sources in descending order",
+            "is not in ascending source and mesh order");
+
+    // An invalid mesh has no geometry to draw, first in the list and in the
+    // middle of it.
+    refused(one, {{0, 1}}, "an invalid mesh alone", "is invalid and cannot be drawn");
+    refused(one, {{0, 0}, {0, 1}, {0, 2}}, "an invalid mesh among valid ones",
+            "is invalid and cannot be drawn");
+
+    // The rest of the same contract.
+    refused({}, {{0, 0}}, "no geometry source at all",
+            "needs at least one geometry source");
+    refused({&geometry, nullptr}, {{0, 0}}, "a null geometry source", "is null");
+    nfsu::SceneLimits limits;
+    limits.max_sources = 1;
+    error.clear();
+    check(!nfsu::prepare_scene_meshes(two, {{0, 0}}, {}, textures, limits, scene, error),
+          "more sources than the limit refused");
+    check(error.find("the limit is 1") != std::string::npos,
+          "the source limit error names the limit: " + error);
+    error.clear();
+    check(!nfsu::prepare_scene_meshes(one, {{0, 0}, {0, 2}}, {7}, textures,
+                                      nfsu::SceneLimits{}, scene, error),
+          "a selector list that does not cover every mesh refused");
+    check(error.find("does not cover every selected mesh") != std::string::npos,
+          "the selector error says so: " + error);
+}
+
 // A stock car scene carries transforms this renderer does not apply, so it
 // is refused rather than drawn in the wrong place. The profile is set by
 // hand here: building one needs the part database layer above this test.
@@ -773,6 +860,8 @@ void test_renderer_refuses_unplaced_instances() {
     check(frame.width() == 0 && frame.rgba().empty(), "the refusal allocates no frame");
 }
 
+// A scene changed after preparation is refused before the frame is
+// allocated, never read out of bounds.
 void test_hostile_scene() {
     const nfsu::GeometryReport geometry = scene_geometry();
     nfsu::PreparedCarScene good;
@@ -1028,6 +1117,7 @@ int main() {
     test_bindings_and_records();
     test_determinism();
     test_lifetime();
+    test_prepare_scene_meshes_contract();
     test_renderer_refuses_unplaced_instances();
     test_hostile_scene();
     test_failure_leaves_outputs_empty();
