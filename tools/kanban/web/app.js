@@ -1,5 +1,9 @@
 import { columnShortName, resolveMoveOutcome, riskToken } from "./shared.mjs";
 
+// Exported for the test suite. The page loads this file as a module, where an
+// export costs nothing, and the two rules below are the ones a reviewer proved
+// were wrong before: a message that must survive, and one that must not appear.
+
 const state = {
   board: null,
   draggedTask: null,
@@ -24,11 +28,21 @@ const elements = {
 
 const escapeColor = (color) => (/^[0-9a-f]{6}$/i.test(color) ? `#${color}` : "#8190a5");
 
-function showToast(message, isError = false, holdMs = 2600) {
+// A long hold is a request to be read: the drift message exists to be acted on,
+// and a routine confirmation must not wipe it after 2.6 seconds. An error is
+// never suppressed, whatever is on screen, because the operator cannot act on a
+// problem they are not shown; a suppressed success still shows itself by moving
+// the card.
+export function showToast(message, isError = false, holdMs = 2600) {
+  const now = Date.now();
+  if (!isError && showToast.until && now + holdMs < showToast.until) {
+    return;
+  }
   elements.toast.textContent = message;
   elements.toast.classList.toggle("error", isError);
   elements.toast.classList.add("visible");
   clearTimeout(showToast.timer);
+  showToast.until = now + holdMs;
   showToast.timer = setTimeout(() => elements.toast.classList.remove("visible"), holdMs);
 }
 
@@ -208,7 +222,7 @@ async function requestJson(url, options) {
   return payload;
 }
 
-async function loadBoard({ quiet = false } = {}) {
+export async function loadBoard({ quiet = false } = {}) {
   elements.refresh.disabled = true;
   elements.connection.className = "connection";
   elements.connection.lastChild.textContent = " Connecting to Gitea";
@@ -230,7 +244,12 @@ async function loadBoard({ quiet = false } = {}) {
   } catch (error) {
     elements.connection.className = "connection error";
     elements.connection.lastChild.textContent = " Gitea connection failed";
-    showToast(error.message, true);
+    // A quiet refresh is reporting, not the operator's action. Its failure is
+    // worth a connection pill, never a toast that buries the result of the
+    // write it followed.
+    if (!quiet) {
+      showToast(error.message, true);
+    }
     throw error;
   } finally {
     elements.refresh.disabled = false;
@@ -288,7 +307,8 @@ async function moveTask(number, column) {
   }
 
   // The refresh is reporting, not part of the write. Its failure must not
-  // change what the board believes about a write Gitea already accepted.
+  // change what the board believes about a write Gitea already accepted, and
+  // must not replace the message that explains what the write did.
   await loadBoard({ quiet: true }).catch(() => {});
 
   if (failure) {

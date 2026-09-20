@@ -1,16 +1,28 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { appendFileSync } from "node:fs";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import os from "node:os";
 import net from "node:net";
 import path from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  GiteaError,
   HttpError,
+  createConsoleLogger,
+  STALLED_PAGE_LIMIT,
   createGiteaClient,
   createKanbanServer,
+  isDefiniteRejection,
+  limitToDeclaredLength,
+  moveIssue,
   resolveStaticPath,
+  scrubSecrets,
   silentLogger,
 } from "./service.mjs";
 
@@ -66,6 +78,12 @@ async function startFakeGitea(handler) {
     } catch (error) {
       result = { status: 500, payload: { message: String(error) } };
     }
+    if (result.destroy) {
+      // The request arrived and may well have been applied; the answer never
+      // comes back. This is the shape that makes an outcome unknown.
+      request.socket.destroy();
+      return;
+    }
     const text = result.text ?? JSON.stringify(result.payload ?? null);
     response.writeHead(result.status ?? 200, {
       "Content-Type": result.contentType ?? "application/json",
@@ -78,18 +96,24 @@ async function startFakeGitea(handler) {
   return { origin: `http://127.0.0.1:${port}`, calls, close: () => close(server) };
 }
 
-async function startKanban({ giteaOrigin, token = "test-token", repository = "owner/repo" }) {
+async function startKanban({
+  giteaOrigin,
+  token = "test-token",
+  repository = "owner/repo",
+  logger = silentLogger,
+  webRoot = WEB_ROOT,
+}) {
   const port = await freePort();
   const client = createGiteaClient({ baseUrl: giteaOrigin, token });
   const server = createKanbanServer({
     client,
     repository,
     giteaBaseUrl: giteaOrigin,
-    webRoot: WEB_ROOT,
+    webRoot,
     host: "127.0.0.1",
     port,
     instanceId: "test-instance",
-    logger: silentLogger,
+    logger,
   });
   await listen(server, port);
   return { port, origin: `http://127.0.0.1:${port}`, close: () => close(server) };
@@ -165,9 +189,9 @@ function pagedReply(items, { pageSize, totalHeader = true }) {
   };
 }
 
-async function withServers(handler, run) {
+async function withServers(handler, run, kanbanOptions = {}) {
   const gitea = await startFakeGitea(handler);
-  const kanban = await startKanban({ giteaOrigin: gitea.origin });
+  const kanban = await startKanban({ giteaOrigin: gitea.origin, ...kanbanOptions });
   try {
     return await run({ gitea, kanban });
   } finally {
@@ -290,9 +314,8 @@ test("the move endpoint gates method, media type, body size and body shape", asy
       "Connection: close",
     ], "{ x");
     assert.equal(badJson.status, 400);
+    // The authored text, not the parser's, which would name a byte offset.
     assert.equal(badJson.json.error, "Request body is not valid JSON");
-    // The raw parser message must not be handed to the browser.
-    assert.equal(/position|JSON at/i.test(badJson.json.error), false);
   });
 });
 
@@ -331,6 +354,12 @@ test("static paths cannot escape the web root, and a malformed escape is 404 not
     const ok = await rawRequest(port, ["GET / HTTP/1.1", `Host: 127.0.0.1:${port}`, "Connection: close"]);
     assert.equal(ok.status, 200);
 
+    // `new URL` normalizes a dot segment before the guard is reached, so
+    // "/../lib.mjs", "/%2e%2e/lib.mjs" and "/../web-secrets/f.txt" arrive as
+    // ordinary paths inside the web root and 404 because no such file exists.
+    // They are kept because that normalization is itself load-bearing. The
+    // backslash forms are not normalized and do reach the guard, and the
+    // sibling-directory escape is pinned by the unit test below.
     for (const path of [
       "/../lib.mjs",
       "/%2e%2e/lib.mjs",
@@ -785,10 +814,17 @@ test("the server exits when the launcher that owns it disappears", { timeout: 60
   try {
     await waitForInstance(port, "lifetime-test");
     parent.kill();
+    // The losing side of this race must be cleared. An uncleared 30 second
+    // timer held the event loop open long after the assertions were done and
+    // made a mandated gate run twenty times longer than its own work.
+    let timer = null;
     const code = await Promise.race([
       exited,
-      new Promise((resolve) => setTimeout(() => resolve("timeout"), 30_000)),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve("timeout"), 30_000);
+      }),
     ]);
+    clearTimeout(timer);
     assert.equal(code, 0, "the orphaned server should shut itself down");
   } finally {
     parent.kill();
@@ -820,4 +856,648 @@ test("the instance endpoint identifies the process that owns the port", async ()
     assert.equal(res.json.instance, "test-instance");
     assert.equal(res.json.pid, process.pid);
   });
+});
+
+// ------------------------------------------------------ malformed labels ---
+
+test("a label array with malformed elements neither crashes nor writes a null id", async () => {
+  const brokenLabels = [null, LABELS[0], "state/working", 7, LABELS[1]];
+  const handler = (call) => {
+    if (call.method === "GET" && call.path === "/repos/owner/repo/issues/42") {
+      return { status: 200, payload: openIssue({ labels: brokenLabels }) };
+    }
+    if (call.path === "/repos/owner/repo/labels" && call.method === "GET") {
+      return pagedReply(LABELS, { pageSize: 50 })(call);
+    }
+    if (call.path === "/repos/owner/repo/issues") {
+      return pagedReply([openIssue({ labels: brokenLabels })], { pageSize: 50 })(call);
+    }
+    if (call.path === "/repos/owner/repo/pulls") {
+      return pagedReply([], { pageSize: 50 })(call);
+    }
+    if (call.method === "PUT") {
+      return { status: 200, payload: LABELS };
+    }
+    return { status: 404, payload: { message: "unhandled" } };
+  };
+
+  await withServers(handler, async ({ gitea, kanban }) => {
+    const board = await rawRequest(kanban.port, ["GET /api/board HTTP/1.1", `Host: 127.0.0.1:${kanban.port}`, "Connection: close"]);
+    assert.equal(board.status, 200, "a malformed label element must not become a 500");
+    assert.equal(board.json.tasks.length, 1);
+    // A label with no name cannot be rendered, and the client reads .name.
+    assert.deepEqual(board.json.tasks[0].labels.map((label) => label.name), ["agent/claude", "state/working"]);
+
+    const moved = await movePost(kanban.port, 42, "state/review");
+    assert.equal(moved.status, 200, `expected an accepted move, got ${moved.body}`);
+
+    const put = gitea.calls.find((call) => call.method === "PUT");
+    assert.deepEqual(put.body.labels, [10, 13], "only real label ids may be written back");
+  });
+});
+
+// ------------------------------------------------- unknown move outcomes ---
+
+test("an unanswered state change is reported as unknown instead of rolled back", async () => {
+  const handler = (call) => {
+    if (call.method === "GET" && call.path === "/repos/owner/repo/issues/42") {
+      return { status: 200, payload: openIssue() };
+    }
+    if (call.path === "/repos/owner/repo/labels" && call.method === "GET") {
+      return pagedReply(LABELS, { pageSize: 50 })(call);
+    }
+    if (call.method === "PUT" && call.path === "/repos/owner/repo/issues/42/labels") {
+      return { status: 200, payload: LABELS };
+    }
+    if (call.method === "PATCH") {
+      // Gitea may well have applied this; the answer just never arrives.
+      return { destroy: true };
+    }
+    return { status: 404, payload: { message: "unhandled" } };
+  };
+
+  await withServers(handler, async ({ gitea, kanban }) => {
+    const res = await movePost(kanban.port, 42, "state/done");
+    assert.equal(res.status, 502);
+    assert.equal(res.json.partial, true, "an unknown outcome must not be reported as a clean failure");
+    assert.equal(res.json.reverted, false);
+    assert.match(res.json.error, /unknown whether/i);
+    assert.match(res.json.error, /#42/);
+
+    const puts = gitea.calls.filter((call) => call.method === "PUT");
+    assert.equal(puts.length, 1, "rolling back an outcome Gitea may have applied creates the inverse drift");
+  });
+});
+
+test("a refused state change is still rolled back, so the two outcomes stay distinct", async () => {
+  const handler = (call) => {
+    if (call.method === "GET" && call.path === "/repos/owner/repo/issues/42") {
+      return { status: 200, payload: openIssue() };
+    }
+    if (call.path === "/repos/owner/repo/labels" && call.method === "GET") {
+      return pagedReply(LABELS, { pageSize: 50 })(call);
+    }
+    if (call.method === "PUT") {
+      return { status: 200, payload: LABELS };
+    }
+    if (call.method === "PATCH") {
+      return { status: 403, payload: { message: "state change forbidden" } };
+    }
+    return { status: 404, payload: { message: "unhandled" } };
+  };
+
+  await withServers(handler, async ({ gitea, kanban }) => {
+    const res = await movePost(kanban.port, 42, "state/done");
+    assert.equal(res.status, 502);
+    assert.equal(res.json.reverted, true);
+    assert.equal(res.json.partial, false);
+    assert.equal(gitea.calls.filter((call) => call.method === "PUT").length, 2);
+  });
+});
+
+// -------------------------------------------------- token secrecy, again ---
+
+test("the token reaches neither the response nor the log", async () => {
+  const CANARY = "gta_review_canary_0123456789abcdef0123456789abcd";
+  const echoing = () => ({
+    status: 502,
+    text: `<html>proxy error. Upstream received: Authorization: token ${CANARY}</html>`,
+    contentType: "text/html",
+    headers: { "X-Echoed-Authorization": `token ${CANARY}` },
+  });
+
+  const logged = [];
+  const record = (message) => logged.push(String(message));
+  const logger = createConsoleLogger({ log: record, warn: record, error: record });
+
+  await withServers(
+    echoing,
+    async ({ kanban }) => {
+      const res = await rawRequest(kanban.port, ["GET /api/board HTTP/1.1", `Host: 127.0.0.1:${kanban.port}`, "Connection: close"]);
+      assert.equal(res.status, 502);
+      assert.equal(res.json.error, "Gitea request failed (HTTP 502)");
+      // Head and body both, so a leak into a response header is caught too.
+      assert.equal(res.head.includes(CANARY), false, "the token must not appear in any response header");
+      assert.equal(res.body.includes(CANARY), false, "the token must not appear in the response body");
+    },
+    { token: CANARY, logger },
+  );
+
+  assert.ok(logged.length > 0, "the upstream failure should have been logged");
+  const transcript = logged.join("\n");
+  assert.equal(transcript.includes(CANARY), false, `the token leaked to the log: ${transcript}`);
+  assert.match(transcript, /\[redacted\]/);
+});
+
+test("scrubSecrets removes the credential from every string it can reach", () => {
+  const token = "gta_secret_value_0123456789abcdef";
+  // The literal value goes wherever it appears, with or without a header shape.
+  assert.equal(scrubSecrets(`sent: token ${token}`, token), "sent: token [redacted]");
+  assert.equal(scrubSecrets(`bare ${token} here`, token), "bare [redacted] here");
+  // A credential this process never held is still scrubbed by its header shape.
+  assert.equal(
+    scrubSecrets("Authorization: token someone-elses-secret", token),
+    "Authorization: token [redacted]",
+  );
+  assert.deepEqual(
+    scrubSecrets({ message: `Authorization: token ${token}`, nested: [`bare ${token}`] }, token),
+    { message: "Authorization: token [redacted]", nested: ["bare [redacted]"] },
+  );
+  // An empty token must not turn every character into a redaction.
+  assert.equal(scrubSecrets("nothing to hide", ""), "nothing to hide");
+  assert.equal(scrubSecrets(42, token), 42);
+  assert.equal(scrubSecrets(null, token), null);
+});
+
+// ------------------------------------------------------- content length ----
+
+test("the declared content length is what the response actually delivers", async () => {
+  await withServers(() => ({ status: 200, payload: [] }), async ({ kanban }) => {
+    for (const asset of ["/", "/app.js", "/styles.css", "/shared.mjs"]) {
+      const res = await rawRequest(kanban.port, [`GET ${asset} HTTP/1.1`, `Host: 127.0.0.1:${kanban.port}`, "Connection: close"]);
+      assert.equal(res.status, 200, `${asset} should be served`);
+      const declared = Number.parseInt(/content-length: (\d+)/i.exec(res.head)?.[1] ?? "-1", 10);
+      assert.equal(Buffer.byteLength(res.body, "utf8"), declared, `${asset} delivered a body of a different length`);
+    }
+  });
+});
+
+test("the length limiter truncates an overrun and fails a short read", async () => {
+  const collect = async (chunks, expected) => {
+    const seen = [];
+    await pipeline(
+      Readable.from(chunks),
+      limitToDeclaredLength(expected),
+      async function (stream) {
+        for await (const chunk of stream) {
+          seen.push(chunk);
+        }
+      },
+    );
+    return Buffer.concat(seen);
+  };
+
+  // A file that grew after the header went out must not spill into the next
+  // response on a keep-alive connection.
+  const truncated = await collect([Buffer.from("AAAA"), Buffer.from("BBBB")], 4);
+  assert.equal(truncated.toString(), "AAAA");
+
+  const exact = await collect([Buffer.from("AAAA"), Buffer.from("BB")], 6);
+  assert.equal(exact.toString(), "AAAABB");
+
+  // A file that shrank is a destroyed connection, not a short body that looks
+  // complete.
+  await assert.rejects(
+    () => collect([Buffer.from("AAA")], 6),
+    /static body was 3 bytes, header declared 6/,
+  );
+});
+
+// ------------------------------------------------- pagination robustness ---
+
+function stubbedClient({ pages, total, maxPages = 6 }) {
+  const requested = [];
+  return {
+    requested,
+    client: createGiteaClient({
+      baseUrl: "http://127.0.0.1:1",
+      token: "t",
+      maxPages,
+      fetchImpl: async (url) => {
+        const page = Number.parseInt(new URL(url).searchParams.get("page") ?? "1", 10);
+        requested.push(page);
+        return new Response(JSON.stringify(pages(page)), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            ...(total === null ? {} : { "X-Total-Count": String(total) }),
+          },
+        });
+      },
+    }),
+  };
+}
+
+test("a total that is smaller than the first page is not trusted as a terminator", async () => {
+  const rows = Array.from({ length: 74 }, (_, index) => ({ id: index + 1, number: index + 1 }));
+  for (const total of ["1", "0", "-5", "1e3", "not-a-number"]) {
+    const { client } = stubbedClient({
+      pages: (page) => rows.slice((page - 1) * 30, page * 30),
+      total,
+    });
+    const collected = await client.paginate("/repos/owner/repo/issues");
+    assert.equal(collected.length, 74, `X-Total-Count: ${total} silently truncated the sweep`);
+  }
+});
+
+test("overlapping pages are counted by identity, so the sweep cannot end early", async () => {
+  const rows = Array.from({ length: 74 }, (_, index) => ({ id: index + 1, number: index + 1 }));
+  // Offset pagination overlaps whenever rows move mid-sweep, which is what
+  // agents dragging cards do. Page 2 repeats page 1 and page 3 resumes.
+  const shape = (page) => {
+    if (page === 1 || page === 2) {
+      return rows.slice(0, 30);
+    }
+    return rows.slice((page - 2) * 30, (page - 1) * 30);
+  };
+  const { client } = stubbedClient({ pages: shape, total: "74", maxPages: 10 });
+  const collected = await client.paginate("/repos/owner/repo/issues");
+  assert.equal(collected.length, 74);
+  assert.equal(new Set(collected.map((row) => row.id)).size, 74, "every row should be present exactly once");
+});
+
+test("a page that never advances fails loudly instead of truncating or hammering", async () => {
+  const rows = Array.from({ length: 30 }, (_, index) => ({ id: index + 1, number: index + 1 }));
+  const { client, requested } = stubbedClient({ pages: () => rows, total: "74", maxPages: 200 });
+  await assert.rejects(() => client.paginate("/repos/owner/repo/issues"), /stopped advancing/);
+  // Without the stall check this shape asked for every page up to the safety
+  // limit, on each of the three endpoints the board loads.
+  // The first page genuinely advanced; the next three added nothing.
+  assert.equal(requested.length, STALLED_PAGE_LIMIT + 1, "a stuck sweep must not run to the safety limit");
+});
+
+test("overlap that eventually resolves is tolerated rather than called a stall", async () => {
+  const rows = Array.from({ length: 74 }, (_, index) => ({ id: index + 1, number: index + 1 }));
+  // Two consecutive repeats, which is within the tolerance, then progress.
+  const shape = (page) => {
+    if (page <= 3) {
+      return rows.slice(0, 30);
+    }
+    return rows.slice((page - 3) * 30, (page - 2) * 30);
+  };
+  const { client } = stubbedClient({ pages: shape, total: "74", maxPages: 20 });
+  const collected = await client.paginate("/repos/owner/repo/issues");
+  assert.equal(collected.length, 74);
+});
+
+test("a duplicated page in a real board request does not hide tasks", async () => {
+  const issues = Array.from({ length: 40 }, (_, index) => ({
+    id: 1000 + index,
+    number: index + 1,
+    title: `Issue ${index + 1}`,
+    state: "open",
+    html_url: `https://git.example/owner/repo/issues/${index + 1}`,
+    labels: [],
+  }));
+  const handler = (call) => {
+    if (call.path === "/repos/owner/repo/labels") {
+      return pagedReply(LABELS, { pageSize: 50 })(call);
+    }
+    if (call.path === "/repos/owner/repo/pulls") {
+      return pagedReply([], { pageSize: 50 })(call);
+    }
+    if (call.path === "/repos/owner/repo/issues") {
+      const page = Number.parseInt(call.query.page ?? "1", 10);
+      const slice = page <= 2 ? issues.slice(0, 20) : issues.slice((page - 2) * 20, (page - 1) * 20);
+      return { status: 200, payload: slice, headers: { "X-Total-Count": "40" } };
+    }
+    return { status: 404, payload: { message: "unhandled" } };
+  };
+
+  await withServers(handler, async ({ kanban }) => {
+    const res = await rawRequest(kanban.port, ["GET /api/board HTTP/1.1", `Host: 127.0.0.1:${kanban.port}`, "Connection: close"]);
+    assert.equal(res.status, 200);
+    assert.equal(res.json.tasks.length, 40);
+    assert.equal(new Set(res.json.tasks.map((task) => task.number)).size, 40);
+  });
+});
+
+// --------------------------------------------- upstream failure classes ---
+
+/**
+ * moveIssue talks only to `client`, so a stub is the precise way to present a
+ * single upstream failure of a single shape to a single call.
+ */
+function stubClient({ issue = openIssue(), labels = LABELS, patchFailure }) {
+  const calls = [];
+  return {
+    calls,
+    request: async (pathname, options = {}) => {
+      const method = options.method ?? "GET";
+      calls.push({ method, pathname, body: options.body });
+      if (method === "PATCH") {
+        throw patchFailure();
+      }
+      if (method === "PUT") {
+        return labels;
+      }
+      return issue;
+    },
+    paginate: async () => labels,
+  };
+}
+
+function moveWithFailure(patchFailure) {
+  const client = stubClient({ patchFailure });
+  return {
+    client,
+    run: () =>
+      moveIssue({ client, repository: "owner/repo", number: 42, targetLabel: "state/done" }),
+  };
+}
+
+function unreachable({ requestSent }) {
+  const error = new HttpError(502, "Gitea is unreachable");
+  error.requestSent = requestSent;
+  return error;
+}
+
+test("a gateway status is an unknown outcome, not a refusal to roll back against", async () => {
+  // GITEA_BASE is an https host, so there is a TLS terminator in front of
+  // Gitea and a 502/504 can be emitted after the PATCH was forwarded.
+  for (const status of [500, 502, 503, 504, 408]) {
+    const { client, run } = moveWithFailure(() => new GiteaError(status, "gateway"));
+    await assert.rejects(run, (error) => {
+      assert.equal(error.status, 502, `status ${status}`);
+      assert.equal(error.extra.partial, true, `status ${status} must be reported as unknown`);
+      assert.equal(error.extra.reverted, false);
+      assert.match(error.message, /unknown whether/i);
+      return true;
+    });
+    const puts = client.calls.filter((call) => call.method === "PUT");
+    assert.equal(puts.length, 1, `status ${status} must not roll back a change Gitea may have applied`);
+  }
+});
+
+test("a refusal by something that read the request is rolled back", async () => {
+  for (const status of [400, 401, 403, 404, 409, 422, 429]) {
+    const { client, run } = moveWithFailure(() => new GiteaError(status, "refused"));
+    await assert.rejects(run, (error) => {
+      assert.equal(error.extra.reverted, true, `status ${status} should roll back`);
+      assert.equal(error.extra.partial, false);
+      return true;
+    });
+    const puts = client.calls.filter((call) => call.method === "PUT");
+    assert.equal(puts.length, 2, `status ${status} should have written and rolled back`);
+  }
+});
+
+test("a connection that was never established is rolled back, a dropped one is not", async () => {
+  const refused = moveWithFailure(() => unreachable({ requestSent: false }));
+  await assert.rejects(refused.run, (error) => {
+    assert.equal(error.extra.reverted, true, "a request that never arrived did not change anything");
+    return true;
+  });
+  assert.equal(refused.client.calls.filter((call) => call.method === "PUT").length, 2);
+
+  const dropped = moveWithFailure(() => unreachable({ requestSent: true }));
+  await assert.rejects(dropped.run, (error) => {
+    assert.equal(error.extra.partial, true, "a dropped answer leaves the outcome unknown");
+    return true;
+  });
+  assert.equal(dropped.client.calls.filter((call) => call.method === "PUT").length, 1);
+});
+
+test("isDefiniteRejection separates a read request from an unanswered one", () => {
+  assert.equal(isDefiniteRejection(new GiteaError(403, "x")), true);
+  assert.equal(isDefiniteRejection(new GiteaError(422, "x")), true);
+  assert.equal(isDefiniteRejection(new GiteaError(408, "x")), false);
+  assert.equal(isDefiniteRejection(new GiteaError(504, "x")), false);
+  assert.equal(isDefiniteRejection(unreachable({ requestSent: false })), true);
+  assert.equal(isDefiniteRejection(unreachable({ requestSent: true })), false);
+  assert.equal(isDefiniteRejection(new TypeError("terminated")), false);
+});
+
+test("a connection refused by the OS is marked as never sent", async () => {
+  const port = await freePort();
+  const client = createGiteaClient({ baseUrl: `http://127.0.0.1:${port}`, token: "t" });
+  await assert.rejects(
+    () => client.request("/repos/owner/repo/labels"),
+    (error) => {
+      assert.equal(error.status, 502);
+      assert.equal(error.requestSent, false, "nothing was listening, so nothing was delivered");
+      assert.equal(isDefiniteRejection(error), true);
+      return true;
+    },
+  );
+});
+
+test("a socket that dies during the body is a 502, not a runtime error as a 500", async () => {
+  // The body read used to sit outside the try around fetch, so this rejected
+  // with a bare TypeError and reached the browser as a 500.
+  const server = createServer((request, response) => {
+    response.writeHead(200, { "Content-Type": "application/json", "Content-Length": "4096" });
+    response.write("[");
+    // The pause matters: fetch must resolve its headers first, so the failure
+    // lands on the body read rather than on the fetch itself.
+    setTimeout(() => request.socket.destroy(), 150);
+  });
+  const port = await listen(server);
+  try {
+    const client = createGiteaClient({ baseUrl: `http://127.0.0.1:${port}`, token: "t" });
+    await assert.rejects(
+      () => client.request("/repos/owner/repo/issues/42"),
+      (error) => {
+        assert.ok(error instanceof HttpError, `expected an HttpError, got ${error?.name}: ${error?.message}`);
+        assert.equal(error.status, 502);
+        assert.equal(error.message, "Gitea is unreachable", "no runtime text may reach the browser");
+        assert.equal(error.requestSent, true, "the request reached the server before the body died");
+        return true;
+      },
+    );
+  } finally {
+    await close(server);
+  }
+});
+
+test("an issue payload that is not an issue is refused before any write", async () => {
+  for (const payload of [null, "not an issue", 7, []]) {
+    const calls = [];
+    const client = {
+      request: async (pathname, options = {}) => {
+        calls.push({ method: options.method ?? "GET", pathname });
+        return payload;
+      },
+      paginate: async () => LABELS,
+    };
+    await assert.rejects(
+      () => moveIssue({ client, repository: "owner/repo", number: 42, targetLabel: "state/done" }),
+      (error) => {
+        assert.equal(error.status, 502);
+        assert.equal(error.message, "Gitea returned an unexpected issue payload");
+        return true;
+      },
+    );
+    assert.equal(
+      calls.some((call) => call.method === "PUT" || call.method === "PATCH"),
+      false,
+      `payload ${JSON.stringify(payload)} must not reach a write that would clear the labels`,
+    );
+  }
+});
+
+// ------------------------------------------------ label ids that cannot be --
+
+test("a label the board cannot write back fails the move instead of being deleted", async () => {
+  const unusableId = [{ id: Number.MAX_SAFE_INTEGER + 2, name: "area/render" }, LABELS[1]];
+  const handler = (call) => {
+    if (call.method === "GET" && call.path === "/repos/owner/repo/issues/42") {
+      return { status: 200, payload: openIssue({ labels: unusableId }) };
+    }
+    if (call.path === "/repos/owner/repo/labels" && call.method === "GET") {
+      return pagedReply(LABELS, { pageSize: 50 })(call);
+    }
+    return { status: 200, payload: LABELS };
+  };
+
+  await withServers(handler, async ({ gitea, kanban }) => {
+    const res = await movePost(kanban.port, 42, "state/review");
+    assert.equal(res.status, 409);
+    assert.match(res.json.error, /no id this board can write back/);
+    // Silently dropping it would have deleted area/render and reported success.
+    assert.equal(gitea.calls.some((call) => call.method === "PUT"), false);
+  });
+});
+
+test("a target label with no usable id fails the move", async () => {
+  const handler = (call) => {
+    if (call.method === "GET" && call.path === "/repos/owner/repo/issues/42") {
+      return { status: 200, payload: openIssue() };
+    }
+    if (call.path === "/repos/owner/repo/labels" && call.method === "GET") {
+      return pagedReply([LABELS[0], LABELS[1], { id: "13", name: "state/review" }], { pageSize: 50 })(call);
+    }
+    return { status: 200, payload: LABELS };
+  };
+
+  await withServers(handler, async ({ gitea, kanban }) => {
+    const res = await movePost(kanban.port, 42, "state/review");
+    assert.equal(res.status, 409);
+    assert.match(res.json.error, /state\/review has no id/);
+    assert.equal(gitea.calls.some((call) => call.method === "PUT"), false);
+  });
+});
+
+// ------------------------------------------------------ scrubbing corners ---
+
+test("the token is removed from keys and from values below the depth cap", () => {
+  const token = "gta_deep_canary_0123456789abcdef";
+  const deep = { a: { b: { c: { d: { e: { f: { g: `token ${token}` } } } } } } };
+  assert.equal(JSON.stringify(scrubSecrets(deep, token)).includes(token), false, "a deep value must not survive");
+
+  const nestedArrays = [[[[[[[`token ${token}`]]]]]]];
+  assert.equal(JSON.stringify(scrubSecrets(nestedArrays, token)).includes(token), false, "a deep array must not survive");
+
+  const inKey = { [`hdr-token ${token}`]: "x" };
+  assert.equal(JSON.stringify(scrubSecrets(inKey, token)).includes(token), false, "a key must not survive");
+});
+
+// ------------------------------------------------- untested guarantees -----
+
+test("a rollback never writes a null label id, even for the state label", async () => {
+  // nextLabelIds vets every label it keeps, but it removes state labels before
+  // that check, so the rollback set is the one place an unusable state-label id
+  // can still reach a PUT body.
+  const unsafeStateLabel = { id: Number.MAX_SAFE_INTEGER + 2, name: "state/working" };
+  const handler = (call) => {
+    if (call.method === "GET" && call.path === "/repos/owner/repo/issues/42") {
+      return { status: 200, payload: openIssue({ labels: [LABELS[0], unsafeStateLabel] }) };
+    }
+    if (call.path === "/repos/owner/repo/labels" && call.method === "GET") {
+      return pagedReply(LABELS, { pageSize: 50 })(call);
+    }
+    if (call.method === "PUT") {
+      return { status: 200, payload: LABELS };
+    }
+    if (call.method === "PATCH") {
+      return { status: 403, payload: { message: "state change forbidden" } };
+    }
+    return { status: 404, payload: { message: "unhandled" } };
+  };
+
+  await withServers(handler, async ({ gitea, kanban }) => {
+    const res = await movePost(kanban.port, 42, "state/done");
+    assert.equal(res.status, 502);
+    assert.equal(res.json.reverted, true);
+
+    const puts = gitea.calls.filter((call) => call.method === "PUT");
+    assert.equal(puts.length, 2);
+    assert.deepEqual(puts[1].body.labels, [10], "the rollback must not write a null id");
+    assert.equal(puts[1].body.labels.includes(null), false);
+  });
+});
+
+test("a runtime failure inside nextLabelIds is not relayed as a 409", async () => {
+  // moveIssue takes any client, so this is the shape that still reaches
+  // nextLabelIds with something it cannot use. The narrowed catch must let it
+  // through as a defect rather than dress it up as a board condition.
+  const client = {
+    request: async () => openIssue(),
+    paginate: async () => "not an array",
+  };
+  await assert.rejects(
+    () => moveIssue({ client, repository: "owner/repo", number: 42, targetLabel: "state/review" }),
+    (error) => {
+      assert.equal(error instanceof HttpError, false, "a runtime failure is not an answer for the browser");
+      assert.equal(error.status, undefined);
+      return true;
+    },
+  );
+});
+
+test("a file that grows while it is being sent is truncated to its declared length", async () => {
+  // The limiter has its own unit test; this one proves it is actually in the
+  // response pipeline. A large file so the append lands mid-transfer.
+  const webRoot = await mkdtemp(path.join(os.tmpdir(), "kanban-webroot-"));
+  const assetPath = path.join(webRoot, "big.js");
+  const half = Buffer.alloc(4 * 1024 * 1024, "A");
+  await writeFile(assetPath, half);
+
+  const warnings = [];
+  const logger = { info() {}, warn: (message) => warnings.push(String(message)), error() {} };
+
+  await withServers(
+    () => ({ status: 200, payload: [] }),
+    async ({ kanban }) => {
+      const { declared, delivered } = await new Promise((resolve, reject) => {
+        const socket = net.connect(kanban.port, "127.0.0.1");
+        let head = "";
+        let headerEnd = -1;
+        let bodyBytes = 0;
+        let grown = false;
+        socket.on("connect", () => {
+          socket.write(`GET /big.js HTTP/1.1\r\nHost: 127.0.0.1:${kanban.port}\r\nConnection: close\r\n\r\n`);
+        });
+        socket.on("data", (chunk) => {
+          if (headerEnd < 0) {
+            head += chunk.toString("latin1");
+            headerEnd = head.indexOf("\r\n\r\n");
+            if (headerEnd >= 0) {
+              bodyBytes += Buffer.byteLength(head.slice(headerEnd + 4), "latin1");
+              head = head.slice(0, headerEnd);
+            }
+            if (!grown) {
+              grown = true;
+              appendFileSync(assetPath, Buffer.alloc(4 * 1024 * 1024, "B"));
+            }
+            return;
+          }
+          bodyBytes += chunk.length;
+        });
+        socket.on("error", reject);
+        socket.on("close", () => {
+          const match = /content-length: (\d+)/i.exec(head);
+          resolve({ declared: Number.parseInt(match?.[1] ?? "-1", 10), delivered: bodyBytes });
+        });
+      });
+
+      assert.equal(declared, half.length, "the header should describe the file as it was opened");
+      assert.equal(
+        delivered,
+        declared,
+        `a file that grew must not overrun its declared length: declared ${declared}, delivered ${delivered}`,
+      );
+      assert.ok(
+        (await stat(assetPath)).size > declared,
+        "the harness failed to grow the file, so nothing was exercised",
+      );
+      assert.ok(
+        warnings.some((message) => message.includes("grew by")),
+        `an overrun should be logged, saw ${JSON.stringify(warnings)}`,
+      );
+    },
+    { webRoot, logger },
+  );
+
+  await rm(webRoot, { recursive: true, force: true });
 });

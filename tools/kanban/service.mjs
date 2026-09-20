@@ -1,13 +1,16 @@
 import { open } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
+import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 import {
+  BoardLabelError,
   COLUMNS,
   STATE_LABELS,
   isPullRequest,
   isValidIssueNumber,
+  labelIds,
   labelList,
   nextLabelIds,
   normalizeIssue,
@@ -17,6 +20,10 @@ import {
 
 export const PAGE_LIMIT = 50;
 export const MAX_PAGES = 200;
+// Consecutive pages that add no new row before the sweep is declared stuck.
+// More than one tolerates the overlap that offset pagination produces when
+// rows are deleted mid-sweep.
+export const STALLED_PAGE_LIMIT = 3;
 export const MAX_BODY_BYTES = 16_384;
 
 const MIME_TYPES = new Map([
@@ -39,13 +46,101 @@ export class HttpError extends Error {
 
 // Upstream status is safe to name; `detail` is the upstream body and stays on
 // the server, because a proxy or WAF in front of Gitea can echo the request
-// headers, and those headers carry the token.
+// headers, and those headers carry the token. `detail` still reaches the log,
+// so the caller scrubs the credential out of it before constructing this.
 export class GiteaError extends Error {
   constructor(status, detail) {
     super(`Gitea request failed (HTTP ${status})`);
     this.name = "GiteaError";
     this.giteaStatus = status;
     this.detail = detail;
+  }
+}
+
+// A connection that was never established cannot have delivered the request,
+// so a write that failed this way is known not to have been applied.
+const UNSENT_ERROR_CODES = new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ERR_INVALID_URL",
+  "CERT_HAS_EXPIRED",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+]);
+
+function isUnsentFailure(error) {
+  const codes = [error?.code, error?.cause?.code, error?.cause?.errors?.[0]?.code];
+  return codes.some((code) => typeof code === "string" && UNSENT_ERROR_CODES.has(code));
+}
+
+// A 4xx is a refusal by something that read and understood the request, so the
+// issue is known not to have changed. A 5xx or a request timeout can be
+// produced by a gateway that had already forwarded the request -- and
+// GITEA_BASE is an https host, so there is a TLS terminator in front of Gitea
+// by construction. Rolling back on those would undo a change Gitea applied.
+const AMBIGUOUS_UPSTREAM_STATUS = new Set([408]);
+
+export function isDefiniteRejection(error) {
+  if (error instanceof GiteaError) {
+    return (
+      error.giteaStatus >= 400 &&
+      error.giteaStatus < 500 &&
+      !AMBIGUOUS_UPSTREAM_STATUS.has(error.giteaStatus)
+    );
+  }
+  return error instanceof HttpError && error.requestSent === false;
+}
+
+const REDACTED = "[redacted]";
+const MAX_SCRUB_DEPTH = 6;
+// Keeps the scheme, drops the credential, and stops at the delimiters that end
+// a header value inside JSON, HTML or a plain-text proxy page.
+const AUTH_HEADER = /((?:authorization|private-token|x-auth-token)"?\s*[:=]\s*"?)(token |bearer |basic )?[^\s"'<>,;)&]+/gi;
+
+function scrubText(text, token) {
+  const masked = text.replace(AUTH_HEADER, (_match, prefix, scheme) => `${prefix}${scheme ?? ""}${REDACTED}`);
+  // Unconditional, so the guarantee does not depend on the token's shape. A
+  // pathologically short token over-redacts the log, which is the safe side.
+  return token ? masked.split(token).join(REDACTED) : masked;
+}
+
+/**
+ * Removes the token from an upstream payload before it is logged. The payload
+ * is whatever the proxy chose to send, so this walks strings inside objects and
+ * arrays as well, with a depth cap because the shape is not ours.
+ */
+export function scrubSecrets(value, token, depth = 0) {
+  if (typeof value === "string") {
+    return scrubText(value, token);
+  }
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+  if (depth >= MAX_SCRUB_DEPTH) {
+    // Flattening rather than returning the subtree, because returning it would
+    // hand every string inside it to the log unscrubbed.
+    return scrubText(flatten(value), token);
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => scrubSecrets(entry, token, depth + 1));
+  }
+  const scrubbed = {};
+  for (const [key, entry] of Object.entries(value)) {
+    // Keys too: a proxy that echoes a header can put the credential in one.
+    scrubbed[scrubText(String(key), token)] = scrubSecrets(entry, token, depth + 1);
+  }
+  return scrubbed;
+}
+
+function flatten(value) {
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
   }
 }
 
@@ -80,6 +175,16 @@ function sendJson(response, statusCode, payload) {
   response.end(body);
 }
 
+// Only a value that identifies a row. NaN is excluded deliberately: a Set
+// treats every NaN as the same key, so two distinct rows would collapse.
+function identityKey(item) {
+  const raw = item?.id ?? item?.number;
+  if (typeof raw === "number") {
+    return Number.isSafeInteger(raw) ? `n${raw}` : null;
+  }
+  return typeof raw === "string" ? `s${raw}` : null;
+}
+
 export function createGiteaClient({
   baseUrl,
   token,
@@ -93,6 +198,7 @@ export function createGiteaClient({
     }
 
     let response;
+    let text;
     try {
       response = await fetchImpl(`${baseUrl}/api/v1${pathname}`, {
         method,
@@ -104,11 +210,16 @@ export function createGiteaClient({
         },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
+      // The body read belongs to the same exchange. A socket that dies after
+      // the headers rejects here with a bare TypeError, which is neither an
+      // HttpError nor a GiteaError and reached the browser as a 500.
+      text = await response.text();
     } catch (error) {
-      throw new HttpError(502, "Gitea is unreachable", {}, { cause: error });
+      const failure = new HttpError(502, "Gitea is unreachable", {}, { cause: error });
+      failure.requestSent = response !== undefined || !isUnsentFailure(error);
+      throw failure;
     }
 
-    const text = await response.text();
     let payload = null;
     if (text) {
       try {
@@ -119,7 +230,8 @@ export function createGiteaClient({
     }
 
     if (!response.ok) {
-      throw new GiteaError(response.status, payload?.message ?? payload ?? response.statusText);
+      const detail = payload?.message ?? payload ?? response.statusText;
+      throw new GiteaError(response.status, scrubSecrets(detail, token));
     }
     return { payload, headers: response.headers };
   }
@@ -129,12 +241,20 @@ export function createGiteaClient({
       return (await call(pathname, options)).payload;
     },
 
-    // Stops on an empty page, or as soon as X-Total-Count is satisfied. It must
-    // not stop on a short page: Gitea clamps `limit` to its own maximum, so a
-    // short first page is the normal shape on a conservatively configured
-    // instance and used to truncate the board silently.
+    // Stops on an empty page, or as soon as a trusted X-Total-Count is
+    // satisfied. It must not stop on a short page: Gitea clamps `limit` to its
+    // own maximum, so a short first page is the normal shape on a
+    // conservatively configured instance and used to truncate the board.
+    //
+    // Offset pagination overlaps whenever rows are inserted or reordered
+    // mid-sweep, which is exactly what agents moving cards do, so rows are
+    // counted by identity. Counting raw rows let a repeated page satisfy the
+    // total while real tasks were still unfetched.
     async paginate(pathname) {
       const result = [];
+      const seen = new Set();
+      let trustedTotal = null;
+      let stalled = 0;
       const separator = pathname.includes("?") ? "&" : "?";
       for (let page = 1; page <= maxPages; page += 1) {
         const { payload, headers } = await call(
@@ -143,12 +263,41 @@ export function createGiteaClient({
         if (!Array.isArray(payload)) {
           throw new HttpError(502, "Gitea returned an invalid paginated response");
         }
-        result.push(...payload);
         if (payload.length === 0) {
           return result;
         }
-        const total = Number.parseInt(headers?.get?.("x-total-count") ?? "", 10);
-        if (Number.isSafeInteger(total) && result.length >= total) {
+        const before = result.length;
+        for (const item of payload) {
+          const key = identityKey(item);
+          if (key === null) {
+            // Nothing to compare, so it cannot be proved to be a repeat. Keeping
+            // it risks a duplicate; dropping it would lose a real row.
+            result.push(item);
+            continue;
+          }
+          if (!seen.has(key)) {
+            seen.add(key);
+            result.push(item);
+          }
+        }
+        if (result.length === before) {
+          // A page that contributed nothing new is not a sweep in progress. A
+          // proxy that ignores `page` would otherwise be asked for every page
+          // up to the safety limit, three times over, before the board failed.
+          stalled += 1;
+          if (stalled >= STALLED_PAGE_LIMIT) {
+            throw new HttpError(502, "Gitea pagination stopped advancing");
+          }
+        } else {
+          stalled = 0;
+        }
+        if (page === 1) {
+          // A header claiming fewer rows than the first page already delivered
+          // is not describing this collection, so it is not a terminator.
+          const total = Number.parseInt(headers?.get?.("x-total-count") ?? "", 10);
+          trustedTotal = Number.isSafeInteger(total) && total >= result.length ? total : null;
+        }
+        if (trustedTotal !== null && result.length >= trustedTotal) {
           return result;
         }
       }
@@ -207,27 +356,55 @@ export async function moveIssue({ client, repository, number, targetLabel, logge
     client.paginate(`/repos/${repository}/labels`),
   ]);
 
+  // Before any write. A payload that is not an issue would otherwise reach the
+  // label PUT with an empty label list, destroying the issue's labels, and then
+  // throw a runtime error on `issue.state`.
+  if (issue === null || typeof issue !== "object" || Array.isArray(issue)) {
+    throw new HttpError(502, "Gitea returned an unexpected issue payload");
+  }
+
   if (isPullRequest(issue)) {
     throw new HttpError(409, "Pull requests cannot be moved on the task board");
   }
 
-  let labelIds;
+  let targetLabelIds;
   try {
-    labelIds = nextLabelIds(issue, targetLabel, labels);
+    targetLabelIds = nextLabelIds(issue, targetLabel, labels);
   } catch (error) {
-    throw new HttpError(409, error.message, {}, { cause: error });
+    // Only the board's own authored conditions are safe to relay as text.
+    // Anything else here is a defect, and a runtime message is neither a 409
+    // nor something the browser is allowed to read.
+    if (error instanceof BoardLabelError) {
+      throw new HttpError(409, error.message, {}, { cause: error });
+    }
+    throw error;
   }
 
-  const originalLabelIds = labelList(issue).map((label) => label.id);
+  const originalLabelIds = labelIds(labelList(issue));
   const targetState = targetStateFor(targetLabel);
 
-  await client.request(`${issuePath}/labels`, { method: "PUT", body: { labels: labelIds } });
+  await client.request(`${issuePath}/labels`, { method: "PUT", body: { labels: targetLabelIds } });
 
   if (issue.state !== targetState) {
     try {
       await client.request(issuePath, { method: "PATCH", body: { state: targetState } });
     } catch (error) {
       logger.error(`issue #${number} state change failed`, error);
+
+      // Roll back only a refusal that is known not to have been applied: a 4xx
+      // from something that read the request, or a connection that was never
+      // established. A gateway 5xx, a timeout or a dropped socket leaves the
+      // outcome unknown, and rolling those back would undo a state change
+      // Gitea applied while telling the operator that nothing changed.
+      if (!isDefiniteRejection(error)) {
+        throw new HttpError(
+          502,
+          `Gitea did not answer the state change for issue #${number}, so it is unknown whether the issue is now ${targetState}. The board label was left on ${targetLabel}. Check the issue in Gitea.`,
+          { reverted: false, partial: true },
+          { cause: error },
+        );
+      }
+
       let reverted = false;
       try {
         await client.request(`${issuePath}/labels`, {
@@ -325,6 +502,34 @@ export function resolveStaticPath(pathname, webRoot) {
   return filePath.startsWith(webRoot) ? filePath : null;
 }
 
+// Emits at most `expected` bytes and fails the stream if the source ran out
+// early, so the bytes on the wire always match the Content-Length header.
+export function limitToDeclaredLength(expected, onOverrun = () => {}) {
+  let sent = 0;
+  let dropped = 0;
+  return new Transform({
+    transform(chunk, _encoding, callback) {
+      const room = expected - sent;
+      const slice = room <= 0 ? chunk.subarray(0, 0) : chunk.subarray(0, Math.min(chunk.length, room));
+      dropped += chunk.length - slice.length;
+      sent += slice.length;
+      callback(null, slice.length > 0 ? slice : undefined);
+    },
+    flush(callback) {
+      if (dropped > 0) {
+        // Correct on the wire, but the file is not what was served, and
+        // editing an asset while a browser loads it should not be silent.
+        onOverrun(dropped);
+      }
+      callback(
+        sent === expected
+          ? null
+          : new Error(`static body was ${sent} bytes, header declared ${expected}`),
+      );
+    },
+  });
+}
+
 async function serveStatic(request, response, url, { webRoot, logger }) {
   const filePath = resolveStaticPath(url.pathname, webRoot);
   if (filePath === null) {
@@ -341,8 +546,9 @@ async function serveStatic(request, response, url, { webRoot, logger }) {
   }
 
   try {
-    // stat the open handle, not the path, so the length that goes on the wire
-    // is the length of the bytes actually being streamed.
+    // stat the open handle, not the path, so the declared length describes the
+    // file this request opened rather than whatever the path names by the time
+    // the read happens.
     const fileStat = await handle.stat();
     if (!fileStat.isFile()) {
       sendJson(response, 404, { error: "Not found" });
@@ -360,9 +566,22 @@ async function serveStatic(request, response, url, { webRoot, logger }) {
       return;
     }
 
+    // stat'ing the handle closes the path-to-open race, not the stat-to-read
+    // one: a file that grows between the two would overrun Content-Length, and
+    // on a keep-alive connection the excess is parsed as the next response.
+    // The limiter makes the declared length true by construction, and turns a
+    // file that shrank into a destroyed connection rather than a short body
+    // that looks complete.
+    //
     // pipeline propagates a read error instead of leaving it unhandled on the
     // source stream, where it would take the whole process down.
-    await pipeline(handle.createReadStream({ autoClose: false }), response);
+    await pipeline(
+      handle.createReadStream({ autoClose: false }),
+      limitToDeclaredLength(fileStat.size, (dropped) =>
+        logger.warn(`${filePath} grew by ${dropped} bytes while it was being sent; the response was truncated to its declared length`),
+      ),
+      response,
+    );
   } catch (error) {
     logger.error(`static read failed for ${filePath}`, error);
     if (!response.headersSent) {

@@ -168,3 +168,103 @@ test("a partially applied move is not reverted and is flagged as drift", () => {
   });
   assert.deepEqual(outcome, { column: "state/done", reverted: false, drift: true });
 });
+
+// ------------------------------------------------------- the board page ----
+
+/**
+ * Enough of a document for app.js to load and for its failure paths to run.
+ * The success path renders cards from templates and is not exercised here:
+ * every fetch in these tests fails, which is the shape both rules are about.
+ */
+function installDocument() {
+  const nodes = new Map();
+  const makeElement = () => {
+    const tokens = new Set();
+    return {
+      textContent: "",
+      value: "",
+      disabled: false,
+      className: "",
+      lastChild: { textContent: "" },
+      classList: {
+        add: (...names) => names.forEach((name) => tokens.add(name)),
+        remove: (...names) => names.forEach((name) => tokens.delete(name)),
+        toggle: (name, on) => (on ? tokens.add(name) : tokens.delete(name)),
+        contains: (name) => tokens.has(name),
+      },
+      setAttribute() {},
+      append() {},
+      addEventListener() {},
+    };
+  };
+  globalThis.document = {
+    querySelector(selector) {
+      if (!nodes.has(selector)) {
+        nodes.set(selector, makeElement());
+      }
+      return nodes.get(selector);
+    },
+    addEventListener() {},
+  };
+  return nodes;
+}
+
+const elements = installDocument();
+let nextFetch = async () => {
+  throw new Error("no fetch configured");
+};
+globalThis.fetch = (...args) => nextFetch(...args);
+
+// Imported after the document exists, because app.js reads it on load.
+const { loadBoard, showToast } = await import("./web/app.js");
+const toast = elements.get("#toast");
+
+function resetToast() {
+  showToast.until = 0;
+  toast.textContent = "";
+}
+
+test("a toast that would leave the screen sooner does not replace a longer hold", () => {
+  resetToast();
+  showToast("PARTIAL: issue #9 carries state/done while still open", true, 12_000);
+  showToast("#6 moved to review");
+  assert.match(toast.textContent, /carries state\/done/, "a routine confirmation must not wipe the drift message");
+});
+
+test("an error is never suppressed, however long the current hold is", () => {
+  resetToast();
+  showToast("PARTIAL: issue #9 carries state/done while still open", true, 12_000);
+  showToast("Missing Gitea label: state/review", true);
+  assert.equal(
+    toast.textContent,
+    "Missing Gitea label: state/review",
+    "the operator cannot act on a problem they are not shown",
+  );
+});
+
+test("a hold that has already expired suppresses nothing", () => {
+  resetToast();
+  showToast("done", false, 10);
+  showToast.until = Date.now() - 1;
+  showToast("later message");
+  assert.equal(toast.textContent, "later message");
+});
+
+test("a quiet refresh that fails raises no toast, and a requested one does", async () => {
+  // The reported interleaving: a drift message is on screen for twelve seconds
+  // and the refresh that follows the move fails. That refresh is reporting, not
+  // the operator's action, so it must not speak at all.
+  nextFetch = async () => {
+    throw new Error("Gitea 502: refresh died too");
+  };
+
+  resetToast();
+  showToast("PARTIAL: issue #9 carries state/done while still open", true, 12_000);
+  await assert.rejects(() => loadBoard({ quiet: true }));
+  assert.match(toast.textContent, /carries state\/done/, "a quiet refresh must not overwrite the drift message");
+
+  // The same failure, when the operator asked for it, is theirs to see.
+  resetToast();
+  await assert.rejects(() => loadBoard());
+  assert.equal(toast.textContent, "Gitea 502: refresh died too");
+});

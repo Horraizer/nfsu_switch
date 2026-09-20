@@ -25,9 +25,11 @@ The rule covers artifacts, not the workspace. The checkout directory itself may 
 Scan with:
 
 ```powershell
-git ls-tree -r --name-only HEAD | Select-String -Pattern '[^\x20-\x7E]'
+git -c core.quotepath=false ls-tree -r --name-only HEAD | Select-String -Pattern '[^\x20-\x7E]'
 git show HEAD:<path> | Select-String -Pattern '[^\x09\x0A\x0D\x20-\x7E]'
 ```
+
+`core.quotepath=false` is not optional. Git's default C-quotes a non-ASCII name into pure-ASCII octal escapes, so the pattern never matches and the scan silently passes a repository that violates the rule.
 
 ## Required validation
 
@@ -35,12 +37,12 @@ git show HEAD:<path> | Select-String -Pattern '[^\x09\x0A\x0D\x20-\x7E]'
 
 | Area touched | Command |
 | --- | --- |
-| C++ sources, headers, `CMakeLists.txt` | `cmake --build build` then `ctest --test-dir build --output-on-failure` |
-| `tools/kanban/` | `node --test tools\kanban\test.mjs tools\kanban\server.test.mjs` |
-| `tools/kanban/start.ps1` | launcher smoke: `$env:KANBAN_SMOKE="1"; .\tools\kanban\start.ps1` from the real workspace path |
+| C++ sources, headers, `CMakeLists.txt` | `cmake -S . -B build -G Ninja`, because the build directory is gitignored and a fresh clone has none, then `cmake --build build` then `ctest --test-dir build --output-on-failure` |
+| `tools/kanban/` | `node --test tools\kanban\test.mjs tools\kanban\server.test.mjs tools\kanban\launcher.test.mjs` |
+| `tools/kanban/start.ps1` | launcher smoke, with `GITEA_TOKEN` set: `$env:KANBAN_SMOKE="1"; .\tools\kanban\start.ps1` from the real workspace path |
 | any tracked file | the ASCII scan above |
 
-A change that touches nothing in a row does not have to run that row. If a gate cannot run, that is a blocker, not a note.
+A change that touches nothing in a row does not have to run that row. If a gate cannot run, that is a blocker, not a note. Configuring a build directory, or exporting a token the gate itself needs, is part of running the gate rather than a reason to skip it.
 
 ## Required handoff
 
@@ -55,11 +57,13 @@ Do not stop after telling the human that code was committed, pushed, or ready fo
 ```text
 CODEX_REVIEW_REQUESTED
 head: <full commit SHA>
-issue: #<issue number>
+issue: <#number | none, with the reason>
 tests: <commands and results>
 evidence: <short evidence summary>
 blockers: <none | what is blocked and what decision is needed>
 ```
+
+Most work is assigned as a Gitea issue and names it here. Tooling and protocol changes that no issue tracks are what the `none` form is for. It records that no issue governs the branch; it does not widen the scope rule above.
 
 The comment is the handoff to Codex. After posting it, wait for Codex review through Gitea or exit cleanly. Do not ask the human to notify Codex.
 
@@ -76,6 +80,8 @@ A session may instead be asked to review a pull request rather than implement on
 - posts a single comment on the pull request under review that begins with `CLAUDE_REVIEW_PASSED` or `CLAUDE_REVIEW_CHANGES_REQUESTED`, and includes the exact head SHA reviewed, findings with file and line references, and exact validation results.
 
 A reviewer never posts `CODEX_REVIEW_REQUESTED`; that token belongs to the worker handoff.
+
+Review mode wins over the blocker rule below. A reviewer who cannot run a required gate posts neither a second comment nor `CODEX_BLOCKED`: the gate, and why it could not run, go inside the single `CLAUDE_REVIEW_PASSED` or `CLAUDE_REVIEW_CHANGES_REQUESTED` comment.
 
 ## Blockers
 
