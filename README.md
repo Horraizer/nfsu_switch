@@ -36,6 +36,7 @@ build/nfsu_probe texture-bindings X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games
 build/nfsu_probe car-parts X:/Games/NFSU/Global/GLOBALB.BUN 240SX
 build/nfsu_probe stock-parts X:/Games/NFSU/Global/GLOBALB.BUN 240SX X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games/NFSU/Cars/BRAKES/GEOMETRY.BIN X:/Games/NFSU/Cars/PLATES/GEOMETRY.BIN
 build/nfsu_probe track-region X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN
+build/nfsu_probe track-objects X:/Games/NFSU/Tracks/STREAML1RB.BUN 23011344 4168 23015540 178268
 build/nfsu_probe car-placement X:/Games/NFSU/Global/GLOBALB.BUN 240SX
 build/nfsu_probe part-markers X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN exhaust
 build/nfsu_probe body-skin-inputs 240SX --source car-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN --source car-vinyls X:/Games/NFSU/Cars/240SX/VINYLS.BIN --source other X:/Games/NFSU/Cars/TEXTURES.BIN --target-texture DUMMY_SKIN1 --vinyl 0 TRIBAL5 16 no-remap --doorline plain --base 200 30 30 128 --assemble
@@ -103,6 +104,18 @@ any problem. Track meshes use a 24-byte vertex; a mesh whose vertex-format
 word selects the 36-byte or 60-byte retail layout is refused by name
 rather than guessed at. See `docs/TRACK.md` for the byte evidence, the
 decoded retail region and the read-only acceptance procedure.
+`track-objects` decodes the scenery sections of one explicitly selected
+byte range of the same container, bounded the same way: the per-section
+object directory with its six mesh-hash slots per object, the instances
+that place those objects with a float translation and a fixed-point 3x3
+matrix, and the bounding tree that indexes them. It refuses a tree that is
+not a tree, an instance that names no object and a record array that is
+not a whole number of records, each with an absolute file offset, and it
+exits 3 if the region has any problem. Given a second offset and length it
+also resolves every object mesh hash against that region's geometry and
+cross-checks each instance's stored box against the mesh it places; a hash
+another section carries is reported unresolved rather than treated as an
+error. See `docs/TRACK_OBJECTS.md`.
 `stock-parts` applies the game's stock-part rules to one car type and
 prints the chosen record per slot with each LOD mesh hash resolved against
 the `GEOMETRY.BIN` files given after the car type, including the mesh the
