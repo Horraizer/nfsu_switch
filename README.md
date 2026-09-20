@@ -40,6 +40,13 @@ build/nfsu_probe part-markers X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN exhaust
 build/nfsu_probe body-skin-inputs 240SX --source car-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN --source car-vinyls X:/Games/NFSU/Cars/240SX/VINYLS.BIN --source other X:/Games/NFSU/Cars/TEXTURES.BIN --target-texture DUMMY_SKIN1 --vinyl 0 TRIBAL5 16 no-remap --doorline plain --base 200 30 30 128 --assemble
 ```
 
+Run `nfsu_probe` with no arguments to print the usage text. It lists every
+command the program accepts: a command is registered in one place that holds
+its name, its usage line and its handler together, and
+`tests/usage_commands.cmake` checks that from outside against the built
+program. A command that is not registered is named as unknown and refused
+with exit 1.
+
 `meshes` lists every mesh with its name, vertex count, face count and
 validation status. `obj` writes all valid meshes to a diagnostic OBJ file at
 the given path. Both commands print precise diagnostics for malformed meshes

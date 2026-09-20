@@ -21,6 +21,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -1669,32 +1670,157 @@ int run_part_markers(const fs::path& path, const std::string& role_filter) {
     return report.ok() ? 0 : 3;
 }
 
+void print_usage();
+
+// The single registration point for an nfsu_probe command. One entry carries
+// the name main() dispatches on, the usage text print_usage() prints, and the
+// handler that runs the command, so a command cannot be dispatched without
+// being listed, or listed without being dispatched. Adding a command means
+// adding one entry here; tests/usage_commands.cmake checks the result from
+// outside, against the built program.
+struct Command {
+    std::string_view name;
+    // One or more complete lines, each indented and newline-terminated. The
+    // first line of an entry starts with "  nfsu_probe <name>", because the
+    // usage check reads the command inventory back out of this text.
+    std::string_view usage;
+    int (*run)(int argc, char** argv);
+};
+
+// This order is the order print_usage() prints.
+const Command kCommands[] = {
+    {"summary", "  nfsu_probe summary <game-root>\n",
+     [](int, char** argv) { return run_summary(fs::path(argv[2])); }},
+    {"chunks", "  nfsu_probe chunks <file> [display-limit]\n",
+     [](int argc, char** argv) {
+         std::size_t limit = 128;
+         if (argc >= 4) {
+             try {
+                 limit = static_cast<std::size_t>(std::stoull(argv[3]));
+             } catch (const std::exception&) {
+                 std::cerr << "error: display-limit must be an integer\n";
+                 return 1;
+             }
+         }
+         return run_chunks(fs::path(argv[2]), limit);
+     }},
+    {"meshes", "  nfsu_probe meshes <GEOMETRY.BIN>\n",
+     [](int, char** argv) { return run_meshes(fs::path(argv[2])); }},
+    {"obj", "  nfsu_probe obj <GEOMETRY.BIN> <output.obj>\n",
+     [](int argc, char** argv) {
+         if (argc < 4) {
+             print_usage();
+             return 1;
+         }
+         return run_obj(fs::path(argv[2]), fs::path(argv[3]));
+     }},
+    {"textures", "  nfsu_probe textures <TEXTURES.BIN>\n",
+     [](int, char** argv) { return run_textures(fs::path(argv[2])); }},
+    {"pack-set",
+     "  nfsu_probe pack-set <file>   (metadata of every texture pack, e.g. in a BUN)\n",
+     [](int, char** argv) { return run_pack_set(fs::path(argv[2])); }},
+    {"export-textures",
+     "  nfsu_probe export-textures <TEXTURES.BIN> <output-dir> [tga|dds]\n",
+     [](int argc, char** argv) {
+         if (argc < 4) {
+             print_usage();
+             return 1;
+         }
+         return run_export_textures(fs::path(argv[2]), fs::path(argv[3]),
+                                    argc >= 5 ? std::string(argv[4]) : "tga");
+     }},
+    {"texture-bindings",
+     "  nfsu_probe texture-bindings <GEOMETRY.BIN> <TEXTURES.BIN>\n",
+     [](int argc, char** argv) {
+         if (argc < 4) {
+             print_usage();
+             return 1;
+         }
+         return run_texture_bindings(fs::path(argv[2]), fs::path(argv[3]));
+     }},
+    {"car-parts", "  nfsu_probe car-parts <GLOBALB.BUN> [car-type]\n",
+     [](int argc, char** argv) {
+         if (argc > 4) {
+             print_usage();
+             return 1;
+         }
+         return run_car_parts(fs::path(argv[2]),
+                              argc == 4 ? std::string(argv[3]) : "");
+     }},
+    {"stock-parts",
+     "  nfsu_probe stock-parts <GLOBALB.BUN> <car-type> [GEOMETRY.BIN ...]\n",
+     [](int argc, char** argv) {
+         if (argc < 4) {
+             print_usage();
+             return 1;
+         }
+         std::vector<fs::path> geometry;
+         for (int i = 4; i < argc; ++i) {
+             geometry.emplace_back(argv[i]);
+         }
+         return run_stock_parts(fs::path(argv[2]), std::string(argv[3]), geometry);
+     }},
+    {"track-region",
+     "  nfsu_probe track-region <STREAM.BUN> <offset> <size> [TEXTURE.BIN ...]\n",
+     [](int argc, char** argv) {
+         if (argc < 5) {
+             print_usage();
+             return 1;
+         }
+         std::uint64_t offset = 0;
+         std::uint64_t size = 0;
+         if (!parse_u64(std::string(argv[3]), offset)) {
+             std::cerr << "error: offset must be a decimal or 0x integer\n";
+             return 1;
+         }
+         if (!parse_u64(std::string(argv[4]), size)) {
+             std::cerr << "error: size must be a decimal or 0x integer\n";
+             return 1;
+         }
+         std::vector<fs::path> textures;
+         for (int i = 5; i < argc; ++i) {
+             textures.emplace_back(argv[i]);
+         }
+         return run_track_region(fs::path(argv[2]), offset, size, textures);
+     }},
+    {"car-placement", "  nfsu_probe car-placement <GLOBALB.BUN> [car-type]\n",
+     [](int argc, char** argv) {
+         if (argc != 3 && argc != 4) {
+             print_usage();
+             return 1;
+         }
+         return run_car_placement(fs::path(argv[2]),
+                                  argc == 4 ? std::string(argv[3]) : "");
+     }},
+    {"part-markers", "  nfsu_probe part-markers <GEOMETRY.BIN> [role]\n",
+     [](int argc, char** argv) {
+         if (argc != 3 && argc != 4) {
+             print_usage();
+             return 1;
+         }
+         return run_part_markers(fs::path(argv[2]),
+                                 argc == 4 ? std::string(argv[3]) : "");
+     }},
+    {"body-skin-inputs",
+     "  nfsu_probe body-skin-inputs <car-name> <option>...\n"
+     "    --source <car-textures|car-vinyls|other> <FILE>   (repeatable,\n"
+     "        in priority order; the first source claiming a hash wins)\n"
+     "    --size <WIDTHxHEIGHT>   --target-texture <NAME>\n"
+     "    --target <type32|type8>   --assemble\n"
+     "    --hood <hood-spoiler|hood|spoiler>\n"
+     "    --vinyl <0-3> <TEXTURE> <NUMCOLOURS> <remap|no-remap>\n"
+     "    --vinyl-color <0-3> <0-3> <R> <G> <B> <GLOSS>\n"
+     "    --doorline <plain|kit|widebody>\n"
+     "    --base <R> <G> <B> <GLOSS>\n"
+     "    --special <0-3> <R> <G> <B> <GLOSS>\n",
+     [](int argc, char** argv) { return run_body_skin_inputs(argc, argv); }},
+};
+
 void print_usage() {
-    std::cout
-        << "Usage:\n"
-        << "  nfsu_probe summary <game-root>\n"
-        << "  nfsu_probe chunks <file> [display-limit]\n"
-        << "  nfsu_probe meshes <GEOMETRY.BIN>\n"
-        << "  nfsu_probe obj <GEOMETRY.BIN> <output.obj>\n"
-        << "  nfsu_probe textures <TEXTURES.BIN>\n"
-        << "  nfsu_probe pack-set <file>   (metadata of every texture pack, e.g. in a BUN)\n"
-        << "  nfsu_probe export-textures <TEXTURES.BIN> <output-dir> [tga|dds]\n"
-        << "  nfsu_probe texture-bindings <GEOMETRY.BIN> <TEXTURES.BIN>\n"
-        << "  nfsu_probe car-parts <GLOBALB.BUN> [car-type]\n"
-        << "  nfsu_probe stock-parts <GLOBALB.BUN> <car-type> [GEOMETRY.BIN ...]\n"
-        << "  nfsu_probe track-region <STREAM.BUN> <offset> <size> [TEXTURE.BIN ...]\n"
-        << "  nfsu_probe car-placement <GLOBALB.BUN> [car-type]\n"
-        << "  nfsu_probe body-skin-inputs <car-name> <option>...\n"
-        << "    --source <car-textures|car-vinyls|other> <FILE>   (repeatable,\n"
-        << "        in priority order; the first source claiming a hash wins)\n"
-        << "    --size <WIDTHxHEIGHT>   --target-texture <NAME>\n"
-        << "    --target <type32|type8>   --assemble\n"
-        << "    --hood <hood-spoiler|hood|spoiler>\n"
-        << "    --vinyl <0-3> <TEXTURE> <NUMCOLOURS> <remap|no-remap>\n"
-        << "    --vinyl-color <0-3> <0-3> <R> <G> <B> <GLOSS>\n"
-        << "    --doorline <plain|kit|widebody>\n"
-        << "    --base <R> <G> <B> <GLOSS>\n"
-        << "    --special <0-3> <R> <G> <B> <GLOSS>\n";
+    std::cout << "Usage:\n";
+    for (const Command& command : kCommands) {
+        std::cout << command.usage;
+    }
 }
 
 } // namespace
@@ -1705,113 +1831,17 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const std::string command = argv[1];
-    if (command == "summary") {
-        return run_summary(fs::path(argv[2]));
-    }
-    if (command == "chunks") {
-        std::size_t limit = 128;
-        if (argc >= 4) {
-            try {
-                limit = static_cast<std::size_t>(std::stoull(argv[3]));
-            } catch (const std::exception&) {
-                std::cerr << "error: display-limit must be an integer\n";
-                return 1;
-            }
+    const std::string_view command = argv[1];
+    for (const Command& entry : kCommands) {
+        if (command == entry.name) {
+            return entry.run(argc, argv);
         }
-        return run_chunks(fs::path(argv[2]), limit);
-    }
-    if (command == "meshes") {
-        return run_meshes(fs::path(argv[2]));
-    }
-    if (command == "obj") {
-        if (argc < 4) {
-            print_usage();
-            return 1;
-        }
-        return run_obj(fs::path(argv[2]), fs::path(argv[3]));
-    }
-    if (command == "textures") {
-        return run_textures(fs::path(argv[2]));
-    }
-    if (command == "pack-set") {
-        return run_pack_set(fs::path(argv[2]));
-    }
-    if (command == "export-textures") {
-        if (argc < 4) {
-            print_usage();
-            return 1;
-        }
-        return run_export_textures(fs::path(argv[2]), fs::path(argv[3]),
-                                   argc >= 5 ? std::string(argv[4]) : "tga");
-    }
-    if (command == "texture-bindings") {
-        if (argc < 4) {
-            print_usage();
-            return 1;
-        }
-        return run_texture_bindings(fs::path(argv[2]), fs::path(argv[3]));
-    }
-    if (command == "car-parts") {
-        if (argc > 4) {
-            print_usage();
-            return 1;
-        }
-        return run_car_parts(fs::path(argv[2]), argc == 4 ? std::string(argv[3]) : "");
-    }
-    if (command == "car-placement") {
-        if (argc != 3 && argc != 4) {
-            print_usage();
-            return 1;
-        }
-        return run_car_placement(fs::path(argv[2]),
-                                 argc == 4 ? std::string(argv[3]) : "");
-    }
-    if (command == "part-markers") {
-        if (argc != 3 && argc != 4) {
-            print_usage();
-            return 1;
-        }
-        return run_part_markers(fs::path(argv[2]),
-                                argc == 4 ? std::string(argv[3]) : "");
-    }
-    if (command == "body-skin-inputs") {
-        return run_body_skin_inputs(argc, argv);
-    }
-    if (command == "stock-parts") {
-        if (argc < 4) {
-            print_usage();
-            return 1;
-        }
-        std::vector<fs::path> geometry;
-        for (int i = 4; i < argc; ++i) {
-            geometry.emplace_back(argv[i]);
-        }
-        return run_stock_parts(fs::path(argv[2]), std::string(argv[3]), geometry);
-    }
-    if (command == "track-region") {
-        if (argc < 5) {
-            print_usage();
-            return 1;
-        }
-        std::uint64_t offset = 0;
-        std::uint64_t size = 0;
-        if (!parse_u64(std::string(argv[3]), offset)) {
-            std::cerr << "error: offset must be a decimal or 0x integer\n";
-            return 1;
-        }
-        if (!parse_u64(std::string(argv[4]), size)) {
-            std::cerr << "error: size must be a decimal or 0x integer\n";
-            return 1;
-        }
-        std::vector<fs::path> textures;
-        for (int i = 5; i < argc; ++i) {
-            textures.emplace_back(argv[i]);
-        }
-        return run_track_region(fs::path(argv[2]), offset, size, textures);
     }
 
+    // Naming the command is what lets the usage check tell a command this
+    // program dispatches from one it merely lists: every other refusal prints
+    // the same usage text this one does, and says nothing else.
+    std::cerr << "error: unknown command '" << command << "'\n";
     print_usage();
     return 1;
 }
-

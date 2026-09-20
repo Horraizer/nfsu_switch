@@ -260,12 +260,20 @@ if(NFSU_BUILD_TESTS)
         PASS_REGULAR_EXPRESSION "--skin-dump must differ from the output file"
         FAIL_REGULAR_EXPRESSION "failed to read file size;no valid meshes")
 
+    # nfsu_probe registers a command in one place, so its usage text and its
+    # dispatch cannot disagree by construction. This runs the built program
+    # and checks that they do not: see tests/usage_commands.cmake.
+    add_test(NAME nfsu_probe_usage_commands
+        COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/usage_commands.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
     # A hung test is killed and reported as a failure.
     set_tests_properties(
         nfsu_chunk_tests nfsu_geometry_tests nfsu_texture_tests
         nfsu_render_tests nfsu_scene_tests nfsu_car_parts_tests
         nfsu_track_tests nfsu_part_placement_tests nfsu_body_skin_tests
         nfsu_skin_inputs_tests nfsu_runtime_skin_tests
-        nfsu_viewer_dump_alias
+        nfsu_viewer_dump_alias nfsu_probe_usage_commands
         PROPERTIES TIMEOUT 60)
 endif()
