@@ -32,8 +32,8 @@
 - Resolve shared car materials while preserving source provenance.
 - Build a backend-neutral prepared draw list for the CPU and deko3d renderers.
   `PreparedCarScene` (`include/nfsu/scene.h`) is in place with an all-meshes
-  profile and explicit mesh subsets, and the CPU renderer consumes it; the
-  deko3d backend is still to do.
+  profile, explicit mesh subsets and the stock car profile, and the CPU
+  renderer consumes the first two; the deko3d backend is still to do.
 - Installed-part and LOD selection are recovered: the car part database of
   `GLOBALB.BUN`, the stock part set per slot, the per-LOD mesh hash of a
   part and the fallback the game uses for a missing mesh
@@ -44,8 +44,15 @@
   every other installed part is drawn at the car's own matrix
   (`include/nfsu/part_placement.h`, `nfsu_probe car-placement`,
   `nfsu_probe part-markers`, [`PART_PLACEMENT.md`](PART_PLACEMENT.md)). The
-  drawn wheel matrix's lateral term is traced but not reproduced. Turning
-  selection and placement into a render profile is still to do.
+  drawn wheel matrix's lateral term is traced but not reproduced.
+- Selection and placement are assembled into a render profile:
+  `nfsu::prepare_stock_car_scene` (`include/nfsu/stock_scene.h`,
+  `nfsu_probe stock-scene`) builds the `stock car` profile of
+  `PreparedCarScene` from the stock part set, the per-LOD meshes and the
+  placement, with one instance per drawn copy. The wheel and the brake are
+  opt-in and marked inexact because their drawn matrices are not
+  reproduced, and no backend applies instance transforms yet: the CPU
+  renderer refuses the profile instead of drawing it unplaced.
 - The body-skin pixel compositor is recovered for both target types, with a
   bounded CPU reference (`include/nfsu/body_skin.h`,
   [`BODY_SKIN.md`](BODY_SKIN.md)). The RED/GREEN/BLUE/GLOSS lane mapping is

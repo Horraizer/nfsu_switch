@@ -207,15 +207,21 @@ struct MeshSelector {
 
 // No selectors: the "all meshes" profile, every valid mesh in source
 // order, invalid meshes skipped and counted. Any selector: an explicit
-// subset. Neither is a stock-car assembly; which meshes the game draws
-// together is not decoded.
+// subset. Neither is a stock-car assembly: they name meshes directly and
+// read no car state.
 struct MeshSelection {
     std::vector<MeshSelector> selectors;
 };
 
-enum class SelectionProfile { all_meshes, explicit_subset };
+// all_meshes and explicit_subset are the two profiles resolve_mesh_selection
+// produces from one geometry source. stock_car is built by a layer above
+// this one, include/nfsu/stock_scene.h, out of the recovered stock part set,
+// its per-LOD mesh hashes and the recovered placement; it is the only
+// profile that names several geometry sources and the only one that carries
+// instances.
+enum class SelectionProfile { all_meshes, explicit_subset, stock_car };
 
-// "all meshes" or "explicit subset".
+// "all meshes", "explicit subset" or "stock car".
 const char* selection_profile_name(SelectionProfile profile) noexcept;
 
 struct SceneLimits {
@@ -231,6 +237,11 @@ struct SceneLimits {
     std::uint64_t max_draw_triangles = 1U << 24;
     // RGBA8 bytes of the textures copied into the scene.
     std::uint64_t max_texture_bytes = 128ULL * 1024ULL * 1024ULL;
+    // Geometry sources a scene may be built from. The single-source
+    // profiles always use one.
+    std::size_t max_sources = 64;
+    // Drawn copies of the selected meshes (prepared instances).
+    std::uint64_t max_instances = 65536;
 };
 
 // Resolves a selection to mesh positions in ascending source order. The
@@ -258,6 +269,12 @@ constexpr std::size_t kNoHandle = std::numeric_limits<std::size_t>::max();
 // triangles and verified directory provenance; nothing refers back to the
 // GeometryReport.
 struct PreparedMesh {
+    // Which geometry source the mesh was copied from: a position in the
+    // source list the profile was prepared from, and an index into
+    // PreparedCarScene::source_mesh_counts. Always 0 for the two
+    // single-source profiles.
+    std::size_t source = 0;
+    // Position in that source's GeometryReport::meshes.
     std::size_t source_index = 0;
     std::string name;
     std::uint32_t directory_hash = 0;
@@ -308,6 +325,42 @@ struct PreparedDraw {
     bool drawable = false;
 };
 
+// One drawn copy of a prepared mesh, with the transform that places it.
+// Only the stock-car profile produces instances; the two single-source
+// profiles name meshes and leave placement to the backend, so their
+// instance list is empty and each of their meshes is drawn once in its own
+// space, exactly as before this type existed.
+//
+// This layer places nothing and interprets nothing: the transform is
+// carried as given and the four provenance fields are opaque numbers here,
+// the way texture source, pack and record are. What they mean, and which
+// retail rule produced each transform, is in include/nfsu/stock_scene.h.
+struct PreparedInstance {
+    // Index into PreparedCarScene::meshes.
+    std::size_t mesh = 0;
+    // Row-major 4x4, the row-vector convention v' = v * transform that
+    // nfsu::multiply_placement_matrix uses, in the geometry file's raw slot
+    // frame: component 0 is longitudinal (MeshVertex::px), 1 is lateral
+    // (MeshVertex::pz) and 2 is vertical (MeshVertex::py). The identity
+    // means the mesh is drawn at the car's own matrix.
+    float transform[16] = {1.0F, 0.0F, 0.0F, 0.0F,
+                           0.0F, 1.0F, 0.0F, 0.0F,
+                           0.0F, 0.0F, 1.0F, 0.0F,
+                           0.0F, 0.0F, 0.0F, 1.0F};
+    // False when the profile could not derive the transform the retail draw
+    // path applies and placed the instance from a documented stand-in
+    // instead. A backend that must not show an unverified position skips
+    // these; nothing else in this layer reads the flag.
+    bool placement_exact = true;
+    // Profile provenance: the car part slot, the LOD index of the model,
+    // the 0-based copy within the slot and the mesh hash the slot resolved
+    // to.
+    std::uint32_t part_slot = 0;
+    std::uint32_t part_lod = 0;
+    std::uint32_t copy = 0;
+    std::uint32_t mesh_hash = 0;
+};
+
 // A self-contained, validated draw list. It owns every byte a backend
 // reads, so the GeometryReport and RenderTextureSet it was prepared from
 // may change or be destroyed afterwards without affecting it. Fields are
@@ -315,13 +368,14 @@ struct PreparedDraw {
 // refuse a scene that was changed into an inconsistent state.
 struct PreparedCarScene {
     SelectionProfile profile = SelectionProfile::all_meshes;
-    // The selectors as given; empty for all meshes.
+    // The selectors as given; empty for all meshes and for the stock car.
     std::vector<MeshSelector> selectors;
-    // GeometryReport::meshes.size() of the source.
-    std::size_t source_mesh_count = 0;
+    // GeometryReport::meshes.size() of each geometry source, in source
+    // order. The two single-source profiles hold exactly one entry.
+    std::vector<std::size_t> source_mesh_counts;
     // All meshes only: positions of the invalid meshes, ascending.
     std::vector<std::size_t> skipped_invalid_meshes;
-    // Ascending source_index.
+    // Ascending (source, source_index).
     std::vector<PreparedMesh> meshes;
     // Mesh order, then record order.
     std::vector<PreparedDraw> draws;
@@ -329,13 +383,51 @@ struct PreparedCarScene {
     std::vector<RenderTexture> textures;
     // Distinct hashes of unresolved groups (drawable or not), ascending.
     std::vector<std::uint32_t> unresolved_hashes;
+    // Stock car only: the drawn copies, in the order the profile produced
+    // them. Empty for every other profile, and every prepared mesh of a
+    // stock car is named by at least one of them.
+    std::vector<PreparedInstance> instances;
 };
 
-// Prepares the scene: resolves the selection, copies the selected meshes,
-// resolves every material group once and copies each resolved texture
-// once. Fails, with error set and scene left empty, on a selection error,
-// a limit, an allocation failure or a failed self-check; std::bad_alloc is
-// caught.
+// One selected mesh of a scene that may name several geometry sources.
+struct SceneMeshRef {
+    // Position in the source list the scene is prepared from.
+    std::size_t source = 0;
+    // Position in that source's GeometryReport::meshes.
+    std::size_t index = 0;
+};
+
+// The profile-independent half of preparing a scene: checks the counts
+// against the limits, copies the named meshes in the order given, resolves
+// every material group once and copies each resolved texture once.
+//
+// `sources` holds the loaded geometry sources in the order the profile
+// numbers them, and none of its entries may be null. `meshes` must be
+// strictly ascending in (source, index), must stay inside `sources` and
+// must name only valid meshes. `selected_by` is either empty or holds one
+// selector position per entry of `meshes`.
+//
+// On success the result carries the meshes, draws, textures, unresolved
+// hashes and source mesh counts, and nothing else: the profile is left at
+// all_meshes with no selectors, no skipped meshes and no instances, because
+// only the caller knows which profile it is building. A caller therefore
+// fills those fields and calls validate_prepared_scene itself; that is what
+// prepare_car_scene and prepare_stock_car_scene do. On failure `scene` is
+// left empty. std::bad_alloc is caught.
+bool prepare_scene_meshes(
+    const std::vector<const GeometryReport*>& sources,
+    const std::vector<SceneMeshRef>& meshes,
+    const std::vector<std::size_t>& selected_by,
+    const RenderTextureSet& textures,
+    const SceneLimits& limits,
+    PreparedCarScene& scene,
+    std::string& error);
+
+// Prepares a single-source scene: resolves the selection, copies the
+// selected meshes, resolves every material group once and copies each
+// resolved texture once. Fails, with error set and scene left empty, on a
+// selection error, a limit, an allocation failure or a failed self-check;
+// std::bad_alloc is caught.
 bool prepare_car_scene(
     const GeometryReport& geometry,
     const RenderTextureSet& textures,
@@ -345,11 +437,12 @@ bool prepare_car_scene(
     std::string& error);
 
 // Checks every structural invariant a backend relies on: profile coverage
-// and semantic selectors, ascending unique meshes, one ordered draw per
-// material, raw-record agreement, derived flags and hashes, binding and
-// texture provenance, first-use texture handles, texture sizes, and a drawn
-// triangle total below 2^32 - 1. Vertex indices inside triangles are checked
-// by backends per triangle.
+// and semantic selectors, ascending unique meshes inside their sources, one
+// ordered draw per material, raw-record agreement, derived flags and hashes,
+// binding and texture provenance, first-use texture handles, texture sizes,
+// a drawn triangle total below 2^32 - 1, and instances that name a prepared
+// mesh with a finite transform and leave no prepared mesh undrawn. Vertex
+// indices inside triangles are checked by backends per triangle.
 bool validate_prepared_scene(const PreparedCarScene& scene, std::string& error);
 
 // Triangles over all drawable ranges; only meaningful for a valid scene.

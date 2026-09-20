@@ -3,6 +3,7 @@
 #include "nfsu/geometry.h"
 #include "nfsu/part_placement.h"
 #include "nfsu/skin_inputs.h"
+#include "nfsu/stock_scene.h"
 #include "nfsu/texture.h"
 #include "nfsu/texture_decode.h"
 #include "nfsu/track.h"
@@ -1808,6 +1809,118 @@ int run_part_markers(const fs::path& path, const std::string& role_filter) {
     return report.ok() ? 0 : 3;
 }
 
+// Prepares the stock-car profile of PreparedCarScene and reports every
+// slot. No texture source is read: the profile is a mesh, instance and
+// placement selection, and every material group is reported unresolved.
+int run_stock_scene(const fs::path& database_path,
+                    const std::string& car_type_name,
+                    std::size_t lod,
+                    bool front_end,
+                    bool place_wheels,
+                    const std::vector<fs::path>& geometry_paths) {
+    const nfsu::CarPartDatabase database = nfsu::load_car_part_database(database_path);
+    print_car_part_issues(database);
+    const nfsu::CarTypeTable table = nfsu::load_car_type_table(database_path);
+    print_car_type_issues(table);
+
+    std::vector<nfsu::GeometryReport> reports;
+    reports.reserve(geometry_paths.size());
+    for (std::size_t f = 0; f < geometry_paths.size(); ++f) {
+        reports.push_back(nfsu::load_geometry_file(geometry_paths[f]));
+        print_geometry_issues(reports.back());
+        std::cout << "geometry " << f << ": " << geometry_paths[f].string() << " meshes "
+                  << reports.back().meshes.size() << " directory "
+                  << (reports.back().mesh_directory_valid ? "verified" : "unavailable")
+                  << '\n';
+    }
+    std::vector<const nfsu::GeometryReport*> sources;
+    sources.reserve(reports.size());
+    for (const nfsu::GeometryReport& report : reports) {
+        sources.push_back(&report);
+    }
+
+    nfsu::StockSceneRequest request;
+    request.car_type_name = car_type_name;
+    request.lod = lod;
+    request.pass = front_end ? nfsu::CarDrawPass::front_end : nfsu::CarDrawPass::world;
+    request.place_wheels_from_culling_table = place_wheels;
+
+    nfsu::PreparedCarScene scene;
+    nfsu::StockSceneReport report;
+    std::string error;
+    if (!nfsu::prepare_stock_car_scene(sources, nfsu::RenderTextureSet{}, database,
+                                       table, request, nfsu::SceneLimits{}, scene,
+                                       report, error)) {
+        std::cerr << "error: " << error << '\n';
+        return 2;
+    }
+
+    std::cout << "car type: " << report.car_type_name << ' '
+              << hex32(report.car_type_hash) << " record " << report.car_type << '\n';
+    std::cout << "lod: " << static_cast<char>('A' + report.lod) << " pass: "
+              << nfsu::car_draw_pass_name(report.pass) << " wheels: "
+              << (place_wheels ? "placed from the culling table" : "not placed")
+              << '\n';
+    for (const nfsu::StockSlotReport& slot : report.slots) {
+        if (slot.record == nfsu::kNoCarPart) {
+            continue;
+        }
+        std::cout << "slot " << std::setw(3) << std::setfill(' ') << slot.slot << ' '
+                  << nfsu::car_slot_name(slot.slot) << ' '
+                  << nfsu::stock_part_rule_name(slot.rule) << ' '
+                  << (slot.enabled ? "enabled" : "disabled") << " record "
+                  << slot.record << ' ' << nfsu::stock_slot_outcome_name(slot.outcome);
+        if (slot.outcome != nfsu::StockSlotOutcome::no_model &&
+            slot.outcome != nfsu::StockSlotOutcome::not_installed &&
+            slot.outcome != nfsu::StockSlotOutcome::skipped) {
+            std::cout << " lod " << static_cast<char>('A' + slot.lod) << " requested "
+                      << hex32(slot.requested_hash);
+            if (slot.model == nfsu::PartModelSource::fallback) {
+                std::cout << " fallback " << hex32(slot.hash);
+            }
+        }
+        if (slot.outcome == nfsu::StockSlotOutcome::drawn ||
+            slot.outcome == nfsu::StockSlotOutcome::mesh_invalid) {
+            std::cout << " geometry " << slot.geometry_source << " mesh "
+                      << slot.source_mesh << ' '
+                      << reports[slot.geometry_source].meshes[slot.source_mesh].name;
+        }
+        if (slot.outcome == nfsu::StockSlotOutcome::drawn) {
+            std::cout << ' ' << nfsu::stock_placement_name(slot.placement)
+                      << " instances " << slot.instance_count;
+        }
+        std::cout << '\n';
+    }
+    std::size_t exhaust = 0;
+    std::size_t plate = 0;
+    for (const nfsu::StockMarker& marker : report.markers) {
+        exhaust += marker.role == nfsu::CarMarkerRole::exhaust ? 1U : 0U;
+        plate += marker.role == nfsu::CarMarkerRole::license_plate ? 1U : 0U;
+    }
+    std::cout << "markers: " << report.markers.size() << " exhaust " << exhaust
+              << " license plate " << plate << '\n';
+    std::cout << "installed slots: " << report.installed << " with a model: "
+              << report.with_model << " drawn: " << report.drawn << " by fallback: "
+              << report.fell_back << '\n';
+    std::cout << "prepared: " << scene.meshes.size() << " meshes, "
+              << scene.draws.size() << " material groups, " << report.instances
+              << " instances\n";
+    if (report.degenerate_wheel_plane) {
+        std::cout << "wheel plane: degenerate\n";
+    }
+    for (const std::uint32_t hash : report.absent_hashes) {
+        std::cout << "absent hash: " << hex32(hash) << '\n';
+    }
+    for (const std::uint32_t hash : report.ambiguous_hashes) {
+        std::cout << "ambiguous hash: " << hex32(hash) << '\n';
+    }
+    bool geometry_ok = true;
+    for (const nfsu::GeometryReport& source : reports) {
+        geometry_ok = geometry_ok && source.ok();
+    }
+    return database.ok() && table.ok() && geometry_ok ? 0 : 3;
+}
+
 void print_usage();
 
 // The single registration point for an nfsu_probe command. One entry carries
@@ -1910,6 +2023,39 @@ const Command kCommands[] = {
              geometry.emplace_back(argv[i]);
          }
          return run_stock_parts(fs::path(argv[2]), std::string(argv[3]), geometry);
+     }},
+    {"stock-scene", " <GLOBALB.BUN> <car-type> <A|B|C|D>",
+     "      [--front-end] [--place-wheels] [GEOMETRY.BIN ...]\n",
+     [](int argc, char** argv) {
+         if (argc < 5) {
+             print_usage();
+             return 1;
+         }
+         const std::string lod_name(argv[4]);
+         if (lod_name.size() != 1 || lod_name[0] < 'A' ||
+             lod_name[0] >= 'A' + static_cast<char>(nfsu::kCarPartLodCount)) {
+             std::cerr << "error: the LOD must be one of A, B, C or D\n";
+             return 1;
+         }
+         const std::size_t lod = static_cast<std::size_t>(lod_name[0] - 'A');
+         bool front_end = false;
+         bool place_wheels = false;
+         std::vector<fs::path> geometry;
+         for (int i = 5; i < argc; ++i) {
+             const std::string argument(argv[i]);
+             if (argument == "--front-end") {
+                 front_end = true;
+             } else if (argument == "--place-wheels") {
+                 place_wheels = true;
+             } else if (argument.size() > 2 && argument.compare(0, 2, "--") == 0) {
+                 std::cerr << "error: unknown option " << argument << '\n';
+                 return 1;
+             } else {
+                 geometry.emplace_back(argument);
+             }
+         }
+         return run_stock_scene(fs::path(argv[2]), std::string(argv[3]), lod, front_end,
+                                place_wheels, geometry);
      }},
     {"track-region", " <STREAM.BUN> <offset> <size> [TEXTURE.BIN ...]", "",
      [](int argc, char** argv) {

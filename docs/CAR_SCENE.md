@@ -475,6 +475,54 @@ and disappear from LOD B on. The same command runs for all 20 racers; in
 ten of them the stock spoiler names meshes that the car file does not
 contain at any LOD, so a stock car there has no spoiler at all.
 
+### The stock car scene profile (issue #32)
+
+`nfsu::prepare_stock_car_scene` (`include/nfsu/stock_scene.h`) turns the
+selection above and the placement of [`PART_PLACEMENT.md`](PART_PLACEMENT.md)
+into the `stock car` profile of `PreparedCarScene`: the meshes the stock
+parts draw at one LOD, once each, and one instance with a transform per
+drawn copy. The rules it applies are the ones observed above; which LOD
+each slot takes, and which of the three placement mechanisms it uses, are
+listed in [`RENDERER.md`](RENDERER.md), "The stock car profile". Nothing
+new about the retail game is claimed here.
+
+Two of the traced rules are deliberately not turned into geometry. The
+wheel and the brake report `placement unreproduced` and draw nothing
+unless the caller opts in with `place_wheels_from_culling_table`, because
+the drawn wheel and brake matrices are not reproduced by this project; the
+opt-in places them at the culling placements and marks every instance it
+produces as not exact.
+
+Measured with `nfsu_probe stock-scene GLOBALB.BUN 240SX <LOD>
+Cars/240SX/GEOMETRY.BIN Cars/BRAKES/GEOMETRY.BIN Cars/PLATES/GEOMETRY.BIN
+--place-wheels`, in the world pass:
+
+| LOD | Slots drawn | By fallback | Meshes | Material groups | Instances |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A | 24 | 0 | 24 | 79 | 30 |
+| B | 24 | 7 | 24 | 73 | 30 |
+| C | 15 | 0 | 15 | 44 | 21 |
+| D | 6 | 1 | 6 | 23 | 12 |
+
+The instance total is the drawn slots plus three per wheel-table slot: the
+wheel and the brake draw four copies each, and the 240SX carries one
+exhaust and one licence-plate marker among the 16 markers the collector
+accepts. Without `--place-wheels` LOD A gives 22 slots, 22 meshes and 22
+instances.
+
+These counts are the same selection as the per-LOD table above, with the
+four slots whose LOD the draw code overrides moved to the LOD they
+actually take: at LOD B the exhaust and the plate still draw their LOD A
+mesh instead of disappearing, at LOD C and D the exhaust, the plate, the
+brake and the wheel keep drawing while the mirrors stop.
+
+The command runs for all 35 car types in the table. Each of the 20 racers
+draws 23 or 24 of its 24 model slots at LOD A, the same 11 cars as above
+drawing 23; `CIVIC`, `ECLIPSE`, `SUPRA` and `TIBURON` still exit 3 for the
+pre-existing geometry rejections listed above and prepare their scenes
+anyway. The 15 traffic vehicles have 5 installed slots, 4 of them with a
+model, and draw 3 in 9 instances.
+
 ### Still open after this slice
 
 - The pixel size itself: `[view+0xC]` in 0x545180 was not traced to a
@@ -491,6 +539,17 @@ contain at any LOD, so a stock car there has no spoiler at all.
   installed part is drawn at the car's own matrix. See
   [`PART_PLACEMENT.md`](PART_PLACEMENT.md). The lateral term of the drawn
   wheel matrix is still open there.
+- Markers of a mesh that failed geometry validation are not collected here,
+  and the game would collect them. `parse_geometry` withdraws the marker
+  records of a mesh it rejects, so by the time the collector at 0x0056BDB0
+  is reproduced there is nothing left to collect for that mesh, while the
+  game reads the `0x0013401A` list without consulting the solid's validity.
+  Where this would bite, a slot whose exhaust or licence-plate marker lived
+  on a rejected mesh would be reported `no marker` instead of drawn. No
+  surveyed retail car reaches it: the collector reads each slot's LOD A
+  model, and the one rejected mesh in the survey - `ECLIPSE_KIT00_SPOILER_D`,
+  slot 11 at LOD D - is not a LOD A model, so ECLIPSE collects the same 27
+  markers at every LOD.
 
 ## Still unknown
 
@@ -514,13 +573,19 @@ contain at any LOD, so a stock car there has no spoiler at all.
 - The identities of six hashes absent from the surveyed packs.
 - The 24-byte track vertex field layout.
 
-A renderer may now build the stock part set for a car and the mesh list it
-uses at a given LOD (`nfsu_probe stock-parts`, `nfsu::select_stock_parts`),
-and it may read where each part goes (`nfsu_probe car-placement`,
-`nfsu_probe part-markers`, `nfsu::derive_cullable_part_placements`,
-`nfsu::car_marker_placement`). That is a decoded part and mesh selection
-plus placement, not a stock car: decal textures are still missing, nothing
-consumes the placement yet, and the paint, skin and vinyls the viewer can
-now compose are the caller's explicit selection rather than a car's own
+A renderer may now ask for the whole stock assembly of a car at one LOD
+and get back a validated draw list with a transform per drawn copy
+(`nfsu_probe stock-scene`, `nfsu::prepare_stock_car_scene`), built from the
+part set (`nfsu::select_stock_parts`), the per-LOD meshes
+(`nfsu::resolve_part_models`) and the placement
+(`nfsu::derive_cullable_part_placements`, `nfsu::car_marker_placement`).
+
+That is the decoded selection and placement assembled, and it is still not
+the whole stock car. The drawn wheel and brake matrices are not
+reproduced, so those two slots are opt-in and their instances are marked
+inexact; decal textures are still missing; no backend applies the instance
+transforms yet, and the CPU reference renderer refuses the profile rather
+than draw it unplaced; and the paint, skin and vinyls the viewer can
+compose are still the caller's explicit selection rather than a car's own
 customization state, so neither viewer profile may be labelled the stock
 car.

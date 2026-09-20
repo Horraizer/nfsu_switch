@@ -1139,6 +1139,15 @@ bool render_scene(
         error = "invalid prepared scene: " + error;
         return false;
     }
+    // This renderer draws every prepared mesh once in its own space. It
+    // does not apply PreparedInstance::transform, so it would draw the
+    // four wheels of a stock car on top of each other at the origin.
+    // Refusing is the honest answer until a backend consumes instances.
+    if (scene.profile == SelectionProfile::stock_car) {
+        error = "the CPU reference renderer does not place instances yet, so it "
+                "cannot draw the stock car profile";
+        return false;
+    }
     std::uint64_t source_triangles = 0;
     for (const PreparedMesh& mesh : scene.meshes) {
         source_triangles += mesh.triangles.size();

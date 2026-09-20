@@ -68,6 +68,17 @@ add_library(nfsu_track
 target_link_libraries(nfsu_track PUBLIC nfsu_core nfsu_scene)
 nfsu_enable_warnings(nfsu_track)
 
+# The stock-car profile of PreparedCarScene: the recovered stock part set,
+# its per-LOD mesh hashes and the recovered placement, turned into one
+# prepared draw list with an instance per drawn copy. It reads no files, so
+# it sits above the scene layer and beside the parsers it consumes.
+add_library(nfsu_stock_scene
+    src/stock_scene.cpp
+)
+
+target_link_libraries(nfsu_stock_scene PUBLIC nfsu_core nfsu_scene)
+nfsu_enable_warnings(nfsu_stock_scene)
+
 # Texture-pack decoding for prepared scenes. Backends do not depend on it.
 add_library(nfsu_texture_decode
     src/texture_decode.cpp
@@ -137,7 +148,8 @@ add_executable(nfsu_probe
 )
 
 target_link_libraries(nfsu_probe
-    PRIVATE nfsu_core nfsu_track nfsu_texture_decode nfsu_skin_inputs)
+    PRIVATE nfsu_core nfsu_track nfsu_texture_decode nfsu_skin_inputs
+            nfsu_stock_scene)
 nfsu_enable_warnings(nfsu_probe)
 
 # Backend-neutral interactive inspection state: the camera the pointer
@@ -239,6 +251,14 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_car_parts_tests PRIVATE nfsu_core)
     nfsu_enable_warnings(nfsu_car_parts_tests)
     add_test(NAME nfsu_car_parts_tests COMMAND nfsu_car_parts_tests)
+
+    add_executable(nfsu_stock_scene_tests
+        tests/stock_scene_tests.cpp
+    )
+
+    target_link_libraries(nfsu_stock_scene_tests PRIVATE nfsu_stock_scene)
+    nfsu_enable_warnings(nfsu_stock_scene_tests)
+    add_test(NAME nfsu_stock_scene_tests COMMAND nfsu_stock_scene_tests)
 
     add_executable(nfsu_track_tests
         tests/track_tests.cpp
@@ -344,6 +364,7 @@ if(NFSU_BUILD_TESTS)
         nfsu_render_tests nfsu_scene_tests nfsu_car_parts_tests
         nfsu_track_tests nfsu_track_object_tests
         nfsu_part_placement_tests nfsu_body_skin_tests
+        nfsu_stock_scene_tests
         nfsu_skin_inputs_tests nfsu_runtime_skin_tests nfsu_inspect_tests
         nfsu_viewer_dump_alias nfsu_probe_usage_commands
         PROPERTIES TIMEOUT 60)

@@ -735,6 +735,16 @@ translation and the local placement the exhaust and plate draw paths build,
 plus the number of meshes it skipped as invalid and a per-hash summary; an
 optional role argument filters the listing.
 
+`nfsu_probe stock-scene` is the consumer of both: it assembles the stock
+part set and this placement into the `stock car` profile of
+`PreparedCarScene` (`include/nfsu/stock_scene.h`,
+[`RENDERER.md`](RENDERER.md)). The exhaust and the licence plate are
+placed there from their markers, exactly as above. The wheel and the brake
+are not: the profile reports them as `placement unreproduced` and draws
+nothing for them, because of the lateral expression below, and the opt-in
+that places them at the culling placements marks every instance it
+produces as not exact.
+
 ## Unknown
 
 - The lateral expression the wheel draw builds at

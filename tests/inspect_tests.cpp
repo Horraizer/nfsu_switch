@@ -355,7 +355,7 @@ nfsu::PreparedDraw ordered_draw(const nfsu::PreparedCarScene& scene,
 // submission order from it and number every triangle by it.
 void test_draw_order_stability() {
     nfsu::PreparedCarScene scene;
-    scene.source_mesh_count = 1;
+    scene.source_mesh_counts = {1};
     scene.meshes.emplace_back();
     scene.meshes.back().name = "ORDER";
     // Two textures whose raw bytes put them in different draw queue rows:

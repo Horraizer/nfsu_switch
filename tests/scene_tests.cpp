@@ -209,7 +209,7 @@ std::vector<std::size_t> mesh_positions(const nfsu::PreparedCarScene& scene) {
 
 bool empty_scene(const nfsu::PreparedCarScene& scene) {
     return scene.profile == nfsu::SelectionProfile::all_meshes &&
-           scene.selectors.empty() && scene.source_mesh_count == 0 &&
+           scene.selectors.empty() && scene.source_mesh_counts.empty() &&
            scene.skipped_invalid_meshes.empty() && scene.meshes.empty() &&
            scene.draws.empty() && scene.textures.empty() &&
            scene.unresolved_hashes.empty();
@@ -232,7 +232,7 @@ bool same_draw(const nfsu::PreparedDraw& a, const nfsu::PreparedDraw& b) {
 
 bool same_scene(const nfsu::PreparedCarScene& a, const nfsu::PreparedCarScene& b) {
     if (a.profile != b.profile || a.selectors.size() != b.selectors.size() ||
-        a.source_mesh_count != b.source_mesh_count ||
+        a.source_mesh_counts != b.source_mesh_counts ||
         a.skipped_invalid_meshes != b.skipped_invalid_meshes ||
         a.meshes.size() != b.meshes.size() || a.draws.size() != b.draws.size() ||
         a.textures.size() != b.textures.size() ||
@@ -327,7 +327,9 @@ void test_all_meshes() {
     check(scene.profile == nfsu::SelectionProfile::all_meshes &&
               std::string(nfsu::selection_profile_name(scene.profile)) == "all meshes",
           "all-meshes profile");
-    check(scene.selectors.empty() && scene.source_mesh_count == 5, "all-meshes sources");
+    check(scene.selectors.empty() &&
+              scene.source_mesh_counts == std::vector<std::size_t>({5}),
+          "all-meshes sources");
     check(mesh_positions(scene) == std::vector<std::size_t>({0, 2, 3, 4}),
           "every valid mesh in source order");
     check(scene.skipped_invalid_meshes == std::vector<std::size_t>({1}),
@@ -335,6 +337,10 @@ void test_all_meshes() {
     check(scene.meshes[1].name == "WHEEL" && scene.meshes[0].selector == nfsu::kNoHandle,
           "mesh identity");
     check(scene.draws.size() == 8, "one draw per material group");
+    // The stock car profile owns instances; the two profiles this layer
+    // resolves place nothing and carry none.
+    check(scene.instances.empty() && scene.meshes[0].source == 0,
+          "the all-meshes profile carries no instance");
     std::vector<std::size_t> resolved;
     nfsu::resolve_mesh_selection(geometry, nfsu::MeshSelection{}, nfsu::SceneLimits{},
                                  resolved, nullptr, error);
@@ -736,6 +742,124 @@ void test_lifetime() {
     check(same_scene(scene, snapshot), "scene unchanged");
 }
 
+// prepare_scene_meshes is public API with an input contract its own callers
+// inside this library never violate: prepare_car_scene hands it refs it
+// resolved itself, and prepare_stock_car_scene hands it refs it built from
+// a part database. The guards exist for a caller that does neither, and
+// nothing above this function re-checks them - it does not run the prepared
+// scene through validate_prepared_scene, so what it accepts it returns.
+//
+// The bounds guard is the one whose loss is not a wrong answer: the mesh
+// lookup a few lines under it indexes both the source list and that
+// source's meshes with the values the guard just checked.
+void test_prepare_scene_meshes_contract() {
+    const nfsu::GeometryReport geometry = scene_geometry();
+    const nfsu::GeometryReport second = scene_geometry();
+    const std::vector<const nfsu::GeometryReport*> one{&geometry};
+    const std::vector<const nfsu::GeometryReport*> two{&geometry, &second};
+    const nfsu::RenderTextureSet textures = scene_textures();
+    nfsu::PreparedCarScene scene;
+    std::string error;
+    const auto prepare_refs =
+        [&](const std::vector<const nfsu::GeometryReport*>& sources,
+            const std::vector<nfsu::SceneMeshRef>& refs) {
+            error.clear();
+            return nfsu::prepare_scene_meshes(sources, refs, {}, textures,
+                                              nfsu::SceneLimits{}, scene, error);
+        };
+    const auto refused = [&](const std::vector<const nfsu::GeometryReport*>& sources,
+                             const std::vector<nfsu::SceneMeshRef>& refs,
+                             const std::string& label, const std::string& expected) {
+        check(!prepare_refs(sources, refs), label + " refused");
+        check(error.find(expected) != std::string::npos,
+              label + " names '" + expected + "': " + error);
+        check(empty_scene(scene), label + " leaves the scene empty");
+    };
+
+    // The contract held, so a refusal below is the guard talking and not the
+    // input being unusable for some other reason. Meshes 0, 2, 3 and 4 of
+    // scene_geometry() are valid; mesh 1 is the one that failed validation.
+    check(prepare_refs(one, {{0, 0}, {0, 2}, {0, 3}}), "in-contract input: " + error);
+    check(scene.meshes.size() == 3 && scene.source_mesh_counts.size() == 1,
+          "three meshes of one source");
+    check(prepare_refs(two, {{0, 0}, {0, 4}, {1, 2}}), "two sources: " + error);
+    check(scene.meshes.size() == 3 && scene.source_mesh_counts.size() == 2,
+          "meshes taken from both sources");
+
+    // The bounds guard, each half on its own.
+    refused(one, {{1, 0}}, "a source outside the source list",
+            "is outside its geometry source");
+    refused(two, {{2, 0}}, "a source past the last of two",
+            "is outside its geometry source");
+    refused(one, {{0, 5}}, "a mesh one past its source's last",
+            "is outside its geometry source");
+    refused(one, {{0, 0}, {0, 99}}, "a mesh far outside its source",
+            "is outside its geometry source");
+
+    // Strictly ascending in (source, index). A repeat would copy one mesh
+    // twice and a step backwards would reorder the draw list against the
+    // order the caller asked for.
+    refused(one, {{0, 2}, {0, 0}}, "meshes in descending index order",
+            "is not in ascending source and mesh order");
+    refused(one, {{0, 0}, {0, 0}}, "the same mesh named twice",
+            "is not in ascending source and mesh order");
+    refused(two, {{1, 0}, {0, 2}}, "sources in descending order",
+            "is not in ascending source and mesh order");
+
+    // An invalid mesh has no geometry to draw, first in the list and in the
+    // middle of it.
+    refused(one, {{0, 1}}, "an invalid mesh alone", "is invalid and cannot be drawn");
+    refused(one, {{0, 0}, {0, 1}, {0, 2}}, "an invalid mesh among valid ones",
+            "is invalid and cannot be drawn");
+
+    // The rest of the same contract.
+    refused({}, {{0, 0}}, "no geometry source at all",
+            "needs at least one geometry source");
+    refused({&geometry, nullptr}, {{0, 0}}, "a null geometry source", "is null");
+    nfsu::SceneLimits limits;
+    limits.max_sources = 1;
+    error.clear();
+    check(!nfsu::prepare_scene_meshes(two, {{0, 0}}, {}, textures, limits, scene, error),
+          "more sources than the limit refused");
+    check(error.find("the limit is 1") != std::string::npos,
+          "the source limit error names the limit: " + error);
+    error.clear();
+    check(!nfsu::prepare_scene_meshes(one, {{0, 0}, {0, 2}}, {7}, textures,
+                                      nfsu::SceneLimits{}, scene, error),
+          "a selector list that does not cover every mesh refused");
+    check(error.find("does not cover every selected mesh") != std::string::npos,
+          "the selector error says so: " + error);
+}
+
+// A stock car scene carries transforms this renderer does not apply, so it
+// is refused rather than drawn in the wrong place. The profile is set by
+// hand here: building one needs the part database layer above this test.
+void test_renderer_refuses_unplaced_instances() {
+    const nfsu::GeometryReport geometry = scene_geometry();
+    nfsu::PreparedCarScene scene;
+    std::string error;
+    check(prepare(geometry, scene_textures(), selection_of({by_index(0)}), scene, error),
+          "stock refusal base: " + error);
+    scene.profile = nfsu::SelectionProfile::stock_car;
+    scene.selectors.clear();
+    scene.meshes[0].selector = nfsu::kNoHandle;
+    nfsu::PreparedInstance instance;
+    instance.mesh = 0;
+    instance.mesh_hash = scene.meshes[0].directory_hash;
+    scene.instances.push_back(instance);
+    check(nfsu::validate_prepared_scene(scene, error),
+          "a hand-built stock scene validates: " + error);
+    nfsu::Frame frame;
+    nfsu::RenderStats stats;
+    std::string message;
+    check(!nfsu::render_scene(scene, options(), nfsu::RenderLimits{}, frame, stats,
+                              message),
+          "the renderer refuses the stock car profile");
+    check(message.find("does not place instances") != std::string::npos,
+          "the refusal says why: " + message);
+    check(frame.width() == 0 && frame.rgba().empty(), "the refusal allocates no frame");
+}
+
 // A scene changed after preparation is refused before the frame is
 // allocated, never read out of bounds.
 void test_hostile_scene() {
@@ -993,6 +1117,8 @@ int main() {
     test_bindings_and_records();
     test_determinism();
     test_lifetime();
+    test_prepare_scene_meshes_contract();
+    test_renderer_refuses_unplaced_instances();
     test_hostile_scene();
     test_failure_leaves_outputs_empty();
 

@@ -379,6 +379,11 @@ private:
 // with validate_prepared_scene, and the options and limits are checked,
 // before the frame is allocated, so a rejected scene leaves frame
 // untouched. Vertex indices are checked per triangle (bad_index).
+//
+// Each prepared mesh is drawn once, in its own space: this renderer does
+// not apply PreparedInstance::transform, so it refuses a scene whose
+// profile is SelectionProfile::stock_car rather than draw a car's four
+// wheels on top of each other at the origin.
 bool render_scene(
     const PreparedCarScene& scene,
     const RenderOptions& options,

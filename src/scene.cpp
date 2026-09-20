@@ -3,6 +3,7 @@
 #include "nfsu/geometry.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <map>
 #include <new>
@@ -201,6 +202,7 @@ const char* selection_profile_name(SelectionProfile profile) noexcept {
     switch (profile) {
     case SelectionProfile::all_meshes: return "all meshes";
     case SelectionProfile::explicit_subset: return "explicit subset";
+    case SelectionProfile::stock_car: return "stock car";
     }
     return "unknown";
 }
@@ -427,28 +429,60 @@ bool resolve_mesh_selection(
     return true;
 }
 
-bool prepare_car_scene(
-    const GeometryReport& geometry,
+bool prepare_scene_meshes(
+    const std::vector<const GeometryReport*>& sources,
+    const std::vector<SceneMeshRef>& meshes,
+    const std::vector<std::size_t>& selected_by,
     const RenderTextureSet& textures,
-    const MeshSelection& selection,
     const SceneLimits& limits,
     PreparedCarScene& scene,
     std::string& error) {
     scene = PreparedCarScene{};
-    std::vector<std::size_t> selected;
-    std::vector<std::size_t> selected_by;
-    if (!resolve_mesh_selection(geometry, selection, limits, selected, &selected_by,
-                                error)) {
+    if (sources.empty()) {
+        error = "a prepared scene needs at least one geometry source";
         return false;
     }
-    const bool subset = !selection.selectors.empty();
+    if (sources.size() > limits.max_sources) {
+        error = std::to_string(sources.size()) + " geometry sources; the limit is " +
+                std::to_string(limits.max_sources);
+        return false;
+    }
+    for (std::size_t s = 0; s < sources.size(); ++s) {
+        if (sources[s] == nullptr) {
+            error = "geometry source " + std::to_string(s) + " is null";
+            return false;
+        }
+    }
+    if (!selected_by.empty() && selected_by.size() != meshes.size()) {
+        error = "the selector list does not cover every selected mesh";
+        return false;
+    }
 
     // Every count is checked before the copies are allocated.
     std::uint64_t vertices = 0;
     std::uint64_t triangles = 0;
     std::uint64_t draws = 0;
-    for (const std::size_t index : selected) {
-        const Mesh& mesh = geometry.meshes[index];
+    for (std::size_t k = 0; k < meshes.size(); ++k) {
+        const SceneMeshRef& ref = meshes[k];
+        if (ref.source >= sources.size() ||
+            ref.index >= sources[ref.source]->meshes.size()) {
+            error = "selected mesh " + std::to_string(k) +
+                    " is outside its geometry source";
+            return false;
+        }
+        if (k > 0 && (ref.source < meshes[k - 1].source ||
+                      (ref.source == meshes[k - 1].source &&
+                       ref.index <= meshes[k - 1].index))) {
+            error = "selected mesh " + std::to_string(k) +
+                    " is not in ascending source and mesh order";
+            return false;
+        }
+        const Mesh& mesh = sources[ref.source]->meshes[ref.index];
+        if (!mesh.valid) {
+            error = "selected mesh " + std::to_string(k) +
+                    " is invalid and cannot be drawn";
+            return false;
+        }
         if (!add_within(vertices, mesh.vertices.size(), limits.max_vertices, vertices)) {
             error = "selected meshes have more than " +
                     std::to_string(limits.max_vertices) + " vertices";
@@ -469,36 +503,30 @@ bool prepare_car_scene(
 
     PreparedCarScene result;
     try {
-        result.profile = subset ? SelectionProfile::explicit_subset
-                                : SelectionProfile::all_meshes;
-        result.selectors = selection.selectors;
-        result.source_mesh_count = geometry.meshes.size();
-        if (!subset) {
-            for (std::size_t i = 0; i < geometry.meshes.size(); ++i) {
-                if (!geometry.meshes[i].valid) {
-                    result.skipped_invalid_meshes.push_back(i);
-                }
-            }
+        result.source_mesh_counts.reserve(sources.size());
+        for (const GeometryReport* source : sources) {
+            result.source_mesh_counts.push_back(source->meshes.size());
         }
-        result.meshes.reserve(selected.size());
+        result.meshes.reserve(meshes.size());
         result.draws.reserve(static_cast<std::size_t>(draws));
         // RenderTextureSet index -> scene texture handle.
         std::map<std::size_t, std::size_t> handles;
         std::set<std::uint32_t> unresolved;
         std::uint64_t texture_bytes = 0;
         std::uint64_t draw_triangles = 0;
-        for (std::size_t k = 0; k < selected.size(); ++k) {
-            const Mesh& mesh = geometry.meshes[selected[k]];
+        for (std::size_t k = 0; k < meshes.size(); ++k) {
+            const Mesh& mesh = sources[meshes[k].source]->meshes[meshes[k].index];
             const std::size_t mesh_handle = result.meshes.size();
             result.meshes.emplace_back();
             PreparedMesh& prepared = result.meshes.back();
-            prepared.source_index = selected[k];
+            prepared.source = meshes[k].source;
+            prepared.source_index = meshes[k].index;
             prepared.name = mesh.name;
             prepared.directory_hash = mesh.directory_hash;
             prepared.directory_offset = mesh.directory_offset;
             prepared.directory_size = mesh.directory_size;
             prepared.has_directory_entry = mesh.has_directory_entry;
-            prepared.selector = subset ? selected_by[k] : kNoHandle;
+            prepared.selector = selected_by.empty() ? kNoHandle : selected_by[k];
             prepared.material_count = mesh.materials.size();
             prepared.vertices = mesh.vertices;
             prepared.triangles = mesh.triangles;
@@ -566,6 +594,53 @@ bool prepare_car_scene(
         error = "out of memory while preparing the scene";
         return false;
     }
+    scene = std::move(result);
+    return true;
+}
+
+bool prepare_car_scene(
+    const GeometryReport& geometry,
+    const RenderTextureSet& textures,
+    const MeshSelection& selection,
+    const SceneLimits& limits,
+    PreparedCarScene& scene,
+    std::string& error) {
+    scene = PreparedCarScene{};
+    std::vector<std::size_t> selected;
+    std::vector<std::size_t> selected_by;
+    if (!resolve_mesh_selection(geometry, selection, limits, selected, &selected_by,
+                                error)) {
+        return false;
+    }
+    const bool subset = !selection.selectors.empty();
+
+    PreparedCarScene result;
+    try {
+        std::vector<SceneMeshRef> refs;
+        refs.reserve(selected.size());
+        for (const std::size_t index : selected) {
+            refs.push_back(SceneMeshRef{0, index});
+        }
+        const std::vector<const GeometryReport*> sources{&geometry};
+        if (!prepare_scene_meshes(sources, refs,
+                                  subset ? selected_by : std::vector<std::size_t>{},
+                                  textures, limits, result, error)) {
+            return false;
+        }
+        result.profile = subset ? SelectionProfile::explicit_subset
+                                : SelectionProfile::all_meshes;
+        result.selectors = selection.selectors;
+        if (!subset) {
+            for (std::size_t i = 0; i < geometry.meshes.size(); ++i) {
+                if (!geometry.meshes[i].valid) {
+                    result.skipped_invalid_meshes.push_back(i);
+                }
+            }
+        }
+    } catch (const std::bad_alloc&) {
+        error = "out of memory while preparing the scene";
+        return false;
+    }
     if (!validate_prepared_scene(result, error)) {
         error = "prepared scene failed its self-check: " + error;
         return false;
@@ -589,7 +664,8 @@ namespace {
 
 bool validate_scene(const PreparedCarScene& scene, std::string& error) {
     const bool subset = scene.profile == SelectionProfile::explicit_subset;
-    if (!subset && scene.profile != SelectionProfile::all_meshes) {
+    const bool stock = scene.profile == SelectionProfile::stock_car;
+    if (!subset && !stock && scene.profile != SelectionProfile::all_meshes) {
         error = "unknown selection profile";
         return false;
     }
@@ -597,25 +673,53 @@ bool validate_scene(const PreparedCarScene& scene, std::string& error) {
         error = "selection profile does not match the selector list";
         return false;
     }
+    if (scene.source_mesh_counts.empty()) {
+        error = "prepared scene names no geometry source";
+        return false;
+    }
+    if (!stock && scene.source_mesh_counts.size() != 1) {
+        error = "only the stock car profile names several geometry sources";
+        return false;
+    }
+    if (!stock && !scene.instances.empty()) {
+        error = "only the stock car profile carries instances";
+        return false;
+    }
     if (subset && !scene.skipped_invalid_meshes.empty()) {
         error = "an explicit subset skips no meshes";
         return false;
     }
-    if (scene.meshes.size() > scene.source_mesh_count ||
+    if (stock && !scene.skipped_invalid_meshes.empty()) {
+        error = "the stock car profile skips no meshes";
+        return false;
+    }
+    // Sum without overflow: each term is a container size, but the list
+    // itself is public and may hold anything.
+    std::uint64_t source_meshes = 0;
+    for (const std::size_t count : scene.source_mesh_counts) {
+        if (count > UINT64_MAX - source_meshes) {
+            error = "source mesh counts overflow";
+            return false;
+        }
+        source_meshes += count;
+    }
+    if (scene.meshes.size() > source_meshes ||
         scene.skipped_invalid_meshes.size() >
-            scene.source_mesh_count - scene.meshes.size()) {
+            source_meshes - scene.meshes.size()) {
         error = "more prepared meshes than source meshes";
         return false;
     }
-    if (!subset && scene.skipped_invalid_meshes.size() !=
-                       scene.source_mesh_count - scene.meshes.size()) {
+    if (!subset && !stock &&
+        scene.skipped_invalid_meshes.size() !=
+            source_meshes - scene.meshes.size()) {
         error = "the all-meshes profile does not cover every source mesh";
         return false;
     }
-    // Both lists ascending and disjoint, all inside the source.
+    // Both lists ascending and disjoint, all inside the source. Only the
+    // all-meshes profile fills this one, and it has a single source.
     for (std::size_t i = 0; i < scene.skipped_invalid_meshes.size(); ++i) {
         const std::size_t index = scene.skipped_invalid_meshes[i];
-        if (index >= scene.source_mesh_count ||
+        if (index >= scene.source_mesh_counts[0] ||
             (i > 0 && index <= scene.skipped_invalid_meshes[i - 1])) {
             error = "skipped mesh list is not ascending inside the source";
             return false;
@@ -624,8 +728,11 @@ bool validate_scene(const PreparedCarScene& scene, std::string& error) {
     std::vector<bool> selector_used(scene.selectors.size(), false);
     for (std::size_t i = 0; i < scene.meshes.size(); ++i) {
         const PreparedMesh& mesh = scene.meshes[i];
-        if (mesh.source_index >= scene.source_mesh_count ||
-            (i > 0 && mesh.source_index <= scene.meshes[i - 1].source_index)) {
+        if (mesh.source >= scene.source_mesh_counts.size() ||
+            mesh.source_index >= scene.source_mesh_counts[mesh.source] ||
+            (i > 0 && (mesh.source < scene.meshes[i - 1].source ||
+                       (mesh.source == scene.meshes[i - 1].source &&
+                        mesh.source_index <= scene.meshes[i - 1].source_index)))) {
             error = "prepared mesh " + std::to_string(i) +
                     " is not in ascending source order inside the source";
             return false;
@@ -685,7 +792,7 @@ bool validate_scene(const PreparedCarScene& scene, std::string& error) {
             selector_used[mesh.selector] = true;
         } else if (mesh.selector != kNoHandle) {
             error = "prepared mesh " + std::to_string(i) +
-                    " names a selector in the all-meshes profile";
+                    " names a selector in a profile that has none";
             return false;
         }
     }
@@ -843,6 +950,42 @@ bool validate_scene(const PreparedCarScene& scene, std::string& error) {
                     unresolved.begin())) {
         error = "unresolved hash list does not match the prepared draws";
         return false;
+    }
+    // Instances. This layer places nothing, so it checks only what a
+    // backend relies on: the handle, a finite transform, and that no
+    // prepared mesh is left without a copy to draw.
+    std::vector<bool> mesh_drawn(scene.meshes.size(), false);
+    for (std::size_t i = 0; i < scene.instances.size(); ++i) {
+        const PreparedInstance& instance = scene.instances[i];
+        if (instance.mesh >= scene.meshes.size()) {
+            error = "prepared instance " + std::to_string(i) +
+                    " has an invalid mesh handle";
+            return false;
+        }
+        for (const float element : instance.transform) {
+            if (!std::isfinite(element)) {
+                error = "prepared instance " + std::to_string(i) +
+                        " has a transform element that is not finite";
+                return false;
+            }
+        }
+        if (instance.mesh_hash != 0 &&
+            scene.meshes[instance.mesh].has_directory_entry &&
+            instance.mesh_hash != scene.meshes[instance.mesh].directory_hash) {
+            error = "prepared instance " + std::to_string(i) +
+                    " names a hash its prepared mesh does not have";
+            return false;
+        }
+        mesh_drawn[instance.mesh] = true;
+    }
+    if (stock) {
+        for (std::size_t i = 0; i < mesh_drawn.size(); ++i) {
+            if (!mesh_drawn[i]) {
+                error = "prepared mesh " + std::to_string(i) +
+                        " has no instance to draw it";
+                return false;
+            }
+        }
     }
     return true;
 }
