@@ -23,6 +23,23 @@ target_include_directories(nfsu_image
 target_compile_features(nfsu_image PUBLIC cxx_std_17)
 nfsu_enable_warnings(nfsu_image)
 
+# One command-line argument turned into a filesystem path. It is the only
+# file outside the window backend that calls the Windows API, and it is
+# separate from the parsers for that reason: nothing under nfsu_core knows
+# what an operating system is. Both programs link it, because both read
+# paths out of a narrow argv and both used to terminate on one that the
+# active ANSI code page spelled with a byte above 0x7E.
+add_library(nfsu_arg_path
+    src/arg_path.cpp
+)
+
+target_include_directories(nfsu_arg_path
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_compile_features(nfsu_arg_path PUBLIC cxx_std_17)
+nfsu_enable_warnings(nfsu_arg_path)
+
 add_library(nfsu_core
     src/car_parts.cpp
     src/chunk.cpp
@@ -149,7 +166,7 @@ add_executable(nfsu_probe
 
 target_link_libraries(nfsu_probe
     PRIVATE nfsu_core nfsu_track nfsu_texture_decode nfsu_skin_inputs
-            nfsu_stock_scene)
+            nfsu_stock_scene nfsu_arg_path)
 nfsu_enable_warnings(nfsu_probe)
 
 # Backend-neutral interactive inspection state: the camera the pointer
@@ -202,7 +219,7 @@ add_executable(nfsu_viewer
 # the first program that links both.
 target_link_libraries(nfsu_viewer
     PRIVATE nfsu_render nfsu_texture_decode nfsu_runtime_skin nfsu_inspect_window
-            nfsu_stock_scene)
+            nfsu_stock_scene nfsu_arg_path)
 nfsu_enable_warnings(nfsu_viewer)
 
 if(NFSU_BUILD_TESTS)
@@ -215,6 +232,19 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_chunk_tests PRIVATE nfsu_core)
     nfsu_enable_warnings(nfsu_chunk_tests)
     add_test(NAME nfsu_chunk_tests COMMAND nfsu_chunk_tests)
+
+    # The narrow-argument-to-path conversion, against stated code pages
+    # rather than the one the machine running the test happens to use, and
+    # once against the real filesystem so that a conversion that produces
+    # the right characters and still cannot open a file is not mistaken for
+    # a working one.
+    add_executable(nfsu_arg_path_tests
+        tests/arg_path_tests.cpp
+    )
+
+    target_link_libraries(nfsu_arg_path_tests PRIVATE nfsu_arg_path)
+    nfsu_enable_warnings(nfsu_arg_path_tests)
+    add_test(NAME nfsu_arg_path_tests COMMAND nfsu_arg_path_tests)
 
     add_executable(nfsu_geometry_tests
         tests/geometry_tests.cpp
@@ -392,8 +422,19 @@ if(NFSU_BUILD_TESTS)
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/usage_commands.cmake
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
+    # What both programs do with a path argument that is not plain ASCII:
+    # the exit status, the diagnostic, and the absence of the terminate
+    # that issue #87 reported. A unit test cannot reach any of those three,
+    # because the defect was an exception escaping main().
+    add_test(NAME nfsu_path_arguments
+        COMMAND ${CMAKE_COMMAND} -DVIEWER=$<TARGET_FILE:nfsu_viewer>
+                -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/path_arguments.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
     # A hung test is killed and reported as a failure.
     set_tests_properties(
+        nfsu_arg_path_tests nfsu_path_arguments
         nfsu_chunk_tests nfsu_geometry_tests nfsu_texture_tests
         nfsu_render_tests nfsu_scene_tests nfsu_car_parts_tests
         nfsu_track_tests nfsu_track_object_tests

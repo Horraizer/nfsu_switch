@@ -1,3 +1,4 @@
+#include "nfsu/arg_path.h"
 #include "nfsu/car_parts.h"
 #include "nfsu/chunk.h"
 #include "nfsu/geometry.h"
@@ -1472,7 +1473,8 @@ int run_body_skin_inputs(int argc, char** argv) {
                 return 1;
             }
             entry->path = argv[i + 2];
-            entry->pack = nfsu::load_texture_pack(fs::path(entry->path), entry->bytes);
+            entry->pack = nfsu::load_texture_pack(
+                nfsu::argument_path(entry->path.c_str()), entry->bytes);
             loaded.push_back(std::move(entry));
             i += 3;
         } else if (option == "--hood" && left >= 1) {
@@ -1957,7 +1959,7 @@ struct Command {
 // This order is the order print_usage() prints.
 const Command kCommands[] = {
     {"summary", " <game-root>", "",
-     [](int, char** argv) { return run_summary(fs::path(argv[2])); }},
+     [](int, char** argv) { return run_summary(nfsu::argument_path(argv[2])); }},
     {"chunks", " <file> [display-limit]", "",
      [](int argc, char** argv) {
          std::size_t limit = 128;
@@ -1969,30 +1971,31 @@ const Command kCommands[] = {
                  return 1;
              }
          }
-         return run_chunks(fs::path(argv[2]), limit);
+         return run_chunks(nfsu::argument_path(argv[2]), limit);
      }},
     {"meshes", " <GEOMETRY.BIN>", "",
-     [](int, char** argv) { return run_meshes(fs::path(argv[2])); }},
+     [](int, char** argv) { return run_meshes(nfsu::argument_path(argv[2])); }},
     {"obj", " <GEOMETRY.BIN> <output.obj>", "",
      [](int argc, char** argv) {
          if (argc < 4) {
              print_usage();
              return 1;
          }
-         return run_obj(fs::path(argv[2]), fs::path(argv[3]));
+         return run_obj(nfsu::argument_path(argv[2]), nfsu::argument_path(argv[3]));
      }},
     {"textures", " <TEXTURES.BIN>", "",
-     [](int, char** argv) { return run_textures(fs::path(argv[2])); }},
+     [](int, char** argv) { return run_textures(nfsu::argument_path(argv[2])); }},
     {"pack-set",
      " <file>   (metadata of every texture pack, e.g. in a BUN)", "",
-     [](int, char** argv) { return run_pack_set(fs::path(argv[2])); }},
+     [](int, char** argv) { return run_pack_set(nfsu::argument_path(argv[2])); }},
     {"export-textures", " <TEXTURES.BIN> <output-dir> [tga|dds]", "",
      [](int argc, char** argv) {
          if (argc < 4) {
              print_usage();
              return 1;
          }
-         return run_export_textures(fs::path(argv[2]), fs::path(argv[3]),
+         return run_export_textures(nfsu::argument_path(argv[2]),
+                                    nfsu::argument_path(argv[3]),
                                     argc >= 5 ? std::string(argv[4]) : "tga");
      }},
     {"texture-bindings", " <GEOMETRY.BIN> <TEXTURES.BIN>", "",
@@ -2001,7 +2004,8 @@ const Command kCommands[] = {
              print_usage();
              return 1;
          }
-         return run_texture_bindings(fs::path(argv[2]), fs::path(argv[3]));
+         return run_texture_bindings(nfsu::argument_path(argv[2]),
+                                     nfsu::argument_path(argv[3]));
      }},
     {"car-parts", " <GLOBALB.BUN> [car-type]", "",
      [](int argc, char** argv) {
@@ -2009,7 +2013,7 @@ const Command kCommands[] = {
              print_usage();
              return 1;
          }
-         return run_car_parts(fs::path(argv[2]),
+         return run_car_parts(nfsu::argument_path(argv[2]),
                               argc == 4 ? std::string(argv[3]) : "");
      }},
     {"stock-parts", " <GLOBALB.BUN> <car-type> [GEOMETRY.BIN ...]", "",
@@ -2020,9 +2024,10 @@ const Command kCommands[] = {
          }
          std::vector<fs::path> geometry;
          for (int i = 4; i < argc; ++i) {
-             geometry.emplace_back(argv[i]);
+             geometry.push_back(nfsu::argument_path(argv[i]));
          }
-         return run_stock_parts(fs::path(argv[2]), std::string(argv[3]), geometry);
+         return run_stock_parts(nfsu::argument_path(argv[2]), std::string(argv[3]),
+                                geometry);
      }},
     {"stock-scene", " <GLOBALB.BUN> <car-type> <A|B|C|D>",
      "      [--front-end] [--place-wheels] [GEOMETRY.BIN ...]\n",
@@ -2051,11 +2056,11 @@ const Command kCommands[] = {
                  std::cerr << "error: unknown option " << argument << '\n';
                  return 1;
              } else {
-                 geometry.emplace_back(argument);
+                 geometry.push_back(nfsu::argument_path(argv[i]));
              }
          }
-         return run_stock_scene(fs::path(argv[2]), std::string(argv[3]), lod, front_end,
-                                place_wheels, geometry);
+         return run_stock_scene(nfsu::argument_path(argv[2]), std::string(argv[3]),
+                                lod, front_end, place_wheels, geometry);
      }},
     {"track-region", " <STREAM.BUN> <offset> <size> [TEXTURE.BIN ...]", "",
      [](int argc, char** argv) {
@@ -2075,9 +2080,9 @@ const Command kCommands[] = {
          }
          std::vector<fs::path> textures;
          for (int i = 5; i < argc; ++i) {
-             textures.emplace_back(argv[i]);
+             textures.push_back(nfsu::argument_path(argv[i]));
          }
-         return run_track_region(fs::path(argv[2]), offset, size, textures);
+         return run_track_region(nfsu::argument_path(argv[2]), offset, size, textures);
      }},
     {"track-objects", " <STREAM.BUN> <offset> <size>",
      "      [<geometry-offset> <geometry-size>]\n",
@@ -2109,7 +2114,7 @@ const Command kCommands[] = {
                  return 1;
              }
          }
-         return run_track_objects(fs::path(argv[2]), offset, size,
+         return run_track_objects(nfsu::argument_path(argv[2]), offset, size,
                                   has_geometry, geometry_offset,
                                   geometry_size);
      }},
@@ -2119,7 +2124,7 @@ const Command kCommands[] = {
              print_usage();
              return 1;
          }
-         return run_car_placement(fs::path(argv[2]),
+         return run_car_placement(nfsu::argument_path(argv[2]),
                                   argc == 4 ? std::string(argv[3]) : "");
      }},
     {"part-markers", " <GEOMETRY.BIN> [role]", "",
@@ -2128,7 +2133,7 @@ const Command kCommands[] = {
              print_usage();
              return 1;
          }
-         return run_part_markers(fs::path(argv[2]),
+         return run_part_markers(nfsu::argument_path(argv[2]),
                                  argc == 4 ? std::string(argv[3]) : "");
      }},
     {"body-skin-inputs", " <car-name> <option>...",
@@ -2172,6 +2177,17 @@ int main(int argc, char** argv) {
     }
 
     const std::string_view command = argv[1];
+    // Before the command runs, and before any of its arguments reaches a
+    // file operation. Every argument goes through the same check, not only
+    // the ones that become paths: the rest are command and option names,
+    // decimal and hexadecimal numbers, and retail texture, mesh and car
+    // names, and none of those has a spelling this refuses.
+    // docs/PATH_ARGUMENTS.md says what is accepted and what is not.
+    std::string argument_error;
+    if (!nfsu::check_arguments(argc, argv, 1, argument_error)) {
+        std::cerr << "error: " << argument_error << '\n';
+        return 1;
+    }
     for (const Command& entry : kCommands) {
         if (command == entry.name) {
             return entry.run(argc, argv);
