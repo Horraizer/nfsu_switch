@@ -29,15 +29,14 @@
 #                of two outcomes, requires the one that matches what
 #                arrived, and prints which it got.
 #
-#   every entry  every command nfsu_probe registers, and every path-valued
-#                option nfsu_viewer documents, run with a Cyrillic path and
-#                required not to crash. Both inventories are read out of
-#                the programs' own usage text rather than listed here, so a
-#                command or an option added later is covered without anyone
-#                remembering. The review reverted one of the sixteen probe
-#                call sites to fs::path(argv[2]) and restored the exact
-#                terminate of issue #87 while the whole suite stayed green,
-#                because this file drove one command.
+#   every        every path argument of every registered command and every
+#   position     path-valued option, each driven with a Cyrillic path in
+#                turn while the others stay ASCII. Positions, not commands:
+#                the first version of this file drove one position per
+#                program and an independent review reverted nine individual
+#                call sites, each of which kept the suite green and each of
+#                which then reproduced the issue #87 crash. That section
+#                carries the detail and the site numbers.
 #
 #   refusal      an argument holding '?'. This is the same on every Windows
 #                installation whatever its code page, which is why the
@@ -55,13 +54,22 @@
 #                instead of passing quietly.
 #
 #   prefix       "\\?\C:\dir\out.tga", the Windows extended-length prefix,
-#                accepted rather than caught by the '?' rule. The project
-#                supports that spelling (strip_extended_prefix in
-#                src/render.cpp, and docs/RUNTIME_SKIN.md records a review
-#                that fixed --skin-dump for it), so a rule that refused it
-#                would quietly take away a supported spelling.
+#                accepted rather than caught by the '?' rule. It is a
+#                legitimate spelling that strip_extended_prefix in
+#                src/render.cpp already handles in the overwrite and
+#                same-file alias checks, so a rule that refused it would
+#                take away what those checks accept today.
 #
-# Run from the build directory. VIEWER and PROBE are the built programs.
+#                This case asserts the exemption and nothing more, because
+#                there is nothing more to assert: the prefix does not open
+#                a file through this standard library, identically here and
+#                on origin/main, and docs/PATH_ARGUMENTS.md measures that.
+#                A case requiring the run to resolve the file would be
+#                requiring a fix to something outside issue #87.
+#
+# Run from the build directory. VIEWER and PROBE are the built programs;
+# MAIN_SOURCE and VIEWER_SOURCE are their sources, read only to count how
+# many arguments each one converts.
 
 # Not decoration: a script run with -P starts with no policies set, and
 # IN_LIST below is an unknown argument rather than an operator without
@@ -215,15 +223,103 @@ endif()
 message(STATUS "acceptance: nfsu_viewer, ${reached}")
 
 # ---------------------------------------------------------------------------
-# every entry: each registered command and each path-valued option
+# every position: a Cyrillic path in each path argument in turn
 # ---------------------------------------------------------------------------
 
-# The command inventory, read out of the program rather than listed here.
+# What this section is for, and the mistake it replaces. The first version
+# of this file drove the Cyrillic path through one position per program -
+# argv[2] for every probe command, the option value for every viewer option
+# - and said in the commit message that it covered every command and every
+# option. Both were true and neither was the property that mattered. An
+# independent review reverted nine individual call sites, one at a time, to
+# the pre-branch fs::path(argv[k]) spelling: all nine kept the suite at
+# 100% tests passed, 0 of 20, and all nine then died on a Cyrillic path
+# with exit 0xC0000409, six of them printing the issue #87 terminate
+# verbatim. The uncovered sites were src/main.cpp 1477, 1984, 1998, 2008,
+# 2027, 2059 and 2083, and src/viewer_main.cpp 999 and 1000. Every one of
+# them is a second, third or variadic path argument, or a positional the
+# option sweep never touched.
+#
+# So the unit of coverage here is a path *position*, not a command. For each
+# command the template below marks every position that becomes a path with
+# PATHARG; the loop then runs the command once per marked position, with the
+# Cyrillic path in that one and an ASCII placeholder in the others.
+#
+# Two guards keep this honest, and neither is an adversarial barrier:
+#
+#   the command set is read out of the program's own usage text, and a
+#   command with no template here is a hard error rather than a command
+#   quietly skipped. A command added by another branch fails this file and
+#   says so;
+#
+#   the number of nfsu::argument_path call sites in each source file is
+#   counted and required to equal the number this file was written against.
+#   A new path argument anywhere - a new positional, a new repeatable
+#   option, a path reached from something other than argv - changes that
+#   count and fails here with a message saying to add a case. It cannot
+#   tell whether the case you add actually reaches the new site; it can
+#   only refuse to let the site arrive unnoticed.
+
+if(NOT DEFINED MAIN_SOURCE OR NOT DEFINED VIEWER_SOURCE)
+    message(FATAL_ERROR "MAIN_SOURCE and VIEWER_SOURCE must both be defined")
+endif()
+
+function(nfsu_count_sites path out_var)
+    file(READ "${path}" text)
+    string(REGEX MATCHALL "nfsu::argument_path\\(" hits "${text}")
+    list(LENGTH hits count)
+    set(${out_var} "${count}" PARENT_SCOPE)
+endfunction()
+
+nfsu_count_sites("${MAIN_SOURCE}" main_sites)
+nfsu_count_sites("${VIEWER_SOURCE}" viewer_sites)
+if(NOT main_sites EQUAL 22 OR NOT viewer_sites EQUAL 8)
+    message(FATAL_ERROR
+        "the conversion is called at ${main_sites} places in ${MAIN_SOURCE} "
+        "and ${viewer_sites} in ${VIEWER_SOURCE}; this file was written "
+        "against 22 and 8. A path argument was added or removed. Drive a "
+        "non-ASCII path through the new position - a template entry below "
+        "for a probe command, or a viewer case - and then update these two "
+        "numbers. Reverting a single call site is how issue #87 comes back, "
+        "and a position nothing drives is a site nothing would catch.")
+endif()
+
+# One entry per registered command: the command name, then its arguments
+# with PATHARG wherever the argument becomes a path. The values are chosen
+# to get past each command's own checks so that the deepest site is reached
+# - "A" is a LOD, "240SX" a car type, "0" and "16" an offset and a size.
+# Slashes separate the tokens, because a CMake list cannot nest.
+set(templates
+    "summary/PATHARG"
+    "chunks/PATHARG/64"
+    "meshes/PATHARG"
+    "obj/PATHARG/PATHARG"
+    "textures/PATHARG"
+    "pack-set/PATHARG"
+    "export-textures/PATHARG/PATHARG/tga"
+    "texture-bindings/PATHARG/PATHARG"
+    "car-parts/PATHARG/240SX"
+    "stock-parts/PATHARG/240SX/PATHARG/PATHARG"
+    "stock-scene/PATHARG/240SX/A/--place-wheels/PATHARG/PATHARG"
+    "track-region/PATHARG/0/16/PATHARG/PATHARG"
+    "track-objects/PATHARG/0/16"
+    "car-placement/PATHARG/240SX"
+    "part-markers/PATHARG/BODY"
+    "body-skin-inputs/240SX/--source/car-textures/PATHARG"
+)
+
+# The command inventory, read out of the program rather than listed here, so
+# that a command registered and not covered is a failure rather than a
+# silence.
 nfsu_run(usage usage_code "${PROBE}")
 set(commands "")
 string(REPLACE ";" "\\;" usage_escaped "${usage}")
 string(REGEX REPLACE "\r?\n" ";" usage_lines "${usage_escaped}")
+set(usage_line_count 0)
 foreach(line IN LISTS usage_lines)
+    if(line MATCHES "^  nfsu_probe ")
+        math(EXPR usage_line_count "${usage_line_count}+1")
+    endif()
     if(line MATCHES "^  nfsu_probe ([^ ]+)")
         if(NOT CMAKE_MATCH_1 IN_LIST commands)
             list(APPEND commands "${CMAKE_MATCH_1}")
@@ -231,29 +327,94 @@ foreach(line IN LISTS usage_lines)
     endif()
 endforeach()
 list(LENGTH commands command_count)
-if(command_count LESS 10)
+# An equality against the text, not a floor against a number someone chose.
+# A usage line this reader cannot take a name out of drops out of the
+# inventory, and a floor with room in it would let that pass.
+if(NOT command_count EQUAL usage_line_count)
     message(FATAL_ERROR
-        "only ${command_count} commands were read out of the nfsu_probe usage "
-        "text, so this case would cover almost nothing. The usage text "
-        "reads:\n${usage}")
+        "${usage_line_count} usage lines name a command and only "
+        "${command_count} names came out of them, so at least one command is "
+        "listed in a shape this reader cannot take a name from and would be "
+        "covered by nothing. The usage text reads:\n${usage}")
+endif()
+if(command_count LESS 1)
+    message(FATAL_ERROR
+        "no commands were read out of the nfsu_probe usage text:\n${usage}")
 endif()
 
-# Several argument counts, because a command that refuses its own arity
-# returns before it builds a path and would be covered in name only. These
-# four reach the handler of every command registered today.
+set(covered_positions 0)
 foreach(command IN LISTS commands)
-    foreach(extra "" "0" "0;0" "0;0;0;0")
-        nfsu_run(out code "${PROBE}" "${command}" "${cyrillic_input}" ${extra})
-        nfsu_forbid_crash("nfsu_probe ${command} with a Cyrillic path" "${out}"
-                          "${code}")
+    set(template "")
+    foreach(candidate IN LISTS templates)
+        if(candidate MATCHES "^${command}(/|$)")
+            set(template "${candidate}")
+        endif()
+    endforeach()
+    if(template STREQUAL "")
+        message(FATAL_ERROR
+            "nfsu_probe registers '${command}' and this file has no template "
+            "for it, so no non-ASCII path would ever be driven through its "
+            "path arguments. Add an entry to `templates` above with PATHARG "
+            "at every position that becomes a path, and update the call-site "
+            "counts at the top of this section.")
+    endif()
+    string(REPLACE "/" ";" tokens "${template}")
+    list(LENGTH tokens token_count)
+    # Which of this command's arguments are paths. Position 0 is the command
+    # name itself and is never one.
+    set(slots "")
+    math(EXPR last "${token_count}-1")
+    foreach(index RANGE ${last})
+        list(GET tokens ${index} token)
+        if(token STREQUAL "PATHARG")
+            list(APPEND slots ${index})
+        endif()
+    endforeach()
+    list(LENGTH slots slot_count)
+    if(slot_count LESS 1)
+        message(FATAL_ERROR
+            "the template for '${command}' marks no path argument, so it "
+            "would run and measure nothing")
+    endif()
+    foreach(target IN LISTS slots)
+        set(arguments "")
+        foreach(index RANGE ${last})
+            list(GET tokens ${index} token)
+            if(NOT token STREQUAL "PATHARG")
+                list(APPEND arguments "${token}")
+            elseif(index EQUAL target)
+                list(APPEND arguments "${cyrillic_input}")
+            else()
+                list(APPEND arguments "${ascii_geometry}")
+            endif()
+        endforeach()
+        nfsu_run(out code "${PROBE}" ${arguments})
+        nfsu_forbid_crash(
+            "nfsu_probe ${command}, Cyrillic path at argument ${target}"
+            "${out}" "${code}")
+        math(EXPR covered_positions "${covered_positions}+1")
     endforeach()
 endforeach()
 message(STATUS
-    "every entry: ${command_count} nfsu_probe commands took a Cyrillic path "
-    "without crashing")
+    "every position: ${command_count} nfsu_probe commands, ${covered_positions} "
+    "path positions, each driven with a Cyrillic path in turn")
 
-# The viewer's path-valued options, read out of its usage text the same way:
-# every option line whose value is spelled F or FILE.
+# The viewer. Its three positional arguments, then each path-valued option,
+# which is read out of the usage text the same way: every option line whose
+# value is spelled F or FILE. argv[1] and argv[2] are what the review found
+# uncovered; argv[3] is covered by the acceptance case above and is repeated
+# here so that the three read as one set.
+foreach(position 1 2 3)
+    set(arguments "${ascii_geometry}" "${ascii_textures}" "${viewer_output}")
+    math(EXPR index "${position}-1")
+    list(REMOVE_AT arguments ${index})
+    list(INSERT arguments ${index} "${cyrillic_input}")
+    nfsu_run(out code "${VIEWER}" ${arguments})
+    nfsu_forbid_crash("nfsu_viewer, Cyrillic path at argument ${position}"
+                      "${out}" "${code}")
+    file(REMOVE "${viewer_output}" "${viewer_output}.partial")
+endforeach()
+
 nfsu_run(viewer_usage viewer_usage_code "${VIEWER}")
 set(options "")
 string(REPLACE ";" "\\;" viewer_escaped "${viewer_usage}")
@@ -266,13 +427,22 @@ foreach(line IN LISTS viewer_lines)
     endif()
 endforeach()
 list(LENGTH options option_count)
-if(option_count LESS 5)
+# Three positionals plus one per path-valued option is the whole of what
+# nfsu_viewer converts, so this is the same equality the call-site count
+# above applies to the file: an option whose usage placeholder stops being
+# spelled F or FILE drops out of `options` and lands here rather than
+# silently reducing what runs. What it cannot catch is a usage line added
+# that looks like a path option and is not; the review demonstrated that,
+# and it is an edit rather than drift.
+math(EXPR expected_options "${viewer_sites}-3")
+if(NOT option_count EQUAL expected_options)
     message(FATAL_ERROR
-        "only ${option_count} path-valued options were read out of the "
-        "nfsu_viewer usage text, and there were five when this was written. "
-        "An option whose value is spelled something other than F or FILE is "
-        "not covered here; give it one of those spellings or teach this "
-        "reader the new one. The usage text reads:\n${viewer_usage}")
+        "${option_count} path-valued options were read out of the nfsu_viewer "
+        "usage text and the source converts ${viewer_sites} arguments, three "
+        "of them positional, so ${expected_options} were expected. An option "
+        "whose value is spelled something other than F or FILE is covered by "
+        "nothing here. Spell it F or FILE, or teach this reader the new "
+        "spelling. The usage text reads:\n${viewer_usage}")
 endif()
 
 foreach(option IN LISTS options)
@@ -283,8 +453,8 @@ foreach(option IN LISTS options)
 endforeach()
 file(REMOVE "${viewer_output}" "${viewer_output}.partial")
 message(STATUS
-    "every entry: ${option_count} nfsu_viewer path options took a Cyrillic "
-    "value without crashing")
+    "every position: nfsu_viewer, 3 positional arguments and ${option_count} "
+    "path options, each driven with a Cyrillic path in turn")
 
 # ---------------------------------------------------------------------------
 # refusal: an argument holding '?'

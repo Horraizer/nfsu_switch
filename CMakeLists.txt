@@ -429,6 +429,8 @@ if(NFSU_BUILD_TESTS)
     add_test(NAME nfsu_path_arguments
         COMMAND ${CMAKE_COMMAND} -DVIEWER=$<TARGET_FILE:nfsu_viewer>
                 -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -DMAIN_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp
+                -DVIEWER_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/viewer_main.cpp
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/path_arguments.cmake
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 

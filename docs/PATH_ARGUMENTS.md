@@ -69,11 +69,28 @@ name, so neither reading names a file that can be opened. On other platforms
 
 The exception is exactly one spelling. `\\?\C:\dir\out.tga` is the Windows
 extended-length prefix, the only way to name a path longer than `MAX_PATH`,
-and this project supports it on purpose: `strip_extended_prefix` in
-`src/render.cpp` exists for it, `tests/render_tests.cpp` covers it, and
-`docs/RUNTIME_SKIN.md` records a review that fixed `--skin-dump` for it. The
-`?` scan starts after that prefix; a `?` anywhere later is refused as
-before, at its real offset.
+and it is a legitimate spelling this project already handles in one place:
+`strip_extended_prefix` in `src/render.cpp` exists for it,
+`tests/render_tests.cpp` covers it, and `docs/RUNTIME_SKIN.md` records a
+review that fixed `--skin-dump` for it. The `?` scan starts after that
+prefix; a `?` anywhere later is refused as before, at its real offset.
+
+What that place is, precisely, because an earlier draft of this paragraph
+claimed more. `strip_extended_prefix` is reached only through
+`absolute_name` at `src/render.cpp:366`, which is the same-file and
+overwrite alias comparison, not a file open. The prefix does not work end
+to end and never has: measured on this branch and identically on
+`origin/main`, `nfsu_viewer <GEO> <TEX> \\?\C:\...\out.tga` fails with
+Windows error 123 and writes nothing, and `nfsu_probe meshes
+\\?\E:\...\GEOMETRY.BIN` reports the file as `\\GEOMETRY.BIN`.
+`src/render.cpp:316-319` already says why: this standard library does not
+parse the prefix, and `fs::absolute` rewrites it. So the project supports
+the prefix as an alias spelling in its overwrite checks, and nothing more.
+
+That is pre-existing and outside issue #87, and it does not change the
+exemption: refusing the prefix would take away a spelling the alias checks
+accept today, and would be a regression this branch introduced rather than
+a defect it found.
 
 ### What the `?` refusal does not do
 
@@ -103,6 +120,33 @@ does not. That is worth having and it is all it is.
 one by substitution, so nothing here has grounds to refuse it. On this
 toolchain a `*` argument does not reach this code at all: the runtime
 expands it, and one argument becomes several.
+
+### Why it stays anyway
+
+Once that measurement was in, the rule was worth deleting on its face, and
+an independent reviewer was asked to weigh exactly that. It argued for
+keeping it and the argument was accepted, on three measured points rather
+than on taste:
+
+* it costs nothing real. `?` cannot appear in a Windows file name, and the
+  reviewer checked the retail data rather than assuming: no mesh, texture
+  or car name in the retail 240SX `GEOMETRY.BIN`, `TEXTURES.BIN` or
+  `GLOBAL/GLOBALB.BUN` contains one. So the claim under **Scope** below,
+  that the non-path arguments have no spelling this refuses, holds against
+  the data and not just against expectation;
+* on this machine it is the whole refusal surface. Code page 1251 decodes
+  all 128 of its high bytes, so the decoding refusal never fires here.
+  Delete the `?` rule and the entire refusal path becomes unreachable on
+  the primary development machine, and the diagnostic that names a
+  substitution goes with it - along with any test that could observe
+  either;
+* that diagnostic is the real scenario, not a hypothetical one. A Japanese
+  or Greek path on a code page 1251 machine arrives as `?`, and the caller
+  gets a sentence naming the substitution instead of a downstream `failed
+  to read file size` that says nothing about why.
+
+The complexity it buys that with is four lines in `src/arg_path.cpp` plus a
+scan offset, pinned by unit tests.
 
 ## What the code page decides, measured
 
@@ -156,7 +200,10 @@ reads `argv[0]`.
   filesystem, so that a conversion producing the right characters that
   still cannot open a file is not mistaken for a working one.
 * `tests/path_arguments.cmake` - what the two programs do: the exit status,
-  the diagnostic, the absence of the terminate this issue was about, and
-  every registered command and path-valued option driven with a Cyrillic
-  path. Both inventories are read out of the programs' own usage text, so
-  a command or option added later is covered without anyone remembering.
+  the diagnostic, the absence of the terminate this issue was about, and a
+  Cyrillic path driven through every path *position* in turn, which is 25
+  across the sixteen probe commands and 8 across the viewer. Positions, not
+  commands: the first version drove one position per program, and an
+  independent review reverted nine individual call sites that each kept the
+  suite green and each reproduced the crash. Reverting any one of the 30
+  conversion sites now fails the suite, measured one at a time.

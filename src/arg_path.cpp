@@ -36,10 +36,14 @@
 // it could not have opened the wrong one. What the refusal buys is a
 // diagnostic that names the substitution, in place of a later "failed to
 // read file size" that does not. It is not a guard against opening the
-// wrong file, and it is not written here as one. The Windows
-// extended-length prefix is exempt, because "\\?\C:\dir\out.tga" is a
-// spelling this project supports: see strip_extended_prefix in
-// src/render.cpp.
+// wrong file, and it is not written here as one.
+//
+// The Windows extended-length prefix is exempt. "\\?\C:\dir\out.tga" is a
+// legitimate spelling that strip_extended_prefix in src/render.cpp already
+// handles in the overwrite and same-file alias checks - and only there:
+// the prefix does not open a file through this standard library, which
+// src/render.cpp:316 records and docs/PATH_ARGUMENTS.md measures. Refusing
+// it here would take away what the alias checks accept today.
 
 namespace nfsu {
 

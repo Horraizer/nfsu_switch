@@ -17,6 +17,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <unistd.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -30,6 +32,19 @@ void check(bool condition, const std::string& message) {
         std::cerr << "test failure: " << message << '\n';
         ++g_failures;
     }
+}
+
+// A fixture name no other process shares. CLAUDE.md says several
+// sessions are routinely live on this machine, and a fixed name under the
+// system temp directory that is removed on entry lets two concurrent ctest
+// runs delete each other's directory out from under them.
+std::string unique_fixture(const std::string& label) {
+#ifdef _WIN32
+    const unsigned long pid = GetCurrentProcessId();
+#else
+    const unsigned long pid = static_cast<unsigned long>(getpid());
+#endif
+    return "nfsu_arg_path_" + label + "_" + std::to_string(pid);
 }
 
 // Not one non-ASCII byte appears in this file. Every byte above 0x7E that
@@ -85,6 +100,15 @@ void test_missing_argument() {
     check(!nfsu::argument_to_path(nullptr, path, reason),
           "a null argument is refused rather than dereferenced");
     check(reason == "is missing", "a null argument says what is wrong: " + reason);
+    // The contract the header states for every refusal, including this one.
+    // It was pinned for the other two branches and not for this, and a
+    // mutant that wrote to `out` here survived the whole suite.
+    fs::path kept("build/240sx.tga");
+    std::string ignored;
+    check(!nfsu::argument_to_path(nullptr, kept, ignored),
+          "a null argument is still refused when `out` already holds a path");
+    check(kept == fs::path("build/240sx.tga"),
+          "a refused null argument leaves the output path untouched");
 }
 
 void test_check_arguments_names_the_argument() {
@@ -192,6 +216,27 @@ void test_invalid_sequence_is_refused() {
           "an unassigned byte of a single-byte code page is refused");
     check(greek_reason.find("\\xAA") != std::string::npos,
           "the refusal shows the offending byte as \\xHH: " + greek_reason);
+
+    // Code page 1257 leaves 0xA1 unassigned, and the two cross cases are
+    // what make the document's framing - a property of the page and not of
+    // the byte - a measurement rather than a phrase. Each page refuses its
+    // own unassigned byte and decodes the other's.
+    const std::string baltic = bytes({'x', 0xA1, 'y'});
+    fs::path baltic_path;
+    std::string baltic_reason;
+    check(!nfsu::argument_to_path_in_code_page(baltic.c_str(), 1257U, baltic_path,
+                                               baltic_reason),
+          "code page 1257 refuses its unassigned 0xA1");
+    check(baltic_reason.find("\\xA1") != std::string::npos,
+          "the refusal shows the offending byte: " + baltic_reason);
+    fs::path cross;
+    std::string cross_reason;
+    check(nfsu::argument_to_path_in_code_page(baltic.c_str(), 1253U, cross,
+                                              cross_reason),
+          "code page 1253 decodes 0xA1, which 1257 refuses: " + cross_reason);
+    check(nfsu::argument_to_path_in_code_page(greek.c_str(), 1257U, cross,
+                                              cross_reason),
+          "code page 1257 decodes 0xAA, which 1253 refuses: " + cross_reason);
 
     // And the half that is easy to assume the other way round. Code page
     // 1251, which is the one this repository's own machine runs, assigns a
@@ -305,12 +350,16 @@ void test_active_code_page_is_used() {
     std::string encoded;
     for (wchar_t value = 0x00A1; value < 0x0500 && carried.empty(); ++value) {
         const std::wstring candidate(1, value);
-        BOOL substituted = FALSE;
         char narrow[16] = {0};
-        const int written =
-            WideCharToMultiByte(CP_ACP, 0, candidate.c_str(), -1, narrow, sizeof(narrow),
-                                nullptr, &substituted);
-        if (written <= 0 || substituted) {
+        // No lpUsedDefaultChar: WideCharToMultiByte refuses that argument
+        // for CP_UTF8, so on a machine whose active code page is 65001 the
+        // call failed, this loop found nothing and the case below checked
+        // nothing. The round trip is what the flag was there for, it holds
+        // for every code page, and a substituted character does not come
+        // back as itself.
+        const int written = WideCharToMultiByte(CP_ACP, 0, candidate.c_str(), -1, narrow,
+                                                sizeof(narrow), nullptr, nullptr);
+        if (written <= 0) {
             continue;
         }
         fs::path decoded;
@@ -345,7 +394,7 @@ void test_active_code_page_is_used() {
     // right characters but a path nothing can open is not mistaken for a
     // working one.
     std::error_code error;
-    const fs::path root = fs::temp_directory_path(error) / "nfsu_arg_path_active";
+    const fs::path root = fs::temp_directory_path(error) / unique_fixture("active");
     fs::remove_all(root, error);
     fs::create_directories(root, error);
     const fs::path directory = root / fs::path(L"nfsu" + carried);
@@ -358,18 +407,21 @@ void test_active_code_page_is_used() {
     fs::path opened;
     std::string open_reason;
     // The file path as a narrow argument, encoded exactly the way Windows
-    // encodes an argument vector.
-    BOOL substituted = FALSE;
+    // encodes an argument vector. Its one non-ASCII character came out of
+    // the loop above, which already proved it round-trips, so this encoding
+    // is lossless by construction rather than by a flag this code page may
+    // refuse.
     const std::wstring wide_file = (directory / "probe.bin").wstring();
     const int size = WideCharToMultiByte(CP_ACP, 0, wide_file.c_str(), -1, nullptr, 0,
                                          nullptr, nullptr);
     check(size > 0, "the file path can be encoded in the active code page");
     std::string narrow(static_cast<std::size_t>(size - 1), '\0');
     WideCharToMultiByte(CP_ACP, 0, wide_file.c_str(), -1, &narrow[0], size, nullptr,
-                        &substituted);
-    check(!substituted, "the file path survives encoding without substitution");
+                        nullptr);
     check(nfsu::argument_to_path(narrow.c_str(), opened, open_reason),
           "the encoded file path is accepted: " + open_reason);
+    check(opened.wstring() == wide_file,
+          "the decoded path is the one that was encoded, character for character");
     check(fs::exists(opened, error) && fs::file_size(opened, error) == 4U,
           "the decoded path opens the file that was created");
 
@@ -382,7 +434,7 @@ void test_reaches_the_real_filesystem() {
     // under a directory whose name is the Cyrillic word, through the
     // converted path alone, and reads it back.
     std::error_code error;
-    const fs::path root = fs::temp_directory_path(error) / "nfsu_arg_path_tests";
+    const fs::path root = fs::temp_directory_path(error) / unique_fixture("cyrillic");
     fs::remove_all(root, error);
     fs::create_directories(root, error);
     check(!error, "the test root could be created");
