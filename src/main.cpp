@@ -1,6 +1,7 @@
 #include "nfsu/car_parts.h"
 #include "nfsu/chunk.h"
 #include "nfsu/geometry.h"
+#include "nfsu/part_placement.h"
 #include "nfsu/skin_inputs.h"
 #include "nfsu/texture.h"
 
@@ -427,6 +428,10 @@ int run_textures(const fs::path& path) {
                          nfsu::texture_alpha_blend(texture))
                   << '(' << static_cast<unsigned int>(texture.alpha_blend_mode)
                   << ')'
+                  << " layer=" << nfsu::texture_draw_layer(texture)
+                  << '(' << static_cast<unsigned int>(texture.layer_group)
+                  << ',' << static_cast<unsigned int>(texture.layer_order)
+                  << ')'
                   << " name_hash=" << name_hash_status(texture) << ' '
                   << texture.name << '\n';
     }
@@ -489,6 +494,10 @@ int run_pack_set(const fs::path& path) {
                       << nfsu::texture_alpha_blend_name(
                              nfsu::texture_alpha_blend(texture))
                       << '(' << static_cast<unsigned int>(texture.alpha_blend_mode)
+                      << ')'
+                      << " layer=" << nfsu::texture_draw_layer(texture)
+                      << '(' << static_cast<unsigned int>(texture.layer_group)
+                      << ',' << static_cast<unsigned int>(texture.layer_order)
                       << ')'
                       << " name_hash=" << name_hash_status(texture) << ' '
                       << texture.name << '\n';
@@ -1253,6 +1262,182 @@ int run_body_skin_inputs(int argc, char** argv) {
     return (sources_ok && assembled.plan().skipped_inputs == 0) ? 0 : 3;
 }
 
+void print_car_type_issues(const nfsu::CarTypeTable& table) {
+    for (const nfsu::CarTypeIssue& issue : table.issues) {
+        std::cerr << "issue at offset " << issue.offset << ": " << issue.message
+                  << '\n';
+    }
+}
+
+// Prints the wheel table of one car type and the 14 placements the
+// CarRenderInfo constructor derives from it. Read-only; writes nothing.
+int run_car_placement(const fs::path& path, const std::string& car_type_name) {
+    const nfsu::CarTypeTable table = nfsu::load_car_type_table(path);
+    std::cout << "file: " << path.string() << '\n';
+    std::cout << "bytes: " << table.file_size << '\n';
+    std::cout << "car type table: chunk offset " << table.chunk_offset
+              << " records at " << table.record_offset << " count "
+              << table.records.size() << " valid " << (table.valid ? 1 : 0) << '\n';
+    print_car_type_issues(table);
+    if (!table.ok()) {
+        std::cerr << "error: the car type table is not valid\n";
+        return 3;
+    }
+
+    std::vector<std::size_t> wanted;
+    if (car_type_name.empty()) {
+        for (const nfsu::CarTypeRecord& record : table.records) {
+            wanted.push_back(record.index);
+        }
+    } else {
+        const std::size_t found = nfsu::find_car_type(table, car_type_name);
+        if (found == nfsu::kNoCarType) {
+            std::cerr << "error: no car type is named '" << car_type_name << "'\n";
+            return 2;
+        }
+        wanted.push_back(found);
+    }
+
+    std::cout << std::fixed << std::setprecision(5);
+    for (const std::size_t index : wanted) {
+        const nfsu::CarTypeRecord& record = table.records[index];
+        std::cout << "car type " << record.index << ' ' << record.name
+                  << " class " << record.class_id << " offset " << record.offset
+                  << '\n';
+        std::cout << "  geometry '" << escaped_name(record.geometry_path)
+                  << "' compressed '" << escaped_name(record.compressed_path)
+                  << "' brand '" << escaped_name(record.brand_name) << "'\n";
+        for (std::size_t w = 0; w < nfsu::kCarWheelCount; ++w) {
+            const nfsu::CarWheelPlacement& wheel = record.wheels[w];
+            std::cout << "  wheel " << w << " offset " << wheel.offset
+                      << " pos " << wheel.longitudinal << ' ' << wheel.lateral
+                      << ' ' << wheel.vertical << " rolling-radius " << wheel.rolling_radius
+                      << " +0x14 " << wheel.value_14 << " +0x1C " << wheel.value_1c
+                      << " +0x20 " << wheel.value_20 << '\n';
+        }
+        std::array<nfsu::PartPlacement, nfsu::kCullableCarPartCount> placements;
+        std::string error;
+        if (!nfsu::derive_cullable_part_placements(record.wheels, placements, error)) {
+            std::cerr << "error: " << record.name << ": " << error << '\n';
+            return 3;
+        }
+        for (std::size_t p = 0; p < placements.size(); ++p) {
+            const nfsu::PartPlacement& placement = placements[p];
+            std::cout << "  part " << std::setw(2) << std::setfill(' ') << p << ' '
+                      << nfsu::cullable_car_part_name(
+                             static_cast<nfsu::CullableCarPart>(p))
+                      << " pos " << placement.position[0] << ' '
+                      << placement.position[1] << ' ' << placement.position[2]
+                      << " from " << nfsu::placement_source_name(placement.source);
+            // The source indices are printed with the table they index, so a
+            // reader cannot mistake the underneath entry's placement indices
+            // for wheel indices.
+            if (placement.source_count != 0) {
+                std::cout << ' '
+                          << nfsu::placement_index_space_name(placement.index_space)
+                          << " [";
+                for (std::size_t k = 0; k < placement.source_count; ++k) {
+                    std::cout << (k == 0 ? "" : " ") << placement.sources[k];
+                }
+                std::cout << ']';
+            }
+            if (placement.degenerate_plane) {
+                std::cout << " degenerate-plane";
+            }
+            std::cout << '\n';
+        }
+    }
+    std::cout << "listed car types: " << wanted.size() << '\n';
+    return 0;
+}
+
+// Lists the 0x0013401A attachment markers of every mesh of a geometry file
+// that validated, with each marker's resolved name, role, stored matrix and
+// the local placement the exhaust and plate draw paths build from it. A mesh
+// the parser rejected is skipped whole and only counted. Read-only; writes
+// nothing.
+int run_part_markers(const fs::path& path, const std::string& role_filter) {
+    const nfsu::GeometryReport report = nfsu::load_geometry_file(path);
+    print_geometry_issues(report);
+    std::cout << "file: " << path.string() << '\n';
+    std::cout << "bytes: " << report.file_size << '\n';
+    std::cout << "meshes: " << report.meshes.size() << '\n';
+
+    std::map<std::uint32_t, std::size_t> by_hash;
+    std::size_t chunks = 0;
+    std::size_t markers = 0;
+    std::size_t unnamed = 0;
+    std::size_t skipped = 0;
+    std::cout << std::fixed << std::setprecision(5);
+    for (const nfsu::Mesh& mesh : report.meshes) {
+        // A mesh the parser rejected is skipped whole, markers included. The
+        // parser already withdraws its marker state, so this only makes the
+        // rule visible here and counts what was left out; the diagnostic for
+        // each such mesh is in the issue list printed above.
+        if (!mesh.valid) {
+            ++skipped;
+            continue;
+        }
+        if (!mesh.has_marker_chunk) {
+            continue;
+        }
+        ++chunks;
+        bool printed_header = false;
+        for (const nfsu::MeshMarker& marker : mesh.markers) {
+            ++markers;
+            ++by_hash[marker.name_hash];
+            const char* name = nfsu::car_marker_name(marker.name_hash);
+            const nfsu::CarMarkerRole role = nfsu::car_marker_role(marker.name_hash);
+            if (name == nullptr) {
+                ++unnamed;
+            }
+            if (!role_filter.empty() &&
+                role_filter != nfsu::car_marker_role_name(role)) {
+                continue;
+            }
+            if (!printed_header) {
+                std::cout << "mesh " << mesh.index << " '" << escaped_name(mesh.name)
+                          << "' markers " << mesh.markers.size() << " at "
+                          << mesh.marker_data_offset << " (prefix "
+                          << mesh.marker_prefix_bytes << ")\n";
+                printed_header = true;
+            }
+            std::cout << "  marker " << hex32(marker.name_hash) << ' '
+                      << (name == nullptr ? "<name not recovered>" : name) << ' '
+                      << nfsu::car_marker_role_name(role) << " offset "
+                      << marker.offset << '\n';
+            std::cout << "    translation " << marker.translation(0) << ' '
+                      << marker.translation(1) << ' ' << marker.translation(2)
+                      << '\n';
+            float placement[16];
+            if (!nfsu::car_marker_placement(marker, placement)) {
+                std::cout << "    placement unavailable: the matrix is not finite\n";
+                continue;
+            }
+            for (std::size_t row = 0; row < 4; ++row) {
+                std::cout << "    placement row " << row;
+                for (std::size_t column = 0; column < 4; ++column) {
+                    std::cout << ' ' << placement[row * 4 + column];
+                }
+                std::cout << '\n';
+            }
+        }
+    }
+    std::cout << "meshes skipped as invalid: " << skipped << '\n';
+    std::cout << "marker chunks: " << chunks << '\n';
+    std::cout << "markers: " << markers << '\n';
+    std::cout << "distinct hashes: " << by_hash.size() << '\n';
+    std::cout << "markers whose name is not recovered: " << unnamed << '\n';
+    for (const auto& [hash, count] : by_hash) {
+        const char* name = nfsu::car_marker_name(hash);
+        std::cout << "  " << hex32(hash) << ' '
+                  << (name == nullptr ? "<name not recovered>" : name) << ' '
+                  << nfsu::car_marker_role_name(nfsu::car_marker_role(hash))
+                  << ' ' << count << '\n';
+    }
+    return report.ok() ? 0 : 3;
+}
+
 void print_usage() {
     std::cout
         << "Usage:\n"
@@ -1266,6 +1451,7 @@ void print_usage() {
         << "  nfsu_probe texture-bindings <GEOMETRY.BIN> <TEXTURES.BIN>\n"
         << "  nfsu_probe car-parts <GLOBALB.BUN> [car-type]\n"
         << "  nfsu_probe stock-parts <GLOBALB.BUN> <car-type> [GEOMETRY.BIN ...]\n"
+        << "  nfsu_probe car-placement <GLOBALB.BUN> [car-type]\n"
         << "  nfsu_probe body-skin-inputs <car-name> <option>...\n"
         << "    --source <car-textures|car-vinyls|other> <FILE>   (repeatable,\n"
         << "        in priority order; the first source claiming a hash wins)\n"
@@ -1340,6 +1526,22 @@ int main(int argc, char** argv) {
             return 1;
         }
         return run_car_parts(fs::path(argv[2]), argc == 4 ? std::string(argv[3]) : "");
+    }
+    if (command == "car-placement") {
+        if (argc != 3 && argc != 4) {
+            print_usage();
+            return 1;
+        }
+        return run_car_placement(fs::path(argv[2]),
+                                 argc == 4 ? std::string(argv[3]) : "");
+    }
+    if (command == "part-markers") {
+        if (argc != 3 && argc != 4) {
+            print_usage();
+            return 1;
+        }
+        return run_part_markers(fs::path(argv[2]),
+                                argc == 4 ? std::string(argv[3]) : "");
     }
     if (command == "body-skin-inputs") {
         return run_body_skin_inputs(argc, argv);

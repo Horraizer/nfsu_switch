@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <new>
 #include <sstream>
 #include <system_error>
@@ -718,6 +719,43 @@ const char* shading_mode_name(ShadingMode mode) noexcept {
     return "unknown";
 }
 
+const char* material_state_mode_name(MaterialStateMode mode) noexcept {
+    switch (mode) {
+    case MaterialStateMode::off: return "off";
+    case MaterialStateMode::retail: return "retail";
+    }
+    return "unknown";
+}
+
+bool validate_material_coefficients(
+    const MaterialCoefficients& coefficients, std::string& error) {
+    const auto bounded = [&error](double value, const char* name) {
+        if (!std::isfinite(value) || value < 0.0 ||
+            value > kMaxMaterialCoefficient) {
+            error = std::string(name) + " is outside 0.." +
+                    std::to_string(static_cast<int>(kMaxMaterialCoefficient));
+            return false;
+        }
+        return true;
+    };
+    if (!bounded(coefficients.alpha_min, "alpha_min") ||
+        !bounded(coefficients.alpha_range, "alpha_range")) {
+        return false;
+    }
+    for (int k = 0; k < 3; ++k) {
+        if (!bounded(coefficients.environment_min[k], "environment_min") ||
+            !bounded(coefficients.environment_range[k], "environment_range")) {
+            return false;
+        }
+    }
+    if (coefficients.environment_power > kMaxEnvironmentPower) {
+        error = "environment_power is above " +
+                std::to_string(kMaxEnvironmentPower);
+        return false;
+    }
+    return true;
+}
+
 bool Frame::reset(
     std::uint32_t width,
     std::uint32_t height,
@@ -749,9 +787,11 @@ bool Frame::reset(
         std::vector<double> depth(static_cast<std::size_t>(pixels), 1.0);
         std::vector<std::uint32_t> ids(static_cast<std::size_t>(pixels),
                                        kNoTriangle);
+        std::vector<unsigned char> blended(static_cast<std::size_t>(pixels), 0);
         rgba_ = std::move(rgba);
         depth_ = std::move(depth);
         ids_ = std::move(ids);
+        blended_ = std::move(blended);
     } catch (const std::bad_alloc&) {
         error = "not enough memory for the frame";
         return false;
@@ -934,6 +974,14 @@ bool Rasterizer::fill(
     const double inv_area = 1.0 / static_cast<double>(area);
     const RenderTexture* texture = material.texture;
     const bool fallback = texture == nullptr;
+    // Hoisted so that a draw without the retail state does exactly the
+    // integer work it did before.
+    const bool environment =
+        !fallback && (material.environment[0] != 0.0 ||
+                      material.environment[1] != 0.0 ||
+                      material.environment[2] != 0.0);
+    const bool scaled_alpha = !fallback && material.alpha_scale != 1.0;
+    const bool blending = material.blend != RenderBlendMode::disabled;
     for (std::int64_t y = y0; y <= y1; ++y) {
         std::int64_t e[3] = {row[0], row[1], row[2]};
         for (std::int64_t x = x0; x <= x1; ++x) {
@@ -961,6 +1009,7 @@ bool Rasterizer::fill(
                         tv = 1.0 - tv;
                     }
                     std::uint32_t color[4];
+                    std::uint32_t source_alpha = 255;
                     bool keep = true;
                     if (fallback) {
                         const bool dark = checker_odd(u) != checker_odd(tv);
@@ -980,6 +1029,22 @@ bool Rasterizer::fill(
                             color[k] = texel[k];
                         }
                         keep = color[3] >= options_.alpha_cutoff;
+                        if (scaled_alpha) {
+                            const double value =
+                                static_cast<double>(color[3]) * material.alpha_scale;
+                            source_alpha = value <= 0.0
+                                               ? 0U
+                                               : (value >= 255.0
+                                                      ? 255U
+                                                      : static_cast<std::uint32_t>(
+                                                            value + 0.5));
+                        } else {
+                            source_alpha = color[3];
+                        }
+                        // D3DCMP_GREATER against D3DRS_ALPHAREF.
+                        if (keep && material.alpha_test) {
+                            keep = source_alpha > material.alpha_ref;
+                        }
                     }
                     if (!keep) {
                         ++stats_.fragments_alpha_discarded;
@@ -1001,12 +1066,44 @@ bool Rasterizer::fill(
                         const std::uint32_t shade = std::min<std::uint32_t>(material.shade, 256U);
                         unsigned char* out = &frame_.rgba_[index * 4U];
                         for (int k = 0; k < 3; ++k) {
-                            out[k] = static_cast<unsigned char>(
-                                std::min<std::uint32_t>(255U, (color[k] * shade + 128U) >> 8U));
+                            std::uint32_t value =
+                                material.diffuse_zeroed
+                                    ? 0U
+                                    : std::min<std::uint32_t>(
+                                          255U, (color[k] * shade + 128U) >> 8U);
+                            if (environment) {
+                                // 4 * diffuse_scale.w * envmap_sample *
+                                // (EnvmapMin + envvdotn * EnvmapRange), times
+                                // the texel alpha, in 0..255 units.
+                                const double add = material.environment[k] *
+                                                   static_cast<double>(color[3]) / 255.0;
+                                const double sum =
+                                    static_cast<double>(value) + std::floor(add + 0.5);
+                                value = sum >= 255.0 ? 255U
+                                                     : static_cast<std::uint32_t>(sum);
+                            }
+                            if (blending) {
+                                const std::uint32_t dst = out[k];
+                                if (material.blend == RenderBlendMode::source_over) {
+                                    value = (value * source_alpha +
+                                             dst * (255U - source_alpha) + 127U) / 255U;
+                                } else {
+                                    value = std::min<std::uint32_t>(
+                                        255U, (value * source_alpha + 127U) / 255U + dst);
+                                }
+                            }
+                            out[k] = static_cast<unsigned char>(value);
                         }
                         out[3] = 255;
                         frame_.depth_[index] = z;
                         frame_.ids_[index] = id;
+                        if (blending) {
+                            ++stats_.fragments_blended;
+                            if (frame_.blended_[index] != 0) {
+                                ++stats_.fragments_blend_overlap;
+                            }
+                            frame_.blended_[index] = 1;
+                        }
                         ++stats_.fragments_written;
                     }
                 }
@@ -1061,13 +1158,83 @@ bool render_scene(
                 std::to_string(limits.max_submitted_triangles);
         return false;
     }
+    if (scene.draws.size() >= kNoTriangle) {
+        error = "scene has " + std::to_string(scene.draws.size()) +
+                " material groups; the limit is " +
+                std::to_string(kNoTriangle - 1);
+        return false;
+    }
+    if (options.material_state == MaterialStateMode::retail &&
+        !validate_material_coefficients(options.coefficients, error)) {
+        return false;
+    }
     std::vector<unsigned char> id_fallback;
+    // The order the groups are drawn in. With MaterialStateMode::off it is
+    // the prepared order, as it has always been; with the retail state it
+    // is the order the retail draw queue produces.
+    std::vector<std::uint32_t> order;
     try {
         id_fallback.reserve(static_cast<std::size_t>(submitted));
+        order.resize(scene.draws.size());
     } catch (const std::bad_alloc&) {
         error = "not enough memory for the triangle table";
         return false;
     }
+    for (std::size_t i = 0; i < order.size(); ++i) {
+        order[i] = static_cast<std::uint32_t>(i);
+    }
+    if (options.material_state == MaterialStateMode::retail) {
+        // The retail queue is a fixed table of buckets indexed by a row
+        // taken from the bound texture and a column taken from the effect.
+        // Every material of one car uses the same effect, so the column is
+        // constant and the row alone selects the bucket. Inside a bucket
+        // the queue holds one entry per texture, placed where that texture
+        // was first used, and each entry holds its materials in record
+        // order; the table is then walked by ascending row and drained in
+        // place. Ordering the prepared draws by (row, first use of the
+        // texture) with a stable sort reproduces that exactly. A group with
+        // no resolved texture has no row of its own and takes row 0, the
+        // row a record with both bytes zero selects.
+        std::vector<unsigned char> layer;
+        std::vector<std::uint32_t> group;
+        std::map<std::pair<std::size_t, std::uint32_t>, std::uint32_t> first_use;
+        try {
+            layer.assign(scene.draws.size(), 0);
+            group.assign(scene.draws.size(), 0);
+            std::uint32_t next_group = 0;
+            for (std::size_t i = 0; i < scene.draws.size(); ++i) {
+                const PreparedDraw& draw = scene.draws[i];
+                std::pair<std::size_t, std::uint32_t> key{kNoHandle, draw.texture_hash};
+                if (draw.binding == BindingKind::resolved) {
+                    const RenderTexture& texture = scene.textures[draw.texture];
+                    layer[i] = static_cast<unsigned char>(
+                        render_draw_layer(texture.layer_group, texture.layer_order));
+                    key = {draw.texture, 0U};
+                }
+                const auto inserted = first_use.emplace(key, next_group);
+                if (inserted.second) {
+                    ++next_group;
+                }
+                group[i] = inserted.first->second;
+            }
+        } catch (const std::bad_alloc&) {
+            error = "not enough memory for the draw order tables";
+            return false;
+        }
+        for (std::size_t i = 0; i < scene.draws.size(); ++i) {
+            if (scene.draws[i].drawable) {
+                ++stats.draw_rows[layer[i]];
+            }
+        }
+        std::stable_sort(order.begin(), order.end(),
+                         [&layer, &group](std::uint32_t a, std::uint32_t b) {
+                             if (layer[a] != layer[b]) {
+                                 return layer[a] < layer[b];
+                             }
+                             return group[a] < group[b];
+                         });
+    }
+
     if (!frame.reset(options.width, options.height, options.background, limits,
                      error)) {
         return false;
@@ -1081,7 +1248,10 @@ bool render_scene(
     stats.meshes_skipped_invalid = scene.skipped_invalid_meshes.size();
     stats.meshes_rendered = scene.meshes.size();
     stats.unresolved_hashes = scene.unresolved_hashes.size();
-    for (const PreparedDraw& draw : scene.draws) {
+    const MaterialCoefficients& coefficients = options.coefficients;
+    const bool retail_state = options.material_state == MaterialStateMode::retail;
+    for (const std::uint32_t d : order) {
+        const PreparedDraw& draw = scene.draws[d];
         ++stats.material_groups;
         if (!draw.drawable) {
             ++stats.groups_invalid;
@@ -1104,6 +1274,42 @@ bool render_scene(
             break;
         }
         fallback_color(draw.texture_hash, raster.fallback);
+        // The retail state comes from the bound texture-info record only.
+        // A group with no resolved texture has no proven state and keeps
+        // the opaque defaults.
+        bool environment = false;
+        // The coefficient upload zeros whole float4 vectors, W lane
+        // included, so a closed diffuse gate leaves diffuse_scale.w at
+        // zero: the source alpha and the environment term both vanish.
+        bool zero_alpha_lane = false;
+        if (retail_state && draw.binding == BindingKind::resolved) {
+            const RenderTexture& texture = scene.textures[draw.texture];
+            raster.alpha_test = render_alpha_test_enabled(texture.alpha_test_mode);
+            raster.blend = render_blend_mode_of(texture.alpha_blend_mode);
+            if (raster.alpha_test) {
+                ++stats.groups_alpha_tested;
+            }
+            if (raster.blend != RenderBlendMode::disabled) {
+                ++stats.groups_blended;
+            }
+            const MaterialCoefficientGates gates = material_coefficient_gates(
+                draw.flags, coefficients.environment_enabled);
+            zero_alpha_lane = !gates.diffuse;
+            environment = gates.environment && !zero_alpha_lane &&
+                          (coefficients.environment_min[0] != 0.0 ||
+                           coefficients.environment_min[1] != 0.0 ||
+                           coefficients.environment_min[2] != 0.0 ||
+                           coefficients.environment_range[0] != 0.0 ||
+                           coefficients.environment_range[1] != 0.0 ||
+                           coefficients.environment_range[2] != 0.0);
+        }
+        // vdotn is needed whenever a coefficient the caller supplied can
+        // change the fragment: the alpha lane or the environment term.
+        const bool needs_view =
+            retail_state && draw.binding == BindingKind::resolved &&
+            !zero_alpha_lane &&
+            (environment || coefficients.alpha_min != 1.0 ||
+             coefficients.alpha_range != 0.0);
 
         for (std::uint64_t t = first / 3; t < (first + count) / 3; ++t) {
             const std::uint32_t id = next_id++;
@@ -1137,14 +1343,51 @@ bool render_scene(
             if (!has_normal) {
                 ++stats.triangles_degenerate_source;
             }
+            // The eye-facing normal is shared by the flat shade factor and
+            // by the effect's vdotn, and the test is the one flat shading
+            // has always used.
+            if (has_normal && dot(normal, sub(camera.eye, world[0])) < 0.0) {
+                normal = {-normal.x, -normal.y, -normal.z};
+            }
             raster.shade = 256;
             if (options.shading == ShadingMode::flat && has_normal) {
-                if (dot(normal, sub(camera.eye, world[0])) < 0.0) {
-                    normal = {-normal.x, -normal.y, -normal.z};
-                }
                 const double k = 0.35 + 0.65 * std::max(0.0, dot(normal, light));
                 raster.shade = static_cast<std::uint32_t>(
                     std::floor(std::clamp(k, 0.0, 1.0) * 256.0 + 0.5));
+            }
+            raster.alpha_scale = zero_alpha_lane ? 0.0 : 1.0;
+            raster.diffuse_zeroed = zero_alpha_lane;
+            raster.environment[0] = 0.0;
+            raster.environment[1] = 0.0;
+            raster.environment[2] = 0.0;
+            if (needs_view) {
+                // The effect evaluates vdotn per vertex from the stored
+                // normal; the reference evaluates it once per triangle from
+                // the geometric normal and the direction to the eye, the
+                // same flat model its shade factor uses.
+                double vdotn = 0.01;
+                if (has_normal) {
+                    Vec3 view = sub(camera.eye, world[0]);
+                    if (normalize(view)) {
+                        vdotn = std::max(0.01, dot(view, normal));
+                    }
+                }
+                const double alpha_scale =
+                    coefficients.alpha_min + vdotn * coefficients.alpha_range;
+                raster.alpha_scale = alpha_scale;
+                if (environment) {
+                    double envvdotn = 1.0;
+                    for (std::uint32_t e = 0; e < coefficients.environment_power; ++e) {
+                        envvdotn *= vdotn;
+                    }
+                    for (int k = 0; k < 3; ++k) {
+                        raster.environment[k] =
+                            4.0 * alpha_scale *
+                            static_cast<double>(coefficients.environment_color[k]) *
+                            (coefficients.environment_min[k] +
+                             envvdotn * coefficients.environment_range[k]);
+                    }
+                }
             }
             if (!rasterizer.draw_triangle(clip, raster, id, error)) {
                 return false;
@@ -1162,6 +1405,9 @@ bool render_scene(
             ++stats.pixels_drawn;
             if (id < id_fallback.size() && id_fallback[id] != 0) {
                 ++stats.pixels_fallback;
+            }
+            if (frame.blended()[std::size_t{y} * frame.width() + x] != 0) {
+                ++stats.pixels_blended;
             }
             if (first_pixel) {
                 stats.min_x = stats.max_x = x;

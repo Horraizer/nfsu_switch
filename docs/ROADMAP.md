@@ -34,8 +34,15 @@
 - Installed-part and LOD selection are recovered: the car part database of
   `GLOBALB.BUN`, the stock part set per slot, the per-LOD mesh hash of a
   part and the fallback the game uses for a missing mesh
-  (`include/nfsu/car_parts.h`, `nfsu_probe stock-parts`). Turning that into
-  a render profile still needs part placement.
+  (`include/nfsu/car_parts.h`, `nfsu_probe stock-parts`).
+- Part placement is recovered: the car type table of `GLOBALB.BUN` carries
+  the four wheel positions per car, geometry chunk `0x0013401A` carries the
+  named attachment markers that place the exhaust and the licence plate, and
+  every other installed part is drawn at the car's own matrix
+  (`include/nfsu/part_placement.h`, `nfsu_probe car-placement`,
+  `nfsu_probe part-markers`, [`PART_PLACEMENT.md`](PART_PLACEMENT.md)). The
+  drawn wheel matrix's lateral term is traced but not reproduced. Turning
+  selection and placement into a render profile is still to do.
 - The body-skin pixel compositor is recovered for both target types, with a
   bounded CPU reference (`include/nfsu/body_skin.h`,
   [`BODY_SKIN.md`](BODY_SKIN.md)). The RED/GREEN/BLUE/GLOSS lane mapping is

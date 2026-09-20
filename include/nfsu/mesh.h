@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -42,6 +43,34 @@ struct MeshVertex {
     float v = 0.0F;
 };
 
+// One 80-byte attachment marker of chunk 0x0013401A. The record layout and
+// every rule are in docs/PART_PLACEMENT.md; the loader is speed.exe
+// 0x005400E3, which stores the aligned table at solid +0x80 and the record
+// count in the byte at solid +0x1B.
+struct MeshMarker {
+    // Absolute source offset of the record.
+    std::uint64_t offset = 0;
+    // +0x00: bin_hash of the marker name. nfsu::car_marker_name resolves the
+    // hashes whose names were recovered.
+    std::uint32_t name_hash = 0;
+    // +0x04..+0x0F. Zero in every one of the 4216 markers the 37
+    // retail-original car files hold. The other 245 markers in the installation
+    // are all of Cars/LANCER and Cars/PEUGOT, which carry an NFS-CarToolkit
+    // header instead of the retail source path and hold uninitialised bytes
+    // here. No traced instruction reads these words, and refusing them would
+    // refuse files the game itself loads, so they are kept raw and never
+    // interpreted. See docs/PART_PLACEMENT.md.
+    std::array<std::uint32_t, 3> reserved{};
+    // +0x10: a row-major 4x4 matrix. Row 3 is the translation, in the same
+    // raw slot order as MeshVertex (longitudinal, lateral, vertical).
+    float matrix[16] = {};
+
+    // Row 3 of the matrix.
+    float translation(std::size_t axis) const noexcept {
+        return matrix[12 + axis];
+    }
+};
+
 // Triangle indices in source order.
 struct MeshTriangle {
     std::uint16_t a = 0;
@@ -82,6 +111,17 @@ struct Mesh {
     std::vector<std::uint32_t> texture_hashes;
     // 0x00134013 material/effect keys resolved to runtime objects by the game.
     std::vector<std::uint32_t> material_key_hashes;
+    // 0x0013401A attachment markers, in source order. Empty when the mesh has
+    // no marker chunk, which is the common case, and also when the mesh
+    // failed validation: a mesh with valid == false reports no markers even
+    // if its marker chunk parsed before the failing check.
+    std::vector<MeshMarker> markers;
+    // Absolute offset of the aligned marker record array, and the 0x11 filler
+    // before it. Zero when has_marker_chunk is false.
+    std::uint64_t marker_data_offset = 0;
+    std::uint64_t marker_prefix_bytes = 0;
+    // Set only on a mesh that both has a 0x0013401A chunk and validated.
+    bool has_marker_chunk = false;
     std::vector<MeshMaterial> materials;
     bool valid = false;
 };
