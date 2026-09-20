@@ -30,11 +30,13 @@ Reference samples for this document:
 | `Tracks/STREAML1RX.BUN` | 16732096 | `2F3CFBFA779076C7E0AE3AED825B821F030861F7C81FB83FF46FCF9FC1CF7AE1` |
 | `speed.exe` | 3178496 | `C0FAD450912952F53809A54690D235AA8B4E25B9F46650693C7CBEE1B4C074B7` |
 
-Those five `STREAML1R*.BUN` files are the whole corpus. Walking the
-top-level chunks of every one of the 457 files of the installation that
-could hold a chunk tree finds a `0x80034100` in no other file, and **593**
-of them in these five: 423 in `RA`, 77 in `RB`, 45 in `RC`, 44 in `RE` and
-4 in `RX`.
+Those five `STREAML1R*.BUN` files are the whole corpus. The installation
+holds 476 files; reading each one's top-level chunks as (u32 id, u32
+payload size) pairs from offset 0, **207** of them are a whole number of
+such chunks ending exactly at end of file, and the rest are not chunk
+trees at all. A `0x80034100` appears in no file outside these five, and
+**593** times inside them: 423 in `RA`, 77 in `RB`, 45 in `RC`, 44 in `RE`
+and 4 in `RX`.
 
 Offsets are decimal absolute file offsets unless written as `+n`, which is
 relative to the start of the named record. Executable addresses are
@@ -58,10 +60,16 @@ off     177280 id 0x80134000 size    173364     geometry root
 
 The pairing is by position only. A section's objects name meshes by hash,
 and those hashes are resolved against whatever geometry is loaded, not
-against the root that happens to follow. Over the five files, **13023 of
-the 19734** mesh hashes the objects name, and **4534 of the 9681** in slot
-0 alone, name a mesh that is not in the geometry root next to their own
-section, so the adjacency is a layout convention and not a reference.
+against the root that happens to follow. Take a section's *adjacent root*
+to be the first top-level `0x80134000` after it, stopping at the next
+`0x80034100`, and take a hash to be *in* that root when it appears in the
+root's `0x00134003` hash table, which in all 1231 geometry roots of these
+five files is the same set as the hashes at `0x00134011 +16` of the
+root's own meshes. Counting every
+non-zero mesh slot, not distinct hashes, **13023 of the 19734** slots the
+objects fill, and **4534 of the 9681** slot-0 entries alone, name a mesh
+that is not in their own section's adjacent root, so the adjacency is a
+layout convention and not a reference.
 
 Each section holds exactly four chunks, in this order in all 593 retail
 sections:
@@ -223,10 +231,12 @@ objects and which the loader skips rather than looks up. `0x72923C81`
 names no mesh anywhere in the installation. The decoder reports both like
 any other hash and never resolves them.
 
-`+68` is finite and positive in all 9681 records. 2295 of them hold
-exactly 9999.0, which is the value a skybox-sized object would need, and
-the rest scale with the object, so the field is named `radius`. No
-instruction that reads it was traced, so that name is the only claim made.
+`+68` is finite and positive in all 9681 records, running from 0.3248766
+to 10000.0. 2295 of them hold exactly 10000.0, stored as `00 40 1C 46` =
+`0x461C4000`, and those 2295 are exactly the records at or above 9000,
+which is the size a skybox-sized object would need; the rest scale with
+the object, so the field is named `radius`. No instruction that reads it
+was traced, so that name is the only claim made.
 
 ## The instance record (`0x00034103`)
 
@@ -283,13 +293,16 @@ stride. No other bit of the field was traced, so the decoder keeps it raw.
 
 **The matrix is row-major and 8192 is 1.0.** Neither of those is a guess.
 Dividing the nine int16 by 8192 and transforming every vertex of the mesh
-the instance's object names in slot 0 reproduces the stored int16 box:
-over all five files, **29674** instances could be checked this way, and
-for **29347** of them the stored box contains every transformed vertex.
-Reading the same nine words column-major fails: over the first 300
-instances of each of `RA` and `RB`, the row-major reading agreed with the
-stored box for 599 of those 600 instances and the column-major reading for
-510, with a worst error of 1.7 units against 32.1.
+the instance's object names in slot 0 reproduces the stored int16 box. An
+instance can be checked when that slot-0 hash names a mesh the same file
+decodes; over all five files **29674** instances qualify, and for
+**29347** of them the stored box contains every transformed vertex.
+Reading the same nine words column-major, that is `world[c] = t[c] + sum_r
+local[r] * m[3c + r]` instead of `m[3r + c]`, and changing nothing else,
+holds for only **19011** of the same 29674. The two readings also fail by
+different orders of magnitude: over that whole set the worst a transformed
+vertex falls outside its stored box is 48.7 units row-major and 815.7
+column-major.
 
 The stored box is also *tight*: over all five files and all three axes,
 the stored minimum equals `floor` of the exact minimum in 88329 of 89022
@@ -392,11 +405,13 @@ Structure:
    unknown child is refused rather than ignored: a decoder that ignored it
    would silently drop a chunk this project has never seen.
 3. The header record starts at `align_up(payload, 16)` and the payload
-   must hold 60 bytes from there. The object directory and the bounding
-   tree start at their payload. The instance array starts at
-   `align_up(payload, 16)` and the bytes to the end of the payload must be
-   a whole number of 48-byte records. Every skipped alignment byte must be
-   `0x11`; positions are computed, never found by scanning for `0x11`.
+   must end exactly 60 bytes later: all 593 retail payloads do, and a
+   trailing byte is refused for the same reason an unknown chunk id is.
+   The object directory and the bounding tree start at their payload. The
+   instance array starts at `align_up(payload, 16)` and the bytes to the
+   end of the payload must be a whole number of 48-byte records. Every
+   skipped alignment byte must be `0x11`; positions are computed, never
+   found by scanning for `0x11`.
 4. Each of the three arrays must hold at least one record. A section that
    placed nothing would still have to carry a tree over nothing.
 5. Every object must name a mesh in slot 0, and its radius must be finite.
@@ -414,9 +429,13 @@ Structure:
 9. Every node's stored box must contain the stored boxes of everything
    below it.
 10. Limits bound the region bytes, the chunk count, the section count, the
-    records per section and the tree depth. The per-section limits default
-    to what the format can address: an instance names its object with a
-    u16 and a tree entry is an int16.
+    records per section, the objects, instances and bounding nodes of the
+    whole region, and the tree depth. The per-section limits default to
+    what the format can address: an instance names its object with a u16
+    and a tree entry is an int16. The three region totals are added up as
+    each array is about to be decoded, so they bound what a caller has to
+    hold; they count the arrays of a section a later rule refuses, and the
+    section that crosses one is refused while the region walk goes on.
 
 A section that fails any rule is kept with `valid == false` and no decoded
 record, exactly as an invalid track mesh is, and it contributes nothing to
@@ -562,8 +581,9 @@ build/nfsu_probe chunks X:/Games/NFSU/Tracks/STREAML1RB.BUN 100000
 ## Observed
 
 - The five large `STREAML1R*.BUN` files hold all 593 `0x80034100` chunks
-  in the installation, one before each geometry root. No other file of the
-  457 walked holds one.
+  in the installation, one before each geometry root. No other file holds
+  one: of the 476 files installed, 207 walk as top-level chunks to end of
+  file and none of the other 202 carries a `0x80034100`.
 - A section holds exactly `0x00034101`, `0x00034103`, `0x00034102` and
   `0x00034104`, in that order, in all 593 cases.
 - The header record is 60 bytes at a 16-byte aligned offset and carries
@@ -575,7 +595,8 @@ build/nfsu_probe chunks X:/Games/NFSU/Tracks/STREAML1RB.BUN 100000
   flags word, a float translation, a row-major int16 3x3 with 8192 as 1.0,
   and two padding bytes that are zero in all 29715 records.
 - The instance transform reproduces the stored box for 29347 of the 29674
-  instances whose slot-0 mesh is in the same file.
+  instances whose slot-0 mesh is in the same file; the column-major
+  reading of the same words manages 19011.
 - A section number is distinct inside its file but not across the five,
   and the matrix is a general 3x3 whose determinant is not always +-1.
 - The bounding tree is a strict tree of fan-out 1 to 5 and depth at most
@@ -590,7 +611,7 @@ build/nfsu_probe chunks X:/Games/NFSU/Tracks/STREAML1RB.BUN 100000
   the `_1A_`, `_1B_`, `_1C_` and `_1Z_` suffixes of the names they resolve
   to and from the order the loader reads them in.
 - `0x00034102 +68` is a bounding radius: it is finite and positive
-  everywhere, and 2295 objects hold exactly 9999.0.
+  everywhere, and 2295 objects hold exactly 10000.0.
 - The 61 instances whose box is too small by more than a unit are stale
   exporter output, the same way four `0x00134B02` bound records are.
 - The instance box is the transformed mesh bounds rounded outward, and the

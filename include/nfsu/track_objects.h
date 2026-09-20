@@ -238,6 +238,13 @@ struct TrackObjectLimits {
     // than the positive half of that range.
     std::uint32_t max_instances_per_section = 32768;
     std::uint32_t max_nodes_per_section = 32768;
+    // Running totals over the whole region, tested as each array is about
+    // to be decoded and so counting the arrays of a section a later rule
+    // refuses. The three caps above bound one section; these bound what a
+    // caller has to hold for the region, which max_region_bytes bounds
+    // only very loosely, since 64 MB of payload is room for roughly 930000
+    // objects. The first array to cross its cap raises an issue and its
+    // section is refused; the region walk goes on.
     std::uint64_t max_objects = 1ULL << 20;
     std::uint64_t max_instances = 1ULL << 20;
     std::uint64_t max_bound_nodes = 1ULL << 20;

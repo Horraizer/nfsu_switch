@@ -380,12 +380,27 @@ private:
             add_issue(chunk.offset, context + ": header alignment overflows");
             return false;
         }
+        const std::uint64_t payload_end =
+            chunk.payload_offset + chunk.payload_size;
         std::uint64_t record_end = 0;
         if (!checked_add(record, kSceneryHeaderRecordSize, record_end) ||
-            record_end > chunk.payload_offset + chunk.payload_size) {
+            record_end > payload_end) {
             Message text;
             text << context << ": " << chunk_label(chunk) << " holds "
                  << chunk.payload_size << " bytes, too few for a "
+                 << kSceneryHeaderRecordSize << "-byte record at offset "
+                 << record;
+            add_issue(chunk.offset, text.str());
+            return false;
+        }
+        // The record ends the payload in all 593 retail sections. Ignoring
+        // whatever follows would let a chunk carry bytes this decoder has
+        // never seen, which is exactly what refusing an unknown chunk id is
+        // meant to prevent.
+        if (record_end != payload_end) {
+            Message text;
+            text << context << ": " << chunk_label(chunk) << " holds "
+                 << (payload_end - record_end) << " bytes after its "
                  << kSceneryHeaderRecordSize << "-byte record at offset "
                  << record;
             add_issue(chunk.offset, text.str());
@@ -398,6 +413,30 @@ private:
         section.header_prefix_bytes = record - chunk.payload_offset;
         section.number = read_u32_le(at(record + kScenerySectionNumberOffset));
         section.has_letter = track_section_letter(section.number, section.letter);
+        return true;
+    }
+
+    // The running totals of TrackObjectLimits. A caller that caps a parse
+    // of untrusted bytes gets the cap it asked for: the count is added
+    // before the array is reserved, so the limit bounds what is allocated
+    // rather than reporting it afterwards.
+    bool take_region_total(
+        std::uint64_t& total,
+        std::uint64_t count,
+        std::uint64_t limit,
+        const char* what,
+        const std::string& context,
+        std::uint64_t offset) {
+        std::uint64_t next = 0;
+        if (!checked_add(total, count, next) || next > limit) {
+            Message text;
+            text << context << ": " << count << " " << what << " after "
+                 << total << " already in the region exceed the limit of "
+                 << limit;
+            add_issue(offset, text.str());
+            return false;
+        }
+        total = next;
         return true;
     }
 
@@ -427,6 +466,10 @@ private:
             text << context << ": " << count << " objects exceed the limit of "
                  << limits_.max_objects_per_section;
             add_issue(chunk.offset, text.str());
+            return false;
+        }
+        if (!take_region_total(region_objects_, count, limits_.max_objects,
+                               "objects", context, chunk.offset)) {
             return false;
         }
 
@@ -484,6 +527,10 @@ private:
                  << " instances exceed the limit of "
                  << limits_.max_instances_per_section;
             add_issue(chunk.offset, text.str());
+            return false;
+        }
+        if (!take_region_total(region_instances_, count, limits_.max_instances,
+                               "instances", context, chunk.offset)) {
             return false;
         }
 
@@ -580,6 +627,11 @@ private:
                  << " bounding nodes exceed the limit of "
                  << limits_.max_nodes_per_section;
             add_issue(chunk.offset, text.str());
+            return false;
+        }
+        if (!take_region_total(region_bound_nodes_, count,
+                               limits_.max_bound_nodes, "bounding nodes",
+                               context, chunk.offset)) {
             return false;
         }
 
@@ -841,6 +893,9 @@ private:
     std::uint64_t end_;
     TrackObjectLimits limits_;
     TrackObjectReport& report_;
+    std::uint64_t region_objects_ = 0;
+    std::uint64_t region_instances_ = 0;
+    std::uint64_t region_bound_nodes_ = 0;
 };
 
 } // namespace

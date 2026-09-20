@@ -43,15 +43,21 @@ void check_issue_count(
                    : " (first: " + report.issues[0].message + ")"));
 }
 
-bool has_issue_with(
-    const nfsu::TrackObjectReport& report,
+bool has_text(
+    const std::vector<nfsu::TrackIssue>& issues,
     const std::string& text) {
-    for (const nfsu::TrackIssue& issue : report.issues) {
+    for (const nfsu::TrackIssue& issue : issues) {
         if (issue.message.find(text) != std::string::npos) {
             return true;
         }
     }
     return false;
+}
+
+bool has_issue_with(
+    const nfsu::TrackObjectReport& report,
+    const std::string& text) {
+    return has_text(report.issues, text);
 }
 
 void check_refused(
@@ -189,6 +195,9 @@ struct SectionSpec {
     bool break_instance_filler = false;
     // Bytes cut from the end of the header payload.
     std::size_t header_short_by = 0;
+    // Bytes appended after the header record, which the payload must not
+    // carry: the record ends the chunk.
+    std::size_t header_extra_bytes = 0;
     // Bytes appended to a list payload, breaking its record stride.
     std::size_t object_extra_bytes = 0;
     std::size_t instance_extra_bytes = 0;
@@ -209,7 +218,10 @@ Bytes object_payload(const std::vector<ObjectSpec>& objects,
         }
         append_u32(payload, object.flags);
         append_u32(payload, object.flags2);
-        payload.resize(start + nfsu::kSceneryObjectRadiusOffset, 0U);
+        // The radius goes at a literal 68, not at the constant the parser
+        // reads from: the retail hexdump is the evidence for that offset,
+        // so moving the constant must move only one side of the test.
+        payload.resize(start + 68, 0U);
         append_f32(payload, object.radius);
         payload.resize(start + nfsu::kSceneryObjectRecordSize, 0U);
     }
@@ -292,8 +304,12 @@ void write_section(Writer& writer, const SectionSpec& spec) {
         writer.pad_to(nfsu::kSceneryRecordAlignment,
                       spec.break_header_filler ? 0x22U : 0x11U);
         Bytes record(nfsu::kSceneryHeaderRecordSize, 0U);
-        put_u32(record, nfsu::kScenerySectionNumberOffset, spec.number);
+        // A literal 12, not the constant the parser reads from: speed.exe
+        // 0x00445804 is the evidence for that offset, so moving the
+        // constant must move only one side of the test.
+        put_u32(record, 12, spec.number);
         record.resize(record.size() - spec.header_short_by);
+        record.insert(record.end(), spec.header_extra_bytes, 0x00U);
         writer.append(record);
         writer.end();
     };
@@ -625,6 +641,22 @@ void test_section_shape() {
         check_refused(parse_one(spec), "too few for a 60-byte record",
                       "a truncated header record");
     }
+    {
+        // The other side of the same rule: the record ends the payload, so
+        // trailing bytes are refused rather than ignored, the same way an
+        // unknown chunk id is.
+        SectionSpec spec;
+        spec.header_extra_bytes = 64;
+        check_refused(parse_one(spec),
+                      "64 bytes after its 60-byte record",
+                      "a header payload with trailing bytes");
+    }
+    {
+        SectionSpec spec;
+        spec.header_extra_bytes = 1;
+        check_refused(parse_one(spec), "1 bytes after its 60-byte record",
+                      "a header payload with one trailing byte");
+    }
 }
 
 void test_object_rules() {
@@ -701,10 +733,14 @@ void test_instance_rules() {
                       "an instance with a dirty padding word");
     }
     {
+        // The bounding-node rule emits the same "which is empty" tail, and
+        // the default tree derives its root box from the instance box, so
+        // the whole instance message is asserted rather than that tail.
         SectionSpec spec;
         spec.instances[0].bounds_min[2] = 5;
         spec.instances[0].bounds_max[2] = 4;
-        check_refused(parse_one(spec), "which is empty",
+        check_refused(parse_one(spec),
+                      "instance 0 has slot 2 bounds 5 .. 4, which is empty",
                       "an instance with inverted bounds");
     }
 }
@@ -743,6 +779,22 @@ void test_tree_rules() {
                       "a bounding node with too many entries");
     }
     {
+        // The node side of the empty-box rule, with valid instances, so it
+        // is pinned independently of the instance rule.
+        SectionSpec spec;
+        spec.nodes.clear();
+        NodeSpec root;
+        root.entry_count = 1;
+        root.entries[0] = 0;
+        root.bounds_min[1] = 7;
+        root.bounds_max[1] = 6;
+        spec.nodes.push_back(root);
+        check_refused(
+            parse_one(spec),
+            "bounding node 0 has slot 1 bounds 7 .. 6, which is empty",
+            "a bounding node with inverted bounds");
+    }
+    {
         SectionSpec spec;
         spec.nodes.clear();
         NodeSpec root;
@@ -753,6 +805,19 @@ void test_tree_rules() {
                       "a leaf naming a missing instance");
     }
     {
+        // The first index past the end rather than an overshoot. An
+        // off-by-one in the leaf bound reads past the instance array here,
+        // so only this fixture pins that comparison.
+        SectionSpec spec;
+        spec.nodes.clear();
+        NodeSpec root;
+        root.entry_count = 1;
+        root.entries[0] = static_cast<std::int16_t>(spec.instances.size());
+        spec.nodes.push_back(root);
+        check_refused(parse_one(spec), "names instance 1; the section holds 1",
+                      "a leaf naming the first instance past the end");
+    }
+    {
         SectionSpec spec;
         spec.nodes.clear();
         NodeSpec root;
@@ -761,6 +826,19 @@ void test_tree_rules() {
         spec.nodes.push_back(root);
         check_refused(parse_one(spec), "names child node 4; the tree holds 1",
                       "a child index past the tree");
+    }
+    {
+        // The same boundary on the child side: a one-node tree whose only
+        // entry names node 1.
+        SectionSpec spec;
+        spec.nodes.clear();
+        NodeSpec root;
+        root.entry_count = 1;
+        spec.nodes.push_back(root);
+        spec.nodes[0].entries[0] =
+            static_cast<std::int16_t>(-static_cast<int>(spec.nodes.size()));
+        check_refused(parse_one(spec), "names child node 1; the tree holds 1",
+                      "a child naming the first node past the end");
     }
     {
         // A node that is its own child.
@@ -854,7 +932,8 @@ void test_tree_rules() {
                       "an instance outside the tree");
     }
     {
-        // A node whose box does not hold the instance below it.
+        // A node whose box does not hold the instance below it, on both
+        // sides at once.
         SectionSpec spec;
         spec.nodes.clear();
         NodeSpec root;
@@ -865,6 +944,39 @@ void test_tree_rules() {
         spec.nodes.push_back(root);
         check_refused(parse_one(spec), "does not contain",
                       "a bounding node that is too small");
+    }
+    {
+        // Only the minimum side: the node starts above the instance box
+        // and ends exactly on it.
+        SectionSpec spec;
+        spec.nodes.clear();
+        NodeSpec root;
+        root.entry_count = 1;
+        root.entries[0] = 0;
+        root.bounds_min[0] = -1;
+        root.bounds_max[0] = 2;
+        spec.nodes.push_back(root);
+        check_refused(
+            parse_one(spec),
+            "bounding node 0 has slot 0 bounds -1 .. 2, which does not "
+            "contain -2 .. 2 below it",
+            "a bounding node that is too small on the minimum side");
+    }
+    {
+        // Only the maximum side.
+        SectionSpec spec;
+        spec.nodes.clear();
+        NodeSpec root;
+        root.entry_count = 1;
+        root.entries[0] = 0;
+        root.bounds_min[0] = -2;
+        root.bounds_max[0] = 1;
+        spec.nodes.push_back(root);
+        check_refused(
+            parse_one(spec),
+            "bounding node 0 has slot 0 bounds -2 .. 1, which does not "
+            "contain -2 .. 2 below it",
+            "a bounding node that is too small on the maximum side");
     }
     {
         // Depth, fan-out and the union rule on a real two-level tree.
@@ -924,6 +1036,50 @@ void test_limits() {
         limits.max_nodes_per_section = 0;
         check_refused(parse_one(spec, 4096, limits), "exceed the limit of 0",
                       "the bounding node limit");
+    }
+    {
+        // The three region-wide running totals. Each fixture writes two
+        // sections, so the second crosses a limit of one section's worth.
+        const char* const names[] = {"objects", "instances", "bounding nodes"};
+        for (int which = 0; which < 3; ++which) {
+            Writer writer(0);
+            SectionSpec spec;
+            write_section(writer, spec);
+            write_section(writer, spec);
+            nfsu::TrackObjectLimits limits;
+            if (which == 0) {
+                limits.max_objects = 1;
+            } else if (which == 1) {
+                limits.max_instances = 1;
+            } else {
+                limits.max_bound_nodes = 1;
+            }
+            const nfsu::TrackObjectReport report = parse(writer, limits);
+            const std::string expected = std::string("1 ") + names[which] +
+                                         " after 1 already in the region "
+                                         "exceed the limit of 1";
+            check(has_issue_with(report, expected),
+                  std::string("the region ") + names[which] +
+                      " limit is reported (got " +
+                      (report.issues.empty() ? std::string("no issue")
+                                             : report.issues[0].message) +
+                      ")");
+            check(report.valid_section_count() == 1,
+                  std::string("the region ") + names[which] +
+                      " limit refuses only the section that crosses it");
+        }
+        // One section's worth is inside each limit.
+        Writer writer(0);
+        SectionSpec spec;
+        write_section(writer, spec);
+        nfsu::TrackObjectLimits limits;
+        limits.max_objects = 1;
+        limits.max_instances = 1;
+        limits.max_bound_nodes = 1;
+        const nfsu::TrackObjectReport report = parse(writer, limits);
+        check_issue_count(report, 0, "one section inside the region limits");
+        check(report.valid_section_count() == 1,
+              "one section inside the region limits is valid");
     }
     {
         // A chain of nodes deeper than the limit allows.
@@ -1104,6 +1260,10 @@ struct GeometryMeshSpec {
     std::uint32_t hash = 0;
     std::string name = "MESH";
     float span = 1.0F;
+    // 0x00134900 +12. Bit 0x80 selects a 36-byte retail stride, which
+    // docs/TRACK.md refuses, so the mesh keeps its hash and its metadata
+    // but is left invalid with no vertex.
+    std::uint32_t vertex_format_flags = 0;
 };
 
 void write_geometry_region(
@@ -1153,7 +1313,7 @@ void write_geometry_region(
         writer.pad_to(16);
         {
             Bytes record(64, 0U);
-            put_u32(record, nfsu::kVertexFormatOffset, 0U);
+            put_u32(record, nfsu::kVertexFormatOffset, mesh.vertex_format_flags);
             put_u32(record, nfsu::kMaterialCountOffset, 1U);
             put_u32(record, nfsu::kFaceCountOffset, 1U);
             put_u32(record, nfsu::kVertexCountOffset, 3U);
@@ -1209,6 +1369,10 @@ void write_geometry_region(
 void test_resolution() {
     const std::uint32_t present = 0x00001111U;
     const std::uint32_t absent = 0x00009999U;
+    // A mesh the region carries and docs/TRACK.md refuses. Binding to it
+    // would contradict the promise that a binding names a valid mesh, and
+    // it would be counted in slots_resolved.
+    const std::uint32_t refused = 0x00007777U;
 
     Writer geometry_writer(0);
     std::vector<GeometryMeshSpec> meshes;
@@ -1217,23 +1381,36 @@ void test_resolution() {
     mesh.name = "TRACKPIECE";
     mesh.span = 4.0F;
     meshes.push_back(mesh);
+    GeometryMeshSpec broken;
+    broken.hash = refused;
+    broken.name = "BADSTRIDE";
+    broken.span = 4.0F;
+    broken.vertex_format_flags = 0x00000080U;
+    meshes.push_back(broken);
     write_geometry_region(geometry_writer, meshes);
     const nfsu::TrackRegionReport region = nfsu::parse_track_region(
         geometry_writer.bytes().data(), geometry_writer.bytes().size(),
         geometry_writer.base());
-    check(region.issues.empty() && region.valid_mesh_count() == 1,
-          "resolution: the geometry fixture decodes" +
+    check(region.meshes.size() == 2 && region.valid_mesh_count() == 1,
+          "resolution: the geometry fixture decodes one of its two meshes");
+    check(region.issues.size() == 1 &&
+              has_text(region.issues, "selects retail vertex format"),
+          "resolution: the refused mesh is the only issue" +
               (region.issues.empty() ? std::string()
                                      : " (" + region.issues[0].message + ")"));
-    if (region.valid_mesh_count() != 1) {
+    if (region.valid_mesh_count() != 1 || region.meshes.size() != 2) {
         return;
     }
+    check(!region.meshes[1].valid && region.meshes[1].mesh_hash == refused &&
+              region.meshes[1].vertices.empty(),
+          "resolution: the refused mesh keeps its hash and holds no vertex");
 
     SectionSpec spec;
     spec.objects.clear();
     ObjectSpec resolved;
     resolved.hashes[0] = present;
     resolved.hashes[1] = absent;
+    resolved.hashes[2] = refused;
     ObjectSpec unresolved;
     unresolved.hashes[0] = absent;
     spec.objects.push_back(resolved);
@@ -1273,12 +1450,13 @@ void test_resolution() {
     const nfsu::TrackObjectResolution resolution =
         nfsu::resolve_track_objects(objects, region);
     check(resolution.slots_total == 12, "resolution: twelve slots in total");
-    check(resolution.slots_empty == 9, "resolution: nine empty slots");
+    check(resolution.slots_empty == 8, "resolution: eight empty slots");
     check(resolution.slots_resolved == 1, "resolution: one resolved slot");
-    check(resolution.slots_unresolved == 2, "resolution: two unresolved slots");
-    check(resolution.bindings.size() == 3,
+    check(resolution.slots_unresolved == 3,
+          "resolution: three unresolved slots");
+    check(resolution.bindings.size() == 4,
           "resolution: one binding per used slot");
-    if (resolution.bindings.size() == 3) {
+    if (resolution.bindings.size() == 4) {
         check(resolution.bindings[0].resolved &&
                   resolution.bindings[0].hash == present &&
                   resolution.bindings[0].object_index == 0 &&
@@ -1288,13 +1466,23 @@ void test_resolution() {
         check(!resolution.bindings[1].resolved &&
                   resolution.bindings[1].slot == 1,
               "resolution: the second binding does not");
+        // The refused mesh is in the region under this exact hash, so only
+        // the validity filter keeps this slot unresolved.
         check(!resolution.bindings[2].resolved &&
-                  resolution.bindings[2].object_index == 1,
-              "resolution: the third binding does not");
+                  resolution.bindings[2].slot == 2 &&
+                  resolution.bindings[2].hash == refused,
+              "resolution: a hash that names only a refused mesh does not "
+              "resolve");
+        check(!resolution.bindings[3].resolved &&
+                  resolution.bindings[3].object_index == 1,
+              "resolution: the fourth binding does not");
     }
-    check(resolution.unresolved_hashes.size() == 1 &&
-              resolution.unresolved_hashes[0] == absent,
-          "resolution: one distinct unresolved hash");
+    // The set is reported in ascending order, and 0x7777 sorts before
+    // 0x9999.
+    check(resolution.unresolved_hashes.size() == 2 &&
+              resolution.unresolved_hashes[0] == refused &&
+              resolution.unresolved_hashes[1] == absent,
+          "resolution: two distinct unresolved hashes");
 
     check(resolution.instances_checked == 2,
           "resolution: the two resolvable instances are checked");
@@ -1327,7 +1515,7 @@ void test_resolution() {
     const nfsu::TrackRegionReport nothing;
     const nfsu::TrackObjectResolution none =
         nfsu::resolve_track_objects(objects, nothing);
-    check(none.slots_resolved == 0 && none.slots_unresolved == 3 &&
+    check(none.slots_resolved == 0 && none.slots_unresolved == 4 &&
               none.instances_checked == 0 && !none.has_bounds,
           "resolution: an empty region leaves every slot unresolved");
 }
