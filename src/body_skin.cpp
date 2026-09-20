@@ -187,6 +187,28 @@ bool check_layers(const BodySkinRequest& request, std::string& error) {
     return true;
 }
 
+bool check_marker_cache(
+    const SkinMarkerCache& markers,
+    std::size_t pixel_count,
+    std::string& error) {
+    if (!markers.valid) {
+        return true;
+    }
+    for (std::size_t k = 0; k < markers.counts.size(); ++k) {
+        if (markers.counts[k] > kSkinMarkerSlots) {
+            error = "cached marker count exceeds the 16-entry list";
+            return false;
+        }
+        for (std::uint32_t j = 0; j < markers.counts[k]; ++j) {
+            if (markers.indices[k][j] >= pixel_count) {
+                error = "cached marker pixel is outside the target";
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 const std::array<std::uint32_t, 4> kSkinMarkerSurface = {
@@ -238,6 +260,9 @@ bool composite_body_skin_32(
         return false;
     }
     if (!check_layers(request, error)) {
+        return false;
+    }
+    if (!check_marker_cache(markers, count, error)) {
         return false;
     }
     if (!markers.valid && target_pixels.size() < count) {
@@ -346,6 +371,9 @@ bool composite_body_skin_8(
         return false;
     }
     if (!check_layers(request, error)) {
+        return false;
+    }
+    if (!check_marker_cache(markers, count, error)) {
         return false;
     }
     if (!markers.valid && target_indices.size() < count) {

@@ -74,9 +74,9 @@ constexpr std::uint32_t skin_swap_lane02(std::uint32_t value) noexcept {
 // (0x005A86A6). The conversion at 0x00674898 is 64-bit and only its low
 // dword is read, so a product past 2^31 wraps too. Neither composite path
 // can build a weight that reaches either case; this helper is exported, so
-// it reproduces them anyway. A product past 2^63, and a NaN weight, yield
-// zero, which is also the low dword of the x87 integer indefinite the game
-// would store.
+// it reproduces them anyway. A product past 2^63 yields zero, the low dword
+// of the x87 integer indefinite the game would store. A NaN weight is
+// skipped by the unordered comparison before conversion.
 //
 // Returns 0 and leaves `error` set when count exceeds kSkinMaxBlendColors.
 bool skin_blend(
@@ -113,7 +113,9 @@ extern const std::array<std::uint32_t, 4> kSkinMarkerPalette;
 // 0x00733E28 holds 4 lists of 16 pixel indices, 0x00733F50 their 4 counts and
 // 0x00733F4C a one-shot valid flag. The game fills them on the first
 // composite of the process and never checks the 16-entry bound; this
-// reference refuses to overflow instead.
+// reference refuses to overflow instead. A caller-supplied valid cache is
+// also rejected when a count exceeds 16 or a recorded pixel lies outside
+// the current target.
 constexpr std::size_t kSkinMarkerSlots = 16;
 
 struct SkinMarkerCache {

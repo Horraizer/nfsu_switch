@@ -834,9 +834,9 @@ hidden:
 
 - `skin_blend` is exported with only its count bounded. For a weight far
   outside anything the composite paths build, a product past 2^31 wraps the
-  same way the game's does, but a product past 2^63, or a NaN weight,
-  yields zero where the game would store the x87 integer indefinite's low
-  dword, which is also zero. The two agree; the reasoning differs.
+  same way the game's does. A product past 2^63 yields zero, the low dword
+  of the x87 integer indefinite the game would store. A NaN weight is
+  skipped by the unordered comparison before conversion.
 - The type-8 output palette is zero-filled, so entries at or above
   `palette_used` are meaningless. The game composites into the target's own
   palette and leaves whatever was there before those entries.
@@ -845,7 +845,9 @@ hidden:
 - Every other bound the game leaves unchecked is refused, which the game
   would instead walk off the end of.
 
-Every refusal leaves the output untouched and reports why.
+Both composite entry points leave their output object untouched on refusal
+and report why. The lower-level `skin_blend` helper resets its scalar result
+to zero before validating its input.
 
 `tests/body_skin_tests.cpp` pins each operation with vectors whose expected
 values were worked out from the instructions by hand before the code ran.

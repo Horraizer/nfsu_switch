@@ -37,8 +37,8 @@
   a render profile still needs part placement.
 - The body-skin pixel compositor is recovered for both target types, with a
   bounded CPU reference (`include/nfsu/body_skin.h`,
-  [`BODY_SKIN.md`](BODY_SKIN.md)). Feeding it real vinyl and doorline
-  surfaces, and deciding which byte lane is which channel, are still to do.
+  [`BODY_SKIN.md`](BODY_SKIN.md)). The RED/GREEN/BLUE/GLOSS lane mapping is
+  proven; feeding it real vinyl and doorline surfaces is still to do.
 - Track retail evidence and remaining unknowns in
   [`CAR_SCENE.md`](CAR_SCENE.md).
 

@@ -449,6 +449,18 @@ void test_type32_refusals() {
                 "repeated marker pixel " + std::to_string(i));
         }
     }
+    {
+        nfsu::SkinMarkerCache corrupt;
+        corrupt.valid = true;
+        corrupt.counts[0] = static_cast<std::uint32_t>(nfsu::kSkinMarkerSlots + 1);
+        nfsu::BodySkin32 out;
+        out.pixels.assign(1, 0x12345678U);
+        const nfsu::BodySkinRequest one = make_request(1, 1);
+        check(
+            !nfsu::composite_body_skin_32(one, {}, corrupt, out, error),
+            "an oversized supplied marker count is refused");
+        check(out.pixels[0] == 0x12345678U, "a bad supplied cache leaves out untouched");
+    }
 }
 
 struct Type8Fixture {
@@ -886,6 +898,16 @@ void test_type8_refusals() {
         !nfsu::composite_body_skin_8(
             no_palette, fixture.target_indices, fixture.target_palette, markers, out, error),
         "present layer without palettes refused");
+
+    nfsu::SkinMarkerCache outside;
+    outside.valid = true;
+    outside.counts[1] = 1;
+    outside.indices[1][0] = 1;
+    const nfsu::BodySkinRequest one_pixel = make_request(1, 1);
+    check(
+        !nfsu::composite_body_skin_8(
+            one_pixel, {}, fixture.target_palette, outside, out, error),
+        "a supplied marker outside the target is refused");
 }
 
 void test_type8_blend_overflow() {
