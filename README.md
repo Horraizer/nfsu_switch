@@ -10,7 +10,8 @@ PC installation is required for local research and testing.
 The first milestone is `nfsu_probe`, a read-only installation and chunk-format
 inspector. It validates the expected game layout and walks NFS chunk containers
 without loading whole asset files into memory. `nfsu_viewer` renders a decoded
-car to a screenshot with a portable CPU reference renderer.
+car to a screenshot with a portable CPU reference renderer, and with
+`--interactive` opens a desktop window on the same scene for inspection.
 
 ## Build
 
@@ -126,7 +127,7 @@ for the evidence and for what a "stock" part set does and does not cover.
 ## Reference viewer
 
 `nfsu_viewer` renders a complete car with a deterministic CPU rasterizer
-and writes the frame as a TGA screenshot. It needs no window and no
+and writes the frame as a TGA screenshot. Rendering needs no window and no
 graphics library:
 
 ```text
@@ -162,6 +163,22 @@ parts hang off an attachment marker (`nfsu_probe car-placement`,
 `nfsu_probe part-markers`) are decoded, but the viewer does not consume any
 of it yet, and paint and skin are still missing (see `docs/CAR_SCENE.md` and
 `docs/PART_PLACEMENT.md`).
+
+`--interactive` opens a desktop window on the same prepared scene once the
+screenshot has been written and the report printed:
+
+```text
+build/nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> build/240sx.tga --shared-textures X:/Games/NFSU/GLOBAL/GLOBALB.BUN --interactive
+```
+
+Left drag orbits, right drag pans, the wheel zooms and a click selects the
+material group under the pointer and reports its mesh, record fields, bound
+texture and retail render state. `V` cycles the shaded, per-group, per-mesh
+and depth views, `O` cycles the overlay. Without the flag nothing of it
+runs: the TGA, the report and the exit code are unchanged. The window is
+Win32 and GDI, with no external dependency, and every rule it follows lives
+in a backend-neutral layer a deko3d renderer will reuse. See
+`docs/INSPECTOR.md`.
 
 ## Body-skin compositor reference
 
