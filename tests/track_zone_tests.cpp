@@ -1,11 +1,16 @@
 #include "nfsu/track_zones.h"
 
+#include "nfsu/texture.h"
+
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -790,6 +795,143 @@ void test_empty_optional_lists() {
                  "empty children are still counted");
 }
 
+// ---------------------------------------------------------------------
+// load_track_zones: the file path, the JDLZ branch and the branch that
+// parses an image that was never compressed.
+// ---------------------------------------------------------------------
+
+// The smallest legal JDLZ stream for a payload: every step a literal. The
+// decoder reads a flags1 byte before every eighth step and a flags2 byte
+// only once, because flags2 is shifted on a match and there are none.
+Bytes jdlz_all_literals(const Bytes& payload) {
+    Bytes body;
+    for (std::size_t i = 0; i < payload.size(); ++i) {
+        if (i % 8 == 0) {
+            body.push_back(0x00U); // flags1: eight literals
+            if (i == 0) {
+                body.push_back(0x00U); // flags2, read once
+            }
+        }
+        body.push_back(payload[i]);
+    }
+    Bytes out;
+    out.push_back('J');
+    out.push_back('D');
+    out.push_back('L');
+    out.push_back('Z');
+    out.push_back(0x02U);
+    out.push_back(0x10U);
+    out.push_back(0x00U);
+    out.push_back(0x00U);
+    append_u32(out, static_cast<std::uint32_t>(payload.size()));
+    append_u32(out, static_cast<std::uint32_t>(out.size() + 4 + body.size()));
+    out.insert(out.end(), body.begin(), body.end());
+    return out;
+}
+
+bool write_file(const std::string& path, const Bytes& bytes) {
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    if (!stream) {
+        return false;
+    }
+    stream.write(reinterpret_cast<const char*>(bytes.data()),
+                 static_cast<std::streamsize>(bytes.size()));
+    return static_cast<bool>(stream);
+}
+
+void test_load() {
+    const Bytes image = build_image(two_zone_spec());
+    // The encoder is a fixture, so prove it against the decoder the loader
+    // uses before anything is concluded from a file that went through it.
+    {
+        std::vector<unsigned char> round;
+        std::size_t unused = 0;
+        std::string error;
+        const Bytes packed = jdlz_all_literals(image);
+        const bool ok = nfsu::jdlz_decompress(packed.data(), packed.size(),
+                                              1U << 20, round, unused, error);
+        check(ok, "the test's JDLZ encoder round trips: " + error);
+        check(round == image, "the round trip returns the same bytes");
+    }
+
+    std::error_code code;
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path(code) / "nfsu_track_zone_tests";
+    if (code) {
+        check(false, "cannot name a temporary directory: " + code.message());
+        return;
+    }
+    std::filesystem::create_directories(dir, code);
+    if (code) {
+        check(false, "cannot create a temporary directory: " + code.message());
+        return;
+    }
+    const std::filesystem::path packed_path = dir / "packed.lzc";
+    const std::filesystem::path raw_path = dir / "raw.lzc";
+    const std::filesystem::path broken_path = dir / "broken.lzc";
+    const std::filesystem::path missing_path = dir / "absent.lzc";
+
+    check(write_file(packed_path.string(), jdlz_all_literals(image)),
+          "the packed fixture is written");
+    check(write_file(raw_path.string(), image), "the raw fixture is written");
+    Bytes broken = jdlz_all_literals(image);
+    broken[12] = static_cast<unsigned char>(broken[12] + 1U); // the packed size
+    check(write_file(broken_path.string(), broken),
+          "the broken fixture is written");
+
+    {
+        std::vector<unsigned char> bytes;
+        const nfsu::TrackZoneReport report =
+            nfsu::load_track_zones(packed_path, bytes);
+        check(report.valid, "a JDLZ file loads");
+        check(bytes == image, "the decompressed image is the one written");
+        check_eq_u64(report.cost.zones, 2, "the JDLZ file holds two zones");
+        check(report.file_size == jdlz_all_literals(image).size(),
+              "the file size is the packed size");
+        check(report.cost.packed_bytes == report.file_size,
+              "packed bytes and file size agree");
+    }
+    {
+        std::vector<unsigned char> bytes;
+        const nfsu::TrackZoneReport report =
+            nfsu::load_track_zones(raw_path, bytes);
+        check(report.valid, "a file with no JDLZ header parses as it stands");
+        check_eq_u64(report.cost.unused_packed_bytes, 0,
+                     "an uncompressed file leaves no packed bytes unread");
+    }
+    {
+        std::vector<unsigned char> bytes;
+        const nfsu::TrackZoneReport report =
+            nfsu::load_track_zones(broken_path, bytes);
+        check(!report.valid, "a broken JDLZ header is refused");
+        check(has_text(report.issues, "JDLZ"),
+              "the refusal names JDLZ rather than a record rule");
+    }
+    {
+        std::vector<unsigned char> bytes;
+        const nfsu::TrackZoneReport report =
+            nfsu::load_track_zones(missing_path, bytes);
+        check(!report.valid, "a missing file is refused");
+        check(has_text(report.issues, "cannot size the file"),
+              "the refusal names the file, not a record rule");
+    }
+    {
+        nfsu::TrackZoneLimits limits;
+        limits.max_packed_bytes = 8;
+        std::vector<unsigned char> bytes;
+        const nfsu::TrackZoneReport report =
+            nfsu::load_track_zones(packed_path, bytes, limits);
+        check(!report.valid, "the packed-size limit refuses a larger file");
+        check(has_text(report.issues, "over the limit of 8"),
+              "the refusal names the limit it broke");
+    }
+
+    // Only the files this test created, by exact name.
+    std::filesystem::remove(packed_path, code);
+    std::filesystem::remove(raw_path, code);
+    std::filesystem::remove(broken_path, code);
+}
+
 void test_determinism() {
     const Bytes image = build_image(two_zone_spec());
     const nfsu::TrackZoneReport a = parse(image);
@@ -1252,6 +1394,7 @@ int main() {
     test_parse_keeps_raw_fields();
     test_parse_refusals();
     test_empty_optional_lists();
+    test_load();
     test_determinism();
     test_find_zone();
     test_find_zone_takes_the_first_match();
