@@ -196,8 +196,13 @@ add_executable(nfsu_viewer
     src/viewer_main.cpp
 )
 
+# nfsu_stock_scene is what --stock-car needs: the part database, the car
+# type table and the placement the stock-car profile is built from. The
+# renderer consumes the instances that profile produces, so the viewer is
+# the first program that links both.
 target_link_libraries(nfsu_viewer
-    PRIVATE nfsu_render nfsu_texture_decode nfsu_runtime_skin nfsu_inspect_window)
+    PRIVATE nfsu_render nfsu_texture_decode nfsu_runtime_skin nfsu_inspect_window
+            nfsu_stock_scene)
 nfsu_enable_warnings(nfsu_viewer)
 
 if(NFSU_BUILD_TESTS)
@@ -344,6 +349,30 @@ if(NFSU_BUILD_TESTS)
         PASS_REGULAR_EXPRESSION "--skin-dump must differ from the output file"
         FAIL_REGULAR_EXPRESSION "failed to read file size;no valid meshes")
 
+    # The two stock-car usage guards, both decided before any file is
+    # opened, so they need no inputs at all. A --stock-* option without
+    # --stock-car would otherwise be silently ignored, and a mesh selector
+    # with --stock-car would ask for two profiles in one frame. The
+    # FAIL_REGULAR_EXPRESSION half is what a run prints once it gets past
+    # the guard and starts reading the inputs that do not exist, so a
+    # viewer that printed the refusal and carried on would still fail.
+    add_test(NAME nfsu_viewer_stock_needs_car
+        COMMAND nfsu_viewer missing_geometry.bin missing_textures.bin
+                nfsu_stock_guard_probe.tga --place-wheels
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(nfsu_viewer_stock_needs_car PROPERTIES
+        PASS_REGULAR_EXPRESSION "--place-wheels need --stock-car NAME"
+        FAIL_REGULAR_EXPRESSION "failed to read file size;no valid meshes")
+
+    add_test(NAME nfsu_viewer_stock_excludes_selectors
+        COMMAND nfsu_viewer missing_geometry.bin missing_textures.bin
+                nfsu_stock_guard_probe.tga --stock-car 240SX
+                --stock-parts missing_globalb.bun --mesh-index 0
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(nfsu_viewer_stock_excludes_selectors PROPERTIES
+        PASS_REGULAR_EXPRESSION "cannot be combined with --mesh-index"
+        FAIL_REGULAR_EXPRESSION "failed to read file size;no valid meshes")
+
     # nfsu_probe registers a command in one place, and print_usage() composes
     # the usage line out of the name main() dispatches on. This reads the
     # command inventory back out of three independent places - the kCommands
@@ -371,6 +400,7 @@ if(NFSU_BUILD_TESTS)
         nfsu_part_placement_tests nfsu_body_skin_tests
         nfsu_stock_scene_tests
         nfsu_skin_inputs_tests nfsu_runtime_skin_tests nfsu_inspect_tests
-        nfsu_viewer_dump_alias nfsu_probe_usage_commands
+        nfsu_viewer_dump_alias nfsu_viewer_stock_needs_car
+        nfsu_viewer_stock_excludes_selectors nfsu_probe_usage_commands
         PROPERTIES TIMEOUT 60)
 endif()

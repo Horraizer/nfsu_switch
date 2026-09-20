@@ -1152,6 +1152,115 @@ void test_overlay() {
     check(lines.empty(), "the overlay off says nothing");
 }
 
+// Framing and the overlay's world bounds describe the copies that are on
+// screen, not the space the mesh was authored in. The inspector measures
+// with placed_vertex, the same rule render_scene draws with, so the two
+// cannot disagree; before instances reached the renderer this function
+// read the vertices straight and a placed part framed the wrong place.
+//
+// The pin is the frame itself: the camera the inspector chooses must put
+// the drawn pixels of the selection inside the viewport. A bounds function
+// that ignored the transform would aim at the origin, where nothing is.
+void test_instanced_bounds_follow_the_copies() {
+    nfsu::PreparedCarScene scene;
+    if (!build_scene(scene)) {
+        return;
+    }
+    // A stock car over the same meshes: every mesh keeps one copy, and
+    // mesh 0 is moved far along the lateral axis, where nothing else is.
+    // The profile is set by hand; building a real one needs the part
+    // database layer, which this test does not link.
+    const float lateral = 12.0F;
+    scene.profile = nfsu::SelectionProfile::stock_car;
+    scene.skipped_invalid_meshes.clear();
+    for (std::size_t m = 0; m < scene.meshes.size(); ++m) {
+        nfsu::PreparedInstance instance;
+        instance.mesh = m;
+        instance.mesh_hash = scene.meshes[m].directory_hash;
+        if (m == 0) {
+            instance.transform[13] = lateral;
+        }
+        scene.instances.push_back(instance);
+    }
+    std::string error;
+    check(nfsu::validate_prepared_scene(scene, error),
+          "the hand-built instanced scene validates: " + error);
+
+    nfsu::Inspector inspector;
+    if (!open_inspector(inspector, scene, inspect_options())) {
+        return;
+    }
+    // Group 0 belongs to mesh 0, the moved one.
+    check(scene.draws[0].mesh == 0, "group 0 draws the moved mesh");
+    check(inspector.command(nfsu::InspectorCommand::select_next_draw, error) &&
+              inspector.selected_draw() == 0,
+          "the moved mesh's group is selected: " + error);
+    check(inspector.command(nfsu::InspectorCommand::frame_selection, error),
+          "the moved group can be framed: " + error);
+    check(nfsu::validate_camera(inspector.options().camera, error),
+          "framing a moved group leaves a valid camera: " + error);
+
+    // The camera the inspector chose, used to render the scene it was
+    // chosen for. Every pixel the selected group draws must be inside the
+    // frame, which is what framing means.
+    nfsu::Frame frame;
+    nfsu::RenderStats stats;
+    if (!render(scene, inspector.options(), frame, stats)) {
+        return;
+    }
+    check(stats.pixels_drawn > 0,
+          "framing the moved group puts something on screen: " +
+              std::to_string(stats.pixels_drawn));
+    std::vector<nfsu::PreparedTriangleRange> ranges = inspector.triangle_ranges();
+    std::uint64_t selected_pixels = 0;
+    for (const std::uint32_t id : frame.ids()) {
+        if (id != nfsu::kNoTriangle &&
+            nfsu::find_prepared_triangle(ranges, id) == 0) {
+            ++selected_pixels;
+        }
+    }
+    check(selected_pixels > 0,
+          "the framed group is the one on screen: " +
+              std::to_string(selected_pixels));
+
+    // And the target really did follow the copy. The authored mesh sits at
+    // pz in -3.0..-2.2, so world z is 2.2..3.0; moved by lateral it is
+    // -(-3.0 + lateral) .. -(-2.2 + lateral), that is -9.8 .. -9.0.
+    const double target_z = inspector.options().camera.target.z;
+    check(target_z < -8.0 && target_z > -11.0,
+          "the camera target followed the copy rather than the authored mesh: " +
+              std::to_string(target_z));
+
+    // Framing the whole scene must cover the moved copy too, so its box is
+    // much wider than the authored meshes alone.
+    check(inspector.command(nfsu::InspectorCommand::frame_scene, error),
+          "the instanced scene can be framed: " + error);
+    check(nfsu::validate_camera(inspector.options().camera, error),
+          "framing the instanced scene leaves a valid camera: " + error);
+    check(inspector.options().camera.distance > lateral,
+          "framing the scene pulls back far enough to hold the moved copy: " +
+              std::to_string(inspector.options().camera.distance));
+
+    // The same scene with the instance at the identity frames the authored
+    // place instead, so the two answers differ because of the transform and
+    // not because the profile changed.
+    nfsu::PreparedCarScene home = scene;
+    home.instances[0].transform[13] = 0.0F;
+    nfsu::Inspector unmoved;
+    if (!open_inspector(unmoved, home, inspect_options())) {
+        return;
+    }
+    check(unmoved.command(nfsu::InspectorCommand::select_next_draw, error) &&
+              unmoved.selected_draw() == 0,
+          "the unmoved group is selected: " + error);
+    check(unmoved.command(nfsu::InspectorCommand::frame_selection, error),
+          "the unmoved group can be framed: " + error);
+    const double home_z = unmoved.options().camera.target.z;
+    check(home_z > 2.0 && home_z < 3.2,
+          "an identity instance frames where the mesh was authored: " +
+              std::to_string(home_z));
+}
+
 void test_reset_refusals() {
     nfsu::PreparedCarScene scene;
     if (!build_scene(scene)) {
@@ -1355,6 +1464,7 @@ int main() {
     test_pick_and_highlight();
     test_views();
     test_overlay();
+    test_instanced_bounds_follow_the_copies();
     test_reset_refusals();
     test_dirty_and_stale();
     test_window_backend();

@@ -1,8 +1,11 @@
+#include "nfsu/car_parts.h"
 #include "nfsu/geometry.h"
 #include "nfsu/inspect.h"
 #include "nfsu/inspect_window.h"
+#include "nfsu/part_placement.h"
 #include "nfsu/render.h"
 #include "nfsu/runtime_skin.h"
+#include "nfsu/stock_scene.h"
 #include "nfsu/texture.h"
 #include "nfsu/texture_decode.h"
 
@@ -30,6 +33,10 @@ namespace {
 // and at most this many bytes read for the car's pack plus all of them.
 constexpr std::size_t kMaxSharedTextureSources = 8;
 constexpr std::uint64_t kMaxTextureInputBytes = 512ULL * 1024ULL * 1024ULL;
+
+// Geometry files a stock car may be assembled from beyond the car's own:
+// the retail 240SX needs two, Cars/BRAKES and Cars/PLATES.
+constexpr std::size_t kMaxStockGeometrySources = 8;
 
 void print_usage() {
     std::cout
@@ -94,6 +101,28 @@ void print_usage() {
         << "                       most 256 selectors and 16384 name bytes. A\n"
         << "                       selection is a diagnostic subset, not a decoded\n"
         << "                       game car assembly.\n"
+        << "Stock car assembly (docs/CAR_SCENE.md). It replaces the mesh selection\n"
+        << "above and cannot be combined with it; without --stock-car nothing below\n"
+        << "is read and the report is unchanged:\n"
+        << "  --stock-car NAME     draw the installed stock parts of car type NAME,\n"
+        << "                       each where the recovered placement puts it\n"
+        << "  --stock-parts F      GLOBAL/GLOBALB.BUN, which holds both the car part\n"
+        << "                       database and the car type table. Required.\n"
+        << "  --stock-geometry F   another geometry file the parts may come from,\n"
+        << "                       searched after <GEOMETRY.BIN> in the order given;\n"
+        << "                       the retail 240SX needs Cars/BRAKES/GEOMETRY.BIN\n"
+        << "                       and Cars/PLATES/GEOMETRY.BIN. At most 8.\n"
+        << "  --stock-lod L        A (default), B, C or D\n"
+        << "  --stock-pass P       world (default) or front-end; the brake model is\n"
+        << "                       the only part whose LOD this changes\n"
+        << "  --place-wheels       also draw the wheels and brakes, at the culling\n"
+        << "                       placements. Those are a documented stand-in and\n"
+        << "                       NOT the matrix the game draws them with: the\n"
+        << "                       lateral component is a term this project did not\n"
+        << "                       reproduce, and the spin, steering and mirroring\n"
+        << "                       the draw applies are not there at all. Without\n"
+        << "                       this option both slots are reported\n"
+        << "                       'placement unreproduced' and draw nothing.\n"
         << "Runtime body skin (off unless --skin-car is given; without it nothing\n"
         << "below is read and the report is unchanged):\n"
         << "  --skin-car NAME      compose the body skin for car NAME and bind it.\n"
@@ -270,6 +299,35 @@ struct SkinOptions {
     bool has_dump = false;
     nfsu::BodySkinSelection selection;
 };
+
+// The stock-car profile: which car, which databases and geometry files it
+// is assembled from, and the two choices the retail draw makes per frame.
+// Nothing here is defaulted into existence: without --stock-car the viewer
+// draws the mesh selection it always did.
+struct StockOptions {
+    bool enabled = false;
+    // True once any --stock-* option or --place-wheels was seen, so that
+    // the rest without --stock-car is a usage error rather than silently
+    // ignored input.
+    bool any_option = false;
+    std::string car;
+    fs::path parts;
+    bool has_parts = false;
+    // Extra geometry sources, after the car's own <GEOMETRY.BIN>.
+    std::vector<fs::path> geometry;
+    std::size_t lod = 0;
+    nfsu::CarDrawPass pass = nfsu::CarDrawPass::world;
+    bool place_wheels = false;
+};
+
+nfsu::StockSceneRequest stock_request(const StockOptions& stock) {
+    nfsu::StockSceneRequest request;
+    request.car_type_name = stock.car;
+    request.lod = stock.lod;
+    request.pass = stock.pass;
+    request.place_wheels_from_culling_table = stock.place_wheels;
+    return request;
+}
 
 // Four 0..255 channel values in the lane order every BodySkinRequest field
 // uses: RED, GREEN, BLUE, GLOSS.
@@ -557,6 +615,7 @@ int parse_options(
     std::vector<fs::path>& shared,
     nfsu::MeshSelection& selection,
     SkinOptions& skin,
+    StockOptions& stock,
     bool& interactive) {
     const nfsu::RenderLimits limits;
     const nfsu::SceneLimits scene_limits;
@@ -636,6 +695,24 @@ int parse_options(
             shared.emplace_back(argv[++i]);
             continue;
         }
+        if (name == "--stock-geometry") {
+            stock.any_option = true;
+            if (i + 1 >= argc) {
+                std::cerr << "error: missing value for " << name << '\n';
+                return 1;
+            }
+            if (stock.geometry.size() >= kMaxStockGeometrySources) {
+                std::cerr << "error: at most " << kMaxStockGeometrySources
+                          << " --stock-geometry files are allowed\n";
+                return 1;
+            }
+            if (argv[i + 1][0] == '\0') {
+                std::cerr << "error: invalid value for " << name << '\n';
+                return 1;
+            }
+            stock.geometry.emplace_back(argv[++i]);
+            continue;
+        }
         if (!seen.insert(name).second) {
             std::cerr << "error: option given twice: " << name << '\n';
             return 1;
@@ -646,6 +723,11 @@ int parse_options(
         }
         if (name == "--vertex-color") {
             options.vertex_color = true;
+            continue;
+        }
+        if (name == "--place-wheels") {
+            stock.any_option = true;
+            stock.place_wheels = true;
             continue;
         }
         if (name == "--interactive") {
@@ -664,7 +746,8 @@ int parse_options(
             "--width", "--height", "--alpha-cutoff", "--yaw", "--pitch",
             "--distance", "--fov", "--near", "--far", "--target", "--cull",
             "--shading", "--material-state", "--material-alpha", "--environment",
-            "--environment-color", "--environment-global"};
+            "--environment-color", "--environment-global", "--stock-car",
+            "--stock-parts", "--stock-lod", "--stock-pass"};
         if (valued.count(name) == 0) {
             std::cerr << "error: unknown option " << name << '\n';
             return 1;
@@ -761,6 +844,32 @@ int parse_options(
             } else {
                 ok = false;
             }
+        } else if (name == "--stock-car") {
+            stock.any_option = true;
+            stock.enabled = !value.empty();
+            stock.car = value;
+            ok = stock.enabled;
+        } else if (name == "--stock-parts") {
+            stock.any_option = true;
+            ok = !value.empty();
+            stock.parts = fs::path(value);
+            stock.has_parts = ok;
+        } else if (name == "--stock-lod") {
+            stock.any_option = true;
+            ok = value.size() == 1 && value[0] >= 'A' &&
+                 value[0] < 'A' + static_cast<char>(nfsu::kCarPartLodCount);
+            if (ok) {
+                stock.lod = static_cast<std::size_t>(value[0] - 'A');
+            }
+        } else if (name == "--stock-pass") {
+            stock.any_option = true;
+            if (value == "world") {
+                stock.pass = nfsu::CarDrawPass::world;
+            } else if (value == "front-end") {
+                stock.pass = nfsu::CarDrawPass::front_end;
+            } else {
+                ok = false;
+            }
         }
         if (!ok) {
             std::cerr << "error: invalid value for " << name << ": " << value << '\n';
@@ -799,6 +908,25 @@ int parse_options(
     }
     if (skin.any_option && !skin.enabled) {
         std::cerr << "error: the --skin-* options need --skin-car NAME\n";
+        return 1;
+    }
+    if (stock.any_option && !stock.enabled) {
+        std::cerr << "error: the --stock-* options and --place-wheels need "
+                     "--stock-car NAME\n";
+        return 1;
+    }
+    if (stock.enabled && !stock.has_parts) {
+        std::cerr << "error: --stock-car needs --stock-parts <GLOBALB.BUN>, which "
+                     "holds the part database and the car type table\n";
+        return 1;
+    }
+    // Two profiles at once would mean drawing a decoded assembly and a
+    // hand-named subset in one frame, and only one of them can be the
+    // scene.
+    if (stock.enabled && !selection.selectors.empty()) {
+        std::cerr << "error: --stock-car draws the decoded stock assembly, so it "
+                     "cannot be combined with --mesh-index, --mesh-name or "
+                     "--mesh-hash\n";
         return 1;
     }
     // The target hash, the optional <car>_SKIN1 hash and every extra one.
@@ -863,19 +991,34 @@ int main(int argc, char** argv) {
     std::vector<fs::path> shared_paths;
     nfsu::MeshSelection selection;
     SkinOptions skin;
+    StockOptions stock;
     bool interactive = false;
-    const int parse_result =
-        parse_options(argc, argv, options, shared_paths, selection, skin, interactive);
+    const int parse_result = parse_options(argc, argv, options, shared_paths, selection,
+                                           skin, stock, interactive);
     if (parse_result != 0) {
         return parse_result;
     }
     std::vector<fs::path> inputs = {geometry_path, texture_path};
     inputs.insert(inputs.end(), shared_paths.begin(), shared_paths.end());
-    // Appended last so that the texture-source indexing below is unchanged;
-    // it is an input for the path checks and for the writers, not a
-    // material texture source.
+    // Appended after the texture sources so that the texture-source
+    // indexing below is unchanged; it is an input for the path checks and
+    // for the writers, not a material texture source. Its own position is
+    // remembered rather than assumed to be the last: the stock car appends
+    // more inputs after it, and the check below would otherwise compare it
+    // with itself and refuse every run that names both.
+    const std::size_t vinyl_input = inputs.size();
     if (skin.has_vinyls) {
         inputs.push_back(skin.vinyls);
+    }
+    // The stock-car inputs come after those, for the same reason. They are
+    // deliberately not cross-checked against the texture sources: GLOBALB.BUN
+    // is normally both --stock-parts and a --shared-textures source, and
+    // naming one file twice among read-only inputs costs a second read and
+    // nothing else. What is checked below is that no geometry source is
+    // named twice, because that one does change the answer.
+    if (stock.enabled) {
+        inputs.push_back(stock.parts);
+        inputs.insert(inputs.end(), stock.geometry.begin(), stock.geometry.end());
     }
 
     // Fail early; write_frame_tga repeats these checks before writing.
@@ -908,7 +1051,10 @@ int main(int argc, char** argv) {
             }
         }
         if (skin.has_vinyls) {
-            for (std::size_t j = 0; j + 1 < inputs.size(); ++j) {
+            for (std::size_t j = 0; j < inputs.size(); ++j) {
+                if (j == vinyl_input) {
+                    continue;
+                }
                 if (nfsu::same_file_path(skin.vinyls, inputs[j])) {
                     std::cerr << "error: --skin-vinyls names the same file as another "
                                  "input\n";
@@ -959,10 +1105,63 @@ int main(int argc, char** argv) {
         }
     }
 
+    // A stock part may live in any of the geometry files the game has
+    // loaded, and the hash lookup takes the first source that holds it, so
+    // one file named twice would report every one of its hashes as
+    // ambiguous and change which source the report blames.
+    if (stock.enabled) {
+        for (std::size_t i = 0; i < stock.geometry.size(); ++i) {
+            if (nfsu::same_file_path(stock.geometry[i], geometry_path)) {
+                std::cerr << "error: --stock-geometry " << (i + 1)
+                          << " names the same file as <GEOMETRY.BIN>\n";
+                return 1;
+            }
+            for (std::size_t j = 0; j < i; ++j) {
+                if (nfsu::same_file_path(stock.geometry[i], stock.geometry[j])) {
+                    std::cerr << "error: --stock-geometry " << (i + 1)
+                              << " names the same file as --stock-geometry "
+                              << (j + 1) << '\n';
+                    return 1;
+                }
+            }
+        }
+    }
+
     const nfsu::GeometryReport geometry = nfsu::load_geometry_file(geometry_path);
     for (const nfsu::GeometryIssue& issue : geometry.issues) {
         std::cerr << "geometry issue at " << issue.offset << ": "
                   << issue.message << '\n';
+    }
+    // Geometry source 0 is always the car's own file; each --stock-geometry
+    // follows in the order given, which is the order the solid lookup
+    // searches them in.
+    std::vector<nfsu::GeometryReport> stock_geometry;
+    std::vector<const nfsu::GeometryReport*> stock_sources;
+    nfsu::CarPartDatabase stock_parts;
+    nfsu::CarTypeTable stock_types;
+    if (stock.enabled) {
+        stock_geometry.reserve(stock.geometry.size());
+        for (std::size_t i = 0; i < stock.geometry.size(); ++i) {
+            stock_geometry.push_back(nfsu::load_geometry_file(stock.geometry[i]));
+            for (const nfsu::GeometryIssue& issue : stock_geometry.back().issues) {
+                std::cerr << "stock geometry " << (i + 1) << " issue at "
+                          << issue.offset << ": " << issue.message << '\n';
+            }
+        }
+        stock_sources.push_back(&geometry);
+        for (const nfsu::GeometryReport& source : stock_geometry) {
+            stock_sources.push_back(&source);
+        }
+        stock_parts = nfsu::load_car_part_database(stock.parts);
+        for (const nfsu::CarPartIssue& issue : stock_parts.issues) {
+            std::cerr << "car part issue at " << issue.offset << ": " << issue.message
+                      << '\n';
+        }
+        stock_types = nfsu::load_car_type_table(stock.parts);
+        for (const nfsu::CarTypeIssue& issue : stock_types.issues) {
+            std::cerr << "car type issue at " << issue.offset << ": " << issue.message
+                      << '\n';
+        }
     }
     // Selection errors are usage errors, found before any texture is read.
     const nfsu::SceneLimits scene_limits;
@@ -1033,9 +1232,40 @@ int main(int argc, char** argv) {
             }
         }
     }
-    if (geometry.valid_mesh_count() == 0) {
+    // A stock car may draw a part out of any of its geometry sources, so
+    // what has to hold meshes is the set of them and not the car's own
+    // file. The message is unchanged, and so is the check for every other
+    // profile, which reads one source.
+    std::size_t valid_meshes = geometry.valid_mesh_count();
+    for (const nfsu::GeometryReport& source : stock_geometry) {
+        valid_meshes += source.valid_mesh_count();
+    }
+    if (valid_meshes == 0) {
         std::cerr << "error: no valid meshes to render\n";
         return 2;
+    }
+    // Which meshes a stock car draws comes from the part database, not from
+    // the command line, so the hashes worth decoding out of a shared source
+    // are known only once the assembly has been resolved. It is resolved
+    // twice: here against no textures at all, and below against the decoded
+    // set. Both resolutions select the same meshes, because which part a
+    // slot installs and which mesh hash it names are decided before any
+    // material is bound; only the bindings of the second one are used.
+    std::vector<nfsu::SceneMeshRef> stock_mesh_refs;
+    if (stock.enabled) {
+        nfsu::PreparedCarScene unbound;
+        nfsu::StockSceneReport unbound_report;
+        std::string error;
+        if (!nfsu::prepare_stock_car_scene(stock_sources, nfsu::RenderTextureSet{},
+                                           stock_parts, stock_types,
+                                           stock_request(stock), scene_limits, unbound,
+                                           unbound_report, error)) {
+            std::cerr << "error: stock car: " << error << '\n';
+            return 2;
+        }
+        for (const nfsu::PreparedMesh& mesh : unbound.meshes) {
+            stock_mesh_refs.push_back(nfsu::SceneMeshRef{mesh.source, mesh.source_index});
+        }
     }
     nfsu::RenderTextureSet textures;
     std::vector<std::uint32_t> wanted;
@@ -1048,13 +1278,23 @@ int main(int argc, char** argv) {
         } else {
             // Shared sources decode only hashes that a selected mesh uses,
             // so unrelated textures do not count against the shared budget.
-            // Without selectors these are all valid meshes.
-            for (const std::size_t index : selected) {
-                const nfsu::Mesh& mesh = geometry.meshes[index];
+            // Without selectors these are all valid meshes; for a stock car
+            // they are the meshes its installed parts resolved to, in any
+            // of its geometry sources.
+            const auto want = [&wanted](const nfsu::Mesh& mesh) {
                 for (const nfsu::MeshMaterial& material : mesh.materials) {
                     if (material.texture_slot < mesh.texture_hashes.size()) {
                         wanted.push_back(mesh.texture_hashes[material.texture_slot]);
                     }
+                }
+            };
+            if (stock.enabled) {
+                for (const nfsu::SceneMeshRef& ref : stock_mesh_refs) {
+                    want(stock_sources[ref.source]->meshes[ref.index]);
+                }
+            } else {
+                for (const std::size_t index : selected) {
+                    want(geometry.meshes[index]);
                 }
             }
             std::sort(wanted.begin(), wanted.end());
@@ -1259,9 +1499,17 @@ int main(int argc, char** argv) {
 
     // Material lookup happens here, once; the renderer reads the scene only.
     nfsu::PreparedCarScene scene;
+    nfsu::StockSceneReport stock_report;
     std::string error;
-    if (!nfsu::prepare_car_scene(geometry, textures, selection, scene_limits, scene,
-                                 error)) {
+    if (stock.enabled) {
+        if (!nfsu::prepare_stock_car_scene(stock_sources, textures, stock_parts,
+                                           stock_types, stock_request(stock),
+                                           scene_limits, scene, stock_report, error)) {
+            std::cerr << "error: stock car: " << error << '\n';
+            return 2;
+        }
+    } else if (!nfsu::prepare_car_scene(geometry, textures, selection, scene_limits,
+                                        scene, error)) {
         std::cerr << "error: " << error << '\n';
         return 2;
     }
@@ -1443,6 +1691,67 @@ int main(int argc, char** argv) {
                   << " environment_global " << (c.environment_enabled ? "on" : "off")
                   << '\n';
     }
+    // Printed only for the stock car, so every other report is byte for
+    // byte what it was before this profile existed.
+    if (stock.enabled) {
+        for (std::size_t i = 0; i < stock_sources.size(); ++i) {
+            std::cout << "stock geometry " << i << ": meshes "
+                      << stock_sources[i]->meshes.size() << " valid "
+                      << stock_sources[i]->valid_mesh_count() << " directory "
+                      << (stock_sources[i]->mesh_directory_valid ? "verified"
+                                                                 : "unavailable")
+                      << '\n';
+        }
+        std::cout << "stock: car " << ascii_quoted(stock_report.car_type_name)
+                  << " hash " << hex32(stock_report.car_type_hash) << " record "
+                  << stock_report.car_type << " lod "
+                  << static_cast<char>('A' + stock_report.lod) << " pass "
+                  << nfsu::car_draw_pass_name(stock_report.pass) << '\n';
+        for (const nfsu::StockSlotReport& slot : stock_report.slots) {
+            if (slot.record == nfsu::kNoCarPart) {
+                continue;
+            }
+            std::cout << "stock slot " << slot.slot << ' '
+                      << nfsu::car_slot_name(slot.slot) << ' '
+                      << (slot.enabled ? "enabled" : "disabled") << " record "
+                      << slot.record << ' '
+                      << nfsu::stock_slot_outcome_name(slot.outcome);
+            if (slot.outcome == nfsu::StockSlotOutcome::drawn) {
+                std::cout << " lod " << static_cast<char>('A' + slot.lod)
+                          << " geometry " << slot.geometry_source << " mesh "
+                          << slot.source_mesh << ' '
+                          << ascii_quoted(stock_sources[slot.geometry_source]
+                                              ->meshes[slot.source_mesh]
+                                              .name)
+                          << ' ' << nfsu::stock_placement_name(slot.placement)
+                          << " instances " << slot.instance_count;
+            }
+            std::cout << '\n';
+        }
+        std::cout << "stock slots: installed " << stock_report.installed
+                  << " with_model " << stock_report.with_model << " drawn "
+                  << stock_report.drawn << " by_fallback " << stock_report.fell_back
+                  << " markers " << stock_report.markers.size() << '\n';
+        // The one place the opt-in stand-in is named as such. Without it
+        // the wheel and brake slots report placement unreproduced above and
+        // put nothing in the frame at all.
+        std::cout << "stock wheels: "
+                  << (stock.place_wheels
+                          ? "drawn at the culling placements, which are a stand-in "
+                            "and not the matrix the game draws them with"
+                          : "not drawn; the drawn wheel and brake matrices are not "
+                            "reproduced")
+                  << '\n';
+        if (stock_report.degenerate_wheel_plane) {
+            std::cout << "stock wheel plane: degenerate\n";
+        }
+        for (const std::uint32_t hash : stock_report.absent_hashes) {
+            std::cout << "stock absent hash: " << hex32(hash) << '\n';
+        }
+        for (const std::uint32_t hash : stock_report.ambiguous_hashes) {
+            std::cout << "stock ambiguous hash: " << hex32(hash) << '\n';
+        }
+    }
     // The all-meshes report is unchanged; only an explicit subset is listed.
     if (scene.profile == nfsu::SelectionProfile::explicit_subset) {
         std::cout << "selection: " << nfsu::selection_profile_name(scene.profile)
@@ -1457,6 +1766,15 @@ int main(int argc, char** argv) {
         }
     }
     print_stats(stats);
+    // Drawn copies, next to the mesh count print_stats reports, so that 30
+    // instances of 24 meshes cannot be read as 30 meshes. A profile with no
+    // instances draws each mesh once, so the two counts are equal there and
+    // the line is left out to keep those reports unchanged.
+    if (scene.profile == nfsu::SelectionProfile::stock_car) {
+        std::cout << "instances: " << stats.instances << " exact "
+                  << stats.instances_exact << " stand_in " << stats.instances_stand_in
+                  << '\n';
+    }
     if (options.material_state == nfsu::MaterialStateMode::retail) {
         // The rows the renderer itself assigned, so the report can never
         // describe an order other than the one that was drawn.
@@ -1496,5 +1814,12 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
-    return geometry.ok() && pack.ok() && sources_ok && skin_ok ? 0 : 3;
+    bool stock_ok = true;
+    if (stock.enabled) {
+        stock_ok = stock_parts.ok() && stock_types.ok();
+        for (const nfsu::GeometryReport& source : stock_geometry) {
+            stock_ok = stock_ok && source.ok();
+        }
+    }
+    return geometry.ok() && pack.ok() && sources_ok && skin_ok && stock_ok ? 0 : 3;
 }
