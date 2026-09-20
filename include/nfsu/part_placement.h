@@ -233,7 +233,9 @@ bool car_marker_name_at(std::size_t index,
 void car_marker_quarter_turn(float out[16]) noexcept;
 
 // out = a * b, row-major, the row-vector convention the game uses
-// (0x005AC69C). `out` may alias neither input.
+// (0x005AC69C). `out` may alias either input, as it may in the game, whose
+// multiply accumulates into a local when it detects the overlap
+// (0x005AC6AE).
 void multiply_placement_matrix(const float a[16],
                                const float b[16],
                                float out[16]) noexcept;

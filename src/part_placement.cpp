@@ -357,8 +357,15 @@ private:
                 return false;
             }
         }
-        const float values[5] = {wheel.longitudinal, wheel.lateral, wheel.vertical,
-                                 wheel.rolling_radius, wheel.value_14};
+        // All seven floats of the record have a traced reader, so all seven
+        // are required to be finite: +0x00, +0x04 and +0x08 reach the
+        // placement array through 0x5693d0, +0x10 the shadow offset at
+        // 0x56b3f5, and +0x14, +0x1C and +0x20 the wheel draw through
+        // 0x56c283, 0x56c267 and 0x56c275.
+        const float values[7] = {wheel.longitudinal, wheel.lateral,
+                                 wheel.vertical,     wheel.rolling_radius,
+                                 wheel.value_14,     wheel.value_1c,
+                                 wheel.value_20};
         for (const float value : values) {
             if (!std::isfinite(value)) {
                 add_issue(offset, "wheel record " + std::to_string(position) +
@@ -666,14 +673,22 @@ void car_marker_quarter_turn(float out[16]) noexcept {
 void multiply_placement_matrix(const float a[16],
                                const float b[16],
                                float out[16]) noexcept {
+    // 0x005AC6AE..0x005AC6BC compares the destination against both sources
+    // and accumulates into a local when it aliases either one, so the game's
+    // own multiply is alias-safe. This one always does, which costs one
+    // 64-byte copy and removes the footgun.
+    float result[16];
     for (std::size_t row = 0; row < 4; ++row) {
         for (std::size_t column = 0; column < 4; ++column) {
             float sum = 0.0F;
             for (std::size_t k = 0; k < 4; ++k) {
                 sum += a[row * 4 + k] * b[k * 4 + column];
             }
-            out[row * 4 + column] = sum;
+            result[row * 4 + column] = sum;
         }
+    }
+    for (std::size_t i = 0; i < 16; ++i) {
+        out[i] = result[i];
     }
 }
 

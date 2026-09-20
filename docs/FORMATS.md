@@ -842,10 +842,14 @@ matches texture 18 at 5744.
 
 ## Attachment markers (GEOMETRY.BIN chunk 0x0013401A)
 
-Optional, at most one per mesh: 2860 of the 9408 meshes in the 39 retail car
-files carry one, holding 4461 records in total, and 647 of those chunks hold
-no record. The loader is `speed.exe` 0x5400e3, which stores the aligned
-table at solid +0x80 and the record count in the byte at solid +0x1B.
+Optional, at most one per mesh. In the 37 car files that are
+retail-original, 2092 meshes carry one, holding 4216 records in total, and
+every chunk holds at least one record. Counting `Cars/LANCER` and
+`Cars/PEUGOT`, which carry an `NFS-CarToolkit` header instead of the retail
+source path, the totals are 2860 chunks and 4461 records, and the 647 empty
+chunks are all theirs. The loader is `speed.exe` 0x5400e3, which stores the
+aligned table at solid +0x80 and the record count in the byte at solid
++0x1B.
 
 Records start at the first absolute file offset in the payload that is a
 multiple of 16, after 0x11 filler, exactly as the other aligned records do.
@@ -855,7 +859,7 @@ reciprocal multiply whose divisor is exactly 80.
 | Offset | Type | Meaning |
 | --- | --- | --- |
 | +0x00 | u32 | `bin_hash` of the marker name |
-| +0x04 | u32[3] | zero in 4216 of 4461 retail records, uninitialised in the rest |
+| +0x04 | u32[3] | zero in all 4216 retail-original records; uninitialised in the two rewritten files |
 | +0x10 | f32[16] | row-major 4x4 matrix; row 3 is the translation |
 
 The translation is in the same raw slot order as a vertex (longitudinal,

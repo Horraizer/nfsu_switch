@@ -1388,8 +1388,10 @@ void test_markers() {
         }
     }
 
-    // The reserved words are kept raw, not required to be zero: 245 of the
-    // 4461 retail markers hold uninitialised bytes there.
+    // The reserved words are kept raw, not required to be zero. Every
+    // marker in the 37 retail-original car files has zero here, but all 245
+    // markers of the two toolkit-rewritten files do not, and the game loads
+    // those files, so the parser must not refuse them.
     {
         MeshSpec spec = quad_spec();
         spec.include_marker_list = true;

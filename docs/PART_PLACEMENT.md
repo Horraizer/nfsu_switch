@@ -71,29 +71,47 @@ One 80-byte record:
 The translation is in the same raw slot order as a vertex: longitudinal,
 lateral, vertical.
 
-Because `+0x04..+0x0F` is not zero everywhere, the parser keeps those three
-words raw and never requires or interprets them.
-
 ### Retail inventory
 
-Over all 39 `Cars/*/GEOMETRY.BIN`: 2860 marker chunks holding 4461 markers,
-with 18 distinct name hashes. `nfsu_probe part-markers` reproduces those
-totals exactly. Chunk record counts observed: 0 (647 chunks), 1, 2, 3, 4, 5,
+Two of the 39 `Cars/*/GEOMETRY.BIN` files are not retail-original.
+`Cars/LANCER` and `Cars/PEUGOT` carry `NFS-CarToolkit by nfsu360` in their
+`0x00134002` header instead of the retail source path, they are the only two
+files without `0x80134008`, and they carry a marker chunk on every mesh.
+Both totals are given below because the game loads those files and the
+parser must too.
+
+| | All 39 files | The 37 retail-original files |
+| --- | ---: | ---: |
+| Marker chunks | 2860 | 2092 |
+| Markers | 4461 | 4216 |
+| Chunks holding no record | 647 | 0 |
+| Markers with a non-zero word at `+0x04` | 245 | 0 |
+
+`nfsu_probe part-markers` reproduces every figure in the first column.
+Both the 647 empty chunks and the 245 markers with a non-zero reserved word
+are entirely inside `Cars/LANCER` and `Cars/PEUGOT`, and they are 100% of
+those two files' markers. Retail record counts per chunk are 1, 2, 3, 4, 5,
 6, 7, 8, 10, 12 and 18.
+
+The parser therefore keeps the three words at `+0x04..+0x0F` raw and never
+requires or interprets them: no traced instruction reads them, and requiring
+zero would refuse two files the game accepts.
 
 `Cars/BRAKES`, `Cars/EXHAUST` and `Cars/PLATES` carry no markers at all;
 `Cars/WHEELS` carries exactly one `MARKER_BRAKE` per rim mesh.
-
-`Cars/LANCER` and `Cars/PEUGOT` are not retail-original: their `0x00134002`
-header says `NFS-CarToolkit by nfsu360` instead of the retail source path,
-they are the only two files without `0x80134008`, and they carry marker
-chunks on every mesh. They are excluded from retail statistics here.
 
 ### Marker names
 
 Every name below was recovered and then confirmed by recomputing `bin_hash`
 over it; `nfsu::car_marker_name` holds the same table and
 `nfsu_part_placement_tests` re-derives every hash from its name.
+
+The table is what the collector at `0x0056BDB0` accepts, not an inventory of
+the data. Retail geometry uses 18 distinct hashes: 17 of these names plus
+the unrecovered one below. The seven names `BRAKELIGHT_LEFT`,
+`BRAKELIGHT_RIGHT`, `SIDE_MIRROR_LEFT`, `SIDE_MIRROR_RIGHT`,
+`LICENSE_PLATE_REAR`, `CENTRE_EXHAUST` and `EXHAUST_RIGHT` occur in no car
+file in this installation.
 
 | Hash | Name | Role |
 | --- | --- | --- |
@@ -130,8 +148,12 @@ document treats it as an identification.
 
 One hash that occurs in retail data, `0x3AC3FFB1`, has no recovered name. It
 appears 76 times across 19 cars, always as a symmetric pair on a `BASE` mesh
-at about longitudinal `1.04`, lateral `+-0.22`, vertical `0.70`. It resolves
-to no name and no role rather than to a guess.
+at about longitudinal `1.04`, lateral `+-0.22`, vertical `0.70`, which is the
+inboard base of the windscreen. A brute force over 79500 candidates built
+from the vocabulary the other names use - cores such as `WIPER`, `SEAT`,
+`ANTENNA` and `COWL`, the `LEFT`/`RIGHT`/`FRONT`/`REAR`/`CENTRE` qualifiers
+in both orders, and the `MARKER_`, `CAR_` and `DUMMY_` prefixes - found no
+match. It resolves to no name and no role rather than to a guess.
 
 The collector at `0x0056BDB0..0x0056C0DC` switches on the hash and appends a
 node to one of 28 intrusive lists at `CarRenderInfo + 0x62C`. It walks slots
@@ -598,8 +620,8 @@ is not `valid`, and `find_car_type` and the derivation refuse it.
 4. Each of the five string fields must be NUL-terminated within its `0x20`
    bytes, non-empty and printable ASCII, and the two name fields equal.
 5. Each wheel record's stored index must equal its position, its `+0x0C`,
-   `+0x24`, `+0x28` and `+0x2C` words must be zero, and its five float
-   fields must be finite.
+   `+0x24`, `+0x28` and `+0x2C` words must be zero, and all seven of its
+   float fields must be finite. All seven have a traced reader.
 
 The marker parser in `nfsu::parse_geometry` accepts at most one
 `0x0013401A` per mesh, requires `0x11` filler up to the 16-byte boundary,
@@ -607,8 +629,8 @@ requires the remaining payload to be a whole number of 80-byte records,
 refuses more records than the game's byte count can address, and refuses a
 matrix element that is not finite. A mesh that fails any of these is skipped
 with a diagnostic, as every other geometry failure is. The three reserved
-words are kept raw and never checked, because 245 of the 4461 retail markers
-hold uninitialised bytes there.
+words are kept raw and never checked, for the reason in "Retail inventory"
+above.
 
 `derive_cullable_part_placements` reproduces the 14 culling placements. It
 fails only for a wheel value that is not finite. A degenerate wheel plane is
@@ -649,8 +671,9 @@ plus a per-hash summary; an optional role argument filters the listing.
   but the consumer that dots them with a view direction was not traced.
   Nothing here depends on them.
 - The name behind marker hash `0x3AC3FFB1`.
-- Marker record bytes `+0x04..+0x0F`. Zero in most retail records,
-  uninitialised in 245 of them, and read by no traced instruction.
+- Marker record bytes `+0x04..+0x0F`. Zero in every retail-original record
+  and read by no traced instruction, so whether they are a field at all is
+  unknown.
 - The rest of the `0x2B0`-byte setup sub-object at `+0x110`. The post-load
   pass `0x00581D30` accumulates global extents from its fields into
   `0x006F0D30..0x006F0D3C`, but nothing there is placement.

@@ -53,8 +53,13 @@ struct MeshMarker {
     // +0x00: bin_hash of the marker name. nfsu::car_marker_name resolves the
     // hashes whose names were recovered.
     std::uint32_t name_hash = 0;
-    // +0x04..+0x0F. Zero in 4216 of the 4461 retail markers and uninitialised
-    // bytes in the rest, so they are kept raw and never interpreted.
+    // +0x04..+0x0F. Zero in every one of the 4216 markers of the 37
+    // retail-original car files. The other 245 markers in the installation
+    // are all of Cars/LANCER and Cars/PEUGOT, which carry an NFS-CarToolkit
+    // header instead of the retail source path and hold uninitialised bytes
+    // here. No traced instruction reads these words, and refusing them would
+    // refuse files the game itself loads, so they are kept raw and never
+    // interpreted. See docs/PART_PLACEMENT.md.
     std::array<std::uint32_t, 3> reserved{};
     // +0x10: a row-major 4x4 matrix. Row 3 is the translation, in the same
     // raw slot order as MeshVertex (longitudinal, lateral, vertical).

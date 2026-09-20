@@ -300,6 +300,40 @@ void test_marker_transform() {
                                              std::to_string(i));
     }
 
+    // Aliasing the destination with either input must still be correct,
+    // which is what the game's own multiply guarantees at 0x005AC6AE.
+    {
+        float expected[16];
+        nfsu::multiply_placement_matrix(turn, turn, expected);
+        float aliased_a[16];
+        for (std::size_t i = 0; i < 16; ++i) {
+            aliased_a[i] = turn[i];
+        }
+        nfsu::multiply_placement_matrix(aliased_a, turn, aliased_a);
+        for (std::size_t i = 0; i < 16; ++i) {
+            check_close(aliased_a[i], expected[i],
+                        "out aliasing a, element " + std::to_string(i));
+        }
+        float aliased_b[16];
+        for (std::size_t i = 0; i < 16; ++i) {
+            aliased_b[i] = turn[i];
+        }
+        nfsu::multiply_placement_matrix(turn, aliased_b, aliased_b);
+        for (std::size_t i = 0; i < 16; ++i) {
+            check_close(aliased_b[i], expected[i],
+                        "out aliasing b, element " + std::to_string(i));
+        }
+        float both[16];
+        for (std::size_t i = 0; i < 16; ++i) {
+            both[i] = turn[i];
+        }
+        nfsu::multiply_placement_matrix(both, both, both);
+        for (std::size_t i = 0; i < 16; ++i) {
+            check_close(both[i], expected[i],
+                        "out aliasing both, element " + std::to_string(i));
+        }
+    }
+
     // Four quarter turns are the identity.
     float once[16];
     float twice[16];
@@ -650,12 +684,24 @@ void test_malformed_wheels() {
         expect_rejected(layout.bytes, "not finite", "infinite radius");
     }
     {
-        // A NaN in an untraced field is refused too, because it would reach
-        // any consumer of the raw record.
+        // All seven floats are checked, not just the three positions and
+        // the radius: +0x14, +0x1C and +0x20 have traced readers too.
         Layout layout = build_table(cars);
         put_f32(layout.bytes, layout.records + wheel2 + 0x14,
                 std::numeric_limits<float>::quiet_NaN());
         expect_rejected(layout.bytes, "not finite", "NaN in +0x14");
+    }
+    {
+        Layout layout = build_table(cars);
+        put_f32(layout.bytes, layout.records + wheel2 + 0x1C,
+                std::numeric_limits<float>::quiet_NaN());
+        expect_rejected(layout.bytes, "not finite", "NaN in +0x1C");
+    }
+    {
+        Layout layout = build_table(cars);
+        put_f32(layout.bytes, layout.records + wheel2 + 0x20,
+                -std::numeric_limits<float>::infinity());
+        expect_rejected(layout.bytes, "not finite", "infinite +0x20");
     }
 }
 
