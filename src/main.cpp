@@ -9,6 +9,7 @@
 #include "nfsu/texture_decode.h"
 #include "nfsu/track.h"
 #include "nfsu/track_collision.h"
+#include "nfsu/track_draw_list.h"
 #include "nfsu/track_objects.h"
 #include "nfsu/track_scene.h"
 #include "nfsu/track_visibility.h"
@@ -1701,6 +1702,230 @@ int run_track_zones(
 }
 
 // ---------------------------------------------------------------------------
+// track-scene: one bounded geometry region placed by the scenery region
+// beside it, and the draw list one camera selects out of the two. See
+// docs/TRACK_DRAW_LIST.md.
+// ---------------------------------------------------------------------------
+
+constexpr std::size_t kTrackDrawListLimit = 32;
+
+struct TrackSceneArgs {
+    std::vector<fs::path> textures;
+    nfsu::TrackSceneOptions scene;
+    nfsu::TrackDrawListOptions list;
+    nfsu::TrackCullOptions cull;
+    nfsu::TrackCamera camera;
+    // Without a camera the run uses the fallback policy, which consults no
+    // frustum at all, so the frustum built from the default camera below
+    // cannot change its answer.
+    bool has_camera = false;
+    std::size_t list_limit = kTrackDrawListLimit;
+};
+
+// Decodes only the hashes `wanted` names out of the given sources. Both
+// vectors are sized once, so the pointers taken here stay valid.
+bool decode_track_scene_textures(
+    const std::vector<fs::path>& paths,
+    const std::vector<std::uint32_t>& wanted,
+    std::vector<std::vector<unsigned char>>& source_bytes,
+    std::vector<nfsu::TexturePackSet>& sets,
+    std::vector<nfsu::RenderTextureSource>& sources,
+    nfsu::RenderTextureSet& textures) {
+    source_bytes.resize(paths.size());
+    sets.resize(paths.size());
+    sources.resize(paths.size());
+    std::uint64_t read_bytes = 0;
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+        nfsu::TextureLimits limits;
+        const std::uint64_t remaining = kMaxTrackTextureInputBytes - read_bytes;
+        limits.max_file_size = std::min(limits.max_file_size, remaining);
+        sets[i] = nfsu::load_texture_pack_set(paths[i], source_bytes[i], limits);
+        read_bytes += source_bytes[i].size();
+        std::cout << "texture source " << i << ": " << paths[i].string()
+                  << " size " << sets[i].file_size << " read "
+                  << source_bytes[i].size() << " packs " << sets[i].packs.size()
+                  << " complete " << (sets[i].complete ? 1 : 0) << '\n';
+        for (const nfsu::TextureIssue& issue : sets[i].issues) {
+            std::cerr << "texture source " << i << " issue at " << issue.offset
+                      << ": " << issue.message << '\n';
+        }
+    }
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+        sources[i].bytes = &source_bytes[i];
+        for (const nfsu::TexturePack& pack : sets[i].packs) {
+            sources[i].packs.push_back(&pack);
+        }
+        sources[i].complete = sets[i].complete;
+        sources[i].wanted = &wanted;
+    }
+    std::string error;
+    if (!nfsu::decode_render_texture_sources(
+            sources, nfsu::RenderTextureLimits{}, textures, error)) {
+        std::cerr << "error: " << error << '\n';
+        return false;
+    }
+    return true;
+}
+
+int run_track_scene(
+    const fs::path& path,
+    const nfsu::TrackRegionSelector& geometry_region,
+    const nfsu::TrackRegionSelector& object_region,
+    const TrackSceneArgs& args) {
+    std::vector<unsigned char> geometry_bytes;
+    const nfsu::TrackRegionReport geometry =
+        nfsu::load_track_region(path, geometry_region, geometry_bytes);
+    std::vector<unsigned char> object_bytes;
+    const nfsu::TrackObjectReport objects =
+        nfsu::load_track_objects(path, object_region, object_bytes);
+
+    std::cout << "file: " << path.string() << '\n';
+    std::cout << "geometry region: offset " << geometry.region.offset
+              << " size " << geometry.region.size << " meshes "
+              << geometry.meshes.size() << " valid "
+              << geometry.valid_mesh_count() << '\n';
+    std::cout << "object region: offset " << objects.region.offset << " size "
+              << objects.region.size << " sections " << objects.sections.size()
+              << " valid " << objects.valid_section_count() << " instances "
+              << objects.cost.instances << '\n';
+    for (const nfsu::TrackIssue& issue : geometry.issues) {
+        std::cerr << "geometry issue at " << issue.offset << ": "
+                  << issue.message << '\n';
+    }
+    for (const nfsu::TrackIssue& issue : objects.issues) {
+        std::cerr << "object issue at " << issue.offset << ": " << issue.message
+                  << '\n';
+    }
+
+    const std::vector<std::uint32_t> wanted =
+        nfsu::track_region_texture_hashes(geometry);
+    std::vector<std::vector<unsigned char>> source_bytes;
+    std::vector<nfsu::TexturePackSet> sets;
+    std::vector<nfsu::RenderTextureSource> sources;
+    nfsu::RenderTextureSet textures;
+    if (!decode_track_scene_textures(args.textures, wanted, source_bytes, sets,
+                                     sources, textures)) {
+        return 2;
+    }
+    std::cout << "textures: wanted " << wanted.size() << " decoded "
+              << textures.textures.size() << " bytes " << textures.decoded_bytes
+              << '\n';
+
+    nfsu::PreparedTrackScene scene;
+    std::string error;
+    if (!nfsu::build_track_scene(geometry, objects, textures, args.scene, scene,
+                                 error)) {
+        std::cerr << "error: " << error << '\n';
+        return 2;
+    }
+
+    const nfsu::TrackDrawCost& draws = scene.region.cost;
+    std::cout << "region: meshes " << draws.meshes << " draws " << draws.draws
+              << " drawable " << draws.drawable_draws << " resolved "
+              << draws.resolved_draws << " unresolved "
+              << draws.unresolved_draws << " textures " << draws.textures
+              << '\n';
+    std::cout << "region: vertex buffer bytes " << draws.vertex_buffer_bytes
+              << " index buffer bytes " << draws.index_buffer_bytes
+              << " texture bytes " << draws.texture_bytes << '\n';
+
+    const nfsu::TrackScenePlacementCost& cost = scene.cost;
+    std::cout << "placement: slot " << scene.lod_slot << " sections "
+              << cost.valid_sections << " of " << cost.source_sections
+              << " instances " << cost.source_instances << " placed "
+              << cost.placed_instances << " fallbacks " << cost.slot_fallbacks
+              << '\n';
+    std::cout << "unplaced: empty slot " << cost.unplaced_empty_slot
+              << " skipped hash " << cost.unplaced_skipped_hash
+              << " unresolved " << cost.unplaced_unresolved << " distinct "
+              << cost.unplaced_hashes << '\n';
+    std::cout << "meshes: drawn " << cost.drawn_meshes << " undrawn "
+              << cost.undrawn_meshes << " resident entries "
+              << cost.resident_entries << " resident triangles "
+              << cost.resident_triangles << '\n';
+    if (cost.has_bounds) {
+        std::cout << "world: px " << cost.bounds_min[0] << " .. "
+                  << cost.bounds_max[0] << " pz " << cost.bounds_min[1]
+                  << " .. " << cost.bounds_max[1] << " py "
+                  << cost.bounds_min[2] << " .. " << cost.bounds_max[2] << '\n';
+    }
+    std::size_t shown = 0;
+    for (const std::uint32_t hash : scene.unplaced_hashes) {
+        if (shown >= kTrackUnresolvedListLimit) {
+            std::cout << "  ... " << (scene.unplaced_hashes.size() - shown)
+                      << " more unplaced hashes not listed\n";
+            break;
+        }
+        ++shown;
+        std::cout << "  unplaced " << hex32(hash) << '\n';
+    }
+
+    nfsu::TrackFrustum frustum;
+    if (!nfsu::track_frustum_look_at(args.camera, frustum)) {
+        std::cerr << "error: the camera is degenerate and builds no frustum\n";
+        return 1;
+    }
+    if (args.has_camera) {
+        std::cout << "camera: world eye " << args.camera.eye[0] << ' '
+                  << args.camera.eye[1] << ' ' << args.camera.eye[2]
+                  << " target " << args.camera.target[0] << ' '
+                  << args.camera.target[1] << ' ' << args.camera.target[2]
+                  << " far " << args.camera.far_plane << '\n';
+    } else {
+        std::cout << "camera: none given; the fallback policy consults no"
+                     " frustum\n";
+    }
+
+    const nfsu::TrackCullReport cull =
+        nfsu::cull_track_region(objects, frustum, args.cull);
+    std::cout << "cull: policy "
+              << nfsu::track_cull_policy_name(cull.requested_policy) << " held "
+              << (cull.policy_held ? "yes" : "no") << " resident "
+              << cull.stats.sections_resident << " degraded "
+              << cull.stats.sections_degraded << " visible "
+              << cull.stats.instances_visible << '\n';
+    for (const nfsu::TrackIssue& issue : cull.issues) {
+        std::cerr << "visibility issue at " << issue.offset << ": "
+                  << issue.message << '\n';
+    }
+
+    nfsu::TrackDrawList list;
+    if (!nfsu::build_track_draw_list(scene, cull, args.list, list, error)) {
+        std::cerr << "error: " << error << '\n';
+        return 2;
+    }
+    const nfsu::TrackDrawListCost& list_cost = list.cost;
+    std::cout << "draw list: order " << nfsu::track_draw_order_name(list.order)
+              << " visible " << list_cost.visible << " placed "
+              << list_cost.visible_placed << " unplaced "
+              << list_cost.visible_unplaced << " without groups "
+              << list_cost.instances_without_entries << '\n';
+    std::cout << "draw list: entries " << list_cost.entries << " triangles "
+              << list_cost.triangles << " groups " << list_cost.groups
+              << " meshes " << list_cost.meshes << " texture binds "
+              << list_cost.texture_binds << '\n';
+
+    std::size_t listed = 0;
+    for (const nfsu::TrackDrawListEntry& entry : list.entries) {
+        if (listed >= args.list_limit) {
+            std::cout << "  ... " << (list.entries.size() - listed)
+                      << " more entries not listed\n";
+            break;
+        }
+        ++listed;
+        const nfsu::PreparedTrackInstance& placed = scene.instances[entry.instance];
+        const nfsu::TrackDraw& draw = scene.region.draws[entry.draw];
+        std::cout << "  instance " << entry.instance << " section "
+                  << placed.section_index << " source " << placed.instance_index
+                  << " mesh " << placed.mesh << " draw " << entry.draw
+                  << " indices " << draw.index_count << " texture "
+                  << hex32(draw.texture_hash) << '\n';
+    }
+
+    return (geometry.ok() && objects.ok() && cull.ok()) ? 0 : 3;
+}
+
+// ---------------------------------------------------------------------------
 // body-skin-inputs: read-only diagnostics for the assembled layer list.
 // It opens only the files named on the command line, and it writes nothing.
 // ---------------------------------------------------------------------------
@@ -2753,6 +2978,144 @@ const Command kCommands[] = {
          return run_track_zones(nfsu::argument_path(argv[2]), argc == 5,
                                 slot0, slot1,
                                 kTrackZoneListLimit);
+     }},
+    {"track-scene",
+     " <STREAM.BUN> <geometry-offset> <geometry-size>",
+     "      <object-offset> <object-size>\n"
+     "      [--texture <file>]... [--lod-slot <0..5>]\n"
+     "      [--order <visible-instance|material-group>]\n"
+     "      [--eye <x> <y> <z>] [--target <x> <y> <z>] [--far <f>]\n"
+     "      [--residency <every|no-zone>] [--list <count>]\n"
+     "      (eye and target are in the world frame of docs/FORMATS.md:286;\n"
+     "       with no camera the fallback policy draws every resident\n"
+     "       section, which is not what the game draws)\n",
+     [](int argc, char** argv) {
+         if (argc < 7) {
+             print_usage();
+             return 1;
+         }
+         std::uint64_t numbers[4] = {0, 0, 0, 0};
+         static const char* const kNames[4] = {"geometry-offset",
+                                               "geometry-size", "object-offset",
+                                               "object-size"};
+         for (int k = 0; k < 4; ++k) {
+             if (!parse_u64(std::string(argv[3 + k]), numbers[k])) {
+                 std::cerr << "error: " << kNames[k]
+                           << " must be a decimal or 0x integer\n";
+                 return 1;
+             }
+         }
+         nfsu::TrackRegionSelector geometry_region;
+         geometry_region.offset = numbers[0];
+         geometry_region.size = numbers[1];
+         nfsu::TrackRegionSelector object_region;
+         object_region.offset = numbers[2];
+         object_region.size = numbers[3];
+
+         TrackSceneArgs args;
+         args.cull.policy = nfsu::TrackCullPolicy::draw_everything;
+         bool has_eye = false;
+         bool has_target = false;
+         for (int i = 7; i < argc; ++i) {
+             const std::string flag = argv[i];
+             const bool has_value = i + 1 < argc;
+             const std::string value = has_value ? argv[i + 1] : std::string();
+             const auto take_triple = [&](float out[3]) {
+                 if (i + 3 >= argc) {
+                     std::cerr << "error: " << flag
+                               << " needs three finite floats\n";
+                     return false;
+                 }
+                 for (int k = 0; k < 3; ++k) {
+                     if (!parse_f32(std::string(argv[i + 1 + k]), out[k])) {
+                         std::cerr << "error: " << flag
+                                   << " needs three finite floats\n";
+                         return false;
+                     }
+                 }
+                 i += 3;
+                 return true;
+             };
+             if (flag == "--texture") {
+                 if (!has_value) {
+                     std::cerr << "error: --texture needs a path\n";
+                     return 1;
+                 }
+                 args.textures.push_back(nfsu::argument_path(argv[i + 1]));
+                 ++i;
+             } else if (flag == "--lod-slot") {
+                 std::uint64_t slot = 0;
+                 if (!has_value || !parse_u64(value, slot) ||
+                     slot >= nfsu::kSceneryObjectMeshSlots) {
+                     std::cerr << "error: --lod-slot needs a slot from 0 to "
+                               << (nfsu::kSceneryObjectMeshSlots - 1) << '\n';
+                     return 1;
+                 }
+                 args.scene.lod_slot = static_cast<std::size_t>(slot);
+                 ++i;
+             } else if (flag == "--order") {
+                 if (value == "visible-instance") {
+                     args.list.order = nfsu::TrackDrawOrder::visible_instance;
+                 } else if (value == "material-group") {
+                     args.list.order = nfsu::TrackDrawOrder::material_group;
+                 } else {
+                     std::cerr << "error: --order must be visible-instance or"
+                                  " material-group\n";
+                     return 1;
+                 }
+                 ++i;
+             } else if (flag == "--eye") {
+                 if (!take_triple(args.camera.eye)) {
+                     return 1;
+                 }
+                 has_eye = true;
+             } else if (flag == "--target") {
+                 if (!take_triple(args.camera.target)) {
+                     return 1;
+                 }
+                 has_target = true;
+             } else if (flag == "--far") {
+                 if (!has_value || !parse_f32(value, args.camera.far_plane)) {
+                     std::cerr << "error: --far needs a finite float\n";
+                     return 1;
+                 }
+                 ++i;
+             } else if (flag == "--residency") {
+                 if (value == "every") {
+                     args.cull.residency.rule =
+                         nfsu::TrackResidencyRule::every_section;
+                 } else if (value == "no-zone") {
+                     args.cull.residency.rule =
+                         nfsu::TrackResidencyRule::no_zone;
+                 } else {
+                     std::cerr << "error: --residency must be every or"
+                                  " no-zone\n";
+                     return 1;
+                 }
+                 ++i;
+             } else if (flag == "--list") {
+                 std::uint64_t count = 0;
+                 if (!has_value || !parse_u64(value, count)) {
+                     std::cerr << "error: --list needs a count\n";
+                     return 1;
+                 }
+                 args.list_limit = static_cast<std::size_t>(count);
+                 ++i;
+             } else {
+                 std::cerr << "error: unknown option " << flag << '\n';
+                 return 1;
+             }
+         }
+         if (has_eye != has_target) {
+             std::cerr << "error: --eye and --target are given together\n";
+             return 1;
+         }
+         if (has_eye) {
+             args.has_camera = true;
+             args.cull.policy = nfsu::TrackCullPolicy::retail_tree;
+         }
+         return run_track_scene(nfsu::argument_path(argv[2]), geometry_region,
+                                object_region, args);
      }},
     {"track-collision", " <TRACKB####.lzc> [px pz]", "",
      [](int argc, char** argv) {

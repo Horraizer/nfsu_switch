@@ -41,6 +41,7 @@ build/nfsu_probe track-objects X:/Games/NFSU/Tracks/STREAML1RB.BUN 23011344 4168
 build/nfsu_probe track-visibility X:/Games/NFSU/Tracks/STREAML1RB.BUN 23011344 4168 450 20 -80 900 20 -80 --far 60
 build/nfsu_probe track-zones X:/Games/NFSU/Tracks/TRACKB1301.lzc
 build/nfsu_probe track-zones X:/Games/NFSU/Tracks/TRACKB1301.lzc 0 -1200
+build/nfsu_probe track-scene X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 23011344 4168 --texture X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN --order material-group
 build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc
 build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc 783 -8.5
 build/nfsu_probe car-placement X:/Games/NFSU/Global/GLOBALB.BUN 240SX
@@ -148,6 +149,22 @@ keyed by the track number. Given a world point in the two horizontal raw
 slots it also runs the recovered point-in-polygon test and names the zone
 that holds it, or reports that the camera is in none, which is the case
 retail's no-zone rule exists for. See `docs/TRACK_ZONES.md`.
+`track-scene` composes those three into the one contract a render backend
+consumes. It takes a geometry region and the scenery region that places it,
+prepares the region's draw list against the texture sources given with
+`--texture`, places every instance of every valid section on a prepared
+mesh, and then builds the draw list one visible set selects out of the two.
+Visibility selection happens entirely above any backend: the draw list is a
+flat list of (instance, material group) pairs and nothing below it needs to
+know how culling works. `--order material-group` reorders the same entries
+so that every copy of one group is contiguous, which is one texture bind per
+group instead of one per copy. Which of an object's six mesh slots places an
+instance is `--lod-slot`, and it is a documented choice rather than the
+retail rule, because the per-slot distance thresholds were never recovered;
+an instance whose slot names a mesh that streams in with another region is
+counted as unplaced rather than drawn as a stand-in. See
+`docs/TRACK_DRAW_LIST.md` for the boundary, the placement rules, what a
+prepared scene does not promise and the retail measurements.
 `track-collision` decodes the static collision of one track. Collision is
 not in the `STREAM*.BUN` containers at all: those hold geometry, scenery,
 textures and animation and nothing else. It lives in
