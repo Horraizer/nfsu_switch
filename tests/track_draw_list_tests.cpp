@@ -365,6 +365,11 @@ InstanceSpec row_instance(int index, std::uint16_t object_index) {
     instance.bounds_max[2] = 5;
     instance.object_index = object_index;
     instance.position[0] = static_cast<float>(centre);
+    // A distinct raw flags word per instance, so that a scene carrying a
+    // constant there instead of the record's own is visible. Bit 0x10 is
+    // avoided: the loader sets and clears it, so it is the one bit of this
+    // word that does not mean what the file says.
+    instance.flags = static_cast<std::uint16_t>(0x1000 + index);
     return instance;
 }
 
@@ -993,7 +998,7 @@ void test_residency_narrows_the_list() {
 std::vector<SectionSpec> lod_sections() {
     SectionSpec section;
     section.number = 303;
-    section.objects.resize(7);
+    section.objects.resize(9);
     // slot 1 filled, so slot 1 places mesh B.
     section.objects[0].mesh_hash[0] = kMeshA;
     section.objects[0].mesh_hash[1] = kMeshB;
@@ -1012,15 +1017,25 @@ std::vector<SectionSpec> lod_sections() {
     // this one unplaced.
     section.objects[5].mesh_hash[0] = kMissingHash;
     section.objects[5].mesh_hash[2] = kMeshB;
-    // And it stops before slot 5: slots 0 to 3 resolve nothing, so this one
-    // is unplaced however much mesh slot 5 holds.
+    // And it stops before slot 5: slots 0 to 3 resolve nothing, so at slot 4
+    // this one is unplaced however much mesh slot 5 holds - while at slot 5
+    // it is placed from its own slot with no fallback at all.
     section.objects[6].mesh_hash[0] = kMissingHash;
     section.objects[6].mesh_hash[5] = kMeshB;
-    for (int i = 0; i < 7; ++i) {
+    // The far end of the chain: only slot 3 resolves, so a chain that
+    // stopped short of it would leave this one unplaced.
+    section.objects[7].mesh_hash[0] = kMissingHash;
+    section.objects[7].mesh_hash[3] = kMeshB;
+    // A requested slot that names a hash rather than nothing. The fallback
+    // still fires, and the hash the scene records must be the one that
+    // resolved, not the one that was asked for.
+    section.objects[8].mesh_hash[0] = kMeshA;
+    section.objects[8].mesh_hash[4] = kMissingHash;
+    for (int i = 0; i < 9; ++i) {
         section.instances.push_back(row_instance(i, static_cast<std::uint16_t>(i)));
     }
-    section.nodes.push_back(node_over(95, 705, {0, 1, 2, 3, -1}));
-    section.nodes.push_back(node_over(495, 705, {4, 5, 6}));
+    section.nodes.push_back(node_over(95, 905, {0, 1, 2, 3, -1}));
+    section.nodes.push_back(node_over(495, 905, {4, 5, 6, 7, 8}));
     return {section};
 }
 
@@ -1032,9 +1047,9 @@ void test_lod_slot_zero() {
                                   fixture.textures, nfsu::TrackSceneOptions{},
                                   scene, error),
           "the lod scene is built at slot 0: " + error);
-    check_eq_u64(scene.cost.placed_instances, 4, "four instances place at slot 0");
+    check_eq_u64(scene.cost.placed_instances, 5, "five instances place at slot 0");
     check_eq_u64(scene.cost.slot_fallbacks, 0, "slot 0 has no fallback");
-    check_eq_u64(scene.cost.unplaced_unresolved, 3, "three hashes resolve nothing");
+    check_eq_u64(scene.cost.unplaced_unresolved, 4, "four hashes resolve nothing");
     for (const nfsu::PreparedTrackInstance& placed : scene.instances) {
         check(placed.mesh == 0 && placed.slot == 0,
               "every slot 0 placement is mesh A");
@@ -1054,7 +1069,7 @@ void test_lod_slot_one_has_no_fallback() {
           "the lod scene is built at slot 1: " + error);
     check_eq_u64(scene.cost.placed_instances, 1, "one instance places at slot 1");
     check_eq_u64(scene.cost.slot_fallbacks, 0, "slot 1 never falls back");
-    check_eq_u64(scene.cost.unplaced_empty_slot, 6, "six slots are empty");
+    check_eq_u64(scene.cost.unplaced_empty_slot, 8, "eight slots are empty");
     check_eq_u64(scene.cost.unplaced_unresolved, 0,
                  "no slot 1 hash fails to resolve");
     check(scene.unplaced_hashes.empty(),
@@ -1077,11 +1092,11 @@ void test_lod_slot_four_falls_back() {
     check(nfsu::build_track_scene(fixture.geometry, fixture.objects,
                                   fixture.textures, options, scene, error),
           "the lod scene is built at slot 4: " + error);
-    check_eq_u64(scene.cost.placed_instances, 5, "five instances place at slot 4");
-    check_eq_u64(scene.cost.slot_fallbacks, 4, "four of them fell back");
+    check_eq_u64(scene.cost.placed_instances, 7, "seven instances place at slot 4");
+    check_eq_u64(scene.cost.slot_fallbacks, 6, "six of them fell back");
     check_eq_u64(scene.cost.unplaced_empty_slot, 2,
                  "the two whose chains resolve nothing stay unplaced");
-    if (scene.instances.size() != 5) {
+    if (scene.instances.size() != 7) {
         return;
     }
     check(scene.instances[0].mesh == 0 && scene.instances[0].slot == 0 &&
@@ -1105,6 +1120,92 @@ void test_lod_slot_four_falls_back() {
               scene.unplaced[0].reason == nfsu::TrackUnplacedReason::empty_slot &&
               scene.unplaced[1].instance_index == 6,
           "the unplaced instances report the requested slot and its reason");
+}
+
+// Slot 5 is the other half of the recovered fallback, and it behaves
+// differently from slot 4 on this fixture: object 6 fills slot 5 itself, so
+// it is placed from its own hash while six others fall back. Dropping the
+// slot 5 arm of the rule leaves only that one placed.
+void test_lod_slot_five_falls_back_too() {
+    const Fixture fixture = make_fixture(town_meshes(), lod_sections());
+    nfsu::TrackSceneOptions options;
+    options.lod_slot = 5;
+    nfsu::PreparedTrackScene scene;
+    std::string error;
+    check(nfsu::build_track_scene(fixture.geometry, fixture.objects,
+                                  fixture.textures, options, scene, error),
+          "the lod scene is built at slot 5: " + error);
+    check_eq_u64(scene.cost.placed_instances, 8, "eight instances place at slot 5");
+    check_eq_u64(scene.cost.slot_fallbacks, 7, "seven of them fell back");
+    check_eq_u64(scene.cost.unplaced_empty_slot, 1, "one chain resolves nothing");
+    if (scene.instances.size() != 8) {
+        return;
+    }
+    // Object 6 is instance 6, and it is the only one taking its own slot.
+    const nfsu::PreparedTrackInstance* own = nullptr;
+    for (const nfsu::PreparedTrackInstance& placed : scene.instances) {
+        if (!placed.slot_fallback_used) {
+            own = &placed;
+        }
+    }
+    check(own != nullptr && own->instance_index == 6 && own->slot == 5 &&
+              own->requested_slot == 5 && own->mesh == 1,
+          "object 6 is placed from slot 5 itself");
+}
+
+// The chain walks all four of slots 0 to 3. Object 7 resolves only at slot
+// 3, so a chain that stopped anywhere earlier would leave it unplaced.
+void test_lod_chain_reaches_slot_three() {
+    const Fixture fixture = make_fixture(town_meshes(), lod_sections());
+    nfsu::TrackSceneOptions options;
+    options.lod_slot = 4;
+    nfsu::PreparedTrackScene scene;
+    std::string error;
+    check(nfsu::build_track_scene(fixture.geometry, fixture.objects,
+                                  fixture.textures, options, scene, error),
+          "the lod scene is built at slot 4: " + error);
+    const nfsu::PreparedTrackInstance* seven = nullptr;
+    for (const nfsu::PreparedTrackInstance& placed : scene.instances) {
+        if (placed.instance_index == 7) {
+            seven = &placed;
+        }
+    }
+    check(seven != nullptr && seven->slot == 3 && seven->slot_fallback_used &&
+              seven->mesh == 1,
+          "object 7 falls back all the way to slot 3");
+    // And the chain stops there: object 6 fills slot 5 and nothing else, so
+    // a chain that ran past slot 3 would place it.
+    for (const nfsu::TrackUnplacedInstance& miss : scene.unplaced) {
+        check(miss.instance_index == 4 || miss.instance_index == 6,
+              "only objects 4 and 6 are unplaced at slot 4");
+    }
+    check_eq_u64(scene.unplaced.size(), 2, "two are unplaced at slot 4");
+}
+
+// The hash a placement records is the one that resolved, not the one the
+// caller asked for. Object 8 asks slot 4, which names a hash no mesh
+// claims, and lands on slot 0; counting the requested hash instead would
+// put a hash that resolves nothing into the placed set.
+void test_placed_hashes_are_the_resolved_ones() {
+    const Fixture fixture = make_fixture(town_meshes(), lod_sections());
+    nfsu::TrackSceneOptions options;
+    options.lod_slot = 4;
+    nfsu::PreparedTrackScene scene;
+    std::string error;
+    check(nfsu::build_track_scene(fixture.geometry, fixture.objects,
+                                  fixture.textures, options, scene, error),
+          "the lod scene is built at slot 4: " + error);
+    check_eq_u64(scene.cost.placed_hashes, 2,
+                 "only the two hashes that resolved are counted");
+    const nfsu::PreparedTrackInstance* eight = nullptr;
+    for (const nfsu::PreparedTrackInstance& placed : scene.instances) {
+        if (placed.instance_index == 8) {
+            eight = &placed;
+        }
+    }
+    check(eight != nullptr && eight->mesh_hash == kMeshA && eight->slot == 0 &&
+              eight->requested_slot == 4 && eight->slot_fallback_used,
+          "object 8 records the hash that resolved, from slot 0");
 }
 
 void test_lod_slot_must_exist() {
@@ -1258,7 +1359,10 @@ void test_duplicate_hash_binds_the_lowest_mesh() {
               scene.region.meshes[3].name == "BARRIER_A_TWIN" &&
               scene.region.meshes[3].mesh_hash == kMeshA,
           "the twin is prepared as mesh 3 and claims the same hash");
-    if (scene.instances.empty()) {
+    // Asserted before the guard, or a fixture that placed nothing would
+    // skip the comparison below and leave this test passing vacuously.
+    check_eq_u64(scene.instances.size(), 5, "the twin scene places five instances");
+    if (scene.instances.size() != 5) {
         return;
     }
     check(scene.instances[0].mesh == 0,
@@ -1273,8 +1377,16 @@ void test_duplicate_hash_binds_the_lowest_mesh() {
             bound = binding.mesh_index;
         }
     }
-    check(bound == 0,
-          "resolve_track_objects binds the same source mesh for that hash");
+    // Compared by identity, not by number. resolve_track_objects returns a
+    // position in TrackRegionReport::meshes and this layer returns one in
+    // PreparedTrackRegion::meshes; the two coincide only for a region with
+    // no invalid mesh, so an equality between the numbers would be a
+    // statement about the fixture rather than about the rule.
+    check(bound != nfsu::kNoHandle &&
+              bound < fixture.geometry.meshes.size() &&
+              fixture.geometry.meshes[bound].name ==
+                  scene.region.meshes[scene.instances[0].mesh].name,
+          "resolve_track_objects binds the same mesh for that hash");
 }
 
 void test_draw_list_refuses_a_foreign_visible_set() {
@@ -1561,6 +1673,90 @@ void test_validate_scene_rejects_tampering() {
         check(!nfsu::validate_prepared_track_scene(bad, error),
               "a tampered prepared region is rejected");
     }
+    {
+        // The scene's own slot, with every instance and every unplaced
+        // entry moved to match, so the range check on it is what is left.
+        nfsu::PreparedTrackScene bad = good;
+        bad.lod_slot = nfsu::kSceneryObjectMeshSlots;
+        for (nfsu::PreparedTrackInstance& placed : bad.instances) {
+            placed.requested_slot = nfsu::kSceneryObjectMeshSlots;
+            placed.slot = nfsu::kSceneryObjectMeshSlots;
+        }
+        for (nfsu::TrackUnplacedInstance& miss : bad.unplaced) {
+            miss.slot = nfsu::kSceneryObjectMeshSlots;
+        }
+        check(!nfsu::validate_prepared_track_scene(bad, error),
+              "a scene built for a slot outside the record is rejected");
+    }
+    {
+        nfsu::PreparedTrackScene bad = good;
+        bad.first_instance_of_mesh.pop_back();
+        check(!nfsu::validate_prepared_track_scene(bad, error),
+              "a witness table that does not cover every mesh is rejected");
+    }
+    {
+        nfsu::PreparedTrackScene bad = good;
+        bad.instance_handles[0] = bad.instances.size();
+        check(!nfsu::validate_prepared_track_scene(bad, error),
+              "a handle naming an instance past the end is rejected");
+    }
+    {
+        nfsu::PreparedTrackScene bad = good;
+        bad.instances[0].radius = std::numeric_limits<float>::quiet_NaN();
+        check(!nfsu::validate_prepared_track_scene(bad, error),
+              "an instance with a radius that is not finite is rejected");
+    }
+    {
+        nfsu::PreparedTrackScene bad = good;
+        bad.instances[0].bounds_max[2] =
+            std::numeric_limits<float>::infinity();
+        check(!nfsu::validate_prepared_track_scene(bad, error),
+              "an instance with a bound that is not finite is rejected");
+    }
+    {
+        // A hash the loader skips can never have placed a mesh, whatever
+        // the region holds.
+        nfsu::PreparedTrackScene bad = good;
+        bad.instances[0].mesh_hash = nfsu::kSkydomeMeshHash;
+        check(!nfsu::validate_prepared_track_scene(bad, error),
+              "an instance claiming to be placed by a skipped hash is"
+              " rejected");
+    }
+    {
+        nfsu::PreparedTrackScene bad = good;
+        bad.instances[0].mesh_hash = 0;
+        check(!nfsu::validate_prepared_track_scene(bad, error),
+              "an instance claiming to be placed by hash 0 is rejected");
+    }
+    {
+        nfsu::PreparedTrackScene bad = good;
+        bad.unplaced[0].slot = 1;
+        check(!nfsu::validate_prepared_track_scene(bad, error),
+              "an unplaced entry naming another slot is rejected");
+    }
+    {
+        // An unplaced entry that names a position the handle table says was
+        // placed: the two halves of the same fact disagreeing.
+        nfsu::PreparedTrackScene bad = good;
+        bad.unplaced[0].instance_index = 0;
+        check(!nfsu::validate_prepared_track_scene(bad, error),
+              "an unplaced entry naming a placed position is rejected");
+    }
+    {
+        nfsu::PreparedTrackScene bad = good;
+        bad.unplaced[0].reason = nfsu::TrackUnplacedReason::empty_slot;
+        bad.cost.unplaced_empty_slot = 1;
+        bad.cost.unplaced_skipped_hash = 0;
+        check(!nfsu::validate_prepared_track_scene(bad, error),
+              "an empty slot that names a hash is rejected");
+    }
+    {
+        nfsu::PreparedTrackScene bad = good;
+        bad.cost.has_bounds = false;
+        check(!nfsu::validate_prepared_track_scene(bad, error),
+              "a scene that places instances and claims no bounds is"
+              " rejected");
+    }
 }
 
 // The lowest-mesh rule, isolated. The twin has BARRIER_A's hash and its
@@ -1747,6 +1943,64 @@ void test_validate_draw_list_rejects_tampering() {
         check(!nfsu::validate_track_draw_list(scene, bad, error),
               "provenance fields on a list that claims none are rejected");
     }
+    {
+        // The fourth provenance field, which the other three do not cover.
+        nfsu::TrackDrawList bad = good;
+        bad.has_cull_provenance = false;
+        bad.policy_held = true;
+        bad.sections_resident = 0;
+        bad.sections_degraded = 0;
+        bad.requested_policy = nfsu::TrackCullPolicy::draw_everything;
+        check(!nfsu::validate_track_draw_list(scene, bad, error),
+              "a policy on a list that carries no provenance is rejected");
+    }
+    {
+        nfsu::TrackDrawList bad = good;
+        bad.entries[0].draw =
+            static_cast<std::uint32_t>(scene.region.draws.size());
+        check(!nfsu::validate_track_draw_list(scene, bad, error),
+              "an entry naming a group outside the region is rejected");
+    }
+    {
+        nfsu::TrackDrawList bad = good;
+        bad.cost.groups += 1;
+        check(!nfsu::validate_track_draw_list(scene, bad, error),
+              "a distinct-group count that does not match is rejected");
+    }
+    {
+        nfsu::TrackDrawList bad = good;
+        bad.cost.meshes += 1;
+        check(!nfsu::validate_track_draw_list(scene, bad, error),
+              "a distinct-mesh count that does not match is rejected");
+    }
+    {
+        nfsu::TrackDrawList bad = good;
+        bad.cost.triangles += 1;
+        check(!nfsu::validate_track_draw_list(scene, bad, error),
+              "a triangle total that does not match is rejected");
+    }
+    {
+        // instances_without_entries is a count, not a ceiling: the distinct
+        // instances in the entries plus this number are exactly
+        // visible_placed, so claiming one here while every placed instance
+        // drew is a contradiction. Nothing else is touched, or the totals
+        // would fail their own check instead of this one.
+        nfsu::TrackDrawList bad = good;
+        check(bad.cost.instances_without_entries == 0,
+              "the reference list has every placed instance drawing");
+        bad.cost.instances_without_entries = 1;
+        check(!nfsu::validate_track_draw_list(scene, bad, error),
+              "an instances-without-entries count the entries contradict is"
+              " rejected");
+    }
+    {
+        // Nothing else bounds the visible totals from above.
+        nfsu::TrackDrawList bad = good;
+        bad.cost.visible += 700;
+        bad.cost.visible_unplaced += 700;
+        check(!nfsu::validate_track_draw_list(scene, bad, error),
+              "more visible instances than the scene can hold is rejected");
+    }
 }
 
 // The material group order is a stable reordering: the same multiset of
@@ -1872,6 +2126,307 @@ void test_empty_visible_set() {
           "an empty list costs nothing");
 }
 
+// Both hashes speed.exe skips without a lookup, not just SKYDOME. A miss on
+// either is a skipped hash, which is not the same as scenery this region
+// cannot draw: unplaced_unresolved is the count that measures the hole a
+// backend leaves, and a skipped hash does not belong in it.
+void test_both_skipped_hashes() {
+    SectionSpec section;
+    section.number = 303;
+    section.objects.resize(2);
+    section.objects[0].mesh_hash[0] = nfsu::kSkydomeMeshHash;
+    section.objects[1].mesh_hash[0] = nfsu::kReservedMeshHash;
+    section.instances.push_back(row_instance(0, 0));
+    section.instances.push_back(row_instance(1, 1));
+    section.nodes.push_back(node_over(95, 205, {0, 1}));
+
+    const Fixture fixture = make_fixture(town_meshes(), {section});
+    nfsu::PreparedTrackScene scene;
+    std::string error;
+    check(nfsu::build_track_scene(fixture.geometry, fixture.objects,
+                                  fixture.textures, nfsu::TrackSceneOptions{},
+                                  scene, error),
+          "the skipped-hash scene is built: " + error);
+    check_eq_u64(scene.cost.placed_instances, 0, "neither instance is placed");
+    check_eq_u64(scene.cost.unplaced_skipped_hash, 2,
+                 "both are skipped hashes");
+    check_eq_u64(scene.cost.unplaced_unresolved, 0,
+                 "neither counts as scenery this region cannot draw");
+    check(scene.unplaced_hashes.size() == 2 &&
+              scene.unplaced_hashes[0] == nfsu::kReservedMeshHash &&
+              scene.unplaced_hashes[1] == nfsu::kSkydomeMeshHash,
+          "both hashes are listed, ascending");
+
+    // The validator must keep the two reasons apart. Relabelling the
+    // reserved hash as unresolved, with the counts moved to match, would
+    // otherwise inflate the number a caller reads as a hole.
+    nfsu::PreparedTrackScene bad = scene;
+    bad.unplaced[0].reason = nfsu::TrackUnplacedReason::unresolved_hash;
+    bad.cost.unplaced_skipped_hash = 1;
+    bad.cost.unplaced_unresolved = 1;
+    check(!nfsu::validate_prepared_track_scene(bad, error),
+          "a hash the loader skips cannot be relabelled unresolved");
+}
+
+// An invalid section contributes nothing and does not renumber the ones
+// around it. The middle section here holds an object with no mesh in slot 0,
+// which src/track_objects.cpp refuses, so the two valid sections keep source
+// positions 0 and 2.
+void test_invalid_section_is_skipped() {
+    std::vector<SectionSpec> sections = town_sections();
+    SectionSpec broken;
+    broken.number = 305;
+    broken.objects.resize(1);  // every mesh slot zero: refused
+    broken.instances.push_back(row_instance(0, 0));
+    broken.nodes.push_back(node_over(95, 105, {0}));
+    sections.insert(sections.begin() + 1, broken);
+
+    const Fixture fixture = make_fixture(town_meshes(), sections);
+    check_eq_u64(fixture.objects.sections.size(), 3, "three sections parse");
+    check_eq_u64(fixture.objects.valid_section_count(), 2,
+                 "one of them is invalid");
+
+    nfsu::PreparedTrackScene scene;
+    std::string error;
+    check(nfsu::build_track_scene(fixture.geometry, fixture.objects,
+                                  fixture.textures, nfsu::TrackSceneOptions{},
+                                  scene, error),
+          "the scene with an invalid section is built: " + error);
+    check_eq_u64(scene.cost.source_sections, 3, "all three are counted");
+    check_eq_u64(scene.cost.valid_sections, 2, "two of them are valid");
+    check_eq_u64(scene.cost.source_instances, 7,
+                 "the invalid section's instance is not counted");
+    check_eq_u64(scene.cost.placed_instances, 5, "the same five are placed");
+    check(scene.sections.size() == 2 && scene.sections[0].section_index == 0 &&
+              scene.sections[1].section_index == 2,
+          "the valid sections keep their source positions");
+    check(nfsu::track_scene_instance_of(scene, 2, 0) == 4,
+          "a lookup by source position finds the second valid section");
+    check(nfsu::track_scene_instance_of(scene, 1, 0) == nfsu::kNoHandle,
+          "the invalid section answers no handle");
+}
+
+// The provenance a scene carries, read back. Four of these fields are
+// documented and nothing else in this file looks at them.
+void test_instance_provenance() {
+    const Fixture fixture = town();
+    nfsu::PreparedTrackScene scene;
+    std::string error;
+    check(nfsu::build_track_scene(fixture.geometry, fixture.objects,
+                                  fixture.textures, nfsu::TrackSceneOptions{},
+                                  scene, error),
+          "the town scene is built: " + error);
+    if (scene.instances.size() != 5 || scene.unplaced.size() != 2 ||
+        scene.sections.size() != 2) {
+        check(false, "the town scene has the shape this test needs");
+        return;
+    }
+    // row_instance writes 0x1000 + index into the record's flags word.
+    check(scene.instances[0].instance_flags == 0x1000U &&
+              scene.instances[3].instance_flags == 0x1005U &&
+              scene.instances[4].instance_flags == 0x1006U,
+          "each instance carries its own raw flags word");
+    check(scene.instances[0].object_index == 0 &&
+              scene.instances[1].object_index == 1 &&
+              scene.instances[2].object_index == 4 &&
+              scene.instances[3].object_index == 0,
+          "each instance carries the object it names");
+    check(scene.unplaced[0].object_index == 2 &&
+              scene.unplaced[1].object_index == 3,
+          "an unplaced instance carries its object too");
+    check(scene.sections[0].number == 303 && scene.sections[0].letter == 'C' &&
+              scene.sections[1].number == 410 &&
+              scene.sections[1].letter == 'D' &&
+              scene.sections[0].source_instances == 6 &&
+              scene.sections[1].source_instances == 1,
+          "each scene section carries its number, letter and instance count");
+}
+
+// A section whose bounding tree does not contain what it indexes degrades to
+// a flat instance test, and the draw list carries that: policy_held false
+// and one degraded section. Those two are among the three facts the header
+// tells a caller to read.
+void test_degraded_policy_reaches_the_draw_list() {
+    Fixture fixture = town();
+    nfsu::PreparedTrackScene scene;
+    std::string error;
+    check(nfsu::build_track_scene(fixture.geometry, fixture.objects,
+                                  fixture.textures, nfsu::TrackSceneOptions{},
+                                  scene, error),
+          "the town scene is built: " + error);
+
+    // The box is shrunk on the decoded report rather than written into the
+    // fixture bytes, because src/track_objects.cpp refuses a tree whose node
+    // does not contain what is below it: such a section is invalid at parse
+    // time and never reaches the culler at all. The culler's own
+    // verify_containment therefore only ever sees a report assembled some
+    // other way, which is what this builds.
+    check(!fixture.objects.sections.empty() &&
+              fixture.objects.sections[0].nodes.size() == 2,
+          "the town fixture's first section has the tree this test shrinks");
+    fixture.objects.sections[0].nodes[0].bounds_max[0] = 205;
+
+    nfsu::TrackFrustum frustum;
+    check(nfsu::track_frustum_look_at(looking_down_the_row(1000.0F), frustum),
+          "the reference camera builds a frustum");
+    const nfsu::TrackCullReport cull =
+        nfsu::cull_track_region(fixture.objects, frustum,
+                                nfsu::TrackCullOptions{});
+    check(!cull.policy_held && cull.stats.sections_degraded == 1,
+          "the culler degrades the section whose tree fails containment");
+
+    nfsu::TrackDrawList list;
+    check(nfsu::build_track_draw_list(scene, cull, nfsu::TrackDrawListOptions{},
+                                      list, error),
+          "the draw list is built from the degraded report: " + error);
+    check(list.has_cull_provenance && !list.policy_held &&
+              list.sections_degraded == 1 && list.sections_resident == 2,
+          "the draw list carries the degradation the culler reported");
+}
+
+// The grouped order is a stable reordering. Every fixture with a handful of
+// entries is below the implementation's insertion-sort cutoff, where an
+// unstable sort is stable by accident, so this one puts more than twenty
+// copies of one group in a deliberately scrambled visible order.
+void test_material_group_order_is_stable_at_scale() {
+    MeshSpec mesh;
+    mesh.name = "POST";
+    mesh.hash = kMeshA;
+    mesh.vertex_count = 3;
+    mesh.face_count = 1;
+    mesh.texture_hashes = {0xAAAA0001U};
+    mesh.materials = {MaterialSpec{3, 0}};
+
+    SectionSpec section;
+    section.number = 303;
+    section.objects.resize(1);
+    section.objects[0].mesh_hash[0] = kMeshA;
+    const int kCopies = 24;
+    for (int i = 0; i < kCopies; ++i) {
+        section.instances.push_back(row_instance(i, 0));
+    }
+    // A flat tree: five entries per node, so six nodes under a root of five
+    // children plus its own entries. Simplest shape that covers 24 exactly:
+    // the root names five children, each naming up to five instances.
+    section.nodes.push_back(node_over(95, 2500, {-1, -2, -3, -4, -5}));
+    for (int child = 0; child < 5; ++child) {
+        std::vector<std::int16_t> entries;
+        for (int k = 0; k < 5; ++k) {
+            const int index = child * 5 + k;
+            if (index < kCopies) {
+                entries.push_back(static_cast<std::int16_t>(index));
+            }
+        }
+        section.nodes.push_back(node_over(95, 2500, entries));
+    }
+
+    const Fixture fixture = make_fixture({mesh}, {section});
+    check(fixture.objects.ok(), "the 24-copy fixture parses cleanly");
+    nfsu::PreparedTrackScene scene;
+    std::string error;
+    check(nfsu::build_track_scene(fixture.geometry, fixture.objects,
+                                  fixture.textures, nfsu::TrackSceneOptions{},
+                                  scene, error),
+          "the 24-copy scene is built: " + error);
+    check_eq_u64(scene.instances.size(), kCopies, "every copy is placed");
+    if (scene.instances.size() != static_cast<std::size_t>(kCopies)) {
+        return;
+    }
+
+    // The visible set in reverse, which no ordering by instance or by group
+    // reproduces by accident.
+    std::vector<nfsu::TrackVisibleInstance> visible;
+    for (int i = kCopies - 1; i >= 0; --i) {
+        nfsu::TrackVisibleInstance item;
+        item.section_index = 0;
+        item.instance_index = static_cast<std::size_t>(i);
+        visible.push_back(item);
+    }
+    nfsu::TrackDrawListOptions grouped;
+    grouped.order = nfsu::TrackDrawOrder::material_group;
+    nfsu::TrackDrawList list;
+    check(nfsu::build_track_draw_list(scene, visible, grouped, list, error),
+          "the grouped list of 24 copies is built: " + error);
+    std::vector<Pair> want;
+    for (int i = kCopies - 1; i >= 0; --i) {
+        want.push_back(Pair(static_cast<std::uint32_t>(i), 0U));
+    }
+    check_entries(list, want,
+                  "24 copies of one group keep the visible order exactly");
+}
+
+// The draw index an entry carries is the prepared position of the group,
+// not its position in the per-mesh table. The two are the same number until
+// a mesh has an undrawable group before a drawable one.
+void test_entry_names_the_prepared_group() {
+    const Fixture fixture = town();
+    nfsu::PreparedTrackScene scene;
+    std::string error;
+    check(nfsu::build_track_scene(fixture.geometry, fixture.objects,
+                                  fixture.textures, nfsu::TrackSceneOptions{},
+                                  scene, error),
+          "the town scene is built: " + error);
+    check(scene.region.draws.size() == 4 && scene.region.draws[0].mesh == 0 &&
+              scene.region.draws[1].mesh == 0,
+          "BARRIER_A owns prepared groups 0 and 1");
+    // Mesh 0's first group stops being drawable, so its only entry is the
+    // second one, at prepared position 1 and table position 0.
+    scene.region.draws[0].drawable = false;
+
+    std::vector<nfsu::TrackVisibleInstance> visible(1);
+    visible[0].section_index = 0;
+    visible[0].instance_index = 0;
+    nfsu::TrackDrawList list;
+    check(nfsu::build_track_draw_list(scene, visible,
+                                      nfsu::TrackDrawListOptions{}, list, error),
+          "the list is built: " + error);
+    check_entries(list, {{0, 1}},
+                  "the entry names prepared group 1, not table position 0");
+}
+
+// Acceptance exactly at a limit, which the refusal cases cannot show. One
+// section holding exactly max_instances, and a list drawing exactly
+// max_triangles, are both legal.
+void test_limits_accept_their_own_value() {
+    const Fixture one_section = make_fixture(town_meshes(),
+                                             {town_sections()[0]});
+    check_eq_u64(one_section.objects.cost.instances, 6,
+                 "the single-section fixture places six instances");
+    nfsu::TrackSceneOptions options;
+    options.placement.max_instances = 6;
+    nfsu::PreparedTrackScene scene;
+    std::string error;
+    check(nfsu::build_track_scene(one_section.geometry, one_section.objects,
+                                  one_section.textures, options, scene, error),
+          "one section of exactly six instances is accepted at six: " + error);
+    options.placement.max_instances = 5;
+    nfsu::PreparedTrackScene refused;
+    check(!nfsu::build_track_scene(one_section.geometry, one_section.objects,
+                                   one_section.textures, options, refused,
+                                   error),
+          "and refused at five");
+
+    const Fixture fixture = town();
+    nfsu::PreparedTrackScene full;
+    check(nfsu::build_track_scene(fixture.geometry, fixture.objects,
+                                  fixture.textures, nfsu::TrackSceneOptions{},
+                                  full, error),
+          "the town scene is built: " + error);
+    nfsu::TrackFrustum frustum;
+    check(nfsu::track_frustum_look_at(looking_down_the_row(1000.0F), frustum),
+          "the reference camera builds a frustum");
+    nfsu::TrackCullOptions cull_options;
+    cull_options.policy = nfsu::TrackCullPolicy::draw_everything;
+    const nfsu::TrackCullReport cull =
+        nfsu::cull_track_region(fixture.objects, frustum, cull_options);
+    nfsu::TrackDrawListOptions list_options;
+    list_options.limits.max_triangles = 9;
+    nfsu::TrackDrawList list;
+    check(nfsu::build_track_draw_list(full, cull, list_options, list, error),
+          "a list of exactly nine triangles is accepted at nine: " + error);
+    check_eq_u64(list.cost.triangles, 9, "and it draws all nine");
+}
+
 void test_reason_names() {
     check(std::string(nfsu::track_unplaced_reason_name(
               nfsu::TrackUnplacedReason::empty_slot)) == "empty slot",
@@ -1902,7 +2457,17 @@ int main() {
     test_lod_slot_zero();
     test_lod_slot_one_has_no_fallback();
     test_lod_slot_four_falls_back();
+    test_lod_slot_five_falls_back_too();
+    test_lod_chain_reaches_slot_three();
+    test_placed_hashes_are_the_resolved_ones();
     test_lod_slot_must_exist();
+    test_both_skipped_hashes();
+    test_invalid_section_is_skipped();
+    test_instance_provenance();
+    test_degraded_policy_reaches_the_draw_list();
+    test_material_group_order_is_stable_at_scale();
+    test_entry_names_the_prepared_group();
+    test_limits_accept_their_own_value();
     test_scene_outlives_its_inputs();
     test_build_is_deterministic();
     test_duplicate_hash_binds_the_lowest_mesh();

@@ -2814,7 +2814,7 @@ const Command kCommands[] = {
                      std::cerr << "error: --texture needs a path\n";
                      return 1;
                  }
-                 args.textures.emplace_back(argv[i + 1]);
+                 args.textures.push_back(nfsu::argument_path(argv[i + 1]));
                  ++i;
              } else if (flag == "--lod-slot") {
                  std::uint64_t slot = 0;
@@ -2887,7 +2887,7 @@ const Command kCommands[] = {
              args.has_camera = true;
              args.cull.policy = nfsu::TrackCullPolicy::retail_tree;
          }
-         return run_track_scene(fs::path(argv[2]), geometry_region,
+         return run_track_scene(nfsu::argument_path(argv[2]), geometry_region,
                                 object_region, args);
      }},
     {"track-collision", " <TRACKB####.lzc> [px pz]", "",

@@ -790,10 +790,17 @@ bool validate_prepared_track_scene(
             ++skipped;
             break;
         case TrackUnplacedReason::unresolved_hash:
-            if (miss.mesh_hash == 0 || meshes.count(miss.mesh_hash) != 0) {
+            // The two hashes the loader skips are not unresolved: nothing
+            // ever looks them up. Letting one be labelled unresolved would
+            // add it to unplaced_unresolved, which is the count a caller
+            // reads as "scenery this region cannot draw".
+            if (miss.mesh_hash == 0 || meshes.count(miss.mesh_hash) != 0 ||
+                miss.mesh_hash == kSkydomeMeshHash ||
+                miss.mesh_hash == kReservedMeshHash) {
                 error = "unplaced instance " + std::to_string(i) + " calls " +
                         hex32(miss.mesh_hash) +
-                        " unresolved and the region resolves it";
+                        " unresolved and it is skipped or the region resolves"
+                        " it";
                 return false;
             }
             unplaced_hashes.insert(miss.mesh_hash);
@@ -904,6 +911,11 @@ bool validate_track_draw_list(
 
     std::set<std::uint32_t> groups;
     std::set<std::size_t> used_meshes;
+    // The distinct instances the entries draw. A visible set holds each
+    // (section, instance) at most once, so a placed visible instance either
+    // appears here or has no drawable group at all; that is what ties
+    // cost.visible_placed to the entries below rather than leaving it free.
+    std::set<std::uint32_t> drawn_instances;
     // One copy of one group is one entry: the same pair twice would draw a
     // copy twice, and no order this layer produces can do that.
     std::set<std::pair<std::uint32_t, std::uint32_t>> pairs;
@@ -974,6 +986,7 @@ bool validate_track_draw_list(
         }
         groups.insert(entry.draw);
         used_meshes.insert(draw.mesh);
+        drawn_instances.insert(entry.instance);
         triangles += draw.index_count / 3U;
         const std::size_t wanted =
             draw.binding == BindingKind::resolved ? draw.texture : kNoHandle;
@@ -988,12 +1001,28 @@ bool validate_track_draw_list(
         cost.groups != groups.size() || cost.meshes != used_meshes.size() ||
         cost.texture_binds != binds ||
         cost.visible_placed + cost.visible_unplaced != cost.visible ||
-        cost.instances_without_entries > cost.visible_placed) {
+        // A placed visible instance either draws at least one group or has
+        // none to draw, so these two account for every one of them. Without
+        // this, instances_without_entries is bounded and never pinned, and a
+        // list could claim any number at or below visible_placed.
+        cost.visible_placed !=
+            static_cast<std::uint64_t>(drawn_instances.size()) +
+                cost.instances_without_entries) {
         error = "the draw list cost statistics do not match its entries";
         return false;
     }
+    // A visible set names each source instance at most once, so it cannot be
+    // longer than the scene's handle table. Nothing else bounds these two
+    // from above, and both are printed as measurements.
+    if (cost.visible > scene.instance_handles.size()) {
+        error = "the draw list claims " + std::to_string(cost.visible) +
+                " visible instances over a scene holding " +
+                std::to_string(scene.instance_handles.size());
+        return false;
+    }
     if (!list.has_cull_provenance &&
-        (list.policy_held != true || list.sections_resident != 0 ||
+        (list.requested_policy != TrackCullPolicy::retail_tree ||
+         list.policy_held != true || list.sections_resident != 0 ||
          list.sections_degraded != 0)) {
         error = "the draw list carries cull provenance it did not come with";
         return false;

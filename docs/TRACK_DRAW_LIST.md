@@ -18,11 +18,29 @@ outside backend-specific code. That is the load-bearing one, and it is
 settled here rather than left to a convention a backend could quietly break:
 
 - a backend reads a `PreparedTrackScene` and a `TrackDrawList`;
-- it never sees a `TrackFrustum`, a `TrackCullReport`, a bounding tree, a
-  section number or a residency rule;
 - `build_track_draw_list` turns a visible set into ordered (instance, group)
   pairs above every backend, so nothing below it has to know how culling
-  works to draw the result.
+  works to draw the result;
+- the frustum, the bounding tree, the box test, the residency rule and the
+  traversal are all on the far side of that call, and no field a backend
+  reads is an input to any of them.
+
+An earlier draft of this section said a backend "never sees a
+`TrackFrustum`, a `TrackCullReport`, a bounding tree, a section number or a
+residency rule". That was wider than the code and the header's own structs
+contradicted it: `include/nfsu/track_draw_list.h` includes
+`nfsu/track_visibility.h`, so every one of those types is declared wherever
+it is included, and `PreparedTrackInstance::section_number`,
+`TrackSceneSection::number` and `TrackDrawList::requested_policy`,
+`policy_held`, `sections_resident` and `sections_degraded` are all in the
+data a backend is handed.
+
+They are there on purpose. They are the provenance a caller needs to judge
+how complete a list is, and the section below tells a caller to read them.
+The claim that survives is narrower and is the one that matters: a backend
+does not have to run, understand, configure or reproduce the culler, and a
+backend that ignores every one of those fields draws exactly the same
+frame.
 
 The culler is therefore a producer of input to this layer, not something
 this layer calls. The primary entry point takes a plain
@@ -133,13 +151,26 @@ Three rules are applied, and only the first two are recovered:
 
 1. **The slots 4 and 5 fallback.** speed.exe 0x00445A81 and 0x00445A8F: when
    slot 5 or slot 4 resolved nothing, the loader fills it with the first
-   solid that slots 0 to 3 resolved. This layer reproduces that exactly,
-   for those two slots and no others, walking slots 0, 1, 2, 3 in order and
+   solid that slots 0 to 3 resolved. The shape of that is reproduced here -
+   those two slots and no others, walking slots 0, 1, 2, 3 in order and
    stopping at the first that resolves. A slot from 1 to 3 that is empty
    places nothing, because no fallback for it was recovered.
    `PreparedTrackInstance::slot_fallback_used` records that it fired and
    `slot` records where it landed, while `requested_slot` keeps what the
    caller asked for.
+
+   **Where it diverges from retail, and it is not a small divergence.** An
+   earlier draft of this note said the rule was reproduced "exactly". The
+   shape is; the predicate is not. Retail asks whether a hash resolved
+   against every solid the game has loaded. This layer asks whether it
+   resolves against the valid meshes of one prepared region. A section
+   routinely names meshes that stream in with another region - 21 of the 39
+   instances of the retail section measured below - and for such a hash
+   retail's chain stops at slot 0 while this one walks past it. The two can
+   therefore land on different slots for the same object at `--lod-slot 4`
+   or `5`. Getting the retail answer needs a scene built over every region
+   the section reaches, and the streaming tables that would say which those
+   are are undecoded (`TRACK_OBJECTS.md`).
 2. **The two skipped hashes.** speed.exe 0x0044590B and 0x00445917 compare
    against `kSkydomeMeshHash` and `kReservedMeshHash` and skip the lookup,
    so neither ever resolves a solid and neither ever places an instance
@@ -192,7 +223,12 @@ Both are total and deterministic, and the two always hold the same entries.
 | Order | Rule | What it is for |
 | --- | --- | --- |
 | `visible_instance` | the visible set's own order, and inside one instance its mesh's drawable groups in prepared order | under `TrackCullPolicy::retail_tree` this is the retail traversal order, so a backend walks scenery the way the game's tree reaches it |
-| `material_group` | every copy of one group contiguous, groups in prepared order, copies in visible order inside a group | one texture bind per group, and a run of copies a backend may submit as one instanced call |
+| `material_group` | every copy of one group contiguous, groups in prepared order, copies in visible order inside a group | at most one texture bind per group rather than one per copy, and a run of copies a backend may submit as one instanced call |
+
+"At most", not "exactly": two consecutive groups that resolved the same
+texture share a bind, so `cost.texture_binds` can fall below `cost.groups`,
+and on both retail regions below it does - 41 binds over 42 groups, and 25
+over 26. Read the count rather than assuming it.
 
 Neither is the retail draw queue; see the car-scene differences above.
 
@@ -265,9 +301,63 @@ times.
 
 ### Mutations
 
-Fifty mutations were written against `src/track_draw_list.cpp`, applied one
-at a time, rebuilt and run. **49 are caught. One survives, and it is
-provably redundant rather than a hole:**
+Two independent sets were written against `src/track_draw_list.cpp`, each
+applied one at a time, rebuilt and run.
+
+| Set | Written | Caught | Survived |
+| --- | ---: | ---: | ---: |
+| The author's, first pass | 50 | 34 | 16 |
+| The author's, after closing them | 50 | 49 | 1 |
+| An independent pass, first run | 124 | 67 | 56 |
+| The independent survivors, re-run after the fixes below | 22 | 22 | 0 |
+
+**The second row is the number a reader should distrust, and the third is
+why.** 49 of 50 measured the suite against the mutation set its own author
+wrote, and an independent pass that had not seen that set found 56
+survivors out of 124. The two numbers are not comparable mutant for mutant,
+but the gap is the point: a mutation score describes the set, not the
+suite, and the first set was scored against one idea of what mattered.
+
+What the independent pass found, and what closing it took:
+
+- **Slot 5 was never exercised at all.** The recovered fallback rule is
+  about slots 4 and 5; every test asked for 0, 1, 4 or the out-of-range 6.
+  Deleting the slot 5 arm of the rule left the suite fully green while
+  cutting retail placement at that slot from 18 instances to 6.
+- **The chain never had to reach slot 3**, no object anywhere filled it,
+  and no fixture used `kReservedMeshHash`, the second of the two hashes the
+  loader skips.
+- **`std::stable_sort` could be `std::sort`.** Every grouped fixture held
+  four or seven entries, below libstdc++'s insertion-sort cutoff, where an
+  unstable sort is stable by accident. The stability claim was
+  unfalsifiable by the suite that made it. There is now a 24-copy case.
+- **An entry's group index could be its per-mesh table position**, because
+  the two coincide for every region whose groups are all drawable, which is
+  every region a file produces.
+- **Two limit checks could be off by one**, because acceptance was only
+  ever asserted away from the boundary.
+- **No fixture had an invalid section**, so three separate statements about
+  what an invalid section does to the counts and to section numbering were
+  untested; **no test read `instance_flags`, either `object_index`, or a
+  scene section's number**; and **no test built a list from a report where
+  the policy did not hold**, which is one of the three facts this note tells
+  a caller to read.
+- **Eighteen validator checks had no tampering that isolated them.**
+
+The same pass found four holes in the validators themselves, all now
+closed: `unresolved_hash` accepted a hash the loader skips, which corrupts
+the very count this note calls the measure of the hole a backend leaves;
+`instances_without_entries` was bounded rather than pinned;
+`requested_policy` went unchecked on a list carrying no provenance; and
+`cost.visible` was bounded by nothing at all.
+
+It also verified every retail number in this note, command by command, and
+reproduced them exactly.
+
+After those fixes both sets were re-run: **the author's 50 give 49 caught,
+and all 22 of the independent survivors that could be re-expressed against
+the current source are caught. The one remaining survivor is provably
+redundant rather than a hole:**
 
 > The validator reports an instance that no section handle names. Every
 > handle that is not `kNoHandle` has already been checked to name the
@@ -284,20 +374,30 @@ of `requested` and is reassigned only inside the fallback loop's success
 branch, which breaks, so on the path that records an unplaced instance the
 two expressions are the same value.
 
-The first run of the fifty caught 34. Closing the rest needed four fixture
-changes and eight sharper tamperings, because most survivors were not holes
-in the rules but redundancy between checks: swapping two instances breaks
-four invariants at once, so removing any one of the four still fails the
-test. The tamperings that replaced them move the handle table, the mesh
-witnesses and the cost statistics along with the edit, leaving exactly one
-invariant broken.
+Closing a survivor of either set was usually not a matter of adding a
+check. Most of them were redundancy between checks rather than holes in the
+rules: swapping two instances breaks four invariants at once, so removing
+any one of the four still fails the test. The tamperings that replaced
+those move the handle table, the mesh witnesses and the cost statistics
+along with the edit, leaving exactly one invariant broken.
 
-One class of defect this suite cannot reach from a parsed region:
-`src/track.cpp` refuses an out-of-range texture slot outright and requires
-every material group's index range to tile the mesh index stream, so every
-group of every valid track mesh is drawable and a region parsed from a file
-never produces an undrawable one. The tests that cover undrawable groups
-clear the flag on a prepared region and say so.
+Two classes of defect this suite cannot reach from a parsed region, both
+stated here rather than papered over:
+
+**No undrawable group.** `src/track.cpp` refuses an out-of-range texture
+slot outright and requires every material group's index range to tile the
+mesh index stream, so every group of every valid track mesh is drawable and
+a region parsed from a file never produces an undrawable one. The tests
+that cover undrawable groups clear the flag on a prepared region and say
+so.
+
+**No section whose bounding tree fails containment.**
+`src/track_objects.cpp` refuses a node whose box does not contain what is
+below it, so such a section is invalid at parse time and never reaches the
+culler. `TrackCullOptions::verify_containment` and the degradation it
+drives can therefore only ever see a report assembled some other way, and
+the test that covers `policy_held` shrinks a node box on the decoded report
+rather than in the fixture bytes.
 
 ## Read-only retail acceptance
 

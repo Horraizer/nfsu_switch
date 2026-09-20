@@ -21,13 +21,30 @@ namespace nfsu {
 //
 // WHERE THE BOUNDARY IS
 //
-// A backend reads a PreparedTrackScene and a TrackDrawList and nothing else.
-// It never sees a TrackFrustum, a TrackCullReport, a bounding tree, a
-// section number or a residency rule, and it never decides what is drawn:
-// build_track_draw_list turns a visible set into ordered (instance, draw)
-// pairs here, above every backend. That is issue #40's second criterion, and
-// it is the reason the culler is a producer of input to this header rather
-// than something this header calls.
+// A backend reads a PreparedTrackScene and a TrackDrawList and nothing else,
+// and it never decides what is drawn: build_track_draw_list turns a visible
+// set into ordered (instance, draw) pairs here, above every backend. That is
+// issue #40's second criterion, and it is the reason the culler is a
+// producer of input to this header rather than something this header calls.
+//
+// State that precisely, because the weaker claim is the true one. A backend
+// does not have to run, understand, configure or reproduce the culler: the
+// frustum, the bounding tree, the box test, the residency rule and the
+// traversal are all on the other side of this call, and no field below is an
+// input to any of them.
+//
+// It is NOT true that a backend never sees the culler's vocabulary. This
+// header includes nfsu/track_visibility.h, so TrackFrustum, TrackCullReport,
+// TrackCullPolicy and TrackResidencyRule are all declared in any translation
+// unit that includes it. More than that, some of them are in the data: a
+// PreparedTrackInstance carries its section_number, a TrackSceneSection
+// carries its number, and a TrackDrawList carries requested_policy,
+// policy_held, sections_resident and sections_degraded. Those are carried
+// deliberately - they are the provenance a caller needs to judge how
+// complete a list is, and HOW COMPLETE A DRAW LIST IS below tells a caller
+// to read them. They are there to be read, not to be acted on: nothing a
+// backend does with a draw list depends on any of them, and a backend that
+// ignores every one of them draws exactly the same frame.
 //
 // The scene holds the whole region and a draw list names a subset of it. The
 // other arrangement - preparing a scene per visible set - was rejected: a
@@ -213,12 +230,32 @@ struct TrackSceneOptions {
     // Which of the six object mesh slots places an instance. Slot 0 is the
     // head of the level-of-detail chain and is set in all 9681 retail
     // objects; slots 1 to 5 are optional, and an instance whose object
-    // leaves the named slot empty places nothing unless the recovered
-    // slots 4 and 5 fallback fills it. Outside 0..kSceneryObjectMeshSlots-1
+    // leaves the named slot empty places nothing unless the slots 4 and 5
+    // fallback fills it. Outside 0..kSceneryObjectMeshSlots-1
     // build_track_scene fails.
     //
     // This is not a distance rule and picking a slot is not what retail
     // does per frame; see WHAT IT DOES NOT GUARANTEE above.
+    //
+    // THE SLOTS 4 AND 5 FALLBACK, AND WHERE IT DIVERGES FROM RETAIL.
+    // speed.exe 0x00445A81 and 0x00445A8F fill an unresolved slot 4 or 5
+    // with the first solid that slots 0 to 3 resolved. The shape is
+    // reproduced here exactly - those two slots and no others, slots 0 to 3
+    // walked in that order, stopping at the first that resolves - but the
+    // predicate is not the same one, and the difference is not small:
+    //
+    //   retail resolves a hash against every solid the game has loaded;
+    //   this layer resolves it against the valid meshes of ONE prepared
+    //   region.
+    //
+    // A section routinely names meshes that stream in with another region
+    // (21 of 39 instances of the retail section docs/TRACK_DRAW_LIST.md
+    // measures). For such a hash retail's chain stops at slot 0 and this
+    // one walks past it, so the two can land on different slots for the
+    // same object. A caller that needs the retail answer needs a scene
+    // built over every region the section reaches, which this project
+    // cannot assemble yet because the streaming tables are undecoded.
+    // PreparedTrackInstance::slot records where this layer actually landed.
     std::size_t lod_slot = 0;
     TrackSceneLimits region;
     TrackPlacementLimits placement;
@@ -311,10 +348,15 @@ enum class TrackDrawOrder {
     visible_instance,
     // Grouped by material: every copy of one prepared group is contiguous,
     // groups in prepared order and copies in visible order inside a group.
-    // This is the order a backend wants - one texture bind per group, and a
-    // run of copies it may submit as one instanced call - and it is a
-    // stable reordering of the same entries, so the two orders always hold
-    // the same multiset.
+    // This is the order a backend wants - at most one texture bind per
+    // group rather than one per copy, and a run of copies it may submit as
+    // one instanced call. At most, not exactly: two consecutive groups that
+    // resolved the same texture share a bind, and over a retail region that
+    // is measurable, so read cost.texture_binds rather than assuming it
+    // equals cost.groups.
+    //
+    // It is a stable reordering of the same entries, so the two orders
+    // always hold the same multiset.
     material_group,
 };
 
@@ -341,6 +383,12 @@ struct TrackDrawListOptions {
 // out of the index stream of mesh region.draws[draw].mesh. That mesh is
 // always scene.instances[instance].mesh; the field is not repeated here,
 // and validate_track_draw_list checks the two agree.
+//
+// A group whose binding is not BindingKind::resolved carries texture
+// kNoHandle and names no texture at all, exactly as TrackDraw says. A
+// backend binds its own fallback there; cost.texture_binds counts every
+// such group as one shared fallback binding, which is the same rule
+// TrackDrawCost::texture_binds uses.
 struct TrackDrawListEntry {
     // Index into PreparedTrackScene::instances.
     std::uint32_t instance = 0;
@@ -421,6 +469,12 @@ struct TrackDrawList {
 // names a section or an instance the scene does not hold is an error, not a
 // count: the two reports disagree and a silently shorter draw list would
 // hide it.
+//
+// The scene is read as given, so validate_prepared_track_scene belongs
+// before it. In particular the (section, instance) lookup is a binary
+// search over PreparedTrackScene::sections, which that validator is what
+// checks is ascending; a scene whose sections are out of order answers the
+// wrong instance here rather than failing.
 //
 // Fails, with error set and list left empty, on such a mismatch, on a
 // limit, on a repeated (section, instance) pair, on an allocation failure
