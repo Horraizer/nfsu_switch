@@ -34,6 +34,7 @@ build/nfsu_probe export-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN build/dds
 build/nfsu_probe texture-bindings X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games/NFSU/Cars/240SX/TEXTURES.BIN
 build/nfsu_probe car-parts X:/Games/NFSU/Global/GLOBALB.BUN 240SX
 build/nfsu_probe stock-parts X:/Games/NFSU/Global/GLOBALB.BUN 240SX X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games/NFSU/Cars/BRAKES/GEOMETRY.BIN X:/Games/NFSU/Cars/PLATES/GEOMETRY.BIN
+build/nfsu_probe body-skin-inputs 240SX --source car-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN --source car-vinyls X:/Games/NFSU/Cars/240SX/VINYLS.BIN --source other X:/Games/NFSU/Cars/TEXTURES.BIN --target-texture DUMMY_SKIN1 --vinyl 0 TRIBAL5 16 no-remap --doorline plain --base 200 30 30 128 --assemble
 ```
 
 `meshes` lists every mesh with its name, vertex count, face count and
@@ -110,9 +111,7 @@ missing (see `docs/CAR_SCENE.md`).
 ## Body-skin compositor reference
 
 `nfsu_body_skin` (`include/nfsu/body_skin.h`) is a bounded CPU reference for
-the game's runtime body-skin compositor. It is a library only: it has no CLI
-command, because feeding it real inputs needs the runtime customization
-state that the project does not build yet. It reproduces the weighted lane
+the game's runtime body-skin compositor. It reproduces the weighted lane
 sum both composite paths share, the mask arithmetic, the colour remap, the
 target markers, and the palette the indexed path builds, for both target
 types the game dispatches on. Every bound the game leaves unchecked is
@@ -122,6 +121,19 @@ lanes instead of naming channels, because the two paths store a colour with
 two lanes exchanged; which channel each lane carries is documented once, with
 its evidence. No pixel format is named anywhere, because no instruction names
 one. See `docs/BODY_SKIN.md`.
+
+`nfsu_skin_inputs` (`include/nfsu/skin_inputs.h`) feeds it. It takes an
+explicit customization selection - which vinyl each of the four layers
+uses with its `NUMCOLOURS` and `REMAP` colors, which hood/spoiler and
+doorline variant is installed, and the five paint colors - and turns it
+into a `BodySkinRequest` whose every buffer the result owns. It invents no
+customization state: where the game itself substitutes a value, the
+substitution is optional and reported back. It resolves each source and its
+exact `_MASK` partner out of read-only parsed packs, keeps every raw
+identifier it saw, converts only in the three cases retail evidence proves,
+and refuses the rest. `nfsu_probe body-skin-inputs` prints the whole
+assembled layer list with its provenance and writes nothing. See
+`docs/SKIN_INPUTS.md`.
 
 Selection and material lookup happen once, in `prepare_car_scene`
 (`include/nfsu/scene.h`). It builds a self-contained `PreparedCarScene`

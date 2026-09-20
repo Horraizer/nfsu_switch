@@ -43,7 +43,7 @@ add_executable(nfsu_probe
     src/main.cpp
 )
 
-target_link_libraries(nfsu_probe PRIVATE nfsu_core)
+target_link_libraries(nfsu_probe PRIVATE nfsu_core nfsu_skin_inputs)
 nfsu_enable_warnings(nfsu_probe)
 
 # Backend-neutral prepared car scene: mesh selection and material binding.
@@ -85,6 +85,16 @@ if(MSVC)
 else()
     target_compile_options(nfsu_body_skin PRIVATE -ffp-contract=off -fno-fast-math)
 endif()
+
+# Body-skin input assembly: turns an explicit customization selection and
+# parsed texture packs into an owned BodySkinRequest. It sits between the
+# pack reader and the compositor and depends on both.
+add_library(nfsu_skin_inputs
+    src/skin_inputs.cpp
+)
+
+target_link_libraries(nfsu_skin_inputs PUBLIC nfsu_core nfsu_body_skin)
+nfsu_enable_warnings(nfsu_skin_inputs)
 
 # Deterministic CPU reference renderer. Floating-point contraction is
 # disabled so that results do not depend on FMA availability.
@@ -167,10 +177,18 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_body_skin_tests)
     add_test(NAME nfsu_body_skin_tests COMMAND nfsu_body_skin_tests)
 
+    add_executable(nfsu_skin_inputs_tests
+        tests/skin_inputs_tests.cpp
+    )
+
+    target_link_libraries(nfsu_skin_inputs_tests PRIVATE nfsu_skin_inputs)
+    nfsu_enable_warnings(nfsu_skin_inputs_tests)
+    add_test(NAME nfsu_skin_inputs_tests COMMAND nfsu_skin_inputs_tests)
+
     # A hung test is killed and reported as a failure.
     set_tests_properties(
         nfsu_chunk_tests nfsu_geometry_tests nfsu_texture_tests
         nfsu_render_tests nfsu_scene_tests nfsu_car_parts_tests
-        nfsu_body_skin_tests
+        nfsu_body_skin_tests nfsu_skin_inputs_tests
         PROPERTIES TIMEOUT 60)
 endif()

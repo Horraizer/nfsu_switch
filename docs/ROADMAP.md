@@ -38,7 +38,14 @@
 - The body-skin pixel compositor is recovered for both target types, with a
   bounded CPU reference (`include/nfsu/body_skin.h`,
   [`BODY_SKIN.md`](BODY_SKIN.md)). The RED/GREEN/BLUE/GLOSS lane mapping is
-  proven; feeding it real vinyl and doorline surfaces is still to do.
+  proven.
+- Real vinyl, vinyl-mask and doorline surfaces now reach that compositor
+  through an owned input-assembly layer (`include/nfsu/skin_inputs.h`,
+  `nfsu_probe body-skin-inputs`, [`SKIN_INPUTS.md`](SKIN_INPUTS.md)). It
+  takes an explicit customization selection, resolves the pairs out of
+  read-only packs with full provenance and owns every buffer the request
+  points at. Binding the composited skin into `PreparedCarScene` and the
+  viewer is still to do.
 - Track retail evidence and remaining unknowns in
   [`CAR_SCENE.md`](CAR_SCENE.md).
 
