@@ -592,6 +592,19 @@ bool validate_prepared_track_scene(
                         " position";
                 return false;
             }
+            // The section provenance an instance carries, against the
+            // section it actually belongs to. The builder copies both
+            // from the same TrackSection and cannot produce a
+            // disagreement, but nothing else in this structure pins
+            // them, and a backend reads section_number as provenance.
+            if (instance.section_number != section.number ||
+                instance.section_letter != section.letter ||
+                instance.has_section_letter != section.has_letter) {
+                error = "instance " + std::to_string(handle) +
+                        " carries section provenance its own section"
+                        " contradicts";
+                return false;
+            }
             if (named[handle] != 0) {
                 error = "instance " + std::to_string(handle) +
                         " is named by two handles";

@@ -1751,6 +1751,38 @@ void test_validate_scene_rejects_tampering() {
               "an empty slot that names a hash is rejected");
     }
     {
+        // The section provenance an instance carries, against the
+        // section table it belongs to. Nothing else in the structure
+        // pins these three, and a backend reads section_number.
+        nfsu::PreparedTrackScene bad = good;
+        bad.instances[0].section_number = 999;
+        check(!nfsu::validate_prepared_track_scene(bad, error),
+              "an instance whose section number its section contradicts"
+              " is rejected");
+    }
+    {
+        nfsu::PreparedTrackScene bad = good;
+        bad.instances[0].section_letter = 'Z';
+        check(!nfsu::validate_prepared_track_scene(bad, error),
+              "an instance whose section letter its section contradicts"
+              " is rejected");
+    }
+    {
+        nfsu::PreparedTrackScene bad = good;
+        bad.instances[0].has_section_letter = false;
+        check(!nfsu::validate_prepared_track_scene(bad, error),
+              "an instance denying a section letter its section has is"
+              " rejected");
+    }
+    {
+        // And the other side of the same pair.
+        nfsu::PreparedTrackScene bad = good;
+        bad.sections[0].number = 777;
+        check(!nfsu::validate_prepared_track_scene(bad, error),
+              "a section whose number its instances contradict is"
+              " rejected");
+    }
+    {
         nfsu::PreparedTrackScene bad = good;
         bad.cost.has_bounds = false;
         check(!nfsu::validate_prepared_track_scene(bad, error),
