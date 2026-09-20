@@ -475,7 +475,53 @@ one entry per turn.
 
 A pass written by the author of a suite is weak evidence about that
 suite - it tends to mutate what the tests already name - which is why the
-second pass below was written by someone who had not read this list.
+second pass was written by someone who had not read this list.
+
+**An independent pass, 201 mutations.** Written by an adversarial reviewer
+working from the diff and the repository in its own detached worktree,
+without seeing either list above. 127 were caught, 12 were refused at
+compile time by the `static_assert` block that ties the record sizes to
+the offsets beside them, and **62 survived**; the reviewer discarded 10 of
+those as provably equivalent. Re-measured against the head this note
+describes, 12 more were already dead - the four the pass above closed and
+the eight the file-loading tests closed - and 39 were live.
+
+**Four of the 39 were defects in the code, not gaps in the suite.**
+
+| Defect | What it was |
+| --- | --- |
+| `parse_track_zones` did not bound `base_offset` | every offset it reports is that base plus something, and `size_` is bounded while the base is a caller's number, so a base near the top of the range made the whole report wrong instead of refused |
+| three count guards read as a parallel pair of rules and were not | the signed half of each was dead, because the `std::size_t` cast in the other half already rejected every negative |
+| `kTrackZoneStoredLinkValue` was referenced nowhere outside a test comparing it to a literal | a check of that shape cannot fail for any reason worth knowing |
+| `valid` and `ok()` were presented as two predicates | they are one, because every rule that raises an issue returns immediately |
+
+The first two are fixed. The third now drives
+`TrackZoneCost::records_with_unexpected_link`, which is zero for all 4278
+retail records and is counted rather than refused, because nothing reads
+those words. The fourth is documented where it lives rather than
+restructured.
+
+The other 35 were the suite's, and they fell into groups it had missed
+systematically:
+
+| Group | Count | What the suite could not see |
+| --- | ---: | --- |
+| inclusive boundaries | 11 | every count bound and every limit was tested from one side only: a 16-vertex polygon, a 64-section zone and a full section list being *rejected* were all invisible |
+| the 2600 end of the band | 5 | no fixture made 2600 itself resident, which hid both ends of the band scan, both cap checks and the two default `cap` arguments |
+| guards and index bounds | 7 | `report.valid` on all three entry points, and a zone index of exactly `size()` |
+| fields nothing read back | 7 | `TrackIssue::offset`, the region's offset and size, `cost.region_bytes`, and a section-list record's index, offset and link words |
+| fixtures too weak to bite | 5 | the duplicate-key sort was never load-bearing because both colliding records were adjacent; the two child-chunk refusals were asserted against *empty* chunks; the payload-overrun fixture overran by 0xFFFF bytes and not by one |
+| values no fixture reached | 5 | no section number above 255, no polygon whose unused vertex slots were non-zero, no zone whose unused section slots named a resident section, and a single call passing three refusing arguments at once |
+
+**Two of the 39 remain, and are named rather than papered over.** The index
+bound inside `find_track_zone`'s loop cannot be exercised without reading
+`report.polygons[size()]`, which is undefined, so no assertion can depend
+on what it produces; and `valid` being `issues.empty()` is equivalent by
+construction. Both are commented where they live.
+
+The suite went from 235 checks to 354. Of the 262 mutations written across
+the two passes, all but those two are caught, and the ten the reviewer
+itself discarded as equivalent are not counted as catches.
 
 ### The retail differential
 
