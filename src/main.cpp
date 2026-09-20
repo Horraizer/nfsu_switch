@@ -1321,10 +1321,16 @@ int run_car_placement(const fs::path& path, const std::string& car_type_name) {
                       << " pos " << placement.position[0] << ' '
                       << placement.position[1] << ' ' << placement.position[2]
                       << " from " << nfsu::placement_source_name(placement.source);
-            for (std::size_t k = 0; k < placement.wheel_count; ++k) {
-                std::cout << (k == 0 ? " [" : " ") << placement.wheels[k];
-            }
-            if (placement.wheel_count != 0) {
+            // The source indices are printed with the table they index, so a
+            // reader cannot mistake the underneath entry's placement indices
+            // for wheel indices.
+            if (placement.source_count != 0) {
+                std::cout << ' '
+                          << nfsu::placement_index_space_name(placement.index_space)
+                          << " [";
+                for (std::size_t k = 0; k < placement.source_count; ++k) {
+                    std::cout << (k == 0 ? "" : " ") << placement.sources[k];
+                }
                 std::cout << ']';
             }
             if (placement.degenerate_plane) {
@@ -1337,9 +1343,11 @@ int run_car_placement(const fs::path& path, const std::string& car_type_name) {
     return 0;
 }
 
-// Lists every 0x0013401A attachment marker of a geometry file with its
-// resolved name, role, stored matrix and the local placement the exhaust and
-// plate draw paths build from it. Read-only; writes nothing.
+// Lists the 0x0013401A attachment markers of every mesh of a geometry file
+// that validated, with each marker's resolved name, role, stored matrix and
+// the local placement the exhaust and plate draw paths build from it. A mesh
+// the parser rejected is skipped whole and only counted. Read-only; writes
+// nothing.
 int run_part_markers(const fs::path& path, const std::string& role_filter) {
     const nfsu::GeometryReport report = nfsu::load_geometry_file(path);
     print_geometry_issues(report);
@@ -1351,8 +1359,17 @@ int run_part_markers(const fs::path& path, const std::string& role_filter) {
     std::size_t chunks = 0;
     std::size_t markers = 0;
     std::size_t unnamed = 0;
+    std::size_t skipped = 0;
     std::cout << std::fixed << std::setprecision(5);
     for (const nfsu::Mesh& mesh : report.meshes) {
+        // A mesh the parser rejected is skipped whole, markers included. The
+        // parser already withdraws its marker state, so this only makes the
+        // rule visible here and counts what was left out; the diagnostic for
+        // each such mesh is in the issue list printed above.
+        if (!mesh.valid) {
+            ++skipped;
+            continue;
+        }
         if (!mesh.has_marker_chunk) {
             continue;
         }
@@ -1398,6 +1415,7 @@ int run_part_markers(const fs::path& path, const std::string& role_filter) {
             }
         }
     }
+    std::cout << "meshes skipped as invalid: " << skipped << '\n';
     std::cout << "marker chunks: " << chunks << '\n';
     std::cout << "markers: " << markers << '\n';
     std::cout << "distinct hashes: " << by_hash.size() << '\n';

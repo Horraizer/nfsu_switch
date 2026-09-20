@@ -20,8 +20,11 @@ constexpr std::uint32_t kMeshContainerId = 0x80134010U;
 constexpr std::uint32_t kMeshMetadataId = 0x00134011U;
 constexpr std::uint32_t kTextureListId = 0x00134012U;
 constexpr std::uint32_t kMaterialKeyListId = 0x00134013U;
-// Attachment markers. Optional: 2860 of the 9408 retail meshes carry one,
-// and 647 of those chunks hold no record. See docs/PART_PLACEMENT.md.
+// Attachment markers. Optional: 2860 of the 9408 meshes in the 39 installed
+// Cars/*/GEOMETRY.BIN files carry one, and 647 of those chunks hold no
+// record. One of the 2860 is on a mesh this parser rejects, in Cars/CIVIC,
+// so summing the reports over those 39 files gives 2859 rather than 2860.
+// See docs/PART_PLACEMENT.md.
 constexpr std::uint32_t kMarkerListId = 0x0013401AU;
 constexpr std::uint32_t kGeometryContainerId = 0x80134100U;
 constexpr std::uint32_t kGeometryMetadataId = 0x00134900U;
@@ -101,8 +104,14 @@ struct GeometryReport {
 };
 
 // Parses an in-memory GEOMETRY.BIN image. Never throws for malformed input;
-// every problem is reported in GeometryReport::issues. Meshes that fail
-// validation are kept with valid == false and no vertex or face data.
+// every problem is reported in GeometryReport::issues. A mesh that fails
+// validation is kept with valid == false and none of the records it had
+// decoded before the failure: Mesh::vertices, triangles, texture_hashes,
+// material_key_hashes, materials and markers are all empty, and
+// has_marker_chunk is false with marker_data_offset and marker_prefix_bytes
+// at zero. Its name, its declared counts, the record offsets it reached and
+// the directory fields the owning directory pass writes are left alone,
+// because those locate the mesh rather than assert decoded data.
 GeometryReport parse_geometry(
     const unsigned char* data,
     std::size_t size,

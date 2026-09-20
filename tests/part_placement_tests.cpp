@@ -737,7 +737,8 @@ void test_derive_placements() {
                     "tire " + std::to_string(w) + " vertical");
         check(placements[w].source == nfsu::PlacementSource::wheel,
               "tire " + std::to_string(w) + " source");
-        check(placements[w].wheel_count == 1 && placements[w].wheels[0] == w,
+        check(placements[w].source_count == 1 && placements[w].sources[0] == w &&
+                  placements[w].index_space == nfsu::PlacementIndexSpace::wheel,
               "tire " + std::to_string(w) + " provenance");
     }
 
@@ -747,12 +748,14 @@ void test_derive_placements() {
     check_close(placements[4].position[1], 0.75F, "blurs left lateral");
     check(placements[4].source == nfsu::PlacementSource::wheel_mean,
           "blurs left source");
-    check(placements[4].wheel_count == 2 && placements[4].wheels[0] == 3 &&
-              placements[4].wheels[1] == 0,
+    check(placements[4].source_count == 2 && placements[4].sources[0] == 3 &&
+              placements[4].sources[1] == 0 &&
+              placements[4].index_space == nfsu::PlacementIndexSpace::wheel,
           "blurs left provenance is wheels 3 and 0");
     check_close(placements[5].position[1], -0.75F, "blurs right lateral");
-    check(placements[5].wheel_count == 2 && placements[5].wheels[0] == 2 &&
-              placements[5].wheels[1] == 1,
+    check(placements[5].source_count == 2 && placements[5].sources[0] == 2 &&
+              placements[5].sources[1] == 1 &&
+              placements[5].index_space == nfsu::PlacementIndexSpace::wheel,
           "blurs right provenance is wheels 2 and 1");
 
     // 6..9 repeat the wheels for the brakes.
@@ -761,13 +764,14 @@ void test_derive_placements() {
                     "brake " + std::to_string(w) + " longitudinal");
         check_close(placements[6 + w].position[1], wheels[w].lateral,
                     "brake " + std::to_string(w) + " lateral");
-        check(placements[6 + w].wheels[0] == w,
+        check(placements[6 + w].sources[0] == w &&
+                  placements[6 + w].index_space == nfsu::PlacementIndexSpace::wheel,
               "brake " + std::to_string(w) + " provenance");
     }
 
     // 10 is wheel 0 and 11 is wheel 2.
-    check(placements[10].wheels[0] == 0, "side front is wheel 0");
-    check(placements[11].wheels[0] == 2, "side rear is wheel 2");
+    check(placements[10].sources[0] == 0, "side front is wheel 0");
+    check(placements[11].sources[0] == 2, "side rear is wheel 2");
 
     // 12 is the centroid of the four wheels.
     check_close(placements[12].position[0], 0.0F, "underneath longitudinal");
@@ -775,6 +779,14 @@ void test_derive_placements() {
     check_close(placements[12].position[2], 0.10F, "underneath vertical");
     check(placements[12].source == nfsu::PlacementSource::part_mean,
           "underneath source");
+    // The one entry built from earlier placements. Its 5 and 4 are placement
+    // indices; reading them as wheel indices would run off the 4-entry wheel
+    // table, so the index space must say which table they belong to.
+    check(placements[12].index_space == nfsu::PlacementIndexSpace::placement,
+          "underneath sources are placement indices");
+    check(placements[12].source_count == 2 && placements[12].sources[0] == 5 &&
+              placements[12].sources[1] == 4,
+          "underneath provenance is placements 5 and 4");
 
     // 13 is the centroid offset by wheel 0's radius along the wheel-plane
     // normal, which for a level car is straight down.
@@ -784,7 +796,7 @@ void test_derive_placements() {
     check(placements[13].source == nfsu::PlacementSource::plane_offset,
           "shadow source");
     check(!placements[13].degenerate_plane, "level car has a valid wheel plane");
-    check(placements[13].wheel_count == 3, "shadow uses three wheels");
+    check(placements[13].source_count == 3, "shadow uses three wheels");
 }
 
 void test_derive_tilted_and_asymmetric() {
@@ -932,6 +944,182 @@ void test_derive_rejects_non_finite() {
     }
 }
 
+// Every placement must name sources that are valid in the table its index
+// space points at, and placement indices must never be reachable as wheel
+// indices. Before this was modelled, CullableCarPart::underneath stored 5
+// and 4 in a field documented as wheel indices, so a consumer following the
+// header would have indexed the 4-entry wheel table with 5.
+void test_placement_index_space() {
+    const TestCar car = default_car("CAR");
+    const auto wheels = wheels_of(car);
+    std::array<nfsu::PartPlacement, nfsu::kCullableCarPartCount> placements;
+    std::string error;
+    check(nfsu::derive_cullable_part_placements(wheels, placements, error),
+          "index space derivation succeeds");
+
+    std::size_t wheel_space = 0;
+    std::size_t placement_space = 0;
+    for (std::size_t p = 0; p < placements.size(); ++p) {
+        const nfsu::PartPlacement& placement = placements[p];
+        const std::string what = "placement " + std::to_string(p);
+        check(placement.source_count != 0 &&
+                  placement.source_count <= placement.sources.size(),
+              what + " names at least one source");
+        // part_mean is the only source that reads earlier placements, so it
+        // is exactly the set of entries in the placement index space.
+        const bool expect_placement_space =
+            placement.source == nfsu::PlacementSource::part_mean;
+        check((placement.index_space == nfsu::PlacementIndexSpace::placement) ==
+                  expect_placement_space,
+              what + " index space matches its source kind");
+        const std::size_t bound =
+            placement.index_space == nfsu::PlacementIndexSpace::wheel
+                ? nfsu::kCarWheelCount
+                : nfsu::kCullableCarPartCount;
+        for (std::size_t i = 0; i < placement.source_count; ++i) {
+            check(placement.sources[i] < bound,
+                  what + " source " + std::to_string(i) + " is in range");
+        }
+
+        std::array<std::size_t, 3> from_wheels{};
+        std::size_t count = 12345;
+        const bool is_wheel_space =
+            placement.index_space == nfsu::PlacementIndexSpace::wheel;
+        if (is_wheel_space) {
+            ++wheel_space;
+            check(nfsu::placement_wheel_sources(placement, from_wheels, count),
+                  what + " exposes its wheel sources");
+            check(count == placement.source_count,
+                  what + " wheel source count");
+            for (std::size_t i = 0; i < count; ++i) {
+                check(from_wheels[i] == placement.sources[i],
+                      what + " wheel source " + std::to_string(i));
+            }
+            for (std::size_t i = count; i < from_wheels.size(); ++i) {
+                check(from_wheels[i] == 0,
+                      what + " zeroes output element " + std::to_string(i));
+            }
+        } else {
+            ++placement_space;
+            // The accessor is the only safe way to reach the wheel table, so
+            // it must refuse an entry whose indices are not wheels and leave
+            // the caller's outputs alone.
+            check(!nfsu::placement_wheel_sources(placement, from_wheels, count),
+                  what + " refuses to report placement indices as wheels");
+            check(count == 12345, what + " leaves the count untouched");
+            for (const std::size_t value : from_wheels) {
+                check(value == 0, what + " leaves the wheel array untouched");
+            }
+        }
+    }
+    check(placement_space == 1,
+          "exactly one placement is built from earlier placements");
+    check(wheel_space == nfsu::kCullableCarPartCount - 1,
+          "the other thirteen are built from wheel records");
+
+    check(std::string(nfsu::placement_index_space_name(
+              nfsu::PlacementIndexSpace::wheel)) == "wheels",
+          "wheel index space name");
+    check(std::string(nfsu::placement_index_space_name(
+              nfsu::PlacementIndexSpace::placement)) == "placements",
+          "placement index space name");
+
+    // A hand-built placement that lies about its space must not be able to
+    // hand a caller an out-of-range wheel index either.
+    nfsu::PartPlacement forged;
+    forged.index_space = nfsu::PlacementIndexSpace::wheel;
+    forged.sources[0] = nfsu::kCarWheelCount;
+    forged.source_count = 1;
+    std::array<std::size_t, 3> forged_out{};
+    std::size_t forged_count = 7;
+    check(!nfsu::placement_wheel_sources(forged, forged_out, forged_count),
+          "an out-of-range wheel index is refused");
+    check(forged_count == 7, "a refused forgery leaves the count untouched");
+
+    // A count larger than the array must be refused before it is used as a
+    // loop bound. This one pins the contract rather than catching a
+    // regression: without the guard the accessor reads past the end of
+    // `sources`, which is undefined and need not fail the check.
+    nfsu::PartPlacement overlong;
+    overlong.index_space = nfsu::PlacementIndexSpace::wheel;
+    overlong.sources = {{0, 1, 2}};
+    overlong.source_count = overlong.sources.size() + 1;
+    check(!nfsu::placement_wheel_sources(overlong, forged_out, forged_count),
+          "a source count past the array is refused");
+    check(forged_count == 7, "a refused overlong count leaves the count untouched");
+
+    // Entries past source_count mean nothing, so a junk tail must neither
+    // refuse the placement nor be copied out: a caller that iterates the
+    // returned array instead of applying the count would otherwise index the
+    // wheel table with them.
+    nfsu::PartPlacement junk_tail;
+    junk_tail.index_space = nfsu::PlacementIndexSpace::wheel;
+    junk_tail.sources = {{2, 9, 12345}};
+    junk_tail.source_count = 1;
+    std::array<std::size_t, 3> tail_out{};
+    std::size_t tail_count = 7;
+    check(nfsu::placement_wheel_sources(junk_tail, tail_out, tail_count),
+          "a placement with a junk tail past its count is still usable");
+    check(tail_count == 1, "the junk-tail placement names one source");
+    check(tail_out[0] == 2, "the one named source is copied");
+    for (const std::size_t value : tail_out) {
+        check(value < nfsu::kCarWheelCount,
+              "every element written is a wheel index");
+    }
+}
+
+// The public in-memory parser must apply limits.max_file_size itself. The
+// file entry point checked it before reading, so a caller that already had
+// the bytes could parse an image of any size with the limit lowered.
+void test_in_memory_size_limit() {
+    const Layout layout = build_table(default_cars());
+
+    nfsu::CarTypeLimits exact;
+    exact.max_file_size = layout.bytes.size();
+    const nfsu::CarTypeTable at_limit =
+        nfsu::parse_car_type_table(layout.bytes.data(), layout.bytes.size(), exact);
+    check(at_limit.ok(), "an image exactly at the limit is accepted");
+
+    nfsu::CarTypeLimits one_short;
+    one_short.max_file_size = layout.bytes.size() - 1;
+    const nfsu::CarTypeTable over =
+        nfsu::parse_car_type_table(layout.bytes.data(), layout.bytes.size(),
+                                   one_short);
+    check(!over.valid, "an image one byte over the limit is refused");
+    check(over.records.empty(), "a refused image decodes no records");
+    check(over.file_size == layout.bytes.size(),
+          "a refused image still reports its size");
+    // The in-memory entry point says "buffer", as parse_geometry does; only
+    // load_car_type_table, which was handed a path, says "file".
+    check(has_issue(over, "buffer is " + std::to_string(layout.bytes.size()) +
+                              " bytes; limit is " +
+                              std::to_string(layout.bytes.size() - 1)),
+          "the in-memory limit issue names both sizes");
+    check(!has_issue(over, "file is "),
+          "the in-memory limit issue does not call the buffer a file");
+    check(nfsu::find_car_type(over, "CAR0") == nfsu::kNoCarType,
+          "lookup on an over-size table returns kNoCarType");
+
+    // A deliberately tiny limit, the shape a caller would use to bound an
+    // untrusted image, and the same limit the file entry point reports.
+    nfsu::CarTypeLimits tiny;
+    tiny.max_file_size = 8;
+    const nfsu::CarTypeTable refused =
+        nfsu::parse_car_type_table(layout.bytes.data(), layout.bytes.size(), tiny);
+    check(!refused.valid && refused.issues.size() == 1U,
+          "a tiny limit refuses with one issue");
+    check(has_issue(refused, "limit is 8"), "the tiny limit is reported");
+
+    // The limit is a bound on the image, not a reason to reject a small one.
+    Bytes empty_chunk;
+    append_u32(empty_chunk, 0);
+    append_u32(empty_chunk, 0);
+    const nfsu::CarTypeTable small =
+        nfsu::parse_car_type_table(empty_chunk.data(), empty_chunk.size(), tiny);
+    check(!has_issue(small, "limit is 8"),
+          "an image inside the limit is not refused for its size");
+}
+
 void test_find_on_invalid_table() {
     // A table that failed to parse must not answer lookups.
     Bytes bytes;
@@ -969,6 +1157,9 @@ void test_load_file() {
     small.max_file_size = 8;
     const nfsu::CarTypeTable too_big = nfsu::load_car_type_table(path, small);
     check(!too_big.valid && !too_big.issues.empty(), "file over the size limit");
+    check(has_issue(too_big, "file is " + std::to_string(layout.bytes.size()) +
+                                 " bytes; limit is 8"),
+          "the file limit issue names the file and both sizes");
 
     fs::remove(path, ignored);
     const nfsu::CarTypeTable missing = nfsu::load_car_type_table(path);
@@ -992,6 +1183,8 @@ int main() {
     test_derive_degenerate_plane();
     test_derive_rejects_huge_positions();
     test_derive_rejects_non_finite();
+    test_placement_index_space();
+    test_in_memory_size_limit();
     test_find_on_invalid_table();
     test_load_file();
     if (g_failures != 0) {

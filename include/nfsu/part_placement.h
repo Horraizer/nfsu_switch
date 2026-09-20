@@ -163,20 +163,60 @@ enum class PlacementSource {
 
 const char* placement_source_name(PlacementSource source) noexcept;
 
+// Which table PartPlacement::sources indexes. The constructor builds
+// thirteen of the fourteen placements out of wheel records, but the
+// underneath entry out of two placements it produced earlier (0x0056B2E4
+// reads entries 5 and 4), so the two index spaces are not the same
+// namespace: 4 and 5 are placements, and there is no wheel 4 or 5.
+enum class PlacementIndexSpace {
+    // Indices into the four wheel records, 0 .. kCarWheelCount - 1.
+    wheel,
+    // Indices into this 14-entry placement array,
+    // 0 .. kCullableCarPartCount - 1.
+    placement
+};
+
+const char* placement_index_space_name(PlacementIndexSpace space) noexcept;
+
 struct PartPlacement {
     float position[3] = {0.0F, 0.0F, 0.0F};
     PlacementSource source = PlacementSource::wheel;
-    // The wheel indexes the position was built from, in the order the
-    // constructor reads them. Two entries for a mean, one for a copy, three
-    // for the shadow's plane.
-    std::array<std::size_t, 3> wheels{};
-    std::size_t wheel_count = 0;
+    // Which table `sources` indexes. In the output of
+    // derive_cullable_part_placements it is `placement` exactly when `source`
+    // is PlacementSource::part_mean and `wheel` for every other source; this
+    // is an aggregate a caller can also fill itself, so a reader must take
+    // this field as it stands rather than deduce it from `source`.
+    PlacementIndexSpace index_space = PlacementIndexSpace::wheel;
+    // The entries the position was built from, in the order the constructor
+    // reads them, as indices into the table `index_space` names. Two entries
+    // for a mean, one for a copy, three for the shadow's plane. These are
+    // not interchangeable with wheel indices: read them through
+    // placement_wheel_sources() rather than indexing the wheel table with
+    // them directly.
+    std::array<std::size_t, 3> sources{};
+    std::size_t source_count = 0;
     // Set only for CullableCarPart::shadow, when the wheel plane is
     // degenerate and 0x56b3e2 takes the fallback branch instead of
     // normalizing. The placement then uses kDegenerateWheelPlaneNormal.
     // See docs/PART_PLACEMENT.md.
     bool degenerate_plane = false;
 };
+
+// Writes the wheel records `placement` was built from directly, in the
+// constructor's read order, and returns true. Returns false and leaves both
+// outputs untouched whenever the sources are not usable wheel indices: when
+// index_space is PlacementIndexSpace::placement, when source_count is larger
+// than `sources`, or when any named index is not below kCarWheelCount. False
+// therefore means "do not read `sources` as wheel indices"; it does not say
+// which of those it was, and in particular it does not imply the placement
+// index space. On success it writes the `count` sources it checked and zero
+// in the remaining elements, so every element of `wheels` is below
+// kCarWheelCount whether or not the caller applies `count`, and a caller
+// that reaches the wheel table only through this function cannot index it
+// out of range.
+bool placement_wheel_sources(const PartPlacement& placement,
+                             std::array<std::size_t, 3>& wheels,
+                             std::size_t& count) noexcept;
 
 // 0x56b3af compares the wheel-plane normal's length against the float at
 // 0x6cc7a4, which is 0.0, and 0x56b3b7 takes the fallback only when the
@@ -297,13 +337,14 @@ struct CarTypeTable {
 };
 
 // Parses the car type table of an in-memory file such as GLOBALB.BUN. Never
-// throws for malformed input. The file must be a sequence of top-level
-// chunks with exactly one 0x00034600 among them, whose payload holds the
-// filler bytes and then all kCarTypeInfoRecordCount records. Checks: the
-// chunk count and payload bounds, the filler bytes, NUL-terminated printable
-// names in every string field, the two name fields being equal, every wheel
-// record's stored index, its four reserved words, and every wheel float
-// being finite.
+// throws for malformed input. The image must be at most limits.max_file_size
+// bytes, the same bound load_car_type_table applies to a file. The file must
+// be a sequence of top-level chunks with exactly one 0x00034600 among them,
+// whose payload holds the filler bytes and then all kCarTypeInfoRecordCount
+// records. Checks: the size limit, the chunk count and payload bounds, the
+// filler bytes, NUL-terminated printable names in every string field, the
+// two name fields being equal, every wheel record's stored index, its four
+// reserved words, and every wheel float being finite.
 CarTypeTable parse_car_type_table(
     const unsigned char* data,
     std::size_t size,
@@ -332,9 +373,12 @@ std::size_t find_car_type(const CarTypeTable& table,
 //   5      the mean of wheels 2 and 1 (the right pair)
 //   6..9   the four wheel positions again
 //   10     wheel 0, 11 wheel 2
-//   12     the mean of entries 5 and 4, so the centroid of the four wheels
-//   13     entry 12 offset along the normalized wheel-plane normal by
-//          wheel 0's radius
+//   12     the mean of placements 5 and 4, so the centroid of the four
+//          wheels. This is the one entry whose sources are placement
+//          indices; PartPlacement::index_space says so.
+//   13     placement 12 offset along the normalized wheel-plane normal by
+//          wheel 0's radius. Its sources are the three wheels whose plane
+//          that normal comes from.
 // Fails for a wheel float that is not finite, and for a derived position
 // that is not finite, which a finite but enormous wheel table can produce.
 // A degenerate wheel plane is reported in the shadow entry rather than

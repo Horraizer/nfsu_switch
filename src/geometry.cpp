@@ -461,14 +461,31 @@ private:
         return text.str();
     }
 
-    bool fail(Mesh& mesh, std::uint64_t offset, const std::string& message) {
-        add_issue(offset, mesh_context(mesh) + ": " + message);
-        mesh.valid = false;
+    // A skipped mesh must carry no decoded data at all. The marker chunk is
+    // read before the counts, the buffers and the materials (see
+    // parse_mesh_contents), so a mesh can reach a later failure with its
+    // markers already decoded; retail CIVIC mesh 286
+    // 'CIVIC_KIT13_REAR_BUMPER_A' is exactly that case, failing material
+    // validation after two markers parsed. The marker offsets and the
+    // has_marker_chunk flag are reset with the records, unlike the other
+    // record offsets, because they describe records this mesh no longer
+    // reports rather than locating where it went wrong.
+    static void clear_decoded_data(Mesh& mesh) {
         mesh.vertices.clear();
         mesh.triangles.clear();
         mesh.texture_hashes.clear();
         mesh.material_key_hashes.clear();
         mesh.materials.clear();
+        mesh.markers.clear();
+        mesh.marker_data_offset = 0;
+        mesh.marker_prefix_bytes = 0;
+        mesh.has_marker_chunk = false;
+    }
+
+    bool fail(Mesh& mesh, std::uint64_t offset, const std::string& message) {
+        add_issue(offset, mesh_context(mesh) + ": " + message);
+        mesh.valid = false;
+        clear_decoded_data(mesh);
         return false;
     }
 
@@ -603,7 +620,15 @@ private:
         Mesh mesh;
         mesh.index = report_.meshes.size();
         mesh.offset = container.offset;
-        parse_mesh_contents(container, mesh);
+        if (!parse_mesh_contents(container, mesh)) {
+            // Every failure path runs through fail(), which has already done
+            // this. Repeating it here makes "an invalid mesh holds no decoded
+            // data" an invariant of report_.meshes rather than of each call
+            // site, so a future check added ahead of a fail() cannot leak
+            // half-decoded state to a consumer.
+            mesh.valid = false;
+            clear_decoded_data(mesh);
+        }
         report_.meshes.push_back(std::move(mesh));
     }
 

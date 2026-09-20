@@ -53,8 +53,8 @@ struct MeshMarker {
     // +0x00: bin_hash of the marker name. nfsu::car_marker_name resolves the
     // hashes whose names were recovered.
     std::uint32_t name_hash = 0;
-    // +0x04..+0x0F. Zero in every one of the 4216 markers of the 37
-    // retail-original car files. The other 245 markers in the installation
+    // +0x04..+0x0F. Zero in every one of the 4216 markers the 37
+    // retail-original car files hold. The other 245 markers in the installation
     // are all of Cars/LANCER and Cars/PEUGOT, which carry an NFS-CarToolkit
     // header instead of the retail source path and hold uninitialised bytes
     // here. No traced instruction reads these words, and refusing them would
@@ -112,12 +112,15 @@ struct Mesh {
     // 0x00134013 material/effect keys resolved to runtime objects by the game.
     std::vector<std::uint32_t> material_key_hashes;
     // 0x0013401A attachment markers, in source order. Empty when the mesh has
-    // no marker chunk, which is the common case.
+    // no marker chunk, which is the common case, and also when the mesh
+    // failed validation: a mesh with valid == false reports no markers even
+    // if its marker chunk parsed before the failing check.
     std::vector<MeshMarker> markers;
     // Absolute offset of the aligned marker record array, and the 0x11 filler
-    // before it. Zero when the mesh has no marker chunk.
+    // before it. Zero when has_marker_chunk is false.
     std::uint64_t marker_data_offset = 0;
     std::uint64_t marker_prefix_bytes = 0;
+    // Set only on a mesh that both has a 0x0013401A chunk and validated.
     bool has_marker_chunk = false;
     std::vector<MeshMaterial> materials;
     bool valid = false;

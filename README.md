@@ -65,10 +65,13 @@ channel semantics and runtime skin composition are not yet implemented.
 `car-placement` parses the car type table of `GLOBAL/GLOBALB.BUN` and
 prints, per car type, its name, class, geometry paths and brand, the four
 wheel records with their file offsets, and the 14 placements the game
-derives from them. `part-markers` lists every `0x0013401A` attachment marker
-of a `GEOMETRY.BIN` with its resolved name, role, translation and the local
+derives from them, each with the table its source indices belong to.
+`part-markers` lists every `0x0013401A` attachment marker of a
+`GEOMETRY.BIN` with its resolved name, role, translation and the local
 placement the exhaust and licence-plate draw paths build from it; an
-optional role argument filters the listing. Between them, the wheels and
+optional role argument filters the listing. It reports only meshes that
+validated, and prints how many it skipped, so a mesh rejected after its
+marker chunk parsed contributes nothing. Between them, the wheels and
 brakes come from the car type table and the exhaust and plate from markers,
 while every other installed part is drawn at the car's own matrix. See
 `docs/PART_PLACEMENT.md`.

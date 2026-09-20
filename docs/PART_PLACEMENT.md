@@ -71,7 +71,7 @@ One 80-byte record:
 | Offset | Type | Field |
 | --- | --- | --- |
 | `+0x00` | u32 | `bin_hash` of the marker name |
-| `+0x04` | u32[3] | zero in 4216 of the 4461 retail markers, uninitialised in the rest |
+| `+0x04` | u32[3] | zero in 4216 of the 4461 markers in the files, uninitialised in the rest |
 | `+0x10` | f32[16] | a row-major 4x4 matrix; row 3 is the translation |
 
 The translation is in the same raw slot order as a vertex: longitudinal,
@@ -93,7 +93,21 @@ parser must too.
 | Chunks holding no record | 647 | 0 |
 | Markers with a non-zero word at `+0x04` | 245 | 0 |
 
-`nfsu_probe part-markers` reproduces every figure in the first column.
+Those are the records present in the files, counted by walking the chunk
+tree with no mesh validation at all.
+
+`nfsu_probe part-markers` reports one chunk and two markers fewer, 2859 and
+4459 over all 39 files and 2091 and 4214 over the 37 retail-original ones,
+because it reports only meshes that validated. The single difference is
+`Cars/CIVIC` mesh 286 `CIVIC_KIT13_REAR_BUMPER_A`, whose marker chunk parses
+and whose material record 3 then declares an index count of zero. The mesh
+is skipped, so its two markers, `RIGHT_EXHAUST` and `REAR_LICENSE_PLATE`,
+are withdrawn with the rest of its data; see "Parser rules" below. No other
+file changes: across the 39 `Cars/*/GEOMETRY.BIN` files the parser rejects
+eight further meshes, one in `Cars/ECLIPSE`, three in `Cars/SUPRA` and four
+in `Cars/TIBURON`, and none of the eight has a `0x0013401A` chunk in its
+container at all.
+
 Both the 647 empty chunks and the 245 markers with a non-zero reserved word
 are entirely inside `Cars/LANCER` and `Cars/PEUGOT`, and they are 100% of
 those two files' markers. Retail record counts per chunk are 1, 2, 3, 4, 5,
@@ -464,10 +478,17 @@ With `[ebx + 0x0C]` the RideInfo, `edi` = `RideInfo + 0x70`, `esi` =
 | `0x0056B2AA` | 9 | wheel 3 |
 | `0x0056B2C0` | 10 | wheel 0 |
 | `0x0056B2CE` | 11 | wheel 2 |
-| `0x0056B2E4` | 12 | (index 5 + index 4) * 0.5 |
-| `0x0056B33C` | 13 | index 12 offset along the wheel-plane normal |
+| `0x0056B2E4` | 12 | (placement 5 + placement 4) * 0.5 |
+| `0x0056B33C` | 13 | placement 12 offset along the wheel-plane normal |
 
 Index 12 is therefore the centroid of the four wheel positions.
+
+Row 12 is the only one whose sources are placements rather than wheels, and
+it is the reason `PartPlacement` carries a `PlacementIndexSpace`: 4 and 5
+are valid placement indices and there is no wheel 4 or 5, so the two cannot
+share a field without a consumer being able to run off the four-entry wheel
+table. `placement_wheel_sources` is the accessor that returns wheel indices
+and refuses this row.
 
 Index 13, the shadow, with `a` = wheel 0 - wheel 1 and `b` = wheel 1 -
 wheel 2:
@@ -635,26 +656,33 @@ its radial profile in the longitudinal-vertical plane, the centres
 rolling radius to the vertical destroys that, and two control points show no
 ring at all. The stored vertical is the wheel-centre height directly.
 
-`nfsu_probe part-markers` over all 39 files reports 2860 marker chunks and
-4461 markers. 18 distinct hashes occur across the whole installation; no
-single file holds more than 17, and the twenty full car files span 8 to 17.
-76 markers carry the one unrecovered name. For 240SX it reports 60 chunks, 168 markers, 16
-distinct hashes and no unrecovered name.
+`nfsu_probe part-markers` over all 39 files reports 2859 marker chunks and
+4459 markers on meshes that validated, out of the 2860 and 4461 the files
+hold; the one withdrawn chunk is `Cars/CIVIC` mesh 286, as "Retail
+inventory" above sets out. 18 distinct hashes occur across the whole
+installation; no single file holds more than 17, and the twenty full car
+files span 8 to 17. 76 markers carry the one unrecovered name. For 240SX it
+reports 60 chunks, 168 markers, 16 distinct hashes and no unrecovered name,
+and no mesh of that file is skipped.
 
 ## Parser rules
 
 `nfsu::parse_car_type_table` is fail-closed. A table that reports any issue
 is not `valid`, and `find_car_type` and the derivation refuse it.
 
-1. The file must be a well-formed sequence of top-level chunks with exactly
+1. The image must be at most `CarTypeLimits::max_file_size`. Both entry
+   points apply it: `load_car_type_table` before it reads the file, and
+   `parse_car_type_table` before it parses an image the caller already has,
+   so lowering the limit bounds an in-memory image as well as a file.
+2. The file must be a well-formed sequence of top-level chunks with exactly
    one `0x00034600` among them.
-2. The record array starts at `align_up(payload, 16)`, computed from the
+3. The record array starts at `align_up(payload, 16)`, computed from the
    absolute file offset as `0x0057C8C2` does. Every byte between the payload
    start and that offset must be `0x11`.
-3. The payload must hold all 35 records of `0xC90` bytes after the filler.
-4. Each of the five string fields must be NUL-terminated within its `0x20`
+4. The payload must hold all 35 records of `0xC90` bytes after the filler.
+5. Each of the five string fields must be NUL-terminated within its `0x20`
    bytes, non-empty and printable ASCII, and the two name fields equal.
-5. Each wheel record's stored index must equal its position, its `+0x0C`,
+6. Each wheel record's stored index must equal its position, its `+0x0C`,
    `+0x24`, `+0x28` and `+0x2C` words must be zero, and all seven of its
    float fields must be finite. All seven have a traced reader.
 
@@ -665,10 +693,20 @@ refuses more records than the game's byte count can address, and refuses a
 matrix element that is not finite. A mesh that fails any of these is skipped
 with a diagnostic, as every other geometry failure is. That is a behaviour
 change for third-party data: before this slice a malformed `0x0013401A` was
-ignored as an unknown chunk and the mesh still parsed. No retail file is
-affected, because all 2860 chunks pass every check. The three reserved
-words are kept raw and never checked, for the reason in "Retail inventory"
-above.
+ignored as an unknown chunk and the mesh still parsed. No retail file has a
+marker chunk that fails one of these checks; all 2860 pass.
+
+Skipping a mesh withdraws its markers as well. The marker chunk is read
+before the counts, the vertex and face buffers and the materials, so a mesh
+can reach a later failure with its markers already decoded. `Mesh::markers`
+is then emptied, `Mesh::has_marker_chunk` goes back to false and the two
+marker offsets back to zero, exactly as the vertices, faces, texture and
+material-key hashes and materials are cleared, so an invalid mesh carries no
+decoded data of any kind. `nfsu_probe part-markers` also skips a mesh whose
+`valid` is false outright and prints how many it skipped. Retail
+`Cars/CIVIC` mesh 286 is the one place in the 39 car files where this is
+observable; the figures are in "Retail inventory" above. The three reserved
+words are kept raw and never checked, for the reason given there.
 
 `derive_cullable_part_placements` reproduces the 14 culling placements. It
 fails for a wheel value that is not finite, and for a derived position that
@@ -688,10 +726,14 @@ build/nfsu_probe part-markers X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN exhaust
 
 Both are read-only and write nothing. `car-placement` prints the table
 location, each car type's strings and class, its four wheel records with
-their file offsets, and the 14 derived placements with the wheels each one
-came from. `part-markers` prints every marker with its resolved name, role,
+their file offsets, and the 14 derived placements with the entries each one
+came from. Those entries are printed with the table they index, `wheels` or
+`placements`, because the underneath placement is built from two earlier
+placements and its 5 and 4 are not wheel numbers. `part-markers` prints
+every marker of every mesh that validated, with its resolved name, role,
 translation and the local placement the exhaust and plate draw paths build,
-plus a per-hash summary; an optional role argument filters the listing.
+plus the number of meshes it skipped as invalid and a per-hash summary; an
+optional role argument filters the listing.
 
 ## Unknown
 

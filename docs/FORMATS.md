@@ -847,7 +847,10 @@ retail-original, 2092 meshes carry one, holding 4216 records in total, and
 every chunk holds at least one record. Counting `Cars/LANCER` and
 `Cars/PEUGOT`, which carry an `NFS-CarToolkit` header instead of the retail
 source path, the totals are 2860 chunks and 4461 records, and the 647 empty
-chunks are all theirs. The loader is `speed.exe` 0x5400e3, which stores the
+chunks are all theirs. Those are the records in the files; a parser that
+skips invalid meshes reports one chunk and two records fewer, because
+`Cars/CIVIC` mesh 286 fails a later check. `docs/PART_PLACEMENT.md` has the
+detail. The loader is `speed.exe` 0x5400e3, which stores the
 aligned table at solid +0x80 and the record count in the byte at solid
 +0x1B.
 
@@ -1043,8 +1046,12 @@ uses in raw slot order (px, pz, py). Both claims are proven in
 
 ### Parser rules (`nfsu::parse_car_type_table`)
 
-- The whole file is read once (limit 256 MiB). Top-level chunks must tile
-  the file exactly; exactly one of them is 0x00034600.
+- The image must be at most `CarTypeLimits::max_file_size`, 256 MiB by
+  default. Both entry points apply it: `load_car_type_table` before it reads
+  the file, and `parse_car_type_table` before it parses an image the caller
+  already has.
+- The whole file is read once. Top-level chunks must tile the file exactly;
+  exactly one of them is 0x00034600.
 - The record array starts at the first 16-byte boundary at or after the
   payload, and every byte before it in the payload must be 0x11.
 - The payload must hold all 35 records after the filler. The game would
@@ -1053,6 +1060,8 @@ uses in raw slot order (px, pz, py). Both claims are proven in
   bytes, non-empty and printable ASCII, and the two name fields must be
   equal.
 - Each wheel record's stored index must equal its position, its four
-  reserved words must be zero, and its five float fields must be finite.
+  reserved words must be zero, and all seven of its float fields must be
+  finite: +0x00, +0x04, +0x08, +0x10, +0x14, +0x1C and +0x20, each of which
+  has a traced reader.
 - Any problem makes the table invalid (`CarTypeTable::valid`), and
   `find_car_type` then refuses it.

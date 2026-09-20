@@ -365,13 +365,17 @@ database is in the same section.
   the stock spoiler names meshes that are absent at every LOD, and in
   SKYLINE it is slot 9, whose `TRUNK KIT00` record 4168 names
   0xABE49618, 19 and 1A, none of which `Cars/SKYLINE/GEOMETRY.BIN` has.
-- For CIVIC, ECLIPSE and SUPRA the command still exits 3, because the
-  geometry parser rejects a mesh in those files:
+- For CIVIC, ECLIPSE, SUPRA and TIBURON the command still exits 3, because
+  the geometry parser rejects a mesh in those files:
   `CIVIC_KIT13_REAR_BUMPER_A` has a zero-length material range,
-  `ECLIPSE_KIT00_SPOILER_D` has 0 vertices, and three SUPRA
-  `*_HEADLIGHT_C` meshes have a short vertex payload. Those are
-  pre-existing geometry issues, not part selection ones; the stock parts
-  of those cars still resolve.
+  `ECLIPSE_KIT00_SPOILER_D` declares 0 vertices and carries no `0x00134013`
+  material-key list, three SUPRA `*_HEADLIGHT_C` meshes have a short vertex
+  payload, and four TIBURON `*_BRAKELIGHT_` meshes carry no `0x00134013`
+  list although they declare geometry. Those nine meshes are every mesh the
+  parser rejects across the 39 `Cars/*/GEOMETRY.BIN` files. They are
+  pre-existing geometry issues, not part selection ones; the stock parts of
+  all four cars still resolve, TIBURON with 24 of its 24 slots drawn at
+  LOD A.
 
 ### Name construction
 

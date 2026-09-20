@@ -857,7 +857,11 @@ void expect_mesh_rejected(const MeshSpec& spec, const std::string& needle,
          report.meshes[0].triangles.empty() &&
          report.meshes[0].texture_hashes.empty() &&
          report.meshes[0].material_key_hashes.empty() &&
-         report.meshes[0].materials.empty());
+         report.meshes[0].materials.empty() &&
+         report.meshes[0].markers.empty() &&
+         !report.meshes[0].has_marker_chunk &&
+         report.meshes[0].marker_data_offset == 0 &&
+         report.meshes[0].marker_prefix_bytes == 0);
     const bool ok = !report.ok() && report.meshes.size() == 2U &&
                     !report.meshes[0].valid && report.meshes[1].valid &&
                     has_issue(report, needle) && data_cleared;
@@ -1136,6 +1140,17 @@ void test_bad_materials() {
         spec.materials = std::vector<MaterialSpec>{{0, 9, 0}};
         expect_mesh_rejected(spec, "exceeds the 6 remaining indices",
                              "material overruns faces");
+    }
+    {
+        // The same rejection with a marker chunk present, so the marker
+        // conjuncts in expect_mesh_rejected are exercised here too and not
+        // only by test_markers_withdrawn_when_a_later_check_fails.
+        MeshSpec spec = quad_spec();
+        spec.include_marker_list = true;
+        spec.markers = {TestMarker{}};
+        spec.materials = std::vector<MaterialSpec>{{0, 9, 0}};
+        expect_mesh_rejected(spec, "exceeds the 6 remaining indices",
+                             "material overruns faces with a marker chunk");
     }
     {
         MeshSpec spec = quad_spec();
@@ -1452,6 +1467,106 @@ void test_markers() {
     }
 }
 
+// A mesh whose marker chunk parses before a later check fails must report no
+// markers at all. parse_mesh_contents reads 0x0013401A before the counts,
+// the buffers and the materials, so this ordering is reachable; retail
+// CIVIC mesh 286 'CIVIC_KIT13_REAR_BUMPER_A' is the case in the shipped
+// data, where material validation fails after two markers have parsed and
+// the mesh nevertheless reported them.
+void test_markers_withdrawn_when_a_later_check_fails() {
+    // First establish that this spec's markers really do parse when nothing
+    // else is wrong, so the assertions below cannot pass vacuously.
+    TestMarker exhaust;
+    exhaust.name_hash = 0xBD7CF15EU;  // bin_hash("RIGHT_EXHAUST")
+    exhaust.matrix[12] = -2.18176F;
+    TestMarker plate;
+    plate.name_hash = 0xC805F7E0U;  // bin_hash("REAR_LICENSE_PLATE")
+    plate.matrix[12] = -2.09928F;
+
+    MeshSpec good = quad_spec();
+    good.include_marker_list = true;
+    good.markers = {exhaust, plate};
+    const nfsu::GeometryReport baseline = parse(build({good}).bytes);
+    check(baseline.ok(), "the marker fixture parses when the mesh is sound");
+    check(baseline.meshes.size() == 1U && baseline.meshes[0].valid &&
+              baseline.meshes[0].has_marker_chunk &&
+              baseline.meshes[0].markers.size() == 2U &&
+              baseline.meshes[0].marker_data_offset != 0,
+          "the marker fixture decodes two markers");
+
+    // Now break each stage that runs after the markers in turn: the vertex
+    // buffer, the face indices and the material records. The first case is
+    // the shape retail CIVIC mesh 286 has.
+    struct Case {
+        MeshSpec spec;
+        std::string needle;
+        std::string label;
+    };
+    std::vector<Case> cases;
+    {
+        MeshSpec spec = good;
+        spec.materials = std::vector<MaterialSpec>{{0, 0, 0}, {0, 6, 0}};
+        cases.push_back({spec, "index count 0 is zero, not a multiple of 3",
+                         "material index count zero after markers"});
+    }
+    {
+        // A different post-marker stage: the vertex buffer.
+        MeshSpec spec = good;
+        spec.declared_vertices = 8;
+        cases.push_back({spec, "vertices of 36 bytes",
+                         "short vertex buffer after markers"});
+    }
+    {
+        // And the face indices, later still.
+        MeshSpec spec = good;
+        spec.indices = {0, 1, 9, 0, 2, 3};
+        cases.push_back({spec, "out of range for 4 vertices",
+                         "bad face index after markers"});
+    }
+
+    for (const Case& item : cases) {
+        const nfsu::GeometryReport report =
+            parse(build({item.spec, triangle_spec()}).bytes);
+        if (!has_issue(report, item.needle) || report.meshes.size() != 2U) {
+            std::cerr << "case '" << item.label << "' expected issue containing '"
+                      << item.needle << "'\n";
+            dump_issues(report);
+            check(false, item.label);
+            continue;
+        }
+        const nfsu::Mesh& mesh = report.meshes[0];
+        check(!mesh.valid, item.label + ": the mesh is invalid");
+        check(mesh.markers.empty(), item.label + ": no markers are reported");
+        check(!mesh.has_marker_chunk,
+              item.label + ": the marker chunk flag is cleared");
+        check(mesh.marker_data_offset == 0,
+              item.label + ": the marker data offset is cleared");
+        check(mesh.marker_prefix_bytes == 0,
+              item.label + ": the marker prefix is cleared");
+        // The sound mesh beside it keeps parsing, so this is a per-mesh
+        // withdrawal and not a whole-file one.
+        check(report.meshes[1].valid, item.label + ": the next mesh still parses");
+    }
+
+    // The same rule when the failure is inside the marker chunk itself: the
+    // partially decoded records must not survive either.
+    {
+        MeshSpec spec = good;
+        TestMarker broken;
+        broken.matrix[3] = std::numeric_limits<float>::quiet_NaN();
+        spec.markers = {exhaust, broken};
+        const nfsu::GeometryReport report = parse(build({spec}).bytes);
+        check(has_issue(report, "is not finite"),
+              "a non-finite element in the second marker is reported");
+        check(report.meshes.size() == 1U && !report.meshes[0].valid &&
+                  report.meshes[0].markers.empty() &&
+                  !report.meshes[0].has_marker_chunk &&
+                  report.meshes[0].marker_data_offset == 0 &&
+                  report.meshes[0].marker_prefix_bytes == 0,
+              "a failure inside the marker chunk withdraws the first record too");
+    }
+}
+
 void test_file_loading() {
 
     const fs::path path = fs::temp_directory_path() / "nfsu_geometry_test.bin";
@@ -1493,6 +1608,7 @@ int main() {
     test_structural_errors();
     test_exporter_revalidates_indices();
     test_markers();
+    test_markers_withdrawn_when_a_later_check_fails();
     test_file_loading();
 
     if (g_failures != 0) {

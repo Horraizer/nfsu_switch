@@ -42,6 +42,16 @@ bool printable_ascii(const std::string& text) {
     return true;
 }
 
+// The size-limit issue for either entry point. `what` names the input the
+// caller actually gave, "file" or "buffer", as parse_geometry and
+// load_geometry_file distinguish them.
+std::string size_limit_message(const char* what,
+                               std::uintmax_t size,
+                               std::uint64_t limit) {
+    return std::string(what) + " is " + std::to_string(size) +
+           " bytes; limit is " + std::to_string(limit);
+}
+
 struct RawChunk {
     std::uint32_t id = 0;
     std::uint64_t offset = 0;
@@ -387,8 +397,9 @@ void copy_wheel(const CarWheelPlacement& wheel, PartPlacement& out, std::size_t 
     out.position[1] = wheel.lateral;
     out.position[2] = wheel.vertical;
     out.source = PlacementSource::wheel;
-    out.wheels[0] = index;
-    out.wheel_count = 1;
+    out.index_space = PlacementIndexSpace::wheel;
+    out.sources[0] = index;
+    out.source_count = 1;
 }
 
 // 0x56b1d8 and 0x56b228 add the two positions and scale each component by
@@ -422,6 +433,47 @@ const char* cullable_car_part_name(CullableCarPart part) noexcept {
     return kCullableNames[index];
 }
 
+const char* placement_index_space_name(PlacementIndexSpace space) noexcept {
+    switch (space) {
+    case PlacementIndexSpace::wheel:
+        return "wheels";
+    case PlacementIndexSpace::placement:
+        return "placements";
+    }
+    return "unknown";
+}
+
+bool placement_wheel_sources(const PartPlacement& placement,
+                             std::array<std::size_t, 3>& wheels,
+                             std::size_t& count) noexcept {
+    if (placement.index_space != PlacementIndexSpace::wheel) {
+        return false;
+    }
+    // The count is checked before it is used as a bound, because this takes
+    // a PartPlacement by reference and a caller may hand it one it built
+    // itself rather than one derive_cullable_part_placements produced.
+    if (placement.source_count > placement.sources.size()) {
+        return false;
+    }
+    // Only the first source_count entries mean anything, so only those are
+    // checked and copied; the rest of the output is zeroed rather than taken
+    // from the input. Copying the whole array would hand back entries this
+    // never validated, and a caller that iterated the array instead of the
+    // count would then be back to indexing the wheel table out of range.
+    std::array<std::size_t, 3> checked{};
+    for (std::size_t i = 0; i < placement.source_count; ++i) {
+        if (placement.sources[i] >= kCarWheelCount) {
+            // Unreachable for a placement this translation unit built; the
+            // guard keeps the promise in the header true for any other.
+            return false;
+        }
+        checked[i] = placement.sources[i];
+    }
+    wheels = checked;
+    count = placement.source_count;
+    return true;
+}
+
 const char* placement_source_name(PlacementSource source) noexcept {
     switch (source) {
     case PlacementSource::wheel:
@@ -446,6 +498,15 @@ CarTypeTable parse_car_type_table(
         table.issues.push_back(CarTypeIssue{0, "empty input"});
         return table;
     }
+    // The same bound load_car_type_table applies before it reads a file.
+    // This entry point is public and takes an image the caller obtained some
+    // other way, so it has to enforce the limit itself; otherwise a lowered
+    // max_file_size is silently ignored for every in-memory caller.
+    if (static_cast<std::uint64_t>(size) > limits.max_file_size) {
+        table.issues.push_back(CarTypeIssue{
+            0, size_limit_message("buffer", size, limits.max_file_size)});
+        return table;
+    }
     TableParser parser(data, static_cast<std::uint64_t>(size), limits, table);
     parser.run();
     return table;
@@ -467,8 +528,7 @@ CarTypeTable load_car_type_table(
         file_size > static_cast<std::uintmax_t>(
                         std::numeric_limits<std::streamsize>::max())) {
         table.issues.push_back(CarTypeIssue{
-            0, "file is " + std::to_string(file_size) + " bytes; limit is " +
-                   std::to_string(limits.max_file_size)});
+            0, size_limit_message("file", file_size, limits.max_file_size)});
         return table;
     }
     std::ifstream stream(path, std::ios::binary);
@@ -533,17 +593,19 @@ bool derive_cullable_part_placements(
     PartPlacement& blurs_left = placements[4];
     mean_of(placements[3].position, placements[0].position, blurs_left.position);
     blurs_left.source = PlacementSource::wheel_mean;
-    blurs_left.wheels[0] = 3;
-    blurs_left.wheels[1] = 0;
-    blurs_left.wheel_count = 2;
+    blurs_left.index_space = PlacementIndexSpace::wheel;
+    blurs_left.sources[0] = 3;
+    blurs_left.sources[1] = 0;
+    blurs_left.source_count = 2;
 
     // 0x56b228: the right pair, wheels 2 and 1 in that read order.
     PartPlacement& blurs_right = placements[5];
     mean_of(placements[2].position, placements[1].position, blurs_right.position);
     blurs_right.source = PlacementSource::wheel_mean;
-    blurs_right.wheels[0] = 2;
-    blurs_right.wheels[1] = 1;
-    blurs_right.wheel_count = 2;
+    blurs_right.index_space = PlacementIndexSpace::wheel;
+    blurs_right.sources[0] = 2;
+    blurs_right.sources[1] = 1;
+    blurs_right.source_count = 2;
 
     // 0x56b27b, 0x56b289, 0x56b294, 0x56b2aa: the brakes reuse the wheels.
     copy_wheel(wheels[0], placements[6], 0);
@@ -560,9 +622,13 @@ bool derive_cullable_part_placements(
     PartPlacement& underneath = placements[12];
     mean_of(blurs_right.position, blurs_left.position, underneath.position);
     underneath.source = PlacementSource::part_mean;
-    underneath.wheels[0] = 5;
-    underneath.wheels[1] = 4;
-    underneath.wheel_count = 2;
+    // 5 and 4 are placements, not wheels: this is the one entry the
+    // constructor builds from its own earlier output, and there is no wheel
+    // 4 or 5 to index.
+    underneath.index_space = PlacementIndexSpace::placement;
+    underneath.sources[0] = 5;
+    underneath.sources[1] = 4;
+    underneath.source_count = 2;
 
     // 0x56b33c..0x56b44x: the normal of the plane through wheels 0, 1 and 2,
     // normalized, scaled by wheel 0's radius and added to the centroid.
@@ -576,10 +642,14 @@ bool derive_cullable_part_placements(
                                    normal[2] * normal[2]);
     PartPlacement& shadow = placements[13];
     shadow.source = PlacementSource::plane_offset;
-    shadow.wheels[0] = 0;
-    shadow.wheels[1] = 1;
-    shadow.wheels[2] = 2;
-    shadow.wheel_count = 3;
+    // The offset is applied to placement 12, but the sources named here are
+    // the three wheels whose plane gives the normal, so this stays in the
+    // wheel index space.
+    shadow.index_space = PlacementIndexSpace::wheel;
+    shadow.sources[0] = 0;
+    shadow.sources[1] = 1;
+    shadow.sources[2] = 2;
+    shadow.source_count = 3;
     if (length > kWheelPlaneMinimumLength) {
         const float scale = 1.0F / length;
         for (std::size_t i = 0; i < 3; ++i) {
@@ -608,6 +678,32 @@ bool derive_cullable_part_placements(
             if (!std::isfinite(placements[p].position[axis])) {
                 error = "placement " + std::to_string(p) +
                         " is not finite; the wheel positions are too large";
+                placements = std::array<PartPlacement, kCullableCarPartCount>{};
+                return false;
+            }
+        }
+        // Every source index must be in range for the space it was written
+        // in. The indices above are literals, so this can only fire if one
+        // of them is edited into the wrong space; catching it here keeps a
+        // placement index from ever leaving this function as a wheel index.
+        const PartPlacement& entry = placements[p];
+        const std::size_t bound = entry.index_space == PlacementIndexSpace::wheel
+                                      ? kCarWheelCount
+                                      : kCullableCarPartCount;
+        if (entry.source_count > entry.sources.size()) {
+            error = "placement " + std::to_string(p) + " names " +
+                    std::to_string(entry.source_count) + " sources; at most " +
+                    std::to_string(entry.sources.size()) + " fit";
+            placements = std::array<PartPlacement, kCullableCarPartCount>{};
+            return false;
+        }
+        for (std::size_t i = 0; i < entry.source_count; ++i) {
+            if (entry.sources[i] >= bound) {
+                error = "placement " + std::to_string(p) + " source " +
+                        std::to_string(i) + " is " +
+                        std::to_string(entry.sources[i]) + ", outside the " +
+                        std::to_string(bound) + "-entry " +
+                        placement_index_space_name(entry.index_space) + " table";
                 placements = std::array<PartPlacement, kCullableCarPartCount>{};
                 return false;
             }
