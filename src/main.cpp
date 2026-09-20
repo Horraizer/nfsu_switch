@@ -10,10 +10,12 @@
 #include "nfsu/track_collision.h"
 #include "nfsu/track_objects.h"
 #include "nfsu/track_scene.h"
+#include "nfsu/track_visibility.h"
 
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -1392,6 +1394,137 @@ int run_track_objects(
 }
 
 // ---------------------------------------------------------------------------
+// track-visibility: which scenery instances one camera can see in one
+// explicitly selected region, under the rule recovered in
+// docs/TRACK_VISIBILITY.md or under one of its explicit fallbacks.
+// ---------------------------------------------------------------------------
+
+constexpr std::size_t kTrackVisibleListLimit = 32;
+
+// A finite float, with the whole argument consumed.
+bool parse_f32(const std::string& text, float& out) {
+    if (text.empty()) {
+        return false;
+    }
+    try {
+        std::size_t used = 0;
+        const float value = std::stof(text, &used);
+        if (used != text.size() || !std::isfinite(value)) {
+            return false;
+        }
+        out = value;
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+struct TrackVisibilityArgs {
+    nfsu::TrackCamera camera;
+    nfsu::TrackCullOptions options;
+    std::size_t list_limit = kTrackVisibleListLimit;
+};
+
+int run_track_visibility(
+    const fs::path& path,
+    std::uint64_t offset,
+    std::uint64_t size,
+    const TrackVisibilityArgs& args) {
+    std::vector<unsigned char> region_bytes;
+    nfsu::TrackRegionSelector selector;
+    selector.offset = offset;
+    selector.size = size;
+    const nfsu::TrackObjectReport objects =
+        nfsu::load_track_objects(path, selector, region_bytes);
+
+    std::cout << "file: " << path.string() << '\n';
+    std::cout << "region: offset " << objects.region.offset << " size "
+              << objects.region.size << " bytes read " << region_bytes.size()
+              << '\n';
+    std::cout << "sections: " << objects.sections.size() << " valid "
+              << objects.valid_section_count() << '\n';
+    for (const nfsu::TrackIssue& issue : objects.issues) {
+        std::cerr << "region issue at " << issue.offset << ": " << issue.message
+                  << '\n';
+    }
+
+    nfsu::TrackFrustum frustum;
+    if (!nfsu::track_frustum_look_at(args.camera, frustum)) {
+        std::cerr << "error: the camera is degenerate and builds no frustum\n";
+        return 1;
+    }
+
+    const nfsu::TrackCamera& camera = args.camera;
+    std::cout << "camera: world eye " << camera.eye[0] << ' ' << camera.eye[1]
+              << ' ' << camera.eye[2] << " target " << camera.target[0] << ' '
+              << camera.target[1] << ' ' << camera.target[2] << '\n';
+    std::cout << "camera: fov " << camera.vertical_fov << " rad aspect "
+              << camera.aspect << " near " << camera.near_plane << " far "
+              << camera.far_plane << '\n';
+    for (std::size_t i = 0; i < nfsu::kTrackFrustumPlanes; ++i) {
+        const nfsu::TrackPlane& plane = frustum.planes[i];
+        std::cout << "  plane " << i << " raw normal " << plane.normal[0] << ' '
+                  << plane.normal[1] << ' ' << plane.normal[2] << " d "
+                  << plane.d << '\n';
+    }
+
+    const nfsu::TrackCullReport report =
+        nfsu::cull_track_region(objects, frustum, args.options);
+
+    std::cout << "policy: requested "
+              << nfsu::track_cull_policy_name(report.requested_policy)
+              << " held " << (report.policy_held ? "yes" : "no") << '\n';
+    std::cout << "sections: considered " << report.stats.sections_considered
+              << " resident " << report.stats.sections_resident << " degraded "
+              << report.stats.sections_degraded << '\n';
+    for (const nfsu::TrackSectionCull& section : report.sections) {
+        std::cout << "  section " << section.section_index << " number "
+                  << section.number << " letter "
+                  << (section.has_letter ? section.letter : '?')
+                  << (section.resident ? " resident" : " not resident")
+                  << " policy " << nfsu::track_cull_policy_name(section.policy_used)
+                  << " containment "
+                  << (!section.containment_checked
+                          ? "unchecked"
+                          : (section.containment_holds ? "holds" : "broken"))
+                  << " instances " << section.instances << " visible "
+                  << section.visible << '\n';
+    }
+
+    std::cout << "nodes: visited " << report.stats.nodes_visited << " tested "
+              << report.stats.node_tests << " culled "
+              << report.stats.nodes_culled << '\n';
+    std::cout << "instances: visited " << report.stats.instances_visited
+              << " pruned " << report.stats.instances_pruned << " box tests "
+              << report.stats.instance_tests << '\n';
+    std::cout << "culled: by mask " << report.stats.instances_culled_by_mask
+              << " by box " << report.stats.instances_culled_by_box
+              << " by size " << report.stats.instances_culled_by_size << '\n';
+    std::cout << "visible: " << report.stats.instances_visible << '\n';
+
+    std::size_t listed = 0;
+    for (const nfsu::TrackVisibleInstance& item : report.visible) {
+        if (listed >= args.list_limit) {
+            std::cout << "  ... " << (report.visible.size() - listed)
+                      << " more visible instances not listed\n";
+            break;
+        }
+        ++listed;
+        std::cout << "  section " << item.section_index << " instance "
+                  << item.instance_index << " node " << item.node_index
+                  << " node " << nfsu::track_box_class_name(item.node_class)
+                  << " box " << nfsu::track_box_class_name(item.instance_class)
+                  << " level " << item.screen_level << '\n';
+    }
+
+    for (const nfsu::TrackIssue& issue : report.issues) {
+        std::cerr << "visibility issue at " << issue.offset << ": "
+                  << issue.message << '\n';
+    }
+    return (objects.ok() && report.ok()) ? 0 : 3;
+}
+
+// ---------------------------------------------------------------------------
 // body-skin-inputs: read-only diagnostics for the assembled layer list.
 // It opens only the files named on the command line, and it writes nothing.
 // ---------------------------------------------------------------------------
@@ -2246,6 +2379,147 @@ const Command kCommands[] = {
          return run_track_objects(fs::path(argv[2]), offset, size,
                                   has_geometry, geometry_offset,
                                   geometry_size);
+     }},
+    {"track-visibility",
+     " <STREAM.BUN> <offset> <size>",
+     "      <eye-x> <eye-y> <eye-z> <target-x> <target-y> <target-z>\n"
+     "      [--fov <radians>] [--aspect <ratio>] [--near <n>] [--far <f>]\n"
+     "      [--policy <retail-tree|draw-everything|flat-instance-test>]\n"
+     "      [--residency <every|no-zone|zone>] [--zone <section-number>]...\n"
+     "      [--mask <0xNN>] [--screen-scale <s>] [--list <count>]\n"
+     "      (eye and target are in the world frame of docs/FORMATS.md:286)\n",
+     [](int argc, char** argv) {
+         if (argc < 11) {
+             print_usage();
+             return 1;
+         }
+         std::uint64_t offset = 0;
+         std::uint64_t size = 0;
+         if (!parse_u64(std::string(argv[3]), offset)) {
+             std::cerr << "error: offset must be a decimal or 0x integer\n";
+             return 1;
+         }
+         if (!parse_u64(std::string(argv[4]), size)) {
+             std::cerr << "error: size must be a decimal or 0x integer\n";
+             return 1;
+         }
+         TrackVisibilityArgs args;
+         for (int i = 0; i < 3; ++i) {
+             if (!parse_f32(std::string(argv[5 + i]), args.camera.eye[i])) {
+                 std::cerr << "error: the eye must be three finite floats\n";
+                 return 1;
+             }
+             if (!parse_f32(std::string(argv[8 + i]), args.camera.target[i])) {
+                 std::cerr << "error: the target must be three finite floats\n";
+                 return 1;
+             }
+         }
+         for (int i = 11; i < argc; ++i) {
+             const std::string flag = argv[i];
+             const bool has_value = i + 1 < argc;
+             const std::string value = has_value ? argv[i + 1] : std::string();
+             const auto take_float = [&](float& out) {
+                 if (!has_value || !parse_f32(value, out)) {
+                     std::cerr << "error: " << flag
+                               << " needs a finite float\n";
+                     return false;
+                 }
+                 ++i;
+                 return true;
+             };
+             if (flag == "--fov") {
+                 if (!take_float(args.camera.vertical_fov)) {
+                     return 1;
+                 }
+             } else if (flag == "--aspect") {
+                 if (!take_float(args.camera.aspect)) {
+                     return 1;
+                 }
+             } else if (flag == "--near") {
+                 if (!take_float(args.camera.near_plane)) {
+                     return 1;
+                 }
+             } else if (flag == "--far") {
+                 if (!take_float(args.camera.far_plane)) {
+                     return 1;
+                 }
+             } else if (flag == "--screen-scale") {
+                 if (!take_float(args.options.screen_scale)) {
+                     return 1;
+                 }
+                 args.options.use_screen_size = true;
+                 nfsu::track_raw_from_world(args.camera.eye,
+                                            args.options.screen_eye);
+                 float forward_world[3] = {
+                     args.camera.target[0] - args.camera.eye[0],
+                     args.camera.target[1] - args.camera.eye[1],
+                     args.camera.target[2] - args.camera.eye[2]};
+                 nfsu::track_raw_from_world(forward_world,
+                                            args.options.screen_forward);
+             } else if (flag == "--policy") {
+                 if (value == "retail-tree") {
+                     args.options.policy = nfsu::TrackCullPolicy::retail_tree;
+                 } else if (value == "draw-everything") {
+                     args.options.policy =
+                         nfsu::TrackCullPolicy::draw_everything;
+                 } else if (value == "flat-instance-test") {
+                     args.options.policy =
+                         nfsu::TrackCullPolicy::flat_instance_test;
+                 } else {
+                     std::cerr << "error: --policy must be retail-tree, "
+                                  "draw-everything or flat-instance-test\n";
+                     return 1;
+                 }
+                 ++i;
+             } else if (flag == "--residency") {
+                 if (value == "every") {
+                     args.options.residency.rule =
+                         nfsu::TrackResidencyRule::every_section;
+                 } else if (value == "no-zone") {
+                     args.options.residency.rule =
+                         nfsu::TrackResidencyRule::no_zone;
+                 } else if (value == "zone") {
+                     args.options.residency.rule =
+                         nfsu::TrackResidencyRule::zone_list;
+                 } else {
+                     std::cerr << "error: --residency must be every, no-zone "
+                                  "or zone\n";
+                     return 1;
+                 }
+                 ++i;
+             } else if (flag == "--zone") {
+                 std::uint64_t number = 0;
+                 if (!has_value || !parse_u64(value, number) ||
+                     number > 0xFFFFU) {
+                     std::cerr << "error: --zone needs a section number\n";
+                     return 1;
+                 }
+                 args.options.residency.zone_sections.push_back(
+                     static_cast<std::uint32_t>(number));
+                 ++i;
+             } else if (flag == "--mask") {
+                 std::uint64_t mask = 0;
+                 if (!has_value || !parse_u64(value, mask) || mask > 0xFFU) {
+                     std::cerr << "error: --mask needs a byte\n";
+                     return 1;
+                 }
+                 args.options.instance_mask =
+                     static_cast<std::uint8_t>(mask);
+                 ++i;
+             } else if (flag == "--list") {
+                 std::uint64_t count = 0;
+                 if (!has_value || !parse_u64(value, count)) {
+                     std::cerr << "error: --list needs a count\n";
+                     return 1;
+                 }
+                 args.list_limit = static_cast<std::size_t>(count);
+                 ++i;
+             } else {
+                 std::cerr << "error: unknown option " << flag << '\n';
+                 return 1;
+             }
+         }
+         return run_track_visibility(fs::path(argv[2]), offset, size, args);
      }},
     {"track-collision", " <TRACKB####.lzc> [px pz]", "",
      [](int argc, char** argv) {

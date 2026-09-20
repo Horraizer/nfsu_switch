@@ -108,7 +108,17 @@
   against explicit ordered track texture sources through the same
   `RenderTextureSet` the car scene uses; per-material effect state is
   still to do.
-- Add visibility, camera, and static collision.
+- Add visibility, camera, and static collision. Scenery visibility is
+  recovered from the executable and implemented for one bounded region:
+  the six-plane box test, the bounding-tree prune it drives and the
+  per-instance gates (`include/nfsu/track_visibility.h`, `nfsu_probe
+  track-visibility`, [`TRACK_VISIBILITY.md`](TRACK_VISIBILITY.md)). The
+  zone layer that picks which sections are drawn is recovered as a rule,
+  but the record layout inside its `0x80034150` chunk is not decoded yet,
+  so residency defaults to an explicit draw-every-section fallback. The
+  chunk itself is reachable: every `Tracks/*.lzc` carries one once
+  `nfsu::jdlz_decompress` has opened the container. Static collision is
+  still to do.
 - Measure CPU, memory, and draw-call costs.
 
 ## M3: Switch bring-up
