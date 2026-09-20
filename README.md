@@ -91,6 +91,18 @@ any problem. Track meshes use a 24-byte vertex; a mesh whose vertex-format
 word selects the 36-byte or 60-byte retail layout is refused by name
 rather than guessed at. See `docs/TRACK.md` for the byte evidence, the
 decoded retail region and the read-only acceptance procedure.
+`track-objects` decodes the scenery sections of one explicitly selected
+byte range of the same container, bounded the same way: the per-section
+object directory with its six mesh-hash slots per object, the instances
+that place those objects with a float translation and a fixed-point 3x3
+matrix, and the bounding tree that indexes them. It refuses a tree that is
+not a tree, an instance that names no object and a record array that is
+not a whole number of records, each with an absolute file offset, and it
+exits 3 if the region has any problem. Given a second offset and length it
+also resolves every object mesh hash against that region's geometry and
+cross-checks each instance's stored box against the mesh it places; a hash
+another section carries is reported unresolved rather than treated as an
+error. See `docs/TRACK_OBJECTS.md`.
 `stock-parts` applies the game's stock-part rules to one car type and
 prints the chosen record per slot with each LOD mesh hash resolved against
 the `GEOMETRY.BIN` files given after the car type, including the mesh the

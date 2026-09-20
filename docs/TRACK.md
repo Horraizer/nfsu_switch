@@ -12,10 +12,13 @@ This note covers exactly two things:
 2. one explicitly bounded region of one `Tracks/STREAM*.BUN` file, decoded
    end to end into a draw list with cost statistics.
 
-It deliberately stops there. Object instances and transforms, visibility
-groups, collision and the streaming tables that decide which region is
-resident are not decoded, and nothing here should be read as a claim about
-a complete track.
+It deliberately stops there. Visibility groups, collision and the
+streaming tables that decide which region is resident are not decoded, and
+nothing here should be read as a claim about a complete track. The object
+directory, the instance transforms and the bounding tree that place this
+geometry in the world are decoded in
+[`TRACK_OBJECTS.md`](TRACK_OBJECTS.md), from the `0x80034100` chunk that
+sits beside each geometry root.
 
 Reference samples for this document:
 
@@ -638,10 +641,10 @@ decoded partially. Two examples from the same installation:
 - The colour byte order and meaning, as for the car vertex.
 - `0x00134002` beyond its first four words and the source path.
 - How the game reads a count word whose high half is set.
-- The `0x80034100`, `0x00E34010`, `0x00034035` and `0xB0300100` chunks
-  that sit beside the geometry roots, and the `0x80034020` / `0x00039200`
-  family whose handler is at 0x00472B05.
-- Everything about streaming: which regions are resident together, what
-  the `_NNNN` section numbers select, and how a region is placed in the
-  world. Nothing in this note decodes an instance transform, a visibility
-  group or collision.
+- The `0x00E34010`, `0x00034035` and `0xB0300100` chunks that sit beside
+  the geometry roots, and the `0x80034020` / `0x00039200` family whose
+  handler is at 0x00472B05. The `0x80034100` chunk beside them is decoded
+  in [`TRACK_OBJECTS.md`](TRACK_OBJECTS.md).
+- Everything about streaming: which regions are resident together and what
+  the `_NNNN` section numbers select. Nothing in this note decodes a
+  visibility group or collision.
