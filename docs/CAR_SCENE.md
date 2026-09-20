@@ -257,6 +257,17 @@ priority rule. The executable evidence establishes target selection, inputs,
 layer order and paired-mask lookup. The per-pixel work that follows is in
 [`BODY_SKIN.md`](BODY_SKIN.md).
 
+Issue #28 traced the gatherer itself to the instruction: the exact string
+each of the three name helpers builds, the multiply-by-33 continuation that
+forms a mask hash without building its string, which sources take
+`NUMCOLOURS` from a part and which take the constant `0x10`, the five paths
+that drop a source, the vinyl-layer de-duplication on part identity, the
+Direct3D lock protocol behind the pixel pointers, and the fact that no
+source dimension and no mip level is ever read. It also settles why one
+composite can mix a paletted vinyl with a 32-bit doorline. See
+[`SKIN_INPUTS.md`](SKIN_INPUTS.md), which supersedes the summary above
+wherever the two differ in detail.
+
 ## Track geometry lead
 
 The large `STREAML1R*.BUN` files form valid bounded chunk trees. Their meshes
