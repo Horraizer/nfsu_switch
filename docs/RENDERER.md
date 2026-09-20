@@ -9,7 +9,7 @@ and writes it as a TGA screenshot. The screenshot is the acceptance
 artifact. There is no window and no platform graphics API.
 
 ```text
-nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> <out.tga> [--shared-textures FILE]... [--mesh-index N | --mesh-name NAME | --mesh-hash HEX]... [options]
+nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> <out.tga> [--shared-textures FILE]... [--mesh-index N | --mesh-name NAME | --mesh-hash HEX]... [--skin-car NAME [--skin-* ...]] [options]
 ```
 
 | Option | Range | Default |
@@ -31,8 +31,15 @@ nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> <out.tga> [--shared-textures FILE]... 
 | `--mesh-name NAME` | 1..28 printable ASCII bytes, repeatable | none (all meshes) |
 | `--mesh-hash HEX` | 1..8 hex digits, optional `0x`, repeatable | none (all meshes) |
 
+The `--skin-*` options are listed in
+[`RUNTIME_SKIN.md`](RUNTIME_SKIN.md) and summarized under "Runtime body
+skin" below. They do nothing unless `--skin-car NAME` is given, and giving
+one without it is a usage error (exit 1).
+
 Each option may be given once, except `--shared-textures` (at most 8
-times) and the mesh selectors (see below). Numbers are parsed with `std::from_chars`
+times), the mesh selectors (see below) and the repeatable `--skin-bind`,
+`--skin-bind-hash`, `--skin-vinyl`, `--skin-vinyl-color` and
+`--skin-special`. Numbers are parsed with `std::from_chars`
 and must be consumed completely and be finite. Anything else is a usage
 error (exit 1). An output path that exists or names an input is refused
 before loading (exit 1). Rendering or writing failures exit with 2. If the frame is
@@ -112,6 +119,59 @@ H source S pack P texture R`, in source, pack, record and claim order). The `tex
 pack alone. Problems in shared sources are printed on stderr as `texture
 source N [pack P] issue at ...`. The exit code is 3 if any source reported
 an issue.
+
+## Runtime body skin
+
+Off unless `--skin-car NAME` is given. Without it no extra file is read, no
+line of the report changes and the TGA is unchanged; that is checked
+against a build of the previous commit, byte for byte
+([`RUNTIME_SKIN.md`](RUNTIME_SKIN.md)).
+
+With it, the viewer composes the car's body skin from an explicit
+customization selection and binds the result so that a material group
+naming one of the bound hashes resolves to it.
+
+- The composite target is named by `--skin-target NAME` (default
+  `DUMMY_SKIN1`) or `--skin-target-hash HEX`. Which composite routine runs
+  is taken from that record, never from an option.
+- Skin input packs are searched in a fixed order: the car's
+  `TEXTURES.BIN`, then `--skin-vinyls FILE`, then each `--shared-textures
+  FILE` in the order given, first claim wins. This is the rule
+  `decode_render_texture_sources` uses, over a different list. Every one of
+  these packs is parsed exactly once, by the viewer, for both purposes;
+  nothing is parsed twice.
+- `--skin-vinyls` is a skin input source only. It never becomes a material
+  texture source and is not a `--shared-textures` file, so texture source
+  numbering is unchanged. It is bounded by the same 256 MiB per-file cap,
+  and the bytes it takes come out of the same 512 MiB total, so it lowers
+  what is left for the shared files read after it. The car's pack and this
+  file cannot exceed that total between them, so the clamp on this one file
+  never binds; it is kept so the rule holds if either constant changes.
+- The generated texture is bound to the target hash and, unless
+  `--skin-no-body-bind` is given, to `bin_hash("<NAME>_SKIN1")`, the hash
+  the retail render path replaces with `RideInfo+0x444`. `--skin-bind NAME`
+  and `--skin-bind-hash HEX` add more, up to three hashes in total.
+- It outranks every pack source for those hashes: any decoded texture or
+  unusable claim that claims one is removed from the set and reported, so
+  the generated texture is the single claimant `resolve_material` needs.
+  No pack is modified and `RenderTextureSet::shadowed` is left alone,
+  because it records what the decode did.
+- The per-source decode counts on stdout are taken before binding, so they
+  keep describing the decode.
+- `--skin-dump FILE` writes the generated texture as a TGA through the same
+  no-replace protocol as the screenshot, after the composite and before the
+  render. It is refused if it exists, names an input, or names the
+  screenshot.
+
+stdout gains one `skin source I: <label>` line per skin input source
+actually searched (a file whose packs the assembly layer would refuse is
+left out, reported on stderr, and makes the exit code 3), then `skin:`,
+`skin target:`, `skin paint:`, one `skin input` line
+per selected source index, one `skin bound:` line per hash, one `skin
+displaced:` or `skin displaced claim:` line per record the binding removed,
+`skin generated:` and, with a dump, `skin dump:`. A selected input that did
+not resolve is reported with its skip reason, is not fatal, and makes the
+exit code 3.
 
 ## Mesh selection and the prepared scene
 
@@ -540,6 +600,34 @@ nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> build/shots/s.tga --shared-textures <G
   fallback). 9 hashes were wanted from GLOBALB and 4 of its textures
   decoded.
 
+### Runtime body skin
+
+Read-only, with an explicit selection, mesh 259 `240SX_KIT00_BODY_A` at
+640x360, the car pack plus `Global/GLOBALB.BUN` and `Cars/TEXTURES.BIN`:
+
+```text
+nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> build/shots/skin.tga --shared-textures <GLOBAL/GLOBALB.BUN> --shared-textures <Cars/TEXTURES.BIN> --skin-car 240SX --skin-vinyls <Cars/240SX/VINYLS.BIN> --skin-vinyl 0 TRIBAL5 16 no-remap --skin-doorline plain --skin-base 200 30 30 128 --skin-special 0 255 200 0 128 --mesh-name 240SX_KIT00_BODY_A --width 640 --height 360
+```
+
+- The target resolved to `DUMMY_SKIN1` `0x530B82B0` in `Cars/TEXTURES.BIN`,
+  record 120, format code 0x20 / D3DFORMAT 21, 512x512, one mip level. The
+  path taken from that record is type 32, object type byte 0x20, not
+  expanded. The generated texture is 512x512, 1048576 bytes.
+- Two layers were assembled, owning 4198400 bytes: `240SX_TRIBAL5` with
+  `240SX_TRIBAL5_MASK` expanded from `VINYLS.BIN`, and `240SX_DOORLINE`
+  with `240SX_DOORLINE_MASK` passed through from the car's pack.
+- It was bound under `0x530B82B0` and `0x77A20245`, displacing nothing,
+  because no pack record claims either hash.
+- The same command at the previous commit reported 3 material groups, all
+  unresolved, 804 triangles all fallback and 16432 pixels all fallback. With
+  the runtime skin all 3 groups resolve, all 804 triangles are textured, no
+  hash is left unresolved and no pixel is fallback.
+- Two runs gave byte-identical screenshots and byte-identical generated
+  textures. All five retail files were unchanged before and after
+  ([`RUNTIME_SKIN.md`](RUNTIME_SKIN.md) lists their hashes) and nothing was
+  written into the installation. The derived images were deleted after
+  checking.
+
 ### Inferred
 
 - Raw UVs with a top-left texture origin, rows as decoded, are correct for
@@ -547,7 +635,9 @@ nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> build/shots/s.tga --shared-textures <G
 - Most visible surfaces are fallback-colored because the body skin
   (0x77A20245) and other shared textures live outside the car's pack.
   With GLOBALB.BUN the underside (0xBD1F0E0A), carbon (0x721AFF7C) and six
-  more resolve. The body skin still does not.
+  more resolve. The body skin does not, because no record claims that hash
+  anywhere; it needs `--skin-car`, which composes the skin and binds it
+  under that hash as well (see "Runtime body skin" above).
 - Vertex colors look like a grey mask or baked term rather than a color
   tint. Multiplying by them would turn about 39% of vertices black, so
   `--vertex-color` is off by default.

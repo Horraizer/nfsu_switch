@@ -1144,6 +1144,23 @@ bool write_frame_tga(
         result.error = "frame is empty";
         return false;
     }
+    return write_rgba_tga(frame.width(), frame.height(), frame.rgba(), target, sources,
+                          result);
+}
+
+bool write_rgba_tga(
+    std::uint32_t width,
+    std::uint32_t height,
+    const std::vector<unsigned char>& rgba,
+    const std::filesystem::path& target,
+    const std::vector<std::filesystem::path>& sources,
+    FrameWriteResult& result) {
+    result.error.clear();
+    result.not_removed.clear();
+    if (width == 0 || height == 0) {
+        result.error = "image is empty";
+        return false;
+    }
     fs::path partial = target;
     partial += ".partial";
     for (const fs::path& source : sources) {
@@ -1169,8 +1186,7 @@ bool write_frame_tga(
         std::ostringstream stream(std::ios::binary);
         std::string error;
         try {
-            if (!write_tga(stream, frame.width(), frame.height(), frame.rgba(),
-                           error)) {
+            if (!write_tga(stream, width, height, rgba, error)) {
                 result.error = error;
                 return false;
             }

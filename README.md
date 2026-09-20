@@ -82,6 +82,7 @@ build/nfsu_viewer X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN X:/Games/NFSU/Cars/240SX
 build/nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> build/front.tga --yaw 0 --pitch 5 --distance 3 --width 800 --height 600
 build/nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> build/shared.tga --shared-textures X:/Games/NFSU/GLOBAL/GLOBALB.BUN
 build/nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> build/part.tga --mesh-name 240SX_KITW01_BODY_A --mesh-index 4 --mesh-hash 0x013953B3
+build/nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> build/skin.tga --shared-textures X:/Games/NFSU/Global/GLOBALB.BUN --shared-textures X:/Games/NFSU/Cars/TEXTURES.BIN --skin-car 240SX --skin-vinyls X:/Games/NFSU/Cars/240SX/VINYLS.BIN --skin-vinyl 0 TRIBAL5 16 no-remap --skin-doorline plain --skin-base 200 30 30 128
 ```
 
 Textures come only from files named on the command line. The car's
@@ -134,6 +135,20 @@ identifier it saw, converts only in the three cases retail evidence proves,
 and refuses the rest. `nfsu_probe body-skin-inputs` prints the whole
 assembled layer list with its provenance and writes nothing. See
 `docs/SKIN_INPUTS.md`.
+
+`nfsu_runtime_skin` (`include/nfsu/runtime_skin.h`) closes the chain. It
+takes the compositor path from the real target record instead of from an
+option - a record whose format code is 0x20 keeps that byte, a paletted one
+has it rewritten to 0x20 by the upload, and anything else is refused with
+the instruction that would have turned it away - reads the untouched target
+so the marker scan sees it, runs the proven composite and converts the
+result to RGBA8 with the same byte mapping a decoded A8R8G8B8 level gets.
+It then binds the generated texture into a `RenderTextureSet` under an
+explicit list of hashes, removing and reporting every pack record that
+claimed one, so a prepared scene resolves those material groups to it. No
+pack is modified and nothing is parsed twice. `nfsu_viewer --skin-car NAME`
+drives it; without that option nothing in this chain runs and the viewer's
+output is byte-identical to before. See `docs/RUNTIME_SKIN.md`.
 
 Selection and material lookup happen once, in `prepare_car_scene`
 (`include/nfsu/scene.h`). It builds a self-contained `PreparedCarScene`

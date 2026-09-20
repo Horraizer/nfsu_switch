@@ -317,4 +317,16 @@ bool write_frame_tga(
     const std::vector<std::filesystem::path>& sources,
     FrameWriteResult& result);
 
+// The same write, for an RGBA8 image that is not a rendered frame, for
+// example a generated texture. rgba must hold exactly width * height * 4
+// bytes. Every rule above applies unchanged, including the refusal to
+// replace an existing target.
+bool write_rgba_tga(
+    std::uint32_t width,
+    std::uint32_t height,
+    const std::vector<unsigned char>& rgba,
+    const std::filesystem::path& target,
+    const std::vector<std::filesystem::path>& sources,
+    FrameWriteResult& result);
+
 } // namespace nfsu

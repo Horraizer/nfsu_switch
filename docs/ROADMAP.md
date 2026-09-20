@@ -14,9 +14,10 @@
 - Decode `TEXTURES.BIN` texture packs.
 - Decode the embedded texture packs of `GLOBAL/GLOBALB.BUN` and resolve
   shared car textures from explicit, ordered sources. Runtime body-skin
-  composition into `DUMMY_SKIN1` is still to do; `%s_SKIN1` is the static
-  fallback. P8 vinyl index chains and palettes are now structurally
-  extracted without guessing the blend.
+  composition into `DUMMY_SKIN1` is in place and the generated texture is
+  bound under the `%s_SKIN1` hash the retail render path overrides
+  ([`RUNTIME_SKIN.md`](RUNTIME_SKIN.md)). P8 vinyl index chains and
+  palettes are structurally extracted without guessing the blend.
 - Export diagnostic meshes and images.
 - Render one complete car on desktop: deterministic CPU reference renderer
   and TGA screenshot (`nfsu_viewer`, `docs/RENDERER.md`). An interactive
@@ -44,8 +45,16 @@
   `nfsu_probe body-skin-inputs`, [`SKIN_INPUTS.md`](SKIN_INPUTS.md)). It
   takes an explicit customization selection, resolves the pairs out of
   read-only packs with full provenance and owns every buffer the request
-  points at. Binding the composited skin into `PreparedCarScene` and the
-  viewer is still to do.
+  points at.
+- The composed skin now reaches the screen
+  (`include/nfsu/runtime_skin.h`, `nfsu_viewer --skin-car`,
+  [`RUNTIME_SKIN.md`](RUNTIME_SKIN.md)). The compositor path is taken from
+  the real target record, the result is bound into `RenderTextureSet` at a
+  documented priority over every pack source, and `prepare_car_scene`
+  resolves the body material groups to it. Without the `--skin-*` options
+  the viewer is byte-identical to before. Which customization a car
+  actually has is still the caller's to state: no part database is read
+  here.
 - Track retail evidence and remaining unknowns in
   [`CAR_SCENE.md`](CAR_SCENE.md).
 
