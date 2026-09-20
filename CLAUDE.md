@@ -54,8 +54,8 @@ agent: <model, and the session or subagent label>
 
 - Work only on the assigned Gitea issue and its explicit dependencies.
 - Use subagents when the assignment requests them, and say in the handoff what
-  each one found. One that mutates a tree needs its own worktree; see Shared
-  checkout.
+  each one found. One that mutates or measures a tree needs its own worktree;
+  see Shared checkout.
 - Keep retail game files strictly read-only.
 - Follow the ASCII-only artifact rule below.
 - A worker does not merge pull requests.
@@ -63,8 +63,8 @@ agent: <model, and the session or subagent label>
 ## Shared checkout
 
 Several sessions share one repository, and more than one is routinely live. A
-subagent is a second writer its dispatcher cannot see or stop mid-run, so these
-rules bind it too.
+subagent is a second writer whose writes its dispatcher does not see until they
+have already landed, so these rules bind it too.
 
 - Resolve remote-tracking refs, not local branches, for any work that is not
   your own. A fetch updates `origin/<branch>` and leaves the local branch where
@@ -106,18 +106,21 @@ rules bind it too.
   and a subagent pointed at a branch has to be told before the branch moves.
   Both directions have already cost work. On issue #38 an adversarial subagent
   aimed at the worker's own tree ran `git checkout --` during a mutation pass,
-  reverted two uncommitted files, overwrote a scratchpad script, and could not
-  be stopped. On issue #39 it ran the other way: the worker amended one commit
+  reverted two uncommitted files, overwrote a scratchpad script, and produced
+  no report. On issue #39 it ran the other way: the worker amended one commit
   three times inside eight minutes - `8d8643a`, `ad0d944`, `7b7634f` - while
   its subagent measured the branch, and the report had to be reconciled against
-  a head that had moved under it.
+  a head that had moved under it. A dispatcher can stop its own subagent -
+  `TaskStop` ends a backgrounded one by name or id - but not one another
+  session dispatched, and no stop recalls a write that has already landed.
 - A finished subagent looks exactly like a working one, in both directions.
   Apply the liveness test under Coordinator duties to the subagent's own
   output, never to a directory above it, whose mtime moves with your own
   activity. This branch's own adversarial pass showed an empty output file and
   untouched artifacts across two samples, then delivered a full report four
-  minutes later. A pass that reported nothing is recorded as not performed: an
-  unread transcript is not assurance.
+  minutes later. An idle sample is not a finished subagent: the report is the
+  only signal that it is done, and it arrives on its own. A pass that reported
+  nothing is recorded as not performed: an unread transcript is not assurance.
 - Never `git checkout` in the main working tree unless your own branch is the
   one already checked out there.
 - Re-read a shared file immediately before writing it if the write is not part
@@ -371,9 +374,10 @@ routine status.
 
 ## What these rules actually cover
 
-Every failure that shaped this document is named below; one equal-weight rule
-each would imply it closed them all. It has mechanically closed none of them,
-and earlier drafts of this section claimed otherwise twice.
+The failures named below are the ones these rules were written against; one
+equal-weight rule each would imply it closed them all. It has mechanically
+closed none of them, and earlier drafts of this section claimed otherwise
+twice.
 
 The scope diff came closest, but what survives is a two-part discipline that
 still depends on the operator fetching first and reading the right ref - not a
