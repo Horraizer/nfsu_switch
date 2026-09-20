@@ -42,45 +42,88 @@
 #     if (command == "track-objects") { ... }
 #
 # into main() after the table dispatch loop with no conflict reported. It
-# compiled, it ran, and the three inventories agreed. Two more checks close
-# it from opposite sides:
+# compiled, it ran, and the three inventories agreed.
 #
-#   the shape of main()  argv[1] is read once, in main(), into one named
-#                        variable; main() loops over kCommands; the only
-#                        line in main() that selects on a value is that
-#                        loop's comparison against an entry's own `name`;
-#                        and no command name is spelled inside main() at
-#                        all;
-#   the name literals    every command-shaped string literal anywhere in
-#                        src/main.cpp is either a registered command or is
-#                        refused, by name, by the built program.
+# WHAT THE TWO CHECKS BELOW ARE FOR
 #
-# The first is the cheap one and catches the shape above where it landed.
-# The second does not care how the dispatch is written - a switch, a helper,
-# a lambda, a map at namespace scope - only that the name it answers to is
-# spelled somewhere in the file, and it asks the program itself rather than
-# this file's idea of C++.
+# That defect was an accident. Git glued a handler into main() and nobody was
+# prompted to look, which is what makes an auto-merge the dangerous route.
+# The checks below are built for that: a handler that lands in main() carries
+# a comparison into main(), and a comparison in main() is what they refuse.
 #
-# Between them they catch every shape tried against them but one: a helper
-# outside main() that compares the name against a string assembled at run
-# time, called from main() by a line that compares nothing. main() then has
-# no comparison to find and the name is spelled nowhere, so both checks pass
-# on a binary that answers to it. That mutant was built and it dispatches.
-# Closing it needs the dispatch itself to be derivable from the table, which
-# is a change to src/main.cpp and not to this check.
+#   the shape of main()  argv[1] is read in main() and bound by a line this
+#                        file can name the variable from; main() loops over
+#                        kCommands; and the only line in main() that selects
+#                        on a command name is that loop's comparison against
+#                        an entry's own `name`;
+#   the name literals    every command-shaped string literal in src/main.cpp
+#                        is either a registered command or is refused, by
+#                        name, by the built program under each of several
+#                        argument counts.
 #
-# The candidate names for the second check are read from the source and not
-# from the binary, which is the stronger place to read them but not one CMake
-# can reach. file(STRINGS) drops a non-printable byte instead of ending the
-# string at it, so every NUL-separated literal between two newlines arrives
-# glued into one run: measured on this program's nfsu_probe.exe, 40 runs, the
-# longest 2017982 characters. Recovering tokens out of those runs takes 23
-# seconds, loses every boundary between two adjacent all-letter literals, and
-# yields 3222 candidates, which is 3222 process launches against a 60 second
-# test timeout. Reading the source costs nothing and keeps every boundary.
-# Beside the assembled name above, what it gives up is a literal that lives
-# in another translation unit; main() is here, so a dispatch there still has
-# to be reached from a line in this file.
+# WHAT THEY DO NOT CATCH
+#
+# They are not an adversarial barrier, and nothing here should be read as
+# claiming they are. An earlier draft of this comment said they caught every
+# shape tried against them but one. Two reviews then got nine shapes past
+# them, and the first needed no obfuscation at all. Seven of those nine are
+# closed now. These are not, and each one was built and runs:
+#
+#   * a helper in another translation unit. The literal is plain and the
+#     reaching line in main() compares nothing:
+#         const int extra =
+#             dispatch_extra(command, argc, argv, &run_track_objects_cli);
+#     This file reads src/main.cpp and nothing else, so the comparison is
+#     invisible to it and the call is just a call. Measured: the command
+#     dispatches while this check exits 0 and reports 15 commands
+#     registered, listed, documented and dispatched. Splitting a helper into
+#     its own .cpp is ordinary refactoring, which makes this the most
+#     reachable of the four.
+#   * a dispatch gated on something the probe below cannot produce. The
+#     probe offers a name with several counts of a path that does not exist;
+#     a handler guarded by `fs::exists(argv[2])`, or by an environment
+#     variable, answers every question it knows how to ask.
+#   * a name spelled by adjacent literal concatenation, `"dump" "-state"`.
+#     The two literals are collected separately, both are refused, and the
+#     compiler still sees one name.
+#   * a name assembled at run time, compared in a helper outside main().
+#
+# The marker list this file uses is an enumeration of the ways someone
+# thought of. A map lookup through .at() and a three-way comparison were
+# both missing from the first version and both carried a dispatch through
+# main() untouched. Read a shape that is not on that list as uncovered
+# rather than as impossible.
+#
+# So: this catches the accident it was built for, and a fair number of
+# deliberate shapes besides. It does not establish that the table is the
+# only dispatch path, and a reviewer should not treat a green run as though
+# it had.
+#
+# WHY THE CANDIDATE NAMES COME FROM THE SOURCE AND NOT THE BINARY
+#
+# Reading them out of the built program is the stronger idea - it is how the
+# #79 review closed this by hand - but it is not one CMake can afford.
+# file(STRINGS) drops a non-printable byte instead of ending the string at
+# it, so NUL-separated literals arrive glued into long runs and the token
+# boundaries have to be recovered by regex. On one build of this program
+# that yielded 3222 candidate names and took 23 seconds before a single
+# question was asked. The launches are the decisive part: this check
+# measured 210 launches inside a 1.1 second run here, and an independent
+# measurement on another machine took 2.6 seconds for 200, which puts 3222
+# launches between 17 and 42 seconds on top of the 23. The test's budget is
+# the TIMEOUT 60 in CMakeLists.txt, so the faster machine has little margin
+# and the slower one has none.
+#
+# Numbers that describe the binary's layout - how many runs file(STRINGS)
+# returns, how long the longest one is - are deliberately not quoted here.
+# An earlier draft did quote them, and they did not reproduce: the same
+# measurement gives 40 runs in one configuration and 109 or 182 in others,
+# because the layout is a property of the build and not of this argument.
+# The launch count is what the argument rests on.
+#
+# Restricting the scan to hyphenated tokens brings the count down to about a
+# hundred, and gives up every command whose name has no hyphen, of which
+# this program has five.
 #
 # A name that this file's pattern cannot represent is a hard error rather
 # than something quietly trimmed to the part that does match, because a
@@ -122,6 +165,16 @@ set(name_pattern "^[a-z0-9][a-z0-9-]*$")
 # contains one would otherwise split into two list elements.
 function(split_lines text out_var)
     string(REPLACE "\r\n" "\n" text "${text}")
+    # A backslash at the end of a line splices it onto the next one before
+    # the compiler sees either, so this joins them the same way and for the
+    # same reason. It also has to happen here rather than in a reader: the
+    # separator written below is a semicolon, a trailing backslash escapes
+    # it, and the two lines then arrive as one element with a "\;" in the
+    # middle. Doubling the backslash first does not help, because the list
+    # parser resolves the pair back into an escape for the separator. A
+    # legal C++ line splice above any line this file pins would otherwise
+    # read as that line missing entirely.
+    string(REPLACE "\\\n" "" text "${text}")
     string(REPLACE ";" "\;" text "${text}")
     string(REPLACE "\n" ";" text "${text}")
     set(${out_var} "${text}" PARENT_SCOPE)
@@ -351,135 +404,211 @@ if(NOT code EQUAL 1)
 endif()
 
 # ---------------------------------------------------------------------------
-# the shape of main(): one read of argv[1], one comparison, over the table
+# the shape of main(): one binding, one comparison, over the table
 # ---------------------------------------------------------------------------
+
+# A C++ string literal, escapes included, so that a \" inside one does not
+# end it and leave the rest of the line paired the wrong way round.
+set(string_literal "\"(\\\\.|[^\"\\\\])*\"")
+
+# A character literal. These are removed before the string literals are, so
+# that '\"' cannot pair with a later quote and delete the code between them.
+set(char_literal "'(\\\\.|[^'])'")
 
 # The line that binds argv[1] to a name. Pinned by shape and not by exact
 # text: the variable may be renamed, and the capture is what names it in the
-# comparison pattern below. A binding this pattern cannot represent is a hard
-# error, because the alternative is to fall back to a comparison pattern with
-# an empty variable name in it, which matches nothing and would report a
-# correct main() as having no dispatch at all.
+# comparison patterns below. Leading tabs and a trailing comment are fine;
+# the comment is gone and the space it left is trimmed before this is tried.
 set(dispatch_binding
-    "^ +const std::string_view ([A-Za-z_][A-Za-z0-9_]*) = argv\\[1\\];$")
+    "^[ \t]+const[ \t]+std::string_view[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*argv\\[1\\];$")
 
 # Reading one value and taking one of several branches from it. Anything
 # spelled this way inside main() is a dispatch until it is shown to be the
-# table's own.
+# table's own, or to be about something no command could be named.
+#
+# This is an enumeration, which means it is a list of the ways someone
+# thought of. A map lookup through .at() and a three-way comparison were
+# both missing from the first version of it and both got a dispatch through
+# main() untouched. Treat a shape that is not here as uncovered rather than
+# as impossible.
 set(selection_markers
-    "==|!=|switch|case|compare|strcmp|strncmp|memcmp|strstr|starts_with|ends_with|\\.find|\\.rfind|\\.count|\\.contains")
+    "==|!=|<=>|switch|case|compare|strcmp|strncmp|strcasecmp|_stricmp|memcmp|strstr|starts_with|ends_with|regex|std::equal|\\.find|\\.rfind|\\.count|\\.contains|\\.at\\(|\\.lower_bound|\\.upper_bound|\\.equal_range")
 
-set(argv1_reads 0)
+set(bindings 0)
 set(dispatch_variable "")
 set(in_main FALSE)
 set(main_opened FALSE)
 set(main_closed FALSE)
+set(in_block_comment FALSE)
 set(iterates_table FALSE)
 set(table_comparisons 0)
 set(literals "")
-foreach(line IN LISTS source_lines)
-    if(NOT main_opened AND line MATCHES "^int main\\(")
-        set(in_main TRUE)
-        set(main_opened TRUE)
-    elseif(in_main AND line MATCHES "^\\};?$")
-        set(in_main FALSE)
-        set(main_closed TRUE)
+foreach(raw_line IN LISTS source_lines)
+    # A raw string literal is not something this reader can represent: its
+    # delimiter is arbitrary, a quote inside it is ordinary text, and a "}"
+    # inside one at column zero would end main() as far as everything below
+    # is concerned and leave the rest of the function unread. Refusing it is
+    # the same rule this file already applies to a command name it cannot
+    # represent, and it is a refusal rather than a silence.
+    if(raw_line MATCHES "R\"")
+        message(FATAL_ERROR
+            "${SOURCE} contains a raw string literal:\n  ${raw_line}\n"
+            "This check reads the file as lines of ordinary C++ and cannot "
+            "represent one. A name inside a raw string is invisible to the "
+            "command inventory below, and a '}' inside one at column zero "
+            "would end main() for this reader while leaving the rest of it "
+            "unchecked. Rewrite it as an ordinary string literal, or teach "
+            "this reader raw strings and say so here.")
     endif()
 
-    # Command names are taken from the line as written. Stripping the comment
-    # first would take a name inside a string literal that contains "//" out
-    # of the inventory along with the comment that is not there.
-    # MATCHALL hands its matches back as a list, so a literal that contains a
-    # semicolon arrives split across several elements. Requiring both quotes
-    # back drops those fragments: a literal with a semicolon in it is not a
-    # command name under name_pattern either way, and a fragment carrying one
-    # quote would otherwise be trimmed into a name nothing ever spelled.
-    string(REGEX MATCHALL "\"[^\"]*\"" quoted "${line}")
+    # The candidate names are taken from the line as written, comments
+    # included. A name in a comment costs one refused probe and nothing
+    # else, while a name this loop does not collect is a name the program is
+    # never asked about, so the inclusive reading is the safe one.
+    string(REGEX MATCHALL "${string_literal}" quoted "${raw_line}")
     foreach(quoted_text IN LISTS quoted)
-        if(NOT quoted_text MATCHES "^\"([^\"]*)\"$")
-            continue()
-        endif()
-        set(literal "${CMAKE_MATCH_1}")
-        if(literal MATCHES "${name_pattern}")
-            if(in_main)
-                message(FATAL_ERROR
-                    "main() in ${SOURCE} names the command '${literal}' "
-                    "directly:\n  ${line}\nmain() compares the command "
-                    "against the kCommands table and against nothing else, "
-                    "so a command name spelled inside it is a second "
-                    "dispatch path. Register '${literal}' in the table "
-                    "instead.")
-            endif()
-            if(NOT literal IN_LIST literals)
+        if(quoted_text MATCHES "^\"(.*)\"$")
+            set(literal "${CMAKE_MATCH_1}")
+            if(literal MATCHES "${name_pattern}" AND NOT literal IN_LIST literals)
                 list(APPEND literals "${literal}")
             endif()
         endif()
     endforeach()
 
-    # Everything below reads the line as code: its line comment removed, so
-    # that prose about argv[1] or about a switch statement is prose, and its
-    # string literals removed, so that a message that happens to contain "=="
-    # is a message. Neither removal can hide a dispatch. A comparison operator
-    # is a token and is never inside the literal it compares against, and the
-    # name inventory above already read this line whole, so the name a
-    # dispatch answers to is collected before either removal happens. A "//"
-    # inside a string literal truncates the line here, and that is the same
-    # trade: the name survives in the inventory.
-    string(REGEX REPLACE "//.*$" "" statement "${line}")
-    string(REGEX REPLACE "\"[^\"]*\"" "" statement "${statement}")
+    # Everything below reads the same line as code, in this order:
+    # character literals, then string literals, then comments. Each step
+    # removes something that could otherwise be mistaken for the next one's
+    # opening delimiter - a '"' for a string, a "//" or "/*" inside a string
+    # for a comment - and taking them in any other order is how a comparison
+    # gets deleted out of the middle of a line while looking stripped.
+    string(REGEX REPLACE "${char_literal}" "" code "${raw_line}")
+
+    string(REGEX MATCHALL "${string_literal}" code_quoted "${code}")
+    set(code_strings 0)
+    set(code_names 0)
+    foreach(quoted_text IN LISTS code_quoted)
+        if(quoted_text MATCHES "^\"(.*)\"$")
+            math(EXPR code_strings "${code_strings}+1")
+            if(CMAKE_MATCH_1 MATCHES "${name_pattern}")
+                math(EXPR code_names "${code_names}+1")
+            endif()
+        endif()
+    endforeach()
+    string(REGEX REPLACE "${string_literal}" "" code "${code}")
+
+    # Comments last, and block comments may span lines. Whichever of "//"
+    # and "/*" comes first on the line wins, so that a "/*" written inside a
+    # line comment does not open a block comment that swallows the rest of
+    # the file.
+    set(rest "${code}")
+    set(code "")
+    while(TRUE)
+        string(LENGTH "${rest}" rest_length)
+        if(rest_length EQUAL 0)
+            break()
+        endif()
+        if(in_block_comment)
+            string(FIND "${rest}" "*/" at)
+            if(at LESS 0)
+                break()
+            endif()
+            math(EXPR at "${at}+2")
+            set(in_block_comment FALSE)
+        else()
+            string(FIND "${rest}" "/*" at)
+            string(FIND "${rest}" "//" line_at)
+            if(line_at GREATER_EQUAL 0 AND (at LESS 0 OR line_at LESS at))
+                string(SUBSTRING "${rest}" 0 ${line_at} head)
+                string(APPEND code "${head}")
+                break()
+            endif()
+            if(at LESS 0)
+                string(APPEND code "${rest}")
+                break()
+            endif()
+            string(SUBSTRING "${rest}" 0 ${at} head)
+            string(APPEND code "${head}")
+            math(EXPR at "${at}+2")
+            set(in_block_comment TRUE)
+        endif()
+        if(at GREATER_EQUAL rest_length)
+            break()
+        endif()
+        string(SUBSTRING "${rest}" ${at} -1 rest)
+    endwhile()
+
+    # The space a removed comment leaves behind. Trimming it is what lets
+    # every pattern below end at "$" while still accepting a line that
+    # carries a comment, and the binding and the comparison are the two most
+    # comment-worthy lines in main().
+    string(REGEX REPLACE "[ \t]+$" "" code "${code}")
+
+    if(NOT main_opened AND code MATCHES "^int main[ \t]*\\(")
+        set(in_main TRUE)
+        set(main_opened TRUE)
+    elseif(in_main AND code MATCHES "^\\};?$")
+        set(in_main FALSE)
+        set(main_closed TRUE)
+    endif()
+
+    set(statement "${code}")
 
     if(statement MATCHES "argv\\[1\\]")
-        math(EXPR argv1_reads "${argv1_reads}+1")
         if(NOT in_main)
             message(FATAL_ERROR
                 "${SOURCE} reads argv[1] outside main(), or before the line "
-                "this check reads as main()'s opening:\n  ${line}\nThe "
-                "command name is read once, in main(), and compared against "
-                "the kCommands table there. A second reader of argv[1] is a "
-                "second dispatch path, and appears in none of the three "
+                "this check reads as main()'s opening:\n  ${raw_line}\nThe "
+                "command name is read in main() and compared against the "
+                "kCommands table there. A reader of argv[1] anywhere else is "
+                "a second dispatch path, and appears in none of the three "
                 "inventories above. If main() is still where it was, check "
                 "that its definition opens a line with 'int main('.")
         endif()
         if(statement MATCHES "${dispatch_binding}")
             set(dispatch_variable "${CMAKE_MATCH_1}")
-        else()
-            message(FATAL_ERROR
-                "main() in ${SOURCE} reads argv[1] in a form this check "
-                "cannot represent:\n  ${line}\nIt must be bound by a line of "
-                "the form\n"
-                "      const std::string_view <name> = argv[1];\n"
-                "so that the one comparison main() is allowed to make can be "
-                "recognized by the name it compares.")
+            math(EXPR bindings "${bindings}+1")
         endif()
     endif()
 
-    if(in_main AND statement MATCHES "^ *for \\(.*kCommands")
+    if(in_main AND statement MATCHES "^[ \t]*for[ \t]*\\(.*kCommands")
         set(iterates_table TRUE)
     endif()
 
     if(in_main AND statement MATCHES "${selection_markers}")
-        # STREQUAL "", not if(NOT dispatch_variable): a bare if() on a
-        # variable's value reads "n", "no", "off" and "0" as false, and all
-        # four are names a C++ variable can have.
         if(dispatch_variable STREQUAL "")
             message(FATAL_ERROR
                 "main() in ${SOURCE} selects on a value before it binds "
-                "argv[1]:\n  ${line}\nThe binding comes first, so that every "
-                "later comparison can be read against the name it binds.")
+                "argv[1]:\n  ${raw_line}\nThe binding comes first, so that "
+                "every later comparison can be read against the name it "
+                "binds.")
         endif()
+        set(entry_name "[A-Za-z_][A-Za-z0-9_]*(\\[[A-Za-z0-9_]+\\])?\\.name")
         if(statement MATCHES
-           "^ +if \\(${dispatch_variable} == [A-Za-z_][A-Za-z0-9_]*(\\[[A-Za-z0-9_]+\\])?\\.name\\) \\{$")
+           "^[ \t]+if[ \t]*\\([ \t]*${dispatch_variable}[ \t]*==[ \t]*${entry_name}[ \t]*\\)[ \t]*\\{$"
+           OR statement MATCHES
+           "^[ \t]+if[ \t]*\\([ \t]*${entry_name}[ \t]*==[ \t]*${dispatch_variable}[ \t]*\\)[ \t]*\\{$")
             math(EXPR table_comparisons "${table_comparisons}+1")
+        elseif(code_strings GREATER 0 AND code_names EQUAL 0)
+            # Every string this line compares against is one no table entry
+            # could be registered under, so it is an option and not a
+            # command. "--help" is the case this exists for: name_pattern
+            # forbids a leading hyphen, so it cannot be a table entry, and a
+            # rule with no legal way to satisfy it is a rule the next person
+            # who needs one deletes.
         else()
             message(FATAL_ERROR
-                "main() in ${SOURCE} has a second dispatch path:\n  ${line}\n"
-                "The only line in main() that may select on a value is the "
-                "kCommands loop's comparison, spelled\n"
+                "main() in ${SOURCE} has a second dispatch path:\n"
+                "  ${raw_line}\n"
+                "The only line in main() that may select on a command name "
+                "is the kCommands loop's comparison, spelled\n"
                 "      if (${dispatch_variable} == <entry>.name) {\n"
-                "or with the entry subscripted out of the table. "
-                "A command dispatched from any other branch is registered "
-                "nowhere, listed nowhere and documented nowhere, so the three "
-                "inventories above agree while it works.")
+                "in either operand order, with the entry subscripted out of "
+                "the table if you prefer. A line that compares only against "
+                "strings no command could be named - an option such as "
+                "\"--help\" - is allowed. A command dispatched from any "
+                "other branch is registered nowhere, listed nowhere and "
+                "documented nowhere, so the three inventories above agree "
+                "while it works.")
         endif()
     endif()
 endforeach()
@@ -494,11 +623,13 @@ if(NOT main_closed)
         "main() in ${SOURCE} was not closed by a '}' line, so the dispatch "
         "could not be read")
 endif()
-if(NOT argv1_reads EQUAL 1)
+if(bindings EQUAL 0)
     message(FATAL_ERROR
-        "${SOURCE} reads argv[1] ${argv1_reads} times, expected exactly once. "
-        "The command name is read once, in main(), and compared against the "
-        "kCommands table there.")
+        "main() in ${SOURCE} never binds argv[1] by a line of the form\n"
+        "      const std::string_view <name> = argv[1];\n"
+        "so the name the one allowed comparison compares could not be read. "
+        "argv[1] may be read again for a message; it is the binding that has "
+        "to be recognizable.")
 endif()
 if(NOT iterates_table)
     message(FATAL_ERROR
@@ -515,38 +646,67 @@ endif()
 # and no command-shaped name in the source dispatches unless it is registered
 # ---------------------------------------------------------------------------
 
-# The reader above has to be able to see the table's own names. If it could
-# not - a table written in some other form, a quoting shape this file does
-# not match - it would produce an empty candidate list, and the loop below
-# would pass without asking the program a single question.
-foreach(name IN LISTS registered)
-    if(NOT name IN_LIST literals)
-        message(FATAL_ERROR
-            "the registered command '${name}' was not read back out of "
-            "${SOURCE} as a string literal, so the literal reader is not "
-            "seeing what the table reader sees and the dispatch check below "
-            "would run on an incomplete list of names")
-    endif()
-endforeach()
+# Each candidate is offered to the program under several argument counts.
+# One is not enough, and this is the thing to understand about this check if
+# you read nothing else in it: a handler guarded by its own argument count
+# falls through to the unknown-command branch when it is asked with too few
+# arguments, and a single question records that fall-through as a refusal.
+# Thirteen of the sixteen registered commands take two inputs or more, so
+# "if (argc >= 4 && name == ...)" is the ordinary shape a command has in
+# this program rather than a suspicious one.
+#
+# Widening the question raises the count a dispatch has to dodge. It does
+# not close the hole, and nothing that probes can: a handler gated on an
+# input that exists, or on an environment variable, answers every question
+# this loop knows how to ask. The header comment says so plainly rather than
+# leaving the number of shapes to imply a proof.
+set(probe_widths 1 2 3 4 5 6)
 
 set(undeclared "")
 set(undeclared_count 0)
+set(probed_count 0)
+set(probe_calls 0)
 foreach(name IN LISTS literals)
     if(NOT name IN_LIST registered)
-        run_probe(out code "${name}" "${missing_input}")
-        if(NOT out MATCHES "unknown command '${name}'")
-            list(APPEND undeclared "${name}")
-            math(EXPR undeclared_count "${undeclared_count}+1")
-        endif()
+        math(EXPR probed_count "${probed_count}+1")
+        set(arguments "")
+        foreach(width IN LISTS probe_widths)
+            list(APPEND arguments "${missing_input}")
+            run_probe(out code "${name}" ${arguments})
+            math(EXPR probe_calls "${probe_calls}+1")
+            if(NOT out MATCHES "unknown command '${name}'")
+                if(NOT name IN_LIST undeclared)
+                    list(APPEND undeclared "${name}")
+                    math(EXPR undeclared_count "${undeclared_count}+1")
+                endif()
+            endif()
+        endforeach()
     endif()
 endforeach()
+
+# The one thing that would make the loop above prove nothing is an empty
+# candidate list, which is what a broken literal reader produces. This is
+# reached by breaking that reader and by nothing an author can write in
+# src/main.cpp, so it guards this file against itself rather than the
+# program against a mistake. It replaces a guard that required every
+# registered name to appear in the candidate list, which could not fire at
+# all: the table reader's own anchor guarantees the name is the first
+# quoted run on its line, so the literal reader sees every name the table
+# reader sees, and three earlier failures cover every way that could stop
+# being true.
+if(probed_count EQUAL 0)
+    message(FATAL_ERROR
+        "no command-shaped name outside the kCommands table was read out of "
+        "${SOURCE}, so the dispatch check below asked nfsu_probe nothing. "
+        "The literal reader above is not seeing what the table reader sees.")
+endif()
+
 # The count, not if(undeclared). name_pattern admits "n", "no", "off", "0"
 # and "ignore", and a one-element list holding any of them is a value if()
-# reads as false, so a single stray dispatch under one of those names would
-# be reported as nothing to report. That is measured, not theoretical:
-# spelled if(undeclared), this loop passed a binary that answers to "off",
-# and the summary line below then reported 36 names refused as unknown when
-# 35 were refused and one had answered. Do not shorten it back.
+# reads as false. That is measured, not theoretical: spelled if(undeclared),
+# this loop passed a binary that answers to "off", and the summary line below
+# then reported one more name refused as unknown than had been refused. Do
+# not shorten it back.
 if(undeclared_count GREATER 0)
     message(FATAL_ERROR
         "nfsu_probe dispatches ${undeclared}, which the kCommands table does "
@@ -556,15 +716,15 @@ if(undeclared_count GREATER 0)
         "remove the branch that dispatches it.")
 endif()
 
-list(LENGTH literals literal_count)
-list(LENGTH registered registered_count)
-math(EXPR probed_count "${literal_count}-${registered_count}")
+
+
+
 
 list(LENGTH listed listed_count)
 message(STATUS
     "nfsu_probe: ${listed_count} commands registered, listed, documented and "
     "dispatched: ${listed}")
 message(STATUS
-    "nfsu_probe: one read of argv[1] and one comparison in main(), and "
+    "nfsu_probe: one binding and one table comparison in main(), and "
     "${probed_count} further command-shaped names in ${SOURCE} refused as "
-    "unknown")
+    "unknown under ${probe_calls} launches")
