@@ -839,11 +839,12 @@ nfsu::MeshVertex vertex(float px, float py, float pz, float u = 0.0F, float v = 
 }
 
 nfsu::MeshMaterial material_range(std::uint32_t first, std::uint32_t count,
-                                   std::uint32_t slot) {
+                                   std::uint32_t slot, std::uint32_t flags = 0) {
     nfsu::MeshMaterial material;
     material.first_index = first;
     material.index_count = count;
     material.texture_slot = slot;
+    material.flags = flags;
     const auto store = [](unsigned char* out, std::uint32_t value) {
         out[0] = static_cast<unsigned char>(value);
         out[1] = static_cast<unsigned char>(value >> 8U);
@@ -853,6 +854,7 @@ nfsu::MeshMaterial material_range(std::uint32_t first, std::uint32_t count,
     store(material.raw + 12, material.index_count);
     store(material.raw + 28, material.texture_slot);
     store(material.raw + 52, material.first_index);
+    store(material.raw + 56, material.flags);
     return material;
 }
 
@@ -919,6 +921,643 @@ nfsu::PreparedCarScene prepare_all(const nfsu::GeometryReport& geometry,
                                   nfsu::SceneLimits{}, scene, error),
           "prepare all meshes: " + error);
     return scene;
+}
+
+// Retail material state. Every rule below is recovered in
+// docs/MATERIALS.md, and no test here reads a retail asset.
+
+void test_material_state_decoders() {
+    // The prepared-scene layer decodes the two raw texture-info bytes on
+    // its own, because it must not depend on the pack reader. Both
+    // decoders therefore have to agree for every byte value.
+    bool same = true;
+    for (unsigned int raw = 0; raw < 256U; ++raw) {
+        nfsu::TextureRecord record;
+        record.alpha_test_mode = static_cast<std::uint8_t>(raw);
+        record.alpha_blend_mode = static_cast<std::uint8_t>(raw);
+        const std::string scene_name = nfsu::render_blend_mode_name(
+            nfsu::render_blend_mode_of(record.alpha_blend_mode));
+        const std::string pack_name =
+            nfsu::texture_alpha_blend_name(nfsu::texture_alpha_blend(record));
+        same = same &&
+               nfsu::render_alpha_test_enabled(record.alpha_test_mode) ==
+                   nfsu::texture_alpha_test_enabled(record) &&
+               scene_name == pack_name;
+    }
+    check(same, "scene and pack alpha state decoders agree on all 256 values");
+    check(nfsu::render_alpha_test_enabled(1) &&
+              !nfsu::render_alpha_test_enabled(0) &&
+              !nfsu::render_alpha_test_enabled(2) &&
+              !nfsu::render_alpha_test_enabled(255),
+          "only +85 == 1 enables the alpha test");
+    check(nfsu::render_blend_mode_of(0) == nfsu::RenderBlendMode::disabled &&
+              nfsu::render_blend_mode_of(1) == nfsu::RenderBlendMode::source_over &&
+              nfsu::render_blend_mode_of(2) == nfsu::RenderBlendMode::additive &&
+              nfsu::render_blend_mode_of(6) == nfsu::RenderBlendMode::source_over &&
+              nfsu::render_blend_mode_of(255) == nfsu::RenderBlendMode::source_over,
+          "+86 selects the blend and every other nonzero value is source-over");
+    check(nfsu::kRenderAlphaRef == 0xAAU, "the alpha reference is 0xAA");
+    // The draw queue row, and the same duplication rule as above.
+    bool rows_agree = true;
+    for (unsigned int group = 0; group < 256U && rows_agree; ++group) {
+        for (unsigned int order = 0; order < 256U; ++order) {
+            nfsu::TextureRecord record;
+            record.layer_group = static_cast<std::uint8_t>(group);
+            record.layer_order = static_cast<std::uint8_t>(order);
+            if (nfsu::render_draw_layer(record.layer_group, record.layer_order) !=
+                nfsu::texture_draw_layer(record)) {
+                rows_agree = false;
+                break;
+            }
+        }
+    }
+    check(rows_agree, "scene and pack draw layer decoders agree on all 65536 pairs");
+    check(nfsu::kRenderDrawLayerCount == 16, "the retail bucket table has 16 rows");
+    // The four rows the retail 240SX pack uses.
+    check(nfsu::render_draw_layer(0, 0) == 0 && nfsu::render_draw_layer(0, 5) == 5 &&
+              nfsu::render_draw_layer(1, 0) == 8 &&
+              nfsu::render_draw_layer(1, 5) == 13,
+          "the retail 240SX rows are 0, 5, 8 and 13");
+    check(nfsu::render_draw_layer(0, 0xFFU) == 0, "a row below the table is clamped up");
+    check(nfsu::render_draw_layer(1, 0x7FU) == nfsu::kRenderDrawLayerCount - 1,
+          "a row past the table is clamped down");
+    check(std::string(nfsu::material_state_mode_name(
+              nfsu::MaterialStateMode::off)) == "off" &&
+              std::string(nfsu::material_state_mode_name(
+                  nfsu::MaterialStateMode::retail)) == "retail",
+          "material state mode names");
+}
+
+void test_material_gates() {
+    // The branch bits are used only as the retail upload tests them. The
+    // result string is diffuse, specular, environment.
+    const auto gates = [](std::uint32_t flags, bool global) {
+        const nfsu::MaterialCoefficientGates g =
+            nfsu::material_coefficient_gates(flags, global);
+        return std::string(g.diffuse ? "d" : "-") + (g.specular ? "s" : "-") +
+               (g.environment ? "e" : "-");
+    };
+    check(gates(0x00000000U, true) == "ds-", "no environment branch bit");
+    check(gates(0x00000080U, true) == "ds-", "the other bit alone keeps no environment");
+    check(gates(0x00000180U, false) == "ds-", "the global off zeros environment");
+    check(gates(0x00000100U, true) == "--e", "environment kept, diffuse and specular zeroed");
+    check(gates(0x00000180U, true) == "dse", "all three groups survive");
+    check(gates(0xFFFFFF7FU, true) == "--e", "only the two branch bits matter");
+    check(gates(0xFFFFFFFFU, true) == "dse", "every other bit is ignored");
+    // 0x00004180 is 922 of the 1242 records of the 240SX geometry and has
+    // both branch bits, so every coefficient group survives for it.
+    check(gates(0x00004180U, true) == "dse",
+          "the most common retail flag value keeps all three groups");
+    check(gates(0x00018000U, true) == "ds-",
+          "a retail flag value without the environment branch bit");
+    // The traced branch zeros the diffuse and the specular vectors
+    // together, so the two can never disagree.
+    bool paired = true;
+    for (int bit = 0; bit < 32 && paired; ++bit) {
+        for (int extra = 0; extra < 4; ++extra) {
+            const std::uint32_t flags =
+                (1U << bit) | (static_cast<std::uint32_t>(extra) * 0x80U);
+            for (int global = 0; global < 2; ++global) {
+                const nfsu::MaterialCoefficientGates g =
+                    nfsu::material_coefficient_gates(flags, global != 0);
+                paired = paired && g.diffuse == g.specular;
+            }
+        }
+    }
+    check(paired, "the diffuse and specular gates are always equal");
+}
+
+void test_material_alpha_test() {
+    // D3DCMP_GREATER against 0xAA, applied to the source alpha after the
+    // undecoded diffuse alpha lane has scaled it.
+    nfsu::RenderTexture texture = make_texture(2, 1);
+    texture.rgba[3] = 0xAA;
+    texture.rgba[7] = 0xAB;
+    const auto run = [&](bool enabled, double scale, nfsu::RenderStats& stats) {
+        Canvas canvas(2, 1);
+        nfsu::RasterMaterial material;
+        material.texture = &texture;
+        material.alpha_test = enabled;
+        material.alpha_scale = scale;
+        nfsu::ClipVertex a = at(canvas, 0, -4);
+        nfsu::ClipVertex b = at(canvas, 0, 5);
+        nfsu::ClipVertex c = at(canvas, 2, -4);
+        nfsu::ClipVertex d = at(canvas, 2, 5);
+        a.u = b.u = 0.0;
+        c.u = d.u = 1.0;
+        const nfsu::ClipVertex t0[3] = {a, b, d};
+        const nfsu::ClipVertex t1[3] = {a, d, c};
+        canvas.draw(t0, 1, &material);
+        canvas.draw(t1, 2, &material);
+        stats = canvas.stats;
+        return std::pair<bool, bool>(canvas.covered(0, 0), canvas.covered(1, 0));
+    };
+    nfsu::RenderStats stats;
+    check(run(true, 1.0, stats) == std::pair<bool, bool>(false, true),
+          "alpha 0xAA fails GREATER and 0xAB passes");
+    check(stats.fragments_alpha_discarded == 1, "the retail alpha discard is counted");
+    check(run(false, 1.0, stats) == std::pair<bool, bool>(true, true),
+          "the test off keeps both");
+    check(stats.fragments_alpha_discarded == 0, "nothing discarded with the test off");
+    check(run(true, 2.0, stats) == std::pair<bool, bool>(true, true),
+          "an alpha lane above 1 lifts both past the reference");
+    check(run(true, 0.5, stats) == std::pair<bool, bool>(false, false),
+          "an alpha lane below 1 drops both");
+}
+
+// Draws an opaque destination, then one or two blended triangles over it.
+struct BlendCase {
+    std::vector<int> pixel;
+    nfsu::RenderStats stats;
+};
+
+BlendCase blend_over(nfsu::RenderBlendMode mode, const unsigned char (&src)[4],
+                     double z, bool second, const unsigned char (&src2)[4],
+                     double z2 = 0.1) {
+    Canvas canvas(1, 1);
+    nfsu::RenderTexture back = make_texture(1, 1);
+    back.rgba = {200, 100, 50, 255};
+    nfsu::RenderTexture front = make_texture(1, 1);
+    front.rgba = {src[0], src[1], src[2], src[3]};
+    nfsu::RenderTexture front2 = make_texture(1, 1);
+    front2.rgba = {src2[0], src2[1], src2[2], src2[3]};
+    nfsu::RasterMaterial opaque;
+    opaque.texture = &back;
+    nfsu::RasterMaterial blended;
+    blended.texture = &front;
+    blended.blend = mode;
+    nfsu::RasterMaterial blended2 = blended;
+    blended2.texture = &front2;
+    const auto tri = [&canvas](double depth, nfsu::ClipVertex (&out)[3]) {
+        out[0] = at(canvas, -2, -2, depth);
+        out[1] = at(canvas, -2, 4, depth);
+        out[2] = at(canvas, 4, -2, depth);
+    };
+    nfsu::ClipVertex o[3];
+    nfsu::ClipVertex b[3];
+    nfsu::ClipVertex b2[3];
+    tri(0.5, o);
+    tri(z, b);
+    tri(z2, b2);
+    canvas.draw(o, 0, &opaque);
+    canvas.draw(b, 1, &blended);
+    if (second) {
+        canvas.draw(b2, 2, &blended2);
+    }
+    BlendCase result;
+    result.pixel = {canvas.pixel(0, 0)[0], canvas.pixel(0, 0)[1],
+                    canvas.pixel(0, 0)[2], canvas.pixel(0, 0)[3]};
+    result.stats = canvas.stats;
+    return result;
+}
+
+void test_blend_modes() {
+    const unsigned char none[4] = {0, 0, 0, 0};
+    // source-over: (src * a + dst * (255 - a) + 127) / 255 over (200,100,50).
+    const unsigned char over[4] = {0, 0, 255, 128};
+    const BlendCase a =
+        blend_over(nfsu::RenderBlendMode::source_over, over, 0.25, false, none);
+    check(a.pixel == std::vector<int>({100, 50, 153, 255}), "source-over result");
+    check(a.stats.fragments_blended == 1 && a.stats.fragments_blend_overlap == 0,
+          "one blended fragment and no overlap");
+    // additive: min(255, (src * a + 127) / 255 + dst).
+    const unsigned char add[4] = {100, 200, 250, 128};
+    const BlendCase b =
+        blend_over(nfsu::RenderBlendMode::additive, add, 0.25, false, none);
+    check(b.pixel == std::vector<int>({250, 200, 175, 255}), "additive result");
+    const unsigned char bright[4] = {255, 255, 255, 255};
+    const BlendCase c =
+        blend_over(nfsu::RenderBlendMode::additive, bright, 0.25, false, none);
+    check(c.pixel == std::vector<int>({255, 255, 255, 255}), "additive saturates");
+    // A blended draw behind opaque geometry still fails the depth test.
+    const BlendCase d =
+        blend_over(nfsu::RenderBlendMode::source_over, over, 0.75, false, none);
+    check(d.pixel == std::vector<int>({200, 100, 50, 255}),
+          "a blended draw behind opaque geometry is rejected");
+    check(d.stats.fragments_blended == 0 && d.stats.fragments_depth_failed == 1,
+          "the rejected blended fragment is a depth failure");
+    // A blended draw in front of another one composites over it, and the
+    // overlap counter counts the second fragment.
+    const unsigned char over2[4] = {200, 100, 50, 200};
+    const BlendCase e =
+        blend_over(nfsu::RenderBlendMode::source_over, over, 0.25, true, over2, 0.1);
+    check(e.pixel == std::vector<int>({178, 89, 72, 255}),
+          "a nearer blended draw composites over the blended draw before it");
+    check(e.stats.fragments_blended == 2 && e.stats.fragments_blend_overlap == 1,
+          "the second blended fragment is counted as an overlap");
+    // The retail path leaves depth writes on for blended car draws, so a
+    // blended draw behind an earlier blended one is rejected outright.
+    const BlendCase f =
+        blend_over(nfsu::RenderBlendMode::source_over, over, 0.25, true, over2, 0.4);
+    check(f.pixel == std::vector<int>({100, 50, 153, 255}),
+          "a blended draw writes depth and hides the blended draw behind it");
+    check(f.stats.fragments_blended == 1 && f.stats.fragments_blend_overlap == 0,
+          "the rejected second blended fragment never blends");
+}
+
+void test_environment_term() {
+    // environment[k] carries every factor but the texel alpha, and the
+    // fragment adds environment[k] * texel_alpha / 255.
+    const auto run = [](unsigned char alpha, double e0, double e2) {
+        Canvas canvas(1, 1);
+        nfsu::RenderTexture texture = make_texture(1, 1);
+        texture.rgba = {10, 20, 30, alpha};
+        nfsu::RasterMaterial material;
+        material.texture = &texture;
+        material.environment[0] = e0;
+        material.environment[2] = e2;
+        const nfsu::ClipVertex t[3] = {at(canvas, -2, -2), at(canvas, -2, 4),
+                                       at(canvas, 4, -2)};
+        canvas.draw(t, 1, &material);
+        return std::vector<int>({canvas.pixel(0, 0)[0], canvas.pixel(0, 0)[1],
+                                 canvas.pixel(0, 0)[2]});
+    };
+    check(run(255, 0.0, 0.0) == std::vector<int>({10, 20, 30}), "no term, no change");
+    check(run(255, 40.4, 200.0) == std::vector<int>({50, 20, 230}),
+          "the term at full alpha");
+    check(run(128, 40.4, 200.0) == std::vector<int>({30, 20, 130}),
+          "the term scaled by the texel alpha");
+    check(run(0, 40.4, 200.0) == std::vector<int>({10, 20, 30}),
+          "no term at zero alpha");
+    check(run(255, 0.0, 255.0) == std::vector<int>({10, 20, 255}),
+          "the term saturates");
+}
+
+void test_material_coefficient_validation() {
+    std::string error;
+    check(nfsu::validate_material_coefficients(nfsu::MaterialCoefficients{}, error),
+          "the default coefficients are valid: " + error);
+    const auto refused = [&error](const nfsu::MaterialCoefficients& c,
+                                  const std::string& label) {
+        error.clear();
+        const bool ok = nfsu::validate_material_coefficients(c, error);
+        check(!ok && !error.empty(), label);
+    };
+    nfsu::MaterialCoefficients power;
+    power.environment_power = nfsu::kMaxEnvironmentPower + 1U;
+    refused(power, "an environment power above the bound is refused");
+    nfsu::MaterialCoefficients negative;
+    negative.alpha_min = -1.0;
+    refused(negative, "a negative alpha lane is refused");
+    nfsu::MaterialCoefficients huge;
+    huge.environment_range[2] = 1e9;
+    refused(huge, "an environment range above the bound is refused");
+    nfsu::MaterialCoefficients nan;
+    nan.alpha_range = std::numeric_limits<double>::quiet_NaN();
+    refused(nan, "a non-finite alpha lane is refused");
+    nfsu::MaterialCoefficients edge;
+    edge.alpha_min = nfsu::kMaxMaterialCoefficient;
+    edge.environment_min[1] = nfsu::kMaxMaterialCoefficient;
+    edge.environment_power = nfsu::kMaxEnvironmentPower;
+    check(nfsu::validate_material_coefficients(edge, error),
+          "the bounds themselves are accepted: " + error);
+}
+
+constexpr std::uint32_t kBlendHash = 0x55555555U;
+constexpr std::uint32_t kOpaqueHash = 0x66666666U;
+
+// One mesh with two groups covering the same screen area. Group 0, first in
+// record order, is the quad in front; group 1 is the quad behind it. A
+// frame that blends correctly must therefore have drawn group 0 last.
+nfsu::GeometryReport blend_geometry(std::uint32_t flags,
+                                    std::uint32_t back_flags = 0xFFFFFFFFU) {
+    if (back_flags == 0xFFFFFFFFU) {
+        back_flags = flags;
+    }
+    nfsu::GeometryReport report;
+    nfsu::Mesh mesh;
+    mesh.index = 0;
+    mesh.name = "BLEND_MESH";
+    mesh.valid = true;
+    mesh.vertices = {
+        vertex(1, 0, -0.5F, 0, 0), vertex(1, 1, -0.5F, 0, 1),
+        vertex(1, 1, 0.5F, 1, 1), vertex(1, 0, 0.5F, 1, 0),
+        vertex(0, 0, -0.5F, 0, 0), vertex(0, 1, -0.5F, 0, 1),
+        vertex(0, 1, 0.5F, 1, 1), vertex(0, 0, 0.5F, 1, 0)};
+    mesh.triangles = {{0, 1, 2}, {0, 2, 3}, {4, 5, 6}, {4, 6, 7}};
+    mesh.texture_hashes = {kBlendHash, kOpaqueHash};
+    mesh.materials = {material_range(0, 6, 0, flags),
+                      material_range(6, 6, 1, back_flags)};
+    report.meshes.push_back(mesh);
+    return report;
+}
+
+// front_layer 5 and back_layer 0 are the arrangement the retail 240SX pack
+// uses: its blended glass sits in row 5 and its opaque body in row 0.
+nfsu::RenderTextureSet blend_textures(std::uint8_t front_blend,
+                                      std::uint8_t back_blend,
+                                      std::uint8_t front_layer = 5,
+                                      std::uint8_t back_layer = 0) {
+    nfsu::RenderTextureSet set;
+    nfsu::RenderTexture front = make_texture(1, 1);
+    front.hash = kBlendHash;
+    front.rgba = {0, 0, 255, 128};
+    front.alpha_blend_mode = front_blend;
+    front.layer_order = front_layer;
+    set.textures.push_back(front);
+    nfsu::RenderTexture back = make_texture(1, 1);
+    back.hash = kOpaqueHash;
+    back.rgba = {200, 100, 50, 255};
+    back.alpha_blend_mode = back_blend;
+    back.layer_order = back_layer;
+    set.textures.push_back(back);
+    return set;
+}
+
+nfsu::RenderOptions blend_options() {
+    nfsu::RenderOptions options = scene_options();
+    options.shading = nfsu::ShadingMode::none;
+    options.background[0] = 0;
+    options.background[1] = 0;
+    options.background[2] = 0;
+    options.background[3] = 255;
+    return options;
+}
+
+void test_material_state_scene() {
+    const nfsu::RenderOptions base = blend_options();
+    const nfsu::PreparedCarScene scene =
+        prepare_all(blend_geometry(0), blend_textures(1, 0));
+    const std::size_t centre =
+        (std::size_t{base.height / 2} * base.width + base.width / 2) * 4U;
+    const auto render = [&](const nfsu::PreparedCarScene& drawn,
+                            const nfsu::RenderOptions& options,
+                            nfsu::RenderStats& stats) {
+        nfsu::Frame frame;
+        std::string error;
+        check(nfsu::render_scene(drawn, options, nfsu::RenderLimits{}, frame, stats,
+                                 error),
+              "material state render: " + error);
+        if (frame.rgba().size() < centre + 4U) {
+            return std::vector<int>();
+        }
+        return std::vector<int>({frame.rgba()[centre], frame.rgba()[centre + 1],
+                                 frame.rgba()[centre + 2],
+                                 frame.rgba()[centre + 3]});
+    };
+
+    // Off: the front quad is drawn first, wins the depth test and is
+    // written opaquely, exactly as the renderer has always done.
+    nfsu::RenderStats off_stats;
+    const std::vector<int> off = render(scene, base, off_stats);
+    check(off == std::vector<int>({0, 0, 255, 255}),
+          "material state off draws the front quad opaquely");
+    check(off_stats.groups_blended == 0 && off_stats.groups_alpha_tested == 0 &&
+              off_stats.fragments_blended == 0 && off_stats.pixels_blended == 0,
+          "material state off reports no blending");
+
+    // Retail: the opaque group is drawn first although it is second in
+    // record order, and the blended group is composited over it.
+    nfsu::RenderOptions retail = base;
+    retail.material_state = nfsu::MaterialStateMode::retail;
+    nfsu::RenderStats retail_stats;
+    check(render(scene, retail, retail_stats) == std::vector<int>({100, 50, 153, 255}),
+          "the blended group is composited over the opaque one");
+    check(retail_stats.groups_blended == 1 && retail_stats.groups_alpha_tested == 0,
+          "one blended group");
+    check(retail_stats.fragments_blended > 0 &&
+              retail_stats.fragments_blend_overlap == 0,
+          "a single blended group cannot overlap itself");
+    check(retail_stats.pixels_blended > 0, "blended pixels counted");
+    // The two passes must submit exactly what one pass submits.
+    check(retail_stats.material_groups == off_stats.material_groups &&
+              retail_stats.triangles_submitted == off_stats.triangles_submitted &&
+              retail_stats.groups_resolved == off_stats.groups_resolved &&
+              retail_stats.triangles_rasterized == off_stats.triangles_rasterized,
+          "the two passes submit exactly the groups one pass submits");
+
+    // A constant alpha lane has to reach the fragment even though it does
+    // not depend on the view direction: 128 * 0.5 = 64 as the source alpha.
+    nfsu::RenderOptions half = retail;
+    half.coefficients.alpha_min = 0.5;
+    nfsu::RenderStats half_stats;
+    check(render(scene, half, half_stats) == std::vector<int>({150, 75, 101, 255}),
+          "a constant alpha lane scales the source alpha");
+
+    // A closed diffuse gate zeros the effect's whole output. On the
+    // blended group in front that means it contributes nothing, so the
+    // ungated opaque group behind it shows unchanged.
+    nfsu::RenderStats gated_stats;
+    const nfsu::PreparedCarScene gated_front =
+        prepare_all(blend_geometry(0x00000100U, 0), blend_textures(1, 0));
+    check(render(gated_front, retail, gated_stats) ==
+              std::vector<int>({200, 100, 50, 255}),
+          "a closed gate makes a source-over group contribute nothing");
+    check(gated_stats.fragments_blended > 0,
+          "the group is still blended, it just adds nothing");
+    // On the opaque group it means black, not the texel colour, because
+    // the effect writes zero whatever the undecoded coefficients hold.
+    nfsu::RenderStats gated_both_stats;
+    const nfsu::PreparedCarScene gated_both =
+        prepare_all(blend_geometry(0x00000100U), blend_textures(1, 0));
+    check(render(gated_both, retail, gated_both_stats) ==
+              std::vector<int>({0, 0, 0, 255}),
+          "a closed gate writes an opaque group black");
+
+    // Both groups blended: the nearer one is drawn second, in the later
+    // row, so it composites over the first and the overlap is counted.
+    nfsu::RenderStats both_stats;
+    const nfsu::PreparedCarScene both =
+        prepare_all(blend_geometry(0), blend_textures(1, 1));
+    render(both, retail, both_stats);
+    check(both_stats.groups_blended == 2 && both_stats.fragments_blend_overlap > 0,
+          "two blended groups overlap and the overlap is counted");
+
+    // An alpha-tested front texture is removed whole, because its texel
+    // alpha 128 is not above 0xAA, so the quad behind shows through.
+    nfsu::RenderTextureSet tested = blend_textures(0, 0);
+    tested.textures[0].alpha_test_mode = 1;
+    tested.textures[0].layer_order = 0;
+    nfsu::RenderStats tested_stats;
+    const std::vector<int> pixel =
+        render(prepare_all(blend_geometry(0), tested), retail, tested_stats);
+    check(tested_stats.groups_alpha_tested == 1 &&
+              tested_stats.fragments_alpha_discarded > 0,
+          "the alpha-tested group discards fragments");
+    check(pixel == std::vector<int>({200, 100, 50, 255}),
+          "the quad behind shows through the failed alpha test");
+}
+
+// Three quads, one material group each, at px = depths[k] with texture
+// slot slots[k]. Larger px is nearer the camera. This is the fixture for
+// the two draw order rules a plain sort by row would not reproduce.
+nfsu::GeometryReport order_geometry(const float (&depths)[3],
+                                    const std::uint32_t (&slots)[3]) {
+    nfsu::GeometryReport report;
+    nfsu::Mesh mesh;
+    mesh.index = 0;
+    mesh.name = "ORDER_MESH";
+    mesh.valid = true;
+    for (int k = 0; k < 3; ++k) {
+        const float x = depths[k];
+        mesh.vertices.push_back(vertex(x, 0, -0.5F, 0, 0));
+        mesh.vertices.push_back(vertex(x, 1, -0.5F, 0, 1));
+        mesh.vertices.push_back(vertex(x, 1, 0.5F, 1, 1));
+        mesh.vertices.push_back(vertex(x, 0, 0.5F, 1, 0));
+        const std::uint16_t base = static_cast<std::uint16_t>(k * 4);
+        mesh.triangles.push_back({base, static_cast<std::uint16_t>(base + 1),
+                                  static_cast<std::uint16_t>(base + 2)});
+        mesh.triangles.push_back({base, static_cast<std::uint16_t>(base + 2),
+                                  static_cast<std::uint16_t>(base + 3)});
+        mesh.materials.push_back(
+            material_range(static_cast<std::uint32_t>(k * 6), 6, slots[k]));
+    }
+    mesh.texture_hashes = {kBlendHash, kOpaqueHash};
+    report.meshes.push_back(mesh);
+    return report;
+}
+
+// Two source-over textures in the same row, so nothing but the two order
+// rules inside a row can decide the composite.
+nfsu::RenderTextureSet order_textures() {
+    nfsu::RenderTextureSet set;
+    nfsu::RenderTexture a = make_texture(1, 1);
+    a.hash = kBlendHash;
+    a.rgba = {0, 0, 255, 128};
+    a.alpha_blend_mode = 1;
+    a.layer_order = 5;
+    set.textures.push_back(a);
+    nfsu::RenderTexture b = make_texture(1, 1);
+    b.hash = kOpaqueHash;
+    b.rgba = {255, 0, 0, 200};
+    b.alpha_blend_mode = 1;
+    b.layer_order = 5;
+    set.textures.push_back(b);
+    return set;
+}
+
+void test_draw_order_rules() {
+    nfsu::RenderOptions retail = blend_options();
+    retail.material_state = nfsu::MaterialStateMode::retail;
+    const std::size_t centre =
+        (std::size_t{retail.height / 2} * retail.width + retail.width / 2) * 4U;
+    const auto composite = [&](const float (&depths)[3],
+                               const std::uint32_t (&slots)[3]) {
+        nfsu::Frame frame;
+        nfsu::RenderStats stats;
+        std::string error;
+        check(nfsu::render_scene(
+                  prepare_all(order_geometry(depths, slots), order_textures()),
+                  retail, nfsu::RenderLimits{}, frame, stats, error),
+              "draw order render: " + error);
+        if (frame.rgba().size() < centre + 4U) {
+            return std::vector<int>();
+        }
+        return std::vector<int>({frame.rgba()[centre], frame.rgba()[centre + 1],
+                                 frame.rgba()[centre + 2]});
+    };
+
+    // Rule 2, textures batch in first-use order inside a row. Groups 0 and
+    // 2 share texture A, so the queue draws them together where A was
+    // first used and texture B last: A, A, B. All three quads are
+    // coplanar, so nothing but the order can decide the composite. Over a
+    // black frame that is (0,0,128), then (0,0,192), then (200,0,41).
+    // Submitting in plain record order, A, B, A, would give (100,0,142).
+    const float coplanar[3] = {0.0F, 0.0F, 0.0F};
+    const std::uint32_t a_b_a[3] = {0, 1, 0};
+    check(composite(coplanar, a_b_a) == std::vector<int>({200, 0, 41}),
+          "textures batch in first-use order inside a row");
+
+    // Rule 3, inside one texture the material records keep their order.
+    // Groups 0 and 1 are both texture A, the first farther than the
+    // second, and group 2 is texture B behind both. In record order the
+    // far quad blends first and the near one over it, giving (0,0,192);
+    // the reverse order would let the near quad write depth and reject the
+    // far one, leaving (0,0,128). B is rejected by depth in either case.
+    const float far_near_behind[3] = {0.0F, 1.0F, -1.0F};
+    const std::uint32_t a_a_b[3] = {0, 0, 1};
+    check(composite(far_near_behind, a_a_b) == std::vector<int>({0, 0, 192}),
+          "material records keep their order inside one texture");
+
+    // The row histogram reports what was drawn: three groups, all in row 5.
+    nfsu::Frame frame;
+    nfsu::RenderStats stats;
+    std::string error;
+    check(nfsu::render_scene(
+              prepare_all(order_geometry(coplanar, a_b_a), order_textures()),
+              retail, nfsu::RenderLimits{}, frame, stats, error),
+          "row histogram render: " + error);
+    check(stats.draw_rows[5] == 3, "three drawable groups in row 5");
+    std::uint64_t other_rows = 0;
+    for (int row = 0; row < nfsu::kRenderDrawLayerCount; ++row) {
+        other_rows += row == 5 ? 0 : stats.draw_rows[row];
+    }
+    check(other_rows == 0, "no group in any other row");
+    nfsu::RenderOptions off = blend_options();
+    nfsu::RenderStats off_stats;
+    check(nfsu::render_scene(
+              prepare_all(order_geometry(coplanar, a_b_a), order_textures()),
+              off, nfsu::RenderLimits{}, frame, off_stats, error),
+          "row histogram off render: " + error);
+    std::uint64_t off_rows = 0;
+    for (int row = 0; row < nfsu::kRenderDrawLayerCount; ++row) {
+        off_rows += off_stats.draw_rows[row];
+    }
+    check(off_rows == 0, "material state off assigns no rows");
+}
+
+void test_draw_layer_order() {
+    // The row comes from the bound texture, not from whether the group
+    // blends: two blended groups swap their composite when their rows swap.
+    nfsu::RenderOptions retail = blend_options();
+    retail.material_state = nfsu::MaterialStateMode::retail;
+    const std::size_t centre =
+        (std::size_t{retail.height / 2} * retail.width + retail.width / 2) * 4U;
+    const auto composite = [&](std::uint8_t front_layer, std::uint8_t back_layer) {
+        nfsu::Frame frame;
+        nfsu::RenderStats stats;
+        std::string error;
+        check(nfsu::render_scene(
+                  prepare_all(blend_geometry(0),
+                              blend_textures(1, 1, front_layer, back_layer)),
+                  retail, nfsu::RenderLimits{}, frame, stats, error),
+              "layer order render: " + error);
+        if (frame.rgba().size() < centre + 4U) {
+            return std::vector<int>();
+        }
+        return std::vector<int>({frame.rgba()[centre], frame.rgba()[centre + 1],
+                                 frame.rgba()[centre + 2]});
+    };
+    // Row 0 before row 5: the back group composites first and the front
+    // group over it, whatever the depth policy, because the front quad is
+    // nearer than the back one.
+    check(composite(5, 0) == std::vector<int>({100, 50, 153}),
+          "the row 0 group composites before the row 5 group");
+    check(composite(0, 5) != composite(5, 0),
+          "swapping the rows swaps which group composites last");
+}
+
+void test_environment_scene() {
+    nfsu::RenderOptions options = blend_options();
+    options.material_state = nfsu::MaterialStateMode::retail;
+    options.coefficients.environment_range[0] = 1.0;
+    options.coefficients.environment_color[0] = 255;
+    const std::size_t centre =
+        (std::size_t{options.height / 2} * options.width + options.width / 2) * 4U;
+    // The front quad's texel is (0, 0, 255, 128), so its red channel is 0
+    // and only the environment term can raise it.
+    const auto red = [&](std::uint32_t flags, bool global) {
+        nfsu::RenderOptions local = options;
+        local.coefficients.environment_enabled = global;
+        nfsu::Frame frame;
+        nfsu::RenderStats stats;
+        std::string error;
+        check(nfsu::render_scene(prepare_all(blend_geometry(flags),
+                                             blend_textures(0, 0)),
+                                 local, nfsu::RenderLimits{}, frame, stats, error),
+              "environment render: " + error);
+        return frame.rgba().size() >= centre + 4U
+                   ? static_cast<int>(frame.rgba()[centre])
+                   : -1;
+    };
+    check(red(0x00000000U, true) == 0, "no environment branch bit means no term");
+    check(red(0x00000180U, false) == 0, "the global off means no term");
+    check(red(0x00000180U, true) > 0, "an open gate adds the environment term");
+    // The upload zeros the W lane of DiffuseMin and DiffuseRange with the
+    // rest of the vector, so the closed diffuse gate takes the environment
+    // term with it even though the environment vectors survive.
+    check(red(0x00000100U, true) == 0,
+          "a closed diffuse gate zeros the alpha lane and the term with it");
 }
 
 void test_bindings() {
@@ -1640,7 +2279,11 @@ void test_texture_sources() {
             const nfsu::RenderTexture& x = old_set.textures[i];
             const nfsu::RenderTexture& y = new_set.textures[i];
             same = x.hash == y.hash && x.valid == y.valid && x.rgba == y.rgba &&
-                   x.problem == y.problem && x.width == y.width && y.record == i;
+                   x.problem == y.problem && x.width == y.width &&
+                   x.alpha_test_mode == y.alpha_test_mode &&
+                   x.alpha_blend_mode == y.alpha_blend_mode &&
+                   x.layer_order == y.layer_order &&
+                   x.layer_group == y.layer_group && y.record == i;
         }
         check(same, "one source equals decode_render_textures");
     }
@@ -1648,6 +2291,19 @@ void test_texture_sources() {
 
 void test_alpha_default() {
     check(nfsu::RenderOptions{}.alpha_cutoff == 0, "default alpha cutoff is 0");
+    check(nfsu::RenderOptions{}.material_state == nfsu::MaterialStateMode::off,
+          "the retail material state is off by default");
+    const nfsu::RasterMaterial defaults;
+    check(!defaults.alpha_test && defaults.blend == nfsu::RenderBlendMode::disabled &&
+              defaults.alpha_scale == 1.0 &&
+              defaults.environment[0] == 0.0 && defaults.environment[1] == 0.0 &&
+              defaults.environment[2] == 0.0,
+          "a default raster material is the opaque state");
+    check(nfsu::RenderTexture{}.alpha_test_mode == 0 &&
+              nfsu::RenderTexture{}.alpha_blend_mode == 0 &&
+              nfsu::RenderTexture{}.layer_order == 0 &&
+              nfsu::RenderTexture{}.layer_group == 0,
+          "a hand-built texture is opaque and in row 0");
     nfsu::RenderTexture texture = make_texture(1, 1);
     texture.rgba = {90, 80, 70, 0};
     Canvas canvas(2, 2);
@@ -1866,6 +2522,16 @@ int main() {
     test_perspective_uv();
     test_uv_wrap_and_flip();
     test_alpha();
+    test_material_state_decoders();
+    test_material_gates();
+    test_material_alpha_test();
+    test_blend_modes();
+    test_environment_term();
+    test_material_coefficient_validation();
+    test_material_state_scene();
+    test_draw_layer_order();
+    test_draw_order_rules();
+    test_environment_scene();
     test_vertex_color_and_fallback();
     test_bindings();
     test_scene();

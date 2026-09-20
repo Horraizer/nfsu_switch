@@ -105,6 +105,12 @@ struct TextureRecord {
     std::uint8_t height_log2 = 0;      // info +73
     std::uint8_t format_code = 0;      // info +74
     std::uint8_t mip_count = 0;        // info +78
+    // The retail draw path turns these two bytes into the row of the draw
+    // queue bucket a material is appended to: +81 counts as a signed byte
+    // and +84, when nonzero, adds 8. No name is claimed for either byte;
+    // texture_draw_layer holds the decoded rule.
+    std::uint8_t layer_order = 0;      // info +81
+    std::uint8_t layer_group = 0;      // info +84
     // The game enables alpha test only when +85 == 1, using GREATER and
     // reference 0xAA. Other observed values leave it disabled.
     std::uint8_t alpha_test_mode = 0;  // info +85
@@ -130,6 +136,13 @@ struct TextureRecord {
     // hash it claims (see record_claims_hash).
     std::uint32_t table_hash = 0;
 };
+
+// The draw queue row: (layer_group != 0 ? 8 : 0) + (signed) layer_order,
+// clamped to 0..kTextureDrawLayerCount - 1. The retail code does not clamp;
+// every record read from retail data stays inside the range on its own.
+constexpr int kTextureDrawLayerCount = 16;
+
+int texture_draw_layer(const TextureRecord& texture) noexcept;
 
 bool texture_alpha_test_enabled(const TextureRecord& texture) noexcept;
 

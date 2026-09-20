@@ -56,6 +56,24 @@ void print_usage() {
         << "  --vertex-color       multiply by vertex color bytes 0..2\n"
         << "  --cull MODE          none (default), back or front\n"
         << "  --shading MODE       flat (default) or none\n"
+        << "Retail material state (docs/MATERIALS.md). Every option below\n"
+        << "the first one needs --material-state retail:\n"
+        << "  --material-state M   off (default) or retail. retail applies the\n"
+        << "                       texture-info alpha test and blend selection,\n"
+        << "                       the coefficient gates and the bounded\n"
+        << "                       transparent draw order\n"
+        << "  --material-alpha M,R the undecoded diffuse alpha lane, each\n"
+        << "                       0..16, default 1,0, which leaves the source\n"
+        << "                       alpha equal to the texel alpha\n"
+        << "  --environment M,R,P  EnvmapMin and EnvmapRange, each 0..16 and\n"
+        << "                       applied to all three channels, and a whole\n"
+        << "                       EnvmapPower 0..64; default 0,0,1 = no term\n"
+        << "  --environment-color R,G,B  stands in for a cube-map sample,\n"
+        << "                       each 0..255, default 0,0,0\n"
+        << "  --environment-global S  on (default) or off, the runtime global\n"
+        << "                       the coefficient upload also tests.\n"
+        << "                       No value here is a retail value: the retail\n"
+        << "                       coefficients are not decoded.\n"
         << "Mesh selection (repeatable, may be mixed; default: all meshes):\n"
         << "  --mesh-index N       the mesh at source position N\n"
         << "  --mesh-name NAME     the one mesh whose stored name is exactly NAME\n"
@@ -110,6 +128,15 @@ bool parse_hex32(const char* text, std::uint32_t& value) {
     }
     const auto result = std::from_chars(begin, end, value, 16);
     return result.ec == std::errc{} && result.ptr == end;
+}
+
+bool parse_pair(const std::string& text, double& first, double& second) {
+    const std::size_t comma = text.find(',');
+    if (comma == std::string::npos) {
+        return false;
+    }
+    return parse_double(text.substr(0, comma), first) &&
+           parse_double(text.substr(comma + 1), second);
 }
 
 bool parse_vec3(const std::string& text, nfsu::Vec3& value) {
@@ -230,7 +257,8 @@ int parse_options(
         static const std::set<std::string> valued = {
             "--width", "--height", "--alpha-cutoff", "--yaw", "--pitch",
             "--distance", "--fov", "--near", "--far", "--target", "--cull",
-            "--shading"};
+            "--shading", "--material-state", "--material-alpha", "--environment",
+            "--environment-color", "--environment-global"};
         if (valued.count(name) == 0) {
             std::cerr << "error: unknown option " << name << '\n';
             return 1;
@@ -283,11 +311,75 @@ int parse_options(
             } else {
                 ok = false;
             }
+        } else if (name == "--material-state") {
+            if (value == "off") {
+                options.material_state = nfsu::MaterialStateMode::off;
+            } else if (value == "retail") {
+                options.material_state = nfsu::MaterialStateMode::retail;
+            } else {
+                ok = false;
+            }
+        } else if (name == "--material-alpha") {
+            ok = parse_pair(value, options.coefficients.alpha_min,
+                            options.coefficients.alpha_range);
+        } else if (name == "--environment") {
+            nfsu::Vec3 parsed;
+            ok = parse_vec3(value, parsed) && parsed.z >= 0.0 &&
+                 parsed.z <= static_cast<double>(nfsu::kMaxEnvironmentPower) &&
+                 parsed.z == std::floor(parsed.z);
+            if (ok) {
+                for (int k = 0; k < 3; ++k) {
+                    options.coefficients.environment_min[k] = parsed.x;
+                    options.coefficients.environment_range[k] = parsed.y;
+                }
+                options.coefficients.environment_power =
+                    static_cast<std::uint32_t>(parsed.z);
+            }
+        } else if (name == "--environment-color") {
+            nfsu::Vec3 parsed;
+            ok = parse_vec3(value, parsed);
+            const double channels[3] = {parsed.x, parsed.y, parsed.z};
+            for (int k = 0; ok && k < 3; ++k) {
+                ok = channels[k] >= 0.0 && channels[k] <= 255.0 &&
+                     channels[k] == std::floor(channels[k]);
+                if (ok) {
+                    options.coefficients.environment_color[k] =
+                        static_cast<unsigned char>(channels[k]);
+                }
+            }
+        } else if (name == "--environment-global") {
+            if (value == "on") {
+                options.coefficients.environment_enabled = true;
+            } else if (value == "off") {
+                options.coefficients.environment_enabled = false;
+            } else {
+                ok = false;
+            }
         }
         if (!ok) {
             std::cerr << "error: invalid value for " << name << ": " << value << '\n';
             return 1;
         }
+    }
+    // A coefficient without the mode would be a silent no-op.
+    if (options.material_state == nfsu::MaterialStateMode::off) {
+        static const std::set<std::string> retail_only = {
+            "--material-alpha", "--environment", "--environment-color",
+            "--environment-global"};
+        for (const std::string& option : retail_only) {
+            if (seen.count(option) != 0) {
+                std::cerr << "error: " << option
+                          << " needs --material-state retail\n";
+                return 1;
+            }
+        }
+    }
+    std::string coefficient_error;
+    if (options.material_state == nfsu::MaterialStateMode::retail &&
+        !nfsu::validate_material_coefficients(options.coefficients,
+                                              coefficient_error)) {
+        std::cerr << "error: " << coefficient_error << '\n';
+        return 1;
     }
     if (std::uint64_t{options.width} * options.height > limits.max_pixels) {
         std::cerr << "error: width * height exceeds " << limits.max_pixels
@@ -612,6 +704,24 @@ int main(int argc, char** argv) {
               << " vertex_color " << (options.vertex_color ? 1 : 0) << " cull "
               << nfsu::cull_mode_name(options.cull) << " shading "
               << nfsu::shading_mode_name(options.shading) << '\n';
+    // Printed only with the retail state, so the report of every other run
+    // is byte for byte what it was before this option existed. The same
+    // rule already applies to the selection block below.
+    if (options.material_state == nfsu::MaterialStateMode::retail) {
+        const nfsu::MaterialCoefficients& c = options.coefficients;
+        std::cout << "material: state "
+                  << nfsu::material_state_mode_name(options.material_state)
+                  << " alpha_lane " << format_double(c.alpha_min) << ','
+                  << format_double(c.alpha_range) << " environment "
+                  << format_double(c.environment_min[0]) << ','
+                  << format_double(c.environment_range[0]) << ','
+                  << c.environment_power << " environment_color "
+                  << static_cast<unsigned int>(c.environment_color[0]) << ','
+                  << static_cast<unsigned int>(c.environment_color[1]) << ','
+                  << static_cast<unsigned int>(c.environment_color[2])
+                  << " environment_global " << (c.environment_enabled ? "on" : "off")
+                  << '\n';
+    }
     // The all-meshes report is unchanged; only an explicit subset is listed.
     if (scene.profile == nfsu::SelectionProfile::explicit_subset) {
         std::cout << "selection: " << nfsu::selection_profile_name(scene.profile)
@@ -625,6 +735,20 @@ int main(int argc, char** argv) {
         }
     }
     print_stats(stats);
+    if (options.material_state == nfsu::MaterialStateMode::retail) {
+        // The rows the renderer itself assigned, so the report can never
+        // describe an order other than the one that was drawn.
+        std::cout << "draw rows:";
+        for (int row = 0; row < nfsu::kRenderDrawLayerCount; ++row) {
+            std::cout << ' ' << stats.draw_rows[row];
+        }
+        std::cout << '\n';
+        std::cout << "material groups: alpha_tested " << stats.groups_alpha_tested
+                  << " blended " << stats.groups_blended << '\n';
+        std::cout << "blend: fragments " << stats.fragments_blended << " overlap "
+                  << stats.fragments_blend_overlap << " pixels "
+                  << stats.pixels_blended << '\n';
+    }
     std::cout << "wrote: " << output_path.filename().u8string() << '\n';
     return geometry.ok() && pack.ok() && sources_ok ? 0 : 3;
 }

@@ -41,6 +41,22 @@ struct RenderTexture {
     std::size_t source = 0;
     std::size_t pack = 0;
     std::size_t record = 0;
+    // The two raw texture-info bytes the retail draw path reads for render
+    // state, carried unchanged: +85 selects the alpha test and +86 the
+    // blend. The decode functions copy them from the record before it is
+    // validated, so an invalid record still reports what it stored. A
+    // hand-built texture leaves both 0, which is the opaque state. Never
+    // interpret them here; render_alpha_test_enabled and
+    // render_blend_mode_of hold the only decoded rules. See
+    // docs/MATERIALS.md.
+    std::uint8_t alpha_test_mode = 0;
+    std::uint8_t alpha_blend_mode = 0;
+    // The two raw texture-info bytes the retail draw path turns into the
+    // row of the draw queue bucket a material is appended to: +81 counts as
+    // a signed byte and +84, when nonzero, adds 8. Carried unchanged and
+    // decoded only by render_draw_layer.
+    std::uint8_t layer_order = 0;
+    std::uint8_t layer_group = 0;
 
     // True if value is hash or one of the first claim_count claims.
     bool claims_hash(std::uint32_t value) const noexcept;
@@ -48,6 +64,55 @@ struct RenderTexture {
     // width * height * 4 bytes.
     bool usable() const noexcept;
 };
+
+// Retail render state decoded from the two raw texture-info bytes above.
+// Both rules are traced in the retail draw path; see docs/MATERIALS.md for
+// the addresses. They are duplicated from texture.h on purpose: this layer
+// must not depend on the pack reader. tests/render_tests.cpp checks the two
+// decoders agree for all 256 byte values.
+
+// Texture-info +85 == 1 enables the alpha test; every other value leaves it
+// off.
+bool render_alpha_test_enabled(std::uint8_t alpha_test_mode) noexcept;
+
+// D3DRS_ALPHAREF written with the test, compared with D3DCMP_GREATER, so a
+// texel passes only when its alpha is strictly above this value.
+constexpr std::uint8_t kRenderAlphaRef = 0xAA;
+
+// The draw queue row a material with these two bytes is appended to:
+// (layer_group != 0 ? 8 : 0) + (signed) layer_order, clamped to
+// 0..kRenderDrawLayerCount - 1. The retail code does not clamp; every
+// record read from retail data stays inside the range on its own.
+constexpr int kRenderDrawLayerCount = 16;
+
+int render_draw_layer(std::uint8_t layer_group, std::uint8_t layer_order) noexcept;
+
+// Texture-info +86: 0 disables blending, 2 selects SRCALPHA/ONE, and every
+// other non-zero value selects SRCALPHA/INVSRCALPHA.
+enum class RenderBlendMode { disabled, source_over, additive };
+
+RenderBlendMode render_blend_mode_of(std::uint8_t alpha_blend_mode) noexcept;
+
+// "disabled", "source-over" or "additive".
+const char* render_blend_mode_name(RenderBlendMode mode) noexcept;
+
+// Which material coefficient groups of the car effect survive the
+// flag-controlled zeroing in the retail coefficient upload. The three bits
+// are the only proven consumers of the material record flags; no semantic
+// name for any flag bit is claimed, and nothing else may be derived from
+// the flags. environment_enabled stands for the runtime global the upload
+// also tests. See docs/MATERIALS.md.
+// The traced branch zeros the diffuse and the specular vectors together,
+// so diffuse and specular are always equal; they are kept apart because the
+// branch names two coefficient groups, and a test pins the equality.
+struct MaterialCoefficientGates {
+    bool diffuse = true;
+    bool specular = true;
+    bool environment = true;
+};
+
+MaterialCoefficientGates material_coefficient_gates(
+    std::uint32_t flags, bool environment_enabled) noexcept;
 
 // A record left out of the set because an earlier source already claims
 // one of its hashes (see record_claims_hash).

@@ -277,7 +277,10 @@ bool same_scene(const nfsu::PreparedCarScene& a, const nfsu::PreparedCarScene& b
         const nfsu::RenderTexture& y = b.textures[i];
         if (x.hash != y.hash || x.width != y.width || x.height != y.height ||
             x.rgba != y.rgba || x.source != y.source || x.pack != y.pack ||
-            x.record != y.record) {
+            x.record != y.record ||
+            x.alpha_test_mode != y.alpha_test_mode ||
+            x.alpha_blend_mode != y.alpha_blend_mode ||
+            x.layer_order != y.layer_order || x.layer_group != y.layer_group) {
             return false;
         }
     }
