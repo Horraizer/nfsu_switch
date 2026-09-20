@@ -92,10 +92,12 @@ rules bind it too.
   it, and to no seat by default. Any other session, in any seat, takes its own
   copy with `git worktree add --detach <temp path> <sha>`, works there, and
   removes it when finished. A detached worktree still completes the worker
-  handoff: commit there and push with an explicit refspec,
-  `git push origin HEAD:<branch>`. Do not check the branch out to get a push
-  target - two worktrees cannot hold the same branch, so that is the one thing
-  the detached copy exists to avoid.
+  handoff: commit there and push with a fully qualified refspec,
+  `git push origin HEAD:refs/heads/<branch>`. The short `HEAD:<branch>` form
+  fails from a detached HEAD the first time, because git will not guess a
+  namespace for a branch the remote does not have yet. Do not check the branch
+  out to get a push target - two worktrees cannot hold the same branch, so that
+  is the one thing the detached copy exists to avoid.
 - A subagent asked to mutate, build or revert works only in a detached worktree
   of its own, which the dispatcher creates, names in the assignment with the
   SHA to work from, and removes once the subagent has reported. The dispatcher
