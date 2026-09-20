@@ -160,23 +160,38 @@ function Get-PortOwnerPids {
     # Two processes cannot both hold 127.0.0.1:P, so this returns at most the
     # process that answered the ownership probe.
     #
-    # It does not close the window this design carries: between the
+    # It does not close the window Stop-OwnedListener records: between the
     # Test-OwnedIdentity that proves ownership and this query, the owned server
     # can exit and another process can bind 127.0.0.1:P, and this would then
-    # name that process. Stop-ProcessEntries' start-time check limits what a
-    # stop can reach afterwards. The window is inherent to asking the OS a
-    # second question about a port and is recorded rather than closed.
+    # name that process. That window is not a property of this query -- the
+    # other branch there reads a pid the probe reported and carries exactly the
+    # same one -- so it is described in full at Stop-OwnedListener, the one
+    # caller that acts on the answer rather than printing it.
     return Get-ListenerPids "127.0.0.1"
 }
 
 function Get-PortOwnerDescription {
     # The owner the OS reports, not the pid a foreign listener chose to claim
     # about itself: the launcher sends the operator after a real process. This
-    # one is a message, not a target, so it must not be narrowed to 127.0.0.1:
-    # a process holding 0.0.0.0:P or [::]:P makes 127.0.0.1:P unavailable just
-    # as effectively and is exactly who the operator has to go and stop. A
-    # loopback owner is still preferred, being the closest match to the bind
-    # that failed.
+    # one is a message and never a target -- both callers interpolate it into a
+    # throw -- so leaving it unnarrowed cannot reach the stop path.
+    #
+    # The unnarrowed half earns its place on the ownership failure, not on the
+    # port-in-use one. A non-exclusive listener on 0.0.0.0:P answers
+    # 127.0.0.1:P, so when this run's server dies while one of those is up,
+    # Test-OwnedIdentity fails and the operator is told the url is owned by
+    # someone else -- and a query narrowed to 127.0.0.1 returns nothing at all
+    # for that listener, which would leave the message with no one to name.
+    #
+    # It is not about a bind that failed, whatever the shape suggests. Measured
+    # here: a squatter on 0.0.0.0:P, on [::]:P, or on 0.0.0.0:P with
+    # ExclusiveAddressUse off all leave 127.0.0.1:P bindable. The variant that
+    # does block it, 0.0.0.0:P with ExclusiveAddressUse on, fails the bind with
+    # EACCES, and server.mjs maps only EADDRINUSE to the exit code that reaches
+    # the port-in-use message.
+    #
+    # A loopback owner is still preferred, being the closest match to whichever
+    # failure sent the operator here.
     foreach ($ownerPid in @(@(Get-PortOwnerPids) + @(Get-ListenerPids))) {
         $name = ""
         try {
@@ -280,8 +295,19 @@ function Stop-ProcessEntries {
 function Stop-OwnedListener {
     # Last resort, and the one that holds whatever node resolved to: a listener
     # is stopped only if it proves, with this run's one-time GUID, that it is
-    # the server this launcher started. A foreign process is never touched,
-    # subject to the window Get-PortOwnerPids records.
+    # the server this launcher started.
+    #
+    # A foreign process is never touched, subject to one window, which runs
+    # from the identity probe below to the stop that follows it and which both
+    # branches carry equally: the proved server can exit in that gap and its
+    # pid be reused, and the tree walked is then a stranger's. That is as true
+    # of the pid the probe itself reported as of the pid the OS is asked for
+    # afterwards -- both are read after the proof and acted on after that --
+    # so it is a property of proving ownership and then acting on it, not of
+    # either way of naming the target. Stop-ProcessEntries' start-time check
+    # limits what the walk can reach once it has been made, and there is no
+    # cheaper close: a handle opened after the reuse pins the stranger, and the
+    # GUID cannot be reproved against a pid, only against the port.
     for ($attempt = 0; $attempt -lt $stopConfirmAttempts; $attempt++) {
         $identity = Get-InstanceIdentity
         if (-not (Test-OwnedIdentity $identity)) {
@@ -318,7 +344,28 @@ function Stop-SpawnedServer {
         }
     }
     if ($serverPid -gt 0) {
-        Stop-ProcessEntries (Get-ProcessTree $serverPid)
+        # Guarded the same way, and for a sharper reason than the pass above.
+        # Nothing holds this pid open: Wait-Process releases its handle the
+        # moment the server exits, so on the ordinary exit path the process is
+        # already gone by the time this runs and the only way the walk can find
+        # anything is if the pid has been reused. Without the captured start
+        # time, Get-ProcessTree would record the stranger's own start time and
+        # the check in Stop-ProcessEntries would compare that value to itself
+        # and pass, making killing a stranger's tree this pass's only possible
+        # effect.
+        $owned = $null
+        try {
+            $owned = Get-Process -Id $serverPid -ErrorAction Stop
+        }
+        catch {
+            $owned = $null
+        }
+        # A start time that could not be read leaves the pass unguarded rather
+        # than skipped, matching the handle pass above: failing to stop a real
+        # server leaks an authenticated writer on loopback, which is worse.
+        if ($null -ne $owned -and ($null -eq $serverPidStartedAt -or $owned.StartTime -eq $serverPidStartedAt)) {
+            Stop-ProcessEntries (Get-ProcessTree $serverPid)
+        }
     }
     Stop-OwnedListener
 }
@@ -362,6 +409,7 @@ $previousParent = $env:KANBAN_PARENT_PID
 $server = $null
 $serverPid = 0
 $serverStartedAt = $null
+$serverPidStartedAt = $null
 
 # The child inherits these. KANBAN_PARENT_PID is the pid of the process running
 # this script, which is the process whose death must reap the server when this
@@ -428,6 +476,16 @@ try {
     $serverPid = Get-IdentityPid $identity
     if ($serverPid -eq 0) {
         throw "$url answered for this launcher's instance but reported no usable pid."
+    }
+
+    # Read now, while the GUID has just proved this pid is this run's server.
+    # It is what the stop pass compares against later, once nothing holds the
+    # pid open any more.
+    try {
+        $serverPidStartedAt = (Get-Process -Id $serverPid -ErrorAction Stop).StartTime
+    }
+    catch {
+        $serverPidStartedAt = $null
     }
 
     if ($env:KANBAN_SMOKE -eq "1") {

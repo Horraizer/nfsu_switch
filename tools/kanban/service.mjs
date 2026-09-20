@@ -109,6 +109,12 @@ const PERCENT_ESCAPE = /^[0-9a-fA-F]{2}$/;
  * in the original. Decoding is per byte rather than per code point: the token
  * this is compared against is ASCII, and a truncated UTF-8 escape must yield
  * something harmless rather than throw the way `decodeURIComponent` does.
+ *
+ * One consequence, for a token that is not ASCII after all: a character in
+ * U+0080 to U+00FF comes back from its single-byte escape -- `%E9` becomes
+ * U+00E9 -- so such a token is matched in that form as well as literally. Its
+ * real UTF-8 encoding, `%C3%A9`, is not, and neither is anything above U+00FF
+ * in any escaped form. README states the same limit.
  */
 function decodeOnce(text) {
   let decoded = "";
@@ -157,6 +163,16 @@ function tokenSpans(text, token) {
   // The decoded pass does not subsume the raw one: decoding rewrites a token
   // that contains a `%hh` sequence of its own, so its literal form is not in
   // `decoded` at all and only the raw pass above can see it.
+  //
+  // That is also where the pair stops. Such a token is found whole-literal, by
+  // the raw pass, and whole-encoded, by this one -- but not mixed. The raw
+  // pass needs every character literal, so one other character arriving
+  // encoded leaves only this pass, which has already turned the token's own
+  // `%hh` into the byte it names: `a%2cb` inside `x %61%2cb y` survives both.
+  // Closing it means deciding which `%hh` in the text belongs to the token and
+  // which to the encoding, which the text does not say. A real Gitea token is
+  // `gta_` plus base32 and holds no `%`, so nothing reaches the gap without a
+  // malformed one; README records it rather than this pretending otherwise.
   for (const at of occurrences(decoded, token)) {
     spans.push([origin[at], origin[at + token.length]]);
   }
@@ -372,16 +388,18 @@ export function createGiteaClient({
           // up to the safety limit, three times over, before the board failed.
           stalled += 1;
           if (stalled >= STALLED_PAGE_LIMIT) {
-            if (trustedTotal !== null && result.length === trustedTotal) {
-              // The pages stopped advancing on a collection whose size the
-              // first response stated, and exactly that many rows are in hand.
-              // That is an upstream which ignores or clamps `page` on a
-              // collection that is an exact multiple of the page size -- the
-              // sweep is complete, and it is the only reason left to keep
-              // asking. An upstream that is truncating instead lands short of
-              // the total, and still fails below.
-              return result;
-            }
+            // Unconditional, including when the rows in hand match the stated
+            // total exactly. That looks like the one benign stall -- an
+            // upstream clamping `page` on a collection that is an exact
+            // multiple of the page size -- but a healthy upstream never
+            // arrives here with that shape: the page after its last full one
+            // is empty and returns above. The only upstream that can reach a
+            // total-matched stall is one that is already broken, and the
+            // header is the weakest evidence there is about such an upstream.
+            // A narrow or stale total -- the shapes the block below documents
+            // as real -- names the wrong number, and a truncating upstream
+            // landing on it would have served a short board with a 200 and
+            // nothing in the log.
             throw new HttpError(502, "Gitea pagination stopped advancing");
           }
         } else {

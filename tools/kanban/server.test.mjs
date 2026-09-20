@@ -1057,6 +1057,47 @@ test("a token whose own characters are percent signs does not wedge the scrub", 
   assert.equal(scrubSecrets("x a%2cb y", "a%2cb"), "x [redacted] y");
 });
 
+test("the raw and decoded passes leave one documented gap, and it is where README says", () => {
+  // The two passes are not a partition. A token that contains a `%hh` sequence
+  // of its own is found whole-literal, by the raw pass, and whole-encoded, by
+  // the decoded one -- but not mixed, because the raw pass needs every
+  // character literal and the decoded pass has already rewritten the token's
+  // own `%hh` into the byte it names. This pins the gap so that README stays
+  // true and so that a later change which closes it is noticed here rather
+  // than being discovered as a surprise.
+  assert.equal(scrubSecrets("x a%2cb y", "a%2cb"), "x [redacted] y", "whole-literal is the raw pass");
+  assert.equal(scrubSecrets("x %61%25%32%63%62 y", "a%2cb"), "x [redacted] y", "whole-encoded is the decoded pass");
+  // The gap: the token's own `%2c` arrives literally while `a` arrives as
+  // `%61`. Neither pass can see it, and the text is returned unchanged.
+  assert.equal(scrubSecrets("x %61%2cb y", "a%2cb"), "x %61%2cb y");
+  assert.equal(scrubSecrets("%78%41y", "x%41y"), "%78%41y");
+
+  // Decoding is per byte, so a character in U+0080..U+00FF is matched in its
+  // single-byte percent form as well as literally -- wider than a code-point
+  // decode would be, and not what a real URL encoder emits.
+  for (const [code, escape] of [[0x80, "%80"], [0xe9, "%E9"], [0xff, "%ff"]]) {
+    const wide = `a${String.fromCharCode(code)}b`;
+    assert.equal(scrubSecrets(`a${escape}b`, wide), "[redacted]", `${escape} should reach U+00${code.toString(16)}`);
+    assert.equal(scrubSecrets(wide, wide), "[redacted]", "the literal form still matches");
+  }
+  // Its actual UTF-8 encoding is not matched, and neither is anything above
+  // U+00FF in any encoded form: those stay literal-only.
+  const accented = `a${String.fromCharCode(0xe9)}b`;
+  assert.equal(scrubSecrets("a%C3%A9b", accented), "a%C3%A9b");
+  const macron = `a${String.fromCharCode(0x100)}b`;
+  assert.equal(scrubSecrets("a%C4%80b", macron), "a%C4%80b");
+  assert.equal(scrubSecrets("a%100b", macron), "a%100b");
+  assert.equal(scrubSecrets(macron, macron), "[redacted]", "the literal form still matches");
+
+  // None of this reaches a real credential: a Gitea token is `gta_` plus
+  // base32, which holds no `%` and nothing above U+007F, and it is covered in
+  // every mix of literal and encoded characters.
+  const token = "gta_CANARY_0123456789abcdefABCDEF0123456789";
+  assert.equal(scrubSecrets(token, token), "[redacted]");
+  assert.equal(scrubSecrets(`x ${encodeURIComponent(token)} y`, token), "x [redacted] y");
+  assert.equal(scrubSecrets(`x gta%5FCANARY%5f${token.slice(11)} y`, token), "x [redacted] y");
+});
+
 // ------------------------------------------------------- content length ----
 
 test("the declared content length is what the response actually delivers", async () => {
@@ -1180,22 +1221,19 @@ test("a page that never advances fails loudly instead of truncating or hammering
   assert.equal(requested.length, STALLED_PAGE_LIMIT + 1, "a stuck sweep must not run to the safety limit");
 });
 
-test("a sweep that stops advancing on exactly the stated total is complete, not a failure", async () => {
-  // A collection that is an exact multiple of the page size never produces a
-  // short page, so the "shorter than the pages before it" terminator cannot
-  // fire, and an upstream that ignores or clamps `page` then repeats its last
-  // page forever. The stall detector sees that, and at that point the total
-  // the first response stated is the evidence in hand: exactly that many
-  // distinct rows have been collected, so the sweep is finished. Hard-failing
-  // a board that is demonstrably complete is the regression this closes.
+test("a sweep that stops advancing fails even when the rows match the stated total", async () => {
+  // A stall that lands exactly on X-Total-Count looks like the one benign
+  // stall there is -- an upstream clamping `page` on a collection that is an
+  // exact multiple of the page size, with every row already in hand. Returning
+  // it was a truncation vector, and it is pinned closed here so that softening
+  // it again fails: the total is a claim by the same upstream whose paging is
+  // already proved broken, and the attack below lands on the wrong number.
   const rows = Array.from({ length: 100 }, (_, index) => ({ id: index + 1, number: index + 1 }));
   // Clamps `page` to the last page it has, which is what a proxy that caps an
   // offset does.
   const clamped = (page) => rows.slice((Math.min(page, 2) - 1) * 50, Math.min(page, 2) * 50);
   const { client, requested } = stubbedClient({ pages: clamped, total: "100", maxPages: 200 });
-  const collected = await client.paginate("/repos/owner/repo/issues");
-  assert.equal(collected.length, 100, "a complete collection was reported as a pagination failure");
-  assert.equal(new Set(collected.map((row) => row.id)).size, 100, "every row should be present exactly once");
+  await assert.rejects(() => client.paginate("/repos/owner/repo/issues"), /stopped advancing/);
   assert.equal(
     requested.length,
     2 + STALLED_PAGE_LIMIT,
@@ -1207,14 +1245,79 @@ test("a sweep that stops advancing on exactly the stated total is complete, not 
   for (const size of [50, 30]) {
     const fixed = Array.from({ length: size }, (_, index) => ({ id: index + 1, number: index + 1 }));
     const single = stubbedClient({ pages: () => fixed, total: String(size), maxPages: 200 });
-    const swept = await single.client.paginate("/repos/owner/repo/issues");
-    assert.equal(swept.length, size, `${size} rows behind an upstream that ignores page were rejected`);
+    await assert.rejects(
+      () => single.client.paginate("/repos/owner/repo/issues"),
+      /stopped advancing/,
+      `${size} rows behind an upstream that ignores page were served as a whole collection`,
+    );
+  }
+});
+
+test("a stall landing on a narrow or stale total is refused, not served as a short board", async () => {
+  // The attack the rule above would otherwise open. Both header shapes are the
+  // ones the sweep already documents as real -- a count that describes a
+  // narrower set than the request, and a stale cached one -- and both clear
+  // the "smaller than the first page" check. Combined with an upstream that
+  // clamps `page`, the truncating sweep lands on exactly the stated total, so
+  // a rule that trusts that number serves part of the collection with a 200
+  // and nothing in the log.
+  const rows = (count) => Array.from({ length: count }, (_, index) => ({ id: index + 1, number: index + 1 }));
+
+  // Narrow total: the header says 50, the collection holds 120, and the
+  // clamping upstream repeats page 1 forever. Trusting the total here loses
+  // issue numbers 51..120 silently.
+  const narrow = rows(120);
+  const { client: narrowClient } = stubbedClient({
+    pages: () => narrow.slice(0, 50),
+    total: "50",
+    maxPages: 200,
+  });
+  await assert.rejects(
+    () => narrowClient.paginate("/repos/owner/repo/issues?state=all"),
+    /stopped advancing/,
+    "50 rows of 120 were served as the whole collection",
+  );
+
+  // Stale cached total: the header is left over from when the collection held
+  // 30 rows, and the clamping upstream serves a 30-row first page out of 100.
+  const stale = rows(100);
+  const { client: staleClient } = stubbedClient({
+    pages: () => stale.slice(0, 30),
+    total: "30",
+    maxPages: 200,
+  });
+  await assert.rejects(
+    () => staleClient.paginate("/repos/owner/repo/issues"),
+    /stopped advancing/,
+    "30 rows of 100 were served as the whole collection",
+  );
+});
+
+test("a healthy upstream ends an exact-multiple collection on its empty page", async () => {
+  // Why refusing the stall above costs nothing. A collection that is an exact
+  // multiple of the page size never produces a short page, so the "shorter
+  // than the pages before it" terminator cannot fire -- but a correct Gitea
+  // answers the page after the last full one with an empty array, and that
+  // ends the sweep with every row in hand and no reliance on the header. The
+  // stall path is therefore unreachable for an upstream that is paging
+  // correctly, whatever its total says.
+  const rows = Array.from({ length: 100 }, (_, index) => ({ id: index + 1, number: index + 1 }));
+  for (const total of ["100", "50", null]) {
+    const { client, requested } = stubbedClient({
+      pages: (page) => rows.slice((page - 1) * 50, page * 50),
+      total,
+      maxPages: 200,
+    });
+    const collected = await client.paginate("/repos/owner/repo/issues?state=all");
+    assert.equal(collected.length, 100, `an exact multiple was truncated with X-Total-Count ${total}`);
+    assert.equal(new Set(collected.map((row) => row.id)).size, 100, "every row should be present exactly once");
+    assert.deepEqual(requested, [1, 2, 3], "the empty third page is what ends the sweep");
   }
 });
 
 test("a sweep that stops advancing short of the stated total still fails", async () => {
-  // The other side of the case above, and the reason it is safe. The pages
-  // stopped advancing here too, but the rows in hand do not account for the
+  // The same rule from the other side, and the case that always failed: the
+  // pages stopped advancing and the rows in hand do not account for the
   // collection the first response described, so this is an upstream that is
   // truncating and the board must not be served as though it were whole.
   const rows = Array.from({ length: 50 }, (_, index) => ({ id: index + 1, number: index + 1 }));
@@ -1228,10 +1331,44 @@ test("a sweep that stops advancing short of the stated total still fails", async
 });
 
 test("a collection that is an exact multiple of the page size is served as a board", async () => {
-  // The end-to-end shape of the case above: 100 issues at a page size of 50,
-  // behind an upstream that clamps `page` to the last page it has. Every page
-  // is full, so nothing but the total can end the sweep, and answering the
-  // board with a 502 is worse than answering it with the collection.
+  // The end-to-end shape: 100 issues at a page size of 50, so no page is ever
+  // short and the "shorter than the pages before it" terminator cannot fire.
+  // A correct upstream still ends it, on the empty third page.
+  const issues = Array.from({ length: 100 }, (_, index) => ({
+    id: 1000 + index,
+    number: index + 1,
+    title: `Issue ${index + 1}`,
+    state: "open",
+    html_url: `https://git.example/owner/repo/issues/${index + 1}`,
+    labels: [],
+  }));
+  const handler = (call) => {
+    if (call.path === "/repos/owner/repo/labels") {
+      return pagedReply(LABELS, { pageSize: 50 })(call);
+    }
+    if (call.path === "/repos/owner/repo/pulls") {
+      return pagedReply([], { pageSize: 50 })(call);
+    }
+    if (call.path === "/repos/owner/repo/issues") {
+      return pagedReply(issues, { pageSize: 50 })(call);
+    }
+    return { status: 404, payload: { message: "unhandled" } };
+  };
+
+  await withServers(handler, async ({ kanban }) => {
+    const res = await rawRequest(kanban.port, ["GET /api/board HTTP/1.1", `Host: 127.0.0.1:${kanban.port}`, "Connection: close"]);
+    assert.equal(res.status, 200, "a complete board was refused as a pagination failure");
+    assert.equal(res.json.tasks.length, 100);
+    assert.equal(new Set(res.json.tasks.map((task) => task.number)).size, 100);
+  });
+});
+
+test("a board behind an upstream that clamps page fails loudly instead of serving short", async () => {
+  // The same collection behind a proxy that caps the offset: page 2 is
+  // repeated forever, so the sweep never sees an empty page and the rows in
+  // hand happen to match the header exactly. The board must refuse rather than
+  // answer 200 with whatever the truncation left, because the same shape with
+  // a narrow or stale header hides real rows.
   const issues = Array.from({ length: 100 }, (_, index) => ({
     id: 1000 + index,
     number: index + 1,
@@ -1260,9 +1397,7 @@ test("a collection that is an exact multiple of the page size is served as a boa
 
   await withServers(handler, async ({ kanban }) => {
     const res = await rawRequest(kanban.port, ["GET /api/board HTTP/1.1", `Host: 127.0.0.1:${kanban.port}`, "Connection: close"]);
-    assert.equal(res.status, 200, "a complete board was refused as a pagination failure");
-    assert.equal(res.json.tasks.length, 100);
-    assert.equal(new Set(res.json.tasks.map((task) => task.number)).size, 100);
+    assert.equal(res.status, 502, "a truncating upstream was served as a complete board");
   });
 });
 
