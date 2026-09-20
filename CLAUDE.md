@@ -118,6 +118,10 @@ git show HEAD:<path> | Select-String -Pattern '[^\x09\x0A\x0D\x20-\x7E]'
 into pure-ASCII octal escapes, so the pattern never matches and the scan
 silently passes a repository that violates the rule.
 
+Scan blob bytes directly. Redirecting a blob to a temp file through PowerShell
+writes it back with a UTF-8 byte order mark, so every file reports a three-byte
+violation the scan itself created. Pipe `git cat-file blob` into the pattern.
+
 Check text before you post it, not only before you commit it. A comment body
 assembled in a PowerShell double-quoted here-string passes backticks to the
 escape parser, so a markdown code span written as `` `0x00034101` `` becomes a
