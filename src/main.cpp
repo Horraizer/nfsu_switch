@@ -2277,7 +2277,8 @@ const Command kCommands[] = {
                  return 1;
              }
          }
-         return run_track_collision(fs::path(argv[2]), argc == 5, slot0, slot1);
+         return run_track_collision(nfsu::argument_path(argv[2]), argc == 5, slot0,
+                                    slot1);
      }},
     {"car-placement", " <GLOBALB.BUN> [car-type]", "",
      [](int argc, char** argv) {
