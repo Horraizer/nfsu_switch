@@ -378,8 +378,13 @@ if(NFSU_BUILD_TESTS)
     # command inventory back out of three independent places - the kCommands
     # table in the source, the built program's usage text, and the README's
     # run lines - and requires all three to be the same set, so a command
-    # added to one of them alone is named as missing from the others: see
-    # tests/usage_commands.cmake.
+    # added to one of them alone is named as missing from the others. It then
+    # checks the shape of main(), because a command dispatched from anywhere
+    # else is missing from all three inventories at once and leaves them
+    # agreeing. That second half catches the accident it was built for - a
+    # handler merged into main() after the dispatch loop - and is not an
+    # adversarial barrier; tests/usage_commands.cmake names the shapes that
+    # get past it.
     add_test(NAME nfsu_probe_usage_commands
         COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
                 -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp
