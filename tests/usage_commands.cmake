@@ -53,9 +53,13 @@
 #
 #   the shape of main()  argv[1] is read in main() and bound by a line this
 #                        file can name the variable from; main() loops over
-#                        kCommands; and the only line in main() that selects
-#                        on a command name is that loop's comparison against
-#                        an entry's own `name`;
+#                        kCommands; and every line in main() that selects on
+#                        a value is either that loop's comparison against an
+#                        entry's own `name`, or a comparison whose strings
+#                        are all spelled as options, or a line that does not
+#                        touch the command name at all. Any other selection
+#                        in main() is refused, including one on a name no
+#                        table entry could carry;
 #   the name literals    every command-shaped string literal in src/main.cpp
 #                        is either a registered command or is refused, by
 #                        name, by the built program under each of several
@@ -87,6 +91,13 @@
 #     The two literals are collected separately, both are refused, and the
 #     compiler still sees one name.
 #   * a name assembled at run time, compared in a helper outside main().
+#
+# One honest edit is refused on purpose rather than accommodated. A switch
+# spelled without a leading hyphen - `if (command == "/?")` - fails here,
+# because a string a user can type and the table cannot hold is a command
+# this file has no way to tell from an option. Accepting `/?` is accepting
+# `dump/state`, which is the shape this hatch was found passing. Spell a
+# switch with a hyphen, or register it as a command.
 #
 # The marker list this file uses is an enumeration of the ways someone
 # thought of. A map lookup through .at() and a three-way comparison were
@@ -486,11 +497,26 @@ foreach(raw_line IN LISTS source_lines)
     string(REGEX MATCHALL "${string_literal}" code_quoted "${code}")
     set(code_strings 0)
     set(code_names 0)
+    set(code_options 0)
     foreach(quoted_text IN LISTS code_quoted)
         if(quoted_text MATCHES "^\"(.*)\"$")
             math(EXPR code_strings "${code_strings}+1")
-            if(CMAKE_MATCH_1 MATCHES "${name_pattern}")
+            # Saved before the next MATCHES overwrites it. Two tests run on
+            # this literal, and CMAKE_MATCH_1 does not survive the first.
+            set(code_literal "${CMAKE_MATCH_1}")
+            if(code_literal MATCHES "${name_pattern}")
                 math(EXPR code_names "${code_names}+1")
+            endif()
+            # An option, by the only convention this program uses: every
+            # option nfsu_probe already accepts is spelled with a leading
+            # "--". A leading hyphen is also the one thing that makes a
+            # string untypeable as a command here, because main() would have
+            # matched it against the table first and the table cannot hold
+            # it. "Not registrable under name_pattern" is NOT the same test
+            # and must not be used as one: "Dump-State" is unregistrable and
+            # still a name a user can type and the program can answer to.
+            if(code_literal MATCHES "^-")
+                math(EXPR code_options "${code_options}+1")
             endif()
         endif()
     endforeach()
@@ -574,6 +600,17 @@ foreach(raw_line IN LISTS source_lines)
         set(iterates_table TRUE)
     endif()
 
+    # Whether this line touches the command name at all, by the variable it
+    # was bound to or by argv[1] directly. A line that touches neither is not
+    # dispatching on the command, whatever else it compares.
+    set(selects_on_command FALSE)
+    if(statement MATCHES "argv\\[1\\]")
+        set(selects_on_command TRUE)
+    elseif(NOT dispatch_variable STREQUAL "" AND statement MATCHES
+           "(^|[^A-Za-z0-9_])${dispatch_variable}([^A-Za-z0-9_]|$)")
+        set(selects_on_command TRUE)
+    endif()
+
     if(in_main AND statement MATCHES "${selection_markers}")
         if(dispatch_variable STREQUAL "")
             message(FATAL_ERROR
@@ -588,27 +625,40 @@ foreach(raw_line IN LISTS source_lines)
            OR statement MATCHES
            "^[ \t]+if[ \t]*\\([ \t]*${entry_name}[ \t]*==[ \t]*${dispatch_variable}[ \t]*\\)[ \t]*\\{$")
             math(EXPR table_comparisons "${table_comparisons}+1")
-        elseif(code_strings GREATER 0 AND code_names EQUAL 0)
-            # Every string this line compares against is one no table entry
-            # could be registered under, so it is an option and not a
-            # command. "--help" is the case this exists for: name_pattern
+        elseif(code_strings GREATER 0 AND code_options EQUAL code_strings)
+            # Every string this line compares against is spelled as an
+            # option. "--help" is the case this exists for: name_pattern
             # forbids a leading hyphen, so it cannot be a table entry, and a
             # rule with no legal way to satisfy it is a rule the next person
             # who needs one deletes.
+        elseif(NOT selects_on_command AND code_names EQUAL 0)
+            # This line selects on something that is not the command name and
+            # compares against nothing a command could be named, so it is not
+            # a dispatch. A debug switch read from the environment, or a test
+            # on argv[0], lands here. Both halves are load-bearing: without
+            # the first, an alias of the command name would pass; without the
+            # second, a comparison against a command name by way of a local
+            # copy would.
         else()
             message(FATAL_ERROR
                 "main() in ${SOURCE} has a second dispatch path:\n"
                 "  ${raw_line}\n"
-                "The only line in main() that may select on a command name "
-                "is the kCommands loop's comparison, spelled\n"
+                "Every line in main() that selects on a value has to be "
+                "one of three things, and this is none of them:\n"
+                "  the kCommands loop's comparison, spelled\n"
                 "      if (${dispatch_variable} == <entry>.name) {\n"
-                "in either operand order, with the entry subscripted out of "
-                "the table if you prefer. A line that compares only against "
-                "strings no command could be named - an option such as "
-                "\"--help\" - is allowed. A command dispatched from any "
-                "other branch is registered nowhere, listed nowhere and "
-                "documented nowhere, so the three inventories above agree "
-                "while it works.")
+                "  in either operand order, with the entry subscripted out "
+                "of the table if you prefer;\n"
+                "  a comparison whose every string is spelled as an option, "
+                "with a leading hyphen, such as \"--help\". A switch "
+                "spelled any other way is refused here, because a string a "
+                "user can type and the table cannot hold is a command this "
+                "file has no other way to tell from an option;\n"
+                "  a line that does not touch the command name at all and "
+                "compares against nothing a command could be named.\n"
+                "A command dispatched from any other branch is registered "
+                "nowhere, listed nowhere and documented nowhere, so the "
+                "three inventories above agree while it works.")
         endif()
     endif()
 endforeach()
@@ -651,15 +701,21 @@ endif()
 # you read nothing else in it: a handler guarded by its own argument count
 # falls through to the unknown-command branch when it is asked with too few
 # arguments, and a single question records that fall-through as a refusal.
-# Thirteen of the sixteen registered commands take two inputs or more, so
-# "if (argc >= 4 && name == ...)" is the ordinary shape a command has in
-# this program rather than a suspicious one.
+# Seven of the sixteen registered commands refuse an argc of 3 outright by
+# printing usage - obj, export-textures, texture-bindings, stock-parts,
+# stock-scene, track-region and track-objects - measured by running each with
+# one argument and looking for a usage line. So "if (argc >= 4 && name ==
+# ...)" is an ordinary shape for a command in this program rather than a
+# suspicious one. An earlier draft said thirteen, which reproduces under no
+# reading of the table: count the required placeholders in the usage text and
+# it is eight, count the optional ones too and it is twelve.
 #
 # Widening the question raises the count a dispatch has to dodge. It does
 # not close the hole, and nothing that probes can: a handler gated on an
 # input that exists, or on an environment variable, answers every question
 # this loop knows how to ask. The header comment says so plainly rather than
 # leaving the number of shapes to imply a proof.
+# One to six arguments after the name, so the program sees argc 3 through 8.
 set(probe_widths 1 2 3 4 5 6)
 
 set(undeclared "")
@@ -715,10 +771,6 @@ if(undeclared_count GREATER 0)
         "inventories above agree while it works. Register it in the table, or "
         "remove the branch that dispatches it.")
 endif()
-
-
-
-
 
 list(LENGTH listed listed_count)
 message(STATUS
