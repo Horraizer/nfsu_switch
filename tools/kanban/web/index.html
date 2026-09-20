@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta name="description" content="Local Gitea kanban board for the NFSU Switch port.">
+    <title>NFSU Switch / Task Board</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230a0d12'/%3E%3Cpath d='M12 43h40M16 34h23M25 25h23M36 16h12' stroke='%2348a8ff' stroke-width='7' stroke-linecap='round'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="/styles.css">
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand-block">
+        <a class="brand" id="repository-link" href="#" target="_blank" rel="noreferrer">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span>NFSU <strong>SWITCH</strong></span>
+        </a>
+        <span class="board-name">Task board</span>
+      </div>
+
+      <div class="summary" aria-label="Project summary">
+        <div class="metric"><strong id="open-count">--</strong><span>Open</span></div>
+        <div class="metric accent"><strong id="active-count">--</strong><span>Active</span></div>
+        <div class="metric"><strong id="pr-count">--</strong><span>PRs</span></div>
+      </div>
+
+      <div class="toolbar">
+        <label class="search-box">
+          <span class="visually-hidden">Filter tasks</span>
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m21 21-4.35-4.35m2.35-5.65a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z"/></svg>
+          <input id="search" type="search" placeholder="Filter tasks" autocomplete="off">
+        </label>
+        <button class="refresh-button" id="refresh" type="button">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.34 5.66M20 4v7h-7"/></svg>
+          Refresh
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <div class="status-line">
+        <span class="connection" id="connection"><i></i> Connecting to Gitea</span>
+        <span id="updated-at"></span>
+      </div>
+      <section class="board" id="board" aria-label="Kanban board" aria-busy="true"></section>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <template id="column-template">
+      <section class="column">
+        <header class="column-header">
+          <div><span class="column-signal"></span><h2></h2></div>
+          <span class="column-count"></span>
+        </header>
+        <div class="card-list"></div>
+      </section>
+    </template>
+
+    <template id="card-template">
+      <article class="card" draggable="true" tabindex="0">
+        <div class="card-topline">
+          <a class="issue-number" target="_blank" rel="noreferrer"></a>
+          <span class="risk-chip"></span>
+        </div>
+        <h3></h3>
+        <div class="card-labels"></div>
+        <footer>
+          <span class="agent"></span>
+          <label class="move-control">
+            <span class="visually-hidden">Move task</span>
+            <select aria-label="Move task to another column"></select>
+          </label>
+        </footer>
+      </article>
+    </template>
+  </body>
+</html>
