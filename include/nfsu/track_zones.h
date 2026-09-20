@@ -259,6 +259,12 @@ struct TrackZoneCost {
     std::uint64_t zones = 0;
     std::uint64_t polygon_vertices = 0;
     std::uint64_t zone_sections = 0;
+    // Records of any of the four chunks whose two opening words are not
+    // both kTrackZoneStoredLinkValue. Zero in all 4278 retail records.
+    // Counted and never refused: nothing reads those words, so a different
+    // value cannot make a report wrong. It says the image did not come from
+    // the retail exporter, which is worth knowing and is not an error.
+    std::uint64_t records_with_unexpected_link = 0;
     // The axis-aligned box over every stored vertex the counts reach, in
     // slot 0 and slot 1. Meaningful only when polygon_vertices is non-zero.
     float vertex_min[2] = {0.0F, 0.0F};
@@ -287,7 +293,14 @@ struct TrackZoneReport {
     std::vector<TrackIssue> issues;
     TrackZoneCost cost;
     // True when the container was found, every record parsed and every rule
-    // below held. find_track_zone refuses a report that is not valid.
+    // below held. find_track_zone, track_zone_residency and
+    // track_zone_draw_list all refuse a report that is not valid.
+    //
+    // This parser stops at the first problem, so valid and ok() cannot
+    // disagree: every rule that raises an issue returns immediately and
+    // leaves valid false. They are two names for one predicate here, and
+    // ok() exists so that a caller reads the same member it reads on a
+    // TrackObjectReport or a TrackCollisionReport.
     bool valid = false;
 
     bool ok() const noexcept { return issues.empty(); }

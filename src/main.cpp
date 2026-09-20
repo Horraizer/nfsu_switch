@@ -1464,6 +1464,14 @@ int run_track_visibility(
         std::cerr << "error: --zones and --zone-point are used together\n";
         return 1;
     }
+    // --zones replaces the residency outright, so a hand-written --zone
+    // list beside it would be read by nothing. Refusing is the only
+    // answer that cannot be mistaken for the list having been used.
+    if (args.has_zone_file && !args.options.residency.zone_sections.empty()) {
+        std::cerr << "error: --zones replaces the residency, so it cannot be "
+                     "combined with --zone\n";
+        return 1;
+    }
     if (args.has_zone_file) {
         std::vector<unsigned char> zone_bytes;
         const nfsu::TrackZoneReport zones =

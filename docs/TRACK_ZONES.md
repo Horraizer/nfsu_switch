@@ -442,6 +442,41 @@ It also pins the integration: a written region of three sections numbered
 the band. Under that zone residency the tree walk and the flat instance
 test select the same instances and the fallback covers both.
 
+**A mutation pass written with the implementation, 61 edits.** 53 ran, 8
+would not compile because a mutated record size or capacity breaks a
+`static_assert` that ties it to the offsets beside it. 48 of the 53 were
+caught from the start. The other ten are worth recording, because six of
+them were equivalent and four were real:
+
+| Survivor | Why the suite could not see it |
+| --- | --- |
+| both of the rising band's comparisons reversed | a square is symmetric about a scanline through any of its vertices, so the falling clause covered for the rising one at every boundary the suite tested |
+| the negative-entry skip in `track_zone_draw_list` deleted | a dropped skip reinterprets -7 as 65529, which the residency filter then dropped anyway |
+| both validity guards deleted | the only report the suite could hand them that was not valid also held no resolvable zone |
+
+What closed them: a diamond sampled at the level of its left vertex and to
+the left of everything, where the correct answer is two crossings and
+outside and opening the closed end drops one of them; a triangle sampled
+exactly at its apex, where the correct answer takes neither edge and
+closing the open end takes one; a residency that holds 65529, so the skip
+has to do its own work; and a `TrackZoneReport` built field by field with
+`valid` left false, then the same report marked valid, so the three
+refusals cannot hold for the wrong reason.
+
+The five that still survive are equivalent, and are listed rather than
+papered over: taking the next vertex instead of the previous enumerates
+the same undirected edges under a rule symmetric in the pair; the
+zero-count guard in the polygon test is redundant with a loop that does
+not run; the signed half of the section-count check is subsumed by the
+`std::size_t` cast in its other half; the resolution's `break` cannot
+matter because a duplicate key is refused first; and the draw list's cap
+check gives the same answer before or after an append that adds at most
+one entry per turn.
+
+A pass written by the author of a suite is weak evidence about that
+suite - it tends to mutate what the tests already name - which is why the
+second pass below was written by someone who had not read this list.
+
 ### The retail differential
 
 Over four `STREAML1R*.BUN` containers, eight `Tracks/TRACKB*.lzc` zone

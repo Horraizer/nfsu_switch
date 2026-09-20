@@ -142,6 +142,17 @@ public:
                                    << limits_.max_region_bytes);
             return std::move(report_);
         }
+        // size_ is bounded above; base_offset is a caller's number and is
+        // not. Every offset this parser reports is base_ plus something, so
+        // a base that overflows makes the whole report wrong rather than
+        // refused.
+        std::uint64_t image_end = 0;
+        if (!checked_add(base_, size_, image_end)) {
+            issue(base_, Message() << "an image of " << size_
+                                   << " bytes at offset " << base_
+                                   << " overflows a 64-bit offset");
+            return std::move(report_);
+        }
         if (!walk_top_level()) {
             return std::move(report_);
         }
@@ -177,6 +188,19 @@ private:
 
     const unsigned char* at(std::uint64_t absolute) const {
         return data_ + (absolute - base_);
+    }
+
+    // Every record of every chunk opens with the two words the loader
+    // overwrites. Retail writes kTrackZoneStoredLinkValue into both in all
+    // 4278 records of all 31 tracks, so a record that carries anything else
+    // did not come from that exporter. It is counted, never refused:
+    // nothing reads those words, so a different value cannot make a report
+    // wrong.
+    void count_link(std::uint32_t next, std::uint32_t prev) {
+        if (next != kTrackZoneStoredLinkValue ||
+            prev != kTrackZoneStoredLinkValue) {
+            ++report_.cost.records_with_unexpected_link;
+        }
     }
 
     // Walks `(id, payload size)` chunks over [start, start + length) and
@@ -351,12 +375,13 @@ private:
                 read_u32_le(record + kTrackZoneLinkNextOffset);
             polygon.stored_link[1] =
                 read_u32_le(record + kTrackZoneLinkPrevOffset);
+            count_link(polygon.stored_link[0], polygon.stored_link[1]);
             polygon.key = read_i16_le(record + kTrackZonePolygonKeyOffset);
             polygon.vertex_count =
                 read_i16_le(record + kTrackZonePolygonVertexCountOffset);
             if (polygon.vertex_count < 1 ||
-                static_cast<std::size_t>(polygon.vertex_count) >
-                    kTrackZoneMaxVertices) {
+                polygon.vertex_count >
+                    static_cast<std::int16_t>(kTrackZoneMaxVertices)) {
                 issue(offset + kTrackZonePolygonVertexCountOffset,
                       Message() << "zone polygon " << i << " claims "
                                 << polygon.vertex_count
@@ -436,6 +461,7 @@ private:
             zone.offset = offset;
             zone.stored_link[0] = read_u32_le(record + kTrackZoneLinkNextOffset);
             zone.stored_link[1] = read_u32_le(record + kTrackZoneLinkPrevOffset);
+            count_link(zone.stored_link[0], zone.stored_link[1]);
             zone.key = read_i16_le(record + kTrackZoneKeyOffset);
             zone.unknown = read_i16_le(record + kTrackZoneUnknownOffset);
             zone.stored_polygon_link =
@@ -443,8 +469,8 @@ private:
             zone.section_count =
                 read_i32_le(record + kTrackZoneSectionCountOffset);
             if (zone.section_count < 0 ||
-                static_cast<std::size_t>(zone.section_count) >
-                    kTrackZoneMaxSections) {
+                zone.section_count >
+                    static_cast<std::int32_t>(kTrackZoneMaxSections)) {
                 issue(offset + kTrackZoneSectionCountOffset,
                       Message() << "zone " << i << " claims "
                                 << zone.section_count
@@ -509,10 +535,11 @@ private:
                     read_u32_le(record + kTrackZoneLinkNextOffset);
                 list.stored_link[1] =
                     read_u32_le(record + kTrackZoneLinkPrevOffset);
+                count_link(list.stored_link[0], list.stored_link[1]);
                 list.key = read_u32_le(record + kTrackZoneListKeyOffset);
                 list.count = read_i32_le(record + kTrackZoneListCountOffset);
                 if (list.count < 0 ||
-                    static_cast<std::size_t>(list.count) > capacity) {
+                    list.count > static_cast<std::int32_t>(capacity)) {
                     issue(offset + kTrackZoneListCountOffset,
                           Message()
                               << kChildren[slot].what << " record " << i
@@ -705,6 +732,13 @@ std::size_t find_track_zone(
         return kTrackZoneNone;
     }
     for (const TrackZone& zone : report.zones) {
+        // Parser rule 7 makes this unreachable on a valid report, and the
+        // line above refuses every other kind, so it is a contract rather
+        // than a branch a test can take. A mutation of >= to > is not
+        // catchable either: exercising it means reading
+        // report.polygons[size()], which is undefined, so no assertion can
+        // depend on what it produces. It stays because the alternative is
+        // an out-of-bounds read the moment either rule changes.
         if (zone.polygon_index >= report.polygons.size()) {
             continue;
         }

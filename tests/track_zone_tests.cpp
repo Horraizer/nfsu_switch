@@ -511,14 +511,21 @@ void test_polygon_counts() {
     const std::vector<std::pair<float, float>> one = {{0.0F, 0.0F}};
     const std::vector<std::pair<float, float>> two = {{0.0F, 0.0F},
                                                       {10.0F, 10.0F}};
-    check(!nfsu::point_in_track_zone_polygon(nullptr, nullptr, 0),
-          "a null point is outside");
+    // Each guard on its own. A single call that passes three refusing
+    // arguments at once cannot attribute the answer to any one of them, so
+    // deleting any single guard would leave that call still returning
+    // false.
     const float origin[2] = {0.0F, 0.0F};
+    const float real_square[] = {-1.0F, -1.0F, 1.0F, -1.0F,
+                                 1.0F,  1.0F,  -1.0F, 1.0F};
+    check(nfsu::point_in_track_zone_polygon(origin, real_square, 4),
+          "the guard fixture is a polygon that does hold the origin");
+    check(!nfsu::point_in_track_zone_polygon(nullptr, real_square, 4),
+          "a null point alone is outside");
     check(!nfsu::point_in_track_zone_polygon(origin, nullptr, 4),
-          "a null vertex array is outside");
-    std::vector<float> flat = {0.0F, 0.0F};
-    check(!nfsu::point_in_track_zone_polygon(origin, flat.data(), 0),
-          "a count of zero is outside");
+          "a null vertex array alone is outside");
+    check(!nfsu::point_in_track_zone_polygon(origin, real_square, 0),
+          "a count of zero alone is outside");
     check_hit(one, 0.0F, 0.0F, false, "one vertex");
     check_hit(two, 5.0F, 5.0F, false, "two vertices: one crossing each way");
     check_hit(two, -5.0F, 5.0F, false, "two vertices, from the left");
@@ -645,21 +652,47 @@ void test_parse_refusals() {
                       "two containers");
     }
     {
+        // The two mandatory chunks carry real records, so that a parser
+        // which logged the unknown child and carried on would report them.
+        // With empty chunks the "no record" assertion below would hold for
+        // the wrong reason.
         ImageSpec spec = two_zone_spec();
         Bytes children;
-        append(children, chunk(kPolygonChunk, Bytes()));
-        append(children, chunk(kZoneChunk, Bytes()));
+        Bytes polygons;
+        for (const PolygonSpec& polygon : spec.polygons) {
+            append(polygons, polygon_record(polygon));
+        }
+        Bytes zones;
+        for (const ZoneSpec& zone : spec.zones) {
+            append(zones, zone_record(zone));
+        }
+        append(children, chunk(kPolygonChunk, polygons));
+        append(children, chunk(kZoneChunk, zones));
         append(children, chunk(0x00034155U, Bytes(8, 0U)));
-        check_refused(parse(chunk(kContainer, children)),
-                      "unknown child chunk 0x00034155", "an unknown child");
+        const nfsu::TrackZoneReport unknown = parse(chunk(kContainer, children));
+        check_refused(unknown, "unknown child chunk 0x00034155",
+                      "an unknown child");
+        check(unknown.polygons.empty() && unknown.zones.empty(),
+              "an unknown child stops the parse before any record");
     }
     {
+        ImageSpec spec = two_zone_spec();
+        Bytes polygons;
+        for (const PolygonSpec& polygon : spec.polygons) {
+            append(polygons, polygon_record(polygon));
+        }
+        Bytes zones;
+        for (const ZoneSpec& zone : spec.zones) {
+            append(zones, zone_record(zone));
+        }
         Bytes children;
-        append(children, chunk(kPolygonChunk, Bytes()));
-        append(children, chunk(kZoneChunk, Bytes()));
-        append(children, chunk(kZoneChunk, Bytes()));
-        check_refused(parse(chunk(kContainer, children)),
-                      "more than one 0x00034152", "a repeated child");
+        append(children, chunk(kPolygonChunk, polygons));
+        append(children, chunk(kZoneChunk, zones));
+        append(children, chunk(kZoneChunk, zones));
+        const nfsu::TrackZoneReport repeated = parse(chunk(kContainer, children));
+        check_refused(repeated, "more than one 0x00034152", "a repeated child");
+        check(repeated.polygons.empty() && repeated.zones.empty(),
+              "a repeated child stops the parse before any record");
     }
     {
         ImageSpec spec = two_zone_spec();
@@ -750,7 +783,18 @@ void test_parse_refusals() {
         spec.polygons.push_back(square(101, 0.0F, 0.0F, 10.0F, 10.0F));
         spec.polygons.push_back(square(101, 10.0F, 0.0F, 20.0F, 10.0F));
         check_refused(parse(build_image(spec)), "repeats the key 101",
-                      "two polygons with one key");
+                      "two adjacent polygons with one key");
+    }
+    {
+        // Separated by a third record, so an adjacency scan over the
+        // records as they lie cannot see them. The check sorts first, and
+        // that sort is the only reason this is refused.
+        ImageSpec spec;
+        spec.polygons.push_back(square(101, 0.0F, 0.0F, 10.0F, 10.0F));
+        spec.polygons.push_back(square(102, 10.0F, 0.0F, 20.0F, 10.0F));
+        spec.polygons.push_back(square(101, 20.0F, 0.0F, 30.0F, 10.0F));
+        check_refused(parse(build_image(spec)), "repeats the key 101",
+                      "two separated polygons with one key");
     }
     {
         ImageSpec spec;
@@ -761,7 +805,22 @@ void test_parse_refusals() {
         b.key = 101;
         spec.zones = {a, b};
         check_refused(parse(build_image(spec)), "zone 1 repeats the key 101",
-                      "two zones with one key");
+                      "two adjacent zones with one key");
+    }
+    {
+        // Separated, as above: only the sort finds this pair.
+        ImageSpec spec;
+        spec.polygons.push_back(square(101, 0.0F, 0.0F, 10.0F, 10.0F));
+        spec.polygons.push_back(square(102, 10.0F, 0.0F, 20.0F, 10.0F));
+        ZoneSpec a;
+        a.key = 101;
+        ZoneSpec b;
+        b.key = 102;
+        ZoneSpec c;
+        c.key = 101;
+        spec.zones = {a, b, c};
+        check_refused(parse(build_image(spec)), "repeats the key 101",
+                      "two separated zones with one key");
     }
     {
         ImageSpec spec;
@@ -786,11 +845,242 @@ void test_parse_refusals() {
                       "a payload that overruns the image");
     }
     {
+        // One byte, which is the smallest overrun there is and the one an
+        // off-by-one in the bound would let through into an out-of-bounds
+        // read.
+        Bytes image = build_image(two_zone_spec());
+        const std::uint32_t declared =
+            static_cast<std::uint32_t>(image.size() - 8);
+        put_u32(image, 4, declared + 1);
+        check_refused(parse(image), "reaches past the end",
+                      "a payload that overruns the image by one byte");
+    }
+    {
         const nfsu::TrackZoneReport report = nfsu::parse_track_zones(nullptr, 0, 0);
         check(!report.valid, "a null image must not be valid");
         check(has_text(report.issues, "no zone image bytes"),
               "a null image names itself");
     }
+}
+
+// Every count bound and every limit is inclusive on one side. A test that
+// only ever breaks a rule cannot see the boundary move inwards, so each
+// one below is exercised from both sides: the largest value the rule
+// admits, and the smallest it refuses.
+void test_boundaries_are_inclusive() {
+    {
+        ImageSpec spec;
+        PolygonSpec polygon;
+        polygon.key = 101;
+        for (int i = 0; i < 16; ++i) {
+            const double a = 6.283185307179586 * i / 16.0;
+            polygon.vertices.emplace_back(
+                static_cast<float>(10.0 * std::cos(a + 0.1)),
+                static_cast<float>(10.0 * std::sin(a + 0.1)));
+        }
+        spec.polygons.push_back(polygon);
+        ZoneSpec zone;
+        zone.key = 101;
+        zone.sections = {100};
+        spec.zones.push_back(zone);
+        const nfsu::TrackZoneReport report = parse(build_image(spec));
+        check(report.valid, "a 16-vertex polygon is accepted");
+        check(report.polygons[0].vertex_count == 16, "and keeps its count");
+        const float centre[2] = {0.0F, 0.0F};
+        check(nfsu::find_track_zone(report, centre) == 0,
+              "and all 16 of its vertices are used");
+    }
+    {
+        ImageSpec spec;
+        spec.polygons.push_back(square(101, 0.0F, 0.0F, 10.0F, 10.0F));
+        ZoneSpec zone;
+        zone.key = 101;
+        for (int i = 0; i < 64; ++i) {
+            zone.sections.push_back(static_cast<std::int16_t>(100 + i));
+        }
+        spec.zones.push_back(zone);
+        const nfsu::TrackZoneReport report = parse(build_image(spec));
+        check(report.valid, "a 64-section zone is accepted");
+        check(report.zones[0].section_count == 64, "and keeps its count");
+        check_eq_u64(report.cost.zone_sections, 64, "and is counted");
+    }
+    {
+        // A 0x00034154 record holds eight numbers; nine is one too many.
+        Bytes children;
+        append(children, chunk(kPolygonChunk, Bytes()));
+        append(children, chunk(kZoneChunk, Bytes()));
+        std::vector<std::int16_t> eight = {1, 2, 3, 4, 5, 6, 7, 8};
+        append(children,
+               chunk(kExtraListChunk,
+                     section_list_record(kExtraListRecord, 1301, 8, eight)));
+        const nfsu::TrackZoneReport ok = parse(chunk(kContainer, children));
+        check(ok.valid, "a section list filled to its capacity is accepted");
+        check(ok.section_lists[0].count == 8, "and keeps its count");
+
+        Bytes over;
+        append(over, chunk(kPolygonChunk, Bytes()));
+        append(over, chunk(kZoneChunk, Bytes()));
+        append(over,
+               chunk(kExtraListChunk,
+                     section_list_record(kExtraListRecord, 1301, 9, eight)));
+        check_refused(parse(chunk(kContainer, over)),
+                      "claims 9 section numbers",
+                      "a section list one past its capacity");
+
+        Bytes negative;
+        append(negative, chunk(kPolygonChunk, Bytes()));
+        append(negative, chunk(kZoneChunk, Bytes()));
+        Bytes record = section_list_record(kExtraListRecord, 1301, 0, eight);
+        put_u32(record, nfsu::kTrackZoneListCountOffset, 0xFFFFFFFFU);
+        append(negative, chunk(kExtraListChunk, record));
+        check_refused(parse(chunk(kContainer, negative)),
+                      "claims -1 section numbers",
+                      "a section list with a negative count");
+    }
+    {
+        // Each limit, at the value the fixture reaches and one below it.
+        const Bytes image = build_image([] {
+            ImageSpec spec = two_zone_spec();
+            spec.extra_lists.push_back({2601});
+            return spec;
+        }());
+        nfsu::TrackZoneLimits at;
+        at.max_polygons = 2;
+        at.max_zones = 2;
+        at.max_section_lists = 1;
+        at.max_chunks = 4;
+        at.max_region_bytes = image.size();
+        check(nfsu::parse_track_zones(image.data(), image.size(), 0, at).valid,
+              "every limit accepts the value the image reaches");
+
+        struct Case {
+            const char* what;
+            const char* text;
+        };
+        for (int which = 0; which < 5; ++which) {
+            nfsu::TrackZoneLimits under = at;
+            const char* text = "";
+            switch (which) {
+                case 0:
+                    under.max_polygons = 1;
+                    text = "zone polygon list holds 2 records";
+                    break;
+                case 1:
+                    under.max_zones = 1;
+                    text = "zone list holds 2 records";
+                    break;
+                case 2:
+                    under.max_section_lists = 0;
+                    text = "extra section list holds 1 records";
+                    break;
+                case 3:
+                    under.max_chunks = 3;
+                    text = "more than 3 chunks";
+                    break;
+                default:
+                    under.max_region_bytes = image.size() - 1;
+                    text = "over the limit of";
+                    break;
+            }
+            const nfsu::TrackZoneReport report =
+                nfsu::parse_track_zones(image.data(), image.size(), 0, under);
+            check_refused(report, text,
+                          std::string("limit case ") + std::to_string(which));
+        }
+    }
+}
+
+void test_offsets_and_raw_fields_are_reported() {
+    // Nothing asserted these, so a decoder that reported every offset as
+    // zero passed. They are the only way a caller can point at the bytes a
+    // record came from.
+    const std::uint64_t base = 0x1000;
+    ImageSpec spec = two_zone_spec();
+    spec.track_lists.push_back({704, 705});
+    spec.extra_lists.push_back({2601});
+    const Bytes image = build_image(spec);
+    const nfsu::TrackZoneReport report =
+        nfsu::parse_track_zones(image.data(), image.size(), base);
+    check(report.valid, "the offset fixture parses at a non-zero base");
+    check_eq_u64(report.region.offset, base, "the region reports its base");
+    check_eq_u64(report.region.size, image.size(), "and its size");
+    check_eq_u64(report.cost.region_bytes, image.size(), "and its byte count");
+
+    // The container header is 8 bytes, then the polygon chunk header is 8
+    // more, so record 0 starts 16 bytes into the image.
+    check_eq_u64(report.polygons[0].offset, base + 16,
+                 "polygon 0 is at the container's payload plus a header");
+    check_eq_u64(report.zones[0].offset,
+                 report.polygons[1].offset + kPolygonRecord + 8,
+                 "zone 0 follows the polygon chunk and its own header");
+    check_eq_u64(report.section_lists[0].index, 0, "the first list record");
+    check_eq_u64(report.section_lists[1].index, 0,
+                 "and the first record of the second chunk");
+
+    // Two records in one chunk, so that a record index of 1 exists at all
+    // and the default record limit has something to admit. With one record
+    // per chunk both are invisible.
+    ImageSpec many = two_zone_spec();
+    many.extra_lists.push_back({2601});
+    many.extra_lists.push_back({2602, 2603});
+    const nfsu::TrackZoneReport many_report = parse(build_image(many));
+    check(many_report.valid, "two records in one section-list chunk parse");
+    check_eq_u64(many_report.section_lists.size(), 2, "and both are reported");
+    check_eq_u64(many_report.section_lists[0].index, 0, "record 0");
+    check_eq_u64(many_report.section_lists[1].index, 1, "record 1");
+    check(many_report.section_lists[1].offset ==
+              many_report.section_lists[0].offset + kExtraListRecord,
+          "the two records are 32 bytes apart");
+    check(many_report.section_lists[1].count == 2, "and record 1 holds two");
+    check(report.section_lists[0].offset > report.zones[1].offset,
+          "the track list follows the zones");
+    check(report.section_lists[1].offset > report.section_lists[0].offset,
+          "and the extra list follows the track list");
+    check(report.section_lists[0].stored_link[0] == 11 &&
+              report.section_lists[0].stored_link[1] == 11,
+          "a section list record keeps its stored link words");
+    check_eq_u64(report.cost.records_with_unexpected_link, 0,
+                 "every record carries the retail link placeholder");
+
+    // And a record that does not.
+    ImageSpec odd = two_zone_spec();
+    odd.polygons[0].link0 = 12;
+    odd.zones[1].link1 = 0;
+    const nfsu::TrackZoneReport odd_report = parse(build_image(odd));
+    check(odd_report.valid, "an unexpected link word is not an error");
+    check_eq_u64(odd_report.cost.records_with_unexpected_link, 2,
+                 "but it is counted, once per record");
+
+    // An issue must name the byte it is about.
+    ImageSpec bad;
+    bad.polygons.push_back(square(101, 0.0F, 0.0F, 10.0F, 10.0F));
+    ZoneSpec zone;
+    zone.key = 101;
+    zone.section_count = 65;
+    bad.zones.push_back(zone);
+    const Bytes bad_image = build_image(bad);
+    const nfsu::TrackZoneReport bad_report =
+        nfsu::parse_track_zones(bad_image.data(), bad_image.size(), base);
+    check(!bad_report.valid, "the bad-count image is refused");
+    check(!bad_report.issues.empty(), "and says why");
+    if (!bad_report.issues.empty()) {
+        const std::uint64_t zone_offset = base + 16 + kPolygonRecord + 8;
+        check_eq_u64(bad_report.issues[0].offset,
+                     zone_offset + nfsu::kTrackZoneSectionCountOffset,
+                     "the issue points at the count field itself");
+    }
+}
+
+void test_base_offset_overflow() {
+    // base_offset is a caller's number and nothing else bounds it. Every
+    // offset in the report is base plus something, so a base that
+    // overflows makes the whole report wrong rather than refused.
+    const Bytes image = build_image(two_zone_spec());
+    const nfsu::TrackZoneReport report = nfsu::parse_track_zones(
+        image.data(), image.size(),
+        0xFFFFFFFFFFFFFFFFULL - (image.size() / 2));
+    check_refused(report, "overflows a 64-bit offset",
+                  "a base offset that overflows");
 }
 
 void test_empty_optional_lists() {
@@ -1028,6 +1318,65 @@ void test_find_zone_takes_the_first_match() {
                  "the first record in order wins");
 }
 
+// A polygon keyed `key` covering [x0, x1) by [y0, y1), whose twelve unused
+// vertex slots hold a second, disjoint square far away. Nothing may read
+// those slots: a decoder that took all sixteen would answer for the union
+// of the two, and one that started at slot 1 would answer for a quad that
+// is neither.
+PolygonSpec square_with_a_decoy_tail(
+    std::int16_t key,
+    float x0,
+    float y0,
+    float x1,
+    float y1) {
+    PolygonSpec spec = square(key, x0, y0, x1, y1);
+    for (std::size_t i = 4; i < 16; ++i) {
+        spec.vertices.emplace_back(1000.0F + static_cast<float>(i),
+                                   1000.0F + static_cast<float>(i));
+    }
+    spec.vertex_count = 4;
+    return spec;
+}
+
+void test_find_zone_reads_only_what_the_counts_allow() {
+    // The zone index and the polygon index must differ, or returning one
+    // for the other is invisible. Zone 0 is keyed 103 and resolves to
+    // polygon 1; zone 1 is keyed 101 and resolves to polygon 0.
+    ImageSpec spec;
+    spec.polygons.push_back(
+        square_with_a_decoy_tail(101, 0.0F, 0.0F, 100.0F, 100.0F));
+    spec.polygons.push_back(
+        square_with_a_decoy_tail(103, 200.0F, 0.0F, 300.0F, 100.0F));
+    ZoneSpec first;
+    first.key = 103;
+    first.sections = {102, 103};
+    ZoneSpec second;
+    second.key = 101;
+    second.sections = {100, 101};
+    spec.zones = {first, second};
+    const nfsu::TrackZoneReport report = parse(build_image(spec));
+    check(report.valid, "the crossed-index image must parse");
+    check(report.zones[0].polygon_index == 1, "zone 0 resolves to polygon 1");
+    check(report.zones[1].polygon_index == 0, "zone 1 resolves to polygon 0");
+
+    const float right[2] = {250.0F, 50.0F};
+    const float left[2] = {50.0F, 50.0F};
+    check_eq_u64(nfsu::find_track_zone(report, right), 0,
+                 "the right square is zone 0, not polygon 0");
+    check_eq_u64(nfsu::find_track_zone(report, left), 1,
+                 "the left square is zone 1, not polygon 1");
+
+    // The decoy tail is inside no zone. A scan that read all sixteen slots
+    // would report one; a scan that started at slot 1 would answer for a
+    // quad built from three decoy vertices and one real one.
+    const float decoy[2] = {1005.0F, 1005.0F};
+    check(nfsu::find_track_zone(report, decoy) == nfsu::kTrackZoneNone,
+          "the vertex slots past the count are not part of any polygon");
+    const float shifted[2] = {150.0F, 50.0F};
+    check(nfsu::find_track_zone(report, shifted) == nfsu::kTrackZoneNone,
+          "the gap between the two squares is inside neither");
+}
+
 // ---------------------------------------------------------------------
 // Residency and the draw list
 // ---------------------------------------------------------------------
@@ -1047,6 +1396,29 @@ void test_zone_residency() {
 
     check(!nfsu::track_zone_residency(report, 99, residency),
           "an index past the end is refused");
+    check(!nfsu::track_zone_residency(report, report.zones.size(), residency),
+          "the index bound refuses size() itself");
+
+    // out is replaced, not appended to. A caller reusing a TrackResidency
+    // would otherwise accumulate two zones' sections into one.
+    nfsu::TrackResidency reused;
+    reused.rule = nfsu::TrackResidencyRule::every_section;
+    reused.zone_sections = {7777};
+    check(nfsu::track_zone_residency(report, 1, reused), "zone 1 residency");
+    check_list(reused.zone_sections, {102, 103, 112, 113},
+               "a reused residency is replaced, not appended to");
+
+    // Every number must survive a 16-bit widening. A zone list holding
+    // nothing above 255 cannot tell a 16-bit cast from an 8-bit one.
+    ImageSpec wide = two_zone_spec();
+    wide.zones[0].sections = {100, 703, 1305, 2524};
+    const nfsu::TrackZoneReport wide_report = parse(build_image(wide));
+    check(wide_report.valid, "the wide-number image must parse");
+    nfsu::TrackResidency widened;
+    check(nfsu::track_zone_residency(wide_report, 0, widened),
+          "the wide zone fills a residency");
+    check_list(widened.zone_sections, {100, 703, 1305, 2524},
+               "a number above 255 is not truncated");
     nfsu::TrackZoneReport empty;
     check(!nfsu::track_zone_residency(empty, 0, residency),
           "an empty report is refused");
@@ -1079,6 +1451,18 @@ void test_zone_residency() {
     zone.polygon_index = 0;
     hand.zones.push_back(zone);
 
+    // A second zone naming a polygon index one past the end. Rule 7 makes
+    // that unreachable on a valid report, which is why the in-loop bound
+    // can only be exercised on a hand-built one - and a bound written as >
+    // instead of >= would read report.polygons[size()].
+    nfsu::TrackZone past;
+    past.index = 1;
+    past.key = 999;
+    past.section_count = 1;
+    past.sections[0] = 999;
+    past.polygon_index = hand.polygons.size();
+    hand.zones.push_back(past);
+
     check(!nfsu::track_zone_residency(hand, 0, residency),
           "a report that is not valid yields no residency, zone or no zone");
     const float inside_hand[2] = {50.0F, 50.0F};
@@ -1092,6 +1476,13 @@ void test_zone_residency() {
     hand.valid = true;
     check(nfsu::find_track_zone(hand, inside_hand) == 0,
           "the same report, marked valid, picks the zone");
+    // Zone 1 names polygon 1 of a one-polygon report, so the scan must
+    // skip it rather than index past the end on the way to zone 0.
+    check(hand.zones[1].polygon_index == hand.polygons.size(),
+          "the second zone names exactly one past the last polygon");
+    const float nowhere[2] = {5000.0F, 5000.0F};
+    check(nfsu::find_track_zone(hand, nowhere) == nfsu::kTrackZoneNone,
+          "a zone naming size() is skipped, not indexed");
     check(nfsu::track_zone_residency(hand, 0, residency),
           "the same report, marked valid, yields a residency");
     check_list(residency.zone_sections, {100}, "and it is the zone's list");
@@ -1136,6 +1527,10 @@ void test_zone_draw_list() {
 
     check_list(nfsu::track_zone_draw_list(report, 99, resident), {},
                "an index past the end draws nothing");
+    // Exactly one past the last zone, which is the index a bound written
+    // with > instead of >= would let through into report.zones[size()].
+    check_list(nfsu::track_zone_draw_list(report, report.zones.size(), resident),
+               {}, "the index bound refuses size() itself");
 
     // The negative-entry skip has to be tested against a resident number,
     // or it cannot fail: a dropped skip reinterprets -7 as the unsigned
@@ -1149,6 +1544,72 @@ void test_zone_draw_list() {
                "a negative entry is skipped before residency, not by it");
 }
 
+void test_zone_draw_list_band_edges_and_caps() {
+    ImageSpec spec = two_zone_spec();
+    spec.zones[0].sections = {100, 101};
+    // Slots past the count hold a number that is resident, so a loop that
+    // walked all 64 instead of section_count would emit it.
+    spec.zones[0].section_count = 2;
+    spec.zones[0].sections.resize(64, 0);
+    spec.zones[0].sections[2] = 111;
+    spec.zones[0].section_count = 2;
+    const nfsu::TrackZoneReport report = parse(build_image(spec));
+    check(report.valid, "the band-edge image must parse");
+
+    // 2599 and 2600 are the two numbers the band's first bound sits
+    // between, and 2700 the one past its last. All four are resident here,
+    // so moving either bound by one changes the answer. The suite's other
+    // residency sets deliberately omit 2600, which is what let a moved
+    // lower bound hide.
+    const std::vector<std::uint32_t> edges = {2599, 2600, 2699, 2700,
+                                              100,  101,  111};
+    check_list(nfsu::track_zone_draw_list(report, 0, edges),
+               {2600, 2699, 100, 101},
+               "the band runs 2600 to 2699 inclusive and no further");
+
+    // The cap is checked before the append, so a cap of zero emits nothing
+    // even though the very first candidate is resident.
+    check_list(nfsu::track_zone_draw_list(report, 0, edges, 0), {},
+               "a cap of zero draws nothing when 2600 itself is resident");
+    check_list(nfsu::track_zone_draw_list(report, 0, edges, 1), {2600},
+               "a cap of one stops after the band's first number");
+    // The band fills the buffer exactly, so the zone half must add nothing.
+    check_list(nfsu::track_zone_draw_list(report, 0, edges, 2), {2600, 2699},
+               "a buffer filled by the band leaves no room for the zone list");
+    check_list(nfsu::track_zone_draw_list(report, 0, edges, 3),
+               {2600, 2699, 100},
+               "one more slot takes exactly one number from the zone list");
+
+    // The default cap is kTrackZoneDrawBufferLimit, and nothing else had a
+    // reason to exceed it: the whole band plus a full zone list is 164
+    // candidates, so the answer is the first 128 of them.
+    ImageSpec full = two_zone_spec();
+    full.zones[0].sections.clear();
+    for (int i = 0; i < 64; ++i) {
+        full.zones[0].sections.push_back(static_cast<std::int16_t>(100 + i));
+    }
+    full.zones[0].section_count = 64;
+    const nfsu::TrackZoneReport full_report = parse(build_image(full));
+    check(full_report.valid, "the full-zone image must parse");
+    check(full_report.zones[0].section_count == 64,
+          "a zone may hold exactly 64 section numbers");
+    std::vector<std::uint32_t> everything;
+    for (std::uint32_t n = 2600; n <= 2699; ++n) {
+        everything.push_back(n);
+    }
+    for (std::uint32_t n = 100; n < 164; ++n) {
+        everything.push_back(n);
+    }
+    const std::vector<std::uint32_t> defaulted =
+        nfsu::track_zone_draw_list(full_report, 0, everything);
+    check_eq_u64(defaulted.size(), 128,
+                 "the default cap is the 128-entry retail buffer");
+    check(defaulted.front() == 2600 && defaulted[99] == 2699,
+          "the first 100 entries are the band");
+    check(defaulted[100] == 100 && defaulted.back() == 127,
+          "the remaining 28 come from the zone list, in its order");
+}
+
 void test_no_zone_draw_list() {
     // 0x00446459 `cmp edx, 0xa`: the sub-index below ten, and the loaded
     // order kept as the list holds it.
@@ -1159,7 +1620,23 @@ void test_no_zone_draw_list() {
                "modulo 100 below ten, in the loaded order");
     check_list(nfsu::track_no_zone_draw_list(loaded, 3), {303, 309, 2601},
                "the cap stops the append");
+    // The first loaded section already qualifies, so a cap checked after
+    // the append would emit it.
+    check_list(nfsu::track_no_zone_draw_list(loaded, 0), {},
+               "a cap of zero draws nothing when the first number qualifies");
     check_list(nfsu::track_no_zone_draw_list({}), {}, "an empty list");
+
+    // The default cap is the same 128-entry buffer. 200 qualifying numbers
+    // give exactly 128, which is the only call that can see the default.
+    std::vector<std::uint32_t> many;
+    for (std::uint32_t i = 0; i < 200; ++i) {
+        many.push_back(100 * i); // every one has a sub-index of 0
+    }
+    const std::vector<std::uint32_t> defaulted =
+        nfsu::track_no_zone_draw_list(many);
+    check_eq_u64(defaulted.size(), 128,
+                 "the no-zone default cap is the 128-entry retail buffer");
+    check(defaulted.back() == 12700, "and it takes the first 128, in order");
 }
 
 void test_section_number_arithmetic() {
@@ -1478,13 +1955,18 @@ int main() {
     test_parse_valid();
     test_parse_keeps_raw_fields();
     test_parse_refusals();
+    test_boundaries_are_inclusive();
+    test_offsets_and_raw_fields_are_reported();
+    test_base_offset_overflow();
     test_empty_optional_lists();
     test_load();
     test_determinism();
     test_find_zone();
     test_find_zone_takes_the_first_match();
+    test_find_zone_reads_only_what_the_counts_allow();
     test_zone_residency();
     test_zone_draw_list();
+    test_zone_draw_list_band_edges_and_caps();
     test_no_zone_draw_list();
     test_section_number_arithmetic();
     test_residency_drives_the_culler();
