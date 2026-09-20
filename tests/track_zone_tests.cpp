@@ -418,6 +418,35 @@ void test_polygon_boundaries() {
         {0.0F, 0.0F}, {10.0F, 0.0F}, {10.0F, 4.0F}, {0.0F, 4.0F}};
     check_hit(flat_top, 5.0F, 4.0F, false, "level with a flat top");
     check_hit(flat_top, 5.0F, 0.0F, true, "level with a flat bottom");
+
+    // The two bands must be attacked separately, and a square cannot do it.
+    // At a scanline through a vertex, the edge on one side is decided by
+    // the rising clause and the edge on the other by the falling one, so a
+    // shape symmetric about that scanline lets one clause cover for the
+    // other. These two do not.
+    //
+    // A diamond, sampled at the level of its left vertex and to the LEFT of
+    // everything. Both edges at that vertex cross the scanline, so the
+    // correct answer is two toggles and outside. Opening the rising band's
+    // closed end drops one of them and the point becomes inside.
+    const std::vector<std::pair<float, float>> diamond = {
+        {0.0F, 0.0F}, {10.0F, -5.0F}, {20.0F, 0.0F}, {10.0F, 5.0F}};
+    check_hit(diamond, 10.0F, 0.0F, true, "diamond centre");
+    check_hit(diamond, -5.0F, 0.0F, false,
+              "diamond, left of a vertex-level scanline");
+    check_hit(diamond, 25.0F, 0.0F, false,
+              "diamond, right of a vertex-level scanline");
+
+    // A triangle sampled exactly at its apex, where both neighbours lie
+    // below. The correct answer takes neither edge, so the apex is outside.
+    // Closing the rising band's open end takes one of them and the point
+    // becomes inside.
+    const std::vector<std::pair<float, float>> peak = {
+        {0.0F, 0.0F}, {20.0F, 0.0F}, {10.0F, 10.0F}};
+    check_hit(peak, 0.0F, 10.0F, false, "left of a local maximum vertex");
+    check_hit(peak, 10.0F, 10.0F, false, "exactly on a local maximum vertex");
+    check_hit(peak, 10.0F, 0.0F, true, "inside the triangle at its base");
+    check_hit(peak, 0.0F, 5.0F, false, "left of the triangle at half height");
 }
 
 void test_polygon_winding_and_shape() {
@@ -1020,7 +1049,52 @@ void test_zone_residency() {
           "an index past the end is refused");
     nfsu::TrackZoneReport empty;
     check(!nfsu::track_zone_residency(empty, 0, residency),
-          "an invalid report is refused");
+          "an empty report is refused");
+
+    // The validity guard needs a report that is not valid and that still
+    // holds a resolvable zone. The parser cannot produce one - every step
+    // that raises an issue returns before the zones resolve - so the guard
+    // is a contract rather than a state the parser reaches, and the only
+    // way to test a contract is to build the state by hand.
+    nfsu::TrackZoneReport hand;
+    hand.valid = false;
+    nfsu::TrackZonePolygon polygon;
+    polygon.index = 0;
+    polygon.key = 101;
+    polygon.vertex_count = 4;
+    polygon.vertices[0][0] = 0.0F;
+    polygon.vertices[0][1] = 0.0F;
+    polygon.vertices[1][0] = 100.0F;
+    polygon.vertices[1][1] = 0.0F;
+    polygon.vertices[2][0] = 100.0F;
+    polygon.vertices[2][1] = 100.0F;
+    polygon.vertices[3][0] = 0.0F;
+    polygon.vertices[3][1] = 100.0F;
+    hand.polygons.push_back(polygon);
+    nfsu::TrackZone zone;
+    zone.index = 0;
+    zone.key = 101;
+    zone.section_count = 1;
+    zone.sections[0] = 100;
+    zone.polygon_index = 0;
+    hand.zones.push_back(zone);
+
+    check(!nfsu::track_zone_residency(hand, 0, residency),
+          "a report that is not valid yields no residency, zone or no zone");
+    const float inside_hand[2] = {50.0F, 50.0F};
+    check(nfsu::find_track_zone(hand, inside_hand) == nfsu::kTrackZoneNone,
+          "a report that is not valid picks no zone, even for a point in one");
+    check(nfsu::track_zone_draw_list(hand, 0, {100}).empty(),
+          "a report that is not valid draws nothing");
+
+    // The same report, marked valid, must answer - otherwise the three
+    // assertions above would hold for the wrong reason.
+    hand.valid = true;
+    check(nfsu::find_track_zone(hand, inside_hand) == 0,
+          "the same report, marked valid, picks the zone");
+    check(nfsu::track_zone_residency(hand, 0, residency),
+          "the same report, marked valid, yields a residency");
+    check_list(residency.zone_sections, {100}, "and it is the zone's list");
 }
 
 void test_zone_draw_list() {
@@ -1062,6 +1136,17 @@ void test_zone_draw_list() {
 
     check_list(nfsu::track_zone_draw_list(report, 99, resident), {},
                "an index past the end draws nothing");
+
+    // The negative-entry skip has to be tested against a resident number,
+    // or it cannot fail: a dropped skip reinterprets -7 as the unsigned
+    // 65529, which a residency that does not hold 65529 drops anyway. The
+    // skip is then doing no work the residency filter was not already
+    // doing, and only this list can tell the two apart.
+    std::vector<std::uint32_t> with_wrapped = resident;
+    with_wrapped.push_back(65529); // (std::uint16_t)(-7)
+    check_list(nfsu::track_zone_draw_list(report, 0, with_wrapped),
+               {2601, 2650, 2699, 100, 101, 110, 111},
+               "a negative entry is skipped before residency, not by it");
 }
 
 void test_no_zone_draw_list() {
