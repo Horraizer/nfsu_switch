@@ -13,6 +13,7 @@
 #include "nfsu/track_objects.h"
 #include "nfsu/track_scene.h"
 #include "nfsu/track_visibility.h"
+#include "nfsu/track_zones.h"
 
 #include <algorithm>
 #include <array>
@@ -1425,6 +1426,16 @@ struct TrackVisibilityArgs {
     nfsu::TrackCamera camera;
     nfsu::TrackCullOptions options;
     std::size_t list_limit = kTrackVisibleListLimit;
+    // --zones names a Tracks/TRACKB####.lzc and --zone-point a world point
+    // in the two horizontal raw slots. Together they replace the residency
+    // with the zone the recovered polygon test picks for that point, which
+    // is what turns --residency zone from a caller-supplied list into the
+    // game's own rule. Neither prints anything when both are absent, so the
+    // commands docs/TRACK_VISIBILITY.md pins keep their exact output.
+    bool has_zone_file = false;
+    fs::path zone_file;
+    bool has_zone_point = false;
+    float zone_point[2] = {0.0F, 0.0F};
 };
 
 int run_track_visibility(
@@ -1450,6 +1461,61 @@ int run_track_visibility(
                   << '\n';
     }
 
+    nfsu::TrackCullOptions options = args.options;
+    if (args.has_zone_file != args.has_zone_point) {
+        std::cerr << "error: --zones and --zone-point are used together\n";
+        return 1;
+    }
+    // --zones replaces the residency outright, so a hand-written --zone
+    // list beside it would be read by nothing. Refusing is the only
+    // answer that cannot be mistaken for the list having been used.
+    if (args.has_zone_file && !args.options.residency.zone_sections.empty()) {
+        std::cerr << "error: --zones replaces the residency, so it cannot be "
+                     "combined with --zone\n";
+        return 1;
+    }
+    if (args.has_zone_file) {
+        std::vector<unsigned char> zone_bytes;
+        const nfsu::TrackZoneReport zones =
+            nfsu::load_track_zones(args.zone_file, zone_bytes);
+        for (const nfsu::TrackIssue& issue : zones.issues) {
+            std::cerr << "zone issue at " << issue.offset << ": "
+                      << issue.message << '\n';
+        }
+        if (!zones.valid) {
+            std::cerr << "error: the zone container was refused\n";
+            return 3;
+        }
+        const std::size_t picked = nfsu::find_track_zone(zones, args.zone_point);
+        std::cout << "zones: file " << args.zone_file.string() << " polygons "
+                  << zones.cost.polygons << " zones " << zones.cost.zones
+                  << '\n';
+        std::cout << "zone point: slot0 " << args.zone_point[0] << " slot1 "
+                  << args.zone_point[1] << '\n';
+        if (picked == nfsu::kTrackZoneNone) {
+            // 0x00446424 `test ebp, ebp` / `jne`: no zone is the other arm
+            // of 0x00446400, not a failure.
+            options.residency = nfsu::TrackResidency{};
+            options.residency.rule = nfsu::TrackResidencyRule::no_zone;
+            std::cout << "zone: none; residency falls back to no-zone\n";
+        } else if (!nfsu::track_zone_residency(zones, picked,
+                                               options.residency)) {
+            std::cerr << "error: the selected zone yields no residency\n";
+            return 3;
+        } else {
+            const nfsu::TrackZone& zone = zones.zones[picked];
+            std::cout << "zone: index " << picked << " key " << zone.key
+                      << " polygon " << zone.polygon_index << " sections "
+                      << zone.section_count << '\n';
+            std::cout << "zone sections:";
+            for (std::int32_t i = 0; i < zone.section_count; ++i) {
+                std::cout << ' '
+                          << zone.sections[static_cast<std::size_t>(i)];
+            }
+            std::cout << '\n';
+        }
+    }
+
     nfsu::TrackFrustum frustum;
     if (!nfsu::track_frustum_look_at(args.camera, frustum)) {
         std::cerr << "error: the camera is degenerate and builds no frustum\n";
@@ -1471,7 +1537,7 @@ int run_track_visibility(
     }
 
     const nfsu::TrackCullReport report =
-        nfsu::cull_track_region(objects, frustum, args.options);
+        nfsu::cull_track_region(objects, frustum, options);
 
     std::cout << "policy: requested "
               << nfsu::track_cull_policy_name(report.requested_policy)
@@ -1524,6 +1590,115 @@ int run_track_visibility(
                   << issue.message << '\n';
     }
     return (objects.ok() && report.ok()) ? 0 : 3;
+}
+
+// ---------------------------------------------------------------------------
+// track-zones: the 0x80034150 visibility zones of one track, and which one
+// holds a given world point. See docs/TRACK_ZONES.md.
+// ---------------------------------------------------------------------------
+
+constexpr std::size_t kTrackZoneListLimit = 16;
+
+void print_track_zone(
+    const nfsu::TrackZoneReport& report,
+    const nfsu::TrackZone& zone,
+    const char* indent) {
+    std::cout << indent << "zone " << zone.index << " key " << zone.key
+              << " polygon " << zone.polygon_index << " sections "
+              << zone.section_count << " stored link "
+              << zone.stored_link[0] << '/' << zone.stored_link[1]
+              << " unknown " << zone.unknown << " polygon link "
+              << zone.stored_polygon_link << '\n';
+    std::cout << indent << "  sections:";
+    for (std::int32_t i = 0; i < zone.section_count; ++i) {
+        std::cout << ' ' << zone.sections[static_cast<std::size_t>(i)];
+    }
+    std::cout << '\n';
+    if (zone.polygon_index >= report.polygons.size()) {
+        return;
+    }
+    const nfsu::TrackZonePolygon& polygon = report.polygons[zone.polygon_index];
+    std::cout << indent << "  polygon " << polygon.index << " key "
+              << polygon.key << " vertices " << polygon.vertex_count << ':';
+    for (std::int16_t v = 0; v < polygon.vertex_count; ++v) {
+        std::cout << " (" << polygon.vertices[static_cast<std::size_t>(v)][0]
+                  << ", " << polygon.vertices[static_cast<std::size_t>(v)][1]
+                  << ')';
+    }
+    std::cout << '\n';
+}
+
+int run_track_zones(
+    const fs::path& path,
+    bool has_point,
+    double point_slot0,
+    double point_slot1,
+    std::size_t list_limit) {
+    std::vector<unsigned char> image;
+    const nfsu::TrackZoneReport report = nfsu::load_track_zones(path, image);
+
+    std::cout << "file: " << path.string() << '\n';
+    std::cout << "file size: " << report.file_size << " image bytes "
+              << image.size() << " unused packed bytes "
+              << report.cost.unused_packed_bytes << '\n';
+    const nfsu::TrackZoneCost& cost = report.cost;
+    std::cout << "zones: " << (report.valid ? "valid" : "refused") << " chunks "
+              << cost.chunks << " container children " << cost.container_children
+              << " polygons " << cost.polygons << " zones " << cost.zones
+              << " section lists " << report.section_lists.size() << '\n';
+    std::cout << "cost: polygon vertices " << cost.polygon_vertices
+              << " zone sections " << cost.zone_sections << '\n';
+    if (cost.polygon_vertices != 0) {
+        std::cout << "vertex bounds: slot0 " << cost.vertex_min[0] << " .. "
+                  << cost.vertex_max[0] << " slot1 " << cost.vertex_min[1]
+                  << " .. " << cost.vertex_max[1] << '\n';
+    }
+
+    for (const nfsu::TrackIssue& issue : report.issues) {
+        std::cerr << "zone issue at " << issue.offset << ": " << issue.message
+                  << '\n';
+    }
+    if (!report.valid) {
+        return 3;
+    }
+
+    for (const nfsu::TrackZoneSectionList& list : report.section_lists) {
+        std::cout << "section list " << nfsu::format_chunk_id(list.chunk_id)
+                  << " record " << list.index << " key " << list.key
+                  << " count " << list.count << ":";
+        for (std::int32_t i = 0; i < list.count; ++i) {
+            std::cout << ' ' << list.sections[static_cast<std::size_t>(i)];
+        }
+        std::cout << '\n';
+    }
+
+    std::size_t listed = 0;
+    for (const nfsu::TrackZone& zone : report.zones) {
+        if (listed >= list_limit) {
+            std::cout << "  ... " << (report.zones.size() - listed)
+                      << " more zones not listed\n";
+            break;
+        }
+        ++listed;
+        print_track_zone(report, zone, "  ");
+    }
+
+    if (!has_point) {
+        std::cout << "point: none given; no lookup was run\n";
+        return 0;
+    }
+
+    const float point[2] = {static_cast<float>(point_slot0),
+                            static_cast<float>(point_slot1)};
+    std::cout << "point: slot0 " << point[0] << " slot1 " << point[1] << '\n';
+    const std::size_t picked = nfsu::find_track_zone(report, point);
+    if (picked == nfsu::kTrackZoneNone) {
+        std::cout << "picked: none; retail falls back to the no-zone rule\n";
+        return 0;
+    }
+    std::cout << "picked: zone " << picked << '\n';
+    print_track_zone(report, report.zones[picked], "  ");
+    return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -2616,8 +2791,11 @@ const Command kCommands[] = {
      "      [--fov <radians>] [--aspect <ratio>] [--near <n>] [--far <f>]\n"
      "      [--policy <retail-tree|draw-everything|flat-instance-test>]\n"
      "      [--residency <every|no-zone|zone>] [--zone <section-number>]...\n"
+     "      [--zones <TRACKB####.lzc> --zone-point <slot0> <slot1>]\n"
      "      [--mask <0xNN>] [--screen-scale <s>] [--list <count>]\n"
-     "      (eye and target are in the world frame of docs/FORMATS.md:286)\n",
+     "      (eye and target are in the world frame of docs/FORMATS.md:286;\n"
+     "       --zones replaces the residency with the zone that holds the\n"
+     "       point, which is stated in the raw slot order instead)\n",
      [](int argc, char** argv) {
          if (argc < 11) {
              print_usage();
@@ -2727,6 +2905,25 @@ const Command kCommands[] = {
                  args.options.residency.zone_sections.push_back(
                      static_cast<std::uint32_t>(number));
                  ++i;
+             } else if (flag == "--zones") {
+                 if (!has_value) {
+                     std::cerr << "error: --zones needs a TRACKB####.lzc "
+                                  "path\n";
+                     return 1;
+                 }
+                 args.zone_file = nfsu::argument_path(argv[i + 1]);
+                 args.has_zone_file = true;
+                 ++i;
+             } else if (flag == "--zone-point") {
+                 if (i + 2 >= argc ||
+                     !parse_f32(std::string(argv[i + 1]), args.zone_point[0]) ||
+                     !parse_f32(std::string(argv[i + 2]), args.zone_point[1])) {
+                     std::cerr << "error: --zone-point needs two finite "
+                                  "floats\n";
+                     return 1;
+                 }
+                 args.has_zone_point = true;
+                 i += 2;
              } else if (flag == "--mask") {
                  std::uint64_t mask = 0;
                  if (!has_value || !parse_u64(value, mask) || mask > 0xFFU) {
@@ -2751,6 +2948,36 @@ const Command kCommands[] = {
          }
          return run_track_visibility(nfsu::argument_path(argv[2]), offset, size,
                                      args);
+     }},
+    {"track-zones", " <TRACKB####.lzc> [slot0 slot1]",
+     "      (slot0 and slot1 are the two horizontal raw slots, px and pz)\n",
+     [](int argc, char** argv) {
+         if (argc != 3 && argc != 5) {
+             print_usage();
+             return 1;
+         }
+         double slot0 = 0.0;
+         double slot1 = 0.0;
+         if (argc == 5) {
+             try {
+                 std::size_t used0 = 0;
+                 std::size_t used1 = 0;
+                 const std::string first(argv[3]);
+                 const std::string second(argv[4]);
+                 slot0 = std::stod(first, &used0);
+                 slot1 = std::stod(second, &used1);
+                 if (used0 != first.size() || used1 != second.size()) {
+                     std::cerr << "error: slot0 and slot1 must be numbers\n";
+                     return 1;
+                 }
+             } catch (const std::exception&) {
+                 std::cerr << "error: slot0 and slot1 must be numbers\n";
+                 return 1;
+             }
+         }
+         return run_track_zones(nfsu::argument_path(argv[2]), argc == 5,
+                                slot0, slot1,
+                                kTrackZoneListLimit);
      }},
     {"track-scene",
      " <STREAM.BUN> <geometry-offset> <geometry-size>",

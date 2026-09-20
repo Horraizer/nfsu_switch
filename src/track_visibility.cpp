@@ -838,15 +838,18 @@ TrackCullReport cull_track_region(
         report.sections.push_back(summary);
     }
 
-    // The id exists only so a diagnostic can name the chunk this project
-    // cannot read; see docs/TRACK_VISIBILITY.md.
+    // An empty zone list leaves only the 2600..2699 band resident, which is
+    // not what any zone this project has read stands for: every one of the
+    // 2110 retail zone records names at least four sections. The issue
+    // names the chunk the list comes from, so that a caller who forgot to
+    // load it cannot mistake the band alone for a zone's own set.
     if (in_options.residency.rule == TrackResidencyRule::zone_list &&
         in_options.residency.zone_sections.empty()) {
         report.issues.push_back(TrackIssue{
-            0, "a zone list was requested with no section in it; the record "
-               "layout inside the visibility-zone chunk " +
+            0, "a zone list was requested with no section in it; fill it from "
+               "the visibility-zone chunk " +
                    hex32(kTrackVisibilityZoneId) +
-                   " is not decoded by this project"});
+                   " with nfsu::track_zone_residency"});
     }
     return report;
 }

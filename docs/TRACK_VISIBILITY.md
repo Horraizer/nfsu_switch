@@ -84,9 +84,13 @@ section numbers, then walk each resident section's tree.
 0044642A  jne  0x446473                      ; a zone: take its list
 ```
 
-0x00446FD0 walks a linked list whose head is at 0x0077A930, and for each
-entry reads a record at `+0xc`, a count at `record +0xa` and a vertex
-array at `record +0xc`, and calls 0x005679B0:
+0x00446FD0 is handed 0x0077A930 and reads `[eax + 0x10]`, so the list it
+walks is the one whose head is at **0x0077A940**, which
+[`TRACK_ZONES.md`](TRACK_ZONES.md) shows the loader filling with
+`0x00034152` records. An earlier draft of this note said 0x0077A930; the
+`add edi, 0x10` at 0x00446FDC is what settles it. For each entry it reads
+a record at `+0xc`, a count at `record +0xa` and a vertex array at
+`record +0xc`, and calls 0x005679B0:
 
 ```text
 00446FE3  mov   eax, dword ptr [esi + 0xc]
@@ -132,7 +136,10 @@ unconditional band are two halves of one decision: the 26xx sections are
 the always-resident set.
 
 **With no zone**, the drawn list is every loaded section whose number
-modulo 100 is below 10:
+modulo 100 is below 10. The numbers come from the loaded-section list at
+0x0077A978 (0x0044642C `mov edi, dword ptr [0x77a978]`), which is the list
+`TRACK_OBJECTS.md` records the loader linking at 0x00445831, and not from
+the number table the zone arm uses:
 
 ```text
 00446448  mov  ecx, dword ptr [edi + 0xc]    ; the section number
@@ -200,36 +207,34 @@ four children in the same order in all 31:
 | `0x00034154` | 32 |
 
 So the census above reports none only because it walks files as they lie
-on disk and does not decompress them. What is missing is the layout
-*inside* that chunk: which of the four children is the polygon list, which
-is the section list, what the zone record's fields at `+8` and `+0x10`
-are, and what the eight bytes per polygon vertex hold beyond the two the
-point test reads. None of that is decoded here, and this note does not
-widen to decode it.
+on disk and does not decompress them.
 
-That is the boundary, and it is worth being exact about which kind it is.
-The residency rule is not reproduced because a format has not been read,
-not because a capability is missing: the chunk id is known, the container
-opens with code already in this repository, the four child ids are listed
-above, and the polygon test that consumes the result is traced. What is
-undecoded is the record layout inside those four chunks, and decoding it
-is follow-up work along a known path rather than a blocked one.
+**The layout inside that chunk is now decoded**, in
+[`TRACK_ZONES.md`](TRACK_ZONES.md) and
+`include/nfsu/track_zones.h`. `0x00034151` is the polygon list, 140 bytes
+a record, and `0x00034152` is the zone list, 148 bytes a record, carrying
+the `+0x10` count and the `+0x14` int16 array this note traced the reads
+of; the other two are further section lists keyed on the track number.
+Each record size is the stride of the loader's own loop at 0x00446DB0.
+`nfsu::track_zone_residency` fills a `TrackResidency` from one decoded
+zone, so the rule below is now driven by the game's data rather than by a
+caller's guess.
 
-That is also why the fallback below is a deliverable rather than a
-consolation. It is the correct answer for a caller that knows the rule and
-has not yet read the data, and it says so in every report it produces
-instead of passing itself off as the retail set. `nfsu::TrackResidency` therefore offers three rules, and the
-default is the explicit fallback:
+None of that deletes the fallback, and it was never a consolation. It is
+the correct answer for a caller that has not read a zone file, and it says
+so in every report it produces instead of passing itself off as the retail
+set. `nfsu::TrackResidency` offers three rules, and the default is still
+the explicit fallback:
 
 | `TrackResidencyRule` | What it is |
 | --- | --- |
-| `every_section` | **Not a retail rule.** Every valid section of the named region is drawn. The default, and the safe answer when retail visibility is unknown. |
-| `no_zone` | 0x00446459 exactly: `number % 100 < 10`. What retail does when the camera is inside no zone polygon. |
-| `zone_list` | 0x00446473 to 0x004464D6 exactly: sections 2600 to 2699 first, then a caller-supplied list. The list has to be supplied because the record layout inside `0x80034150` is not decoded here. |
+| `every_section` | **Not a retail rule.** Every valid section of the named region is drawn. The default, and the safe answer when no zone file has been read. |
+| `no_zone` | 0x00446459 exactly: `number % 100 < 10`. What retail does when the camera is inside no zone polygon, which over the corpus is 39054 of 251100 sampled points. |
+| `zone_list` | 0x00446473 to 0x004464D6 exactly: sections 2600 to 2699 first, then a supplied list. `nfsu::track_zone_residency` supplies it from a decoded `0x80034150`; a caller may still supply its own. |
 
 Asking for `zone_list` with an empty list raises an issue that names
-`0x80034150`, so a run can never quietly look like it consulted zone data
-it does not have.
+`0x80034150` and the call that fills it, so a run can never quietly look
+like it consulted zone data it does not have.
 
 ## The box test (0x0040DB20)
 
@@ -780,11 +785,15 @@ build/nfsu_probe chunks X:/Games/NFSU/Tracks/STREAML1RB.BUN 100000
   0x00446400, then walk each resident section's `0x00034104` tree at
   0x00446140. A section with no tree pointer is skipped.
 - A visibility zone is a polygon tested in two dimensions against a world
-  point (0x005679B0, stride 8), held in a most-recently-used list at
-  0x0077A930 built from chunk id `0x80034150` (0x00446AB4).
+  point (0x005679B0, stride 8), reached through a most-recently-used list
+  of `0x00034152` records at 0x0077A940, which is `0x0077A930 + 0x10`
+  (0x00446FD9). The five list heads from 0x0077A930 are reset by the
+  `0x80034150` callback at 0x00446AB4 and filled by the loader at
+  0x00446DB0; [`TRACK_ZONES.md`](TRACK_ZONES.md) decodes the records.
 - With a zone active the drawn list is sections 2600 to 2699 plus the
   zone's own int16 list of at most 64 numbers; with no zone it is every
-  loaded section whose number modulo 100 is below 10.
+  section of the loaded list at 0x0077A978 whose number modulo 100 is
+  below 10. Both arms stop at the 128-entry cap 0x004465C1 passes in.
 - No file carries a top-level `0x80034150` as it lies on disk: of the 207
   non-empty files that walk as chunks to end of file, none holds one. 33 of
   34 `.lzc` files begin with `JDLZ`, the exception being
@@ -832,13 +841,6 @@ build/nfsu_probe chunks X:/Games/NFSU/Tracks/STREAML1RB.BUN 100000
 
 ## Unknown
 
-- The record layout inside `0x80034150`: which of `0x00034151`,
-  `0x00034152`, `0x00034153` and `0x00034154` holds the polygons and which
-  holds the section lists, what the zone record's fields at `+8` and
-  `+0x10` are, and what the eight bytes per polygon vertex hold beyond the
-  two the point test at 0x005679B0 reads. The container opens with
-  `nfsu::jdlz_decompress`; only the records inside it are unread, and
-  reading them is tracked separately rather than widened into this note.
 - Every bit of the render mask byte at context `+0x84`, so gate 1 cannot
   be reproduced with a retail value.
 - The scale at context `+0xC0`, so gate 3 cannot be reproduced with a
@@ -848,5 +850,10 @@ build/nfsu_probe chunks X:/Games/NFSU/Tracks/STREAML1RB.BUN 100000
 - What the two objects whose `+28` second word reads 27008 are for.
 - Whether the letter range `A` to `T` at 0x00446BF0 bounds the track
   sections generally or only the two list operations that check it.
+  [`TRACK_ZONES.md`](TRACK_ZONES.md) narrows this: the 2600 to 2699 band
+  is letter `Z`, is outside that range, and is drawn anyway, so the range
+  is not a filter on what is drawn.
 - Collision, and everything about streaming: what decides that a section
-  is in the table at 0x0072A008 in the first place.
+  is in the table at 0x0072A008, or in the loaded list at 0x0077A978, in
+  the first place. The zone data says which sections a camera asks for; it
+  says nothing about which are there to be asked for.

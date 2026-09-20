@@ -108,6 +108,26 @@ else()
     target_compile_options(nfsu_track_visibility PRIVATE -ffp-contract=off -fno-fast-math)
 endif()
 
+# The visibility zones of one track: the 0x80034150 records that turn a
+# camera position into the section list the group layer draws. It sits above
+# nfsu_track_visibility because a decoded zone is handed straight to that
+# library's TrackResidency. Floating-point contraction is disabled for the
+# same reason it is disabled there: the crossing test at speed.exe
+# 0x005679B0 decides on a strict comparison of an interpolated coordinate,
+# so a fused multiply-add would move a boundary case and the selected zone
+# with it. See docs/TRACK_ZONES.md.
+add_library(nfsu_track_zones
+    src/track_zones.cpp
+)
+
+target_link_libraries(nfsu_track_zones PUBLIC nfsu_track_visibility)
+nfsu_enable_warnings(nfsu_track_zones)
+if(MSVC)
+    target_compile_options(nfsu_track_zones PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_track_zones PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+
 # The composition layer of the track path: the prepared region of
 # src/track_scene.cpp placed by the scenery instances of
 # src/track_objects.cpp, and the per-frame draw list one visible set selects
@@ -208,7 +228,8 @@ add_executable(nfsu_probe
 )
 
 target_link_libraries(nfsu_probe
-    PRIVATE nfsu_core nfsu_track nfsu_track_visibility nfsu_track_draw_list
+    PRIVATE nfsu_core nfsu_track nfsu_track_visibility nfsu_track_zones
+            nfsu_track_draw_list
             nfsu_texture_decode nfsu_skin_inputs nfsu_stock_scene
             nfsu_arg_path)
 nfsu_enable_warnings(nfsu_probe)
@@ -371,6 +392,19 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_track_visibility_tests)
     add_test(NAME nfsu_track_visibility_tests COMMAND nfsu_track_visibility_tests)
 
+    add_executable(nfsu_track_zone_tests
+        tests/track_zone_tests.cpp
+    )
+
+    target_link_libraries(nfsu_track_zone_tests PRIVATE nfsu_track_zones)
+    nfsu_enable_warnings(nfsu_track_zone_tests)
+    if(MSVC)
+        target_compile_options(nfsu_track_zone_tests PRIVATE /fp:precise)
+    else()
+        target_compile_options(nfsu_track_zone_tests PRIVATE -ffp-contract=off -fno-fast-math)
+    endif()
+    add_test(NAME nfsu_track_zone_tests COMMAND nfsu_track_zone_tests)
+
     add_executable(nfsu_track_draw_list_tests
         tests/track_draw_list_tests.cpp
     )
@@ -509,7 +543,8 @@ if(NFSU_BUILD_TESTS)
         nfsu_chunk_tests nfsu_geometry_tests nfsu_texture_tests
         nfsu_render_tests nfsu_scene_tests nfsu_car_parts_tests
         nfsu_track_tests nfsu_track_object_tests
-        nfsu_track_visibility_tests nfsu_track_draw_list_tests
+        nfsu_track_visibility_tests nfsu_track_zone_tests
+        nfsu_track_draw_list_tests
         nfsu_part_placement_tests nfsu_body_skin_tests
         nfsu_stock_scene_tests
         nfsu_skin_inputs_tests nfsu_runtime_skin_tests nfsu_inspect_tests

@@ -251,10 +251,14 @@ visible set named that the scene placed. Three separate things narrow it:
    containment. `TrackDrawList::requested_policy` and `policy_held` carry
    which, when the list came from a cull report.
 2. **Residency.** Which sections are resident is the caller's
-   `TrackResidency`, and the retail zone list is undecoded (issue #96), so
-   `TrackResidencyRule::every_section` is the only rule this project can
-   serve for a real frame. The game draws a smaller set than that, and this
-   layer cannot say which.
+   `TrackResidency`, and this layer never fills one itself.
+   `TrackResidencyRule::every_section` is its default and is not a retail
+   rule: the game draws a smaller set. Issue #96 decoded the zone data the
+   retail rule reads, so a caller can now fill that `TrackResidency` from
+   the game's own zones with `nfsu::track_zone_residency`
+   ([`TRACK_ZONES.md`](TRACK_ZONES.md)); what this layer reports is still
+   whatever residency it was handed, and it cannot say whether that was
+   one.
 3. **Placement.** `cost.visible_unplaced` counts the visible instances whose
    mesh is not in this region.
 
@@ -511,9 +515,11 @@ The cameras were `450 20 -80` to `900 20 -80` for the first region and
   per-slot thresholds at `0x00034102 +24` and the projection scale
   0x00445E10 needs were not recovered, so `lod_slot` is the caller's and
   this layer states that rather than guessing.
-- Which sections are resident together. The visibility zone list is
-  undecoded (issue #96), so a real frame's resident set cannot be
-  reproduced and `every_section` is what a caller has.
+- Which sections are resident together, from this layer alone: it reads a
+  `TrackResidency` and fills none. Issue #96 decoded the zone list, so a
+  caller can build one from the game's own data; what is still unknown is
+  what puts a section in the streaming table in the first place, which is
+  upstream of both.
 - Whether the retail draw queue of [`MATERIALS.md`](MATERIALS.md) orders
   track material groups the way it orders car ones. Neither order here
   claims it does.
