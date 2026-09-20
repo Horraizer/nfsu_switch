@@ -91,8 +91,14 @@
   per-mesh vertex-format field that selects it, and one explicitly
   bounded region of `Tracks/STREAML1RB.BUN` are decoded end to end
   (`include/nfsu/track.h`, `nfsu_probe track-region`,
-  [`TRACK.md`](TRACK.md)). Object instances, transforms and the
-  streaming tables are still to do.
+  [`TRACK.md`](TRACK.md)). The streaming tables are still to do.
+- Place that geometry. The `0x80034100` scenery section beside each
+  geometry root is decoded end to end: the object directory and its six
+  mesh-hash slots, the instance transforms and their coordinate
+  convention, and the bounding tree over the instances
+  (`include/nfsu/track_objects.h`, `nfsu_probe track-objects`,
+  [`TRACK_OBJECTS.md`](TRACK_OBJECTS.md)). All 593 retail sections decode
+  with no issue. Which sections are resident together is still to do.
 - Resolve track textures and materials. The bounded region resolves
   against explicit ordered track texture sources through the same
   `RenderTextureSet` the car scene uses; per-material effect state is

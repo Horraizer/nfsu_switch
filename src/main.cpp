@@ -7,6 +7,7 @@
 #include "nfsu/texture.h"
 #include "nfsu/texture_decode.h"
 #include "nfsu/track.h"
+#include "nfsu/track_objects.h"
 #include "nfsu/track_scene.h"
 
 #include <algorithm>
@@ -36,6 +37,11 @@ constexpr std::uint32_t kNfsuGeometryId = 0x80134000U;
 // total bytes read for all texture sources of one run.
 constexpr std::size_t kTrackMeshListLimit = 64;
 constexpr std::uint64_t kMaxTrackTextureInputBytes = 512ULL * 1024ULL * 1024ULL;
+
+// track-objects: sections printed before the listing is summarized, and
+// unresolved mesh hashes printed before the same.
+constexpr std::size_t kTrackSectionListLimit = 32;
+constexpr std::size_t kTrackUnresolvedListLimit = 32;
 
 std::string hex32(std::uint32_t value);
 
@@ -1120,6 +1126,138 @@ int run_track_region(
 }
 
 // ---------------------------------------------------------------------------
+// track-objects: the scenery sections of one explicitly selected region.
+// The region is read exactly once, read-only, and nothing else of the file
+// is touched. A second selector, when given, names the region whose
+// geometry the object mesh hashes are resolved against; it is read the
+// same way. The two need not be the same bytes, because a section commonly
+// names meshes that stream in with another one.
+// ---------------------------------------------------------------------------
+int run_track_objects(
+    const fs::path& path,
+    std::uint64_t offset,
+    std::uint64_t size,
+    bool has_geometry,
+    std::uint64_t geometry_offset,
+    std::uint64_t geometry_size) {
+    std::vector<unsigned char> region_bytes;
+    nfsu::TrackRegionSelector selector;
+    selector.offset = offset;
+    selector.size = size;
+    const nfsu::TrackObjectReport report =
+        nfsu::load_track_objects(path, selector, region_bytes);
+
+    std::cout << "file: " << path.string() << '\n';
+    std::cout << "file size: " << report.file_size << '\n';
+    std::cout << "region: offset " << report.region.offset << " size "
+              << report.region.size << " bytes read " << region_bytes.size()
+              << '\n';
+    std::cout << "sections: " << report.sections.size() << " valid "
+              << report.valid_section_count() << " chunks "
+              << report.cost.chunks << '\n';
+
+    std::size_t listed = 0;
+    for (const nfsu::TrackSection& section : report.sections) {
+        if (listed >= kTrackSectionListLimit) {
+            std::cout << "  ... " << (report.sections.size() - listed)
+                      << " more sections not listed\n";
+            break;
+        }
+        ++listed;
+        std::cout << "  " << std::setw(4) << std::setfill(' ') << section.index
+                  << ' ' << (section.valid ? "ok     " : "invalid")
+                  << " number " << section.number << " letter "
+                  << (section.has_letter ? section.letter : '?') << '\n';
+        std::cout << "       container " << section.offset << " objects "
+                  << section.objects.size() << " instances "
+                  << section.instances.size() << " nodes "
+                  << section.nodes.size() << " tree depth "
+                  << section.tree_depth << '\n';
+        std::cout << "       header " << section.header_record_offset
+                  << " prefix " << section.header_prefix_bytes
+                  << " object list " << section.object_list_offset
+                  << " instance list " << section.instance_list_offset
+                  << " prefix " << section.instance_prefix_bytes
+                  << " bound tree " << section.bound_tree_offset << '\n';
+    }
+
+    for (const nfsu::TrackIssue& issue : report.issues) {
+        std::cerr << "region issue at " << issue.offset << ": " << issue.message
+                  << '\n';
+    }
+
+    const nfsu::TrackObjectCost& cost = report.cost;
+    std::cout << "cost: region bytes " << cost.region_bytes << " chunks "
+              << cost.chunks << " sections " << cost.valid_sections
+              << " objects " << cost.objects << " instances " << cost.instances
+              << " nodes " << cost.bound_nodes << '\n';
+    std::cout << "cost: source object bytes " << cost.source_object_bytes
+              << " instance bytes " << cost.source_instance_bytes
+              << " node bytes " << cost.source_bound_node_bytes << '\n';
+    std::cout << "cost: mesh slots used " << cost.mesh_slots_used
+              << " distinct mesh hashes " << cost.distinct_mesh_hashes
+              << " largest section instances "
+              << cost.largest_section_instances << " deepest tree "
+              << cost.deepest_tree << '\n';
+    if (cost.has_bounds) {
+        std::cout << "bounds: px " << cost.bounds_min[0] << " .. "
+                  << cost.bounds_max[0] << " pz " << cost.bounds_min[1]
+                  << " .. " << cost.bounds_max[1] << " py "
+                  << cost.bounds_min[2] << " .. " << cost.bounds_max[2] << '\n';
+    }
+
+    if (!has_geometry) {
+        std::cout << "geometry: no region given; mesh hashes are not resolved\n";
+        return report.ok() ? 0 : 3;
+    }
+
+    std::vector<unsigned char> geometry_bytes;
+    nfsu::TrackRegionSelector geometry_selector;
+    geometry_selector.offset = geometry_offset;
+    geometry_selector.size = geometry_size;
+    const nfsu::TrackRegionReport geometry =
+        nfsu::load_track_region(path, geometry_selector, geometry_bytes);
+    std::cout << "geometry region: offset " << geometry.region.offset
+              << " size " << geometry.region.size << " bytes read "
+              << geometry_bytes.size() << " meshes " << geometry.meshes.size()
+              << " valid " << geometry.valid_mesh_count() << '\n';
+    for (const nfsu::TrackIssue& issue : geometry.issues) {
+        std::cerr << "geometry issue at " << issue.offset << ": "
+                  << issue.message << '\n';
+    }
+
+    const nfsu::TrackObjectResolution resolution =
+        nfsu::resolve_track_objects(report, geometry);
+    std::cout << "slots: total " << resolution.slots_total << " empty "
+              << resolution.slots_empty << " resolved "
+              << resolution.slots_resolved << " unresolved "
+              << resolution.slots_unresolved << '\n';
+    std::cout << "instances: checked " << resolution.instances_checked
+              << " bounds contain the mesh "
+              << resolution.instances_bounds_contained << '\n';
+    if (resolution.has_bounds) {
+        std::cout << "world: px " << resolution.bounds_min[0] << " .. "
+                  << resolution.bounds_max[0] << " pz "
+                  << resolution.bounds_min[1] << " .. "
+                  << resolution.bounds_max[1] << " py "
+                  << resolution.bounds_min[2] << " .. "
+                  << resolution.bounds_max[2] << '\n';
+    }
+    std::size_t shown = 0;
+    for (const std::uint32_t hash : resolution.unresolved_hashes) {
+        if (shown >= kTrackUnresolvedListLimit) {
+            std::cout << "  ... "
+                      << (resolution.unresolved_hashes.size() - shown)
+                      << " more unresolved hashes not listed\n";
+            break;
+        }
+        ++shown;
+        std::cout << "  unresolved " << hex32(hash) << '\n';
+    }
+    return (report.ok() && geometry.ok()) ? 0 : 3;
+}
+
+// ---------------------------------------------------------------------------
 // body-skin-inputs: read-only diagnostics for the assembled layer list.
 // It opens only the files named on the command line, and it writes nothing.
 // ---------------------------------------------------------------------------
@@ -1940,6 +2078,40 @@ const Command kCommands[] = {
              textures.emplace_back(argv[i]);
          }
          return run_track_region(fs::path(argv[2]), offset, size, textures);
+     }},
+    {"track-objects", " <STREAM.BUN> <offset> <size>",
+     "      [<geometry-offset> <geometry-size>]\n",
+     [](int argc, char** argv) {
+         if (argc != 5 && argc != 7) {
+             print_usage();
+             return 1;
+         }
+         std::uint64_t offset = 0;
+         std::uint64_t size = 0;
+         if (!parse_u64(std::string(argv[3]), offset)) {
+             std::cerr << "error: offset must be a decimal or 0x integer\n";
+             return 1;
+         }
+         if (!parse_u64(std::string(argv[4]), size)) {
+             std::cerr << "error: size must be a decimal or 0x integer\n";
+             return 1;
+         }
+         std::uint64_t geometry_offset = 0;
+         std::uint64_t geometry_size = 0;
+         const bool has_geometry = argc == 7;
+         if (has_geometry) {
+             if (!parse_u64(std::string(argv[5]), geometry_offset)) {
+                 std::cerr << "error: geometry-offset must be a decimal or 0x integer\n";
+                 return 1;
+             }
+             if (!parse_u64(std::string(argv[6]), geometry_size)) {
+                 std::cerr << "error: geometry-size must be a decimal or 0x integer\n";
+                 return 1;
+             }
+         }
+         return run_track_objects(fs::path(argv[2]), offset, size,
+                                  has_geometry, geometry_offset,
+                                  geometry_size);
      }},
     {"car-placement", " <GLOBALB.BUN> [car-type]", "",
      [](int argc, char** argv) {

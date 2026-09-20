@@ -54,12 +54,14 @@ target_compile_features(nfsu_scene PUBLIC cxx_std_17)
 nfsu_enable_warnings(nfsu_scene)
 
 # One explicitly selected, bounded track STREAM region: chunk-tree parsing
-# of the 24-byte track vertex layout, and the prepared draw list with its
-# cost statistics. The parser (src/track.cpp) uses only nfsu_core; the
+# of the 24-byte track vertex layout, the scenery sections that place that
+# geometry, and the prepared draw list with its cost statistics. The
+# parsers (src/track.cpp and src/track_objects.cpp) use only nfsu_core; the
 # prepared region (src/track_scene.cpp) also uses the backend-neutral
 # scene layer for material binding.
 add_library(nfsu_track
     src/track.cpp
+    src/track_objects.cpp
     src/track_scene.cpp
 )
 
@@ -266,6 +268,14 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_track_tests)
     add_test(NAME nfsu_track_tests COMMAND nfsu_track_tests)
 
+    add_executable(nfsu_track_object_tests
+        tests/track_object_tests.cpp
+    )
+
+    target_link_libraries(nfsu_track_object_tests PRIVATE nfsu_track)
+    nfsu_enable_warnings(nfsu_track_object_tests)
+    add_test(NAME nfsu_track_object_tests COMMAND nfsu_track_object_tests)
+
     add_executable(nfsu_part_placement_tests
         tests/part_placement_tests.cpp
     )
@@ -352,7 +362,8 @@ if(NFSU_BUILD_TESTS)
     set_tests_properties(
         nfsu_chunk_tests nfsu_geometry_tests nfsu_texture_tests
         nfsu_render_tests nfsu_scene_tests nfsu_car_parts_tests
-        nfsu_track_tests nfsu_part_placement_tests nfsu_body_skin_tests
+        nfsu_track_tests nfsu_track_object_tests
+        nfsu_part_placement_tests nfsu_body_skin_tests
         nfsu_stock_scene_tests
         nfsu_skin_inputs_tests nfsu_runtime_skin_tests nfsu_inspect_tests
         nfsu_viewer_dump_alias nfsu_probe_usage_commands
