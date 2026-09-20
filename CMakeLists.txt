@@ -269,7 +269,7 @@ if(NFSU_BUILD_TESTS)
         tests/track_tests.cpp
     )
 
-    target_link_libraries(nfsu_track_tests PRIVATE nfsu_track)
+    target_link_libraries(nfsu_track_tests PRIVATE nfsu_track nfsu_texture_decode)
     nfsu_enable_warnings(nfsu_track_tests)
     add_test(NAME nfsu_track_tests COMMAND nfsu_track_tests)
 
