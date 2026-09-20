@@ -314,12 +314,26 @@ if(NFSU_BUILD_TESTS)
         PASS_REGULAR_EXPRESSION "--skin-dump must differ from the output file"
         FAIL_REGULAR_EXPRESSION "failed to read file size;no valid meshes")
 
+    # nfsu_probe registers a command in one place, and print_usage() composes
+    # the usage line out of the name main() dispatches on. This reads the
+    # command inventory back out of three independent places - the kCommands
+    # table in the source, the built program's usage text, and the README's
+    # run lines - and requires all three to be the same set, so a command
+    # added to one of them alone is named as missing from the others: see
+    # tests/usage_commands.cmake.
+    add_test(NAME nfsu_probe_usage_commands
+        COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp
+                -DREADME=${CMAKE_CURRENT_SOURCE_DIR}/README.md
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/usage_commands.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
     # A hung test is killed and reported as a failure.
     set_tests_properties(
         nfsu_chunk_tests nfsu_geometry_tests nfsu_texture_tests
         nfsu_render_tests nfsu_scene_tests nfsu_car_parts_tests
         nfsu_track_tests nfsu_part_placement_tests nfsu_body_skin_tests
         nfsu_skin_inputs_tests nfsu_runtime_skin_tests nfsu_inspect_tests
-        nfsu_viewer_dump_alias
+        nfsu_viewer_dump_alias nfsu_probe_usage_commands
         PROPERTIES TIMEOUT 60)
 endif()
