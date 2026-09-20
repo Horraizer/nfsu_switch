@@ -18,7 +18,7 @@ The launcher proves the listener is the server this run started by matching a on
 
 Press Ctrl+C in the launcher window, or close it.
 
-The server is a hidden process, and two mechanisms stop it. The launcher stops the whole process tree it started on every exit path it reaches, including a failed launch, and as a final check it stops any listener that proves with the run's instance id that it belongs to this launcher. If the launcher is force-killed and never reaches that cleanup, the server shuts itself down instead: it is told which process launched it and polls for that process once a second.
+The server is a hidden process, and two mechanisms stop it. The launcher stops the whole process tree it started on every exit path it reaches, including a failed launch, and as a final check it stops any listener that proves with the run's instance id that it belongs to this launcher, falling back to the owner the OS reports for the port when that listener answers without a usable pid of its own. If the launcher is force-killed and never reaches that cleanup, the server shuts itself down instead: it is told which process launched it and polls for that process once a second.
 
 A server started by hand, without `KANBAN_PARENT_PID` in its environment, has no such watch and will keep running until it is stopped.
 
@@ -41,7 +41,9 @@ A move is refused outright, before anything is written, if the issue carries a l
 
 ## Security model
 
-The server binds only to `127.0.0.1`, requires a local `Host`, and rejects any cross-origin `Origin`. The Gitea token stays in the server process: it is never sent to the browser, and upstream error text is never relayed to the browser, so a proxy that echoes request headers cannot leak it through an error page. Upstream error text is still written to the server's own log, with the token value and any `Authorization`-shaped credential stripped out first.
+The server binds only to `127.0.0.1`, requires a local `Host`, and rejects any cross-origin `Origin`. The Gitea token stays in the server process: it is never sent to the browser, and upstream error text is never relayed to the browser, so a proxy that echoes request headers cannot leak it through an error page.
+
+Upstream error text is still written to the server's own log, scrubbed first. The scrub removes the token value wherever it appears, literally or with any of its characters percent-encoded, and redacts an `Authorization`-shaped header value up to the first whitespace or delimiter. It is a best-effort pass over text of a shape this tool does not control, not a guarantee: a credential that the upstream page wrapped across lines leaves the part after the break behind, because the header match stops at the line break. The log is local to the machine running the server.
 
 The loopback API itself is **unauthenticated**. Any process or user session on this machine can drive authenticated Gitea writes through it while the server is running. That is why the server does not outlive its launcher.
 
@@ -51,9 +53,11 @@ The loopback API itself is **unauthenticated**. Any process or user session on t
 node --test tools\kanban\test.mjs tools\kanban\server.test.mjs tools\kanban\launcher.test.mjs
 ```
 
-`test.mjs` covers the pure board logic, and the two rules the board page makes about its own messages: a message that must survive the refresh which follows a move, and an error that must never be suppressed. `server.test.mjs` runs the real server over real HTTP against a fake Gitea and covers request validation, host and origin gating, static path traversal, `Content-Length` correctness, pagination against clamped, duplicated and mis-labelled pages, move rollback, unknown move outcomes, accepted-write behaviour, malformed label payloads, and token secrecy: a canary token is asserted absent from the response head, the response body, and everything the console logger writes.
+`test.mjs` covers the pure board logic, and the two rules the board page makes about its own messages: a message that must survive the refresh which follows a move, and an error that must never be suppressed. `server.test.mjs` runs the real server over real HTTP against a fake Gitea and covers request validation, host and origin gating, static path traversal, `Content-Length` correctness against a file that is replaced mid-request, pagination against clamped, duplicated, mis-labelled and under-counted pages, move rollback, unknown move outcomes, accepted-write behaviour, malformed label payloads, and token secrecy: a canary token is asserted absent from the response head, the response body, and everything the console logger writes, in percent-encoded form as well as literal.
 
-`launcher.test.mjs` drives `start.ps1` itself under a real PowerShell host. It covers a `node` that resolves through a `cmd` wrapper, a shim that detaches before the server binds, a failed launch leaving no orphaned server, the wall-clock startup deadline, a foreign listener being named and left alone, an occupied port being reported as such under every installed PowerShell edition, a force-killed launcher being reaped by the server's own parent watch, and the sweep that removes the output such a launcher could not delete. The proxy case needs PowerShell 6 or later. On Windows a missing PowerShell host fails rather than skips, because a skipped gate still exits zero.
+`launcher.test.mjs` drives `start.ps1` itself under a real PowerShell host. It covers a `node` that resolves through a `cmd` wrapper, a shim that detaches before the server binds, a failed launch leaving no orphaned server, the wall-clock startup deadline, a foreign listener being named and left alone, an occupied port being reported as such under every installed PowerShell edition, a force-killed launcher being reaped by the server's own parent watch, a server that answers for this run but reports no usable pid still being stopped, and the sweep that removes the output a force-killed launcher could not delete.
+
+The proxy case needs PowerShell 6 or later: `-NoProxy` exists only there, and Windows PowerShell 5.1 bypasses a proxy for loopback addresses already, so under 5.1 alone that one test has nothing to assert and is skipped with a reason naming the host that is missing. On Windows a missing PowerShell host altogether fails rather than skips, because a skipped gate still exits zero.
 
 No test contacts a real Gitea instance; every test points at a loopback stub.
 

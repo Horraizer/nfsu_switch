@@ -126,18 +126,29 @@ function Get-ServerOutputSuffix {
     return " Server output: " + ((@($lines | Select-Object -Last 5)) -join " | ")
 }
 
-function Get-PortOwnerDescription {
-    # The owner the OS reports, not the pid a foreign listener chose to claim
-    # about itself: the launcher sends the operator after a real process.
-    $connections = @()
+function Get-PortOwnerPids {
+    # The owner the OS reports, not the pid a listener chose to claim about
+    # itself.
+    $owners = @()
     try {
         $connections = @(Get-NetTCPConnection -LocalPort ([int] $port) -State Listen -ErrorAction Stop)
     }
     catch {
-        $connections = @()
+        return @()
     }
     foreach ($connection in $connections) {
         $ownerPid = [int] $connection.OwningProcess
+        if ($ownerPid -gt 0 -and $owners -notcontains $ownerPid) {
+            $owners += $ownerPid
+        }
+    }
+    return $owners
+}
+
+function Get-PortOwnerDescription {
+    # The owner the OS reports, not the pid a foreign listener chose to claim
+    # about itself: the launcher sends the operator after a real process.
+    foreach ($ownerPid in @(Get-PortOwnerPids)) {
         $name = ""
         try {
             $name = (Get-Process -Id $ownerPid -ErrorAction Stop).ProcessName
@@ -246,11 +257,15 @@ function Stop-OwnedListener {
         if (-not (Test-OwnedIdentity $identity)) {
             return
         }
+        # The GUID has already proved that whatever is listening on this port is
+        # this run's server, so a reply that carries no usable pid is not a
+        # reason to walk away from a process still holding the token: the OS
+        # knows which pid owns the port even when the answer does not.
         $ownedPid = Get-IdentityPid $identity
-        if ($ownedPid -eq 0) {
-            return
+        $targets = if ($ownedPid -gt 0) { @($ownedPid) } else { @(Get-PortOwnerPids) }
+        foreach ($target in $targets) {
+            Stop-ProcessEntries (Get-ProcessTree $target)
         }
-        Stop-ProcessEntries (Get-ProcessTree $ownedPid)
         Start-Sleep -Milliseconds $probeIntervalMs
     }
 }

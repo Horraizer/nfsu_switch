@@ -101,11 +101,46 @@ const MAX_SCRUB_DEPTH = 6;
 // a header value inside JSON, HTML or a plain-text proxy page.
 const AUTH_HEADER = /((?:authorization|private-token|x-auth-token)"?\s*[:=]\s*"?)(token |bearer |basic )?[^\s"'<>,;)&]+/gi;
 
+/**
+ * Matches the token as text, allowing any character of it to arrive
+ * percent-encoded. A proxy that echoes the request line sends the credential
+ * back through a query string -- `?access_token=gta%5F...` -- and a literal
+ * comparison walks straight past that into the log.
+ */
+function tokenPattern(token) {
+  const body = [...token]
+    .map((character) => {
+      const literal = character.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const code = character.codePointAt(0);
+      if (code > 0x7f) {
+        // Percent-encoding a non-ASCII character is several bytes of UTF-8, and
+        // guessing at that is not worth widening the pattern for.
+        return literal;
+      }
+      const hex = code.toString(16).padStart(2, "0");
+      return `(?:${literal}|%(?:${hex}|${hex.toUpperCase()}))`;
+    })
+    .join("");
+  return new RegExp(body, "g");
+}
+
+// One token per process, so the pattern is built once rather than per string.
+let patternToken = null;
+let patternFor = null;
+
+function tokenMatcher(token) {
+  if (token !== patternToken) {
+    patternToken = token;
+    patternFor = tokenPattern(token);
+  }
+  return patternFor;
+}
+
 function scrubText(text, token) {
   const masked = text.replace(AUTH_HEADER, (_match, prefix, scheme) => `${prefix}${scheme ?? ""}${REDACTED}`);
   // Unconditional, so the guarantee does not depend on the token's shape. A
   // pathologically short token over-redacts the log, which is the safe side.
-  return token ? masked.split(token).join(REDACTED) : masked;
+  return token ? masked.replace(tokenMatcher(token), REDACTED) : masked;
 }
 
 /**
@@ -241,10 +276,11 @@ export function createGiteaClient({
       return (await call(pathname, options)).payload;
     },
 
-    // Stops on an empty page, or as soon as a trusted X-Total-Count is
-    // satisfied. It must not stop on a short page: Gitea clamps `limit` to its
-    // own maximum, so a short first page is the normal shape on a
-    // conservatively configured instance and used to truncate the board.
+    // Stops on an empty page, or on a page that is shorter than the pages
+    // before it and satisfies X-Total-Count. It must not stop on a short page
+    // by itself: Gitea clamps `limit` to its own maximum, so a short first page
+    // is the normal shape on a conservatively configured instance and used to
+    // truncate the board.
     //
     // Offset pagination overlaps whenever rows are inserted or reordered
     // mid-sweep, which is exactly what agents moving cards do, so rows are
@@ -255,6 +291,11 @@ export function createGiteaClient({
       const seen = new Set();
       let trustedTotal = null;
       let stalled = 0;
+      // The largest page upstream has actually delivered. Gitea clamps `limit`
+      // to its own maximum, so the page size in force is discovered rather than
+      // assumed, and a page no shorter than that is not evidence that the sweep
+      // has reached the end of the collection.
+      let observedPageSize = 0;
       const separator = pathname.includes("?") ? "&" : "?";
       for (let page = 1; page <= maxPages; page += 1) {
         const { payload, headers } = await call(
@@ -291,13 +332,22 @@ export function createGiteaClient({
         } else {
           stalled = 0;
         }
+        const wasFullPage = payload.length >= observedPageSize;
+        observedPageSize = Math.max(observedPageSize, payload.length);
         if (page === 1) {
           // A header claiming fewer rows than the first page already delivered
           // is not describing this collection, so it is not a terminator.
           const total = Number.parseInt(headers?.get?.("x-total-count") ?? "", 10);
           trustedTotal = Number.isSafeInteger(total) && total >= result.length ? total : null;
         }
-        if (trustedTotal !== null && result.length >= trustedTotal) {
+        // The total is an upper bound, never a terminator on its own. A header
+        // that describes a narrower set than the request -- an open-only count
+        // answering `state=all`, or a stale cached value -- lands at or above
+        // the first page's length, passes the check above, and used to end the
+        // sweep on page one: the board then served part of the collection with
+        // a 200 and nothing in the log. Only a page shorter than the ones
+        // before it is evidence that there is nothing left to ask for.
+        if (trustedTotal !== null && !wasFullPage && result.length >= trustedTotal) {
           return result;
         }
       }

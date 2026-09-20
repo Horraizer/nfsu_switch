@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
@@ -1009,6 +1009,25 @@ test("scrubSecrets removes the credential from every string it can reach", () =>
   assert.equal(scrubSecrets(null, token), null);
 });
 
+test("a percent-encoded token is scrubbed as well as the literal one", () => {
+  // A proxy that echoes the request line sends the credential back inside a
+  // query string, where it arrives percent-encoded. A literal comparison walks
+  // straight past that and the token reaches the local log whole.
+  const token = "gta_CANARY_0123456789abcdefABCDEF0123456789";
+  const encoded = "gta%5FCANARY%5F0123456789abcdefABCDEF0123456789";
+  const scrubbed = scrubSecrets({ detail: `proxy: /x?access_token=${encoded}`, nested: [encoded] }, token);
+  assert.equal(scrubbed.detail.includes("CANARY"), false, `the encoded token survived: ${scrubbed.detail}`);
+  assert.equal(scrubbed.detail, "proxy: /x?access_token=[redacted]");
+  assert.equal(scrubbed.nested[0], "[redacted]");
+  // Lower and upper case escapes, and a mixture of encoded and literal
+  // characters, are all the same credential.
+  assert.equal(scrubSecrets("gta%5fCANARY%5F0123456789abcdefABCDEF0123456789", token), "[redacted]");
+  assert.equal(scrubSecrets("%67ta_CANARY_0123456789abcdefABCDEF0123456789", token), "[redacted]");
+  // The literal form still goes, and an unrelated escape is left alone.
+  assert.equal(scrubSecrets(`bare ${token} here`, token), "bare [redacted] here");
+  assert.equal(scrubSecrets("a%20b", token), "a%20b");
+});
+
 // ------------------------------------------------------- content length ----
 
 test("the declared content length is what the response actually delivers", async () => {
@@ -1090,6 +1109,22 @@ test("a total that is smaller than the first page is not trusted as a terminator
   }
 });
 
+test("a total at or above the first page is not a terminator while the pages stay full", async () => {
+  // The header describes a narrower set than the request: an open-only count
+  // answering `state=all`, or a stale cached one. It clears the "smaller than
+  // the first page" check above, and trusting it ended the sweep on page one --
+  // 50 rows of 120 served as the whole collection, with a 200 and nothing said.
+  const rows = Array.from({ length: 120 }, (_, index) => ({ id: index + 1, number: index + 1 }));
+  const { client } = stubbedClient({
+    pages: (page) => rows.slice((page - 1) * 50, page * 50),
+    total: "50",
+    maxPages: 10,
+  });
+  const collected = await client.paginate("/repos/owner/repo/issues?state=all");
+  assert.equal(collected.length, 120, "X-Total-Count: 50 silently truncated a 120-row sweep");
+  assert.equal(new Set(collected.map((row) => row.id)).size, 120, "every row should be present exactly once");
+});
+
 test("overlapping pages are counted by identity, so the sweep cannot end early", async () => {
   const rows = Array.from({ length: 74 }, (_, index) => ({ id: index + 1, number: index + 1 }));
   // Offset pagination overlaps whenever rows move mid-sweep, which is what
@@ -1159,6 +1194,46 @@ test("a duplicated page in a real board request does not hide tasks", async () =
     assert.equal(res.status, 200);
     assert.equal(res.json.tasks.length, 40);
     assert.equal(new Set(res.json.tasks.map((task) => task.number)).size, 40);
+  });
+});
+
+test("a total that describes a narrower set than the request does not empty the done column", async () => {
+  // The end-to-end shape of the case above: an upstream or caching proxy whose
+  // X-Total-Count counts only the open issues while the board asked for
+  // state=all. Every closed task lives past that boundary, so the truncation
+  // that used to happen here rendered Done as an empty column.
+  const issues = Array.from({ length: 120 }, (_, index) => ({
+    id: 1000 + index,
+    number: index + 1,
+    title: `Issue ${index + 1}`,
+    state: index < 50 ? "open" : "closed",
+    html_url: `https://git.example/owner/repo/issues/${index + 1}`,
+    labels: [],
+  }));
+  const handler = (call) => {
+    if (call.path === "/repos/owner/repo/labels") {
+      return pagedReply(LABELS, { pageSize: 50 })(call);
+    }
+    if (call.path === "/repos/owner/repo/pulls") {
+      return pagedReply([], { pageSize: 50 })(call);
+    }
+    if (call.path === "/repos/owner/repo/issues") {
+      const page = Number.parseInt(call.query.page ?? "1", 10);
+      return {
+        status: 200,
+        payload: issues.slice((page - 1) * 50, page * 50),
+        headers: { "X-Total-Count": "50" },
+      };
+    }
+    return { status: 404, payload: { message: "unhandled" } };
+  };
+
+  await withServers(handler, async ({ kanban }) => {
+    const res = await rawRequest(kanban.port, ["GET /api/board HTTP/1.1", `Host: 127.0.0.1:${kanban.port}`, "Connection: close"]);
+    assert.equal(res.status, 200);
+    assert.equal(res.json.tasks.length, 120, "a truncated collection was served as a complete board");
+    assert.equal(res.json.summary.total, 120);
+    assert.equal(res.json.summary.closed, 70, "every closed task belongs in the done column");
   });
 });
 
@@ -1298,6 +1373,36 @@ test("a socket that dies during the body is a 502, not a runtime error as a 500"
   } finally {
     await close(server);
   }
+});
+
+test("a body read that fails with a connect-shaped code is still a request that was sent", async () => {
+  // The headers had already arrived, so the request provably reached Gitea and
+  // may well have been applied. A connect-time code turning up on the body read
+  // is a misattribution, and it must not reclassify the exchange as never
+  // delivered: that classification is what a rollback turns on.
+  const client = createGiteaClient({
+    baseUrl: "http://127.0.0.1:1",
+    token: "t",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      text: async () => {
+        const error = new Error("connection reset");
+        error.code = "ECONNREFUSED";
+        throw error;
+      },
+    }),
+  });
+  await assert.rejects(
+    () => client.request("/repos/owner/repo/issues/42"),
+    (error) => {
+      assert.equal(error.status, 502);
+      assert.equal(error.requestSent, true, "a response was already received, so the request was delivered");
+      assert.equal(isDefiniteRejection(error), false, "an outcome that may have been applied must not be rolled back");
+      return true;
+    },
+  );
 });
 
 test("an issue payload that is not an issue is refused before any write", async () => {
@@ -1495,6 +1600,139 @@ test("a file that grows while it is being sent is truncated to its declared leng
         warnings.some((message) => message.includes("grew by")),
         `an overrun should be logged, saw ${JSON.stringify(warnings)}`,
       );
+    },
+    { webRoot, logger },
+  ).finally(() => rm(webRoot, { recursive: true, force: true }));
+});
+
+test("the declared length describes the file that was opened, not what the path names later", async () => {
+  // The stat is taken from the open handle rather than from the path, so a
+  // request that has already opened a file can never be handed the length of
+  // whatever replaces it a moment later. Windows refuses to rename over an open
+  // file, so a swap here is an unlink followed by a rename, which also leaves
+  // the path briefly absent: a 404 is a legitimate outcome and only a served
+  // body is checked.
+  //
+  // The window between the open and the stat is microseconds wide and there is
+  // no seam to pause it at, so this races it repeatedly instead. It cannot fail
+  // against a correct implementation -- with the handle as the source, content
+  // and declared length come from one file by construction -- and against a
+  // path stat it fails as soon as the race lands.
+  const webRoot = await mkdtemp(path.join(os.tmpdir(), "kanban-swap-"));
+  const asset = path.join(webRoot, "asset.js");
+  const spare = path.join(webRoot, "spare.tmp");
+  const shapes = [
+    { letter: "A", size: 48 * 1024 },
+    { letter: "B", size: 3 * 1024 },
+  ];
+  const sizeOf = new Map(shapes.map((shape) => [shape.letter, shape.size]));
+  let next = 0;
+  writeFileSync(asset, Buffer.alloc(shapes[0].size, shapes[0].letter));
+
+  function swapAsset() {
+    next = (next + 1) % shapes.length;
+    const shape = shapes[next];
+    writeFileSync(spare, Buffer.alloc(shape.size, shape.letter));
+    try {
+      unlinkSync(asset);
+    } catch {
+      // Already gone; the rename below puts one back.
+    }
+    renameSync(spare, asset);
+  }
+
+  function fetchAsset(port) {
+    return new Promise((resolve) => {
+      const socket = net.connect(port, "127.0.0.1");
+      let head = "";
+      let headerEnd = -1;
+      let delivered = 0;
+      let reset = false;
+      const letters = new Set();
+      const note = (buffer) => {
+        delivered += buffer.length;
+        for (const byte of buffer) {
+          letters.add(String.fromCharCode(byte));
+        }
+      };
+      socket.setTimeout(20_000);
+      socket.on("connect", () => {
+        socket.write(`GET /asset.js HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: close\r\n\r\n`);
+      });
+      socket.on("data", (chunk) => {
+        if (headerEnd < 0) {
+          head += chunk.toString("latin1");
+          headerEnd = head.indexOf("\r\n\r\n");
+          if (headerEnd < 0) {
+            return;
+          }
+          const body = Buffer.from(head.slice(headerEnd + 4), "latin1");
+          head = head.slice(0, headerEnd);
+          note(body);
+          return;
+        }
+        note(chunk);
+      });
+      socket.on("timeout", () => {
+        reset = true;
+        socket.destroy();
+      });
+      socket.on("error", () => {
+        reset = true;
+      });
+      socket.on("close", () => {
+        resolve({
+          status: Number.parseInt((head.split("\r\n")[0] ?? "").split(" ")[1] ?? "0", 10),
+          declared: Number.parseInt(/content-length: (\d+)/i.exec(head)?.[1] ?? "-1", 10),
+          delivered,
+          letters: [...letters],
+          reset,
+        });
+      });
+    });
+  }
+
+  const warnings = [];
+  const logger = { info() {}, warn: (message) => warnings.push(String(message)), error() {} };
+
+  await withServers(
+    () => ({ status: 200, payload: [] }),
+    async ({ kanban }) => {
+      const pending = [];
+      for (let round = 0; round < 12; round += 1) {
+        for (let request = 0; request < 12; request += 1) {
+          pending.push(fetchAsset(kanban.port));
+        }
+        for (let swap = 0; swap < 24; swap += 1) {
+          swapAsset();
+          // The swap is synchronous, so the event loop has to be handed back
+          // for the in-flight opens and stats to resolve around it.
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+      }
+
+      const results = await Promise.all(pending);
+      const served = results.filter((result) => result.status === 200);
+      assert.ok(served.length > 0, "the harness served nothing, so nothing was exercised");
+      for (const result of served) {
+        assert.equal(result.reset, false, `a served response was cut short: ${JSON.stringify(result)}`);
+        assert.equal(
+          result.delivered,
+          result.declared,
+          `a served body did not match its declared length: ${JSON.stringify(result)}`,
+        );
+        assert.deepEqual(
+          result.letters.length,
+          1,
+          `a served body mixed two files together: ${JSON.stringify(result)}`,
+        );
+        assert.equal(
+          result.declared,
+          sizeOf.get(result.letters[0]),
+          `the declared length belongs to a different file than the body: ${JSON.stringify(result)}`,
+        );
+      }
+      assert.deepEqual(warnings, [], `no response should have been truncated: ${JSON.stringify(warnings)}`);
     },
     { webRoot, logger },
   ).finally(() => rm(webRoot, { recursive: true, force: true }));

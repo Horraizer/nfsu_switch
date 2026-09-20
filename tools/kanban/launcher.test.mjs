@@ -36,6 +36,16 @@ const HOST = PWSH ?? HOSTS[0] ?? null;
 // A skipped suite still exits 0, so on the platform this launcher is for, a
 // missing host has to fail rather than quietly remove the whole gate.
 const NO_HOST = process.platform === "win32" ? false : "not Windows";
+// `-NoProxy` is a PowerShell 6+ parameter, and 5.1 bypasses a proxy for
+// loopback addresses already (start.ps1:23-30), so under 5.1 alone there is
+// genuinely nothing for the proxy case to assert. That is a skip rather than a
+// pass, and the reason names the host that is missing so a green run cannot
+// hide the fact that the proxy path went unexercised. A machine with no
+// PowerShell at all still falls through to NO_HOST and fails.
+const NO_PWSH =
+  HOSTS.length === 0
+    ? NO_HOST
+    : "PowerShell 6 or later (pwsh.exe) is not installed, so the -NoProxy path was not exercised";
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -380,7 +390,8 @@ test("a hard-killed launcher does not leave a server holding the token", { timeo
   }
 });
 
-test("a proxy environment variable does not break the loopback readiness probe", { timeout: 180_000, skip: PWSH ? false : (process.platform === "win32" ? false : "not Windows") }, async () => {
+test("a proxy environment variable does not break the loopback readiness probe", { timeout: 180_000, skip: PWSH ? false : NO_PWSH }, async () => {
+  assert.ok(PWSH, "a PowerShell host is required for the launcher gate");
   const port = await freePort();
   // 127.0.0.1:9 is the discard port: a proxy that will never answer, which is
   // what a corporate HTTP_PROXY or a stopped Fiddler looks like.
@@ -411,6 +422,66 @@ test("a shim that detaches before the server binds is still started and still cl
     assert.equal(await waitForGone(port, 15_000), true, "a detached server must not survive the smoke run");
   } finally {
     await rm(wrapper, { recursive: true, force: true });
+  }
+});
+
+test("a server that answers without a usable pid is still stopped", { timeout: 180_000, skip: HOST ? false : NO_HOST }, async () => {
+  assert.ok(HOST, "a PowerShell host is required for the launcher gate");
+  const port = await freePort();
+  const dir = await mkdtemp(path.join(os.tmpdir(), "kanban-nopid-"));
+  const pidFile = path.join(dir, "child.pid");
+  const stub = path.join(dir, "stub.js");
+  // Answers the readiness probe with this run's instance id -- so the launcher
+  // has proved the listener is its own server -- while reporting a pid it
+  // cannot use. start.ps1 fails the launch at that point, and by then the
+  // spawned handle is a cmd shim that already exited and no pid was ever
+  // recorded, so the GUID-proved last-resort stop is the only pass left that
+  // can reach a listener which is still holding the token.
+  await writeFile(
+    stub,
+    [
+      'const http = require("node:http");',
+      `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
+      "const server = http.createServer((request, response) => {",
+      '  const body = JSON.stringify({ pid: 0, instance: process.env.KANBAN_INSTANCE ?? "" });',
+      '  response.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) });',
+      "  response.end(body);",
+      "});",
+      'server.listen(Number(process.env.KANBAN_PORT), "127.0.0.1");',
+      "setTimeout(() => {}, 600000);",
+      "",
+    ].join("\n"),
+    "ascii",
+  );
+  const wrapper = await makeWrapperDir(stub, { detach: true });
+
+  let stubPid = 0;
+  try {
+    const run = await runLauncher(HOST, withWrapper(launcherEnv(port, { KANBAN_SMOKE: "1" }), wrapper));
+    assert.notEqual(run.code, 0, `a server with no usable pid must fail the launch, output: ${run.output}`);
+    assert.match(run.output, /no usable pid/i);
+
+    stubPid = Number.parseInt((await readFile(pidFile, "ascii")).trim(), 10);
+    assert.ok(stubPid > 0, "the stub should have recorded its pid");
+    assert.equal(
+      await waitForGone(port, 15_000),
+      true,
+      "a listener this run is proved to own must be stopped even when it reports no usable pid",
+    );
+    assert.equal(processAlive(stubPid), false, `pid ${stubPid} was left holding the token after a failed launch`);
+  } finally {
+    if (stubPid === 0) {
+      // An assertion may have failed before the pid was read, and the stub
+      // outlives this test by ten minutes if nobody stops it.
+      try {
+        stubPid = Number.parseInt((await readFile(pidFile, "ascii")).trim(), 10);
+      } catch {
+        stubPid = 0;
+      }
+    }
+    killQuietly(stubPid);
+    await rm(wrapper, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
