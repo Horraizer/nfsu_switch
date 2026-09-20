@@ -519,9 +519,41 @@ bound inside `find_track_zone`'s loop cannot be exercised without reading
 on what it produces; and `valid` being `issues.empty()` is equivalent by
 construction. Both are commented where they live.
 
-The suite went from 235 checks to 354. Of the 262 mutations written across
-the two passes, all but those two are caught, and the ten the reviewer
-itself discarded as equivalent are not counted as catches.
+**A third pass, from this branch's review.** The reviewer wrote 36 of its
+own and a separately-tasked adversarial agent wrote 152. Both converged on
+the same two untested invariants, and the review named four things nothing
+pinned. None was a defect - the shipped code is correct in every case -
+and the reviewer did not block on any of them. They are closed anyway,
+because the first of them is the one this project declares load-bearing in
+three places and protects with a build flag:
+
+| Untested | What now pins it |
+| --- | --- |
+| the association order of the crossing expression | a trapezoid whose far side is a vertical edge, so that crossing is exactly 10000 under every spelling and the parity turns on one sensitive edge, with the point one float32 ulp from what that edge computes |
+| the anchor vertex of that expression | a second trapezoid of the same shape, where anchoring on `v[j]` instead of `v[i]` moves the crossing across the point |
+| the two-byte stride of a section-list array | slots 1, 2 and the first slot past the count. Slot 0 sits at the array offset under any stride, so asserting it alone pinned nothing |
+| the negative-entry drop boundary | -1 and 0, in both places that carry the rule. The only fixture value was -7, which exercises neither side, so `<= 0` and `< -1` were as good as `< 0` |
+
+The two float32 fixtures are each checked away from the boundary as well,
+on both sides and past the far edge, so neither can be pinning an accident
+of its own coordinates; and each asserts the bit patterns of its literals
+before using them, so a compiler that parsed them differently fails there
+rather than failing an answer later. The association fixture is insensitive
+to the anchor mutation and the anchor fixture is insensitive to the
+association one, so the pair says which invariant broke.
+
+The seven mutations those four close - two spellings, one stride and four
+boundary directions - were each run and each caught by the assertion
+written for it. Neither retail geometry nor any retail zone list can reach
+the drop boundary, because corpus entries run 100 to 2524, so a fixture is
+the only thing that can hold it.
+
+The suite went from 235 checks to 373. Of the 269 mutations written across
+the four passes, all but two are caught: the index bound inside
+`find_track_zone`'s loop, which cannot be exercised without undefined
+behaviour, and `valid` being `issues.empty()`, which is equivalent by
+construction. The ten the second reviewer discarded as equivalent are not
+counted as catches.
 
 ### The retail differential
 
