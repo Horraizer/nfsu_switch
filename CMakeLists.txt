@@ -108,6 +108,26 @@ else()
     target_compile_options(nfsu_track_visibility PRIVATE -ffp-contract=off -fno-fast-math)
 endif()
 
+# The composition layer of the track path: the prepared region of
+# src/track_scene.cpp placed by the scenery instances of
+# src/track_objects.cpp, and the per-frame draw list one visible set selects
+# out of the two. It decodes nothing and opens no file. It links the culler
+# because build_track_draw_list reads a TrackCullReport; a render backend
+# links this and never reaches past it to the culler or the parsers. See
+# docs/TRACK_DRAW_LIST.md.
+#
+# No floating-point flags: this library makes no decision from an
+# arithmetic result. It copies the transform track_instance_transform
+# returns and totals integer counts, so there is nothing here for a fused
+# multiply-add to move. nfsu_track_visibility, where that is not true,
+# carries its own.
+add_library(nfsu_track_draw_list
+    src/track_draw_list.cpp
+)
+
+target_link_libraries(nfsu_track_draw_list PUBLIC nfsu_track_visibility)
+nfsu_enable_warnings(nfsu_track_draw_list)
+
 # The stock-car profile of PreparedCarScene: the recovered stock part set,
 # its per-LOD mesh hashes and the recovered placement, turned into one
 # prepared draw list with an instance per drawn copy. It reads no files, so
@@ -188,8 +208,9 @@ add_executable(nfsu_probe
 )
 
 target_link_libraries(nfsu_probe
-    PRIVATE nfsu_core nfsu_track nfsu_track_visibility nfsu_texture_decode
-            nfsu_skin_inputs nfsu_stock_scene nfsu_arg_path)
+    PRIVATE nfsu_core nfsu_track nfsu_track_visibility nfsu_track_draw_list
+            nfsu_texture_decode nfsu_skin_inputs nfsu_stock_scene
+            nfsu_arg_path)
 nfsu_enable_warnings(nfsu_probe)
 
 # Backend-neutral interactive inspection state: the camera the pointer
@@ -350,6 +371,15 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_track_visibility_tests)
     add_test(NAME nfsu_track_visibility_tests COMMAND nfsu_track_visibility_tests)
 
+    add_executable(nfsu_track_draw_list_tests
+        tests/track_draw_list_tests.cpp
+    )
+
+    target_link_libraries(nfsu_track_draw_list_tests
+        PRIVATE nfsu_track_draw_list)
+    nfsu_enable_warnings(nfsu_track_draw_list_tests)
+    add_test(NAME nfsu_track_draw_list_tests COMMAND nfsu_track_draw_list_tests)
+
     add_executable(nfsu_part_placement_tests
         tests/part_placement_tests.cpp
     )
@@ -479,7 +509,7 @@ if(NFSU_BUILD_TESTS)
         nfsu_chunk_tests nfsu_geometry_tests nfsu_texture_tests
         nfsu_render_tests nfsu_scene_tests nfsu_car_parts_tests
         nfsu_track_tests nfsu_track_object_tests
-        nfsu_track_visibility_tests
+        nfsu_track_visibility_tests nfsu_track_draw_list_tests
         nfsu_part_placement_tests nfsu_body_skin_tests
         nfsu_stock_scene_tests
         nfsu_skin_inputs_tests nfsu_runtime_skin_tests nfsu_inspect_tests
