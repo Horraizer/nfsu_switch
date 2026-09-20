@@ -56,9 +56,10 @@ constexpr std::uint32_t kTrackNoZoneSubIndexLimit = 10;
 
 // 0x00446AB4 `cmp dword ptr [eax], 0x80034150`: the chunk id of the
 // visibility-zone container, which builds the polygon list at 0x0077A930.
-// No file of the sampled installation carries this chunk at its top level;
-// see docs/TRACK_VISIBILITY.md for where the bytes are and why they are out
-// of reach here.
+// No file carries this chunk at its top level as it lies on disk; every
+// Tracks/*.lzc carries one once nfsu::jdlz_decompress has opened the
+// container, and it is the record layout inside it that is not decoded
+// here. See docs/TRACK_VISIBILITY.md.
 constexpr std::uint32_t kTrackVisibilityZoneId = 0x80034150U;
 
 // One plane of the retail frustum, in the raw file slot order: a point p is
@@ -87,7 +88,7 @@ enum class TrackBoxClass {
     outside = 0,
     // The box crosses at least one plane. Children must be tested too.
     intersecting = 1,
-    // The box is inside all six planes. 0x0044617D and 0x00445EFE both skip
+    // The box is inside all six planes. 0x00446181 and 0x00445EFE both skip
     // the test when the code they carry is this one.
     inside = 2,
 };

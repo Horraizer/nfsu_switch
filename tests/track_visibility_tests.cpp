@@ -394,13 +394,42 @@ void test_box_test_classes() {
               nfsu::TrackBoxClass::outside,
           "a box beyond the far plane classifies as outside");
 
-    // Far off to one side, inside the depth range: this is the case a test
-    // that only moved the far plane would never reach.
-    const float aside_min[3] = {95.0F, 400.0F, -5.0F};
-    const float aside_max[3] = {105.0F, 420.0F, 5.0F};
-    check(nfsu::track_classify_box(frustum, aside_min, aside_max) ==
+    // Far off each side in turn, inside the depth range. All four are
+    // needed: with any one of the four side planes duplicated onto another,
+    // exactly one of these stops being rejected, so a single off-axis box
+    // would leave three of the six planes unpinned. Raw slot 1 is pz and
+    // raw slot 2 is py.
+    const float side_offsets[4][2] = {{400.0F, 0.0F}, {-420.0F, 0.0F},
+                                      {0.0F, 400.0F}, {0.0F, -420.0F}};
+    const char* side_names[4] = {"+pz", "-pz", "+py", "-py"};
+    for (std::size_t i = 0; i < 4; ++i) {
+        const float aside_min[3] = {95.0F, side_offsets[i][0],
+                                    side_offsets[i][1]};
+        const float aside_max[3] = {105.0F, side_offsets[i][0] + 20.0F,
+                                    side_offsets[i][1] + 20.0F};
+        check(nfsu::track_classify_box(frustum, aside_min, aside_max) ==
+                  nfsu::TrackBoxClass::outside,
+              std::string("a box past the side planes on ") + side_names[i] +
+                  " classifies as outside");
+    }
+
+    // The near plane on its own. A box nearer than the near plane but well
+    // inside the cone and well short of the far plane is rejected by nothing
+    // else, so this is the only case that separates plane 0 from plane 1.
+    nfsu::TrackCamera far_near = axis_camera(1000.0F);
+    far_near.near_plane = 200.0F;
+    const nfsu::TrackFrustum deep =
+        frustum_or_fail(far_near, "near plane alone");
+    const float too_close_min[3] = {50.0F, -5.0F, -5.0F};
+    const float too_close_max[3] = {60.0F, 5.0F, 5.0F};
+    check(nfsu::track_classify_box(deep, too_close_min, too_close_max) ==
               nfsu::TrackBoxClass::outside,
-          "a box outside the side planes classifies as outside");
+          "a box nearer than the near plane classifies as outside");
+    const float past_near_min[3] = {300.0F, -5.0F, -5.0F};
+    const float past_near_max[3] = {310.0F, 5.0F, 5.0F};
+    check(nfsu::track_classify_box(deep, past_near_min, past_near_max) ==
+              nfsu::TrackBoxClass::inside,
+          "a box past the near plane and short of the far one is inside");
 }
 
 void test_fixture_parses() {
@@ -419,7 +448,7 @@ void test_fixture_parses() {
 }
 
 // The whole row inside the frustum. The root box is inside all six planes,
-// so 0x0044617D's shortcut fires: no other node and no instance is tested
+// so 0x00446181's shortcut fires: no other node and no instance is tested
 // at all. That is the retail rule's containment assumption, and the counts
 // below are what make it visible.
 void test_camera_sees_everything() {
@@ -506,6 +535,29 @@ void test_camera_tests_instances() {
           "the surviving instance is the one node 1 crossed the far plane with");
 }
 
+// A far plane at 100 leaves node 1 crossing it and leaves instance 0
+// crossing it too, which is the only case that distinguishes the class the
+// instance box tested as from the class it inherited from its node.
+void test_instance_box_can_cross() {
+    const nfsu::TrackObjectReport objects = parse_row_region();
+    const nfsu::TrackFrustum frustum =
+        frustum_or_fail(axis_camera(100.0F), "crossing instance");
+
+    const nfsu::TrackCullReport report = cull_track_region(objects, frustum);
+    check(report.ok(), "the crossing-instance cull must raise no issue");
+    check_visible(report, {0}, "crossing instance");
+    check(report.visible.size() == 1 &&
+              report.visible[0].node_class ==
+                  nfsu::TrackBoxClass::intersecting &&
+              report.visible[0].instance_class ==
+                  nfsu::TrackBoxClass::intersecting,
+          "an instance straddling the far plane reports itself as crossing");
+    check(!report.sections.empty() && report.sections[0].visible == 1 &&
+              report.sections[0].instances == 8,
+          "the per-section summary carries its own instance and visible "
+          "counts");
+}
+
 // Every policy must agree on the invariant that the traversal reaches every
 // resident instance exactly once, whether it draws it or not.
 void test_visit_accounting() {
@@ -553,6 +605,12 @@ void test_draw_everything_ignores_the_frustum() {
     check(std::string(nfsu::track_cull_policy_name(
               nfsu::TrackCullPolicy::draw_everything)) == "draw-everything",
           "the fallback policy has a stable name");
+    check(report.requested_policy == nfsu::TrackCullPolicy::draw_everything,
+          "the report repeats the policy it was asked for");
+    check(away.requested_policy == nfsu::TrackCullPolicy::retail_tree,
+          "and a default run repeats the default");
+    check_eq_u64(report.stats.sections_considered, 1,
+                 "the fallback still counts the section it considered");
 }
 
 // The flat policy tests every instance and prunes nothing, so it finds the
@@ -636,6 +694,27 @@ void test_containment_failure_changes_the_answer() {
     }
     check(named, "the issue names the axis and the overshoot in units");
 
+    // The other side of the same check. Shrinking the node's maximum makes
+    // an entry reach above it instead of below it, and the two sides are
+    // separate comparisons: a culler that checked only one would pass every
+    // assertion above.
+    nfsu::TrackObjectReport above = parse_row_region();
+    above.sections[0].nodes[1].bounds_max[0] = 305;
+    const nfsu::TrackCullReport above_report =
+        cull_track_region(above, frustum);
+    check(!above_report.ok(), "an entry above the node box must be reported");
+    check_eq_u64(above_report.stats.sections_degraded, 1,
+                 "an entry above the node box degrades the section");
+    bool named_above = false;
+    for (const nfsu::TrackIssue& issue : above_report.issues) {
+        if (issue.message.find("reaches 100 units above the node box on px") !=
+            std::string::npos) {
+            named_above = true;
+        }
+    }
+    check(named_above,
+          "the issue names the overshoot on the maximum side too");
+
     // The unmodified tree must not trip the check, or the check would be
     // reporting on the fixture rather than on the mutation.
     const nfsu::TrackObjectReport sound = parse_row_region();
@@ -716,6 +795,22 @@ void test_broken_trees_degrade() {
                      "an unreachable instance degrades the section");
         check_visible(report, {0, 1, 2, 3, 4, 5, 6, 7},
                       "the degraded section reaches the unreachable instance");
+    }
+    {
+        // An entry count past the five slots the record holds. Reading
+        // entries[5] would be out of bounds, so the guard is what keeps the
+        // walk inside the record.
+        nfsu::TrackObjectReport objects = parse_row_region();
+        objects.sections[0].nodes[1].entry_count = 9;
+        const nfsu::TrackCullReport report =
+            cull_track_region(objects, frustum);
+        check(!report.ok(), "an entry count past five must be reported");
+        check(names(report, "entry count 9 is outside 1 to 5"),
+              "the issue names the count and the bound");
+        check_eq_u64(report.stats.sections_degraded, 1,
+                     "an entry count past five degrades the section");
+        check_visible(report, {0, 1, 2, 3, 4, 5, 6, 7},
+                      "the degraded section still offers every instance");
     }
     {
         // A traversal that would need more pending nodes than the limit.
@@ -869,10 +964,36 @@ void test_residency_rules() {
 
     {
         const nfsu::TrackCullReport report = cull_track_region(objects, frustum);
+        check_eq_u64(report.stats.sections_considered, 3,
+                     "every_section considers all three");
         check_eq_u64(report.stats.sections_resident, 3,
                      "every_section keeps all three");
         check_eq_u64(report.stats.instances_visible, 24,
                      "every_section draws all three sections");
+        // 0x0044580E: the letter is 0x40 + number / 100, so 303 is C, 1210
+        // is L and 2606 is Z. A summary that did not carry its own section's
+        // identity and counts would be unusable, and nothing else in this
+        // suite reads those four fields.
+        check(report.sections.size() == 3 &&
+                  report.sections[0].number == 303 &&
+                  report.sections[1].number == 1210 &&
+                  report.sections[2].number == 2606,
+              "each summary carries its own section number");
+        check(report.sections.size() == 3 && report.sections[0].has_letter &&
+                  report.sections[1].has_letter &&
+                  report.sections[2].has_letter &&
+                  report.sections[0].letter == 'C' &&
+                  report.sections[1].letter == 'L' &&
+                  report.sections[2].letter == 'Z',
+              "each summary carries its own section letter");
+        check(report.sections.size() == 3 &&
+                  report.sections[0].instances == 8 &&
+                  report.sections[1].instances == 8 &&
+                  report.sections[2].instances == 8 &&
+                  report.sections[0].visible == 8 &&
+                  report.sections[1].visible == 8 &&
+                  report.sections[2].visible == 8,
+              "each summary carries its own instance and visible counts");
     }
     {
         nfsu::TrackCullOptions options;
@@ -1019,6 +1140,7 @@ int main() {
     test_camera_prunes_far_group();
     test_camera_prunes_near_group();
     test_camera_tests_instances();
+    test_instance_box_can_cross();
     test_visit_accounting();
     test_draw_everything_ignores_the_frustum();
     test_flat_policy_agrees_with_the_tree();

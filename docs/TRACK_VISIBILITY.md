@@ -135,7 +135,7 @@ the always-resident set.
 modulo 100 is below 10:
 
 ```text
-0044644C  mov  ecx, dword ptr [edi + 0xc]    ; the section number
+00446448  mov  ecx, dword ptr [edi + 0xc]    ; the section number
 0044644E  mov  ebx, 0x64
 00446453  idiv ebx
 00446459  cmp  edx, 0xa                      ; number % 100 >= 10 ?
@@ -161,36 +161,71 @@ The zone list is built by the chunk handler at 0x00446AB0:
 ```
 
 **`0x80034150` is the visibility-zone chunk id.** It does not appear at
-the top level of any file in the installation. Scanning all 476 files: 226
-walk as `(u32 id, u32 payload size)` chunks from offset 0 to end of file,
-and none of them carries a `0x80034150` at its top level. A raw 32-bit
-`0x80034150` occurs 21 times in 19 files, and 17 of those files are
-`Tracks/TRACKB*.lzc`.
+the top level of any file in the installation. Scanning all 476 files: 19
+are zero bytes, 207 of the other 457 walk as `(u32 id, u32 payload size)`
+chunks from offset 0 to end of file - the same 207 `TRACK_OBJECTS.md`
+counts - and none of the 207 carries a `0x80034150` at its top level. A
+raw 32-bit `0x80034150` occurs 21 times in 19 files, and 17 of those files
+are `Tracks/TRACKB*.lzc`; the other two files are `speed.exe`, whose two
+occurrences are both instruction immediates - 0x00446AB4
+`cmp dword ptr [eax], 0x80034150` and 0x00446DB5 `cmp ecx, 0x80034150` -
+and a file under `Movies/`.
 
-Those are compressed. 33 of the 34 `.lzc` files in the installation begin
-with the four bytes `4A 44 4C 5A`, that is `JDLZ`, and
+Those files are compressed. 33 of the 34 `.lzc` files in the installation
+begin with the four bytes `4A 44 4C 5A`, that is `JDLZ`, and
 `Tracks/TRACKB1301.lzc` reads
 
 ```text
 00000000  4A 44 4C 5A 02 10 00 00 90 30 04 00 A0 04 01 00
 ```
 
-which is not a chunk tree: read as `(id, size)` the second chunk claims
-2936711967 bytes. The only file that does not begin with `JDLZ` is
-`Global/GlobalB.lzc`, which is not a track file. This project has no JDLZ
-decoder, so **the retail zone polygons and their section lists are not
-readable here**, and the occurrences inside the compressed streams prove
-nothing about their contents.
+which is not a chunk tree as it lies on disk: read as `(id, size)` the
+second chunk claims 2936711967 bytes. The one file that does not begin
+with `JDLZ` is `Global/GlobalB.lzc`, which is not a track file.
 
-That is the boundary. The rules above are recovered; the data one of them
-needs is not. `nfsu::TrackResidency` therefore offers three rules, and the
+**The container is not the obstacle.** This project already decodes JDLZ:
+`nfsu::jdlz_decompress`, declared in `include/nfsu/texture.h`, with the
+16-byte header and the two flag registers written out in
+[`FORMATS.md`](FORMATS.md). Run over the track containers, that algorithm
+expands all 31 `Tracks/*.lzc` files to a whole number of top-level chunks
+ending exactly at end of file, and **every one of the 31 carries exactly
+one top-level `0x80034150`**, from 1216 to 29424 bytes, holding the same
+four children in the same order in all 31:
+
+| Chunk | Size in `TRACKB1301.lzc` |
+| --- | ---: |
+| `0x00034151` | 5880 |
+| `0x00034152` | 6216 |
+| `0x00034153` | 272 |
+| `0x00034154` | 32 |
+
+So the census above reports none only because it walks files as they lie
+on disk and does not decompress them. What is missing is the layout
+*inside* that chunk: which of the four children is the polygon list, which
+is the section list, what the zone record's fields at `+8` and `+0x10`
+are, and what the eight bytes per polygon vertex hold beyond the two the
+point test reads. None of that is decoded here, and this note does not
+widen to decode it.
+
+That is the boundary, and it is worth being exact about which kind it is.
+The residency rule is not reproduced because a format has not been read,
+not because a capability is missing: the chunk id is known, the container
+opens with code already in this repository, the four child ids are listed
+above, and the polygon test that consumes the result is traced. What is
+undecoded is the record layout inside those four chunks, and decoding it
+is follow-up work along a known path rather than a blocked one.
+
+That is also why the fallback below is a deliverable rather than a
+consolation. It is the correct answer for a caller that knows the rule and
+has not yet read the data, and it says so in every report it produces
+instead of passing itself off as the retail set. `nfsu::TrackResidency` therefore offers three rules, and the
 default is the explicit fallback:
 
 | `TrackResidencyRule` | What it is |
 | --- | --- |
 | `every_section` | **Not a retail rule.** Every valid section of the named region is drawn. The default, and the safe answer when retail visibility is unknown. |
 | `no_zone` | 0x00446459 exactly: `number % 100 < 10`. What retail does when the camera is inside no zone polygon. |
-| `zone_list` | 0x00446473 to 0x004464D6 exactly: sections 2600 to 2699 first, then a caller-supplied list. The list has to be supplied because `0x80034150` cannot be read. |
+| `zone_list` | 0x00446473 to 0x004464D6 exactly: sections 2600 to 2699 first, then a caller-supplied list. The list has to be supplied because the record layout inside `0x80034150` is not decoded here. |
 
 Asking for `zone_list` with an empty list raises an issue that names
 `0x80034150`, so a run can never quietly look like it consulted zone data
@@ -261,7 +296,7 @@ decides a strict comparison against zero.
 00446170  mov  bl, byte ptr [edx - 1]       ; pop the code
 00446173  mov  esi, dword ptr [edi - 4]     ; pop the node
 0044617A  cmp  bl, 1
-0044617D  jne  0x446201                     ; code 2: do not test at all
+00446181  jne  0x446201                     ; code 2: do not test at all
 00446183  movsx edx, word ptr [esi]         ; the six int16 of the box
 004461F6  call 0x40db20
 004461FF  mov  bl, al
@@ -292,7 +327,7 @@ must do:
    order, and its children are pushed, so the children come back off in
    *reverse* entry order. The visible set has a defined order and
    `nfsu::cull_track_region` reproduces it.
-2. **A node reached with code 2 is not tested.** 0x0044617D takes the code
+2. **A node reached with code 2 is not tested.** 0x00446181 takes the code
    the parent stored and skips straight past the box test. This is the
    containment assumption: retail trusts that a child of a fully-inside
    node is itself fully inside. It is safe in the widening direction - the
@@ -319,6 +354,14 @@ parent-to-entry relations, 220260 axis comparisons, and not one
 overshoot.** The largest slack in the tight direction is 0 units, which
 occurs 42339 times, and -1 occurs 38468 times; every other slack is more
 negative still.
+
+**That is a property of this retail data, not a guarantee of the format.**
+Nothing in the 24-byte node record requires a parent box to contain its
+entries, no field records that it does, and no instruction in the retail
+loader checks it; the exporter simply always produced it. A different
+track, a modified file or a generated section could break it, and the
+traversal at 0x00446140 would prune a visible subtree without noticing.
+Retail can assume it because retail ships the data it was measured on.
 
 So on retail data the hierarchical prune is exact, and the design decision
 this measurement forces is the narrow one: **check containment, then
@@ -350,6 +393,7 @@ decoder's.
 00445ED2  shl   ebx, 4                        ; index * 48
 00445ECF  mov   edi, dword ptr [ecx + 0x20]   ; the instance array
 00445ED5  add   ebx, edi
+00445ED7  mov   edi, dword ptr [ebp + 8]      ; the render context
 00445EDA  mov   dl, byte ptr [edi + 0x84]     ; a render mask byte
 00445EE2  mov   ax, word ptr [ebx + 0xe]      ; the instance flags
 00445EE6  xor   eax, 0x60
@@ -389,7 +433,8 @@ shortcut again, one level down.
 **Gate 3, the screen size.** 0x00445E10:
 
 ```text
-00445E19  fld  dword ptr [eax]               ; position - eye, from +0xA0
+00445E19  fld  dword ptr [eax]               ; the instance position
+00445E1B  fsub dword ptr [ecx + 0xa0]        ;   - the eye at +0xA0
 00445E35  fmul dword ptr [ecx + 0xb8]        ; . the context axis at +0xB0
 00445E4F  fld  dword ptr [ebp + 8]           ; the radius
 00445E52  fchs
@@ -533,35 +578,72 @@ exact sets and exact counts:
 | 450 | 0, 1, 2, 3 | 3 | 1 | 0 |
 | 450, from x = 900 | 4, 5, 6, 7 | 3 | 1 | 0 |
 | 150 | 0 | 3 | 1 | 4 |
+| 100 | 0, itself crossing | 3 | 1 | 4 |
 
 The first row is the containment shortcut: the root is inside, so nothing
 else is tested, and the order is the reverse child order of the
-last-in-first-out stack. The last row is the opposite: node 1 crosses the
-far plane, so its four instances are tested one at a time.
+last-in-first-out stack. The fourth row is the opposite: node 1 crosses
+the far plane, so its four instances are tested one at a time. The fifth
+exists because the fourth cannot tell the class an instance box tested as
+from the class it inherited - at 150 the surviving instance is wholly
+inside, and only at 100 does it straddle the plane itself.
 
-Eighteen mutations of the implementation were each applied alone, built
-and run, and every one was caught by at least one assertion:
+**Fifty-four mutations** of the implementation were each applied alone,
+built and run. Eighteen cover the recovered rule itself, and all eighteen
+were caught from the start:
 
 ```text
-caught  children in entry order instead of reverse            1 failure
-caught  test every node, never inherit the inside code        1 failure
-caught  never prune an outside node                          17 failures
-caught  skip the containment check                            4 failures
-caught  reject on the near corner instead of the far one     17 failures
-caught  never test an instance box                           12 failures
-caught  emit instances in reverse order under the flat policy 5 failures
-caught  drop the 0x60 instance-flags bias                     7 failures
-caught  draw at screen level 1                                4 failures
-caught  round the screen level instead of truncating          4 failures
-caught  drop the radius bias                                  3 failures
-caught  keep the sign of pz in the world map                  3 failures
-caught  widen the always-resident band by one                 1 failure
-caught  use 100 instead of 10 for the no-zone sub-index       5 failures
-caught  let the fallback consult the frustum                  2 failures
-caught  accept a far plane at the near plane                  4 failures
-caught  count a pruned subtree as one instance                6 failures
-caught  let an unreachable instance through the tree walk     3 failures
+caught  children in entry order instead of reverse             1 failure
+caught  test every node, never inherit the inside code         1 failure
+caught  never prune an outside node                           20 failures
+caught  skip the containment check                             5 failures
+caught  reject on the near corner instead of the far one      20 failures
+caught  never test an instance box                            15 failures
+caught  emit instances in reverse order under the flat policy  6 failures
+caught  drop the 0x60 instance-flags bias                      7 failures
+caught  draw at screen level 1                                 4 failures
+caught  round the screen level instead of truncating           4 failures
+caught  drop the radius bias                                   3 failures
+caught  keep the sign of pz in the world map                   3 failures
+caught  widen the always-resident band by one                  1 failure
+caught  use 100 instead of 10 for the no-zone sub-index        5 failures
+caught  let the fallback consult the frustum                   2 failures
+caught  accept a far plane at the near plane                   4 failures
+caught  count a pruned subtree as one instance                 6 failures
+caught  let an unreachable instance through the tree walk      3 failures
 ```
+
+A second batch of thirty-six aimed at the reporting surface, the plane set
+and the branches the first batch never reached. **Eleven of those thirty-
+six survived the first time**, which means eleven behaviours the suite
+named were not pinned by it:
+
+```text
+sections_considered never counted      requested_policy left at the default
+summary.visible never counted          summary.letter never copied
+instance_class always inside           has_letter never copied
+summary.instances never set            entry-count upper bound dropped
+bottom plane duplicated onto top       containment high side ignored
+far plane duplicated onto near
+```
+
+Three are worth naming, because they were not oversights of one kind. The
+fixture is symmetric about pz and py and every camera looked along +X past
+a single off-axis box, so **four of the six planes were interchangeable**
+as far as the suite could tell: one side plane was ever exercised, and the
+near plane was never isolated from the far one. The containment check
+makes two comparisons per axis and only the minimum side was ever
+violated, so **half of it was untested**. And every instance that survived
+a cull was wholly inside, so **`instance_class` never differed from the
+code it inherited**.
+
+The fixes are four off-axis boxes rather than one, a second camera whose
+near plane is 200 so that a box in front of it is rejected by nothing
+else, a camera at far 100 whose surviving instance straddles the plane, a
+containment mutation on the maximum side, an entry count of 9 against the
+five slots the record holds, and assertions on the per-section summary
+fields. The suite went from 199 checks to 224, and all fifty-four
+mutations are now caught with no survivor.
 
 ### The retail differential
 
@@ -636,9 +718,15 @@ build/nfsu_probe chunks X:/Games/NFSU/Tracks/STREAML1RB.BUN 100000
 - With a zone active the drawn list is sections 2600 to 2699 plus the
   zone's own int16 list of at most 64 numbers; with no zone it is every
   loaded section whose number modulo 100 is below 10.
-- No file of the installation carries a top-level `0x80034150`. 33 of 34
-  `.lzc` files begin with `JDLZ`, and the files whose bytes contain the
-  pattern are `Tracks/TRACKB*.lzc`.
+- No file carries a top-level `0x80034150` as it lies on disk: of the 207
+  non-empty files that walk as chunks to end of file, none holds one. 33 of
+  34 `.lzc` files begin with `JDLZ`, the exception being
+  `Global/GlobalB.lzc`. Decompressed with the algorithm
+  [`FORMATS.md`](FORMATS.md) documents and `nfsu::jdlz_decompress`
+  implements, all 31 `Tracks/*.lzc` files walk as chunks to end of file and
+  each carries exactly one `0x80034150`, of 1216 to 29424 bytes, holding
+  `0x00034151`, `0x00034152`, `0x00034153` and `0x00034154` in that order
+  in all 31.
 - The box test is six planes of four floats at `[[context + 0x80] + 0xC4]`,
   centre-and-extent, returning 0 outside, 1 crossing and 2 inside, with
   0.5 at 0x006CC7DC and 0.0 at 0x006CC7A4.
@@ -677,11 +765,13 @@ build/nfsu_probe chunks X:/Games/NFSU/Tracks/STREAML1RB.BUN 100000
 
 ## Unknown
 
-- The zone polygons and their section lists. The chunk id is
-  `0x80034150`; the bytes are inside JDLZ-compressed `Tracks/TRACKB*.lzc`
-  files this project cannot decompress, so nothing is known about the
-  record layout past the count at `+0xa` and the 8-byte vertex stride the
-  point test uses, or about the fields at zone `+8` and `+0x10`.
+- The record layout inside `0x80034150`: which of `0x00034151`,
+  `0x00034152`, `0x00034153` and `0x00034154` holds the polygons and which
+  holds the section lists, what the zone record's fields at `+8` and
+  `+0x10` are, and what the eight bytes per polygon vertex hold beyond the
+  two the point test at 0x005679B0 reads. The container opens with
+  `nfsu::jdlz_decompress`; only the records inside it are unread, and
+  reading them is tracked separately rather than widened into this note.
 - Every bit of the render mask byte at context `+0x84`, so gate 1 cannot
   be reproduced with a retail value.
 - The scale at context `+0xC0`, so gate 3 cannot be reproduced with a

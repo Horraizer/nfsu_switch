@@ -130,8 +130,9 @@ every instance box with an issue saying so. `--policy draw-everything` is
 the explicit fallback for a caller that would rather draw the whole region
 than trust a visibility rule, and the report names the policy each section
 was culled with. The zone layer that decides which sections are drawn is
-recovered as a rule but its data is not readable here, so `--residency`
-defaults to every section in the region. See `docs/TRACK_VISIBILITY.md`.
+recovered as a rule, but the record layout inside its `0x80034150` chunk is
+not decoded here, so `--residency` defaults to every section in the region.
+See `docs/TRACK_VISIBILITY.md`.
 `stock-parts` applies the game's stock-part rules to one car type and
 prints the chosen record per slot with each LOD mesh hash resolved against
 the `GEOMETRY.BIN` files given after the car type, including the mesh the

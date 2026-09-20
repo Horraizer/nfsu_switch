@@ -770,8 +770,8 @@ TrackCullReport cull_track_region(
     if (options.residency.rule == TrackResidencyRule::zone_list &&
         options.residency.zone_sections.empty()) {
         report.issues.push_back(TrackIssue{
-            0, "a zone list was requested with no section in it; the "
-               "visibility-zone chunk " +
+            0, "a zone list was requested with no section in it; the record "
+               "layout inside the visibility-zone chunk " +
                    hex32(kTrackVisibilityZoneId) +
                    " is not decoded by this project"});
     }

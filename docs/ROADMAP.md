@@ -114,9 +114,11 @@
   per-instance gates (`include/nfsu/track_visibility.h`, `nfsu_probe
   track-visibility`, [`TRACK_VISIBILITY.md`](TRACK_VISIBILITY.md)). The
   zone layer that picks which sections are drawn is recovered as a rule,
-  but its data sits in JDLZ-compressed track files this project cannot
-  read, so residency defaults to an explicit draw-every-section fallback.
-  Static collision is still to do.
+  but the record layout inside its `0x80034150` chunk is not decoded yet,
+  so residency defaults to an explicit draw-every-section fallback. The
+  chunk itself is reachable: every `Tracks/*.lzc` carries one once
+  `nfsu::jdlz_decompress` has opened the container. Static collision is
+  still to do.
 - Measure CPU, memory, and draw-call costs.
 
 ## M3: Switch bring-up
