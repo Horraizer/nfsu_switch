@@ -180,6 +180,102 @@ function(nfsu_forbid_crash label out code)
 endfunction()
 
 # ---------------------------------------------------------------------------
+# no raw conversion: the source, before any program runs
+# ---------------------------------------------------------------------------
+
+if(NOT DEFINED MAIN_SOURCE OR NOT DEFINED VIEWER_SOURCE)
+    message(FATAL_ERROR "MAIN_SOURCE and VIEWER_SOURCE must both be defined")
+endif()
+
+# No argument may reach a std::filesystem::path except through the
+# conversion. That is the shape issue #87 was reported as, and this is the
+# one guard here that watches the set of path arguments rather than the set
+# of converted ones, because the counter below cannot: it keys on
+# "nfsu::argument_path(", so a path argument added the old way is not a
+# site it can see. A review added one to the meshes command as an optional
+# second argument and the whole suite stayed green while nfsu_probe meshes
+# with two Cyrillic paths died with the issue #87 terminate. The template
+# guard was silent because meshes already had a template, the inventory
+# equality because no command was added, the option equality because the
+# viewer was untouched. Every guard watched a set that had not changed.
+#
+# Three rules, over the three shapes that actually occur here. The first is
+# deliberately not the "fs::path(argv" grep that two handoffs ran by hand
+# and called evidence: that grep finds a temporary and is silent on a
+# declaration, which is how the review's own reproduction was spelled -
+# "const fs::path extra(argv[3]);" - so the grep would have been silent on
+# the very defect it was proposed to close. Measured on that tree: the grep
+# returned nothing and rule B below names the line.
+#
+#   A  a path temporary built straight from argv, fs::path(argv[2]). No
+#      exclusion for a line that also uses the conversion, because two
+#      conversions on one line is a shape this file already has and one of
+#      them can be reverted alone.
+#   B  a path declared or assigned from argv in one statement,
+#      "fs::path x(argv[3])" or "fs::path x = argv[3]", on a line that does
+#      not use the conversion. The exclusion is what keeps the three real
+#      declarations in src/viewer_main.cpp from reading as offences.
+#   C  emplace_back or push_back taking argv directly. Three sites read
+#      exactly that before this branch - the stock-parts, stock-scene and
+#      track-region lists - and a vector of paths builds its elements from
+#      the raw bytes without naming a path type anywhere on the line, so
+#      neither A nor B can see it.
+#
+# What none of them catches, stated rather than left to be discovered:
+# argv[k] handed straight to a function whose parameter is a path, such as
+# run_meshes(argv[2]); and an assignment to a path variable declared on an
+# earlier line. Both name no path type at the point argv appears, and no
+# predicate over one line of text can tell either from an ordinary call or
+# an ordinary assignment. What covers them is the position loop below, for
+# every position a template drives, and the counter for a site removed.
+function(nfsu_forbid_raw_paths path)
+    file(READ "${path}" text)
+    # Semicolons escaped before the split, or every one in the C++ would
+    # start a new list element and the line numbers below would be fiction.
+    string(REPLACE ";" "\\;" escaped "${text}")
+    string(REGEX REPLACE "\r?\n" ";" lines "${escaped}")
+    set(path_type "(fs|std::filesystem)::path")
+    set(offences "")
+    set(number 0)
+    foreach(line IN LISTS lines)
+        math(EXPR number "${number}+1")
+        # A line comment can name any of these in prose. Block comments are
+        # not stripped, and there is none in either source.
+        string(REGEX REPLACE "//.*$" "" code "${line}")
+        set(offence "")
+        if(code MATCHES "${path_type}[ \t]*\\([ \t]*argv")
+            set(offence "builds a path straight from argv")
+        elseif(code MATCHES
+               "${path_type}[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*[(=][^\;]*argv"
+               AND NOT code MATCHES "nfsu::argument_path")
+            set(offence "declares a path from argv")
+        elseif(code MATCHES "(emplace_back|push_back)[ \t]*\\([ \t]*argv")
+            set(offence "builds a vector element straight from argv")
+        endif()
+        if(NOT offence STREQUAL "")
+            string(STRIP "${code}" trimmed)
+            list(APPEND offences "  ${path}:${number}: ${trimmed}")
+            list(APPEND offences "      ${offence}")
+        endif()
+    endforeach()
+    if(NOT offences STREQUAL "")
+        string(REPLACE ";" "\n" listing "${offences}")
+        message(FATAL_ERROR
+            "an argument reaches a std::filesystem::path without the "
+            "conversion:\n${listing}\n"
+            "That is the defect issue #87 reported: on Windows the argument "
+            "vector arrives in the active ANSI code page and that "
+            "constructor reads it as UTF-8, so it throws out of a main() "
+            "that catches nothing. Use nfsu::argument_path instead, and add "
+            "the new position to the template list or the viewer cases "
+            "below, so that something drives a non-ASCII path through it.")
+    endif()
+endfunction()
+
+nfsu_forbid_raw_paths("${MAIN_SOURCE}")
+nfsu_forbid_raw_paths("${VIEWER_SOURCE}")
+
+# ---------------------------------------------------------------------------
 # acceptance: a real file under a directory whose name is Cyrillic
 # ---------------------------------------------------------------------------
 
@@ -245,7 +341,15 @@ message(STATUS "acceptance: nfsu_viewer, ${reached}")
 # PATHARG; the loop then runs the command once per marked position, with the
 # Cyrillic path in that one and an ASCII placeholder in the others.
 #
-# Two guards keep this honest, and neither is an adversarial barrier:
+# Three guards keep this honest, and none is an adversarial barrier:
+#
+#   no argument is turned into a path by handing argv to the
+#   std::filesystem::path constructor, in either source. That is the shape
+#   issue #87 was reported as, and it is the only guard here that watches
+#   the set of path arguments rather than the set of converted ones. The
+#   counter below cannot: a review added a raw fs::path(argv[3]) to the
+#   meshes command, every guard stayed silent because no set any of them
+#   watches had changed, and the suite stayed green over a live #87 crash;
 #
 #   the command set is read out of the program's own usage text, and a
 #   command with no template here is a hard error rather than a command
@@ -259,10 +363,25 @@ message(STATUS "acceptance: nfsu_viewer, ${reached}")
 #   count and fails here with a message saying to add a case. It cannot
 #   tell whether the case you add actually reaches the new site; it can
 #   only refuse to let the site arrive unnoticed.
-
-if(NOT DEFINED MAIN_SOURCE OR NOT DEFINED VIEWER_SOURCE)
-    message(FATAL_ERROR "MAIN_SOURCE and VIEWER_SOURCE must both be defined")
-endif()
+#
+# What none of the three catches is a template that stops measuring as
+# deeply as it reads. Two shapes, both built and run by the review that
+# asked for them: shallowing a template - "obj/PATHARG/PATHARG" to
+# "obj/PATHARG/out.obj" - passes silently and drops the reported position
+# count from 26 to 25, with nothing comparing that number to anything; and
+# breaking a non-PATHARG value so the run bails before converting -
+# "chunks/PATHARG/64" to "chunks/PATHARG/notanumber", which makes the
+# command print usage and return - passes silently AND leaves the count
+# reading 26, so a position can be counted and measure nothing.
+#
+# Neither can turn into a live defect on its own, and that is the reason
+# they are disclosed rather than closed: producing one needs the marked
+# site reverted as well, and reverting a site changes the count the third
+# guard pins. Both shapes were tried with the site reverted too, and both
+# failed on that counter. Closing them properly means requiring each
+# position run to show it reached the conversion - that its output names
+# the Cyrillic path or its 4096 bytes rather than printing usage - which is
+# a larger change than issue #87 needs.
 
 function(nfsu_count_sites path out_var)
     file(READ "${path}" text)

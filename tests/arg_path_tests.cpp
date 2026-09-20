@@ -351,12 +351,23 @@ void test_active_code_page_is_used() {
     for (wchar_t value = 0x00A1; value < 0x0500 && carried.empty(); ++value) {
         const std::wstring candidate(1, value);
         char narrow[16] = {0};
-        // No lpUsedDefaultChar: WideCharToMultiByte refuses that argument
-        // for CP_UTF8, so on a machine whose active code page is 65001 the
-        // call failed, this loop found nothing and the case below checked
-        // nothing. The round trip is what the flag was there for, it holds
-        // for every code page, and a substituted character does not come
-        // back as itself.
+        // No lpUsedDefaultChar. The documentation forbids that argument
+        // for CP_UTF8, 54936 and the other stateful pages, and this build
+        // enforces it unevenly rather than not at all: measured here, 54936
+        // and 52936 both fail it with ERROR_INVALID_PARAMETER and return
+        // nothing, while CP_UTF8 accepts it and answers normally. A machine
+        // whose active code page is one that enforces it would find nothing
+        // in this loop and the case below would check nothing.
+        //
+        // An earlier version of this comment said CP_UTF8 was the page that
+        // refuses it. That was measured and it is false on this build; it
+        // is recorded here rather than quietly corrected, because the
+        // sentence was the stated reason for the argument being absent.
+        //
+        // The round trip below is what the flag was there for, it needs no
+        // page to cooperate, and it is strictly stronger: encoding
+        // U+65E5 U+672C U+8A9E through code page 1251 yields the three
+        // bytes 3F 3F 3F, and "???" does not come back as itself.
         const int written = WideCharToMultiByte(CP_ACP, 0, candidate.c_str(), -1, narrow,
                                                 sizeof(narrow), nullptr, nullptr);
         if (written <= 0) {
