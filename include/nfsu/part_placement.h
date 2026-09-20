@@ -173,13 +173,25 @@ struct PartPlacement {
     std::size_t wheel_count = 0;
     // Set only for CullableCarPart::shadow, when the wheel plane is
     // degenerate and 0x56b3e2 takes the fallback branch instead of
-    // normalizing. See docs/PART_PLACEMENT.md.
+    // normalizing. The placement then uses kDegenerateWheelPlaneNormal.
+    // See docs/PART_PLACEMENT.md.
     bool degenerate_plane = false;
 };
 
-// 0x56b3af compares the wheel-plane normal's length against this before
-// normalizing it; at or below it, 0x56b3e2 replaces the normal instead.
-constexpr float kWheelPlaneMinimumLength = 0.01F;
+// 0x56b3af compares the wheel-plane normal's length against the float at
+// 0x6cc7a4, which is 0.0, and 0x56b3b7 takes the fallback only when the
+// compare sets C3 with C2 clear, that is when the length is exactly zero.
+// The 0.01 nearby at 0x6cc79c is a different constant: it is the tolerance
+// the direction-vector normalizer uses at 0x5693f5.
+constexpr float kWheelPlaneMinimumLength = 0.0F;
+
+// The normal 0x56b3e2 substitutes when the plane is degenerate. It clears
+// the third component and leaves 0.0 and 1.0 on the x87 stack; matching the
+// stack at the join with the normalizing path (0x56b3db leaves y then x)
+// shows 1.0 lands in the first component and 0.0 in the second, and
+// 0x56b40a multiplies the first by the radius into the first output
+// component.
+constexpr float kDegenerateWheelPlaneNormal[3] = {1.0F, 0.0F, 0.0F};
 
 // ---------------------------------------------------------------------
 // Attachment markers (geometry chunk 0x0013401A)
@@ -323,9 +335,10 @@ std::size_t find_car_type(const CarTypeTable& table,
 //   12     the mean of entries 5 and 4, so the centroid of the four wheels
 //   13     entry 12 offset along the normalized wheel-plane normal by
 //          wheel 0's radius
-// Fails only for a wheel float that is not finite; a degenerate wheel plane
-// is reported in the shadow entry rather than refused, because the game
-// takes a fallback branch for it.
+// Fails for a wheel float that is not finite, and for a derived position
+// that is not finite, which a finite but enormous wheel table can produce.
+// A degenerate wheel plane is reported in the shadow entry rather than
+// refused, because the game takes a fallback branch for it.
 bool derive_cullable_part_placements(
     const std::array<CarWheelPlacement, kCarWheelCount>& wheels,
     std::array<PartPlacement, kCullableCarPartCount>& placements,

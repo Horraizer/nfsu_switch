@@ -854,7 +854,9 @@ aligned table at solid +0x80 and the record count in the byte at solid
 Records start at the first absolute file offset in the payload that is a
 multiple of 16, after 0x11 filler, exactly as the other aligned records do.
 The count is `(payload_size - filler) / 80`, computed at 0x540104 by a
-reciprocal multiply whose divisor is exactly 80.
+reciprocal multiply whose divisor is exactly 80. It is stored with
+`mov byte [ebx+0x1b], dl` and read back with `movsx`, so only counts up to
+127 behave as written; the most any retail chunk holds is 18.
 
 | Offset | Type | Meaning |
 | --- | --- | --- |
@@ -871,8 +873,9 @@ marker places and which are drawn at the car's own matrix instead.
 
 Parser rules (`nfsu::parse_geometry`): at most one chunk per mesh, 0x11
 filler up to the 16-byte boundary, the remaining payload a whole number of
-80-byte records, at most 255 records because the game stores the count in a
-byte, and every matrix element finite. The three reserved words are kept raw
+80-byte records, at most 127 records because the game truncates the count to
+a byte and every reader sign-extends it again, and every matrix element
+finite. The three reserved words are kept raw
 and never checked. A mesh that fails any of these is skipped with a
 diagnostic, like any other geometry failure.
 

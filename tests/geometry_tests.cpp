@@ -1408,6 +1408,31 @@ void test_markers() {
         }
     }
 
+    // The count boundary. The game stores the count with `mov byte
+    // [ebx+0x1b], dl` and reads it back with `movsx`, so 127 is the largest
+    // value it can use; 128 comes back negative.
+    {
+        MeshSpec spec = quad_spec();
+        spec.include_marker_list = true;
+        spec.markers.assign(nfsu::kMaxMarkersPerMesh, TestMarker{});
+        const nfsu::GeometryReport report = parse(build({spec}).bytes);
+        check(report.ok(), "the largest usable marker count parses");
+        if (!report.meshes.empty()) {
+            check(report.meshes[0].markers.size() == nfsu::kMaxMarkersPerMesh,
+                  "all 127 markers are decoded");
+        }
+    }
+    {
+        MeshSpec spec = quad_spec();
+        spec.include_marker_list = true;
+        spec.markers.assign(nfsu::kMaxMarkersPerMesh + 1, TestMarker{});
+        const nfsu::GeometryReport report = parse(build({spec}).bytes);
+        check(has_issue(report, "are reachable"),
+              "one marker past the usable count is refused");
+        check(report.valid_mesh_count() == 0U,
+              "an unreachable marker count skips the mesh");
+    }
+
     // A marker chunk does not disturb the records that follow it.
     {
         MeshSpec spec = quad_spec();

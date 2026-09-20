@@ -586,17 +586,32 @@ bool derive_cullable_part_placements(
             normal[i] *= scale;
         }
     } else {
-        // 0x56b3e2 clears the third component and loads 1.0 and 0.01 in
-        // place of the scaled normal. Only the third component's fate is
-        // unambiguous from the instruction stream, so the reproduction
-        // stops here and the caller is told the plane was degenerate.
+        // 0x56b3e2 clears the third component, then 0x56b3e9 and 0x56b3ef
+        // push 1.0 and 0.0. The normalizing path reaches the join at
+        // 0x56b3f5 with the second component on top of the first, so the
+        // 1.0 is the first component; 0x56b40a confirms it by multiplying
+        // st(2), the first component, by the radius into the first output.
         shadow.degenerate_plane = true;
-        normal[0] = 0.0F;
-        normal[1] = 0.0F;
-        normal[2] = 0.0F;
+        for (std::size_t i = 0; i < 3; ++i) {
+            normal[i] = kDegenerateWheelPlaneNormal[i];
+        }
     }
     for (std::size_t i = 0; i < 3; ++i) {
         shadow.position[i] = underneath.position[i] + normal[i] * wheels[0].rolling_radius;
+    }
+
+    // A finite but enormous wheel table can still overflow the differences,
+    // the cross product or the means. The game would propagate the result;
+    // this refuses it so no caller consumes an infinity or a NaN.
+    for (std::size_t p = 0; p < placements.size(); ++p) {
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            if (!std::isfinite(placements[p].position[axis])) {
+                error = "placement " + std::to_string(p) +
+                        " is not finite; the wheel positions are too large";
+                placements = std::array<PartPlacement, kCullableCarPartCount>{};
+                return false;
+            }
+        }
     }
     return true;
 }

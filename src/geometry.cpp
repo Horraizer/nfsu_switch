@@ -566,8 +566,9 @@ private:
         if (count > kMaxMarkersPerMesh) {
             std::ostringstream text;
             text << chunk_label(list) << " declares " << count
-                 << " markers; the game stores the count in a byte, so at most "
-                 << kMaxMarkersPerMesh << " are reachable";
+                 << " markers; the game stores the count in a byte and reads it"
+                 << " back sign-extended, so at most " << kMaxMarkersPerMesh
+                 << " are reachable";
             return fail(mesh, list.offset, text.str());
         }
 

@@ -64,11 +64,15 @@ constexpr std::uint64_t kMaterialDataAlignment = 16;
 // Marker records start at the first absolute offset in the payload that is a
 // multiple of kMarkerDataAlignment, after kAlignmentByte filler, exactly as
 // the other aligned records do. 0x005400EA..0x0054010E derives the count as
-// (payload_size - filler) / kMarkerRecordSize and stores it in a byte, so a
-// chunk can hold at most kMaxMarkersPerMesh records.
+// (payload_size - filler) / kMarkerRecordSize and stores it with
+// `mov byte [ebx+0x1b], dl`, which truncates. Every reader then sign-extends
+// it (`movsx` at 0x0056BD89 and 0x0056B8CC), so a count above
+// kMaxMarkersPerMesh is read as negative and the walk at 0x0056B8DE computes
+// a negative end. Only counts up to kMaxMarkersPerMesh behave as written;
+// the most any retail chunk holds is 18.
 constexpr std::size_t kMarkerRecordSize = 80;
 constexpr std::uint64_t kMarkerDataAlignment = 16;
-constexpr std::size_t kMaxMarkersPerMesh = 255;
+constexpr std::size_t kMaxMarkersPerMesh = 127;
 struct GeometryIssue {
     std::uint64_t offset = 0;
     std::string message;

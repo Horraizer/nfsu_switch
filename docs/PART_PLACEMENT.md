@@ -46,10 +46,12 @@ The loader is at `0x005400E3`:
 ```text
 0x005400E3  cmp eax, 0x13401a
 0x005400EA  lea eax, [esi + 0x17]        esi is the chunk header
+0x005400ED  mov ecx, eax
 0x005400EF  and ecx, 0xfffffff0          records start at align_up(payload, 16)
+0x005400F2  and eax, 0xfffffff0          the same value, kept in eax
 0x005400F5  mov [ebx + 0x80], ecx        solid + 0x80 = the marker table
 0x005400FB  mov edx, [esi + 4]           the payload size
-0x005400FE  sub edx, eax
+0x005400FE  sub edx, eax                 eax is aligned, so this is size - aligned
 0x00540100  lea ecx, [edx + esi + 8]     payload size minus the filler
 0x00540104  mov eax, 0xcccccccd
 0x00540109  mul ecx
@@ -57,8 +59,12 @@ The loader is at `0x005400E3`:
 0x0054010E  mov [ebx + 0x1b], dl         solid + 0x1B = the marker count
 ```
 
-`2^38 / 0xCCCCCCCD` is exactly 80, so the record size is `0x50`. The count is
-stored in a byte, so at most 255 records of a chunk are reachable.
+`0xCCCCCCCD` with `shr edx, 6` is an exact divide by 80, so the record size
+is `0x50`. `mov [ebx + 0x1b], dl` truncates the count to a byte, and every
+reader sign-extends it again (`movsx` at `0x0056BD89` and `0x0056B8CC`), so
+a count above 127 comes back negative and the walk at `0x0056B8DE` computes
+a negative end. Only counts up to 127 behave as written. The most any retail
+chunk holds is 18.
 
 One 80-byte record:
 
@@ -97,8 +103,9 @@ The parser therefore keeps the three words at `+0x04..+0x0F` raw and never
 requires or interprets them: no traced instruction reads them, and requiring
 zero would refuse two files the game accepts.
 
-`Cars/BRAKES`, `Cars/EXHAUST` and `Cars/PLATES` carry no markers at all;
-`Cars/WHEELS` carries exactly one `MARKER_BRAKE` per rim mesh.
+`Cars/BRAKES`, `Cars/EXHAUST` and `Cars/PLATES` carry no markers at all. In
+`Cars/WHEELS`, 984 of the 1476 meshes carry exactly one `MARKER_BRAKE`: the
+492 `_A` and the 492 `_B` rim meshes do, and the 492 `_C` meshes do not.
 
 ### Marker names
 
@@ -148,8 +155,9 @@ document treats it as an identification.
 
 One hash that occurs in retail data, `0x3AC3FFB1`, has no recovered name. It
 appears 76 times across 19 cars, always as a symmetric pair on a `BASE` mesh
-at about longitudinal `1.04`, lateral `+-0.22`, vertical `0.70`, which is the
-inboard base of the windscreen. A brute force over 79500 candidates built
+in a band that spans longitudinal `0.5609..1.2049`, lateral
+`-0.3672..0.3740` and vertical `0.6341..0.7819` over the 19 cars, which puts
+it at the inboard base of the windscreen. A brute force over 79500 candidates built
 from the vocabulary the other names use - cores such as `WIPER`, `SEAT`,
 `ANTENNA` and `COWL`, the `LEFT`/`RIGHT`/`FRONT`/`REAR`/`CENTRE` qualifiers
 in both orders, and the `MARKER_`, `CAR_` and `DUMMY_` prefixes - found no
@@ -184,16 +192,20 @@ placement = quarter_turn * marker.matrix
 world     = placement * car_world_matrix
 ```
 
-with row-major matrices and the row-vector convention `v' = v * M`, which is
-what `0x005AC69C` implements.
+with row-major matrices and the row-vector convention `v' = v * M`.
+`0x005AC69C` is a lazily resolved dispatch thunk (`jmp [0x006D4ACC]`, which
+starts at the resolver `0x005AC68F`); the x87 body it reaches is
+`0x005AC6A2`, and the multiply order was read there.
 
 `0x0040BA40` is called with `edx = 0x4000`. `0x00564B10` multiplies an angle
 by the `2 * pi / 65536` at `0x006CC980`, so `0x4000` is a quarter turn.
 `0x0040BA40` writes the cosine into elements 0 and 10, `-sin` into element 2
 and `+sin` into element 8, so the turn is in the longitudinal-vertical plane,
-about the lateral axis. At a quarter turn the sine is exactly 1 and the
-cosine exactly 0, so the matrix is exact and needs no trigonometry;
-`nfsu::car_marker_quarter_turn` writes those constants directly.
+about the lateral axis. `0x00564B10` is a ninth-order Taylor sine, so at a
+quarter turn it returns `1.00000358` rather than exactly 1, while the cosine
+does come out exactly `-0.0`. `nfsu::car_marker_quarter_turn` writes the
+exact 0 and 1 instead. That 3.6e-06 difference is deliberate and is the only
+place this project knowingly departs from the instruction stream.
 
 ### Why the quarter turn is not optional
 
@@ -208,17 +220,22 @@ matrix alone does not orient them. Applying the retail
 
 With the turn the exhaust is a horizontal pipe 0.53 long running forward
 from its tip under the rear left, and the plate is a vertical quad on the
-rear face; the host bumper's rear face is at longitudinal `-2.050`. Without
-the turn the exhaust stands upright and the plate lies flat. The turn is
-therefore load-bearing, not cosmetic.
+rear face. The host mesh `240SX_KIT15_REAR_BUMPER_A` reaches longitudinal
+`-2.067047` overall and `-2.050148` within the band the plate occupies
+(`|lateral| < 0.35`, `0.25 < vertical < 0.37`), so the plate at `-2.032`
+sits just in front of it. Without the turn the exhaust stands upright and
+the plate lies flat. The turn is therefore load-bearing, not cosmetic.
 
 ## Parts drawn at the car's own matrix (observed)
 
 The per-slot draw loop is `0x0056F4B0`, bounded by `cmp esi, 0x1e` at
 `0x0056F607`, with the jump table at `0x00570788` and its 16 index bytes at
-`0x00570794`: `00 00 02 02 02 02 02 02 02 02 02 02 01 01 01 01`. Slots 3 and
-4 take the mirror branch, slots 5..14 the generic branch, and slots 15..18
-are skipped by the loop because they have their own code.
+`0x00570794`: `00 00 02 02 02 02 02 02 02 02 02 02 01 01 01 01`. The table
+covers slots 3..18 only: `0x0056F4B6` computes `slot - 3` and sends anything
+above 15 straight to the generic branch, so slots 0..2 and 19..29 are
+generic as well. Within the table, slots 3 and 4 take the mirror branch,
+slots 5..14 the generic branch, and slots 15..18 are skipped by the loop
+because they have their own code.
 
 In the generic branch `0x0056F557..0x0056F5FE`:
 
@@ -327,7 +344,8 @@ wheel centres (`0x0056B3F5`), and `0x004B17F5` combines it as
 `(+0x10) - (+0x08) + 0.01`. Both make it the height of a wheel centre above
 the ground, that is a rolling radius. It is **not** the visual wheel mesh's
 radius: 240SX stores 0.288 front and 0.3135 rear while
-`240SX_KIT00_WHEEL_A` measures 0.311064 in both non-axle axes, and the
+`240SX_KIT00_WHEEL_A` measures 0.311064 longitudinally and 0.311065
+vertically, and the
 aftermarket rims in `Cars/WHEELS` quantize to exact inch diameters (0.29210,
 0.30480, 0.31750, 0.33020) that neither stored value matches.
 
@@ -457,11 +475,27 @@ wheel 2:
 ```text
 0x0056B36A..0x0056B392   n = a x b, component by component
 0x0056B397..0x0056B3AD   len = sqrt(n . n)
-0x0056B3AF               fcom [0x6cc7a4] = 0.01
-  len  > 0.01            0x0056B3BC scales n by 1.0 / len
-  len <= 0.01            0x0056B3E2 clears n.z and loads 1.0 and 0.01 instead
+0x0056B3AF               fcom [0x6cc7a4], which is 0.0
+0x0056B3B7               test ah, 0x44 / jnp: the fallback is taken only on
+                         C3 set with C2 clear, that is len exactly 0.0
+  len != 0.0             0x0056B3BC scales n by 1.0 / len
+  len == 0.0             0x0056B3E2 clears the third component, then
+                         0x0056B3E9 and 0x0056B3EF push 1.0 and 0.0
 0x0056B3F5               mov edx, [ebx+0xc] ; mov eax, [edx + 0x80]
 0x0056B401..0x0056B43A   index 13 = index 12 + n * that value
+
+The normalizing path reaches the join at `0x0056B3F5` having stored the
+third component and popped it (`0x0056B3DB`), leaving the second on top of
+the first, so on the fallback path the 1.0 is the first component and the
+0.0 the second. `0x0056B40A` confirms it: it multiplies `st(2)`, the first
+component, by the radius, and `0x0056B423` adds that to the centroid's first
+component. A degenerate car therefore puts its shadow at
+`centroid + (radius, 0, 0)`.
+
+The 0.01 at `0x006CC79C` is a different constant: it is the tolerance the
+direction-vector normalizer uses at `0x005693F5`. Reading it as the
+wheel-plane threshold would make this project call a plane degenerate that
+the game normalizes.
 ```
 
 `RideInfo + 0x80` is block offset `0x20`, which is wheel 0's field `+0x10`.
@@ -602,8 +636,9 @@ rolling radius to the vertical destroys that, and two control points show no
 ring at all. The stored vertical is the wheel-centre height directly.
 
 `nfsu_probe part-markers` over all 39 files reports 2860 marker chunks and
-4461 markers with 16 to 18 distinct hashes per car, 76 of which carry the
-one unrecovered name. For 240SX it reports 60 chunks, 168 markers, 16
+4461 markers. 18 distinct hashes occur across the whole installation; no
+single file holds more than 17, and the twenty full car files span 8 to 17.
+76 markers carry the one unrecovered name. For 240SX it reports 60 chunks, 168 markers, 16
 distinct hashes and no unrecovered name.
 
 ## Parser rules
@@ -628,12 +663,17 @@ The marker parser in `nfsu::parse_geometry` accepts at most one
 requires the remaining payload to be a whole number of 80-byte records,
 refuses more records than the game's byte count can address, and refuses a
 matrix element that is not finite. A mesh that fails any of these is skipped
-with a diagnostic, as every other geometry failure is. The three reserved
+with a diagnostic, as every other geometry failure is. That is a behaviour
+change for third-party data: before this slice a malformed `0x0013401A` was
+ignored as an unknown chunk and the mesh still parsed. No retail file is
+affected, because all 2860 chunks pass every check. The three reserved
 words are kept raw and never checked, for the reason in "Retail inventory"
 above.
 
 `derive_cullable_part_placements` reproduces the 14 culling placements. It
-fails only for a wheel value that is not finite. A degenerate wheel plane is
+fails for a wheel value that is not finite, and for a derived position that
+is not finite, which a finite but enormous wheel table can still produce
+through the differences and the cross product. A degenerate wheel plane is
 reported in the shadow entry rather than refused, because the game takes a
 fallback branch for it.
 

@@ -498,15 +498,14 @@ void test_malformed_structure() {
         expect_rejected(bytes, "found 0", "missing car type chunk");
     }
     {
-        // Two of them.
+        // Two of them. Appending the whole second image really does add a
+        // second 0x00034600 header; appending from a byte offset instead
+        // would only add a payload and the duplicate branch would never
+        // run.
         Layout a = build_table(cars);
         const Layout b = build_table(cars);
-        a.bytes.insert(a.bytes.end(), b.bytes.begin() + 24, b.bytes.end());
-        // The appended copy keeps its own header; its alignment filler may no
-        // longer match, but the duplicate must be reported first.
-        const nfsu::CarTypeTable table =
-            nfsu::parse_car_type_table(a.bytes.data(), a.bytes.size());
-        check(!table.valid, "two car type chunks: must not be valid");
+        a.bytes.insert(a.bytes.end(), b.bytes.begin(), b.bytes.end());
+        expect_rejected(a.bytes, "found 2", "two car type chunks");
     }
     {
         // Trailing bytes smaller than a chunk header.
@@ -814,8 +813,13 @@ void test_derive_tilted_and_asymmetric() {
 }
 
 void test_derive_degenerate_plane() {
-    // Four coincident wheels give a zero-length normal, which is the branch
-    // 0x56b3e2 takes instead of normalizing.
+    // 0x56b3af compares the wheel-plane normal's length against the 0.0 at
+    // 0x6cc7a4 and 0x56b3b7 takes the fallback only when it is exactly
+    // zero, so any non-zero plane, however small, is normalized.
+    check(nfsu::kWheelPlaneMinimumLength == 0.0F,
+          "the degenerate threshold is zero");
+
+    // Four coincident wheels give a zero-length normal.
     TestCar car = default_car("CAR");
     for (std::size_t w = 0; w < nfsu::kCarWheelCount; ++w) {
         car.wheels[w].longitudinal = 0.0F;
@@ -828,12 +832,17 @@ void test_derive_degenerate_plane() {
     check(nfsu::derive_cullable_part_placements(wheels, placements, error),
           "degenerate derivation still succeeds");
     check(placements[13].degenerate_plane, "degenerate plane is reported");
-    check_close(placements[13].position[0], placements[12].position[0],
-                "degenerate shadow keeps the centroid longitudinal");
+    // 0x56b3e2 leaves 1.0 in the first component and 0.0 in the other two,
+    // so the shadow moves along the longitudinal axis by wheel 0's radius.
+    check_close(placements[13].position[0],
+                placements[12].position[0] + wheels[0].rolling_radius,
+                "degenerate shadow moves by the radius along the first axis");
+    check_close(placements[13].position[1], placements[12].position[1],
+                "degenerate shadow keeps the centroid lateral");
     check_close(placements[13].position[2], placements[12].position[2],
                 "degenerate shadow keeps the centroid vertical");
 
-    // Collinear wheels are degenerate too.
+    // Collinear wheels are degenerate too: both differences are parallel.
     TestCar collinear = default_car("CAR");
     for (std::size_t w = 0; w < nfsu::kCarWheelCount; ++w) {
         collinear.wheels[w].lateral = 0.0F;
@@ -845,12 +854,12 @@ void test_derive_degenerate_plane() {
           "collinear derivation succeeds");
     check(collinear_out[13].degenerate_plane, "collinear wheels are degenerate");
 
-    // A plane whose normal is just under the 0.01 threshold is degenerate,
-    // and one just over it is not.
-    for (int step = 0; step < 2; ++step) {
+    // A plane far smaller than the old 0.01 guess must still be normalized,
+    // because the executable only rejects an exactly zero length. For a
+    // rectangle |(w0-w1) x (w1-w2)| is 0.2 * lateral with these longitudes,
+    // so lateral 0.04 gives 0.008 and lateral 0.0004 gives 0.00008.
+    for (const float lateral : {0.04F, 0.0004F}) {
         TestCar tiny = default_car("CAR");
-        // |(w0-w1) x (w1-w2)| = |2*lat| * |2*lon| for a rectangle.
-        const float lateral = step == 0 ? 0.0400F : 0.0600F;
         tiny.wheels[0] = TestWheel{0.05F, lateral, 0.0F, 0.3F, 0.2F, 0.0F, 0.0F};
         tiny.wheels[1] = TestWheel{0.05F, -lateral, 0.0F, 0.3F, 0.2F, 0.0F, 0.0F};
         tiny.wheels[2] = TestWheel{-0.05F, -lateral, 0.0F, 0.3F, 0.2F, 0.0F, 0.0F};
@@ -858,11 +867,40 @@ void test_derive_degenerate_plane() {
         std::array<nfsu::PartPlacement, nfsu::kCullableCarPartCount> tiny_out;
         check(nfsu::derive_cullable_part_placements(wheels_of(tiny), tiny_out, error),
               "small-plane derivation succeeds");
-        // 4 * 0.05 * lateral is 0.008 then 0.012, around the 0.01 threshold.
-        const bool expect_degenerate = step == 0;
-        check(tiny_out[13].degenerate_plane == expect_degenerate,
-              std::string("wheel-plane threshold at lateral ") +
-                  (step == 0 ? "0.04" : "0.06"));
+        check(!tiny_out[13].degenerate_plane,
+              "a non-zero wheel plane is normalized, not treated as degenerate");
+        // However small the plane, the normal is a unit vector, so the
+        // shadow stays exactly one radius from the centroid.
+        float delta[3];
+        for (std::size_t i = 0; i < 3; ++i) {
+            delta[i] = tiny_out[13].position[i] - tiny_out[12].position[i];
+        }
+        const float length = std::sqrt(delta[0] * delta[0] + delta[1] * delta[1] +
+                                       delta[2] * delta[2]);
+        check_close(length, 0.3F, "a tiny plane still gives a unit normal");
+        check(delta[2] < 0.0F, "the shadow still sits below the plane");
+    }
+}
+
+void test_derive_rejects_huge_positions() {
+    // Finite but enormous wheel positions overflow the differences and the
+    // cross product. The result must be refused rather than handed back.
+    TestCar car = default_car("CAR");
+    const float huge = 3.0e38F;
+    car.wheels[0] = TestWheel{huge, huge, 0.0F, 0.3F, 0.2F, 0.0F, 0.0F};
+    car.wheels[1] = TestWheel{huge, -huge, 0.0F, 0.3F, 0.2F, 0.0F, 0.0F};
+    car.wheels[2] = TestWheel{-huge, -huge, 0.0F, 0.3F, 0.2F, 0.0F, 0.0F};
+    car.wheels[3] = TestWheel{-huge, huge, 0.0F, 0.3F, 0.2F, 0.0F, 0.0F};
+    std::array<nfsu::PartPlacement, nfsu::kCullableCarPartCount> placements;
+    std::string error;
+    check(!nfsu::derive_cullable_part_placements(wheels_of(car), placements, error),
+          "an overflowing wheel table is refused");
+    check(!error.empty(), "the overflow reports an error");
+    for (const nfsu::PartPlacement& placement : placements) {
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            check(placement.position[axis] == 0.0F,
+                  "a refused derivation clears its output");
+        }
     }
 }
 
@@ -952,6 +990,7 @@ int main() {
     test_derive_placements();
     test_derive_tilted_and_asymmetric();
     test_derive_degenerate_plane();
+    test_derive_rejects_huge_positions();
     test_derive_rejects_non_finite();
     test_find_on_invalid_table();
     test_load_file();
