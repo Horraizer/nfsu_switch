@@ -101,46 +101,90 @@ const MAX_SCRUB_DEPTH = 6;
 // a header value inside JSON, HTML or a plain-text proxy page.
 const AUTH_HEADER = /((?:authorization|private-token|x-auth-token)"?\s*[:=]\s*"?)(token |bearer |basic )?[^\s"'<>,;)&]+/gi;
 
+const PERCENT_ESCAPE = /^[0-9a-fA-F]{2}$/;
+
 /**
- * Matches the token as text, allowing any character of it to arrive
- * percent-encoded. A proxy that echoes the request line sends the credential
- * back through a query string -- `?access_token=gta%5F...` -- and a literal
- * comparison walks straight past that into the log.
+ * Percent-decodes `text` once and records, for each decoded character, where it
+ * started in the original, so a match found in the decoded form can be redacted
+ * in the original. Decoding is per byte rather than per code point: the token
+ * this is compared against is ASCII, and a truncated UTF-8 escape must yield
+ * something harmless rather than throw the way `decodeURIComponent` does.
  */
-function tokenPattern(token) {
-  const body = [...token]
-    .map((character) => {
-      const literal = character.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const code = character.codePointAt(0);
-      if (code > 0x7f) {
-        // Percent-encoding a non-ASCII character is several bytes of UTF-8, and
-        // guessing at that is not worth widening the pattern for.
-        return literal;
-      }
-      const hex = code.toString(16).padStart(2, "0");
-      return `(?:${literal}|%(?:${hex}|${hex.toUpperCase()}))`;
-    })
-    .join("");
-  return new RegExp(body, "g");
+function decodeOnce(text) {
+  let decoded = "";
+  const origin = [];
+  let at = 0;
+  while (at < text.length) {
+    const escaped = text.charAt(at) === "%" && PERCENT_ESCAPE.test(text.slice(at + 1, at + 3));
+    decoded += escaped
+      ? String.fromCharCode(Number.parseInt(text.slice(at + 1, at + 3), 16))
+      : text.charAt(at);
+    origin.push(at);
+    at += escaped ? 3 : 1;
+  }
+  // Sentinel, so the last decoded character has an end offset like every other.
+  origin.push(text.length);
+  return { decoded, origin };
 }
 
-// One token per process, so the pattern is built once rather than per string.
-let patternToken = null;
-let patternFor = null;
-
-function tokenMatcher(token) {
-  if (token !== patternToken) {
-    patternToken = token;
-    patternFor = tokenPattern(token);
+function occurrences(haystack, needle) {
+  const found = [];
+  for (let at = haystack.indexOf(needle); at >= 0; at = haystack.indexOf(needle, at + needle.length)) {
+    found.push(at);
   }
-  return patternFor;
+  return found;
+}
+
+/**
+ * Every span of `text` that holds the token, whether its characters arrived
+ * literally or percent-encoded. A proxy that echoes the request line sends the
+ * credential back through a query string -- `?access_token=gta%5F...` -- and a
+ * literal comparison walks straight past that into the log.
+ *
+ * This was one regular expression per token character, each `(?:literal|%hh)`.
+ * Exactly one character can begin both branches at the same position -- `%`,
+ * whose encoding is `%25` -- so a token holding a run of them made the engine
+ * try every combination before failing: against text that never matches, 24 of
+ * them cost 2.3 seconds and each further pair cost four times that again. A
+ * real Gitea token is `gta_` plus base32 and holds no `%`, but the value comes
+ * from the environment and a malformed one must not be able to wedge the
+ * server. Decoding once removes the choice rather than ordering it; both passes
+ * below are linear in the length of the text.
+ */
+function tokenSpans(text, token) {
+  const spans = occurrences(text, token).map((at) => [at, at + token.length]);
+  const { decoded, origin } = decodeOnce(text);
+  // The decoded pass does not subsume the raw one: decoding rewrites a token
+  // that contains a `%hh` sequence of its own, so its literal form is not in
+  // `decoded` at all and only the raw pass above can see it.
+  for (const at of occurrences(decoded, token)) {
+    spans.push([origin[at], origin[at + token.length]]);
+  }
+  return spans;
+}
+
+function redactSpans(text, spans) {
+  let result = "";
+  let cursor = 0;
+  for (const [start, end] of spans.sort((left, right) => left[0] - right[0] || left[1] - right[1])) {
+    if (end <= cursor) {
+      continue;
+    }
+    if (start >= cursor) {
+      result += text.slice(cursor, start) + REDACTED;
+    }
+    // A span that starts inside the previous redaction is the same credential
+    // seen a second way, so it extends that redaction instead of adding one.
+    cursor = end;
+  }
+  return result + text.slice(cursor);
 }
 
 function scrubText(text, token) {
   const masked = text.replace(AUTH_HEADER, (_match, prefix, scheme) => `${prefix}${scheme ?? ""}${REDACTED}`);
   // Unconditional, so the guarantee does not depend on the token's shape. A
   // pathologically short token over-redacts the log, which is the safe side.
-  return token ? masked.replace(tokenMatcher(token), REDACTED) : masked;
+  return token ? redactSpans(masked, tokenSpans(masked, token)) : masked;
 }
 
 /**
@@ -276,11 +320,12 @@ export function createGiteaClient({
       return (await call(pathname, options)).payload;
     },
 
-    // Stops on an empty page, or on a page that is shorter than the pages
-    // before it and satisfies X-Total-Count. It must not stop on a short page
-    // by itself: Gitea clamps `limit` to its own maximum, so a short first page
-    // is the normal shape on a conservatively configured instance and used to
-    // truncate the board.
+    // Stops on an empty page, on a page that is shorter than the pages before
+    // it and satisfies X-Total-Count, or -- once the pages have stopped
+    // advancing at all -- on a row count that exactly matches the stated total.
+    // It must not stop on a short page by itself: Gitea clamps `limit` to its
+    // own maximum, so a short first page is the normal shape on a
+    // conservatively configured instance and used to truncate the board.
     //
     // Offset pagination overlaps whenever rows are inserted or reordered
     // mid-sweep, which is exactly what agents moving cards do, so rows are
@@ -327,6 +372,16 @@ export function createGiteaClient({
           // up to the safety limit, three times over, before the board failed.
           stalled += 1;
           if (stalled >= STALLED_PAGE_LIMIT) {
+            if (trustedTotal !== null && result.length === trustedTotal) {
+              // The pages stopped advancing on a collection whose size the
+              // first response stated, and exactly that many rows are in hand.
+              // That is an upstream which ignores or clamps `page` on a
+              // collection that is an exact multiple of the page size -- the
+              // sweep is complete, and it is the only reason left to keep
+              // asking. An upstream that is truncating instead lands short of
+              // the total, and still fails below.
+              return result;
+            }
             throw new HttpError(502, "Gitea pagination stopped advancing");
           }
         } else {

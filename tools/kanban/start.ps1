@@ -126,12 +126,18 @@ function Get-ServerOutputSuffix {
     return " Server output: " + ((@($lines | Select-Object -Last 5)) -join " | ")
 }
 
-function Get-PortOwnerPids {
+function Get-ListenerPids {
+    param([string] $LocalAddress = "")
+
     # The owner the OS reports, not the pid a listener chose to claim about
-    # itself.
+    # itself. An empty $LocalAddress means every local address on this port.
     $owners = @()
+    $query = @{ LocalPort = [int] $port; State = "Listen"; ErrorAction = "Stop" }
+    if ($LocalAddress) {
+        $query["LocalAddress"] = $LocalAddress
+    }
     try {
-        $connections = @(Get-NetTCPConnection -LocalPort ([int] $port) -State Listen -ErrorAction Stop)
+        $connections = @(Get-NetTCPConnection @query)
     }
     catch {
         return @()
@@ -145,10 +151,33 @@ function Get-PortOwnerPids {
     return $owners
 }
 
+function Get-PortOwnerPids {
+    # Only 127.0.0.1, which is the address the instance GUID was proved against
+    # and the address server.mjs binds. Querying the port number alone returns
+    # every listener on it on any local address, and Windows lets 127.0.0.1:P
+    # and [::1]:P be held by two unrelated processes at once -- so an unfiltered
+    # answer fed to the stop path below would walk a stranger's process tree.
+    # Two processes cannot both hold 127.0.0.1:P, so this returns at most the
+    # process that answered the ownership probe.
+    #
+    # It does not close the window this design carries: between the
+    # Test-OwnedIdentity that proves ownership and this query, the owned server
+    # can exit and another process can bind 127.0.0.1:P, and this would then
+    # name that process. Stop-ProcessEntries' start-time check limits what a
+    # stop can reach afterwards. The window is inherent to asking the OS a
+    # second question about a port and is recorded rather than closed.
+    return Get-ListenerPids "127.0.0.1"
+}
+
 function Get-PortOwnerDescription {
     # The owner the OS reports, not the pid a foreign listener chose to claim
-    # about itself: the launcher sends the operator after a real process.
-    foreach ($ownerPid in @(Get-PortOwnerPids)) {
+    # about itself: the launcher sends the operator after a real process. This
+    # one is a message, not a target, so it must not be narrowed to 127.0.0.1:
+    # a process holding 0.0.0.0:P or [::]:P makes 127.0.0.1:P unavailable just
+    # as effectively and is exactly who the operator has to go and stop. A
+    # loopback owner is still preferred, being the closest match to the bind
+    # that failed.
+    foreach ($ownerPid in @(@(Get-PortOwnerPids) + @(Get-ListenerPids))) {
         $name = ""
         try {
             $name = (Get-Process -Id $ownerPid -ErrorAction Stop).ProcessName
@@ -251,7 +280,8 @@ function Stop-ProcessEntries {
 function Stop-OwnedListener {
     # Last resort, and the one that holds whatever node resolved to: a listener
     # is stopped only if it proves, with this run's one-time GUID, that it is
-    # the server this launcher started. A foreign process is never touched.
+    # the server this launcher started. A foreign process is never touched,
+    # subject to the window Get-PortOwnerPids records.
     for ($attempt = 0; $attempt -lt $stopConfirmAttempts; $attempt++) {
         $identity = Get-InstanceIdentity
         if (-not (Test-OwnedIdentity $identity)) {

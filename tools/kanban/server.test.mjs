@@ -1028,6 +1028,35 @@ test("a percent-encoded token is scrubbed as well as the literal one", () => {
   assert.equal(scrubSecrets("a%20b", token), "a%20b");
 });
 
+test("a token whose own characters are percent signs does not wedge the scrub", () => {
+  // Every token character used to become `(?:literal|%hh)`, and `%` is the one
+  // character whose literal form and whose encoding, `%25`, can both begin at
+  // the same position. Against text that never matches, the engine explored
+  // both at every one of them: 24 percent signs took 2.3 s on the machine this
+  // was written on, and each further pair cost four times that again. The
+  // token is read from the environment, so a malformed one must not be able to
+  // hang the server process on its first upstream error.
+  const token = `${"%".repeat(26)}Z`;
+  const text = "%25".repeat(40);
+  const started = process.hrtime.bigint();
+  const scrubbed = scrubSecrets(text, token);
+  const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+  assert.ok(
+    elapsedMs < 1000,
+    `scrubbing a ${token.length}-character token took ${elapsedMs.toFixed(1)} ms`,
+  );
+  // Nothing in that text is the token, so it must come back untouched.
+  assert.equal(scrubbed, text);
+
+  // A `%` in the token is still matched in both of its forms, which is the
+  // behaviour the pattern existed for.
+  assert.equal(scrubSecrets("a%25b", "a%b"), "[redacted]");
+  assert.equal(scrubSecrets("a%b", "a%b"), "[redacted]");
+  // And a token holding what looks like an escape of its own is still found
+  // literally, which a decode-only comparison would walk straight past.
+  assert.equal(scrubSecrets("x a%2cb y", "a%2cb"), "x [redacted] y");
+});
+
 // ------------------------------------------------------- content length ----
 
 test("the declared content length is what the response actually delivers", async () => {
@@ -1149,6 +1178,92 @@ test("a page that never advances fails loudly instead of truncating or hammering
   // limit, on each of the three endpoints the board loads.
   // The first page genuinely advanced; the next three added nothing.
   assert.equal(requested.length, STALLED_PAGE_LIMIT + 1, "a stuck sweep must not run to the safety limit");
+});
+
+test("a sweep that stops advancing on exactly the stated total is complete, not a failure", async () => {
+  // A collection that is an exact multiple of the page size never produces a
+  // short page, so the "shorter than the pages before it" terminator cannot
+  // fire, and an upstream that ignores or clamps `page` then repeats its last
+  // page forever. The stall detector sees that, and at that point the total
+  // the first response stated is the evidence in hand: exactly that many
+  // distinct rows have been collected, so the sweep is finished. Hard-failing
+  // a board that is demonstrably complete is the regression this closes.
+  const rows = Array.from({ length: 100 }, (_, index) => ({ id: index + 1, number: index + 1 }));
+  // Clamps `page` to the last page it has, which is what a proxy that caps an
+  // offset does.
+  const clamped = (page) => rows.slice((Math.min(page, 2) - 1) * 50, Math.min(page, 2) * 50);
+  const { client, requested } = stubbedClient({ pages: clamped, total: "100", maxPages: 200 });
+  const collected = await client.paginate("/repos/owner/repo/issues");
+  assert.equal(collected.length, 100, "a complete collection was reported as a pagination failure");
+  assert.equal(new Set(collected.map((row) => row.id)).size, 100, "every row should be present exactly once");
+  assert.equal(
+    requested.length,
+    2 + STALLED_PAGE_LIMIT,
+    "the sweep must stop as soon as the pages stop advancing, not run to the safety limit",
+  );
+
+  // The same shape from an upstream that ignores `page` outright: one
+  // collection that fills exactly one page, and one that does not fill it.
+  for (const size of [50, 30]) {
+    const fixed = Array.from({ length: size }, (_, index) => ({ id: index + 1, number: index + 1 }));
+    const single = stubbedClient({ pages: () => fixed, total: String(size), maxPages: 200 });
+    const swept = await single.client.paginate("/repos/owner/repo/issues");
+    assert.equal(swept.length, size, `${size} rows behind an upstream that ignores page were rejected`);
+  }
+});
+
+test("a sweep that stops advancing short of the stated total still fails", async () => {
+  // The other side of the case above, and the reason it is safe. The pages
+  // stopped advancing here too, but the rows in hand do not account for the
+  // collection the first response described, so this is an upstream that is
+  // truncating and the board must not be served as though it were whole.
+  const rows = Array.from({ length: 50 }, (_, index) => ({ id: index + 1, number: index + 1 }));
+  const { client } = stubbedClient({ pages: () => rows, total: "120", maxPages: 200 });
+  await assert.rejects(() => client.paginate("/repos/owner/repo/issues"), /stopped advancing/);
+
+  // With no total at all there is no evidence either way, so a stall stays a
+  // loud failure rather than becoming a silent truncation.
+  const { client: headerless } = stubbedClient({ pages: () => rows, total: null, maxPages: 200 });
+  await assert.rejects(() => headerless.paginate("/repos/owner/repo/issues"), /stopped advancing/);
+});
+
+test("a collection that is an exact multiple of the page size is served as a board", async () => {
+  // The end-to-end shape of the case above: 100 issues at a page size of 50,
+  // behind an upstream that clamps `page` to the last page it has. Every page
+  // is full, so nothing but the total can end the sweep, and answering the
+  // board with a 502 is worse than answering it with the collection.
+  const issues = Array.from({ length: 100 }, (_, index) => ({
+    id: 1000 + index,
+    number: index + 1,
+    title: `Issue ${index + 1}`,
+    state: "open",
+    html_url: `https://git.example/owner/repo/issues/${index + 1}`,
+    labels: [],
+  }));
+  const handler = (call) => {
+    if (call.path === "/repos/owner/repo/labels") {
+      return pagedReply(LABELS, { pageSize: 50 })(call);
+    }
+    if (call.path === "/repos/owner/repo/pulls") {
+      return pagedReply([], { pageSize: 50 })(call);
+    }
+    if (call.path === "/repos/owner/repo/issues") {
+      const page = Math.min(Number.parseInt(call.query.page ?? "1", 10), 2);
+      return {
+        status: 200,
+        payload: issues.slice((page - 1) * 50, page * 50),
+        headers: { "X-Total-Count": "100" },
+      };
+    }
+    return { status: 404, payload: { message: "unhandled" } };
+  };
+
+  await withServers(handler, async ({ kanban }) => {
+    const res = await rawRequest(kanban.port, ["GET /api/board HTTP/1.1", `Host: 127.0.0.1:${kanban.port}`, "Connection: close"]);
+    assert.equal(res.status, 200, "a complete board was refused as a pagination failure");
+    assert.equal(res.json.tasks.length, 100);
+    assert.equal(new Set(res.json.tasks.map((task) => task.number)).size, 100);
+  });
 });
 
 test("overlap that eventually resolves is tolerated rather than called a stall", async () => {

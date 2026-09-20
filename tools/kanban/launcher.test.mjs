@@ -58,6 +58,56 @@ function freePort() {
   });
 }
 
+function canBind(port, host) {
+  return new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once("error", () => resolve(false));
+    probe.listen(port, host, () => probe.close(() => resolve(true)));
+  });
+}
+
+/**
+ * A port that is free on both loopback addresses. Windows lets `127.0.0.1:P`
+ * and `[::1]:P` be held by two unrelated processes at once, which is the shape
+ * the co-binding case below needs to stage.
+ */
+async function dualLoopbackPort() {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const port = await freePort();
+    if (await canBind(port, "::1")) {
+      return port;
+    }
+  }
+  return 0;
+}
+
+// A machine with IPv6 loopback disabled cannot stage the co-binding case, and
+// the reason says so rather than letting a green run imply it was exercised.
+const NO_IPV6 = (await canBind(0, "::1"))
+  ? false
+  : "IPv6 loopback ([::1]) is unavailable, so a co-bound foreign listener cannot be staged";
+
+/**
+ * A server that answers the readiness probe with this run's instance id -- so
+ * the launcher has proved the listener is its own -- while reporting a pid it
+ * cannot use. That is the one path on which the launcher asks the OS who owns
+ * the port instead of using the pid it was told.
+ */
+function noPidStubSource(pidFile) {
+  return [
+    'const http = require("node:http");',
+    `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
+    "const server = http.createServer((request, response) => {",
+    '  const body = JSON.stringify({ pid: 0, instance: process.env.KANBAN_INSTANCE ?? "" });',
+    '  response.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) });',
+    "  response.end(body);",
+    "});",
+    'server.listen(Number(process.env.KANBAN_PORT), "127.0.0.1");',
+    "setTimeout(() => {}, 600000);",
+    "",
+  ].join("\n");
+}
+
 function launcherEnv(port, extra = {}) {
   return {
     ...process.env,
@@ -431,28 +481,11 @@ test("a server that answers without a usable pid is still stopped", { timeout: 1
   const dir = await mkdtemp(path.join(os.tmpdir(), "kanban-nopid-"));
   const pidFile = path.join(dir, "child.pid");
   const stub = path.join(dir, "stub.js");
-  // Answers the readiness probe with this run's instance id -- so the launcher
-  // has proved the listener is its own server -- while reporting a pid it
-  // cannot use. start.ps1 fails the launch at that point, and by then the
-  // spawned handle is a cmd shim that already exited and no pid was ever
-  // recorded, so the GUID-proved last-resort stop is the only pass left that
-  // can reach a listener which is still holding the token.
-  await writeFile(
-    stub,
-    [
-      'const http = require("node:http");',
-      `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
-      "const server = http.createServer((request, response) => {",
-      '  const body = JSON.stringify({ pid: 0, instance: process.env.KANBAN_INSTANCE ?? "" });',
-      '  response.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) });',
-      "  response.end(body);",
-      "});",
-      'server.listen(Number(process.env.KANBAN_PORT), "127.0.0.1");',
-      "setTimeout(() => {}, 600000);",
-      "",
-    ].join("\n"),
-    "ascii",
-  );
+  // start.ps1 fails the launch on the unusable pid, and by then the spawned
+  // handle is a cmd shim that already exited and no pid was ever recorded, so
+  // the GUID-proved last-resort stop is the only pass left that can reach a
+  // listener which is still holding the token.
+  await writeFile(stub, noPidStubSource(pidFile), "ascii");
   const wrapper = await makeWrapperDir(stub, { detach: true });
 
   let stubPid = 0;
@@ -480,6 +513,90 @@ test("a server that answers without a usable pid is still stopped", { timeout: 1
       }
     }
     killQuietly(stubPid);
+    await rm(wrapper, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a foreign listener co-bound on the same port survives the last-resort stop", { timeout: 180_000, skip: HOST ? NO_IPV6 : NO_HOST }, async () => {
+  assert.ok(HOST, "a PowerShell host is required for the launcher gate");
+  // The case above is the only path that asks the OS who owns the port, and a
+  // query by port number alone answers for every local address. Windows lets
+  // `127.0.0.1:P` and `[::1]:P` be held by two unrelated processes at once, so
+  // an unfiltered answer put a stranger's pid into the stop path and the
+  // launcher killed a process it had proved nothing about.
+  const port = await dualLoopbackPort();
+  assert.ok(port > 0, "no port was free on both 127.0.0.1 and [::1]");
+  const dir = await mkdtemp(path.join(os.tmpdir(), "kanban-cobound-"));
+  const ownedPidFile = path.join(dir, "owned.pid");
+  const foreignPidFile = path.join(dir, "foreign.pid");
+  const stub = path.join(dir, "stub.js");
+  const foreign = path.join(dir, "foreign.js");
+  await writeFile(stub, noPidStubSource(ownedPidFile), "ascii");
+  // Nothing to do with this launcher: a separate process that happens to hold
+  // the same port number on the other loopback address.
+  await writeFile(
+    foreign,
+    [
+      'const net = require("node:net");',
+      "const server = net.createServer((socket) => socket.end());",
+      'server.on("error", (error) => { process.stderr.write(String(error)); process.exit(1); });',
+      'server.listen(Number(process.argv[2]), "::1", () => {',
+      `  require("node:fs").writeFileSync(${JSON.stringify(foreignPidFile)}, String(process.pid));`,
+      "});",
+      "setTimeout(() => {}, 600000);",
+      "",
+    ].join("\n"),
+    "ascii",
+  );
+  const wrapper = await makeWrapperDir(stub, { detach: true });
+
+  const bystander = spawn(process.execPath, [foreign, String(port)], { stdio: ["ignore", "ignore", "pipe"] });
+  bystander.stderr.resume();
+  let stubPid = 0;
+  let foreignPid = 0;
+  try {
+    const deadline = Date.now() + 15_000;
+    while (foreignPid === 0 && Date.now() < deadline) {
+      try {
+        foreignPid = Number.parseInt((await readFile(foreignPidFile, "ascii")).trim(), 10);
+      } catch {
+        await delay(100);
+      }
+    }
+    assert.ok(foreignPid > 0, `the co-bound listener should have taken [::1]:${port}`);
+
+    const run = await runLauncher(HOST, withWrapper(launcherEnv(port, { KANBAN_SMOKE: "1" }), wrapper));
+    assert.notEqual(run.code, 0, `a server with no usable pid must fail the launch, output: ${run.output}`);
+
+    stubPid = Number.parseInt((await readFile(ownedPidFile, "ascii")).trim(), 10);
+    assert.ok(stubPid > 0, "the stub should have recorded its pid");
+    // The launcher's own server still has to go: narrowing the query must not
+    // cost it the one pass that can reach a listener with no usable pid.
+    assert.equal(
+      await waitForGone(port, 15_000),
+      true,
+      "the listener this run owns must still be stopped",
+    );
+    assert.equal(processAlive(stubPid), false, `pid ${stubPid} was left holding the token`);
+    // And the process the launcher proved nothing about must be untouched.
+    assert.equal(
+      processAlive(foreignPid),
+      true,
+      `pid ${foreignPid} held only [::1]:${port} and was killed by a launcher that never owned it`,
+    );
+    assert.equal(await canBind(port, "::1"), false, "the foreign listener should still hold its port");
+  } finally {
+    if (stubPid === 0) {
+      try {
+        stubPid = Number.parseInt((await readFile(ownedPidFile, "ascii")).trim(), 10);
+      } catch {
+        stubPid = 0;
+      }
+    }
+    killQuietly(stubPid);
+    bystander.kill();
+    killQuietly(foreignPid);
     await rm(wrapper, { recursive: true, force: true });
     await rm(dir, { recursive: true, force: true });
   }
