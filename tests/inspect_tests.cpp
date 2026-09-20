@@ -4,6 +4,8 @@
 #include "nfsu/render.h"
 #include "nfsu/scene.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -93,6 +95,28 @@ std::uint32_t texture_hash_of(std::size_t mesh, std::size_t slot) {
            static_cast<std::uint32_t>(slot);
 }
 
+// The last mesh is named with the bytes a file can actually hold rather
+// than with an identifier: a mesh name is raw bytes, so it may carry a NUL,
+// a control byte, a quote, a backslash and anything above 0x7E, and none of
+// those may reach the overlay unescaped. It is also long enough that the
+// overlay line quoting it passes kMaxOverlayLineBytes, which is the only
+// way the truncation is exercised at all. No file holds a name this long;
+// the point is to test the guarantee past the bound rather than up to it.
+std::string hostile_mesh_name() {
+    std::string name = "RAW";
+    for (int i = 0; i < 12; ++i) {
+        name += static_cast<char>(0x00);
+        name += static_cast<char>(0x01 + i);
+        name += static_cast<char>(0x7F);
+        name += static_cast<char>(0x80 + i);
+        name += static_cast<char>(0xFF);
+        name += '"';
+        name += '\\';
+        name += static_cast<char>('a' + i);
+    }
+    return name;
+}
+
 // Quads at x = 0, one per mesh, spanning a distinct pz band.
 nfsu::GeometryReport inspect_geometry() {
     nfsu::GeometryReport report;
@@ -101,7 +125,8 @@ nfsu::GeometryReport inspect_geometry() {
         const float z1 = z0 + 0.8F;
         nfsu::Mesh mesh;
         mesh.index = i;
-        mesh.name = "QUAD" + std::to_string(i);
+        mesh.name = i + 1 == kMeshCount ? hostile_mesh_name()
+                                        : "QUAD" + std::to_string(i);
         mesh.valid = true;
         mesh.vertices = {vertex(0.0F, 0.0F, z0, 0.0F, 0.0F),
                          vertex(0.0F, 1.0F, z0, 0.0F, 1.0F),
@@ -304,6 +329,87 @@ void test_order_and_ranges() {
           "an order naming a group that does not exist is refused");
 }
 
+// One hand-built group bound to one of the two textures below.
+nfsu::PreparedDraw ordered_draw(const nfsu::PreparedCarScene& scene,
+                                std::size_t material_index, std::size_t texture) {
+    nfsu::PreparedDraw draw;
+    draw.mesh = 0;
+    draw.material_index = material_index;
+    draw.first_index = static_cast<std::uint32_t>(material_index) * 3U;
+    draw.index_count = 3;
+    draw.binding = nfsu::BindingKind::resolved;
+    draw.texture = texture;
+    draw.texture_hash = scene.textures[texture].hash;
+    draw.drawable = true;
+    return draw;
+}
+
+// The retail order keeps the record order of the groups that a comparison
+// cannot separate, which is what "inside one texture the material records
+// keep their order" means. The fixtures that cover the rule through the
+// renderer hold three groups, and libstdc++ sorts a range that short with
+// insertion sort whether the call asked for a stable sort or not, so an
+// unstable sort passes them unchanged. This scene is past that threshold,
+// where the two sorts genuinely differ, and it calls prepared_draw_order
+// directly because the inspector and a future deko3d backend take their
+// submission order from it and number every triangle by it.
+void test_draw_order_stability() {
+    nfsu::PreparedCarScene scene;
+    scene.source_mesh_count = 1;
+    scene.meshes.emplace_back();
+    scene.meshes.back().name = "ORDER";
+    // Two textures whose raw bytes put them in different draw queue rows:
+    // layer_order counts as a signed byte and layer_group adds eight when
+    // it is not zero, so these are rows 3 and 1.
+    for (const std::uint8_t row : {std::uint8_t{3}, std::uint8_t{1}}) {
+        nfsu::RenderTexture texture;
+        texture.hash = 0x0A0000FFU - row;
+        texture.width = 1;
+        texture.height = 1;
+        texture.valid = true;
+        texture.rgba = {row, row, row, 255};
+        texture.layer_order = row;
+        texture.layer_group = 0;
+        scene.textures.push_back(texture);
+    }
+    // Comfortably past the sixteen elements below which introsort never
+    // reaches its unstable path.
+    constexpr std::size_t kGroups = 48;
+    for (std::size_t i = 0; i < kGroups; ++i) {
+        scene.draws.push_back(ordered_draw(scene, i, i < kGroups / 2 ? 0 : 1));
+    }
+    std::string error;
+    std::vector<std::uint32_t> order;
+    std::vector<unsigned char> layers;
+    check(nfsu::prepared_draw_order(scene, true, order, &layers, error),
+          "the retail order of a large scene is produced: " + error);
+    // Row 1 drains before row 3, and inside each row the records keep the
+    // order they were prepared in.
+    std::vector<std::uint32_t> expected;
+    for (std::size_t i = kGroups / 2; i < kGroups; ++i) {
+        expected.push_back(static_cast<std::uint32_t>(i));
+    }
+    for (std::size_t i = 0; i < kGroups / 2; ++i) {
+        expected.push_back(static_cast<std::uint32_t>(i));
+    }
+    check(order == expected,
+          "the rows drain in order and the records inside a row keep theirs");
+
+    // Every group on one texture in one row, so no comparison can decide
+    // anything at all and the order must come back untouched.
+    scene.draws.clear();
+    for (std::size_t i = 0; i < kGroups; ++i) {
+        scene.draws.push_back(ordered_draw(scene, i, 0));
+    }
+    check(nfsu::prepared_draw_order(scene, true, order, &layers, error),
+          "the retail order of a single-row scene is produced: " + error);
+    bool identity = order.size() == kGroups;
+    for (std::size_t i = 0; identity && i < order.size(); ++i) {
+        identity = order[i] == static_cast<std::uint32_t>(i);
+    }
+    check(identity, "groups a comparison cannot separate keep the prepared order");
+}
+
 // The heart of the contract: the id the renderer wrote at a pixel names the
 // group that drew that pixel, in both material states.
 void test_ids_match_the_renderer() {
@@ -387,10 +493,43 @@ void test_camera_input() {
         inspector.zoom(-9);
         check(nfsu::validate_camera(inspector.options().camera, error),
               "the camera stays valid under hostile input");
+        // Half open, as include/nfsu/inspect.h documents it: 180 is the
+        // same heading as -180 and only one of them may be produced. A wrap
+        // that saturated there instead of wrapping would sit on the closed
+        // end and stop the camera turning, which is why the upper bound is
+        // strict.
         check(inspector.options().camera.yaw_deg >= -180.0 &&
-                  inspector.options().camera.yaw_deg <= 180.0,
+                  inspector.options().camera.yaw_deg < 180.0,
               "yaw stays wrapped");
     }
+    // The wrap is a wrap, not a saturation: turning one way for a whole
+    // revolution passes 180, comes back at -180 and arrives where it
+    // started. At one degree per pixel every step below is exact.
+    nfsu::Inspector turner;
+    if (!open_inspector(turner, scene, inspect_options())) {
+        ++g_failures;
+        return;
+    }
+    nfsu::InspectorSensitivity one_degree = turner.sensitivity();
+    one_degree.orbit_deg_per_pixel = 1.0;
+    check(turner.set_sensitivity(one_degree, error), "one degree per pixel is set");
+    check(turner.command(nfsu::InspectorCommand::view_front, error) &&
+              turner.options().camera.yaw_deg == 0.0,
+          "the turn starts at the front view");
+    for (int i = 0; i < 179; ++i) {
+        turner.orbit(-1.0, 0.0);
+    }
+    check(turner.options().camera.yaw_deg == 179.0,
+          "179 degrees of turning is 179 degrees of yaw");
+    turner.orbit(-1.0, 0.0);
+    check(turner.options().camera.yaw_deg == -180.0,
+          "the 180th degree wraps to the other end rather than stopping there");
+    for (int i = 0; i < 180; ++i) {
+        turner.orbit(-1.0, 0.0);
+    }
+    check(turner.options().camera.yaw_deg == 0.0,
+          "a whole revolution of turning arrives back at the front view");
+
     inspector.orbit(1e18, 1e18);
     check(nfsu::validate_camera(inspector.options().camera, error),
           "an enormous delta is clamped, not applied");
@@ -417,18 +556,33 @@ void test_camera_input() {
     check(fresh.options().camera.distance == nfsu::kMaxDistance,
           "zooming out stops at the largest distance");
 
-    // A pan moves the target across the view, never along it.
+    // A pan moves the target across the view, never along it, and by the
+    // pixels the pointer crossed the window, not by the pixels of the frame
+    // that was rendered for it. The window renders a drag at a fraction of
+    // the client area, so the two are only the same outside a drag: the
+    // case below is the one a default configuration is always in while a
+    // pan is happening.
     nfsu::Inspector panner;
     if (!open_inspector(panner, scene, inspect_options())) {
         ++g_failures;
         return;
     }
+    const int client_width = static_cast<int>(inspect_options().width);
+    const int client_height = static_cast<int>(inspect_options().height);
+    check(panner.set_viewport(static_cast<std::uint32_t>(client_width) / 2U,
+                              static_cast<std::uint32_t>(client_height) / 2U, error),
+          "a drag renders at half the client area");
     const nfsu::Vec3 before = panner.options().camera.target;
     nfsu::CameraFrame camera_frame;
-    check(nfsu::make_camera_frame(panner.options().camera, panner.options().width,
-                                  panner.options().height, camera_frame, error),
+    check(nfsu::make_camera_frame(panner.options().camera,
+                                  static_cast<std::uint32_t>(client_width),
+                                  static_cast<std::uint32_t>(client_height),
+                                  camera_frame, error),
           "the fixture camera projects");
-    panner.pan(30.0, 12.0);
+    const nfsu::PanDelta delta =
+        nfsu::pan_delta_for(client_width, client_height, panner.options().width,
+                            panner.options().height, 30.0, 12.0);
+    panner.pan(delta.dx, delta.dy);
     const nfsu::Vec3 after = panner.options().camera.target;
     const nfsu::Vec3 moved{after.x - before.x, after.y - before.y, after.z - before.z};
     const double along = moved.x * camera_frame.forward.x +
@@ -442,13 +596,115 @@ void test_camera_input() {
     check(along > -1e-9 && along < 1e-9, "a pan does not move along the view");
     check(sideways < 0.0, "dragging right moves the target left, so the car follows");
     check(upward > 0.0, "dragging down moves the target up, so the car follows");
-    // One pixel of drag is one pixel of world at the target's depth.
+    // One pixel of drag is one pixel of world at the target's depth, in the
+    // pixels of the window. Measuring that against the rendered height
+    // instead would be measuring pan against itself and would hold whatever
+    // the frame size was.
     const double expected = 30.0 * 2.0 * panner.options().camera.distance /
                             (camera_frame.focal_y *
-                             static_cast<double>(panner.options().height));
+                             static_cast<double>(client_height));
     const double difference = -sideways - expected;
     check(difference > -1e-9 && difference < 1e-9,
           "a pan moves the target by exactly the pixels dragged");
+}
+
+// The world distance one drag moves the target, with the frame rendered at
+// 1 / divisor of a window of this size, which is what the window does for
+// the length of a drag.
+double pan_distance_at_divisor(const nfsu::PreparedCarScene& scene, int client_width,
+                               int client_height, std::uint32_t divisor, double dx,
+                               double dy) {
+    nfsu::Inspector inspector;
+    if (!open_inspector(inspector, scene, inspect_options())) {
+        return -1.0;
+    }
+    std::string error;
+    if (!inspector.set_viewport(static_cast<std::uint32_t>(client_width) / divisor,
+                                static_cast<std::uint32_t>(client_height) / divisor,
+                                error)) {
+        std::cerr << "test setup failed: " << error << '\n';
+        return -1.0;
+    }
+    const nfsu::Vec3 before = inspector.options().camera.target;
+    const nfsu::PanDelta delta =
+        nfsu::pan_delta_for(client_width, client_height, inspector.options().width,
+                            inspector.options().height, dx, dy);
+    inspector.pan(delta.dx, delta.dy);
+    const nfsu::Vec3 after = inspector.options().camera.target;
+    const double mx = after.x - before.x;
+    const double my = after.y - before.y;
+    const double mz = after.z - before.z;
+    return std::sqrt(mx * mx + my * my + mz * mz);
+}
+
+// The drag divisor is a rendering decision and must not be a control
+// decision: the same drag over the same window has to move the target the
+// same world distance whatever fraction of the window the frame is drawn
+// at. Nothing else pins this, and the default configuration never renders a
+// pan at full size, so without it the shipped default is the broken one.
+void test_pan_is_divisor_invariant() {
+    nfsu::PreparedCarScene scene;
+    if (!build_scene(scene)) {
+        ++g_failures;
+        return;
+    }
+    // A window every divisor below divides exactly, so the comparison is
+    // not softened by the integer division the window does.
+    const int client_width = 1000;
+    const int client_height = 600;
+    const double one = pan_distance_at_divisor(scene, client_width, client_height, 1,
+                                               100.0, 0.0);
+    const double two = pan_distance_at_divisor(scene, client_width, client_height, 2,
+                                               100.0, 0.0);
+    const double four = pan_distance_at_divisor(scene, client_width, client_height, 4,
+                                                100.0, 0.0);
+    check(one > 0.0 && two > 0.0 && four > 0.0, "every drag moves the target");
+    if (!(one > 0.0)) {
+        return;
+    }
+    check(two / one > 1.0 - 1e-9 && two / one < 1.0 + 1e-9,
+          "a drag at divisor 2 moves the target as far as at divisor 1");
+    check(four / one > 1.0 - 1e-9 && four / one < 1.0 + 1e-9,
+          "a drag at divisor 4 moves the target as far as at divisor 1");
+
+    // And the distance they all agree on is the documented one, so three
+    // wrong answers that agree would not pass either.
+    nfsu::Inspector reference;
+    if (!open_inspector(reference, scene, inspect_options())) {
+        ++g_failures;
+        return;
+    }
+    std::string error;
+    nfsu::CameraFrame camera_frame;
+    check(nfsu::make_camera_frame(reference.options().camera,
+                                  static_cast<std::uint32_t>(client_width),
+                                  static_cast<std::uint32_t>(client_height),
+                                  camera_frame, error),
+          "the reference camera projects");
+    const double expected = 100.0 * 2.0 * reference.options().camera.distance /
+                            (camera_frame.focal_y * static_cast<double>(client_height));
+    check(one - expected > -1e-9 && one - expected < 1e-9,
+          "one client pixel of drag is one client pixel of world at the target");
+
+    // An orbit is measured in degrees per pixel, which no viewport enters,
+    // so it must not be scaled and must not change with the divisor.
+    const auto yaw_after_orbit = [&](std::uint32_t divisor) {
+        nfsu::Inspector inspector;
+        if (!open_inspector(inspector, scene, inspect_options())) {
+            return 1e18;
+        }
+        std::string ignored;
+        if (!inspector.set_viewport(static_cast<std::uint32_t>(client_width) / divisor,
+                                    static_cast<std::uint32_t>(client_height) / divisor,
+                                    ignored)) {
+            return 1e18;
+        }
+        inspector.orbit(100.0, 0.0);
+        return inspector.options().camera.yaw_deg;
+    };
+    check(yaw_after_orbit(1) == yaw_after_orbit(2) &&
+              yaw_after_orbit(1) == yaw_after_orbit(4),
+          "an orbit turns the same amount whatever the frame is rendered at");
 }
 
 void test_commands() {
@@ -855,6 +1111,34 @@ void test_overlay() {
     check(all.find(expected) != std::string::npos,
           "the detail overlay names the texture hash of the selected group");
 
+    // The mesh whose name is raw bytes rather than an identifier. Both
+    // guarantees the window relies on are only exercised here: nothing else
+    // in the fixture carries a byte outside printable ASCII, and no other
+    // line comes near kMaxOverlayLineBytes.
+    for (std::size_t i = 0; i + 1 < kMeshCount; ++i) {
+        check(inspector.command(nfsu::InspectorCommand::select_next_mesh, error),
+              "the mesh walk reaches the mesh named with raw bytes");
+    }
+    check(inspector.selected_mesh() + 1 == kMeshCount,
+          "the mesh named with raw bytes is selected");
+    inspector.build_overlay(stats, lines);
+    all = joined(lines);
+    check(ascii_and_bounded(lines),
+          "an overlay quoting a raw mesh name stays printable ASCII within a line");
+    std::size_t longest = 0;
+    for (const std::string& line : lines) {
+        longest = std::max(longest, line.size());
+    }
+    check(longest == nfsu::kMaxOverlayLineBytes,
+          "the name overruns a line, so the truncation is the reason it fits");
+    check(all.find("\\x00") != std::string::npos &&
+              all.find("\\xFF") != std::string::npos &&
+              all.find("\\x7F") != std::string::npos,
+          "a NUL, a high byte and a control byte reach the overlay escaped");
+    check(all.find("\\x22") != std::string::npos &&
+              all.find("\\x5C") != std::string::npos,
+          "a quote and a backslash in a name cannot close or escape the quoting");
+
     check(inspector.command(nfsu::InspectorCommand::cycle_overlay, error) &&
               inspector.overlay() == nfsu::InspectorOverlay::help,
           "the help overlay is selected");
@@ -1063,8 +1347,10 @@ void test_window_backend() {
 
 int main() {
     test_order_and_ranges();
+    test_draw_order_stability();
     test_ids_match_the_renderer();
     test_camera_input();
+    test_pan_is_divisor_invariant();
     test_commands();
     test_pick_and_highlight();
     test_views();

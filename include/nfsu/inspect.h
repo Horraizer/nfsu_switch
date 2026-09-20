@@ -58,8 +58,11 @@ constexpr double kMaxOrbitSensitivity = 45.0;
 constexpr double kMinZoomStep = 1.0001;
 constexpr double kMaxZoomStep = 4.0;
 // Pointer deltas and wheel steps are clamped to these before they are
-// applied, so no single event can move the camera unboundedly far and the
-// yaw wrap below always terminates.
+// applied, so no single event can move the camera unboundedly far. The clamp
+// also turns a delta that is not a number into a bounded one, which is what
+// keeps a stray event out of the camera rather than into an invalid one; the
+// yaw wrap is a floor and a subtraction, with no loop that could fail to
+// terminate.
 constexpr double kMaxPointerDelta = 100000.0;
 constexpr int kMaxZoomSteps = 1024;
 

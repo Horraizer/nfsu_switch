@@ -30,7 +30,7 @@ failing exits 2.
 | --- | --- |
 | left drag | orbit |
 | right or middle drag | pan |
-| wheel | zoom, one step per notch |
+| wheel | zoom, one step per notch; a device that reports a fraction of a notch has its reports added up |
 | left click | select the material group under the pointer |
 | `1` `2` `3` `4` `5` | front, right, rear, left and top views |
 | `R` | reset the camera to the one the command line asked for |
@@ -48,9 +48,18 @@ failing exits 2.
 | `Q` or the window close button | close |
 
 The pointer follows the grab convention: the car moves with it. Dragging
-right lowers yaw, dragging down raises pitch, and a pan of one pixel moves
-the target by exactly one pixel's worth of world at the target's depth, so
-a point at that depth stays under the pointer.
+right lowers yaw, dragging down raises pitch, and a pan of one pixel of the
+window moves the target by exactly one window pixel's worth of world at the
+target's depth, so a point at that depth stays under the pointer.
+
+Window pixels, not frame pixels. The window renders a drag smaller than the
+window and stretches it (see **Bounds** below), and the drag divisor is a
+rendering decision that must not change what a control does.
+`Inspector::pan` measures in the pixels of the frame, so the backend undoes
+the stretch first with `pan_delta_for` in `include/nfsu/inspect_window.h`;
+`tests/inspect_tests.cpp` pins that one drag moves the target the same world
+distance at divisor 1, 2 and 4. An orbit needs no conversion, because
+degrees per pixel does not depend on a viewport.
 
 `T` changes the submission order of the whole scene, which renumbers every
 triangle, so it drops the selection rather than keeping one that was made
@@ -135,10 +144,14 @@ valid.
 
 The window renders at the client size, except while a pointer button is held,
 when it renders at half of it and stretches the result, so that a drag stays
-responsive on a CPU rasterizer. A click is resolved against a frame at the
+responsive on a CPU rasterizer. That is a rendering decision only: a pan
+converts the pointer delta out of window pixels and into the pixels of that
+smaller frame before it applies it, so the same drag moves the target the
+same distance at any divisor. A click is resolved against a frame at the
 full client size, so the pixel clicked and the pixel picked are the same one.
 A client size the render limits refuse keeps the previous frame size and
-stretches it.
+stretches it; the frame is then not at the client size, where a click would
+resolve against the wrong pixel, so the click is dropped instead.
 
 A render is asked for only when the frame itself is out of date. The
 inspector reports that separately from needing a repaint: the camera, the
@@ -153,24 +166,33 @@ takes a moment to rasterize is therefore immediate, and
 `nfsu_inspect` is the state, `nfsu_inspect_window` the backend; the viewer
 links the second, which links the first. The window backend is chosen by
 `if(WIN32)` in `CMakeLists.txt` and nothing else selects it.
+`src/inspect_window_common.cpp` is the part of a backend that is not a
+window, `pan_delta_for` so far; it calls no operating system, is compiled on
+every platform and is therefore tested with everything else.
 
 `nfsu_inspect_tests` covers the layer headlessly. No test opens a window:
 one that did would wait for a person. It checks that the prepared order is
 the identity and the retail order is a permutation that walks the draw queue
-rows in ascending order; that the triangle ranges are contiguous from zero
-and cover every submitted triangle; that a malformed order is refused; that
-in **both** material states every drawn pixel's id names the group whose
+rows in ascending order; that the retail order keeps the record order of
+groups a comparison cannot separate, on a scene long enough that an unstable
+sort would actually reorder it; that the triangle ranges are contiguous from
+zero and cover every submitted triangle; that a malformed order is refused;
+that in **both** material states every drawn pixel's id names the group whose
 texture is at that pixel, on frames the CPU renderer produced, which is the
 whole picking contract; that the camera survives 200 rounds of hostile input
-and stays valid; that a drag moves the target by exactly the pixels dragged
-and never along the view; that the selection walks visit every drawable
+and stays valid; that turning one way for a whole revolution passes 180,
+comes back at -180 and arrives where it started, so the yaw wrap is a wrap
+and not a saturation; that a drag moves the target by exactly the window
+pixels dragged and never along the view, and by the same world distance at
+drag divisor 1, 2 and 4; that the selection walks visit every drawable
 group and every mesh once and wrap; that a click selects the group under it
 and a click on the background clears; that the highlight mask marks exactly
 the selected group's pixels; that each view gives one color per group or per
 mesh and keeps the background; that a view is refused rather than invented
 when the backend gave it no depth or no ids; that the overlay is printable
-ASCII and reports what it claims to; and that the window backend refuses an
-inspector with no scene and an out-of-range drag divisor before creating
+ASCII and reports what it claims to, including for a mesh whose name is raw
+bytes and long enough to overrun a line; and that the window backend refuses
+an inspector with no scene and an out-of-range drag divisor before creating
 anything.
 
 The refactor that moved the draw order into the scene layer was checked

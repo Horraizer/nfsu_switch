@@ -31,6 +31,39 @@ struct InspectionWindowOptions {
 
 constexpr std::uint32_t kMaxDragDivisor = 16;
 
+// A pointer delta expressed in the pixels of the frame, which is the unit
+// Inspector::pan takes.
+struct PanDelta {
+    double dx = 0.0;
+    double dy = 0.0;
+};
+
+// Converts a pointer delta measured in client pixels into that unit.
+//
+// frame_width and frame_height are the viewport the inspector will render
+// at, Inspector::options().width and .height, because that is the size
+// Inspector::pan turns a pixel into a world distance with. A backend that
+// renders smaller than the window and stretches the result therefore has to
+// undo the stretch before it pans: one client pixel spans
+// frame_width / client_width pixels of the frame across and
+// frame_height / client_height down. Without that the target moves
+// drag_divisor times too far, which is what a pan does while a button is
+// held and the frame is rendered at a fraction of the window.
+//
+// One drag in client pixels therefore moves the target the same world
+// distance at every drag divisor, and the delta is dx, dy unchanged when the
+// frame already fills the client area. A client area or frame with a side
+// that is not positive maps to no movement, because no stretch is defined
+// for it. This is pure arithmetic and belongs to no windowing API: a deko3d
+// backend that renders a drag smaller uses it the same way.
+PanDelta pan_delta_for(
+    int client_width,
+    int client_height,
+    std::uint32_t frame_width,
+    std::uint32_t frame_height,
+    double dx,
+    double dy) noexcept;
+
 // True when this build has a window backend at all. False builds still
 // compile and link; run_inspection_window then fails with a clear message
 // instead of pretending to open anything.

@@ -62,6 +62,10 @@ struct Session {
     int last_y = 0;
     int press_x = 0;
     int press_y = 0;
+    // Wheel movement that has not yet added up to a whole notch. A precision
+    // trackpad reports deltas smaller than WHEEL_DELTA, and dropping them
+    // would leave it unable to zoom at all.
+    int wheel_residual = 0;
     // A click that has not been resolved into a selection yet, in client
     // pixels; resolved against the frame that the next paint renders.
     bool pending_pick = false;
@@ -81,10 +85,16 @@ struct Session {
 
 // The viewport the next frame is rendered at: the client size, divided while
 // a drag is in progress so that the CPU renderer keeps up.
-void apply_viewport(Session& session) {
+//
+// Returns false when the viewport is not the size that was asked for, which
+// happens when the render limits refuse it: the previous viewport is kept
+// and the blit stretches whatever size the frame has onto the client area.
+// Only the pick cares, because a click is resolved in client pixels and that
+// is only the same pixel when the frame covers the client area one to one.
+bool apply_viewport(Session& session) {
     if (session.inspector == nullptr || session.client_width <= 0 ||
         session.client_height <= 0) {
-        return;
+        return false;
     }
     std::uint32_t divisor = 1;
     if (session.orbiting || session.panning) {
@@ -95,9 +105,7 @@ void apply_viewport(Session& session) {
     const std::uint32_t height =
         std::max<std::uint32_t>(1, static_cast<std::uint32_t>(session.client_height) / divisor);
     std::string ignored;
-    // A size the render limits refuse keeps the previous viewport; the blit
-    // stretches whatever size the frame has onto the client area.
-    session.inspector->set_viewport(width, height, ignored);
+    return session.inspector->set_viewport(width, height, ignored);
 }
 
 // Renders when the inspector says the frame is stale, then resolves a
@@ -234,6 +242,10 @@ void paint(Session& session, HWND window) {
     PAINTSTRUCT paint_struct;
     HDC dc = BeginPaint(window, &paint_struct);
     if (dc == nullptr) {
+        // BeginPaint failed, so EndPaint has nothing to end and the update
+        // region is still there. Clear it by hand: leaving it would have
+        // Windows post WM_PAINT again at once, forever.
+        ValidateRect(window, nullptr);
         return;
     }
     RECT client;
@@ -317,7 +329,7 @@ void begin_drag(Session& session, HWND window, bool orbit, LPARAM position) {
     session.last_x = session.press_x;
     session.last_y = session.press_y;
     SetCapture(window);
-    apply_viewport(session);
+    static_cast<void>(apply_viewport(session));
 }
 
 void end_drag(Session& session, HWND window, LPARAM position, bool was_orbit) {
@@ -328,10 +340,13 @@ void end_drag(Session& session, HWND window, LPARAM position, bool was_orbit) {
     session.orbiting = false;
     session.panning = false;
     ReleaseCapture();
-    apply_viewport(session);
-    if (click) {
+    const bool full_size = apply_viewport(session);
+    if (click && full_size) {
         // Resolved by the next paint, against a frame at the full client
         // size, so the client pixel and the frame pixel are the same one.
+        // A client area the render limits refuse leaves the frame at the
+        // drag size, where that is no longer true, so the click is dropped
+        // rather than resolved against the wrong pixel.
         session.pending_pick = true;
         session.pick_x = x;
         session.pick_y = y;
@@ -350,7 +365,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     case WM_SIZE: {
         session->client_width = static_cast<int>(LOWORD(l));
         session->client_height = static_cast<int>(HIWORD(l));
-        apply_viewport(*session);
+        static_cast<void>(apply_viewport(*session));
         InvalidateRect(window, nullptr, FALSE);
         return 0;
     }
@@ -368,21 +383,21 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     case WM_MBUTTONDOWN:
         begin_drag(*session, window, false, l);
         return 0;
+    // Releasing any pointer button ends the drag that is running, whichever
+    // button started it. Pressing a second button while the first is held
+    // switches the drag, so tying each release to its own button would make
+    // the first release do nothing and hold the capture until the second.
     case WM_LBUTTONUP:
-        if (session->orbiting) {
-            end_drag(*session, window, l, true);
-        }
-        return 0;
     case WM_RBUTTONUP:
     case WM_MBUTTONUP:
-        if (session->panning) {
-            end_drag(*session, window, l, false);
+        if (session->orbiting || session->panning) {
+            end_drag(*session, window, l, session->orbiting);
         }
         return 0;
     case WM_CAPTURECHANGED:
         session->orbiting = false;
         session->panning = false;
-        apply_viewport(*session);
+        static_cast<void>(apply_viewport(*session));
         return 0;
     case WM_MOUSEMOVE: {
         if (!session->orbiting && !session->panning) {
@@ -398,16 +413,32 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
             return 0;
         }
         if (session->orbiting) {
+            // Degrees per pixel does not depend on the viewport, so an
+            // orbit is the same drag whatever size the frame is rendered at.
             session->inspector->orbit(dx, dy);
         } else {
-            session->inspector->pan(dx, dy);
+            // A pan does depend on it: the delta is in client pixels and
+            // Inspector::pan measures in the pixels of the viewport it will
+            // render at, which is smaller than the client area for the
+            // length of the drag.
+            const RenderOptions& view = session->inspector->options();
+            const PanDelta delta =
+                pan_delta_for(session->client_width, session->client_height, view.width,
+                              view.height, dx, dy);
+            session->inspector->pan(delta.dx, delta.dy);
         }
         InvalidateRect(window, nullptr, FALSE);
         return 0;
     }
     case WM_MOUSEWHEEL: {
         const int delta = GET_WHEEL_DELTA_WPARAM(w);
-        const int steps = delta / WHEEL_DELTA;
+        // Accumulate, so that a precision trackpad reporting a fraction of a
+        // notch per event still zooms once its events add up to one. The
+        // residual is bounded by a notch in each direction, so the sum
+        // cannot overflow whatever a device sends.
+        const int total = session->wheel_residual + delta;
+        const int steps = total / WHEEL_DELTA;
+        session->wheel_residual = total - steps * WHEEL_DELTA;
         if (steps != 0) {
             session->inspector->zoom(steps);
             InvalidateRect(window, nullptr, FALSE);

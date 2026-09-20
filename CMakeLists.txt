@@ -146,13 +146,21 @@ add_library(nfsu_inspect
     src/inspect.cpp
 )
 
+# Backend-neutral is about the windowing API, not about this link: the
+# state is declared in terms of RenderOptions, RenderLimits and OrbitCamera,
+# which live in nfsu_render, so the library carries a link-time dependency on
+# the CPU rasterizer even though it never calls render_scene. A deko3d
+# backend links it and submits its own frames; moving those three types into
+# a smaller target is the only thing that would drop the dependency, and
+# nothing needs that yet.
 target_link_libraries(nfsu_inspect PUBLIC nfsu_render)
 nfsu_enable_warnings(nfsu_inspect)
 
 # The desktop window that drives it. Exactly one backend is compiled: the
 # Win32 one, which needs nothing but user32 and gdi32, or a stub that fails
 # closed everywhere else. This is the only file in the project that talks to
-# a windowing API.
+# a windowing API. src/inspect_window_common.cpp is the arithmetic every
+# backend shares and calls no operating system, so it is always compiled.
 if(WIN32)
     set(NFSU_INSPECT_WINDOW_SOURCE src/inspect_window_win32.cpp)
 else()
@@ -160,6 +168,7 @@ else()
 endif()
 
 add_library(nfsu_inspect_window
+    src/inspect_window_common.cpp
     ${NFSU_INSPECT_WINDOW_SOURCE}
 )
 
