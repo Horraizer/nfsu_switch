@@ -305,7 +305,7 @@ nfsu_case("the frame size reaches the frame" 4
 # symmetric in the two. Nothing driven from this script can see that swap.
 # What can is a scene with geometry in it, where the aspect ratio changes
 # what the camera frames: on the reference region 64x32 draws 65 pixels over
-# 345 tests and 32x64 draws 76 over 422. That is acceptance item 8 of
+# 345 tests and 32x64 draws 76 over 422. That is acceptance item 7 of
 # docs/TRACK_BUDGET.md, and it is a run someone performs rather than a gate.
 nfsu_case("the echoed frame size is width then height" 4
           "budget: frame 64x32" "budget: frame 32x64"

@@ -29,9 +29,11 @@ behaviour changed.
 **Wall-clock time on this project's machine is not.** Several agent sessions
 share this checkout and more than one is routinely live, so a stage timed
 while another session is linking is slower for a reason that has nothing to
-do with this code. That is not hypothetical here: the timings below were
-taken twice on purpose, once with another build running and once without,
-and the difference is recorded rather than averaged away.
+do with this code. That is not hypothetical here, and the measurement below
+did not have to arrange it: no run in this note could be taken on an idle
+machine, because another session was compiling throughout. Measured over
+five runs of thirty repetitions, the MEDIAN moves by up to 14.6 per cent
+between runs.
 
 So the two are split at the API boundary rather than mixed and then
 qualified:
@@ -69,6 +71,23 @@ overhead, or anything the process allocated for another reason. They are the
 dominant arrays a backend sizes buffers against, which is what a budget is
 for. A process-wide memory number would cover the rest and would stop being
 reproducible in exchange - the same trade the clock paragraph refuses.
+
+**Three of them are also not portable, and the claim above has to be read
+with that.** `prepare.instance_bytes` is `instances * sizeof(PreparedTrackInstance)`,
+`prepare.resident_bytes` includes it, and `frame.entry_bytes` is
+`entries * sizeof(TrackDrawListEntry)`. A `sizeof` is a property of the
+compiler and the target, not of the region: `PreparedTrackInstance` holds
+several `std::size_t`, so it is 144 bytes here and would be smaller on a
+32-bit target and could differ again under another compiler's padding.
+
+So the precise statement is that **every counter is a function of the inputs
+FOR ONE BUILD**, which is what the determinism cross-check verifies and what
+a regression gate needs; and that the counts of things - draw calls,
+triangles, texture binds, instances, vertices - are portable on top of that,
+while those three byte figures carry their build with them. The figures
+below are this repository's GCC 13.2.0 x86-64 build. `render.frame_bytes`
+is in between: its four element sizes are fixed by the C++ types
+`nfsu::Frame` names, so it moves only if `Frame` does.
 
 ## The four stages
 
@@ -367,25 +386,99 @@ repository has twice drawn a wrong conclusion from a harness that looked
 fine - once from concurrent arms where the contention it assumed never
 existed, and once from a stale executable a failed compile left behind.
 
-Two sets were taken, deliberately:
+**There was no quiet machine to measure on, and that is a result rather
+than an excuse.** The plan was a quiet set and a loaded set. The quiet set
+could not be taken: at every attempt another agent session was compiling in
+its own worktree - `C:/Users/horra/AppData/Local/Temp/nfsu-42-probe-sub`,
+issue #42's, identified from the compiler process's own command line. That
+is exactly the condition [`CLAUDE.md`](../CLAUDE.md) describes as ordinary
+here, so the measurement was redesigned around it rather than waiting for a
+state this machine does not reliably reach.
 
-- **QUIET.** No other build, test or agent session running on this machine,
-  checked by process list immediately before and after. This is the set the
-  budget quotes.
-- **LOADED.** Taken while a second agent session compiled in its own
-  worktree, which is the ordinary state of this machine rather than an
-  artificial stress. It is recorded to show how far a number taken at the
-  wrong moment moves, and it is the evidence behind the decision not to gate
-  a time.
+**What replaced it is a better experiment anyway.** Five separate runs of
+`--repeat 30` were taken, minutes apart, with the number of running
+compiler, `ninja` and `cmake` processes recorded immediately before each -
+3, 3, 2, 1 and 1. That measures the thing a budget actually needs to know:
+not how fast one run was, but **how far the number moves depending on when
+you take it.**
 
-Both sets are Release, the same region, the same command, `--repeat 30`
-after one discarded warm-up. `nfsu_probe.exe` was deleted by exact name and
-rebuilt before the quiet set, and its timestamp checked afterwards, so no
-figure here comes from an executable an earlier failed compile left behind.
+`nfsu_probe.exe` was deleted by exact name and rebuilt before the set, and
+its timestamp checked afterwards, so no figure here comes from an executable
+an earlier failed compile left behind.
 
 ### The measurement
 
+Release, the reference region, `--order material-group`, `--repeat 30` after
+one discarded warm-up, default 1280x720 frame. All five runs reported
+`counts identical in all 31 runs`, and none wrote to standard error.
+
+Milliseconds. The middle column is the median of each run's median over the
+five runs; the two spread columns are what the argument rests on.
+
+| Phase | Median of medians | Between-run spread of the median | Within-run standard deviation |
+| --- | ---: | ---: | --- |
+| `parse` | 0.366 | 5.0% | 8.1% to 24.6% of the median |
+| `texture` | 3.984 | 8.3% | 4.0% to 8.6% |
+| `prepare` | 0.881 | 14.4% | 6.2% to 21.7% |
+| `frame` | 0.025 | 5.6% | 3.5% to 20.6% |
+| `render` | 4.849 | 14.6% | 5.4% to 13.1% |
+| **all five** | **10.0** | **10.0%** | |
+
+One run in full, so the shape of a report is on the record:
+
+```text
+time: parse samples 30 min 0.3086 median 0.369 mean 0.37275 stddev 0.03775 max 0.5024 ms
+time: texture samples 30 min 3.623 median 3.82575 mean 3.83905 stddev 0.15172 max 4.2825 ms
+time: prepare samples 30 min 0.7894 median 0.83525 mean 0.84952 stddev 0.06190 max 1.0338 ms
+time: frame samples 30 min 0.0235 median 0.02465 mean 0.02486 stddev 0.00087 max 0.0268 ms
+time: render samples 30 min 4.2161 median 4.4406 mean 4.51846 stddev 0.24086 max 5.0459 ms
+```
+
+#### The build configuration, measured rather than asserted
+
+The same command from the default configuration, which carries no `-O` flag
+so GCC compiles it at `-O0`, taken under matched load so that the
+configuration is the only thing that differs:
+
+| Phase | Release | Default (`-O0`) | Ratio |
+| --- | ---: | ---: | ---: |
+| `parse` | 0.327 | 0.748 | 2.29x |
+| `texture` | 4.135 | 10.323 | 2.50x |
+| `prepare` | 0.890 | 1.148 | 1.29x |
+| `frame` | 0.025 | 0.065 | 2.59x |
+| `render` | 4.763 | 14.266 | 3.00x |
+| **total** | **10.14** | **26.55** | **2.62x** |
+
+**That is why every figure here is Release**, and why the note says so
+wherever one is not. A budget quoted from the default configuration would be
+two and a half times too generous.
+
 ### What the timings say
+
+- **Render dominates, and texture decoding is second.** Of 10.1 ms,
+  `render` is 4.8 and `texture` is 4.0. Parsing and preparing the region
+  together are 1.25 ms, and selecting a frame out of the prepared scene is
+  0.025 ms - **195 times cheaper than drawing it.** That is the
+  prepare-once, select-per-frame arrangement of
+  [`TRACK_DRAW_LIST.md`](TRACK_DRAW_LIST.md) doing what it was chosen to do,
+  and it is the same conclusion `frame.entry_bytes` reaches about memory:
+  368 bytes per frame against 3173846 held.
+- **The render figure is the CPU reference rasterizer's and transfers to no
+  backend.** It is a scalar loop over 2739 rasterized triangles writing a
+  `double` depth buffer. What a GPU backend inherits from this table is the
+  shape - that selection is free and drawing is not - and none of the
+  numbers.
+- **A 30-sample median still moves by up to 14.6 per cent between runs**,
+  and the whole pipeline's total by 10 per cent, on a machine where the only
+  thing that changed was how many other processes were compiling. Within a
+  single run the standard deviation reaches 24.6 per cent of the median.
+
+**That last point is the whole case for not gating a time.** A ceiling with
+less headroom than about 15 per cent would trip on a concurrent build and be
+deleted; a ceiling with more would not catch a regression smaller than the
+noise. Neither is worth having, so this project pins counts and documents
+times, and says so rather than leaving a reader to wonder why the timing
+section ends without a limit.
 
 ## What is automated, and what is not
 
@@ -399,7 +492,7 @@ limits as possible.
 - **The budget mechanism.** `tests/track_budget_tests.cpp` covers the
   counter table, the four gatherers and `check_track_budget`, including both
   sides of every boundary and all three refusals.
-- **The command.** `tests/track_budget_guards.cmake` drives 64 cases with no
+- **The command.** `tests/track_budget_guards.cmake` drives 84 cases with no
   input files at all: every option refusal, both budget verdicts, four of
   the five exit statuses, and each of the report's four blocks.
 - **Two real ceilings on a real counter.** The guard cases hold
@@ -418,12 +511,15 @@ limits as possible.
   [`TRACK_RENDER.md`](TRACK_RENDER.md) all do the same. A CTest entry that
   silently skipped when the installation was absent would be worse than the
   acceptance list: it would read as a gate and cover nothing.
-- **Every wall-clock time.** The measured variance above is the evidence,
-  and it is not marginal: even on a quiet machine over 30 repetitions the
-  standard deviation runs from 3.7 to 9.9 per cent of the median, and a
-  concurrent build moves the median itself. A documented budget with no
-  automated limit is what issue #43 allows when the reasoning is stated; a
-  limit that flakes is not.
+- **Every wall-clock time.** The measured variance above is the evidence and
+  it is not marginal: over five runs of 30 repetitions each, the MEDIAN
+  moved by up to 14.6 per cent per phase and 10 per cent over the whole
+  pipeline, and within a single run the standard deviation reached 24.6 per
+  cent of the median. A ceiling tighter than that noise would trip on
+  another session's build and be deleted; one looser would not catch a
+  regression smaller than the noise. A documented budget with no automated
+  limit is what issue #43 allows when the reasoning is stated; a limit that
+  flakes is not.
 
 ## Tests
 
@@ -436,7 +532,8 @@ field**, which is what makes a gatherer reading the wrong source member
 produce the wrong number rather than the right one by luck - the single most
 likely real defect in a field-copy layer.
 
-Three things it pins that are easy to leave out:
+Six things it pins that are easy to leave out. The first three were there
+from the start; the last three are what the two mutation passes added.
 
 - **Each gatherer fills only its own block.** Every test pre-fills the other
   three blocks with sentinels and requires them untouched.
@@ -448,10 +545,25 @@ Three things it pins that are easy to leave out:
   Asserted in both directions, because a caller reading a refusal as "over
   budget" would report a typo as a regression and one reading it as "within
   budget" would report a typo as a pass.
+- **The counter table's full contents and order**, as a 44-name list. The
+  shape checks around it - unique names, a stage prefix, contiguous blocks -
+  are all satisfied by two counters of one stage swapped with each other,
+  which is what an independent pass used. The list is deliberately brittle:
+  a counter added, removed or moved has to be acknowledged here, which for a
+  documented contract is the behaviour worth having.
+- **Each stage measured ON ITS OWN.** Setting every flag the same way lets
+  `stage_measured` answer with a neighbour's flag and still be right, so
+  there is a loop that measures exactly one stage at a time and requires
+  that stage's limit to be checked and the other three to be refused.
+- **The statistics, against known answers.** Sample sets of zero, one, two,
+  three and four, given out of order, with the median, mean and sample
+  standard deviation of each worked out by hand. Two is the count that
+  matters most: it is the boundary the `n > 1` guard sits on and the only
+  one that distinguishes it from `n > 2`.
 
 ### The command
 
-`tests/track_budget_guards.cmake`, one CTest entry driving 64 cases, each
+`tests/track_budget_guards.cmake`, one CTest entry driving 84 cases, each
 asserting the exact exit status and a diagnostic that names what was
 refused. A CMake script rather than more `add_test` entries because
 `PASS_REGULAR_EXPRESSION` makes CTest **ignore the exit status**, and here
@@ -493,8 +605,39 @@ it. They are not summable.
 | Set | Written | Applied | Caught | Survived | Unknown |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | The author's, against the first revision | 58 | 56 | 50 | 6 | 0 |
+| **An independent pass, against the first revision** | **224** | **224** | **159** | **65** | **0** |
 | The author's, against this revision | 58 | 58 | 57 | 1 | 0 |
 | The first round's survivors re-expressed, plus four | 10 | 10 | 8 | 2 | 0 |
+
+**The bold row is the number to quote**, and it is the only one in the table
+taken over a set nobody here chose. It was written by a session that had not
+read either test file - it was told to write its mutations from the source
+and the header and to read the tests only afterwards, to explain survivors -
+working in its own detached worktree at the pinned first-revision SHA. It
+re-ran all 65 of its survivors under the full 30-test `ctest` as well, and
+all 65 survived that too, so no other suite covers any of them.
+
+By function, at the revision it measured:
+
+| Area | Caught / applied |
+| --- | ---: |
+| The four gatherers | **60 / 60** |
+| `track_budget_value` | 6 / 6 |
+| `check_track_budget` | 18 / 19 |
+| The `kCounters` table | 12 / 13 |
+| `track_budget_entries` | 5 / 7 |
+| `stage_measured` | **2 / 7** |
+| `src/track_budget.cpp` overall | 106 / 116 |
+| The command's argument parsing | 23 / 35 |
+| `run_track_budget` | 23 / 36 |
+| `measure_track_budget_once` | 6 / 24 |
+| **The statistics helper** | **1 / 13** |
+
+The shape of that is the finding. **The four gatherers - the part of this
+change most likely to hold a real defect, because a field-copy layer's
+characteristic bug is reading the wrong field - were the one thing it could
+not break at all.** Everything it did break was in the command, and the two
+weakest areas were the two this note now says were moved into the library.
 
 `Applied` is below `Written` in the first row because two mutants did not
 compile; a mutant that does not build is not a mutant and is discarded
@@ -535,6 +678,52 @@ tests used sample sets of one, three and four, and **not two** - which is
 the smallest count that has a spread at all and the boundary the `n > 1`
 guard sits on. A guard written `n > 2` passed every other case. There is a
 two-sample case now.
+
+#### What the independent pass found on top of that
+
+It reached the same conclusion about the statistics helper independently and
+called it the highest-value gap in the change, which is the main reason that
+refactor is described above as measured rather than guessed. Seven further
+findings were confirmed before any was acted on, and every one is now
+closed:
+
+- **A vacuous assertion.** `check(error.find("render"))` was satisfied by
+  the echoed counter name `render.pixels_drawn` before the stage name was
+  ever appended, so a mutant replacing the stage name with `"?"` passed it.
+  The message claimed a property the assertion did not check. It now
+  requires the phrase `names the render stage`.
+- **`stage_measured`'s parse, prepare and frame arms were untested**, and
+  are unreachable from the command, which always measures those three
+  stages - so the library test was the only place they could be covered, and
+  it covered none. It now drives each stage measured ON ITS OWN, so an arm
+  reading a neighbour's flag fails one half of the pair whichever two it
+  confuses.
+- **The counter table's ORDER was unpinned.** Every shape check - unique
+  names, a stage prefix, contiguous blocks - passes with two counters of one
+  stage swapped. The full 44-name list is asserted now.
+- **Five guard needles omitted the sample count**, reading
+  `time: <phase> samples`, which a phase that collected nothing also matches
+  at `samples 0`. A mutant that ended the collection loop one phase early
+  lived there. They carry counts now, and one case pins that the warm-up
+  contributes no sample.
+- **No guard case put a `--limit` on a parse or a prepare counter**, so both
+  gatherer calls could be deleted from the command and every block still
+  printed, at zero, because the table always emits every row. There is a
+  limit on each of the four stages now.
+- **The accepting boundary of `--repeat`, `--width`, `--height` and every
+  `--view-*` option was undriven** while the rejecting side was covered, and
+  the literals `--order visible-instance`, `--residency every`, `no-zone`
+  and a valid `--far` were never passed at all.
+- **`kMaxTrackTextureInputBytes - read_bytes` is an unguarded unsigned
+  subtraction.** It was safe as written, but only as an emergent property of
+  the loop, and this command had added a third copy of it. The copy is gone:
+  `decode_track_scene_textures` takes a `quiet` flag, so `track-budget`
+  times the same path `track-scene` and `track-render` run, and the
+  subtraction is clamped rather than left to be reasoned about.
+
+The exit-2 gap and the swapped `--width`/`--height` that no gate can see
+were found by both passes independently; they are recorded above under the
+command's tests and as acceptance item 7.
 
 #### What still survives, and why
 
@@ -611,7 +800,29 @@ Expected:
 6. Adding `--limit frame.draw_call 46` - one character short - exits **1**
    with `no track budget counter is named 'frame.draw_call'` and prints no
    verdict line at all.
-7. The 476 files of the installation are unchanged in path, size and
+7. **The frame's width and height are not interchangeable.** Adding
+   `--width 64 --height 32` gives `render.pixel_tests 345` and
+   `render.pixels_drawn 65`; `--width 32 --height 64` gives `422` and `76`.
+   `render.frame_bytes` is `34816` for both, because it is a product.
+   **This is the only check of that anywhere**, and it is here rather than
+   in the gate for a reason worth stating: with no geometry every render
+   counter is symmetric in the two, so a run without the installation cannot
+   tell a swapped width and height from a correct one. An independent
+   mutation pass swapped them and survived every case in
+   `tests/track_budget_guards.cmake`.
+8. **The two commands that share the texture decoder are unchanged.**
+   `decode_track_scene_textures` gained a `quiet` flag so that
+   `track-budget` could time the same path rather than carry a second copy
+   of it, and that function is `track-scene`'s and `track-render`'s. Neither
+   passes the flag, so neither should move: `track-scene` still prints its
+   `texture source 0: ... packs 1 complete 1` line and the same
+   `draw list: entries 46 triangles 2827 groups 42 meshes 17 texture binds
+   41`, and `track-render` still writes 3686418 bytes with SHA-256
+   `D17D632B1648B46C26852E91B71BC27CC69D25216C8056AD15FD87E049EA9FD2` -
+   the hash [`TRACK_RENDER.md`](TRACK_RENDER.md) pins for the default view.
+   That rendered frame is derived game data and is **not committed**; it is
+   written outside the repository and deleted.
+9. The 476 files of the installation are unchanged in path, size and
    modification time before and after.
 
 ## Unknown, and what this does not cover
