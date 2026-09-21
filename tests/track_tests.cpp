@@ -2444,6 +2444,11 @@ void test_track_texture_source_collision() {
         const bool ok = decode_and_prepare(
             report, {a.source(&wanted), b.source(&wanted)}, set, prepared, error);
         check(ok, "the two-source region prepares: " + error);
+        // Both sources hold one pack, so pack 0 is the only value this
+        // fixture can produce and this line alone distinguishes nothing.
+        // It is the zero half of a pair; the one half is the second-pack
+        // block below, which is what a decoder that stopped writing the
+        // field would fail.
         check(set.shadowed.size() == 1 && set.shadowed[0].hash == 0xAAAA0002U &&
                   set.shadowed[0].source == 1 && set.shadowed[0].pack == 0 &&
                   set.shadowed[0].record == 0 && set.shadowed[0].by_source == 0,
@@ -2485,6 +2490,8 @@ void test_track_texture_source_collision() {
         const bool ok = decode_and_prepare(
             report, {b.source(&wanted), a.source(&wanted)}, set, prepared, error);
         check(ok, "the reversed region prepares: " + error);
+        // pack 0 here is the zero half of the same pair; record 1 is not,
+        // because the block above pins the same field at 0.
         check(set.shadowed.size() == 1 && set.shadowed[0].hash == 0xAAAA0002U &&
                   set.shadowed[0].source == 1 && set.shadowed[0].pack == 0 &&
                   set.shadowed[0].record == 1 && set.shadowed[0].by_source == 0,
@@ -2557,6 +2564,96 @@ void test_track_texture_source_collision() {
               "source 1 was read and both its records were shadowed");
         check(prepared.cost.unusable_draws == 2,
               "a later source does not resolve an earlier ambiguity");
+    }
+    {
+        // The pack half of shadowed-record provenance. Every other shadowed
+        // record in this file sits in the first pack of its source, so the
+        // "pack 0" those blocks assert is the only value their fixtures can
+        // produce: a decoder that never wrote the field would satisfy them
+        // all. This block is the other half of the pair, the same shape the
+        // resolved-draw assertions above already have with texture_pack 0
+        // and texture_pack 1 at two sites. The shadowed record and the
+        // unusable claim it leaves behind both come out of the second pack
+        // of a two-pack source, at a position inside that pack that is not
+        // 0 either.
+        //
+        // The fixture states the layout in bytes - build() writes the packs
+        // in the order it is given - and the parse is read back below before
+        // any decode assertion leans on it. Nothing hands the decoder the
+        // numbers it is then held to; they are this test's own.
+        PackSpec front;
+        front.textures = {pack_texture(0xAAAA0001U, 0x11)};
+        PackSpec back_first;
+        back_first.textures = {pack_texture(0xAAAA0003U, 0x44)};
+        PackSpec back_second;
+        // Record 0 of the second pack is sound. Record 1 disagrees with its
+        // own hash-table word, so it is refused and still claims two
+        // hashes: 0x0BADF00D, which nothing else claims, and 0xAAAA0001,
+        // which the earlier source already holds. Shadowed on the second,
+        // it leaves the first as an unusable claim, so one record at a
+        // known position pins the provenance of both records.
+        back_second.textures = {pack_texture(0xAAAA0002U, 0x33),
+                                pack_texture(0x0BADF00DU, 0x55)};
+        back_second.textures[1].table_hash = 0xAAAA0001U;
+
+        TextureFile front_file;
+        front_file.build({front});
+        TextureFile back_file;
+        back_file.build({back_first, back_second});
+        check(back_file.set.packs.size() == 2 &&
+                  back_file.set.packs[0].textures.size() == 1 &&
+                  back_file.set.packs[0].textures[0].hash == 0xAAAA0003U &&
+                  back_file.set.packs[1].textures.size() == 2 &&
+                  back_file.set.packs[1].textures[0].hash == 0xAAAA0002U &&
+                  back_file.set.packs[1].textures[1].hash == 0x0BADF00DU &&
+                  back_file.set.packs[1].textures[1].table_hash == 0xAAAA0001U,
+              "the second file parses as two packs, the refused record last "
+              "in the second");
+
+        nfsu::RenderTextureSet set;
+        nfsu::PreparedTrackRegion prepared;
+        std::string error;
+        const bool ok = decode_and_prepare(
+            report, {front_file.source(&wanted), back_file.source(&wanted)}, set,
+            prepared, error);
+        check(ok, "the second-pack shadow region prepares: " + error);
+        check(set.shadowed.size() == 1 && set.shadowed[0].hash == 0xAAAA0001U &&
+                  set.shadowed[0].source == 1 && set.shadowed[0].pack == 1 &&
+                  set.shadowed[0].record == 1 && set.shadowed[0].by_source == 0,
+              "a shadowed record names the pack it came from, got pack " +
+                  std::to_string(set.shadowed.empty() ? 0
+                                                      : set.shadowed[0].pack));
+        check(set.unusable_claims.size() == 1 &&
+                  set.unusable_claims[0].hash == 0x0BADF00DU &&
+                  set.unusable_claims[0].source == 1 &&
+                  set.unusable_claims[0].pack == 1 &&
+                  set.unusable_claims[0].record == 1,
+              "its unusable claim names the same pack and position, got pack " +
+                  std::to_string(set.unusable_claims.empty()
+                                     ? 0
+                                     : set.unusable_claims[0].pack));
+        // The first pack of that same source supplied a texture, so the
+        // index above is a position inside the source and not the source
+        // index, a constant, or a count of packs seen.
+        bool saw_first_pack = false;
+        for (const nfsu::RenderTexture& texture : set.textures) {
+            if (texture.hash == 0xAAAA0003U) {
+                saw_first_pack = true;
+                check(texture.source == 1 && texture.pack == 0 &&
+                          texture.record == 0,
+                      "the first pack of the second source is still pack 0");
+            }
+        }
+        check(saw_first_pack && set.textures.size() == 3,
+              "the sound records of both packs are decoded");
+        check(prepared.cost.resolved_draws == 4 &&
+                  prepared.cost.unusable_draws == 0 &&
+                  prepared.unresolved_hashes.empty(),
+              "the refused record costs the region none of its draws");
+        check(drawn_fill(prepared, 0) == 0x11 &&
+                  drawn_fill(prepared, 1) == 0x33 &&
+                  drawn_fill(prepared, 3) == 0x44,
+              "each draw carries the pixels of the pack that kept its hash");
     }
     {
         // The wanted filter. A track source is filtered by the region's
@@ -2661,6 +2758,9 @@ void test_track_texture_source_collision() {
             {a_file.source(&wanted), b_file.source(&wanted), c_file.source(&wanted)},
             set, prepared, error);
         check(ok, "the unusable-claim region prepares: " + error);
+        // Single-pack sources again, and the claiming record is the first
+        // of its pack, so pack 0 and record 0 are the zero half of a pair.
+        // The one half of both is the second-pack block above.
         check(set.unusable_claims.size() == 1 &&
                   set.unusable_claims[0].hash == 0xAAAA0002U &&
                   set.unusable_claims[0].source == 1 &&
