@@ -173,6 +173,31 @@ else()
     target_compile_options(nfsu_track_render PRIVATE -ffp-contract=off -fno-fast-math)
 endif()
 
+# The read-only inspection layer over that scene: where every placed
+# instance came from, what it draws, and why it is or is not on screen.
+# It renders nothing and decodes nothing, and it links nfsu_track_render
+# rather than duplicating two of its rules - track_placed_vertex, the one
+# placement composition, and frame_track_bounds, the view-independent
+# sphere fit the free camera's default is read out of.
+#
+# Floating-point contraction is disabled for the reason
+# nfsu_track_visibility disables it, not the reason nfsu_render does:
+# every verdict this library reports is a strict comparison - a plane
+# distance against zero, a screen-size level against kTrackMinDrawLevel,
+# a camera value against a range - so a fused multiply-add would move a
+# boundary and with it a printed answer. See docs/TRACK_PROBE.md.
+add_library(nfsu_track_probe
+    src/track_probe.cpp
+)
+
+target_link_libraries(nfsu_track_probe PUBLIC nfsu_track_render)
+nfsu_enable_warnings(nfsu_track_probe)
+if(MSVC)
+    target_compile_options(nfsu_track_probe PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_track_probe PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+
 # The stock-car profile of PreparedCarScene: the recovered stock part set,
 # its per-LOD mesh hashes and the recovered placement, turned into one
 # prepared draw list with an instance per drawn copy. It reads no files, so
@@ -257,7 +282,7 @@ add_executable(nfsu_probe
 # nfsu_track_draw_list with it, so the two are not named again.
 target_link_libraries(nfsu_probe
     PRIVATE nfsu_core nfsu_track nfsu_track_visibility nfsu_track_zones
-            nfsu_track_draw_list nfsu_track_render
+            nfsu_track_draw_list nfsu_track_render nfsu_track_probe
             nfsu_texture_decode nfsu_skin_inputs nfsu_stock_scene
             nfsu_arg_path)
 nfsu_enable_warnings(nfsu_probe)
@@ -455,6 +480,20 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_track_render_tests)
     add_test(NAME nfsu_track_render_tests COMMAND nfsu_track_render_tests)
 
+
+    # The inspection layer: the free camera and its two moves, the
+    # residency reason, the bounding-tree provenance and the three gate
+    # verdicts. Its fixtures go through the real parsers over byte images
+    # at absolute offsets, like the render tests beside it, and every
+    # visibility answer it asserts is also compared against the one
+    # cull_track_region reaches for the same frustum.
+    add_executable(nfsu_track_probe_tests
+        tests/track_probe_tests.cpp
+    )
+
+    target_link_libraries(nfsu_track_probe_tests PRIVATE nfsu_track_probe)
+    nfsu_enable_warnings(nfsu_track_probe_tests)
+    add_test(NAME nfsu_track_probe_tests COMMAND nfsu_track_probe_tests)
     add_executable(nfsu_part_placement_tests
         tests/part_placement_tests.cpp
     )
@@ -589,6 +628,17 @@ if(NFSU_BUILD_TESTS)
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/track_render_guards.cmake
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
+
+    # The same treatment for `track-probe`, which is the command the
+    # render guards' own header argues every probe command deserves: 30
+    # cases that need no input files, each asserting the exact exit
+    # status and the diagnostic. track-probe writes no file, so the
+    # output rules of the render script have no counterpart here and the
+    # exit status carries the whole machine-readable contract.
+    add_test(NAME nfsu_probe_track_probe_guards
+        COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/track_probe_guards.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
     # nfsu_probe registers a command in one place, and print_usage() composes
     # the usage line out of the name main() dispatches on. This reads the
     # command inventory back out of three independent places - the kCommands
@@ -628,6 +678,7 @@ if(NFSU_BUILD_TESTS)
         nfsu_track_tests nfsu_track_object_tests
         nfsu_track_visibility_tests nfsu_track_zone_tests
         nfsu_track_draw_list_tests nfsu_track_render_tests
+        nfsu_track_probe_tests
         nfsu_part_placement_tests nfsu_body_skin_tests
         nfsu_stock_scene_tests
         nfsu_skin_inputs_tests nfsu_runtime_skin_tests nfsu_inspect_tests
@@ -636,5 +687,6 @@ if(NFSU_BUILD_TESTS)
         nfsu_probe_track_render_needs_out
         nfsu_probe_track_render_keeps_its_output
         nfsu_probe_track_render_guards
+        nfsu_probe_track_probe_guards
         PROPERTIES TIMEOUT 60)
 endif()

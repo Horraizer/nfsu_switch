@@ -43,6 +43,9 @@ build/nfsu_probe track-zones X:/Games/NFSU/Tracks/TRACKB1301.lzc
 build/nfsu_probe track-zones X:/Games/NFSU/Tracks/TRACKB1301.lzc 0 -1200
 build/nfsu_probe track-scene X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 23011344 4168 --texture X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN --order material-group
 build/nfsu_probe track-render X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 23011344 4168 --texture X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN --order material-group --out build/shots/region.tga
+build/nfsu_probe track-probe X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 23011344 4168 --texture X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN
+build/nfsu_probe track-probe X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 23011344 4168 --texture X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN --eye 450 20 -80 --look-at 900 20 -80 --view-far 60 --limit 2
+build/nfsu_probe track-probe X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 23011344 4168 --texture X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN --mesh TRSABC_ROAD_CHOP14 --screen-scale 120
 build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc
 build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc 783 -8.5
 build/nfsu_probe car-placement X:/Games/NFSU/Global/GLOBALB.BUN 240SX
