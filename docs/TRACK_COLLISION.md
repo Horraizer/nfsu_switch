@@ -715,16 +715,20 @@ every one of them.
 Every command below only reads. Nothing writes to the installation, and no
 game data, screenshot or exported asset may be committed.
 
+The Release configuration goes in the sibling `build-release/`, which
+`.gitignore` covers, so the shared default `build/` keeps whatever
+configuration another session left in it.
+
 ```text
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-ctest --test-dir build --output-on-failure
+cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release
+ctest --test-dir build-release --output-on-failure
 
-build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc
+build-release/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc
 
-build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc 783 -8.5
+build-release/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc 783 -8.5
 
-build/nfsu_probe track-collision X:/Games/NFSU/Tracks/STREAML1RB.BUN
+build-release/nfsu_probe track-collision X:/Games/NFSU/Tracks/STREAML1RB.BUN
 ```
 
 Expected:

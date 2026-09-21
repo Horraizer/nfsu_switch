@@ -687,18 +687,22 @@ normally.
 Every command below only reads. Nothing writes to the installation, and
 no game data, screenshot or exported asset may be committed.
 
-```text
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-ctest --test-dir build --output-on-failure
+The Release configuration goes in the sibling `build-release/`, which
+`.gitignore` covers, so the shared default `build/` keeps whatever
+configuration another session left in it.
 
-build/nfsu_probe track-region X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 \
+```text
+cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release
+ctest --test-dir build-release --output-on-failure
+
+build-release/nfsu_probe track-region X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 \
     X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN
 
-build/nfsu_probe track-region X:/Games/NFSU/Tracks/STREAML1RX.BUN 9728 784032 \
+build-release/nfsu_probe track-region X:/Games/NFSU/Tracks/STREAML1RX.BUN 9728 784032 \
     X:/Games/NFSU/Tracks/STREAML1RX_1099.BUN X:/Games/NFSU/Tracks/STREAML1RA.BUN
 
-build/nfsu_probe track-region X:/Games/NFSU/Tracks/STREAML1RX.BUN 3766272 257312
+build-release/nfsu_probe track-region X:/Games/NFSU/Tracks/STREAML1RX.BUN 3766272 257312
 ```
 
 Expected:

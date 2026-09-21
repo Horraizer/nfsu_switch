@@ -654,21 +654,43 @@ void test_valid_image() {
     check(report.cost.chunks == 6,
           "valid image: the unrelated top-level chunk is counted and ignored");
 
+    // check() records a failure and returns, so a refused image arrives
+    // here with the arrays the assertions above already complained about:
+    // empty, or shorter than the record this one wants. Reading one anyway
+    // is undefined behaviour rather than a reported failure, and it ends
+    // the process before the summary line, so every read below asks its
+    // array for the record first. Each guard repeats a size an assertion
+    // above has already made, which is what keeps a skipped read from
+    // costing a failure: nothing here is the only assertion that can
+    // notice a short array.
+
     // The strides the loader's shifts fix, pinned against the records the
     // parser actually walked rather than against the constants alone.
-    check(report.polygons[1].offset - report.polygons[0].offset ==
-              nfsu::kCollisionPolygonRecordSize,
-          "valid image: polygons are 32 bytes apart");
-    check(report.cells[1].offset - report.cells[0].offset ==
-              nfsu::kCollisionCellRecordSize,
-          "valid image: cells are 16 bytes apart");
-    check(report.nodes[1].offset - report.nodes[0].offset ==
-              nfsu::kCollisionTreeNodeSize,
-          "valid image: quadtree nodes are 8 bytes apart");
-    check(report.polygons.back().offset + nfsu::kCollisionPolygonRecordSize ==
-              report.polygons[0].offset +
-                  report.polygons.size() * nfsu::kCollisionPolygonRecordSize,
-          "valid image: the polygon array ends where its stride says");
+    // Guarded by "four polygons" and "three cells and the sentinel" above.
+    if (report.polygons.size() >= 2) {
+        check(report.polygons[1].offset - report.polygons[0].offset ==
+                  nfsu::kCollisionPolygonRecordSize,
+              "valid image: polygons are 32 bytes apart");
+        check(report.polygons.back().offset +
+                      nfsu::kCollisionPolygonRecordSize ==
+                  report.polygons[0].offset +
+                      report.polygons.size() * nfsu::kCollisionPolygonRecordSize,
+              "valid image: the polygon array ends where its stride says");
+    }
+    if (report.cells.size() >= 2) {
+        check(report.cells[1].offset - report.cells[0].offset ==
+                  nfsu::kCollisionCellRecordSize,
+              "valid image: cells are 16 bytes apart");
+    }
+    // The node array has no size assertion of its own above, so the depth
+    // assertion below is the one that reports a short one; it is outside
+    // every guard on purpose, and it fails for any array these two guards
+    // can skip.
+    if (report.nodes.size() >= 2) {
+        check(report.nodes[1].offset - report.nodes[0].offset ==
+                  nfsu::kCollisionTreeNodeSize,
+              "valid image: quadtree nodes are 8 bytes apart");
+    }
 
     // The quadtree covers the world square and its leaves land on the
     // cells, which is what makes a query able to find them.
@@ -677,19 +699,24 @@ void test_valid_image() {
     for (const nfsu::TrackCollisionTreeNode& node : report.nodes) {
         check(node.reached, "valid image: every node is reached");
     }
-    check(report.nodes[0].half_extent == nfsu::kCollisionRootHalfExtent,
-          "valid image: the root covers the world square");
+    if (!report.nodes.empty()) {
+        check(report.nodes[0].half_extent == nfsu::kCollisionRootHalfExtent,
+              "valid image: the root covers the world square");
+    }
 
     // The decoded corners are the stored halfwords divided by the
     // documented units and nothing else.
-    const nfsu::TrackCollisionPolygon& polygon = report.polygons[0];
-    check(polygon.corner[0][0] ==
-              static_cast<float>(polygon.slot0[0]) * nfsu::kCollisionHorizontalUnit,
-          "valid image: slot 0 is an eighth of a world unit");
-    check(polygon.corner[0][2] ==
-              static_cast<float>(polygon.slot2[0]) * nfsu::kCollisionVerticalUnit,
-          "valid image: slot 2 is a 256th of a world unit");
-    check(polygon.corner[0][2] == 1.0F, "valid image: the first quad is at y=1");
+    if (!report.polygons.empty()) {
+        const nfsu::TrackCollisionPolygon& polygon = report.polygons[0];
+        check(polygon.corner[0][0] == static_cast<float>(polygon.slot0[0]) *
+                                          nfsu::kCollisionHorizontalUnit,
+              "valid image: slot 0 is an eighth of a world unit");
+        check(polygon.corner[0][2] == static_cast<float>(polygon.slot2[0]) *
+                                          nfsu::kCollisionVerticalUnit,
+              "valid image: slot 2 is a 256th of a world unit");
+        check(polygon.corner[0][2] == 1.0F,
+              "valid image: the first quad is at y=1");
+    }
 }
 
 void test_empty_and_missing() {
@@ -1252,7 +1279,11 @@ void test_queries() {
                                                 20.0F, cells),
               "cells: a small box succeeds");
         check(cells.size() == 1, "cells: a small box touches one cell");
-        check(cells[0] == 1, "cells: it is the first cell");
+        // A refused query answers nothing, and the count above is what
+        // says so; reading cells[0] anyway ends the process instead.
+        if (!cells.empty()) {
+            check(cells[0] == 1, "cells: it is the first cell");
+        }
         check(!nfsu::query_track_collision_cells(report, 20.0F, 10.0F, 10.0F,
                                                  20.0F, cells),
               "cells: a minimum above its maximum is refused");
@@ -1803,20 +1834,31 @@ void test_vertical_base() {
                                  ? std::string()
                                  : " (" + report.issues[0].message + ")"));
 
-    check(report.polygons[0].vertical_base == -23,
-          "vertical base: the stored base is kept");
-    for (std::size_t c = 0; c < nfsu::kCollisionPolygonCorners; ++c) {
-        check(std::fabs(report.polygons[0].corner[c][2] - (-22.75F)) < 1e-4F,
-              "vertical base: a negative base lowers the corner");
-        check(std::fabs(report.polygons[1].corner[c][2] - 94.5F) < 1e-4F,
-              "vertical base: a positive base raises the corner");
-        check(std::fabs(report.polygons[2].corner[c][2] - 0.75F) < 1e-4F,
-              "vertical base: a zero base leaves the corner alone");
+    // A refused image decodes no polygon at all, and check() only records
+    // the refusal above rather than stopping, so the three reads below
+    // would run past the end of an empty array and take the process with
+    // them. Assert the size the block needs, the way test_scratch_stamp
+    // above does: stating it keeps a short array a reported failure, and
+    // keeps the skip from being the only thing a mutation costs.
+    check(report.polygons.size() == 3,
+          "vertical base: three polygons were decoded");
+    if (report.polygons.size() == 3) {
+        check(report.polygons[0].vertical_base == -23,
+              "vertical base: the stored base is kept");
+        for (std::size_t c = 0; c < nfsu::kCollisionPolygonCorners; ++c) {
+            check(std::fabs(report.polygons[0].corner[c][2] - (-22.75F)) <
+                      1e-4F,
+                  "vertical base: a negative base lowers the corner");
+            check(std::fabs(report.polygons[1].corner[c][2] - 94.5F) < 1e-4F,
+                  "vertical base: a positive base raises the corner");
+            check(std::fabs(report.polygons[2].corner[c][2] - 0.75F) < 1e-4F,
+                  "vertical base: a zero base leaves the corner alone");
+        }
+        // The horizontal slots must not move with it.
+        check(std::fabs(report.polygons[0].corner[0][0] - 8.0F) < 1e-4F &&
+                  std::fabs(report.polygons[0].corner[0][1] - 8.0F) < 1e-4F,
+              "vertical base: only the vertical carries the base");
     }
-    // The horizontal slots must not move with it.
-    check(std::fabs(report.polygons[0].corner[0][0] - 8.0F) < 1e-4F &&
-              std::fabs(report.polygons[0].corner[0][1] - 8.0F) < 1e-4F,
-          "vertical base: only the vertical carries the base");
 
     // The decoded bounds follow the corrected height, not the stored one.
     check(std::fabs(report.cost.corner_min[2] - (-22.75F)) < 1e-4F,
