@@ -89,7 +89,21 @@ constexpr std::size_t kCollisionBoundsMaxOffset = 16;
 // +6 of a polygon. 0x00441400 walks every record of the chunk immediately
 // after loading it and 0x00441403 stores 0xFFFF into this halfword, so whatever the
 // file holds there is scratch the runtime overwrites before anything reads
-// it. The parser keeps the stored value and never uses it.
+// it. The parser keeps the stored value and never decodes it.
+//
+// What the file holds there is not that stamp, which is the reason the
+// stamp is worth publishing at all. Counted over all 31 retail tracks,
+// 261315 of the 290995 records already carry 0xFFFF and the other 29680
+// carry values that cover 0x0000 to 0x03FF exactly and with no gap. A
+// 1024-wide range filled end to end is an index, not noise, and 0x00441B90
+// reads this same halfword to decide whether a record already has a body,
+// beside a pool retail names TrackPolygonCollisionBodySlotPool at
+// 0x006C8928. Tracks/TRACKB1301.lzc is the clean case: 582 polygons, not
+// one stamp among them, and the values 0 to 581 once each. The reading
+// that fits is a saved body-slot index with 0xFFFF for "none". None of
+// that is decoded here; parse_track_collision separates the two
+// populations into TrackCollisionCost::scratch_sentinel_polygons and keeps
+// the raw halfword in TrackCollisionPolygon::stored_scratch.
 constexpr std::size_t kCollisionPolygonScratchOffset = 6;
 constexpr std::uint16_t kCollisionPolygonScratchValue = 0xFFFFU;
 
@@ -167,7 +181,10 @@ struct TrackCollisionPolygon {
     // five records in six.
     std::int16_t vertical_base = 0;
     // +6 as the file stores it. The loader overwrites it, so it carries no
-    // meaning; it is kept only so that a caller can see what was there.
+    // meaning to the runtime; it is kept only so that a caller can see
+    // what was there. Most retail records hold kCollisionPolygonScratchValue
+    // here and 29680 hold something else, which
+    // TrackCollisionCost::scratch_sentinel_polygons counts apart.
     std::uint16_t stored_scratch = 0;
     // The three quantised groups, exactly as stored.
     std::int16_t slot0[kCollisionPolygonCorners] = {0, 0, 0, 0};
@@ -258,6 +275,14 @@ struct TrackCollisionCost {
     std::uint64_t saturated_vertical_polygons = 0;
     // Polygons that repeat an adjacent corner and so describe a triangle.
     std::uint64_t degenerate_corner_polygons = 0;
+    // Polygons whose stored +6 halfword already holds
+    // kCollisionPolygonScratchValue, the halfword the loader stamps over
+    // every record of the chunk. 261315 of the 290995 retail records do
+    // and 29680 do not; see that constant for what the other population
+    // looks like. The parser decodes neither and keeps both raw in
+    // TrackCollisionPolygon::stored_scratch, so this count is all a caller
+    // gets without walking the array itself.
+    std::uint64_t scratch_sentinel_polygons = 0;
     // The 0x00034134 record, and the axis-aligned box over every decoded
     // corner. The two agree exactly in every retail track.
     bool has_bounds = false;

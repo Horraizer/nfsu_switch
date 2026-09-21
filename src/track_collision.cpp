@@ -326,6 +326,13 @@ private:
             polygon.vertical_base = read_i16_le(record + 4);
             polygon.stored_scratch =
                 read_u16_le(record + kCollisionPolygonScratchOffset);
+            // 0x00441403 stamps this halfword over every record before
+            // anything reads it. Most retail records already hold the
+            // stamp and 29680 hold a value in 0x0000..0x03FF instead, so
+            // the two populations are counted apart. Neither is decoded.
+            if (polygon.stored_scratch == kCollisionPolygonScratchValue) {
+                ++report_.cost.scratch_sentinel_polygons;
+            }
             bool saturated = false;
             for (std::size_t c = 0; c < kCollisionPolygonCorners; ++c) {
                 polygon.slot0[c] =

@@ -179,6 +179,19 @@ loop's `add ecx, 0x20` is a second proof of the 32-byte stride, independent
 of the `shr ecx, 5` above it. The `sar eax, 5` in the next section is a
 third.
 
+What the file itself holds there is not that stamp. Counted over all 31
+tracks, 261315 of the 290995 records already carry 0xFFFF and the remaining
+29680 carry values that cover 0x0000 to 0x03FF exactly and with no gap. A
+1024-wide range filled end to end is an index rather than noise, and
+0x00441B90 below reads this same halfword to decide whether a record
+already has a body, beside a pool retail names
+`TrackPolygonCollisionBodySlotPool` at 0x006C8928. `TRACKB1301.lzc` is the
+clean case: 582 polygons, not one stamp among them, and the values 0 to 581
+once each. The reading that fits is a saved body-slot index with 0xFFFF for
+"none", and it is not decoded here: `parse_track_collision` counts the two
+populations into `TrackCollisionCost::scratch_sentinel_polygons` and keeps
+the raw halfword in `stored_scratch`.
+
 ## These records are the collision
 
 The array at +0x10 of that structure is the global at **0x0077B140**, and
@@ -221,7 +234,7 @@ Polygon 0 of `TRACKB1210.lzc`, at offset 263208 of the decompressed image:
 | 2 | u8 | not decoded here |
 | 3 | u8 | not decoded here; read by 0x0043FFDD |
 | 4 | i16 | the whole-unit base of this polygon's vertical |
-| 6 | u16 | scratch; the loader stamps 0xFFFF over it |
+| 6 | u16 | scratch the loader stamps 0xFFFF over; 29680 records hold a value in 0x0000..0x03FF there instead |
 | 8 | i16[4] | corner slot 0, in eighths of a world unit |
 | 16 | i16[4] | corner slot 1, in eighths of a world unit |
 | 24 | i16[4] | corner slot 2, in 256ths of a world unit, above +4 |
@@ -804,6 +817,14 @@ Expected:
   290995 of 290995 records. Neither is decoded by this parser and neither
   claim is reproduced here; they belong to a separate issue together with
   +2.
+- What the `0x00034132` +6 halfword holds in the file. 29680 of the 290995
+  retail records carry a value in 0x0000..0x03FF there rather than the
+  0xFFFF the loader stamps over it, and that range is filled exactly and
+  with no gap across the corpus, so it is an index into something
+  1024 wide. A saved `TrackPolygonCollisionBodySlotPool` index is the
+  reading that fits; the code that would have written it is not traced
+  here, and the parser counts the two populations apart without decoding
+  either.
 - What the runtime does with a polygon once it has one: the surface type,
   the response, and whether any of the three bytes above selects them.
 - The other chunks of the same container. A `TRACKB` image also holds

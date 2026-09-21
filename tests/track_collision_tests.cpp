@@ -33,6 +33,17 @@ constexpr float kCellSquare = 32.0F;
 // byte before a step runs, so a decompressor that stops on a full
 // output leaves at most that pair of bytes behind.
 constexpr std::size_t kMaxUnusedPacked = 2;
+// The five chunk ids, as the five compares at speed.exe 0x00441380 spell
+// them. build_image below writes these and never the header's symbols, so
+// a published id that drifts away from the format leaves the fixture
+// where it was and the parser then cannot find its own chunk.
+constexpr std::uint32_t kTreeChunk = 0x00034130U;
+constexpr std::uint32_t kCellChunk = 0x00034131U;
+constexpr std::uint32_t kPolygonChunk = 0x00034132U;
+constexpr std::uint32_t kIndexChunk = 0x00034133U;
+constexpr std::uint32_t kBoundsChunk = 0x00034134U;
+// The halfword 0x00441403 stamps over +6 of every polygon record.
+constexpr std::uint16_t kScratchStamp = 0xFFFFU;
 
 
 int g_failures = 0;
@@ -217,7 +228,7 @@ struct Polygon {
     // does not say otherwise leaves it zero, which is why it has to be
     // exercised deliberately: five retail records in six carry one.
     std::int16_t vertical_base = 0;
-    std::uint16_t scratch = 0xFFFFU;
+    std::uint16_t scratch = kScratchStamp;
     std::int16_t slot0[4] = {0, 0, 0, 0};
     std::int16_t slot1[4] = {0, 0, 0, 0};
     std::int16_t slot2[4] = {0, 0, 0, 0};
@@ -388,7 +399,7 @@ Bytes build_image(const Image& source, Layout& layout) {
 
     // 0x00034130: the quadtree, at a 16-byte boundary.
     layout.tree_chunk = bytes.size();
-    append_u32(bytes, nfsu::kCollisionTreeId);
+    append_u32(bytes, kTreeChunk);
     append_u32(bytes, 0);
     pad_to_alignment(bytes);
     layout.tree_data = bytes.size();
@@ -410,7 +421,7 @@ Bytes build_image(const Image& source, Layout& layout) {
     // laid out here and the index list itself is written from them.
     std::vector<std::uint16_t> indices;
     layout.cell_chunk = bytes.size();
-    append_u32(bytes, nfsu::kCollisionCellListId);
+    append_u32(bytes, kCellChunk);
     append_u32(bytes, 0);
     pad_to_alignment(bytes);
     layout.cell_data = bytes.size();
@@ -427,7 +438,7 @@ Bytes build_image(const Image& source, Layout& layout) {
 
     // 0x00034132: the polygons, at the payload.
     layout.polygon_chunk = bytes.size();
-    append_u32(bytes, nfsu::kCollisionPolygonListId);
+    append_u32(bytes, kPolygonChunk);
     append_u32(bytes, static_cast<std::uint32_t>(
                           image.polygons.size() * kPolygonRecord +
                           image.polygon_extra_bytes));
@@ -454,7 +465,7 @@ Bytes build_image(const Image& source, Layout& layout) {
     // four bytes the way retail pads it.
     layout.index_used = indices.size();
     layout.index_chunk = bytes.size();
-    append_u32(bytes, nfsu::kCollisionIndexListId);
+    append_u32(bytes, kIndexChunk);
     append_u32(bytes, 0);
     layout.index_data = bytes.size();
     for (std::uint16_t index : indices) {
@@ -491,7 +502,7 @@ Bytes build_image(const Image& source, Layout& layout) {
         }
     }
     layout.bounds_chunk = bytes.size();
-    append_u32(bytes, nfsu::kCollisionBoundsId);
+    append_u32(bytes, kBoundsChunk);
     append_u32(bytes, 0);
     pad_to_alignment(bytes);
     layout.bounds_data = bytes.size();
@@ -696,10 +707,8 @@ void test_empty_and_missing() {
                   "a region of unrelated chunks");
 
     // Each of the five, removed in turn by renaming its id, is named.
-    const std::uint32_t ids[] = {
-        nfsu::kCollisionTreeId, nfsu::kCollisionCellListId,
-        nfsu::kCollisionPolygonListId, nfsu::kCollisionIndexListId,
-        nfsu::kCollisionBoundsId};
+    const std::uint32_t ids[] = {kTreeChunk, kCellChunk, kPolygonChunk,
+                                 kIndexChunk, kBoundsChunk};
     const std::size_t Layout::*chunk_field[] = {
         &Layout::tree_chunk, &Layout::cell_chunk, &Layout::polygon_chunk,
         &Layout::index_chunk, &Layout::bounds_chunk};
@@ -717,10 +726,10 @@ void test_empty_and_missing() {
     {
         Layout layout;
         Bytes bytes = build_image(sample_image(), layout);
-        const std::size_t size = 8 + nfsu::kCollisionPolygonRecordSize;
+        const std::size_t size = 8 + kPolygonRecord;
         Bytes extra;
-        append_u32(extra, nfsu::kCollisionPolygonListId);
-        append_u32(extra, nfsu::kCollisionPolygonRecordSize);
+        append_u32(extra, kPolygonChunk);
+        append_u32(extra, static_cast<std::uint32_t>(kPolygonRecord));
         extra.resize(size, 0);
         bytes.insert(bytes.end(), extra.begin(), extra.end());
         check_refused(parse(bytes), "more than one 0x00034132",
@@ -1633,6 +1642,136 @@ void test_constants() {
           "constant: a polygon has four corners");
     check(nfsu::kCollisionTreeNodeEntries == 4,
           "constant: a node has four entries");
+    check(nfsu::kCollisionTreeId == kTreeChunk,
+          "constant: the quadtree chunk is 0x00034130");
+    check(nfsu::kCollisionCellListId == kCellChunk,
+          "constant: the cell list chunk is 0x00034131");
+    check(nfsu::kCollisionPolygonListId == kPolygonChunk,
+          "constant: the polygon list chunk is 0x00034132");
+    check(nfsu::kCollisionIndexListId == kIndexChunk,
+          "constant: the index list chunk is 0x00034133");
+    check(nfsu::kCollisionBoundsId == kBoundsChunk,
+          "constant: the bounds chunk is 0x00034134");
+    check(nfsu::kCollisionPolygonScratchValue == kScratchStamp,
+          "constant: the loader stamps 0xFFFF over +6");
+}
+
+// -------------------------------------------------------------------
+// The five chunk ids as behaviour rather than as an equality alone. The
+// fixture writes the format's own numbers, so a published id that does
+// not match one of them makes the parser miss that chunk and refuse the
+// image instead of quietly relabelling the fixture along with it.
+// -------------------------------------------------------------------
+
+void test_chunk_ids() {
+    Layout layout;
+    const Bytes bytes = build_image(sample_image(), layout);
+
+    // The fixture really does carry the format's numbers, so that what
+    // follows is an assertion about the parser and not about build_image.
+    check(read_u32(bytes, layout.tree_chunk) == kTreeChunk,
+          "chunk ids: the fixture's quadtree header carries 0x00034130");
+    check(read_u32(bytes, layout.cell_chunk) == kCellChunk,
+          "chunk ids: the fixture's cell header carries 0x00034131");
+    check(read_u32(bytes, layout.polygon_chunk) == kPolygonChunk,
+          "chunk ids: the fixture's polygon header carries 0x00034132");
+    check(read_u32(bytes, layout.index_chunk) == kIndexChunk,
+          "chunk ids: the fixture's index header carries 0x00034133");
+    check(read_u32(bytes, layout.bounds_chunk) == kBoundsChunk,
+          "chunk ids: the fixture's bounds header carries 0x00034134");
+
+    const nfsu::TrackCollisionReport report = parse(bytes);
+    check(report.valid,
+          "chunk ids: an image carrying the format's own ids parses" +
+              (report.issues.empty()
+                   ? std::string()
+                   : " (" + report.issues[0].message + ")"));
+
+    // And every one of the five found its own chunk: each decoded into
+    // its own product, at the size that chunk was written with. A
+    // published id that is wrong arrives here as a refused image and an
+    // empty array rather than as a renamed fixture.
+    check(!report.nodes.empty(),
+          "chunk ids: 0x00034130 decoded into quadtree nodes");
+    check(report.cells.size() == 4,
+          "chunk ids: 0x00034131 decoded into three cells and the sentinel");
+    check(report.polygons.size() == 4,
+          "chunk ids: 0x00034132 decoded into four polygons");
+    check(report.indices.size() == 4,
+          "chunk ids: 0x00034133 decoded into four indices");
+    check(report.cost.has_bounds,
+          "chunk ids: 0x00034134 decoded into the stored bounds");
+}
+
+// -------------------------------------------------------------------
+// The halfword the loader stamps over polygon +6. The file does not hold
+// it everywhere - 261315 of the 290995 retail records carry the stamp and
+// 29680 carry a value in 0x0000..0x03FF instead - so the parser counts the
+// two populations apart, and that count is the one thing in the decoder
+// that reads kCollisionPolygonScratchValue.
+// -------------------------------------------------------------------
+
+void test_scratch_stamp() {
+    Image image;
+    // Two records already stamped and one carrying an index instead, each
+    // written as the format's own number. 0x0245 is 581, the largest index
+    // Tracks/TRACKB1301.lzc holds: it stores 0 to 581 once each across its
+    // 582 polygons and is the one retail file that stamps none of them.
+    // Corpus-wide the indices run to 0x03FF, as the constant's own comment
+    // and docs/TRACK_COLLISION.md both record.
+    Polygon stamped_low = flat_quad(16.0F, 16.0F, 8.0F, 1.0F);
+    stamped_low.scratch = kScratchStamp;
+    Polygon indexed = flat_quad(16.0F, 16.0F, 8.0F, 2.0F);
+    indexed.scratch = 0x0245U;
+    Polygon stamped_high = flat_quad(16.0F, 16.0F, 8.0F, 3.0F);
+    stamped_high.scratch = kScratchStamp;
+    image.polygons = {stamped_low, indexed, stamped_high};
+    Cell cell;
+    cell.center[0] = 16.0F;
+    cell.center[1] = 16.0F;
+    cell.polygons = {0, 1, 2};
+    image.cells = {cell};
+    Layout layout;
+    const nfsu::TrackCollisionReport report = parse(build_image(image, layout));
+    check(report.valid, "scratch stamp: the image parses" +
+                            (report.issues.empty()
+                                 ? std::string()
+                                 : " (" + report.issues[0].message + ")"));
+    // A refused image decodes no polygon at all. Reading one anyway would
+    // be undefined rather than a reported failure, so say what is missing
+    // and stop here.
+    check(report.polygons.size() == 3,
+          "scratch stamp: three polygons were decoded");
+    if (report.polygons.size() != 3) {
+        return;
+    }
+
+    // The raw halfword is kept exactly as stored, stamp or index alike.
+    check(report.polygons[0].stored_scratch == kScratchStamp &&
+              report.polygons[2].stored_scratch == kScratchStamp,
+          "scratch stamp: a stamped record keeps the stamp");
+    check(report.polygons[1].stored_scratch == 0x0245U,
+          "scratch stamp: a record holding an index keeps the index");
+
+    // And the counter separates the two. This is what a wrong stamp
+    // changes: no record holds any other value, so the count falls to
+    // zero and this assertion is what says so.
+    check(report.cost.scratch_sentinel_polygons == 2,
+          "scratch stamp: two of the three records already hold the stamp");
+
+    // One below the stamp is not the stamp. Two records carry 0xFFFE and
+    // one carries 0xFFFF, so a stamp read as 0xFFFE counts two here and a
+    // stamp read as 0xFFFF counts one: the comparison is exact, and this
+    // pair of counts is what tells the two readings apart.
+    Image near = image;
+    near.polygons[0].scratch = static_cast<std::uint16_t>(kScratchStamp - 1U);
+    near.polygons[1].scratch = static_cast<std::uint16_t>(kScratchStamp - 1U);
+    Layout near_layout;
+    const nfsu::TrackCollisionReport near_report =
+        parse(build_image(near, near_layout));
+    check(near_report.valid, "scratch stamp: the near-miss image parses");
+    check(near_report.cost.scratch_sentinel_polygons == 1,
+          "scratch stamp: a halfword one below the stamp is not the stamp");
 }
 
 // -------------------------------------------------------------------
@@ -1844,6 +1983,8 @@ void test_query_edges() {
 
 int main() {
     test_constants();
+    test_chunk_ids();
+    test_scratch_stamp();
     test_jdlz();
     test_valid_image();
     test_empty_and_missing();
