@@ -492,7 +492,7 @@ limits as possible.
 - **The budget mechanism.** `tests/track_budget_tests.cpp` covers the
   counter table, the four gatherers and `check_track_budget`, including both
   sides of every boundary and all three refusals.
-- **The command.** `tests/track_budget_guards.cmake` drives 84 cases with no
+- **The command.** `tests/track_budget_guards.cmake` drives 88 cases with no
   input files at all: every option refusal, both budget verdicts, four of
   the five exit statuses, and each of the report's four blocks.
 - **Two real ceilings on a real counter.** The guard cases hold
@@ -563,7 +563,7 @@ from the start; the last three are what the two mutation passes added.
 
 ### The command
 
-`tests/track_budget_guards.cmake`, one CTest entry driving 84 cases, each
+`tests/track_budget_guards.cmake`, one CTest entry driving 88 cases, each
 asserting the exact exit status and a diagnostic that names what was
 refused. A CMake script rather than more `add_test` entries because
 `PASS_REGULAR_EXPRESSION` makes CTest **ignore the exit status**, and here
@@ -606,8 +606,10 @@ it. They are not summable.
 | --- | ---: | ---: | ---: | ---: | ---: |
 | The author's, against the first revision | 58 | 56 | 50 | 6 | 0 |
 | **An independent pass, against the first revision** | **224** | **224** | **159** | **65** | **0** |
-| The author's, against this revision | 58 | 58 | 57 | 1 | 0 |
+| The author's, against the second revision | 58 | 58 | 57 | 1 | 0 |
 | The first round's survivors re-expressed, plus four | 10 | 10 | 8 | 2 | 0 |
+| **The independent pass, re-scored after the fixes** | **98** | **98** | **44** | **52** | **2** |
+| The author's targeted round, against this revision | 14 | 13 | 11 | 2 | 0 |
 
 **The bold row is the number to quote**, and it is the only one in the table
 taken over a set nobody here chose. It was written by a session that had not
@@ -725,27 +727,103 @@ The exit-2 gap and the swapped `--width`/`--height` that no gate can see
 were found by both passes independently; they are recorded above under the
 command's tests and as acceptance item 7.
 
+#### The re-score, and the three things it caught the fixes not doing
+
+The same session was asked to re-express and re-run all 65 of its survivors
+against the fixed head, and to write fresh mutants against the fixes
+themselves - because a fix written from a report shares a blind spot with
+it. **26 of the 65 closed; 38 did not.** Its 33 new mutants scored 18
+caught. Two results were UNKNOWN by the rule above and are counted as
+neither: both remove `summarize_track_samples`'s empty-set guard, and the
+new empty-set test case reaches the read and the process dies with no
+failure line.
+
+The closures were real - the statistics cluster went from 1 of 13 caught to
+10, and `stage_measured`, the table order, the deletable gatherers, the
+sample counts, the accepting boundaries and the option literals all closed.
+**Three findings mattered more than that count**, and each is a place where
+the first fix satisfied the named mutant and left the class open:
+
+- **The same vacuous assertion, written again in the commit that repaired
+  it.** `track_budget_costs_equal`'s message was asserted with
+  `difference.find("frame")`, which the echoed counter name
+  `frame.visible_instances` supplies on its own - one screen from the
+  `check_track_budget` assertion repaired for exactly that. A neighbouring
+  one searched for `46` and `47` independently, so the two could be printed
+  the wrong way round while the comment above claimed a reader could tell
+  which run was odd. Both now assert a phrase no counter name can supply.
+- **The functions were moved into reach of a test; their CALL SITES were
+  not.** 18 of 21 mutants against the two function bodies were caught and
+  every mutant against the code calling them survived. The worst replaced
+  `track_budget_costs_equal(first_cost, cost, ...)` with `(cost, cost, ...)`,
+  which turns the determinism self-check into a tautology with the gate
+  green. That one is in the irreducible class below; the statistics half was
+  closed by asserting the one timing figure that is not a measurement.
+- **The clamp this branch added had no test at all.** Swapping its two
+  branches makes `remaining` zero on every iteration, so
+  `max_file_size` becomes zero and **every texture source of `track-scene`,
+  `track-render` and `track-budget` is refused** - with all 30 tests
+  passing. It was untested because no case passed `--texture` at all. The
+  guard script now writes a small file that is deliberately not a texture
+  pack and requires the run to read it and report that it holds no pack
+  root; a run whose budget collapsed refuses it for its size instead and
+  says so. The same file closes the `quiet` parameter, whose default was
+  removed outright rather than tested: a default is the one setting no call
+  site states, and flipping it silenced two commands nothing asserts.
+
+Those fixes were themselves re-mutated before being believed: the clamp
+swap, the silenced call site, both vacuous assertions, and a comparison walk
+that skips the table's first row or stops one short are all caught now,
+measured one at a time.
+
 #### What still survives, and why
 
-Two mutants, both the same shape, both stated rather than hidden:
+**38 of the independent pass's 65 survivors were still alive at the re-score
+and are not all closed now.** The ones closed since are named above. What is
+left falls into four groups, and the honest summary is that the library is
+near-total and the command is not.
 
-1. The command's call to `track_budget_costs_equal` replaced by `if (false)`.
-2. The `return 5` inside that call's failing branch replaced by `break`.
+**1. The determinism branch, which correct code never takes.** The call to
+`track_budget_costs_equal`, the diagnostic inside its failing arm and the
+`return 5` that follows are all unreachable while the counts agree - and
+they always agree, which is the property the check exists to assert. The
+sharpest of them replaces `(first_cost, cost, ...)` with `(cost, cost, ...)`,
+so the check compares a value with itself and can never fire.
 
-**Neither can be turned into a kill, and the reason is structural rather
-than a to-do.** Both live on the branch taken when two repetitions of the
-pipeline disagree about a count, and correct code never disagrees - that is
-the property the check exists to assert. Reaching the branch from outside
-would need a way to inject non-determinism into the command, which means a
-test-only flag in a shipped program: a worse thing to carry than an
-uncovered safety net, and one that would itself need testing.
+**No test can reach these from outside**, and the fix is not a to-do: it
+would need a way to inject non-determinism into a shipped command, which
+means a test-only flag, which is a worse thing to carry than an uncovered
+safety net and would itself need testing. What the suite does instead is
+cover the comparison the branch depends on - equal costs, costs differing in
+one counter, in the first and last rows of the table, in two rows so that
+the earlier is reported, and a stage one cost measured and the other did
+not, with the message asserted as a whole phrase. A fault in the comparison
+is caught; the command's use of its verdict is not.
 
-What the suite CAN do, and does, is cover the comparison the branch
-depends on. `track_budget_costs_equal` is driven directly with equal costs,
-with costs differing in one counter, with costs differing in two so that the
-first difference in table order is the reported one, and with a stage one
-cost measured and the other did not. A fault in the comparison is caught;
-only the command's use of the verdict is not.
+**2. Timing values, which no assertion can name.** A min field that prints
+the max, or a per-phase summary that reports another phase's, prints figures
+exactly as plausible as the right ones. The one timing figure that is not a
+measurement - the standard deviation of a single sample, which is 0 whatever
+the clock said - is asserted, and it closes the mutants that make a single
+sample report a spread. The rest stay open by the same argument that keeps
+times out of the gate.
+
+**3. Faults only retail data can show.** A swapped `--width` and `--height`
+(acceptance item 7), `reports_ok` dropping one of its three reports, and the
+`--eye`/`--target`/`--far` cull camera, which the report does not echo.
+Every one needs a region that parses, and the acceptance list is where two
+of them are checked.
+
+**4. Equivalent or unreachable.** The `return` after an exhaustive `switch`
+in `stage_measured` and `track_budget_stage_name`; `reserve()` changes,
+which alter no observable behaviour; and an over-long `source_bytes` buffer,
+whose extra element is never indexed.
+
+That is a fair picture rather than a flattering one. The gatherers - the
+part of this change most likely to hold a real defect - were 60 of 60
+against a set nobody here wrote. The command's argument parsing and report
+wiring are the weak half, and the four groups above say which parts of it
+are closeable and which are not.
 
 #### The harness fault this sweep hit, recorded because it is the trap
 

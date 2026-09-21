@@ -1762,8 +1762,16 @@ struct TrackSceneArgs {
 // `track-budget`, which TIMES this call: anything printed inside a timed
 // region is being timed, and a dozen formatted lines are neither free nor
 // part of what texture decoding costs. The alternative was a second copy of
-// this loop in that command, which is how the subtraction below came to
-// have three copies before this parameter replaced two of them.
+// this loop in that command, and a second place for the input-size budget
+// below to be got wrong.
+//
+// IT HAS NO DEFAULT VALUE, deliberately. A default is the one setting of a
+// parameter that no call site states, and flipping it here silences the
+// per-source lines of `track-scene` and `track-render` - which nothing in
+// this repository asserts, so an independent mutation pass flipped it and
+// survived the whole suite. With three call sites, all in this file, and no
+// default, that mutation does not exist to be caught rather than being
+// caught by a test someone has to remember to write.
 bool decode_track_scene_textures(
     const std::vector<fs::path>& paths,
     const std::vector<std::uint32_t>& wanted,
@@ -1771,7 +1779,7 @@ bool decode_track_scene_textures(
     std::vector<nfsu::TexturePackSet>& sets,
     std::vector<nfsu::RenderTextureSource>& sources,
     nfsu::RenderTextureSet& textures,
-    bool quiet = false) {
+    bool quiet) {
     source_bytes.resize(paths.size());
     sets.resize(paths.size());
     sources.resize(paths.size());
@@ -1879,8 +1887,10 @@ int build_track_scene_pipeline(
 
     out.wanted = nfsu::track_region_texture_hashes(geometry);
     const std::vector<std::uint32_t>& wanted = out.wanted;
+    // Not quiet: track-scene and track-render both report their sources.
     if (!decode_track_scene_textures(args.textures, wanted, out.source_bytes,
-                                     out.sets, out.sources, out.textures)) {
+                                     out.sets, out.sources, out.textures,
+                                     false)) {
         return 2;
     }
     const nfsu::RenderTextureSet& textures = out.textures;

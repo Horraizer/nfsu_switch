@@ -860,17 +860,51 @@ void test_costs_equal() {
     difference.clear();
     check(!nfsu::track_budget_costs_equal(a, b, difference),
           "a differing counter is not equal");
-    check(difference.find("frame.draw_calls") != std::string::npos,
-          "the difference names the counter: " + difference);
-    check(difference.find("46") != std::string::npos,
-          "the difference carries the first value: " + difference);
-    check(difference.find("47") != std::string::npos,
-          "the difference carries the second value: " + difference);
+    // The whole phrase, in order, and not the three pieces separately. Two
+    // values searched for independently are both present when the message
+    // prints them the wrong way round, and the comment above this block
+    // says a reader has to be able to tell WHICH run was the odd one - so
+    // asserting them apart would be asserting something other than what is
+    // claimed. An independent mutation pass found exactly that shape in the
+    // neighbouring assertion.
+    check(difference.find("frame.draw_calls: 46 against 47") !=
+              std::string::npos,
+          "the difference names the counter and both values, in the order"
+          " the arguments were given: " + difference);
 
-    // The comparison is symmetric.
+    // The comparison is symmetric, and says so the other way round.
     difference.clear();
     check(!nfsu::track_budget_costs_equal(b, a, difference),
           "the comparison is symmetric");
+    check(difference.find("frame.draw_calls: 47 against 46") !=
+              std::string::npos,
+          "swapping the arguments swaps the reported values: " + difference);
+
+    // THE FIRST AND LAST ROWS OF THE TABLE. A walk that starts at 1 or
+    // stops one short still finds a difference in the middle of the table,
+    // which is where every other case here puts one, so neither end is
+    // covered by them.
+    {
+        nfsu::TrackBudgetCost first_row = measured_cost();
+        nfsu::TrackBudgetCost first_row_other = measured_cost();
+        first_row_other.parse_region_bytes = first_row.parse_region_bytes + 1;
+        difference.clear();
+        check(!nfsu::track_budget_costs_equal(first_row, first_row_other,
+                                              difference),
+              "a difference in the table's FIRST counter is found");
+        check(difference.find("parse.region_bytes") != std::string::npos,
+              "and it is named: " + difference);
+
+        nfsu::TrackBudgetCost last_row = measured_cost();
+        nfsu::TrackBudgetCost last_row_other = measured_cost();
+        last_row_other.render_frame_bytes = last_row.render_frame_bytes + 1;
+        difference.clear();
+        check(!nfsu::track_budget_costs_equal(last_row, last_row_other,
+                                              difference),
+              "a difference in the table's LAST counter is found");
+        check(difference.find("render.frame_bytes") != std::string::npos,
+              "and it is named: " + difference);
+    }
 
     // The FIRST difference in table order is the one reported. Both costs
     // below differ in two counters, one early and one late, and the early
@@ -896,8 +930,15 @@ void test_costs_equal() {
     difference.clear();
     check(!nfsu::track_budget_costs_equal(measured, unmeasured, difference),
           "a stage measured by one cost and not the other is a difference");
-    check(difference.find("frame") != std::string::npos,
-          "the difference names the stage: " + difference);
+    // "the frame stage was measured", not "frame". Every counter is
+    // prefixed with its own stage, so `difference.find("frame")` is
+    // satisfied by the echoed counter name `frame.visible_instances` before
+    // the stage name is ever appended - the same vacuous shape as the one
+    // repaired in check_track_budget's refusal, which an independent pass
+    // found repeated here in the very commit that repaired the first.
+    check(difference.find("the frame stage was measured") != std::string::npos,
+          "the difference names the stage, in a phrase the counter name"
+          " cannot supply: " + difference);
 }
 
 void test_sample_summary() {

@@ -57,6 +57,16 @@ file(MAKE_DIRECTORY "${work}")
 # case below run the whole command body.
 set(missing "${work}/missing_stream.bun")
 
+# A file that EXISTS and is not a texture pack. It is small and its bytes are
+# nonsense on purpose: what it is for is to make the texture loop RUN, which
+# no other case here does, and the loop is where the input-size budget is
+# computed. Passed as --texture, load_texture_pack_set reads all of it and
+# then reports that it holds no pack root - and that diagnostic is what the
+# cases below pin, because a budget computed wrongly refuses the file for its
+# SIZE instead and the diagnostic changes.
+set(not_a_pack "${work}/not_a_texture_pack.bun")
+file(WRITE "${not_a_pack}" "not a texture pack at all, just bytes")
+
 set(failures 0)
 
 function(nfsu_fail message)
@@ -531,6 +541,90 @@ nfsu_case("--far accepts a finite float" 3 "camera given" ""
 nfsu_case("--lod-slot 0 is accepted and reported" 3 "budget: lod slot 0" ""
           "${missing}" 0 16 0 16 --repeat 1 --no-render --no-time
           --lod-slot 0)
+
+# ---------------------------------------------------------------------------
+# The texture loop, which is where the input-size budget lives.
+#
+# WHY A FILE AT ALL, when every other case here runs against one that does
+# not exist. Without a --texture argument the loop body never executes, so
+# the budget arithmetic inside it is unreachable and anything can be done to
+# it. An independent mutation pass swapped the branches of the clamp on
+# `remaining`: every iteration then computes a remaining of 0, every texture
+# source is refused for its size, and `track-scene`, `track-render` and
+# `track-budget` all stop decoding any texture at all - with the whole
+# 30-test suite still green.
+#
+# This file is not a texture pack and is not meant to be. Decoding it has to
+# get far enough to read its bytes and report that it holds no pack root,
+# and THAT is the difference: a run whose size budget collapsed to zero
+# refuses the file before parsing it and says so instead.
+# ---------------------------------------------------------------------------
+
+nfsu_case("a texture source is read, not refused for its size" 3
+          "no 0xB3300000 texture pack root found" "exceeds the maximum"
+          "${missing}" 0 16 0 16 --repeat 1 --no-render --no-time
+          --texture "${not_a_pack}")
+
+# The same file, decoded through the same function, with the per-source line
+# SUPPRESSED. track-budget passes quiet=true because it times that call and
+# a dozen formatted lines are not free; this is the only case that can see
+# the flag, and without the `banned` needle a flag that did nothing would
+# pass.
+nfsu_case("track-budget decodes textures quietly" 3
+          "no 0xB3300000 texture pack root found" "texture source 0: "
+          "${missing}" 0 16 0 16 --repeat 1 --no-render --no-time
+          --texture "${not_a_pack}")
+
+# Two sources, so `read_bytes` is non-zero on the second iteration, which is
+# the only iteration where the running total has ever been added to and so
+# the only one where the subtraction it feeds can be got wrong.
+nfsu_case("a second texture source is read too" 3
+          "texture source 1 issue" ""
+          "${missing}" 0 16 0 16 --repeat 1 --no-render --no-time
+          --texture "${not_a_pack}" --texture "${not_a_pack}")
+
+# ---------------------------------------------------------------------------
+# One statistic that IS deterministic, and is therefore assertable.
+#
+# Every timing VALUE is a wall-clock measurement and no case can pin one.
+# The spread of a single sample is not a measurement: one sample has no
+# spread, so the standard deviation is exactly 0 whatever the clock said.
+# That is the one timing figure this suite can hold to a value, and it
+# catches a standard deviation that prints the mean, or that divides by n
+# instead of n-1 and so reports something non-zero for one sample.
+# ---------------------------------------------------------------------------
+
+nfsu_case("one sample has no spread" 3 "samples 1 min .* stddev 0 max" ""
+          "${missing}" 0 16 0 16 --repeat 1 --no-render)
+
+# ---------------------------------------------------------------------------
+# The OTHER side of the quiet flag, which is not a track-budget case at all.
+#
+# `decode_track_scene_textures` is shared with track-scene and track-render,
+# and this file introduced the parameter that can silence them. Nothing in
+# this repository asserts that either of those two prints its per-source
+# line, so the argument at their call site could be flipped and every gate
+# would stay green - the same hole that made the parameter's DEFAULT
+# untestable before it was removed. The command under test here is the one
+# that gained the risk, so the case belongs with it.
+# ---------------------------------------------------------------------------
+
+execute_process(
+    COMMAND "${PROBE}" track-scene "${missing}" 0 16 0 16
+            --texture "${not_a_pack}" --list 0
+    OUTPUT_VARIABLE scene_out
+    ERROR_VARIABLE scene_err
+    RESULT_VARIABLE scene_code)
+set(scene_text "${scene_out}${scene_err}")
+if(NOT scene_text MATCHES "texture source 0: ")
+    nfsu_fail("track-scene must report its texture sources; the quiet flag "
+              "this file introduced is for track-budget alone. It reads:\n"
+              "${scene_text}")
+endif()
+if(NOT scene_text MATCHES "no 0xB3300000 texture pack root found")
+    nfsu_fail("track-scene must read the texture source rather than refuse "
+              "it for its size. It reads:\n${scene_text}")
+endif()
 
 if(failures GREATER 0)
     message(FATAL_ERROR "${failures} track-budget guard case(s) failed")
