@@ -361,7 +361,201 @@ nfsu_case("the gate totals are printed" 3
           "probe: rejected by mask 0 box 0 size 0 pruned 0" ""
           "${missing}" 0 16 0 16 --eye 1 2 3 --look-at 4 5 6)
 
+
+# ---------------------------------------------------------------------------
+# AND NOW WITH REAL DATA.
+#
+# Everything above runs with no input files, which reaches every refusal and
+# the whole body of a run that reads nothing - and reaches no line that only
+# prints when a region holds an instance. That is the gap
+# tests/track_render_guards.cmake documents and could not close: the listing
+# limit, the per-instance block and every total that is non-zero only over a
+# real region were left to a manual acceptance and to no gate at all.
+#
+# The fixture nfsu_track_probe_tests already builds in memory is written to a
+# file here and driven through the command. It is the SAME bytes the unit
+# tests parse, at the same absolute offsets, so the two halves cannot describe
+# different regions; the test binary prints the two regions it laid down and
+# this reads them back rather than repeating them.
+#
+# The numbers below are this fixture's and are pinned exactly. That is a
+# coupling and it is the point: a change to the fixture that moves an offset
+# has to be acknowledged here, and a change to what the command PRINTS cannot
+# pass unnoticed.
+# ---------------------------------------------------------------------------
+
+if(NOT DEFINED TESTS)
+    message(FATAL_ERROR "TESTS must be defined")
+endif()
+
+set(fixture "${work}/fixture.bun")
+file(REMOVE "${fixture}")
+execute_process(
+    COMMAND "${TESTS}" --write-fixture "${fixture}"
+    OUTPUT_VARIABLE fixture_text
+    ERROR_VARIABLE fixture_error
+    RESULT_VARIABLE fixture_status)
+if(NOT fixture_status EQUAL 0)
+    message(FATAL_ERROR
+        "the fixture could not be written: ${fixture_status}\n"
+        "${fixture_text}${fixture_error}")
+endif()
+if(NOT EXISTS "${fixture}")
+    message(FATAL_ERROR "the fixture writer reported success and wrote no file")
+endif()
+if(NOT fixture_text MATCHES
+   "fixture: geometry ([0-9]+) ([0-9]+) scenery ([0-9]+) ([0-9]+)")
+    message(FATAL_ERROR
+        "the fixture writer did not name its two regions, and it reads\n"
+        "${fixture_text}${fixture_error}")
+endif()
+set(geo_off "${CMAKE_MATCH_1}")
+set(geo_size "${CMAKE_MATCH_2}")
+set(obj_off "${CMAKE_MATCH_3}")
+set(obj_size "${CMAKE_MATCH_4}")
+
+# One explicit camera for every case below, so that no case depends on the
+# automatic framing and two cases never differ by the camera by accident.
+set(cam --eye -6 0 30 --look-at -6 0 0 --view-fov 10
+        --width 100 --height 100 --view-far 100)
+
+# The same case runner, with the fixture and its two regions in front.
+function(nfsu_data_case label code needle banned)
+    nfsu_case("${label}" "${code}" "${needle}" "${banned}"
+              "${fixture}" ${geo_off} ${geo_size} ${obj_off} ${obj_size}
+              ${ARGN})
+endfunction()
+
+# The exit status over data that parses. It is 3 rather than 0 because the
+# fixture carries one mesh the decoder refuses - which is what makes a
+# prepared mesh index differ from its source index below - so this pins the
+# "a report raised an issue" arm with a region that otherwise decodes.
+nfsu_data_case("a region with a refused mesh exits 3" 3
+               "probe: instances 13 probed 13 visible 3 culler 3 disagreements 0"
+               "" ${cam})
+
+# THE GATE TOTALS, with a non-zero count in three of the four places. Every
+# one of these is zero for a run with no input, so a totals line that printed
+# a literal zero passed every case above.
+nfsu_data_case("the gate totals carry non-zero counts" 3
+               "probe: rejected by mask 0 box 1 size 0 pruned 9" ""
+               ${cam})
+nfsu_data_case("the placement totals carry non-zero counts" 3
+               "probe: placed 10 unplaced 3 groups 16 triangles 20" ""
+               ${cam})
+
+# THE REGION BOUNDS, which are measured over the placed geometry and not over
+# what the camera sees. With no input they read `none` either way.
+nfsu_data_case("the region bounds are measured" 3
+               "probe: region bounds: x -21 .. 30.5 y -1 .. 1"
+               "probe: region bounds: none" ${cam})
+
+# THE LISTING LIMIT. A listing that ignored it prints every record and still
+# prints a count line, so only a count below the total tells the two apart.
+nfsu_data_case("the instance listing honours its limit" 3
+               "probe: listed 1 of 13 instances" "" ${cam} --limit 1)
+nfsu_data_case("a limit above the count lists them all" 3
+               "probe: listed 13 of 13 instances" "" ${cam} --limit 20)
+nfsu_data_case("a limit of zero lists none of them" 3
+               "probe: listed 0 of 13 instances" "  instance 0:0"
+               ${cam} --limit 0)
+nfsu_data_case("both sections are listed" 3
+               "probe: listed 2 of 2 sections" "" ${cam} --limit 0)
+
+# THE CULL OPTIONS REACH THE PROBE. Section 310 modulo 100 is 10, so the
+# no-zone rule drops it while section 303 stays - which no run without input
+# can show, because it has no section to be resident or not.
+nfsu_data_case("the residency rule reaches the probe" 3
+               "reason sub-index-out-of-range" "" ${cam}
+               --residency no-zone --limit 0)
+nfsu_data_case("and only one of the two sections survives it" 3
+               "probe: sections 2 valid 2 resident 1" "" ${cam}
+               --residency no-zone --limit 0)
+
+# THE SCREEN-SIZE EYE, in the raw slot order. The level below is the retail
+# arithmetic over this instance's own radius from this eye; mapping the eye
+# with the world frame instead gives another number.
+nfsu_data_case("the screen-size eye is mapped to the raw slots" 3
+               "size not-applied level 14" "" ${cam}
+               --screen-scale 40 --limit 1)
+
+# THE INSTANCE BLOCK. Every line of it is unreachable without a region, and
+# each of these pins a different group of fields.
+nfsu_data_case("the source offsets are printed" 3
+               "offsets: section 8192 instance 8288 object 8632 mesh container 680 mesh record 704 hash record 168"
+               "" ${cam} --limit 1)
+nfsu_data_case("the object record is printed" 3
+               "object: radius 5 flags 0x11223344 flags2 0x55667788 slots 0x00003001 0x00000000"
+               "" ${cam} --limit 1)
+nfsu_data_case("the stored box is printed in the raw slot order" 3
+               "instance: flags 0x00000060 stored raw px -22 .. -18 pz -1 .. 3 py -2 .. 2"
+               "" ${cam} --limit 1)
+nfsu_data_case("the transform is printed" 3
+               "transform: linear 1 0 0 0 1 0 0 0 1 translation -20,0,0" ""
+               ${cam} --limit 1)
+# The stored box's world image, where slot 1 is negated and its ends
+# exchanged: raw pz -1 .. 3 is world z -3 .. 1 and not -1 .. 3.
+nfsu_data_case("the stored box reaches the world frame negated" 3
+               "stored world: x -22 .. -18 y -2 .. 2 z -3 .. 1 points 2"
+               "stored world: x -22 .. -18 y -2 .. 2 z -1 .. 3" ${cam} --limit 1)
+nfsu_data_case("the drawn box is measured over the vertices" 3
+               "drawn world: x -21 .. -19 y -1 .. 1 z -0 .. -0 points 6" ""
+               ${cam} --limit 1)
+nfsu_data_case("the tree provenance is printed" 3
+               "tree: policy retail-tree node 1 depth 1 carried intersecting pruned by none"
+               "" ${cam} --limit 1)
+nfsu_data_case("the gate verdicts are printed" 3
+               "gates: mask passed bits 0x00000000 box rejected tested outside own box outside"
+               "" ${cam} --limit 1)
+nfsu_data_case("the placement names the source mesh apart from the prepared one" 3
+               "placement: mesh 0 'PANEL' hash 0x00003001 source mesh 1 slot 0 requested 0 fallback no"
+               "" ${cam} --limit 1)
+nfsu_data_case("the material totals are printed" 3
+               "materials: groups 1 drawable 1 triangles 2 resolved 0 unresolved 1 unusable 0 invalid slot 0"
+               "" ${cam} --limit 1)
+nfsu_data_case("each material group is printed" 3
+               "group 0 material 0 record 1136 first 0 count 6 slot 0 hash 0xBBBB0001 binding unresolved drawable yes"
+               "" ${cam} --limit 1)
+nfsu_data_case("an unresolved group names no texture" 3
+               "texture none key slot 255 flags 0x00000000 record bounds min -1,-2,-3 max 1,2,3"
+               "" ${cam} --limit 1)
+
+# A PRUNED INSTANCE, which is the line this whole layer exists for, and which
+# no run without input can produce.
+nfsu_data_case("a pruned instance names the node that stopped it" 3
+               "tree: policy retail-tree node 1 depth 1 carried outside pruned by 1"
+               "" ${cam} --section 1 --instance 0 --limit 1)
+nfsu_data_case("and reaches no gate at all" 3
+               "gates: mask not-applied bits 0x00000000 box not-applied" ""
+               ${cam} --section 1 --instance 0 --limit 1)
+nfsu_data_case("and its own box is measured anyway" 3
+               "own box outside" "" ${cam} --section 1 --instance 0 --limit 1)
+
+# An instance that places nothing says why, which is the other end of the
+# same line.
+nfsu_data_case("an unplaced instance names its reason" 3
+               "placement: none reason skipped hash" "" ${cam}
+               --section 1 --instance 4 --limit 1)
+
+# THE SELECTIONS, over a region that has something to select from.
+nfsu_data_case("a mesh name selects the instances that place it" 3
+               "probe: instances 13 probed 6 visible 1 culler 1" ""
+               ${cam} --mesh POST --limit 0)
+nfsu_data_case("a section selects its own instances" 3
+               "probe: instances 13 probed 6 visible 0 culler 0" ""
+               ${cam} --section 1 --limit 0)
+nfsu_data_case("two instances of one section are selected" 3
+               "probe: instances 13 probed 2 visible 2 culler 2" "" ${cam}
+               --section 0 --instance 3 --instance 1 --limit 0)
+
+# And the draw order, which changes the draw-list line and nothing above it.
+nfsu_data_case("the draw order reaches the draw list over real data" 3
+               "draw list: order material group visible 3" "" ${cam}
+               --order material-group --limit 0)
+
+file(REMOVE "${fixture}")
 file(REMOVE_RECURSE "${work}")
 message(STATUS
-    "track-probe guards: 52 cases, each asserting the exit status and the "
-    "diagnostic, with no input files and nothing written")
+    "track-probe guards: 95 cases, each asserting the exit status and the "
+    "diagnostic: 64 with no input files at all and 31 over a fixture the "
+    "unit tests laid down, and none of them wrote anything")

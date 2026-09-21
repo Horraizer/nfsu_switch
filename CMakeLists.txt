@@ -629,14 +629,23 @@ if(NFSU_BUILD_TESTS)
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
 
-    # The same treatment for `track-probe`, which is the command the
-    # render guards' own header argues every probe command deserves: 30
-    # cases that need no input files, each asserting the exact exit
-    # status and the diagnostic. track-probe writes no file, so the
-    # output rules of the render script have no counterpart here and the
-    # exit status carries the whole machine-readable contract.
+    # The same treatment for `track-probe`, which is the command the render
+    # guards' own header argues every probe command deserves: 95 cases, each
+    # asserting the exact exit status and the diagnostic. track-probe writes
+    # no file, so the output rules of the render script have no counterpart
+    # here and the exit status carries the whole machine-readable contract.
+    #
+    # 64 of them need no input files, which is what tests/track_render_
+    # guards.cmake can do. The other 31 drive the command over a fixture
+    # nfsu_track_probe_tests writes on request - the same bytes its own
+    # cases parse, at the same absolute offsets - because the listing limit,
+    # the per-instance block and every total that is non-zero only over a
+    # real region are unreachable without one. That is the gap the render
+    # guards document and could not close, and it is why TESTS is passed in
+    # beside PROBE.
     add_test(NAME nfsu_probe_track_probe_guards
         COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -DTESTS=$<TARGET_FILE:nfsu_track_probe_tests>
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/track_probe_guards.cmake
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
     # nfsu_probe registers a command in one place, and print_usage() composes

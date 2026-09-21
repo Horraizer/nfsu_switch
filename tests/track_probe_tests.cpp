@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -186,6 +187,11 @@ struct MeshSpec {
     std::vector<std::array<std::uint16_t, 3>> triangles;
     std::vector<MaterialSpec> materials{MaterialSpec{}};
     std::vector<std::uint32_t> texture_hashes{0xBBBB0001U};
+    // 0x00134900 +12. Zero takes the default row of the retail selector and
+    // its 24-byte stride; 0x80 takes the row whose stride is 36, which
+    // src/track.cpp refuses. A refused mesh is what makes a prepared mesh
+    // index differ from its source mesh index.
+    std::uint32_t vertex_format = 0;
 };
 
 void write_mesh(Writer& writer, const MeshSpec& spec) {
@@ -217,7 +223,7 @@ void write_mesh(Writer& writer, const MeshSpec& spec) {
     writer.begin(nfsu::kGeometryMetadataId);
     writer.pad_to(nfsu::kGeometryMetadataAlignment);
     Bytes metadata(nfsu::kGeometryMetadataSize, 0);
-    put_u32(metadata, nfsu::kVertexFormatOffset, 0U);
+    put_u32(metadata, nfsu::kVertexFormatOffset, spec.vertex_format);
     put_u32(metadata, nfsu::kMaterialCountOffset,
             static_cast<std::uint32_t>(spec.materials.size()));
     put_u32(metadata, nfsu::kFaceCountOffset,
@@ -476,6 +482,8 @@ nfsu::RenderTextureSet two_textures() {
 constexpr std::uint32_t kPanel = 0x3001U;
 constexpr std::uint32_t kPost = 0x3002U;
 constexpr std::uint32_t kMissingMesh = 0x00007777U;
+// The hash of the mesh the parser refuses. No object names it.
+constexpr std::uint32_t kRefusedMesh = 0x00003003U;
 constexpr std::uint64_t kGeometryBase = 0;
 constexpr std::uint64_t kSceneryBase = 0x2000;
 // (flags ^ kTrackInstanceMaskBias) is zero for this value, so no mask byte
@@ -499,6 +507,21 @@ VertexSpec plane_vertex(float x, float y, float u, float v) {
 }
 
 std::vector<MeshSpec> fixture_meshes() {
+    // A mesh the parser REFUSES, first in the root, so that every prepared
+    // mesh index is one below its source mesh index. With only sound meshes
+    // the two are the same number and a report that printed one for the
+    // other would be right by accident. No object names its hash.
+    MeshSpec refused;
+    refused.name = "WIDE";
+    refused.hash = kRefusedMesh;
+    refused.vertex_format = 0x80U;
+    refused.vertices = {plane_vertex(0.0F, 0.0F, 0.0F, 0.0F),
+                        plane_vertex(1.0F, 0.0F, 1.0F, 0.0F),
+                        plane_vertex(1.0F, 1.0F, 1.0F, 1.0F)};
+    refused.triangles = {{0, 1, 2}};
+    refused.materials = {MaterialSpec{3, 0}};
+    refused.texture_hashes = {kTexA};
+
     MeshSpec panel;
     panel.name = "PANEL";
     panel.hash = kPanel;
@@ -521,7 +544,7 @@ std::vector<MeshSpec> fixture_meshes() {
     post.materials = {MaterialSpec{3, 0}, MaterialSpec{3, 1}};
     post.texture_hashes = {kTexA, kTexMissing};
 
-    return {panel, post};
+    return {refused, panel, post};
 }
 
 InstanceSpec placed(std::uint16_t object_index, float x, std::uint16_t flags) {
@@ -618,15 +641,22 @@ std::vector<SectionSpec> two_sections(std::uint32_t first,
     std::vector<SectionSpec> sections = fixture_sections(first);
     SectionSpec other;
     other.number = second;
-    other.objects.resize(2);
+    other.objects.resize(3);
     other.objects[0].mesh_hash[0] = kPost;
     other.objects[0].radius = 3.0F;
     other.objects[1].mesh_hash[0] = kMissingMesh;
+    // One of the two hashes speed.exe 0x0044590B and 0x00445917 skip
+    // without a lookup, which places nothing for the reason `skipped
+    // hash` rather than for `unresolved hash`. A slot 0 of zero would
+    // have been the other way to two reasons, and src/track_objects.cpp
+    // refuses an object that leaves it empty.
+    other.objects[2].mesh_hash[0] = nfsu::kSkydomeMeshHash;
     other.instances.push_back(placed(0, 20.0F, kQuietFlags));
-    for (int k = 0; k < 4; ++k) {
+    for (int k = 0; k < 3; ++k) {
         other.instances.push_back(
             placed(0, 25.0F + static_cast<float>(k), kQuietFlags));
     }
+    other.instances.push_back(placed(2, 28.0F, kQuietFlags));
     other.instances.push_back(placed(1, 30.0F, kQuietFlags));
 
     // The root reaches back across the whole region, so the FRUSTUM crosses
@@ -674,7 +704,8 @@ struct Fixture {
 };
 
 Fixture make_fixture(const std::vector<MeshSpec>& meshes,
-                     const std::vector<SectionSpec>& sections) {
+                     const std::vector<SectionSpec>& sections,
+                     std::size_t lod_slot = 0) {
     Fixture fixture;
     fixture.geometry_bytes = build_geometry(meshes, kGeometryBase);
     fixture.scenery_bytes = build_sections(sections, kSceneryBase);
@@ -685,9 +716,11 @@ Fixture make_fixture(const std::vector<MeshSpec>& meshes,
                                                 fixture.scenery_bytes.size(),
                                                 kSceneryBase);
     fixture.textures = two_textures();
+    nfsu::TrackSceneOptions scene_options;
+    scene_options.lod_slot = lod_slot;
     std::string error;
     if (!nfsu::build_track_scene(fixture.geometry, fixture.objects,
-                                 fixture.textures, nfsu::TrackSceneOptions{},
+                                 fixture.textures, scene_options,
                                  fixture.scene, error)) {
         check(false, "the fixture scene builds: " + error);
     }
@@ -1085,6 +1118,37 @@ void test_default_camera_is_the_framing() {
         }
     }
 
+    // A BOX THE FRAMING CAN FIT AND THE CAMERA CANNOT HOLD. frame_track_bounds
+    // bounds the target and the distance but not the EYE, which is the two
+    // composed, so a box far from the origin can be framed into a camera
+    // standing outside the range a camera may stand in. Only the free
+    // camera's own validation sees that, and it is not redundant with the
+    // framing's.
+    nfsu::TrackWorldBounds distant;
+    distant.valid = true;
+    distant.min[0] = 8712.0;
+    distant.max[0] = 9288.0;
+    distant.min[1] = -288.0;
+    distant.max[1] = 288.0;
+    distant.min[2] = -288.0;
+    distant.max[2] = 288.0;
+    distant.points = 8;
+    nfsu::OrbitCamera distant_orbit;
+    std::string reason;
+    check_ok(nfsu::frame_track_bounds(distant, 1280, 720, framing,
+                                      distant_orbit, reason),
+             "the distant box frames as an orbit camera", reason);
+    const nfsu::Vec3 distant_eye = nfsu::orbit_eye(distant_orbit);
+    check(distant_eye.x > nfsu::kMaxTargetMagnitude,
+          "and the eye it puts the camera at is outside the range, which is "
+          "what this case is for: got " + std::to_string(distant_eye.x));
+    nfsu::TrackFreeCamera refused_camera;
+    std::string distant_error;
+    check_fails(nfsu::track_frame_free_camera(distant, framing, 1280, 720,
+                                              refused_camera, distant_error),
+                distant_error, "the framed camera is invalid",
+                "a framing whose eye leaves the range is refused");
+
     // The refusals the framing forwards, and the one it adds.
     nfsu::TrackWorldBounds empty;
     std::string message;
@@ -1308,6 +1372,22 @@ void test_cull_camera_conversion() {
     broken.near_plane = 0.0;
     check_fails(nfsu::track_cull_camera_of(broken, cull, message), message,
                 "near plane", "an invalid camera does not convert");
+
+    // THE NARROWING IS NOT A NO-OP, and this is the one input that shows it:
+    // two doubles that differ by less than a float ulp are one float. The
+    // camera below passes validate_track_free_camera - its far plane really
+    // is greater than its near plane in double - and the frustum it would
+    // narrow to has no depth at all.
+    nfsu::TrackFreeCamera collapsing = camera;
+    collapsing.near_plane = 1e-4;
+    collapsing.far_plane = 1e-4 * (1.0 + 1e-9);
+    std::string collapse_error;
+    check_ok(nfsu::validate_track_free_camera(collapsing, collapse_error),
+             "the collapsing camera is valid in double", collapse_error);
+    check_fails(nfsu::track_cull_camera_of(collapsing, cull, message), message,
+                "usable float frustum",
+                "and the narrowing refuses it rather than passing on a "
+                "frustum with no depth");
 }
 
 // ---------------------------------------------------------------------------
@@ -1386,6 +1466,12 @@ void test_source_provenance() {
         check_eq_u64(first->mesh_hash, kPanel, "the placed mesh hash");
         check(first->source_mesh_index < fixture.geometry.meshes.size(),
               "the source mesh index is inside the geometry report");
+        check(first->mesh != first->source_mesh_index,
+              "the prepared index and the source index are different "
+              "numbers here, so the comparisons below are not between "
+              "two names for one value: prepared " +
+                  std::to_string(first->mesh) + ", source " +
+                  std::to_string(first->source_mesh_index));
         const nfsu::TrackMesh& source =
             fixture.geometry.meshes[first->source_mesh_index];
         check_eq_u64(first->mesh_container_offset, source.offset,
@@ -2044,12 +2130,30 @@ void test_screen_size_gate() {
 
     // A forward axis of some other LENGTH gives the same answers, because
     // the gate compares a dot product against a negated radius and that only
-    // means "behind by more than the radius" for a unit axis. The level is
-    // asserted instance by instance against the unit run, so a normalization
-    // that stopped happening changes numbers this case reads rather than a
-    // count it might not.
+    // means "behind by more than the radius" for a unit axis.
+    //
+    // WHERE THAT DIFFERENCE LIVES, because it lives nowhere else: for an
+    // instance in FRONT of the screen eye the dot product is positive and
+    // any positive multiple of it clears the comparison, so a run that
+    // forgot to normalize answers identically. The comparison only bites
+    // just BEHIND the eye, inside the radius, which is why this case moves
+    // the screen eye one unit past the instances rather than leaving it
+    // where the frustum camera is. The screen eye and the frustum camera are
+    // separate inputs to the culler, and this is what that is for.
     options.use_screen_size = true;
     options.screen_scale = 4.0F;
+    // NO SLOT OF EITHER VECTOR IS ZERO, and none of the three differences
+    // that make up the dot product is either. The gate reads its forward in
+    // the raw slot order, and an axis-aligned direction leaves one or two of
+    // those slots at zero - where scaling them changes nothing, so a
+    // normalization dropped on ONE lane is invisible. The eye below is a
+    // unit past the instances on every axis at once, and the forward is the
+    // raw diagonal (1, 1, 1), which makes each of the three lanes able to
+    // carry the dot product past the negated radius on its own.
+    const float behind_world[3] = {-6.0F, 2.0F, -1.0F};
+    nfsu::track_raw_from_world(behind_world, options.screen_eye);
+    const float back_world[3] = {1.0F, 1.0F, -1.0F};
+    nfsu::track_raw_from_world(back_world, options.screen_forward);
     const Run unit = probe_run(fixture, camera, options);
     check_ok(unit.ok, "the unit-axis probe runs", unit.error);
     nfsu::TrackCullOptions stretched = options;
@@ -2073,9 +2177,10 @@ void test_screen_size_gate() {
         }
         check_eq_u64(long_axis.probe.cost.visible, unit.probe.cost.visible,
                      "nor the visible set");
-        check(unit.probe.cost.rejected_by_size > 0,
-              "and this scale rejects something, so the comparison is not "
-              "between two runs that reject nothing");
+        check(unit.probe.cost.visible > 0,
+              "and something survives the gate from behind the screen eye, "
+              "so the comparison is not between two runs that reject "
+              "everything");
     }
 
     // A forward axis that cannot be normalized disables the gate and says so,
@@ -2497,6 +2602,50 @@ void test_two_sections() {
                   join(culler_visible_set(run.cull)),
                   "the two visible sets hold the same instance indices");
 
+    // THREE UNPLACED INSTANCES WITH TWO REASONS BETWEEN THEM, one of
+    // which shares a section index with another and one an instance
+    // index. The reason is looked up by a pair over an ascending list,
+    // and a lookup that matched on either half of that pair alone would
+    // answer correctly for a region with one unplaced instance and
+    // wrongly here.
+    struct Expected {
+        std::size_t section;
+        std::size_t instance;
+        nfsu::TrackUnplacedReason reason;
+    };
+    const std::vector<Expected> unplaced = {
+        {0, 4, nfsu::TrackUnplacedReason::unresolved_hash},
+        {1, 4, nfsu::TrackUnplacedReason::skipped_hash},
+        {1, 5, nfsu::TrackUnplacedReason::unresolved_hash},
+    };
+    std::uint64_t seen = 0;
+    for (const nfsu::TrackInstanceProbe& probe : run.probe.instances) {
+        if (probe.placed) {
+            continue;
+        }
+        ++seen;
+        bool matched = false;
+        for (const Expected& want : unplaced) {
+            if (want.section != probe.section_index ||
+                want.instance != probe.instance_index) {
+                continue;
+            }
+            matched = true;
+            check(probe.has_unplaced_reason,
+                  "an unplaced instance names its reason");
+            check_eq_text(
+                nfsu::track_unplaced_reason_name(probe.unplaced_reason),
+                nfsu::track_unplaced_reason_name(want.reason),
+                "the reason of instance " +
+                    std::to_string(probe.section_index) + ":" +
+                    std::to_string(probe.instance_index));
+        }
+        check(matched, "an unplaced instance this case did not expect: " +
+                           std::to_string(probe.section_index) + ":" +
+                           std::to_string(probe.instance_index));
+    }
+    check_eq_u64(seen, unplaced.size(), "three instances place nothing");
+
     // A selection of the SECOND section probes only its three.
     nfsu::TrackProbeSelection second;
     second.has_section = true;
@@ -2670,6 +2819,12 @@ void test_tree_the_probe_cannot_walk() {
         {"one instance named twice",
          [](nfsu::TrackSection& section) { section.nodes[1].entries[0] = 1; },
          "outside the array or already reached"},
+        // Shortening a node's entry list leaves the last instance named by
+        // nothing, which every other rule above accepts: the count is still
+        // legal, no node is reached twice and no index is out of range.
+        {"an instance the tree does not name",
+         [](nfsu::TrackSection& section) { section.nodes[1].entry_count = 3; },
+         "names 6 of 7 instances"},
     };
 
     for (const Case& item : cases) {
@@ -2785,6 +2940,55 @@ void test_tree_the_probe_cannot_walk() {
           "and the tree is walked");
 }
 
+// THE SLOTS 4 AND 5 FALLBACK. Every object of the fixture fills slot 0
+// and leaves the rest empty, so asking for slot 4 sends every placement
+// through the recovered fallback at speed.exe 0x00445A81: the chain
+// walks slots 0 to 3 and lands on 0. It is the only configuration in
+// which `slot` and `requested_slot` are different numbers, and a report
+// that printed one for the other would be right everywhere else.
+void test_slot_fallback() {
+    const Fixture fixture = make_fixture(fixture_meshes(),
+                                         fixture_sections(303), 4);
+    nfsu::TrackCullOptions options;
+    options.policy = nfsu::TrackCullPolicy::draw_everything;
+    const Run run = probe_run(fixture, street_camera(), options);
+    check_ok(run.ok, "the slot 4 probe runs", run.error);
+    if (!run.ok) {
+        return;
+    }
+    check_eq_u64(run.probe.cost.disagreements, 0, "the culler agrees");
+    std::uint64_t fell_back = 0;
+    for (const nfsu::TrackInstanceProbe& probe : run.probe.instances) {
+        if (!probe.placed) {
+            continue;
+        }
+        ++fell_back;
+        check(probe.slot_fallback_used,
+              "a placement at slot 4 went through the fallback");
+        check_eq_u64(probe.requested_slot, 4, "the slot asked for");
+        check_eq_u64(probe.slot, 0, "and the slot it landed on");
+    }
+    check(fell_back >= 5, "at least five instances placed through the "
+                          "fallback, so this case is not vacuous");
+
+    // And at slot 0 the fallback does not run at all, so the two fields
+    // agree and the flag is clear.
+    const Fixture direct = town();
+    const Run plain = probe_run(direct, street_camera(), options);
+    check_ok(plain.ok, "the slot 0 probe runs", plain.error);
+    if (plain.ok) {
+        for (const nfsu::TrackInstanceProbe& probe : plain.probe.instances) {
+            if (!probe.placed) {
+                continue;
+            }
+            check(!probe.slot_fallback_used,
+                  "no fallback runs at slot 0");
+            check_eq_u64(probe.slot, 0, "the slot is the one asked for");
+            check_eq_u64(probe.requested_slot, 0, "on both fields");
+        }
+    }
+}
+
 void test_names() {
     check_eq_text(nfsu::track_residency_reason_name(
                       nfsu::TrackResidencyReason::every_section),
@@ -2848,9 +3052,77 @@ void test_determinism() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The fixture, as a file
+// ---------------------------------------------------------------------------
+
+// Writes the two-section fixture to `path` as one container image and
+// prints the two regions it holds, so that a CMake gate can drive
+// `nfsu_probe track-probe` against REAL DATA.
+//
+// WHY THIS EXISTS. tests/track_render_guards.cmake drives a probe
+// command with no input files at all, which reaches every refusal and
+// the whole body of a run that reads nothing - and reaches no line that
+// only prints when a region holds an instance. That leaves the listing
+// limit, the per-instance block and the totals that are non-zero only
+// over real data covered by a manual acceptance and by no gate, which
+// docs/TRACK_RENDER.md records as the gap it could not close. This
+// closes it: the fixture is already built in memory here, and writing
+// the same bytes to a path the caller names costs one function.
+//
+// IT WRITES ONLY WHERE IT IS TOLD. There is no default path and no
+// fixed one; issue #124 is about test binaries that write to a fixed
+// path under the system temp directory, and the gate hands this one a
+// path inside its own build directory.
+bool write_fixture(const std::string& path) {
+    const Bytes geometry = build_geometry(fixture_meshes(), kGeometryBase);
+    const Bytes scenery =
+        build_sections(two_sections(303, 310), kSceneryBase);
+    if (geometry.size() > kSceneryBase) {
+        std::cerr << "the geometry region reaches past the scenery base\n";
+        return false;
+    }
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    if (!stream) {
+        std::cerr << "cannot open " << path << " for writing\n";
+        return false;
+    }
+    stream.write(reinterpret_cast<const char*>(geometry.data()),
+                 static_cast<std::streamsize>(geometry.size()));
+    // The parsers are told the absolute offset their bytes came from,
+    // because every alignment rule of the format is relative to the
+    // start of the FILE. So the scenery has to sit at kSceneryBase here,
+    // exactly where build_sections was told it would.
+    const std::vector<char> gap(
+        static_cast<std::size_t>(kSceneryBase - geometry.size()), '\0');
+    stream.write(gap.data(), static_cast<std::streamsize>(gap.size()));
+    stream.write(reinterpret_cast<const char*>(scenery.data()),
+                 static_cast<std::streamsize>(scenery.size()));
+    stream.flush();
+    if (!stream) {
+        std::cerr << "failed to write " << path << '\n';
+        return false;
+    }
+    std::cout << "fixture: geometry " << kGeometryBase << ' '
+              << geometry.size() << " scenery " << kSceneryBase << ' '
+              << scenery.size() << '\n';
+    return true;
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    // One argument mode, and it is not a test: --write-fixture <path>
+    // lays the fixture down as a file for tests/track_probe_guards.cmake
+    // and runs no check at all.
+    if (argc == 3 && std::string(argv[1]) == "--write-fixture") {
+        return write_fixture(argv[2]) ? 0 : 1;
+    }
+    if (argc != 1) {
+        std::cerr << "usage: nfsu_track_probe_tests [--write-fixture <path>]\n";
+        return 1;
+    }
+
     test_camera_validation();
     test_camera_basis();
     test_default_camera_is_the_framing();
@@ -2870,6 +3142,7 @@ int main() {
     test_invalid_section();
     test_degraded_section();
     test_tree_the_probe_cannot_walk();
+    test_slot_fallback();
     test_mismatched_inputs();
     test_disagreement_is_reported();
     test_names();
