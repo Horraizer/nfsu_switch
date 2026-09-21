@@ -1715,8 +1715,10 @@ void test_scratch_stamp() {
     Image image;
     // Two records already stamped and one carrying an index instead, each
     // written as the format's own number. 0x0245 is 581, the largest index
-    // any retail record holds: Tracks/TRACKB1301.lzc stores 0 to 581 once
-    // each across its 582 polygons and stamps none of them.
+    // Tracks/TRACKB1301.lzc holds: it stores 0 to 581 once each across its
+    // 582 polygons and is the one retail file that stamps none of them.
+    // Corpus-wide the indices run to 0x03FF, as the constant's own comment
+    // and docs/TRACK_COLLISION.md both record.
     Polygon stamped_low = flat_quad(16.0F, 16.0F, 8.0F, 1.0F);
     stamped_low.scratch = kScratchStamp;
     Polygon indexed = flat_quad(16.0F, 16.0F, 8.0F, 2.0F);
