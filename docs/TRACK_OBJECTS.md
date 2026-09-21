@@ -686,14 +686,22 @@ The suite went from 197 checks to 247, but that is 5 new distinct assertions
 rather than 50: 46 of the 50 are the one `default_tree` fixture check, counted
 once per call.
 
-Issue #124 covers the eight other test files that still build fixtures at a
-fixed name - `car_parts_tests.cpp:864`, `chunk_tests.cpp:36`,
-`geometry_tests.cpp:1572`, `part_placement_tests.cpp:1139`,
-`texture_tests.cpp:1774`, `track_collision_tests.cpp:1489`,
-`track_tests.cpp:1573` and `track_zone_tests.cpp:1282`. `render_tests.cpp:166`
-is not one of them: it randomises its directory name from `steady_clock` and
-`random_device`. The nine names all differ, so each file collides only with
-another copy of itself and each can be fixed on its own.
+Issue #124 closed the same hole in the eight other test files that built
+fixtures at a fixed name: `car_parts_tests.cpp`, `chunk_tests.cpp`,
+`geometry_tests.cpp`, `part_placement_tests.cpp`, `texture_tests.cpp`,
+`track_collision_tests.cpp`, `track_tests.cpp` and `track_zone_tests.cpp`.
+Each now derives its fixture name from the process id, the way this file and
+`arg_path_tests.cpp` do. `render_tests.cpp` never needed it: it randomises its
+directory name from `steady_clock` and `random_device`. The nine names all
+differed, so each file collided only with another copy of itself and each was
+fixed on its own.
+
+That list named a line in every entry until issue #124 landed, and the change
+that closed these files is what falsified all eight numbers at once, because
+each file gained a platform block above its call. The names are kept and the
+numbers are not, deliberately: a paragraph naming a file and a mechanism stays
+true, and one naming a line has a half-life this document has now measured at
+a single commit.
 
 Whether any of the eight crashes rather than merely fails is no longer open.
 `nfsu_texture_tests` does: under three concurrent full `ctest` runs it was seen
@@ -703,6 +711,20 @@ to exit `0xc0000409`, `STATUS_STACK_BUFFER_OVERRUN`, and to hit twelve
 because a sweep reads it as neither. `nfsu_track_collision_tests`,
 `nfsu_track_zone_tests`, `nfsu_track_tests`, `nfsu_geometry_tests` and
 `nfsu_car_parts_tests` were seen to fail but not to crash.
+
+Issue #124 then found the route, and it is not the one this file's own crash
+would have predicted. `texture_tests.cpp` counted directory entries with the
+throwing overload of `fs::directory_iterator`, not at a container subscript: a
+concurrent copy's `fs::remove_all` takes the directory away, the constructor
+raises `filesystem_error`, nothing catches it, and `std::terminate` calls
+`abort`, which the UCRT turns into `__fastfail` - exit `0xc0000409`. A program
+that does nothing but iterate a directory which is not there reproduces that
+status on its own, and the `error_code` overload returns from the same call
+with a count of zero and the error set. So the second half of the audit has
+two shapes rather than one, and enumerating subscripts finds only the first: a
+`-D_GLIBCXX_ASSERTIONS` build of these eight binaries fired no bounds
+assertion in 2880 contended runs, on a set that includes the one binary that
+does crash.
 
 ## Observed
 
