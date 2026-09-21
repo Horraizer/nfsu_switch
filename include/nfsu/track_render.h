@@ -114,7 +114,7 @@ bool track_draw_list_bounds(
 //
 // A car sits at the origin and fits in a box a fixed distance works for. A
 // track region does not: the retail region docs/TRACK_RENDER.md measures is
-// 429 by 140 by 161 world units across and sits 650 units from the origin,
+// 429 by 160 by 139 world units across and sits 650 units from the origin,
 // so the car defaults - distance 7, target 0.2,0.35,0 - render it entirely
 // outside the frustum and produce a frame of nothing but background. This
 // is the rule that replaces them, and it needs no flags to produce a
@@ -146,8 +146,11 @@ constexpr double kMaxTrackFramingMargin = 100.0;
 //   distance = radius / s * margin
 //
 // s is the sine of the smaller of the two half-angles, so distance * s is
-// the half-extent the frustum admits at the target plane and a sphere of
-// that radius fits in both axes. The sphere and not the box, deliberately:
+// the radius of the LARGEST SPHERE the cone admits at that distance, and
+// the box's bounding sphere therefore fits in both axes. It is not the
+// half-extent at the target plane, which is distance * tan of the same
+// angle and is larger; the formula here is the stricter of the two, which
+// is the one a containment claim needs. The sphere and not the box, deliberately:
 // a box fit depends on the view direction, so the framing would change
 // whenever yaw or pitch did and two runs at different angles could not be
 // compared. The sphere fit is view-independent and always contains the
@@ -261,7 +264,21 @@ struct TrackRenderStats {
 // The scene is checked with validate_prepared_track_scene and the list with
 // validate_track_draw_list, and the options and limits are checked, before
 // the frame is allocated, so a rejected input leaves `frame` untouched.
-// Vertex indices are checked per triangle and counted as triangles_bad_index.
+// Vertex indices are checked per triangle and counted as
+// triangles_bad_index.
+//
+// THREE STATISTICS ARE DEAD ON THIS PATH, and the reason is the same one
+// entries_drawn carries above. validate_prepared_track_region already
+// refuses any triangle index outside its mesh's vertex table, and
+// validate_prepared_track_scene runs it, so on a scene this function
+// accepts triangles_bad_index is always 0, the bad-index branch below is
+// never taken, and TrackRenderStats::bounds.instances_without_vertices is
+// always 0. The checks stay because they are cheap and because the
+// alternative is an out-of-range read if a validator ever loosens.
+//
+// The identical block inside track_draw_list_bounds is NOT dead: that
+// function is public, is documented as running no validator, and is
+// reached with hand-built scenes. Its version is covered.
 //
 // Fails, with error set, on an invalid scene or list, on a camera or size
 // validate_camera or Frame::reset refuses, on a work limit, and on

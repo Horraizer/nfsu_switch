@@ -2108,6 +2108,10 @@ int run_track_render(
     } else {
         // The renderer's own defaults, with the framing angles applied, are
         // what the explicit distance and target are then measured against.
+        // Report it: otherwise the reason the framing failed reaches
+        // nobody, and the frame is not the one the options describe.
+        std::cout << "render: framing failed (" << error
+                  << "); drawing from the explicit distance and target\n";
         options.camera = nfsu::OrbitCamera{};
         options.camera.yaw_deg = args.framing.yaw_deg;
         options.camera.pitch_deg = args.framing.pitch_deg;
@@ -2215,7 +2219,10 @@ int run_track_render(
     }
     std::cout << "wrote: " << args.output.string() << '\n';
 
-    print_track_draw_list_entries(pipeline, args.list_limit);
+    // Only when entries were actually asked for; see above.
+    if (args.list_limit > 0) {
+        print_track_draw_list_entries(pipeline, args.list_limit);
+    }
     return pipeline.reports_ok ? 0 : 3;
 }
 
@@ -3489,6 +3496,21 @@ const Command kCommands[] = {
                  ++i;
                  return true;
              };
+             const auto take_ranged = [&](double& out, double low,
+                                         double high) {
+                 double parsed = 0.0;
+                 if (!has_value || !parse_f64(value, parsed) ||
+                     parsed < low || parsed > high) {
+                     std::cerr << "error: " << flag
+                               << " needs a number from "
+                               << format_double(low) << " to "
+                               << format_double(high) << '\n';
+                     return false;
+                 }
+                 out = parsed;
+                 ++i;
+                 return true;
+             };
              const auto take_size = [&](std::uint32_t& out) {
                  std::uint64_t parsed = 0;
                  if (!has_value || !parse_u64(value, parsed) || parsed == 0 ||
@@ -3585,19 +3607,28 @@ const Command kCommands[] = {
                      return 1;
                  }
              } else if (flag == "--view-yaw") {
-                 if (!take_double(args.framing.yaw_deg)) {
+                 // The same ranges frame_track_bounds enforces, checked
+                 // here so that the diagnostic names the option and
+                 // arrives before any file is opened.
+                 if (!take_ranged(args.framing.yaw_deg,
+                                  -nfsu::kMaxYawMagnitude,
+                                  nfsu::kMaxYawMagnitude)) {
                      return 1;
                  }
              } else if (flag == "--view-pitch") {
-                 if (!take_double(args.framing.pitch_deg)) {
+                 if (!take_ranged(args.framing.pitch_deg, nfsu::kMinPitch,
+                                  nfsu::kMaxPitch)) {
                      return 1;
                  }
              } else if (flag == "--view-fov") {
-                 if (!take_double(args.framing.fov_y_deg)) {
+                 if (!take_ranged(args.framing.fov_y_deg, nfsu::kMinFov,
+                                  nfsu::kMaxFov)) {
                      return 1;
                  }
              } else if (flag == "--view-margin") {
-                 if (!take_double(args.framing.margin)) {
+                 if (!take_ranged(args.framing.margin,
+                                  nfsu::kMinTrackFramingMargin,
+                                  nfsu::kMaxTrackFramingMargin)) {
                      return 1;
                  }
              } else if (flag == "--view-distance") {

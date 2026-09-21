@@ -2758,6 +2758,177 @@ void test_render_an_unusable_binding() {
           "an unusable group draws the fallback, like an unresolved one");
 }
 
+void test_render_resets_its_out_parameters() {
+    // Both statistics structures are cleared on entry, and nothing pinned
+    // that in either direction.
+    //
+    // The scenario is not hypothetical: a viewer redrawing a frame calls
+    // this with the same two objects every time. Without the reset every
+    // ++-accumulated counter doubles on the second call, and - worse - the
+    // material-state refusal and both validator refusals return EARLY, so a
+    // caller that reads the statistics after a refused call gets the
+    // previous call's numbers as though they described this one.
+    const Fixture fixture = town();
+    const nfsu::TrackDrawList list =
+        make_list(fixture.scene, nfsu::TrackDrawOrder::visible_instance);
+    const nfsu::RenderOptions options = small_options();
+    std::string error;
+
+    nfsu::Frame fresh_frame;
+    nfsu::RenderStats fresh;
+    nfsu::TrackRenderStats fresh_track;
+    check_ok(nfsu::render_track_draw_list(fixture.scene, list, options,
+                                          nfsu::RenderLimits{}, fresh_frame,
+                                          fresh, fresh_track, error),
+             "the reference render succeeds", error);
+
+    // The same two objects, twice. The second call must produce the first
+    // call's numbers and not twice them.
+    nfsu::Frame frame;
+    nfsu::RenderStats stats;
+    nfsu::TrackRenderStats track;
+    check_ok(nfsu::render_track_draw_list(fixture.scene, list, options,
+                                          nfsu::RenderLimits{}, frame, stats,
+                                          track, error),
+             "the first of two renders succeeds", error);
+    check_ok(nfsu::render_track_draw_list(fixture.scene, list, options,
+                                          nfsu::RenderLimits{}, frame, stats,
+                                          track, error),
+             "the second of two renders succeeds", error);
+    check_eq_u64(stats.triangles_submitted, fresh.triangles_submitted,
+                 "a re-used RenderStats is not accumulated into");
+    check_eq_u64(stats.fragments_written, fresh.fragments_written,
+                 "nor is its fragment count");
+    check_eq_u64(stats.pixels_drawn, fresh.pixels_drawn,
+                 "nor its pixel count");
+    check_eq_u64(track.entries, fresh_track.entries,
+                 "a re-used TrackRenderStats is not accumulated into");
+    check_eq_u64(track.texture_binds, fresh_track.texture_binds,
+                 "nor is its bind count");
+    check_eq_u64(track.bounds.drawn.points, fresh_track.bounds.drawn.points,
+                 "nor the points its bounds visited");
+
+    // And on a refused call. The retail material state is refused before
+    // anything else, so this is the earliest return there is.
+    nfsu::RenderOptions retail = options;
+    retail.material_state = nfsu::MaterialStateMode::retail;
+    check(!nfsu::render_track_draw_list(fixture.scene, list, retail,
+                                        nfsu::RenderLimits{}, frame, stats,
+                                        track, error),
+          "the retail material state is refused");
+    check_eq_u64(stats.triangles_submitted, 0,
+                 "a refused call leaves no triangle count behind");
+    check_eq_u64(stats.pixels_drawn, 0,
+                 "a refused call leaves no pixel count behind");
+    check_eq_u64(track.entries, 0,
+                 "a refused call leaves no entry count behind");
+    check_eq_u64(track.texture_binds, 0,
+                 "a refused call leaves no bind count behind");
+    check(!track.bounds.drawn.valid,
+          "a refused call leaves no bounds behind");
+}
+
+void test_render_triangle_ids_start_at_zero() {
+    // The triangle id is the running count of submitted triangles, and two
+    // things outside this function read it: stats.pixels_fallback indexes
+    // its own table by it, and Frame::ids() is what
+    // Inspector::draw_of_triangle turns back into a material group. An id
+    // that starts at one shifts every lookup by one group boundary, and
+    // nothing in the frame or in any count would show it.
+    const Fixture fixture = town();
+    const nfsu::TrackDrawList list =
+        make_list(fixture.scene, nfsu::TrackDrawOrder::visible_instance);
+    nfsu::Frame frame;
+    nfsu::RenderStats stats;
+    nfsu::TrackRenderStats track;
+    std::string error;
+    check_ok(nfsu::render_track_draw_list(fixture.scene, list, small_options(),
+                                          nfsu::RenderLimits{}, frame, stats,
+                                          track, error),
+             "the id fixture renders", error);
+    check(stats.triangles_submitted > 0, "the id fixture submits triangles");
+
+    bool any = false;
+    std::uint32_t lowest = 0;
+    std::uint32_t highest = 0;
+    std::uint64_t past_the_end = 0;
+    for (const std::uint32_t id : frame.ids()) {
+        if (id == nfsu::kNoTriangle) {
+            continue;
+        }
+        if (id >= stats.triangles_submitted) {
+            ++past_the_end;
+            continue;
+        }
+        if (!any) {
+            lowest = highest = id;
+            any = true;
+        } else {
+            lowest = std::min(lowest, id);
+            highest = std::max(highest, id);
+        }
+    }
+    check(any, "some pixel owns a triangle");
+    check_eq_u64(past_the_end, 0,
+                 "no pixel owns an id past the submitted count");
+    check_eq_u64(lowest, 0, "the first submitted triangle is id 0");
+    check(highest < stats.triangles_submitted,
+          "and the last id is inside the submitted range: " +
+              std::to_string(highest) + " of " +
+              std::to_string(stats.triangles_submitted));
+}
+
+void test_framing_refuses_a_non_finite_option() {
+    // Every framing option, one at a time. A NaN passes BOTH range
+    // comparisons - NaN < low and NaN > high are each false - so the
+    // finiteness gate is the only thing in front of it, and that gate is
+    // one `||` chain: a single one of them turned into `&&` lets a NaN
+    // through in three of the four lanes while the fourth still refuses.
+    // Driving only one lane cannot see that.
+    //
+    // This is also what makes the validate_camera self-check at the end of
+    // frame_track_bounds observable. A NaN that gets past the gate reaches
+    // it, and with both gone orbit_eye produces a NaN eye and a frame of
+    // nothing.
+    const nfsu::TrackWorldBounds unit = box(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0);
+    const double nan_value = std::numeric_limits<double>::quiet_NaN();
+    const double infinite = std::numeric_limits<double>::infinity();
+    nfsu::OrbitCamera camera;
+    std::string error;
+
+    // Both infinities, because finite_value rejects them with two separate
+    // comparisons and a fixture that drives only one leaves the other free.
+    for (int lane = 0; lane < 4; ++lane) {
+        for (int which = 0; which < 3; ++which) {
+            const double bad = which == 0 ? nan_value
+                                          : (which == 1 ? infinite : -infinite);
+            const std::string kind = which == 0 ? "a NaN"
+                                                : (which == 1 ? "an infinity"
+                                                              : "a negative infinity");
+            static const char* const kNames[4] = {"yaw", "pitch", "fov",
+                                                  "margin"};
+            nfsu::TrackFramingOptions options;
+            if (lane == 0) {
+                options.yaw_deg = bad;
+            } else if (lane == 1) {
+                options.pitch_deg = bad;
+            } else if (lane == 2) {
+                options.fov_y_deg = bad;
+            } else {
+                options.margin = bad;
+            }
+            const std::string what =
+                kind + " " + kNames[lane] + " is refused";
+            check(!nfsu::frame_track_bounds(unit, 1280, 720, options, camera,
+                                            error),
+                  what);
+            check(error.find("must be finite") != std::string::npos,
+                  what + " by the finiteness gate, not by something later: " +
+                      error);
+        }
+    }
+}
+
 } // namespace
 
 int main() {
@@ -2782,6 +2953,7 @@ int main() {
     test_framing_is_a_function_of_its_inputs();
     test_framing_refusals();
     test_framing_a_single_point();
+    test_framing_refuses_a_non_finite_option();
 
     test_render_counts();
     test_render_texture_binds_match_the_draw_list_cost();
@@ -2801,6 +2973,8 @@ int main() {
     test_render_drawn_bounds_match_the_frame();
     test_render_reports_an_invalid_mesh();
     test_render_counts_a_degenerate_triangle();
+    test_render_resets_its_out_parameters();
+    test_render_triangle_ids_start_at_zero();
     test_render_reports_the_copies_that_drew();
     test_render_edge_pixels_are_counted();
     test_render_a_wrong_scene_is_refused_before_the_frame();

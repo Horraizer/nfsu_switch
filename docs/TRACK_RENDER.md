@@ -240,27 +240,112 @@ come from the render path at all. The static collision of
 [`TRACK_COLLISION.md`](TRACK_COLLISION.md) is a separate container, decoded
 by separate code, that this renderer never reads.
 
-Rendered, over the placed instances of this region:
+**Rendered**, over the placed instances of this region, measured by
+`track_draw_list_bounds` over a sub-list filtered to one prepared mesh:
 
-| Mesh | drawn world y |
-| --- | --- |
-| `TRSABC_ROAD_CHOP14` | -22.7532 .. -21.2757 |
-| `TRSABC_SIDEWALK_CHOP8` | -22.7532 .. -21.1319 |
+| Mesh | entries | points | drawn world y |
+| --- | ---: | ---: | --- |
+| `TRSABC_ROAD_CHOP14` | 3 | 534 | -22.753185 .. -21.275707 |
+| `TRSABC_SIDEWALK_CHOP8` | 1 | 165 | -22.753185 .. -21.131891 |
 
-Sampled from `Tracks/TRACKB1210.lzc` with `track-collision`, over the same
-`(px, pz)` window, the indexed ground runs **-22.7539 .. -21.1719**.
+Their union occupies, in the **raw slot order** that `track-collision`
+takes its arguments in,
 
-The rendered road's floor and the collision floor differ by **0.0007**
-world units and the sidewalk's ceiling and the collision ceiling by
-**0.040**. At the scale measured below that is under a millimetre and four
-centimetres. Two decoders that share no code agree on where the ground is.
+```text
+px 436.515808 .. 650.009583      pz 70.252800 .. 94.762497
+```
 
-The file-to-track correspondence was established twice and independently:
-by the naming rule [`TRACK_COLLISION.md`](TRACK_COLLISION.md) records, and
-by casting a ray down each of this section's 30 real instance translations
-in all 31 `TRACKB*.lzc` files - only 1201 and 1210 put their surface a few
-tenths of a unit above the instance origins, every other candidate that
-hits anything is 13 to 79 units away.
+**Sampled**, from `Tracks/TRACKB1210.lzc`, over exactly that window. THE
+LATTICE IS PART OF THE RESULT and is stated so the figures can be
+reproduced: `slot0 = px_min + k` for k in 0..213 plus the exact `px_max`,
+which is 215 values, by `slot1 = pz_min + j` for j in 0..24 plus the exact
+`pz_max`, which is 26 - **5590 sample columns, of which 2744 hit a
+surface**. Each column is the probe's own ray: origin `(slot0, slot1,
+1000)`, direction `(0, 0, -1)`.
+
+```text
+ground over the window: -22.753906 .. -21.143860
+```
+
+Both extrema are single `track-collision` invocations:
+
+```text
+build/nfsu_probe track-collision <Tracks/TRACKB1210.lzc> 601.515808105469 76.252799987793
+  -> probe ray: polygon 3317 triangle 1 distance 1022.75 point (601.516, 76.2528, -22.7539)
+
+build/nfsu_probe track-collision <Tracks/TRACKB1210.lzc> 464.515808105469 94.252799987793
+  -> probe ray: polygon 5082 triangle 0 distance 1021.14 point (464.516, 94.2528, -21.1439)
+```
+
+**The agreement.**
+
+| | rendered | collision | difference |
+| --- | --- | --- | ---: |
+| floor | -22.753185 | -22.753906 | 0.000721 |
+| ceiling | -21.131891 | -21.143860 | 0.011969 |
+
+At the scale measured below that is **under a millimetre on the floor and
+about a centimetre on the ceiling**, between two decoders that share no
+code.
+
+An earlier draft of this section printed the collision ceiling as -21.1719
+and the difference as 0.040, and a reviewer could not reproduce either.
+The cause is worth recording because it is a trap this kind of measurement
+sets: -21.171875 is exactly -5420/256, a stored quantum, and it is the
+maximum of an INTEGER lattice over the ROAD mesh's window alone,
+`px 441..650` by `pz 71..91`. The sidewalk reaches out to `pz 94.76`, and
+the collision surface ramps upward across exactly that last strip - pz
+90.25 gives -21.2929, then -21.2108, -21.1885, -21.1662, and 94.25 gives
+-21.1439. The old lattice sampled the middle of that ramp and stopped
+before its top. **It made the agreement look three times worse than it is**,
+which is an unusual direction for an error to run in and still an error.
+
+### What the file pairing does and does not establish
+
+The ray cast **rules out 29 of the 31** `TRACKB*.lzc` files and **cannot
+separate the last two**. Casting the same ray down each of the section's 30
+non-zero instance translations:
+
+| file | instances hit, of 30 | nearest | median | furthest |
+| --- | ---: | ---: | ---: | ---: |
+| `TRACKB1201`, `TRACKB1210` | 9 | 0.062160 | 0.190926 | 0.977442 |
+| `TRACKB1207` | 2 | 33.685514 | 37.802794 | 41.920073 |
+| six more files | 6 | 67.493010 | 75.075417 | 75.893677 |
+| three more files | 4 | 67.493010 | 71.394956 | 75.248512 |
+| the other 18 | 0 | - | - | - |
+
+So the nearest rejected file is 33.7 units away and the furthest is 75.9 -
+**a margin of about 38 units** between the surviving pair and everything
+else. An earlier draft said "13 to 79"; neither end reproduces.
+
+Three things about that table are worth stating rather than leaving
+implied, because each of them could be read as more than it is:
+
+- **Only 9 of the 30 translations hit anything at all**, in any file. The
+  other 21 columns have no indexed surface under them. The pairing rests on
+  nine agreements and twenty-one silences, not on thirty.
+- **The nine zero translations are excluded on purpose, and excluding them
+  is load-bearing.** Fold them back in and `TRACKB1099` hits all nine at a
+  distance of exactly 0.000000, which beats 1201 and 1210 outright. The
+  zero column is not evidence about this region; it is the origin, and
+  several containers happen to have a surface there.
+- **`TRACKB1201` and `TRACKB1210` cannot be told apart here.** They are
+  different files - 246347 and 244396 bytes, SHA-256 `DCF7F514...` and
+  `3EF7DDAC...`, 7913 against 7841 polygons and 10502 against 10424
+  indices - with identical stored bounds, identical 277 cells and 195
+  nodes, and **identical answers at all 5590 lattice columns of the window
+  above**: the same 2744 hits, the same no-hit pattern, the same heights to
+  the last bit, and the same polygon and triangle reported at both extrema.
+
+  So the correct statement is one method plus a tie-break: the ray cast
+  narrows 31 candidates to 2 with a 38-unit margin, and the naming rule
+  [`TRACK_COLLISION.md`](TRACK_COLLISION.md) records picks 1210 out of the
+  pair. An earlier draft called that two independent methods. It is not.
+
+  **The cross-check above is unaffected by which of the two is right**,
+  because both return the same ground everywhere in this window. That is
+  the reason this ambiguity is recorded here rather than treated as a
+  qualification on the agreement.
 
 Scale: the 240SX body mesh measures 4.374 by 1.929 by 1.243 world units
 against a real 4.31 by 1.815 by 1.315 m car, and
@@ -355,11 +440,15 @@ and printed nothing on standard error.
 **Across optimisation levels there is one divergence, and it is in
 `src/render.cpp`, not in this layer.**
 
-| View | Release (-O3) | Debug (-O0) |
+| View | Release (-O3) | Debug and the default (-O0) |
 | --- | --- | --- |
-| default, `material-group` | `D17D632B...` | same |
-| default, `visible-instance` | `D17D632B...` | same |
+| region, `material-group` | `D17D632B...` | same |
+| region, `visible-instance` | `D17D632B...` | same |
 | street-level (below) | `20CCC85C...` | `F691A28D...` |
+
+The third column covers two configurations, not one: an explicit
+`-DCMAKE_BUILD_TYPE=Debug` and the default with no build type, which
+carries no `-O` flag and so compiles at `-O0` as well. Both were measured.
 
 The street view's two frames differ in **61 pixels of 921600**, all of them
 in the two-column strip `x 656..657`, `y 299..401`, which is one
@@ -380,12 +469,21 @@ Four things were measured, in this order:
    two hashes.
 3. Compiling **only `src/render.cpp` at `-O0`** inside an otherwise
    `-O3` Release build reproduces the Debug hash exactly,
-   `F691A28D96876C7F864FA04FF54E5FB265B6F2C3A33A2E2B00EE9E3704F771AC`. The
-   divergence is inside that one translation unit.
+   `F691A28D96876C7F864FA04FF54E5FB265B6F2C3A33A2E2B00EE9E3704F771AC`, and
+   compiling **only `src/track_render.cpp` at `-O0`** in the same build
+   changes nothing at all. The second half is the negative control, and it
+   is an independent reviewer's rather than this branch's: the divergence
+   is inside the translation unit this branch does not touch, and is not
+   inside the one it adds.
 4. The car path does not reproduce it. All five
    [`RENDERER.md`](RENDERER.md) reference hashes are identical in Release
    and in Debug, and so is a deliberately hostile car view - grazing angle,
-   `--near 0.0001 --far 90000`, `--fov 120`.
+   `--near 0.0001 --far 90000`, `--fov 120`. An independent reviewer tried
+   five such views on `origin/main` across `-O0` and `-O3`, including a
+   distance of 900 at `--fov 1` and a target at `9000,0,0`, and every one
+   is byte-identical. That is the expected result rather than a gap:
+   `origin/main` has no path that renders geometry hundreds of units from
+   the origin, which is the whole point of the paragraph below.
 
 What separates the two scenes is magnitude. A car sits within a few units
 of the origin; this region's vertices are 436 to 865 units out, so
@@ -455,132 +553,218 @@ pins the UV orientation absolutely rather than relatively.
 
 ### Mutations
 
-Two sets were written against `src/track_render.cpp`, applied one at a
-time, rebuilt and run. Both harnesses verify the revert against the
-pristine text before applying the next mutant, refuse to start unless the
-clean suite passes, and give no credit to a mutation that fails to compile.
+**A mutation score describes a SET, not a suite, and no single number here
+is the coverage of this code.** Five sets were run, three of them by
+sessions that had not seen the tests. Each row says what it measured and
+who measured it; they are not summable and they are not comparable to each
+other.
 
-| Set | Written | Compiled | Caught | Survived |
+| Set | Written | Applied | Caught | Survived |
 | --- | ---: | ---: | ---: | ---: |
-| The author's, first pass | 60 | 59 | 43 | 16 |
-| An independent pass, first run | 185 | 185 | 90 | 95 |
-| The author's, after the fixes | 60 | 59 | 56 | 3 |
-| The independent survivors, re-run after the fixes | 43 | 43 | 42 | 1 |
+| Independent pass over the library, at the first head | 185 | 185 | 90 | 95 |
+| **Independent pass over the library, 200 mutants, after the first round of fixes** | **200** | **200** | **169** | **31** |
+| Independent pass over the `track-render` command | 34 | 34 | 7 | 27 |
+| The author's own library set | 60 | 59 | 56 | 3 |
+| The author's own `track-render` command set, after this round | 34 | 34 | 33 | 1 |
+| The independent library survivors, re-expressed and re-run | 43 | 43 | 42 | 1 |
+| The reviewer's named library survivors, re-run after this round | 11 | 11 | 10 | 1 |
 
-**The first row is the number a reader should distrust, and the second is
-why.** The independent pass was run by a subagent that had not seen this
-suite, against the same head, and it found 95 survivors out of 185 where
-the author's own set found 16 out of 59. Of its 95, seven are provably
-equivalent and three are guards no file can reach, leaving **85 real
-survivors: 63 in `src/track_render.cpp` and all 22 it wrote against the
-`track-render` command**. It also re-ran each of its 73 library survivors
-against the whole CTest suite one at a time: none is caught by any other
-test in the repository.
+**The bold row is the number to quote for the library.** It is an
+independent 200-mutant pass by a reviewer's subagent that had not seen this
+suite, and of its 31 survivors it classed 13 as real coverage holes, 12 as
+provably equivalent and 6 as unreachable behind
+`validate_prepared_track_scene`. By function it reports
+`track_placed_vertex` 13 of 13, `extend_bounds` 9 of 9,
+`extend_bounds_from_raw_box` 8 of 8 and `sine_of_half_angle` 5 of 5, with
+the survivors concentrated in `frame_track_bounds` (9 of 44) and
+`render_track_draw_list` (20 of 95).
 
-What the two passes found between them, and what closing it took:
+That set is not one this branch can re-run - it was written elsewhere and
+is not in the repository - so the honest statement is that an independent
+pass measured 169 of 200 at the head it was run against, and the rows below
+it are what this branch can reproduce on demand.
+
+An earlier draft of this table reported "43 written, 42 caught, 1 survived"
+as though it described the library's coverage. It does not: 43 is the count
+of survivors the FIRST independent pass named, re-expressed against this
+source. Re-running a set selected for having survived says something useful
+about whether those particular holes closed, and nothing at all about the
+remaining 90 per cent of the code. The bold row is there because it is the
+only measurement in this table taken over a set nobody here chose.
+
+**An oracle caveat that affects every number above, and every mutation
+number in this repository.** Eight test binaries write to FIXED paths under
+the system temp directory, so two concurrent `ctest` runs collide. It
+reproduces on a pristine tree, it is not introduced here, and it can only
+manufacture a false CAUGHT - never a false survivor - so survivor counts
+are sound and catch counts can be optimistic. `tests/track_render_tests.cpp`
+does no file I/O at all. The command set above sidesteps it entirely by
+running only the five tests a `src/main.cpp` change can reach.
+
+#### What the passes found, and what closing it took
 
 - **No test read a pixel's colour at all.** The suite compared frames to
   each other and never to a value, so every fault that changes what a
-  fragment IS - the UV pair, the vertex-colour channels, the light
-  normalization, the clamp on the shade factor, the normal flip, the bound
-  texture, the rounding in the shade factor - left every count, bind and
-  total identical. Twelve separate mutations survived on that one gap. The
-  suite now pins five exact pixels, derived and not recorded, and the four
-  UV corners of a four-texel texture.
+  fragment IS left every count, bind and total identical. Twelve mutations
+  survived on that one gap. There are now five exact pixels, derived and
+  not recorded, and the four UV corners of a four-texel texture.
 - **Every fixture normal was `(0, 0, 1)` and every camera was in front of
-  it.** That made three more faults unfalsifiable: at a normal of
-  `(0, 0, 1)` the shade is 156 whether the fixed light is normalized or
-  not; with the eye always in front, the clamp at zero never ran; and a
-  wrong sign in the cross product is exactly a negated normal there, which
-  the flip towards the eye puts straight back. There are now three
-  fixtures: flat, tilted 45 degrees about the world X axis, and rotated 45
-  degrees about the world Y axis so the normal's x component is non-zero.
+  it.** At that normal the shade is 156 whether the fixed light is
+  normalized or not; with the eye always in front, the clamp at zero never
+  ran; and a wrong sign in the cross product is exactly a negated normal
+  there, which the flip towards the eye puts straight back. Four fixtures
+  now: flat, tilted about world X, rotated about world Y so the normal's x
+  component is non-zero, and a probe mesh with a unique extreme on each
+  vertex of one triangle and no area on the other.
 - **The flat texel was 60.** `(texel * shade + 128) >> 8` gives the same
-  byte for shades 89 and 90 at a texel of 60, so dropping the `+ 0.5` from
-  the shade factor was invisible. It is 255 now, where they differ.
+  byte for shades 89 and 90 there, so a dropped `+ 0.5` in the shade factor
+  was invisible. It is 255 now.
+- **The two out-parameters were never checked for being reset.** A caller
+  that re-uses one `RenderStats` - which is what a viewer redrawing a frame
+  does - doubled every counter, and a caller that read the statistics after
+  a REFUSED call got the previous call's numbers, because the material
+  state refusal and both validators return early. Pinned in both
+  directions now.
+- **Triangle-id identity was unpinned.** Ids that start at one shift
+  `stats.pixels_fallback`'s own table lookup by one and shift what
+  `Inspector::draw_of_triangle` reads out of `Frame::ids()` by one group
+  boundary, and no count or pixel would show it.
+- **A non-finite framing option reached nothing that refuses it.** `NaN <
+  low` and `NaN > high` are both false, so the range gates pass it and only
+  the finiteness gate stands in front - and that gate is one `||` chain, so
+  a single `||` turned into `&&` opens three lanes of four. All four lanes
+  are now driven with a NaN and with both infinities.
 - **`stats.min_x`, `max_x`, `min_y`, `max_y`, `pixels_blended` and
-  `triangles_degenerate_source` were never read.** Six mutations to the
-  pixel scan survived, including one that dropped the last row and column
-  of every frame. The suite now scans the colour buffer itself and compares
-  the whole rectangle, once with the geometry inside the frame and once
-  with it overflowing every edge.
-- **Five boundary comparisons turned refusals into out-of-range reads and
-  the tests accepted it**, because they asserted only that the call
-  returned false and a later check caught the garbage the earlier one let
-  through. Every such refusal now asserts which diagnostic fired.
+  `triangles_degenerate_source` were never read.** One mutation dropped the
+  last row and column of every frame and nothing noticed.
+- **Five boundary comparisons turned refusals into out-of-range reads** and
+  the tests accepted it, because they asserted only that the call returned
+  false and a later check caught the garbage the earlier one let through.
+  Every such refusal now asserts which diagnostic fired.
 - **`validate_track_draw_list` was redundant with the bounds walk** for
-  every case the suite had. The case only it catches is a list whose
-  entries are valid and whose cost statistics are not, and that cost is
-  what the submitted-triangle limit is measured against.
-- **Three counts coincided with something else in every fixture.** The
-  copies that reached the frame equalled the copies the scene held; the
-  region's mesh total equalled its prepared total; and `entries_unusable`
-  had no fixture at all, because nothing ever produced a hash that is
-  claimed by a record the decoder could not use.
-- **The near-plane rule was only ever tested where the clamp answered.** On
-  the retail-shaped box `(distance - radius) / 2` is about 300 and
-  `kMaxNear` is 10, so the rule itself was invisible.
-- **The stored box was asserted on one axis of three**, and the bad-index
-  skip was tested with every triangle broken, so a walk that stopped
-  instead of skipping was indistinguishable from one that skipped.
+  every case the suite had. A list whose entries are valid and whose cost
+  statistics are not is the case only it catches, and that cost is what the
+  submitted-triangle limit is measured against.
+- **The near-plane rule was only tested where the clamp answered.**
 
-Four mutants survive both passes after the fixes, and all four are stated
-rather than hidden:
+#### What still survives, and why
+
+Three mutants survive the author's library set and one survives the
+reviewer's named list. All four are stated rather than hidden:
 
 1. `if (distance > kMaxDistance)` to `>=`. Refusing a framed distance of
    exactly `kMaxDistance` needs a box whose `radius / sine * margin` is
-   exactly 10000.0 in IEEE double, and no fixture can be built to land on
-   it: `sine` comes from the polynomial `det_sin_deg`, so neither factor is
-   under the test's control. Both neighbourhoods are tested - boxes far
-   below are accepted, and a 9000-unit cube is refused with the distance
-   diagnostic.
+   exactly 10000.0 in IEEE double, and neither factor is under a fixture's
+   control: `sine` comes from the polynomial `det_sin_deg`. Both
+   neighbourhoods are tested.
 2. Removing the `validate_camera` self-check at the end of
-   `frame_track_bounds`. Every clamp in that function is one of
-   `validate_camera`'s own bounds, and the explicit checks catch the inputs
-   that would otherwise reach it, so the two are mutually redundant by
-   design. Removing **both** is caught, which is the evidence that neither
-   is dead code.
-3. `if ((first + count) / 3 > first / 3)` to `>=`, the guard that decides
-   whether an entry drew anything. No file can produce an entry that draws
-   nothing: `src/track.cpp` refuses a material record with no indices and a
-   group with an empty range is not drawable. Same shape as
-   [`TRACK_DRAW_LIST.md`](TRACK_DRAW_LIST.md)'s "no undrawable group", and
-   the header says `entries_drawn` equals `entries` for that reason.
+   `frame_track_bounds`. Every clamp there is one of `validate_camera`'s own
+   bounds and the explicit gates catch everything that would reach it, so
+   the two are mutually redundant by design. Removing **both** is caught,
+   which is the evidence that neither is dead. The reviewer's independent
+   pass classed this one as provably equivalent.
+3. `if ((first + count) / 3 > first / 3)` to `>=`. No file can produce an
+   entry that draws nothing: `src/track.cpp` refuses a material record with
+   no indices and a group with an empty range is not drawable. The header
+   says `entries_drawn` equals `entries` for that reason.
 4. Scaling ONE lane of the fixed light by its own length instead of
-   dividing by it. The light's length is `sqrt(1.005)`, so this moves one
-   lane by one part in four hundred, and the shade factor is an integer
-   0..256: over every normal the three fixtures carry, the two answers
-   floor to the same shade. The whole-vector version of the same fault,
-   which changes all three lanes, IS caught by the tilted fixture. Closing
-   this one needs a normal tuned so that `k * 256 + 0.5` straddles an
-   integer, which would pin a coincidence rather than a rule.
+   dividing. The length is `sqrt(1.005)`, so this moves one lane by one part
+   in four hundred, and the shade factor is an integer 0..256: over every
+   normal the four fixtures carry, the two answers floor to the same shade.
+   The whole-vector version IS caught. The reviewer disagrees that closing
+   this would pin a coincidence and suggests one triangle with a chosen
+   normal would do it; that is a fair point and it is left open rather than
+   argued away.
 
-### What the command has no test for
+One command mutant survives the author's 34: printing the draw-list trailer
+at a limit of zero. Catching it needs a NON-EMPTY draw list, and every case
+in `tests/track_render_guards.cmake` runs without input files, so the list
+is always empty and the mutant prints nothing either. It is one of the
+small class that genuinely needs retail geometry, and the retail acceptance
+below is where it is covered.
 
-The independent pass wrote 22 mutations against `run_track_render` and the
-`track-render` block of `src/main.cpp`, and **all 22 survived**: nothing in
-the repository ran that command's body. Two CTest entries now do - they
-check that `--out` is required and that an existing `--out` is refused,
-both decidable before any input is opened, in the shape the three
-`nfsu_viewer_*` guard tests already use - and both were confirmed to fail
-when the guard they pin is removed.
+### What the command is tested for
 
-The rest of the command is covered by the read-only retail acceptance below
-and by nothing else, which is the same position every other `nfsu_probe`
-command is in: `nfsu_probe_usage_commands` and `nfsu_path_arguments` check
-the inventory and the path arguments, and no test in this repository runs a
-probe command against real data. The mutations that remain uncovered are
-worth naming, because they are what that gap costs: framing the camera on
-the stored box instead of the drawn one, ignoring a `--view-*` override,
-accepting `--lod-slot 6`, accepting `--alpha-cutoff 256`, skipping the
-first option after the positionals, and returning 0 where the reports
-failed.
+An independent mutation pass over the `track-render` block of
+`src/main.cpp` scored **7 caught out of 34**: nothing in the repository ran
+the command's body.
+
+An earlier draft of this note justified that by saying the command was "in
+the same position every other `nfsu_probe` command is in", because "no test
+in this repository runs a probe command against real data". **The code
+contradicts that, and the contradiction is easy to demonstrate:**
+
+```text
+build/nfsu_probe track-render <a path that does not exist> 0 16 0 16 \
+    --out <a new path> --view-distance 10 --view-target 0 0 0
+
+  -> exit 3
+  -> "geometry issue at 0: failed to read file size" on standard error
+  -> the whole render: block, down to "render: drawn bounds none"
+  -> a valid 1280x720 TGA, 3686418 bytes
+```
+
+The framing fallback, every `--view-*` override, `validate_camera`,
+`render_track_draw_list`, the report, `write_frame_tga` and the exit status
+all run with no input file at all. The gap was a choice, not a structural
+limit, and it is now closed:
+
+- `tests/track_render_guards.cmake`, one CTest entry driving **35 cases**,
+  each asserting the exact exit status, the diagnostic, and whether an
+  output file exists afterwards. A CMake script rather than more `add_test`
+  entries because `PASS_REGULAR_EXPRESSION` makes CTest **ignore the exit
+  status**, and the status is half of what is being pinned: the survivor
+  that mattered most turned a run whose reports failed into exit 0, which
+  changes no printed byte.
+- `nfsu_probe_track_render_needs_out` and
+  `nfsu_probe_track_render_keeps_its_output`, the two simpler entries, kept
+  because they fail with a one-line message.
+
+Four faults that survived before and do not now are worth naming, because
+they are what the gap actually cost:
+
+- **exit 0 on a failing run.** The exit status appears nowhere in the
+  printed report, so every automated caller silently stopped seeing
+  failure.
+- **a TGA written after a fatal diagnostic.** Dropping the early return
+  after the scene pipeline left the command printing "the camera is
+  degenerate and builds no frustum" and then rendering and writing the file
+  anyway - the data-loss class the two output guards exist for.
+- **`--alpha-cutoff 300` wrapping to 44** and rendering, the only fault
+  that changed pixels with no diagnostic at any layer.
+- **a `std::logic_error` escaping `main()`** when the positional guard goes,
+  which is the failure class issue #87 and `tests/path_arguments.cmake`
+  exist to prevent in another code path.
+
+Three code fixes came out of the same pass, all in the command rather than
+the library:
+
+- **every `--view-*` option is range-checked at parse time**, against the
+  same bounds `frame_track_bounds` enforces. Before, an out-of-range one
+  was not refused at all: the framing failed on it, the explicit-camera
+  fallback caught the failure, and when `--view-distance` and
+  `--view-target` were both present the run drew from the renderer defaults
+  and wrote a TGA with the option silently ignored.
+- **an abandoned framing is reported.** That fallback now prints
+  `render: framing failed (...)`, so a frame that is not the one the
+  options describe says so.
+- **the draw-list trailer is not printed at a limit of zero**, which is
+  `track-render`'s default. It used to print "... 46 more entries not
+  listed" under a default this note describes as showing none.
 
 ## Read-only retail acceptance
 
 Every command below only reads the installation. The rendered images are
 derived game data and are **not committed**; this note records their sizes
 and hashes instead.
+
+The default configuration is enough for the region view, whose hash does
+not depend on it. The street view's does, so it gets its own Release recipe
+in the sibling `build-release/` that `.gitignore` covers, which is the
+convention [`TRACK.md`](TRACK.md) and
+[`TRACK_COLLISION.md`](TRACK_COLLISION.md) use for the same reason: the
+shared default `build/` keeps whatever configuration another session left
+in it.
 
 ```text
 cmake -S . -B build -G Ninja
@@ -591,33 +775,54 @@ build/nfsu_probe track-render X:/Games/NFSU/Tracks/STREAML1RB.BUN \
     23015540 178268 23011344 4168 \
     --texture X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN \
     --order material-group --out build/shots/region.tga
+```
 
-build/nfsu_probe track-render X:/Games/NFSU/Tracks/STREAML1RB.BUN \
+```text
+cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release
+ctest --test-dir build-release --output-on-failure
+
+build-release/nfsu_probe track-render X:/Games/NFSU/Tracks/STREAML1RB.BUN \
     23015540 178268 23011344 4168 \
     --texture X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN \
-    --order material-group --out build/shots/street.tga \
+    --order material-group --out build-release/shots/street.tga \
     --view-target 600 -20 -85 --view-distance 55 --view-yaw 0 \
     --view-pitch 6 --view-fov 55 --view-near 0.5 --view-far 2000
 ```
 
 Expected:
 
-1. Both exit 0 and write nothing to standard error.
-2. The first prints the scene, cull and draw-list lines
+1. Both `ctest` runs report 28 tests passed, 0 failed.
+2. Both renders exit 0 and write nothing to standard error.
+3. The region view prints the scene, cull and draw-list lines
    [`TRACK_DRAW_LIST.md`](TRACK_DRAW_LIST.md) pins for this region,
    unchanged, then the `render:` block recorded under "Observed" above, and
    writes 3686418 bytes with SHA-256
    `D17D632B1648B46C26852E91B71BC27CC69D25216C8056AD15FD87E049EA9FD2`.
-3. The second is the street-level view: the eye on the road at
-   `600,-20,-85` looking along `-x`, with the road surface, its kerb and
-   sidewalk, a brick warehouse facade and the tower above it. 365723 pixels
-   drawn, drawn bounds `x 248..1156 y 0..719`, 3686418 bytes, SHA-256
-   `20CCC85C62993298989CEDE3B3BFBBC0099F246573F2C3ED42BA9D0678B875A4` in a
-   Release build. See "Determinism" for why a Debug build gives
-   `F691A28D...` for this one view.
-4. Running either twice in separate processes gives byte-identical output.
-5. Re-running with `--out` naming a file that exists is refused with
+   **That hash is the same in all three configurations** - default,
+   Release and Debug - which was measured, not assumed.
+4. The street view is the eye on the road at `600,-20,-85` looking along
+   `-x`, with the road surface, its kerb and sidewalk, a brick warehouse
+   facade and the tower above it. 365723 pixels drawn, drawn bounds
+   `x 248..1156 y 0..719`, 3686418 bytes, SHA-256
+   `20CCC85C62993298989CEDE3B3BFBBC0099F246573F2C3ED42BA9D0678B875A4`.
+   **This one is configuration-dependent**: a Release build gives that
+   hash, and the default configuration - which carries no `-O` flag, so
+   GCC compiles at `-O0` - and an explicit Debug build both give
+   `F691A28D96876C7F864FA04FF54E5FB265B6F2C3A33A2E2B00EE9E3704F771AC`.
+   That is why it has a Release recipe of its own; see "Determinism" for
+   the 61 pixels involved and where they come from.
+5. Running either twice in separate processes, from the same build
+   directory, gives byte-identical output.
+6. Re-running with `--out` naming a file that exists is refused with
    `already exists; this command never replaces a file`, exit 1, and
-   nothing written.
-6. The 476 files of the installation are unchanged in path, size and
+   nothing written; `--out` naming one of the inputs is refused with
+   `--out must differ from every input file`, exit 1.
+7. A run with no readable geometry still exercises the whole command:
+   `track-render <a path that does not exist> 0 16 0 16 --out <new>
+   --view-distance 10 --view-target 0 0 0` exits 3, prints the whole
+   `render:` block and writes a 3686418-byte frame of background. That is
+   what `tests/track_render_guards.cmake` drives, and it needs no retail
+   data at all.
+8. The 476 files of the installation are unchanged in path, size and
    modification time before and after.

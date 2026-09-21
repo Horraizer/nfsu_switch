@@ -577,6 +577,18 @@ if(NFSU_BUILD_TESTS)
         PASS_REGULAR_EXPRESSION "already exists; this command never replaces a file"
         FAIL_REGULAR_EXPRESSION "failed to read file size")
 
+    # What track-render refuses, what it writes and what it exits with, over
+    # 25 cases that need no input files. It is a script rather than more
+    # add_test entries because PASS_REGULAR_EXPRESSION makes CTest ignore the
+    # exit status, and the status is half of what is pinned here: the command
+    # survivor that mattered most turned a failing run into exit 0, which
+    # changes no printed byte. tests/track_render_guards.cmake says why it
+    # exists and what each case is for.
+    add_test(NAME nfsu_probe_track_render_guards
+        COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/track_render_guards.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
     # nfsu_probe registers a command in one place, and print_usage() composes
     # the usage line out of the name main() dispatches on. This reads the
     # command inventory back out of three independent places - the kCommands
@@ -623,5 +635,6 @@ if(NFSU_BUILD_TESTS)
         nfsu_viewer_stock_excludes_selectors nfsu_probe_usage_commands
         nfsu_probe_track_render_needs_out
         nfsu_probe_track_render_keeps_its_output
+        nfsu_probe_track_render_guards
         PROPERTIES TIMEOUT 60)
 endif()
