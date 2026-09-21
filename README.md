@@ -178,7 +178,7 @@ actually cover, distance fitted to that box's bounding sphere - and every
 naming an input, is refused before a file is opened, and every `--view-*`
 option is range-checked there too. The command's own refusals, exit
 statuses and output rules are pinned by
-`tests/track_render_guards.cmake`, which drives 35 cases with no input
+`tests/track_render_guards.cmake`, which drives 36 cases with no input
 files at all. `src/render.cpp` is
 not modified by the command's own commit, so the car path's reference
 frames are unchanged by construction. See `docs/TRACK_RENDER.md` for the

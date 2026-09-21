@@ -211,6 +211,15 @@ nfsu_case("--view-yaw past the limit" 1 "--view-yaw needs a number from -36000 t
 nfsu_case("--view-distance is not a number" 1 "--view-distance needs a finite number" "" NO
           "${missing}" 0 16 0 16 --out "${out}" --view-distance notanumber)
 
+# The same for a RANGED option, which is a different function:
+# --view-distance goes through take_double and the four framing angles go
+# through take_ranged. A take_ranged that accepted an unparsable value would
+# leave the option at its default and write a TGA where this writes none.
+nfsu_case("--view-yaw is not a number" 1
+          "--view-yaw needs a number from -36000 to 36000" "" NO
+          "${missing}" 0 16 0 16 --out "${out}" --view-yaw notanumber
+          --view-distance 5 --view-target 0 0 0)
+
 # ---------------------------------------------------------------------------
 # Options that are only meaningful in pairs. Each alone used to produce a
 # plausible frame built on a value the caller never gave.
@@ -286,13 +295,21 @@ nfsu_case("an abandoned framing is reported" 3
           "${missing}" 0 16 0 16 --out "${out}"
           --view-distance 5 --view-target 1 2 3)
 
-# The draw-list trailer. track-scene prints "... N more entries not listed"
-# even at a limit of zero; track-render's default limit IS zero and the
-# documentation describes that default as showing none.
-nfsu_case("no draw-list trailer at the default limit" 3
-          "wrote: " "more entries not listed" YES
-          "${missing}" 0 16 0 16 --out "${out}"
-          --view-distance 5 --view-target 1 2 3)
+# THE DRAW-LIST TRAILER IS NOT PINNED HERE, deliberately, and this comment
+# is the whole of what this file has to say about it.
+#
+# A case was written for it and then deleted, because it could not fail:
+# every case in this script runs without input files, so the draw list is
+# always empty, the loop that prints the trailer never runs, and a build
+# with the "args.list_limit > 0" guard REMOVED prints no trailer either. A
+# reviewer removed that guard, rebuilt, ran the retail region and watched
+# the trailer come back while this script still reported Passed.
+#
+# Catching it needs a non-empty draw list, which needs real geometry, which
+# is the one thing every case here does without. It is pinned by the
+# retail acceptance in docs/TRACK_RENDER.md, which names it in an
+# expectation for exactly that reason - a manual check, not a gate, and
+# said plainly there rather than implied here.
 
 # ---------------------------------------------------------------------------
 # Two guards that a later one would otherwise cover for. Both are about
@@ -322,7 +339,16 @@ nfsu_case("an out-of-range near plane is refused before the render" 1
           "${missing}" 0 16 0 16 --out "${out}"
           --view-distance 5 --view-target 0 0 0 --view-near 100 --view-far 1)
 
+# That case is refused by the NEAR bound, so it says nothing about whether
+# --view-far reaches the camera at all. This one is refused by the FAR
+# bound and can only be, so dropping the --view-far override - which would
+# leave the default far plane in place and render - fails here.
+nfsu_case("the far override reaches the camera" 1
+          "far plane must be greater than near" "" NO
+          "${missing}" 0 16 0 16 --out "${out}"
+          --view-distance 5 --view-target 0 0 0 --view-far 0.0001)
+
 file(REMOVE_RECURSE "${work}")
 message(STATUS
-    "track-render guards: 35 cases, each asserting the exit status, the "
+    "track-render guards: 36 cases, each asserting the exit status, the "
     "diagnostic and whether a file was written, with no input files")

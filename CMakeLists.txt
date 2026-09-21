@@ -578,7 +578,7 @@ if(NFSU_BUILD_TESTS)
         FAIL_REGULAR_EXPRESSION "failed to read file size")
 
     # What track-render refuses, what it writes and what it exits with, over
-    # 25 cases that need no input files. It is a script rather than more
+    # 36 cases that need no input files. It is a script rather than more
     # add_test entries because PASS_REGULAR_EXPRESSION makes CTest ignore the
     # exit status, and the status is half of what is pinned here: the command
     # survivor that mattered most turned a failing run into exit 0, which

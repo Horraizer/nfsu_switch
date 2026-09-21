@@ -300,6 +300,16 @@ the collision surface ramps upward across exactly that last strip - pz
 before its top. **It made the agreement look three times worse than it is**,
 which is an unusual direction for an error to run in and still an error.
 
+The word **integer** in that reconstruction is load-bearing rather than
+incidental, and it is worth saying so because it is the only lattice choice
+that lands on the stored quantum. A step-1.0 lattice anchored at the ROAD
+window's own minimum corner - 212 by 23, 4876 columns, 2388 hitting - maxes
+at -21.192993 instead, and the same integer lattice over the road-and-
+sidewalk UNION window reaches -21.149536. Three plausible samplings give
+three different ceilings, each correct over the window it covers, which is
+the whole reason this section now states its lattice rather than only its
+result.
+
 ### What the file pairing does and does not establish
 
 The ray cast **rules out 29 of the 31** `TRACKB*.lzc` files and **cannot
@@ -310,12 +320,19 @@ non-zero instance translations:
 | --- | ---: | ---: | ---: | ---: |
 | `TRACKB1201`, `TRACKB1210` | 9 | 0.062160 | 0.190926 | 0.977442 |
 | `TRACKB1207` | 2 | 33.685514 | 37.802794 | 41.920073 |
-| six more files | 6 | 67.493010 | 75.075417 | 75.893677 |
+| seven more files | 6 | 67.493010 | 75.075417 | 75.893677 |
 | three more files | 4 | 67.493010 | 71.394956 | 75.248512 |
 | the other 18 | 0 | - | - | - |
 
+The seven are `TRACKB1003`, `1006`, `1102`, `1104`, `1107`, `1108` and
+`1109`. 2 + 1 + 7 + 3 + 18 is 31, which is every candidate, and 31 less the
+surviving pair is the 29 the sentence above says are ruled out. An earlier
+draft labelled the seven-file row "six", so the table accounted for 30 files
+while its own headline said 29 were ruled out; every measured value in it
+reproduced, and only the label was wrong.
+
 So the nearest rejected file is 33.7 units away and the furthest is 75.9 -
-**a margin of about 38 units** between the surviving pair and everything
+**a margin of about 33 units** between the surviving pair and everything
 else. An earlier draft said "13 to 79"; neither end reproduces.
 
 Three things about that table are worth stating rather than leaving
@@ -559,15 +576,38 @@ sessions that had not seen the tests. Each row says what it measured and
 who measured it; they are not summable and they are not comparable to each
 other.
 
-| Set | Written | Applied | Caught | Survived |
-| --- | ---: | ---: | ---: | ---: |
-| Independent pass over the library, at the first head | 185 | 185 | 90 | 95 |
-| **Independent pass over the library, 200 mutants, after the first round of fixes** | **200** | **200** | **169** | **31** |
-| Independent pass over the `track-render` command | 34 | 34 | 7 | 27 |
-| The author's own library set | 60 | 59 | 56 | 3 |
-| The author's own `track-render` command set, after this round | 34 | 34 | 33 | 1 |
-| The independent library survivors, re-expressed and re-run | 43 | 43 | 42 | 1 |
-| The reviewer's named library survivors, re-run after this round | 11 | 11 | 10 | 1 |
+| Set | Written | Applied | Caught | Survived | Unknown |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Independent pass over the library, at the first head | 185 | 185 | 90 | 95 | not separated |
+| **Independent pass over the library, 200 mutants, after the first round of fixes** | **200** | **200** | **169** | **31** | not separated |
+| Independent pass over the `track-render` command | 34 | 34 | 7 | 27 | not separated |
+| The author's own library set | 60 | 59 | 56 | 3 | 0 |
+| The author's own `track-render` command set | 34 | 34 | 33 | 1 | 0 |
+| The independent library survivors, re-expressed and re-run | 43 | 43 | 41 | 1 | 1 |
+| The reviewer's named library survivors, re-run | 11 | 11 | 10 | 1 | 0 |
+
+**The last four rows were re-scored under the sweep rule
+[`CLAUDE.md`](../CLAUDE.md) gained while this branch was in review**: a
+non-zero exit that printed neither a failure line nor the suite's own
+summary is an UNKNOWN result, not a kill. Applying it cost this branch one
+of its own catches, which is the point of the rule and is recorded here
+rather than quietly absorbed.
+
+The mutant is T30, `draw.mesh >= scene.region.meshes.size()` weakened to
+`>` in `track_draw_list_bounds`. An earlier round reported it caught. It is
+not: with the guard weakened, a handle exactly equal to the mesh count
+passes and the next line reads one past the end of the vector, so the suite
+**segfaults with zero bytes of output** - exit 139, no `FAIL:` line, three
+runs out of three, reproduced in isolation. The old classifier read that
+non-zero exit as a kill.
+
+It cannot be turned into a real kill either, and that is worth stating
+rather than leaving as a to-do: the mutant's behaviour is undefined by
+construction, so no assertion can distinguish "the guard refused" from "the
+process died". What the test CAN do, and does, is pin the guard on the
+pristine code by requiring the refusal's own diagnostic - and that is what
+kills the two neighbouring handle mutants. T30 is counted as unknown, not
+as caught and not as survived.
 
 **The bold row is the number to quote for the library.** It is an
 independent 200-mutant pass by a reviewer's subagent that had not seen this
@@ -593,13 +633,20 @@ remaining 90 per cent of the code. The bold row is there because it is the
 only measurement in this table taken over a set nobody here chose.
 
 **An oracle caveat that affects every number above, and every mutation
-number in this repository.** Eight test binaries write to FIXED paths under
-the system temp directory, so two concurrent `ctest` runs collide. It
+number in this repository.** Test binaries that write to FIXED paths under
+the system temp directory collide when two `ctest` runs overlap, which this
+protocol's shared-checkout model makes routine. `nfsu_track_object_tests`
+was fixed under issue #122 and the remaining files are issue #124. It
 reproduces on a pristine tree, it is not introduced here, and it can only
 manufacture a false CAUGHT - never a false survivor - so survivor counts
-are sound and catch counts can be optimistic. `tests/track_render_tests.cpp`
-does no file I/O at all. The command set above sidesteps it entirely by
-running only the five tests a `src/main.cpp` change can reach.
+are sound and catch counts can be optimistic.
+
+That is the same shape as the T30 result above and the same rule catches
+both: a crash is not a kill. `tests/track_render_tests.cpp` does no file
+I/O at all, and the command set runs only the five tests a `src/main.cpp`
+change can reach, so neither of those two sets can be affected by the
+collision; the T30 segfault was the mutant's own and reproduces with
+nothing else running.
 
 #### What the passes found, and what closing it took
 
@@ -679,9 +726,17 @@ reviewer's named list. All four are stated rather than hidden:
 One command mutant survives the author's 34: printing the draw-list trailer
 at a limit of zero. Catching it needs a NON-EMPTY draw list, and every case
 in `tests/track_render_guards.cmake` runs without input files, so the list
-is always empty and the mutant prints nothing either. It is one of the
-small class that genuinely needs retail geometry, and the retail acceptance
-below is where it is covered.
+is always empty and the mutant prints nothing either.
+
+A case for it WAS written, and it has been deleted. It could not fail: a
+reviewer removed the `args.list_limit > 0` guard, rebuilt, ran the retail
+region, watched the trailer come back, and saw the guard script still report
+Passed. An earlier draft of this paragraph then said the retail acceptance
+was where the behaviour was covered, and that was not true either - none of
+the acceptance expectations mentioned it. **No automated test pins this
+line.** Acceptance item 3 now names it, both at the default limit and with
+`--list 5`, which makes it a manual check that someone performs rather than
+a claim about a gate that does not exist.
 
 ### What the command is tested for
 
@@ -709,7 +764,7 @@ The framing fallback, every `--view-*` override, `validate_camera`,
 all run with no input file at all. The gap was a choice, not a structural
 limit, and it is now closed:
 
-- `tests/track_render_guards.cmake`, one CTest entry driving **35 cases**,
+- `tests/track_render_guards.cmake`, one CTest entry driving **36 cases**,
   each asserting the exact exit status, the diagnostic, and whether an
   output file exists afterwards. A CMake script rather than more `add_test`
   entries because `PASS_REGULAR_EXPRESSION` makes CTest **ignore the exit
@@ -801,6 +856,14 @@ Expected:
    `D17D632B1648B46C26852E91B71BC27CC69D25216C8056AD15FD87E049EA9FD2`.
    **That hash is the same in all three configurations** - default,
    Release and Debug - which was measured, not assumed.
+
+   Its output contains **no** `more entries not listed` line, because
+   `track-render`'s default `--list` limit is zero and this note describes
+   that default as showing none. Adding `--list 5` to the same command
+   prints five `  instance ...` lines followed by
+   `  ... 41 more entries not listed`. **This is the only place that
+   behaviour is checked**, and it is a manual check rather than a gate;
+   `tests/track_render_guards.cmake` explains why it cannot cover it.
 4. The street view is the eye on the road at `600,-20,-85` looking along
    `-x`, with the road surface, its kerb and sidewalk, a brick warehouse
    facade and the tower above it. 365723 pixels drawn, drawn bounds
