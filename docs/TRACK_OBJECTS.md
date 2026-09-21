@@ -542,17 +542,21 @@ issue `no scenery section chunk 0x80034100 in the region`.
 Every command below only reads. Nothing writes to the installation, and no
 game data, screenshot or exported asset may be committed.
 
-```text
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-ctest --test-dir build --output-on-failure
+The Release configuration goes in the sibling `build-release/`, which
+`.gitignore` covers, so the shared default `build/` keeps whatever
+configuration another session left in it.
 
-build/nfsu_probe track-objects X:/Games/NFSU/Tracks/STREAML1RB.BUN \
+```text
+cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release
+ctest --test-dir build-release --output-on-failure
+
+build-release/nfsu_probe track-objects X:/Games/NFSU/Tracks/STREAML1RB.BUN \
     23011344 4168 23015540 178268
 
-build/nfsu_probe track-objects X:/Games/NFSU/Tracks/STREAML1RB.BUN 0 177232
+build-release/nfsu_probe track-objects X:/Games/NFSU/Tracks/STREAML1RB.BUN 0 177232
 
-build/nfsu_probe track-objects X:/Games/NFSU/Tracks/STREAML1RB.BUN \
+build-release/nfsu_probe track-objects X:/Games/NFSU/Tracks/STREAML1RB.BUN \
     23015540 178268
 ```
 
