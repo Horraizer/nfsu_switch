@@ -496,10 +496,12 @@ void test_well_formed_section() {
     check(section.nodes.size() == 1, "well formed: one bounding node");
     check(section.tree_depth == 0, "well formed: a single node is depth 0");
 
-    // The two checks above are the soft kind: they report a wrong count and
-    // carry on. Every subscript below them is a container read, so carrying
-    // on past a wrong count reads past the end rather than failing. Stop
-    // here instead, the same way the empty-section guard above does.
+    // The count checks above are the soft kind: they report a wrong count
+    // and carry on. Every subscript below this point is a container read, so
+    // carrying on past a wrong count reads past the end rather than failing.
+    // Stop here instead, the same way the empty-section guard above does.
+    // On a passing run nothing below is skipped, and the counts are asserted
+    // above either way, so no assertion is lost.
     if (section.objects.empty() || section.instances.size() < 2) {
         return;
     }
