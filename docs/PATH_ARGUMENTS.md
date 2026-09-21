@@ -201,11 +201,13 @@ reads `argv[0]`.
   still cannot open a file is not mistaken for a working one.
 * `tests/path_arguments.cmake` - what the two programs do: the exit status,
   the diagnostic, the absence of the terminate this issue was about, and a
-  Cyrillic path driven through every path *position* in turn, which is 34
-  across the twenty-one probe commands and 8 across the viewer. Positions,
-  not commands: the first version drove one position per program, and an
-  independent review reverted nine individual call sites that each kept the
-  suite green and each reproduced the crash. Reverting any one of the 39
+  Cyrillic path driven through every path *position* in turn, which is 36
+  across the twenty-two probe commands and 8 across the viewer - the two
+  numbers the gate itself prints, read out of its own `every position:`
+  lines rather than counted by hand. Positions, not commands: the first
+  version drove one position per program, and an independent review
+  reverted nine individual call sites that each kept the suite green and
+  each reproduced the crash. Reverting any one of the 41
   conversion sites now fails the suite, measured one at a time. The file
   also refuses, in the source and before it runs anything, the three
   spellings that turn an argument into a path without the conversion; that

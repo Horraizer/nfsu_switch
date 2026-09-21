@@ -173,6 +173,26 @@ else()
     target_compile_options(nfsu_track_render PRIVATE -ffp-contract=off -fno-fast-math)
 endif()
 
+# The desktop track slice's cost accounting: the four stages' own reports
+# rearranged into one named, stage-tagged counter table, and the budget
+# check a gate runs over it. It is declared after nfsu_track_render because
+# it reads that layer's RenderStats and TrackRenderStats, and it adds no
+# fifth source of truth: every counter it exposes is a field some other
+# layer already computed.
+#
+# It carries no floating-point flags, and that is a statement rather than an
+# omission: this library does no floating-point arithmetic at all. Every
+# counter it touches is an integer count or an integer byte total, so there
+# is nothing here for contraction to move, exactly as for
+# nfsu_track_draw_list. It also reads no clock - see the header for why a
+# wall-clock number is not a counter this project pins.
+add_library(nfsu_track_budget
+    src/track_budget.cpp
+)
+
+target_link_libraries(nfsu_track_budget PUBLIC nfsu_track_render)
+nfsu_enable_warnings(nfsu_track_budget)
+
 # The stock-car profile of PreparedCarScene: the recovered stock part set,
 # its per-LOD mesh hashes and the recovered placement, turned into one
 # prepared draw list with an instance per drawn copy. It reads no files, so
@@ -257,7 +277,7 @@ add_executable(nfsu_probe
 # nfsu_track_draw_list with it, so the two are not named again.
 target_link_libraries(nfsu_probe
     PRIVATE nfsu_core nfsu_track nfsu_track_visibility nfsu_track_zones
-            nfsu_track_draw_list nfsu_track_render
+            nfsu_track_draw_list nfsu_track_render nfsu_track_budget
             nfsu_texture_decode nfsu_skin_inputs nfsu_stock_scene
             nfsu_arg_path)
 nfsu_enable_warnings(nfsu_probe)
@@ -455,6 +475,23 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_track_render_tests)
     add_test(NAME nfsu_track_render_tests COMMAND nfsu_track_render_tests)
 
+    # The cost table, the four gatherers and the budget check. It builds no
+    # byte fixture and parses nothing: every function under test reads a
+    # report struct and writes counters, so the inputs are hand-set reports
+    # with a different value in every field, which is what makes a gatherer
+    # reading the wrong source field produce the wrong number rather than
+    # the right one by luck. The integration - that these counters equal
+    # what the pipeline really costs - is the retail acceptance of
+    # docs/TRACK_BUDGET.md, which needs the installation and is therefore
+    # not a CTest entry.
+    add_executable(nfsu_track_budget_tests
+        tests/track_budget_tests.cpp
+    )
+
+    target_link_libraries(nfsu_track_budget_tests PRIVATE nfsu_track_budget)
+    nfsu_enable_warnings(nfsu_track_budget_tests)
+    add_test(NAME nfsu_track_budget_tests COMMAND nfsu_track_budget_tests)
+
     add_executable(nfsu_part_placement_tests
         tests/part_placement_tests.cpp
     )
@@ -589,6 +626,17 @@ if(NFSU_BUILD_TESTS)
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/track_render_guards.cmake
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
+    # The same for track-budget, for the same reason and with one more: this
+    # command's exit 4 and exit 3 differ in a single printed line and mean
+    # opposite things about a budget, so a property that ignored the status
+    # would leave the verdict itself untested.
+    # tests/track_budget_guards.cmake says what each case is for and names
+    # the one exit no case there can reach.
+    add_test(NAME nfsu_probe_track_budget_guards
+        COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/track_budget_guards.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
     # nfsu_probe registers a command in one place, and print_usage() composes
     # the usage line out of the name main() dispatches on. This reads the
     # command inventory back out of three independent places - the kCommands
@@ -628,6 +676,7 @@ if(NFSU_BUILD_TESTS)
         nfsu_track_tests nfsu_track_object_tests
         nfsu_track_visibility_tests nfsu_track_zone_tests
         nfsu_track_draw_list_tests nfsu_track_render_tests
+        nfsu_track_budget_tests
         nfsu_part_placement_tests nfsu_body_skin_tests
         nfsu_stock_scene_tests
         nfsu_skin_inputs_tests nfsu_runtime_skin_tests nfsu_inspect_tests
@@ -636,5 +685,6 @@ if(NFSU_BUILD_TESTS)
         nfsu_probe_track_render_needs_out
         nfsu_probe_track_render_keeps_its_output
         nfsu_probe_track_render_guards
+        nfsu_probe_track_budget_guards
         PROPERTIES TIMEOUT 60)
 endif()

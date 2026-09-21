@@ -43,6 +43,7 @@ build/nfsu_probe track-zones X:/Games/NFSU/Tracks/TRACKB1301.lzc
 build/nfsu_probe track-zones X:/Games/NFSU/Tracks/TRACKB1301.lzc 0 -1200
 build/nfsu_probe track-scene X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 23011344 4168 --texture X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN --order material-group
 build/nfsu_probe track-render X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 23011344 4168 --texture X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN --order material-group --out build/shots/region.tga
+build/nfsu_probe track-budget X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 23011344 4168 --texture X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN --order material-group --repeat 9
 build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc
 build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc 783 -8.5
 build/nfsu_probe car-placement X:/Games/NFSU/Global/GLOBALB.BUN 240SX
@@ -185,6 +186,23 @@ frames are unchanged by construction. See `docs/TRACK_RENDER.md` for the
 placement, the framing rule, the retail region's numbers and hashes, the
 ground plane cross-checked against the collision data, and what the frame
 is still missing.
+`track-budget` runs those same four stages and reports what each one costs,
+separated by the stage that pays it. It writes no file at all: the frame is
+rendered into memory and dropped, so the command cannot leave a derived
+game asset on disk. Its output has two halves with deliberately different
+stability. The `cost:` lines are counts - draw calls, triangles, texture
+binds, bytes retained - which are a function of the inputs and are
+byte-identical between runs, and `--limit <counter> <ceiling>` holds any of
+them to a ceiling and exits 4 when one is exceeded. The `time:` lines are
+wall-clock milliseconds, which on a machine several sessions build on are
+not reproducible, so they are reported as a spread over `--repeat`
+repetitions after one discarded warm-up rather than as one number, and no
+automated limit in this repository is a time. Every repetition's counts are
+compared against the first and a disagreement exits 5, which makes the
+determinism the counts are quoted under a checked property of each run
+rather than a claim. See `docs/TRACK_BUDGET.md` for the measurement
+procedure, the retail figures with their variance, and the reasoning for
+which limits are automated and which are documented and not.
 `track-collision` decodes the static collision of one track. Collision is
 not in the `STREAM*.BUN` containers at all: those hold geometry, scenery,
 textures and animation and nothing else. It lives in
