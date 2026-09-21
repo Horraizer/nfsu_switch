@@ -14,11 +14,47 @@
 #include <utility>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
 namespace fs = std::filesystem;
 
 namespace {
 
 using Bytes = std::vector<unsigned char>;
+
+// A fixture name no other process shares, built the way
+// tests/arg_path_tests.cpp has built one since issue #87 and
+// tests/track_object_tests.cpp since issue #122.
+//
+// test_load_file used to build its fixture under the system temporary
+// directory at "nfsu_car_parts_tests", with nothing in the name to make it
+// this process's own. CLAUDE.md says several sessions are routinely live on
+// this machine, each with its own build directory, so two copies of this
+// binary overlap whenever two of them run ctest at the same time - and each
+// one writes that directory's file with std::ios::trunc and then removes
+// both the file and the directory. A copy that called
+// load_car_part_database while another was between its open and its close
+// read a file that was missing, empty or half written, and the load-from-
+// file check then failed for a reason that had nothing to do with the
+// parser. Issue #124.
+std::string unique_fixture(const std::string& label) {
+#ifdef _WIN32
+    const unsigned long pid = GetCurrentProcessId();
+#else
+    const unsigned long pid = static_cast<unsigned long>(getpid());
+#endif
+    return "nfsu_car_parts_" + label + "_" + std::to_string(pid);
+}
 
 int g_failures = 0;
 
@@ -861,7 +897,7 @@ void test_part_models() {
 }
 
 void test_load_file() {
-    const fs::path dir = fs::temp_directory_path() / "nfsu_car_parts_tests";
+    const fs::path dir = fs::temp_directory_path() / unique_fixture("tests");
     std::error_code ignored;
     fs::create_directories(dir, ignored);
     const fs::path path = dir / "GLOBALB_TEST.BUN";
