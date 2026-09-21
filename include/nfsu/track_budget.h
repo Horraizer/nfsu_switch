@@ -16,10 +16,10 @@ namespace nfsu {
 // The desktop track slice's cost, separated by the stage that pays it, and
 // a limit set a gate can check it against. See docs/TRACK_BUDGET.md.
 //
-// This header decodes nothing, renders nothing and measures no time. It
-// reads the reports the four stages already produce and rearranges their
-// counters into one named, stage-tagged table, so that a budget is written
-// against names rather than against a struct layout.
+// This header decodes nothing, renders nothing and READS NO CLOCK. It takes
+// the reports the four stages already produce and rearranges their counters
+// into one named, stage-tagged table, so that a budget is written against
+// names rather than against a struct layout.
 //
 // WHY THERE IS NO CLOCK IN THIS HEADER
 //
@@ -37,11 +37,20 @@ namespace nfsu {
 //     nothing at all.
 //
 // So the two are split at the API boundary rather than mixed and then
-// qualified. Everything in this header is a count, and every count here is
-// exact and reproducible. Timing is `nfsu_probe track-budget`'s, which
-// repeats each stage and reports the spread instead of one number, and no
-// automated limit in this repository is a time. docs/TRACK_BUDGET.md states
-// that choice and the measurements behind it.
+// qualified. Every counter in TrackBudgetCost is exact and reproducible,
+// and a budget limit can only name one of those: check_track_budget reads
+// nothing else, so a limit on a time cannot be expressed here at all. No
+// automated limit in this repository is a time.
+//
+// TWO FUNCTIONS HERE TAKE DOUBLES AND NEITHER IS AN EXCEPTION TO THAT.
+// summarize_track_samples is pure arithmetic over numbers the caller hands
+// it - it reads no clock and does not know its caller's samples are
+// milliseconds - and it lives here rather than in the command because a
+// statistic computed in a command cannot be tested: a summary of wall-clock
+// times has no value a test can assert against, so every fault in it
+// survives. track_budget_costs_equal is here for the mirror of that reason;
+// its own comment says which. docs/TRACK_BUDGET.md records the mutation
+// sweep that established both, and the measurements behind the split.
 //
 // WHAT "RETAINED BYTES" MEANS HERE, AND WHAT IT DOES NOT
 //
@@ -238,6 +247,51 @@ void track_budget_render_cost(
     const TrackRenderStats& track_stats,
     const Frame& frame,
     TrackBudgetCost& cost) noexcept;
+
+// Whether two costs hold the same numbers, and which counter differs first.
+//
+// This is what makes a repeated measurement's determinism a CHECKED property
+// rather than an assertion: a caller that runs the pipeline twice compares
+// the two costs with this and reports a disagreement instead of quietly
+// averaging over it. `difference` is set, and false returned, on the first
+// counter whose values differ or whose stage one cost measured and the other
+// did not; it names the counter and prints both values.
+//
+// It lives here rather than in the command for a reason the mutation sweep
+// in docs/TRACK_BUDGET.md records. A comparison that only ever runs over
+// costs that ARE equal cannot be tested from outside: correct code never
+// takes its failing branch. As a library function it is driven directly with
+// two costs that differ, so the branch is exercised.
+bool track_budget_costs_equal(
+    const TrackBudgetCost& first,
+    const TrackBudgetCost& second,
+    std::string& difference);
+
+// The spread of a set of samples. Pure arithmetic over numbers the caller
+// supplies - it reads no clock, and it does not know or care that its
+// caller's samples are milliseconds.
+//
+// Reporting a spread rather than one number is the point. A single figure
+// taken on a machine several sessions build on reads like a fact and is not
+// one, so nfsu_probe track-budget reports all five of these and this project
+// pins none of them.
+struct TrackSampleSummary {
+    std::size_t samples = 0;
+    double min = 0.0;
+    double median = 0.0;
+    double mean = 0.0;
+    // The SAMPLE standard deviation, dividing by n-1: these repetitions are
+    // a sample of the machine's behaviour and not its population. Zero for a
+    // single sample, where the population form would divide by zero.
+    double stddev = 0.0;
+    double max = 0.0;
+};
+
+// Summarizes `samples`, which is taken by value and sorted in place. An
+// empty set gives a summary of zeros with `samples` zero, which is the
+// honest answer rather than a division by zero. The median of an even count
+// is the mean of the two middle values.
+TrackSampleSummary summarize_track_samples(std::vector<double> samples);
 
 // Checks `cost` against `limits` and lists every counter that is over.
 //

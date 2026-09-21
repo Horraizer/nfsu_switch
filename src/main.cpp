@@ -1757,27 +1757,47 @@ struct TrackSceneArgs {
 
 // Decodes only the hashes `wanted` names out of the given sources. Both
 // vectors are sized once, so the pointers taken here stay valid.
+//
+// `quiet` suppresses the per-source lines and nothing else. It exists for
+// `track-budget`, which TIMES this call: anything printed inside a timed
+// region is being timed, and a dozen formatted lines are neither free nor
+// part of what texture decoding costs. The alternative was a second copy of
+// this loop in that command, which is how the subtraction below came to
+// have three copies before this parameter replaced two of them.
 bool decode_track_scene_textures(
     const std::vector<fs::path>& paths,
     const std::vector<std::uint32_t>& wanted,
     std::vector<std::vector<unsigned char>>& source_bytes,
     std::vector<nfsu::TexturePackSet>& sets,
     std::vector<nfsu::RenderTextureSource>& sources,
-    nfsu::RenderTextureSet& textures) {
+    nfsu::RenderTextureSet& textures,
+    bool quiet = false) {
     source_bytes.resize(paths.size());
     sets.resize(paths.size());
     sources.resize(paths.size());
     std::uint64_t read_bytes = 0;
     for (std::size_t i = 0; i < paths.size(); ++i) {
         nfsu::TextureLimits limits;
-        const std::uint64_t remaining = kMaxTrackTextureInputBytes - read_bytes;
+        // Clamped rather than left to the loop. read_bytes cannot pass the
+        // constant today, because every file is capped by `remaining` on the
+        // same iteration that adds it - but that is an emergent property of
+        // this loop rather than a stated one, and an unsigned subtraction
+        // that underflows gives a HUGE remaining and lifts the cap it exists
+        // to impose. Stating it costs one comparison.
+        const std::uint64_t remaining =
+            read_bytes >= kMaxTrackTextureInputBytes
+                ? 0
+                : kMaxTrackTextureInputBytes - read_bytes;
         limits.max_file_size = std::min(limits.max_file_size, remaining);
         sets[i] = nfsu::load_texture_pack_set(paths[i], source_bytes[i], limits);
         read_bytes += source_bytes[i].size();
-        std::cout << "texture source " << i << ": " << paths[i].string()
-                  << " size " << sets[i].file_size << " read "
-                  << source_bytes[i].size() << " packs " << sets[i].packs.size()
-                  << " complete " << (sets[i].complete ? 1 : 0) << '\n';
+        if (!quiet) {
+            std::cout << "texture source " << i << ": " << paths[i].string()
+                      << " size " << sets[i].file_size << " read "
+                      << source_bytes[i].size() << " packs "
+                      << sets[i].packs.size() << " complete "
+                      << (sets[i].complete ? 1 : 0) << '\n';
+        }
         for (const nfsu::TextureIssue& issue : sets[i].issues) {
             std::cerr << "texture source " << i << " issue at " << issue.offset
                       << ": " << issue.message << '\n';
@@ -2311,49 +2331,24 @@ struct TrackBudgetArgs {
     std::vector<nfsu::TrackBudgetLimit> limits;
 };
 
-// min, median, mean and sample standard deviation of one phase's samples,
-// in milliseconds. The spread is the point: a single number taken while
-// another session was linking is not a budget, and reporting four figures
-// makes that visible instead of hiding it in an average.
-struct TrackBudgetTiming {
-    std::size_t samples = 0;
-    double min_ms = 0.0;
-    double median_ms = 0.0;
-    double mean_ms = 0.0;
-    double stddev_ms = 0.0;
-    double max_ms = 0.0;
-};
-
-TrackBudgetTiming summarize_timing(std::vector<double> samples) {
-    TrackBudgetTiming out;
-    out.samples = samples.size();
-    if (samples.empty()) {
-        return out;
-    }
-    std::sort(samples.begin(), samples.end());
-    out.min_ms = samples.front();
-    out.max_ms = samples.back();
-    const std::size_t n = samples.size();
-    out.median_ms = (n % 2 == 1)
-                        ? samples[n / 2]
-                        : (samples[n / 2 - 1] + samples[n / 2]) / 2.0;
-    double total = 0.0;
-    for (const double value : samples) {
-        total += value;
-    }
-    out.mean_ms = total / static_cast<double>(n);
-    if (n > 1) {
-        double sum_sq = 0.0;
-        for (const double value : samples) {
-            const double delta = value - out.mean_ms;
-            sum_sq += delta * delta;
-        }
-        // The sample standard deviation, n-1: these repetitions are a
-        // sample of the machine's behaviour, not its population.
-        out.stddev_ms = std::sqrt(sum_sq / static_cast<double>(n - 1));
-    }
-    return out;
-}
+// The sample statistics and the repetition comparison are
+// nfsu::summarize_track_samples and nfsu::track_budget_costs_equal, in
+// nfsu/track_budget.h, rather than local copies here. That is not tidiness.
+// A mutation sweep over an earlier revision of this file, recorded in
+// docs/TRACK_BUDGET.md, found that EVERY fault in the local copies survived
+// every gate, and for two reasons no case in
+// tests/track_budget_guards.cmake can get around:
+//
+//   * a summary of wall-clock times cannot be asserted against a value, so
+//     a swapped min and max, an unsorted sample set and a standard deviation
+//     divided by n instead of n-1 all print numbers that look exactly as
+//     plausible as the right ones;
+//   * a comparison that only ever runs over costs that ARE equal never takes
+//     its failing branch, so deleting the branch changes no output.
+//
+// As library functions both are driven directly by
+// tests/track_budget_tests.cpp, with sample sets whose statistics are known
+// exactly and with two costs built to differ.
 
 double elapsed_ms(
     const std::chrono::steady_clock::time_point& from,
@@ -2392,31 +2387,17 @@ int measure_track_budget_once(
         elapsed_ms(t_parse_begin, t_parse_end);
     nfsu::track_budget_parse_cost(geometry, objects, cost);
 
+    // The SAME function track-scene and track-render decode through, with
+    // its printing suppressed. A second copy here would be a second place
+    // for the texture budget to be got wrong, and would mean this command
+    // timed a code path neither of the others runs.
     const auto t_texture_begin = std::chrono::steady_clock::now();
     pipeline.wanted = nfsu::track_region_texture_hashes(geometry);
-    pipeline.source_bytes.resize(args.scene.textures.size());
-    pipeline.sets.resize(args.scene.textures.size());
-    pipeline.sources.resize(args.scene.textures.size());
-    std::uint64_t read_bytes = 0;
-    for (std::size_t i = 0; i < args.scene.textures.size(); ++i) {
-        nfsu::TextureLimits limits;
-        const std::uint64_t remaining = kMaxTrackTextureInputBytes - read_bytes;
-        limits.max_file_size = std::min(limits.max_file_size, remaining);
-        pipeline.sets[i] = nfsu::load_texture_pack_set(
-            args.scene.textures[i], pipeline.source_bytes[i], limits);
-        read_bytes += pipeline.source_bytes[i].size();
-    }
-    for (std::size_t i = 0; i < args.scene.textures.size(); ++i) {
-        pipeline.sources[i].bytes = &pipeline.source_bytes[i];
-        for (const nfsu::TexturePack& pack : pipeline.sets[i].packs) {
-            pipeline.sources[i].packs.push_back(&pack);
-        }
-        pipeline.sources[i].complete = pipeline.sets[i].complete;
-        pipeline.sources[i].wanted = &pipeline.wanted;
-    }
-    if (!nfsu::decode_render_texture_sources(pipeline.sources,
-                                             nfsu::RenderTextureLimits{},
-                                             pipeline.textures, error)) {
+    if (!decode_track_scene_textures(args.scene.textures, pipeline.wanted,
+                                     pipeline.source_bytes, pipeline.sets,
+                                     pipeline.sources, pipeline.textures,
+                                     true)) {
+        error = "the texture sources could not be decoded";
         return 2;
     }
     const auto t_texture_end = std::chrono::steady_clock::now();
@@ -2579,19 +2560,14 @@ int run_track_budget(
             }
             continue;
         }
-        std::vector<nfsu::TrackBudgetEntry> entries;
-        nfsu::track_budget_entries(cost, entries);
-        for (std::size_t i = 0; i < entries.size(); ++i) {
-            if (entries[i].value != first_entries[i].value) {
-                std::cerr << "error: repetition " << run << " measured "
-                          << entries[i].name << ' ' << entries[i].value
-                          << " where the first run measured "
-                          << first_entries[i].value
-                          << "; these counts are supposed to be a function of"
-                             " the inputs, so this is a defect and not a"
-                             " budget result\n";
-                return 5;
-            }
+        std::string difference;
+        if (!nfsu::track_budget_costs_equal(first_cost, cost, difference)) {
+            std::cerr << "error: repetition " << run
+                      << " disagreed with the first run about " << difference
+                      << "; these counts are supposed to be a function of the"
+                         " inputs, so this is a defect and not a budget"
+                         " result\n";
+            return 5;
         }
         if (run_reports_ok != reports_ok || run_framed != framed) {
             std::cerr << "error: repetition " << run
@@ -2618,14 +2594,15 @@ int run_track_budget(
             if (phase == TrackBudgetPhase::render && !args.render) {
                 continue;
             }
-            const TrackBudgetTiming timing = summarize_timing(samples[p]);
+            const nfsu::TrackSampleSummary timing =
+                nfsu::summarize_track_samples(samples[p]);
             std::cout << "time: " << track_budget_phase_name(phase)
                       << " samples " << timing.samples << " min "
-                      << format_double(timing.min_ms) << " median "
-                      << format_double(timing.median_ms) << " mean "
-                      << format_double(timing.mean_ms) << " stddev "
-                      << format_double(timing.stddev_ms) << " max "
-                      << format_double(timing.max_ms) << " ms\n";
+                      << format_double(timing.min) << " median "
+                      << format_double(timing.median) << " mean "
+                      << format_double(timing.mean) << " stddev "
+                      << format_double(timing.stddev) << " max "
+                      << format_double(timing.max) << " ms\n";
         }
     }
 

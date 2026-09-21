@@ -57,6 +57,76 @@ void test_counter_table() {
     nfsu::track_budget_entries(cost, entries);
     check(!entries.empty(), "the counter table is not empty");
 
+    // THE WHOLE TABLE, EXACTLY, IN ORDER. The header promises the entries
+    // come in stage order and, inside a stage, in the order the struct
+    // declares them, and a caller printing a budget straight through relies
+    // on it. The checks further down pin the table's SHAPE - unique names,
+    // a stage prefix, contiguous blocks - and every one of them is satisfied
+    // by two counters of one stage swapped with each other, which is what an
+    // independent mutation pass used. Listing the names is the only thing
+    // that is not.
+    //
+    // It is deliberately brittle. A counter added, removed or moved fails
+    // here and has to be acknowledged, which for a table that is a
+    // documented contract is the behaviour worth having.
+    static const char* const kExpected[] = {
+        "parse.region_bytes",
+        "parse.meshes",
+        "parse.valid_meshes",
+        "parse.vertices",
+        "parse.triangles",
+        "parse.materials",
+        "parse.decoded_mesh_bytes",
+        "parse.sections",
+        "parse.valid_sections",
+        "parse.objects",
+        "parse.instances",
+        "parse.bound_nodes",
+        "parse.object_record_bytes",
+        "prepare.meshes",
+        "prepare.draws",
+        "prepare.drawable_draws",
+        "prepare.textures",
+        "prepare.vertex_buffer_bytes",
+        "prepare.index_buffer_bytes",
+        "prepare.texture_bytes",
+        "prepare.instance_bytes",
+        "prepare.resident_bytes",
+        "prepare.placed_instances",
+        "prepare.unplaced_instances",
+        "prepare.resident_entries",
+        "prepare.resident_triangles",
+        "frame.visible_instances",
+        "frame.visible_placed",
+        "frame.visible_unplaced",
+        "frame.draw_calls",
+        "frame.triangles",
+        "frame.groups",
+        "frame.meshes",
+        "frame.texture_binds",
+        "frame.entry_bytes",
+        "render.entries",
+        "render.triangles_submitted",
+        "render.triangles_rasterized",
+        "render.pixel_tests",
+        "render.fragments",
+        "render.fragments_written",
+        "render.pixels_drawn",
+        "render.texture_binds",
+        "render.frame_bytes",
+    };
+    const std::size_t expected_count =
+        sizeof(kExpected) / sizeof(kExpected[0]);
+    check(entries.size() == expected_count,
+          "the table holds " + std::to_string(expected_count) +
+              " counters, and it holds " + std::to_string(entries.size()));
+    for (std::size_t i = 0; i < entries.size() && i < expected_count; ++i) {
+        check(entries[i].name == kExpected[i],
+              "counter " + std::to_string(i) + " is " +
+                  std::string(kExpected[i]) + ", and it is " +
+                  std::string(entries[i].name));
+    }
+
     // Names are unique.
     std::set<std::string> names;
     for (const nfsu::TrackBudgetEntry& entry : entries) {
@@ -622,9 +692,93 @@ void test_budget_check_refusals() {
     check(!nfsu::check_track_budget(partial, {{"render.pixels_drawn", 5}}, over,
                                     error),
           "a limit on an unmeasured stage is refused");
-    check(error.find("render") != std::string::npos,
-          "the unmeasured refusal names the stage: " + error);
+    // "names the render stage", and NOT merely "render". Every counter is
+    // prefixed with its own stage, so `error.find("render")` is satisfied by
+    // the echoed counter name alone and would pass with the stage name
+    // replaced by anything at all - which is what an independent mutation
+    // pass demonstrated with a mutant that replaced it by "?".
+    check(error.find("names the render stage") != std::string::npos,
+          "the unmeasured refusal names the stage, in a phrase the counter"
+          " name cannot supply: " + error);
     check(over.empty(), "a refused unmeasured check reports no exceedance");
+
+    // All FOUR stage arms of the refusal, not only the render one. Only the
+    // render arm is reachable from nfsu_probe track-budget, because
+    // measure_track_budget_once gathers parse, prepare and frame before it
+    // can return, so this test is the only place the other three can be
+    // covered at all.
+    {
+        const struct {
+            const char* counter;
+            const char* phrase;
+        } kArms[] = {
+            {"parse.meshes", "names the parse stage"},
+            {"prepare.meshes", "names the prepare stage"},
+            {"frame.draw_calls", "names the frame stage"},
+            {"render.pixels_drawn", "names the render stage"},
+        };
+        for (const auto& arm : kArms) {
+            nfsu::TrackBudgetCost nothing;
+            error.clear();
+            check(!nfsu::check_track_budget(nothing, {{arm.counter, 0}}, over,
+                                            error),
+                  std::string("a limit on unmeasured ") + arm.counter +
+                      " is refused");
+            check(error.find(arm.phrase) != std::string::npos,
+                  std::string("the refusal for ") + arm.counter +
+                      " names its own stage: " + error);
+        }
+        // And with every stage measured, all four are checked rather than
+        // refused - so the loop above is not passing because the refusal is
+        // unconditional.
+        nfsu::TrackBudgetCost everything;
+        everything.measured_parse = true;
+        everything.measured_prepare = true;
+        everything.measured_frame = true;
+        everything.measured_render = true;
+        for (const auto& arm : kArms) {
+            error.clear();
+            check(nfsu::check_track_budget(everything, {{arm.counter, 0}}, over,
+                                           error),
+                  std::string("a limit on measured ") + arm.counter +
+                      " is checked: " + error);
+            check(over.empty(),
+                  std::string("zero is within a zero ceiling for ") +
+                      arm.counter);
+        }
+
+        // EACH STAGE MEASURED ON ITS OWN. The two loops above both set every
+        // flag the same way, so a lookup that reads a NEIGHBOUR's flag -
+        // parse answering with prepare's, say - gives the right answer in
+        // both and survives. Here exactly one flag is set at a time: the
+        // limit on that stage must be checked, and a limit on each of the
+        // other three must still be refused. A misread flag fails one of the
+        // two halves whichever pair it confuses.
+        for (std::size_t measured = 0; measured < 4; ++measured) {
+            nfsu::TrackBudgetCost only;
+            only.measured_parse = (measured == 0);
+            only.measured_prepare = (measured == 1);
+            only.measured_frame = (measured == 2);
+            only.measured_render = (measured == 3);
+            for (std::size_t named = 0; named < 4; ++named) {
+                const char* counter = kArms[named].counter;
+                error.clear();
+                const bool ran = nfsu::check_track_budget(
+                    only, {{counter, 0}}, over, error);
+                if (named == measured) {
+                    check(ran, std::string("with only ") +
+                                   kArms[measured].counter +
+                                   "'s stage measured, its own limit is"
+                                   " checked: " + error);
+                } else {
+                    check(!ran, std::string("with only ") +
+                                    kArms[measured].counter +
+                                    "'s stage measured, a limit on " +
+                                    counter + " is refused");
+                }
+            }
+        }
+    }
     // The same counter, once its stage has been measured, is checked
     // normally. Without this the refusal above could be a blanket one.
     partial.measured_render = true;
@@ -662,6 +816,168 @@ void test_budget_check_refusals() {
           "a refused set reports no exceedance even though one was over");
 }
 
+// ---------------------------------------------------------------------------
+// Repetition comparison and sample statistics.
+//
+// Both of these were local to src/main.cpp in an earlier revision, and an
+// independent mutation sweep found that EVERY fault in them survived every
+// gate. Neither is reachable from a command-level test: a summary of
+// wall-clock times cannot be asserted against a value, and a comparison that
+// only runs over equal costs never takes its failing branch. Here the inputs
+// are chosen so that both have exact expected answers.
+// ---------------------------------------------------------------------------
+
+void check_eq_double(double got, double want, const std::string& what) {
+    // The values below are chosen to be exact in binary except where a
+    // square root is involved, so this tolerance is about the one irrational
+    // expectation and not a licence for the rest to drift.
+    const double tolerance = 1e-12;
+    const double delta = got > want ? got - want : want - got;
+    check(delta <= tolerance,
+          what + ": got " + std::to_string(got) + ", want " +
+              std::to_string(want));
+}
+
+void test_costs_equal() {
+    nfsu::TrackBudgetCost a = measured_cost();
+    nfsu::TrackBudgetCost b = measured_cost();
+    std::string difference;
+
+    check(nfsu::track_budget_costs_equal(a, b, difference),
+          "two identical costs compare equal: " + difference);
+
+    // Two costs that measured nothing are equal too. Without this the
+    // function could be "always false" and still pass the case below.
+    nfsu::TrackBudgetCost empty_a;
+    nfsu::TrackBudgetCost empty_b;
+    check(nfsu::track_budget_costs_equal(empty_a, empty_b, difference),
+          "two empty costs compare equal: " + difference);
+
+    // One counter differs. The message names the counter and BOTH values,
+    // because a report that named only one would leave a reader unable to
+    // say which run was the odd one.
+    b.frame_draw_calls = 47;
+    difference.clear();
+    check(!nfsu::track_budget_costs_equal(a, b, difference),
+          "a differing counter is not equal");
+    check(difference.find("frame.draw_calls") != std::string::npos,
+          "the difference names the counter: " + difference);
+    check(difference.find("46") != std::string::npos,
+          "the difference carries the first value: " + difference);
+    check(difference.find("47") != std::string::npos,
+          "the difference carries the second value: " + difference);
+
+    // The comparison is symmetric.
+    difference.clear();
+    check(!nfsu::track_budget_costs_equal(b, a, difference),
+          "the comparison is symmetric");
+
+    // The FIRST difference in table order is the one reported. Both costs
+    // below differ in two counters, one early and one late, and the early
+    // one is the answer.
+    nfsu::TrackBudgetCost early = measured_cost();
+    nfsu::TrackBudgetCost late = measured_cost();
+    late.parse_meshes = 999;
+    late.render_pixels_drawn = 999;
+    early.parse_meshes = 1;
+    early.render_pixels_drawn = 1;
+    difference.clear();
+    check(!nfsu::track_budget_costs_equal(early, late, difference),
+          "two differences are not equal");
+    check(difference.find("parse.meshes") != std::string::npos,
+          "the earlier difference in table order is reported: " + difference);
+
+    // A stage one cost measured and the other did not is a difference even
+    // when both values are zero, because a zero that nothing measured does
+    // not mean the same thing as a zero that was measured.
+    nfsu::TrackBudgetCost measured;
+    measured.measured_frame = true;
+    nfsu::TrackBudgetCost unmeasured;
+    difference.clear();
+    check(!nfsu::track_budget_costs_equal(measured, unmeasured, difference),
+          "a stage measured by one cost and not the other is a difference");
+    check(difference.find("frame") != std::string::npos,
+          "the difference names the stage: " + difference);
+}
+
+void test_sample_summary() {
+    // An empty set: zeros rather than a division by zero.
+    const nfsu::TrackSampleSummary none = nfsu::summarize_track_samples({});
+    check(none.samples == 0, "an empty sample set has no samples");
+    check_eq_double(none.min, 0.0, "an empty set's min");
+    check_eq_double(none.mean, 0.0, "an empty set's mean");
+    check_eq_double(none.stddev, 0.0, "an empty set's standard deviation");
+
+    // One sample: the spread is zero, and the standard deviation must not
+    // divide by n-1 == 0.
+    const nfsu::TrackSampleSummary one = nfsu::summarize_track_samples({5.0});
+    check(one.samples == 1, "one sample");
+    check_eq_double(one.min, 5.0, "one sample's min");
+    check_eq_double(one.median, 5.0, "one sample's median");
+    check_eq_double(one.mean, 5.0, "one sample's mean");
+    check_eq_double(one.max, 5.0, "one sample's max");
+    check_eq_double(one.stddev, 0.0, "one sample's standard deviation");
+
+    // TWO samples, which is the smallest count that has a spread at all and
+    // the boundary the n > 1 guard sits on. A guard written n > 2 leaves
+    // this reporting no spread, and every other case in this function - 1,
+    // 3 and 4 samples - passes with it.
+    const nfsu::TrackSampleSummary two =
+        nfsu::summarize_track_samples({4.0, 2.0});
+    check(two.samples == 2, "two samples");
+    check_eq_double(two.min, 2.0, "two samples' min");
+    check_eq_double(two.max, 4.0, "two samples' max");
+    check_eq_double(two.median, 3.0, "two samples' median");
+    check_eq_double(two.mean, 3.0, "two samples' mean");
+    // sqrt(((2-3)^2 + (4-3)^2) / (2-1)) = sqrt(2).
+    check_eq_double(two.stddev, 1.4142135623730951,
+                    "two samples have a spread");
+
+    // Three samples, GIVEN OUT OF ORDER. Every figure below is wrong if the
+    // sort is dropped: unsorted, min would be 3 and max 2.
+    const nfsu::TrackSampleSummary odd =
+        nfsu::summarize_track_samples({3.0, 1.0, 2.0});
+    check(odd.samples == 3, "three samples");
+    check_eq_double(odd.min, 1.0, "an unsorted set's min is the smallest");
+    check_eq_double(odd.max, 3.0, "an unsorted set's max is the largest");
+    check_eq_double(odd.median, 2.0, "an odd count's median is the middle");
+    check_eq_double(odd.mean, 2.0, "the mean of 1, 2 and 3");
+    // The SAMPLE standard deviation: sqrt(((1-2)^2 + 0 + (3-2)^2) / (3-1))
+    // is sqrt(1) = 1. The population form would divide by 3 and give
+    // sqrt(2/3) = 0.8165, so this value distinguishes the two.
+    check_eq_double(odd.stddev, 1.0,
+                    "the sample standard deviation divides by n-1");
+
+    // Four samples, so the median is the mean of the two middle values.
+    // samples[n/2] alone would be 3.
+    const nfsu::TrackSampleSummary even =
+        nfsu::summarize_track_samples({4.0, 1.0, 3.0, 2.0});
+    check(even.samples == 4, "four samples");
+    check_eq_double(even.min, 1.0, "an even count's min");
+    check_eq_double(even.max, 4.0, "an even count's max");
+    check_eq_double(even.median, 2.5,
+                    "an even count's median is the mean of the two middle"
+                    " values");
+    check_eq_double(even.mean, 2.5, "the mean of 1, 2, 3 and 4");
+    // sqrt((2.25 + 0.25 + 0.25 + 2.25) / 3) = sqrt(5/3).
+    check_eq_double(even.stddev, 1.2909944487358056,
+                    "an even count's sample standard deviation");
+
+    // Repeated values: the spread is zero even though there are four of
+    // them, which is what a stage whose time never moves should report.
+    const nfsu::TrackSampleSummary flat =
+        nfsu::summarize_track_samples({7.0, 7.0, 7.0, 7.0});
+    check_eq_double(flat.stddev, 0.0, "identical samples have no spread");
+    check_eq_double(flat.median, 7.0, "identical samples have that median");
+
+    // The caller's vector is taken by value, so a caller that summarizes one
+    // phase and then prints its own samples still has them in its own order.
+    std::vector<double> mine = {3.0, 1.0, 2.0};
+    (void)nfsu::summarize_track_samples(mine);
+    check(mine.size() == 3 && mine[0] == 3.0,
+          "summarizing does not sort the caller's own vector");
+}
+
 } // namespace
 
 int main() {
@@ -672,6 +988,8 @@ int main() {
     test_render_gatherer();
     test_budget_check_boundaries();
     test_budget_check_refusals();
+    test_costs_equal();
+    test_sample_summary();
 
     if (failures != 0) {
         std::cerr << failures << " check(s) failed\n";

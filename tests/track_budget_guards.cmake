@@ -20,14 +20,25 @@
 # any refusal, and an argument parser has many.
 #
 # WHAT NO CASE HERE REACHES, stated rather than left to be discovered: exit
-# 0. It needs geometry.ok() && objects.ok() && cull.ok(), which needs a
-# region that parses cleanly, and a region cannot be built from this script -
-# a minimal chunk header is eight bytes of which at least three are NUL, and
-# CMake's file(WRITE) cannot write a NUL. A cleanly parsing region needs the
-# installation, so exit 0 is covered by the retail acceptance of
-# docs/TRACK_BUDGET.md instead, which is a run someone performs rather than a
-# gate. Every OTHER exit this command can produce - 1, 2, 3, 4 and the
-# absence of 5 - is driven below.
+# 0, and only exit 0. It needs geometry.ok() && objects.ok() && cull.ok(),
+# which needs a region that parses cleanly, and this script cannot build
+# one - a minimal chunk header is eight bytes of which at least three are
+# NUL, and CMake's file(WRITE) cannot write a NUL. The retail acceptance of
+# docs/TRACK_BUDGET.md is where exit 0 is checked, and it is a run someone
+# performs rather than a gate.
+#
+# Exits 1, 2, 3 and 4 are all driven below, and so is the ABSENCE of 5 -
+# every multi-repetition case here would exit 5 if the counts were not
+# deterministic.
+#
+# Exit 2 is worth a word because it nearly was not driven. It is the
+# library-error path, and most of its refusals are refusals over CONTENT - a
+# failed self-check, a box that cannot be framed - which no run without a
+# region can reach. One is not: the frame is allocated from the caller's
+# size rather than from the scene, so a size past RenderLimits::max_pixels
+# is refused with nothing loaded at all. An earlier draft of this paragraph
+# declared exit 2 unreachable here on the strength of the first half and
+# never looked for the second.
 #
 # Run from the build directory. PROBE is the built program.
 
@@ -207,25 +218,41 @@ nfsu_case("--no-time prints no time line" 3 "cost: frame.draw_calls" "time: "
 nfsu_case("times are printed by default" 3 "time: parse samples 1" ""
           "${missing}" 0 16 0 16 --repeat 1 --no-render)
 
-# Each of the four non-render phases is timed and named. A phase dropped from
-# the report is a stage nobody can see the cost of.
-nfsu_case("the parse phase is timed" 3 "time: parse samples" ""
-          "${missing}" 0 16 0 16 --repeat 1 --no-render)
-nfsu_case("the texture phase is timed" 3 "time: texture samples" ""
-          "${missing}" 0 16 0 16 --repeat 1 --no-render)
-nfsu_case("the prepare phase is timed" 3 "time: prepare samples" ""
-          "${missing}" 0 16 0 16 --repeat 1 --no-render)
-nfsu_case("the frame phase is timed" 3 "time: frame samples" ""
-          "${missing}" 0 16 0 16 --repeat 1 --no-render)
+# Each of the four non-render phases is timed and named, AND CARRIES ITS
+# SAMPLE COUNT. The count is the load-bearing half: a phase whose sample
+# vector is never filled still prints its own name followed by "samples 0",
+# so a needle that stops at the name is matched by a phase that collected
+# nothing. An independent mutation pass ended the collection loop one phase
+# early and survived on exactly that.
+nfsu_case("the parse phase is timed over 2 samples" 3
+          "time: parse samples 2" ""
+          "${missing}" 0 16 0 16 --repeat 2 --no-render)
+nfsu_case("the texture phase is timed over 2 samples" 3
+          "time: texture samples 2" ""
+          "${missing}" 0 16 0 16 --repeat 2 --no-render)
+nfsu_case("the prepare phase is timed over 2 samples" 3
+          "time: prepare samples 2" ""
+          "${missing}" 0 16 0 16 --repeat 2 --no-render)
+nfsu_case("the frame phase is timed over 2 samples" 3
+          "time: frame samples 2" ""
+          "${missing}" 0 16 0 16 --repeat 2 --no-render)
+
+# The sample count is the repetitions and NOT the runs: the warm-up is
+# discarded, so --repeat 2 gives two samples and not three. A warm-up that
+# was timed rather than dropped changes this line and nothing else.
+nfsu_case("the warm-up contributes no sample" 3 "time: parse samples 3"
+          "time: parse samples 4"
+          "${missing}" 0 16 0 16 --repeat 3 --no-render)
 
 # --no-render suppresses the render phase's time and nothing else; with the
-# render stage on, it is there. The pair is what pins that --no-render
-# controls the render stage rather than merely the render counters.
-nfsu_case("--no-render times no render phase" 3 "time: prepare samples"
+# render stage on, it is there with its own count. The pair is what pins
+# that --no-render controls the render stage rather than merely the render
+# counters.
+nfsu_case("--no-render times no render phase" 3 "time: prepare samples 2"
           "time: render samples"
-          "${missing}" 0 16 0 16 --repeat 1 --no-render)
-nfsu_case("the render phase is timed by default" 3 "time: render samples" ""
-          "${missing}" 0 16 0 16 --repeat 1)
+          "${missing}" 0 16 0 16 --repeat 2 --no-render)
+nfsu_case("the render phase is timed by default" 3 "time: render samples 2" ""
+          "${missing}" 0 16 0 16 --repeat 2)
 
 # ---------------------------------------------------------------------------
 # The frame size and the framing options.
@@ -241,11 +268,47 @@ nfsu_case("--width rejects a size past the cap" 1
 nfsu_case("--height rejects zero" 1 "--height needs a size from 1 to 8192" ""
           "${missing}" 0 16 0 16 --height 0)
 
+# A size each of whose halves is inside RenderLimits and whose PRODUCT is
+# not. It is accepted by the option parser, which checks the two
+# separately, and refused by render_track_draw_list, which checks the
+# frame. This is the one exit-2 path a run with no region can reach: the
+# frame is sized from the caller and not from the scene.
+nfsu_case("a frame past the pixel limit exits 2" 2
+          "frame has 67108864 pixels; the limit is 16777216" ""
+          "${missing}" 0 16 0 16 --repeat 1 --no-time --width 8192
+          --height 8192)
+
+# And the same run under --no-render does NOT fail, which is what pins that
+# the refusal comes from the render stage rather than from the option.
+nfsu_case("the same size is harmless with no render" 3
+          "budget: limits 0 exceeded 0" "frame has 67108864 pixels"
+          "${missing}" 0 16 0 16 --repeat 1 --no-time --no-render --width 8192
+          --height 8192)
+
 # The size reaches the frame: render.frame_bytes is the four frame buffers at
 # 17 bytes a pixel, so 64 by 32 is 2048 pixels and 34816 bytes. A --width
 # that parsed and was then ignored gives the default 15667200 here.
 nfsu_case("the frame size reaches the frame" 4
           "cost: render.frame_bytes 34816" ""
+          "${missing}" 0 16 0 16 --repeat 1 --no-time --width 64 --height 32
+          --limit render.frame_bytes 1)
+
+# The echoed size carries the two in the order they were given. This is a
+# smaller claim than it looks and the limit is worth stating: it pins the
+# ECHO, not the frame.
+#
+# render.frame_bytes is a PRODUCT, so 64 by 32 and 32 by 64 are both 2048
+# pixels and 34816 bytes, and the case above cannot tell them apart. An
+# independent mutation pass swapped options.width and options.height inside
+# measure_track_budget_once and survived both cases - correctly, because the
+# echo is printed from the arguments and every counter of an EMPTY scene is
+# symmetric in the two. Nothing driven from this script can see that swap.
+# What can is a scene with geometry in it, where the aspect ratio changes
+# what the camera frames: on the reference region 64x32 draws 65 pixels over
+# 345 tests and 32x64 draws 76 over 422. That is acceptance item 8 of
+# docs/TRACK_BUDGET.md, and it is a run someone performs rather than a gate.
+nfsu_case("the echoed frame size is width then height" 4
+          "budget: frame 64x32" "budget: frame 32x64"
           "${missing}" 0 16 0 16 --repeat 1 --no-time --width 64 --height 32
           --limit render.frame_bytes 1)
 
@@ -381,6 +444,93 @@ nfsu_case("the render block is reported" 4 "cost: render.pixels_drawn" ""
 nfsu_case("the inputs are echoed so a report names what produced it" 3
           "budget: geometry offset 0 size 16 objects offset 0 size 16" ""
           "${missing}" 0 16 0 16 --repeat 1 --no-render --no-time)
+
+# A --limit ON EACH STAGE, which is what makes each stage's gatherer load
+# bearing. Printing a block is not enough on its own: the counter table
+# always emits every row, so a stage whose gatherer is never CALLED still
+# prints its whole block at zero and every "the block is reported" case
+# above passes. A limit is the only thing that reads a value, and an
+# independent mutation pass deleted the parse and prepare gatherer calls
+# from the command and survived until these four existed.
+#
+# Each ceiling is zero and each counter is zero here, so all four hold; what
+# they prove is that check_track_budget did not REFUSE, which it would if
+# the stage had not been measured.
+nfsu_case("a parse limit is checked, so the parse gatherer ran" 3
+          "budget: limits 1 exceeded 0" "did not measure"
+          "${missing}" 0 16 0 16 --repeat 1 --no-render --no-time
+          --limit parse.region_bytes 0)
+nfsu_case("a prepare limit is checked, so the prepare gatherer ran" 3
+          "budget: limits 1 exceeded 0" "did not measure"
+          "${missing}" 0 16 0 16 --repeat 1 --no-render --no-time
+          --limit prepare.resident_bytes 0)
+nfsu_case("a frame limit is checked, so the frame gatherer ran" 3
+          "budget: limits 1 exceeded 0" "did not measure"
+          "${missing}" 0 16 0 16 --repeat 1 --no-render --no-time
+          --limit frame.draw_calls 0)
+nfsu_case("a render limit is checked, so the render gatherer ran" 3
+          "budget: limits 1 exceeded 0" "did not measure"
+          "${missing}" 0 16 0 16 --repeat 1 --no-time
+          --limit render.pixels_drawn 0)
+
+# ---------------------------------------------------------------------------
+# The ACCEPTING side of every bounded option, and every option literal.
+#
+# Each option below had its refusal driven above and its acceptance driven
+# nowhere, which is the asymmetry an independent pass found: a bound moved
+# inward by one rejects a documented-legal value and every rejection case
+# still passes. --lod-slot already had both sides; these bring the rest into
+# line.
+# ---------------------------------------------------------------------------
+
+nfsu_case("--repeat accepts its documented maximum" 3
+          "repetitions 1000 after 1 discarded warm-up" ""
+          "${missing}" 0 16 0 16 --repeat 1000 --no-render --no-time)
+
+# 8192 is the documented maximum of both, and 8192 x 2048 is exactly
+# RenderLimits::max_pixels, so this is the accepting boundary of the size
+# options AND of the pixel limit the case above rejects one past.
+nfsu_case("--width accepts its documented maximum" 4
+          "cost: render.frame_bytes 285212672" ""
+          "${missing}" 0 16 0 16 --repeat 1 --no-time --width 8192
+          --height 2048 --limit render.frame_bytes 1)
+nfsu_case("--height accepts its documented maximum" 4
+          "cost: render.frame_bytes 285212672" ""
+          "${missing}" 0 16 0 16 --repeat 1 --no-time --width 2048
+          --height 8192 --limit render.frame_bytes 1)
+
+nfsu_case("--view-pitch accepts its documented maximum" 3 "budget: frame" ""
+          "${missing}" 0 16 0 16 --repeat 1 --no-time --view-pitch 89)
+nfsu_case("--view-pitch accepts its documented minimum" 3 "budget: frame" ""
+          "${missing}" 0 16 0 16 --repeat 1 --no-time --view-pitch -89)
+nfsu_case("--view-fov accepts its documented maximum" 3 "budget: frame" ""
+          "${missing}" 0 16 0 16 --repeat 1 --no-time --view-fov 170)
+nfsu_case("--view-fov accepts its documented minimum" 3 "budget: frame" ""
+          "${missing}" 0 16 0 16 --repeat 1 --no-time --view-fov 1)
+nfsu_case("--view-margin accepts its documented maximum" 3 "budget: frame" ""
+          "${missing}" 0 16 0 16 --repeat 1 --no-time --view-margin 100)
+nfsu_case("--view-yaw accepts its documented maximum" 3 "budget: frame" ""
+          "${missing}" 0 16 0 16 --repeat 1 --no-time --view-yaw 36000)
+
+# The option LITERALS. Every one of these had only its misspelling driven,
+# so a handler that accepted the word and then did nothing with it, or that
+# compared against a different spelling, passed everything.
+nfsu_case("--order visible-instance is accepted and reported" 3
+          "order visible instance" "order material group"
+          "${missing}" 0 16 0 16 --repeat 1 --no-render --no-time
+          --order visible-instance)
+nfsu_case("--residency every is accepted" 3 "budget: limits 0 exceeded 0" ""
+          "${missing}" 0 16 0 16 --repeat 1 --no-render --no-time
+          --residency every)
+nfsu_case("--residency no-zone is accepted" 3 "budget: limits 0 exceeded 0" ""
+          "${missing}" 0 16 0 16 --repeat 1 --no-render --no-time
+          --residency no-zone)
+nfsu_case("--far accepts a finite float" 3 "camera given" ""
+          "${missing}" 0 16 0 16 --repeat 1 --no-render --no-time
+          --eye 1 2 3 --target 4 5 6 --far 250.5)
+nfsu_case("--lod-slot 0 is accepted and reported" 3 "budget: lod slot 0" ""
+          "${missing}" 0 16 0 16 --repeat 1 --no-render --no-time
+          --lod-slot 0)
 
 if(failures GREATER 0)
     message(FATAL_ERROR "${failures} track-budget guard case(s) failed")

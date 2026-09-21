@@ -1,5 +1,7 @@
 #include "nfsu/track_budget.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 
 namespace nfsu {
@@ -257,6 +259,59 @@ void track_budget_render_cost(
             static_cast<std::uint64_t>(sizeof(std::uint32_t)) +
         static_cast<std::uint64_t>(frame.blended().size());
     cost.measured_render = true;
+}
+
+bool track_budget_costs_equal(
+    const TrackBudgetCost& first,
+    const TrackBudgetCost& second,
+    std::string& difference) {
+    for (const CounterRef& ref : kCounters) {
+        const bool first_measured = stage_measured(first, ref.stage);
+        const bool second_measured = stage_measured(second, ref.stage);
+        if (first_measured != second_measured) {
+            difference = std::string(ref.name) + ": the " +
+                         track_budget_stage_name(ref.stage) +
+                         " stage was measured by one cost and not the other";
+            return false;
+        }
+        const std::uint64_t a = first.*(ref.member);
+        const std::uint64_t b = second.*(ref.member);
+        if (a != b) {
+            difference = std::string(ref.name) + ": " + std::to_string(a) +
+                         " against " + std::to_string(b);
+            return false;
+        }
+    }
+    return true;
+}
+
+TrackSampleSummary summarize_track_samples(std::vector<double> samples) {
+    TrackSampleSummary out;
+    out.samples = samples.size();
+    if (samples.empty()) {
+        return out;
+    }
+    std::sort(samples.begin(), samples.end());
+    out.min = samples.front();
+    out.max = samples.back();
+    const std::size_t n = samples.size();
+    out.median = (n % 2 == 1)
+                     ? samples[n / 2]
+                     : (samples[n / 2 - 1] + samples[n / 2]) / 2.0;
+    double total = 0.0;
+    for (const double value : samples) {
+        total += value;
+    }
+    out.mean = total / static_cast<double>(n);
+    if (n > 1) {
+        double sum_sq = 0.0;
+        for (const double value : samples) {
+            const double delta = value - out.mean;
+            sum_sq += delta * delta;
+        }
+        out.stddev = std::sqrt(sum_sq / static_cast<double>(n - 1));
+    }
+    return out;
 }
 
 bool check_track_budget(
