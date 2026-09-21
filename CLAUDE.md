@@ -261,6 +261,35 @@ error line and an error line is not empty. Delete prior outputs by
 exact name first, then confirm that both sides wrote this run's artifact and
 that neither printed an error line.
 
+A mutation sweep fails the same way, in the direction that produces a false
+pass. Every sweep here reads a non-zero exit as a kill, and branches have been
+accepted on sweeps of 26, 34, 185 and 200 mutants. A target that crashes for a
+reason the mutant did not cause therefore reports that mutant caught, and a
+surviving mutant is exactly what a sweep exists to find. **Classify a run by
+what it printed, not only by its exit status: a non-zero exit with no failure
+line and no summary line is an unknown result, not a kill.** Report unknowns as
+their own column. A sweep that cannot tell a kill from a crash has no score,
+and re-run its unknowns before quoting a number.
+
+Issue #122 is what this rule was written against, and the crash was real
+rather than hypothetical. `nfsu_track_object_tests` named its fixture
+`nfsu_track_objects_region.bin` under the system temporary directory with no
+process id in it, so two copies - two sessions running `ctest` from their own
+build directories, which Shared checkout above says is routine - wrote and
+removed one another's file. The reader then got a report with no section and
+took an access violation at a container subscript. Two concurrent `ctest`
+invocations reproduced it on the eighteenth run of the target while the other
+side ran 6000 clean. Any sweep running while another session built would have
+recorded those crashes as kills. Both halves were needed: the unique fixture
+name stops the collision, and the subscript guard keeps any other transient
+filesystem failure a failure rather than a segmentation fault.
+
+The rule is a reporting discipline, not a gate. Nothing here runs a sweep, no
+sweep script is tracked, and the scripts that exist live in a shared scratch
+directory where they are rewritten and deleted between rounds - the two named
+in issue #122's dispatch were already gone when this was written. So this
+paragraph binds the next author of one, and nothing checks it.
+
 ## Required handoff
 
 Complete the entire worker handoff yourself. Do not stop at committed, pushed,

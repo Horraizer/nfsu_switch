@@ -12,13 +12,48 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <system_error>
 #include <vector>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace fs = std::filesystem;
 
 namespace {
 
 using Bytes = std::vector<unsigned char>;
+
+// A fixture name no other process shares, built the way
+// tests/arg_path_tests.cpp builds one.
+//
+// This file used to name its fixture "nfsu_track_objects_region.bin" under
+// the system temporary directory, with no process id in it. CLAUDE.md says
+// several sessions are routinely live on this machine, each with its own
+// build directory, so two copies of this binary run concurrently often
+// enough to matter - and each one writes that single path with
+// std::ios::trunc and removes it again. A copy that reads the fixture while
+// another copy is between its open and its close sees a file that is
+// missing, empty or half written, and load_track_objects then reports
+// issues and no section at all. Issue #122 is what that cost: an
+// intermittent segmentation fault that passed every sequential recheck.
+std::string unique_fixture(const std::string& label) {
+#ifdef _WIN32
+    const unsigned long pid = GetCurrentProcessId();
+#else
+    const unsigned long pid = static_cast<unsigned long>(getpid());
+#endif
+    return "nfsu_track_objects_" + label + "_" + std::to_string(pid) + ".bin";
+}
 
 int g_failures = 0;
 int g_checks = 0;
@@ -176,6 +211,22 @@ struct NodeSpec {
     std::int16_t entries[5] = {0, 0, 0, 0, 0};
 };
 
+// object_payload and tree_payload walk these two arrays with the parser's
+// own constants as the bound, while the arrays themselves are declared with
+// literals. That is deliberate everywhere else in this file - a literal
+// offset is what keeps a moved constant from moving both sides of a test at
+// once - but a literal *length* under a loop bounded by the constant is a
+// different thing: a constant that grew past the array would write past the
+// end of a stack object with no diagnostic anywhere. Pin the coupling
+// without pinning the value.
+static_assert(sizeof(ObjectSpec::hashes) / sizeof(std::uint32_t) >=
+                  nfsu::kSceneryObjectMeshSlots,
+              "ObjectSpec::hashes must cover every mesh slot object_payload "
+              "writes");
+static_assert(sizeof(NodeSpec::entries) / sizeof(std::int16_t) >=
+                  nfsu::kSceneryBoundNodeEntries,
+              "NodeSpec::entries must cover every entry tree_payload writes");
+
 struct SectionSpec {
     std::uint32_t number = 303;
     std::vector<ObjectSpec> objects{ObjectSpec{}};
@@ -274,8 +325,19 @@ Bytes tree_payload(const std::vector<NodeSpec>& nodes, std::size_t extra_bytes) 
 std::vector<NodeSpec> default_tree(const std::vector<InstanceSpec>& instances) {
     NodeSpec root;
     root.entry_count = static_cast<std::uint16_t>(instances.size());
+    // SectionSpec::nodes documents this bound in a comment and nothing
+    // enforced it: a caller that left nodes empty and passed more than
+    // kSceneryBoundNodeEntries instances wrote past root.entries, which is
+    // a fixed array inside this function's own frame. No caller does today,
+    // so the check below is what keeps that true. entry_count still carries
+    // the real count, so a fixture that trips this fails the parser's own
+    // entry-count rule as well as failing here.
+    check(instances.size() <= nfsu::kSceneryBoundNodeEntries,
+          "fixture: default_tree fits every instance in one root node");
+    const std::size_t entry_count =
+        std::min(instances.size(), nfsu::kSceneryBoundNodeEntries);
     bool first = true;
-    for (std::size_t i = 0; i < instances.size(); ++i) {
+    for (std::size_t i = 0; i < entry_count; ++i) {
         root.entries[i] = static_cast<std::int16_t>(i);
         for (std::size_t axis = 0; axis < 3; ++axis) {
             if (first) {
@@ -434,6 +496,14 @@ void test_well_formed_section() {
     check(section.nodes.size() == 1, "well formed: one bounding node");
     check(section.tree_depth == 0, "well formed: a single node is depth 0");
 
+    // The two checks above are the soft kind: they report a wrong count and
+    // carry on. Every subscript below them is a container read, so carrying
+    // on past a wrong count reads past the end rather than failing. Stop
+    // here instead, the same way the empty-section guard above does.
+    if (section.objects.empty() || section.instances.size() < 2) {
+        return;
+    }
+
     check(section.objects[0].mesh_hash[0] == 0x00001111U,
           "well formed: object slot 0");
     check(section.objects[0].mesh_hash[1] == 0x00002222U,
@@ -482,8 +552,12 @@ void test_well_formed_section() {
 
     // The same bytes parsed twice give the same answer.
     const nfsu::TrackObjectReport again = parse_one(spec);
+    // The size comparison guards again.sections[0], because report.sections
+    // is known non-empty by here; again.sections[0].instances needs its own
+    // guard, which is what the third line is.
     check(again.sections.size() == report.sections.size() &&
               again.cost.instances == report.cost.instances &&
+              again.sections[0].instances.size() == 2 &&
               again.sections[0].instances[1].matrix[3] ==
                   section.instances[1].matrix[3],
           "well formed: parsing is deterministic");
@@ -1180,7 +1254,7 @@ void test_region_boundaries() {
 
 void test_load_reads_only_the_region() {
     const fs::path path =
-        fs::temp_directory_path() / "nfsu_track_objects_region.bin";
+        fs::temp_directory_path() / unique_fixture("region");
     Writer writer(256);
     SectionSpec spec;
     spec.number = 1500;
@@ -1206,12 +1280,39 @@ void test_load_reads_only_the_region() {
     check(region_bytes.size() == writer.size(),
           "load: exactly the region is read");
     check(report.file_size == file.size(), "load: the file size is reported");
-    check(report.valid_section_count() == 1 &&
+    check(report.valid_section_count() == 1 && !report.sections.empty() &&
               report.sections[0].number == 1500,
           "load: the section decodes");
-    check(report.sections[0].letter == 'O',
+    // This subscript is the one issue #122 crashed on. A load that fails for
+    // any reason - and a fixture under the system temporary directory can
+    // fail for reasons that have nothing to do with this test, from a
+    // concurrent writer to a virus scanner holding the new file open -
+    // returns a report with issues and no section, and sections[0] on an
+    // empty vector is an access violation rather than a test failure. The
+    // unique fixture name above closes the cause seen here; this guard is
+    // what keeps any other transient failure a failure.
+    check(!report.sections.empty() && report.sections[0].letter == 'O',
           "load: 1500 is section letter O");
 
+    {
+        // The shape the crash depended on, pinned rather than assumed: a
+        // refused load reports issues and no section at all, so a reader
+        // that checks sections.empty() is reading a real contract. A future
+        // load that half-filled sections on a failed read would fail here
+        // instead of somewhere else, at a subscript, days later.
+        nfsu::TrackRegionSelector missing;
+        missing.offset = 0;
+        missing.size = 16;
+        Bytes bytes;
+        const nfsu::TrackObjectReport gone = nfsu::load_track_objects(
+            path.parent_path() / unique_fixture("absent"), missing, bytes);
+        check(!gone.issues.empty(), "load: a file that is not there is refused");
+        check(gone.sections.empty(),
+              "load: a refused load reports no section at all");
+        check(gone.valid_section_count() == 0,
+              "load: a refused load has no valid section either");
+        check(bytes.empty(), "load: nothing is read for a file that is not there");
+    }
     {
         nfsu::TrackRegionSelector past;
         past.offset = file.size();

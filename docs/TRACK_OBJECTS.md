@@ -587,6 +587,58 @@ header:
 build/nfsu_probe chunks X:/Games/NFSU/Tracks/STREAML1RB.BUN 100000
 ```
 
+## The intermittent segmentation fault, and what it was
+
+Issue #122. `nfsu_track_object_tests` was seen to exit with a segmentation
+fault twice, by two sessions that could not explain it: once on a reviewer's
+first full `ctest` run after a fresh configure on a documentation-only
+branch, and once on a mutant confined to a `src/main.cpp` handler this test
+does not link. Both passed every recheck. It is fixed, and it was two
+defects rather than one.
+
+`test_load_reads_only_the_region` writes a real file and loads a region out
+of it. It named that file `nfsu_track_objects_region.bin` under the system
+temporary directory, with nothing in the name to make it this process's own,
+wrote it with `std::ios::trunc` and removed it at the end. CLAUDE.md says
+several sessions are routinely live on this machine, each with its own build
+directory, so two copies of this binary overlap whenever two of them run
+`ctest` at the same time - and each one truncates and deletes the other's
+fixture. A copy that called `load_track_objects` while another was between
+its open and its close read a file that was missing, empty or half written.
+
+That alone would only have failed. What crashed was the second defect: the
+letter assertion after the load subscripted `report.sections[0]` with no
+guard, and a refused load returns a report with issues and no section at
+all. `sections[0]` on an empty vector is an access violation.
+
+Both halves are needed, and both were measured separately.
+
+| Experiment | Before | After |
+| --- | --- | --- |
+| The target alone, sequentially, default build | 200 of 200 passed | - |
+| Six concurrent copies, 20 rounds | 120 of 120 passed | - |
+| Two `ctest` runs, two build directories, `--repeat until-fail:6000` | one side crashed on its 18th run, the other ran 6000 clean | 6000 and 6000, no failure |
+| The fixture written and removed by another process throughout | 33 segmentation faults in 40 runs | 48 reported failures, 0 crashes in 60 |
+
+The last row measures the guard on its own: it puts the shared name back on
+top of the fixed source, so the race still happens and the crash does not.
+The third row is the whole fix. The first two rows are why this took two
+sightings to pin - the fault cannot occur in the one condition under which a
+flaky target is normally investigated, which is running it alone.
+
+The fixture name now carries the process id, the way `tests/arg_path_tests.cpp`
+has since issue #87. Every container subscript in the test file was then
+enumerated mechanically rather than by grep, over 235 bracket sites; four
+more unguarded ones were found and guarded, and two `static_assert`s now pin
+the fixture's fixed-length arrays to the parser constants that index them.
+The suite went from 197 checks to 247.
+
+Issue #124 covers the seven other test files that still build fixtures at a
+fixed name. They do not collide with each other - all eight names differ - so
+each one collides only with another copy of itself, and each can be fixed on
+its own. Whether any of the seven crashes rather than fails depends on
+whether it, too, subscripts a container after a load that can fail.
+
 ## Observed
 
 - The five large `STREAML1R*.BUN` files hold all 593 `0x80034100` chunks
