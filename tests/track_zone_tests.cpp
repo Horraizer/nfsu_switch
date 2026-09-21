@@ -14,9 +14,42 @@
 #include <utility>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
 namespace {
 
 using Bytes = std::vector<unsigned char>;
+
+// A fixture name no other process shares, built the way
+// tests/arg_path_tests.cpp has built one since issue #87 and
+// tests/track_object_tests.cpp since issue #122.
+//
+// test_load used to build its fixture directory under the system temporary
+// directory at "nfsu_track_zone_tests", with nothing in the name to make it
+// this process's own. CLAUDE.md says several sessions are routinely live on
+// this machine, each with its own build directory, so two copies of this
+// binary overlap whenever two of them run ctest at the same time - and one
+// copy's cleanup removed the other copy's three fixture files by those
+// exact shared names while it was still loading them. Issue #124 measured
+// that: 66 of 360 contended runs failed.
+std::string unique_fixture(const std::string& label) {
+#ifdef _WIN32
+    const unsigned long pid = GetCurrentProcessId();
+#else
+    const unsigned long pid = static_cast<unsigned long>(getpid());
+#endif
+    return "nfsu_track_zone_" + label + "_" + std::to_string(pid);
+}
 
 // The format's own numbers, as literals. A fixture built out of the
 // header's constants would move with them, so a mutation of a constant
@@ -1279,7 +1312,7 @@ void test_load() {
 
     std::error_code code;
     const std::filesystem::path dir =
-        std::filesystem::temp_directory_path(code) / "nfsu_track_zone_tests";
+        std::filesystem::temp_directory_path(code) / unique_fixture("tests");
     if (code) {
         check(false, "cannot name a temporary directory: " + code.message());
         return;
@@ -1353,6 +1386,13 @@ void test_load() {
     std::filesystem::remove(packed_path, code);
     std::filesystem::remove(raw_path, code);
     std::filesystem::remove(broken_path, code);
+    // And the directory itself, which this process now owns outright. While
+    // the name was shared, leaving it behind cost nothing because the next
+    // run reused it; a per-process name does not get reused, so issue #124
+    // would otherwise turn a shared directory into one per process per run.
+    // remove, not remove_all: if anything unexpected is in there, this
+    // fails and leaves it rather than deleting what it did not create.
+    std::filesystem::remove(dir, code);
 }
 
 void test_determinism() {

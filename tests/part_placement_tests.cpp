@@ -15,11 +15,46 @@
 #include <system_error>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
 namespace fs = std::filesystem;
 
 namespace {
 
 using Bytes = std::vector<unsigned char>;
+
+// A fixture name no other process shares, built the way
+// tests/arg_path_tests.cpp has built one since issue #87 and
+// tests/track_object_tests.cpp since issue #122.
+//
+// test_load_file used to build its fixture under the system temporary
+// directory at "nfsu_part_placement_tests", with nothing in the name to
+// make it this process's own, and it opens that directory with
+// fs::remove_all before creating it. CLAUDE.md says several sessions are
+// routinely live on this machine, each with its own build directory, so two
+// copies of this binary overlap whenever two of them run ctest at the same
+// time - and the remove_all at the top of this test deleted the other
+// copy's fixture out from under it. Issue #124 measured that: 48 of 360
+// contended runs failed here, on "load from file", "missing file" and the
+// file-limit diagnostic in turn.
+std::string unique_fixture(const std::string& label) {
+#ifdef _WIN32
+    const unsigned long pid = GetCurrentProcessId();
+#else
+    const unsigned long pid = static_cast<unsigned long>(getpid());
+#endif
+    return "nfsu_part_placement_" + label + "_" + std::to_string(pid);
+}
 
 int g_failures = 0;
 
@@ -1136,7 +1171,7 @@ void test_find_on_invalid_table() {
 void test_load_file() {
     std::error_code ignored;
     const fs::path dir =
-        fs::temp_directory_path(ignored) / "nfsu_part_placement_tests";
+        fs::temp_directory_path(ignored) / unique_fixture("tests");
     fs::remove_all(dir, ignored);
     fs::create_directories(dir, ignored);
     const fs::path path = dir / "table.bin";
