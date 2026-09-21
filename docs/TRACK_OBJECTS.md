@@ -617,7 +617,7 @@ Both halves are needed, and both were measured separately.
 | --- | --- | --- |
 | The target alone, sequentially, default build | 200 of 200 passed | - |
 | Six concurrent copies started together, 20 rounds | 120 of 120 passed | - |
-| Eight copies in independent phase-drifting loops, 120 rounds | 166 segmentation faults and 51 failures in 960 | 0 and 0 in 960 |
+| Eight copies in independent drifting loops, 120 rounds | 166 segmentation faults and 51 failures in 960; independently replicated at 149 and 47 | 0 and 0 in 960, replicated |
 | Two `ctest` runs, two build directories, `--repeat until-fail:6000` | one side crashed on its 18th run, the other ran 6000 clean | 6000 and 6000, no failure |
 | Two `ctest` runs filtered to this test, 400 repeats each | 800 of 800 clean | - |
 | The fixture written and removed by another process throughout | 33 segmentation faults in 40 runs | 48 reported failures, 0 crashes in 60 |
@@ -627,17 +627,47 @@ top of the fixed source, so the race still happens and the crash does not.
 The two `ctest` rows either side of the middle are the whole fix.
 
 **Rows two and five are the trap, and they are recorded because they passed.**
-Copies started together tend to stay in step, and copies in step write the
-same bytes to the fixture at the same time, so a truncation collision is
-invisible: 120 of 120 and 800 of 800 both look like a target that is fine.
-Only independent loops that drift out of phase expose it, and then it is not
-marginal at all - 17.3 per cent. A negative result from concurrent runs means
-nothing unless the runs were free to drift.
+Both are concurrent arms that came back clean on a binary that crashes 15 to
+41 per cent of the time under other concurrent arms. Read either one as a
+negative and you would have closed this issue.
+
+Why they are clean is not known. The first explanation this document gave -
+that copies started together stay in step, write identical bytes and so hide
+the collision - was tested and is false. Putting the copies deliberately back
+in step with a rendezvous barrier makes the fault worse, not invisible, at two
+sizes and in two harnesses, all on the pristine base binary:
+
+```text
+8 workers x 120 rounds, drifting, no barrier        149 crashes   15.5%
+8 workers x 120 rounds, barrier every round         399 crashes   41.6%
+6 workers x  20 rounds, barrier every round          34 crashes   28.3%
+6 workers x  20 rounds, single-thread launch burst,
+                        3.0 ms mean skew             10 crashes    8.3%
+```
+
+That is also the mechanically sensible direction: simultaneity should raise
+the chance that one copy's remove lands inside another's read window. So "in
+step" is not what made rows two and five pass, and no replacement mechanism
+has been established. The clean bash arm reproduces - 120 of 120 on three
+further trials, with bash confirmed to report these crashes correctly as
+status 139 for both foreground runs and backgrounded jobs reaped with `wait` -
+so those zeros are real rather than an accounting error. An attempt to measure
+its launch stagger was confounded, because a timestamp call between launches
+costs more than the interval being measured. The true per-run time is 61 ms.
+Something about those two harnesses leaves the fixture windows not
+overlapping, and what it is remains open.
+
+What survives is the directional advice, in the form the evidence supports: **a
+clean result from concurrent runs means nothing unless you have evidence the
+copies were actually running at the same time**, and a harness whose
+per-launch overhead approaches the target's runtime cannot give you that
+evidence. "Make them drift" is not the condition - the 800-of-800 arm was two
+independent `ctest` processes free to drift, and it still came back clean.
 
 Together with row one, that is why this took two sightings to pin: the fault
 cannot occur in the one condition under which a flaky target is normally
-investigated, which is running it alone, and it hides from the obvious next
-thing, which is running several copies at once.
+investigated, which is running it alone, and two reasonable ways of running
+several copies at once report it absent.
 
 The fixture name now carries the process id, the way `tests/arg_path_tests.cpp`
 has since issue #87. Every container subscript in the test file was then
