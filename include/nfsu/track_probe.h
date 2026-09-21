@@ -415,6 +415,12 @@ struct TrackSectionProbe {
     // this walk could not.
     bool tree_walked = false;
     std::uint64_t nodes = 0;
+    // Depth of the bounding tree, with the root at 0. It is this layer's own
+    // measurement when tree_walked and TrackSection::tree_depth otherwise.
+    // The two count the same thing the same way - src/track_objects.cpp
+    // measures the traversal stack less one - so a section walked here
+    // reports the number the parser reports; the field is not a comparison
+    // and a caller wanting one reads both.
     std::uint32_t tree_depth = 0;
     // Instances the section holds, and how many of them the selection kept.
     std::uint64_t instances = 0;
@@ -487,6 +493,12 @@ struct TrackProbeCost {
     // the node, the box class or the screen level this header computed
     // differs from the one the culler recorded. Every one of them is also an
     // issue; this is the count.
+    //
+    // PROBED instances, and nothing else. An instance the selection drops
+    // contributes neither a count here nor an issue, because a report that
+    // failed over something it does not list would be reporting about a
+    // region the caller did not ask about - and the command turns a
+    // non-empty issue list into a non-zero exit status.
     std::uint64_t disagreements = 0;
     std::uint64_t placed = 0;
     std::uint64_t unplaced = 0;
@@ -528,7 +540,9 @@ struct TrackProbeReport {
 // A DISAGREEMENT IS NOT A FAILURE. When this header and the culler reach
 // different answers the report is still produced, with the difference in
 // TrackProbeCost::disagreements and one issue naming the instance, because a
-// caller needs to see both answers to know which to distrust.
+// caller needs to see both answers to know which to distrust. An instance
+// the selection drops raises nothing: every issue about one instance waits
+// until that instance is known to be kept.
 bool probe_track_scene(
     const TrackRegionReport& geometry,
     const TrackObjectReport& objects,

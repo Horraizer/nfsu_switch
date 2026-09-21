@@ -484,6 +484,9 @@ constexpr std::uint32_t kPost = 0x3002U;
 constexpr std::uint32_t kMissingMesh = 0x00007777U;
 // The hash of the mesh the parser refuses. No object names it.
 constexpr std::uint32_t kRefusedMesh = 0x00003003U;
+// A hash in the last mesh slot of one object, which nothing resolves
+// and nothing asks for.
+constexpr std::uint32_t kLastSlotHash = 0x00005555U;
 constexpr std::uint64_t kGeometryBase = 0;
 constexpr std::uint64_t kSceneryBase = 0x2000;
 // (flags ^ kTrackInstanceMaskBias) is zero for this value, so no mask byte
@@ -587,6 +590,12 @@ std::vector<SectionSpec> fixture_sections(std::uint32_t number) {
     section.objects[0].mesh_hash[0] = kPanel;
     section.objects[0].radius = 5.0F;
     section.objects[1].mesh_hash[0] = kPost;
+    // The LAST slot, non-zero. Every other object leaves slots 1 to
+    // 5 at zero, where a loop that copied five of the six would
+    // report the same six hashes either way. Nothing resolves this
+    // hash and no test asks for slot 5, so it changes no placement.
+    section.objects[1].mesh_hash[nfsu::kSceneryObjectMeshSlots - 1] =
+        kLastSlotHash;
     section.objects[1].radius = 7.0F;
     section.objects[2].mesh_hash[0] = kMissingMesh;
 
@@ -692,6 +701,24 @@ std::vector<SectionSpec> one_broken_section() {
     sections[1].nodes[0].bounds_min[0] = 0;
     sections[1].nodes[0].bounds_max[0] = 1;
     return sections;
+}
+
+// A section whose bounding tree is a single node holding every
+// instance. Every other fixture here is three nodes deep, so the
+// walk's own lower bound on the node count is never approached.
+std::vector<SectionSpec> single_node_sections() {
+    SectionSpec section;
+    section.number = 303;
+    section.objects.resize(1);
+    section.objects[0].mesh_hash[0] = kPanel;
+    section.instances.push_back(placed(0, -6.0F, kQuietFlags));
+    section.instances.push_back(placed(0, -3.0F, kQuietFlags));
+    NodeSpec only = node_over(-8, -1);
+    only.entry_count = 2;
+    only.entries[0] = 0;
+    only.entries[1] = 1;
+    section.nodes.push_back(only);
+    return {section};
 }
 
 struct Fixture {
@@ -857,6 +884,35 @@ void test_camera_validation() {
     bad.target.x = nan_value;
     cases.push_back({"a NaN target", "target is not finite", bad});
     bad = base;
+    bad.target.z = -inf_value;
+    cases.push_back({"a negative infinite target",
+                     "target is not finite", bad});
+    bad = base;
+    bad.up.x = -inf_value;
+    cases.push_back({"a negative infinite up",
+                     "up vector is not finite", bad});
+    // FINITE and enormous. normalize squares each component, so this
+    // one overflows there and is refused by a guard that names the
+    // wrong thing unless the magnitude is bounded here.
+    bad = base;
+    bad.up.y = 1e200;
+    cases.push_back({"an up vector near the top of the range",
+                     "up vector is", bad});
+    bad = base;
+    bad.up.z = -1e200;
+    cases.push_back({"the same on another axis",
+                     "up vector is", bad});
+    // The THIRD axis of the eye and target ranges, which a loop that
+    // ran two of three would leave unbounded.
+    bad = base;
+    bad.eye.z = nfsu::kMaxTargetMagnitude + 1.0;
+    cases.push_back({"an eye past the range on the last axis",
+                     "eye is at", bad});
+    bad = base;
+    bad.target.z = -nfsu::kMaxTargetMagnitude - 1.0;
+    cases.push_back({"a target past the range on the last axis",
+                     "target is at", bad});
+    bad = base;
     bad.up.z = nan_value;
     cases.push_back({"a NaN up", "up vector is not finite", bad});
     bad = base;
@@ -926,6 +982,40 @@ void test_camera_validation() {
     edge.height = 1;
     check_ok(nfsu::validate_track_free_camera(edge, error),
              "the extreme frame sizes are accepted", error);
+    // The two ends of the eye-to-target distance. Only a camera AT
+    // each bound separates a `<` from a `<=` there.
+    edge = base;
+    edge.target = nfsu::Vec3{edge.eye.x, edge.eye.y,
+                             edge.eye.z - nfsu::kMinDistance};
+    check_ok(nfsu::validate_track_free_camera(edge, error),
+             "the shortest distance is accepted", error);
+    edge = base;
+    edge.eye = nfsu::Vec3{0.0, 0.0, 0.0};
+    edge.target = nfsu::Vec3{nfsu::kMaxDistance, 0.0, 0.0};
+    check_ok(nfsu::validate_track_free_camera(edge, error),
+             "and the longest is too", error);
+    // The position range, at both ends and on the last axis.
+    edge = base;
+    edge.eye = nfsu::Vec3{0.0, 0.0, nfsu::kMaxTargetMagnitude};
+    edge.target = nfsu::Vec3{0.0, 0.0,
+                             nfsu::kMaxTargetMagnitude - 5000.0};
+    check_ok(nfsu::validate_track_free_camera(edge, error),
+             "a camera at the far end of the position range is "
+             "accepted",
+             error);
+    edge.eye = nfsu::Vec3{0.0, 0.0, -nfsu::kMaxTargetMagnitude};
+    edge.target = nfsu::Vec3{0.0, 0.0,
+                             -nfsu::kMaxTargetMagnitude + 5000.0};
+    check_ok(nfsu::validate_track_free_camera(edge, error),
+             "and at the near end", error);
+    edge = base;
+    edge.far_plane = nfsu::kMaxFar;
+    check_ok(nfsu::validate_track_free_camera(edge, error),
+             "and the farthest far plane", error);
+    edge = base;
+    edge.up = nfsu::Vec3{nfsu::kMaxTargetMagnitude, 1.0, 0.0};
+    check_ok(nfsu::validate_track_free_camera(edge, error),
+             "and an up vector at the edge of its own range", error);
 }
 
 void test_camera_basis() {
@@ -1162,6 +1252,12 @@ void test_default_camera_is_the_framing() {
                     bounds, framing, nfsu::kMaxTrackProbeFrameSize + 1, 720,
                     camera, message),
                 message, "frame size", "a width past the limit is refused");
+    check_ok(nfsu::track_frame_free_camera(
+                 bounds, framing, nfsu::kMaxTrackProbeFrameSize,
+                 nfsu::kMaxTrackProbeFrameSize, camera, message),
+             "and the largest frame the bound allows is accepted, on "
+             "both axes",
+             message);
 }
 
 void test_camera_moves() {
@@ -1275,7 +1371,33 @@ void test_camera_moves() {
     bad.turn_yaw_deg = nfsu::kMaxTrackTurnDegrees;
     check_ok(nfsu::track_move_free_camera(base, bad, moved, message),
              "and the limit itself is accepted", message);
-    bad.turn_yaw_deg = 0.0;
+    bad.turn_yaw_deg = -nfsu::kMaxTrackTurnDegrees;
+    check_ok(nfsu::track_move_free_camera(base, bad, moved, message),
+             "at both ends, because the bound is two comparisons",
+             message);
+    // The pitch is a second pair of comparisons, and the fly three
+    // more. Each of the six is a bound only a value AT it separates
+    // from the one next to it.
+    bad = nfsu::TrackCameraMoves{};
+    bad.has_turn = true;
+    bad.turn_pitch_deg = nfsu::kMaxTrackTurnDegrees;
+    check_ok(nfsu::track_move_free_camera(base, bad, moved, message),
+             "the largest pitch is accepted", message);
+    bad.turn_pitch_deg = -nfsu::kMaxTrackTurnDegrees;
+    check_ok(nfsu::track_move_free_camera(base, bad, moved, message),
+             "and the smallest", message);
+    bad = nfsu::TrackCameraMoves{};
+    bad.has_fly = true;
+    bad.fly_forward = nfsu::kMaxTrackFlyDistance;
+    bad.fly_right = -nfsu::kMaxTrackFlyDistance;
+    bad.fly_up = nfsu::kMaxTrackFlyDistance;
+    check_fails(nfsu::track_move_free_camera(base, bad, moved, message),
+                message, "flown camera is invalid",
+                "a fly AT the bound is accepted by the bound and "
+                "refused by the camera it produces, which is the "
+                "other check");
+    bad = nfsu::TrackCameraMoves{};
+    bad.has_turn = true;
     bad.turn_pitch_deg = -nfsu::kMaxTrackTurnDegrees - 1.0;
     check_fails(nfsu::track_move_free_camera(base, bad, moved, message), message,
                 "turn needs a yaw", "a pitch past the limit is refused");
@@ -1287,6 +1409,27 @@ void test_camera_moves() {
     bad.fly_right = nfsu::kMaxTrackFlyDistance + 1.0;
     check_fails(nfsu::track_move_free_camera(base, bad, moved, message), message,
                 "fly needs three distances", "a fly past the limit is refused");
+    // EVERY LANE, because the bound is a loop over three of them and
+    // a loop one short leaves the last one unbounded.
+    bad = nfsu::TrackCameraMoves{};
+    bad.has_fly = true;
+    bad.fly_up = nfsu::kMaxTrackFlyDistance + 1.0;
+    check_fails(nfsu::track_move_free_camera(base, bad, moved, message),
+                message, "fly needs three distances",
+                "a fly past the limit on the last lane is refused");
+    bad = nfsu::TrackCameraMoves{};
+    bad.has_fly = true;
+    bad.fly_forward = -nfsu::kMaxTrackFlyDistance - 1.0;
+    check_fails(nfsu::track_move_free_camera(base, bad, moved, message),
+                message, "fly needs three distances",
+                "a fly past the negative limit is refused");
+    // And the pitch, which is the other half of the turn bound.
+    bad = nfsu::TrackCameraMoves{};
+    bad.has_turn = true;
+    bad.turn_pitch_deg = nfsu::kMaxTrackTurnDegrees + 1.0;
+    check_fails(nfsu::track_move_free_camera(base, bad, moved, message),
+                message, "turn needs a yaw",
+                "a pitch past the positive limit is refused");
 
     // Pitching onto the up axis leaves a camera with no basis, and that is
     // refused rather than answered with an invented right vector.
@@ -1295,6 +1438,27 @@ void test_camera_moves() {
     pole.turn_pitch_deg = 90.0;
     check_fails(nfsu::track_move_free_camera(base, pole, moved, message), message,
                 "no basis", "pitching onto the up axis is refused");
+
+    // A TURN whose target leaves the range. A turn keeps the eye and
+    // swings the target around it at the same distance, so a camera
+    // near the edge of the range with a long enough reach can be
+    // valid before the turn and not after it. Nothing before the
+    // revalidation sees that.
+    nfsu::TrackFreeCamera edge_camera;
+    edge_camera.eye = nfsu::Vec3{9000.0, 0.0, 0.0};
+    edge_camera.target = nfsu::Vec3{6000.0, 0.0, 0.0};
+    edge_camera.up = nfsu::Vec3{0.0, 1.0, 0.0};
+    edge_camera.near_plane = 1.0;
+    edge_camera.far_plane = 5000.0;
+    check_ok(nfsu::validate_track_free_camera(edge_camera, message),
+             "the camera near the edge of the range is valid", message);
+    nfsu::TrackCameraMoves about_face;
+    about_face.has_turn = true;
+    about_face.turn_yaw_deg = 180.0;
+    check_fails(nfsu::track_move_free_camera(edge_camera, about_face,
+                                             moved, message),
+                message, "turned camera is invalid",
+                "and turning it around puts the target out of range");
 
     // A fly far enough to leave the camera range is refused by the same
     // bounds validate_track_free_camera enforces, not silently clamped.
@@ -1344,6 +1508,23 @@ void test_camera_moves() {
                 "the component along the axis survives a turn about it");
     check_close(basis.forward.x, s, 1e-12, "and the rest turns");
     check_close(basis.forward.z, 0.0, 1e-12, "onto the plane of the axis");
+
+    // A THIRD turn, where the cosine is neither 0 nor 1. Every turn above
+    // is a right angle or a whole revolution, and at those the axis
+    // term's coefficient 1 - cos takes the values 1 and 0 - which are the
+    // two values 1 + cos takes there as well. Sixty degrees separates
+    // them.
+    quarter.turn_yaw_deg = 60.0;
+    check_ok(nfsu::track_move_free_camera(slanted, quarter, moved, error),
+             "a sixty degree turn succeeds", error);
+    check_ok(nfsu::track_camera_basis(moved, basis, error),
+             "and the result has a basis", error);
+    // Rodrigues about (0, 1, 0) by -60 degrees sends (0, s, -s) to
+    // (s * sqrt(3) / 2, s, -s / 2), which is already unit length.
+    check_close(basis.forward.x, s * std::sqrt(3.0) / 2.0, 1e-12,
+                "the turned x component");
+    check_close(basis.forward.y, s, 1e-12, "the axis component");
+    check_close(basis.forward.z, -s / 2.0, 1e-12, "and the rest");
 }
 
 void test_cull_camera_conversion() {
@@ -1631,6 +1812,26 @@ void test_materials() {
                              "an undrawable group is not counted by binding "
                              "either");
             }
+            // And the region total counts drawable groups rather than
+            // every group a mesh holds.
+            std::uint64_t drawable = 0;
+            for (const nfsu::TrackInstanceProbe& each : report.instances) {
+                drawable += each.groups_drawable;
+            }
+            check_eq_u64(report.cost.groups, drawable,
+                         "the group total is over drawable groups");
+            if (dull != nullptr) {
+                std::uint64_t every_group = 0;
+                for (const nfsu::TrackInstanceProbe& each :
+                     report.instances) {
+                    every_group += each.draw_count;
+                }
+                check(report.cost.groups < every_group,
+                      "and strictly below the total over every group a "
+                      "placed mesh holds, which is the number the other "
+                      "field would give: " + std::to_string(report.cost.groups) +
+                          " against " + std::to_string(every_group));
+            }
         }
     }
 
@@ -1727,6 +1928,13 @@ void test_residency_reasons() {
             check_eq_text(
                 nfsu::track_residency_reason_name(probe.residency_reason),
                 item.reason, what + ": an instance carries the reason");
+            check_eq_u64(probe.zone_position == nfsu::kTrackProbeNone
+                             ? 9999
+                             : probe.zone_position,
+                         item.zone_position == nfsu::kTrackProbeNone
+                             ? 9999
+                             : item.zone_position,
+                         what + ": and its own zone list position");
             if (!item.resident) {
                 check(!probe.visible,
                       what + ": nothing of a non-resident section is visible");
@@ -2283,6 +2491,14 @@ void test_selection() {
     bad.instances = {3, 1, 3};
     bad_cases.push_back({"a repeated instance", "more than once", bad});
     bad = nfsu::TrackProbeSelection{};
+    bad.has_section = true;
+    // Sorted, this repeats at position 1 rather than at position 2,
+    // which is where a scan that skipped its own first comparison
+    // would still find the one above and miss this one.
+    bad.instances = {1, 1, 3};
+    bad_cases.push_back({"a repeat at the second position",
+                         "more than once", bad});
+    bad = nfsu::TrackProbeSelection{};
     bad.mesh_name = "NOSUCHMESH";
     bad_cases.push_back({"an unknown mesh name", "is named", bad});
 
@@ -2681,6 +2897,10 @@ void test_two_sections() {
         check_eq_text(nfsu::track_residency_reason_name(
                           mixed.probe.sections[1].residency_reason),
                       "sub-index-out-of-range", "for the reason it gives");
+        check(!mixed.probe.sections[1].tree_walked,
+              "and a section nothing is drawn from walks no tree");
+        check(mixed.probe.sections[0].tree_walked,
+              "while the resident one does");
         for (const nfsu::TrackInstanceProbe& probe : mixed.probe.instances) {
             if (probe.section_index == 1) {
                 check(!probe.visible,
@@ -2989,6 +3209,104 @@ void test_slot_fallback() {
     }
 }
 
+// AN ISSUE ABOUT AN INSTANCE THE SELECTION DROPS REACHES NOTHING.
+// The command turns a non-empty issue list into a non-zero exit
+// status, so an issue raised before the filter made `--mesh NAME`
+// able to fail over an instance its own listing does not hold.
+void test_a_dropped_instance_raises_nothing() {
+    const Fixture fixture = make_fixture(fixture_meshes(),
+                                         two_sections(303, 310));
+    nfsu::TrackCullOptions options;
+    options.policy = nfsu::TrackCullPolicy::draw_everything;
+    nfsu::TrackCamera cull_camera;
+    nfsu::TrackFrustum frustum;
+    std::string error;
+    check_ok(nfsu::track_cull_camera_of(street_camera(), cull_camera,
+                                        error),
+             "the camera converts", error);
+    check_ok(nfsu::track_frustum_look_at(cull_camera, frustum),
+             "the frustum builds", error);
+    nfsu::TrackCullReport cull =
+        nfsu::cull_track_region(fixture.objects, frustum, options);
+    // Instance 0:0 places PANEL, so a POST selection drops it.
+    std::size_t dropped = cull.visible.size();
+    for (std::size_t i = 0; i < cull.visible.size(); ++i) {
+        if (cull.visible[i].section_index == 0 &&
+            cull.visible[i].instance_index == 0) {
+            dropped = i;
+        }
+    }
+    check(dropped < cull.visible.size(), "instance 0:0 is visible");
+    if (dropped >= cull.visible.size()) {
+        return;
+    }
+    cull.visible.erase(cull.visible.begin() +
+                       static_cast<std::ptrdiff_t>(dropped));
+
+    // With no selection the disagreement is reported.
+    nfsu::TrackProbeOptions all;
+    all.cull = options;
+    nfsu::TrackProbeReport wide;
+    std::string message;
+    check_ok(nfsu::probe_track_scene(fixture.geometry, fixture.objects,
+                                     fixture.scene, cull, frustum, all,
+                                     wide, message),
+             "the unfiltered probe runs", message);
+    check_eq_u64(wide.cost.disagreements, 1, "and reports it");
+    check_eq_u64(wide.issues.size(), 1, "with one issue");
+    check(!wide.ok(), "so the report is not ok");
+
+    // With the mesh selection that drops that very instance, nothing
+    // is reported at all.
+    nfsu::TrackProbeOptions filtered;
+    filtered.cull = options;
+    filtered.select.mesh_name = "POST";
+    nfsu::TrackProbeReport narrow;
+    check_ok(nfsu::probe_track_scene(fixture.geometry, fixture.objects,
+                                     fixture.scene, cull, frustum,
+                                     filtered, narrow, message),
+             "the filtered probe runs", message);
+    check_eq_u64(narrow.cost.disagreements, 0,
+                 "a dropped instance counts no disagreement");
+    check_eq_u64(narrow.issues.size(), 0, "and raises no issue");
+    check(narrow.ok(), "so the report is ok");
+    check(narrow.cost.probed > 0,
+          "and the selection kept something, so this is not a report about nothing");
+}
+
+// A one-node tree, walked. It is the smallest tree the format can
+// hold and the only one that meets the walk's own lower bound on the
+// node count from above.
+void test_single_node_tree() {
+    const Fixture fixture = make_fixture(fixture_meshes(),
+                                         single_node_sections());
+    check(fixture.objects.sections.size() == 1 &&
+              fixture.objects.sections[0].nodes.size() == 1,
+          "the fixture section has exactly one node");
+    nfsu::TrackCullOptions options;  // retail_tree
+    const Run run = probe_run(fixture, street_camera(), options);
+    check_ok(run.ok, "the one-node probe runs", run.error);
+    if (!run.ok) {
+        return;
+    }
+    check_eq_u64(run.probe.issues.size(), 0, "and raises no issue");
+    check_eq_u64(run.probe.cost.disagreements, 0,
+                 "and agrees with the culler");
+    check_eq_u64(run.probe.sections.size(), 1, "one section");
+    if (run.probe.sections.empty()) {
+        return;
+    }
+    check(run.probe.sections[0].tree_walked,
+          "the one-node tree is walked");
+    check_eq_u64(run.probe.sections[0].nodes, 1, "over one node");
+    check_eq_u64(run.probe.sections[0].tree_depth, 0,
+                 "which is the root and nothing below it");
+    for (const nfsu::TrackInstanceProbe& probe : run.probe.instances) {
+        check_eq_u64(probe.node_index, 0, "every instance hangs off it");
+        check_eq_u64(probe.node_depth, 0, "at depth zero");
+    }
+}
+
 void test_names() {
     check_eq_text(nfsu::track_residency_reason_name(
                       nfsu::TrackResidencyReason::every_section),
@@ -3142,9 +3460,11 @@ int main(int argc, char** argv) {
     test_invalid_section();
     test_degraded_section();
     test_tree_the_probe_cannot_walk();
+    test_single_node_tree();
     test_slot_fallback();
     test_mismatched_inputs();
     test_disagreement_is_reported();
+    test_a_dropped_instance_raises_nothing();
     test_names();
     test_determinism();
 

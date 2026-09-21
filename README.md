@@ -188,6 +188,21 @@ frames are unchanged by construction. See `docs/TRACK_RENDER.md` for the
 placement, the framing rule, the retail region's numbers and hashes, the
 ground plane cross-checked against the collision data, and what the frame
 is still missing.
+`track-probe` answers the other question about the same region: not what is
+visible but why. For every scenery instance it prints the source offsets,
+the hashes, the transform and the materials, and then the visibility
+provenance the culler reaches and discards - which arm of the residency rule
+made the section resident and at what position in which zone's list, which
+node of the bounding tree names the instance and at what depth, which
+ancestor pruned it before any gate ran, and what each of the three retail
+gates did, beside the measurement each is made of, whether or not that gate
+ran. It writes nothing. Its free camera has six degrees of freedom -
+`--eye` and `--look-at`, then `--turn` about the eye and `--fly` along the
+basis the turn produced - and its default is the same view-independent
+framing `track-render` uses, so two runs at different angles compare. See
+`docs/TRACK_PROBE.md` for the provenance model, the camera's defaults and
+order, the determinism evidence, the retail acceptance and the mutation
+results.
 `track-collision` decodes the static collision of one track. Collision is
 not in the `STREAM*.BUN` containers at all: those hold geometry, scenery,
 textures and animation and nothing else. It lives in

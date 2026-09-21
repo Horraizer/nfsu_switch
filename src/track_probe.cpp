@@ -161,6 +161,11 @@ bool build_tree_shape(
     std::vector<std::size_t> stack;
     stack.reserve(limits.max_pending_nodes + 1);
     stack.push_back(0);
+    // A dead store, kept because prepare_tree in
+    // src/track_visibility.cpp carries the same one and the two walks
+    // are meant to read alike: a child index is the negation of a
+    // negative entry and is therefore never 0, so seen_node[0] is
+    // written and never read.
     seen_node[0] = true;
     std::uint64_t reached = 0;
 
@@ -348,6 +353,22 @@ bool validate_track_free_camera(
     if (!finite_vec(camera.up)) {
         error = "the camera up vector is not finite";
         return false;
+    }
+    // The up vector names a direction and its length is thrown away,
+    // so a bound on it looks redundant and is not: normalize squares
+    // each component, and a finite vector near the top of the double
+    // range overflows to infinity there. The guard inside normalize
+    // catches that and reports it as an up vector parallel to the
+    // view, which names the wrong thing. This names the right one.
+    const double up[3] = {camera.up.x, camera.up.y, camera.up.z};
+    for (int k = 0; k < 3; ++k) {
+        if (up[k] < -kMaxTargetMagnitude || up[k] > kMaxTargetMagnitude) {
+            error = "the camera up vector is " + number(up[k]) +
+                    " on axis " + std::to_string(k) +
+                    ", outside the range of +-" +
+                    number(kMaxTargetMagnitude);
+            return false;
+        }
     }
     const double eye[3] = {camera.eye.x, camera.eye.y, camera.eye.z};
     const double target[3] = {camera.target.x, camera.target.y, camera.target.z};
@@ -859,6 +880,13 @@ bool probe_track_scene(
 
             const bool use_frustum =
                 record.policy_used != TrackCullPolicy::draw_everything;
+            // The culler keeps these two apart - cull_section_flat
+            // takes both - and passes (false, false) under
+            // draw_everything and (true, true) everywhere else, so
+            // collapsing them is faithful to every call site it has
+            // today. It is a coupling to another file's shape rather
+            // than a rule of this one, and a policy that ever
+            // separated the two would need this line separated too.
             const bool apply_gates = use_frustum;
 
             TreeShape shape;
@@ -897,6 +925,15 @@ bool probe_track_scene(
                 const TrackInstance& instance = section.instances[k];
                 const CullerAnswer& answer = answers[slot_base[i] + k];
 
+                // Every issue about THIS instance waits here until
+                // the selection below is known to keep it. An issue
+                // raised earlier reached the report - and the exit
+                // status - for an instance the report does not list,
+                // so `--mesh NAME` could fail over something it had
+                // filtered out.
+                std::vector<TrackIssue> pending;
+                std::uint64_t pending_disagreements = 0;
+
                 TrackInstanceProbe probe;
                 probe.section_index = i;
                 probe.instance_index = k;
@@ -929,7 +966,7 @@ bool probe_track_scene(
                     probe.object_flags2 = object->flags2;
                     probe.object_radius = object->radius;
                 } else {
-                    report.issues.push_back(TrackIssue{
+                    pending.push_back(TrackIssue{
                         instance.offset,
                         "section " + std::to_string(section.number) +
                             " instance " + std::to_string(k) +
@@ -1028,7 +1065,7 @@ bool probe_track_scene(
                 probe.culler_visible = answer.visible;
 
                 if (probe.visible != probe.culler_visible) {
-                    report.issues.push_back(TrackIssue{
+                    pending.push_back(TrackIssue{
                         instance.offset,
                         "section " + std::to_string(section.number) +
                             " instance " + std::to_string(k) +
@@ -1037,14 +1074,14 @@ bool probe_track_scene(
                             " and the cull report says " +
                             (probe.culler_visible ? "visible"
                                                   : "not visible")});
-                    ++report.cost.disagreements;
+                    ++pending_disagreements;
                 } else if (probe.culler_visible && have_tree &&
                            (probe.node_index != answer.node_index ||
                             probe.node_class != answer.node_class ||
                             probe.instance_class != answer.instance_class ||
                             (apply_gates && cull_options.use_screen_size &&
                              probe.screen_level != answer.screen_level))) {
-                    report.issues.push_back(TrackIssue{
+                    pending.push_back(TrackIssue{
                         instance.offset,
                         "section " + std::to_string(section.number) +
                             " instance " + std::to_string(k) +
@@ -1058,7 +1095,7 @@ bool probe_track_scene(
                             track_box_class_name(probe.node_class) + " box " +
                             track_box_class_name(probe.instance_class) +
                             " level " + std::to_string(probe.screen_level)});
-                    ++report.cost.disagreements;
+                    ++pending_disagreements;
                 }
 
                 // Placement and materials.
@@ -1101,7 +1138,7 @@ bool probe_track_scene(
                         probe.mesh_record_offset =
                             source.mesh_metadata_record_offset;
                     } else {
-                        report.issues.push_back(TrackIssue{
+                        pending.push_back(TrackIssue{
                             0, "prepared mesh '" + mesh.name +
                                    "' names source mesh " +
                                    std::to_string(mesh.source_index) +
@@ -1186,6 +1223,10 @@ bool probe_track_scene(
                     return false;
                 }
 
+                for (TrackIssue& held : pending) {
+                    report.issues.push_back(std::move(held));
+                }
+                report.cost.disagreements += pending_disagreements;
                 ++record.probed;
                 ++report.cost.probed;
                 if (probe.visible) {

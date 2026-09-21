@@ -46,7 +46,22 @@ set(cases 0)
 # `needle` is text the combined output must contain, `banned` is text it must
 # NOT contain - empty for none - and everything after that is the command line
 # after "track-probe".
+# The case counts this file reports are MEASURED here, not written out.
+# Both of them had been written out by hand, and both had gone stale by
+# the time anything read them.
+# A global property rather than a variable: a function has its own scope,
+# and `define_property` is not scriptable under `cmake -P`.
+set_property(GLOBAL PROPERTY NFSU_PROBE_CASES 0)
+set_property(GLOBAL PROPERTY NFSU_PROBE_DATA_CASES 0)
+
+function(nfsu_count property)
+    get_property(seen GLOBAL PROPERTY ${property})
+    math(EXPR seen "${seen} + 1")
+    set_property(GLOBAL PROPERTY ${property} ${seen})
+endfunction()
+
 function(nfsu_case label code needle banned)
+    nfsu_count(NFSU_PROBE_CASES)
     execute_process(
         COMMAND "${PROBE}" track-probe ${ARGN}
         WORKING_DIRECTORY "${work}"
@@ -187,6 +202,11 @@ nfsu_case("--lod-slot past the six" 1 "--lod-slot needs a slot from 0 to 5" ""
           "${missing}" 0 16 0 16 --lod-slot 6)
 nfsu_case("--mesh with no name" 1 "--mesh needs a prepared mesh name" ""
           "${missing}" 0 16 0 16 --mesh)
+# The other half of that guard: a value that is there and is empty.
+# The two are separate conditions and one can go while the other stands.
+nfsu_case("--mesh with an empty name" 1
+          "--mesh needs a prepared mesh name" ""
+          "${missing}" 0 16 0 16 --mesh "")
 nfsu_case("--limit is not a number" 1
           "--limit needs a decimal or 0x integer" ""
           "${missing}" 0 16 0 16 --limit notanumber)
@@ -362,6 +382,80 @@ nfsu_case("the gate totals are printed" 3
           "${missing}" 0 16 0 16 --eye 1 2 3 --look-at 4 5 6)
 
 
+
+# ---------------------------------------------------------------------------
+# THE ACCEPTED SIDE OF EVERY GATE. Each case above drives a value one past
+# a bound or outside an enumeration, which proves the refusal and not that
+# the value a caller actually passes is carried. A bound tested only from
+# outside cannot tell a `<` from a `<=`, and an enumeration tested only
+# with a wrong word cannot tell one right word from another.
+# ---------------------------------------------------------------------------
+
+nfsu_case("the byte bound accepts a byte" 3 "mask 0x000000FF" ""
+          "${missing}" 0 16 0 16 --eye 1 2 3 --look-at 4 5 6 --mask 255)
+nfsu_case("the frame bound accepts the largest frame" 3 "frame 1280x8192" ""
+          "${missing}" 0 16 0 16 --eye 1 2 3 --look-at 4 5 6 --height 8192)
+nfsu_case("the lens bound accepts the widest lens" 3 "fov_y 170" ""
+          "${missing}" 0 16 0 16 --eye 1 2 3 --look-at 4 5 6 --view-fov 170)
+# The framing angles have no explicit camera to be carried to here, so what
+# an accepted value reaches is the framing, which then fails for want of a
+# region. Exit 2 and the framing's own diagnostic are what separate that
+# from the parse refusal, which is exit 1 and names the option.
+nfsu_case("the yaw bound accepts its own limit" 2
+          "the region could not be framed automatically"
+          "--view-yaw needs a number"
+          "${missing}" 0 16 0 16 --view-yaw 36000)
+nfsu_case("the pitch bound accepts its own limit" 2
+          "the region could not be framed automatically"
+          "--view-pitch needs a number"
+          "${missing}" 0 16 0 16 --view-pitch -89)
+nfsu_case("the margin bound accepts its own limit" 2
+          "the region could not be framed automatically"
+          "--view-margin needs a number"
+          "${missing}" 0 16 0 16 --view-margin 100)
+
+# Each word of each enumeration, including the one that is also the
+# default: a branch that fell through to the default would look right for
+# the default and wrong for nothing this file drives otherwise.
+nfsu_case("--order visible-instance reaches the draw list" 3
+          "order visible instance" "order material group"
+          "${missing}" 0 16 0 16 --eye 1 2 3 --look-at 4 5 6
+          --order visible-instance)
+nfsu_case("--policy retail-tree reaches the culler" 3
+          "cull: policy retail-tree" "draw-everything"
+          "${missing}" 0 16 0 16 --eye 1 2 3 --look-at 4 5 6
+          --policy retail-tree)
+nfsu_case("--policy flat-instance-test reaches the culler" 3
+          "cull: policy flat-instance-test" ""
+          "${missing}" 0 16 0 16 --eye 1 2 3 --look-at 4 5 6
+          --policy flat-instance-test)
+nfsu_case("--residency every reaches the report" 3
+          "probe: residency rule every " "residency rule no-zone"
+          "${missing}" 0 16 0 16 --eye 1 2 3 --look-at 4 5 6
+          --residency every)
+nfsu_case("--residency zone reaches the report with its list" 3
+          "probe: residency rule zone zone sections 1" ""
+          "${missing}" 0 16 0 16 --eye 1 2 3 --look-at 4 5 6
+          --residency zone --zone 303)
+# A section number at the top of the range a u32 holds, which the parse
+# bound accepts and one byte narrower would not.
+nfsu_case("--zone accepts the largest section number" 3
+          "probe: residency rule zone zone sections 2" ""
+          "${missing}" 0 16 0 16 --eye 1 2 3 --look-at 4 5 6
+          --residency zone --zone 4294967295 --zone 303)
+
+# The camera line itself, which says whether a camera was given at all.
+nfsu_case("the camera line names the camera it was given" 3
+          "camera: world eye 1 2 3 target 4 5 6"
+          "camera: none given"
+          "${missing}" 0 16 0 16 --eye 1 2 3 --look-at 4 5 6)
+
+# The last multi-value option, one value short. --eye, --fly and --turn
+# each have a case above and this one did not.
+nfsu_case("--zone-point one value short" 1
+          "--zone-point needs two finite floats" ""
+          "${missing}" 0 16 0 16 --zones "${missing}" --zone-point 0)
+
 # ---------------------------------------------------------------------------
 # AND NOW WITH REAL DATA.
 #
@@ -421,9 +515,53 @@ set(cam --eye -6 0 30 --look-at -6 0 0 --view-fov 10
 
 # The same case runner, with the fixture and its two regions in front.
 function(nfsu_data_case label code needle banned)
+    nfsu_count(NFSU_PROBE_DATA_CASES)
     nfsu_case("${label}" "${code}" "${needle}" "${banned}"
               "${fixture}" ${geo_off} ${geo_size} ${obj_off} ${obj_size}
               ${ARGN})
+endfunction()
+
+# WHICH STREAM a line goes to, which every case above is blind to by
+# construction: they match against stdout and stderr joined, so a line
+# moved from one to the other reads identically. The probe's issues are
+# diagnostics and belong on stderr, and the exit status is what a caller
+# reads; a caller parsing the report would otherwise find them mixed into
+# it.
+function(nfsu_data_stream_case label code err_needle out_banned)
+    nfsu_count(NFSU_PROBE_CASES)
+    nfsu_count(NFSU_PROBE_DATA_CASES)
+    execute_process(
+        COMMAND "${PROBE}" track-probe
+                "${fixture}" ${geo_off} ${geo_size} ${obj_off} ${obj_size}
+                ${ARGN}
+        WORKING_DIRECTORY "${work}"
+        OUTPUT_VARIABLE stdout_text
+        ERROR_VARIABLE stderr_text
+        RESULT_VARIABLE status)
+    if(NOT status MATCHES "^[0-9]+$" OR status GREATER 128)
+        message(SEND_ERROR "${label}: exit status ${status} is a crash")
+        return()
+    endif()
+    if(NOT status EQUAL ${code})
+        message(SEND_ERROR "${label}: exit status ${status}, expected ${code}")
+        return()
+    endif()
+    if(NOT stderr_text MATCHES "${err_needle}")
+        message(SEND_ERROR
+            "${label}: standard error must contain
+  ${err_needle}
+and it reads
+${stderr_text}")
+        return()
+    endif()
+    if(stdout_text MATCHES "${out_banned}")
+        message(SEND_ERROR
+            "${label}: standard output must NOT contain
+  ${out_banned}
+and it reads
+${stdout_text}")
+        return()
+    endif()
 endfunction()
 
 # The exit status over data that parses. It is 3 rather than 0 because the
@@ -459,6 +597,29 @@ nfsu_data_case("a limit above the count lists them all" 3
 nfsu_data_case("a limit of zero lists none of them" 3
                "probe: listed 0 of 13 instances" "  instance 0:0"
                ${cam} --limit 0)
+# And the DEFAULT limit, which every case above replaces. Nothing else here
+# runs the command without --limit over a region that holds more instances
+# than the default lists, so the default itself was never observed.
+nfsu_data_case("the default limit lists four of them" 3
+               "probe: listed 4 of 13 instances" "probe: listed 13 of 13"
+               ${cam})
+
+# THE SECTION LISTING, which every case above reads past. Its letter arm
+# and its tree-walked arm are each one word chosen from two, and nothing
+# had pinned either.
+nfsu_data_case("the section line carries the number and the letter" 3
+               "section 0 number 303 letter C offset 8192 valid yes"
+               "letter [?]" ${cam} --limit 0)
+nfsu_data_case("the section line says the tree was walked" 3
+               "containment holds nodes 3 depth 1 tree walked yes"
+               "tree walked no" ${cam} --limit 0)
+
+# AND WHICH STREAM. A diagnostic on stdout would be inside the report a
+# caller parses; the exit status is how a caller learns there was one.
+nfsu_data_stream_case(
+    "a parse diagnostic goes to standard error and not into the report"
+    3 "geometry issue at 424: mesh 0 .WIDE." "geometry issue at"
+    ${cam} --limit 0)
 nfsu_data_case("both sections are listed" 3
                "probe: listed 2 of 2 sections" "" ${cam} --limit 0)
 
@@ -553,9 +714,57 @@ nfsu_data_case("the draw order reaches the draw list over real data" 3
                "draw list: order material group visible 3" "" ${cam}
                --order material-group --limit 0)
 
+
+# THE PRINTER, WHERE IT DIFFERS FROM ITSELF. Instance 0:0 has the same
+# section and instance index, its mesh's groups start at 0, and it is
+# pruned by the very node that names it - so a printer that exchanged any
+# of those pairs would print the same line. These pick instances where
+# each pair is two different numbers.
+
+nfsu_data_case("the two indices of an instance are printed in order" 3
+               "instance 1:0 section number 310 letter C object 0" ""
+               ${cam} --section 1 --instance 0 --limit 1)
+nfsu_data_case("an instance under a pruned ancestor carries its code" 3
+               "tree: policy retail-tree node 2 depth 2 carried outside pruned by 1"
+               "" ${cam} --section 1 --instance 1 --limit 1)
+# Its own box is outside and the box it was TESTED as is inside, because
+# it was never tested. A printer that put one under the other's label
+# would read the same on any instance where the two agree.
+nfsu_data_case("the tested class and the own-box class are not the same"
+               3 "tested inside own box outside" ""
+               ${cam} --section 1 --instance 1 --limit 1)
+nfsu_data_case("the residency words are printed the right way round" 3
+               "residency: resident reason every-section zone position none"
+               "residency: not resident" ${cam} --section 1 --instance 1
+               --limit 1)
+# Object 1 of section 0 carries a hash in its LAST mesh slot, so a loop
+# that printed five of the six would stop before it.
+nfsu_data_case("every mesh slot of an object is printed" 3
+               "slots 0x00003002 0x00000000 0x00000000 0x00000000 0x00000000 0x00005555"
+               "" ${cam} --section 0 --instance 2 --limit 1)
+# POST's groups do not start at zero, so a group index that ignored where
+# the mesh's run begins would print 0 and 1 for them.
+nfsu_data_case("a group is numbered from where its mesh begins" 3
+               "group 1 material 0 " "group 0 material 0 "
+               ${cam} --section 0 --instance 2 --limit 1)
+# At slot 4 every object of the fixture goes through the slots 4 and 5
+# fallback, so the slot asked for and the slot reached are two numbers.
+nfsu_data_case("the slot asked for and the slot reached are both printed"
+               3 "slot 0 requested 4 fallback yes" "slot 4 requested 4"
+               ${cam} --lod-slot 4 --section 0 --instance 0 --limit 1)
+# And the camera basis, which only a moved camera separates from the one
+# the command line named.
+nfsu_data_case("the basis is taken from the moved camera" 3
+               "probe: camera forward 1,0,0" "probe: camera forward 0,0,-1"
+               ${cam} --turn 90 0 --limit 0)
+
 file(REMOVE "${fixture}")
 file(REMOVE_RECURSE "${work}")
+get_property(cases GLOBAL PROPERTY NFSU_PROBE_CASES)
+get_property(data_cases GLOBAL PROPERTY NFSU_PROBE_DATA_CASES)
+math(EXPR plain_cases "${cases} - ${data_cases}")
 message(STATUS
-    "track-probe guards: 95 cases, each asserting the exit status and the "
-    "diagnostic: 64 with no input files at all and 31 over a fixture the "
-    "unit tests laid down, and none of them wrote anything")
+    "track-probe guards: ${cases} cases, each asserting the exit status "
+    "and the diagnostic: ${plain_cases} with no input files at all and "
+    "${data_cases} over a fixture the unit tests laid down, and none of "
+    "them wrote anything")
