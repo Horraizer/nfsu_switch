@@ -616,28 +616,63 @@ Both halves are needed, and both were measured separately.
 | Experiment | Before | After |
 | --- | --- | --- |
 | The target alone, sequentially, default build | 200 of 200 passed | - |
-| Six concurrent copies, 20 rounds | 120 of 120 passed | - |
+| Six concurrent copies started together, 20 rounds | 120 of 120 passed | - |
+| Eight copies in independent phase-drifting loops, 120 rounds | 166 segmentation faults and 51 failures in 960 | 0 and 0 in 960 |
 | Two `ctest` runs, two build directories, `--repeat until-fail:6000` | one side crashed on its 18th run, the other ran 6000 clean | 6000 and 6000, no failure |
+| Two `ctest` runs filtered to this test, 400 repeats each | 800 of 800 clean | - |
 | The fixture written and removed by another process throughout | 33 segmentation faults in 40 runs | 48 reported failures, 0 crashes in 60 |
 
 The last row measures the guard on its own: it puts the shared name back on
 top of the fixed source, so the race still happens and the crash does not.
-The third row is the whole fix. The first two rows are why this took two
-sightings to pin - the fault cannot occur in the one condition under which a
-flaky target is normally investigated, which is running it alone.
+The two `ctest` rows either side of the middle are the whole fix.
+
+**Rows two and five are the trap, and they are recorded because they passed.**
+Copies started together tend to stay in step, and copies in step write the
+same bytes to the fixture at the same time, so a truncation collision is
+invisible: 120 of 120 and 800 of 800 both look like a target that is fine.
+Only independent loops that drift out of phase expose it, and then it is not
+marginal at all - 17.3 per cent. A negative result from concurrent runs means
+nothing unless the runs were free to drift.
+
+Together with row one, that is why this took two sightings to pin: the fault
+cannot occur in the one condition under which a flaky target is normally
+investigated, which is running it alone, and it hides from the obvious next
+thing, which is running several copies at once.
 
 The fixture name now carries the process id, the way `tests/arg_path_tests.cpp`
 has since issue #87. Every container subscript in the test file was then
 enumerated mechanically rather than by grep, over 235 bracket sites; four
 more unguarded ones were found and guarded, and two `static_assert`s now pin
 the fixture's fixed-length arrays to the parser constants that index them.
-The suite went from 197 checks to 247.
+An independent pass re-enumerated the file and reached 237 sites, of which 69
+are container subscripts, and found every one guarded or provably in range. It
+cross-checked that by building with `-D_GLIBCXX_ASSERTIONS`, which makes
+`vector::operator[]` bounds-checked: the suite passes with no assertion firing.
+Three of the four new guards are load-bearing; the fourth, the
+`!report.sections.empty()` in the section-decodes check, is belt-and-braces,
+because `valid_section_count() == 1` already implies a non-empty vector.
 
-Issue #124 covers the seven other test files that still build fixtures at a
-fixed name. They do not collide with each other - all eight names differ - so
-each one collides only with another copy of itself, and each can be fixed on
-its own. Whether any of the seven crashes rather than fails depends on
-whether it, too, subscripts a container after a load that can fail.
+The suite went from 197 checks to 247, but that is 5 new distinct assertions
+rather than 50: 46 of the 50 are the one `default_tree` fixture check, counted
+once per call.
+
+Issue #124 covers the eight other test files that still build fixtures at a
+fixed name - `car_parts_tests.cpp:864`, `chunk_tests.cpp:36`,
+`geometry_tests.cpp:1572`, `part_placement_tests.cpp:1139`,
+`texture_tests.cpp:1774`, `track_collision_tests.cpp:1489`,
+`track_tests.cpp:1573` and `track_zone_tests.cpp:1282`. `render_tests.cpp:166`
+is not one of them: it randomises its directory name from `steady_clock` and
+`random_device`. The nine names all differ, so each file collides only with
+another copy of itself and each can be fixed on its own.
+
+Whether any of the eight crashes rather than merely fails is no longer open.
+`nfsu_texture_tests` does: under three concurrent full `ctest` runs it was seen
+to exit `0xc0000409`, `STATUS_STACK_BUFFER_OVERRUN`, and to hit twelve
+60-second timeouts, and standalone under four-way concurrency it failed 85 of
+160 runs. A repeated 60-second hang is worse for a gate than a failure,
+because a sweep reads it as neither. `nfsu_track_collision_tests`,
+`nfsu_track_zone_tests`, `nfsu_track_tests`, `nfsu_geometry_tests` and
+`nfsu_car_parts_tests` were seen to fail but not to crash.
 
 ## Observed
 

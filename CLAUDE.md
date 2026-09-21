@@ -262,8 +262,9 @@ exact name first, then confirm that both sides wrote this run's artifact and
 that neither printed an error line.
 
 A mutation sweep fails the same way, in the direction that produces a false
-pass. Every sweep here reads a non-zero exit as a kill, and branches have been
-accepted on sweeps of 26, 34, 185 and 200 mutants. A target that crashes for a
+pass. Some sweeps here already record a crash as unknown and some still read
+every non-zero exit as a kill, and branches have been accepted on sweeps of 26,
+34, 185 and 200 mutants. A target that crashes for a
 reason the mutant did not cause therefore reports that mutant caught, and a
 surviving mutant is exactly what a sweep exists to find. **Classify a run by
 what it printed, not only by its exit status: a non-zero exit with no failure
@@ -434,7 +435,8 @@ section above now allows. Re-review only codifies a loop the previous protocol
 already implied, and that loop had already caught the launcher fix that stopped
 an unowned process. Silent truncation has no rule of its own and leans on the
 same general reviewer duty that missed it the first time. The surviving mutant
-has no rule at all, and no gate here runs mutation testing. The subagent
+still has no rule of its own, and no gate here runs mutation testing; the sweep
+rule above governs only how a sweep reports a crash it already ran. The subagent
 worktree rule is the least enforced of the set: git does not refuse a second
 writer in one tree, and nothing notices a head that moved under a measurement,
 so both incidents behind it were found only by reading the damage afterwards.
