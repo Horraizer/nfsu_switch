@@ -483,6 +483,10 @@ constexpr std::uint64_t kSceneryBase = 0x2000;
 constexpr std::uint16_t kQuietFlags = 0x0060U;
 // The one instance a mask byte can see, at bit 0x01.
 constexpr std::uint16_t kMaskedFlags = 0x0061U;
+// An instance the BIAS decides: 0x0040 ^ 0x0060 is 0x0020, so a mask of 0x20
+// rejects it and would pass it if the bias were dropped - and would reject
+// every kQuietFlags instance instead, which no other value here can show.
+constexpr std::uint16_t kBiasedFlags = 0x0040U;
 
 VertexSpec plane_vertex(float x, float y, float u, float v) {
     VertexSpec vertex;
@@ -530,10 +534,14 @@ InstanceSpec placed(std::uint16_t object_index, float x, std::uint16_t flags) {
     instance.position[2] = 0.0F;
     instance.bounds_min[0] = static_cast<std::int16_t>(x - 2.0F);
     instance.bounds_max[0] = static_cast<std::int16_t>(x + 2.0F);
-    for (int k = 1; k < 3; ++k) {
-        instance.bounds_min[k] = -2;
-        instance.bounds_max[k] = 2;
-    }
+    // ASYMMETRIC on slot 1, deliberately. The world map negates that slot and
+    // exchanges the ends, so a box of -2 .. 2 there is its own image and a
+    // stored-box conversion that forgot the negation would look right. This
+    // one is -1 .. 3, whose world z interval is -3 .. 1.
+    instance.bounds_min[1] = -1;
+    instance.bounds_max[1] = 3;
+    instance.bounds_min[2] = -2;
+    instance.bounds_max[2] = 2;
     instance.flags = flags;
     return instance;
 }
@@ -542,10 +550,10 @@ NodeSpec node_over(std::int16_t low, std::int16_t high) {
     NodeSpec node;
     node.bounds_min[0] = low;
     node.bounds_max[0] = high;
-    for (int k = 1; k < 3; ++k) {
-        node.bounds_min[k] = -2;
-        node.bounds_max[k] = 2;
-    }
+    node.bounds_min[1] = -1;
+    node.bounds_max[1] = 3;
+    node.bounds_min[2] = -2;
+    node.bounds_max[2] = 2;
     return node;
 }
 
@@ -562,7 +570,7 @@ std::vector<SectionSpec> fixture_sections(std::uint32_t number) {
     section.instances.push_back(placed(0, -20.0F, kQuietFlags));
     section.instances.push_back(placed(0, -9.0F, kQuietFlags));
     section.instances.push_back(placed(1, -6.0F, kMaskedFlags));
-    section.instances.push_back(placed(0, -3.0F, kQuietFlags));
+    section.instances.push_back(placed(0, -3.0F, kBiasedFlags));
     section.instances.push_back(placed(2, 20.0F, kQuietFlags));
     section.instances.push_back(placed(0, 25.0F, kQuietFlags));
     section.instances.push_back(placed(1, 30.0F, kQuietFlags));
@@ -585,6 +593,75 @@ std::vector<SectionSpec> fixture_sections(std::uint32_t number) {
     section.nodes.push_back(left);
     section.nodes.push_back(right);
     return {section};
+}
+
+// A second section, so that a region can hold more than one and the
+// per-section instance table is exercised with a non-zero base. With one
+// section every base is zero and a table that always answered zero would be
+// right by accident.
+//
+// Its tree is THREE levels rather than two, and every instance of it sits
+// out on the right where the street camera's frustum cannot reach:
+//
+//   node 0  root, one entry: child node 1
+//   node 1  two entries: child node 2, and instance 0
+//   node 2  five entries: instances 1 to 5
+//
+// Three things come out of that shape and out of nothing else here. Node 1
+// tests outside, so the prune root has to be carried DOWN a level to node
+// 2's five instances rather than stopping where it was found. The root has
+// exactly one entry and node 2 exactly five, which are the two ends of the
+// range a node's entry count may take. And the second section's six
+// instances sit at non-zero positions in the per-section table.
+std::vector<SectionSpec> two_sections(std::uint32_t first,
+                                      std::uint32_t second) {
+    std::vector<SectionSpec> sections = fixture_sections(first);
+    SectionSpec other;
+    other.number = second;
+    other.objects.resize(2);
+    other.objects[0].mesh_hash[0] = kPost;
+    other.objects[0].radius = 3.0F;
+    other.objects[1].mesh_hash[0] = kMissingMesh;
+    other.instances.push_back(placed(0, 20.0F, kQuietFlags));
+    for (int k = 0; k < 4; ++k) {
+        other.instances.push_back(
+            placed(0, 25.0F + static_cast<float>(k), kQuietFlags));
+    }
+    other.instances.push_back(placed(1, 30.0F, kQuietFlags));
+
+    // The root reaches back across the whole region, so the FRUSTUM crosses
+    // it and the traversal has to descend before it can prune. A root that
+    // was itself outside would prune at depth 0 and never exercise a carry
+    // from a node the walk actually reached. A stored box larger than what
+    // is below it is what the parser accepts; only a smaller one is refused.
+    NodeSpec root = node_over(-22, 34);
+    root.entry_count = 1;
+    root.entries[0] = -1;
+    NodeSpec middle = node_over(18, 34);
+    middle.entry_count = 2;
+    middle.entries[0] = -2;
+    middle.entries[1] = 0;
+    NodeSpec leaf = node_over(23, 34);
+    leaf.entry_count = 5;
+    for (int k = 0; k < 5; ++k) {
+        leaf.entries[k] = static_cast<std::int16_t>(1 + k);
+    }
+    other.nodes.push_back(root);
+    other.nodes.push_back(middle);
+    other.nodes.push_back(leaf);
+    sections.push_back(other);
+    return sections;
+}
+
+// The same two, with the second one's root box shrunk so that it no longer
+// contains what is below it. src/track_objects.cpp refuses that at parse
+// time, so the section is kept with valid == false and carries no decoded
+// record at all.
+std::vector<SectionSpec> one_broken_section() {
+    std::vector<SectionSpec> sections = two_sections(303, 310);
+    sections[1].nodes[0].bounds_min[0] = 0;
+    sections[1].nodes[0].bounds_max[0] = 1;
+    return sections;
 }
 
 struct Fixture {
@@ -1126,6 +1203,14 @@ void test_camera_moves() {
     bad.turn_yaw_deg = nfsu::kMaxTrackTurnDegrees + 1.0;
     check_fails(nfsu::track_move_free_camera(base, bad, moved, message), message,
                 "turn needs a yaw", "a turn past the limit is refused");
+    // Both signs, because the bound is two comparisons and one of them can go
+    // while the other stands.
+    bad.turn_yaw_deg = -nfsu::kMaxTrackTurnDegrees - 1.0;
+    check_fails(nfsu::track_move_free_camera(base, bad, moved, message), message,
+                "turn needs a yaw", "a turn past the negative limit is refused");
+    bad.turn_yaw_deg = nfsu::kMaxTrackTurnDegrees;
+    check_ok(nfsu::track_move_free_camera(base, bad, moved, message),
+             "and the limit itself is accepted", message);
     bad.turn_yaw_deg = 0.0;
     bad.turn_pitch_deg = -nfsu::kMaxTrackTurnDegrees - 1.0;
     check_fails(nfsu::track_move_free_camera(base, bad, moved, message), message,
@@ -1156,12 +1241,45 @@ void test_camera_moves() {
                 message, "flown camera is invalid",
                 "a fly out of range is refused");
 
-    // An invalid camera is refused before any move is read.
+    // An invalid camera is refused before any move is read, INCLUDING when
+    // there is no move at all. With a move the result is revalidated and the
+    // refusal arrives from there under another name, so an empty move is the
+    // only case where the entry check is the one thing standing.
     nfsu::TrackFreeCamera broken = base;
     broken.fov_y_deg = 0.0;
     check_fails(nfsu::track_move_free_camera(broken, fly, moved, message),
                 message, "field of view",
                 "a move on an invalid camera is refused");
+    check_fails(nfsu::track_move_free_camera(broken, nfsu::TrackCameraMoves{},
+                                             moved, message),
+                message, "field of view",
+                "an empty move on an invalid camera is refused too");
+
+    // A TURN WHOSE AXIS IS NOT PERPENDICULAR TO THE VIEW. Every case above
+    // looks along a direction square to the reference up, where the axis
+    // term of the rotation is zero and dropping it changes nothing. Here the
+    // camera looks upward, so that term carries the answer.
+    nfsu::TrackFreeCamera slanted;
+    slanted.eye = nfsu::Vec3{0.0, 0.0, 10.0};
+    slanted.target = nfsu::Vec3{0.0, 10.0, 0.0};
+    slanted.up = nfsu::Vec3{0.0, 1.0, 0.0};
+    slanted.near_plane = 1.0;
+    slanted.far_plane = 100.0;
+    nfsu::TrackCameraMoves quarter;
+    quarter.has_turn = true;
+    quarter.turn_yaw_deg = 90.0;
+    check_ok(nfsu::track_move_free_camera(slanted, quarter, moved, error),
+             "a turn from a slanted camera succeeds", error);
+    check_ok(nfsu::track_camera_basis(moved, basis, error),
+             "and the result has a basis", error);
+    // Rodrigues about (0,1,0) by -90 degrees sends (0, s, -s) to
+    // (-s, s, 0) with s = 1/sqrt(2): the y component is the axis term and
+    // survives the turn, and only the axis term puts it there.
+    const double s = 1.0 / std::sqrt(2.0);
+    check_close(basis.forward.y, s, 1e-12,
+                "the component along the axis survives a turn about it");
+    check_close(basis.forward.x, s, 1e-12, "and the rest turns");
+    check_close(basis.forward.z, 0.0, 1e-12, "onto the plane of the axis");
 }
 
 void test_cull_camera_conversion() {
@@ -1392,6 +1510,43 @@ void test_materials() {
     }
     check_eq_u64(run.probe.cost.groups, groups, "the group total");
     check_eq_u64(run.probe.cost.triangles, triangles, "the triangle total");
+
+    // AN UNDRAWABLE GROUP IS COUNTED AS A GROUP AND DRAWN BY NOTHING.
+    // src/track.cpp refuses a material record with no indices and requires
+    // every group's range to tile the mesh index stream, so a region parsed
+    // from a file never holds one; this clears the flag on a prepared copy,
+    // which is what tests/track_draw_list_tests.cpp does for the same reason.
+    {
+        nfsu::PreparedTrackScene blunted = fixture.scene;
+        check(post->draw_count == 2 && post->first_draw + 1 <
+                                           blunted.region.draws.size(),
+              "POST's two groups are where the probe said they were");
+        if (post->draw_count == 2) {
+            blunted.region.draws[post->first_draw + 1].drawable = false;
+            nfsu::TrackProbeOptions blunt_options;
+            blunt_options.cull = options;
+            nfsu::TrackProbeReport report;
+            std::string error;
+            check_ok(nfsu::probe_track_scene(fixture.geometry, fixture.objects,
+                                             blunted, run.cull, run.frustum,
+                                             blunt_options, report, error),
+                     "the blunted scene probes", error);
+            const nfsu::TrackInstanceProbe* dull = find_instance(report, 2);
+            check(dull != nullptr, "the POST instance is reported");
+            if (dull != nullptr) {
+                check_eq_u64(dull->draw_count, 2,
+                             "the group is still one of the mesh's two");
+                check_eq_u64(dull->groups_drawable, 1,
+                             "but only one of them is drawable");
+                check_eq_u64(dull->triangles, 1,
+                             "and it contributes one triangle rather than "
+                             "two");
+                check_eq_u64(dull->groups_unresolved, 0,
+                             "an undrawable group is not counted by binding "
+                             "either");
+            }
+        }
+    }
 
     // The unplaced instance names the reason rather than leaving it blank.
     const nfsu::TrackInstanceProbe* missing = find_instance(run.probe, 4);
@@ -1692,6 +1847,76 @@ void test_mask_gate() {
         check_eq_u64(unmasked.probe.cost.disagreements, 0,
                      "and still agrees with the culler");
     }
+
+    // THE BIAS ITSELF. At mask 0x20 the xor decides the answer for every
+    // instance in the fixture and decides it the other way round: instance 3
+    // carries 0x0040, whose biased low byte is 0x20, and every other
+    // instance carries 0x0060, whose biased low byte is 0. Drop the bias and
+    // instance 3 passes while the others are rejected - one rejection
+    // becomes five, in the opposite places.
+    nfsu::TrackCullOptions biased = options;
+    biased.instance_mask = 0x20U;
+    const Run by_bias = probe_run(fixture, street_camera(), biased);
+    check_ok(by_bias.ok, "the bias probe runs", by_bias.error);
+    if (by_bias.ok) {
+        check_eq_u64(by_bias.probe.cost.disagreements, 0,
+                     "the bias gate agrees with the culler");
+        check_eq_u64(by_bias.probe.cost.rejected_by_mask, 1,
+                     "exactly one instance is rejected at mask 0x20");
+        const nfsu::TrackInstanceProbe* biased_out =
+            find_instance(by_bias.probe, 3);
+        check(biased_out != nullptr, "instance 3 is reported");
+        if (biased_out != nullptr) {
+            check(biased_out->mask_gate == nfsu::TrackGateVerdict::rejected,
+                  "and it is the one the bias rejects");
+            check_eq_u64(biased_out->mask_bits, 0x20U,
+                         "with the biased bits reported");
+        }
+        const nfsu::TrackInstanceProbe* quiet_at_20 =
+            find_instance(by_bias.probe, 1);
+        check(quiet_at_20 != nullptr, "an 0x0060 instance is reported");
+        if (quiet_at_20 != nullptr) {
+            check(quiet_at_20->mask_gate == nfsu::TrackGateVerdict::passed,
+                  "and the bias lets it through");
+            check_eq_u64(quiet_at_20->mask_bits, 0, "with no bits set");
+        }
+    }
+}
+
+// A node the traversal reached with the INSIDE code makes the instance box
+// test unnecessary, exactly as retail skips it. The street camera never
+// produces one - its frustum is too narrow to contain a whole node - so this
+// widens it until node 1 is fully inside.
+void test_the_box_test_a_node_makes_unnecessary() {
+    const Fixture fixture = town();
+    nfsu::TrackFreeCamera wide = street_camera();
+    wide.fov_y_deg = 120.0;
+    wide.far_plane = 200.0;
+    wide.eye = nfsu::Vec3{-11.0, 0.0, 30.0};
+    wide.target = nfsu::Vec3{-11.0, 0.0, 0.0};
+    nfsu::TrackCullOptions options;  // retail_tree
+    const Run run = probe_run(fixture, wide, options);
+    check_ok(run.ok, "the wide probe runs", run.error);
+    if (!run.ok) {
+        return;
+    }
+    check_eq_u64(run.probe.cost.disagreements, 0, "the culler agrees");
+    std::uint64_t skipped = 0;
+    for (const nfsu::TrackInstanceProbe& probe : run.probe.instances) {
+        if (probe.node_class != nfsu::TrackBoxClass::inside ||
+            probe.pruned_by_node != nfsu::kTrackProbeNone) {
+            continue;
+        }
+        ++skipped;
+        check(probe.box_gate == nfsu::TrackGateVerdict::not_applied,
+              "a node that tested inside makes the box test unnecessary");
+        check(probe.instance_class == nfsu::TrackBoxClass::inside,
+              "and the instance is recorded inside without being tested");
+        check(probe.visible, "so the instance is visible");
+    }
+    check(skipped >= 3,
+          "at least three instances hang off a node that tested inside, so "
+          "the case above is not vacuous: got " + std::to_string(skipped));
 }
 
 void test_screen_size_gate() {
@@ -1817,6 +2042,42 @@ void test_screen_size_gate() {
         }
     }
 
+    // A forward axis of some other LENGTH gives the same answers, because
+    // the gate compares a dot product against a negated radius and that only
+    // means "behind by more than the radius" for a unit axis. The level is
+    // asserted instance by instance against the unit run, so a normalization
+    // that stopped happening changes numbers this case reads rather than a
+    // count it might not.
+    options.use_screen_size = true;
+    options.screen_scale = 4.0F;
+    const Run unit = probe_run(fixture, camera, options);
+    check_ok(unit.ok, "the unit-axis probe runs", unit.error);
+    nfsu::TrackCullOptions stretched = options;
+    for (int k = 0; k < 3; ++k) {
+        stretched.screen_forward[k] *= 37.5F;
+    }
+    const Run long_axis = probe_run(fixture, camera, stretched);
+    check_ok(long_axis.ok, "the long-axis probe runs", long_axis.error);
+    if (unit.ok && long_axis.ok) {
+        check_eq_u64(long_axis.probe.cost.disagreements, 0,
+                     "the long axis agrees with the culler");
+        check_eq_u64(long_axis.probe.instances.size(),
+                     unit.probe.instances.size(), "the same instances");
+        for (std::size_t i = 0; i < unit.probe.instances.size() &&
+                                i < long_axis.probe.instances.size();
+             ++i) {
+            check_exact(
+                static_cast<double>(long_axis.probe.instances[i].screen_level),
+                static_cast<double>(unit.probe.instances[i].screen_level),
+                "the axis length does not change a screen-size level");
+        }
+        check_eq_u64(long_axis.probe.cost.visible, unit.probe.cost.visible,
+                     "nor the visible set");
+        check(unit.probe.cost.rejected_by_size > 0,
+              "and this scale rejects something, so the comparison is not "
+              "between two runs that reject nothing");
+    }
+
     // A forward axis that cannot be normalized disables the gate and says so,
     // the same answer cull_track_region reaches.
     options.use_screen_size = true;
@@ -1908,7 +2169,9 @@ void test_selection() {
     bad_cases.push_back({"a section past the end", "outside the region's", bad});
     bad = nfsu::TrackProbeSelection{};
     bad.has_section = true;
-    bad.instances = {0, 9};
+    // Exactly one past the end of a seven-instance section, so a bound that
+    // became one too loose is caught rather than only a wild value.
+    bad.instances = {0, 7};
     bad_cases.push_back({"an instance past the end", "outside section", bad});
     bad = nfsu::TrackProbeSelection{};
     bad.has_section = true;
@@ -1946,11 +2209,21 @@ void test_selection() {
                                         report, message),
                 message, "more than 3 instances",
                 "the instance limit is enforced");
+    // ONE BELOW the count is the case that separates `>=` from `>`: both
+    // refuse a limit far below, and both accept one at or above, so only a
+    // limit of exactly count - 1 tells them apart.
+    limited.limits.max_instances = 6;
+    check_fails(nfsu::probe_track_scene(fixture.geometry, fixture.objects,
+                                        fixture.scene, cull, frustum, limited,
+                                        report, message),
+                message, "more than 6 instances",
+                "a limit one below the count is enforced");
     limited.limits.max_instances = 7;
     check_ok(nfsu::probe_track_scene(fixture.geometry, fixture.objects,
                                      fixture.scene, cull, frustum, limited,
                                      report, message),
              "the limit accepts exactly its own count", message);
+    check_eq_u64(report.cost.probed, 7, "and probes all seven");
 }
 
 // The reports have to be about the same two regions, or every offset in the
@@ -2095,22 +2368,421 @@ void test_disagreement_is_reported() {
     check(!second.sections[0].resident,
           "the culler's answer is the one carried forward");
 
-    // A node the culler recorded differently is a third issue shape.
-    nfsu::TrackCullReport nodes = nfsu::cull_track_region(
+    // A node the culler recorded differently is a third issue shape, and the
+    // box class it recorded is a fourth. Each is a separate arm of the same
+    // comparison and one of them can go while the others stand.
+    const nfsu::TrackCullReport tree_cull = nfsu::cull_track_region(
         fixture.objects, frustum, nfsu::TrackCullOptions{});
-    check(!nodes.visible.empty(), "the tree cull sees something");
-    if (!nodes.visible.empty()) {
-        nodes.visible[0].node_index += 1;
-        nfsu::TrackProbeOptions tree_options;
-        nfsu::TrackProbeReport third;
-        check_ok(nfsu::probe_track_scene(fixture.geometry, fixture.objects,
-                                         fixture.scene, nodes, frustum,
-                                         tree_options, third, message),
-                 "a disagreeing node still produces a report", message);
-        check_eq_u64(third.cost.disagreements, 1,
-                     "the node disagreement is counted");
-        check(!third.ok(), "and the report is not ok");
+    check(!tree_cull.visible.empty(), "the tree cull sees something");
+    if (!tree_cull.visible.empty()) {
+        struct Tamper {
+            const char* what;
+            void (*apply)(nfsu::TrackVisibleInstance&);
+        };
+        const std::vector<Tamper> tampers = {
+            {"a node index",
+             [](nfsu::TrackVisibleInstance& item) { item.node_index += 1; }},
+            {"a carried node class",
+             [](nfsu::TrackVisibleInstance& item) {
+                 item.node_class = item.node_class == nfsu::TrackBoxClass::inside
+                                       ? nfsu::TrackBoxClass::intersecting
+                                       : nfsu::TrackBoxClass::inside;
+             }},
+            {"an instance box class",
+             [](nfsu::TrackVisibleInstance& item) {
+                 item.instance_class =
+                     item.instance_class == nfsu::TrackBoxClass::inside
+                         ? nfsu::TrackBoxClass::intersecting
+                         : nfsu::TrackBoxClass::inside;
+             }},
+        };
+        for (const Tamper& item : tampers) {
+            nfsu::TrackCullReport tampered = tree_cull;
+            item.apply(tampered.visible[0]);
+            nfsu::TrackProbeOptions tree_options;
+            nfsu::TrackProbeReport third;
+            check_ok(nfsu::probe_track_scene(fixture.geometry, fixture.objects,
+                                             fixture.scene, tampered, frustum,
+                                             tree_options, third, message),
+                     std::string("a disagreeing ") + item.what +
+                         " still produces a report",
+                     message);
+            check_eq_u64(third.cost.disagreements, 1,
+                         std::string("the ") + item.what +
+                             " disagreement is counted");
+            check(!third.ok(), std::string("and the report is not ok for ") +
+                                   item.what);
+        }
     }
+}
+
+// Two sections in one region. Everything the probe keys by section index -
+// the culler's per-instance answers, the per-section summary, the selection -
+// is a table whose base is zero for the first section and non-zero for the
+// second, so a region with one section cannot tell a right answer from a
+// table that always answers zero.
+void test_two_sections() {
+    const Fixture fixture = make_fixture(fixture_meshes(),
+                                         two_sections(303, 310));
+    check_eq_u64(fixture.objects.sections.size(), 2,
+                 "the region holds two sections");
+    nfsu::TrackCullOptions options;  // retail_tree
+    const Run run = probe_run(fixture, street_camera(), options);
+    check_ok(run.ok, "the two-section probe runs", run.error);
+    if (!run.ok) {
+        return;
+    }
+    check_eq_u64(run.probe.cost.disagreements, 0, "the culler agrees");
+    check_eq_u64(run.probe.issues.size(), 0, "and nothing is raised");
+    check_eq_u64(run.probe.sections.size(), 2, "both sections are reported");
+    check_eq_u64(run.probe.cost.instances, 13, "seven and six instances");
+    check_eq_u64(run.probe.cost.probed, 13, "all thirteen are probed");
+    check_eq_u64(run.probe.sections[0].instances, 7, "the first holds seven");
+    check_eq_u64(run.probe.sections[1].instances, 6, "the second holds six");
+    check_eq_u64(run.probe.sections[1].number, 310, "the second's number");
+    check_eq_u64(run.probe.sections[1].nodes, 3, "over three nodes");
+    check_eq_u64(run.probe.sections[1].tree_depth, 2, "two levels down");
+    check(run.probe.sections[1].tree_walked, "and the probe walked it");
+
+    // The second section is entirely outside the frustum, and the prune root
+    // is found at node 1 and CARRIED DOWN to node 2's five instances. A carry
+    // that stopped where the prune was found would leave those five
+    // unpruned, and they would be rejected by their own box instead.
+    check_eq_u64(run.probe.sections[1].visible, 0,
+                 "nothing of the second section is visible");
+    check_eq_u64(run.probe.sections[1].pruned, 6,
+                 "and all six of its instances are pruned");
+    check_eq_u64(run.probe.sections[1].rejected_by_box, 0,
+                 "none of them reaches its own box test");
+    for (const nfsu::TrackInstanceProbe& probe : run.probe.instances) {
+        if (probe.section_index != 1) {
+            continue;
+        }
+        check_eq_u64(probe.pruned_by_node, 1,
+                     "every instance of it is pruned by node 1");
+        if (probe.instance_index == 0) {
+            check_eq_u64(probe.node_index, 1, "instance 0 hangs off node 1");
+            check_eq_u64(probe.node_depth, 1, "one level down");
+        } else {
+            check_eq_u64(probe.node_index, 2, "the rest hang off node 2");
+            check_eq_u64(probe.node_depth, 2, "two levels down");
+        }
+    }
+
+    // Ascending (section, instance), and every record carries its own
+    // section. A per-section base that was always zero would fold the second
+    // section's culler answers onto the first section's instances, which is
+    // exactly what the agreement check above would then report.
+    std::size_t last_section = 0;
+    std::size_t last_instance = 0;
+    bool first = true;
+    for (const nfsu::TrackInstanceProbe& probe : run.probe.instances) {
+        if (!first) {
+            check(probe.section_index > last_section ||
+                      (probe.section_index == last_section &&
+                       probe.instance_index > last_instance),
+                  "the report is ascending in section and instance");
+        }
+        first = false;
+        last_section = probe.section_index;
+        last_instance = probe.instance_index;
+        check_eq_u64(probe.section_number,
+                     run.probe.sections[probe.section_index].number,
+                     "an instance carries its own section's number");
+        check_eq_u64(probe.section_offset,
+                     fixture.objects.sections[probe.section_index].offset,
+                     "and its own section's chunk offset");
+    }
+    check_eq_text(join(probe_visible_set(run.probe)),
+                  join(culler_visible_set(run.cull)),
+                  "the two visible sets hold the same instance indices");
+
+    // A selection of the SECOND section probes only its three.
+    nfsu::TrackProbeSelection second;
+    second.has_section = true;
+    second.section_index = 1;
+    const Run only_second = probe_run(fixture, street_camera(), options,
+                                      second);
+    check_ok(only_second.ok, "the second section probes", only_second.error);
+    if (only_second.ok) {
+        check_eq_u64(only_second.probe.cost.probed, 6, "six instances");
+        check_eq_u64(only_second.probe.sections[0].probed, 0,
+                     "and none from the first");
+        check_eq_u64(only_second.probe.sections[1].probed, 6,
+                     "and six from the second");
+        for (const nfsu::TrackInstanceProbe& probe :
+             only_second.probe.instances) {
+            check_eq_u64(probe.section_index, 1,
+                         "every record is from the selected section");
+        }
+    }
+
+    // And the two sections can disagree about residency, which one section
+    // can never show: 303 modulo 100 is 3 and 310 modulo 100 is 10.
+    nfsu::TrackCullOptions no_zone;
+    no_zone.residency.rule = nfsu::TrackResidencyRule::no_zone;
+    const Run mixed = probe_run(fixture, street_camera(), no_zone);
+    check_ok(mixed.ok, "the mixed-residency probe runs", mixed.error);
+    if (mixed.ok) {
+        check_eq_u64(mixed.probe.cost.disagreements, 0, "the culler agrees");
+        check_eq_u64(mixed.probe.cost.resident_sections, 1,
+                     "one of the two is resident");
+        check(mixed.probe.sections[0].resident, "303 is resident");
+        check(!mixed.probe.sections[1].resident, "and 310 is not");
+        check_eq_text(nfsu::track_residency_reason_name(
+                          mixed.probe.sections[1].residency_reason),
+                      "sub-index-out-of-range", "for the reason it gives");
+        for (const nfsu::TrackInstanceProbe& probe : mixed.probe.instances) {
+            if (probe.section_index == 1) {
+                check(!probe.visible,
+                      "nothing of the second section is visible");
+                check_eq_u64(probe.node_index, nfsu::kTrackProbeNone,
+                             "and no node is reported for it");
+            }
+        }
+    }
+}
+
+// A section the parser refused. It is kept with valid == false and no
+// decoded record, exactly as an invalid mesh is, and contributes to no count.
+void test_invalid_section() {
+    const Fixture fixture = make_fixture(fixture_meshes(),
+                                         one_broken_section());
+    check_eq_u64(fixture.objects.sections.size(), 2,
+                 "both sections are still reported by the parser");
+    check(fixture.objects.sections[0].valid, "the first is valid");
+    check(!fixture.objects.sections[1].valid, "and the second is not");
+
+    nfsu::TrackCullOptions options;
+    const Run run = probe_run(fixture, street_camera(), options);
+    check_ok(run.ok, "the probe runs over a refused section", run.error);
+    if (!run.ok) {
+        return;
+    }
+    check_eq_u64(run.probe.cost.disagreements, 0, "the culler agrees");
+    check_eq_u64(run.probe.sections.size(), 2, "both are reported");
+    check(!run.probe.sections[1].valid, "the second is marked invalid");
+    check_eq_u64(run.probe.sections[1].probed, 0, "nothing of it is probed");
+    check_eq_u64(run.probe.sections[1].instances, 0,
+                 "a refused section carries no decoded instance");
+    check_eq_u64(run.probe.cost.sections, 2, "the section total counts both");
+    check_eq_u64(run.probe.cost.valid_sections, 1, "and the valid one is one");
+    check_eq_u64(run.probe.cost.instances, 7,
+                 "the instance total covers the valid section alone");
+    check_eq_u64(run.probe.cost.probed, 7, "and so does the probed count");
+    for (const nfsu::TrackInstanceProbe& probe : run.probe.instances) {
+        check_eq_u64(probe.section_index, 0,
+                     "no record comes from the refused section");
+    }
+
+    // Selecting it is refused rather than answered with an empty report.
+    nfsu::TrackProbeSelection broken;
+    broken.has_section = true;
+    broken.section_index = 1;
+    const Run refused = probe_run(fixture, street_camera(), options, broken);
+    check_fails(refused.ok, refused.error, "is not valid",
+                "selecting a refused section is refused");
+}
+
+// A section whose bounding tree fails containment degrades to the flat test,
+// and the probe must follow the policy the culler ACTUALLY used rather than
+// the one it was asked for. src/track_objects.cpp refuses such a tree at
+// parse time, so this tampers with the decoded report, which is what
+// tests/track_draw_list_tests.cpp does for the same reason.
+void test_degraded_section() {
+    Fixture fixture = town();
+    check(fixture.objects.sections[0].nodes.size() >= 3,
+          "the fixture tree has a node to shrink");
+    if (fixture.objects.sections[0].nodes.size() < 3) {
+        return;
+    }
+    // Node 2 covers instances 4..6 at x = 20, 25 and 30; shrinking it makes
+    // it stop containing them.
+    fixture.objects.sections[0].nodes[2].bounds_max[0] = 21;
+
+    nfsu::TrackCullOptions options;  // retail_tree, verify_containment on
+    const Run run = probe_run(fixture, street_camera(), options);
+    check_ok(run.ok, "the degraded probe runs", run.error);
+    if (!run.ok) {
+        return;
+    }
+    check(!run.cull.policy_held, "the culler reports the policy did not hold");
+    check_eq_u64(run.probe.sections.size(), 1, "one section");
+    const nfsu::TrackSectionProbe& section = run.probe.sections[0];
+    check(section.policy_used == nfsu::TrackCullPolicy::flat_instance_test,
+          "the probe follows the policy the culler used, not the one asked "
+          "for");
+    check(section.containment_checked && !section.containment_holds,
+          "and reports that containment is what broke");
+    check(!section.tree_walked, "no tree is walked under the flat rule");
+    check_eq_u64(run.probe.cost.pruned, 0, "a flat test prunes nothing");
+    check_eq_u64(run.probe.cost.disagreements, 0,
+                 "and the probe agrees with the culler all the same");
+    check_eq_text(join(probe_visible_set(run.probe)),
+                  join(culler_visible_set(run.cull)),
+                  "over the same visible set");
+    for (const nfsu::TrackInstanceProbe& probe : run.probe.instances) {
+        check(probe.policy_used == nfsu::TrackCullPolicy::flat_instance_test,
+              "every record carries the degraded policy");
+        check_eq_u64(probe.pruned_by_node, nfsu::kTrackProbeNone,
+                     "and none of them was pruned");
+    }
+}
+
+// A tree the CULLER walked and this probe cannot.
+//
+// Every refusal inside the probe's own tree walk is unreachable from a
+// well-formed pair of reports, because cull_track_region applies the same
+// shape rules before it walks: a tree this probe would refuse makes the
+// culler degrade to the flat test, and then the probe never walks a tree at
+// all. The branches are reachable only the way they are reached here, which
+// is also the way a caller could reach them - probe_track_scene is public and
+// takes two reports it did not produce, so it has to answer when they
+// disagree rather than read past the end of a vector.
+//
+// Each case below culls with a sound tree and then breaks the DECODED
+// section, so the cull report still says retail_tree.
+void test_tree_the_probe_cannot_walk() {
+    struct Case {
+        const char* what;
+        void (*damage)(nfsu::TrackSection&);
+        const char* needle;
+    };
+    const std::vector<Case> cases = {
+        {"a node with no entry",
+         [](nfsu::TrackSection& section) { section.nodes[1].entry_count = 0; },
+         "entry count of 0"},
+        {"a node with more entries than it has room for",
+         [](nfsu::TrackSection& section) { section.nodes[1].entry_count = 6; },
+         "entry count of 6"},
+        // Exactly one past the end, because the fixture holds three nodes:
+        // an index of 3 is out of range and an index of 9 would be caught by
+        // a bound that was one too loose as well.
+        {"a child index one past the end of the tree",
+         [](nfsu::TrackSection& section) { section.nodes[0].entries[0] = -3; },
+         "outside the tree or already reached"},
+        {"one node named by two parents",
+         [](nfsu::TrackSection& section) { section.nodes[0].entries[1] = -1; },
+         "outside the tree or already reached"},
+        {"an instance index one past the end of the array",
+         [](nfsu::TrackSection& section) { section.nodes[1].entries[0] = 7; },
+         "outside the array or already reached"},
+        {"one instance named twice",
+         [](nfsu::TrackSection& section) { section.nodes[1].entries[0] = 1; },
+         "outside the array or already reached"},
+    };
+
+    for (const Case& item : cases) {
+        Fixture fixture = town();
+        nfsu::TrackCullOptions options;  // retail_tree
+        nfsu::TrackCamera cull_camera;
+        nfsu::TrackFrustum frustum;
+        std::string error;
+        check_ok(nfsu::track_cull_camera_of(street_camera(), cull_camera, error),
+                 "the camera converts", error);
+        check_ok(nfsu::track_frustum_look_at(cull_camera, frustum),
+                 "the frustum builds", error);
+        const nfsu::TrackCullReport cull =
+            nfsu::cull_track_region(fixture.objects, frustum, options);
+        check(cull.policy_held,
+              std::string(item.what) + ": the culler walked the sound tree");
+
+        item.damage(fixture.objects.sections[0]);
+
+        nfsu::TrackProbeOptions probe_options;
+        probe_options.cull = options;
+        nfsu::TrackProbeReport report;
+        std::string message;
+        const bool ok = nfsu::probe_track_scene(
+            fixture.geometry, fixture.objects, fixture.scene, cull, frustum,
+            probe_options, report, message);
+        check_ok(ok, std::string(item.what) + ": the probe still reports",
+                 message);
+        if (!ok) {
+            continue;
+        }
+        check_eq_u64(report.sections.size(), 1,
+                     std::string(item.what) + ": one section");
+        if (report.sections.empty()) {
+            continue;
+        }
+        check(!report.sections[0].tree_walked,
+              std::string(item.what) + ": the probe did not walk the tree");
+        check_eq_u64(report.issues.size(), 1,
+                     std::string(item.what) + ": exactly one issue");
+        if (!report.issues.empty()) {
+            const std::string& text = report.issues[0].message;
+            check(text.find("this probe cannot") != std::string::npos,
+                  std::string(item.what) + ": the issue says the probe cannot "
+                  "walk it, and reads '" + text + "'");
+            check(text.find(item.needle) != std::string::npos,
+                  std::string(item.what) + ": the issue names the reason, and "
+                  "reads '" + text + "'");
+        }
+        check_eq_u64(report.cost.disagreements, 1,
+                     std::string(item.what) + ": one disagreement");
+        check(!report.ok(), std::string(item.what) + ": the report is not ok");
+        // With no tree of its own the probe carries the culler's answer
+        // rather than inventing one, so the two sets still agree and no
+        // per-instance issue is added on top of the section's.
+        check_eq_text(join(probe_visible_set(report)),
+                      join(culler_visible_set(cull)),
+                      std::string(item.what) +
+                          ": the culler's visible set is carried");
+        for (const nfsu::TrackInstanceProbe& probe : report.instances) {
+            check_eq_u64(probe.node_index, nfsu::kTrackProbeNone,
+                         std::string(item.what) + ": no node is reported");
+            check(probe.mask_gate == nfsu::TrackGateVerdict::not_applied,
+                  std::string(item.what) + ": and no gate verdict either");
+        }
+    }
+
+    // The same shape one level up: a tree that is sound but needs a deeper
+    // pending stack than the limits allow.
+    Fixture fixture = town();
+    nfsu::TrackCullOptions options;
+    nfsu::TrackCamera cull_camera;
+    nfsu::TrackFrustum frustum;
+    std::string error;
+    check_ok(nfsu::track_cull_camera_of(street_camera(), cull_camera, error),
+             "the camera converts", error);
+    check_ok(nfsu::track_frustum_look_at(cull_camera, frustum),
+             "the frustum builds", error);
+    const nfsu::TrackCullReport cull =
+        nfsu::cull_track_region(fixture.objects, frustum, options);
+    nfsu::TrackProbeOptions tight;
+    tight.cull = options;
+    tight.cull.limits.max_pending_nodes = 1;
+    nfsu::TrackProbeReport report;
+    std::string message;
+    check_ok(nfsu::probe_track_scene(fixture.geometry, fixture.objects,
+                                     fixture.scene, cull, frustum, tight,
+                                     report, message),
+             "a tight pending-node limit still reports", message);
+    check_eq_u64(report.issues.size(), 1, "and raises one issue");
+    if (!report.issues.empty()) {
+        check(report.issues[0].message.find("pending nodes") !=
+                  std::string::npos,
+              "which names the pending-node limit, and reads '" +
+                  report.issues[0].message + "'");
+    }
+    check(!report.sections.empty() && !report.sections[0].tree_walked,
+          "and no tree was walked");
+
+    // The boundary the limit sits on: two pending nodes are enough for this
+    // tree, so a `>=` that became `>` and a `>` that became `>=` are not the
+    // same edit.
+    nfsu::TrackProbeOptions exact;
+    exact.cull = options;
+    exact.cull.limits.max_pending_nodes = 2;
+    nfsu::TrackProbeReport wide;
+    check_ok(nfsu::probe_track_scene(fixture.geometry, fixture.objects,
+                                     fixture.scene, cull, frustum, exact, wide,
+                                     message),
+             "two pending nodes are enough", message);
+    check_eq_u64(wide.issues.size(), 0, "so nothing is raised");
+    check(!wide.sections.empty() && wide.sections[0].tree_walked,
+          "and the tree is walked");
 }
 
 void test_names() {
@@ -2191,8 +2863,13 @@ int main() {
     test_tree_provenance();
     test_other_policies();
     test_mask_gate();
+    test_the_box_test_a_node_makes_unnecessary();
     test_screen_size_gate();
     test_selection();
+    test_two_sections();
+    test_invalid_section();
+    test_degraded_section();
+    test_tree_the_probe_cannot_walk();
     test_mismatched_inputs();
     test_disagreement_is_reported();
     test_names();

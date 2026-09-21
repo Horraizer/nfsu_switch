@@ -300,6 +300,28 @@ nfsu_case("the frame size and the lens reach the report" 3
           "frame 640x480" ""
           "${missing}" 0 16 0 16 --eye 1 2 3 --look-at 4 5 6
           --width 640 --height 480)
+# The near and far OVERRIDES, which the cases above only ever drive out of
+# range. An override that parsed, passed its bound and was then dropped would
+# leave the camera at its defaults of 1 and 2000 and say nothing.
+nfsu_case("the near and far overrides reach the camera" 3
+          "near 2 far 500" "near 1 far 2000"
+          "${missing}" 0 16 0 16 --eye 1 2 3 --look-at 4 5 6
+          --view-near 2 --view-far 500)
+# THE MOVED CAMERA IS THE ONE THE FRUSTUM IS BUILT FROM. The camera lines
+# report the moved camera whether or not the move reached the frustum, so the
+# planes are the only place the difference shows. From 0,0,10 looking at the
+# origin the view runs along world -z, which is raw slot 1; a quarter turn to
+# the right puts it along world +x, which is raw slot 0. A frustum built from
+# the unmoved camera gives the near plane a normal of 0,1,0 instead.
+nfsu_case("a turn reaches the frustum and not only the report" 3
+          "probe: plane 0 raw normal 1,-0,0" "probe: plane 0 raw normal 0,1,0"
+          "${missing}" 0 16 0 16 --eye 0 0 10 --look-at 0 0 0 --turn 90 0)
+# And the same for a fly, which moves the planes' constants rather than their
+# normals: the near plane through 0,0,10 along -z has d 10, and flying five
+# units forward moves it to 5.
+nfsu_case("a fly reaches the frustum and not only the report" 3
+          "probe: plane 0 raw normal 0,1,0 d 4" "probe: plane 0 raw normal 0,1,0 d 9"
+          "${missing}" 0 16 0 16 --eye 0 0 10 --look-at 0 0 0 --fly 5 0 0)
 nfsu_case("the six frustum planes are printed" 3 "probe: plane 5 raw normal" ""
           "${missing}" 0 16 0 16 --eye 1 2 3 --look-at 4 5 6)
 nfsu_case("the residency rule reaches the report" 3
@@ -341,5 +363,5 @@ nfsu_case("the gate totals are printed" 3
 
 file(REMOVE_RECURSE "${work}")
 message(STATUS
-    "track-probe guards: 48 cases, each asserting the exit status and the "
+    "track-probe guards: 52 cases, each asserting the exit status and the "
     "diagnostic, with no input files and nothing written")
