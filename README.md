@@ -42,6 +42,7 @@ build/nfsu_probe track-visibility X:/Games/NFSU/Tracks/STREAML1RB.BUN 23011344 4
 build/nfsu_probe track-zones X:/Games/NFSU/Tracks/TRACKB1301.lzc
 build/nfsu_probe track-zones X:/Games/NFSU/Tracks/TRACKB1301.lzc 0 -1200
 build/nfsu_probe track-scene X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 23011344 4168 --texture X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN --order material-group
+build/nfsu_probe track-render X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 23011344 4168 --texture X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN --order material-group --out build/shots/region.tga
 build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc
 build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc 783 -8.5
 build/nfsu_probe car-placement X:/Games/NFSU/Global/GLOBALB.BUN 240SX
@@ -165,6 +166,25 @@ an instance whose slot names a mesh that streams in with another region is
 counted as unplaced rather than drawn as a stand-in. See
 `docs/TRACK_DRAW_LIST.md` for the boundary, the placement rules, what a
 prepared scene does not promise and the retail measurements.
+`track-render` draws that draw list with the CPU reference renderer and
+writes one TGA. It is the first backend of the track path, and it does not
+reopen the boundary above: it reads a prepared scene and a draw list and
+never builds a frustum or calls the culler. A car sits at the origin and
+fits in a box; a region does not, so the render camera frames the drawn
+region automatically - target at the centre of the box the vertices
+actually cover, distance fitted to that box's bounding sphere - and every
+`--view-*` option replaces one field of that camera and leaves the rest.
+`--out` is required and is never replaced: an existing target, or one
+naming an input, is refused before a file is opened, and every `--view-*`
+option is range-checked there too. The command's own refusals, exit
+statuses and output rules are pinned by
+`tests/track_render_guards.cmake`, which drives 36 cases with no input
+files at all. `src/render.cpp` is
+not modified by the command's own commit, so the car path's reference
+frames are unchanged by construction. See `docs/TRACK_RENDER.md` for the
+placement, the framing rule, the retail region's numbers and hashes, the
+ground plane cross-checked against the collision data, and what the frame
+is still missing.
 `track-collision` decodes the static collision of one track. Collision is
 not in the `STREAM*.BUN` containers at all: those hold geometry, scenery,
 textures and animation and nothing else. It lives in

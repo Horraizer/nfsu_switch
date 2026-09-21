@@ -148,6 +148,31 @@ add_library(nfsu_track_draw_list
 target_link_libraries(nfsu_track_draw_list PUBLIC nfsu_track_visibility)
 nfsu_enable_warnings(nfsu_track_draw_list)
 
+# The CPU reference renderer's track backend: one PreparedTrackScene and one
+# TrackDrawList drawn with the same Rasterizer, camera and clipper the car
+# path uses, plus the automatic framing camera a region needs and the world
+# bounds it is fitted to. It is declared after nfsu_render and
+# nfsu_track_draw_list because it is a consumer of both and adds no third
+# source of truth: src/render.cpp is not modified by the commit that adds
+# this target, which is what keeps the car path's reference frames identical
+# by construction. See docs/TRACK_RENDER.md.
+#
+# Floating-point contraction is disabled for the same reason nfsu_render
+# disables it: every frame this library produces is compared byte for byte
+# against another build, and a fused multiply-add in the placement or the
+# framing would move a vertex by an ulp and a coverage boundary with it.
+add_library(nfsu_track_render
+    src/track_render.cpp
+)
+
+target_link_libraries(nfsu_track_render PUBLIC nfsu_render nfsu_track_draw_list)
+nfsu_enable_warnings(nfsu_track_render)
+if(MSVC)
+    target_compile_options(nfsu_track_render PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_track_render PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+
 # The stock-car profile of PreparedCarScene: the recovered stock part set,
 # its per-LOD mesh hashes and the recovered placement, turned into one
 # prepared draw list with an instance per drawn copy. It reads no files, so
@@ -227,9 +252,12 @@ add_executable(nfsu_probe
     src/main.cpp
 )
 
+# nfsu_track_render is what `track-render` needs, and it is the only thing
+# in this list that writes a file. It carries nfsu_render and
+# nfsu_track_draw_list with it, so the two are not named again.
 target_link_libraries(nfsu_probe
     PRIVATE nfsu_core nfsu_track nfsu_track_visibility nfsu_track_zones
-            nfsu_track_draw_list
+            nfsu_track_draw_list nfsu_track_render
             nfsu_texture_decode nfsu_skin_inputs nfsu_stock_scene
             nfsu_arg_path)
 nfsu_enable_warnings(nfsu_probe)
@@ -414,6 +442,19 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_track_draw_list_tests)
     add_test(NAME nfsu_track_draw_list_tests COMMAND nfsu_track_draw_list_tests)
 
+    # The track backend of the CPU reference renderer: the placement, the
+    # automatic framing camera, and the frame one draw list produces. Its
+    # fixtures go through the real parsers over byte images at absolute
+    # offsets, so the vertex field order, the int16 instance matrix and the
+    # material tiling rule are exercised rather than assumed.
+    add_executable(nfsu_track_render_tests
+        tests/track_render_tests.cpp
+    )
+
+    target_link_libraries(nfsu_track_render_tests PRIVATE nfsu_track_render)
+    nfsu_enable_warnings(nfsu_track_render_tests)
+    add_test(NAME nfsu_track_render_tests COMMAND nfsu_track_render_tests)
+
     add_executable(nfsu_part_placement_tests
         tests/part_placement_tests.cpp
     )
@@ -506,6 +547,48 @@ if(NFSU_BUILD_TESTS)
         PASS_REGULAR_EXPRESSION "cannot be combined with --mesh-index"
         FAIL_REGULAR_EXPRESSION "failed to read file size;no valid meshes")
 
+    # The two `track-render` output guards, both decided before any input is
+    # opened, so they need no inputs at all. They are the only tests that run
+    # that command's body: like every other nfsu_probe command, the rest of it
+    # is exercised only by the read-only retail acceptance in
+    # docs/TRACK_RENDER.md. What they pin is the half that must never regress
+    # quietly - the command writes a file, and a missing or replaced output is
+    # data loss rather than a wrong number.
+    #
+    # The FAIL_REGULAR_EXPRESSION half is what a run prints once it is past
+    # the guard and reading the inputs that are not there, so a command that
+    # printed the refusal and carried on would still fail.
+    add_test(NAME nfsu_probe_track_render_needs_out
+        COMMAND nfsu_probe track-render missing_stream.bun 0 16 0 16
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(nfsu_probe_track_render_needs_out PROPERTIES
+        PASS_REGULAR_EXPRESSION "--out <FILE> is required"
+        FAIL_REGULAR_EXPRESSION "failed to read file size")
+
+    # $<TARGET_FILE:nfsu_probe> is passed as the output path on purpose: it
+    # is a file that certainly exists next to the working directory, so the
+    # refusal is about the target already being there and not about a path
+    # the test had to create.
+    add_test(NAME nfsu_probe_track_render_keeps_its_output
+        COMMAND nfsu_probe track-render missing_stream.bun 0 16 0 16
+                --out $<TARGET_FILE:nfsu_probe>
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(nfsu_probe_track_render_keeps_its_output PROPERTIES
+        PASS_REGULAR_EXPRESSION "already exists; this command never replaces a file"
+        FAIL_REGULAR_EXPRESSION "failed to read file size")
+
+    # What track-render refuses, what it writes and what it exits with, over
+    # 36 cases that need no input files. It is a script rather than more
+    # add_test entries because PASS_REGULAR_EXPRESSION makes CTest ignore the
+    # exit status, and the status is half of what is pinned here: the command
+    # survivor that mattered most turned a failing run into exit 0, which
+    # changes no printed byte. tests/track_render_guards.cmake says why it
+    # exists and what each case is for.
+    add_test(NAME nfsu_probe_track_render_guards
+        COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/track_render_guards.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
     # nfsu_probe registers a command in one place, and print_usage() composes
     # the usage line out of the name main() dispatches on. This reads the
     # command inventory back out of three independent places - the kCommands
@@ -544,11 +627,14 @@ if(NFSU_BUILD_TESTS)
         nfsu_render_tests nfsu_scene_tests nfsu_car_parts_tests
         nfsu_track_tests nfsu_track_object_tests
         nfsu_track_visibility_tests nfsu_track_zone_tests
-        nfsu_track_draw_list_tests
+        nfsu_track_draw_list_tests nfsu_track_render_tests
         nfsu_part_placement_tests nfsu_body_skin_tests
         nfsu_stock_scene_tests
         nfsu_skin_inputs_tests nfsu_runtime_skin_tests nfsu_inspect_tests
         nfsu_viewer_dump_alias nfsu_viewer_stock_needs_car
         nfsu_viewer_stock_excludes_selectors nfsu_probe_usage_commands
+        nfsu_probe_track_render_needs_out
+        nfsu_probe_track_render_keeps_its_output
+        nfsu_probe_track_render_guards
         PROPERTIES TIMEOUT 60)
 endif()
