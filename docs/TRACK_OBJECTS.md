@@ -587,6 +587,123 @@ header:
 build/nfsu_probe chunks X:/Games/NFSU/Tracks/STREAML1RB.BUN 100000
 ```
 
+## The intermittent segmentation fault, and what it was
+
+Issue #122. `nfsu_track_object_tests` was seen to exit with a segmentation
+fault twice, by two sessions that could not explain it: once on a reviewer's
+first full `ctest` run after a fresh configure on a documentation-only
+branch, and once on a mutant confined to a `src/main.cpp` handler this test
+does not link. Both passed every recheck. It is fixed, and it was two
+defects rather than one.
+
+`test_load_reads_only_the_region` writes a real file and loads a region out
+of it. It named that file `nfsu_track_objects_region.bin` under the system
+temporary directory, with nothing in the name to make it this process's own,
+wrote it with `std::ios::trunc` and removed it at the end. CLAUDE.md says
+several sessions are routinely live on this machine, each with its own build
+directory, so two copies of this binary overlap whenever two of them run
+`ctest` at the same time - and each one truncates and deletes the other's
+fixture. A copy that called `load_track_objects` while another was between
+its open and its close read a file that was missing, empty or half written.
+
+That alone would only have failed. What crashed was the second defect: the
+letter assertion after the load subscripted `report.sections[0]` with no
+guard, and a refused load returns a report with issues and no section at
+all. `sections[0]` on an empty vector is an access violation.
+
+Both halves are needed, and both were measured separately.
+
+| Experiment | Before | After |
+| --- | --- | --- |
+| The target alone, sequentially, default build | 200 of 200 passed | - |
+| Six concurrent copies started together, 20 rounds | 120 of 120 passed | - |
+| Eight copies in independent drifting loops, 120 rounds | 166 segmentation faults and 51 failures in 960; independently replicated at 149 and 47 | 0 and 0 in 960, replicated |
+| Two `ctest` runs, two build directories, `--repeat until-fail:6000` | one side crashed on its 18th run, the other ran 6000 clean | 6000 and 6000, no failure |
+| Two `ctest` runs filtered to this test, 400 repeats each | 800 of 800 clean | - |
+| The fixture written and removed by another process throughout | 33 segmentation faults in 40 runs | 48 reported failures, 0 crashes in 60 |
+
+The last row measures the guard on its own: it puts the shared name back on
+top of the fixed source, so the race still happens and the crash does not.
+The two `ctest` rows either side of the middle are the whole fix.
+
+**Rows two and five are the trap, and they are recorded because they passed.**
+Both are concurrent arms that came back clean on a binary that crashes 15 to
+41 per cent of the time under other concurrent arms. Read either one as a
+negative and you would have closed this issue.
+
+Why they are clean is not known. The first explanation this document gave -
+that copies started together stay in step, write identical bytes and so hide
+the collision - was tested and is false. Putting the copies deliberately back
+in step with a rendezvous barrier makes the fault worse, not invisible, at two
+sizes and in two harnesses, all on the pristine base binary:
+
+```text
+8 workers x 120 rounds, drifting, no barrier        149 crashes   15.5%
+8 workers x 120 rounds, barrier every round         399 crashes   41.6%
+6 workers x  20 rounds, barrier every round          34 crashes   28.3%
+6 workers x  20 rounds, single-thread launch burst,
+                        3.0 ms mean skew             10 crashes    8.3%
+```
+
+That is also the mechanically sensible direction: simultaneity should raise
+the chance that one copy's remove lands inside another's read window. So "in
+step" is not what made rows two and five pass, and no replacement mechanism
+has been established. The clean bash arm reproduces - 120 of 120 on three
+further trials, with bash confirmed to report these crashes correctly as
+status 139 for both foreground runs and backgrounded jobs reaped with `wait` -
+so those zeros are real rather than an accounting error. An attempt to measure
+its launch stagger was confounded, because a timestamp call between launches
+costs more than the interval being measured. The true per-run time is 61 ms.
+Something about those two harnesses leaves the fixture windows not
+overlapping, and what it is remains open.
+
+What survives is the directional advice, in the form the evidence supports: **a
+clean result from concurrent runs means nothing unless you have evidence the
+copies were actually running at the same time**, and a harness whose
+per-launch overhead approaches the target's runtime cannot give you that
+evidence. "Make them drift" is not the condition - the 800-of-800 arm was two
+independent `ctest` processes free to drift, and it still came back clean.
+
+Together with row one, that is why this took two sightings to pin: the fault
+cannot occur in the one condition under which a flaky target is normally
+investigated, which is running it alone, and two reasonable ways of running
+several copies at once report it absent.
+
+The fixture name now carries the process id, the way `tests/arg_path_tests.cpp`
+has since issue #87. Every container subscript in the test file was then
+enumerated mechanically rather than by grep, over 235 bracket sites; four
+more unguarded ones were found and guarded, and two `static_assert`s now pin
+the fixture's fixed-length arrays to the parser constants that index them.
+An independent pass re-enumerated the file and reached 237 sites, of which 69
+are container subscripts, and found every one guarded or provably in range. It
+cross-checked that by building with `-D_GLIBCXX_ASSERTIONS`, which makes
+`vector::operator[]` bounds-checked: the suite passes with no assertion firing.
+Three of the four new guards are load-bearing; the fourth, the
+`!report.sections.empty()` in the section-decodes check, is belt-and-braces,
+because `valid_section_count() == 1` already implies a non-empty vector.
+
+The suite went from 197 checks to 247, but that is 5 new distinct assertions
+rather than 50: 46 of the 50 are the one `default_tree` fixture check, counted
+once per call.
+
+Issue #124 covers the eight other test files that still build fixtures at a
+fixed name - `car_parts_tests.cpp:864`, `chunk_tests.cpp:36`,
+`geometry_tests.cpp:1572`, `part_placement_tests.cpp:1139`,
+`texture_tests.cpp:1774`, `track_collision_tests.cpp:1489`,
+`track_tests.cpp:1573` and `track_zone_tests.cpp:1282`. `render_tests.cpp:166`
+is not one of them: it randomises its directory name from `steady_clock` and
+`random_device`. The nine names all differ, so each file collides only with
+another copy of itself and each can be fixed on its own.
+
+Whether any of the eight crashes rather than merely fails is no longer open.
+`nfsu_texture_tests` does: under three concurrent full `ctest` runs it was seen
+to exit `0xc0000409`, `STATUS_STACK_BUFFER_OVERRUN`, and to hit twelve
+60-second timeouts, and standalone under four-way concurrency it failed 85 of
+160 runs. A repeated 60-second hang is worse for a gate than a failure,
+because a sweep reads it as neither. `nfsu_track_collision_tests`,
+`nfsu_track_zone_tests`, `nfsu_track_tests`, `nfsu_geometry_tests` and
+`nfsu_car_parts_tests` were seen to fail but not to crash.
+
 ## Observed
 
 - The five large `STREAML1R*.BUN` files hold all 593 `0x80034100` chunks
