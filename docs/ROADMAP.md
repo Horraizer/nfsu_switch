@@ -125,9 +125,18 @@
 
 ## M3: Switch bring-up
 
-- Add devkitA64 and libnx build support.
+- Add devkitA64 and libnx build support. An opt-in Switch configure
+  (`cmake/switch-toolchain.cmake`) locates `DEVKITPRO` and `DEVKITA64`,
+  names any missing SDK piece and the variable that fixes it, and builds a
+  minimal libnx application into an NRO; the desktop build is unchanged
+  ([`SWITCH_BUILD.md`](SWITCH_BUILD.md)). Nothing has run on hardware yet.
 - Add controller, filesystem, timing, and logging services.
-- Add a deko3d renderer with offline-compiled shaders.
+- Add a deko3d renderer with offline-compiled shaders. The shader pipeline is
+  in place: `uam` compiles the car and track material variants at build time,
+  and every program's manifest is checked against its GLSL, its compiled
+  shader and the C++ vertex structs
+  ([`SHADER_PIPELINE.md`](SHADER_PIPELINE.md)). The renderer that draws with
+  them is still to do.
 - Run the car viewer and track slice on hardware.
 
 ## M4: Playable race

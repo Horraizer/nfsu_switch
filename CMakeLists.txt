@@ -1,5 +1,17 @@
 cmake_minimum_required(VERSION 3.20)
 
+# The Nintendo Switch build is opt-in: -DCMAKE_TOOLCHAIN_FILE=
+# cmake/switch-toolchain.cmake (docs/SWITCH_BUILD.md). Its SDK is checked
+# here, before project() reads that file, so a missing tool is reported by
+# name and not by the errors CMake raises after a toolchain file has failed.
+if(CMAKE_TOOLCHAIN_FILE MATCHES "switch-toolchain[.]cmake$")
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/switch-sdk.cmake)
+    nfsu_switch_sdk_locate(NFSU_SWITCH_SDK_PROBLEM)
+    if(NOT NFSU_SWITCH_SDK_PROBLEM STREQUAL "")
+        message(FATAL_ERROR "${NFSU_SWITCH_SDK_PROBLEM}")
+    endif()
+endif()
+
 project(nfsu_switch LANGUAGES CXX)
 
 option(NFSU_BUILD_TESTS "Build unit tests" ON)
@@ -11,6 +23,17 @@ function(nfsu_enable_warnings target)
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
     endif()
 endfunction()
+
+# The Switch build configures switch/ and nothing below this point: the
+# desktop programs and their tests are never built for the console, and a
+# desktop configure never enters this branch.
+if(NINTENDO_SWITCH)
+    if(NFSU_BUILD_TESTS)
+        enable_testing()
+    endif()
+    add_subdirectory(switch)
+    return()
+endif()
 
 add_library(nfsu_image
     src/image.cpp
@@ -636,5 +659,65 @@ if(NFSU_BUILD_TESTS)
         nfsu_probe_track_render_needs_out
         nfsu_probe_track_render_keeps_its_output
         nfsu_probe_track_render_guards
+        PROPERTIES TIMEOUT 60)
+endif()
+
+# The shader pipeline's checks that need no Switch SDK. The manifests in
+# shaders/ state each program's interface; docs/SHADER_PIPELINE.md says what
+# every check catches and what none of them can. The check against the
+# compiled shaders needs uam and runs in the Switch build, in switch/.
+if(NFSU_BUILD_TESTS)
+    file(GLOB NFSU_SHADER_MANIFESTS CONFIGURE_DEPENDS
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.manifest)
+    set(NFSU_SHADER_MANIFEST_HEADER
+        ${CMAKE_CURRENT_BINARY_DIR}/generated/nfsu/shader_manifest.h)
+    add_custom_command(
+        OUTPUT ${NFSU_SHADER_MANIFEST_HEADER}
+        COMMAND ${CMAKE_COMMAND} -DMODE=header
+                -DMANIFEST_DIR=${CMAKE_CURRENT_SOURCE_DIR}/shaders
+                -DOUTPUT=${NFSU_SHADER_MANIFEST_HEADER}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/shader_manifest.cmake
+        DEPENDS ${NFSU_SHADER_MANIFESTS}
+                ${CMAKE_CURRENT_SOURCE_DIR}/cmake/shader_manifest.cmake
+        COMMENT "Generating shader_manifest.h from shaders/*.manifest"
+        VERBATIM)
+
+    # The manifests against what no shader carries: the C++ vertex structs
+    # the buffers are uploaded from, and the state combinations the CPU
+    # reference renderer can give each kind of draw.
+    add_executable(nfsu_shader_manifest_tests
+        tests/shader_manifest_tests.cpp
+        ${NFSU_SHADER_MANIFEST_HEADER}
+    )
+
+    target_include_directories(nfsu_shader_manifest_tests
+        PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    target_link_libraries(nfsu_shader_manifest_tests PRIVATE nfsu_track_render)
+    nfsu_enable_warnings(nfsu_shader_manifest_tests)
+    add_test(NAME nfsu_shader_manifest_tests COMMAND nfsu_shader_manifest_tests)
+
+    # Every manifest against the GLSL of its two stages, and then the same
+    # check over copies with one declaration moved, each of which must fail
+    # with the finding that names it.
+    add_test(NAME nfsu_shader_source_guards
+        COMMAND ${CMAKE_COMMAND}
+                -DCHECKER=${CMAKE_CURRENT_SOURCE_DIR}/cmake/shader_manifest.cmake
+                -DSHADERS=${CMAKE_CURRENT_SOURCE_DIR}/shaders
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/shader_source_guards.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+    # The Switch configure's SDK diagnostics, against SDK trees that each
+    # lack one piece. It needs no SDK: every case stops before a compiler is
+    # looked for.
+    add_test(NAME nfsu_switch_toolchain_diagnostics
+        COMMAND ${CMAKE_COMMAND}
+                -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                "-DGENERATOR=${CMAKE_GENERATOR}"
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/switch_toolchain_diagnostics.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+    set_tests_properties(
+        nfsu_shader_manifest_tests nfsu_shader_source_guards
+        nfsu_switch_toolchain_diagnostics
         PROPERTIES TIMEOUT 60)
 endif()

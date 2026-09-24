@@ -6,3 +6,14 @@
 *.user
 *.log
 
+# What the Switch build writes (docs/SWITCH_BUILD.md). It writes all of it
+# under its build directory, which /build*/ above covers; these keep an
+# application package or a compiled shader out of Git wherever one lands.
+*.elf
+*.nro
+*.nso
+*.nacp
+*.dksh
+*.tgsi
+# Local CMake presets hold machine paths, such as where an SDK is installed.
+/CMakeUserPresets.json
