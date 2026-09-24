@@ -240,6 +240,12 @@ add_library(nfsu_render
 )
 
 target_link_libraries(nfsu_render PUBLIC nfsu_scene nfsu_image)
+# The POSIX frame writer rolls a failed write back with
+# rollback_created_files, which nfsu_core defines (src/texture.cpp). The link
+# is private because render.h exposes nothing of nfsu_core. The Windows
+# writer removes by handle and never calls it, which is why only a POSIX
+# build found the link missing (issue #132).
+target_link_libraries(nfsu_render PRIVATE nfsu_core)
 nfsu_enable_warnings(nfsu_render)
 if(MSVC)
     target_compile_options(nfsu_render PRIVATE /fp:precise)
