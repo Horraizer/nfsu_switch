@@ -127,7 +127,12 @@
 
 - Add devkitA64 and libnx build support.
 - Add controller, filesystem, timing, and logging services.
-- Add a deko3d renderer with offline-compiled shaders.
+- Add a deko3d renderer with offline-compiled shaders. The CPU half of its
+  memory and upload path is in place: persistent, streaming, transient and GPU
+  arenas with budgets and diagnostics ([`MEMORY_BUDGETS.md`](MEMORY_BUDGETS.md)),
+  and the upload table, format gate and fence-gated upload ledger for prepared
+  car and track scenes ([`GPU_UPLOAD.md`](GPU_UPLOAD.md)). Nothing in it has run
+  on hardware, and the budgets are placeholders until it does.
 - Run the car viewer and track slice on hardware.
 
 ## M4: Playable race
