@@ -60,8 +60,13 @@ arena's own figures, and the fifth by passing in a Release build.
    one, and `create()` reserves room for `max_allocations + 1` free blocks,
    `max_allocations` slots and as many free-slot entries, which covers every
    state the arena can reach. A test replaces the global allocation function
-   and counts its calls inside twenty thousand arena calls, in the free list's
-   worst shape as well; the count is zero.
+   and counts its calls inside the arena's own calls, and the count is zero
+   over three kinds of state: one more free block than live allocations, one
+   below the limit; the one state that needs the whole reservation, a
+   two-sided split at the allocation limit that leaves `max_allocations + 1`
+   free blocks; and twenty thousand random calls with a reset every thousand.
+   With the reservation one block short, that split is where `allocate()`
+   would reallocate, and the test counts the allocation and fails.
 4. **A refusal changes nothing** but the refusal counters, and never returns a
    range that reaches past `base + capacity`. For the CPU categories that
    address is the first byte of the next arena.
@@ -289,24 +294,106 @@ it would catch. The mutation sweep that showed each can fail is in
 
 ## Mutations
 
-Each mutant is one edit to the library, rebuilt and run against both suites.
-A run is classified by what it printed, as [`CLAUDE.md`](../CLAUDE.md) requires:
+Each mutant is one edit to the library, rebuilt and run against both suites. A
+run is classified by what it printed, as [`CLAUDE.md`](../CLAUDE.md) requires:
 a kill needs a non-zero exit, at least one `FAIL:` line and the
 `<n> check(s) failed` summary; a survival needs exit 0 and the pass line;
 anything else - a crash, a timeout, a missing summary - is unknown and is not
-counted as a kill. Each suite was also run one test at a time, since both test
-programs take a test name, so every kill is attributed to the tests that made
-it and every test is shown able to fail on its own.
+counted as a kill.
 
-The sweep ran on library sources identical to the ones committed here; the
-tests have only gained checks since, which can only kill more. These are the
-author's mutants, and an author's set measures the set as much as the suite:
-[`TRACK_DRAW_LIST.md`](TRACK_DRAW_LIST.md) records a suite its author's own 50
-mutants scored at 49 caught, and an independent pass that then found 56
-survivors among 124. An independent pass over this change is recorded here
-once it has reported, and the sweep is run again on the final head.
+Three sweeps have been run over this change, and the two its author did not
+write both found what the author's own had missed. An author's mutants measure
+the set as much as the suite: [`TRACK_DRAW_LIST.md`](TRACK_DRAW_LIST.md)
+records a suite its author's own 50 mutants scored at 49 caught, and an
+independent pass that then found 56 survivors among 124. The last two sweeps
+below ran at `932cc01`, whose `src/` and `tests/` are the ones committed here.
 
-43 mutants, 1 build error, 42 killed.
+### The review
+
+The review of head `7bb355df64c51f2b25da575197b72f90f9b0bfac` ran 83 mutants:
+74 caught, 9 survived, 0 unknown. Those figures are the coordinator's report of
+the review; this branch did not run that sweep and has not seen its mutant
+list. The review found no wrong result: by its account each of the nine
+survivors is a coverage gap, a line the shipped code gets right that no test
+looked at. The fix-round brief names four of them, one to each of its items B1
+to B4, and each item closes the survivor it names. For those four this branch
+confirms the review's account: the shipped line is right, and only the test
+was missing.
+
+| Review item | Survivor | The gap | Closed by |
+| --- | --- | --- | --- |
+| B1 | `src/memory_arena.cpp:96`: `create()` reserves `max_allocations` free blocks, not `max_allocations + 1` | no test reached the one state that needs the last block, a two-sided split at the allocation limit | `arena_calls_never_allocate`: that split, in an arena of three |
+| B2 | `src/memory_budget.cpp:146`: `staging_largest_bytes` is the last texture's size, not the largest | the one table it was asserted on had its largest texture last | `scene_requirement_reads_the_whole_table`: the car table, largest texture first |
+| B3 | `src/memory_budget.cpp:167-171`: the guard on the placement pass removed | no test gave a layout query that answers differently when a table is placed than when it was sized | `scene_requirement_reads_the_whole_table`: a query answering 64 bytes, then 4096 |
+| B4 | `src/gpu_upload.cpp:532`: the lifetime an upload records not taken from its resource | no test read a record's lifetime back through `find()` | `generated_skin_is_replaced_on_its_own`: the skin's record reads back as generated, a pack texture's as scene |
+
+The other five survivors are named in the review's comment on the board, which
+this session could not reach, and not in the brief. They are not named here
+rather than guessed. Every mutant this branch's own two sweeps left alive in
+the same three files is listed below, with the test that now kills it or the
+reason it is still open; if any of the five is among them, the same holds for
+it, but without the review's list that cannot be confirmed.
+
+Each of B1 to B4 was shown both ways at `932cc01`: the survivor applied and
+only the named test run, then the file restored byte for byte and the same
+test run again.
+
+| Review item | With the survivor | Restored |
+| --- | --- | --- |
+| B1 | exit 1, `FAIL: heap allocations inside a two-sided split at the limit: got 1, want 0`, `1 check(s) failed` | exit 0, `all memory arena tests passed` |
+| B2 | exit 1, `FAIL: the largest texture is the first one: got 24, want 128`, `1 check(s) failed` | exit 0, `all gpu upload tests passed` |
+| B3 | exit 1, `FAIL: a layout query that answers differently the second time is refused`, `2 check(s) failed` | exit 0, `all gpu upload tests passed` |
+| B4 | exit 1, `FAIL: the ledger records the skin as a generated image texture`, `1 check(s) failed` | exit 0, `all gpu upload tests passed` |
+
+At `7bb355d` the B1 survivor passes the same test, exit 0,
+`all memory arena tests passed`: the test there never reached the split.
+
+### The independent pass
+
+A subagent the worker dispatched, which did not write the change, wrote 136
+mutants of its own over the three library files. It ran inside the worker's
+session, so it is independent of the author's mutant list, not of the author.
+It first ran them at `d1d31a6`, a state of this branch from before its first
+push that was squashed into `7bb355d`; that state's `src/` is byte for byte
+`7bb355d`'s, and its headers differ in one comment. There it scored 101 killed,
+35 survived, 0 unknown. Re-run unchanged at `932cc01`: 133 killed, 3 survived,
+0 unknown.
+
+75 of the 136 are in this document's two files, `src/memory_arena.cpp` and
+`src/memory_budget.cpp`: 57 killed and 18 survived at first, 73 killed and 2
+survived now, 0 unknown either time. Each "closed by" below was checked on its
+own at `932cc01`: the survivor applied and only the named test run, which
+printed a `FAIL:` line and the failure summary, after every named test had
+passed on the unmutated build.
+
+| Mutant | Change | At `932cc01` | Closed by |
+| --- | --- | --- | --- |
+| I-A06 | create refuses base + capacity == 2^64 - 1 exactly | killed | `create_refuses_bad_configurations`: a range ending exactly at 2^64 - 1 |
+| I-A07 | create refuses max_allocations == kMaxArenaAllocations | survived | still open: the inclusive upper bound of `max_allocations`. Killing it needs an arena created at exactly `kMaxArenaAllocations`, which reserves 208 MiB of bookkeeping inside a unit test; the suite pins only that one more is refused |
+| I-A08 | free-block bookkeeping reserved one short (max_allocations, not +1) | killed | `arena_calls_never_allocate`: a two-sided split at the allocation limit (review item B1) |
+| I-A12 | create keeps the resets counter | killed | `create_again_starts_every_figure_over` |
+| I-A13 | create keeps the refusal counters | killed | `create_again_starts_every_figure_over` |
+| I-A14 | create keeps the lifetime high_water_extent | killed | `create_again_starts_every_figure_over` |
+| I-A15 | a refused create still wipes the refusal counters | killed | `create_refuses_bad_configurations`: every figure compared, counters included |
+| I-A32 | high_water_extent is the latest extent, not the max | killed | `high_water_marks_are_peaks` |
+| I-A33 | period extent peak records bytes instead of extent | killed | `high_water_marks_are_peaks` |
+| I-A37 | release slot bound off by one (reads slots_[size]) | survived | still open: the release bound check off by one. The mutant lets a handle one slot past the end through and reads a slot that was never constructed; the suite cannot tell, since whatever that memory holds decides the answer, and reading it is undefined behaviour that only a sanitizer or a checked standard library reports. Nothing in this suite runs one |
+| I-A38 | release accepts a never-issued handle on a free slot | killed | `handles_are_checked`: the current generation of a free slot |
+| I-A49 | reset keeps the period extent peak | killed | `high_water_marks_are_peaks`, and `frames_reset_the_transient_arena` |
+| I-A56 | plan gives every arena the persistent max_allocations | killed | `memory_plan_layout`: a different allocation limit per category |
+| I-B01 | saturating_multiply saturates one step early | killed | `derived_ceilings`: the largest product that fits |
+| I-B12 | make_arena refuses capacity == kMaxArenaCapacity | killed | `scene_requirement_reads_the_whole_table`: one buffer as wide as an arena |
+| I-B13 | make_arena creates an arena for an empty role | killed | `scene_requirement_reads_the_whole_table`: a table with no texture |
+| I-B14 | staging_largest = last texture | killed | `scene_requirement_reads_the_whole_table`: the largest texture first (review item B2) |
+| I-B17 | image_extent reports used bytes, not the extent | killed | `scene_requirement_reads_the_whole_table`: images spaced by their alignment |
+
+### The author's sweep
+
+The author's own mutants, at `932cc01`. Each suite was also run one test at a
+time, since both test programs take a test name, so every kill is attributed
+to the tests that made it and every test is shown able to fail on its own.
+
+43 mutants, 43 killed.
 
 | Mutant | Change | Result |
 | --- | --- | --- |
@@ -337,7 +424,7 @@ once it has reported, and the sweep is run again on the final head.
 | A25 | extent off by one | killed |
 | A26 | plan does not advance past an arena | killed |
 | A27 | plan cpu_bytes stops at the last base | killed |
-| A28 | plan creates in place, so a refusal clobbers it | build error |
+| A28 | plan creates in place, so a refusal clobbers it | killed |
 | A29 | plan places the GPU arena after the CPU ones | killed |
 | A30 | refusal total is the last reason only | killed |
 | A31 | high-water extent tracks bytes instead | killed |
@@ -372,18 +459,20 @@ Each test run alone, against the same mutants:
 | `frames_reset_the_transient_arena` | 4 | A20 A21 A22 A23 |
 | `handles_are_checked` | 6 | A14 A16 A19 A20 A25 A32 |
 | `create_again_keeps_old_handles_stale` | 3 | A20 A33 A34 |
+| `create_again_starts_every_figure_over` | 4 | A08 A25 A30 A31 |
+| `high_water_marks_are_peaks` | 4 | A08 A16 A22 A25 |
 | `allocation_limit` | 2 | A08 A12 |
 | `arena_calls_never_allocate` | 8 | A08 A09 A12 A16 A17 A18 A19 A24 |
-| `memory_plan_layout` | 5 | A05 A06 A26 A27 A29 |
+| `memory_plan_layout` | 6 | A05 A06 A26 A27 A28 A29 |
 | `derived_ceilings` | 2 | B01 B02 |
 | `switch_budget` | 4 | A26 A27 B04 B09 |
 | `scene_requirement_places_the_table` | 7 | A08 A25 A31 B05 B06 B07 B08 |
+| `scene_requirement_reads_the_whole_table` | 5 | A08 A25 A31 B06 B08 |
 | `frame_ceiling_is_the_full_draw_list` | 3 | A05 A06 B03 |
 
-A28 was written against a copyable arena. Arenas became move-only after it
-was written, so it no longer compiles; it is re-expressed as a move for the
-next sweep, and `memory_plan_layout` now releases an allocation made before a
-refused budget, which is the check a moved-from arena fails.
+A28 was written when arenas could be copied. It stopped compiling when they
+became move-only, and the sweep recorded at `7bb355d` counted it as a build
+error; it is written as a move now, and `memory_plan_layout` kills it.
 
 ## What is still open
 
@@ -394,7 +483,7 @@ Of issue #52's acceptance:
 | Fail gracefully before allocation overflow | done for the allocator and the ledger, tested at the exact boundary, in Debug and Release |
 | Report high-water marks and fragmentation diagnostics | done, as data, tested against an independent model |
 | Validate repeated scene load and unload cycles on hardware | **open.** Run here against the arena and the ledger only; no Switch was available and none of these cycles has run on one |
-| Release build and full CTest pass | the new suites pass in both configurations; see the handoff for the full-suite result on Linux, where a pre-existing error outside this change stops `src/render.cpp` compiling |
+| Release build and full CTest pass | The two new suites pass in Debug and in Release. The full suite was not run on this branch's platform: on Linux `src/render.cpp` does not compile, a pre-existing error outside this change now tracked as issue #132, so no target that links `nfsu_render` builds there. The coordinator reports the full suite green at head 7bb355df64c51f2b25da575197b72f90f9b0bfac on MinGW-W64 UCRT GCC 13.2.0, 30 of 30 in Debug and in Release, twice independently; that is the coordinator's measurement, not this branch's |
 | No retail or derived game assets enter Git | none do: every fixture is built in memory |
 | ASCII-only artifacts and Git metadata | scanned; see the handoff |
 

@@ -69,7 +69,12 @@ resource.
 - **Names** are ASCII and unique within a table, and carry the prepared
   position so that two meshes with one stored name stay apart:
   `car mesh 0 BODY vertex buffer`, `track texture 1 hash 0xAAAA0002`,
-  `car generated texture 0 hash 0x5C1A0001`. A leak report prints them.
+  `car generated texture 0 hash 0x5C1A0001`. A leak report prints them. A
+  stored mesh name keeps every byte from 0x20 to 0x7E, the space and the
+  tilde included, and every other byte becomes `?`; an empty name is left out
+  rather than leaving a double space. A texture's hash is
+  `RenderTexture::hash`, which always counts as claimed, not its first claim,
+  which a hand-built texture may leave empty.
 - **An empty stream is counted, not listed.** A mesh prepared with vertices
   and no triangles draws nothing and has nothing to place, and an arena
   refuses a zero-byte request, so `UploadTotals::empty_buffers` counts it and
@@ -91,11 +96,13 @@ It is recognised by provenance, never by hash or position.
 `bind_runtime_skin` stamps the generated texture with a caller-chosen source
 index past the real texture sources and reports it in
 `RuntimeSkinBinding::source`; `build_car_upload_table` takes that index and
-gives `generated` to every texture carrying it. A test builds the scene
-through `bind_runtime_skin` and `prepare_car_scene`, exactly as the viewer
-does, and reads it with the binding's source, with none, and with a source
-nothing carries. Naming a real pack source marks that source's textures, which
-is the documented reason `bind_runtime_skin` asks for an index past them.
+gives `generated` to every texture carrying it. `kNoHandle` marks nothing
+generated, even a texture whose own source index is `kNoHandle`. A test builds
+the scene through `bind_runtime_skin` and `prepare_car_scene`, exactly as the
+viewer does, and reads it with the binding's source, with none, and with a
+source nothing carries. Naming a real pack source marks that source's
+textures, which is the documented reason `bind_runtime_skin` asks for an index
+past them.
 
 ### One upload, one accounting
 
@@ -233,13 +240,21 @@ The rest of the bookkeeping:
   error names the resource and the arena's reason: `cannot upload car mesh 1
   WHEEL vertex buffer: the gpu arena for buffer memory refused 108 bytes at
   alignment 4: over budget`. The arenas' high-water marks keep the moment the
-  partial placement existed, because it did.
+  partial placement existed, because it did. The slots go back too, newest
+  first, which leaves the ledger's free slots exactly as the call found them:
+  a retry is given the same slots in the same order, so its reports stay in
+  table order.
+- **A re-created ledger starts over.** `create()` resets every figure, the
+  completed fence included, so a backend may number its fences from 1 again;
+  a ledger that kept the old completed fence would reclaim new staging before
+  the copies that read it had run. Handles issued before `create()` stay
+  refused, because slot generations carry on across it.
 - **An image is placed where its layout says.** Its size and alignment come
   from an `ImageLayoutQuery`, which on deko3d is `dkImageLayoutGetSize` and
   `dkImageLayoutGetAlignment` of the layout the backend builds. A layout
   smaller than the texels is refused. A desktop passes `linear_image_layout`,
-  which answers the texels and the staging alignment: a lower bound, never a
-  measurement.
+  which answers the texels and the staging alignment for a texture and
+  refuses anything else: a lower bound, never a measurement.
 - **Lost placements are counted.** If an arena is reset, or a placement
   released, behind the ledger's back, the arena refuses the ledger's release
   and `stats().lost_placements` counts it. Nonzero means the arena and the
@@ -327,22 +342,102 @@ a 2x3 texture on the car, a 4x2 and a 3x5 texture on the track.
 
 ## Mutations
 
-Each mutant is one edit to the library, rebuilt and run against both suites.
-A run is classified by what it printed, as [`CLAUDE.md`](../CLAUDE.md) requires:
+Each mutant is one edit to the library, rebuilt and run against both suites. A
+run is classified by what it printed, as [`CLAUDE.md`](../CLAUDE.md) requires:
 a kill needs a non-zero exit, at least one `FAIL:` line and the
 `<n> check(s) failed` summary; a survival needs exit 0 and the pass line;
 anything else - a crash, a timeout, a missing summary - is unknown and is not
-counted as a kill. Each suite was also run one test at a time, since both test
-programs take a test name, so every kill is attributed to the tests that made
-it and every test is shown able to fail on its own.
+counted as a kill.
 
-The sweep ran on library sources identical to the ones committed here; the
-tests have only gained checks since, which can only kill more. These are the
-author's mutants, and an author's set measures the set as much as the suite:
-[`TRACK_DRAW_LIST.md`](TRACK_DRAW_LIST.md) records a suite its author's own 50
-mutants scored at 49 caught, and an independent pass that then found 56
-survivors among 124. An independent pass over this change is recorded here
-once it has reported, and the sweep is run again on the final head.
+Three sweeps have been run over this change, and the two its author did not
+write both found what the author's own had missed. An author's mutants measure
+the set as much as the suite: [`TRACK_DRAW_LIST.md`](TRACK_DRAW_LIST.md)
+records a suite its author's own 50 mutants scored at 49 caught, and an
+independent pass that then found 56 survivors among 124. The last two sweeps
+below ran at `932cc01`, whose `src/` and `tests/` are the ones committed here.
+
+### The review
+
+The review of head `7bb355df64c51f2b25da575197b72f90f9b0bfac` ran 83 mutants:
+74 caught, 9 survived, 0 unknown. Those figures are the coordinator's report of
+the review; this branch did not run that sweep and has not seen its mutant
+list. The review found no wrong result: by its account each of the nine
+survivors is a coverage gap, a line the shipped code gets right that no test
+looked at. The fix-round brief names four of them, one to each of its items B1
+to B4, and each item closes the survivor it names. For those four this branch
+confirms the review's account: the shipped line is right, and only the test
+was missing.
+
+| Review item | Survivor | The gap | Closed by |
+| --- | --- | --- | --- |
+| B1 | `src/memory_arena.cpp:96`: `create()` reserves `max_allocations` free blocks, not `max_allocations + 1` | no test reached the one state that needs the last block, a two-sided split at the allocation limit | `arena_calls_never_allocate`: that split, in an arena of three |
+| B2 | `src/memory_budget.cpp:146`: `staging_largest_bytes` is the last texture's size, not the largest | the one table it was asserted on had its largest texture last | `scene_requirement_reads_the_whole_table`: the car table, largest texture first |
+| B3 | `src/memory_budget.cpp:167-171`: the guard on the placement pass removed | no test gave a layout query that answers differently when a table is placed than when it was sized | `scene_requirement_reads_the_whole_table`: a query answering 64 bytes, then 4096 |
+| B4 | `src/gpu_upload.cpp:532`: the lifetime an upload records not taken from its resource | no test read a record's lifetime back through `find()` | `generated_skin_is_replaced_on_its_own`: the skin's record reads back as generated, a pack texture's as scene |
+
+The other five survivors are named in the review's comment on the board, which
+this session could not reach, and not in the brief. They are not named here
+rather than guessed. Every mutant this branch's own two sweeps left alive in
+the same three files is listed below, with the test that now kills it or the
+reason it is still open; if any of the five is among them, the same holds for
+it, but without the review's list that cannot be confirmed.
+
+Each of B1 to B4 was shown both ways at `932cc01`: the survivor applied and
+only the named test run, then the file restored byte for byte and the same
+test run again.
+
+| Review item | With the survivor | Restored |
+| --- | --- | --- |
+| B1 | exit 1, `FAIL: heap allocations inside a two-sided split at the limit: got 1, want 0`, `1 check(s) failed` | exit 0, `all memory arena tests passed` |
+| B2 | exit 1, `FAIL: the largest texture is the first one: got 24, want 128`, `1 check(s) failed` | exit 0, `all gpu upload tests passed` |
+| B3 | exit 1, `FAIL: a layout query that answers differently the second time is refused`, `2 check(s) failed` | exit 0, `all gpu upload tests passed` |
+| B4 | exit 1, `FAIL: the ledger records the skin as a generated image texture`, `1 check(s) failed` | exit 0, `all gpu upload tests passed` |
+
+At `7bb355d` the B1 survivor passes the same test, exit 0,
+`all memory arena tests passed`: the test there never reached the split.
+
+### The independent pass
+
+A subagent the worker dispatched, which did not write the change, wrote 136
+mutants of its own over the three library files. It ran inside the worker's
+session, so it is independent of the author's mutant list, not of the author.
+It first ran them at `d1d31a6`, a state of this branch from before its first
+push that was squashed into `7bb355d`; that state's `src/` is byte for byte
+`7bb355d`'s, and its headers differ in one comment. There it scored 101 killed,
+35 survived, 0 unknown. Re-run unchanged at `932cc01`: 133 killed, 3 survived,
+0 unknown.
+
+61 of the 136 are in this document's file, `src/gpu_upload.cpp`: 44 killed and
+17 survived at first, 60 killed and 1 survived now, 0 unknown either time. Each
+"closed by" below was checked on its own at `932cc01`: the survivor applied and
+only the named test run, which printed a `FAIL:` line and the failure summary,
+after every named test had passed on the unmutated build.
+
+| Mutant | Change | At `932cc01` | Closed by |
+| --- | --- | --- | --- |
+| I-G02 | printable replaces '~' (0x7E) | killed | `names_hashes_and_sources` |
+| I-G03 | printable replaces ' ' (0x20) | killed | `names_hashes_and_sources` |
+| I-G04 | checked_multiply overflow guard off by one | killed | `gate_refuses_malformed_rgba8`: the largest product that fits |
+| I-G16 | kNoHandle no longer excluded from the generated match | killed | `names_hashes_and_sources` |
+| I-G24 | texture_hash taken from claims[0] | killed | `names_hashes_and_sources` |
+| I-G26 | linear_image_layout accepts a non-texture | killed | `image_layout_query_is_honoured` |
+| I-G27 | ledger create accepts a null image arena | killed | `ledger_creation_is_checked` |
+| I-G28 | ledger create refuses max_resources == kMaxArenaAllocations | survived | still open: the inclusive upper bound of `max_resources`, for the same reason as I-A07: a ledger at exactly `kMaxArenaAllocations` reserves 720 MiB of 176-byte slots and 4-byte free-slot entries on this build; the suite pins only that one more is refused |
+| I-G31 | ledger create keeps the completed fence | killed | `ledger_creation_is_checked` |
+| I-G33 | upload refuses bytes == kMaxUploadResourceBytes | killed | `ledger_creation_is_checked` |
+| I-G44 | rollback oldest first instead of newest first | killed | `upload_table_is_all_or_nothing`: a retry on the same ledger |
+| I-G45 | ledger release accepts a never-issued handle on a free slot | killed | `handles_the_ledger_never_issued` |
+| I-G46 | double-release names a record that is no longer the handle's | killed | `handles_the_ledger_never_issued` |
+| I-G57 | find() accepts a dead slot at the handle's generation | killed | `handles_the_ledger_never_issued` |
+| I-G58 | staged_bytes counts the image placement size | killed | `image_layout_query_is_honoured` |
+| I-G60 | mesh name not passed through printable() | killed | `names_hashes_and_sources` |
+| I-G61 | unnamed mesh label gets a trailing space | killed | `names_hashes_and_sources` |
+
+### The author's sweep
+
+The author's own mutants, at `932cc01`. Each suite was also run one test at a
+time, since both test programs take a test name, so every kill is attributed
+to the tests that made it and every test is shown able to fail on its own.
 
 39 mutants, 38 killed, 1 unknown.
 
@@ -402,21 +497,34 @@ Each test run alone, against the same mutants:
 | `tables_refuse_an_invalid_scene` | 2 | G14 G15 |
 | `track_table_is_the_region_cost` | 3 | G11 G16 G37 |
 | `empty_streams_are_counted_not_listed` | 1 | G17 |
+| `names_hashes_and_sources` | 2 | G12 G17 |
 | `ledger_fences` | 8 | G09 G10 G18 G19 G20 G21 G22 G36 |
 | `upload_release_upload_returns_to_a_known_state` | 2 | G22 G23 |
 | `leaks_are_reported_by_name` | 3 | G22 G24 G37 |
 | `double_release_is_refused_by_name` | 4 | G20 G23 G25 G26 |
+| `handles_the_ledger_never_issued` | 3 | G09 G23 G26 |
 | `upload_table_is_all_or_nothing` | 7 | G09 G11 G13 G22 G27 G28 G29 |
 | `generated_skin_is_replaced_on_its_own` | 2 | G13 G22 |
 | `lost_placements_are_counted` | 2 | G22 G30 |
-| `ledger_creation_is_checked` | 3 | G22 G31 G34 |
+| `ledger_creation_is_checked` | 4 | G18 G22 G31 G34 |
 | `create_again_keeps_old_handles_stale` | 3 | G26 G38 G39 |
-| `image_layout_query_is_honoured` | 2 | G32 G33 |
+| `image_layout_query_is_honoured` | 3 | G32 G33 G36 |
 
 G35 removes the check for a missing staging arena, and the upload then
 dereferences a null pointer: the program dies with a segmentation fault and
 prints no summary. By the rule above that is unknown, not a kill, and it is
-reported that way.
+reported that way. It has come out unknown in all five runs of this sweep on
+this branch, the same crash each time, so re-running it changes nothing.
+
+`ledger_creation_is_checked` gained one check at `932cc01`, after the review: a
+ledger asked for `kMaxArenaAllocations + 1` resources must be refused, and the
+refusal must name the cap. Neither of this branch's sweeps has a mutant that
+drops the upper half of that bound - I-G28 moves it, it does not remove it - so
+it was shown both ways as B1 to B4 were. With
+`max_resources > kMaxArenaAllocations` taken out of the check: exit 1,
+`FAIL: one resource more than the cap`, `2 check(s) failed`. Restored: exit 0,
+`all gpu upload tests passed`. At `1204e1c` the same edit passes the same test,
+exit 0, `all gpu upload tests passed`.
 
 ## What is not verified without hardware
 
@@ -440,5 +548,5 @@ reported that way.
 | Respect alignment, cache and synchronization requirements | done on the CPU side: every placement aligned as its resource requires, buffer and image memory kept apart, staging and releases reclaimed only at their fences. **Open on hardware:** the barrier, the cache behaviour and the image layout are the backend's and are unverified |
 | Allocator and upload bookkeeping tests independent of hardware where possible | done |
 | Real deko3d uploads | **open.** No Switch and no GPU were available; nothing here calls deko3d |
-| Release build and full CTest pass | the new suites pass in both configurations; see the handoff for the full-suite result on Linux |
+| Release build and full CTest pass | The two new suites pass in Debug and in Release. The full suite was not run on this branch's platform: on Linux `src/render.cpp` does not compile, a pre-existing error outside this change now tracked as issue #132, so no target that links `nfsu_render` builds there. The coordinator reports the full suite green at head 7bb355df64c51f2b25da575197b72f90f9b0bfac on MinGW-W64 UCRT GCC 13.2.0, 30 of 30 in Debug and in Release, twice independently; that is the coordinator's measurement, not this branch's |
 | No retail or derived assets, ASCII only | no fixture comes from game data; scanned, see the handoff |
