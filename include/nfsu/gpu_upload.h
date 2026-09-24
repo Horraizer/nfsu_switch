@@ -174,7 +174,9 @@ struct UploadResource {
     UploadMemory memory = UploadMemory::buffer;
     // ASCII, unique within its table and stable across builds of the same
     // scene: what a leak report prints. It carries the prepared position, so
-    // two meshes with one stored name stay apart.
+    // two meshes with one stored name stay apart. A stored mesh name is
+    // copied with every byte outside 0x20..0x7E replaced by '?', and left
+    // out when it is empty.
     std::string name;
     // The prepared mesh a buffer comes from, or the prepared texture.
     std::size_t source = 0;
@@ -232,7 +234,8 @@ struct UploadTable {
 // UploadLifetime::generated. That is the opaque provenance source index
 // bind_runtime_skin stamps on the texture it binds, and
 // RuntimeSkinBinding::source reports it back; pass kNoHandle when the scene
-// holds no generated skin.
+// holds no generated skin. kNoHandle marks nothing generated, even a texture
+// whose own source index is kNoHandle.
 //
 // Fails, with `table` left empty, on a refused scene, on a texture the gate
 // refuses, on a resource above kMaxUploadResourceBytes, and on an allocation
@@ -288,7 +291,8 @@ using ImageLayoutQuery = std::function<bool(const UploadResource& texture,
 
 // The stand-in a desktop build passes: the linear RGBA8 size and the staging
 // alignment. A block-linear layout is at least that big, so a budget
-// computed with it is a lower bound, never a measurement.
+// computed with it is a lower bound, never a measurement. It refuses a
+// resource that is not a texture.
 bool linear_image_layout(const UploadResource& texture,
                          std::uint64_t& bytes,
                          std::uint64_t& alignment,
@@ -383,7 +387,9 @@ public:
     // Fails when buffers or images is null, when the layout query is empty,
     // when max_resources is outside 1..kMaxArenaAllocations, and when the
     // bookkeeping cannot be allocated. staging may be null only for a ledger
-    // that will never be handed a texture.
+    // that will never be handed a texture. Every figure starts over, the
+    // completed fence included: a new ledger has seen no fence complete, so
+    // a backend may number its fences from 1 again.
     bool create(const UploadArenas& arenas,
                 ImageLayoutQuery image_layout,
                 std::uint32_t max_resources,
@@ -403,7 +409,9 @@ public:
 
     // Every resource of a table, all or nothing: on a refusal every
     // placement this call made is returned at once, since nothing was
-    // submitted yet, and `handles` is left empty.
+    // submitted yet, and `handles` is left empty. The slots go back newest
+    // first, which leaves the ledger's free slots exactly as the call found
+    // them, so a retry is given the same slots in the same order.
     bool upload_table(const UploadTable& table,
                       std::uint64_t fence,
                       std::vector<UploadHandle>& handles,

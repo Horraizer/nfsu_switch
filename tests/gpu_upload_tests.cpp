@@ -683,7 +683,9 @@ void test_gate_refuses_every_pack_format() {
 // DXT1-sized - and the zero dimensions and the product that wraps 64 bits
 // are the arithmetic a naive gate gets wrong: (2^32 - 1)^2 * 4 wraps to
 // 2^64 - 2^35 + 4, and a gate that multiplies without checking accepts
-// exactly that byte count.
+// exactly that byte count. The largest product that does fit, 2^64 - 4, is
+// the other side of that check, and must be refused for its size rather than
+// reported as an overflow.
 void test_gate_refuses_malformed_rgba8() {
     const std::uint64_t wrapped = 0ULL - (1ULL << 35U) + 4U;
     const struct {
@@ -700,6 +702,10 @@ void test_gate_refuses_malformed_rgba8() {
         {"P8-sized", 4, 4, 16, "needs exactly 64 bytes, got 16"},
         {"DXT1-sized", 4, 4, 8, "needs exactly 64 bytes, got 8"},
         {"a product that wraps", 0xFFFFFFFFU, 0xFFFFFFFFU, wrapped, "larger than 2^64 - 1"},
+        // (2^31 - 1)(2^31 + 1) * 4 is 2^64 - 4, the largest product that
+        // fits: refused for its byte count, not as an overflow.
+        {"the largest product that fits", 2147483647U, 2147483649U, 0,
+         "needs exactly 18446744073709551612 bytes, got 0"},
     };
     for (const auto& c : cases) {
         nfsu::TextureUploadShape shape;
@@ -1028,6 +1034,65 @@ void test_empty_streams_are_counted_not_listed() {
     check(listed, "the empty mesh's vertex buffer is listed");
 }
 
+// Defect: resource names and hashes taken from the wrong place. A name is
+// built from file bytes, so every byte outside 0x20..0x7E must become '?' -
+// and every byte inside it, the space and the tilde at its two ends
+// included, must be kept - and an unnamed mesh must not leave a double
+// space. A texture's hash is RenderTexture::hash, which always counts as
+// claimed, not the first claim, which a hand-built texture may leave empty.
+// And kNoHandle means "no generated skin" even for a texture whose own
+// source index is kNoHandle, as a hand-built one may be.
+void test_names_hashes_and_sources() {
+    nfsu::GeometryReport geometry = car_geometry();
+    geometry.meshes[0].name = "A~ B";
+    geometry.meshes[1].name = std::string("W\x01\xC3", 3);
+    nfsu::Mesh unnamed;
+    unnamed.index = 2;
+    unnamed.valid = true;
+    unnamed.vertices = {car_vertex(3, 0, 0)};
+    unnamed.directory_hash = 0x01020307U;
+    unnamed.directory_offset = 0x500U;
+    unnamed.directory_size = 0x80U;
+    unnamed.has_directory_entry = true;
+    geometry.meshes.push_back(unnamed);
+
+    nfsu::RenderTextureSet textures;
+    nfsu::RenderTexture paint = make_texture(kPaintHash, 4, 4, 0x40);
+    paint.claims = {};
+    paint.claim_count = 0;
+    paint.source = nfsu::kNoHandle;
+    textures.textures.push_back(paint);
+    nfsu::RenderTexture rim = make_texture(kRimHash, 2, 3, 0x50);
+    rim.source = nfsu::kNoHandle;
+    textures.textures.push_back(rim);
+
+    nfsu::PreparedCarScene scene;
+    std::string error;
+    check(nfsu::prepare_car_scene(geometry, textures, nfsu::MeshSelection{}, nfsu::SceneLimits{},
+                                  scene, error),
+          "prepare the renamed car: " + error);
+    nfsu::UploadTable table;
+    check(nfsu::build_car_upload_table(scene, nfsu::kNoHandle, table, error),
+          "its table: " + error);
+    std::vector<std::string> names;
+    for (const nfsu::UploadResource& resource : table.resources) {
+        names.push_back(resource.name);
+    }
+    const std::vector<std::string> expected{
+        "car mesh 0 A~ B vertex buffer",   "car mesh 0 A~ B index buffer",
+        "car mesh 1 W?? vertex buffer",    "car mesh 1 W?? index buffer",
+        "car mesh 2 vertex buffer",        "car texture 0 hash 0x5C1A0002",
+        "car texture 1 hash 0x5C1A0003"};
+    check(names == expected, "names keep printable bytes, replace the rest, skip an empty name");
+    if (table.resources.size() == expected.size()) {
+        check_eq(table.resources[5].texture_hash, kPaintHash,
+                 "a texture with no claims answers to its own hash");
+    }
+    check_eq(table.totals.generated_textures, 0,
+             "kNoHandle marks nothing generated, even a texture whose source is kNoHandle");
+    check_eq(table.totals.empty_buffers, 1, "the unnamed mesh has no triangles");
+}
+
 // ---------------------------------------------------------------------------
 // The ledger
 // ---------------------------------------------------------------------------
@@ -1344,10 +1409,65 @@ void test_double_release_is_refused_by_name() {
     check_eq(rig.ledger.stats().resident, 1, "the new upload is still resident");
 }
 
+// Defect: a handle the ledger never issued accepted as one it did. Two such
+// handles are easy to come by: the slots of a refused table, which were
+// taken and returned without a handle ever leaving the call, and the
+// current generation of a slot whose resource was reclaimed. Releasing
+// either would mark a dead slot released and hand its stale placements back
+// to the arena a second time. find() must not see them either. And a double
+// release names its resource only while that resource's record is still the
+// slot's: once a newer upload has come and gone, the name there is the
+// newer one's, and naming it would blame the wrong resource.
+void test_handles_the_ledger_never_issued() {
+    CarFixture car = car_fixture(true);
+    const nfsu::UploadTable table = table_of(car.scene);
+    Rig rig;
+    make_rig(rig, 200, 4096, 1024);
+    std::vector<nfsu::UploadHandle> handles;
+    std::string error;
+    check(!rig.ledger.upload_table(table, 1, handles, error), "a table that does not fit");
+    nfsu::UploadRecord record;
+    for (std::uint32_t slot = 0; slot < 2; ++slot) {
+        const nfsu::UploadHandle rolled_back{slot, 1};
+        check(!rig.ledger.release(rolled_back, 2, error),
+              "the slot of a refused table, slot " + std::to_string(slot));
+        check_has(error, "never issued", "a rolled-back slot was never issued");
+        check(!rig.ledger.find(rolled_back, record), "find() does not see a rolled-back slot");
+    }
+
+    Rig fresh;
+    make_rig(fresh);
+    nfsu::UploadHandle first;
+    check(fresh.ledger.upload(table.resources[0], 1, first, error), "first: " + error);
+    check(fresh.ledger.release(first, 1, error), "release first: " + error);
+    fresh.ledger.retire(1);
+    const nfsu::UploadHandle next_generation{first.slot, first.generation + 1U};
+    check(!fresh.ledger.release(next_generation, 2, error),
+          "the current generation of a reclaimed slot");
+    check_has(error, "never issued", "a reclaimed slot's next generation was never issued");
+    check(!fresh.ledger.find(next_generation, record), "find() does not see it");
+    check(!fresh.ledger.find(first, record), "find() does not see the reclaimed handle");
+
+    // The slot is reused by a second upload, which is itself reclaimed; the
+    // name left in the slot is the second one's now.
+    nfsu::UploadHandle second;
+    check(fresh.ledger.upload(table.resources[2], 2, second, error), "second: " + error);
+    check_eq(second.slot, first.slot, "the second upload reuses the slot");
+    check(fresh.ledger.release(second, 2, error), "release second: " + error);
+    fresh.ledger.retire(2);
+    check(!fresh.ledger.release(first, 3, error), "the first handle after two reclaims");
+    check_has(error, "its slot 0 has been reused",
+              "the refusal does not name the second resource as the first");
+    check(error.find("WHEEL") == std::string::npos, "it does not blame the second resource");
+    check_eq(fresh.ledger.stats().lost_placements, 0, "no placement was released twice");
+}
+
 // Defect: a partial upload left behind. When the arena cannot take the
 // whole table, every placement the call made must go back, nothing may stay
 // recorded, and the error must name the resource that did not fit and the
-// arena's reason, so the caller knows what to unload.
+// arena's reason, so the caller knows what to unload. The slots go back too,
+// newest first, so that a retry on the same ledger is given exactly the slots
+// the refused call took and its reports stay in table order.
 void test_upload_table_is_all_or_nothing() {
     CarFixture car = car_fixture(true);
     const nfsu::UploadTable table = table_of(car.scene);
@@ -1393,17 +1513,35 @@ void test_upload_table_is_all_or_nothing() {
         check_eq(stats.reclaimed, 0, std::string(c.what) + ": no reclaim counted");
         check_eq(stats.refused_uploads, 1, std::string(c.what) + ": one refusal counted");
         check(rig.ledger.unreleased().empty(), std::string(c.what) + ": no leak reported");
-        // The same ledger takes the table once there is room.
-        make_rig(rig);
+        // The same ledger takes the table once there is room, and gives the
+        // retry the slots the refused call took, in the same order, so the
+        // reports list the retried table in table order.
+        nfsu::ArenaConfig roomy = rig.buffers.config();
+        roomy.capacity = 4096;
+        check(rig.buffers.create(roomy, error), "a roomier buffer arena: " + error);
+        roomy = rig.images.config();
+        roomy.capacity = 4096;
+        check(rig.images.create(roomy, error), "a roomier image arena: " + error);
+        roomy = rig.staging.config();
+        roomy.capacity = 1024;
+        check(rig.staging.create(roomy, error), "a roomier staging arena: " + error);
         check(rig.ledger.upload_table(table, 1, handles, error),
               std::string(c.what) + ": fits in room: " + error);
+        std::vector<std::string> names;
+        for (const nfsu::UploadResource& resource : table.resources) {
+            names.push_back(resource.name);
+        }
+        check(rig.ledger.unreleased() == names,
+              std::string(c.what) + ": the retry is listed in table order");
     }
 }
 
 // Defect: the generated skin tied to the scene's other resources. The garage
 // recomposes the skin every time a vinyl changes, with frames in flight; each
 // recomposition releases the old skin for its last use and uploads a new one,
-// and neither may disturb a single other placement of the car. With two
+// and neither may disturb a single other placement of the car. The ledger's
+// own record must say which resource is the skin, because that record is what
+// a backend reads to decide what a vinyl change drops. With two
 // frames in flight, at most three skins exist at once, so the image arena's
 // peak is fixed after the first frames and must not creep over a thousand
 // recompositions.
@@ -1417,6 +1555,18 @@ void test_generated_skin_is_replaced_on_its_own() {
     check(rig.ledger.upload_table(table, 0, handles, error), "upload the car: " + error);
     rig.ledger.retire(0);
     const std::vector<Placed> car_before = placements(rig.ledger, handles, table, "car");
+    // What a backend reads on a vinyl change to decide what to drop is the
+    // ledger's record, not the table, so the record must carry the lifetime.
+    nfsu::UploadRecord skin_record;
+    check(rig.ledger.find(handles[4], skin_record) &&
+              skin_record.lifetime == nfsu::UploadLifetime::generated &&
+              skin_record.kind == nfsu::UploadResourceKind::texture &&
+              skin_record.memory == nfsu::UploadMemory::image,
+          "the ledger records the skin as a generated image texture");
+    nfsu::UploadRecord paint_record;
+    check(rig.ledger.find(handles[5], paint_record) &&
+              paint_record.lifetime == nfsu::UploadLifetime::scene,
+          "the ledger records a pack texture with the scene lifetime");
     const std::size_t skin_index = 4;
     const nfsu::UploadResource skin = table.resources[skin_index];
     check(skin.lifetime == nfsu::UploadLifetime::generated, "resource 4 is the skin");
@@ -1488,8 +1638,11 @@ void test_lost_placements_are_counted() {
     check_eq(rig.images.stats().used_bytes, 0, "the image placements were reclaimed");
 }
 
-// Defect: a ledger created over nothing, or one re-created while it still
-// tracks placements, which would forget them while the arenas keep them.
+// Defect: a ledger created over nothing - no buffer arena, no image arena,
+// no layout query - or one re-created while it still tracks placements,
+// which would forget them while the arenas keep them; a block limit that
+// refuses the largest block; and a re-created ledger that keeps the old
+// completed fence, which reclaims new staging before its copy has run.
 void test_ledger_creation_is_checked() {
     nfsu::MemoryArena arena = make_arena(4096, 4096);
     nfsu::UploadLedger ledger;
@@ -1504,6 +1657,10 @@ void test_ledger_creation_is_checked() {
     check(!ledger.create(nfsu::UploadArenas{nullptr, &arena, &arena}, nfsu::linear_image_layout,
                          4, error),
           "no buffer arena");
+    check(!ledger.create(nfsu::UploadArenas{&arena, nullptr, &arena}, nfsu::linear_image_layout,
+                         4, error),
+          "no image arena");
+    check_has(error, "needs a buffer arena and an image arena", "a missing arena is named");
     check(!ledger.create(nfsu::UploadArenas{&arena, &arena, &arena}, nfsu::ImageLayoutQuery{}, 4,
                          error),
           "no layout query");
@@ -1535,6 +1692,34 @@ void test_ledger_creation_is_checked() {
     check(!ledger.upload(resource, 0, handle, error), "a resource larger than a block");
     check_has(error, "is outside 1..4294963200", "the block limit is named");
     check_eq(arena.stats().used_bytes, 0, "no refusal placed anything");
+
+    // The block limit is inclusive: exactly the largest block is accepted.
+    nfsu::MemoryArena wide = make_arena(1ULL << 33U, 4096);
+    nfsu::UploadLedger large;
+    check(large.create(nfsu::UploadArenas{&wide, &wide, &wide}, nfsu::linear_image_layout, 1,
+                       error),
+          "create over a wide arena: " + error);
+    resource.bytes = nfsu::kMaxUploadResourceBytes;
+    check(large.upload(resource, 0, handle, error), "exactly the largest block: " + error);
+
+    // create() starts the fence count over. A ledger that kept the old
+    // completed fence would, once its new uploads are numbered from 1 again,
+    // reclaim their staging before the copies that read it had run.
+    nfsu::MemoryArena reused = make_arena(4096, 4096);
+    nfsu::UploadLedger restarted;
+    const nfsu::UploadArenas both{&reused, &reused, &reused};
+    check(restarted.create(both, nfsu::linear_image_layout, 4, error), "create: " + error);
+    restarted.retire(30);
+    check_eq(restarted.stats().completed_fence, 30, "the first run reached fence 30");
+    check(restarted.create(both, nfsu::linear_image_layout, 4, error), "create again: " + error);
+    check_eq(restarted.stats().completed_fence, 0, "create() starts the fences over");
+    texture.memory = nfsu::UploadMemory::image;
+    nfsu::UploadHandle staged;
+    check(restarted.upload(texture, 1, staged, error), "a texture at fence 1: " + error);
+    restarted.retire(0);
+    check_eq(restarted.stats().staged, 1, "its staging waits for fence 1");
+    restarted.retire(1);
+    check_eq(restarted.stats().staged, 0, "and is reclaimed at fence 1");
 }
 
 // Defect: a double release that re-creating the ledger forgives. create()
@@ -1607,6 +1792,9 @@ void test_image_layout_query_is_honoured() {
     check_eq(record.placement.size, 512, "the image takes the layout's bytes");
     check_eq(record.staging.size, 64, "the staging copy takes the texels only");
     check_eq(images.stats().used_bytes, 1024, "two layouts of 512");
+    check_eq(ledger.stats().staged, 2, "two staging copies");
+    check_eq(ledger.stats().staged_bytes, 128, "staged bytes are texels, not layouts");
+    check_eq(ledger.stats().resident_bytes, 1024, "resident bytes are layouts");
 
     layout_bytes = 63;
     check(!ledger.upload(paint, 0, first, error), "a layout smaller than the texels");
@@ -1620,6 +1808,13 @@ void test_image_layout_query_is_honoured() {
     check_has(error, "image layout refused: no such layout", "the query's own refusal");
     check_eq(images.stats().used_bytes, 1024, "no refused layout placed anything");
     check_eq(staging.stats().used_bytes, 128, "and no staging either");
+
+    // The desktop stand-in answers for textures only.
+    std::uint64_t bytes = 0;
+    std::uint64_t alignment = 0;
+    check(!nfsu::linear_image_layout(table.resources[0], bytes, alignment, error),
+          "linear_image_layout refuses a vertex buffer");
+    check_has(error, "car mesh 0 BODY vertex buffer is not a texture", "and names it");
 }
 
 // ---------------------------------------------------------------------------
@@ -1654,6 +1849,11 @@ void test_derived_ceilings() {
     hostile_list.max_entries = UINT64_MAX / 4U;
     check_eq(nfsu::track_draw_list_frame_ceiling(hostile_list), UINT64_MAX,
              "a draw list ceiling saturates");
+    // The largest product that fits is exact, not saturated one step early.
+    nfsu::TrackDrawListLimits largest_list;
+    largest_list.max_entries = UINT64_MAX / 8U;
+    check_eq(nfsu::track_draw_list_frame_ceiling(largest_list), 18446744073709551608ULL,
+             "the largest draw list ceiling that fits is exact");
 }
 
 // Defect: a Switch budget that does not build, one that is not assembled
@@ -1739,6 +1939,95 @@ void test_scene_requirement_places_the_table() {
     check_eq(requirement.image_extent, 0, "a refused requirement is zeroed");
 }
 
+// Defect: a requirement that is right only for the track table's shape.
+//
+//   * Its largest texture is also its last (32 then 60), so "the largest"
+//     and "the last" cannot be told apart there. The car table's is first:
+//     the 8x4 skin at 128 bytes, then 64, then 24. A backend sizing a
+//     one-at-a-time staging arena from a "last" figure would get 24, and
+//     every larger texture would then be refused as over budget at load.
+//   * Its images pack with no gaps at either alignment the other test uses,
+//     so the image extent and the image bytes coincide. At alignment 256 the
+//     car's three images leave gaps: 216 bytes reach 536.
+//   * A table with no texture at all has an image role with nothing in it;
+//     that must be a zero requirement, not an arena of zero bytes refused.
+//   * A layout query that answers differently when the table is placed than
+//     when it was sized - a backend caching layouts under a key it later
+//     changes - must be refused, not reported with an extent taken from an
+//     arena that never placed that image.
+//   * The simulated arena's capacity bound is inclusive: one buffer whose
+//     worst case is exactly kMaxArenaCapacity is a valid arena.
+void test_scene_requirement_reads_the_whole_table() {
+    CarFixture car = car_fixture(true);
+    const nfsu::UploadTable table = table_of(car.scene);
+    nfsu::SceneMemoryRequirement requirement;
+    std::string error;
+    check(nfsu::upload_table_requirement(table, nfsu::linear_image_layout, requirement, error),
+          "car requirement: " + error);
+    check_eq(requirement.staging_largest_bytes, 128, "the largest texture is the first one");
+    check_eq(requirement.staging_batch_bytes, 216, "car staging for every texture at once");
+    check_eq(requirement.buffer_bytes, 270, "car buffer bytes");
+    check_eq(requirement.buffer_extent, 270, "car buffers pack with no gap");
+
+    const nfsu::ImageLayoutQuery spaced = [](const nfsu::UploadResource& texture,
+                                             std::uint64_t& bytes, std::uint64_t& alignment,
+                                             std::string&) {
+        bytes = texture.bytes;
+        alignment = 256;
+        return true;
+    };
+    check(nfsu::upload_table_requirement(table, spaced, requirement, error),
+          "spaced requirement: " + error);
+    check_eq(requirement.image_bytes, 216, "spaced: the image bytes");
+    check_eq(requirement.image_extent, 536, "spaced: 128 at 0, 64 at 256, 24 at 512");
+
+    nfsu::UploadTable buffers_only = table;
+    buffers_only.resources.erase(
+        std::remove_if(buffers_only.resources.begin(), buffers_only.resources.end(),
+                       [](const nfsu::UploadResource& resource) {
+                           return resource.kind == nfsu::UploadResourceKind::texture;
+                       }),
+        buffers_only.resources.end());
+    check(nfsu::upload_table_requirement(buffers_only, nfsu::linear_image_layout, requirement,
+                                         error),
+          "a table with no texture: " + error);
+    check_eq(requirement.buffer_extent, 270, "no texture: the buffers");
+    check_eq(requirement.image_bytes + requirement.image_extent + requirement.staging_batch_bytes +
+                 requirement.staging_largest_bytes,
+             0, "no texture: no image and no staging");
+
+    // Sized at 64 bytes, placed at 4096: the first answer per texture is
+    // the small one.
+    std::map<std::string, int> asked;
+    const nfsu::ImageLayoutQuery fickle = [&asked](const nfsu::UploadResource& texture,
+                                                   std::uint64_t& bytes, std::uint64_t& alignment,
+                                                   std::string&) {
+        bytes = asked[texture.name]++ == 0 ? 64U : 4096U;
+        alignment = 32;
+        return true;
+    };
+    TrackFixture track = track_fixture();
+    const nfsu::UploadTable track_table = table_of(track.scene);
+    check(!nfsu::upload_table_requirement(track_table, fickle, requirement, error),
+          "a layout query that answers differently the second time is refused");
+    check_has(error,
+              "track texture 0 hash 0xAAAA0001: over budget; the layout query answered "
+              "differently the second time",
+              "the refusal names the texture and the reason");
+    check_eq(requirement.image_extent, 0, "a refused requirement reports no extent");
+
+    nfsu::UploadTable single;
+    nfsu::UploadResource wide;
+    wide.name = "a buffer as wide as an arena";
+    wide.bytes = nfsu::kMaxArenaCapacity - 3U;
+    wide.alignment = 4;
+    single.resources.push_back(wide);
+    check(nfsu::upload_table_requirement(single, nfsu::linear_image_layout, requirement, error),
+          "a worst case of exactly kMaxArenaCapacity: " + error);
+    check_eq(requirement.buffer_extent, nfsu::kMaxArenaCapacity - 3U,
+             "the widest single buffer an arena can model");
+}
+
 // Defect: a frame ceiling that is not the largest list the scene can
 // produce. Every instance of the fixture visible gives the largest draw list
 // the scene has, and its bytes must be exactly the ceiling; a transient arena
@@ -1794,10 +2083,12 @@ const TestCase kTests[] = {
     {"tables_refuse_an_invalid_scene", test_tables_refuse_an_invalid_scene},
     {"track_table_is_the_region_cost", test_track_table_is_the_region_cost},
     {"empty_streams_are_counted_not_listed", test_empty_streams_are_counted_not_listed},
+    {"names_hashes_and_sources", test_names_hashes_and_sources},
     {"ledger_fences", test_ledger_fences},
     {"upload_release_upload_returns_to_a_known_state", test_upload_release_upload_returns_to_a_known_state},
     {"leaks_are_reported_by_name", test_leaks_are_reported_by_name},
     {"double_release_is_refused_by_name", test_double_release_is_refused_by_name},
+    {"handles_the_ledger_never_issued", test_handles_the_ledger_never_issued},
     {"upload_table_is_all_or_nothing", test_upload_table_is_all_or_nothing},
     {"generated_skin_is_replaced_on_its_own", test_generated_skin_is_replaced_on_its_own},
     {"lost_placements_are_counted", test_lost_placements_are_counted},
@@ -1807,6 +2098,7 @@ const TestCase kTests[] = {
     {"derived_ceilings", test_derived_ceilings},
     {"switch_budget", test_switch_budget},
     {"scene_requirement_places_the_table", test_scene_requirement_places_the_table},
+    {"scene_requirement_reads_the_whole_table", test_scene_requirement_reads_the_whole_table},
     {"frame_ceiling_is_the_full_draw_list", test_frame_ceiling_is_the_full_draw_list},
 };
 

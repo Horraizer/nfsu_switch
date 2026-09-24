@@ -239,6 +239,21 @@ void compare(const nfsu::MemoryArena& arena, const Model& model, const std::stri
     check_eq(stats.extent, extent, what + ": extent");
 }
 
+// Every field, counters and high-water marks included.
+bool same_stats(const nfsu::ArenaStats& a, const nfsu::ArenaStats& b) {
+    return a.category == b.category && a.base == b.base && a.capacity == b.capacity &&
+           a.used_bytes == b.used_bytes && a.free_bytes == b.free_bytes &&
+           a.live_allocations == b.live_allocations && a.free_blocks == b.free_blocks &&
+           a.largest_free_block == b.largest_free_block &&
+           a.fragmentation_permille == b.fragmentation_permille && a.extent == b.extent &&
+           a.high_water_bytes == b.high_water_bytes &&
+           a.high_water_extent == b.high_water_extent &&
+           a.period_high_water_bytes == b.period_high_water_bytes &&
+           a.period_high_water_extent == b.period_high_water_extent &&
+           a.allocations == b.allocations && a.releases == b.releases &&
+           a.resets == b.resets && a.refusals == b.refusals && a.refused == b.refused;
+}
+
 // The fields that describe what is in the arena now, as opposed to the
 // counters of what happened to it.
 bool same_contents(const nfsu::ArenaStats& a, const nfsu::ArenaStats& b) {
@@ -281,7 +296,10 @@ void test_names() {
 // that is not a multiple of max_alignment makes an aligned local offset a
 // misaligned address, and a capacity that wraps base + capacity makes every
 // bound check meaningless - or a refused create() that clobbers an arena
-// already in use, silently dropping its live allocations.
+// already in use, silently dropping its live allocations or zeroing its
+// counters. And the other side of every bound: the largest configuration
+// that is accepted, including a range that ends exactly at 2^64 - 1, which
+// does not wrap and must not be refused as if it did.
 void test_create_refuses_bad_configurations() {
     struct Case {
         const char* what;
@@ -304,12 +322,15 @@ void test_create_refuses_bad_configurations() {
          "passes 2^64 - 1"},
         {"zero allocations", 0, 4096, 16, 0, "max allocations 0"},
         {"allocations above the cap", 0, 4096, 16, nfsu::kMaxArenaAllocations + 1U,
-         "max allocations 4194305"},
+         "max allocations 4194305 is outside 1..4194304"},
     };
 
     nfsu::MemoryArena arena = make_arena(0, 4096, 16, 16);
     nfsu::ArenaAllocation held;
     check_refusal(arena.allocate(100, 16, held), nfsu::ArenaRefusal::none, "held allocation");
+    nfsu::ArenaAllocation refused;
+    check_refusal(arena.allocate(0, 16, refused), nfsu::ArenaRefusal::zero_size,
+                  "one refusal, so that the counters have something to lose");
     const nfsu::ArenaStats before = arena.stats();
 
     for (const Case& c : cases) {
@@ -322,7 +343,7 @@ void test_create_refuses_bad_configurations() {
         check(!arena.create(config, error), std::string("create accepted ") + c.what);
         check(error.find(c.message) != std::string::npos,
               std::string(c.what) + ": message '" + error + "' lacks '" + c.message + "'");
-        check(same_contents(arena.stats(), before),
+        check(same_stats(arena.stats(), before),
               std::string(c.what) + ": a refused create changed the arena");
     }
     // The allocation made before every refused create() is still the arena's.
@@ -341,6 +362,18 @@ void test_create_refuses_bad_configurations() {
     check_refusal(arena.allocate(nfsu::kMaxArenaCapacity, nfsu::kMaxArenaAlignment, whole),
                   nfsu::ArenaRefusal::none, "the whole largest arena");
     check_eq(whole.offset, nfsu::kMaxArenaAlignment, "the whole largest arena starts at base");
+
+    // A range that ends exactly at 2^64 - 1 does not wrap.
+    nfsu::ArenaConfig top;
+    top.base = 0xFFFFFFFFFFFFF000ULL;
+    top.capacity = 0xFFF;
+    top.max_alignment = 16;
+    top.max_allocations = 1;
+    check(arena.create(top, error), "a range ending at 2^64 - 1: " + error);
+    nfsu::ArenaAllocation last;
+    check_refusal(arena.allocate(0xFFF, 1, last), nfsu::ArenaRefusal::none,
+                  "the whole range ending at 2^64 - 1");
+    check_eq(last.offset, 0xFFFFFFFFFFFFF000ULL, "it starts at its base");
 }
 
 // Defect: an arena nobody created handing out memory. Its capacity is 0, so
@@ -850,6 +883,75 @@ void test_interleaved_streaming_cycles_do_not_creep() {
     check(settled_extent > settled_bytes, "hole reuse is exercised: extent above bytes");
 }
 
+// Defect: figures that outlive the arena they describe. The header says
+// every counter and every high-water mark counts "since create()", so a
+// second create() must start all of them over; an arena re-created for a new
+// session that kept the old peak, the old refusals or the old reset count
+// would report the previous session's worst moment as its own.
+void test_create_again_starts_every_figure_over() {
+    nfsu::MemoryArena arena = make_arena(0, 4096, 256, 8);
+    nfsu::ArenaAllocation first;
+    nfsu::ArenaAllocation second;
+    check_refusal(arena.allocate(100, 1, first), nfsu::ArenaRefusal::none, "first");
+    check_refusal(arena.allocate(1, 256, second), nfsu::ArenaRefusal::none, "second");
+    check_refusal(arena.release(first.handle), nfsu::ArenaRefusal::none, "release first");
+    nfsu::ArenaAllocation none;
+    check_refusal(arena.allocate(0, 1, none), nfsu::ArenaRefusal::zero_size, "a refusal");
+    arena.reset();
+    check_refusal(arena.allocate(50, 1, first), nfsu::ArenaRefusal::none, "after the reset");
+    const nfsu::ArenaStats busy = arena.stats();
+    check(busy.high_water_extent == 257 && busy.resets == 1 && busy.refusals == 1 &&
+              busy.allocations == 3 && busy.releases == 1,
+          "the figures are all nonzero before create()");
+    std::string error;
+    check(arena.create(arena.config(), error), "create again: " + error);
+    const nfsu::ArenaStats fresh = arena.stats();
+    const nfsu::ArenaStats empty = make_arena(0, 4096, 256, 8).stats();
+    check(same_stats(fresh, empty), "create() again starts every figure over");
+    check_eq(fresh.high_water_bytes, 0, "create again: high water");
+    check_eq(fresh.high_water_extent, 0, "create again: high-water extent");
+    check_eq(fresh.period_high_water_extent, 0, "create again: period extent");
+    check_eq(fresh.allocations, 0, "create again: allocations");
+    check_eq(fresh.releases, 0, "create again: releases");
+    check_eq(fresh.resets, 0, "create again: resets");
+    check_eq(fresh.refusals, 0, "create again: refusals");
+    check_eq(fresh.refused[at(nfsu::ArenaRefusal::zero_size)], 0, "create again: by reason");
+}
+
+// Defect: a high-water mark that is not a peak. Each mark must be the most
+// the arena ever reached, not the latest value: after the furthest
+// allocation is released and a smaller one placed, the extent falls and the
+// mark must not. The period extent is its own figure, not the period's
+// bytes - one byte at 0 and one byte at 256 reach 257 with 2 bytes used -
+// and reset() must start it over with the bytes.
+void test_high_water_marks_are_peaks() {
+    nfsu::MemoryArena arena = make_arena(0, 4096, 256, 8);
+    nfsu::ArenaAllocation low;
+    nfsu::ArenaAllocation high;
+    nfsu::ArenaAllocation small;
+    check_refusal(arena.allocate(1000, 1, low), nfsu::ArenaRefusal::none, "low");
+    check_refusal(arena.allocate(1000, 1, high), nfsu::ArenaRefusal::none, "high");
+    check_refusal(arena.release(high.handle), nfsu::ArenaRefusal::none, "release high");
+    check_refusal(arena.allocate(10, 1, small), nfsu::ArenaRefusal::none, "small");
+    nfsu::ArenaStats stats = arena.stats();
+    check_eq(stats.extent, 1010, "the extent falls back");
+    check_eq(stats.used_bytes, 1010, "the bytes fall back");
+    check_eq(stats.high_water_extent, 2000, "the extent mark stays at the peak");
+    check_eq(stats.high_water_bytes, 2000, "the byte mark stays at the peak");
+    check_eq(stats.period_high_water_extent, 2000, "the period extent mark before a reset");
+
+    arena.reset();
+    stats = arena.stats();
+    check_eq(stats.period_high_water_extent, 0, "reset starts the period extent over");
+    check_eq(stats.period_high_water_bytes, 0, "reset starts the period bytes over");
+    check_refusal(arena.allocate(1, 1, low), nfsu::ArenaRefusal::none, "one byte at 0");
+    check_refusal(arena.allocate(1, 256, high), nfsu::ArenaRefusal::none, "one byte at 256");
+    stats = arena.stats();
+    check_eq(stats.period_high_water_extent, 257, "the period extent is an extent");
+    check_eq(stats.period_high_water_bytes, 2, "the period bytes are bytes");
+    check_eq(stats.high_water_extent, 2000, "the lifetime extent mark survives the reset");
+}
+
 // ---------------------------------------------------------------------------
 // Frames
 // ---------------------------------------------------------------------------
@@ -905,6 +1007,7 @@ void test_frames_reset_the_transient_arena() {
         check_eq(after.used_bytes, 0, what + ": reset frees everything");
         check_eq(after.free_blocks, 1, what + ": reset leaves one block");
         check_eq(after.period_high_water_bytes, 0, what + ": reset starts a period");
+        check_eq(after.period_high_water_extent, 0, what + ": and its extent");
         check_eq(after.high_water_bytes, lifetime_peak, what + ": reset keeps the lifetime peak");
         check_eq(after.resets, static_cast<std::uint64_t>(frame) + 1U, what + ": resets");
         previous = held;
@@ -919,10 +1022,12 @@ void test_frames_reset_the_transient_arena() {
 // ---------------------------------------------------------------------------
 
 // Defect: a release that trusts its handle. A double release, a handle whose
-// slot has been reused, and a handle that was never issued must each be
-// refused without touching anything; without the generation check the second
-// case frees the allocation that now owns the slot, and the next request is
-// placed on top of live data.
+// slot has been reused, and a handle that was never issued - including one at
+// the current generation of a slot that is free - must each be refused
+// without touching anything. Without the generation check a reused slot's
+// old handle frees the allocation that now owns the slot, and the next
+// request is placed on top of live data; without the free-slot check the
+// same range is freed twice and the used byte count wraps below zero.
 void test_handles_are_checked() {
     nfsu::MemoryArena arena = make_arena(0, 4096, 16, 4);
     Model model{0, 4096, {}};
@@ -933,6 +1038,13 @@ void test_handles_are_checked() {
     model.live.erase(first.offset);
     check_refusal(arena.release(first.handle), nfsu::ArenaRefusal::stale_handle,
                   "double release");
+    // The released slot's own current generation was never issued: accepting
+    // it would free the same range twice and wrap the byte count.
+    nfsu::ArenaHandle unissued = first.handle;
+    unissued.generation += 1U;
+    check_refusal(arena.release(unissued), nfsu::ArenaRefusal::unknown_handle,
+                  "the current generation of a free slot");
+    compare(arena, model, "after the free slot's forged handle");
 
     nfsu::ArenaAllocation reuse;
     check_refusal(arena.allocate(200, 16, reuse), nfsu::ArenaRefusal::none, "reuse");
@@ -957,7 +1069,7 @@ void test_handles_are_checked() {
     compare(arena, model, "after the refused releases");
     const nfsu::ArenaStats stats = arena.stats();
     check_eq(stats.refused[at(nfsu::ArenaRefusal::stale_handle)], 2, "stale refusals");
-    check_eq(stats.refused[at(nfsu::ArenaRefusal::unknown_handle)], 3, "unknown refusals");
+    check_eq(stats.refused[at(nfsu::ArenaRefusal::unknown_handle)], 4, "unknown refusals");
     check_refusal(arena.release(reuse.handle), nfsu::ArenaRefusal::none, "release reuse");
 }
 
@@ -1009,9 +1121,15 @@ void test_allocation_limit() {
 // allocate(), release() and reset() can need, and those three are noexcept,
 // so a single heap allocation inside one of them turns memory pressure into
 // std::terminate instead of a refusal. This counts every call of the global
-// allocation function made inside those calls, over the free list's worst
-// shape - one more free block than live allocations, at the allocation
-// limit - and over thousands of random ones, and requires none.
+// allocation function made inside those calls and requires none, over three
+// kinds of state:
+//
+//   * one more free block than live allocations, one below the limit;
+//   * the only state that needs the whole reservation: a two-sided split at
+//     the allocation limit, which leaves max_allocations + 1 free blocks. It
+//     is the one insert the "+ 1" in create() exists for, and with the
+//     reservation one block short it is where allocate() would reallocate;
+//   * thousands of random calls, with a reset every thousand.
 void test_arena_calls_never_allocate() {
     const std::uint32_t limit = 64;
     nfsu::MemoryArena arena = make_arena(0, 4096, 64, limit);
@@ -1046,11 +1164,52 @@ void test_arena_calls_never_allocate() {
     }
     check_refusal(allocate(1, 1), nfsu::ArenaRefusal::allocation_limit, "past the limit");
     check_refusal(release(0), nfsu::ArenaRefusal::none, "free the filler");
-    const nfsu::ArenaStats worst = arena.stats();
-    check_eq(worst.live_allocations, limit - 1U, "worst shape: live");
-    check_eq(worst.free_blocks, limit, "worst shape: one more free block than live");
+    const nfsu::ArenaStats spaced = arena.stats();
+    check_eq(spaced.live_allocations, limit - 1U, "spaced shape: live");
+    check_eq(spaced.free_blocks, limit, "spaced shape: one more free block than live");
+    // Back to the limit through the tail-only branch: the one-byte request
+    // lands at the start of the leading block and replaces it in place, so
+    // the free list does not grow here.
     check_refusal(allocate(1, 1), nfsu::ArenaRefusal::none, "back to the limit");
-    check_eq(arena.stats().free_blocks, limit, "a split at the limit");
+    check_eq(arena.stats().free_blocks, limit, "a tail-only placement at the limit");
+
+    // The two-sided split at the limit, in an arena of three: free [0,4),
+    // live [4,5), free [5,64), live [64,65), free [65,128). Ten bytes at
+    // alignment 8 skip the four-byte leading block and land at 8 inside
+    // [5,64), leaving a 3-byte gap in front and a 46-byte tail behind: four
+    // free blocks, max_allocations + 1, with three allocations live.
+    {
+        nfsu::MemoryArena split = make_arena(0, 128, 64, 3);
+        std::size_t split_inside = 0;
+        const auto place = [&](std::uint64_t size, std::uint64_t alignment,
+                               nfsu::ArenaAllocation& out) {
+            const std::size_t before = g_heap_allocations;
+            const nfsu::ArenaRefusal got = split.allocate(size, alignment, out);
+            split_inside += g_heap_allocations - before;
+            return got;
+        };
+        nfsu::ArenaAllocation leading;
+        nfsu::ArenaAllocation left;
+        nfsu::ArenaAllocation right;
+        nfsu::ArenaAllocation middle;
+        check_refusal(place(4, 1, leading), nfsu::ArenaRefusal::none, "split: leading");
+        check_refusal(place(1, 1, left), nfsu::ArenaRefusal::none, "split: left");
+        check_refusal(place(1, 64, right), nfsu::ArenaRefusal::none, "split: right");
+        check_eq(right.offset, 64, "split: the right block is on its boundary");
+        // Only the arena call is inside the window: a check builds its
+        // message whether or not it fails, and that allocates.
+        const std::size_t before = g_heap_allocations;
+        const nfsu::ArenaRefusal freed = split.release(leading.handle);
+        split_inside += g_heap_allocations - before;
+        check_refusal(freed, nfsu::ArenaRefusal::none, "split: free the leading block");
+        check_eq(split.stats().free_blocks, 3, "split: three free blocks before");
+        check_refusal(place(10, 8, middle), nfsu::ArenaRefusal::none, "split: the middle");
+        check_eq(middle.offset, 8, "split: first fit skips the four-byte block");
+        const nfsu::ArenaStats worst = split.stats();
+        check_eq(worst.live_allocations, 3, "split: at the limit");
+        check_eq(worst.free_blocks, 4, "split: max_allocations + 1 free blocks");
+        check_eq(split_inside, 0, "heap allocations inside a two-sided split at the limit");
+    }
 
     Random random(0xA110C);
     for (int step = 0; step < 20000; ++step) {
@@ -1074,16 +1233,18 @@ void test_arena_calls_never_allocate() {
 // The plan
 // ---------------------------------------------------------------------------
 
-// Defect: CPU arenas that overlap, a base that is not aligned, or a
+// Defect: CPU arenas that overlap, a base that is not aligned, a
 // cpu_bytes() short of the last arena's end, so that the one block the
-// platform reserves is smaller than the plan. Each CPU arena is filled to its
-// last byte here, and the next byte must be refused rather than placed in the
-// arena after it. A refused budget must leave a working plan as it was.
+// platform reserves is smaller than the plan, or an arena built with another
+// category's allocation limit, which is why every category is given a
+// different one here. Each CPU arena is filled to its last byte, and the next
+// byte must be refused rather than placed in the arena after it. A refused
+// budget must leave a working plan as it was.
 void test_memory_plan_layout() {
     nfsu::MemoryBudget budget;
     budget.capacity = {1000, 3000, 500, 8192};
     budget.max_alignment = {16, 64, 16, 4096};
-    budget.max_allocations = {8, 8, 8, 8};
+    budget.max_allocations = {8, 16, 32, 64};
     nfsu::MemoryPlan plan;
     std::string error;
     check(plan.create(budget, error), "plan create: " + error);
@@ -1096,6 +1257,9 @@ void test_memory_plan_layout() {
         check(arena.config().category == category, what + ": category");
         check_eq(arena.config().base, bases[i], what + ": base");
         check_eq(arena.config().capacity, budget.capacity[i], what + ": capacity");
+        check_eq(arena.config().max_alignment, budget.max_alignment[i], what + ": alignment");
+        check_eq(arena.config().max_allocations, budget.max_allocations[i],
+                 what + ": allocation limit");
         nfsu::ArenaAllocation& whole = wholes[i];
         check_refusal(arena.allocate(budget.capacity[i], 1, whole), nfsu::ArenaRefusal::none,
                       what + ": the whole arena");
@@ -1160,6 +1324,8 @@ const TestCase kTests[] = {
     {"frames_reset_the_transient_arena", test_frames_reset_the_transient_arena},
     {"handles_are_checked", test_handles_are_checked},
     {"create_again_keeps_old_handles_stale", test_create_again_keeps_old_handles_stale},
+    {"create_again_starts_every_figure_over", test_create_again_starts_every_figure_over},
+    {"high_water_marks_are_peaks", test_high_water_marks_are_peaks},
     {"allocation_limit", test_allocation_limit},
     {"arena_calls_never_allocate", test_arena_calls_never_allocate},
     {"memory_plan_layout", test_memory_plan_layout},
