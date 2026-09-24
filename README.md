@@ -307,7 +307,9 @@ and depth views, `O` cycles the overlay. Without the flag nothing of it
 runs: the TGA, the report and the exit code are unchanged. The window is
 Win32 and GDI, with no external dependency, and every rule it follows lives
 in a backend-neutral layer a deko3d renderer will reuse. See
-`docs/INSPECTOR.md`.
+`docs/INSPECTOR.md`. The platform it runs on is reached through six
+services, `docs/PLATFORM_SERVICES.md`, and a controller drives the same
+camera, `docs/INPUT.md`.
 
 ## Body-skin compositor reference
 

@@ -1201,7 +1201,7 @@ void test_recorded_replay() {
     // the mapping, the rates, the order of the Inspector calls or the
     // inspector's own arithmetic moves them. They hold on any platform that
     // evaluates doubles as IEEE binary64 without contraction in these
-    // libraries; docs/INPUT.md says where that is not yet guaranteed.
+    // libraries; docs/INPUT.md names the libraries and how it was measured.
     const std::string golden_camera =
         "C0660C4AEC4D8D68 4011EF4455426709 401C71C71C71C71C 3FE1A51699E8084F "
         "3F585684551A16D0 BFE35C54C352170B 4046800000000000 3FA999999999999A "
