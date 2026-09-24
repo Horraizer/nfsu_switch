@@ -722,6 +722,19 @@ else()
     target_compile_options(nfsu_input_camera PRIVATE -ffp-contract=off -fno-fast-math)
 endif()
 
+# nfsu_inspect's orbit, pan and zoom decide the camera a recorded
+# controller session replays to (docs/INPUT.md), so contraction is disabled
+# there for the reason nfsu_render disables it. Measured, not assumed: GCC
+# 13 for AArch64 at -O3 fuses three multiply-adds into Inspector::orbit,
+# which fails nfsu_inspect_tests' "the orbit is reversible" and moves the
+# replayed session's per-frame digest; with these options both pass. x86-64
+# without FMA has nothing to fuse, so its builds are unchanged.
+if(MSVC)
+    target_compile_options(nfsu_inspect PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_inspect PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+
 # The inspection session: everything the window procedure decided that is
 # not a window, now compiled on every platform beside the arithmetic in
 # src/inspect_window_common.cpp, and the frame loop a console backend runs.
