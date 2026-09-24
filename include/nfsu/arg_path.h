@@ -19,7 +19,19 @@
 // refuses instead of throwing. docs/PATH_ARGUMENTS.md states the boundary,
 // including what the '?' refusal does not do and why the Windows
 // extended-length prefix "\\?\" is exempt from it.
+//
+// The conversion is the desktop FileSystemService of include/nfsu/platform.h:
+// the three calls below go through desktop_file_system(), and code that
+// must run on a console as well takes a FileSystemService& instead of
+// calling them. docs/PLATFORM_SERVICES.md.
 namespace nfsu {
+
+class FileSystemService;
+
+// The desktop implementation of FileSystemService: argument_to_path below,
+// against the process's active ANSI code page on Windows. It holds no
+// state and lives for the whole program.
+FileSystemService& desktop_file_system();
 
 // Converts one argument. Returns false and leaves `out` untouched when the
 // argument cannot be converted, setting `reason` to a sentence that names

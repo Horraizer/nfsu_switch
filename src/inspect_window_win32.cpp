@@ -1,11 +1,12 @@
 #include "nfsu/inspect_window.h"
 
+#include "nfsu/inspect_session.h"
+#include "nfsu/platform.h"
 #include "nfsu/render.h"
 
 #include <algorithm>
-#include <cstdlib>
 #include <cstring>
-#include <new>
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -21,9 +22,13 @@
 // The Win32 window backend. It uses user32 and gdi32 only: no external
 // dependency, no graphics API and no shader, because the frame it shows is
 // produced by the CPU reference renderer and blitted as a device-independent
-// bitmap. Its whole job is to turn pointer and key events into
-// InspectorCommand values, ask the Inspector what to show and put it on the
-// screen. Every rule about what a control does lives in src/inspect.cpp.
+// bitmap. Its whole job is to be three of the services in
+// include/nfsu/platform.h for one window - the display that puts a composed
+// frame and its overlay text on the screen, the input that turns window
+// messages into InputEvent values, and the lifecycle that runs the message
+// loop - and to hand every message to the InspectionSession as it arrives.
+// Every rule about what a control does lives in src/inspect_session.cpp and
+// src/inspect.cpp; docs/PLATFORM_SERVICES.md says which call moved where.
 
 namespace nfsu {
 
@@ -33,8 +38,10 @@ constexpr const char* kWindowClass = "nfsu_inspection_window";
 // Overlay box geometry, in pixels of the client area.
 constexpr int kOverlayMargin = 8;
 constexpr int kOverlayPadding = 6;
-// A drag shorter than this many pixels in both axes counts as a click.
-constexpr int kClickSlack = 3;
+
+// The session counts wheel movement in the unit Windows reports it in, so
+// WM_MOUSEWHEEL's delta reaches it unscaled.
+static_assert(WHEEL_DELTA == kWheelNotch, "InputEvent::wheel is in units of WHEEL_DELTA");
 
 std::string ascii_title(const std::string& text) {
     std::string out;
@@ -46,154 +53,8 @@ std::string ascii_title(const std::string& text) {
     return out.empty() ? std::string("nfsu inspector") : out;
 }
 
-struct Session {
-    Inspector* inspector = nullptr;
-    InspectionWindowOptions options;
-    Frame frame;
-    RenderStats stats;
-    // Set when the frame buffer holds a frame that can be presented.
-    bool have_frame = false;
-    // The last render failure, shown in the overlay until a render succeeds.
-    std::string render_error;
-    // Pointer state.
-    bool orbiting = false;
-    bool panning = false;
-    int last_x = 0;
-    int last_y = 0;
-    int press_x = 0;
-    int press_y = 0;
-    // Wheel movement that has not yet added up to a whole notch. A precision
-    // trackpad reports deltas smaller than WHEEL_DELTA, and dropping them
-    // would leave it unable to zoom at all.
-    int wheel_residual = 0;
-    // A click that has not been resolved into a selection yet, in client
-    // pixels; resolved against the frame that the next paint renders.
-    bool pending_pick = false;
-    int pick_x = 0;
-    int pick_y = 0;
-    // Client size the viewport currently follows.
-    int client_width = 0;
-    int client_height = 0;
-    // Scratch buffers, kept between paints so that a drag allocates nothing.
-    std::vector<unsigned char> view_rgba;
-    std::vector<unsigned char> mask;
-    std::vector<unsigned char> bgra;
-    std::vector<std::string> overlay;
-    // The exit reason when the loop ends early.
-    std::string fatal;
-};
-
-// The viewport the next frame is rendered at: the client size, divided while
-// a drag is in progress so that the CPU renderer keeps up.
-//
-// Returns false when the viewport is not the size that was asked for, which
-// happens when the render limits refuse it: the previous viewport is kept
-// and the blit stretches whatever size the frame has onto the client area.
-// Only the pick cares, because a click is resolved in client pixels and that
-// is only the same pixel when the frame covers the client area one to one.
-bool apply_viewport(Session& session) {
-    if (session.inspector == nullptr || session.client_width <= 0 ||
-        session.client_height <= 0) {
-        return false;
-    }
-    std::uint32_t divisor = 1;
-    if (session.orbiting || session.panning) {
-        divisor = session.options.drag_divisor == 0 ? 1 : session.options.drag_divisor;
-    }
-    const std::uint32_t width =
-        std::max<std::uint32_t>(1, static_cast<std::uint32_t>(session.client_width) / divisor);
-    const std::uint32_t height =
-        std::max<std::uint32_t>(1, static_cast<std::uint32_t>(session.client_height) / divisor);
-    std::string ignored;
-    return session.inspector->set_viewport(width, height, ignored);
-}
-
-// Renders when the inspector says the frame is stale, then resolves a
-// pending click against the frame that is now on hand.
-void update_frame(Session& session) {
-    Inspector& inspector = *session.inspector;
-    // Only a change the frame itself depends on costs a render. Switching
-    // the view, moving the overlay and selecting a group are answered from
-    // the frame already on hand, which is what makes them feel instant on a
-    // car that takes a moment to rasterize.
-    if (inspector.frame_stale() || !session.have_frame) {
-        std::string error;
-        RenderStats stats;
-        if (render_scene(*inspector.scene(), inspector.options(), inspector.limits(),
-                         session.frame, stats, error)) {
-            session.stats = stats;
-            session.have_frame = true;
-            session.render_error.clear();
-        } else {
-            session.render_error = error;
-            if (!session.have_frame) {
-                session.fatal = error;
-                return;
-            }
-        }
-        inspector.clear_frame_stale();
-    }
-    inspector.clear_dirty();
-    if (session.pending_pick && session.have_frame) {
-        session.pending_pick = false;
-        const InspectionBuffers buffers = inspection_buffers_of(session.frame);
-        // The frame was rendered at the current viewport, which equals the
-        // client area outside a drag; a click is only ever resolved there.
-        if (session.pick_x >= 0 && session.pick_y >= 0 &&
-            static_cast<std::uint32_t>(session.pick_x) < buffers.width &&
-            static_cast<std::uint32_t>(session.pick_y) < buffers.height) {
-            std::string error;
-            inspector.pick(buffers, static_cast<std::uint32_t>(session.pick_x),
-                           static_cast<std::uint32_t>(session.pick_y), error);
-        }
-        // A selection changes text and the highlight, not the frame.
-        inspector.clear_dirty();
-    }
-}
-
-// Builds the BGRA rows GDI wants out of the inspector view and the highlight.
-bool compose(Session& session) {
-    Inspector& inspector = *session.inspector;
-    const InspectionBuffers buffers = inspection_buffers_of(session.frame);
-    std::string error;
-    if (!inspector.view_pixels(buffers, session.view_rgba, error) ||
-        !inspector.highlight_mask(buffers, session.mask, error)) {
-        session.fatal = error;
-        return false;
-    }
-    const std::size_t pixels = session.mask.size();
-    try {
-        session.bgra.resize(pixels * 4U);
-    } catch (const std::bad_alloc&) {
-        session.fatal = "not enough memory to present the frame";
-        return false;
-    }
-    for (std::size_t i = 0; i < pixels; ++i) {
-        unsigned char r = session.view_rgba[i * 4U + 0];
-        unsigned char g = session.view_rgba[i * 4U + 1];
-        unsigned char b = session.view_rgba[i * 4U + 2];
-        if (session.mask[i] != 0) {
-            // Half way to a fixed amber, which stays visible over both the
-            // shaded frame and the flat index colors.
-            r = static_cast<unsigned char>((r + 255U) / 2U);
-            g = static_cast<unsigned char>((g + 190U) / 2U);
-            b = static_cast<unsigned char>((b + 0U) / 2U);
-        }
-        session.bgra[i * 4U + 0] = b;
-        session.bgra[i * 4U + 1] = g;
-        session.bgra[i * 4U + 2] = r;
-        session.bgra[i * 4U + 3] = 255;
-    }
-    return true;
-}
-
-void draw_overlay(Session& session, HDC dc, int width, int height) {
-    Inspector& inspector = *session.inspector;
-    inspector.build_overlay(session.stats, session.overlay);
-    if (!session.render_error.empty()) {
-        session.overlay.push_back("render failed: " + session.render_error);
-    }
-    if (session.overlay.empty()) {
+void draw_overlay(HDC dc, const std::vector<std::string>& overlay, int width, int height) {
+    if (overlay.empty()) {
         return;
     }
     HGDIOBJ font = GetStockObject(ANSI_FIXED_FONT);
@@ -203,14 +64,14 @@ void draw_overlay(Session& session, HDC dc, int width, int height) {
     GetTextMetricsA(dc, &metrics);
     const int line_height = metrics.tmHeight + 2;
     int box_width = 0;
-    for (const std::string& line : session.overlay) {
+    for (const std::string& line : overlay) {
         SIZE size;
         if (GetTextExtentPoint32A(dc, line.c_str(), static_cast<int>(line.size()), &size)) {
             box_width = std::max<int>(box_width, size.cx);
         }
     }
     const int box_height =
-        line_height * static_cast<int>(session.overlay.size()) + kOverlayPadding * 2;
+        line_height * static_cast<int>(overlay.size()) + kOverlayPadding * 2;
     RECT box;
     box.left = kOverlayMargin;
     box.top = kOverlayMargin;
@@ -227,7 +88,7 @@ void draw_overlay(Session& session, HDC dc, int width, int height) {
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, RGB(226, 232, 240));
     int y = kOverlayMargin + kOverlayPadding;
-    for (const std::string& line : session.overlay) {
+    for (const std::string& line : overlay) {
         if (y + line_height > height) {
             break;
         }
@@ -238,45 +99,62 @@ void draw_overlay(Session& session, HDC dc, int width, int height) {
     SelectObject(dc, previous_font);
 }
 
-void paint(Session& session, HWND window) {
-    PAINTSTRUCT paint_struct;
-    HDC dc = BeginPaint(window, &paint_struct);
-    if (dc == nullptr) {
-        // BeginPaint failed, so EndPaint has nothing to end and the update
-        // region is still there. Clear it by hand: leaving it would have
-        // Windows post WM_PAINT again at once, forever.
-        ValidateRect(window, nullptr);
-        return;
+// The display: a paint of the client area. begin_frame and end_frame are
+// BeginPaint and EndPaint, so a frame is only ever presented from WM_PAINT,
+// and draw_frame is the double-buffered stretch-and-text it always was.
+class Win32Display final : public DisplayService {
+public:
+    HWND window = nullptr;
+
+    void surface_size(int& width, int& height) override {
+        RECT client;
+        GetClientRect(window, &client);
+        width = client.right - client.left;
+        height = client.bottom - client.top;
     }
-    RECT client;
-    GetClientRect(window, &client);
-    const int width = client.right - client.left;
-    const int height = client.bottom - client.top;
-    if (width > 0 && height > 0 && session.have_frame && compose(session)) {
+
+    bool begin_frame(int& width, int& height) override {
+        dc_ = BeginPaint(window, &paint_);
+        if (dc_ == nullptr) {
+            // BeginPaint failed, so EndPaint has nothing to end and the
+            // update region is still there. Clear it by hand: leaving it
+            // would have Windows post WM_PAINT again at once, forever.
+            ValidateRect(window, nullptr);
+            return false;
+        }
+        RECT client;
+        GetClientRect(window, &client);
+        width_ = client.right - client.left;
+        height_ = client.bottom - client.top;
+        width = width_;
+        height = height_;
+        return true;
+    }
+
+    void draw_frame(const DisplayImage& image, const std::vector<std::string>& overlay) override {
         // One memory bitmap for the whole client area: the stretch and the
         // text land there and reach the screen in a single blit, so the
         // overlay never flickers over a half-drawn frame.
-        HDC memory = CreateCompatibleDC(dc);
-        HBITMAP bitmap = memory != nullptr ? CreateCompatibleBitmap(dc, width, height)
+        HDC memory = CreateCompatibleDC(dc_);
+        HBITMAP bitmap = memory != nullptr ? CreateCompatibleBitmap(dc_, width_, height_)
                                            : nullptr;
         if (memory != nullptr && bitmap != nullptr) {
             HGDIOBJ previous = SelectObject(memory, bitmap);
             BITMAPINFO info;
             std::memset(&info, 0, sizeof(info));
             info.bmiHeader.biSize = sizeof(info.bmiHeader);
-            info.bmiHeader.biWidth = static_cast<LONG>(session.frame.width());
+            info.bmiHeader.biWidth = static_cast<LONG>(image.width);
             // Negative: the rows are top down, as the renderer writes them.
-            info.bmiHeader.biHeight = -static_cast<LONG>(session.frame.height());
+            info.bmiHeader.biHeight = -static_cast<LONG>(image.height);
             info.bmiHeader.biPlanes = 1;
             info.bmiHeader.biBitCount = 32;
             info.bmiHeader.biCompression = BI_RGB;
             SetStretchBltMode(memory, COLORONCOLOR);
-            StretchDIBits(memory, 0, 0, width, height, 0, 0,
-                          static_cast<int>(session.frame.width()),
-                          static_cast<int>(session.frame.height()),
-                          session.bgra.data(), &info, DIB_RGB_COLORS, SRCCOPY);
-            draw_overlay(session, memory, width, height);
-            BitBlt(dc, 0, 0, width, height, memory, 0, 0, SRCCOPY);
+            StretchDIBits(memory, 0, 0, width_, height_, 0, 0,
+                          static_cast<int>(image.width), static_cast<int>(image.height),
+                          image.bgra, &info, DIB_RGB_COLORS, SRCCOPY);
+            draw_overlay(memory, overlay, width_, height_);
+            BitBlt(dc_, 0, 0, width_, height_, memory, 0, 0, SRCCOPY);
             SelectObject(memory, previous);
         }
         if (bitmap != nullptr) {
@@ -286,186 +164,198 @@ void paint(Session& session, HWND window) {
             DeleteDC(memory);
         }
     }
-    EndPaint(window, &paint_struct);
-}
 
-// The key table. Nothing else in this file decides what a key means.
-bool command_for_key(WPARAM key, InspectorCommand& command) {
-    switch (key) {
-    case '1': command = InspectorCommand::view_front; return true;
-    case '2': command = InspectorCommand::view_right; return true;
-    case '3': command = InspectorCommand::view_rear; return true;
-    case '4': command = InspectorCommand::view_left; return true;
-    case '5': command = InspectorCommand::view_top; return true;
-    case 'R': command = InspectorCommand::reset_camera; return true;
-    case 'F': command = InspectorCommand::frame_selection; return true;
-    case 'G': command = InspectorCommand::frame_scene; return true;
-    case 'N': command = InspectorCommand::select_next_draw; return true;
-    case 'P': command = InspectorCommand::select_previous_draw; return true;
-    case 'M': command = InspectorCommand::select_next_mesh; return true;
-    case 'B': command = InspectorCommand::select_previous_mesh; return true;
-    case VK_ESCAPE: command = InspectorCommand::clear_selection; return true;
-    case 'V': command = InspectorCommand::cycle_view; return true;
-    case 'O': command = InspectorCommand::cycle_overlay; return true;
-    case 'H': command = InspectorCommand::toggle_highlight; return true;
-    case 'C': command = InspectorCommand::cycle_cull; return true;
-    case 'S': command = InspectorCommand::toggle_shading; return true;
-    case 'T': command = InspectorCommand::toggle_material_state; return true;
-    case 'X': command = InspectorCommand::toggle_vertex_color; return true;
-    case 'U': command = InspectorCommand::toggle_flip_v; return true;
-    default: return false;
+    void end_frame() override {
+        EndPaint(window, &paint_);
+        dc_ = nullptr;
     }
-}
 
-Session* session_of(HWND window) {
-    return reinterpret_cast<Session*>(GetWindowLongPtrA(window, GWLP_USERDATA));
-}
+    void request_redraw() override { InvalidateRect(window, nullptr, FALSE); }
 
-void begin_drag(Session& session, HWND window, bool orbit, LPARAM position) {
-    session.orbiting = orbit;
-    session.panning = !orbit;
-    session.press_x = GET_X_LPARAM(position);
-    session.press_y = GET_Y_LPARAM(position);
-    session.last_x = session.press_x;
-    session.last_y = session.press_y;
-    SetCapture(window);
-    static_cast<void>(apply_viewport(session));
-}
+private:
+    PAINTSTRUCT paint_{};
+    HDC dc_ = nullptr;
+    int width_ = 0;
+    int height_ = 0;
+};
 
-void end_drag(Session& session, HWND window, LPARAM position, bool was_orbit) {
-    const int x = GET_X_LPARAM(position);
-    const int y = GET_Y_LPARAM(position);
-    const bool click = was_orbit && std::abs(x - session.press_x) <= kClickSlack &&
-                       std::abs(y - session.press_y) <= kClickSlack;
-    session.orbiting = false;
-    session.panning = false;
-    ReleaseCapture();
-    const bool full_size = apply_viewport(session);
-    if (click && full_size) {
-        // Resolved by the next paint, against a frame at the full client
-        // size, so the client pixel and the frame pixel are the same one.
-        // A client area the render limits refuse leaves the frame at the
-        // drag size, where that is no longer true, so the click is dropped
-        // rather than resolved against the wrong pixel.
-        session.pending_pick = true;
-        session.pick_x = x;
-        session.pick_y = y;
-    }
-    InvalidateRect(window, nullptr, FALSE);
-}
+// The input: the window procedure queues each input message here as an
+// InputEvent and the session takes it at once. Capture is the window
+// capture a drag has always taken.
+class Win32Input final : public InputService {
+public:
+    HWND window = nullptr;
+    std::deque<InputEvent> queue;
 
-LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
-    Session* session = session_of(window);
-    if (session == nullptr || session->inspector == nullptr) {
-        return DefWindowProcA(window, message, w, l);
-    }
-    switch (message) {
-    case WM_ERASEBKGND:
-        return 1;  // the paint covers every pixel
-    case WM_SIZE: {
-        session->client_width = static_cast<int>(LOWORD(l));
-        session->client_height = static_cast<int>(HIWORD(l));
-        static_cast<void>(apply_viewport(*session));
-        InvalidateRect(window, nullptr, FALSE);
-        return 0;
-    }
-    case WM_PAINT:
-        update_frame(*session);
-        if (!session->fatal.empty()) {
-            PostQuitMessage(0);
+    bool next_event(InputEvent& event) override {
+        if (queue.empty()) {
+            return false;
         }
-        paint(*session, window);
-        return 0;
+        event = queue.front();
+        queue.pop_front();
+        return true;
+    }
+
+    void set_pointer_capture(bool captured) override {
+        if (captured) {
+            SetCapture(window);
+        } else {
+            ReleaseCapture();
+        }
+    }
+
+    // No controller backend exists on the desktop (docs/INPUT.md), so every
+    // slot reads as disconnected. Nothing on this backend samples it: the
+    // window runs no frame loop.
+    void sample_gamepads(GamepadFrame& frame) override {
+        for (GamepadState& pad : frame.pads) {
+            pad = GamepadState{};
+        }
+    }
+};
+
+// The lifecycle: the message loop. One pump is one message waited for,
+// translated and dispatched; the loop ends on WM_QUIT, which the window
+// posts when it is destroyed. An exit request is the WM_CLOSE a user
+// closing the window sends.
+class Win32Lifecycle final : public LifecycleService {
+public:
+    HWND window = nullptr;
+
+    bool pump() override {
+        if (stopped_) {
+            return false;
+        }
+        MSG message;
+        if (GetMessageA(&message, nullptr, 0, 0) <= 0) {
+            stopped_ = true;
+            return false;
+        }
+        TranslateMessage(&message);
+        DispatchMessageA(&message);
+        return true;
+    }
+
+    void request_exit() override { PostMessageA(window, WM_CLOSE, 0, 0); }
+
+private:
+    bool stopped_ = false;
+};
+
+// What GWLP_USERDATA points at while the window runs.
+struct Backend {
+    Win32Display display;
+    Win32Input input;
+    Win32Lifecycle lifecycle;
+    InspectionSession* session = nullptr;
+};
+
+Backend* backend_of(HWND window) {
+    return reinterpret_cast<Backend*>(GetWindowLongPtrA(window, GWLP_USERDATA));
+}
+
+// Which Key a virtual key is. What each one does is the session's key
+// table; this only names the keys that table knows.
+Key key_of(WPARAM key) {
+    switch (key) {
+    case '1': return Key::digit_1;
+    case '2': return Key::digit_2;
+    case '3': return Key::digit_3;
+    case '4': return Key::digit_4;
+    case '5': return Key::digit_5;
+    case 'B': return Key::b;
+    case 'C': return Key::c;
+    case 'F': return Key::f;
+    case 'G': return Key::g;
+    case 'H': return Key::h;
+    case 'M': return Key::m;
+    case 'N': return Key::n;
+    case 'O': return Key::o;
+    case 'P': return Key::p;
+    case 'Q': return Key::q;
+    case 'R': return Key::r;
+    case 'S': return Key::s;
+    case 'T': return Key::t;
+    case 'U': return Key::u;
+    case 'V': return Key::v;
+    case 'X': return Key::x;
+    case VK_ESCAPE: return Key::escape;
+    default: return Key::other;
+    }
+}
+
+// The message table: which window message is which input event. False for
+// a message that is not input.
+bool event_of(UINT message, WPARAM w, LPARAM l, InputEvent& event) {
+    switch (message) {
+    case WM_SIZE:
+        event = resize_event(static_cast<std::int32_t>(LOWORD(l)),
+                             static_cast<std::int32_t>(HIWORD(l)));
+        return true;
     case WM_LBUTTONDOWN:
-        begin_drag(*session, window, true, l);
-        return 0;
+        event = pointer_down_event(PointerButton::primary, GET_X_LPARAM(l), GET_Y_LPARAM(l));
+        return true;
     case WM_RBUTTONDOWN:
+        event = pointer_down_event(PointerButton::secondary, GET_X_LPARAM(l), GET_Y_LPARAM(l));
+        return true;
     case WM_MBUTTONDOWN:
-        begin_drag(*session, window, false, l);
-        return 0;
-    // Releasing any pointer button ends the drag that is running, whichever
-    // button started it. Pressing a second button while the first is held
-    // switches the drag, so tying each release to its own button would make
-    // the first release do nothing and hold the capture until the second.
+        event = pointer_down_event(PointerButton::middle, GET_X_LPARAM(l), GET_Y_LPARAM(l));
+        return true;
     case WM_LBUTTONUP:
     case WM_RBUTTONUP:
     case WM_MBUTTONUP:
-        if (session->orbiting || session->panning) {
-            end_drag(*session, window, l, session->orbiting);
-        }
-        return 0;
+        event = pointer_up_event(GET_X_LPARAM(l), GET_Y_LPARAM(l));
+        return true;
     case WM_CAPTURECHANGED:
-        session->orbiting = false;
-        session->panning = false;
-        static_cast<void>(apply_viewport(*session));
-        return 0;
-    case WM_MOUSEMOVE: {
-        if (!session->orbiting && !session->panning) {
-            return 0;
-        }
-        const int x = GET_X_LPARAM(l);
-        const int y = GET_Y_LPARAM(l);
-        const double dx = static_cast<double>(x - session->last_x);
-        const double dy = static_cast<double>(y - session->last_y);
-        session->last_x = x;
-        session->last_y = y;
-        if (dx == 0.0 && dy == 0.0) {
-            return 0;
-        }
-        if (session->orbiting) {
-            // Degrees per pixel does not depend on the viewport, so an
-            // orbit is the same drag whatever size the frame is rendered at.
-            session->inspector->orbit(dx, dy);
-        } else {
-            // A pan does depend on it: the delta is in client pixels and
-            // Inspector::pan measures in the pixels of the viewport it will
-            // render at, which is smaller than the client area for the
-            // length of the drag.
-            const RenderOptions& view = session->inspector->options();
-            const PanDelta delta =
-                pan_delta_for(session->client_width, session->client_height, view.width,
-                              view.height, dx, dy);
-            session->inspector->pan(delta.dx, delta.dy);
-        }
-        InvalidateRect(window, nullptr, FALSE);
-        return 0;
+        event = pointer_cancel_event();
+        return true;
+    case WM_MOUSEMOVE:
+        event = pointer_move_event(GET_X_LPARAM(l), GET_Y_LPARAM(l));
+        return true;
+    case WM_MOUSEWHEEL:
+        event = wheel_event(GET_WHEEL_DELTA_WPARAM(w));
+        return true;
+    case WM_KEYDOWN:
+        event = key_event(key_of(w));
+        return true;
+    default:
+        return false;
     }
-    case WM_MOUSEWHEEL: {
-        const int delta = GET_WHEEL_DELTA_WPARAM(w);
-        // Accumulate, so that a precision trackpad reporting a fraction of a
-        // notch per event still zooms once its events add up to one. The
-        // residual is bounded by a notch in each direction, so the sum
-        // cannot overflow whatever a device sends.
-        const int total = session->wheel_residual + delta;
-        const int steps = total / WHEEL_DELTA;
-        session->wheel_residual = total - steps * WHEEL_DELTA;
-        if (steps != 0) {
-            session->inspector->zoom(steps);
-            InvalidateRect(window, nullptr, FALSE);
-        }
-        return 0;
+}
+
+LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
+    Backend* backend = backend_of(window);
+    if (backend == nullptr || backend->session == nullptr) {
+        return DefWindowProcA(window, message, w, l);
     }
-    case WM_KEYDOWN: {
-        if (w == 'Q') {
-            PostMessageA(window, WM_CLOSE, 0, 0);
-            return 0;
+    InspectionSession& session = *backend->session;
+    switch (message) {
+    case WM_ERASEBKGND:
+        return 1;  // the paint covers every pixel
+    case WM_PAINT:
+        session.update();
+        if (session.failed()) {
+            PostQuitMessage(0);
         }
-        InspectorCommand command = InspectorCommand::reset_camera;
-        if (command_for_key(w, command)) {
-            std::string error;
-            // A command that cannot apply (nothing selected, no drawable
-            // group) is not an error of the window: it changes nothing and
-            // the overlay keeps showing what is there.
-            session->inspector->command(command, error);
-            InvalidateRect(window, nullptr, FALSE);
-        }
+        session.present();
         return 0;
-    }
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
     default:
         break;
+    }
+    InputEvent event;
+    if (event_of(message, w, l, event)) {
+        // Queued and taken at once: every event reaches the session through
+        // the InputService a frame loop drains, and in the order the window
+        // procedure is called in. That includes WM_CAPTURECHANGED, which
+        // Windows sends from inside the ReleaseCapture that ending a drag
+        // makes, so it is handled inside that drag's release exactly as it
+        // was when both were handlers here.
+        backend->input.queue.push_back(event);
+        session.pump_events();
+        return 0;
     }
     return DefWindowProcA(window, message, w, l);
 }
@@ -506,9 +396,10 @@ bool run_inspection_window(
         return false;
     }
 
-    Session session;
-    session.inspector = &inspector;
-    session.options = options;
+    Backend backend;
+    InspectionSession session(inspector, options, backend.input, backend.display,
+                              backend.lifecycle);
+    backend.session = &session;
 
     RECT wanted;
     wanted.left = 0;
@@ -527,21 +418,17 @@ bool run_inspection_window(
         error = "could not create the inspection window";
         return false;
     }
-    SetWindowLongPtrA(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&session));
-    RECT client;
-    GetClientRect(window, &client);
-    session.client_width = client.right - client.left;
-    session.client_height = client.bottom - client.top;
-    apply_viewport(session);
+    backend.display.window = window;
+    backend.input.window = window;
+    backend.lifecycle.window = window;
+    SetWindowLongPtrA(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&backend));
+    session.start();
 
     ShowWindow(window, SW_SHOWNORMAL);
     UpdateWindow(window);
 
-    MSG message;
-    while (GetMessageA(&message, nullptr, 0, 0) > 0) {
-        TranslateMessage(&message);
-        DispatchMessageA(&message);
-        if (!session.fatal.empty()) {
+    while (backend.lifecycle.pump()) {
+        if (session.failed()) {
             break;
         }
     }
@@ -550,8 +437,8 @@ bool run_inspection_window(
         SetWindowLongPtrA(window, GWLP_USERDATA, 0);
         DestroyWindow(window);
     }
-    if (!session.fatal.empty()) {
-        error = session.fatal;
+    if (session.failed()) {
+        error = session.failure();
         return false;
     }
     return true;
