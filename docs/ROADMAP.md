@@ -128,7 +128,8 @@
 - Add devkitA64 and libnx build support. An opt-in Switch configure
   (`cmake/switch-toolchain.cmake`) locates `DEVKITPRO` and `DEVKITA64`,
   names any missing SDK piece and the variable that fixes it, and builds a
-  minimal libnx application into an NRO; the desktop build is unchanged
+  minimal libnx application into an NRO; the desktop targets are unchanged,
+  and the desktop suite gains three tests that need no SDK
   ([`SWITCH_BUILD.md`](SWITCH_BUILD.md)). Nothing has run on hardware yet.
 - Add controller, filesystem, timing, and logging services.
 - Add a deko3d renderer with offline-compiled shaders. The shader pipeline is

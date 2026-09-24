@@ -697,8 +697,9 @@ if(NFSU_BUILD_TESTS)
     add_test(NAME nfsu_shader_manifest_tests COMMAND nfsu_shader_manifest_tests)
 
     # Every manifest against the GLSL of its two stages, and then the same
-    # check over copies with one declaration moved, each of which must fail
-    # with the finding that names it.
+    # check over copies with one thing changed, each of which must fail with
+    # the finding that names it, or pass where uam reads the change the same
+    # way.
     add_test(NAME nfsu_shader_source_guards
         COMMAND ${CMAKE_COMMAND}
                 -DCHECKER=${CMAKE_CURRENT_SOURCE_DIR}/cmake/shader_manifest.cmake

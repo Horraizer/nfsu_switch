@@ -21,7 +21,11 @@
 #            refused to run, which says nothing about the change
 #   stale    the text a case changes is no longer in the file
 #
-# and the test passes only when every case is caught.
+# A few cases make a change that must pass instead - valid GLSL the reader
+# has to read the way the compiler does, such as a // inside a block
+# comment - and are classified the same way: passed on exit 0 with the
+# closing line, refused on a non-zero exit with it, unknown otherwise. The
+# test passes only when every case is caught or passed.
 #
 # The same changes against the compiled shaders are
 # tests/shader_blob_guards.cmake, which runs in the Switch build.
@@ -39,7 +43,14 @@ string(RANDOM LENGTH 12 ALPHABET "abcdefghijklmnopqrstuvwxyz0123456789" token)
 set(work "${CMAKE_CURRENT_BINARY_DIR}/nfsu_shader_source_guards_${token}")
 set(report "")
 set(caught 0)
+set(passed 0)
 set(failed 0)
+# The bytes some cases write. A copy is written with LF line ends unless
+# newline_style says CRLF.
+string(ASCII 11 vt)
+string(ASCII 12 ff)
+string(ASCII 13 cr)
+set(newline_style LF)
 
 function(nfsu_check_source manifest out_status out_text)
     execute_process(
@@ -65,48 +76,61 @@ foreach(manifest IN LISTS manifests)
     endif()
 endforeach()
 
-# nfsu_case(<label> <file> <manifest> <expected> <from> <to> [<from> <to>])
+# nfsu_case(<label> <file> <manifest> <expected> [<from> <to>]...)
 #
-# Replaces <from> with <to> in <file> of a fresh copy of shaders/ (and the
-# second pair too, when given), runs the check over <manifest> of that copy,
-# and requires it to fail with <expected> in its output.
-function(nfsu_case label file manifest expected from to)
+# Replaces each <from> with its <to> in <file> of a fresh copy of shaders/,
+# runs the check over <manifest> of that copy, and requires it to fail with
+# <expected> in its output, or to pass when <expected> is PASS. The pairs
+# are read one argument at a time, because a CMake list would split the
+# semicolons they hold.
+function(nfsu_case label file manifest expected)
     file(REMOVE_RECURSE "${work}")
     file(MAKE_DIRECTORY "${work}")
     file(GLOB sources "${SHADERS}/*")
     file(COPY ${sources} DESTINATION "${work}")
+    # file(READ) drops the CR of each CR LF, so a checkout with CRLF line
+    # endings is compared and changed with LF, and every pattern below that
+    # spans a line still matches.
     file(READ "${work}/${file}" text)
-    # A checkout with CRLF line endings would leave every pattern below that
-    # spans a line unmatched, so the copy is compared, changed and written
-    # with LF; both checkers read either.
-    string(REPLACE "\r\n" "\n" text "${text}")
-    set(pairs 1)
-    if(ARGC GREATER 7)
-        set(pairs 2)
+    math(EXPR last "${ARGC} - 1")
+    if(ARGC GREATER 4)
+        foreach(from_index RANGE 4 ${last} 2)
+            math(EXPR to_index "${from_index} + 1")
+            set(old "${ARGV${from_index}}")
+            set(new "${ARGV${to_index}}")
+            string(FIND "${text}" "${old}" at)
+            if(at EQUAL -1)
+                set(report "${report}STALE  ${label}: `${old}` is not in ${file}\n" PARENT_SCOPE)
+                math(EXPR count "${failed} + 1")
+                set(failed ${count} PARENT_SCOPE)
+                return()
+            endif()
+            string(REPLACE "${old}" "${new}" text "${text}")
+        endforeach()
     endif()
-    foreach(pair RANGE 1 ${pairs})
-        if(pair EQUAL 1)
-            set(old "${from}")
-            set(new "${to}")
-        else()
-            set(old "${ARGV6}")
-            set(new "${ARGV7}")
-        endif()
-        string(FIND "${text}" "${old}" at)
-        if(at EQUAL -1)
-            set(report "${report}STALE  ${label}: `${old}` is not in ${file}\n" PARENT_SCOPE)
-            math(EXPR count "${failed} + 1")
-            set(failed ${count} PARENT_SCOPE)
-            return()
-        endif()
-        string(REPLACE "${old}" "${new}" text "${text}")
-    endforeach()
-    file(WRITE "${work}/${file}" "${text}")
+    # file(WRITE) writes text mode on Windows, where every LF would gain a
+    # CR. file(CONFIGURE) with a newline style writes the same bytes on every
+    # host; @ONLY leaves the sources' text alone, since none holds an @VAR@
+    # or a #cmakedefine.
+    file(CONFIGURE OUTPUT "${work}/${file}" CONTENT "${text}" @ONLY
+        NEWLINE_STYLE ${newline_style})
 
     nfsu_check_source("${work}/${manifest}" status output)
-    if(status EQUAL 0)
+    set(closing FALSE)
+    if(output MATCHES "drift finding\\(s\\) against|manifest error\\(s\\)|no drift")
+        set(closing TRUE)
+    endif()
+    if(expected STREQUAL "PASS")
+        if(NOT closing)
+            set(verdict "UNKNOWN")
+        elseif(status EQUAL 0)
+            set(verdict "passed")
+        else()
+            set(verdict "REFUSED")
+        endif()
+    elseif(status EQUAL 0)
         set(verdict "MISSED")
-    elseif(NOT output MATCHES "drift finding\\(s\\) against|manifest error\\(s\\)")
+    elseif(NOT closing)
         set(verdict "UNKNOWN")
     else()
         string(FIND "${output}" "${expected}" found)
@@ -116,10 +140,10 @@ function(nfsu_case label file manifest expected from to)
             set(verdict "caught")
         endif()
     endif()
-    if(verdict STREQUAL "caught")
-        math(EXPR count "${caught} + 1")
-        set(caught ${count} PARENT_SCOPE)
-        set(report "${report}caught ${label}\n" PARENT_SCOPE)
+    if(verdict STREQUAL "caught" OR verdict STREQUAL "passed")
+        math(EXPR count "${${verdict}} + 1")
+        set(${verdict} ${count} PARENT_SCOPE)
+        set(report "${report}${verdict} ${label}\n" PARENT_SCOPE)
     else()
         math(EXPR count "${failed} + 1")
         set(failed ${count} PARENT_SCOPE)
@@ -223,9 +247,111 @@ nfsu_case("a block member offset the std140 layout does not produce"
     "member block=Frame name=light type=vec4 offset=80"
     "member block=Frame name=light type=vec4 offset=84")
 
+# The reader has to split comments, lines and directives exactly as uam's
+# preprocessor does; each case below is a way a reader that did not, the
+# one this check had before, was shown one declaration while the compiler
+# read another.
+
+# glcpp looks for the */ that closes a block after its /*, so /*/ opens a
+# comment, and it opens whichever of // and /* comes first.
+nfsu_case("a declaration two /*/ comments hide, and a // inside a block comment"
+    placed.vert.glsl car_textured.manifest
+    "placed.vert.glsl declares vertex attribute location 3 (vec2 inTexcoord), which the manifest does not"
+    "layout (location = 2) in vec2 inTexcoord;\n"
+    "/* see // below */ layout (location = 3) in vec2 inTexcoord;\n/*/ layout (location = 2) in vec2 inTexcoord; /*/\n")
+
+nfsu_case("a uniform block after a block comment holding a URL"
+    textured.frag.glsl car_textured.manifest
+    "textured.frag.glsl declares uniform block Fog at binding 3, which the manifest does not give the fragment stage"
+    "layout (binding = 0) uniform sampler2D baseTexture;\n"
+    "layout (binding = 0) uniform sampler2D baseTexture;\n/* Fog, as https://example.org/fog describes it. */\nlayout (std140, binding = 3) uniform Fog {\n    vec4 fog_color;\n} fog;\n")
+
+nfsu_case("a block comment holding a URL"
+    placed.vert.glsl car_textured.manifest PASS
+    "void main()\n"
+    "/* Placement as https://example.org/placement describes it. */\nvoid main()\n")
+
+# A backslash at the end of a line joins the next line to it before
+# comments are seen, so a // comment ending in one takes the next line too.
+nfsu_case("a // comment a backslash joins to the declaration below it"
+    placed.vert.glsl car_textured.manifest
+    "vertex attribute location 2 (vec2 inTexcoord) is in the manifest, but placed.vert.glsl does not declare it"
+    "layout (location = 2) in vec2 inTexcoord;\n"
+    "// was: \\\nlayout (location = 2) in vec2 inTexcoord;\nlayout (location = 3) in vec2 inTexcoord;\n")
+
+# glcpp ends a line at a lone CR too; this reader reads LF and CR LF only,
+# and refuses any other CR rather than read the line differently.
+nfsu_case("a lone CR that starts a directive"
+    placed.vert.glsl car_textured.manifest
+    "placed.vert.glsl: has a CR that does not begin a CR LF"
+    "layout (location = 2) in vec2 inTexcoord;\n"
+    "// texcoord${cr}#define vec2 ivec2\nlayout (location = 2) in vec2 inTexcoord;\n")
+
+set(newline_style CRLF)
+nfsu_case("CR LF line ends" placed.vert.glsl car_textured.manifest PASS)
+set(newline_style LF)
+
+# A directive may follow a vertical tab, a form feed or a block comment.
+nfsu_case("a form feed before a directive"
+    placed.vert.glsl car_textured.manifest
+    "`#define vec2 ivec2` is a preprocessor directive the interface check does not follow"
+    "layout (location = 2) in vec2 inTexcoord;\n"
+    "${ff}#define vec2 ivec2\nlayout (location = 2) in vec2 inTexcoord;\n")
+
+nfsu_case("a vertical tab before a directive"
+    placed.vert.glsl car_textured.manifest
+    "`#define vec2 ivec2` is a preprocessor directive the interface check does not follow"
+    "layout (location = 2) in vec2 inTexcoord;\n"
+    "${vt}#define vec2 ivec2\nlayout (location = 2) in vec2 inTexcoord;\n")
+
+nfsu_case("a block comment before a directive"
+    placed.vert.glsl car_textured.manifest
+    "`#define vec2 ivec2` is a preprocessor directive the interface check does not follow"
+    "layout (location = 2) in vec2 inTexcoord;\n"
+    "/* note */ #define vec2 ivec2\nlayout (location = 2) in vec2 inTexcoord;\n")
+
+nfsu_case("a # that does not begin a line"
+    placed.vert.glsl car_textured.manifest
+    "placed.vert.glsl: has a # that does not begin a line"
+    "layout (location = 2) in vec2 inTexcoord;\n"
+    "layout (location = 2) in vec2 inTexcoord; #define X\n")
+
+nfsu_case("an @ in a comment"
+    placed.vert.glsl car_textured.manifest PASS
+    "in that memory order.\n"
+    "in that memory order. Questions: shaders@example.org\n")
+
+# GLSL, C++ and CMake read a leading zero three different ways, so neither
+# side may write one.
+nfsu_case("a location written with a leading zero in the stage source"
+    placed.vert.glsl car_textured.manifest
+    "placed.vert.glsl: `location = 02` is not a decimal without a leading zero"
+    "layout (location = 2) in vec2 inTexcoord"
+    "layout (location = 02) in vec2 inTexcoord")
+
+nfsu_case("an array size written with a leading zero in the stage source"
+    placed.vert.glsl car_textured.manifest
+    "has an array size that is not a decimal above zero without a leading zero"
+    "vec4 rows[4];"
+    "vec4 rows[04];")
+
+nfsu_case("a location written with a leading zero in the manifest"
+    car_textured.manifest car_textured.manifest
+    "`02` is not a valid location"
+    "attribute location=2 name=texcoord"
+    "attribute location=02 name=texcoord")
+
+nfsu_case("program moved out of the second record"
+    car_textured.manifest car_textured.manifest
+    "the second record must be `program <name>`"
+    "format 1\nprogram car_textured\n"
+    "format 1\n"
+    "\nvariant name=opaque "
+    "\nprogram car_textured\nvariant name=opaque ")
+
 file(REMOVE_RECURSE "${work}")
 if(NOT failed EQUAL 0)
-    message(FATAL_ERROR "shader source guards: ${failed} failed, ${caught} caught\n${report}")
+    message(FATAL_ERROR "shader source guards: ${failed} failed, ${caught} caught, ${passed} passed\n${report}")
 endif()
 message(STATUS "${report}shader source guards: ${manifest_count} manifests pass, "
-    "${caught} changes caught, none missed")
+    "${caught} changes caught and ${passed} passed, none missed")

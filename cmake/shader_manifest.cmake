@@ -47,7 +47,13 @@ endif()
 # of these before anything reads it, so no later step sees a semicolon, an
 # unbalanced bracket or a byte outside printable ASCII.
 
-set(_nfsu_sm_re_uint "^[0-9]+$")
+# A number is a decimal without a leading zero, which GLSL and C++ would
+# read as octal and CMake as decimal, and of at most nine digits, so that
+# no sum below leaves CMake's arithmetic. The GLSL reader holds a stage
+# source to the same syntax.
+set(_nfsu_sm_digits "[0-9]?[0-9]?[0-9]?[0-9]?[0-9]?[0-9]?[0-9]?[0-9]?")
+set(_nfsu_sm_re_uint "^(0|[1-9]${_nfsu_sm_digits})$")
+set(_nfsu_sm_re_count "^[1-9]${_nfsu_sm_digits}$")
 set(_nfsu_sm_re_ident "^[A-Za-z_][A-Za-z0-9_]*$")
 set(_nfsu_sm_re_file "^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
 set(_nfsu_sm_re_struct "^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*$")
@@ -57,7 +63,7 @@ set(_nfsu_sm_re_stagekind "^(vertex|fragment)$")
 set(_nfsu_sm_re_stages "^(vertex|fragment)(,(vertex|fragment))?$")
 set(_nfsu_sm_re_vtype "^(float|int|uint|vec[234]|ivec[234]|uvec[234])$")
 set(_nfsu_sm_re_mtype
-    "^(float|int|uint|vec[234]|ivec[234]|uvec[234]|mat4)(\\[[0-9]+\\])?$")
+    "^(float|int|uint|vec[234]|ivec[234]|uvec[234]|mat4)(\\[[1-9]${_nfsu_sm_digits}\\])?$")
 set(_nfsu_sm_re_vformat
     "^(float32x[1234]|unorm8x4|snorm8x4|uint8x4|unorm16x2|snorm16x2)$")
 set(_nfsu_sm_re_oformat "^rgba8$")
@@ -260,6 +266,7 @@ function(_nfsu_sm_parse manifest)
         # so a semicolon in a comment is harmless; outside one, the character
         # check below refuses it before anything could split on it.
         set(line_no 0)
+        set(record_no 0)
         while(NOT text STREQUAL "")
             string(FIND "${text}" "\n" newline)
             if(newline EQUAL -1)
@@ -296,6 +303,10 @@ function(_nfsu_sm_parse manifest)
             string(REGEX MATCHALL "[^ \t]+" tokens "${line}")
             list(POP_FRONT tokens kind)
             list(LENGTH tokens token_count)
+            math(EXPR record_no "${record_no} + 1")
+            if(record_no EQUAL 2 AND NOT kind STREQUAL "program")
+                list(APPEND errors "${where}: the second record must be `program <name>`")
+            endif()
 
             if(kind STREQUAL "format")
                 if(format_seen)
@@ -313,6 +324,8 @@ function(_nfsu_sm_parse manifest)
             if(kind STREQUAL "program")
                 if(NOT program STREQUAL "")
                     list(APPEND errors "${where}: a second program record")
+                elseif(NOT record_no EQUAL 2)
+                    list(APPEND errors "${where}: program must be the second record, after `format 1`")
                 elseif(NOT token_count EQUAL 1 OR NOT tokens MATCHES "${_nfsu_sm_re_ident}")
                     list(APPEND errors "${where}: program takes one identifier")
                 else()
@@ -698,7 +711,8 @@ endfunction()
 # qualifier with a literal location or binding, and no preprocessor
 # directive other than #version and #extension may appear, because a
 # conditional could hide a declaration from a reader that does not
-# preprocess.
+# preprocess. Comments, line ends and line joins it takes apart exactly as
+# uam's preprocessor does, for the same reason; see the steps below.
 #
 # _nfsu_sm_parse_glsl(<file>) sets, in the caller's scope:
 #   _sm_glsl_inputs _sm_glsl_outputs  io|location=|name=|type=|interpolation=|qualified=
@@ -716,44 +730,103 @@ function(_nfsu_sm_parse_glsl file)
         set(_sm_glsl_errors "${name_only}: the stage source does not exist: ${file}" PARENT_SCOPE)
         return()
     endif()
+    # The text as uam's preprocessor, Mesa's glcpp, sees it, built in the
+    # order glcpp builds it. A reader that splits comments, lines or
+    # directives any other way can be shown one declaration while the
+    # compiler reads another, so every step here is glcpp's own.
+    #
+    # 1. Line ends. glcpp ends a line at LF, CR LF, LF CR or a lone CR.
+    #    file(READ) is not the bytes: it drops the CR of each CR LF and a CR
+    #    that ends the file, and nothing after a NUL reaches a CMake string.
+    #    So the bytes are read first, and a NUL, or a CR that does not begin
+    #    a CR LF, is refused; what file(READ) then returns is the file with
+    #    each line end, LF or CR LF, as one LF.
+    file(READ "${file}" hex HEX)
+    string(REGEX REPLACE "(..)" " \\1" bytes "${hex}")
+    if(bytes MATCHES " 00")
+        set(_sm_glsl_errors "${name_only}: has a NUL byte" PARENT_SCOPE)
+        return()
+    endif()
+    if(bytes MATCHES " 0d( [^0].| 0[^a]|$)")
+        set(_sm_glsl_errors "${name_only}: has a CR that does not begin a CR LF, and the interface check reads LF and CR LF line ends only" PARENT_SCOPE)
+        return()
+    endif()
     file(READ "${file}" text)
-    string(REPLACE "\r" "" text "${text}")
-    set(text "\n${text}\n")
-
-    string(REGEX REPLACE "//[^\n]*" "" text "${text}")
+    string(ASCII 11 vt)
+    string(ASCII 12 ff)
+    if(text MATCHES "[^\t\n${vt}${ff} -~]")
+        set(_sm_glsl_errors "${name_only}: has a byte that is not printable ASCII, a tab, a line end, a vertical tab or a form feed" PARENT_SCOPE)
+        return()
+    endif()
+    # 2. A backslash at the end of a line joins the next line to it, before
+    #    any comment is seen: a // comment ending in one takes the next line.
+    string(REPLACE "\\\n" "" text "${text}")
+    # 3. Comments go in one pass from left to right. Whichever of // and /*
+    #    comes first opens one; the */ that closes a block is looked for
+    #    after its /*, so /*/ opens a comment and does not close it; a block
+    #    becomes one space; and inside a comment neither opener means
+    #    anything.
+    set(kept "")
     while(TRUE)
-        string(FIND "${text}" "/*" start)
-        if(start EQUAL -1)
+        string(FIND "${text}" "//" line_at)
+        string(FIND "${text}" "/*" block_at)
+        if(line_at EQUAL -1 AND block_at EQUAL -1)
             break()
         endif()
-        string(SUBSTRING "${text}" ${start} -1 tail)
-        string(FIND "${tail}" "*/" length)
-        string(SUBSTRING "${text}" 0 ${start} head)
-        if(length EQUAL -1)
-            list(APPEND errors "${name_only}: a /* comment is never closed")
-            set(text "${head}")
-            break()
+        if(block_at EQUAL -1 OR (NOT line_at EQUAL -1 AND line_at LESS block_at))
+            string(SUBSTRING "${text}" 0 ${line_at} head)
+            string(APPEND kept "${head}")
+            string(SUBSTRING "${text}" ${line_at} -1 text)
+            string(FIND "${text}" "\n" end)
+            if(end EQUAL -1)
+                set(text "")
+            else()
+                string(SUBSTRING "${text}" ${end} -1 text)
+            endif()
+        else()
+            string(SUBSTRING "${text}" 0 ${block_at} head)
+            string(APPEND kept "${head} ")
+            math(EXPR inside "${block_at} + 2")
+            string(SUBSTRING "${text}" ${inside} -1 text)
+            string(FIND "${text}" "*/" end)
+            if(end EQUAL -1)
+                list(APPEND errors "${name_only}: a /* comment is never closed")
+                set(text "")
+                break()
+            endif()
+            math(EXPR end "${end} + 2")
+            string(SUBSTRING "${text}" ${end} -1 text)
         endif()
-        math(EXPR after "${start} + ${length} + 2")
-        string(SUBSTRING "${text}" ${after} -1 rest)
-        set(text "${head} ${rest}")
     endwhile()
+    set(text "\n${kept}${text}\n")
 
-    string(REGEX MATCHALL "\n[ \t]*#[^\n]*" directives "${text}")
+    # From here on a statement ends at @: the reader lists what it reads, and
+    # a CMake list splits on the semicolon. A message quoting the source
+    # therefore shows its semicolons as @.
+    if(text MATCHES "@")
+        list(APPEND errors "${name_only}: contains @ outside a comment, which this reader uses as its statement separator")
+        set(text "\n")
+    endif()
+    string(REPLACE ";" "@" text "${text}")
+
+    # 4. A line whose first byte other than a space, tab, vertical tab or
+    #    form feed is # is a directive. Only #version and #extension may
+    #    appear: a conditional or a macro could change a declaration without
+    #    changing its text. Any other # left anywhere is refused too.
+    string(REGEX MATCHALL "\n[ \t${vt}${ff}]*#[^\n]*" directives "${text}")
     foreach(directive IN LISTS directives)
-        string(STRIP "${directive}" directive)
-        if(NOT directive MATCHES "^#[ \t]*(version|extension)[ \t]")
+        string(REGEX REPLACE "^\n[ \t${vt}${ff}]*" "" directive "${directive}")
+        if(NOT directive MATCHES "^#[ \t${vt}${ff}]*(version|extension)[ \t${vt}${ff}]")
+            string(REGEX REPLACE "[ \t${vt}${ff}]+$" "" directive "${directive}")
             list(APPEND errors "${name_only}: `${directive}` is a preprocessor directive the interface check does not follow")
         endif()
     endforeach()
-    string(REGEX REPLACE "\n[ \t]*#[^\n]*" "\n" text "${text}")
-
-    if(text MATCHES "@")
-        list(APPEND errors "${name_only}: contains @, which this reader uses as its statement separator")
-        set(text "")
+    string(REGEX REPLACE "\n[ \t${vt}${ff}]*#[^\n]*" "\n" text "${text}")
+    if(text MATCHES "#")
+        list(APPEND errors "${name_only}: has a # that does not begin a line, which the interface check does not follow")
     endif()
-    string(REPLACE ";" "@" text "${text}")
-    string(REGEX REPLACE "[ \t\n]+" " " text "${text}")
+
+    string(REGEX REPLACE "[ \t\n${vt}${ff}]+" " " text "${text}")
 
     string(REGEX MATCHALL
         "layout ?[(][^)]*[)] ?[^@{}]*([{][^}]*[}] ?[A-Za-z0-9_]* ?)?@"
@@ -776,10 +849,16 @@ function(_nfsu_sm_parse_glsl file)
             string(STRIP "${qualifier}" qualifier)
             if(qualifier STREQUAL "std140")
                 set(std140 1)
-            elseif(qualifier MATCHES "^location ?= ?([0-9]+)$")
-                set(location "${CMAKE_MATCH_1}")
-            elseif(qualifier MATCHES "^binding ?= ?([0-9]+)$")
-                set(binding "${CMAKE_MATCH_1}")
+            elseif(qualifier MATCHES "^(location|binding) ?= ?([0-9]+)$")
+                # The manifest's own number syntax: GLSL reads a leading zero
+                # as octal, so 010 is location 8 to uam and 10 to a string
+                # compare.
+                set(qualifier_key "${CMAKE_MATCH_1}")
+                set(qualifier_value "${CMAKE_MATCH_2}")
+                if(NOT qualifier_value MATCHES "${_nfsu_sm_re_uint}")
+                    list(APPEND errors "${name_only}: `${qualifier}` is not a decimal without a leading zero, of at most nine digits")
+                endif()
+                set(${qualifier_key} "${qualifier_value}")
             else()
                 list(APPEND errors "${name_only}: `${qualifier}` is a layout qualifier the interface check does not read")
             endif()
@@ -821,10 +900,16 @@ function(_nfsu_sm_parse_glsl file)
                 endif()
                 if(member MATCHES "^([A-Za-z_][A-Za-z0-9_]*) ([A-Za-z_][A-Za-z0-9_]*) ?(\\[([0-9]+)\\])?$")
                     set(member_type "${CMAKE_MATCH_1}")
-                    if(NOT CMAKE_MATCH_4 STREQUAL "")
-                        set(member_type "${member_type}[${CMAKE_MATCH_4}]")
+                    set(member_name "${CMAKE_MATCH_2}")
+                    set(member_count "${CMAKE_MATCH_4}")
+                    if(NOT member_count STREQUAL "")
+                        if(NOT member_count MATCHES "${_nfsu_sm_re_count}")
+                            list(APPEND errors "${name_only}: block `${block}` member `${member}` has an array size that is not a decimal above zero without a leading zero, of at most nine digits")
+                            continue()
+                        endif()
+                        set(member_type "${member_type}[${member_count}]")
                     endif()
-                    list(APPEND members "${CMAKE_MATCH_2}:${member_type}")
+                    list(APPEND members "${member_name}:${member_type}")
                 else()
                     list(APPEND errors "${name_only}: block `${block}` member `${member}` is not one the interface check reads")
                 endif()
@@ -849,7 +934,7 @@ function(_nfsu_sm_parse_glsl file)
     # compiler would assign it a location or binding the manifest cannot state.
     set(rest "@ ${rest} ")
     string(REGEX REPLACE "  +" " " rest "${rest}")
-    if(rest MATCHES "[@}] ?((flat|smooth|noperspective|centroid|sample|patch|invariant|precise|highp|mediump|lowp) )*(in|out|inout|uniform|buffer|attribute|varying|shared) [A-Za-z_]")
+    if(rest MATCHES "[@}] ?((flat|smooth|noperspective|centroid|sample|patch|invariant|precise|highp|mediump|lowp|coherent|volatile|restrict|readonly|writeonly|const) )*(in|out|inout|uniform|buffer|attribute|varying|shared) [A-Za-z_]")
         list(APPEND errors "${name_only}: declares an interface variable without a layout qualifier the check reads")
     endif()
     if(rest MATCHES "[^A-Za-z0-9_]layout[^A-Za-z0-9_]")
@@ -1316,6 +1401,7 @@ endfunction()
 
 function(_nfsu_sm_check_vertex_blob dksh tgsi out)
     set(findings "")
+    unset(sph_written)
     get_filename_component(dksh_name "${dksh}" NAME)
     get_filename_component(tgsi_name "${tgsi}" NAME)
     _nfsu_sm_read_dksh("${dksh}" blob)
@@ -1369,6 +1455,44 @@ function(_nfsu_sm_check_vertex_blob dksh tgsi out)
             if(tgsi_error STREQUAL "" AND NOT tgsi_inputs EQUAL fetched)
                 list(APPEND findings "${tgsi_name} declares ${tgsi_inputs} vertex inputs and ${dksh_name} fetches ${fetched}: they are not one compile")
             endif()
+
+            # Word 13 from bit 12: four bits for the position, then four per
+            # generic output through word 17, the components the program
+            # writes. Generic output n is varying location n.
+            list(GET blob_sph 13 word)
+            math(EXPR sph_position "(${word} >> 12) & 15")
+            if(NOT sph_position EQUAL 15)
+                _nfsu_sm_mask_letters(${sph_position} got_letters)
+                list(APPEND findings "${dksh_name} writes position components ${got_letters}, not xyzw")
+            endif()
+            set(sph_written "")
+            foreach(location RANGE 0 31)
+                math(EXPR bit "16 + 4 * ${location}")
+                math(EXPR word_index "13 + ${bit} / 32")
+                list(GET blob_sph ${word_index} word)
+                math(EXPR got "(${word} >> (${bit} % 32)) & 15")
+                list(APPEND sph_written ${got})
+                _nfsu_sm_find("${_sm_varyings}" location "${location}" want)
+                set(want_mask 0)
+                if(NOT want STREQUAL "")
+                    _nfsu_sm_field("${want}" name want_name)
+                    _nfsu_sm_field("${want}" type want_type)
+                    _nfsu_sm_components("${want_type}" components)
+                    math(EXPR want_mask "(1 << ${components}) - 1")
+                endif()
+                if(got EQUAL want_mask)
+                    continue()
+                endif()
+                _nfsu_sm_mask_letters(${got} got_letters)
+                if(want STREQUAL "")
+                    list(APPEND findings "${dksh_name} writes varying location ${location} (${got_letters}), which the manifest does not declare")
+                elseif(got EQUAL 0)
+                    list(APPEND findings "varying location ${location} (${want_type} ${want_name}) is in the manifest, but ${dksh_name} does not write it")
+                else()
+                    _nfsu_sm_mask_letters(${want_mask} want_letters)
+                    list(APPEND findings "varying location ${location} (${want_name}): the manifest says ${want_type} (${want_letters}), ${dksh_name} writes ${got_letters}")
+                endif()
+            endforeach()
         endif()
     endif()
 
@@ -1377,45 +1501,39 @@ function(_nfsu_sm_check_vertex_blob dksh tgsi out)
     elseif(NOT tgsi_processor STREQUAL "VERT")
         list(APPEND findings "${tgsi_name} is a ${tgsi_processor} program, not VERT")
     else()
-        # Varyings the vertex stage writes: GENERIC[n] is location n.
-        set(written "")
-        set(position FALSE)
+        # The outputs again, in the TGSI's terms: GENERIC[n] is varying
+        # location n. The varyings were held to the manifest from the blob
+        # above, so here the TGSI is held to the blob, and an output the SPH
+        # does not map at all is reported from here.
+        set(tgsi_written "")
         foreach(output IN LISTS tgsi_outs)
             _nfsu_sm_field("${output}" semantic semantic)
             _nfsu_sm_field("${output}" slot slot)
             _nfsu_sm_field("${output}" mask mask)
             if(semantic STREQUAL "POSITION")
-                set(position TRUE)
                 continue()
             endif()
             if(NOT semantic STREQUAL "GENERIC")
                 list(APPEND findings "the compiled vertex shader writes ${semantic}[${slot}], which the manifest does not describe")
                 continue()
             endif()
-            list(APPEND written ${slot})
-            _nfsu_sm_find("${_sm_varyings}" location "${slot}" want)
-            if(want STREQUAL "")
-                list(APPEND findings "the compiled vertex shader writes varying location ${slot} (${mask}), which the manifest does not declare")
-                continue()
-            endif()
-            _nfsu_sm_field("${want}" name want_name)
-            _nfsu_sm_field("${want}" type want_type)
-            _nfsu_sm_components("${want_type}" components)
-            _nfsu_sm_letters(${components} want_letters)
-            if(NOT mask STREQUAL want_letters)
-                list(APPEND findings "varying location ${slot} (${want_name}): the manifest says ${want_type} (${want_letters}), the compiled vertex shader writes ${mask}")
+            list(APPEND tgsi_written ${slot})
+            if(DEFINED sph_written AND slot LESS 32)
+                list(GET sph_written ${slot} blob_bits)
+                _nfsu_sm_mask_bits("${mask}" mask_bits)
+                if(NOT mask_bits EQUAL blob_bits)
+                    list(APPEND findings "${tgsi_name} and ${dksh_name} disagree on varying location ${slot}: they are not one compile")
+                endif()
             endif()
         endforeach()
-        if(NOT position)
-            list(APPEND findings "the compiled vertex shader does not write a position")
+        if(DEFINED sph_written)
+            foreach(location RANGE 0 31)
+                list(GET sph_written ${location} blob_bits)
+                if(NOT blob_bits EQUAL 0 AND NOT location IN_LIST tgsi_written)
+                    list(APPEND findings "${tgsi_name} and ${dksh_name} disagree on varying location ${location}: they are not one compile")
+                endif()
+            endforeach()
         endif()
-        foreach(want IN LISTS _sm_varyings)
-            _nfsu_sm_field("${want}" location location)
-            _nfsu_sm_field("${want}" name want_name)
-            if(NOT location IN_LIST written)
-                list(APPEND findings "varying location ${location} (${want_name}) is in the manifest, but the compiled vertex shader does not write it")
-            endif()
-        endforeach()
         _nfsu_sm_check_tgsi_bindings(vertex "${tgsi_name}" tgsi found)
         list(APPEND findings ${found})
     endif()
@@ -1443,6 +1561,7 @@ function(_nfsu_sm_check_fragment_blob dksh tgsi out)
             # Words 6..13: two bits per component of each generic input, the
             # interpolation the hardware applies: 1 flat, 2 perspective (GLSL
             # smooth), 3 screen-linear (GLSL noperspective).
+            set(sph_read "")
             foreach(location RANGE 0 31)
                 math(EXPR word_index "6 + ${location} / 4")
                 list(GET blob_sph ${word_index} word)
@@ -1458,6 +1577,7 @@ function(_nfsu_sm_check_fragment_blob dksh tgsi out)
                         endif()
                     endif()
                 endforeach()
+                list(APPEND sph_read ${got_mask})
                 _nfsu_sm_find("${_sm_varyings}" location "${location}" want)
                 set(want_mask 0)
                 if(NOT want STREQUAL "")
@@ -1513,28 +1633,28 @@ function(_nfsu_sm_check_fragment_blob dksh tgsi out)
                 endif()
             endforeach()
             # The TGSI says the same thing in its own terms; a disagreement
-            # means the two files are not the output of one compile.
+            # either way means the two files are not the output of one
+            # compile.
             if(tgsi_error STREQUAL "")
+                set(tgsi_read "")
                 foreach(input IN LISTS tgsi_ins)
                     _nfsu_sm_field("${input}" semantic semantic)
                     _nfsu_sm_field("${input}" slot slot)
                     _nfsu_sm_field("${input}" mask mask)
-                    if(NOT semantic STREQUAL "GENERIC")
+                    if(NOT semantic STREQUAL "GENERIC" OR NOT slot LESS 32)
                         continue()
                     endif()
-                    math(EXPR word_index "6 + ${slot} / 4")
-                    list(GET blob_sph ${word_index} word)
-                    math(EXPR lane "(${word} >> (8 * (${slot} % 4))) & 255")
+                    list(APPEND tgsi_read ${slot})
+                    list(GET sph_read ${slot} blob_bits)
                     _nfsu_sm_mask_bits("${mask}" mask_bits)
-                    set(blob_bits 0)
-                    foreach(component IN ITEMS 0 1 2 3)
-                        math(EXPR mode "(${lane} >> (2 * ${component})) & 3")
-                        if(NOT mode EQUAL 0)
-                            math(EXPR blob_bits "${blob_bits} | (1 << ${component})")
-                        endif()
-                    endforeach()
                     if(NOT mask_bits EQUAL blob_bits)
                         list(APPEND findings "${tgsi_name} and ${dksh_name} disagree on varying location ${slot}: they are not one compile")
+                    endif()
+                endforeach()
+                foreach(location RANGE 0 31)
+                    list(GET sph_read ${location} blob_bits)
+                    if(NOT blob_bits EQUAL 0 AND NOT location IN_LIST tgsi_read)
+                        list(APPEND findings "${tgsi_name} and ${dksh_name} disagree on varying location ${location}: they are not one compile")
                     endif()
                 endforeach()
             endif()
@@ -1681,21 +1801,31 @@ function(nfsu_shader_generate_header manifest_dir output out)
             list(LENGTH member_list member_count)
             set(offsets "")
             set(sizes "")
+            set(elements "")
+            set(element_sizes "")
             foreach(member IN LISTS member_list)
                 list(APPEND offsets "offsetof(${struct}, ${member})")
                 list(APPEND sizes "sizeof(${struct}::${member})")
+                list(APPEND elements "element_of<decltype(${struct}::${member})>()")
+                list(APPEND element_sizes "sizeof(std::remove_all_extents_t<decltype(${struct}::${member})>)")
             endforeach()
             list(LENGTH offsets padded)
             while(padded LESS 4)
                 list(APPEND offsets "0")
                 list(APPEND sizes "0")
+                list(APPEND elements "Element::none")
+                list(APPEND element_sizes "0")
                 math(EXPR padded "${padded} + 1")
             endwhile()
             string(REPLACE ";" ", " offsets "${offsets}")
             string(REPLACE ";" ", " sizes "${sizes}")
+            string(REPLACE ";" ",\n      " elements "${elements}")
+            string(REPLACE ";" ",\n      " element_sizes "${element_sizes}")
             string(APPEND body "    {${location}, \"${name}\", \"${type}\", ${components}, VertexFormat::${format}, ${format_components}, ${format_bytes}, ${buffer}, ${offset}, ${member_count},\n")
             string(APPEND body "     {${offsets}},\n")
-            string(APPEND body "     {${sizes}}},\n")
+            string(APPEND body "     {${sizes}},\n")
+            string(APPEND body "     {${elements}},\n")
+            string(APPEND body "     {${element_sizes}}},\n")
         endforeach()
         string(APPEND body "};\n\n")
 
@@ -1811,16 +1941,17 @@ function(nfsu_shader_generate_header manifest_dir output out)
 // Do not edit: edit the manifests. docs/SHADER_PIPELINE.md defines them.
 //
 // Every table below restates one manifest record. Each vertex attribute
-// also carries the offsetof and sizeof of the C++ members it names, taken
-// from the struct its buffer record names, so this header does not compile
-// against a vertex struct that has lost one of them, and
-// tests/shader_manifest_tests.cpp compares the rest.
+// also carries the offsetof and sizeof of the C++ members it names, and the
+// kind and size of their elements, taken from the struct its buffer record
+// names, so this header does not compile against a vertex struct that has
+// lost one of them, and tests/shader_manifest_tests.cpp compares the rest.
 #pragma once
 
 ${includes}
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <type_traits>
 
 namespace nfsu::shader_manifest {
 
@@ -1843,6 +1974,26 @@ enum class BlendOp : std::uint8_t { add, subtract, reverse_subtract, min, max };
 enum class ColorWrite : std::uint8_t { rgb, rgba };
 enum class Cull : std::uint8_t { none, back, front };
 
+// What one element of a C++ member is: the member itself, or the element
+// type of an array member such as MeshVertex::color.
+enum class Element : std::uint8_t {
+    none, floating, signed_integer, unsigned_integer, other
+};
+
+template <typename Member>
+constexpr Element element_of() {
+    using E = std::remove_cv_t<std::remove_all_extents_t<Member>>;
+    if constexpr (std::is_floating_point_v<E>) {
+        return Element::floating;
+    } else if constexpr (std::is_integral_v<E> && std::is_signed_v<E>) {
+        return Element::signed_integer;
+    } else if constexpr (std::is_integral_v<E>) {
+        return Element::unsigned_integer;
+    } else {
+        return Element::other;
+    }
+}
+
 struct Buffer {
     std::uint32_t index;
     std::uint32_t stride;
@@ -1860,10 +2011,13 @@ struct Attribute {
     std::uint32_t format_bytes;
     std::uint32_t buffer;
     std::uint32_t offset;
-    // The C++ members the attribute's bytes come from, in order.
+    // The C++ members the attribute's bytes come from, in order, and the
+    // kind and size of each one's elements.
     std::size_t member_count;
     std::size_t member_offset[4];
     std::size_t member_size[4];
+    Element member_element[4];
+    std::size_t member_element_size[4];
 };
 
 struct Varying {

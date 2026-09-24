@@ -83,6 +83,15 @@ function(nfsu_switch_sdk_locate problem_var)
         set(root_from "the default, because DEVKITPRO is not set")
     endif()
     file(TO_CMAKE_PATH "${root}" root)
+    # A relative root would resolve against whichever directory CMake runs
+    # in, which is not the same for a configure the build starts itself, and
+    # the compiler paths made from it would not be full paths.
+    if(NOT IS_ABSOLUTE "${root}")
+        set(${problem_var}
+            "  Nintendo Switch build: the devkitPro root ${root} is not an absolute path (DEVKITPRO, from ${root_from}).\n    fix: set DEVKITPRO to the absolute path of the directory devkitPro is installed in.\n${docs}"
+            PARENT_SCOPE)
+        return()
+    endif()
     if(NOT IS_DIRECTORY "${root}")
         set(${problem_var}
             "  Nintendo Switch build: the devkitPro root ${root} does not exist (DEVKITPRO, from ${root_from}).\n    fix: install devkitPro with the switch-dev package group, or set DEVKITPRO to the directory it is installed in.\n${docs}"
@@ -101,6 +110,12 @@ function(nfsu_switch_sdk_locate problem_var)
         set(a64_from "DEVKITPRO, because DEVKITA64 is not set")
     endif()
     file(TO_CMAKE_PATH "${a64}" a64)
+    if(NOT IS_ABSOLUTE "${a64}")
+        set(${problem_var}
+            "  Nintendo Switch build: the devkitA64 directory ${a64} is not an absolute path (DEVKITA64, from ${a64_from}).\n    fix: set DEVKITA64 to the absolute path of a devkitA64 directory, or unset it to use DEVKITPRO/devkitA64.\n${docs}"
+            PARENT_SCOPE)
+        return()
+    endif()
 
     set(missing "")
     foreach(piece IN LISTS _nfsu_switch_sdk_pieces)

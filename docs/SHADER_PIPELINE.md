@@ -12,8 +12,8 @@ that states its whole interface: the vertex buffer layout, what the vertex
 stage hands the fragment stage, every uniform block with its member offsets,
 every texture binding, the colour outputs, and the blend and depth state of
 every variant the program is drawn with. Three checks hold the manifest to
-the things it describes, and each of them has been made to fail (see "How the
-drift checks work").
+the things it describes, and each of them is made to fail in the tree, by
+changes it must catch (see "Made to fail").
 
 No deko3d renderer exists yet. These shaders have been compiled and checked,
 not drawn with; see "What the checks cannot catch" for what that leaves open.
@@ -59,6 +59,12 @@ reaches: every record [`MATERIALS.md`](MATERIALS.md) counted with +85 == 1 has
 +86 == 0. They are covered because the reference would draw them, not because
 the data does; `tests/shader_manifest_tests.cpp` derives the six pairs from
 the two decoders over every byte value and requires exactly those.
+
+A variant's name says its state, which is how a backend will pick one:
+`alpha_tested` when the alpha test is on, then the blend, `source_over` or
+`additive`, joined by an underscore, or `opaque` when neither is on. The test
+holds each name to the variant's state, so two variants that trade their blend
+factors fail it even though the set of states is unchanged.
 
 Every variant of every program shares the rest of its state, because the
 reference does: the depth test keeps a fragment whose depth is below the
@@ -132,7 +138,9 @@ A manifest is ASCII text, one record per line. `#` starts a comment; blank
 lines are ignored; fields are separated by spaces. The first record is
 `format 1`, the second `program <name>`, and the name must be the file's own
 name without `.manifest`. Every other record is a kind followed by
-`key=value` fields, in any order, each key once:
+`key=value` fields, in any order, each key once. A number is a decimal of at
+most nine digits with no leading zero, because GLSL and C++ read `010` as
+octal 8 and CMake as 10, and an array size is at least 1:
 
 | Kind | Keys | Notes |
 | --- | --- | --- |
@@ -178,19 +186,43 @@ types still agree.
 | Check | Where it runs | Reads | Catches |
 | --- | --- | --- | --- |
 | Source | desktop CTest, `nfsu_shader_source_guards` | the GLSL of both stages | a location, binding, type, name, interpolation, block member or block size that differs from the manifest |
-| Compiled | Switch build step and `nfsu_switch_shader_<program>` | the `.dksh` each stage compiled to, and the TGSI `uam` wrote beside it | the same, as the compiler produced it |
-| C++ | desktop CTest, `nfsu_shader_manifest_tests` | `nfsu/shader_manifest.h`, generated from the manifests | a vertex struct that no longer matches a buffer, and variants that are not the reference's |
+| Compiled | Switch build step and `nfsu_switch_shader_<program>` | the `.dksh` each stage compiled to, and the TGSI `uam` wrote beside it | a location, component count, interpolation, render target, binding or block size that differs from the manifest, as the compiler produced it; not a name, a base type or a block's members (see "What the checks cannot catch") |
+| C++ | desktop CTest, `nfsu_shader_manifest_tests` | `nfsu/shader_manifest.h`, generated from the manifests | a vertex struct whose members no longer sit where a buffer's attributes read them, or no longer hold the elements their formats read; variants that are not the reference's, or not named for their state |
 
 ### Source
 
 `MODE=source` reads the constrained GLSL the stages are written in and
 refuses what it does not read rather than skipping it: every `in`, `out` and
 `uniform` at global scope needs an explicit layout qualifier with a literal
-location or binding, a uniform block must be `std140`, one declaration per
-statement, and no preprocessor directive but `#version` and `#extension`,
-because a conditional could hide a declaration from a reader that does not
-preprocess. It then compares every declaration with the manifest in both
-directions and computes each block's std140 layout from its members.
+location or binding, written as the manifest writes a number, a uniform block
+must be `std140`, one declaration per statement, and no preprocessor
+directive but `#version` and `#extension`, because a conditional could hide a
+declaration from a reader that does not preprocess. It then compares every
+declaration with the manifest in both directions and computes each block's
+std140 layout from its members.
+
+Before it reads a declaration it takes the text apart as uam's preprocessor,
+Mesa's glcpp, does, because a reader that splits comments, lines or
+directives any other way can be shown one declaration while the compiler
+reads another:
+
+- a backslash at the end of a line joins the next line to it, before comments
+  are seen, so a `//` comment ending in one takes the next line with it;
+- comments go in one pass from left to right: whichever of `//` and `/*`
+  comes first opens one, neither means anything inside a comment, and the
+  `*/` that closes a block is looked for after its `/*`, so `/*/` opens a
+  comment rather than closing one;
+- a directive is a line whose first character other than a space, a tab, a
+  vertical tab or a form feed is `#`, after a block comment too, and any other
+  `#` is refused.
+
+glcpp also ends a line at a lone CR or at LF CR, and CMake's `file(READ)`
+cannot hand over those bytes as they are: it drops the CR of each CR LF and a
+CR that ends the file, and nothing after a NUL byte. So the reader first reads
+the bytes, and refuses a NUL, a CR that does not begin a CR LF, and any byte
+outside printable ASCII, tab, vertical tab and form feed. A stage saved with
+LF or CR LF line ends is read exactly; one saved with lone CRs fails the check
+although uam would compile it.
 
 ### Compiled
 
@@ -211,37 +243,52 @@ here against probe shaders before the check relied on it:
 | --- | --- | --- |
 | both | 0 | bits 0..4 the header type (1 vertex, 2 fragment), bits 10..13 the stage (1 vertex, 5 fragment) |
 | vertex | 6..9 | four bits per generic attribute 0..31, one per component fetched |
+| vertex | 13..17 | from bit 12 of word 13, four bits for the position and then four per generic output 0..31, one per component written |
 | fragment | 6..13 | two bits per component of each generic input 0..31: 1 flat, 2 perspective (`smooth`), 3 screen-linear (`noperspective`) |
 | fragment | 18 | four bits per render target 0..7, one per component written |
 
-So the attribute locations and the components read, the varyings with their
-interpolation, and the render targets are read out of the blob itself.
+So the attribute locations and the components fetched, the varyings each
+stage writes or reads with the components and, in the fragment stage, the
+interpolation, the position, and the render targets are read out of the blob
+itself.
 
 The TGSI dump (`uam -t`) the same invocation writes. It declares each uniform
 block the stage reads as `CONST[binding + 1]` with the block's whole size as
-its range, each texture as `SAMP[binding]` with a `2D FLOAT` view, and each
-varying the vertex stage writes as `GENERIC[location]`, so the bindings, the
-block sizes and the vertex stage's outputs come from here. `CONST[0]` is the
-driver's constant buffer and is skipped: uam refuses a uniform outside a
-block, so only compiler state lands there (the y flip `dFdy` needs, for one).
-The two files are also compared with each other where they overlap, so a
-TGSI that is not from the same compile as its blob is reported.
+its range, and each texture as `SAMP[binding]` with a `2D FLOAT` view, so the
+bindings and the block sizes come from here and from nowhere else.
+`CONST[0]` is the driver's constant buffer and is skipped: uam refuses a
+uniform outside a block, so only compiler state lands there (the y flip
+`dFdy` needs, for one). An output other than the position and the generic
+varyings is reported from here too.
+
+The two files are compared with each other where they overlap: the number of
+vertex inputs, and each varying either stage writes or reads, component by
+component, in both directions. A TGSI from another compile than its blob is
+reported when it differs there. It is not when it differs only in bindings or
+block sizes, which the shader program header does not record; the build
+writes both files in one uam run, so that takes a blob and a TGSI put
+together by hand.
 
 ### C++
 
 `MODE=header` turns the manifests into `nfsu/shader_manifest.h` in the build
 tree. Each attribute there carries `offsetof` and `sizeof` of the members it
-names, taken from the struct its buffer names, so the header does not compile
-against a struct that lost one of them. `tests/shader_manifest_tests.cpp`
-then requires: each buffer's stride to be its struct's size, and the struct
-the path uploads (`MeshVertex` for the car, `TrackVertex` for the track); each
-attribute's members to start at its offset, run without a gap and hold exactly
-the bytes its format fetches; exactly the four programs above; the textured
-programs to sample one nearest, wrapped `sampler2D` and the fallback programs
-none; `car_textured`'s variants to be exactly the alpha test and blend pairs
-the two decoders produce; the other three programs to have only `opaque`;
-`render_track_draw_list` to refuse the retail state; and every variant to
-share the state above.
+names, and whether each member's element - the member itself, or an array
+member's element type - is a floating-point, signed or unsigned integer type
+and how many bytes it has, taken from the struct its buffer names; so the
+header does not compile against a struct that lost one of them.
+`tests/shader_manifest_tests.cpp` then requires: each buffer's stride to be
+its struct's size, and the struct the path uploads (`MeshVertex` for the car,
+`TrackVertex` for the track); each attribute's members to start at its
+offset, run without a gap, hold exactly the bytes its format fetches and be
+made of the elements it reads - 4-byte floats for `float32`, unsigned bytes
+for `unorm8` and `uint8`, signed bytes for `snorm8`, 2-byte integers of the
+format's sign for the 16-bit formats; exactly the four programs above; the
+textured programs to sample one nearest, wrapped `sampler2D` and the fallback
+programs none; `car_textured`'s variants to be exactly the alpha test and
+blend pairs the two decoders produce, each named for its state; the other
+three programs to have only `opaque`; `render_track_draw_list` to refuse the
+retail state; and every variant to share the state above.
 
 ### Made to fail
 
@@ -249,22 +296,43 @@ A check that has only been seen to pass is not evidence, so each is run
 against changes it must catch:
 
 - `nfsu_shader_source_guards` changes one thing in a copy of `shaders/` for
-  each of 15 cases: in a stage source, an attribute moved, widened or swapped
-  with another of its type, a texture or block binding moved, a block member
-  added or reordered, a varying's interpolation changed, an output moved, a
-  declaration without a layout qualifier, a `#define`; in a manifest, an
-  attribute, a texture binding or an interpolation moved, and a member offset
-  std140 would not produce.
+  each of 30 cases. 27 must be caught. In a stage source: an attribute moved,
+  widened or swapped with another of its type, a texture or block binding
+  moved, a block member added or reordered, a varying's interpolation
+  changed, an output moved, a declaration without a layout qualifier, a
+  `#define`; then the text taken apart as glcpp takes it - a declaration two
+  `/*/` comments hide, a block after a block comment holding `//`, a
+  backslash joining a `//` comment to the declaration below it, a lone CR
+  before a `#define`, a form feed, a vertical tab or a block comment before
+  one, and a `#` inside a line - and a location and an array size written
+  with a leading zero. In a manifest: an attribute, a texture binding or an
+  interpolation moved, a member offset std140 would not produce, a location
+  written with a leading zero, and `program` moved out of the second record.
+  3 must pass, because they are GLSL uam reads the same way: a block comment
+  holding a URL, an `@` in a comment, and a stage saved with CR LF line ends.
 - `nfsu_switch_shader_blob_guards` compiles changed stages with `uam` and
-  checks the unchanged manifest against them, for 9 cases: an attribute moved,
-  an attribute widened and read, a texture binding moved, a fragment and a
-  vertex block binding moved, a block member added, a varying's
-  interpolation changed, a varying moved and an output moved.
+  checks the unchanged manifest against them, for 11 cases: an attribute
+  moved, an attribute widened and read, a texture binding moved, a fragment
+  and a vertex block binding moved, a block member added, a varying's
+  interpolation changed, a varying moved and an output moved; and a vertex
+  and a fragment blob each checked with the TGSI of the unchanged compile,
+  which must be reported as not one compile. It reads the stages each
+  manifest names through the checker's own parser.
+- `nfsu_shader_manifest_tests` runs every check of the tables against 15
+  copies with one thing changed: a program the reference does not draw, a car
+  buffer of the track's struct, a stride that is not the struct's size, an
+  attribute offset off its first member, a float member retyped to a
+  same-size integer, a byte member widened, a linear texture filter, the
+  blend factors of two variants swapped under their names, a reference pair
+  with no variant, another alpha reference, an opaque-only program's variant
+  renamed or blended, another depth test, a variant that writes alpha and one
+  that culls.
 
-Each case must fail with the finding that names its change. A run is
-classified by what it printed: one that fails without the checker's closing
-line is an unknown result and fails the test, as does a case whose change is
-no longer in the file, or whose changed stage `uam` refuses.
+Each case must fail with the finding that names its change, and each pass
+case must pass. A run is classified by what it printed: one that fails
+without the checker's closing line is an unknown result and fails the test,
+as does a case whose change is no longer in the file, or whose changed stage
+`uam` refuses.
 
 ## What the checks cannot catch
 
@@ -273,6 +341,12 @@ no longer in the file, or whose changed stage `uam` refuses.
   no shader, so no reflection sees them. The C++ check holds the manifest's
   state to the reference's decoders; nothing yet holds a backend to the
   manifest, because there is no backend.
+- Names and base types, in the compiled check. The shader program header
+  records which components of a location a stage fetches or writes, not the
+  variable's name or its scalar type. Two attributes of one type trading
+  places, an `ivec2` attribute where the manifest says `vec2`, or a `uvec4`
+  output where it says `vec4` all pass the compiled check; the source check
+  catches each of them.
 - Vertex formats. A stage sees floats whatever the buffer holds, so
   `unorm8x4` against `float32x4` is only checked against the C++ struct's
   bytes, not against the compiled shader.
@@ -281,12 +355,15 @@ no longer in the file, or whose changed stage `uam` refuses.
   of one size or changing a type without changing the size passes the
   compiled check. The source check catches both.
 - GLSL outside the subset the source check reads. It refuses what it does not
-  recognise, but it is not a GLSL parser.
+  recognise, but it is not a GLSL parser, and it follows glcpp's comment,
+  line and directive rules as the section above states them, not every rule
+  glcpp has.
 - Bindings from the machine code. They are read from the TGSI, which is the
   compiler's own account of the program and not the Maxwell instructions. A
   uam that numbered `CONST` differently would make every block a finding
-  rather than pass silently, and the overlap check catches a mismatched TGSI,
-  but the instructions themselves are not decoded.
+  rather than pass silently, but the instructions themselves are not decoded,
+  and a TGSI from another compile than its blob passes when the two differ
+  only in bindings or block sizes (see "Compiled").
 - Anything a stage declares and does not use. The compiler drops it, so the
   compiled check reports it missing; a manifest describes what the compiled
   program uses, and every declared component must be read.

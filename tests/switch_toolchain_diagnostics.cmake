@@ -116,7 +116,16 @@ endfunction()
 set(clean "CMake Error at CMakeLists.txt:")
 set(noise "Call Stack|CMAKE_CXX_COMPILER not set|unable to find a build program")
 
-if(CMAKE_HOST_WIN32)
+if(CMAKE_VERSION VERSION_LESS 3.21)
+    # The desktop build takes CMake 3.20, and this test runs in its suite;
+    # the Switch build needs 3.21, and the check says so before it looks at
+    # the host or any SDK, so every case says the same thing.
+    nfsu_case("a CMake older than 3.21 is refused before any SDK is read"
+        "${SOURCE_DIR}" ""
+        "${clean}|this is CMake ${CMAKE_VERSION}, and the Switch build needs 3.21 or newer|configure with CMake 3.21 or newer"
+        "${noise}|devkitPro root"
+        -DDEVKITPRO=${work}/absent)
+elseif(CMAKE_HOST_WIN32)
     # devkitPro's CMake files refuse a native Windows CMake, and so does the
     # check, before it looks at any SDK, so every case says the same thing.
     set(windows "this CMake is a native Windows program|pacman -S cmake")
@@ -129,6 +138,14 @@ else()
         "${clean}|the devkitPro root ${work}/absent does not exist (DEVKITPRO, from the CMake variable DEVKITPRO)|set DEVKITPRO to the directory it is installed in"
         "${noise}"
         -DDEVKITPRO=${work}/absent)
+
+    # A relative root is refused by name rather than resolved against the
+    # directory this configure happens to run in.
+    nfsu_case("DEVKITPRO is a relative path"
+        "${SOURCE_DIR}" ""
+        "${clean}|the devkitPro root relative/devkitpro is not an absolute path (DEVKITPRO, from the CMake variable DEVKITPRO)|set DEVKITPRO to the absolute path"
+        "${noise}|is not a full path"
+        -DDEVKITPRO=relative/devkitpro)
 
     nfsu_case("DEVKITPRO comes from the environment"
         "${SOURCE_DIR}" "DEVKITPRO=${work}/absent-too"
@@ -162,6 +179,12 @@ else()
         "${clean}|DEVKITA64 = ${work}/elsewhere (from the CMake variable DEVKITA64)|missing: aarch64-none-elf-gcc, the devkitA64 C compiler|looked for: ${work}/elsewhere/bin/aarch64-none-elf-gcc|set DEVKITA64 to a devkitA64 directory that has it"
         "${noise}|missing: uam|missing: libnx"
         -DDEVKITPRO=${work}/whole -DDEVKITA64=${work}/elsewhere)
+
+    nfsu_case("DEVKITA64 is a relative path"
+        "${SOURCE_DIR}" "DEVKITA64=relative/devkitA64"
+        "${clean}|the devkitA64 directory relative/devkitA64 is not an absolute path (DEVKITA64, from the environment variable DEVKITA64)|set DEVKITA64 to the absolute path"
+        "${noise}|is not a full path"
+        -DDEVKITPRO=${work}/whole)
 
     # The toolchain file from a project with no check of its own.
     file(WRITE "${work}/bare/CMakeLists.txt"

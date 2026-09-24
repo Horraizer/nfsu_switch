@@ -1,9 +1,12 @@
 # Nintendo Switch build
 
 The Switch build is opt-in. A configure that does not name
-`cmake/switch-toolchain.cmake` never reads it and produces the desktop build
-exactly as before; a configure that names it builds `switch/` and nothing
-else. It exists to prove the toolchain (issue #45) and to host the offline
+`cmake/switch-toolchain.cmake` never reads it: every desktop target and test
+that existed before is declared and built exactly as it was, and the desktop
+suite gains three tests of this work, which need no SDK -
+`nfsu_shader_manifest_tests`, `nfsu_shader_source_guards` and
+`nfsu_switch_toolchain_diagnostics`. A configure that names it builds
+`switch/` and nothing else. It exists to prove the toolchain (issue #45) and to host the offline
 shader pipeline (issue #49, [`SHADER_PIPELINE.md`](SHADER_PIPELINE.md)). It
 renders nothing yet.
 
@@ -22,7 +25,7 @@ machine, not on a console:
 | Test | What it checks |
 | --- | --- |
 | `nfsu_switch_shader_<program>` | One manifest against the blobs the build compiled; the build step runs the same check. |
-| `nfsu_switch_shader_blob_guards` | The same check made to fail: nine changed stage sources, compiled with `uam`, each named by its finding. |
+| `nfsu_switch_shader_blob_guards` | The same check made to fail: eleven cases, nine changed stage sources compiled with `uam` and two blobs checked with the TGSI of another compile, each named by its finding. |
 | `nfsu_switch_nro` | The ELF is AArch64; the NRO has its `NRO0` header, an `ASET` section, the icon and a 0x4000-byte NACP titled `nfsu_switch`; the reader refuses a file that is not an NRO. |
 
 The desktop programs, libraries and tests are not configured for the console:
@@ -112,7 +115,7 @@ this branch was built and tested with:
 
 ## Build commands
 
-The desktop build is unchanged:
+The desktop build takes the same commands as before:
 
 ```text
 cmake -S . -B build -G Ninja
@@ -216,13 +219,23 @@ CMake Error at CMakeLists.txt:11 (message):
 Every missing piece gets its own `missing:` entry, so an empty root lists the
 devkitA64 tools, the CMake files, libnx, deko3d, `uam` and the switch-tools
 together. A CMake older than 3.21 is told so, and a native Windows CMake is
-told to use devkitPro's MSYS2 shell, before anything else is looked at. The toolchain file runs the same check
-itself when another project uses it; the message is the same, but that
-project gets CMake's follow-on errors after it.
+told to use devkitPro's MSYS2 shell, before anything else is looked at. A
+`DEVKITPRO` or `DEVKITA64` that is not an absolute path is refused by name,
+rather than resolved against whichever directory CMake happens to run in,
+which is not the same for a configure the build starts itself. The toolchain
+file runs the same check itself when another project uses it; the message is
+the same, but that project gets CMake's follow-on errors after it.
 
 `nfsu_switch_toolchain_diagnostics`, in the desktop CTest suite, configures
 the project against SDK trees that each lack something and requires those
 messages; it needs no SDK, because every case stops before a compiler is run.
+On Linux it runs nine cases: a missing root, from the CMake variable and from
+the environment, an empty root, an SDK without `uam` and one without deko3d,
+a `DEVKITA64` without the compilers, a relative `DEVKITPRO` and a relative
+`DEVKITA64`, and the toolchain file used by another project. The desktop
+build still takes CMake 3.20, and there, as on a native Windows CMake, the
+check stops before it reads an SDK, so the test runs the one case that says
+so.
 
 ## What is deliberately not covered yet
 
