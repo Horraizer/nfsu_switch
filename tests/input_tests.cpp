@@ -1019,6 +1019,44 @@ void test_camera_hostile() {
               "inverted, stick right raises yaw and swings the eye to the camera's left");
     }
 
+    // A setter that succeeds forgets every earlier frame: the next one has
+    // no interval, and a button held across the change is latched, so it
+    // fires nothing until it is pressed again.
+    {
+        const std::uint32_t reset = bit(nfsu::GamepadButton::select);
+        const auto change = [&](nfsu::GamepadCamera& camera, int which) {
+            std::string refused;
+            if (which == 0) {
+                return camera.set_rates(exact_rates(), refused);
+            }
+            if (which == 1) {
+                return camera.set_bindings(nfsu::default_camera_bindings(), refused);
+            }
+            return camera.set_dead_zone(nfsu::StickDeadZone{}, refused);
+        };
+        const char* const names[] = {"set_rates", "set_bindings", "set_dead_zone"};
+        for (int which = 0; which < 3; ++which) {
+            nfsu::Inspector inspector;
+            nfsu::GamepadCamera camera;
+            if (!open_inspector(inspector, scene) || !camera_under_test(camera)) {
+                ++g_failures;
+                return;
+            }
+            std::uint64_t t = 0;
+            camera.step(pad_frame(t, 0, 0, 0, 0, 0), inspector);
+            camera.step(pad_frame(t += kStepUs, reset, 0, 0, 0, 0), inspector);
+            inspector.orbit(30.0, 0.0);
+            check(change(camera, which), std::string(names[which]) + " succeeds");
+            const std::string moved = camera_bits(inspector.options().camera);
+            nfsu::CameraStep step =
+                camera.step(pad_frame(t += kStepUs, reset, 0, 0, nfsu::kAxisMax, 0), inspector);
+            check(step.commands.empty() && step.orbit_dx == 0.0 &&
+                      camera_bits(inspector.options().camera) == moved,
+                  std::string(names[which]) +
+                      " forgets the frames before it: no interval, and the held button fires nothing");
+        }
+    }
+
     // Rates are refused, not clamped.
     nfsu::GamepadCamera camera;
     const double bad[] = {0.0, -1.0, std::numeric_limits<double>::quiet_NaN(),

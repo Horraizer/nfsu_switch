@@ -505,7 +505,11 @@ void test_wheel() {
     check(inspector.options().camera.distance == distance, "one notch out undoes it");
 
     // Deltas no window reports are clamped to the 16-bit range, so the sum
-    // cannot overflow: 32767 is 273 notches and 107 left over.
+    // cannot overflow: 40000 is read as 32767, which is 273 notches with 7
+    // left over, where unclamped it would be 333 with 40 left over. Both
+    // counts pin the distance at its limit, so the clamp is measured in the
+    // remainder, with the camera first put back where a step shows: 100
+    // more make no notch from 7 and one from 40.
     nfsu::Inspector wide;
     nfsu::Inspector steps;
     if (!open_inspector(wide, scene) || !open_inspector(steps, scene)) {
@@ -514,12 +518,20 @@ void test_wheel() {
     }
     Rig wild(wide);
     wild.session.start();
-    wild.session.handle(nfsu::wheel_event(std::numeric_limits<std::int32_t>::max()));
+    wild.session.handle(nfsu::wheel_event(40000));
     steps.zoom(273);
     check(state_of(wide) == state_of(steps), "a delta past 32767 zooms 273 notches");
+    wild.session.handle(nfsu::key_event(nfsu::Key::r));
+    std::string reset_error;
+    steps.command(nfsu::InspectorCommand::reset_camera, reset_error);
+    wild.session.handle(nfsu::wheel_event(100));
+    check(state_of(wide) == state_of(steps),
+          "and keeps 7 left over, so 100 more are not yet a notch; the session reads " +
+              state_of(wide));
     wild.session.handle(nfsu::wheel_event(13));
     steps.zoom(1);
-    check(state_of(wide) == state_of(steps), "and keeps the 107 left over");
+    check(state_of(wide) == state_of(steps), "and 13 after them are");
+    wild.session.handle(nfsu::wheel_event(std::numeric_limits<std::int32_t>::max()));
     wild.session.handle(nfsu::wheel_event(std::numeric_limits<std::int32_t>::min()));
     std::string error;
     check(nfsu::validate_camera(wide.options().camera, error),
@@ -640,29 +652,45 @@ void test_capture_lost_and_resize() {
     rig.session.handle(nfsu::resize_event(0, 0));
     check(inspector.options().width == 480, "a surface with no area keeps the viewport");
 
-    // A surface the limits refuse keeps the old viewport, and a click is
-    // then dropped rather than resolved against the wrong pixel.
+    // A surface the limits refuse keeps the old viewport, and the frame is
+    // then stretched over it: a click is dropped rather than resolved
+    // against a frame pixel that is not the one under the pointer.
     rig.session.handle(nfsu::resize_event(9000, 120));
     check(inspector.options().width == 480, "a surface past the limits keeps the viewport");
-    rig.display.set_surface(9000, 120);
-    rig.paint();
+
+    nfsu::Inspector stretched;
+    if (!open_inspector(stretched, scene)) {
+        ++g_failures;
+        return;
+    }
+    // Divisor 1, so that the drag itself asks for the same refused size and
+    // the frame on hand is the one the click would be resolved against.
+    Rig wide(stretched, 1);
+    wide.session.start();
+    wide.paint();
     std::uint32_t x = 0;
     std::uint32_t y = 0;
     std::uint32_t ex = 0;
     std::uint32_t ey = 0;
-    if (!find_pixels(inspector, rig.session.frame(), x, y, ex, ey)) {
+    if (!find_pixels(stretched, wide.session.frame(), x, y, ex, ey)) {
         std::cerr << "test setup failed: no drawn pixel\n";
         ++g_failures;
         return;
     }
-    rig.session.handle(nfsu::pointer_down_event(nfsu::PointerButton::primary,
-                                                static_cast<std::int32_t>(x),
-                                                static_cast<std::int32_t>(y)));
-    rig.session.handle(nfsu::pointer_up_event(static_cast<std::int32_t>(x),
-                                              static_cast<std::int32_t>(y)));
-    rig.paint();
-    check(inspector.selected_draw() == nfsu::kNoHandle,
+    wide.session.handle(nfsu::resize_event(9000, 120));
+    wide.display.set_surface(9000, 120);
+    wide.session.handle(nfsu::pointer_down_event(nfsu::PointerButton::primary,
+                                                 static_cast<std::int32_t>(x),
+                                                 static_cast<std::int32_t>(y)));
+    wide.session.handle(nfsu::pointer_up_event(static_cast<std::int32_t>(x),
+                                               static_cast<std::int32_t>(y)));
+    wide.paint();
+    check(stretched.options().width == 240 &&
+              draw_at(stretched, wide.session.frame(), x, y) != nfsu::kNoHandle,
+          "setup: the frame on hand still has a group under the click");
+    check(stretched.selected_draw() == nfsu::kNoHandle,
           "a click on a surface the frame does not cover one to one is dropped");
+    check(wide.display.protocol_errors() == 0, "the stretched display was used by its contract");
     check(rig.display.protocol_errors() == 0, "the display was used by its contract");
 }
 
@@ -749,31 +777,51 @@ void test_highlight() {
     }
     Rig rig(inspector);
     rig.session.start();
-    rig.session.handle(nfsu::key_event(nfsu::Key::n));
-    rig.paint();
-    const std::size_t selected = inspector.selected_draw();
-    const nfsu::Frame& frame = rig.session.frame();
-    const std::vector<unsigned char>& shown = rig.display.presented().back().bgra;
-    std::size_t tinted = 0;
-    bool exact = shown.size() == frame.rgba().size();
-    for (std::size_t i = 0; exact && i < frame.ids().size(); ++i) {
-        const std::uint32_t id = frame.ids()[i];
-        const bool mine = id != nfsu::kNoTriangle && inspector.draw_of_triangle(id) == selected;
-        unsigned r = frame.rgba()[i * 4U + 0];
-        unsigned g = frame.rgba()[i * 4U + 1];
-        unsigned b = frame.rgba()[i * 4U + 2];
-        if (mine) {
-            ++tinted;
-            r = (r + 255U) / 2U;
-            g = (g + 190U) / 2U;
-            b = b / 2U;
+    // Every group in turn, in the shaded view and the draws view, so that
+    // each channel of the tint is exercised with odd and even values: the
+    // blend halves a sum, and a constant off by one is only visible where
+    // the sum's parity shows it.
+    std::size_t checked = 0;
+    for (int view = 0; view < 2; ++view) {
+        for (std::size_t group = 0; group < kDrawCount; ++group) {
+            rig.session.handle(nfsu::key_event(nfsu::Key::n));
+            rig.paint();
+            const std::size_t selected = inspector.selected_draw();
+            const nfsu::Frame& frame = rig.session.frame();
+            std::vector<unsigned char> view_rgba;
+            std::string error;
+            check(inspector.view_pixels(nfsu::inspection_buffers_of(frame), view_rgba, error),
+                  "the view renders");
+            const std::vector<unsigned char>& shown = rig.display.presented().back().bgra;
+            std::size_t tinted = 0;
+            bool exact = shown.size() == view_rgba.size();
+            for (std::size_t i = 0; exact && i < frame.ids().size(); ++i) {
+                const std::uint32_t id = frame.ids()[i];
+                const bool mine =
+                    id != nfsu::kNoTriangle && inspector.draw_of_triangle(id) == selected;
+                unsigned r = view_rgba[i * 4U + 0];
+                unsigned g = view_rgba[i * 4U + 1];
+                unsigned b = view_rgba[i * 4U + 2];
+                if (mine) {
+                    ++tinted;
+                    r = (r + 255U) / 2U;
+                    g = (g + 190U) / 2U;
+                    b = b / 2U;
+                }
+                exact = shown[i * 4U + 0] == b && shown[i * 4U + 1] == g &&
+                        shown[i * 4U + 2] == r && shown[i * 4U + 3] == 255;
+            }
+            check(selected == group && tinted > 0,
+                  "setup: group " + std::to_string(group) + " is selected and on screen");
+            check(exact, "group " + std::to_string(group) + " in view " +
+                             nfsu::inspector_view_name(inspector.view()) +
+                             " is tinted half way to amber, and nothing else is");
+            ++checked;
         }
-        exact = shown[i * 4U + 0] == b && shown[i * 4U + 1] == g && shown[i * 4U + 2] == r &&
-                shown[i * 4U + 3] == 255;
+        rig.session.handle(nfsu::key_event(nfsu::Key::escape));
+        rig.session.handle(nfsu::key_event(nfsu::Key::v));
     }
-    check(selected != nfsu::kNoHandle && tinted > 0,
-          "setup: a selected group covers some pixels");
-    check(exact, "the selected group's pixels are half way to amber and no others are");
+    check(checked == 2 * kDrawCount, "every group was checked in both views");
 }
 
 // ---------------------------------------------------------------------------

@@ -667,9 +667,9 @@ foreach(library IN LISTS neutral)
     math(EXPR source_count "${source_count} + ${read_here}")
 endforeach()
 
+list(LENGTH queue sources_queued)
 set(findings "")
 set(finding_count 0)
-set(header_count 0)
 set(line_count 0)
 set(index 0)
 list(LENGTH queue queued)
@@ -692,11 +692,15 @@ while(index LESS queued)
         if(NOT header IN_LIST queue)
             list(APPEND queue "${header}")
             set(owner_${header} "a header included by ${path}")
-            math(EXPR header_count "${header_count} + 1")
         endif()
     endforeach()
     list(LENGTH queue queued)
 endwhile()
+
+# The headers read are everything the queue held beyond the sources, counted
+# from the queue itself rather than from where headers are found, so that a
+# header found and never queued is not counted as read.
+math(EXPR header_count "${queued} - ${sources_queued}")
 
 # Every neutral source here includes a project header. None read means the
 # include scan has stopped queueing them, and every header - the one place a
