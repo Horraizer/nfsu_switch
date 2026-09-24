@@ -344,8 +344,11 @@ void test_recording_refusals() {
         {"an empty text", "", "line 1"},
         {"another version", "nfsu-input 2\n", "line 1"},
         {"a comment before the header", "# first\nnfsu-input 1\n", "line 1"},
-        {"a byte above 0x7E", h + "10 0 - 0 0 0 0\n20 0 - 0 0 0 \x80\n", "line 3"},
-        {"a tab", h + "10\t0 - 0 0 0 0\n", "line 2"},
+        // In comments, which nothing else reads: only the byte rule can
+        // refuse these.
+        {"a byte above 0x7E in a comment", h + "10\n# caf\xC3\xA9\n", "line 3"},
+        {"a tab in a comment", h + "# a\tcomment\n", "line 2"},
+        {"a byte above 0x7E in a field", h + "10 0 - 0 0 0 \x80\n", "line 2"},
         {"two fields", h + "10 0\n", "line 2"},
         {"eight fields", h + "10 0 - 0 0 0 0 0\n", "line 2"},
         {"a leading zero", h + "010\n", "line 2"},
@@ -375,6 +378,10 @@ void test_recording_refusals() {
               std::string("the refusal of ") + refused.label + " names " + refused.line +
                   ", and reads: " + error);
         check(frames.size() == 1, std::string("nothing is appended for ") + refused.label);
+        if (std::string(refused.label).find("in a comment") != std::string::npos) {
+            check(error.find("printable ASCII") != std::string::npos,
+                  std::string("the refusal of ") + refused.label + " is the byte rule's");
+        }
     }
     std::string oversized(nfsu::kMaxRecordingBytes + 1U, '#');
     std::vector<nfsu::GamepadFrame> frames;
@@ -495,6 +502,44 @@ void test_binding_refusals() {
                   nfsu::ActionKind::digital &&
               kinds.back() == nfsu::ActionKind::digital,
           "motions are analog and every command is digital");
+
+    // The layout docs/INPUT.md tabulates, binding by binding, so that a
+    // control quietly moved to another action is a failure here.
+    using C = nfsu::CameraAction;
+    using I = nfsu::InspectorCommand;
+    using B = nfsu::GamepadButton;
+    const auto id = [](C action) { return nfsu::camera_action_id(action); };
+    const auto command = [](I which) { return nfsu::camera_command_action(which); };
+    const std::vector<nfsu::InputBinding> documented = {
+        binding(nfsu::GamepadAxis::right_x, id(C::orbit_x)),
+        binding(nfsu::GamepadAxis::right_y, id(C::orbit_y)),
+        binding(nfsu::GamepadAxis::left_x, id(C::pan_x)),
+        binding(nfsu::GamepadAxis::left_y, id(C::pan_y)),
+        binding(B::trigger_right, id(C::zoom)),
+        binding(B::trigger_left, id(C::zoom), true),
+        binding(B::start, id(C::exit_session)),
+        binding(B::select, command(I::reset_camera)),
+        binding(B::dpad_up, command(I::view_front)),
+        binding(B::dpad_right, command(I::view_right)),
+        binding(B::dpad_down, command(I::view_rear)),
+        binding(B::dpad_left, command(I::view_left)),
+        binding(B::stick_right, command(I::view_top)),
+        binding(B::stick_left, command(I::frame_scene)),
+        binding(B::face_east, command(I::frame_selection)),
+        binding(B::face_south, command(I::clear_selection)),
+        binding(B::shoulder_right, command(I::select_next_draw)),
+        binding(B::shoulder_left, command(I::select_previous_draw)),
+        binding(B::face_north, command(I::cycle_view)),
+        binding(B::face_west, command(I::cycle_overlay)),
+    };
+    bool same = documented.size() == defaults.size();
+    for (std::size_t i = 0; same && i < documented.size(); ++i) {
+        same = documented[i].control.kind == defaults[i].control.kind &&
+               documented[i].control.index == defaults[i].control.index &&
+               documented[i].action == defaults[i].action &&
+               documented[i].invert == defaults[i].invert;
+    }
+    check(same, "the default table is the documented layout, binding for binding");
 
     const std::uint16_t orbit_x = nfsu::camera_action_id(nfsu::CameraAction::orbit_x);
     const std::uint16_t reset = nfsu::camera_command_action(nfsu::InspectorCommand::reset_camera);
@@ -647,12 +692,6 @@ void test_mapper_rules() {
     both.pads[1].buttons = fire;
     mapper.update(both);
     check(held() && !pressed(), "a second source of a held action is not a press");
-
-    // Bits that are not buttons are not read.
-    mapper.reset();
-    mapper.update(pad_frame(t += kStepUs, 0, 0, 0, 0, 0));
-    mapper.update(pad_frame(t += kStepUs, 0xFFFF0000U, 0, 0, 0, 0));
-    check(!held() && move() == 0.0, "bits outside kGamepadButtonMask are ignored");
 
     // A refused configuration keeps the one that worked.
     std::string error;

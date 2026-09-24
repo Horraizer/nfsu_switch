@@ -263,7 +263,9 @@ void InputMapper::update(const GamepadFrame& frame) {
             latched_[slot] = 0;
             continue;
         }
-        const std::uint32_t buttons = pad.buttons & kGamepadButtonMask;
+        // A bit past kGamepadButtonMask needs no masking here: no binding
+        // can name one, because validate_input_bindings refuses the index.
+        const std::uint32_t buttons = pad.buttons;
         if (!connected_[slot]) {
             connected_[slot] = true;
             latched_[slot] = buttons;

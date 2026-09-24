@@ -574,27 +574,47 @@ if(libraries STREQUAL "")
     message(FATAL_ERROR "${MANIFEST} names no library, so there is nothing to classify")
 endif()
 
-set(unclassified "")
-foreach(library IN LISTS libraries)
-    set(in_neutral FALSE)
-    set(in_platform FALSE)
-    if(library IN_LIST neutral)
-        set(in_neutral TRUE)
-    endif()
-    if(library IN_LIST platform)
-        set(in_platform TRUE)
-    endif()
-    if(NOT in_neutral AND NOT in_platform)
-        list(APPEND unclassified "  ${library} is in neither list")
-    elseif(in_neutral AND in_platform)
-        list(APPEND unclassified "  ${library} is in both lists")
-    endif()
-endforeach()
-foreach(library IN LISTS neutral platform)
-    if(NOT library IN_LIST libraries)
-        list(APPEND unclassified "  ${library} is classified and is not a library target")
-    endif()
-endforeach()
+# Every library in exactly one list, and every classified name a library.
+function(nfsu_classify libraries neutral platform out_var)
+    set(problems "")
+    foreach(library IN LISTS libraries)
+        set(in_neutral FALSE)
+        set(in_platform FALSE)
+        if(library IN_LIST neutral)
+            set(in_neutral TRUE)
+        endif()
+        if(library IN_LIST platform)
+            set(in_platform TRUE)
+        endif()
+        if(NOT in_neutral AND NOT in_platform)
+            list(APPEND problems "  ${library} is in neither list")
+        elseif(in_neutral AND in_platform)
+            list(APPEND problems "  ${library} is in both lists")
+        endif()
+    endforeach()
+    foreach(library IN LISTS neutral platform)
+        if(NOT library IN_LIST libraries)
+            list(APPEND problems "  ${library} is classified and is not a library target")
+        endif()
+    endforeach()
+    set(${out_var} "${problems}" PARENT_SCOPE)
+endfunction()
+
+# Measured first, on lists made up to hold each mistake once: a check that
+# only a bad tree exercises would otherwise break unnoticed until one came.
+nfsu_classify("lib_a;lib_b;lib_c;lib_d" "lib_a;lib_c;lib_gone" "lib_c;lib_d" measured)
+set(expected_problems
+    "  lib_b is in neither list"
+    "  lib_c is in both lists"
+    "  lib_gone is classified and is not a library target")
+if(NOT measured STREQUAL "${expected_problems}")
+    string(REPLACE ";" "\n" listing "${measured}")
+    message(FATAL_ERROR
+        "the classification check no longer names what it exists to name. On "
+        "made-up lists it reported:\n${listing}")
+endif()
+
+nfsu_classify("${libraries}" "${neutral}" "${platform}" unclassified)
 if(NOT unclassified STREQUAL "")
     string(REPLACE ";" "\n" listing "${unclassified}")
     nfsu_restore("${listing}" listing)
@@ -677,6 +697,15 @@ while(index LESS queued)
     endforeach()
     list(LENGTH queue queued)
 endwhile()
+
+# Every neutral source here includes a project header. None read means the
+# include scan has stopped queueing them, and every header - the one place a
+# platform include can hide from a source - would go unread.
+if(header_count EQUAL 0)
+    message(FATAL_ERROR
+        "the neutral sources reached no project header, so the include scan has "
+        "stopped following them and no header was read")
+endif()
 
 if(NOT findings STREQUAL "")
     string(REPLACE ";" "\n" listing "${findings}")
