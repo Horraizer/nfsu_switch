@@ -1640,9 +1640,11 @@ void test_lost_placements_are_counted() {
 
 // Defect: a ledger created over nothing - no buffer arena, no image arena,
 // no layout query - or one re-created while it still tracks placements,
-// which would forget them while the arenas keep them; a block limit that
-// refuses the largest block; and a re-created ledger that keeps the old
-// completed fence, which reclaims new staging before its copy has run.
+// which would forget them while the arenas keep them; a resource cap that is
+// documented but not enforced, so a ledger reserves bookkeeping for any
+// count it is asked for; a block limit that refuses the largest block; and a
+// re-created ledger that keeps the old completed fence, which reclaims new
+// staging before its copy has run.
 void test_ledger_creation_is_checked() {
     nfsu::MemoryArena arena = make_arena(4096, 4096);
     nfsu::UploadLedger ledger;
@@ -1667,6 +1669,10 @@ void test_ledger_creation_is_checked() {
     check(!ledger.create(nfsu::UploadArenas{&arena, &arena, &arena}, nfsu::linear_image_layout,
                          0, error),
           "no resources");
+    check(!ledger.create(nfsu::UploadArenas{&arena, &arena, &arena}, nfsu::linear_image_layout,
+                         nfsu::kMaxArenaAllocations + 1U, error),
+          "one resource more than the cap");
+    check_has(error, "max resources 4194305 is outside 1..4194304", "the resource cap is named");
     check(ledger.create(nfsu::UploadArenas{&arena, &arena, nullptr}, nfsu::linear_image_layout,
                         1, error),
           "one arena for buffers and images, no staging: " + error);
