@@ -520,7 +520,7 @@ build and an explicit Release build:
 | track-probe turned and flown `E666BC2F...`, 3139 bytes | same | same | same |
 | track-budget: counts identical, `budget: limits 11 exceeded 0` | same | same | same |
 | track-budget counts: region bytes 182436, resident 3173846, draw calls 46, pixels 33449, frame 15667200 | same | same | same |
-| track-region summary lines of [`TRACK.md`](TRACK.md) | same | same | same |
+| the first [`TRACK.md`](TRACK.md) acceptance command: its `meshes:`, `cost:`, `textures:` and `draws:` lines | same | same | same |
 
 `src/track.cpp`, `src/track_objects.cpp`, `src/track_scene.cpp`,
 `src/track_draw_list.cpp`, `src/render.cpp` and `src/track_render.cpp` are
