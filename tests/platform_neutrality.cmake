@@ -431,6 +431,13 @@ function(nfsu_scan text label dir out_findings out_includes out_lines)
                     endif()
                 elseif(header MATCHES "^nfsu/" AND EXISTS "${SOURCE_DIR}/include/${header}")
                     list(APPEND includes "include/${header}")
+                elseif(DEFINED GENERATED_DIR AND header MATCHES "^nfsu/[A-Za-z0-9_]+[.]h$" AND
+                       EXISTS "${GENERATED_DIR}/${header}" AND
+                       NOT IS_DIRECTORY "${GENERATED_DIR}/${header}")
+                    # Generated project headers are scanned recursively, never
+                    # exempted. The build supplies this one include directory.
+                    file(RELATIVE_PATH generated "${SOURCE_DIR}" "${GENERATED_DIR}/${header}")
+                    list(APPEND includes "${generated}")
                 elseif(NOT header STREQUAL "" AND EXISTS "${SOURCE_DIR}/${dir}/${header}" AND
                        NOT IS_DIRECTORY "${SOURCE_DIR}/${dir}/${header}")
                     file(RELATIVE_PATH local "${SOURCE_DIR}" "${SOURCE_DIR}/${dir}/${header}")
