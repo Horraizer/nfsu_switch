@@ -43,6 +43,22 @@ namespace {
 
 namespace fs = std::filesystem;
 
+// path::u8string() returns std::u8string once the library defines
+// __cpp_lib_char8_t (true from C++20 on devkitA64's GCC 16 and MinGW's
+// GCC 13 alike once built as C++20), and std::string before that. Every
+// caller below appends the result to a std::string with operator+,
+// which std::u8string does not accept, so the conversion has to be
+// explicit; std::u8string and std::string hold the same UTF-8 bytes,
+// so the copy changes no output on either standard.
+std::string path_to_utf8(const fs::path& path) {
+#if defined(__cpp_lib_char8_t)
+    const std::u8string u8 = path.u8string();
+    return std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
+#else
+    return path.u8string();
+#endif
+}
+
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kDegToRad = kPi / 180.0;
 constexpr std::int64_t kSubpixelBits = 8;
@@ -1473,7 +1489,7 @@ namespace {
         return "removed all 1 files created by this export";
     }
     return "removed 0 of 1 files created by this export; could not remove: " +
-           path.u8string();
+           path_to_utf8(path);
 }
 
 // A "<target>.partial" file created exclusively by this process.
@@ -1753,7 +1769,7 @@ bool write_rgba_tga(
     // Early refusal only; publication below never replaces a target that
     // appears later.
     if (path_exists(target)) {
-        result.error = "refusing to overwrite " + target.filename().u8string();
+        result.error = "refusing to overwrite " + path_to_utf8(target.filename());
         return false;
     }
     if (!frame_writer_supported()) {
@@ -1782,12 +1798,12 @@ bool write_rgba_tga(
     const PartialFile::Open opened = file.create(partial);
     if (opened == PartialFile::Open::exists) {
         result.error = "temporary file already exists: " +
-                       partial.filename().u8string();
+                       path_to_utf8(partial.filename());
         return false;
     }
     if (opened == PartialFile::Open::failed) {
         // Nothing was created.
-        result.error = "failed to create " + partial.filename().u8string();
+        result.error = "failed to create " + path_to_utf8(partial.filename());
         return false;
     }
 
@@ -1801,7 +1817,7 @@ bool write_rgba_tga(
     };
 
     if (!file.write(data)) {
-        return fail("failed to write " + partial.filename().u8string());
+        return fail("failed to write " + path_to_utf8(partial.filename()));
     }
     if (result.before_rename && !result.before_rename(partial)) {
         return fail("write aborted before rename");
@@ -1812,11 +1828,11 @@ bool write_rgba_tga(
         return true;
     case PartialFile::Publish::target_exists:
         return fail("target appeared during the write, not replaced: " +
-                    target.filename().u8string());
+                    path_to_utf8(target.filename()));
     case PartialFile::Publish::failed:
         break;
     }
-    return fail("failed to publish " + target.filename().u8string() +
+    return fail("failed to publish " + path_to_utf8(target.filename()) +
                 (publish_error.empty() ? "" : " (" + publish_error + ")"));
 }
 
