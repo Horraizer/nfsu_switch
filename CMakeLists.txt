@@ -80,6 +80,25 @@ target_compile_features(nfsu_core PUBLIC cxx_std_17)
 target_link_libraries(nfsu_core PUBLIC nfsu_image)
 nfsu_enable_warnings(nfsu_core)
 
+# The texture-export file I/O split out of nfsu_core (issue #139): the
+# export helpers - remove_created, rollback_created_files and
+# export_textures - call fs::remove, fs::rename and fs::create_directories
+# directly to write, roll back and clean up the files a texture export asks
+# for, which is platform code the neutrality gate must not read. See
+# NFSU_PLATFORM_LIBRARIES below and docs/PLATFORM_SERVICES.md.
+add_library(nfsu_texture_export
+    src/texture_export.cpp
+)
+
+target_include_directories(nfsu_texture_export
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_compile_features(nfsu_texture_export PUBLIC cxx_std_17)
+target_link_libraries(nfsu_texture_export PUBLIC nfsu_core)
+nfsu_enable_warnings(nfsu_texture_export)
+
 # Backend-neutral prepared car scene: mesh selection and material binding.
 # Its public data model depends only on in-memory mesh types.
 add_library(nfsu_scene
@@ -309,11 +328,13 @@ add_library(nfsu_render
 
 target_link_libraries(nfsu_render PUBLIC nfsu_scene nfsu_image)
 # The POSIX frame writer rolls a failed write back with
-# rollback_created_files, which nfsu_core defines (src/texture.cpp). The link
-# is private because render.h exposes nothing of nfsu_core. The Windows
-# writer removes by handle and never calls it, which is why only a POSIX
-# build found the link missing (issue #132).
-target_link_libraries(nfsu_render PRIVATE nfsu_core)
+# rollback_created_files, which nfsu_texture_export now defines
+# (src/texture_export.cpp; issue #139 split it out of nfsu_core, which used
+# to hold it in src/texture.cpp). The link is private because render.h
+# exposes nothing of nfsu_texture_export. The Windows writer removes by
+# handle and never calls it, which is why only a POSIX build found the link
+# missing (issue #132).
+target_link_libraries(nfsu_render PRIVATE nfsu_texture_export)
 nfsu_enable_warnings(nfsu_render)
 if(MSVC)
     target_compile_options(nfsu_render PRIVATE /fp:precise)
@@ -330,7 +351,8 @@ add_executable(nfsu_probe
 # in this list that writes a file. It carries nfsu_render and
 # nfsu_track_draw_list with it, so the two are not named again.
 target_link_libraries(nfsu_probe
-    PRIVATE nfsu_core nfsu_track nfsu_track_visibility nfsu_track_zones
+    PRIVATE nfsu_core nfsu_texture_export nfsu_track nfsu_track_visibility
+            nfsu_track_zones
             nfsu_track_draw_list nfsu_track_render nfsu_track_budget
             nfsu_track_probe
             nfsu_texture_decode nfsu_skin_inputs nfsu_stock_scene
@@ -426,7 +448,7 @@ if(NFSU_BUILD_TESTS)
         tests/texture_tests.cpp
     )
 
-    target_link_libraries(nfsu_texture_tests PRIVATE nfsu_core)
+    target_link_libraries(nfsu_texture_tests PRIVATE nfsu_core nfsu_texture_export)
     nfsu_enable_warnings(nfsu_texture_tests)
     add_test(NAME nfsu_texture_tests COMMAND nfsu_texture_tests)
 
@@ -914,32 +936,23 @@ set(NFSU_NEUTRAL_LIBRARIES
 # The libraries that are platform code on purpose, and are not read:
 # nfsu_arg_path decodes arguments with the Windows API, nfsu_render's frame
 # writer creates and publishes files with CreateFileW or open() and link(),
-# and nfsu_platform_desktop reads the steady clock. docs/PLATFORM_SERVICES.md
-# says what would move each one behind a service.
-set(NFSU_PLATFORM_LIBRARIES nfsu_arg_path nfsu_render nfsu_platform_desktop)
+# nfsu_texture_export's export helpers (issue #139, split out of nfsu_core)
+# call fs::remove, fs::rename and fs::create_directories to write, roll back
+# and clean up the files a texture export asks for, and nfsu_platform_desktop
+# reads the steady clock. docs/PLATFORM_SERVICES.md says what would move each
+# one behind a service.
+set(NFSU_PLATFORM_LIBRARIES nfsu_arg_path nfsu_render nfsu_texture_export nfsu_platform_desktop)
 
 # Sources of a neutral library that are platform code on purpose: the one
-# window backend, and src/texture.cpp for its texture-export rollback
-# helpers (remove_created, rollback_created_files, export_textures), which
-# predate this branch and genuinely touch the filesystem - fs::remove,
+# window backend. src/texture.cpp used to be exempted here too, whole, for
+# its texture-export helpers (remove_created, rollback_created_files,
+# export_textures), which genuinely touch the filesystem - fs::remove,
 # fs::rename, fs::create_directories - to clean up and write the files a
-# caller asked for. Finding 1 of the platform-services review (comment 2933
-# on PR #136) is what surfaced this: closing the qualifier gap it names
-# made nfsu_platform_neutrality fail on this pre-existing code the moment
-# the fixed gate could see it -
-#   src/texture.cpp:1877: remove - fs::remove(path, error);
-#   src/texture.cpp:1947: rename - fs::rename(partial, target, rename_error);
-#   src/texture.cpp:2026: create_directories - fs::create_directories(output_dir, error);
-# - which is the fixed gate working as intended, not a false positive: this
-# file was always platform code, only invisible to the gate's old rules.
-# The stub that replaces the window backend elsewhere is neutral and read;
-# src/texture.cpp has no such split yet, so the whole file is exempt for
-# now rather than only its export helpers, at the cost of not reading the
-# texture-decode code that makes up most of it. Splitting the export
-# helpers into their own platform-classified source is follow-up work, not
-# this fix round's: it would also touch src/render.cpp and include/nfsu/
-# texture.h, which the #132 fix on main already settled.
-set(NFSU_PLATFORM_SOURCES src/inspect_window_win32.cpp src/texture.cpp)
+# caller asked for. Issue #139 moved those helpers into
+# src/texture_export.cpp and the nfsu_texture_export library above
+# (NFSU_PLATFORM_LIBRARIES), so src/texture.cpp holds only the texture
+# decoder now and the gate reads it again.
+set(NFSU_PLATFORM_SOURCES src/inspect_window_win32.cpp)
 
 # Every library target and each neutral one's sources, written for the gate
 # once the whole directory has been read, so that a library added anywhere

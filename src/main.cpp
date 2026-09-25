@@ -7,6 +7,7 @@
 #include "nfsu/stock_scene.h"
 #include "nfsu/texture.h"
 #include "nfsu/texture_decode.h"
+#include "nfsu/texture_export.h"
 #include "nfsu/track.h"
 #include "nfsu/track_budget.h"
 #include "nfsu/track_collision.h"
