@@ -787,8 +787,24 @@ if(NFSU_BUILD_TESTS)
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/switch_toolchain_diagnostics.cmake
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
+    # tests/switch_nro_check.cmake against a synthetic NRO built from the
+    # review's real measurements, and against each header corruption it
+    # names, because this machine has no Switch SDK and so never runs the
+    # checker against a real build-switch output otherwise. A compiled test,
+    # not another CMake script: it needs binary content with NUL bytes in
+    # it, which CMake's own string(ASCII 0 ...) refuses to produce.
+    add_executable(nfsu_switch_nro_synthetic_tests
+        tests/switch_nro_synthetic_tests.cpp
+    )
+    target_compile_definitions(nfsu_switch_nro_synthetic_tests PRIVATE
+        NFSU_CMAKE_COMMAND="${CMAKE_COMMAND}"
+        NFSU_SWITCH_NRO_CHECKER="${CMAKE_CURRENT_SOURCE_DIR}/tests/switch_nro_check.cmake")
+    nfsu_enable_warnings(nfsu_switch_nro_synthetic_tests)
+    add_test(NAME nfsu_switch_nro_synthetic_tests
+        COMMAND nfsu_switch_nro_synthetic_tests)
+
     set_tests_properties(
         nfsu_shader_manifest_tests nfsu_shader_source_guards
-        nfsu_switch_toolchain_diagnostics
+        nfsu_switch_toolchain_diagnostics nfsu_switch_nro_synthetic_tests
         PROPERTIES TIMEOUT 60)
 endif()

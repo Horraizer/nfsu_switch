@@ -473,6 +473,16 @@ void test_opaque_only_programs(const Programs& programs, Reporter& r) {
 // which in submission order is LESS_EQUAL; every drawn fragment writes depth,
 // blended ones included; the frame's alpha is always 255, so no draw writes
 // it; and RenderOptions culls nothing unless asked to.
+//
+// Unlike test_car_textured_variants_are_the_reference_pairs above, these
+// four checks are against the constants below, not against src/render.cpp:
+// nothing here calls render_scene or render_track_draw_list. A change to the
+// reference's depth test, its depth write, its alpha write or
+// RenderOptions::cull's default that is not also made by hand to these four
+// constants (and to docs/SHADER_PIPELINE.md's "C++" section) drifts unseen
+// by this test; only nfsu_render_tests and nfsu_track_render_tests, which
+// exercise the reference directly, would still fail (review comment 2856,
+// F2).
 void test_shared_fixed_function_state(const Programs& programs, Reporter& r) {
     r.check(nfsu::RenderOptions{}.cull == nfsu::CullMode::none,
             "the reference culls nothing by default");

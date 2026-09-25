@@ -34,6 +34,20 @@ function(nfsu_le hex offset bytes out)
         string(SUBSTRING "${hex}" ${at} 2 byte)
         string(APPEND value "${byte}")
     endforeach()
+    # math(EXPR) is signed 64-bit, so a full 8-byte read of 0x8000000000000000
+    # (2^63) or more cannot be parsed at all: it stops the whole script with
+    # "cannot evaluate the expression" rather than returning to this
+    # function's caller, and no check below this point runs (review comment
+    # 2856, N3). Route it to the same -1 this function already returns for a
+    # read past the end of the file, which every caller already treats as
+    # out of range, instead of ever handing that hex string to math().
+    if(bytes EQUAL 8)
+        string(SUBSTRING "${value}" 0 1 top_nibble)
+        if(top_nibble MATCHES "[89a-fA-F]")
+            set(${out} -1 PARENT_SCOPE)
+            return()
+        endif()
+    endif()
     math(EXPR value "0x${value}" OUTPUT_FORMAT DECIMAL)
     set(${out} ${value} PARENT_SCOPE)
 endfunction()
@@ -60,6 +74,55 @@ function(nfsu_read_nro path title out)
     nfsu_le("${hex}" 24 4 image)
     if(image LESS 128 OR image GREATER size)
         set(${out} "${name}: the image size ${image} is outside the file's ${size} bytes" PARENT_SCOPE)
+        return()
+    endif()
+    # The segment table (0x20..0x37), the version (0x14) and the MOD0 offset
+    # (0x04) were read nowhere above, so a corrupt header in any of those
+    # fields still passed as long as the magic and the image size did
+    # (review comment 2856, F3). NRO version is always 0 - every NRO this
+    # pipeline or any other homebrew tool produces writes it as a plain
+    # spec-fixed constant, not a value the checker would need to derive from
+    # anything else - and the three segments are always laid out the same
+    # way: text starts at file offset 0, ro follows it immediately, data
+    # follows ro immediately, and data ends exactly where the image (already
+    # read above) ends. MOD0 is the module header, which lives in .text, so
+    # its offset must fall inside the text segment. bss has no such
+    # invariant to check against (its size is whatever the link produced,
+    # with nothing else in the file to compare it to), so it stays unread,
+    # same as the review's own suggested fix.
+    nfsu_le("${hex}" 20 4 version)
+    if(NOT version EQUAL 0)
+        set(${out} "${name}: the NRO version is ${version}, not 0" PARENT_SCOPE)
+        return()
+    endif()
+    nfsu_le("${hex}" 4 4 mod_offset)
+    nfsu_le("${hex}" 32 4 text_offset)
+    nfsu_le("${hex}" 36 4 text_size)
+    nfsu_le("${hex}" 40 4 ro_offset)
+    nfsu_le("${hex}" 44 4 ro_size)
+    nfsu_le("${hex}" 48 4 data_offset)
+    nfsu_le("${hex}" 52 4 data_size)
+    if(NOT text_offset EQUAL 0)
+        set(${out} "${name}: the text segment is at offset ${text_offset}, not 0" PARENT_SCOPE)
+        return()
+    endif()
+    math(EXPR text_end "${text_offset} + ${text_size}")
+    if(NOT ro_offset EQUAL text_end)
+        set(${out} "${name}: the ro segment is at offset ${ro_offset}, not ${text_end} where the text segment (size ${text_size}) ends" PARENT_SCOPE)
+        return()
+    endif()
+    math(EXPR ro_end "${ro_offset} + ${ro_size}")
+    if(NOT data_offset EQUAL ro_end)
+        set(${out} "${name}: the data segment is at offset ${data_offset}, not ${ro_end} where the ro segment (size ${ro_size}) ends" PARENT_SCOPE)
+        return()
+    endif()
+    math(EXPR data_end "${data_offset} + ${data_size}")
+    if(NOT data_end EQUAL image)
+        set(${out} "${name}: the data segment ends at ${data_end}, not the image size ${image}" PARENT_SCOPE)
+        return()
+    endif()
+    if(mod_offset LESS text_offset OR NOT mod_offset LESS text_end)
+        set(${out} "${name}: the MOD0 offset ${mod_offset} is outside the text segment (${text_offset}..${text_end})" PARENT_SCOPE)
         return()
     endif()
     math(EXPR at "${image} * 2")

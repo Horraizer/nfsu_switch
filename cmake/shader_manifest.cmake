@@ -752,6 +752,10 @@ function(_nfsu_sm_parse_glsl file)
         return()
     endif()
     file(READ "${file}" text)
+    # A copy with real line ends, kept only so a later refusal can name the
+    # line a bad declaration started on; every parsing step below works on
+    # `text`, which loses its line ends once whitespace is collapsed.
+    set(raw_lines_text "${text}")
     string(ASCII 11 vt)
     string(ASCII 12 ff)
     if(text MATCHES "[^\t\n${vt}${ff} -~]")
@@ -928,6 +932,45 @@ function(_nfsu_sm_parse_glsl file)
             list(APPEND errors "${name_only}: `${body}` is a declaration the interface check does not read")
         endif()
     endforeach()
+
+    # A qualifier written before layout(...) compiles exactly like one
+    # written after it - GLSL 4.60 allows either order, and uam accepted
+    # both forms of `flat layout (location = 1) in vec3 inColor;` and
+    # `layout (location = 1) flat in vec3 inColor;` alike - but the
+    # declaration match above always starts at the word `layout`, so a
+    # prefix qualifier is left outside every match, sitting in `rest`. The
+    # leftover check below only refuses `<qualifiers> in|out|uniform
+    # <identifier>` right after a statement boundary, and a bare qualifier
+    # in front of a `layout` that was already consumed there never matches
+    # that pattern, so without this check it would be silently dropped: the
+    # declaration parses as if unqualified (smooth), matching the manifest
+    # by accident, while the compiled shader carries the qualifier that was
+    # actually written. This reader has no manifest field for centroid
+    # sampling at all, so every prefix qualifier is refused here rather than
+    # read and compared, the same way a body qualifier it cannot place two
+    # lines below is refused rather than guessed at.
+    set(prefix_scan " ${text}")
+    while(TRUE)
+        string(REGEX MATCH " (flat|smooth|noperspective|centroid) layout ?[(]" hit "${prefix_scan}")
+        if(hit STREQUAL "")
+            break()
+        endif()
+        set(qualifier "${CMAKE_MATCH_1}")
+        set(line_no "an unknown line")
+        string(FIND "${raw_lines_text}" "${qualifier} layout" raw_at)
+        if(NOT raw_at EQUAL -1)
+            string(SUBSTRING "${raw_lines_text}" 0 ${raw_at} before_raw)
+            string(REGEX MATCHALL "\n" newlines_before "${before_raw}")
+            list(LENGTH newlines_before line_no)
+            math(EXPR line_no "${line_no} + 1")
+        endif()
+        list(APPEND errors "${name_only}:${line_no}: \`${qualifier}\` qualifies a declaration before its layout(...) - this reader only reads a qualifier written after layout(...), so it is refused here rather than silently dropped")
+        string(FIND "${prefix_scan}" "${hit}" hit_at)
+        string(LENGTH "${hit}" hit_len)
+        math(EXPR after "${hit_at} + ${hit_len}")
+        string(SUBSTRING "${prefix_scan}" ${after} -1 prefix_scan)
+        set(prefix_scan " ${prefix_scan}")
+    endwhile()
 
     # Whatever is left must not declare an interface: an in, out or uniform
     # at global scope without a layout qualifier is refused, because the
@@ -1264,15 +1307,41 @@ function(_nfsu_sm_read_tgsi file prefix)
                     continue()
                 endif()
                 set(mask "xyzw")
-                if(line MATCHES "^DCL IN\\[([0-9]+)\\](\\.([xyzw]+))?(, ([A-Z]+)(\\[([0-9]+)\\])?)?(, ([A-Z]+))?$")
+                if(line MATCHES "^DCL IN\\[([0-9]+)\\](\\.([xyzw]+))?(, ([A-Z]+)(\\[([0-9]+)\\])?)?(.*)$")
                     if(NOT CMAKE_MATCH_3 STREQUAL "")
                         set(mask "${CMAKE_MATCH_3}")
                     endif()
+                    set(in_index "${CMAKE_MATCH_1}")
+                    set(semantic "${CMAKE_MATCH_5}")
                     set(semantic_index "${CMAKE_MATCH_7}")
                     if(semantic_index STREQUAL "")
                         set(semantic_index 0)
                     endif()
-                    list(APPEND ins "in|index=${CMAKE_MATCH_1}|mask=${mask}|semantic=${CMAKE_MATCH_5}|slot=${semantic_index}|interpolation=${CMAKE_MATCH_9}")
+                    # A varying may carry CENTROID after its interpolation
+                    # mode (Gallium's TGSI dump syntax): "DCL IN[n], GENERIC[n],
+                    # PERSPECTIVE, CENTROID". A single MATCHES call caps out
+                    # at nine capture groups (CMAKE_MATCH_9 is the last one
+                    # CMake fills in), and the clauses above already use
+                    # seven of them, so the fixed single trailing ", WORD"
+                    # this pattern used to end on could not also match a
+                    # second ", CENTROID" - the whole line fell to `unknown`
+                    # below and the cross-check against the compiled .dksh
+                    # reported a spurious location mismatch instead of
+                    # reading the declaration (review comment 2856, N2). The
+                    # rest of the line, after everything already read above,
+                    # is matched again here, as its own independent regex
+                    # with its own nine-group budget, against the 0, 1 or 2
+                    # trailing ", WORD" fields that remain: interpolation
+                    # mode, then centroid. centroid is recorded but, like
+                    # this file's own interpolation field, never compared:
+                    # shaders/*.manifest has no field for it, so the source
+                    # check (MODE=source) refuses it outright instead.
+                    set(in_tail "${CMAKE_MATCH_8}")
+                    if(in_tail MATCHES "^(, ([A-Z]+))?(, ([A-Z]+))?$")
+                        list(APPEND ins "in|index=${in_index}|mask=${mask}|semantic=${semantic}|slot=${semantic_index}|interpolation=${CMAKE_MATCH_2}|centroid=${CMAKE_MATCH_4}")
+                    else()
+                        list(APPEND unknown "${line}")
+                    endif()
                 elseif(line MATCHES "^DCL OUT\\[([0-9]+)\\](\\.([xyzw]+))?, ([A-Z]+)(\\[([0-9]+)\\])?(, .*)?$")
                     if(NOT CMAKE_MATCH_3 STREQUAL "")
                         set(mask "${CMAKE_MATCH_3}")

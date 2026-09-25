@@ -204,6 +204,34 @@ nfsu_case("a varying's interpolation changed in the stage source"
     "layout (location = 2) out vec2 outTexcoord"
     "layout (location = 2) noperspective out vec2 outTexcoord")
 
+# GLSL 4.60 allows an interpolation qualifier before layout(...) as well as
+# after it, and uam reads both orders the same way (review comment 2856,
+# F1). The declaration match in cmake/shader_manifest.cmake starts at the
+# word layout, so each of these left the qualifier silently dropped before
+# the fix: the declaration parsed as unqualified (smooth), matched the
+# manifest by accident, and the checker printed "no drift" while the
+# compiled shader carried the qualifier that was actually written.
+nfsu_case("a flat qualifier written before layout in the stage source"
+    textured.frag.glsl car_textured.manifest
+    "qualifies a declaration before its layout(...)"
+    "layout (location = 1) in vec3 inColor"
+    "flat layout (location = 1) in vec3 inColor")
+
+nfsu_case("a noperspective qualifier written before layout in the stage source"
+    placed.vert.glsl track_textured.manifest
+    "qualifies a declaration before its layout(...)"
+    "layout (location = 2) out vec2 outTexcoord"
+    "noperspective layout (location = 2) out vec2 outTexcoord")
+
+# centroid has no representation in shaders/*.manifest at all (no manifest
+# here declares it), so this is refused the same way as flat and
+# noperspective rather than read and compared.
+nfsu_case("a centroid qualifier written before layout in the stage source"
+    textured.frag.glsl car_textured.manifest
+    "qualifies a declaration before its layout(...)"
+    "layout (location = 2) in vec2 inTexcoord"
+    "centroid layout (location = 2) in vec2 inTexcoord")
+
 nfsu_case("a colour output moved in the stage source"
     textured.frag.glsl car_textured.manifest
     "textured.frag.glsl declares output location 1 (vec4 outColor), which the manifest does not"

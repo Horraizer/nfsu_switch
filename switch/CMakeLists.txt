@@ -97,6 +97,11 @@ endforeach()
 add_custom_target(nfsu_switch_shaders ALL DEPENDS ${NFSU_SHADER_STAMPS})
 
 if(NFSU_BUILD_TESTS)
+    # Appended to below, once per program; never set anywhere before this,
+    # so without this a stray -DNFSU_SWITCH_TESTS from the invoking
+    # environment would reach set_tests_properties along with the real
+    # names (review comment 2856, N4).
+    set(NFSU_SWITCH_TESTS "")
     # The build step's check again, as a test over the blobs the build
     # wrote, so ctest over this tree reports it by program.
     foreach(program IN LISTS NFSU_SHADER_PROGRAMS)

@@ -107,6 +107,17 @@ deko3d's alpha reference to `170.5 / 255` rather than `170 / 255` keeps that
 boundary where the reference has it even if the GPU's division is an ulp off.
 That is guidance for the backend, not something checked here.
 
+Draw order is guidance for the backend too, and none of the checks above see
+it: with `MaterialStateMode::retail`, `render_scene` draws the scene's
+material groups in the order `prepared_draw_order` gives, not the prepared
+order (`src/render.cpp:1229-1233`). That order is what a blended variant
+composites over - the same group drawn earlier or later in the retail order
+blends over a different set of opaque pixels underneath it - so a backend
+that submits the groups in prepared order instead, or in any order its own
+sorting picks, can draw every variant this document describes correctly and
+still not match the reference frame. A backend must draw retail state in
+`prepared_draw_order`'s order to keep that.
+
 ### Left out, deliberately
 
 - The retail material state on the track path. `render_track_draw_list`
@@ -187,7 +198,7 @@ types still agree.
 | --- | --- | --- | --- |
 | Source | desktop CTest, `nfsu_shader_source_guards` | the GLSL of both stages | a location, binding, type, name, interpolation, block member or block size that differs from the manifest |
 | Compiled | Switch build step and `nfsu_switch_shader_<program>` | the `.dksh` each stage compiled to, and the TGSI `uam` wrote beside it | a location, component count, interpolation, render target, binding or block size that differs from the manifest, as the compiler produced it; not a name, a base type or a block's members (see "What the checks cannot catch") |
-| C++ | desktop CTest, `nfsu_shader_manifest_tests` | `nfsu/shader_manifest.h`, generated from the manifests | a vertex struct whose members no longer sit where a buffer's attributes read them, or no longer hold the elements their formats read; variants that are not the reference's, or not named for their state |
+| C++ | desktop CTest, `nfsu_shader_manifest_tests` | `nfsu/shader_manifest.h`, generated from the manifests | a vertex struct whose members no longer sit where a buffer's attributes read them, or no longer hold the elements their formats read; a `car_textured` alpha test/blend pair that is not the reference's, or not named for their state; depth test, depth write, colour write and cull that are not the constants the test asserts (not the reference's: see "C++" below) |
 
 ### Source
 
@@ -289,6 +300,22 @@ programs none; `car_textured`'s variants to be exactly the alpha test and
 blend pairs the two decoders produce, each named for its state; the other
 three programs to have only `opaque`; `render_track_draw_list` to refuse the
 retail state; and every variant to share the state above.
+
+"The state above" - depth test, depth write, colour write and cull - is
+derived from the reference for `car_textured`'s alpha test and blend only.
+The other four fields are held to constants typed into
+`tests/shader_manifest_tests.cpp:476-492`
+(`test_shared_fixed_function_state`), not read from `src/render.cpp`, because
+deriving them would mean calling `render_scene` or
+`render_track_draw_list` for a real draw rather than reading the decoders
+`car_textured` already reads for its own variants; see "Left out,
+deliberately". A change to the reference's depth test, its depth write, its
+alpha write or `RenderOptions::cull`'s default that is not also made by hand
+to those four asserted constants drifts unseen here: the manifests, the
+compiled check and this test would all keep agreeing with each other and
+with the now-stale constants, and only `nfsu_render_tests` and
+`nfsu_track_render_tests`, which exercise the reference directly, would
+still fail.
 
 ### Made to fail
 
