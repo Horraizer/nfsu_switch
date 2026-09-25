@@ -170,3 +170,54 @@ if(NFSU_BUILD_TESTS)
         nfsu_switch_shader_blob_guards nfsu_switch_nro nfsu_switch_car_nro
         PROPERTIES TIMEOUT 60)
 endif()
+
+# The vehicle model on the console (issue #58): runs every built-in scripted
+# input sequence of docs/VEHICLE.md through nfsu_vehicle - declared for both
+# configures in cmake/vehicle_libraries.cmake - and reports each telemetry
+# hash and whether "mixed" is the one pinned on the desktop. Appended as one
+# block so that nothing above is reordered.
+add_executable(nfsu_switch_vehicle
+    vehicle_main.cpp
+)
+
+target_link_libraries(nfsu_switch_vehicle PRIVATE nfsu_vehicle)
+# gnu++17, as the libraries it links are compiled on the console; the
+# comment at the end of cmake/car_libraries.cmake says why it is named.
+set_target_properties(nfsu_switch_vehicle PROPERTIES
+    CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
+nfsu_enable_warnings(nfsu_switch_vehicle)
+
+nx_generate_nacp(
+    OUTPUT nfsu_switch_vehicle.nacp
+    NAME "nfsu_switch_vehicle"
+    AUTHOR "nfsu_switch contributors"
+    VERSION "0.1.0")
+
+nx_create_nro(nfsu_switch_vehicle
+    NACP nfsu_switch_vehicle.nacp)
+
+if(NFSU_BUILD_TESTS)
+    # The NRO and its ELF, as for the other two applications.
+    add_test(NAME nfsu_switch_vehicle_nro
+        COMMAND ${CMAKE_COMMAND}
+                -DNRO=${CMAKE_CURRENT_BINARY_DIR}/nfsu_switch_vehicle.nro
+                -DELF=$<TARGET_FILE:nfsu_switch_vehicle>
+                -DTITLE=nfsu_switch_vehicle
+                -P ${PROJECT_SOURCE_DIR}/tests/switch_nro_check.cmake)
+
+    # This tree cannot run an AArch64 program, so the telemetry hash is not
+    # asserted here; what is asserted is the precondition the desktop pin
+    # rests on: the model's console objects hold no fused multiply-add.
+    if(NOT CMAKE_OBJDUMP)
+        message(FATAL_ERROR "no objdump was found for the Switch toolchain")
+    endif()
+    add_test(NAME nfsu_switch_vehicle_fma_census
+        COMMAND ${CMAKE_COMMAND}
+                -DOBJDUMP=${CMAKE_OBJDUMP}
+                "-DOBJECTS=$<TARGET_OBJECTS:nfsu_vehicle>"
+                -DLABEL=nfsu_vehicle
+                -P ${PROJECT_SOURCE_DIR}/tests/switch_fma_census.cmake)
+
+    set_tests_properties(nfsu_switch_vehicle_nro nfsu_switch_vehicle_fma_census
+        PROPERTIES TIMEOUT 60)
+endif()

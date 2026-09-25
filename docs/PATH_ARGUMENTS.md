@@ -201,17 +201,18 @@ reads `argv[0]`.
   still cannot open a file is not mistaken for a working one.
 * `tests/path_arguments.cmake` - what the two programs do: the exit status,
   the diagnostic, the absence of the terminate this issue was about, and a
-  Cyrillic path driven through every path *position* in turn, which is 41
-  across the twenty-four probe commands and 8 across the viewer - the two
+  Cyrillic path driven through every path *position* in turn, which is 43
+  across the twenty-five probe commands and 8 across the viewer - the two
   numbers the gate itself prints, read out of its own `every position:`
   lines rather than counted by hand. Positions, not commands: the first
   version drove one position per program, and an independent review
   reverted nine individual call sites that each kept the suite green and
-  each reproduced the crash. Reverting any one of the 46
+  each reproduced the crash. Reverting any one of the 48
   conversion sites now fails the suite, measured one at a time - the 39
   that predate `nfsu_probe track-probe`, `nfsu_probe track-budget` and
   `nfsu_probe race-events`, track-probe's own three when it arrived,
-  track-budget's own two when it arrived, and race-events' own two when it
+  track-budget's own two when it arrived, race-events' own two when it
+  arrived, and vehicle-sim's own two (`--script` and `--handling`) when it
   arrived, each of which `nfsu_path_arguments` refused. The file
   also refuses, in the source and before it runs anything, the three
   spellings that turn an argument into a path without the conversion; that

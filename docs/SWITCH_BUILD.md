@@ -28,6 +28,8 @@ platforms. They do not change either application's rendering path. See
 | `nfsu_switch_car` | `nfsu_switch_car.elf` | The stock 240SX: it reads six game files from the SD card, builds the stock scene, composes and binds the body skin, renders it at 1280x720 with the CPU reference renderer, shows it through a libnx framebuffer and reports the render time and the frame's SHA-256 against the pinned desktop frame; then the left stick orbits the camera, - returns it to the default and + exits. |
 | `nfsu_switch_car_nro` | `nfsu_switch_car.nro`, `nfsu_switch_car.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_car`. |
 | `nfsu_switch_shaders` | `shaders/*.dksh`, `shaders/*.tgsi` | Every GLSL stage a manifest in `shaders/` names, compiled by `uam`, and each manifest checked against the result. |
+| `nfsu_switch_vehicle` | `nfsu_switch_vehicle.elf` | The vehicle model of issue #58: runs the eight built-in scripted input sequences through `nfsu_vehicle` and prints each telemetry hash, and whether `mixed` is the one pinned on the desktop ([`VEHICLE.md`](VEHICLE.md), "On the console"); + exits. Not yet run on a console. |
+| `nfsu_switch_vehicle_nro` | `nfsu_switch_vehicle.nro`, `nfsu_switch_vehicle.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_vehicle`. |
 
 Under `build-switch/` itself, the configure also builds the car-path
 libraries `nfsu_switch_car` links: `nfsu_image`, `nfsu_core`,
@@ -35,7 +37,9 @@ libraries `nfsu_switch_car` links: `nfsu_image`, `nfsu_core`,
 `nfsu_texture_decode`, `nfsu_render`, `nfsu_sha256`, `nfsu_stock_frame`,
 `nfsu_screen_text`, the skin layers `nfsu_body_skin`, `nfsu_skin_inputs`
 and `nfsu_runtime_skin`, the camera and controller layers `nfsu_inspect`,
-`nfsu_input` and `nfsu_input_camera`, and `nfsu_stock_view`.
+`nfsu_input` and `nfsu_input_camera`, and `nfsu_stock_view`; and the
+vehicle model `nfsu_vehicle`, which `cmake/vehicle_libraries.cmake` declares
+for both configures and `nfsu_switch_vehicle` links (issue #58).
 
 `nfsu_switch_app` links libnx, which devkitPro's platform file adds to every
 link, and nothing else. Neither application loads a shader. The CTest suite
@@ -47,6 +51,8 @@ runs on the build machine, not on a console:
 | `nfsu_switch_shader_blob_guards` | The same check made to fail: eleven cases, nine changed stage sources compiled with `uam` and two blobs checked with the TGSI of another compile, each named by its finding. |
 | `nfsu_switch_nro` | The ELF is AArch64; the NRO has its `NRO0` header, an `ASET` section, the icon and a 0x4000-byte NACP titled `nfsu_switch`; the reader refuses a file that is not an NRO. |
 | `nfsu_switch_car_nro` | The same checks for `nfsu_switch_car.nro`, whose NACP is titled `nfsu_switch_car`. |
+| `nfsu_switch_vehicle_nro` | The same checks for `nfsu_switch_vehicle.nro`, whose NACP is titled `nfsu_switch_vehicle`. |
+| `nfsu_switch_vehicle_fma_census` | `nfsu_vehicle`'s console objects, disassembled with the toolchain's `objdump`, hold no `fmadd`, `fmsub`, `fnmadd`, `fnmsub`, `fmla` or `fmls`, and do hold `fmul`. This tree cannot run AArch64 code, so it asserts that precondition of the pinned telemetry hash rather than the hash. |
 
 The desktop programs, the other libraries and every test are not configured
 for the console: the top-level `CMakeLists.txt` includes

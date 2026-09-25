@@ -32,6 +32,9 @@ endfunction()
 # are and why each is there.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/car_libraries.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/draw_libraries.cmake)
+# The vehicle model of issue #58, for both configures as well; it links
+# nfsu_sha256 from cmake/car_libraries.cmake, so it is included after it.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/vehicle_libraries.cmake)
 
 # The Switch build configures the shared car and draw libraries and switch/,
 # and nothing below this point: the desktop programs, the other libraries and every test of
@@ -1009,4 +1012,60 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_draw_commands_retail
         PRIVATE nfsu_draw_commands nfsu_stock_frame nfsu_arg_path)
     nfsu_enable_warnings(nfsu_draw_commands_retail)
+endif()
+
+# ---------------------------------------------------------------------------
+# The vehicle model (issue #58)
+# ---------------------------------------------------------------------------
+#
+# Appended as one block, after everything above, so that no list above is
+# reordered: nfsu_vehicle itself is declared in cmake/vehicle_libraries.cmake
+# for both configures, and this block adds what only the desktop has - the
+# probe's link, the neutrality classification and the tests.
+#
+# `vehicle-sim` runs the model over a scripted input sequence, and with
+# --handling it reads the car's handling out of GLOBALB.BUN through
+# nfsu_core's car type table first.
+target_link_libraries(nfsu_probe PRIVATE nfsu_vehicle)
+
+# nfsu_vehicle is neutral by its comment in cmake/vehicle_libraries.cmake: it
+# reads no file and no clock and calls nothing but the standard library and
+# nfsu_sha256. The manifest is written once the whole directory has been
+# read, so this append is in the list the gate classifies.
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_vehicle)
+
+if(NFSU_BUILD_TESTS)
+    # The model against its recovered rules and its approximations: the
+    # arithmetic, the record decoder and its refusals, the torque curve and
+    # the shift tables, rest, acceleration through the gears, braking,
+    # cornering, the grip limit, the top speed, the drivetrain, the script
+    # parser's refusals and the pinned telemetry hash. It also writes, on
+    # request, the synthetic GLOBALB.BUN the probe guards read. It carries
+    # the model's floating-point options because it recomputes the model's
+    # own expressions and compares them bit for bit.
+    add_executable(nfsu_vehicle_tests
+        tests/vehicle_tests.cpp
+    )
+
+    target_link_libraries(nfsu_vehicle_tests PRIVATE nfsu_vehicle nfsu_arg_path)
+    nfsu_enable_warnings(nfsu_vehicle_tests)
+    if(MSVC)
+        target_compile_options(nfsu_vehicle_tests PRIVATE /fp:precise)
+    else()
+        target_compile_options(nfsu_vehicle_tests PRIVATE -ffp-contract=off -fno-fast-math)
+    endif()
+    add_test(NAME nfsu_vehicle_tests COMMAND nfsu_vehicle_tests)
+
+    # What `vehicle-sim` refuses, prints and exits with, over no input, over
+    # script files this test writes, and over the synthetic GLOBALB.BUN
+    # nfsu_vehicle_tests writes. tests/vehicle_sim_guards.cmake says what
+    # each case is for.
+    add_test(NAME nfsu_probe_vehicle_sim_guards
+        COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -DTESTS=$<TARGET_FILE:nfsu_vehicle_tests>
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/vehicle_sim_guards.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+    set_tests_properties(nfsu_vehicle_tests nfsu_probe_vehicle_sim_guards
+        PROPERTIES TIMEOUT 120)
 endif()
