@@ -177,6 +177,12 @@ void LoggingService::write(LogLevel level, const std::string& line);
 Best effort, one line per call, ASCII: the implementation escapes every
 byte outside printable ASCII, so a caller may pass a raw file name.
 
+**Fails** silently: `write` returns nothing and cannot fail by contract - a
+line that cannot be recorded is simply lost, with no signal to the caller.
+The desktop implementation streams to whatever the caller owns and does not
+check its state, so a stream that has already failed drops lines the same
+way.
+
 **Asked for by nothing yet.** The libraries report failures as return values
 and error strings, the programs print to their own streams, and the window
 reports a failed render in its overlay. The interface is kept to one call
@@ -199,6 +205,13 @@ void LifecycleService::request_exit();
 `pump` lets the platform do its own work and says whether the session may go
 on; once false it stays false, and it may block while there is nothing to
 do. `request_exit` asks for the end a user closing the session would cause.
+
+**Fails** by refusing to go on rather than by reporting an error: neither
+call has a failure of its own to report. `pump` only says whether the
+session may continue, and once it says no it stays no for the rest of the
+session's life; `request_exit` cannot fail either, and `pump` returns false
+once the platform has acted on the request, which need not be the very next
+call.
 
 **Asked for by** the Win32 backend's loop and `run_inspection_loop`, which
 pump until told to stop; the session, whose `Q` key asks to exit; and the

@@ -616,7 +616,13 @@ void test_keys() {
     check(rig.lifecycle.exit_requests() == 1 && state_of(inspector) == state_of(untouched) &&
               rig.display.redraw_requests() == 0,
           "Q asks the platform to end the session and changes nothing else");
-    check(!rig.lifecycle.pump(), "and the session then ends");
+    // No further check here: FakeLifecycle::pump() (src/platform_fakes.cpp)
+    // returns false unconditionally once request_exit() has set its
+    // stopped_ flag, with no intervening call into InspectionSession, so
+    // asserting !rig.lifecycle.pump() here would call straight into the
+    // fake's own hard-coded contract and add no detection power beyond the
+    // exit_requests() check above (review comment 2933 on PR #136,
+    // Finding 2).
 }
 
 void test_capture_lost_and_resize() {
