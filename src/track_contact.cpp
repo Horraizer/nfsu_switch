@@ -92,9 +92,16 @@ void fill_resident(TrackContactWorld& world) {
 }
 
 // Moller-Trumbore, in exactly the arithmetic query_track_collision_ray uses,
-// so that a segment down a column gives the same point that query does. It
-// also hands back the determinant, whose sign says which side was hit:
+// so that wherever that query meets something a segment down the same
+// column gives the same polygon, triangle, distance and point. It also hands
+// back the determinant, whose sign says which side was hit:
 // det = edge1 . (direction x edge2) = -(direction . (edge1 x edge2)).
+//
+// Its bounds are strict and its barycentrics are rounded, so it is not
+// watertight: a point exactly on an edge two triangles share can round
+// outside both, and the review of issue #158 found road seams on retail
+// data that it misses from either side. watertight_triangle below closes
+// them.
 bool segment_triangle(
     const float origin[3],
     const float direction[3],
@@ -145,6 +152,110 @@ bool segment_triangle(
     return true;
 }
 
+// The frame of the watertight test of Woop, Benthin and Wald (2013): kz is
+// the axis the direction is longest along, kx and ky the other two in an
+// order that keeps the frame's handedness, and the shear maps the direction
+// onto kz.
+struct Shear {
+    std::size_t kx = 0;
+    std::size_t ky = 1;
+    std::size_t kz = 2;
+    float sx = 0.0F;
+    float sy = 0.0F;
+    float sz = 1.0F;
+};
+
+Shear shear_for(const float direction[3]) {
+    Shear shear;
+    std::size_t kz = 0;
+    for (std::size_t axis = 1; axis < 3; ++axis) {
+        if (std::fabs(direction[axis]) > std::fabs(direction[kz])) {
+            kz = axis;
+        }
+    }
+    std::size_t kx = (kz + 1) % 3;
+    std::size_t ky = (kx + 1) % 3;
+    if (direction[kz] < 0.0F) {
+        std::swap(kx, ky);
+    }
+    shear.kx = kx;
+    shear.ky = ky;
+    shear.kz = kz;
+    shear.sx = direction[kx] / direction[kz];
+    shear.sy = direction[ky] / direction[kz];
+    shear.sz = 1.0F / direction[kz];
+    return shear;
+}
+
+// A watertight segment/triangle test. Each corner is moved to the segment's
+// start and sheared into the frame above in float, by the same operations
+// whichever triangle it belongs to, so a corner two triangles share lands
+// on the same two floats in both. An edge function over two such corners is
+// then the difference of two products that are the same two products, in
+// the other order, in the triangle across the edge: it comes out with the
+// same value and the opposite sign in each. A point exactly on a shared edge
+// therefore gives zero in both and is met by both, and a point beside it is
+// met by the one it lies in, never by neither. The bounds are closed, so a
+// triangle's own outer edge is met too. The products are taken in double,
+// where a product of two floats is exact and the difference is rounded once,
+// so each edge function also has the sign of the exact value: a point off
+// an outer edge by less than a float rounding is not taken as on it.
+//
+// The determinant is the sum of the edge functions, which is
+// -(direction . (edge1 x edge2)) scaled by 1 / |direction[kz]|, so its sign
+// means what segment_triangle's does. A segment edge-on to the triangle
+// gives zero and is not a contact, as there.
+bool watertight_triangle(
+    const float origin[3],
+    const Shear& shear,
+    const float a[3],
+    const float b[3],
+    const float c[3],
+    float max_distance,
+    float& distance,
+    float& determinant) {
+    const float* corners[3] = {a, b, c};
+    float x[3];
+    float y[3];
+    float z[3];
+    for (std::size_t i = 0; i < 3; ++i) {
+        const float relative[3] = {corners[i][0] - origin[0],
+                                   corners[i][1] - origin[1],
+                                   corners[i][2] - origin[2]};
+        x[i] = relative[shear.kx] - shear.sx * relative[shear.kz];
+        y[i] = relative[shear.ky] - shear.sy * relative[shear.kz];
+        z[i] = shear.sz * relative[shear.kz];
+    }
+    // The edge opposite each corner: u over (b, c), v over (c, a), w over
+    // (a, b).
+    const double u = static_cast<double>(x[2]) * static_cast<double>(y[1]) -
+                     static_cast<double>(y[2]) * static_cast<double>(x[1]);
+    const double v = static_cast<double>(x[0]) * static_cast<double>(y[2]) -
+                     static_cast<double>(y[0]) * static_cast<double>(x[2]);
+    const double w = static_cast<double>(x[1]) * static_cast<double>(y[0]) -
+                     static_cast<double>(y[1]) * static_cast<double>(x[0]);
+    if ((u < 0.0 || v < 0.0 || w < 0.0) && (u > 0.0 || v > 0.0 || w > 0.0)) {
+        return false;
+    }
+    const double det = u + v + w;
+    if (!(std::fabs(det) > 0.0)) {
+        return false;
+    }
+    const double t = (u * static_cast<double>(z[0]) + v * static_cast<double>(z[1]) +
+                      w * static_cast<double>(z[2])) /
+                     det;
+    if (!std::isfinite(t) || t < 0.0) {
+        return false;
+    }
+    const float along = static_cast<float>(t);
+    if (!std::isfinite(along) || along > max_distance) {
+        return false;
+    }
+    distance = along;
+    determinant = det > 0.0 ? 1.0F : -1.0F;
+    return true;
+}
+
 // Lexicographic on (distance, polygon, triangle), so the answer does not
 // depend on the order the cells are visited in or on how many of them name
 // the same polygon.
@@ -157,6 +268,189 @@ bool better(float distance, std::size_t polygon, std::size_t triangle,
         return polygon < best.polygon;
     }
     return triangle < best.triangle;
+}
+
+// Shewchuk's error bound for the 2x2 determinant square_meets takes in
+// double is (3 + 16 * 2^-53) * 2^-53, about 3.3e-16, times the sum of the
+// magnitudes of its two products. This is three times that.
+constexpr double kSideErrorBound = 1.0e-15;
+
+// The horizontal projection of a segment, which is what selects cells: the
+// index is two-dimensional.
+struct Footprint {
+    float start[2] = {0.0F, 0.0F};
+    float low[2] = {0.0F, 0.0F};
+    float high[2] = {0.0F, 0.0F};
+    double delta[2] = {0.0, 0.0};
+};
+
+Footprint footprint_of(const float from[3], const float to[3]) {
+    Footprint footprint;
+    for (std::size_t axis = 0; axis < 2; ++axis) {
+        footprint.start[axis] = from[axis];
+        footprint.low[axis] = std::min(from[axis], to[axis]);
+        footprint.high[axis] = std::max(from[axis], to[axis]);
+        footprint.delta[axis] =
+            static_cast<double>(to[axis]) - static_cast<double>(from[axis]);
+    }
+    return footprint;
+}
+
+// Whether the closed square of half extent `half` about `center` meets the
+// footprint. Two convex shapes in the plane are apart exactly when some axis
+// separates them, and for a segment and an axis-aligned square the axes to
+// try are the square's two and the segment's normal. The first two are the
+// box test query_track_collision_cells makes, which is all a column needs.
+// The third asks whether all four corners lie strictly on one side of the
+// segment's line, which is what keeps a diagonal sweep from selecting a
+// cell its bounding box reaches and the segment does not. A corner nearer
+// the line than the determinant's rounding counts as on it, so a doubtful
+// square is kept: a kept square can only add polygons for the triangle test
+// to reject, while a dropped one could lose a contact.
+bool square_meets(const Footprint& footprint, float center0, float center1,
+                  float half) {
+    const float low0 = center0 - half;
+    const float high0 = center0 + half;
+    const float low1 = center1 - half;
+    const float high1 = center1 + half;
+    if (high0 < footprint.low[0] || low0 > footprint.high[0] ||
+        high1 < footprint.low[1] || low1 > footprint.high[1]) {
+        return false;
+    }
+    const float xs[2] = {low0, high0};
+    const float zs[2] = {low1, high1};
+    int above = 0;
+    int below = 0;
+    for (float x : xs) {
+        for (float z : zs) {
+            const double left =
+                footprint.delta[0] *
+                (static_cast<double>(z) - static_cast<double>(footprint.start[1]));
+            const double right =
+                footprint.delta[1] *
+                (static_cast<double>(x) - static_cast<double>(footprint.start[0]));
+            const double side = left - right;
+            const double bound =
+                kSideErrorBound * (std::fabs(left) + std::fabs(right));
+            if (side > bound) {
+                ++above;
+            } else if (side < -bound) {
+                ++below;
+            } else {
+                return true;
+            }
+        }
+    }
+    return above != 4 && below != 4;
+}
+
+// The leaf cells whose closed 32 by 32 square meets the footprint, found by
+// walking the quadtree from the same root, in the same quadrant order and
+// to the same depth as query_track_collision_cells, but descending only
+// into squares the segment itself meets. For a column the footprint is a
+// point and the two walks select the same cells. The cap counts only the
+// cells selected. False when the cap is reached, or when the tree names a
+// node or a cell past its array, which the parser rules out for a report it
+// marked valid and which is checked again here because a world may be
+// assembled by hand.
+bool segment_cells(const TrackCollisionReport& report,
+                   const Footprint& footprint,
+                   std::size_t max_cells,
+                   std::vector<std::size_t>& out) {
+    out.clear();
+    struct Frame {
+        std::size_t node;
+        std::uint32_t depth;
+        float center[2];
+        float half;
+    };
+    std::vector<Frame> stack;
+    stack.push_back(Frame{0, 0, {0.0F, 0.0F}, kCollisionRootHalfExtent});
+    while (!stack.empty()) {
+        const Frame frame = stack.back();
+        stack.pop_back();
+        if (frame.node >= report.nodes.size()) {
+            return false;
+        }
+        const TrackCollisionTreeNode& node = report.nodes[frame.node];
+        const float quarter = frame.half * 0.5F;
+        for (std::size_t slot = 0; slot < kCollisionTreeNodeEntries; ++slot) {
+            const std::uint16_t entry = node.entries[slot];
+            if (entry == 0) {
+                continue;
+            }
+            const float c0 =
+                frame.center[0] + ((slot & 1U) != 0 ? quarter : -quarter);
+            const float c1 =
+                frame.center[1] + ((slot & 2U) != 0 ? quarter : -quarter);
+            if (!square_meets(footprint, c0, c1, quarter)) {
+                continue;
+            }
+            if (frame.depth + 1 < kCollisionTreeDepth) {
+                stack.push_back(Frame{entry, frame.depth + 1, {c0, c1}, quarter});
+                continue;
+            }
+            if (entry >= report.cells.size() || out.size() >= max_cells) {
+                return false;
+            }
+            out.push_back(entry);
+        }
+    }
+    return true;
+}
+
+enum class TriangleTest : std::uint8_t {
+    moller_trumbore = 0,
+    watertight = 1,
+};
+
+// The nearest crossing one test accepts among the named polygons, ordered by
+// better(); a polygon named by several cells is simply tested again and
+// loses the tie to itself. best.distance starts at the segment's length, so
+// a crossing exactly at the segment's end is still found.
+bool nearest_crossing(const TrackContactWorld& world,
+                      const std::vector<std::uint32_t>& named,
+                      const float from[3],
+                      const float direction[3],
+                      float length,
+                      TriangleTest test,
+                      TrackContact& best,
+                      float& best_det) {
+    const Shear shear = shear_for(direction);
+    bool found = false;
+    best = TrackContact{};
+    best.distance = length;
+    for (const std::uint32_t polygon_index : named) {
+        const TrackCollisionPolygon& polygon = world.collision.polygons[polygon_index];
+        for (std::size_t t = 0; t < kTrianglesPerPolygon; ++t) {
+            if (world.triangles[polygon_index * kTrianglesPerPolygon + t].degenerate) {
+                continue;
+            }
+            const float* a = polygon.corner[kTriangleCorners[t][0]];
+            const float* b = polygon.corner[kTriangleCorners[t][1]];
+            const float* c = polygon.corner[kTriangleCorners[t][2]];
+            float distance = 0.0F;
+            float det = 0.0F;
+            const bool met =
+                test == TriangleTest::moller_trumbore
+                    ? segment_triangle(from, direction, a, b, c, best.distance,
+                                       distance, det)
+                    : watertight_triangle(from, shear, a, b, c, best.distance,
+                                          distance, det);
+            if (!met) {
+                continue;
+            }
+            if (found && !better(distance, polygon_index, t, best)) {
+                continue;
+            }
+            found = true;
+            best.polygon = polygon_index;
+            best.triangle = t;
+            best.distance = distance;
+            best_det = det;
+        }
+    }
+    return found;
 }
 
 } // namespace
@@ -344,7 +638,8 @@ TrackContactStatus query_track_contact_segment(
     // A world assembled by hand rather than built: the table must be the
     // one build_track_contact_world derives, or an index below would read
     // past it.
-    if (world.triangles.size() != report.polygons.size() * kTrianglesPerPolygon) {
+    if (world.triangles.size() != report.polygons.size() * kTrianglesPerPolygon ||
+        report.nodes.empty()) {
         return TrackContactStatus::refused;
     }
     if (!finite3(from) || !finite3(to) || !std::isfinite(limits.max_length) ||
@@ -363,28 +658,17 @@ TrackContactStatus query_track_contact_segment(
         return TrackContactStatus::refused;
     }
 
-    // The index is two-dimensional, so the segment's horizontal footprint
-    // is what selects the cells, exactly as it does for the ray query.
-    const float min0 = std::min(from[0], to[0]);
-    const float max0 = std::max(from[0], to[0]);
-    const float min1 = std::min(from[1], to[1]);
-    const float max1 = std::max(from[1], to[1]);
-    TrackCollisionQueryLimits cell_limits;
-    cell_limits.max_cells = limits.max_cells;
+    // The cells the segment's horizontal projection meets, and nothing its
+    // bounding box reaches beyond them: outside means no cell lies under
+    // any part of the segment.
     std::vector<std::size_t> cells;
-    if (!query_track_collision_cells(report, min0, min1, max0, max1, cells,
-                                     cell_limits)) {
-        // Every argument was checked above, so this is the cap.
+    if (!segment_cells(report, footprint_of(from, to), limits.max_cells, cells)) {
         return TrackContactStatus::refused;
     }
     if (cells.empty()) {
         return TrackContactStatus::outside;
     }
-
-    bool found = false;
-    TrackContact best;
-    best.distance = length;
-    float best_det = 0.0F;
+    std::vector<std::uint32_t> named;
     for (std::size_t cell_index : cells) {
         const TrackCollisionCell& cell = report.cells[cell_index];
         if (static_cast<std::uint64_t>(cell.first_index) + cell.index_count >
@@ -397,33 +681,22 @@ TrackContactStatus query_track_contact_segment(
             if (polygon_index >= report.polygons.size()) {
                 return TrackContactStatus::refused;
             }
-            const TrackCollisionPolygon& polygon = report.polygons[polygon_index];
-            for (std::size_t t = 0; t < kTrianglesPerPolygon; ++t) {
-                if (world.triangles[polygon_index * kTrianglesPerPolygon + t]
-                        .degenerate) {
-                    continue;
-                }
-                float distance = 0.0F;
-                float det = 0.0F;
-                if (!segment_triangle(from, direction,
-                                      polygon.corner[kTriangleCorners[t][0]],
-                                      polygon.corner[kTriangleCorners[t][1]],
-                                      polygon.corner[kTriangleCorners[t][2]],
-                                      best.distance, distance, det)) {
-                    continue;
-                }
-                if (found && !better(distance, polygon_index, t, best)) {
-                    continue;
-                }
-                found = true;
-                best.polygon = polygon_index;
-                best.triangle = t;
-                best.distance = distance;
-                best_det = det;
-            }
+            named.push_back(polygon_index);
         }
     }
-    if (!found) {
+
+    // Issue #39's arithmetic decides first, so that wherever its ray meets
+    // something this answers with the same polygon, triangle, distance and
+    // point. Only when it meets nothing anywhere along the segment does the
+    // watertight test decide, and what it adds lies on a triangle's edge:
+    // a seam between two polygons that rounding put outside both, or a
+    // polygon's outer edge.
+    TrackContact best;
+    float best_det = 0.0F;
+    if (!nearest_crossing(world, named, from, direction, length,
+                          TriangleTest::moller_trumbore, best, best_det) &&
+        !nearest_crossing(world, named, from, direction, length,
+                          TriangleTest::watertight, best, best_det)) {
         return TrackContactStatus::clear;
     }
 

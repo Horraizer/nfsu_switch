@@ -22,10 +22,14 @@ namespace nfsu {
 // the single global structure at 0x0077B130 - a second set would overwrite
 // the first, not join it - and the game flow loads that set once per race,
 // from TRACKS\TRACKB%d.LZC formatted with the current track number
-// (0x004497BE, in GameFlowLoadingTrackSpecificPart1). The other files a
-// race on track 1003 needs - STREAML1RA.BUN, the empty STREAML1RA_1003.BUN,
-// TEX1003TRACK.BIN and GLOBALB.BUN - walk as complete chunk trees with no
-// collision chunk at any depth. So the collision of
+// (0x004497BE, in GameFlowLoadingTrackSpecificPart1). None of the other
+// files a race on track 1003 loads carries collision: STREAML1RA.BUN, the
+// empty STREAML1RA_1003.BUN and TEX1003TRACK.BIN beside it; the track-common
+// GLOBAL\INGAMEB.LZC (0x0044933C) and the empty GLOBAL\INGAMEA.BUN
+// (0x004492D7); the global GLOBAL\GLOBALA.BUN (0x00448608) and
+// GLOBAL\GLOBALB.LZC (0x0044865F); and the car files under CARS\ all walk
+// as complete chunk trees with none of the five collision chunks at any
+// depth. So the collision of
 // the whole L1RA circuit of event 1 is the whole of Tracks/TRACKB1003.lzc,
 // which docs/TRACK_COLLISION.md's decoder already parses; this header adds
 // what a vehicle needs on top of that decode. The evidence, the coverage of
@@ -194,11 +198,13 @@ bool place_track_contact_memory(
 enum class TrackContactStatus : std::uint8_t {
     // Something was met; the contact is filled.
     hit = 0,
-    // The game's index covers the query and nothing on it is met: a wheel
-    // over this is airborne, not out of bounds.
+    // At least one leaf cell lies under the query - its closed 32 by 32
+    // square meets the query's horizontal projection - and nothing those
+    // cells name is met: a wheel over this is airborne, not out of bounds.
     clear = 1,
-    // No leaf cell lies under any part of the query: the index places no
-    // collision there at all. This is the out-of-bounds signal of issue #60.
+    // No leaf cell's closed square meets any part of the query's horizontal
+    // projection: the index places no collision there at all. This is the
+    // out-of-bounds signal of issue #60.
     outside = 2,
     // The world is not valid, an argument is malformed or not finite, or a
     // cap was reached. A cap refuses rather than truncating, because a
@@ -225,29 +231,52 @@ struct TrackContact {
 };
 
 struct TrackContactQueryLimits {
-    // Leaf cells one query may visit. A query that would visit more is
-    // refused.
+    // Leaf cells one query may visit, counting only the cells whose square
+    // the segment's horizontal projection meets, never the others its
+    // bounding box reaches. A query that would visit more is refused.
     std::size_t max_cells = 16384;
     // The longest segment, in world units. Longer is refused, which bounds
-    // the swept box and with it the walk.
+    // the cells the segment can meet and with them the walk.
     float max_length = 4096.0F;
 };
 
 // The first contact along the segment from `from` to `to`, both world units
-// in raw slot order: the nearest triangle the game's index names under the
-// segment's horizontal footprint that the segment crosses, road or wall. A
-// tie is broken by the lower polygon index and then the lower triangle, so
-// a query answers the same way on every run. A segment of zero length, or
-// longer than limits.max_length, is refused.
+// in raw slot order, road or wall, out of the triangles the game's index
+// names in the cells under the segment. A tie is broken by the lower
+// polygon index and then the lower triangle, so a query answers the same
+// way on every run. A segment of zero length, or longer than
+// limits.max_length, is refused.
+//
+// WHICH CELLS. The leaf cells whose closed 32 by 32 square meets the
+// segment's horizontal projection, walked down the same quadtree as
+// query_track_collision_cells: the box test that query makes, and then
+// whether the segment's line passes the square, so a diagonal sweep does
+// not select a cell its bounding box reaches and it does not. For a column
+// the two select the same cells. A square the segment only touches, at a
+// corner or along a side, counts as met.
+//
+// WHICH TRIANGLE. Issue #39's arithmetic decides first: the nearest
+// triangle its Moller-Trumbore test accepts, so that wherever
+// query_track_collision_ray meets something along the same line this
+// answers with the same polygon, triangle, distance and point. That test is
+// not watertight, and a point exactly on an edge can round outside every
+// triangle that has it - a seam between two road polygons among them. So
+// when it accepts nothing anywhere along the segment, a watertight test
+// decides instead, and what it adds lies on a triangle's edge: a seam, or a
+// polygon's own outer edge. What this leaves as issue #39 answers it: where
+// the #39 test meets something farther along, a nearer surface met only on
+// its edge is not preferred to it. docs/TRACK_COLLISION.md counts each case
+// on the retail lattices.
 //
 // It answers out of the same index and carries the same guarantee as
 // query_track_collision_ray (see WHAT A QUERY ANSWERS in track_collision.h):
-// a contact is real; clear and outside mean the index places nothing there,
-// which for a retail image misses nothing that crosses the segment with
-// positive area. Because every cell a query visits lies under the query,
-// a query inside one part of the track answers exactly as it would over a
-// collision image holding only that part; tests/track_contact_tests.cpp
-// holds that over synthetic multi-section images.
+// a contact is real; clear and outside mean the index places nothing there
+// that meets the segment, which for a retail image misses nothing that
+// crosses the segment with positive area. Because every cell a query visits
+// lies under the query, a query inside one part of the track answers
+// exactly as it would over a collision image holding only that part;
+// tests/track_contact_tests.cpp holds that over synthetic multi-section
+// images.
 TrackContactStatus query_track_contact_segment(
     const TrackContactWorld& world,
     const float from[3],

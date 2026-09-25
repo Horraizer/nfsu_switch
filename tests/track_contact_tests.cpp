@@ -152,6 +152,23 @@ Polygon flat(float x0, float z0, float x1, float z1, float py) {
     return polygon(corners, static_cast<std::int16_t>(std::floor(py)));
 }
 
+// The same flat quad wound the other way, so (c1 - c0) x (c2 - c0) points
+// down. Retail road is wound both ways; the review of issue #158 counted
+// the downward-wound road triangles of TRACKB1210.
+Polygon flat_clockwise(float x0, float z0, float x1, float z1, float py) {
+    const Corner corners[4] = {{x0, z0, py}, {x0, z1, py}, {x1, z1, py}, {x1, z0, py}};
+    return polygon(corners, static_cast<std::int16_t>(std::floor(py)));
+}
+
+// A flat quad through four given horizontal corners, in perimeter order.
+Polygon flat_quad(const float (&xz)[4][2], float py) {
+    const Corner corners[4] = {{xz[0][0], xz[0][1], py},
+                               {xz[1][0], xz[1][1], py},
+                               {xz[2][0], xz[2][1], py},
+                               {xz[3][0], xz[3][1], py}};
+    return polygon(corners, static_cast<std::int16_t>(std::floor(py)));
+}
+
 // A plane rising along px from h0 at x0 to h1 at x1.
 Polygon ramp(float x0, float z0, float x1, float z1, float h0, float h1) {
     const Corner corners[4] = {{x0, z0, h0}, {x1, z0, h1}, {x1, z1, h1}, {x0, z1, h0}};
@@ -750,6 +767,26 @@ void test_segment_queries() {
               near(c.point[0], 8.0F, 1e-5F) && near(c.point[1], 6.0F, 1e-5F),
           "a 3-4-5 sweep meets the barrier 10 units along: got " + text(c.distance));
     check(c.normal[0] == -1.0F, "the barrier faces the sweep's start");
+    // A contact exactly at the segment's end is a contact, and so is one
+    // exactly at its start: the second street slab, polygon 1, is met one
+    // unit down from py 51.25 at the very end of a one-unit segment. The
+    // first contact any query can find has to be accepted whatever it ties
+    // with, or this one is lost to the untouched starting best.
+    const float e0[3] = {1000.0F, -400.0F, 51.25F};
+    const float e1[3] = {1000.0F, -400.0F, 50.25F};
+    check(segment(world, e0, e1, c) == nfsu::TrackContactStatus::hit &&
+              c.polygon == base[0] + 1 && c.distance == 1.0F && c.point[2] == 50.25F,
+          "a contact exactly at the segment's end is met: got polygon " +
+              std::to_string(c.polygon) + " at " + text(c.distance));
+    check(column(world, 1000.0F, -400.0F, 52.25F, 0.0F, 2.0F, c) ==
+                  nfsu::TrackContactStatus::hit &&
+              c.polygon == base[0] + 1 && c.distance == 2.0F,
+          "a column whose drop ends exactly on the road meets it");
+    const float e2[3] = {1000.0F, -400.0F, 49.25F};
+    check(segment(world, e1, e2, c) == nfsu::TrackContactStatus::hit &&
+              c.polygon == base[0] + 1 && c.distance == 0.0F,
+          "a contact exactly at the segment's start is met at distance 0");
+
     // A sweep that leaves every cell entirely.
     const float a9[3] = {3000.0F, 3000.0F, 0.0F};
     const float b9[3] = {3010.0F, 3000.0F, 0.0F};
@@ -793,8 +830,13 @@ bool same(const nfsu::TrackContact& region, std::size_t base,
 // cells, a cap that counts the whole image, and a tie broken by an index
 // that is not the polygon's own order.
 //
-// It also holds the new column query to the ray query of issue #39 on both
-// images, so the two layers cannot drift apart.
+// It also holds every column of the lattice to the ray query of issue #39
+// over the whole image, whatever either answers: wherever the ray meets
+// something the column is that hit bit for bit, and where the ray meets
+// nothing so does the column, because no column of this lattice lies on a
+// triangle edge the #39 arithmetic misses (test_edges_the_ray_misses has
+// those). A query that loses contacts cannot pass that, where comparing
+// only the columns both sides hit let it through.
 void test_region_equals_whole() {
     const std::vector<Section> all = sections();
     std::vector<std::size_t> base;
@@ -802,6 +844,8 @@ void test_region_equals_whole() {
     check(whole.valid, "the whole image is valid");
     std::size_t compared = 0;
     std::size_t hits = 0;
+    std::size_t rays = 0;
+    std::size_t ray_hits = 0;
     for (std::size_t k = 0; k < all.size(); ++k) {
         const Section& s = all[k];
         const nfsu::TrackContactWorld region = world_of(build(region_image(s)));
@@ -827,20 +871,32 @@ void test_region_equals_whole() {
                         check(same(rc, base[k], wc),
                               std::string(s.name) + ": the same contact at (" + text(x) +
                                   ", " + text(z) + ", " + text(top) + ")");
-                        // Issue #39's ray over the whole image: same polygon,
-                        // triangle, distance and point.
-                        const float origin[3] = {x, z, top};
-                        const float down[3] = {0.0F, 0.0F, -1.0F};
-                        nfsu::TrackCollisionHit ray;
-                        const bool got = nfsu::query_track_collision_ray(
-                            whole.collision, origin, down, 300.0F, ray);
-                        check(got && ray.polygon == wc.polygon &&
+                    }
+                    // Issue #39's ray over the whole image, on every column.
+                    const float origin[3] = {x, z, top};
+                    const float down[3] = {0.0F, 0.0F, -1.0F};
+                    nfsu::TrackCollisionHit ray;
+                    const bool got = nfsu::query_track_collision_ray(
+                        whole.collision, origin, down, 300.0F, ray);
+                    ++rays;
+                    if (got) {
+                        ++ray_hits;
+                        check(ws == nfsu::TrackContactStatus::hit &&
+                                  ray.polygon == wc.polygon &&
                                   ray.triangle == wc.triangle &&
                                   ray.distance == wc.distance &&
+                                  ray.point[0] == wc.point[0] &&
+                                  ray.point[1] == wc.point[1] &&
                                   ray.point[2] == wc.point[2],
                               std::string(s.name) +
                                   ": the ray query of issue #39 agrees at (" + text(x) +
                                   ", " + text(z) + ", " + text(top) + ")");
+                    } else {
+                        check(ws != nfsu::TrackContactStatus::hit,
+                              std::string(s.name) +
+                                  ": where the ray of issue #39 meets nothing the column "
+                                  "meets nothing at (" +
+                                  text(x) + ", " + text(z) + ", " + text(top) + ")");
                     }
                 }
             }
@@ -881,6 +937,248 @@ void test_region_equals_whole() {
                                " queries");
     check(hits > 1000, "region against whole compared " + std::to_string(hits) +
                            " contacts");
+    check(rays > 1500 && ray_hits > 500 && ray_hits < rays,
+          "the ray of issue #39 was compared on " + std::to_string(rays) +
+              " columns, " + std::to_string(ray_hits) + " of them hits");
+}
+
+// ---------------------------------------------------------------------
+// Footprints: which cells a segment meets
+// ---------------------------------------------------------------------
+
+// Would catch (review F1): a segment's cells chosen by its bounding box,
+// which answers clear - airborne - for a diagonal sweep that passes outside
+// every cell, where the contract says outside. And (review N5): a cap that
+// counts the cells of the box rather than the cells the segment meets,
+// across the root's quadrants and inside one node of the tree.
+void test_footprints() {
+    std::vector<std::size_t> base;
+    const nfsu::TrackContactWorld world = world_of(build(whole_image(sections(), base)));
+    nfsu::TrackContact c;
+
+    // The origin section's four cells end at (32, 32) and nothing lies
+    // beyond that corner. This sweep crosses the corner's diagonal 3 units
+    // outside it: its bounding box reaches into cell (16, 16), the segment
+    // itself meets no cell, and neither end nor the midpoint has one.
+    const float a[3] = {30.0F, 40.0F, 3.0F};
+    const float b[3] = {40.0F, 30.0F, 3.0F};
+    check(segment(world, a, b, c) == nfsu::TrackContactStatus::outside,
+          "a sweep past the corner of every cell is outside, not clear");
+    for (const float xz : {30.0F, 35.0F, 40.0F}) {
+        check(column(world, xz, 70.0F - xz, 3.0F, 10.0F, 10.0F, c) ==
+                  nfsu::TrackContactStatus::outside,
+              "a column on that sweep at px " + text(xz) + " is outside");
+    }
+    // Through the corner itself: the closed square is met and nothing on it
+    // is, so the index covers the sweep and it is clear. A quarter unit
+    // further out it is outside again.
+    const float t0[3] = {28.0F, 36.0F, 3.0F};
+    const float t1[3] = {36.0F, 28.0F, 3.0F};
+    check(segment(world, t0, t1, c) == nfsu::TrackContactStatus::clear,
+          "a sweep through a cell's corner meets the cell and is clear");
+    const float u0[3] = {28.0F, 36.25F, 3.0F};
+    const float u1[3] = {36.25F, 28.0F, 3.0F};
+    check(segment(world, u0, u1, c) == nfsu::TrackContactStatus::outside,
+          "a quarter unit past the corner the sweep is outside");
+
+    // A sweep down the origin slab's anti-diagonal side: its bounding box
+    // covers all four origin cells, the segment meets three, since every
+    // point of it has px + pz = -20 and cell (16, 16) starts at 0. The cap
+    // counts the three.
+    const float d0[3] = {-30.0F, 10.0F, 3.0F};
+    const float d1[3] = {10.0F, -30.0F, -2.0F};
+    nfsu::TrackContactQueryLimits cap;
+    cap.max_cells = 3;
+    check(nfsu::query_track_contact_segment(world, d0, d1, c, cap) ==
+                  nfsu::TrackContactStatus::hit &&
+              c.polygon == base[3] && near(c.point[2], 0.5F, 1e-5F),
+          "three cells met under a cap of three run, though the box covers four");
+    cap.max_cells = 2;
+    check(nfsu::query_track_contact_segment(world, d0, d1, c, cap) ==
+              nfsu::TrackContactStatus::refused,
+          "three cells met over a cap of two refuse");
+
+    // The same inside one node of the tree, whose four cells the walk
+    // reaches together: a slab over cells (16, 16), (48, 16), (16, 48) and
+    // (48, 48), and a sweep with px + pz = 44 throughout. Its bounding box
+    // reaches cell (48, 48), which starts at px + pz = 64; the segment meets
+    // the other three.
+    Image block;
+    block.polygons.push_back(flat(2.0F, 2.0F, 62.0F, 62.0F, 1.0F));
+    block.cells.push_back(cell(16.0F, 16.0F, {0}));
+    block.cells.push_back(cell(48.0F, 16.0F, {0}));
+    block.cells.push_back(cell(16.0F, 48.0F, {0}));
+    block.cells.push_back(cell(48.0F, 48.0F, {0}));
+    const nfsu::TrackContactWorld four = world_of(build(block));
+    const float f0[3] = {40.0F, 4.0F, 3.0F};
+    const float f1[3] = {4.0F, 40.0F, -1.0F};
+    cap.max_cells = 3;
+    check(four.valid &&
+              nfsu::query_track_contact_segment(four, f0, f1, c, cap) ==
+                  nfsu::TrackContactStatus::hit &&
+              c.polygon == 0 && near(c.point[2], 1.0F, 1e-5F),
+          "inside one node, three cells met under a cap of three run");
+    cap.max_cells = 2;
+    check(nfsu::query_track_contact_segment(four, f0, f1, c, cap) ==
+              nfsu::TrackContactStatus::refused,
+          "inside one node, three cells met over a cap of two refuse");
+}
+
+// ---------------------------------------------------------------------
+// Windings and edges
+// ---------------------------------------------------------------------
+
+// Would catch (review F3, M2): the road test reading the signed vertical of
+// the normal rather than its magnitude, which turns road wound the other
+// way into wall. (Review N2, M1): the threshold made exclusive, which turns
+// a slope of exactly 60 degrees into wall. And (review F3, M11): the #39
+// arithmetic's closed bound on a triangle's outer edge made open, which
+// drops a deck's own edge and answers with the road beneath it.
+void test_windings_and_edges() {
+    Image image;
+    image.polygons.push_back(flat(2.0F, 2.0F, 30.0F, 30.0F, 0.0F)); // 0
+    // 16 units on a side, so every step of the arithmetic is exact.
+    image.polygons.push_back(flat(8.0F, 8.0F, 24.0F, 24.0F, 10.0F)); // 1
+    image.polygons.push_back(flat_clockwise(-30.0F, 2.0F, -2.0F, 30.0F, 3.0F)); // 2
+    image.cells.push_back(cell(16.0F, 16.0F, {0, 1}));
+    image.cells.push_back(cell(-16.0F, 16.0F, {2}));
+    const nfsu::TrackContactWorld world = world_of(build(image));
+    check(world.valid, "the winding and edge image is valid");
+    if (!world.valid) {
+        return;
+    }
+    check(world.counts.road_triangles == 6 && world.counts.wall_triangles == 0,
+          "both windings are road: got road " +
+              std::to_string(world.counts.road_triangles) + " wall " +
+              std::to_string(world.counts.wall_triangles));
+    const nfsu::TrackContactTriangle& down = world.triangles[2 * 2];
+    check(down.normal[2] == -1.0F,
+          "the clockwise quad's own normal points down: got " + text(down.normal[2]));
+    check(down.kind == nfsu::TrackContactKind::road && down.up == 1.0F,
+          "a road quad wound the other way is road with up 1, got up " + text(down.up));
+    nfsu::TrackContact c;
+    check(column(world, -16.0F, 16.0F, 10.0F, 0.0F, 20.0F, c) ==
+                  nfsu::TrackContactStatus::hit &&
+              c.polygon == 2 && c.kind == nfsu::TrackContactKind::road &&
+              c.up == 1.0F && c.normal[2] == 1.0F && c.distance == 7.0F,
+          "met from above, the clockwise road is road facing up");
+
+    // A slope of exactly 60 degrees in float: rising 94.61328125 over
+    // 54.625, 0.375 deep, both triangles' normals have |py| of exactly 0.5,
+    // found by a search over the format's grid. The threshold is inclusive,
+    // so both are road.
+    Image steep;
+    steep.polygons.push_back(ramp(2.0F, 2.0F, 56.625F, 2.375F, 10.0F, 104.61328125F));
+    steep.cells.push_back(cell(16.0F, 16.0F, {0}));
+    steep.cells.push_back(cell(48.0F, 16.0F, {0}));
+    const nfsu::TrackContactWorld sixty = world_of(build(steep));
+    check(sixty.valid && sixty.triangles.size() == 2 && sixty.triangles[0].up == 0.5F &&
+              sixty.triangles[1].up == 0.5F,
+          "the 60-degree ramp's up is exactly 0.5");
+    check(sixty.valid && sixty.counts.road_triangles == 2,
+          "a slope exactly at the threshold is road: got road " +
+              std::to_string(sixty.counts.road_triangles) + " wall " +
+              std::to_string(sixty.counts.wall_triangles));
+
+    // The deck's edge px = 24 is triangle 0's (c1, c2) edge, the one the
+    // #39 arithmetic bounds by u + v <= 1, and at pz 12 u + v is exactly 1.
+    const float top[3] = {24.0F, 12.0F, 20.0F};
+    const float fall[3] = {0.0F, 0.0F, -1.0F};
+    nfsu::TrackCollisionHit ray;
+    check(nfsu::query_track_collision_ray(world.collision, top, fall, 40.0F, ray) &&
+              ray.polygon == 1 && ray.triangle == 0 && ray.distance == 10.0F,
+          "the ray of issue #39 meets the deck on its own edge");
+    check(column(world, 24.0F, 12.0F, 20.0F, 0.0F, 40.0F, c) ==
+                  nfsu::TrackContactStatus::hit &&
+              c.polygon == 1 && c.triangle == 0 && c.distance == 10.0F &&
+              c.point[2] == 10.0F,
+          "a column on the deck's own edge meets the deck, not the road beneath: "
+          "got polygon " + std::to_string(c.polygon) + " at " + text(c.distance));
+}
+
+// Would catch (review F2): a column exactly on the seam between two road
+// polygons answered clear, which issue #60 would read as airborne, and a
+// column on a polygon's own outer edge answered clear. Both are points the
+// #39 arithmetic misses: it rounds each barycentric on its own, so a point
+// exactly on an edge can round outside every triangle that has it. The
+// geometry below was found by a search over quads on the format's own
+// 1/8-unit grid, and the first checks prove the #39 ray really misses it;
+// if a compiler change ever lets the ray meet it, those checks say so
+// rather than the rest passing for the wrong reason.
+void test_edges_the_ray_misses() {
+    const float py = 5.08984375F;
+    const float first[4][2] = {{39.875F, 16.25F}, {60.75F, 9.125F},
+                               {55.75F, 14.875F}, {43.375F, 23.0F}};
+    const float second[4][2] = {{59.125F, 17.0F}, {56.625F, 22.25F},
+                                {55.75F, 14.875F}, {60.75F, 9.125F}};
+    Image seam;
+    seam.polygons.push_back(flat_quad(first, py)); // 0
+    seam.polygons.push_back(flat_quad(second, py)); // 1
+    seam.cells.push_back(cell(48.0F, 16.0F, {0, 1}));
+    const nfsu::TrackContactWorld world = world_of(build(seam));
+    check(world.valid && world.counts.road_triangles == 4, "the seam image is valid");
+    if (!world.valid) {
+        return;
+    }
+    const float fall[3] = {0.0F, 0.0F, -1.0F};
+    nfsu::TrackCollisionHit ray;
+    nfsu::TrackContact c;
+
+    // (60.203125, 9.75390625) is exactly 7/64 of the way along the shared
+    // edge from (60.75, 9.125) to (55.75, 14.875): triangle 0's (c1, c2)
+    // edge in the first quad and triangle 1's (c2, c3) edge in the second.
+    const float on_seam[3] = {60.203125F, 9.75390625F, 1000.0F};
+    check(!nfsu::query_track_collision_ray(world.collision, on_seam, fall, 2000.0F, ray),
+          "the ray of issue #39 misses this seam from both sides");
+    check(column(world, on_seam[0], on_seam[1], 1000.0F, 0.0F, 2000.0F, c) ==
+                  nfsu::TrackContactStatus::hit &&
+              c.kind == nfsu::TrackContactKind::road && c.normal[0] == 0.0F &&
+              c.normal[1] == 0.0F && c.normal[2] == 1.0F &&
+              near(c.point[2], py, 1e-4F) && near(c.distance, 1000.0F - py, 1e-3F),
+          "a column exactly on the seam meets the road");
+    // A short sweep through the seam, from above and from below: the normal
+    // faces each start, which is the watertight test's determinant sign.
+    const float above[3] = {on_seam[0], on_seam[1], py + 0.5F};
+    const float below[3] = {on_seam[0], on_seam[1], py - 0.5F};
+    check(segment(world, above, below, c) == nfsu::TrackContactStatus::hit &&
+              c.normal[2] == 1.0F && near(c.distance, 0.5F, 1e-5F),
+          "a sweep down through the seam meets it facing up");
+    check(segment(world, below, above, c) == nfsu::TrackContactStatus::hit &&
+              c.normal[2] == -1.0F && near(c.distance, 0.5F, 1e-5F),
+          "a sweep up through the seam meets it facing down");
+    // Off the seam by a hundredth, each side is its own polygon, as the ray
+    // agrees: the seam is closed without either polygon growing.
+    check(column(world, 60.2F, 9.74F, 1000.0F, 0.0F, 2000.0F, c) ==
+                  nfsu::TrackContactStatus::hit && c.polygon == 0,
+          "just off the seam toward the first quad, the first quad: got polygon " +
+              std::to_string(c.polygon));
+    check(column(world, 60.2F, 9.77F, 1000.0F, 0.0F, 2000.0F, c) ==
+                  nfsu::TrackContactStatus::hit && c.polygon == 1,
+          "just off the seam toward the second quad, the second quad: got polygon " +
+              std::to_string(c.polygon));
+
+    // A polygon's outer edge with nothing beyond it: the first quad alone,
+    // and a point 3/64 of the way along its (c1, c2) edge from c1.
+    const float outer[4][2] = {{52.625F, 21.25F}, {44.375F, 19.25F},
+                               {35.25F, 16.125F}, {61.25F, 4.375F}};
+    Image alone;
+    alone.polygons.push_back(flat_quad(outer, py));
+    alone.cells.push_back(cell(48.0F, 16.0F, {0}));
+    const nfsu::TrackContactWorld edge = world_of(build(alone));
+    check(edge.valid, "the outer-edge image is valid");
+    if (!edge.valid) {
+        return;
+    }
+    const float on_edge[3] = {43.947265625F, 19.103515625F, 1000.0F};
+    check(!nfsu::query_track_collision_ray(edge.collision, on_edge, fall, 2000.0F, ray),
+          "the ray of issue #39 misses this outer edge");
+    check(column(edge, on_edge[0], on_edge[1], 1000.0F, 0.0F, 2000.0F, c) ==
+                  nfsu::TrackContactStatus::hit &&
+              c.polygon == 0 && c.kind == nfsu::TrackContactKind::road,
+          "a column exactly on a polygon's outer edge meets it");
+    check(column(edge, 43.9F, 19.3F, 1000.0F, 0.0F, 2000.0F, c) ==
+              nfsu::TrackContactStatus::clear,
+          "just beyond that edge the column is clear");
 }
 
 // ---------------------------------------------------------------------
@@ -1091,6 +1389,18 @@ void test_memory_plan() {
                   .used_bytes == 0,
           "nothing persistent was placed for it");
 
+    // A world built in memory was never loaded, so it has no load buffers:
+    // placing it asks the streaming arena for nothing, rather than for two
+    // requests of zero bytes, which an arena refuses.
+    const nfsu::TrackContactWorld in_memory =
+        world_of(build(whole_image(sections(), base)));
+    nfsu::MemoryPlan fresh;
+    check(fresh.create(budget(1U << 20, 1U << 20), error), "a plan for a world built in memory");
+    check(nfsu::place_track_contact_memory(in_memory.memory, fresh, placement) &&
+              placement.placed && placement.streaming_peak_bytes == 0 &&
+              placement.persistent_used_bytes == in_memory.memory.resident_bytes,
+          "a world with no load buffers is placed without asking the streaming arena");
+
     // The ceiling: every array at its limit, and saturation.
     nfsu::TrackCollisionLimits limits;
     const std::uint64_t expected =
@@ -1283,6 +1593,9 @@ int main(int argc, char** argv) {
     test_point_queries();
     test_segment_queries();
     test_region_equals_whole();
+    test_footprints();
+    test_windings_and_edges();
+    test_edges_the_ray_misses();
     test_refusals();
     test_memory_plan();
     test_conversions();

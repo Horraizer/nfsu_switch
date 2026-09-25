@@ -268,12 +268,14 @@ vehicle needs: every triangle's unit normal and whether it is road or wall,
 the resident and load-time bytes, the largest collision the loader admits,
 and the load placed in the Switch arena plan of `docs/MEMORY_BUDGETS.md`.
 Given `px pz` it probes the column there; given two points `px pz py` it
-sweeps the segment between them. Either answers hit, clear (the index covers
-the query and nothing is met), outside (no cell at all, which is out of
-bounds) or refused, and a hit carries the polygon, the distance in world
-units, the point and a normal that faces the query. It exits 3 for a
-collision that fails its checks, 4 if the Switch plan cannot hold it and 5
-for a refused query. See `docs/TRACK_COLLISION.md`, "The whole circuit".
+sweeps the segment between them. Either answers hit, clear (a cell lies
+under the query and nothing on it is met), outside (no cell lies under any
+part of it, which is out of bounds) or refused, and a hit carries the
+polygon, the distance in world units, the point and a normal that faces the
+query. A column exactly on the seam between two polygons meets them. It
+exits 3 for a collision that fails its checks, 4 if the Switch plan cannot
+hold it and 5 for a refused query. See `docs/TRACK_COLLISION.md`,
+"The whole circuit".
 `stock-parts` applies the game's stock-part rules to one car type and
 prints the chosen record per slot with each LOD mesh hash resolved against
 the `GEOMETRY.BIN` files given after the car type, including the mesh the

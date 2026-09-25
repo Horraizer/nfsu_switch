@@ -196,6 +196,18 @@ nfsu_case("a column no cell covers is outside" 0
           "probe column: outside\n"
           "hit;clear;refused"
           "${image}" "500" "500")
+# A sweep past the corner of the origin section's cells, which end at
+# (32, 32) with nothing beyond: its bounding box reaches cell (16, 16), the
+# segment meets no cell, so it is out of bounds and not airborne. Through
+# the corner itself the closed square is met and nothing on it is: clear.
+nfsu_case("a sweep past every cell's corner is outside" 0
+          "probe segment: (30, 40, 3) to (40, 30, 3)\n;probe segment: outside\n"
+          "hit;clear;refused"
+          "${image}" "30" "40" "3" "40" "30" "3")
+nfsu_case("a sweep through a cell's corner is clear" 0
+          "probe segment: clear\n"
+          "hit;outside;refused"
+          "${image}" "28" "36" "3" "36" "28" "3")
 # A sweep into a barrier from inside the street, and from outside it: the
 # same polygon, the normal turned to face each sweep.
 nfsu_case("a sweep into the barrier from the street" 0
