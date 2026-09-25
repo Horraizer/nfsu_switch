@@ -198,8 +198,13 @@ Shear shear_for(const float direction[3]) {
 // met by the one it lies in, never by neither. The bounds are closed, so a
 // triangle's own outer edge is met too. The products are taken in double,
 // where a product of two floats is exact and the difference is rounded once,
-// so each edge function also has the sign of the exact value: a point off
-// an outer edge by less than a float rounding is not taken as on it.
+// so each edge function has the exact sign for the sheared corners. For a
+// column the shear only moves each corner to the column's start, exact
+// wherever that difference is itself a float, and then the sign is the
+// triangle's own: a point off an outer edge by less than a float rounding
+// is not taken as on it. For an oblique segment the corners are rounded in
+// float as they are sheared, so a point within about a float rounding of an
+// outer edge can be decided either way; a shared edge stays watertight.
 //
 // The determinant is the sum of the edge functions, which is
 // -(direction . (edge1 x edge2)) scaled by 1 / |direction[kz]|, so its sign
@@ -685,8 +690,9 @@ TrackContactStatus query_track_contact_segment(
         }
     }
 
-    // Issue #39's arithmetic decides first, so that wherever its ray meets
-    // something this answers with the same polygon, triangle, distance and
+    // Issue #39's arithmetic decides first, over the triangles that are not
+    // degenerate, so that wherever the first triangle its ray meets is not
+    // degenerate this answers with the same polygon, triangle, distance and
     // point. Only when it meets nothing anywhere along the segment does the
     // watertight test decide, and what it adds lies on a triangle's edge:
     // a seam between two polygons that rounding put outside both, or a

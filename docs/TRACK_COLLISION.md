@@ -999,26 +999,54 @@ non-degenerate triangle in double with closed bounds through no game index:
 | `TRACKB1210` | 68298 | 102681 | 129021 | 0 (the first version: 1620) | 0 | 0, 0, 0 |
 
 **Triangles.** Issue #39's Moller-Trumbore arithmetic decides first: the
-nearest triangle it accepts, a tie going to the lower polygon and then the
-lower triangle. So wherever `query_track_collision_ray` meets something
-along the same line, the contact is that hit, bit for bit in polygon,
-triangle, distance and point. That arithmetic is not watertight. It rounds
-each barycentric on its own, and a point exactly on an edge can round
-outside every triangle that has it: the review found road seams on retail
-data that it misses from both sides, such as the column `track-contact
-<TRACKB1003.lzc> 961.1171875 -244.921875`, on the edge polygons 1980 and
-1986 share, which answered `clear`. So when it accepts nothing anywhere
-along the segment, the watertight test of Woop, Benthin and Wald (2013)
-decides instead. Each corner is sheared into the segment's frame in float
-by the same operations whichever triangle it belongs to, and an edge
-function over two corners is a difference of the same two products in both
-triangles that share the edge, so it has the same value with the opposite
-sign in each; taken in double, it also has the sign of the exact value. A
-point on a shared edge is met by both triangles, a point beside it by the
-one it lies in, and a polygon's own outer edge is met too. That column now
-answers `hit road polygon 1980 triangle 0 distance 940.824`, and the sweep
-through the same point from py 59.5 down to 58.5 `hit road polygon 1980
-triangle 0 distance 0.324219`.
+nearest triangle it accepts among the triangles that are not degenerate, a
+tie going to the lower polygon and then the lower triangle. So wherever the
+first triangle `query_track_collision_ray` meets along the same line is not
+degenerate, the contact is that hit, bit for bit in polygon, triangle,
+distance and point. A degenerate triangle is the exception. The contact
+never meets one; the #39 ray does not skip one, and on an oblique line its
+float determinant for a triangle with two equal corners - a quad slot that
+repeats a corner - can come out nonzero, so it accepts the triangle at a
+distance that is only rounding. There the contact answers the nearest other
+contact instead. The review of this issue found `track-contact
+<TRACKB1003.lzc> 1478.58521 -8.32364178 61.1099014 1485.66479 -7.80135822
+57.4213486` answering `probe segment: clear` while the #39 ray reports
+polygon 536's degenerate triangle 1 at 3.692308; in exact arithmetic the
+segment meets the closed outer edge of the same polygon's triangle 0,
+3.99996 along, which the contact misses by rounding, a case measured under
+"Tests, and the breaks they catch" below. On the edge-aimed oblique sweeps
+described there, the first triangle the #39 ray meets is degenerate on 5076
+of the 611352 on `TRACKB1003` and 729 of the 529632 on `TRACKB1210`, and
+the contact answers farther along on 4978 and 715, nearer - through the
+watertight test - on 85 and 13, at the same distance on another triangle on
+0 and 1, and clear on 13 and 0; on every other sweep where the ray meets
+something the contact is that hit. It never happens on a column: for a
+vertical line the determinant of a triangle with two equal corners is
+exactly 0, and every retail degenerate triangle has two. Nor did it happen
+on any of 300000 random segments on each of the two tracks.
+
+That arithmetic is not watertight either. It rounds each barycentric on its
+own, and a point exactly on an edge can round outside every triangle that
+has it: the review found road seams on retail data that it misses from both
+sides, such as the column `track-contact <TRACKB1003.lzc> 961.1171875
+-244.921875`, on the edge polygons 1980 and 1986 share, which answered
+`clear`. So when it accepts nothing anywhere along the segment, the
+watertight test of Woop, Benthin and Wald (2013) decides instead. Each
+corner is sheared into the segment's frame in float by the same operations
+whichever triangle it belongs to, and an edge function over two corners is
+a difference of the same two products in both triangles that share the
+edge, so it has the same value with the opposite sign in each; taken in
+double, it has the exact sign for the sheared corners. A point on a shared
+edge is met by both triangles, a point beside it by the one it lies in, and
+a polygon's own outer edge is met too. On a column the shear only moves
+each corner to the column's start - exact wherever that difference is
+itself a float - so that sign is the triangle's own; on an oblique segment
+the corners are rounded in float as they are sheared, so a point within
+about a float rounding of an outer edge can go either way, as measured
+under "Tests, and the breaks they catch" below. That column now answers
+`hit road polygon 1980 triangle 0 distance 940.824`, and the sweep through
+the same point from py 59.5 down to 58.5 `hit road polygon 1980 triangle 0
+distance 0.324219`.
 
 Columns at 17 points along every edge two road polygons share, and at 15
 points inside every road quad's (0,2) diagonal, from py 1000 down 2000:
@@ -1030,19 +1058,20 @@ points inside every road quad's (0,2) diagonal, from py 1000 down 2000:
 | `TRACKB1107` | 25448 | 432616 | 20 | 0 | 191085 | 0 |
 
 **What that leaves.** The watertight test only adds contacts where the #39
-arithmetic meets nothing, and on the lattices under "Region against whole"
-below every one it adds lies exactly on a triangle's edge: of the 17
-columns where the ray meets nothing and the contact meets something, 16
-are on a polygon's outer edge with nothing beyond it, such as (754, 209) on
-polygon 3101 of `TRACKB1003`, and 1 is on a seam, (694, -4) on polygon 1159
-of `TRACKB1207`. The price of keeping every #39 hit bit for bit is the
-converse: where the #39 arithmetic meets something farther along, a nearer
-surface met only on its own edge does not replace it. Two columns of those
-lattices are that case, both on `TRACKB1003` and both a polygon's outer
-edge above a lower road: (1690, 486) answers polygon 4247 where polygon
-3972's edge is 0.1 units higher, and (979.5, 281.5) answers polygon 2315
-where polygon 2259's edge is 0.93 units higher. Both are single points;
-issue #39's ray answers them the same way.
+arithmetic meets nothing that is not degenerate, and on the lattices under
+"Region against whole" below every one it adds lies exactly on a triangle's
+edge: of the 17 columns where the ray meets nothing and the contact meets
+something, 16 are on a polygon's outer edge with nothing beyond it, such as
+(754, 209) on polygon 3101 of `TRACKB1003`, and 1 is on a seam, (694, -4)
+on polygon 1159 of `TRACKB1207`. The price of keeping every #39 hit on a
+triangle that is not degenerate bit for bit is the converse: where the #39
+arithmetic meets something farther along, a nearer surface met only on its
+own edge does not replace it. Two columns of those lattices are that case,
+both on `TRACKB1003` and both a polygon's outer edge above a lower road:
+(1690, 486) answers polygon 4247 where polygon 3972's edge is 0.1 units
+higher, and (979.5, 281.5) answers polygon 2315 where polygon 2259's edge
+is 0.93 units higher. Both are single points; issue #39's ray answers them
+the same way.
 
 ### Units, frame and normals, for issue #60
 
@@ -1358,13 +1387,19 @@ compared with the current code's in polygon, triangle and distance:
 
 What that band leaves on its own, measured with the same sweeps: 6304 of
 the 611352 on `TRACKB1003` answer clear although the segment, in exact
-arithmetic, meets the closed triangle it was aimed at. Every one lies
-within 4.5e-8 world units of an edge no neighbouring surface continues - a
-polygon's outer edge (5815), the (0,2) diagonal of a triangle stored in a
-quad slot, which is that triangle's outer edge (454), or the vertical edge
-where two walls meet at a convex corner (35) - and the #39 arithmetic
-misses every one of them too. On a column the shear is the identity and
-the lattices above have no such case.
+arithmetic, meets the closed triangle it was aimed at. Every one lies on
+an edge no neighbouring surface continues - a polygon's outer edge (5815),
+the (0,2) diagonal of a triangle stored in a quad slot, which is that
+triangle's outer edge (454), or the vertical edge where two walls meet at a
+convex corner (35) - within a few float roundings of the sheared corners:
+at most 4.5e-8 world units on these sweeps, and up to 3.81e-6 on the
+review's, which swept in other directions. Those are measurements, not a
+bound, and not a tolerance a caller can rely on. The #39 ray meets nothing
+along 6291 of them; along the other 13 it meets the degenerate triangle of
+the same quad, at 0 to 3.53 units, where the segment really meets that
+quad's other triangle about 4 units along - the exception under
+"Triangles" above. On a column the shear is the identity and the lattices
+above have no such case.
 
 ### What this does not do
 
@@ -1377,7 +1412,10 @@ the lattices above have no such case.
   it does compile, is unchanged by this issue.
 - A sweep that meets a wall only within a float rounding of the wall quad's
   own (0,2) diagonal, while the #39 arithmetic meets something farther
-  along, passes through the wall; issue #167 follows that up.
+  along, passes through the wall; and on an oblique line the #39 ray can
+  meet a degenerate triangle the contact never meets, which leaves the
+  contact answering a farther surface or clear (under "Triangles" above).
+  Issue #167 follows both up.
 
 ## Read-only retail acceptance
 
@@ -1559,6 +1597,10 @@ Expected:
 - On every edge two road polygons share, sampled at 17 points, the #39
   arithmetic misses 4 columns of `TRACKB1003`, 4 of `TRACKB1210` and 20 of
   `TRACKB1107`, and the contact misses none.
+- On oblique sweeps aimed at points of every edge of every triangle, 611352
+  on `TRACKB1003` and 529632 on `TRACKB1210`, the first triangle the #39 ray
+  meets is degenerate on 5076 and 729, and on those alone the contact is not
+  the ray's hit; on 300000 random segments per track it never is.
 
 ## Inferred
 

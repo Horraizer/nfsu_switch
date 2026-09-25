@@ -256,17 +256,26 @@ struct TrackContactQueryLimits {
 // corner or along a side, counts as met.
 //
 // WHICH TRIANGLE. Issue #39's arithmetic decides first: the nearest
-// triangle its Moller-Trumbore test accepts, so that wherever
-// query_track_collision_ray meets something along the same line this
-// answers with the same polygon, triangle, distance and point. That test is
-// not watertight, and a point exactly on an edge can round outside every
-// triangle that has it - a seam between two road polygons among them. So
-// when it accepts nothing anywhere along the segment, a watertight test
-// decides instead, and what it adds lies on a triangle's edge: a seam, or a
-// polygon's own outer edge. What this leaves as issue #39 answers it: where
-// the #39 test meets something farther along, a nearer surface met only on
-// its edge is not preferred to it. docs/TRACK_COLLISION.md counts each case
-// on the retail lattices.
+// triangle its Moller-Trumbore test accepts among the triangles that are
+// not degenerate. So wherever the first triangle query_track_collision_ray
+// meets along the same line is not degenerate, this answers with the same
+// polygon, triangle, distance and point. The #39 ray does not skip a
+// degenerate triangle, and on an oblique line its float determinant for a
+// triangle with two equal corners can come out nonzero and accept it, at
+// a distance that is only rounding; this never meets one, so there it
+// answers the nearest other contact - farther along, nearer through the
+// watertight test below, or clear. A column never meets that case on
+// retail data: for a vertical line the determinant of a triangle with two
+// equal corners is exactly 0, and every retail degenerate triangle has two
+// equal corners. The #39 test is not
+// watertight either, and a point exactly on an edge can round outside
+// every triangle that has it - a seam between two road polygons among
+// them. So when it accepts nothing anywhere along the segment, a watertight
+// test decides instead, and what it adds lies on a triangle's edge: a seam,
+// or a polygon's own outer edge. What this leaves as issue #39 answers it:
+// where the #39 test meets something farther along, a nearer surface met
+// only on its edge is not preferred to it. docs/TRACK_COLLISION.md counts
+// each case on the retail lattices and on oblique sweeps.
 //
 // It answers out of the same index and carries the same guarantee as
 // query_track_collision_ray (see WHAT A QUERY ANSWERS in track_collision.h):
