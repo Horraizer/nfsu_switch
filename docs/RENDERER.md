@@ -667,7 +667,9 @@ than a wheel in a place this project cannot defend.
       them the write fails closed and nothing is published.
     - Tests: the Windows path was exercised here, including live and
       dangling symlinks at the partial and target names. The POSIX branch
-      was not compiled or run on this machine.
+      was not compiled or run on this machine. Issue #132 made it compile
+      on Linux, where `nfsu_render_tests` now runs it, symlink cases
+      included (GCC 13.3, Ubuntu 24.04).
 
 ## Limits
 
