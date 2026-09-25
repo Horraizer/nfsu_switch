@@ -21,6 +21,11 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
+The Nintendo Switch build is opt-in and needs devkitPro; see
+[`docs/SWITCH_BUILD.md`](docs/SWITCH_BUILD.md). Its shaders are compiled
+offline and held to per-program interface manifests, as
+[`docs/SHADER_PIPELINE.md`](docs/SHADER_PIPELINE.md) describes.
+
 ## Run
 
 ```text
