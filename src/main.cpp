@@ -4990,6 +4990,7 @@ int run_race_route(const fs::path& globalb_path, const fs::path& frontb_path,
                 std::cout << " zone " << event_line.index;
                 break;
             case nfsu::RaceEventKind::recovered:
+            case nfsu::RaceEventKind::off_path:
                 std::cout << " node " << event_line.index;
                 break;
             default:

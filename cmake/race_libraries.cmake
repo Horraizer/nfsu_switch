@@ -1,0 +1,62 @@
+# The race route of issue #61 and the zone decoder it links, declared once
+# for both configures: the top-level CMakeLists.txt includes this file after
+# cmake/car_libraries.cmake and cmake/draw_libraries.cmake, whose nfsu_core
+# and nfsu_track_visibility these link, and before the desktop and Switch
+# configures part, so the console compiles both from the same source lists
+# with the same floating-point options as the desktop. #159 needs the lap
+# logic on the Switch, and switch/CMakeLists.txt checks the console objects
+# of nfsu_race_route for fused multiply-adds.
+
+# The visibility zones of one track: the 0x80034150 records that turn a
+# camera position into the section list the group layer draws. It sits above
+# nfsu_track_visibility because a decoded zone is handed straight to that
+# library's TrackResidency. Floating-point contraction is disabled for the
+# same reason it is disabled there: the crossing test at speed.exe
+# 0x005679B0 decides on a strict comparison of an interpolated coordinate,
+# so a fused multiply-add would move a boundary case and the selected zone
+# with it. See docs/TRACK_ZONES.md. (Moved here, as it was, from the
+# top-level CMakeLists.txt by issue #61, so that the console builds it.)
+add_library(nfsu_track_zones
+    src/track_zones.cpp
+)
+
+target_link_libraries(nfsu_track_zones PUBLIC nfsu_track_visibility)
+nfsu_enable_warnings(nfsu_track_zones)
+if(MSVC)
+    target_compile_options(nfsu_track_zones PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_track_zones PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+
+# The route of one race over a TRACKB bundle (issue #61): the track path
+# spline of chunk 0x80034147, the position markers of 0x00034146, the start,
+# split and finish percentages projected from them, and the lap, crossing
+# and wrong-way rules a fixed-step position sequence is replayed through. It
+# links nfsu_core for the JDLZ decoder and nfsu_track_zones for the polygon
+# test 0x005679B0, reads with std::ifstream as nfsu_core's loaders do and
+# reads no clock. It calls no transcendental function: the one angle it
+# needs is speed.exe's own table routine (0x00564DB0), so the desktop and
+# the console agree on every verdict. Floating-point contraction is
+# disabled for the reason nfsu_track_zones disables it: every lap and
+# crossing verdict is a comparison of a float the spline arithmetic
+# produced, and a fused multiply-add - which devkitA64's GCC emits at -O2
+# unless told not to, and the desktop's x86-64 target has none of - would
+# move it. See docs/RACE_ROUTE.md.
+add_library(nfsu_race_route
+    src/race_route.cpp
+)
+
+target_link_libraries(nfsu_race_route PUBLIC nfsu_core nfsu_track_zones)
+nfsu_enable_warnings(nfsu_race_route)
+if(MSVC)
+    target_compile_options(nfsu_race_route PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_race_route PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+
+# gnu++17 on the console, as for the car-path libraries; the comment at the
+# end of cmake/car_libraries.cmake says why.
+if(NINTENDO_SWITCH)
+    set_target_properties(nfsu_track_zones nfsu_race_route
+        PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
+endif()

@@ -38,9 +38,19 @@ constexpr float kDefaultFinish = 95.0F;
 // 0x004348B0 `push 0xbf800000`: no default for the third split.
 constexpr float kNoDefault = -1.0F;
 // 0x00430EFB..0x00430F47: 110 degrees, and 10 more while already on.
-// Each is `(int)(degrees * 65536.0) / 360` in a 16-bit angle.
+// Each is `(int)(degrees * 65536.0) / 360` in a 16-bit angle, and the
+// comparison is `cmp si, dx` / `jb`: at least 20024 units, 109.995 degrees.
 constexpr unsigned int kWrongWayAngle = 20024U;
 constexpr unsigned int kWrongWayHysteresis = 1820U;
+// 0x00426B8C `fcomp [0x6B7BAC]`: a coordinate further than this from its
+// tracked node sets the car's +0x87C and is not searched again.
+constexpr float kOffPathDistance = 5000.0F;
+// 0x00564E1F `fcomp [0x6CCAB0]`: a direction whose squared length is not
+// above this has no ratio, and 0x00564CD0 is given 0.
+constexpr float kAngleMinimumSquare = 9.99999974737875e-05F;
+// 0x00564D6B `fmul [0x6CC83C]` and 0x00564D7B `fmul [0x6CC838]`.
+constexpr float kAngleUnit = 1.52587890625e-05F;
+constexpr float kAngleScale = -65536.0F;
 // 0x00430F55..0x00430F63: speed (m/s) * 2.237 against 10.
 constexpr float kMilesPerHourPerMetre = 2.237F;
 constexpr float kWrongWaySpeed = 10.0F;
@@ -318,6 +328,14 @@ bool parse_path_container(const unsigned char* data,
             !std::isfinite(node.distance)) {
             track.issues.push_back(RaceRouteIssue{at, "node holds a value that is not finite"});
             ok = false;
+        } else if (!(std::fabs(node.x) <= kRaceRouteCoordinateLimit) ||
+                   !(std::fabs(node.y) <= kRaceRouteCoordinateLimit)) {
+            track.issues.push_back(RaceRouteIssue{
+                at, (Message() << "node position " << node.x << ", " << node.y
+                               << " is further than " << kRaceRouteCoordinateLimit
+                               << " from the origin on an axis")
+                        .str()});
+            ok = false;
         }
         if (node.path < 0 || static_cast<std::size_t>(node.path) >= path_count) {
             track.issues.push_back(RaceRouteIssue{
@@ -497,6 +515,14 @@ bool parse_markers(const unsigned char* data,
             track.issues.push_back(RaceRouteIssue{
                 at + kTrackMarkerPositionOffset, "marker position is not finite"});
             ok = false;
+        } else if (!(std::fabs(marker.position[0]) <= kRaceRouteCoordinateLimit) ||
+                   !(std::fabs(marker.position[1]) <= kRaceRouteCoordinateLimit)) {
+            track.issues.push_back(RaceRouteIssue{
+                at + kTrackMarkerPositionOffset,
+                (Message() << "marker position is further than "
+                           << kRaceRouteCoordinateLimit << " from the origin on an axis")
+                    .str()});
+            ok = false;
         }
         track.markers.push_back(marker);
     }
@@ -568,21 +594,33 @@ void evaluate_segment(const TrackPathSpline& spline,
     const float u3 = u2 * u;
     const float powers[4] = {1.0F, u, u2, u3};
     const auto& basis = kBasis[derivative == 0 ? 0 : 1];
+    // 0x005AC449 adds the four products of its first output component as
+    // w, y, z, x (0x005AC455..0x005AC474) and of the other three as w, y,
+    // x, z (0x005AC479..0x005AC4D9). Both transforms of 0x0059CDB0 go
+    // through it, so the weight of control point 0 and the x coordinate
+    // take the first order and everything else the second. The running
+    // length is component 3 of a retail control point (component 2, z, is
+    // zero), so it takes the second.
     float weights[4];
-    for (int k = 0; k < 4; ++k) {
-        // 0x005AC449: the terms are added as u^3, u, u^2, then 1.
+    weights[0] = ((powers[3] * basis[0][3] + powers[1] * basis[0][1]) +
+                  powers[2] * basis[0][2]) +
+                 powers[0] * basis[0][0];
+    for (int k = 1; k < 4; ++k) {
         weights[k] = ((powers[3] * basis[k][3] + powers[1] * basis[k][1]) +
-                      powers[2] * basis[k][2]) +
-                     powers[0] * basis[k][0];
+                      powers[0] * basis[k][0]) +
+                     powers[2] * basis[k][2];
     }
     float points[4][3];
     for (int k = 0; k < 4; ++k) {
         control_point(spline, segment - 1 + k, length, points[k]);
     }
-    for (int c = 0; c < 3; ++c) {
+    out[0] = ((points[3][0] * weights[3] + points[1][0] * weights[1]) +
+              points[2][0] * weights[2]) +
+             points[0][0] * weights[0];
+    for (int c = 1; c < 3; ++c) {
         out[c] = ((points[3][c] * weights[3] + points[1][c] * weights[1]) +
-                  points[2][c] * weights[2]) +
-                 points[0][c] * weights[0];
+                  points[0][c] * weights[0]) +
+                 points[2][c] * weights[2];
     }
 }
 
@@ -718,10 +756,11 @@ int nearer_neighbour(const RaceRouteTrack& track, int node, const float query[2]
             best_distance = d;
         }
     }
-    // 0x00443AB3..0x00443AFD: then each linked node, when nearer still.
-    const TrackPathNode& chosen = track.nodes[static_cast<std::size_t>(best)];
+    // 0x00443AB3..0x00443AFD: then each linked node, when nearer still,
+    // each link read from the node chosen so far (0x00443AB3 reads through
+    // ecx, which 0x00443AF4 moves to a nearer link).
     for (int k = 0; k < 3; ++k) {
-        const int link = chosen.links[k];
+        const int link = track.nodes[static_cast<std::size_t>(best)].links[k];
         if (link < 0) {
             continue;
         }
@@ -735,6 +774,34 @@ int nearer_neighbour(const RaceRouteTrack& track, int node, const float query[2]
     return best;
 }
 
+// How far ahead a percent difference is, in (0, 100]: at most two turns
+// either way, and anything further, or not a number, reads as a whole lap.
+// A percent of a built route lies within one percent of [0, 100]
+// (build_track_path_spline refuses any other path), so two turns are
+// always enough there; the bound is what keeps an absurd value from
+// looping, because x - 100 == x once |x| reaches about 1e10 in float.
+float percent_ahead(float difference) noexcept {
+    for (int turn = 0; turn < 2 && difference <= 0.0F; ++turn) {
+        difference += kWrapWhole;
+    }
+    for (int turn = 0; turn < 2 && difference > kWrapWhole; ++turn) {
+        difference -= kWrapWhole;
+    }
+    if (!(difference > 0.0F && difference <= kWrapWhole)) {
+        return kWrapWhole;
+    }
+    return difference;
+}
+
+// A signed byte and a signed 16-bit word, as the lap record stores them.
+int wrap_signed_byte(int value) noexcept {
+    return ((value + 128) & 0xFF) - 128;
+}
+
+int wrap_signed_word(int value) noexcept {
+    return ((value + 32768) & 0xFFFF) - 32768;
+}
+
 // A percent difference wrapped into [-50, 50] on a closed path.
 float wrap_percent(float difference) noexcept {
     if (difference < -kWrapHalf) {
@@ -745,14 +812,197 @@ float wrap_percent(float difference) noexcept {
     return difference;
 }
 
-// The 16-bit angle of a direction. 0x00564DB0 computes it and is not
-// traced; atan2 stands in, and only differences of two angles are used.
-unsigned int angle16(float x, float y) noexcept {
-    const double radians = std::atan2(static_cast<double>(y), static_cast<double>(x));
-    const double units = radians * (65536.0 / (2.0 * 3.14159265358979323846));
-    const long whole = std::lround(units);
-    return static_cast<unsigned int>(static_cast<unsigned long>(whole) & 0xFFFFUL);
+// The arcsine table 0x00564CD0 reads at 0x006F2280: 208 rows of a 16-bit
+// angle at +0 (0x00564D88) and a float slope at +4 (0x00564D75), eight
+// bytes a row with +2 zero. The slope is kept here as an integer number of
+// ten-thousandths: every retail slope is the float nearest such a number,
+// and `(float)n / 10000.0F`, one correctly rounded division, gives exactly
+// that float. tests/race_route_tests.cpp rebuilds the 1664 retail bytes
+// from these rows and checks their SHA-256 against the one
+// docs/RACE_ROUTE.md records for the executable's.
+struct AngleRow {
+    std::uint16_t angle;
+    std::int32_t slope;
+};
+
+constexpr AngleRow kAngleTable[kTrackAngleTableRows] = {
+    {0, 1592}, {326, 1593}, {652, 1596}, {979, 1601},
+    {1307, 1608}, {1636, 1616}, {1967, 1625}, {2300, 1637},
+    {2635, 1651}, {2973, 1667}, {3315, 1685}, {3660, 1705},
+    {4009, 1729}, {4363, 1756}, {4723, 1785}, {5088, 1819},
+    {5461, 1848}, {5650, 1868}, {5841, 1890}, {6035, 1913},
+    {6231, 1938}, {6429, 1964}, {6630, 1992}, {6834, 2023},
+    {7041, 2056}, {7252, 2091}, {7466, 2129}, {7684, 2170},
+    {7906, 2215}, {8133, 2263}, {8365, 2316}, {8602, 2375},
+    {8845, 2422}, {8969, 2457}, {9095, 2492}, {9223, 2530},
+    {9352, 2570}, {9484, 2612}, {9617, 2657}, {9753, 2705},
+    {9892, 2756}, {10033, 2811}, {10177, 2869}, {10324, 2932},
+    {10474, 3000}, {10628, 3074}, {10785, 3154}, {10946, 3241},
+    {11112, 3312}, {11197, 3362}, {11283, 3415}, {11371, 3471},
+    {11460, 3530}, {11550, 3592}, {11642, 3658}, {11736, 3728},
+    {11831, 3803}, {11928, 3882}, {12028, 3968}, {12129, 4059},
+    {12233, 4158}, {12340, 4264}, {12449, 4380}, {12561, 4507},
+    {12676, 4609}, {12735, 4681}, {12795, 4758}, {12856, 4838},
+    {12918, 4923}, {12981, 5012}, {13045, 5107}, {13111, 5208},
+    {13177, 5314}, {13245, 5429}, {13315, 5551}, {13386, 5682},
+    {13459, 5823}, {13533, 5975}, {13610, 6140}, {13688, 6321},
+    {13769, 6467}, {13810, 6570}, {13853, 6679}, {13895, 6793},
+    {13939, 6914}, {13983, 7042}, {14028, 7177}, {14074, 7320},
+    {14121, 7472}, {14169, 7635}, {14218, 7808}, {14267, 7995},
+    {14319, 8195}, {14371, 8412}, {14425, 8647}, {14480, 8903},
+    {14537, 9110}, {14566, 9257}, {14596, 9411}, {14626, 9574},
+    {14657, 9745}, {14688, 9926}, {14720, 10117}, {14752, 10321},
+    {14785, 10537}, {14819, 10767}, {14853, 11013}, {14889, 11277},
+    {14925, 11562}, {14962, 11869}, {15000, 12202}, {15039, 12565},
+    {15079, 12858}, {15099, 13066}, {15120, 13285}, {15142, 13515},
+    {15163, 13758}, {15185, 14015}, {15208, 14286}, {15231, 14574},
+    {15254, 14880}, {15278, 15206}, {15302, 15555}, {15327, 15929},
+    {15352, 16331}, {15378, 16766}, {15405, 17237}, {15433, 17751},
+    {15461, 18167}, {15476, 18461}, {15491, 18771}, {15506, 19097},
+    {15521, 19441}, {15536, 19804}, {15552, 20188}, {15568, 20595},
+    {15585, 21028}, {15602, 21490}, {15619, 21983}, {15636, 22513},
+    {15655, 23082}, {15673, 23697}, {15692, 24364}, {15711, 25091},
+    {15731, 25679}, {15742, 26096}, {15752, 26535}, {15763, 26996},
+    {15774, 27482}, {15785, 27995}, {15796, 28539}, {15807, 29115},
+    {15819, 29728}, {15831, 30381}, {15843, 31079}, {15855, 31828},
+    {15868, 32633}, {15881, 33504}, {15895, 34447}, {15908, 35476},
+    {15923, 36307}, {15930, 36897}, {15937, 37517}, {15945, 38170},
+    {15952, 38857}, {15960, 39583}, {15968, 40352}, {15976, 41167},
+    {15984, 42034}, {15993, 42958}, {16001, 43945}, {16010, 45004},
+    {16019, 46144}, {16028, 47374}, {16038, 48709}, {16048, 50164},
+    {16058, 51340}, {16063, 52175}, {16068, 53052}, {16073, 53974},
+    {16079, 54947}, {16084, 55974}, {16090, 57061}, {16095, 58214},
+    {16101, 59439}, {16107, 60746}, {16113, 62143}, {16119, 63641},
+    {16126, 65252}, {16132, 66993}, {16139, 68881}, {16146, 70938},
+    {16153, 73192}, {16160, 75674}, {16168, 78429}, {16176, 81507},
+    {16184, 84980}, {16192, 88939}, {16201, 93508}, {16211, 98864},
+    {16221, 105261}, {16231, 113089}, {16242, 122977}, {16255, 136025},
+    {16268, 154395}, {16284, 183140}, {16302, 238672}, {16326, 576203},
+};
+
+float angle_row_slope(const AngleRow& row) noexcept {
+    return static_cast<float>(row.slope) / 10000.0F;
 }
+
+// 0x00564CD0: the 16-bit angle whose sine is `s`, 0x4000 a quarter turn.
+// A negative `s` is measured as its magnitude and turned round
+// (0x00564CD1..0x00564CF0, 0x00564D96..0x00564D9D); 1 and above answer a
+// quarter turn (0x00564CF4..0x00564D17). Otherwise `s * 65536` truncated
+// (0x00564D24, _ftol) picks one of twelve intervals, each half the one
+// before it towards 1, and one of sixteen rows in it (thirty-two in the
+// last), and the row's angle is corrected linearly by its slope
+// (0x00564D67..0x00564D8F).
+std::uint32_t asin_angle(float s) noexcept {
+    bool negative = false;
+    if (s < 0.0F) {
+        negative = true;
+        s = -s;
+    }
+    if (!(s < 1.0F)) {
+        return negative ? 0xC000U : 0x4000U;
+    }
+    const auto scaled = static_cast<std::int32_t>(s * 65536.0F);
+    std::int32_t width = 0x8000;
+    std::int32_t bound = width;
+    int interval = 0;
+    if (scaled >= bound) {
+        while (interval < 11) {
+            width >>= 1;
+            bound += width;
+            ++interval;
+            if (!(scaled >= bound)) {
+                break;
+            }
+        }
+    }
+    const std::int32_t lower = bound - width;
+    const std::int32_t sub = (scaled - lower) >> (11 - interval);
+    const std::int32_t start = (width >> 4) * sub + lower;
+    const AngleRow& row = kAngleTable[interval * 16 + sub];
+    float delta = static_cast<float>(start) * kAngleUnit;
+    delta = s - delta;
+    delta = delta * angle_row_slope(row);
+    delta = delta * kAngleScale;
+    const auto correction = static_cast<std::int32_t>(delta);
+    const std::uint32_t angle =
+        (static_cast<std::uint32_t>(row.angle) - static_cast<std::uint32_t>(correction)) &
+        0xFFFFU;
+    return negative ? 0x10000U - angle : angle;
+}
+
+} // namespace
+
+std::uint32_t track_arcsine_angle(float s) noexcept {
+    return asin_angle(s);
+}
+
+std::uint16_t track_angle(float x, float y) noexcept {
+    // 0x00564DB0. The quadrant first: x below zero is 1, y below zero
+    // turns it with 3 (0x00564DBE..0x00564DDD).
+    unsigned int quadrant = 0;
+    if (x < 0.0F) {
+        quadrant = 1;
+    }
+    if (y < 0.0F) {
+        quadrant ^= 3U;
+    }
+    const float ax = std::fabs(x);
+    const float ay = std::fabs(y);
+    const bool steep = !(ay < ax);
+    // 0x00564E04..0x00564E1B: x * x + y * y, stored as a float.
+    const float square = x * x + y * y;
+    float ratio = 0.0F;
+    std::uint32_t result = 0;
+    if (!steep) {
+        // 0x00564E29..0x00564E64: below 45 degrees, the angle whose sine
+        // is |y| / length.
+        if (square > kAngleMinimumSquare && y != 0.0F) {
+            ratio = ay / std::sqrt(square);
+        }
+        result = asin_angle(ratio);
+    } else {
+        // 0x00564E6A..0x00564EAC: a quarter turn less the angle whose sine
+        // is |x| / length.
+        if (square > kAngleMinimumSquare && x != 0.0F) {
+            ratio = ax / std::sqrt(square);
+        }
+        result = 0x4000U - asin_angle(ratio);
+    }
+    // 0x00564EB0..0x00564EEC.
+    switch (quadrant) {
+    case 0:
+        break;
+    case 3:
+        result = 0x10000U - result;
+        break;
+    case 1:
+        result = 0x8000U - result;
+        break;
+    default:
+        result = result + 0x8000U;
+        break;
+    }
+    return static_cast<std::uint16_t>(result & 0xFFFFU);
+}
+
+void track_angle_table_bytes(unsigned char out[kTrackAngleTableBytes]) noexcept {
+    for (std::size_t i = 0; i < kTrackAngleTableRows; ++i) {
+        const AngleRow& row = kAngleTable[i];
+        const float slope = angle_row_slope(row);
+        std::uint32_t bits = 0;
+        std::memcpy(&bits, &slope, sizeof(bits));
+        unsigned char* at = out + i * 8;
+        at[0] = static_cast<unsigned char>(row.angle & 0xFFU);
+        at[1] = static_cast<unsigned char>((row.angle >> 8U) & 0xFFU);
+        at[2] = 0;
+        at[3] = 0;
+        for (unsigned int b = 0; b < 4; ++b) {
+            at[4 + b] = static_cast<unsigned char>((bits >> (8U * b)) & 0xFFU);
+        }
+    }
+}
+
+namespace {
 
 // The smaller way round between two 16-bit angles, as 0x00430EE2..0x00430EF1
 // take it: the difference, negated when above 0x8000.
@@ -942,6 +1192,29 @@ bool build_track_path_spline(const RaceRouteTrack& track,
         }
     }
     spline.spline_length = running;
+    // Not a retail rule. The path record's length, scale and offset turn
+    // the spline's own running length into a percent, and every rule above
+    // wraps a percent by one lap at most (0x00433665..0x004336D5), so a
+    // path whose loop does not measure 100 percent cannot be raced. Retail
+    // loops measure 100 to within 0.0001 percent; a loop that measures
+    // outside 99..101, or a start outside -1..1, is refused by name rather
+    // than replayed on percents that mean nothing.
+    const float start = spline.distance_offset / spline.path_length * kWrapWhole;
+    const float end = (running * spline.distance_scale + spline.distance_offset) /
+                      spline.path_length * kWrapWhole;
+    if (!std::isfinite(running) || !(running > 0.0F) || !std::isfinite(start) ||
+        !std::isfinite(end) || !(std::fabs(start) <= 1.0F) ||
+        !(std::fabs(end - kWrapWhole) <= 1.0F)) {
+        error = (Message() << "the path's length " << spline.path_length << ", scale "
+                           << spline.distance_scale << " and offset "
+                           << spline.distance_offset << " measure its own loop of "
+                           << running << " from " << start << " to " << end
+                           << " percent; a raceable loop runs from 0 to 100, to "
+                              "within 1")
+                    .str();
+        spline = TrackPathSpline{};
+        return false;
+    }
     return true;
 }
 
@@ -1119,6 +1392,8 @@ const char* race_event_kind_name(RaceEventKind kind) noexcept {
         return "reset-zone";
     case RaceEventKind::recovered:
         return "recovered";
+    case RaceEventKind::off_path:
+        return "off-path";
     }
     return "unknown";
 }
@@ -1129,13 +1404,7 @@ int next_boundary_ahead(const RaceRoute& route, float percent) {
     int best = -1;
     float best_ahead = 0.0F;
     for (std::size_t i = 0; i < route.boundaries.size(); ++i) {
-        float ahead = route.boundaries[i].percent - percent;
-        while (ahead <= 0.0F) {
-            ahead += kWrapWhole;
-        }
-        while (ahead > kWrapWhole) {
-            ahead -= kWrapWhole;
-        }
+        const float ahead = percent_ahead(route.boundaries[i].percent - percent);
         if (best < 0 || ahead < best_ahead) {
             best = static_cast<int>(i);
             best_ahead = ahead;
@@ -1181,21 +1450,33 @@ void step_race_progress(const RaceRoute& route,
 
     // 0x00426AFE: the coordinate follows the car.
     update_track_path_coordinate(route.spline, track, progress.coordinate, position);
-    // 0x00426B63..0x00426BFD: more than 300 from the tracked node, on a
-    // frame whose counter is a multiple of 60, searched again from every
-    // node. The step counter stands in for the frame counter.
-    if (progress.coordinate.node >= 0 && step % kRaceRecoverPeriod == 0) {
+    // 0x00426B63..0x00426BFD, every step: the distance from the coordinate
+    // to its tracked node (0 with none). Beyond 5000 the car's +0x87C is
+    // set and nothing is searched (0x00426B8C..0x00426BAC); otherwise, more
+    // than 300 away on a frame whose counter is a multiple of 60, the
+    // coordinate is searched again from every node (0x00426BAE..
+    // 0x00426BFD). The step counter stands in for the frame counter.
+    float from_node = 0.0F;
+    if (progress.coordinate.node >= 0) {
         const TrackPathNode& node =
             track.nodes[static_cast<std::size_t>(progress.coordinate.node)];
-        if (distance2(progress.coordinate.position[0], progress.coordinate.position[1],
-                      node.x, node.y) > kRaceRecoverDistance) {
-            progress.coordinate.node = -1;
-            update_track_path_coordinate(route.spline, track, progress.coordinate,
-                                         position);
-            emit(RaceEventKind::recovered, progress.coordinate.node,
+        from_node = distance2(progress.coordinate.position[0],
+                              progress.coordinate.position[1], node.x, node.y);
+    }
+    const bool off_path = from_node > kOffPathDistance;
+    if (off_path) {
+        if (!progress.off_path) {
+            emit(RaceEventKind::off_path, progress.coordinate.node,
                  progress.coordinate.fraction * kWrapWhole);
         }
+    } else if (progress.coordinate.node >= 0 && step % kRaceRecoverPeriod == 0 &&
+               from_node > kRaceRecoverDistance) {
+        progress.coordinate.node = -1;
+        update_track_path_coordinate(route.spline, track, progress.coordinate, position);
+        emit(RaceEventKind::recovered, progress.coordinate.node,
+             progress.coordinate.fraction * kWrapWhole);
     }
+    progress.off_path = off_path;
     const float percent = progress.coordinate.fraction * kWrapWhole;
 
     // 0x00430E00, with the step as heading and velocity.
@@ -1205,7 +1486,7 @@ void step_race_progress(const RaceRoute& route,
     const int direction = route.reverse ? 1 : 0;
     bool wrong_way = false;
     unsigned int reference =
-        angle16(progress.coordinate.tangent[0], progress.coordinate.tangent[1]);
+        track_angle(progress.coordinate.tangent[0], progress.coordinate.tangent[1]);
     bool decided = false;
     int reset = -1;
     const float* where = progress.coordinate.position;
@@ -1217,21 +1498,30 @@ void step_race_progress(const RaceRoute& route,
         const int forced = find_zone(track, kZoneWrongWay, direction, where);
         if (forced >= 0) {
             const TrackPathZone& zone = track.zones[static_cast<std::size_t>(forced)];
-            reference = angle16(zone.direction[0], zone.direction[1]);
+            reference = track_angle(zone.direction[0], zone.direction[1]);
         } else {
             reset = find_zone(track, kZoneReset, direction, where);
             if (reset < 0) {
                 reset = find_zone(track, kZoneResetToPoint, direction, where);
             }
-            if (reset >= 0 && reset != progress.zone) {
-                emit(RaceEventKind::reset_zone, reset, percent);
+            if (reset >= 0) {
+                // 0x00427ED0 resets the car and answers 1 unless the zone's
+                // +0x14 height is not zero and the car's +0x68 is at or
+                // above it (0x00427ED9..0x00427EF6); on 1 the wrong-way
+                // test answers no (0x00430EDA..0x00430EDC). A position has
+                // no height, so a zone with a height is taken to reset as
+                // one without does. The car is not moved.
+                decided = true;
+                if (reset != progress.zone) {
+                    emit(RaceEventKind::reset_zone, reset, percent);
+                }
             }
         }
     }
     progress.zone = reset;
     if (!decided) {
         if (travelled > 0.0F) {
-            const unsigned int heading = angle16(dx, dy);
+            const unsigned int heading = track_angle(dx, dy);
             const unsigned int hysteresis = progress.wrong_way ? kWrongWayHysteresis : 0U;
             const unsigned int off = angle_between(reference, heading) + hysteresis;
             if (off >= kWrongWayAngle) {
@@ -1269,7 +1559,9 @@ void step_race_progress(const RaceRoute& route,
         const bool backward = in_window && before >= 0.0F && now < 0.0F;
         if (forward) {
             if (index == route.finish) {
-                ++progress.lap;
+                // +0x08 and +0x09 are signed bytes: 0x00433979 `inc dl`,
+                // 0x0043397F `cmp al, cl` / `jle`.
+                progress.lap = wrap_signed_byte(progress.lap + 1);
                 if (progress.lap > progress.max_lap) {
                     progress.max_lap = progress.lap;
                     emit(RaceEventKind::crossed_forward, index, percent);
@@ -1280,11 +1572,13 @@ void step_race_progress(const RaceRoute& route,
             } else {
                 emit(RaceEventKind::crossed_forward, index, percent);
             }
-            progress.checkpoint = 5 * progress.lap + index;
+            // +0x04 and +0x06 are 16-bit: 0x0043398B..0x004339A3.
+            progress.checkpoint = wrap_signed_word(5 * progress.lap + index);
             progress.max_checkpoint = std::max(progress.max_checkpoint, progress.checkpoint);
         } else if (backward) {
             if (index == route.finish) {
-                --progress.lap;
+                // 0x00433AA7 `dec byte ptr [edi + 8]`.
+                progress.lap = wrap_signed_byte(progress.lap - 1);
             }
             emit(RaceEventKind::crossed_backward, index, percent);
         } else if (travel > 0.0F && before < 0.0F && before + travel >= 0.0F) {
@@ -1300,8 +1594,9 @@ void step_race_progress(const RaceRoute& route,
     progress.previous_position[1] = position[1];
     progress.next_boundary = next_boundary_ahead(route, percent);
 
-    // 0x00435A2A..0x00435A4F: the highest lap reaching the race's laps.
-    if (route.laps > 0 && progress.max_lap >= route.laps) {
+    // 0x00435A17..0x00435A4F: a race with laps finishes a car whose
+    // highest lap equals them.
+    if (route.laps != 0 && progress.max_lap == route.laps) {
         progress.finished = true;
         progress.finish_step = step;
         emit(RaceEventKind::finished, route.finish, percent);
@@ -1371,14 +1666,7 @@ bool make_race_drive(const RaceRoute& route,
     // How far ahead of the grid, in race direction, a percent is: in
     // (0, 100].
     const auto ahead_of_grid = [&](float percent) {
-        float distance = percent - grid_percent;
-        while (distance <= 0.0F) {
-            distance += kWrapWhole;
-        }
-        while (distance > kWrapWhole) {
-            distance -= kWrapWhole;
-        }
-        return distance;
+        return percent_ahead(percent - grid_percent);
     };
     // Race order is node order forward and the reverse of it backward.
     const int race_step = route.reverse ? -1 : 1;

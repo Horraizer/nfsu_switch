@@ -169,6 +169,12 @@ struct RaceRouteIssue {
     std::string message;
 };
 
+// Not a retail rule: the largest magnitude a node or marker coordinate may
+// have on either horizontal axis. Retail positions stay within 2000 of the
+// origin; a coordinate of 1e30 is finite, but its square is not, and the
+// percents built from it mean nothing. docs/RACE_ROUTE.md.
+constexpr float kRaceRouteCoordinateLimit = 1.0e6F;
+
 struct RaceRouteLimits {
     std::uint64_t max_file_size = 64ULL * 1024ULL * 1024ULL;
     std::uint64_t max_image_size = 64ULL * 1024ULL * 1024ULL;
@@ -208,12 +214,14 @@ struct RaceRouteTrack {
 // exactly one 0x00034146, a whole number of 48-byte records after the
 // 16-byte alignment. Each path: a node range inside the node table, a count
 // equal to end - first and at least 3, a finite, positive length and
-// finite scale and offset. Each node: finite coordinates and distance, a
+// finite scale and offset. Each node: finite coordinates and distance,
+// coordinates within kRaceRouteCoordinateLimit of the origin on each axis, a
 // path index naming a path record (0x00443B02 indexes the path table with
 // it unchecked), and links that are -1 or a node index. Zones: types below
 // 11 and in non-decreasing order (0x00443450 indexes the table by the first
 // record of each type, so an unsorted table would hide zones), a vertex
-// count of 0 to 15, finite numbers. Markers: finite positions.
+// count of 0 to 15, finite numbers. Markers: finite positions, within
+// kRaceRouteCoordinateLimit on each horizontal axis.
 RaceRouteTrack parse_race_route_track(const unsigned char* data,
                                       std::size_t size,
                                       const RaceRouteLimits& limits = RaceRouteLimits{});
@@ -261,7 +269,9 @@ struct TrackPathSpline {
 // track that is not valid, holds more than one path, links nodes, or whose
 // path is open: 0x0059CEA0 extrapolates past the ends of an open spline and
 // is not implemented here, so a sprint or drag route is refused rather than
-// approximated.
+// approximated. Also refused, as this project's rule and not the game's: a
+// path whose record's length, scale and offset do not measure the spline's
+// own loop as 0 to 100 percent, to within 1 percent at either end.
 bool build_track_path_spline(const RaceRouteTrack& track,
                              bool reverse,
                              TrackPathSpline& spline,
@@ -274,6 +284,25 @@ void evaluate_track_path(const TrackPathSpline& spline,
                          float parameter,
                          int derivative,
                          float out[3]) noexcept;
+
+// The 16-bit angle of a direction, 0x4000 a quarter turn counterclockwise
+// from +x, exactly as 0x00564DB0 computes it: |y| / length or |x| / length
+// through the arcsine table 0x00564CD0 reads at 0x006F2280, with nothing
+// but float arithmetic, one square root and a table lookup, so every
+// platform gives the same answer. docs/RACE_ROUTE.md traces it.
+std::uint16_t track_angle(float x, float y) noexcept;
+
+// 0x00564CD0, the arcsine by table track_angle calls: the 16-bit angle
+// whose sine is `s`, 0x4000 a quarter turn, 0x10000 less it for a negative
+// `s`. track_angle only ever gives it a ratio of at most 1 / sqrt(2), so it
+// is exposed for the tests that reach its other rows.
+std::uint32_t track_arcsine_angle(float s) noexcept;
+
+// The arcsine table in the executable's own layout, eight bytes a row: the
+// test compares its SHA-256 with the one docs/RACE_ROUTE.md records.
+constexpr std::size_t kTrackAngleTableRows = 208;
+constexpr std::size_t kTrackAngleTableBytes = kTrackAngleTableRows * 8;
+void track_angle_table_bytes(unsigned char out[kTrackAngleTableBytes]) noexcept;
 
 // A car's place on the path: the object 0x004440C0 constructs and
 // 0x00443A10 updates.
@@ -387,11 +416,16 @@ enum class RaceEventKind {
     wrong_way_on,
     wrong_way_off,
     // The car entered a RESET or RESET_TO_POINT zone, reported once on
-    // entry. The game would put it back on the track (0x00427ED0); this
-    // layer reports it and does not.
+    // entry. The game puts it back on the track there (0x00427ED0) and the
+    // wrong-way test answers no; this layer answers no and does not move it.
     reset_zone,
     // The coordinate was searched again from every node (0x00426BFA).
     recovered,
+    // The coordinate went further than 5000 from its tracked node: the game
+    // sets the car's +0x87C there (0x00426BA2), the flag a RESET zone also
+    // sets (0x00427F53), and does not search. Reported on the step it
+    // happens, not again until the car has come back within 5000.
+    off_path,
 };
 
 const char* race_event_kind_name(RaceEventKind kind) noexcept;
@@ -414,12 +448,14 @@ struct RaceProgress {
     TrackPathCoordinate coordinate;
     // +0x1C, the percent at the previous step.
     float previous_percent = 0.0F;
-    // +0x08, -1 until the car first crosses the finish line forward.
+    // +0x08, -1 until the car first crosses the finish line forward. A
+    // signed byte in the game, and kept in that range: 129 backward
+    // crossings from -1 wrap it to 126.
     int lap = -1;
-    // +0x09, the highest lap reached.
+    // +0x09, the highest lap reached, also a signed byte.
     int max_lap = 0;
     // +0x04 and +0x06: 5 * lap + boundary of the last forward crossing, and
-    // the highest of those; -1 before any.
+    // the highest of those; -1 before any. Signed 16-bit.
     int checkpoint = -1;
     int max_checkpoint = -1;
     // The boundary the car reaches next in race order.
@@ -432,6 +468,8 @@ struct RaceProgress {
     // The RESET or RESET_TO_POINT zone the car was in at the last step, or
     // -1.
     int zone = -1;
+    // The coordinate was more than 5000 from its node at the last step.
+    bool off_path = false;
 };
 
 // 0x004333C0: the coordinate of `position`, searched from every node, and
@@ -442,15 +480,17 @@ void start_race_progress(const RaceRoute& route,
                          RaceProgress& progress);
 
 // One fixed step of `step_seconds` to `position`: the coordinate update
-// (0x00443A10), the recovery rule (0x00426B63..0x00426BFD), the wrong-way
-// test (0x00430E00) and the lap update (0x004338C0), in that order. A
-// finished car is not updated again (0x00435603). Events are appended.
+// (0x00443A10), the off-path and recovery rules (0x00426B63..0x00426BFD),
+// the wrong-way test (0x00430E00) and the lap update (0x004338C0), in that
+// order. A finished car is not updated again (0x00435603). Events are
+// appended.
 //
 // The wrong-way test compares the path direction with the car's heading
 // and with its velocity; a position alone has neither, so both are taken
 // to be the direction of the step, and the speed its length over
 // `step_seconds`. The test's wheel-contact gate (+0x3CC >= 4) is taken as
-// met. Both are approximations, and docs/RACE_ROUTE.md names them.
+// met, and a reset zone's height gate as passed. These are approximations,
+// and docs/RACE_ROUTE.md names them.
 void step_race_progress(const RaceRoute& route,
                         const RaceRouteTrack& track,
                         RaceProgress& progress,

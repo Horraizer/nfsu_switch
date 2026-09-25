@@ -19,13 +19,13 @@ a two-lap forward circuit on track 1003, `DT1 - Olympic Square`,
 - **The start line, the split boundaries and the finish line are
   percentages on that spline**, each found once per race by projecting a
   named position marker of chunk `0x00034146` onto it. For event 1 the start
-  line is at **39.343525** percent (marker `ForwardStartLine`), split 1 at
-  **83.33022** (`SplitTimeBoundary1`) and split 2 at **12.659791**
+  line is at **39.34353** percent (marker `ForwardStartLine`), split 1 at
+  **83.33021** (`SplitTimeBoundary1`) and split 2 at **12.659794**
   (`SplitTimeBoundary2`). A circuit's finish line is its start line.
 - **A lap counts when the car's percentage passes the finish percentage
   going forward and lands within 25 percent past it.** Passing it backward
   takes the lap back. The per-car lap counter starts at -1; the grid
-  (`ForwardStartingPosition`, 39.265125 percent) is behind the line, so the
+  (`ForwardStartingPosition`, 39.265133 percent) is behind the line, so the
   first forward crossing starts lap 1, and the race is finished when the
   highest lap reached equals the race's lap count - on event 1 at the third
   forward crossing, two laps after the first.
@@ -35,10 +35,12 @@ a two-lap forward circuit on track 1003, `DT1 - Olympic Square`,
   forward, [`RACE_EVENTS.md`](RACE_EVENTS.md)); the race forces one lap on
   a track whose lap-skip byte is set (a point-to-point track), and a reverse
   race measures the same spline from its other end.
-- **Wrong way** is the car's heading more than 110 degrees off the path's
-  direction at the car, at more than 10 mph, with the velocity also more
-  than 110 degrees off; 100 degrees once the flag is on. Zones of the path
-  container can suppress it or impose their own direction.
+- **Wrong way** is the car's heading at least 20024 of 65536 angle units
+  (109.995 degrees) off the path's direction at the car, at more than 10
+  mph, with the velocity as far off; 18204 units once the flag is on. The
+  angles are speed.exe's own table arcsine (0x00564DB0), implemented here
+  exactly. Zones of the path container can suppress it, impose their own
+  direction, or reset the car, which also answers no.
 
 `nfsu::build_race_route` (`include/nfsu/race_route.h`) recovers all of it
 from the retail files, `nfsu::step_race_progress` replays a position
@@ -233,6 +235,17 @@ i - 1 to i + 2 (0x0059CDB0, through `D3DXVec4Transform` at 0x005AC443). A
 closed spline keeps copies of its last point before its first and of its
 first two after its last (0x0059CD1B..0x0059CDA5).
 
+0x0059CDB0 makes two such products: (1, u, u^2, u^3) times the basis gives
+the four weights, and the weights times the four control points give the
+point. The x87 routine at 0x005AC449 adds the four terms of its first
+output component in the order w, y, z, x (0x005AC455..0x005AC474) and of
+the other three in the order w, y, x, z (0x005AC479..0x005AC4D9). So the
+weight of control point 0 and the x coordinate are summed one way, and the
+other three weights, y and the running length (component 3; component 2, z,
+is zero) the other. This project follows both orders; its first version
+used the first for everything, and the second moves event 1's start line by
+one float step, 39.343525 to 39.34353.
+
 Every control point carries a fourth value, the **running length**.
 0x0059D9F0, called with 16 (0x004433BF), sets each point's fourth value to
 the length so far and adds 16 chords per segment, measured between points
@@ -243,13 +256,17 @@ along the path**.
 
 The data agrees exactly with that reading. For all 17 closed paths in the
 installation, the running lengths of a uniform closed Catmull-Rom spline
-through the nodes, measured with 16 chords per segment in float, match
-every node's stored `+0x10` distance to within 0.0025 and the record's
-stored length to within 0.003; for 1003 the worst node is 0.0015 off (the
-probe prints this) and the spline measures 3318.2705 against the stored
-3318.2698. The chord polygon through the same nodes, the obvious
-alternative, is 3292.269 long and misses node 1's stored 110.2589 by 0.05
-and the worst node by 25.9.
+through the nodes, measured with 16 chords per segment in float in the
+retail order, match every node's stored `+0x10` distance to within 0.004
+and the record's stored length to within 0.004. The worst of both is 1001,
+0.00390625 (the probe prints the node figure for every track it builds);
+for 1003 the worst node is 0.0009765625 off and the spline measures 3318.27
+against the stored 3318.2698. The first version of this note said 0.0025
+and 0.003: 1001 gives 0.0029296875 in the first version's order, and more
+than 0.0025 in either. Neither order fits every stored value better. The
+chord polygon through the same nodes, the obvious alternative, is 3292.269
+long and misses node 1's stored 110.2589 by 0.05 and the worst node by
+25.9.
 
 ## A car on the path: `TrackPathCoordinate`
 
@@ -293,11 +310,17 @@ A reverse race also turns round the three distances of every zone
 0x004435E0 does.
 
 The car's own update calls 0x00443A10 every frame with its position
-(0x00426AFE). A coordinate more than 300 from its tracked node is searched
-again from every node on a frame whose counter is a multiple of 60
-(0x00426BAE..0x00426BFD: `[0x6CCB74]` = 300.0, `idiv` by 0x3C, then the
-node is cleared at 0x00426BFA before the update). One more than 5000 away
-sets a flag at +0x87C instead (0x00426B8C..0x00426BA2).
+(0x00426AFE), and then, every frame, measures the coordinate's distance to
+its tracked node (0 with none, 0x00426B63..0x00426B86):
+
+- **More than 5000** (`[0x6B7BAC]` = 5000.0, 0x00426B8C..0x00426B97): the
+  car's +0x87C is set, unless 0x00736090 is (0x00426B99..0x00426BA2), and
+  nothing is searched (0x00426BAC). +0x87C is the flag a `RESET` zone sets
+  too (0x00427F53).
+- **Otherwise more than 300** (`[0x6CCB74]` = 300.0, 0x00426BAE..0x00426BDA)
+  on a frame whose counter is a multiple of 60 (0x00426BDC..0x00426BEB,
+  `idiv` by 0x3C) with the car's +0x28 set: the node is cleared
+  (0x00426BFA) and the coordinate searched again from every node.
 
 ## The race: laps and boundaries
 
@@ -330,10 +353,14 @@ coordinate (0x00434722..0x00434773) and stores fraction times 100
 The defaults are 0x0043482B `push 0x40a00000`, `[0x6CCD84]` = 33.0,
 `[0x6CCD80]` = 66.0, `[0x6CCD7C]` = 95.0 and 0x004348B0 `push 0xbf800000`.
 On a circuit the finish index is the start index (0x004349E1..0x004349FF).
-The number 0x00434640 matches is 0 for the forward start line and the
-splits and `[0x0078A340]` for the backward start line and the finish lines;
-every retail track holds one marker of each of those names, so the number
-never changes which marker is used.
+The number 0x00434640 matches is 0 for the forward start line, the splits
+and `BackwardFinishLine` (0x004349A0 `push 0`) and `[0x0078A340]` for
+`BackwardStartLine` (0x004348F0) and `ForwardFinishLine` (0x004348D9).
+Every retail track holds at most one marker of each of those names, so the
+number cannot change which marker is used on retail data; this project
+takes the first marker of a name, which is the number-0 answer, and a
+bundle with two would differ only if 0x0078A340 were set and matched the
+second.
 
 **The data orders them as the code does.** On all 15 circuit
 (track, direction) pairs the table races, the markers project so that,
@@ -365,15 +392,26 @@ A forward crossing sets the checkpoint number to `5 * lap + boundary`
 finish boundary first adds one to the lap counter, and when that is a new
 highest lap marks a new lap (0x00433973..0x00433987). A backward crossing of
 the finish boundary takes one from the lap counter (0x00433AA1..0x00433AA7).
-Nothing else changes the lap counter. Last, +0x1C takes the new percentage
+Nothing else changes the lap counter. The counter and the highest lap are
+signed bytes (0x00433979 `inc dl`, 0x0043397F `cmp al, cl` / `jle`,
+0x00433AA7 `dec byte ptr`) and the checkpoint numbers signed 16-bit words
+(0x0043398B `movsx ax`, 0x00433995 `cmp ax, word ptr`), and this project
+keeps them in those ranges: 129 backward crossings from -1 wrap the counter
+to 126, and the next forward crossing is a new highest lap, 127.
+0x004338C0 runs only for a car whose +0x28, or whose +0x14 record's +0x734
+byte, is set (0x004338CA..0x004338DF); a replayed car is taken to pass. Last, +0x1C takes the new percentage
 (0x00433DF5) and +0x14 the lap counter plus the fraction of a lap since the
 finish line (0x00433D91..0x00433DAE, via 0x00434A10).
 
 The race status then finishes every car whose highest lap equals the lap
-count (0x00435A30..0x00435A4F) and does not update a finished car again.
+count, when the count is not 0 (0x00435A17..0x00435A4F, `cmp edx, [esi +
+0x530]` / `jne`), and does not update a finished car again. 0x004333C0
+ends by calling 0x004338C0 once (0x00433492); with the previous percent
+just set to the current one that call crosses nothing, and
+`start_race_progress` leaves it out.
 
-So for event 1: the grid slot 0 marker projects to 39.265125, 0.08 short of
-the line at 39.343525. The first forward crossing takes the counter from -1
+So for event 1: the grid slot 0 marker projects to 39.265133, 0.08 short of
+the line at 39.34353. The first forward crossing takes the counter from -1
 to 0; the next two make it 1 and 2, the highest lap reaches 2, and the race
 is finished.
 
@@ -413,19 +451,27 @@ this project's report wherever it is printed.
 
 0x00430730 calls 0x00430E00 every frame with the last answer and stores the
 new one at +0x4AC (0x0043073F..0x0043074D). With the 16-bit angle of the
-path direction at the car (0x00430E17..0x00430E26, through 0x00564DB0) as
-the reference:
+path direction at the car (0x00430E0A..0x00430E26: the coordinate's +0x18
+and +0x1C, through 0x00564DB0) as the reference:
 
 1. It looks for a zone of type `NO_WRONG_WAY`, `WRONG_WAY`, `RESET` and
    `RESET_TO_POINT`, in that order, at the car's coordinate, filtered by
    the race direction (0x00430E4B..0x00430E98). `NO_WRONG_WAY` answers no.
-   `WRONG_WAY` makes the zone's own direction the reference. A reset zone
-   resets the car (0x00427ED0, unless the car is at or above the zone's
-   height) and answers no if it did not.
+   `WRONG_WAY` makes the zone's own direction the reference (0x00430EA9..
+   0x00430EC3). A reset zone calls 0x00427ED0, which resets the car and
+   returns 1 unless the zone's height at +0x14 is not zero and the car's
+   +0x68 is at or above it (0x00427ED9..0x00427EF6, return 0); on 1 the
+   test answers no (0x00430EDA..0x00430EDC to 0x00430FF8), and only on 0
+   does it go on to the angles. A `RESET_TO_POINT` reset puts the car at
+   the zone's point facing its direction (0x00427F01..0x00427F36); a
+   `RESET` sets the car's +0x87C (0x00427F41..0x00427F53).
 2. The car's heading (+0x3B4) must be at least 110 degrees off the
    reference, or 100 once the flag is on: `(int)(110 * 65536.0) / 360` =
    20024 and a hysteresis of 1820 added to the difference while the flag is
    on (0x00430EE2..0x00430F4C, `[0x6B7B08]` = 110.0, `[0x6B7B10]` = 10.0).
+   The difference is taken in 16 bits and folded to at most 0x8000
+   (0x00430EEA..0x00430EF1), and the comparison is `cmp si, dx` / `jb`:
+   at least 20024 units, which is 109.995 degrees, not more than 110.
 3. Below 10 mph (`[0x6CC9F0]` = 2.237 times the speed at +0x3D0, against
    `[0x6B7B14]` = 10.0) the flag keeps its value (0x00430F52..0x00430F6E,
    0x00430FF4).
@@ -434,6 +480,55 @@ the reference:
 5. To turn the flag on, the car's +0x3CC must also be at least 4
    (0x00431002..0x00431010) - read as a wheel-contact count from its other
    comparisons with 1 to 4, not traced.
+
+### The angle: 0x00564DB0 and 0x00564CD0
+
+Every angle above is 0x00564DB0 of a direction (x, y), and it uses no
+transcendental function. With `quadrant` 1 when x is below zero and turned
+by 3 when y is (0x00564DBE..0x00564DDD), and the squared length `x * x +
+y * y` stored as a float (0x00564E04..0x00564E1B):
+
+- **|y| below |x|**: when the squared length is above 1.0e-4
+  (`[0x6CCAB0]` = 0x38D1B717) and y is not zero, the ratio is `|y| /
+  sqrt(squared length)`, else 0, and the angle is 0x00564CD0 of it
+  (0x00564E29..0x00564E64);
+- **otherwise**: the same with |x| and x, and the angle is 0x4000 less it
+  (0x00564E6A..0x00564EAC);
+- then quadrant 0 keeps it, 3 takes it from 0x10000, 1 from 0x8000, and 2
+  adds 0x8000 (0x00564EB0..0x00564EEC), in 16 bits.
+
+0x00564CD0 is an arcsine by table. A negative ratio is measured as its
+magnitude and the answer taken from 0x10000; 1 and above answer 0x4000.
+Otherwise `ratio * 65536` truncated (0x00564D24, `_ftol`, which truncates
+towards zero: 0x00674898..0x006748F5) is placed in one of twelve intervals,
+[0, 0x8000), [0x8000, 0xC000) and so on, each half the one before, the
+twelfth [0xFFE0, 0x10000); each is cut into sixteen equal rows, the twelfth
+into thirty-two (0x00564D29..0x00564D64). The row's angle is corrected by
+its slope: `angle - (int)((ratio - start / 65536) * slope * -65536)`
+(0x00564D67..0x00564D8F, `[0x6CC83C]` = 2^-16, `[0x6CC838]` = -65536.0).
+
+The table is 208 rows at 0x006F2280, eight bytes each: a 16-bit angle, two
+zero bytes and a float slope; its 1664 bytes have SHA-256
+`BA4B65CEDA6B5BE5C8F7A7FC2D52B0A16D03D9507D602590BACB78DC98E71A87`. Every
+angle is `floor(asin(start) * 65536 / (2 pi))` of its row's start, and
+every slope is the float nearest a whole number of ten-thousandths; 188 of
+the 208 are the rounded secant of the arcsine over the row, and the other
+20 are one ten-thousandth below it. No formula this project found gives
+all 208, so `src/race_route.cpp` carries the 208 pairs as numbers, the
+slope as its integer ten-thousandths, and the unit test rebuilds the 1664
+bytes from them and compares the SHA-256 above.
+
+`nfsu::track_angle` is the two routines, in float, with a square root and
+the table and nothing else, so the desktop and the console compute the
+same angle for every direction: IEEE float addition, multiplication,
+division, square root and truncation are exact to the last bit on both,
+and the library is compiled without contraction. It replaces the `atan2`
+the first version of this project used, which the review found to give the
+direction (-3.9831483, 10.948146) 20023 units on MinGW and 20024 on
+devkitA64's newlib (the latter by emulating newlib's `e_atan2` instruction
+for instruction), one either side of the wrong-way threshold. 0x00564DB0
+gives both that direction and the review's control (-3.9831486,
+10.948146) 20023, on every platform.
 
 ## Float arithmetic
 
@@ -449,8 +544,20 @@ retail routes through `D3DXVec4Transform` (0x005AC443) jumps through the
 pointer at 0x006D4AC8, which starts out at 0x005AC436: a first-call
 dispatcher that calls 0x005B065B and jumps through the pointer again, so
 which implementation runs is chosen at run time and is not traced. The
-order used here is that of the x87 routine that follows it, at
-0x005AC449.
+orders used here are those of the x87 routine that follows it, at
+0x005AC449, per output component as the spline section above gives them.
+
+The console builds the library too (`cmake/race_libraries.cmake`, which
+both configures read), and the Switch tree's
+`nfsu_switch_race_route_fma_census` disassembles its objects and those of
+`nfsu_track_zones` with the toolchain's objdump and fails on any fused
+multiply-add (`tests/race_route_fma_census.cmake`). devkitA64's GCC fuses at
+-O2 unless contraction is off; the census is the check that it is. Measured
+on this branch: `race_route.o` holds 76 `fmul` and no fused instruction;
+the same source compiled by the same command less `-ffp-contract=off`
+holds 40 `fmul` and 36 fused multiply-adds, and the census fails it. The
+console cannot run the replay here, so no hash is asserted there; what is
+asserted is the precondition the desktop's pins rest on.
 
 ## What this project implements
 
@@ -471,21 +578,33 @@ no clock, and is classified neutral for the platform-neutrality gate.
   the table does not hold (0x00443B02 indexes with it unchecked) or a link
   that is neither -1 nor a node; a zone type above 10 or out of order (the
   index of 0x00443450 needs sorted types); a zone vertex count above 15, the
-  most a record holds; anything not finite. Every rule holds for all 31
-  retail bundles.
+  most a record holds; anything not finite; a node or marker further than
+  1e6 from the origin on either horizontal axis (not a retail rule: retail
+  stays within 2000, and a coordinate of 1e30 is finite while its square
+  is not). Every rule holds for all 31 retail bundles.
 - `build_track_path_spline`, `evaluate_track_path` and
   `update_track_path_coordinate` are the spline and the coordinate.
   A track with more than one path, a linked node or an open path is refused
   by name: 0x0059CEA0 extrapolates past the ends of an open spline and is
   not implemented, so a sprint or drag route is refused rather than
-  approximated.
+  approximated. So is a path whose record's length, scale and offset do
+  not measure the spline's own loop as 0 to 100 percent, to within 1 at
+  either end: every rule above wraps a percent by one lap, and retail loops
+  measure 100 to within 0.0001 percent. A path length of 1e-30 or a scale
+  of 1e12, which the first version accepted and then never finished
+  replaying, is refused here by name. Every wrap this project adds (the
+  next boundary, the drive's end) is bounded to two turns besides.
+- `track_angle` is 0x00564DB0, and `track_angle_table_bytes` the table it
+  reads, in the executable's layout.
 - `race_laps` and `build_race_route` are 0x004342A4 and 0x00434810.
 - `start_race_progress` and `step_race_progress` are 0x004333C0 and one
   frame of 0x00426AFE, 0x00426B63..0x00426BFD, 0x00430E00 and 0x004338C0
-  in that order, the finish check of 0x00435A30 and the stop of 0x00435603.
+  in that order, the finish check of 0x00435A17 and the stop of 0x00435603.
   Events: `crossed-forward`, `crossed-backward`, `missed-forward`,
   `missed-backward`, `lap-complete`, `finished`, `wrong-way-on`,
-  `wrong-way-off`, `reset-zone` and `recovered`.
+  `wrong-way-off`, `reset-zone`, `recovered` and `off-path` (the step the
+  coordinate goes beyond 5000 from its node, reported once until it comes
+  back).
 - `make_race_drive` builds the synthetic drive the end-to-end runs below
   use: from the first grid marker of the race direction to the first path
   node ahead of it, then node after node in race order in straight steps of
@@ -518,15 +637,15 @@ It writes nothing.
 ```text
 race: laps 2 (0x004342A4) direction forward point-to-point 0
 path 0 @265704 closed 1 @265705 nodes 0..30 count 30 @265710 length 3318.2698 @265716 scale 1 @265720 offset 0 @265712
-spline: uniform closed Catmull-Rom (0x007376B0), length 3318.2705 (0x0059D9F0, 16 chords per segment); node distances differ from it by at most 0.0014648438
+spline: uniform closed Catmull-Rom (0x007376B0), length 3318.27 (0x0059D9F0, 16 chords per segment); node distances differ from it by at most 0.0009765625
 node 11 @265972 x 1646.3746 y 268.57516 distance 1274.2603 @265988 percent 38.401337
-node 12 @265992 x 1646.3746 y 347.427 distance 1353.2732 @266008 percent 40.782486
+node 12 @265992 x 1646.3746 y 347.427 distance 1353.2732 @266008 percent 40.78249
 marker 9 @264640 ForwardStartingPosition 0x8E55C895 param 0 x 1645.6929 y 297.2468 z 55.94176 angle 0x00004000
 marker 19 @265120 ForwardStartLine 0x6A56B90A param 0 x 1647.4514 y 299.9922 z 55.78148 angle 0x00000000
 boundaries (0x00434810): 3 start 0 finish 0
-boundary 0 ForwardStartLine marker 19 @265120 percent 39.343525 distance 1305.5243 start finish
-boundary 1 SplitTimeBoundary1 marker 17 @265024 percent 83.33022 distance 2765.1216
-boundary 2 SplitTimeBoundary2 marker 18 @265072 percent 12.659791 distance 420.08603
+boundary 0 ForwardStartLine marker 19 @265120 percent 39.34353 distance 1305.5244 start finish
+boundary 1 SplitTimeBoundary1 marker 17 @265024 percent 83.33021 distance 2765.121
+boundary 2 SplitTimeBoundary2 marker 18 @265072 percent 12.659794 distance 420.08612
 ```
 
 The start line lies between nodes 11 and 12; the lap, forward from it, runs
@@ -543,31 +662,42 @@ default and the Release build:
 
 ```text
 P="build/nfsu_probe race-route $R/Global/GLOBALB.BUN $R/FrontEnd/FrontB.lzc $R/Tracks/TRACKB1003.lzc 1"
-$P                               104 lines  9970 bytes  8B09EBAEAD1C4A3F400085A1987246D8589F5BF59CE42C6E6A030BFB0EC94F7B
-$P --drive forward               119 lines 11064 bytes  8D70BDE01CE5F3E6BAC5408D7B163DB50AB4B927B4DA63338C27202226843BBE
-$P --drive backward              116 lines 10900 bytes  B62D7A1F0B23F16C53959C18FBB5EB3738D5B987B0F329047BDC588A4EB76106
-$P --drive forward --skip 23 3   118 lines 11049 bytes  87E763A4CA5651E16D539C6C97CF54C17DDD2D62AABBCFE059E3CA76AE84A609
-$P --drive forward --skip 10 20  117 lines 10995 bytes  571FC4AC09CEAC5352A08AB62E3AECCB22B3383638E6A51A2CC4775C7950D962
+$P                               104 lines  9964 bytes  3A764B957901A6D14A3655CCA117BC3604BB1D8C5250BA486E9728815CE03F00
+$P --drive forward               119 lines 11064 bytes  B7912AA7A8FA8BD21319419EE7746D89E2E86D6A427512534F83E93FF54BE566
+$P --drive backward              120 lines 11086 bytes  2557DCFF2D2DD265C9DE5DE7E52272442537C2FE13D0A65C73A59C1D6EB3437A
+$P --drive forward --skip 23 3   118 lines 11049 bytes  795ED0D169C11CF7E84F3F4262081D760F690EF270445AAEB8AAD57B3E6B3B8C
+$P --drive forward --skip 10 20  117 lines 10993 bytes  46601331AC8A248F1549A8069DA6E0879D82656022701B6ECDBC05755376742E
 ```
+
+The second round of the review changed all five, for three reasons: the
+retail order of 0x005AC449's additions moved every percent in its last
+digits (39.343525 to 39.34353 for the start line), which changes the
+listing and every drive; the backward drive now answers no to the
+wrong-way test inside reset zone 13, as retail does after a reset, so it
+gains four lines (`wrong-way-off` on entering the zone, `wrong-way-on` two
+steps later, twice); and the angle is now 0x00564DB0's, which changes no
+verdict of these five runs. No crossing, lap or finish moved to another
+step. The hashes are the same from the default, the Release and the Debug
+build.
 
 **Two laps, finished.** The drive runs from grid slot 0 through 61 nodes,
 0.5 a step:
 
 ```text
 replay: drive forward from marker 9 through 61 nodes, 13300 positions, 13299 steps of 1/60 s
-start: x 1645.6929 y 297.2468 percent 39.265125 next boundary 0
-step 6 crossed-forward boundary 0 ForwardStartLine lap 0 percent 39.35487
-step 2912 crossed-forward boundary 1 SplitTimeBoundary1 lap 0 percent 83.33289
-step 3630 reset-zone zone 13 lap 0 percent 94.29788
-step 4846 crossed-forward boundary 2 SplitTimeBoundary2 lap 0 percent 12.670117
-step 6605 crossed-forward boundary 0 ForwardStartLine lap 1 percent 39.34716
-step 6605 lap-complete lap 1 percent 39.34716
-step 9511 crossed-forward boundary 1 SplitTimeBoundary1 lap 1 percent 83.33289
-step 10229 reset-zone zone 13 lap 1 percent 94.29788
-step 11445 crossed-forward boundary 2 SplitTimeBoundary2 lap 1 percent 12.670117
-step 13204 crossed-forward boundary 0 ForwardStartLine lap 2 percent 39.34716
-step 13204 lap-complete lap 2 percent 39.34716
-step 13204 finished lap 2 percent 39.34716
+start: x 1645.6929 y 297.2468 percent 39.265133 next boundary 0
+step 6 crossed-forward boundary 0 ForwardStartLine lap 0 percent 39.354877
+step 2912 crossed-forward boundary 1 SplitTimeBoundary1 lap 0 percent 83.33287
+step 3630 reset-zone zone 13 lap 0 percent 94.29785
+step 4846 crossed-forward boundary 2 SplitTimeBoundary2 lap 0 percent 12.670119
+step 6605 crossed-forward boundary 0 ForwardStartLine lap 1 percent 39.347164
+step 6605 lap-complete lap 1 percent 39.347164
+step 9511 crossed-forward boundary 1 SplitTimeBoundary1 lap 1 percent 83.33287
+step 10229 reset-zone zone 13 lap 1 percent 94.29785
+step 11445 crossed-forward boundary 2 SplitTimeBoundary2 lap 1 percent 12.670119
+step 13204 crossed-forward boundary 0 ForwardStartLine lap 2 percent 39.347164
+step 13204 lap-complete lap 2 percent 39.347164
+step 13204 finished lap 2 percent 39.347164
 result: steps 13204 laps 2 of 2 finished yes at step 13204 lap-counter 2 highest 2 checkpoint 10 highest-checkpoint 10 next-boundary 1 wrong-way no
 ```
 
@@ -575,24 +705,31 @@ result: steps 13204 laps 2 of 2 finished yes at step 13204 lap-counter 2 highest
 `RESET` zone 13 (box 694.36 to 775.62 by -12.83 to 41.89). The spline itself
 clips it too, between parameters 28.185 and 28.215: the path is the
 progress measure, not a line a car drives, and a car on the road stays
-outside the zone. The game would reset a car there; the replay reports it
-and carries on.
+outside the zone. The game would reset a car there, and the zone's height
+is 0, so no car escapes it; the replay reports it, answers no to the
+wrong-way test while the car is in it, and carries on.
 
 **Reversed: no lap, the wrong way.** The same 61 nodes the other way from
 the node behind the grid:
 
 ```text
 replay: drive backward from marker 9 through 61 nodes, 13257 positions, 13256 steps of 1/60 s
-step 1 wrong-way-on lap -1 percent 39.250973
-step 1755 crossed-backward boundary 2 SplitTimeBoundary2 lap -1 percent 12.655221
-step 3689 crossed-backward boundary 1 SplitTimeBoundary1 lap -1 percent 83.3185
-step 6595 crossed-backward boundary 0 ForwardStartLine lap -2 percent 39.33236
-step 13194 crossed-backward boundary 0 ForwardStartLine lap -3 percent 39.33236
+step 1 wrong-way-on lap -1 percent 39.250977
+step 1755 crossed-backward boundary 2 SplitTimeBoundary2 lap -1 percent 12.655224
+step 2969 reset-zone zone 13 lap -1 percent 94.31331
+step 2969 wrong-way-off lap -1 percent 94.31331
+step 2971 wrong-way-on lap -1 percent 94.28276
+step 3689 crossed-backward boundary 1 SplitTimeBoundary1 lap -1 percent 83.31849
+step 6595 crossed-backward boundary 0 ForwardStartLine lap -2 percent 39.332367
+step 13194 crossed-backward boundary 0 ForwardStartLine lap -3 percent 39.332367
 result: steps 13256 laps 0 of 2 finished no lap-counter -3 highest 0 checkpoint -1 highest-checkpoint -1 next-boundary 0 wrong-way yes
 ```
 
-(the `start:` line and four event lines - the second round of splits and
-two `reset-zone` lines - are omitted here and included in the hash).
+(the `start:` line and 5 event lines - the second round of splits, and
+the second visit to reset zone 13 - are omitted here and included in the
+hash). Inside zone 13 the car is reset and the wrong-way test answers no
+(0x00430EDA..0x00430EDC); two steps later it is outside the zone and going
+the wrong way again.
 
 **A skipped split: the lap still counts.** Jumping in one step from node 23
 (81.3 percent) to node 3 (10.5), 27.2 past split 1 (an excerpt):
@@ -600,8 +737,8 @@ two `reset-zone` lines - are omitted here and included in the hash).
 ```text
 replay: drive forward from marker 9 through 52 nodes, jumping from node 23 to node 3 past 9, 11375 positions, 11374 steps of 1/60 s
 step 2779 missed-forward boundary 1 SplitTimeBoundary1 lap 0 percent 10.535881
-step 2921 crossed-forward boundary 2 SplitTimeBoundary2 lap 0 percent 12.670117
-step 4680 crossed-forward boundary 0 ForwardStartLine lap 1 percent 39.34716
+step 2921 crossed-forward boundary 2 SplitTimeBoundary2 lap 0 percent 12.670119
+step 4680 crossed-forward boundary 0 ForwardStartLine lap 1 percent 39.347164
 result: steps 11279 laps 2 of 2 finished yes at step 11279 lap-counter 2 highest 2 checkpoint 10 highest-checkpoint 10 next-boundary 1 wrong-way no
 ```
 
@@ -610,9 +747,9 @@ percent) to node 20 (68.6), 29.3 past the line (an excerpt):
 
 ```text
 replay: drive forward from marker 9 through 52 nodes, jumping from node 10 to node 20 past 9, 11200 positions, 11199 steps of 1/60 s
-step 6438 missed-forward boundary 0 ForwardStartLine lap 0 percent 68.60373
-step 11104 crossed-forward boundary 0 ForwardStartLine lap 1 percent 39.34716
-step 11104 lap-complete lap 1 percent 39.34716
+step 6438 missed-forward boundary 0 ForwardStartLine lap 0 percent 68.603714
+step 11104 crossed-forward boundary 0 ForwardStartLine lap 1 percent 39.347164
+step 11104 lap-complete lap 1 percent 39.347164
 result: steps 11199 laps 1 of 2 finished no lap-counter 1 highest 1 checkpoint 5 highest-checkpoint 5 next-boundary 1 wrong-way no
 ```
 
@@ -644,37 +781,105 @@ a reverse crossing taking the lap back) and one that stops one float short
 further (missed); a skipped split and a skipped finish line; the wrong way
 round; a creeping car; `NO_WRONG_WAY`, `WRONG_WAY` and `RESET` zones and
 the direction filter; the recovery rule; and a load from a file, and a
-fixture writer that does not replace one. `tests/race_route_guards.cmake` (ctest
+fixture writer that does not replace one. The review's round added:
+`track_angle` at the cardinal and diagonal directions, the review's two
+near-tie directions, the four threshold steps, and two grids of 4096
+directions each against the SHA-256 of an independent model's answers,
+and the table against the executable's SHA-256; the wrong-way flag at
+20023 and 20024 units off, and at 18203 and 18204 once on or still off,
+with steps whose angles are exact; a reset zone of height 0 and of 48
+answering no; the off-path rule, reported twice and never searched; the lap
+byte wrapping after 129 backward crossings; a race of no laps; the reverse
+defaults, a default past 100 and the first of two markers of a name; three
+control points and two; node 0's neighbour before it; the circle's loop
+length in the retail order (0x441D07B6; the first version's order gives
+0x441D07B7); the secant search's step halving near the circle's centre;
+and nodes at 1e30, -1e30 and 3e38, a marker at 2e6, a length of 1e-30, a
+scale of 1e12 and 3e38, an offset of 50 and a length 11 percent long all
+refused, and a route of absurd percents built by hand replaying in bounded
+time. `tests/race_route_guards.cmake` (ctest
 `nfsu_probe_race_route_guards`) drives the command: the usage and option
 refusals, three missing files, the listing and the forward drive over the
 fixture pinned by SHA-256, the backward drive, both skips, a reverse event,
 a missing event, another track's bundle, a skip outside the path, a path
-file round a square, seven malformed path files and a missing one.
+file round a square, seven malformed path files and a missing one, and
+three bundles of absurd numbers (a length of 1e-30, a scale of 3e38, a node
+at 1e30) each exiting 3 with its reason.
 
 ### Deliberate breaks
 
-Each mutant was applied to `src/race_route.cpp` alone, the tests rebuilt
-and run, the source restored byte for byte and touched. Twelve mutants, and
-each made `nfsu_race_route_tests` print a failure line and exit 1:
+Forty mutants of `src/race_route.cpp`, each applied alone: the first 28
+are the review's own sweep of the first version (comment 3575), redone on
+this code, and 29 to 40 break what this round added. For each, only
+`nfsu_race_route_tests` and `nfsu_probe` were rebuilt; the unit binary ran
+under a 60-second limit and `ctest -R race_route_guards` after it; the
+source was then restored byte for byte and touched. A run is classified by
+what it printed: *killed* when the unit binary printed a `test failure:`
+line or the guards a `CMake Error` or failed-case line, *timeout* when the
+unit binary did not return in 60 seconds (ctest's own TIMEOUT of 60 fails it
+the same way), *passed* when it exited 0 with neither, and *unknown*
+otherwise; a mutant survives only when both passed.
 
-| Mutant | First failure |
-| --- | --- |
-| window `<= 25` made `< 25` | landing exactly 25 past counts |
-| forward `now >= 0` made `now > 0` | touching the line and backing off |
-| backward crossing of the finish no longer takes a lap | touching the line and backing off; the lap is taken back |
-| finished at `max_lap > laps` | two laps |
-| recovery every 61 steps | recovery happens on a multiple of 60 |
-| the 128 re-search removed | a jump across the circle is searched from every node |
-| the running length not shifted at the seam | the running length is carried over the seam |
-| reverse splits in forward order | a reverse race lists the splits the other way round |
-| the lap-skip byte ignored | a lap-skip track runs one lap |
-| `missed-forward` not reported | landing past the window is missed |
-| no speed gate | a creeping car is not flagged |
-| the zone direction filter ignored | a zone for the other direction does not apply |
+| # | Mutant | Unit tests | Guards | Verdict |
+| ---: | --- | --- | --- | --- |
+| 01 | window <= 25 made < 25 | killed | passed | killed |
+| 02 | forward now >= 0 made > 0 | killed | passed | killed |
+| 03 | backward before >= 0 made > 0 | killed | passed | killed |
+| 04 | backward finish takes no lap | killed | killed | killed |
+| 05 | new lap when lap >= max | killed | killed | killed |
+| 06 | laps 0 guard removed | killed | passed | killed |
+| 07 | checkpoint 4*lap+index | killed | killed | killed |
+| 08 | wrap_percent disabled | killed | killed | killed |
+| 09 | wrong-way angle 20025 | killed | passed | killed |
+| 10 | hysteresis while off | killed | passed | killed |
+| 11 | speed gate 100 mph | killed | killed | killed |
+| 12 | NO_WRONG_WAY does not decide | killed | passed | killed |
+| 13 | reseed 128 made 256 | killed | killed | killed |
+| 14 | recovery on step % 60 == 1 | killed | passed | killed |
+| 15 | reverse split defaults swapped | killed | passed | killed |
+| 16 | default start 6 | killed | passed | killed |
+| 17 | default above 100 not wrapped | killed | passed | killed |
+| 18 | seam copy below zero adds length | killed | passed | killed |
+| 19 | tolerance 0.5 | killed | killed | killed |
+| 20 | closed wrap to end-2 | killed | passed | killed |
+| 21 | chords 8 | killed | killed | killed |
+| 22 | last marker of a name | killed | passed | killed |
+| 23 | zone vertex limit 16 | killed | passed | killed |
+| 24 | count at least 2 | killed | passed | killed |
+| 25 | reverse distance not turned | killed | killed | killed |
+| 26 | secant step not halved | killed | passed | killed |
+| 27 | missed-forward not reported | killed | killed | killed |
+| 28 | wrong-way off >= made > | killed | passed | killed |
+| 29 | F1 percent_ahead unbounded | timeout | passed | killed |
+| 30 | F1 loop-measure check removed | killed | passed | killed |
+| 31 | F1 node coordinate limit removed | killed | killed | killed |
+| 32 | F2 atan2 instead of 0x00564DB0 | killed | passed | killed |
+| 33 | F4 first-round summation order | killed | killed | killed |
+| 34 | F5 reset does not answer no | killed | passed | killed |
+| 35 | F6 off-path branch removed | killed | passed | killed |
+| 36 | lap byte not wrapped | killed | passed | killed |
+| 37 | finish when highest >= laps | killed | passed | killed |
+| 38 | one table slope off by one | killed | passed | killed |
+| 39 | twelve intervals made eleven | killed | passed | killed |
+| 40 | off-path at 300 not 5000 | killed | passed | killed |
 
-The 128 re-search mutant survived the first version of the tests, whose
-jumps all landed where the search from the old node converges anyway on a
-circle; the jump straight across the circle was added for it.
+Totals: 40 mutants, 40 killed, 0 survived, 0 other. The source's SHA-256 was the same after the sweep as before it, and the
+restored build passed. Mutant 29 puts back the first version's unbounded
+wraps: the unit binary never returns from the route of absurd percents,
+which is F1 of the review reproduced. Mutant 39 was an equivalent mutant
+for `track_angle` - its ratio never reaches the third of the arcsine's
+twelve intervals - until the test of `track_arcsine_angle` over its whole
+range was added for it. Mutant 37, finishing on `>=` rather than `==`, is
+killed only by the lap byte's wrap: with an ordinary integer the two are the
+same.
+
+The review's ten survivors are among the 28 - the three wrong-way angle
+rules (9, 10, 28), the laps-0 guard (6), the reverse split defaults (15),
+the wrap of a default above 100 (17), the closed wrap to the last node (20),
+the first marker of a name (22), the count of three (24) and the step
+halving (26) - and each is now killed by a test written for it. The first
+version's own twelve mutants, all killed then, overlap these, and every
+test that killed them is still in place.
 
 ## Approximations, labelled
 
@@ -685,19 +890,29 @@ circle; the jump straight across the circle was added for it.
 - **The frame counter.** The recovery rule's multiple of 60 is counted on
   replay steps from the first; the phase of the game's own counter
   (0x006F08A4) against the race start is not traced. The car's +0x28 test
-  beside it is taken as set.
+  beside it, and 0x00736090 in the off-path rule, are taken as set and
+  clear. The check every 32 frames beside them (0x00426B03..0x00426B59,
+  which can also set +0x87C) is not modelled.
 - **Resets are reported, not done.** A `reset-zone` event marks where
-  0x00427ED0 would put the car back; the height gate at zone +0x14 is not
-  evaluated, the car is not moved, and the wrong-way test then runs as it
-  does after a reset.
+  0x00427ED0 puts the car back, and the wrong-way test answers no there, as
+  retail does after a reset. A position has no height, so a zone whose
+  +0x14 height is not zero is taken to reset as one of height 0 does; every
+  reset zone of 1003 has height 0. The car is not moved, so on the next
+  step outside the zone the test runs from where the replay put it, and an
+  `off-path` event likewise reports +0x87C without the reset it leads to.
+- **The lap update's own gate.** 0x004338C0 runs only for a car whose +0x28,
+  or whose +0x14 record's +0x734 byte, is set (0x004338CA..0x004338DF); a
+  replayed car is taken to pass it.
 - **The start.** 0x004333C0 reads the coordinate the car already has; a
   replay starts a coordinate at the first position with a search from every
   node.
-- **Angles.** 0x00564DB0 is not traced; `atan2` rounded to a 16-bit angle
-  stands in for it, and only differences of two such angles are used.
 - **Float.** The arithmetic is float in retail's order, which the Direct3D
   precision setting above makes the right model; x87 exponent range and
   the run-time `D3DXVec4Transform` choice can still differ in the last bit.
+- **The markers' number.** The first marker of a name is projected; retail
+  would take the last one numbered `[0x0078A340]` for `BackwardStartLine`
+  and `ForwardFinishLine` when that global is set, which no retail bundle
+  can show.
 - **Two flags.** 0x0078A344 and 0x007361A8, which also force one lap, are
   taken as clear.
 
@@ -710,10 +925,10 @@ circle; the jump straight across the circle was added for it.
   mean, and what 0x004430B0 does with them for a reverse race.
 - The zone distances at +0x1C .. +0x24 and every zone type but the four the
   wrong-way test reads.
-- What the car's +0x87C flag (set more than 5000 from the tracked node)
-  and the zone record's +0x14 height gate lead to.
-- What sets 0x0078A340, the number matched for the backward start line and
-  the finish lines.
+- What consumes the car's +0x87C flag (set more than 5000 from the
+  tracked node and by a `RESET` zone), and what 0x00736090 is.
+- What sets 0x0078A340, the number matched for `BackwardStartLine` and
+  `ForwardFinishLine`.
 - The marker height at +0x18 and what reads the start line's angle beyond
   0x0047CB35.
 

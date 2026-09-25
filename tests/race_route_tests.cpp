@@ -1,4 +1,5 @@
 #include "nfsu/race_route.h"
+#include "nfsu/sha256.h"
 
 #include <array>
 #include <cmath>
@@ -8,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -259,7 +261,11 @@ Bytes track_image(const TrackSpec& spec) {
     if (spec.length != 0.0F) {
         return track_image_with_length(spec, spec.length);
     }
-    const Bytes probe = track_image_with_length(spec, 1.0F);
+    // A circle's circumference is within a fraction of a percent of its
+    // Catmull-Rom loop, close enough for the loop to build, and the loop's
+    // own measure is then written back.
+    const Bytes probe = track_image_with_length(
+        spec, static_cast<float>(2.0 * kPi * static_cast<double>(spec.radius)));
     const nfsu::RaceRouteTrack track = nfsu::parse_race_route_track(probe.data(), probe.size());
     nfsu::TrackPathSpline spline;
     std::string error;
@@ -935,9 +941,418 @@ void test_recovery() {
           "after the cut the car is measured where it is");
 }
 
-// --write-fixture <trackb>: the circle with a reset zone at its centre, for
-// tests/race_route_guards.cmake. Never replaces a file.
-bool write_fixture(const std::string& path) {
+
+// ---------------------------------------------------------------------
+// Round 2: the retail angle, the wrong-way thresholds, resets, the
+// off-path rule, the lap counter's width, absurd data and the retail
+// summation order
+// ---------------------------------------------------------------------
+
+std::uint32_t float_bits(float value) {
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+// 0x00564DB0 against an independent model of it (a numpy float32
+// transcription of the disassembly, kept with the review's evidence), and
+// the table against the executable's bytes.
+void test_track_angle() {
+    struct Case {
+        float x;
+        float y;
+        std::uint16_t angle;
+    };
+    const Case cases[] = {
+        {1.0F, 0.0F, 0},          {0.0F, 1.0F, 16384},       {-1.0F, 0.0F, 32768},
+        {0.0F, -1.0F, 49152},     {1.0F, 1.0F, 8192},        {-1.0F, 1.0F, 24576},
+        {-1.0F, -1.0F, 40960},    {1.0F, -1.0F, 57344},      {3.0F, 4.0F, 9673},
+        // No length at all: the steep branch with a ratio of 0.
+        {0.0F, 0.0F, 16384},
+        // The two directions the review found atan2 splitting between
+        // MinGW and newlib: the retail routine gives both 20023.
+        {-3.9831483F, 10.948146F, 20023}, {-3.9831486F, 10.948146F, 20023},
+        // The wrong-way thresholds below, as dyadic steps.
+        {-5960.0F / 16384.0F, 1.0F, 20023}, {-5962.0F / 16384.0F, 1.0F, 20024},
+        {-2888.0F / 16384.0F, 1.0F, 18203}, {-2889.0F / 16384.0F, 1.0F, 18204},
+    };
+    for (const Case& c : cases) {
+        const std::uint16_t got = nfsu::track_angle(c.x, c.y);
+        check(got == c.angle, "track_angle(" + std::to_string(c.x) + ", " +
+                                  std::to_string(c.y) + ") = " + std::to_string(got) +
+                                  ", expected " + std::to_string(c.angle));
+    }
+    // 4096 directions on two grids, hashed as little-endian 16-bit angles;
+    // the digests are the independent model's.
+    unsigned char grid[4096 * 2];
+    unsigned char grid2[4096 * 2];
+    for (int i = 0; i < 4096; ++i) {
+        const float x = static_cast<float>(i % 64) - 31.5F;
+        const float y = static_cast<float>(i / 64) - 31.5F;
+        const std::uint16_t a = nfsu::track_angle(x, y);
+        grid[i * 2] = static_cast<unsigned char>(a & 0xFFU);
+        grid[i * 2 + 1] = static_cast<unsigned char>(a >> 8U);
+        const float x2 = static_cast<float>(((i * 37) % 4096) - 2048) / 256.0F;
+        const float y2 = static_cast<float>(((i * 101) % 4096) - 2047) / 1024.0F;
+        const std::uint16_t b = nfsu::track_angle(x2, y2);
+        grid2[i * 2] = static_cast<unsigned char>(b & 0xFFU);
+        grid2[i * 2 + 1] = static_cast<unsigned char>(b >> 8U);
+    }
+    check(nfsu::sha256_hex(nfsu::sha256(grid, sizeof(grid))) ==
+              "85ACB1D0BC1095DB5AA97E8E9360DE674D06DB83F1090DDD52D9CFCCB26F413E",
+          "track_angle over the first grid matches the model");
+    check(nfsu::sha256_hex(nfsu::sha256(grid2, sizeof(grid2))) ==
+              "09C286ECB5B1E405977B47680A5F0FB6C5A99EBD7AFF9A967B4141B280D59751",
+          "track_angle over the second grid matches the model");
+    // 0x00564CD0 over its whole range, which track_angle never leaves the
+    // first two of its twelve intervals of: 4096 sines from -1.08 to 1.08
+    // and 64 either side of 1 in steps of 2^-16, hashed as little-endian
+    // 32-bit angles against the model's digest.
+    std::vector<unsigned char> sines;
+    const auto put_angle = [&](std::uint32_t a) {
+        for (unsigned int b = 0; b < 4; ++b) {
+            sines.push_back(static_cast<unsigned char>((a >> (8U * b)) & 0xFFU));
+        }
+    };
+    for (int i = 0; i < 4096; ++i) {
+        put_angle(nfsu::track_arcsine_angle(static_cast<float>(i - 2048) / 1900.0F));
+    }
+    for (int k = 0; k < 64; ++k) {
+        const float s = 1.0F - static_cast<float>(k) / 65536.0F;
+        put_angle(nfsu::track_arcsine_angle(s));
+        put_angle(nfsu::track_arcsine_angle(-s));
+    }
+    check(nfsu::sha256_hex(nfsu::sha256(sines.data(), sines.size())) ==
+              "546A16A352903AAFA9AFAB8EBF943FE4F884316ACD6269BD2BDB38E5306BD1A8",
+          "the arcsine over its whole range matches the model");
+    unsigned char table[nfsu::kTrackAngleTableBytes];
+    nfsu::track_angle_table_bytes(table);
+    check(nfsu::sha256_hex(nfsu::sha256(table, sizeof(table))) ==
+              "BA4B65CEDA6B5BE5C8F7A7FC2D52B0A16D03D9507D602590BACB78DC98E71A87",
+          "the arcsine table is the executable's 1664 bytes at 0x006F2280");
+}
+
+// A circle whose wrong-way reference is +x everywhere: a WRONG_WAY zone of
+// direction (1, 0) over the whole track, so the step's own angle decides.
+// Every step is (-t, 1) with t a multiple of 1/16384, which every position
+// holds exactly, so each step's angle is the table's above.
+Replay wrong_way_run(const std::vector<int>& steps) {
+    TrackSpec spec = circle_spec();
+    spec.zones = {square_zone(nfsu::kZoneWrongWay, -1000, -1000, 1000, 1000, -1, 1.0F, 0.0F)};
+    const nfsu::RaceRouteTrack track = parse(track_image(spec));
+    check(track.ok(), "the wrong-way circle parses");
+    const nfsu::RaceRoute route = circle_route(track, 2, 0);
+    std::vector<std::array<float, 2>> points;
+    float x = 100.0F;
+    float y = 0.0F;
+    points.push_back({x, y});
+    for (const int t : steps) {
+        x = x - static_cast<float>(t) / 16384.0F;
+        y = y + 1.0F;
+        points.push_back({x, y});
+    }
+    return replay(route, track, points);
+}
+
+std::string wrong_way_events(const Replay& run) {
+    std::string text;
+    for (const nfsu::RaceProgressEvent& event : run.events) {
+        if (event.kind == nfsu::RaceEventKind::wrong_way_on ||
+            event.kind == nfsu::RaceEventKind::wrong_way_off) {
+            text += nfsu::race_event_kind_name(event.kind);
+            text += '@';
+            text += std::to_string(event.step);
+            text += ' ';
+        }
+    }
+    return text;
+}
+
+void test_wrong_way_thresholds() {
+    // Off: 20023 units is not the wrong way, 20024 is (0x00430F49 `jb`).
+    check(wrong_way_events(wrong_way_run({5960, 5960, 5962})) == "wrong-way-on@3 ",
+          "20023 stays off and 20024 turns on: " +
+              wrong_way_events(wrong_way_run({5960, 5960, 5962})));
+    // On: 1820 is added (0x00430EF7..0x00430F21), so 18204 stays on and
+    // 18203 turns it off.
+    check(wrong_way_events(wrong_way_run({5962, 2889, 2889, 2888})) ==
+              "wrong-way-on@1 wrong-way-off@4 ",
+          "18204 keeps it on and 18203 turns it off: " +
+              wrong_way_events(wrong_way_run({5962, 2889, 2889, 2888})));
+    // The 1820 is only added while the flag is on: 18204 from off stays off.
+    check(wrong_way_events(wrong_way_run({2889, 2890, 2889})).empty(),
+          "18204 from off stays off: " + wrong_way_events(wrong_way_run({2889, 2890, 2889})));
+}
+
+// A reset zone answers no (0x00430EDA..0x00430EDC): driving the wrong way
+// into one turns the flag off, and leaving it turns it on again.
+void test_reset_answers_no() {
+    for (const float height : {0.0F, 48.0F}) {
+        TrackSpec spec = circle_spec();
+        ZoneSpec zone = square_zone(nfsu::kZoneReset, -60, 60, -20, 110);
+        spec.zones = {zone};
+        Bytes image = track_image(spec);
+        // +0x14 of the one zone record: the height 0x00427ED9 tests.
+        const std::size_t zone_record = path_record_offset(spec) + 40 + 8 + 16 * 20 + 8;
+        put_f32(image, zone_record + 0x14, height);
+        const nfsu::RaceRouteTrack track = parse(image);
+        check(track.ok() && track.zones.size() == 1 && track.zones[0].height == height,
+              "the reset circle parses with its height");
+        const nfsu::RaceRoute route = circle_route(track, 2, 0);
+        std::vector<std::array<float, 2>> points;
+        arc(points, 170.0, 60.0, 0.25);
+        const Replay run = replay(route, track, points);
+        std::string text;
+        for (const nfsu::RaceProgressEvent& event : run.events) {
+            if (event.kind == nfsu::RaceEventKind::wrong_way_on ||
+                event.kind == nfsu::RaceEventKind::wrong_way_off ||
+                event.kind == nfsu::RaceEventKind::reset_zone) {
+                text += nfsu::race_event_kind_name(event.kind);
+                text += ' ';
+            }
+        }
+        check(text == "wrong-way-on reset-zone wrong-way-off wrong-way-on ",
+              "a reset zone of height " + std::to_string(height) +
+                  " answers no while the car is in it: " + text);
+    }
+}
+
+// More than 5000 from the tracked node: +0x87C, and no search
+// (0x00426B8C..0x00426BAC), however many steps pass.
+void test_off_path() {
+    TrackSpec wide = circle_spec();
+    wide.radius = 1000.0F;
+    for (MarkerSpec& marker : wide.markers) {
+        marker.x *= 10.0F;
+        marker.y *= 10.0F;
+    }
+    const nfsu::RaceRouteTrack track = parse(track_image(wide));
+    const nfsu::RaceRoute route = circle_route(track, 2, 0);
+    std::vector<std::array<float, 2>> points;
+    arc(points, 0.0, 5.0, 0.05, 1000.0);
+    const std::array<float, 2> away = {8000.0F, 0.0F};
+    const std::array<float, 2> back = points.back();
+    for (int round = 0; round < 2; ++round) {
+        for (int k = 0; k < 130; ++k) {
+            points.push_back(away);
+        }
+        for (int k = 0; k < 10; ++k) {
+            points.push_back(back);
+        }
+    }
+    const Replay run = replay(route, track, points);
+    int off_path = 0;
+    int recovered = 0;
+    for (const nfsu::RaceProgressEvent& event : run.events) {
+        off_path += event.kind == nfsu::RaceEventKind::off_path ? 1 : 0;
+        recovered += event.kind == nfsu::RaceEventKind::recovered ? 1 : 0;
+    }
+    check(off_path == 2, "off-path is reported once each time the car goes beyond 5000: " +
+                             std::to_string(off_path));
+    check(recovered == 0, "a coordinate beyond 5000 is not searched again: " +
+                              std::to_string(recovered));
+}
+
+// +0x08 is a signed byte: 129 backward crossings from -1 wrap it to 126,
+// and the next forward crossing is a new highest lap, 127. The race is not
+// finished: 0x00435A43 finishes on equality with the lap count.
+void test_lap_counter_width() {
+    const nfsu::RaceRouteTrack track = parse(track_image(circle_spec()));
+    const nfsu::RaceRoute route = circle_route(track, 2, 0);
+    std::vector<std::array<float, 2>> points;
+    arc(points, 80.0, 80.0 - 129.0 * 360.0, 5.0);
+    arc(points, 80.0 - 129.0 * 360.0, 80.0 - 129.0 * 360.0 + 30.0, 5.0);
+    const Replay run = replay(route, track, points);
+    int backward = 0;
+    for (const nfsu::RaceProgressEvent& event : run.events) {
+        backward += event.kind == nfsu::RaceEventKind::crossed_backward && event.index == 0 ? 1 : 0;
+    }
+    check(backward == 129, "129 backward crossings of the line: " + std::to_string(backward));
+    check(run.progress.lap == 127 && run.progress.max_lap == 127 && !run.progress.finished,
+          "the lap byte wraps to 126 and the next crossing is lap 127, not finished: lap " +
+              std::to_string(run.progress.lap) + " highest " +
+              std::to_string(run.progress.max_lap));
+    check(!run.events.empty() && run.events.back().kind == nfsu::RaceEventKind::lap_complete &&
+              run.events.back().lap == 127,
+          "the last event is lap 127 complete");
+}
+
+// A race of no laps is never finished (0x00435A1D `test eax, eax`).
+void test_no_laps() {
+    const nfsu::RaceRouteTrack track = parse(track_image(circle_spec()));
+    const nfsu::RaceRoute route = circle_route(track, 0, 0);
+    std::vector<std::array<float, 2>> points;
+    arc(points, 80.0, 80.0 + 3.0 * 360.0 + 20.0, 1.0);
+    const Replay run = replay(route, track, points);
+    check(run.progress.max_lap == 3 && !run.progress.finished, "a race of 0 laps never finishes");
+}
+
+// The defaults of a reverse race, the wrap of a default above 100, and the
+// first of two markers of one name.
+void test_boundary_details() {
+    TrackSpec bare = circle_spec();
+    bare.markers = {{"Unrelated", 0, 0.0F, 0.0F, 0}};
+    const nfsu::RaceRouteTrack bare_track = parse(track_image(bare));
+    const nfsu::RaceRoute reverse = circle_route(bare_track, 2, 1);
+    check(reverse.boundaries.size() == 3 && reverse.boundaries[0].name == "BackwardStartLine" &&
+              reverse.boundaries[0].percent == 5.0F &&
+              reverse.boundaries[1].name == "SplitTimeBoundary2" &&
+              reverse.boundaries[1].percent == 38.0F &&
+              reverse.boundaries[2].name == "SplitTimeBoundary1" &&
+              reverse.boundaries[2].percent == 71.0F,
+          "reverse defaults: 5, then split 2 at start + 33 and split 1 at start + 66");
+
+    // A start line at 330 degrees, 91.7 percent: the splits' defaults pass
+    // 100 and have 100 taken off (0x004347BA..).
+    TrackSpec late = circle_spec();
+    late.markers = {{"ForwardStartLine", 0, 86.60254F, -50.0F, 0}};
+    const nfsu::RaceRouteTrack late_track = parse(track_image(late));
+    const nfsu::RaceRoute wrapped = circle_route(late_track, 2, 0);
+    const float start = wrapped.boundaries.empty() ? 0.0F : wrapped.boundaries[0].percent;
+    check(wrapped.boundaries.size() == 3 && start > 91.0F &&
+              wrapped.boundaries[1].percent == (start + 33.0F) - 100.0F &&
+              wrapped.boundaries[2].percent == (start + 66.0F) - 100.0F,
+          "defaults past 100 wrap below it");
+
+    // Two ForwardStartLine markers: GetMarker(hash, 0) takes the first.
+    TrackSpec twice = circle_spec();
+    twice.markers.push_back({"ForwardStartLine", 0, -100.0F, 0.0F, 0});
+    const nfsu::RaceRouteTrack twice_track = parse(track_image(twice));
+    const nfsu::RaceRoute first = circle_route(twice_track, 2, 0);
+    check(!first.boundaries.empty() && first.boundaries[0].marker == 1 &&
+              std::fabs(first.boundaries[0].percent - 25.0F) < 0.3F,
+          "the first marker of a name is the one projected");
+}
+
+// Three control points are enough, two are not.
+void test_count_bound() {
+    TrackSpec three = circle_spec();
+    three.nodes = 3;
+    three.length = 250.0F;
+    check(parse(track_image(three)).ok(), "a path of three control points parses");
+    TrackSpec two = circle_spec();
+    two.nodes = 2;
+    two.length = 250.0F;
+    const Bytes image = track_image(two);
+    const nfsu::RaceRouteTrack track = parse(image);
+    check(!track.ok() && has_issue(track, path_record_offset(two) + 6, "at least 3"),
+          "a path of two control points is refused");
+}
+
+// On a closed path, node 0's neighbour before it is the last node
+// (0x0044395F..0x00443977).
+void test_closed_neighbour() {
+    const nfsu::RaceRouteTrack track = parse(track_image(circle_spec()));
+    nfsu::TrackPathSpline spline;
+    std::string error;
+    check(nfsu::build_track_path_spline(track, false, spline, error), "the circle builds");
+    nfsu::TrackPathCoordinate coordinate;
+    const float at_node0[2] = {100.0F, 0.0F};
+    nfsu::update_track_path_coordinate(spline, track, coordinate, at_node0);
+    check(coordinate.node == 0, "the coordinate starts on node 0");
+    const float at_node15[2] = {92.387953F, -38.268343F};
+    nfsu::update_track_path_coordinate(spline, track, coordinate, at_node15);
+    check(coordinate.node == 15, "node 0's neighbour before it is node 15: " +
+                                     std::to_string(coordinate.node));
+}
+
+// 0x005AC449's own order of additions, pinned on the circle: w, y, x, z for
+// the running length. The first round's order (w, y, z, x everywhere)
+// measures 628.12054 (0x441D07B7); the retail order 628.1205 (0x441D07B6).
+void test_summation_order() {
+    const nfsu::RaceRouteTrack track = parse(track_image(circle_spec()));
+    nfsu::TrackPathSpline spline;
+    std::string error;
+    check(nfsu::build_track_path_spline(track, false, spline, error), "the circle builds");
+    check(float_bits(spline.spline_length) == 0x441D07B6U,
+          "the circle's loop measures 0x441D07B6 in the retail order: " +
+              std::to_string(float_bits(spline.spline_length)));
+    check(float_bits(spline.points[4 * 3 + 2]) == 0x431D07B4U,
+          "node 4's running length in the retail order");
+}
+
+// 0x0059D6DA..0x0059D6F9 halve the step whenever it changes direction. Near
+// the circle's centre the search swings; the halving is what lands it on
+// this parameter in nine evaluations (without it: seven, and 0.51778).
+void test_secant_halving() {
+    const nfsu::RaceRouteTrack track = parse(track_image(circle_spec()));
+    nfsu::TrackPathSpline spline;
+    std::string error;
+    check(nfsu::build_track_path_spline(track, false, spline, error), "the circle builds");
+    nfsu::TrackPathCoordinate coordinate;
+    const float query[2] = {-9.75F, -0.75F};
+    nfsu::update_track_path_coordinate(spline, track, coordinate, query);
+    check(coordinate.iterations == 9 && std::fabs(coordinate.fraction - 0.517994761F) < 1e-6F,
+          "the swinging search near the centre: " + std::to_string(coordinate.iterations) +
+              " evaluations, fraction " + std::to_string(coordinate.fraction));
+}
+
+// Data the parser once let through that made the replay loop forever.
+void test_absurd_data() {
+    const TrackSpec spec = circle_spec();
+    const std::size_t record = path_record_offset(spec);
+    const std::size_t nodes = record + 40 + 8;
+    {
+        for (const float distant : {1.0e30F, -1.0e30F, 3.0e38F}) {
+            Bytes image = track_image(spec);
+            put_f32(image, nodes + 7 * 20, distant);
+            const nfsu::RaceRouteTrack track = parse(image);
+            check(!track.ok() && has_issue(track, nodes + 7 * 20, "further than"),
+                  "a node at " + std::to_string(distant) + " is refused");
+        }
+        Bytes image = track_image(spec);
+        put_f32(image, kMarkerRecordOffset + 48 + 16, 2.0e6F);
+        const nfsu::RaceRouteTrack track = parse(image);
+        check(!track.ok() && has_issue(track, kMarkerRecordOffset + 48 + 16, "further than"),
+              "a marker at 2e6 is refused");
+    }
+    struct Field {
+        std::size_t at;
+        float value;
+        const char* what;
+    };
+    const Field fields[] = {
+        {record + 12, 1.0e-30F, "a length of 1e-30"},
+        {record + 16, 1.0e12F, "a scale of 1e12"},
+        {record + 16, 3.0e38F, "a scale of 3e38"},
+        {record + 8, 50.0F, "an offset of 50"},
+        {record + 12, 700.0F, "a length 11 percent long"},
+    };
+    for (const Field& field : fields) {
+        Bytes image = track_image(spec);
+        put_f32(image, field.at, field.value);
+        const nfsu::RaceRouteTrack track = parse(image);
+        check(track.ok(), std::string(field.what) + " parses");
+        nfsu::RaceRoute route;
+        std::string error;
+        check(!nfsu::build_race_route(track, 2, 0, 0, route, error) &&
+                  error.find("measure its own loop") != std::string::npos,
+              std::string(field.what) + " is refused by the route: " + error);
+    }
+
+    // A route whose percents are absurd anyway - built by hand - still
+    // replays in bounded time: every wrap here is at most two turns.
+    const nfsu::RaceRouteTrack track = parse(track_image(spec));
+    nfsu::RaceRoute route = circle_route(track, 2, 0);
+    route.boundaries[1].percent = 1.0e20F;
+    route.boundaries[2].percent = std::numeric_limits<float>::infinity();
+    std::vector<std::array<float, 2>> points;
+    arc(points, 80.0, 100.0, 1.0);
+    const Replay run = replay(route, track, points);
+    check(run.progress.step == points.size() - 1, "a route of absurd percents replays");
+    nfsu::RaceDrive drive;
+    std::string error;
+    route.boundaries[0].percent = -1.0e20F;
+    check(nfsu::make_race_drive(route, track, false, -1, -1, 0.5F, drive, error),
+          "a drive over absurd percents is built: " + error);
+}
+
+// --write-fixture <trackb> [variant]: the circle with a reset zone at its
+// centre, for tests/race_route_guards.cmake, or one of three variants the
+// first round's parser let through and its replay never returned from:
+// tiny-length (the path length 1e-30), huge-scale (the scale 3e38) and
+// far-node (node 7 at x = 1e30). Never replaces a file.
+bool write_fixture(const std::string& path, const std::string& variant) {
     std::error_code code;
     if (fs::exists(path, code)) {
         std::cerr << "error: --write-fixture " << path
@@ -946,7 +1361,18 @@ bool write_fixture(const std::string& path) {
     }
     TrackSpec spec = circle_spec();
     spec.zones = {square_zone(nfsu::kZoneReset, -10, -10, 10, 10)};
-    const Bytes image = track_image(spec);
+    Bytes image = track_image(spec);
+    const std::size_t record = path_record_offset(spec);
+    if (variant == "tiny-length") {
+        put_f32(image, record + 12, 1.0e-30F);
+    } else if (variant == "huge-scale") {
+        put_f32(image, record + 16, 3.0e38F);
+    } else if (variant == "far-node") {
+        put_f32(image, record + 40 + 8 + 7 * 20, 1.0e30F);
+    } else if (variant != "circle") {
+        std::cerr << "error: unknown fixture variant " << variant << '\n';
+        return false;
+    }
     std::ofstream stream(path, std::ios::binary);
     if (!stream.write(reinterpret_cast<const char*>(image.data()),
                       static_cast<std::streamsize>(image.size()))) {
@@ -960,12 +1386,13 @@ void test_load_from_file() {
     const fs::path path = fs::temp_directory_path() / (unique_fixture("trackb") + ".lzc");
     std::error_code code;
     fs::remove(path, code);
-    check(write_fixture(path.string()), "the fixture is written");
+    check(write_fixture(path.string(), "circle"), "the fixture is written");
     std::vector<unsigned char> image;
     const nfsu::RaceRouteTrack track = nfsu::load_race_route_track(path, image);
     check(track.ok() && track.stored_size == image.size() && !track.jdlz,
           "the fixture loads from a file");
-    check(!write_fixture(path.string()), "the fixture writer never replaces a file");
+    check(!write_fixture(path.string(), "circle"),
+          "the fixture writer never replaces a file");
     fs::remove(path, code);
     const nfsu::RaceRouteTrack missing = nfsu::load_race_route_track(path, image);
     check(!missing.ok() && !missing.issues.empty() &&
@@ -976,11 +1403,12 @@ void test_load_from_file() {
 } // namespace
 
 int main(int argc, char** argv) {
-    if (argc == 3 && std::string(argv[1]) == "--write-fixture") {
-        return write_fixture(argv[2]) ? 0 : 1;
+    if ((argc == 3 || argc == 4) && std::string(argv[1]) == "--write-fixture") {
+        return write_fixture(argv[2], argc == 4 ? argv[3] : "circle") ? 0 : 1;
     }
     if (argc != 1) {
-        std::cerr << "usage: nfsu_race_route_tests [--write-fixture <trackb>]\n";
+        std::cerr << "usage: nfsu_race_route_tests [--write-fixture <trackb> "
+                     "[circle|tiny-length|huge-scale|far-node]]\n";
         return 1;
     }
     test_parse();
@@ -996,6 +1424,18 @@ int main(int argc, char** argv) {
     test_reverse_crossing_and_wrong_way();
     test_wrong_way_zones();
     test_recovery();
+    test_track_angle();
+    test_wrong_way_thresholds();
+    test_reset_answers_no();
+    test_off_path();
+    test_lap_counter_width();
+    test_no_laps();
+    test_boundary_details();
+    test_count_bound();
+    test_closed_neighbour();
+    test_summation_order();
+    test_absurd_data();
+    test_secant_halving();
     test_load_from_file();
     if (g_failures != 0) {
         std::cerr << g_failures << " race route test(s) failed\n";

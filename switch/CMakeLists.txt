@@ -170,3 +170,21 @@ if(NFSU_BUILD_TESTS)
         nfsu_switch_shader_blob_guards nfsu_switch_nro nfsu_switch_car_nro
         PROPERTIES TIMEOUT 60)
 endif()
+
+# The race route of issue #61, which cmake/race_libraries.cmake declares for
+# both configures. Nothing on the console links it yet; building it here is
+# what lets the tree check the precondition #159 rests on, that the lap
+# logic compiles on the console to the same float arithmetic as on the
+# desktop: its objects hold no fused multiply-add.
+if(NFSU_BUILD_TESTS)
+    if(NOT CMAKE_OBJDUMP)
+        message(FATAL_ERROR "no objdump was found for the Switch toolchain")
+    endif()
+    add_test(NAME nfsu_switch_race_route_fma_census
+        COMMAND ${CMAKE_COMMAND}
+                -DOBJDUMP=${CMAKE_OBJDUMP}
+                "-DOBJECTS=$<TARGET_OBJECTS:nfsu_race_route>;$<TARGET_OBJECTS:nfsu_track_zones>"
+                -DLABEL=nfsu_race_route
+                -P ${PROJECT_SOURCE_DIR}/tests/race_route_fma_census.cmake)
+    set_tests_properties(nfsu_switch_race_route_fma_census PROPERTIES TIMEOUT 60)
+endif()

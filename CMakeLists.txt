@@ -32,6 +32,8 @@ endfunction()
 # are and why each is there.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/car_libraries.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/draw_libraries.cmake)
+# The zone decoder and the race route (issue #61), for both configures.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/race_libraries.cmake)
 
 # The Switch build configures the shared car and draw libraries and switch/,
 # and nothing below this point: the desktop programs, the other libraries and every test of
@@ -64,25 +66,9 @@ nfsu_enable_warnings(nfsu_arg_path)
 
 
 
-# The visibility zones of one track: the 0x80034150 records that turn a
-# camera position into the section list the group layer draws. It sits above
-# nfsu_track_visibility because a decoded zone is handed straight to that
-# library's TrackResidency. Floating-point contraction is disabled for the
-# same reason it is disabled there: the crossing test at speed.exe
-# 0x005679B0 decides on a strict comparison of an interpolated coordinate,
-# so a fused multiply-add would move a boundary case and the selected zone
-# with it. See docs/TRACK_ZONES.md.
-add_library(nfsu_track_zones
-    src/track_zones.cpp
-)
-
-target_link_libraries(nfsu_track_zones PUBLIC nfsu_track_visibility)
-nfsu_enable_warnings(nfsu_track_zones)
-if(MSVC)
-    target_compile_options(nfsu_track_zones PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_track_zones PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
+# nfsu_track_zones, the visibility zones of one track, was declared here
+# until issue #61 moved it, as it was, into cmake/race_libraries.cmake: the
+# race route links it, and the console builds the race route.
 
 
 # The CPU reference renderer's track backend: one PreparedTrackScene and one
@@ -187,27 +173,8 @@ target_link_libraries(nfsu_track_stream
     PUBLIC nfsu_track_zones nfsu_texture_decode nfsu_gpu_upload)
 nfsu_enable_warnings(nfsu_track_stream)
 
-# The route of one race over a TRACKB bundle (issue #61): the track path
-# spline of chunk 0x80034147, the position markers of 0x00034146, the start,
-# split and finish percentages projected from them, and the lap, crossing
-# and wrong-way rules a fixed-step position sequence is replayed through. It
-# links nfsu_core for the JDLZ decoder and nfsu_track_zones for the polygon
-# test 0x005679B0, reads with std::ifstream as nfsu_core's loaders do and
-# reads no clock. Floating-point contraction is disabled for the reason
-# nfsu_track_zones disables it: every lap and crossing verdict is a
-# comparison of a float the spline arithmetic produced, and a fused
-# multiply-add would move it. See docs/RACE_ROUTE.md.
-add_library(nfsu_race_route
-    src/race_route.cpp
-)
-
-target_link_libraries(nfsu_race_route PUBLIC nfsu_core nfsu_track_zones)
-nfsu_enable_warnings(nfsu_race_route)
-if(MSVC)
-    target_compile_options(nfsu_race_route PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_race_route PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
+# nfsu_race_route, the route of one race over a TRACKB bundle (issue #61),
+# is declared in cmake/race_libraries.cmake, which both configures read.
 
 # The read-only inspector. It is declared after every library it uses.
 add_executable(nfsu_probe
@@ -487,7 +454,7 @@ if(NFSU_BUILD_TESTS)
         tests/race_route_tests.cpp
     )
 
-    target_link_libraries(nfsu_race_route_tests PRIVATE nfsu_race_route)
+    target_link_libraries(nfsu_race_route_tests PRIVATE nfsu_race_route nfsu_sha256)
     nfsu_enable_warnings(nfsu_race_route_tests)
     if(MSVC)
         target_compile_options(nfsu_race_route_tests PRIVATE /fp:precise)
@@ -680,7 +647,8 @@ if(NFSU_BUILD_TESTS)
     # What `race-route` refuses and exits with, and what it prints over a
     # synthetic TRACKB bundle nfsu_race_route_tests writes on request beside
     # the race-events fixture pair: the route listing, a replayed path file,
-    # the built-in drives, and every malformed path line refused.
+    # the built-in drives, every malformed path line refused, and three
+    # bundles of absurd numbers refused rather than replayed forever.
     # tests/race_route_guards.cmake says what each case is for.
     add_test(NAME nfsu_probe_race_route_guards
         COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>

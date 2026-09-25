@@ -142,10 +142,13 @@ of the path, each projected from its marker. With `--path <FILE>` (one
 position per line, two numbers) or `--drive forward|backward` (optionally
 `--skip <node> <node>`, a one-step jump) it replays the positions one fixed
 step each and prints every boundary crossed forward or backward, every
-boundary passed but not counted, each completed lap, the finish and the
-wrong-way flag. It exits 3 if a table or the bundle fails validation, the
-bundle is not the one the event loads, the path is open (a point-to-point
-track, not implemented) or a path file line is malformed. See
+boundary passed but not counted, each completed lap, the finish, the
+wrong-way flag, each reset zone entered and each time the car goes more
+than 5000 from the path. It exits 3 if a table or the bundle fails
+validation, the bundle is not the one the event loads, the path is open
+(a point-to-point track, not implemented) or its length, scale and offset
+do not measure its own loop as 100 percent, or a path file line is
+malformed. See
 `docs/RACE_ROUTE.md`.
 `car-parts` parses the car part database of `GLOBAL/GLOBALB.BUN` and lists
 every part record: car type hash, slot, upgrade level, part name hash and
