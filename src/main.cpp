@@ -8,6 +8,7 @@
 #include "nfsu/texture.h"
 #include "nfsu/texture_decode.h"
 #include "nfsu/track.h"
+#include "nfsu/track_budget.h"
 #include "nfsu/track_collision.h"
 #include "nfsu/track_draw_list.h"
 #include "nfsu/track_objects.h"
@@ -21,6 +22,7 @@
 #include <array>
 #include <cctype>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -1767,27 +1769,55 @@ struct TrackSceneArgs {
 
 // Decodes only the hashes `wanted` names out of the given sources. Both
 // vectors are sized once, so the pointers taken here stay valid.
+//
+// `quiet` suppresses the per-source lines and nothing else. It exists for
+// `track-budget`, which TIMES this call: anything printed inside a timed
+// region is being timed, and a dozen formatted lines are neither free nor
+// part of what texture decoding costs. The alternative was a second copy of
+// this loop in that command, and a second place for the input-size budget
+// below to be got wrong.
+//
+// IT HAS NO DEFAULT VALUE, deliberately. A default is the one setting of a
+// parameter that no call site states, and flipping it here silences the
+// per-source lines of `track-scene` and `track-render` - which nothing in
+// this repository asserts, so an independent mutation pass flipped it and
+// survived the whole suite. With two call sites, both in this file, and no
+// default, that mutation does not exist to be caught rather than being
+// caught by a test someone has to remember to write.
 bool decode_track_scene_textures(
     const std::vector<fs::path>& paths,
     const std::vector<std::uint32_t>& wanted,
     std::vector<std::vector<unsigned char>>& source_bytes,
     std::vector<nfsu::TexturePackSet>& sets,
     std::vector<nfsu::RenderTextureSource>& sources,
-    nfsu::RenderTextureSet& textures) {
+    nfsu::RenderTextureSet& textures,
+    bool quiet) {
     source_bytes.resize(paths.size());
     sets.resize(paths.size());
     sources.resize(paths.size());
     std::uint64_t read_bytes = 0;
     for (std::size_t i = 0; i < paths.size(); ++i) {
         nfsu::TextureLimits limits;
-        const std::uint64_t remaining = kMaxTrackTextureInputBytes - read_bytes;
+        // Clamped rather than left to the loop. read_bytes cannot pass the
+        // constant today, because every file is capped by `remaining` on the
+        // same iteration that adds it - but that is an emergent property of
+        // this loop rather than a stated one, and an unsigned subtraction
+        // that underflows gives a HUGE remaining and lifts the cap it exists
+        // to impose. Stating it costs one comparison.
+        const std::uint64_t remaining =
+            read_bytes >= kMaxTrackTextureInputBytes
+                ? 0
+                : kMaxTrackTextureInputBytes - read_bytes;
         limits.max_file_size = std::min(limits.max_file_size, remaining);
         sets[i] = nfsu::load_texture_pack_set(paths[i], source_bytes[i], limits);
         read_bytes += source_bytes[i].size();
-        std::cout << "texture source " << i << ": " << paths[i].string()
-                  << " size " << sets[i].file_size << " read "
-                  << source_bytes[i].size() << " packs " << sets[i].packs.size()
-                  << " complete " << (sets[i].complete ? 1 : 0) << '\n';
+        if (!quiet) {
+            std::cout << "texture source " << i << ": " << paths[i].string()
+                      << " size " << sets[i].file_size << " read "
+                      << source_bytes[i].size() << " packs "
+                      << sets[i].packs.size() << " complete "
+                      << (sets[i].complete ? 1 : 0) << '\n';
+        }
         for (const nfsu::TextureIssue& issue : sets[i].issues) {
             std::cerr << "texture source " << i << " issue at " << issue.offset
                       << ": " << issue.message << '\n';
@@ -1881,8 +1911,10 @@ int build_track_scene_stage(
 
     out.wanted = nfsu::track_region_texture_hashes(geometry);
     const std::vector<std::uint32_t>& wanted = out.wanted;
+    // Not quiet: track-scene and track-render both report their sources.
     if (!decode_track_scene_textures(args.textures, wanted, out.source_bytes,
-                                     out.sets, out.sources, out.textures)) {
+                                     out.sets, out.sources, out.textures,
+                                     false)) {
         return 2;
     }
     const nfsu::RenderTextureSet& textures = out.textures;
@@ -2280,6 +2312,402 @@ int run_track_render(
         print_track_draw_list_entries(pipeline, args.list_limit);
     }
     return pipeline.reports_ok ? 0 : 3;
+}
+
+// ---------------------------------------------------------------------------
+// track-budget: what one bounded region costs, separated by the stage that
+// pays it. See docs/TRACK_BUDGET.md.
+//
+// It runs the same four stages track-render runs, over the same inputs, and
+// writes NO FILE AT ALL: the frame is rendered into memory and dropped, so
+// this command cannot put a derived game asset on disk even by accident.
+// That is why it has no --out and why it is not subject to the output
+// guards track-render carries.
+//
+// TWO HALVES WITH DIFFERENT STABILITY, AND THEY ARE PRINTED APART.
+//
+//   * The `cost:` lines are counts. They are a function of the inputs, they
+//     are byte-identical between runs, and they are what an automated limit
+//     is written against. --no-time prints these and nothing else, so a
+//     differential check over this command has something exact to compare.
+//   * The `time:` lines are wall-clock milliseconds on whatever machine ran
+//     them, and they are NOT reproducible: several sessions build
+//     concurrently on this project's machine, so a stage timed against a
+//     running link is slower for a reason that is not this code. They are
+//     reported as a spread over --repeat repetitions - min, median, mean,
+//     standard deviation - rather than as one number, because one number
+//     from a shared machine reads like a fact and is not one.
+//
+// No --limit is ever a time, and check_track_budget cannot express one:
+// nfsu::TrackBudgetCost holds no clock. docs/TRACK_BUDGET.md carries the
+// reasoning and the measurements behind it.
+//
+// EVERY REPETITION'S COUNTS ARE COMPARED, not just timed. A repetition whose
+// counter table differs from the first is reported and exits 5. That is a
+// self-check on the claim this whole command rests on - that the counts are
+// deterministic - and it is cheap: the repetitions are being run anyway.
+// ---------------------------------------------------------------------------
+
+// The five phases this command times. They are the four TrackBudgetStage
+// stages plus texture decoding, which is called out on its own because it
+// is large - 8 MB read and 3 MB decoded for the reference region - and
+// would otherwise hide inside a neighbour. Its bytes are retained by the
+// prepared region, so its COST is reported under prepare.texture_bytes;
+// only its TIME is separate.
+enum class TrackBudgetPhase {
+    parse,
+    texture,
+    prepare,
+    frame,
+    render,
+    count_,
+};
+
+const char* track_budget_phase_name(TrackBudgetPhase phase) {
+    switch (phase) {
+        case TrackBudgetPhase::parse:
+            return "parse";
+        case TrackBudgetPhase::texture:
+            return "texture";
+        case TrackBudgetPhase::prepare:
+            return "prepare";
+        case TrackBudgetPhase::frame:
+            return "frame";
+        case TrackBudgetPhase::render:
+            return "render";
+        case TrackBudgetPhase::count_:
+            break;
+    }
+    return "unknown";
+}
+
+constexpr std::size_t kTrackBudgetPhaseCount =
+    static_cast<std::size_t>(TrackBudgetPhase::count_);
+
+constexpr std::uint64_t kMaxTrackBudgetRepeat = 1000;
+
+struct TrackBudgetArgs {
+    TrackSceneArgs scene;
+    std::uint32_t width = 1280;
+    std::uint32_t height = 720;
+    nfsu::TrackFramingOptions framing;
+    std::uint64_t repeat = 5;
+    bool render = true;
+    bool show_time = true;
+    std::vector<nfsu::TrackBudgetLimit> limits;
+};
+
+// The sample statistics and the repetition comparison are
+// nfsu::summarize_track_samples and nfsu::track_budget_costs_equal, in
+// nfsu/track_budget.h, rather than local copies here. That is not tidiness.
+// A mutation sweep over an earlier revision of this file, recorded in
+// docs/TRACK_BUDGET.md, found that EVERY fault in the local copies survived
+// every gate, and for two reasons no case in
+// tests/track_budget_guards.cmake can get around:
+//
+//   * a summary of wall-clock times cannot be asserted against a value, so
+//     a swapped min and max, an unsorted sample set and a standard deviation
+//     divided by n instead of n-1 all print numbers that look exactly as
+//     plausible as the right ones;
+//   * a comparison that only ever runs over costs that ARE equal never takes
+//     its failing branch, so deleting the branch changes no output.
+//
+// As library functions both are driven directly by
+// tests/track_budget_tests.cpp, with sample sets whose statistics are known
+// exactly and with two costs built to differ.
+
+double elapsed_ms(
+    const std::chrono::steady_clock::time_point& from,
+    const std::chrono::steady_clock::time_point& to) {
+    return std::chrono::duration<double, std::milli>(to - from).count();
+}
+
+// One silent repetition of the whole pipeline. It prints nothing, because
+// anything printed inside a timed region is being timed: the reference
+// region's report is about forty lines of formatted output, which is not
+// free and is not part of what any stage costs.
+//
+// Returns 0 on success, or the exit status the command must return; a
+// non-zero return has set `error` unless it is 3, which means the reports
+// carried issues and the measurement is over a region that did not fully
+// parse.
+int measure_track_budget_once(
+    const fs::path& path,
+    const nfsu::TrackRegionSelector& geometry_region,
+    const nfsu::TrackRegionSelector& object_region,
+    const TrackBudgetArgs& args,
+    double phase_ms[kTrackBudgetPhaseCount],
+    nfsu::TrackBudgetCost& cost,
+    bool& reports_ok,
+    bool& framed,
+    std::string& error) {
+    TrackScenePipeline pipeline;
+
+    const auto t_parse_begin = std::chrono::steady_clock::now();
+    const nfsu::TrackRegionReport geometry =
+        nfsu::load_track_region(path, geometry_region, pipeline.geometry_bytes);
+    const nfsu::TrackObjectReport objects =
+        nfsu::load_track_objects(path, object_region, pipeline.object_bytes);
+    const auto t_parse_end = std::chrono::steady_clock::now();
+    phase_ms[static_cast<std::size_t>(TrackBudgetPhase::parse)] =
+        elapsed_ms(t_parse_begin, t_parse_end);
+    nfsu::track_budget_parse_cost(geometry, objects, cost);
+
+    // The SAME function track-scene and track-render decode through, with
+    // its printing suppressed. A second copy here would be a second place
+    // for the texture budget to be got wrong, and would mean this command
+    // timed a code path neither of the others runs.
+    const auto t_texture_begin = std::chrono::steady_clock::now();
+    pipeline.wanted = nfsu::track_region_texture_hashes(geometry);
+    if (!decode_track_scene_textures(args.scene.textures, pipeline.wanted,
+                                     pipeline.source_bytes, pipeline.sets,
+                                     pipeline.sources, pipeline.textures,
+                                     true)) {
+        error = "the texture sources could not be decoded";
+        return 2;
+    }
+    const auto t_texture_end = std::chrono::steady_clock::now();
+    phase_ms[static_cast<std::size_t>(TrackBudgetPhase::texture)] =
+        elapsed_ms(t_texture_begin, t_texture_end);
+
+    const auto t_prepare_begin = std::chrono::steady_clock::now();
+    if (!nfsu::build_track_scene(geometry, objects, pipeline.textures,
+                                 args.scene.scene, pipeline.scene, error)) {
+        return 2;
+    }
+    const auto t_prepare_end = std::chrono::steady_clock::now();
+    phase_ms[static_cast<std::size_t>(TrackBudgetPhase::prepare)] =
+        elapsed_ms(t_prepare_begin, t_prepare_end);
+    nfsu::track_budget_prepare_cost(pipeline.scene, cost);
+
+    nfsu::TrackFrustum frustum;
+    if (!nfsu::track_frustum_look_at(args.scene.camera, frustum)) {
+        error = "the camera is degenerate and builds no frustum";
+        return 1;
+    }
+    const auto t_frame_begin = std::chrono::steady_clock::now();
+    pipeline.cull =
+        nfsu::cull_track_region(objects, frustum, args.scene.cull);
+    if (!nfsu::build_track_draw_list(pipeline.scene, pipeline.cull,
+                                     args.scene.list, pipeline.list, error)) {
+        return 2;
+    }
+    const auto t_frame_end = std::chrono::steady_clock::now();
+    phase_ms[static_cast<std::size_t>(TrackBudgetPhase::frame)] =
+        elapsed_ms(t_frame_begin, t_frame_end);
+    nfsu::track_budget_frame_cost(pipeline.list, cost);
+
+    reports_ok = geometry.ok() && objects.ok() && pipeline.cull.ok();
+
+    if (!args.render) {
+        return 0;
+    }
+
+    // The camera is framed from the drawn bounds, exactly as track-render
+    // frames it, and the framing is NOT timed: it walks every vertex the
+    // list names, which is work a backend does once to choose a view and not
+    // work the renderer pays per frame.
+    nfsu::TrackDrawListBounds bounds;
+    if (!nfsu::track_draw_list_bounds(pipeline.scene, pipeline.list, bounds,
+                                      error)) {
+        return 2;
+    }
+    nfsu::RenderOptions options;
+    options.width = args.width;
+    options.height = args.height;
+    framed = bounds.drawn.valid;
+    if (bounds.drawn.valid) {
+        if (!nfsu::frame_track_bounds(bounds.drawn, options.width,
+                                      options.height, args.framing,
+                                      options.camera, error)) {
+            // There is no explicit-camera fallback here, unlike
+            // track-render: this command offers no explicit camera at all,
+            // because a budget quoted from a view nobody named is not
+            // reproducible. A box this far out or this large is the only way
+            // to reach this, and the diagnostic says which.
+            error = "the drawn region could not be framed (" + error +
+                    "); this command has no explicit camera to fall back to";
+            return 2;
+        }
+    } else {
+        // NOTHING IS DRAWN, and that is a measurable case rather than an
+        // error. There is no box to fit, so the framing rule has no input;
+        // the documented empty-scene camera below replaces it. It is a
+        // fixed camera with the framing angles applied, so the run is still
+        // reproducible, and the run still measures the one render cost that
+        // does not depend on geometry at all - render.frame_bytes, which for
+        // the default 1280x720 is 15667200 bytes and is paid whether or not
+        // a single triangle is submitted. That figure is larger than the
+        // whole prepared region for the reference region, so a budget that
+        // could not measure it would be missing its largest single item.
+        options.camera = nfsu::OrbitCamera{};
+        options.camera.yaw_deg = args.framing.yaw_deg;
+        options.camera.pitch_deg = args.framing.pitch_deg;
+        options.camera.fov_y_deg = args.framing.fov_y_deg;
+        if (!nfsu::validate_camera(options.camera, error)) {
+            return 2;
+        }
+    }
+
+    nfsu::Frame frame;
+    nfsu::RenderStats stats;
+    nfsu::TrackRenderStats track_stats;
+    const nfsu::RenderLimits limits;
+    const auto t_render_begin = std::chrono::steady_clock::now();
+    if (!nfsu::render_track_draw_list(pipeline.scene, pipeline.list, options,
+                                      limits, frame, stats, track_stats,
+                                      error)) {
+        return 2;
+    }
+    const auto t_render_end = std::chrono::steady_clock::now();
+    phase_ms[static_cast<std::size_t>(TrackBudgetPhase::render)] =
+        elapsed_ms(t_render_begin, t_render_end);
+    nfsu::track_budget_render_cost(stats, track_stats, frame, cost);
+    return 0;
+}
+
+int run_track_budget(
+    const fs::path& path,
+    const nfsu::TrackRegionSelector& geometry_region,
+    const nfsu::TrackRegionSelector& object_region,
+    const TrackBudgetArgs& args) {
+    std::cout << "budget: file " << path.string() << '\n';
+    std::cout << "budget: geometry offset " << geometry_region.offset
+              << " size " << geometry_region.size << " objects offset "
+              << object_region.offset << " size " << object_region.size << '\n';
+    std::cout << "budget: lod slot " << args.scene.scene.lod_slot << " order "
+              << nfsu::track_draw_order_name(args.scene.list.order)
+              << " camera " << (args.scene.has_camera ? "given" : "none")
+              << " render " << (args.render ? "yes" : "no") << '\n';
+    if (args.render) {
+        std::cout << "budget: frame " << args.width << 'x' << args.height
+                  << " yaw " << format_double(args.framing.yaw_deg) << " pitch "
+                  << format_double(args.framing.pitch_deg) << " fov "
+                  << format_double(args.framing.fov_y_deg) << " margin "
+                  << format_double(args.framing.margin) << '\n';
+    }
+
+    // One discarded warm-up, always, and it is reported. The first parse of
+    // a region reads it off the disk and every later one reads it out of the
+    // operating system's file cache, so a first sample is a different
+    // measurement from the rest and averaging it in produces a number that
+    // describes neither.
+    std::vector<double> samples[kTrackBudgetPhaseCount];
+    nfsu::TrackBudgetCost first_cost;
+    std::vector<nfsu::TrackBudgetEntry> first_entries;
+    bool reports_ok = true;
+    bool framed = true;
+    std::string error;
+    const std::uint64_t runs = args.repeat + 1;
+    for (std::uint64_t run = 0; run < runs; ++run) {
+        double phase_ms[kTrackBudgetPhaseCount] = {};
+        nfsu::TrackBudgetCost cost;
+        bool run_reports_ok = true;
+        bool run_framed = true;
+        const int status =
+            measure_track_budget_once(path, geometry_region, object_region,
+                                      args, phase_ms, cost, run_reports_ok,
+                                      run_framed, error);
+        if (status != 0) {
+            std::cerr << "error: " << error << '\n';
+            return status;
+        }
+        if (run == 0) {
+            // The warm-up. Its counts are the reference the rest are
+            // compared against; its times are dropped.
+            first_cost = cost;
+            nfsu::track_budget_entries(first_cost, first_entries);
+            reports_ok = run_reports_ok;
+            framed = run_framed;
+            if (args.render && !framed) {
+                std::cout << "budget: nothing is drawn, so there is no box to"
+                             " frame; rendering with the documented"
+                             " empty-scene camera\n";
+            }
+            continue;
+        }
+        std::string difference;
+        if (!nfsu::track_budget_costs_equal(first_cost, cost, difference)) {
+            std::cerr << "error: repetition " << run
+                      << " disagreed with the first run about " << difference
+                      << "; these counts are supposed to be a function of the"
+                         " inputs, so this is a defect and not a budget"
+                         " result\n";
+            return 5;
+        }
+        if (run_reports_ok != reports_ok || run_framed != framed) {
+            std::cerr << "error: repetition " << run
+                      << " disagreed with the first run about whether the"
+                         " reports were clean or the region was framed\n";
+            return 5;
+        }
+        for (std::size_t p = 0; p < kTrackBudgetPhaseCount; ++p) {
+            samples[p].push_back(phase_ms[p]);
+        }
+    }
+
+    std::cout << "budget: repetitions " << args.repeat
+              << " after 1 discarded warm-up, counts identical in all "
+              << runs << " runs\n";
+
+    for (const nfsu::TrackBudgetEntry& entry : first_entries) {
+        std::cout << "cost: " << entry.name << ' ' << entry.value << '\n';
+    }
+
+    if (args.show_time) {
+        for (std::size_t p = 0; p < kTrackBudgetPhaseCount; ++p) {
+            const TrackBudgetPhase phase = static_cast<TrackBudgetPhase>(p);
+            if (phase == TrackBudgetPhase::render && !args.render) {
+                continue;
+            }
+            const nfsu::TrackSampleSummary timing =
+                nfsu::summarize_track_samples(samples[p]);
+            std::cout << "time: " << track_budget_phase_name(phase)
+                      << " samples " << timing.samples << " min "
+                      << format_double(timing.min) << " median "
+                      << format_double(timing.median) << " mean "
+                      << format_double(timing.mean) << " stddev "
+                      << format_double(timing.stddev) << " max "
+                      << format_double(timing.max) << " ms\n";
+        }
+    }
+
+    std::vector<nfsu::TrackBudgetExceedance> exceedances;
+    if (!nfsu::check_track_budget(first_cost, args.limits, exceedances,
+                                  error)) {
+        std::cerr << "error: " << error << '\n';
+        return 1;
+    }
+    for (const nfsu::TrackBudgetExceedance& over : exceedances) {
+        std::cout << "budget: OVER " << over.name << ' ' << over.value
+                  << " exceeds " << over.ceiling << '\n';
+    }
+    std::cout << "budget: limits " << args.limits.size() << " exceeded "
+              << exceedances.size() << '\n';
+
+    // WHICH OF THE TWO FAILURES THE SINGLE EXIT STATUS REPORTS, and why this
+    // way round. Both lines are printed either way; only the status has to
+    // choose, and the choice follows from which direction a damaged parse
+    // can move a count.
+    //
+    // A region that did not fully parse yields counts that are too SMALL -
+    // a mesh that failed to decode draws nothing, an unreadable section
+    // places nothing. So a damaged parse can manufacture a budget that
+    // PASSES and can never manufacture one that fails:
+    //
+    //   over budget, reports bad   the exceedance is real, and it happened
+    //                              despite a parse that could only have
+    //                              lowered the count. Exit 4.
+    //   within budget, reports bad the pass is not trustworthy, because the
+    //                              counts may be short. Exit 3.
+    //
+    // An earlier draft had these the other way round, on the reasoning that
+    // a budget over a partial parse is not a budget. That is true of the
+    // PASS and false of the exceedance, which is the asymmetry above.
+    if (!exceedances.empty()) {
+        return 4;
+    }
+    return reports_ok ? 0 : 3;
 }
 
 // ---------------------------------------------------------------------------
@@ -4286,6 +4714,245 @@ const Command kCommands[] = {
              args.scene.cull.policy = nfsu::TrackCullPolicy::retail_tree;
          }
          return run_track_render(nfsu::argument_path(argv[2]), geometry_region,
+                                 object_region, args);
+     }},
+    {"track-budget",
+     " <STREAM.BUN> <geometry-offset> <geometry-size>",
+     "      <object-offset> <object-size>\n"
+     "      [--texture <file>]... [--lod-slot <0..5>]\n"
+     "      [--order <visible-instance|material-group>]\n"
+     "      [--eye <x> <y> <z>] [--target <x> <y> <z>] [--far <f>]\n"
+     "      [--residency <every|no-zone>]\n"
+     "      [--repeat <N>] [--width <N>] [--height <N>]\n"
+     "      [--view-yaw <deg>] [--view-pitch <deg>] [--view-fov <deg>]\n"
+     "      [--view-margin <m>] [--no-render] [--no-time]\n"
+     "      [--limit <counter> <ceiling>]...\n"
+     "      (the scene options above --repeat are track-scene's and mean the\n"
+     "       same; this command writes no file and renders into memory.\n"
+     "       --repeat times each stage that many times after one discarded\n"
+     "       warm-up and reports the spread; the cost: lines are exact and\n"
+     "       the time: lines are not. --limit names a cost: counter and a\n"
+     "       ceiling it may not exceed. Exit 4 means a limit was exceeded,\n"
+     "       3 that nothing was over but the region did not fully parse, so\n"
+     "       the counts may be short, and 5 that two repetitions disagreed\n"
+     "       about a count.)\n",
+     [](int argc, char** argv) {
+         if (argc < 7) {
+             print_usage();
+             return 1;
+         }
+         std::uint64_t numbers[4] = {0, 0, 0, 0};
+         static const char* const kNames[4] = {"geometry-offset",
+                                               "geometry-size", "object-offset",
+                                               "object-size"};
+         for (int k = 0; k < 4; ++k) {
+             if (!parse_u64(std::string(argv[3 + k]), numbers[k])) {
+                 std::cerr << "error: " << kNames[k]
+                           << " must be a decimal or 0x integer\n";
+                 return 1;
+             }
+         }
+         nfsu::TrackRegionSelector geometry_region;
+         geometry_region.offset = numbers[0];
+         geometry_region.size = numbers[1];
+         nfsu::TrackRegionSelector object_region;
+         object_region.offset = numbers[2];
+         object_region.size = numbers[3];
+
+         TrackBudgetArgs args;
+         args.scene.cull.policy = nfsu::TrackCullPolicy::draw_everything;
+         bool has_eye = false;
+         bool has_target = false;
+         for (int i = 7; i < argc; ++i) {
+             const std::string flag = argv[i];
+             const bool has_value = i + 1 < argc;
+             const std::string value = has_value ? argv[i + 1] : std::string();
+             const auto take_triple = [&](float out[3]) {
+                 if (i + 3 >= argc) {
+                     std::cerr << "error: " << flag
+                               << " needs three finite floats\n";
+                     return false;
+                 }
+                 for (int k = 0; k < 3; ++k) {
+                     if (!parse_f32(std::string(argv[i + 1 + k]), out[k])) {
+                         std::cerr << "error: " << flag
+                                   << " needs three finite floats\n";
+                         return false;
+                     }
+                 }
+                 i += 3;
+                 return true;
+             };
+             // The same two helpers track-render uses, and the same ranges:
+             // a budget option that accepted a value the renderer refuses
+             // would fail deep in the pipeline instead of naming the option.
+             const auto take_ranged = [&](double& out, double low,
+                                          double high) {
+                 double parsed = 0.0;
+                 if (!has_value || !parse_f64(value, parsed) || parsed < low ||
+                     parsed > high) {
+                     std::cerr << "error: " << flag << " needs a number from "
+                               << format_double(low) << " to "
+                               << format_double(high) << '\n';
+                     return false;
+                 }
+                 out = parsed;
+                 ++i;
+                 return true;
+             };
+             const auto take_size = [&](std::uint32_t& out) {
+                 std::uint64_t parsed = 0;
+                 if (!has_value || !parse_u64(value, parsed) || parsed == 0 ||
+                     parsed > 8192) {
+                     std::cerr << "error: " << flag << " needs a size from 1 to"
+                                  " 8192\n";
+                     return false;
+                 }
+                 out = static_cast<std::uint32_t>(parsed);
+                 ++i;
+                 return true;
+             };
+             if (flag == "--texture") {
+                 if (!has_value) {
+                     std::cerr << "error: --texture needs a path\n";
+                     return 1;
+                 }
+                 args.scene.textures.push_back(
+                     nfsu::argument_path(argv[i + 1]));
+                 ++i;
+             } else if (flag == "--lod-slot") {
+                 std::uint64_t slot = 0;
+                 if (!has_value || !parse_u64(value, slot) ||
+                     slot >= nfsu::kSceneryObjectMeshSlots) {
+                     std::cerr << "error: --lod-slot needs a slot from 0 to "
+                               << (nfsu::kSceneryObjectMeshSlots - 1) << '\n';
+                     return 1;
+                 }
+                 args.scene.scene.lod_slot = static_cast<std::size_t>(slot);
+                 ++i;
+             } else if (flag == "--order") {
+                 if (value == "visible-instance") {
+                     args.scene.list.order =
+                         nfsu::TrackDrawOrder::visible_instance;
+                 } else if (value == "material-group") {
+                     args.scene.list.order =
+                         nfsu::TrackDrawOrder::material_group;
+                 } else {
+                     std::cerr << "error: --order must be visible-instance or"
+                                  " material-group\n";
+                     return 1;
+                 }
+                 ++i;
+             } else if (flag == "--eye") {
+                 if (!take_triple(args.scene.camera.eye)) {
+                     return 1;
+                 }
+                 has_eye = true;
+             } else if (flag == "--target") {
+                 if (!take_triple(args.scene.camera.target)) {
+                     return 1;
+                 }
+                 has_target = true;
+             } else if (flag == "--far") {
+                 if (!has_value ||
+                     !parse_f32(value, args.scene.camera.far_plane)) {
+                     std::cerr << "error: --far needs a finite float\n";
+                     return 1;
+                 }
+                 ++i;
+             } else if (flag == "--residency") {
+                 if (value == "every") {
+                     args.scene.cull.residency.rule =
+                         nfsu::TrackResidencyRule::every_section;
+                 } else if (value == "no-zone") {
+                     args.scene.cull.residency.rule =
+                         nfsu::TrackResidencyRule::no_zone;
+                 } else {
+                     std::cerr << "error: --residency must be every or"
+                                  " no-zone\n";
+                     return 1;
+                 }
+                 ++i;
+             } else if (flag == "--repeat") {
+                 std::uint64_t count = 0;
+                 if (!has_value || !parse_u64(value, count) || count < 1 ||
+                     count > kMaxTrackBudgetRepeat) {
+                     std::cerr << "error: --repeat needs a count from 1 to "
+                               << kMaxTrackBudgetRepeat << '\n';
+                     return 1;
+                 }
+                 args.repeat = count;
+                 ++i;
+             } else if (flag == "--width") {
+                 if (!take_size(args.width)) {
+                     return 1;
+                 }
+             } else if (flag == "--height") {
+                 if (!take_size(args.height)) {
+                     return 1;
+                 }
+             } else if (flag == "--view-yaw") {
+                 if (!take_ranged(args.framing.yaw_deg,
+                                  -nfsu::kMaxYawMagnitude,
+                                  nfsu::kMaxYawMagnitude)) {
+                     return 1;
+                 }
+             } else if (flag == "--view-pitch") {
+                 if (!take_ranged(args.framing.pitch_deg, nfsu::kMinPitch,
+                                  nfsu::kMaxPitch)) {
+                     return 1;
+                 }
+             } else if (flag == "--view-fov") {
+                 if (!take_ranged(args.framing.fov_y_deg, nfsu::kMinFov,
+                                  nfsu::kMaxFov)) {
+                     return 1;
+                 }
+             } else if (flag == "--view-margin") {
+                 if (!take_ranged(args.framing.margin,
+                                  nfsu::kMinTrackFramingMargin,
+                                  nfsu::kMaxTrackFramingMargin)) {
+                     return 1;
+                 }
+             } else if (flag == "--no-render") {
+                 args.render = false;
+             } else if (flag == "--no-time") {
+                 args.show_time = false;
+             } else if (flag == "--limit") {
+                 if (i + 2 >= argc) {
+                     std::cerr << "error: --limit needs a counter name and a"
+                                  " ceiling\n";
+                     return 1;
+                 }
+                 std::uint64_t ceiling = 0;
+                 if (!parse_u64(std::string(argv[i + 2]), ceiling)) {
+                     std::cerr << "error: --limit needs a decimal or 0x"
+                                  " ceiling\n";
+                     return 1;
+                 }
+                 nfsu::TrackBudgetLimit limit;
+                 limit.name = argv[i + 1];
+                 limit.ceiling = ceiling;
+                 args.limits.push_back(limit);
+                 i += 2;
+             } else {
+                 std::cerr << "error: unknown option " << flag << '\n';
+                 return 1;
+             }
+         }
+         if (has_eye != has_target) {
+             std::cerr << "error: --eye and --target are given together\n";
+             return 1;
+         }
+         if (has_eye) {
+             args.scene.has_camera = true;
+             args.scene.cull.policy = nfsu::TrackCullPolicy::retail_tree;
+         }
+         // A limit naming a render counter under --no-render would read as a
+         // budget that passed, because nothing measured the stage and its
+         // value is zero. check_track_budget refuses that rather than
+         // reporting it as within budget, and run_track_budget returns 1 on
+         // the refusal.
+         return run_track_budget(nfsu::argument_path(argv[2]), geometry_region,
                                  object_region, args);
      }},
     {"track-probe",
