@@ -291,6 +291,7 @@ bool render_track_draw_list(
     Frame& frame,
     RenderStats& stats,
     TrackRenderStats& track_stats,
-    std::string& error);
+    std::string& error,
+    const ReferenceDrawObserver& observe = {});
 
 } // namespace nfsu

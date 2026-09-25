@@ -150,6 +150,26 @@ enum class CullMode { none, back, front };
 
 const char* cull_mode_name(CullMode mode) noexcept;
 
+// Optional observation at the actual CPU submission boundary, before clipping.
+// One nonempty material range of one copy. kNoHandle means no placement/texture.
+// The observer must not mutate the scene; exceptions propagate to the caller.
+struct ReferenceDraw {
+    std::size_t group = 0;
+    std::size_t mesh = 0;
+    std::size_t instance = kNoHandle;
+    std::size_t texture = kNoHandle;
+    std::uint32_t first_index = 0;
+    std::uint32_t index_count = 0;
+    bool depth_less_equal = true;
+    bool depth_write = true;
+    bool color_write_rgb = true;
+    CullMode cull = CullMode::none;
+    RenderBlendMode blend = RenderBlendMode::disabled;
+    bool alpha_test = false;
+    std::uint8_t alpha_ref = kRenderAlphaRef;
+};
+using ReferenceDrawObserver = std::function<void(const ReferenceDraw&)>;
+
 enum class ShadingMode { none, flat };
 
 const char* shading_mode_name(ShadingMode mode) noexcept;
@@ -452,7 +472,8 @@ bool render_scene(
     const RenderLimits& limits,
     Frame& frame,
     RenderStats& stats,
-    std::string& error);
+    std::string& error,
+    const ReferenceDrawObserver& observe = {});
 
 struct FrameWriteResult {
     std::string error;
