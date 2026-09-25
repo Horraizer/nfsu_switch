@@ -44,6 +44,9 @@ build/nfsu_probe track-zones X:/Games/NFSU/Tracks/TRACKB1301.lzc 0 -1200
 build/nfsu_probe track-scene X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 23011344 4168 --texture X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN --order material-group
 build/nfsu_probe track-render X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 23011344 4168 --texture X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN --order material-group --out build/shots/region.tga
 build/nfsu_probe track-budget X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 23011344 4168 --texture X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN --order material-group --repeat 9
+build/nfsu_probe track-probe X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 23011344 4168 --texture X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN
+build/nfsu_probe track-probe X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 23011344 4168 --texture X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN --eye 450 20 -80 --look-at 900 20 -80 --view-far 60 --limit 2
+build/nfsu_probe track-probe X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 23011344 4168 --texture X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN --mesh TRSABC_ROAD_CHOP14 --screen-scale 120
 build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc
 build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc 783 -8.5
 build/nfsu_probe car-placement X:/Games/NFSU/Global/GLOBALB.BUN 240SX
@@ -203,6 +206,22 @@ determinism the counts are quoted under a checked property of each run
 rather than a claim. See `docs/TRACK_BUDGET.md` for the measurement
 procedure, the retail figures with their variance, and the reasoning for
 which limits are automated and which are documented and not.
+
+`track-probe` answers the other question about the same region: not what is
+visible but why. For every scenery instance it prints the source offsets,
+the hashes, the transform and the materials, and then the visibility
+provenance the culler reaches and discards - which arm of the residency rule
+made the section resident and at what position in which zone's list, which
+node of the bounding tree names the instance and at what depth, which
+ancestor pruned it before any gate ran, and what each of the three retail
+gates did, beside the measurement each is made of, whether or not that gate
+ran. It writes nothing. Its free camera has six degrees of freedom -
+`--eye` and `--look-at`, then `--turn` about the eye and `--fly` along the
+basis the turn produced - and its default is the same view-independent
+framing `track-render` uses, so two runs at different angles compare. See
+`docs/TRACK_PROBE.md` for the provenance model, the camera's defaults and
+order, the determinism evidence, the retail acceptance and the mutation
+results.
 `track-collision` decodes the static collision of one track. Collision is
 not in the `STREAM*.BUN` containers at all: those hold geometry, scenery,
 textures and animation and nothing else. It lives in

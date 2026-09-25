@@ -468,11 +468,11 @@ endfunction()
 
 nfsu_count_sites("${MAIN_SOURCE}" main_sites)
 nfsu_count_sites("${VIEWER_SOURCE}" viewer_sites)
-if(NOT main_sites EQUAL 33 OR NOT viewer_sites EQUAL 8)
+if(NOT main_sites EQUAL 36 OR NOT viewer_sites EQUAL 8)
     message(FATAL_ERROR
         "the conversion is called at ${main_sites} places in ${MAIN_SOURCE} "
         "and ${viewer_sites} in ${VIEWER_SOURCE}; this file was written "
-        "against 33 and 8. A path argument was added or removed. Drive a "
+        "against 36 and 8. A path argument was added or removed. Drive a "
         "non-ASCII path through the new position - a template entry below "
         "for a probe command, or a viewer case - and then update these two "
         "numbers. Reverting a single call site is how issue #87 comes back, "
@@ -510,6 +510,7 @@ set(templates
     # twice - one warm-up and one repetition - instead of six times. Nothing
     # here depends on the count; it is the runtime of 21 such runs that does.
     "track-budget/PATHARG/0/16/0/16/--texture/PATHARG/--repeat/1"
+    "track-probe/PATHARG/0/16/0/16/--texture/PATHARG/--zones/PATHARG/--zone-point/0/0"
     "body-skin-inputs/240SX/--source/car-textures/PATHARG"
 )
 

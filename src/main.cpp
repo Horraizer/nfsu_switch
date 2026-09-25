@@ -12,6 +12,7 @@
 #include "nfsu/track_collision.h"
 #include "nfsu/track_draw_list.h"
 #include "nfsu/track_objects.h"
+#include "nfsu/track_probe.h"
 #include "nfsu/track_render.h"
 #include "nfsu/track_scene.h"
 #include "nfsu/track_visibility.h"
@@ -94,6 +95,17 @@ bool parse_u64(const std::string& text, std::uint64_t& out) {
 // every camera value it reports. Six significant digits would make two
 // cameras that render different frames print the same line.
 std::string format_double(double value) {
+    char buffer[64];
+    const auto result = std::to_chars(buffer, buffer + sizeof(buffer), value);
+    return std::string(buffer, result.ptr);
+}
+
+// The same for a float, over the FLOAT's own shortest round trip rather
+// than the widened double's. Every decoded field of a track record is a
+// float, and format_double would spell one of them as its exact double
+// value - 0.1F reads 0.10000000149011612 - which is a true number that
+// no reader can compare against the file.
+std::string format_float(float value) {
     char buffer[64];
     const auto result = std::to_chars(buffer, buffer + sizeof(buffer), value);
     return std::string(buffer, result.ptr);
@@ -1841,6 +1853,12 @@ bool decode_track_scene_textures(
 struct TrackScenePipeline {
     std::vector<unsigned char> geometry_bytes;
     std::vector<unsigned char> object_bytes;
+    // The two decoded reports. They are members rather than locals
+    // because track-probe reads their provenance - mesh container and
+    // record offsets, section, object and instance records - after the
+    // pipeline has run.
+    nfsu::TrackRegionReport geometry;
+    nfsu::TrackObjectReport objects;
     std::vector<std::uint32_t> wanted;
     std::vector<std::vector<unsigned char>> source_bytes;
     std::vector<nfsu::TexturePackSet> sets;
@@ -1848,6 +1866,10 @@ struct TrackScenePipeline {
     nfsu::RenderTextureSet textures;
     nfsu::PreparedTrackScene scene;
     nfsu::TrackCullReport cull;
+    // The frustum that cull was run with, kept for the same reason: a
+    // probe that built a second one could describe a camera the report
+    // never named.
+    nfsu::TrackFrustum frustum;
     nfsu::TrackDrawList list;
     // geometry.ok() && objects.ok() && cull.ok(), which is what decides
     // between exit 0 and exit 3 for both commands.
@@ -1856,16 +1878,18 @@ struct TrackScenePipeline {
 
 // Returns 0 when the pipeline is built, or the exit status the command must
 // return. A non-zero return has already printed its own diagnostic.
-int build_track_scene_pipeline(
+int build_track_scene_stage(
     const fs::path& path,
     const nfsu::TrackRegionSelector& geometry_region,
     const nfsu::TrackRegionSelector& object_region,
     const TrackSceneArgs& args,
     TrackScenePipeline& out) {
-    const nfsu::TrackRegionReport geometry =
+    out.geometry =
         nfsu::load_track_region(path, geometry_region, out.geometry_bytes);
-    const nfsu::TrackObjectReport objects =
+    out.objects =
         nfsu::load_track_objects(path, object_region, out.object_bytes);
+    const nfsu::TrackRegionReport& geometry = out.geometry;
+    const nfsu::TrackObjectReport& objects = out.objects;
 
     std::cout << "file: " << path.string() << '\n';
     std::cout << "geometry region: offset " << geometry.region.offset
@@ -1947,23 +1971,40 @@ int build_track_scene_pipeline(
         std::cout << "  unplaced " << hex32(hash) << '\n';
     }
 
-    nfsu::TrackFrustum frustum;
-    if (!nfsu::track_frustum_look_at(args.camera, frustum)) {
+    return 0;
+}
+
+// The second half: the frustum one camera builds, the visible set it
+// selects and the per-frame draw list. `camera` is a parameter rather
+// than args.camera for one reason - track-probe frames its camera on the
+// scene the stage above produced, so the camera cannot be known until
+// that stage has run. track-scene and track-render pass args.camera and
+// args.has_camera, so every byte they print is the byte they printed
+// before this function was split in two.
+int build_track_cull_stage(
+    const nfsu::TrackCamera& camera,
+    bool has_camera,
+    const TrackSceneArgs& args,
+    TrackScenePipeline& out) {
+    const nfsu::TrackObjectReport& objects = out.objects;
+    const nfsu::PreparedTrackScene& scene = out.scene;
+    std::string error;
+    if (!nfsu::track_frustum_look_at(camera, out.frustum)) {
         std::cerr << "error: the camera is degenerate and builds no frustum\n";
         return 1;
     }
-    if (args.has_camera) {
-        std::cout << "camera: world eye " << args.camera.eye[0] << ' '
-                  << args.camera.eye[1] << ' ' << args.camera.eye[2]
-                  << " target " << args.camera.target[0] << ' '
-                  << args.camera.target[1] << ' ' << args.camera.target[2]
-                  << " far " << args.camera.far_plane << '\n';
+    if (has_camera) {
+        std::cout << "camera: world eye " << camera.eye[0] << ' '
+                  << camera.eye[1] << ' ' << camera.eye[2]
+                  << " target " << camera.target[0] << ' '
+                  << camera.target[1] << ' ' << camera.target[2]
+                  << " far " << camera.far_plane << '\n';
     } else {
         std::cout << "camera: none given; the fallback policy consults no"
                      " frustum\n";
     }
 
-    out.cull = nfsu::cull_track_region(objects, frustum, args.cull);
+    out.cull = nfsu::cull_track_region(objects, out.frustum, args.cull);
     const nfsu::TrackCullReport& cull = out.cull;
     std::cout << "cull: policy "
               << nfsu::track_cull_policy_name(cull.requested_policy) << " held "
@@ -1992,8 +2033,23 @@ int build_track_scene_pipeline(
               << " meshes " << list_cost.meshes << " texture binds "
               << list_cost.texture_binds << '\n';
 
-    out.reports_ok = geometry.ok() && objects.ok() && cull.ok();
+    out.reports_ok = out.geometry.ok() && objects.ok() && cull.ok();
     return 0;
+}
+
+// Both halves, in order.
+int build_track_scene_pipeline(
+    const fs::path& path,
+    const nfsu::TrackRegionSelector& geometry_region,
+    const nfsu::TrackRegionSelector& object_region,
+    const TrackSceneArgs& args,
+    TrackScenePipeline& out) {
+    const int status = build_track_scene_stage(path, geometry_region,
+                                              object_region, args, out);
+    if (status != 0) {
+        return status;
+    }
+    return build_track_cull_stage(args.camera, args.has_camera, args, out);
 }
 
 // The draw-list listing both commands end with. track-scene shows
@@ -2652,6 +2708,505 @@ int run_track_budget(
         return 4;
     }
     return reports_ok ? 0 : 3;
+}
+
+// ---------------------------------------------------------------------------
+// track-probe: where every placed instance of one bounded region came from,
+// what it draws, and why it is or is not on screen, from one free camera.
+// It is the same pipeline track-scene and track-render build, and it writes
+// nothing at all. See docs/TRACK_PROBE.md.
+// ---------------------------------------------------------------------------
+
+// Instance records printed by default, and sections printed at all. Both
+// listings print a "listed N of M" line whether or not anything was listed,
+// so neither has a trailer that only a non-empty listing could reach.
+constexpr std::size_t kTrackProbeInstanceListLimit = 4;
+constexpr std::size_t kTrackProbeSectionListLimit = 32;
+
+struct TrackProbeArgs {
+    TrackSceneArgs scene;
+    nfsu::TrackProbeSelection select;
+    nfsu::TrackFramingOptions framing;
+    std::uint32_t width = 1280;
+    std::uint32_t height = 720;
+    // The explicit camera. Both halves are given together or neither is.
+    bool has_eye = false;
+    nfsu::Vec3 eye;
+    bool has_look_at = false;
+    nfsu::Vec3 look_at;
+    nfsu::Vec3 up{0.0, 1.0, 0.0};
+    bool has_near = false;
+    double near_plane = 0.0;
+    bool has_far = false;
+    double far_plane = 0.0;
+    nfsu::TrackCameraMoves moves;
+    std::size_t list_limit = kTrackProbeInstanceListLimit;
+    bool use_screen_size = false;
+    double screen_scale = 0.0;
+    // --zones names a Tracks/TRACKB####.lzc and --zone-point a world point in
+    // the two horizontal raw slots, exactly as track-visibility spells them.
+    bool has_zone_file = false;
+    fs::path zone_file;
+    bool has_zone_point = false;
+    float zone_point[2] = {0.0F, 0.0F};
+};
+
+std::string format_vec3(const nfsu::Vec3& value) {
+    return format_double(value.x) + ',' + format_double(value.y) + ',' +
+           format_double(value.z);
+}
+
+void print_track_probe_bounds(
+    const char* indent,
+    const char* label,
+    const nfsu::TrackWorldBounds& bounds) {
+    if (!bounds.valid) {
+        std::cout << indent << label << ": none\n";
+        return;
+    }
+    std::cout << indent << label << ": x " << format_double(bounds.min[0])
+              << " .. " << format_double(bounds.max[0]) << " y "
+              << format_double(bounds.min[1]) << " .. "
+              << format_double(bounds.max[1]) << " z "
+              << format_double(bounds.min[2]) << " .. "
+              << format_double(bounds.max[2]) << " points " << bounds.points
+              << '\n';
+}
+
+void print_track_probe_index(std::size_t value) {
+    if (value == nfsu::kTrackProbeNone) {
+        std::cout << "none";
+    } else {
+        std::cout << value;
+    }
+}
+
+void print_track_instance_probe(
+    const nfsu::TrackInstanceProbe& probe,
+    const nfsu::PreparedTrackScene& scene) {
+    std::cout << "  instance " << probe.section_index << ':'
+              << probe.instance_index << " section number "
+              << probe.section_number << " letter "
+              << (probe.has_section_letter ? probe.section_letter : '?')
+              << " object " << probe.object_index << '\n';
+    std::cout << "    offsets: section " << probe.section_offset << " instance "
+              << probe.instance_offset << " object " << probe.object_offset;
+    if (probe.placed) {
+        std::cout << " mesh container " << probe.mesh_container_offset
+                  << " mesh record " << probe.mesh_record_offset
+                  << " hash record ";
+        if (probe.has_mesh_hash_record) {
+            std::cout << probe.mesh_hash_record_offset;
+        } else {
+            std::cout << "none";
+        }
+    }
+    std::cout << '\n';
+    std::cout << "    object: radius " << format_float(probe.object_radius)
+              << " flags " << hex32(probe.object_flags) << " flags2 "
+              << hex32(probe.object_flags2) << " slots";
+    for (std::size_t slot = 0; slot < nfsu::kSceneryObjectMeshSlots; ++slot) {
+        std::cout << ' ' << hex32(probe.object_mesh_hash[slot]);
+    }
+    std::cout << '\n';
+    std::cout << "    instance: flags " << hex32(probe.instance_flags)
+              << " stored raw px " << probe.stored_min[0] << " .. "
+              << probe.stored_max[0] << " pz " << probe.stored_min[1] << " .. "
+              << probe.stored_max[1] << " py " << probe.stored_min[2] << " .. "
+              << probe.stored_max[2] << '\n';
+    std::cout << "    transform: linear";
+    for (std::size_t k = 0; k < nfsu::kSceneryInstanceMatrixWords; ++k) {
+        std::cout << ' ' << format_float(probe.transform.linear[k]);
+    }
+    std::cout << " translation " << format_float(probe.transform.translation[0])
+              << ',' << format_float(probe.transform.translation[1]) << ','
+              << format_float(probe.transform.translation[2]) << '\n';
+    print_track_probe_bounds("    ", "stored world", probe.stored_world);
+    print_track_probe_bounds("    ", "drawn world", probe.drawn_world);
+    std::cout << "    residency: "
+              << (probe.section_resident ? "resident" : "not resident")
+              << " reason "
+              << nfsu::track_residency_reason_name(probe.residency_reason)
+              << " zone position ";
+    print_track_probe_index(probe.zone_position);
+    std::cout << '\n';
+    std::cout << "    tree: policy "
+              << nfsu::track_cull_policy_name(probe.policy_used) << " node ";
+    print_track_probe_index(probe.node_index);
+    std::cout << " depth " << probe.node_depth << " carried "
+              << nfsu::track_box_class_name(probe.node_class) << " pruned by ";
+    print_track_probe_index(probe.pruned_by_node);
+    std::cout << '\n';
+    std::cout << "    gates: mask "
+              << nfsu::track_gate_verdict_name(probe.mask_gate) << " bits "
+              << hex32(probe.mask_bits) << " box "
+              << nfsu::track_gate_verdict_name(probe.box_gate) << " tested "
+              << nfsu::track_box_class_name(probe.instance_class) << " own box "
+              << nfsu::track_box_class_name(probe.own_box_class) << " size "
+              << nfsu::track_gate_verdict_name(probe.size_gate) << " level ";
+    if (probe.screen_level_measured) {
+        std::cout << probe.screen_level;
+    } else {
+        std::cout << "unmeasured";
+    }
+    std::cout << '\n';
+    std::cout << "    visible: " << (probe.visible ? "yes" : "no") << " culler "
+              << (probe.culler_visible ? "yes" : "no") << '\n';
+    if (!probe.placed) {
+        std::cout << "    placement: none reason ";
+        if (probe.has_unplaced_reason) {
+            std::cout << nfsu::track_unplaced_reason_name(probe.unplaced_reason);
+        } else {
+            std::cout << "unrecorded";
+        }
+        std::cout << '\n';
+        return;
+    }
+    std::cout << "    placement: mesh " << probe.mesh << " '" << probe.mesh_name
+              << "' hash " << hex32(probe.mesh_hash) << " source mesh "
+              << probe.source_mesh_index << " slot " << probe.slot
+              << " requested " << probe.requested_slot << " fallback "
+              << (probe.slot_fallback_used ? "yes" : "no") << " scene instance "
+              << probe.scene_instance << '\n';
+    std::cout << "    materials: groups " << probe.draw_count << " drawable "
+              << probe.groups_drawable << " triangles " << probe.triangles
+              << " resolved " << probe.groups_resolved << " unresolved "
+              << probe.groups_unresolved << " unusable "
+              << probe.groups_unusable << " invalid slot "
+              << probe.groups_invalid_slot << '\n';
+    for (std::size_t d = 0; d < probe.draw_count; ++d) {
+        const std::size_t index = probe.first_draw + d;
+        const nfsu::TrackDraw& draw = scene.region.draws[index];
+        std::cout << "      group " << index << " material "
+                  << draw.material_index << " record " << draw.record_offset
+                  << " first " << draw.first_index << " count "
+                  << draw.index_count << " slot " << draw.texture_slot
+                  << " hash " << hex32(draw.texture_hash) << " binding "
+                  << nfsu::binding_kind_name(draw.binding) << " drawable "
+                  << (draw.drawable ? "yes" : "no") << '\n';
+        std::cout << "        texture ";
+        if (draw.binding == nfsu::BindingKind::resolved) {
+            std::cout << draw.texture << " source " << draw.texture_source
+                      << " pack " << draw.texture_pack << " record "
+                      << draw.texture_record;
+        } else {
+            std::cout << "none";
+        }
+        std::cout << " key slot " << draw.material_key_slot << " flags "
+                  << hex32(draw.flags) << " record bounds min "
+                  << format_float(draw.bounds_min[0]) << ','
+                  << format_float(draw.bounds_min[1]) << ','
+                  << format_float(draw.bounds_min[2]) << " max "
+                  << format_float(draw.bounds_max[0]) << ','
+                  << format_float(draw.bounds_max[1]) << ','
+                  << format_float(draw.bounds_max[2]) << '\n';
+    }
+}
+
+// The region's own bounds: the drawn vertices of every instance the scene
+// placed, selected by no camera at all.
+//
+// It has to be camera-independent, because the camera is what decides the
+// visible set and the default camera is framed from these bounds. A default
+// framed on what a camera sees would be a camera defined in terms of itself,
+// and two runs at different angles could not be compared - which is the
+// property docs/TRACK_RENDER.md chose the sphere fit for.
+//
+// The throwaway draw list below is the reuse that keeps this honest: the
+// drawn box comes out of nfsu::track_draw_list_bounds, the same measurement
+// track-render frames on, rather than out of a second vertex walk here.
+bool track_probe_region_bounds(
+    const nfsu::PreparedTrackScene& scene,
+    nfsu::TrackWorldBounds& bounds,
+    std::string& error) {
+    std::vector<nfsu::TrackVisibleInstance> everything;
+    for (const nfsu::TrackSceneSection& section : scene.sections) {
+        for (std::size_t k = 0; k < section.source_instances; ++k) {
+            nfsu::TrackVisibleInstance item;
+            item.section_index = section.section_index;
+            item.instance_index = k;
+            everything.push_back(item);
+        }
+    }
+    nfsu::TrackDrawList list;
+    if (!nfsu::build_track_draw_list(scene, everything,
+                                     nfsu::TrackDrawListOptions{}, list,
+                                     error)) {
+        return false;
+    }
+    nfsu::TrackDrawListBounds measured;
+    if (!nfsu::track_draw_list_bounds(scene, list, measured, error)) {
+        return false;
+    }
+    bounds = measured.drawn;
+    return true;
+}
+
+int run_track_probe(
+    const fs::path& path,
+    const nfsu::TrackRegionSelector& geometry_region,
+    const nfsu::TrackRegionSelector& object_region,
+    const TrackProbeArgs& args) {
+    TrackScenePipeline pipeline;
+    TrackSceneArgs scene_args = args.scene;
+    // A probe always has a camera: unlike track-scene there is no arm of this
+    // command that consults no frustum.
+    scene_args.has_camera = true;
+    int status = build_track_scene_stage(path, geometry_region, object_region,
+                                         scene_args, pipeline);
+    if (status != 0) {
+        return status;
+    }
+
+    // --zones replaces the residency with the zone the recovered polygon test
+    // picks for the point, which is what turns "resident" from a caller's
+    // assertion into the game's own rule. The parser has already refused it
+    // beside --residency and --zone, so nothing here can be overwritten.
+    if (args.has_zone_file) {
+        std::vector<unsigned char> zone_bytes;
+        const nfsu::TrackZoneReport zones =
+            nfsu::load_track_zones(args.zone_file, zone_bytes);
+        for (const nfsu::TrackIssue& issue : zones.issues) {
+            std::cerr << "zone issue at " << issue.offset << ": "
+                      << issue.message << '\n';
+        }
+        if (!zones.valid) {
+            std::cerr << "error: the zone container was refused\n";
+            return 3;
+        }
+        const std::size_t picked = nfsu::find_track_zone(zones, args.zone_point);
+        std::cout << "zones: file " << args.zone_file.string() << " polygons "
+                  << zones.cost.polygons << " zones " << zones.cost.zones
+                  << '\n';
+        std::cout << "zone point: slot0 " << format_float(args.zone_point[0])
+                  << " slot1 " << format_float(args.zone_point[1]) << '\n';
+        if (picked == nfsu::kTrackZoneNone) {
+            scene_args.cull.residency = nfsu::TrackResidency{};
+            scene_args.cull.residency.rule = nfsu::TrackResidencyRule::no_zone;
+            std::cout << "zone: none; residency falls back to no-zone\n";
+        } else if (!nfsu::track_zone_residency(zones, picked,
+                                               scene_args.cull.residency)) {
+            std::cerr << "error: the selected zone yields no residency\n";
+            return 3;
+        } else {
+            const nfsu::TrackZone& zone = zones.zones[picked];
+            std::cout << "zone: index " << picked << " key " << zone.key
+                      << " polygon " << zone.polygon_index << " sections "
+                      << zone.section_count << '\n';
+        }
+    }
+
+    nfsu::TrackWorldBounds region_bounds;
+    std::string error;
+    if (!track_probe_region_bounds(pipeline.scene, region_bounds, error)) {
+        std::cerr << "error: " << error << '\n';
+        return 2;
+    }
+    print_track_probe_bounds("", "probe: region bounds", region_bounds);
+
+    nfsu::TrackFreeCamera camera;
+    bool framed = false;
+    if (args.has_eye) {
+        camera.eye = args.eye;
+        camera.target = args.look_at;
+        camera.fov_y_deg = args.framing.fov_y_deg;
+        camera.width = args.width;
+        camera.height = args.height;
+    } else if (nfsu::track_frame_free_camera(region_bounds, args.framing,
+                                             args.width, args.height, camera,
+                                             error)) {
+        framed = true;
+    } else {
+        std::cerr << "error: the region could not be framed automatically ("
+                  << error << "); give --eye and --look-at explicitly\n";
+        return 2;
+    }
+    camera.up = args.up;
+    if (args.has_near) {
+        camera.near_plane = args.near_plane;
+    }
+    if (args.has_far) {
+        camera.far_plane = args.far_plane;
+    }
+    if (!nfsu::validate_track_free_camera(camera, error)) {
+        std::cerr << "error: " << error << '\n';
+        return 1;
+    }
+    nfsu::TrackFreeCamera moved;
+    if (!nfsu::track_move_free_camera(camera, args.moves, moved, error)) {
+        std::cerr << "error: " << error << '\n';
+        return 1;
+    }
+    nfsu::TrackCameraBasis basis;
+    if (!nfsu::track_camera_basis(moved, basis, error)) {
+        std::cerr << "error: " << error << '\n';
+        return 1;
+    }
+    nfsu::TrackCamera cull_camera;
+    if (!nfsu::track_cull_camera_of(moved, cull_camera, error)) {
+        std::cerr << "error: " << error << '\n';
+        return 1;
+    }
+
+    // The screen-size gate reads the SAME camera. track-visibility asks for
+    // its eye and its forward axis separately, which lets a caller evaluate
+    // the gate from somewhere the frustum is not; there is one camera here
+    // and it supplies both, in the raw slot order the gate wants.
+    if (args.use_screen_size) {
+        scene_args.cull.use_screen_size = true;
+        scene_args.cull.screen_scale = static_cast<float>(args.screen_scale);
+        const float eye_world[3] = {static_cast<float>(moved.eye.x),
+                                    static_cast<float>(moved.eye.y),
+                                    static_cast<float>(moved.eye.z)};
+        nfsu::track_raw_from_world(eye_world, scene_args.cull.screen_eye);
+        const float forward_world[3] = {static_cast<float>(basis.forward.x),
+                                        static_cast<float>(basis.forward.y),
+                                        static_cast<float>(basis.forward.z)};
+        nfsu::track_raw_from_world(forward_world,
+                                   scene_args.cull.screen_forward);
+    }
+
+    std::cout << "probe: camera " << (framed ? "framed" : "explicit")
+              << " moves turn ";
+    if (args.moves.has_turn) {
+        std::cout << format_double(args.moves.turn_yaw_deg) << ','
+                  << format_double(args.moves.turn_pitch_deg);
+    } else {
+        std::cout << "none";
+    }
+    std::cout << " fly ";
+    if (args.moves.has_fly) {
+        std::cout << format_double(args.moves.fly_forward) << ','
+                  << format_double(args.moves.fly_right) << ','
+                  << format_double(args.moves.fly_up);
+    } else {
+        std::cout << "none";
+    }
+    std::cout << '\n';
+    std::cout << "probe: camera eye " << format_vec3(moved.eye) << " target "
+              << format_vec3(moved.target) << " up " << format_vec3(moved.up)
+              << '\n';
+    std::cout << "probe: camera forward " << format_vec3(basis.forward)
+              << " right " << format_vec3(basis.right) << " up-axis "
+              << format_vec3(basis.up_axis) << " distance "
+              << format_double(basis.distance) << '\n';
+    std::cout << "probe: camera fov_y " << format_double(moved.fov_y_deg)
+              << " frame " << moved.width << 'x' << moved.height << " aspect "
+              << format_float(cull_camera.aspect) << " near "
+              << format_double(moved.near_plane) << " far "
+              << format_double(moved.far_plane) << '\n';
+
+    status = build_track_cull_stage(cull_camera, true, scene_args, pipeline);
+    if (status != 0) {
+        return status;
+    }
+
+    for (std::size_t i = 0; i < nfsu::kTrackFrustumPlanes; ++i) {
+        const nfsu::TrackPlane& plane = pipeline.frustum.planes[i];
+        std::cout << "probe: plane " << i << " raw normal "
+                  << format_float(plane.normal[0]) << ','
+                  << format_float(plane.normal[1]) << ','
+                  << format_float(plane.normal[2]) << " d "
+                  << format_float(plane.d) << '\n';
+    }
+
+    nfsu::TrackProbeOptions options;
+    options.cull = scene_args.cull;
+    options.select = args.select;
+    nfsu::TrackProbeReport report;
+    if (!nfsu::probe_track_scene(pipeline.geometry, pipeline.objects,
+                                 pipeline.scene, pipeline.cull,
+                                 pipeline.frustum, options, report, error)) {
+        std::cerr << "error: " << error << '\n';
+        return 2;
+    }
+
+    const nfsu::TrackProbeCost& cost = report.cost;
+    std::cout << "probe: residency rule ";
+    switch (scene_args.cull.residency.rule) {
+        case nfsu::TrackResidencyRule::every_section:
+            std::cout << "every";
+            break;
+        case nfsu::TrackResidencyRule::no_zone:
+            std::cout << "no-zone";
+            break;
+        case nfsu::TrackResidencyRule::zone_list:
+            std::cout << "zone";
+            break;
+    }
+    std::cout << " zone sections "
+              << scene_args.cull.residency.zone_sections.size() << " mask "
+              << hex32(scene_args.cull.instance_mask) << " screen scale ";
+    if (scene_args.cull.use_screen_size) {
+        std::cout << format_float(scene_args.cull.screen_scale);
+    } else {
+        std::cout << "off";
+    }
+    std::cout << '\n';
+    std::cout << "probe: sections " << cost.sections << " valid "
+              << cost.valid_sections << " resident " << cost.resident_sections
+              << '\n';
+    std::cout << "probe: instances " << cost.instances << " probed "
+              << cost.probed << " visible " << cost.visible << " culler "
+              << cost.culler_visible << " disagreements " << cost.disagreements
+              << '\n';
+    std::cout << "probe: rejected by mask " << cost.rejected_by_mask << " box "
+              << cost.rejected_by_box << " size " << cost.rejected_by_size
+              << " pruned " << cost.pruned << '\n';
+    std::cout << "probe: placed " << cost.placed << " unplaced "
+              << cost.unplaced << " groups " << cost.groups << " triangles "
+              << cost.triangles << '\n';
+
+    const std::size_t sections_listed =
+        std::min(report.sections.size(), kTrackProbeSectionListLimit);
+    std::cout << "probe: listed " << sections_listed << " of "
+              << report.sections.size() << " sections\n";
+    for (std::size_t i = 0; i < sections_listed; ++i) {
+        const nfsu::TrackSectionProbe& section = report.sections[i];
+        std::cout << "  section " << section.section_index << " number "
+                  << section.number << " letter "
+                  << (section.has_letter ? section.letter : '?') << " offset "
+                  << section.offset << " valid "
+                  << (section.valid ? "yes" : "no") << '\n';
+        std::cout << "    residency: "
+                  << (section.resident ? "resident" : "not resident")
+                  << " reason "
+                  << nfsu::track_residency_reason_name(section.residency_reason)
+                  << " zone position ";
+        print_track_probe_index(section.zone_position);
+        std::cout << '\n';
+        std::cout << "    policy " << nfsu::track_cull_policy_name(
+                                          section.policy_used)
+                  << " containment "
+                  << (!section.containment_checked
+                          ? "unchecked"
+                          : (section.containment_holds ? "holds" : "broken"))
+                  << " nodes " << section.nodes << " depth "
+                  << section.tree_depth << " tree walked "
+                  << (section.tree_walked ? "yes" : "no") << '\n';
+        std::cout << "    instances " << section.instances << " probed "
+                  << section.probed << " visible " << section.visible
+                  << " culler " << section.culler_visible << " placed "
+                  << section.placed << '\n';
+        std::cout << "    rejected: mask " << section.rejected_by_mask
+                  << " box " << section.rejected_by_box << " size "
+                  << section.rejected_by_size << " pruned " << section.pruned
+                  << '\n';
+    }
+
+    const std::size_t listed =
+        std::min(report.instances.size(), args.list_limit);
+    std::cout << "probe: listed " << listed << " of "
+              << report.instances.size() << " instances\n";
+    for (std::size_t i = 0; i < listed; ++i) {
+        print_track_instance_probe(report.instances[i], pipeline.scene);
+    }
+
+    for (const nfsu::TrackIssue& issue : report.issues) {
+        std::cerr << "probe issue at " << issue.offset << ": " << issue.message
+                  << '\n';
+    }
+    return (pipeline.reports_ok && report.ok()) ? 0 : 3;
 }
 
 // ---------------------------------------------------------------------------
@@ -4399,6 +4954,432 @@ const Command kCommands[] = {
          // the refusal.
          return run_track_budget(nfsu::argument_path(argv[2]), geometry_region,
                                  object_region, args);
+     }},
+    {"track-probe",
+     " <STREAM.BUN> <geometry-offset> <geometry-size>",
+     "      <object-offset> <object-size>\n"
+     "      [--texture <file>]... [--lod-slot <0..5>]\n"
+     "      [--order <visible-instance|material-group>]\n"
+     "      [--policy <retail-tree|draw-everything|flat-instance-test>]\n"
+     "      [--residency <every|no-zone|zone>] [--zone <section-number>]...\n"
+     "      [--zones <TRACKB####.lzc> --zone-point <slot0> <slot1>]\n"
+     "      [--mask <0xNN>] [--screen-scale <s>]\n"
+     "      [--width <N>] [--height <N>] [--view-fov <deg>]\n"
+     "      [--view-yaw <deg>] [--view-pitch <deg>] [--view-margin <m>]\n"
+     "      [--eye <x> <y> <z>] [--look-at <x> <y> <z>] [--up <x> <y> <z>]\n"
+     "      [--view-near <n>] [--view-far <f>]\n"
+     "      [--turn <yaw> <pitch>] [--fly <forward> <right> <up>]\n"
+     "      [--section <n>] [--instance <n>]... [--mesh <NAME>]\n"
+     "      [--limit <count>]\n"
+     "      (ONE free camera drives the frustum, the screen-size gate and\n"
+     "       the report. With no --eye it frames the whole placed region,\n"
+     "       which is view-independent, and --turn then --fly move it from\n"
+     "       there. Every option is given at most once except --texture,\n"
+     "       --zone and --instance. This command writes no file.)\n",
+     [](int argc, char** argv) {
+         if (argc < 7) {
+             print_usage();
+             return 1;
+         }
+         std::uint64_t numbers[4] = {0, 0, 0, 0};
+         static const char* const kNames[4] = {"geometry-offset",
+                                               "geometry-size", "object-offset",
+                                               "object-size"};
+         for (int k = 0; k < 4; ++k) {
+             if (!parse_u64(std::string(argv[3 + k]), numbers[k])) {
+                 std::cerr << "error: " << kNames[k]
+                           << " must be a decimal or 0x integer\n";
+                 return 1;
+             }
+         }
+         nfsu::TrackRegionSelector geometry_region;
+         geometry_region.offset = numbers[0];
+         geometry_region.size = numbers[1];
+         nfsu::TrackRegionSelector object_region;
+         object_region.offset = numbers[2];
+         object_region.size = numbers[3];
+
+         TrackProbeArgs args;
+         // The recovered rule is the default here. track-scene defaults to
+         // the fallback because it may be given no camera at all; this
+         // command always has one, so the frustum rule is always meaningful.
+         args.scene.cull.policy = nfsu::TrackCullPolicy::retail_tree;
+
+         // Every option this command takes, and the three that may repeat.
+         // An option outside the first list is refused by name; one outside
+         // the second is refused when it is given twice, because an option
+         // written twice would make the answer depend on the order the
+         // command line was written in, and a deterministic selection cannot
+         // depend on that.
+         static const char* const kFlags[] = {
+             "--texture", "--lod-slot", "--order", "--policy", "--residency",
+             "--zone", "--zones", "--zone-point", "--mask", "--screen-scale",
+             "--width", "--height", "--view-fov", "--view-yaw", "--view-pitch",
+             "--view-margin", "--eye", "--look-at", "--up", "--view-near",
+             "--view-far", "--turn", "--fly", "--section", "--instance",
+             "--mesh", "--limit"};
+         static const char* const kRepeatable[] = {"--texture", "--zone",
+                                                   "--instance"};
+         std::vector<std::string> seen;
+         const auto given = [&seen](const char* name) {
+             return std::find(seen.begin(), seen.end(), std::string(name)) !=
+                    seen.end();
+         };
+
+         for (int i = 7; i < argc; ++i) {
+             const std::string flag = argv[i];
+             bool known = false;
+             for (const char* const name : kFlags) {
+                 if (flag == name) {
+                     known = true;
+                     break;
+                 }
+             }
+             if (!known) {
+                 std::cerr << "error: unknown option " << flag << '\n';
+                 return 1;
+             }
+             bool repeatable = false;
+             for (const char* const name : kRepeatable) {
+                 if (flag == name) {
+                     repeatable = true;
+                     break;
+                 }
+             }
+             if (!repeatable) {
+                 if (given(flag.c_str())) {
+                     std::cerr << "error: " << flag
+                               << " is given at most once\n";
+                     return 1;
+                 }
+                 seen.push_back(flag);
+             }
+
+             const bool has_value = i + 1 < argc;
+             const std::string value = has_value ? argv[i + 1] : std::string();
+             const auto take_ranged = [&](double& out, double low,
+                                          double high) {
+                 double parsed = 0.0;
+                 if (!has_value || !parse_f64(value, parsed) || parsed < low ||
+                     parsed > high) {
+                     std::cerr << "error: " << flag << " needs a number from "
+                               << format_double(low) << " to "
+                               << format_double(high) << '\n';
+                     return false;
+                 }
+                 out = parsed;
+                 ++i;
+                 return true;
+             };
+             const auto take_size = [&](std::uint32_t& out) {
+                 std::uint64_t parsed = 0;
+                 if (!has_value || !parse_u64(value, parsed) || parsed == 0 ||
+                     parsed > nfsu::kMaxTrackProbeFrameSize) {
+                     std::cerr << "error: " << flag << " needs a size from 1 to "
+                               << nfsu::kMaxTrackProbeFrameSize << '\n';
+                     return false;
+                 }
+                 out = static_cast<std::uint32_t>(parsed);
+                 ++i;
+                 return true;
+             };
+             const auto take_count = [&](std::uint64_t& out) {
+                 std::uint64_t parsed = 0;
+                 if (!has_value || !parse_u64(value, parsed)) {
+                     std::cerr << "error: " << flag
+                               << " needs a decimal or 0x integer\n";
+                     return false;
+                 }
+                 out = parsed;
+                 ++i;
+                 return true;
+             };
+             const auto take_vec3 = [&](nfsu::Vec3& out) {
+                 double triple[3] = {0.0, 0.0, 0.0};
+                 if (i + 3 >= argc) {
+                     std::cerr << "error: " << flag
+                               << " needs three finite numbers\n";
+                     return false;
+                 }
+                 for (int k = 0; k < 3; ++k) {
+                     if (!parse_f64(std::string(argv[i + 1 + k]), triple[k])) {
+                         std::cerr << "error: " << flag
+                                   << " needs three finite numbers\n";
+                         return false;
+                     }
+                 }
+                 out = nfsu::Vec3{triple[0], triple[1], triple[2]};
+                 i += 3;
+                 return true;
+             };
+
+             if (flag == "--texture") {
+                 if (!has_value) {
+                     std::cerr << "error: --texture needs a path\n";
+                     return 1;
+                 }
+                 args.scene.textures.push_back(nfsu::argument_path(argv[i + 1]));
+                 ++i;
+             } else if (flag == "--lod-slot") {
+                 std::uint64_t slot = 0;
+                 if (!has_value || !parse_u64(value, slot) ||
+                     slot >= nfsu::kSceneryObjectMeshSlots) {
+                     std::cerr << "error: --lod-slot needs a slot from 0 to "
+                               << (nfsu::kSceneryObjectMeshSlots - 1) << '\n';
+                     return 1;
+                 }
+                 args.scene.scene.lod_slot = static_cast<std::size_t>(slot);
+                 ++i;
+             } else if (flag == "--order") {
+                 if (value == "visible-instance") {
+                     args.scene.list.order =
+                         nfsu::TrackDrawOrder::visible_instance;
+                 } else if (value == "material-group") {
+                     args.scene.list.order =
+                         nfsu::TrackDrawOrder::material_group;
+                 } else {
+                     std::cerr << "error: --order must be visible-instance or"
+                                  " material-group\n";
+                     return 1;
+                 }
+                 ++i;
+             } else if (flag == "--policy") {
+                 if (value == "retail-tree") {
+                     args.scene.cull.policy = nfsu::TrackCullPolicy::retail_tree;
+                 } else if (value == "draw-everything") {
+                     args.scene.cull.policy =
+                         nfsu::TrackCullPolicy::draw_everything;
+                 } else if (value == "flat-instance-test") {
+                     args.scene.cull.policy =
+                         nfsu::TrackCullPolicy::flat_instance_test;
+                 } else {
+                     std::cerr << "error: --policy must be retail-tree,"
+                                  " draw-everything or flat-instance-test\n";
+                     return 1;
+                 }
+                 ++i;
+             } else if (flag == "--residency") {
+                 if (value == "every") {
+                     args.scene.cull.residency.rule =
+                         nfsu::TrackResidencyRule::every_section;
+                 } else if (value == "no-zone") {
+                     args.scene.cull.residency.rule =
+                         nfsu::TrackResidencyRule::no_zone;
+                 } else if (value == "zone") {
+                     args.scene.cull.residency.rule =
+                         nfsu::TrackResidencyRule::zone_list;
+                 } else {
+                     std::cerr << "error: --residency must be every, no-zone or"
+                                  " zone\n";
+                     return 1;
+                 }
+                 ++i;
+             } else if (flag == "--zone") {
+                 std::uint64_t section = 0;
+                 if (!has_value || !parse_u64(value, section) ||
+                     section > 0xFFFFFFFFULL) {
+                     std::cerr << "error: --zone needs a section number\n";
+                     return 1;
+                 }
+                 args.scene.cull.residency.zone_sections.push_back(
+                     static_cast<std::uint32_t>(section));
+                 ++i;
+             } else if (flag == "--zones") {
+                 if (!has_value) {
+                     std::cerr << "error: --zones needs a path\n";
+                     return 1;
+                 }
+                 args.zone_file = nfsu::argument_path(argv[i + 1]);
+                 args.has_zone_file = true;
+                 ++i;
+             } else if (flag == "--zone-point") {
+                 float point[2] = {0.0F, 0.0F};
+                 if (i + 2 >= argc ||
+                     !parse_f32(std::string(argv[i + 1]), point[0]) ||
+                     !parse_f32(std::string(argv[i + 2]), point[1])) {
+                     std::cerr << "error: --zone-point needs two finite"
+                                  " floats\n";
+                     return 1;
+                 }
+                 args.zone_point[0] = point[0];
+                 args.zone_point[1] = point[1];
+                 args.has_zone_point = true;
+                 i += 2;
+             } else if (flag == "--mask") {
+                 std::uint64_t mask = 0;
+                 if (!has_value || !parse_u64(value, mask) || mask > 0xFFULL) {
+                     std::cerr << "error: --mask needs a byte from 0 to 255\n";
+                     return 1;
+                 }
+                 args.scene.cull.instance_mask =
+                     static_cast<std::uint8_t>(mask);
+                 ++i;
+             } else if (flag == "--screen-scale") {
+                 double parsed = 0.0;
+                 if (!has_value || !parse_f64(value, parsed)) {
+                     std::cerr << "error: --screen-scale needs a finite"
+                                  " number\n";
+                     return 1;
+                 }
+                 args.screen_scale = parsed;
+                 args.use_screen_size = true;
+                 ++i;
+             } else if (flag == "--width") {
+                 if (!take_size(args.width)) {
+                     return 1;
+                 }
+             } else if (flag == "--height") {
+                 if (!take_size(args.height)) {
+                     return 1;
+                 }
+             } else if (flag == "--view-fov") {
+                 if (!take_ranged(args.framing.fov_y_deg, nfsu::kMinFov,
+                                  nfsu::kMaxFov)) {
+                     return 1;
+                 }
+             } else if (flag == "--view-yaw") {
+                 if (!take_ranged(args.framing.yaw_deg,
+                                  -nfsu::kMaxYawMagnitude,
+                                  nfsu::kMaxYawMagnitude)) {
+                     return 1;
+                 }
+             } else if (flag == "--view-pitch") {
+                 if (!take_ranged(args.framing.pitch_deg, nfsu::kMinPitch,
+                                  nfsu::kMaxPitch)) {
+                     return 1;
+                 }
+             } else if (flag == "--view-margin") {
+                 if (!take_ranged(args.framing.margin,
+                                  nfsu::kMinTrackFramingMargin,
+                                  nfsu::kMaxTrackFramingMargin)) {
+                     return 1;
+                 }
+             } else if (flag == "--eye") {
+                 if (!take_vec3(args.eye)) {
+                     return 1;
+                 }
+                 args.has_eye = true;
+             } else if (flag == "--look-at") {
+                 if (!take_vec3(args.look_at)) {
+                     return 1;
+                 }
+                 args.has_look_at = true;
+             } else if (flag == "--up") {
+                 if (!take_vec3(args.up)) {
+                     return 1;
+                 }
+             } else if (flag == "--view-near") {
+                 if (!take_ranged(args.near_plane, nfsu::kMinNear,
+                                  nfsu::kMaxNear)) {
+                     return 1;
+                 }
+                 args.has_near = true;
+             } else if (flag == "--view-far") {
+                 if (!take_ranged(args.far_plane, nfsu::kMinNear,
+                                  nfsu::kMaxFar)) {
+                     return 1;
+                 }
+                 args.has_far = true;
+             } else if (flag == "--turn") {
+                 double pair[2] = {0.0, 0.0};
+                 if (i + 2 >= argc ||
+                     !parse_f64(std::string(argv[i + 1]), pair[0]) ||
+                     !parse_f64(std::string(argv[i + 2]), pair[1])) {
+                     std::cerr << "error: --turn needs a yaw and a pitch in"
+                                  " degrees\n";
+                     return 1;
+                 }
+                 args.moves.turn_yaw_deg = pair[0];
+                 args.moves.turn_pitch_deg = pair[1];
+                 args.moves.has_turn = true;
+                 i += 2;
+             } else if (flag == "--fly") {
+                 nfsu::Vec3 legs;
+                 if (!take_vec3(legs)) {
+                     return 1;
+                 }
+                 args.moves.fly_forward = legs.x;
+                 args.moves.fly_right = legs.y;
+                 args.moves.fly_up = legs.z;
+                 args.moves.has_fly = true;
+             } else if (flag == "--section") {
+                 std::uint64_t index = 0;
+                 if (!take_count(index)) {
+                     return 1;
+                 }
+                 args.select.has_section = true;
+                 args.select.section_index = static_cast<std::size_t>(index);
+             } else if (flag == "--instance") {
+                 std::uint64_t index = 0;
+                 if (!take_count(index)) {
+                     return 1;
+                 }
+                 args.select.instances.push_back(
+                     static_cast<std::size_t>(index));
+             } else if (flag == "--mesh") {
+                 if (!has_value || value.empty()) {
+                     std::cerr << "error: --mesh needs a prepared mesh name\n";
+                     return 1;
+                 }
+                 args.select.mesh_name = value;
+                 ++i;
+             } else if (flag == "--limit") {
+                 std::uint64_t limit = 0;
+                 if (!take_count(limit)) {
+                     return 1;
+                 }
+                 args.list_limit = static_cast<std::size_t>(limit);
+             } else {
+                 // kFlags accepted it and no branch above claimed it, so the
+                 // two lists have drifted apart. Refusing is the only answer
+                 // that cannot be mistaken for the option having been used.
+                 std::cerr << "error: option " << flag
+                           << " is listed and not handled\n";
+                 return 1;
+             }
+         }
+
+         if (args.has_eye != args.has_look_at) {
+             std::cerr << "error: --eye and --look-at are given together\n";
+             return 1;
+         }
+         if (args.has_eye && (given("--view-yaw") || given("--view-pitch") ||
+                              given("--view-margin"))) {
+             std::cerr << "error: --view-yaw, --view-pitch and --view-margin"
+                          " describe the automatic framing, which --eye"
+                          " replaces\n";
+             return 1;
+         }
+         if (args.has_zone_file != args.has_zone_point) {
+             std::cerr << "error: --zones and --zone-point are used together\n";
+             return 1;
+         }
+         if (args.has_zone_file &&
+             (given("--residency") ||
+              !args.scene.cull.residency.zone_sections.empty())) {
+             std::cerr << "error: --zones replaces the residency, so it cannot"
+                          " be combined with --residency or --zone\n";
+             return 1;
+         }
+         if (!args.scene.cull.residency.zone_sections.empty() &&
+             args.scene.cull.residency.rule !=
+                 nfsu::TrackResidencyRule::zone_list) {
+             std::cerr << "error: --zone needs --residency zone\n";
+             return 1;
+         }
+         if ((given("--mask") || given("--screen-scale")) &&
+             args.scene.cull.policy ==
+                 nfsu::TrackCullPolicy::draw_everything) {
+             std::cerr << "error: --mask and --screen-scale are not consulted"
+                          " under --policy draw-everything\n";
+             return 1;
+         }
+         if (!args.select.instances.empty() && !args.select.has_section) {
+             std::cerr << "error: --instance needs --section\n";
+             return 1;
+         }
+         return run_track_probe(nfsu::argument_path(argv[2]), geometry_region,
+                                object_region, args);
      }},
     {"track-collision", " <TRACKB####.lzc> [px pz]", "",
      [](int argc, char** argv) {

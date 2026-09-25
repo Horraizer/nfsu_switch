@@ -1799,7 +1799,11 @@ void test_scratch_stamp() {
     indexed.scratch = 0x0245U;
     Polygon stamped_high = flat_quad(16.0F, 16.0F, 8.0F, 3.0F);
     stamped_high.scratch = kScratchStamp;
-    image.polygons = {stamped_low, indexed, stamped_high};
+    // A new vector moved in, not the braced list assigned: assignment into
+    // the empty vector compiles a std::copy into its storage, a null
+    // pointer, on a path GCC cannot rule out, and the Release build warns
+    // (-Wnonnull, issue #131).
+    image.polygons = std::vector<Polygon>{stamped_low, indexed, stamped_high};
     Cell cell;
     cell.center[0] = 16.0F;
     cell.center[1] = 16.0F;
@@ -1863,7 +1867,8 @@ void test_vertical_base() {
     Polygon high = flat_quad(16.0F, 16.0F, 8.0F, 0.50F);
     high.vertical_base = 94;
     Polygon plain = flat_quad(16.0F, 16.0F, 8.0F, 0.75F);
-    image.polygons = {low, high, plain};
+    // Moved in, not assigned, for the reason test_scratch_stamp gives.
+    image.polygons = std::vector<Polygon>{low, high, plain};
     Cell cell;
     cell.center[0] = 16.0F;
     cell.center[1] = 16.0F;
