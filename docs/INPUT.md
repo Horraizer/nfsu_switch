@@ -26,7 +26,9 @@ the camera after every frame. The same bits come out of GCC 13 in the
 default and Release configurations, Clang 18, MinGW-w64 GCC 13 running under
 Wine, and GCC 13 for AArch64 at `-O3` running under QEMU - the last only
 since `nfsu_inspect` is compiled without contraction; see **What is
-guaranteed about determinism** below.
+guaranteed about determinism** below. The AArch64/QEMU run was measured
+once, in the worker's cloud session for this branch, not reproduced on the
+project's own toolchain, and nothing here has run on a console.
 
 ## The model
 
@@ -242,17 +244,20 @@ camera bits wherever double arithmetic is IEEE 754 binary64 without extended
 precision, as it is on x86-64 and AArch64.
 
 `nfsu_inspect` did not have that option before this change, and the reason
-it has it now was measured rather than assumed. GCC 13 cross-compiling for
-AArch64 - the console's architecture - at `-O3` fuses three multiply-adds
-into `Inspector::orbit`. Run under QEMU, that build failed two tests: the
-pinned session's per-frame digest (`0x4D5D67E655FC6F3D` against
-`0x7BE849D74BE1CBE8`; the final camera happened to converge back, which is
-why the digest is taken after every frame), and the existing
-`nfsu_inspect_tests`, whose "the orbit is reversible" is false once an orbit
-and its inverse each round only once. With the option on `nfsu_inspect`
-alone, the function has no fused instruction and every test that can run
-under QEMU passes, 28 of 28. x86-64 without FMA has nothing to fuse, so
-every desktop build is unchanged, the pinned values included.
+it has it now was measured rather than assumed - once, in the worker's
+cloud session for this branch, cross-compiling and running under QEMU
+there, not reproduced on the project's own toolchain, and nothing here has
+run on a console. GCC 13 cross-compiling for AArch64 - the console's
+architecture - at `-O3` fuses three multiply-adds into `Inspector::orbit`.
+Run under QEMU, that build failed two tests: the pinned session's per-frame
+digest (`0x4D5D67E655FC6F3D` against `0x7BE849D74BE1CBE8`; the final camera
+happened to converge back, which is why the digest is taken after every
+frame), and the existing `nfsu_inspect_tests`, whose "the orbit is
+reversible" is false once an orbit and its inverse each round only once.
+With the option on `nfsu_inspect` alone, the function has no fused
+instruction and every test that can run under QEMU passes, 28 of 28.
+x86-64 without FMA has nothing to fuse, so every desktop build is
+unchanged, the pinned values included.
 
 ## The Joy-Con and Pro Controller mapping a libnx backend would implement
 

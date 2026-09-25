@@ -734,7 +734,10 @@ endif()
 # 13 for AArch64 at -O3 fuses three multiply-adds into Inspector::orbit,
 # which fails nfsu_inspect_tests' "the orbit is reversible" and moves the
 # replayed session's per-frame digest; with these options both pass. x86-64
-# without FMA has nothing to fuse, so its builds are unchanged.
+# without FMA has nothing to fuse, so its builds are unchanged. Measured
+# once, in the worker's cloud session for this branch, cross-compiling and
+# running under QEMU there; not reproduced on the project's own toolchain,
+# and nothing here has run on a console.
 if(MSVC)
     target_compile_options(nfsu_inspect PRIVATE /fp:precise)
 else()
