@@ -831,7 +831,8 @@ target_link_libraries(nfsu_inspect_window PUBLIC nfsu_platform nfsu_input_camera
 # merged in from main.
 set(NFSU_NEUTRAL_LIBRARIES
     nfsu_image nfsu_core nfsu_scene nfsu_track nfsu_track_visibility
-    nfsu_track_zones nfsu_track_draw_list nfsu_track_render nfsu_stock_scene
+    nfsu_track_zones nfsu_track_draw_list nfsu_track_render nfsu_track_probe
+    nfsu_stock_scene
     nfsu_texture_decode nfsu_body_skin nfsu_skin_inputs nfsu_runtime_skin
     nfsu_inspect nfsu_inspect_window nfsu_input nfsu_platform
     nfsu_platform_fakes nfsu_input_camera nfsu_memory nfsu_gpu_upload)
