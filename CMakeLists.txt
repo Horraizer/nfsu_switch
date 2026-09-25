@@ -168,6 +168,25 @@ add_library(nfsu_race_events
 target_link_libraries(nfsu_race_events PUBLIC nfsu_core)
 nfsu_enable_warnings(nfsu_race_events)
 
+# The whole track one race loads (issue #156): the streaming table of a
+# track's TRACKB file, the recovered rule that picks which of its sections
+# speed.exe loads, the bounded read of exactly those byte ranges, and their
+# merge into one geometry report and one scenery report that the existing
+# scene layer places as one scene. It links the zone decoder because the
+# rule reads two of the zone file's lists, nfsu_texture_decode for the
+# per-section texture sources, and nfsu_gpu_upload for the budgets of issue
+# #52. It reads its files with std::ifstream, as nfsu_core's loaders do,
+# reads no clock and makes no decision from a floating-point result - it
+# only takes the minimum and maximum of bounds the parsers computed - so it
+# carries no floating-point flags. See docs/TRACK_WHOLE.md.
+add_library(nfsu_track_stream
+    src/track_stream.cpp
+)
+
+target_link_libraries(nfsu_track_stream
+    PUBLIC nfsu_track_zones nfsu_texture_decode nfsu_gpu_upload)
+nfsu_enable_warnings(nfsu_track_stream)
+
 # The read-only inspector. It is declared after every library it uses.
 add_executable(nfsu_probe
     src/main.cpp
@@ -183,6 +202,9 @@ target_link_libraries(nfsu_probe
             nfsu_track_probe nfsu_race_events
             nfsu_texture_decode nfsu_skin_inputs nfsu_stock_scene
             nfsu_arg_path)
+# `track-whole` (issue #156) is the one command that needs the whole-track
+# layer; it is linked on its own line so the list above stays as it was.
+target_link_libraries(nfsu_probe PRIVATE nfsu_track_stream)
 nfsu_enable_warnings(nfsu_probe)
 
 # nfsu_body_skin, nfsu_skin_inputs, nfsu_runtime_skin and nfsu_inspect were
@@ -417,6 +439,19 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_race_event_tests)
     add_test(NAME nfsu_race_event_tests COMMAND nfsu_race_event_tests)
 
+    # The whole-track layer over synthetic multi-section streams: a TRACKB
+    # image carrying a streaming table and a zone container, and a stream
+    # of several sections at their own offsets, parsed by the real parsers.
+    # It also writes the fixture the track-whole guards drive the probe over.
+    add_executable(nfsu_track_stream_tests
+        tests/track_stream_tests.cpp
+    )
+
+    target_link_libraries(nfsu_track_stream_tests PRIVATE nfsu_track_stream)
+    nfsu_enable_warnings(nfsu_track_stream_tests)
+    add_test(NAME nfsu_track_stream_tests COMMAND nfsu_track_stream_tests)
+    set_tests_properties(nfsu_track_stream_tests PROPERTIES TIMEOUT 60)
+
     add_executable(nfsu_body_skin_tests
         tests/body_skin_tests.cpp
     )
@@ -585,6 +620,17 @@ if(NFSU_BUILD_TESTS)
                 -DTESTS=$<TARGET_FILE:nfsu_race_event_tests>
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/race_events_guards.cmake
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+    # What `track-whole` refuses, prints and exits with: every refusal with
+    # no input at all, and the whole listing over the synthetic stream
+    # nfsu_track_stream_tests writes on request. tests/track_whole_guards.cmake
+    # says what each case is for.
+    add_test(NAME nfsu_probe_track_whole_guards
+        COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -DTESTS=$<TARGET_FILE:nfsu_track_stream_tests>
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/track_whole_guards.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(nfsu_probe_track_whole_guards PROPERTIES TIMEOUT 60)
     # nfsu_probe registers a command in one place, and print_usage() composes
     # the usage line out of the name main() dispatches on. This reads the
     # command inventory back out of three independent places - the kCommands
@@ -754,6 +800,11 @@ set(NFSU_PLATFORM_LIBRARIES nfsu_arg_path nfsu_render nfsu_texture_export nfsu_p
 # (NFSU_PLATFORM_LIBRARIES), so src/texture.cpp holds only the texture
 # decoder now and the gate reads it again.
 set(NFSU_PLATFORM_SOURCES src/inspect_window_win32.cpp)
+
+# Neutral as well: nfsu_track_stream (issue #156) reads its files with
+# std::ifstream, as nfsu_core's loaders do, and reads no clock; its own
+# comment above says so.
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_track_stream)
 
 # Every library target and each neutral one's sources, written for the gate
 # once the whole directory has been read, so that a library added anywhere
