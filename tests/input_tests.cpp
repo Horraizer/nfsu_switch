@@ -417,6 +417,19 @@ void test_dead_zone() {
     v = nfsu::apply_stick_dead_zone(zone, 1800, -2401);
     check(v.x > 0.0 && v.y < 0.0, "a diagonal one unit past it does not");
 
+    // The widest zone (inner 0) at a perfectly centred stick: every other
+    // valid (inner, outer) pair's inner edge is equivalent under <= and <,
+    // because the fallback branch's scale converges to the same value
+    // either way, but inner 0 is not - the fallback there divides x and y,
+    // both 0, by length, also 0, and only the early return above (taken
+    // when the comparison is <=, skipped when it is <) avoids that 0 / 0.
+    // Finding 3, review comment 2933 on PR #136.
+    const nfsu::StickDeadZone widest{0, nfsu::kAxisMax};
+    v = nfsu::apply_stick_dead_zone(widest, 0, 0);
+    check(v.x == 0.0 && v.y == 0.0, "the widest zone at a centred stick reads exactly centred");
+    check(!std::isnan(v.x) && !std::isnan(v.y),
+          "and never NaN, even though the fallback branch it must not take would divide 0 by 0");
+
     // The outer edge and past it.
     v = nfsu::apply_stick_dead_zone(zone, 30000, 0);
     check(v.x == 1.0 && v.y == 0.0, "a stick on the outer edge reads fully deflected");
