@@ -48,6 +48,20 @@ target_include_directories(nfsu_core
 target_compile_features(nfsu_core PUBLIC cxx_std_17)
 target_link_libraries(nfsu_core PUBLIC nfsu_image)
 nfsu_enable_warnings(nfsu_core)
+# Floating-point contraction pinned (issue #91): devkitA64 GCC 16.1.0 fuses
+# seven multiply-adds in src/part_placement.cpp, in
+# derive_cullable_part_placements and multiply_placement_matrix, which place
+# the wheels, brakes, exhaust and plate of the stock frame (issue #83,
+# docs/SWITCH_BUILD.md). No difference in the pinned frame has been observed
+# from that fusion on either platform, but this repository's determinism
+# claims are byte-identity claims, and an unpinned target holds one by
+# accident rather than by construction, so contraction is disabled here as
+# it already is on the targets above and below.
+if(MSVC)
+    target_compile_options(nfsu_core PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_core PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
 
 # The texture-export file I/O split out of nfsu_core (issue #139): the
 # export helpers - remove_created, rollback_created_files and
@@ -91,6 +105,16 @@ add_library(nfsu_stock_scene
 
 target_link_libraries(nfsu_stock_scene PUBLIC nfsu_core nfsu_scene)
 nfsu_enable_warnings(nfsu_stock_scene)
+# Floating-point contraction pinned (issue #91), for the same reason as
+# nfsu_core just above: src/stock_scene.cpp builds the wheel and brake
+# instance transforms from the placements nfsu_core derives, so a fused
+# multiply-add here would sit next to the ones issue #83 measured in
+# src/part_placement.cpp rather than instead of them.
+if(MSVC)
+    target_compile_options(nfsu_stock_scene PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_stock_scene PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
 
 # Texture-pack decoding for prepared scenes. Backends do not depend on it.
 add_library(nfsu_texture_decode
