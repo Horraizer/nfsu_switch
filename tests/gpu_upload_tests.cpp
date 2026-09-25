@@ -1,3 +1,5 @@
+#include "draw_command_checks.h"
+#include "nfsu/track_render.h"
 #include "nfsu/geometry.h"
 #include "nfsu/gpu_upload.h"
 #include "nfsu/memory_budget.h"
@@ -2073,12 +2075,335 @@ void test_frame_ceiling_is_the_full_draw_list() {
     }
 }
 
+
+void test_draw_commands_match_cpu() {
+    namespace sm = nfsu::shader_manifest;
+    std::string error;
+    nfsu::RenderOptions options;
+    options.width = 48;
+    options.height = 32;
+    options.flip_v = true;
+    options.vertex_color = true;
+    options.alpha_cutoff = 17;
+    options.coefficients.alpha_min = 0.3;
+    options.coefficients.alpha_range = 0.6;
+    options.coefficients.environment_min[0] = 0.25;
+    options.coefficients.environment_color[0] = 64;
+    options.coefficients.environment_power = 3;
+    // Every decoder outcome, including nonstandard alpha/blend inputs, with
+    // fallback and generated-skin scenes and all cull modes.
+    for (bool skin : {false, true}) {
+        auto fixture = car_fixture(skin);
+        for (auto& texture : fixture.scene.textures) {
+            texture.layer_group = 1;
+            texture.layer_order = 3;
+        }
+        if (!fixture.scene.textures.empty()) fixture.scene.textures.back().layer_order = 0;
+        for (auto mode : {nfsu::MaterialStateMode::off, nfsu::MaterialStateMode::retail}) {
+            options.material_state = mode;
+            for (std::uint8_t alpha : {0, 1, 2, 3, 255}) {
+                for (std::uint8_t blend : {0, 1, 2, 3, 4, 255}) {
+                    for (auto cull : {nfsu::CullMode::none, nfsu::CullMode::back, nfsu::CullMode::front}) {
+                        options.cull = cull;
+                        for (auto& texture : fixture.scene.textures) {
+                            texture.alpha_test_mode = alpha;
+                            texture.alpha_blend_mode = blend;
+                        }
+                        nfsu::RecordedCommands commands;
+                        if (!nfsu::record_car_commands(fixture.scene, options, {}, kSkinSource, commands, error)) {
+                            check(false, "record car: " + error); return;
+                        }
+                        nfsu::Frame frame;
+                        nfsu::RenderStats stats;
+                        std::vector<nfsu::ReferenceDraw> trace;
+                        if (!nfsu::render_scene(fixture.scene, options, {}, frame, stats, error,
+                            [&](const auto& draw) { trace.push_back(draw); })) {
+                            check(false, "CPU car: " + error); return;
+                        }
+                        const auto mismatch = compare_draws(commands, trace, false);
+                        check(mismatch.empty(), "car sequence: " + mismatch);
+                        check_eq(commands.draws.size(), 3, "car nonempty groups");
+                        check_eq(commands.frame.options[0], 1, "flip v uniform");
+                        check_eq(commands.frame.options[1], 1, "vertex colour uniform");
+                        check_eq(commands.frame.options[3], 17, "alpha cutoff uniform");
+                        check_eq(commands.width, 48, "viewport width");
+                        check_eq(commands.height, 32, "viewport height");
+                        for (const auto& d : commands.draws) {
+                            const auto& source = fixture.scene.draws[d.group];
+                            const bool resolved = source.binding == nfsu::BindingKind::resolved;
+                            const auto gates = nfsu::material_coefficient_gates(source.flags, true);
+                            const float expected = mode == nfsu::MaterialStateMode::retail && resolved
+                                ? (gates.diffuse ? 0.3F : 0.0F) : 1.0F;
+                            check(d.material.alpha[0] == expected, d.name + ": coefficient alpha");
+                            check(d.placement.rows[0] == 1 && d.placement.rows[15] == 1,
+                                  d.name + ": authored identity placement");
+                        }
+                        // Prove the comparator reports the specific draw and field.
+                        if (!commands.draws.empty() && alpha == 0 && blend == 0) {
+                            const auto name = commands.draws[0].name;
+                            commands.draws[0].pipeline.depth_write = false;
+                            check(compare_draws(commands, trace, false) == name + ": depth write",
+                                  "differential comparator catches a named depth-write mutation");
+                            commands.draws[0].pipeline.depth_write = true;
+                            commands.draws[0].pipeline.alpha_test = sm::CompareOp::never;
+                            check(compare_draws(commands, trace, false) == name + ": alpha test",
+                                  "differential comparator catches a named alpha mutation");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void test_draw_commands_resources_and_refusals() {
+    auto fixture = car_fixture(true);
+    nfsu::RecordedCommands commands;
+    std::string error;
+    check(nfsu::record_car_commands(fixture.scene, {}, {}, kSkinSource, commands, error), "record ledger car");
+    const auto expected = table_of(fixture.scene);
+    check_eq(commands.uploads.resources.size(), expected.resources.size(), "same upload table");
+    for (std::size_t i = 0; i < commands.uploads.resources.size(); ++i) {
+        check(commands.uploads.resources[i].data == expected.resources[i].data, "borrowed scene bytes");
+    }
+    Rig rig;
+    make_rig(rig);
+    std::vector<nfsu::UploadHandle> handles;
+    check(rig.ledger.upload_table(commands.uploads, 4, handles, error), "recorded uploads enter existing ledger");
+    placements(rig.ledger, handles, commands.uploads, "recorded resources");
+    check(rig.ledger.release_all(handles, 8, error), "release recorded resources");
+    rig.ledger.retire(8);
+    check_eq(rig.buffers.stats().used_bytes, 0, "recorded buffers retired");
+    auto arena = make_arena(4096, 256);
+    nfsu::ArenaAllocation allocation;
+    check(nfsu::reserve_draw_uniforms(commands, arena, allocation, error), "uniform arena placement");
+    check_eq(allocation.size, 7 * 256, "one frame and two blocks per draw");
+    check_eq(allocation.offset % 256, 0, "uniform alignment");
+    check(arena.release(allocation.handle) == nfsu::ArenaRefusal::none, "release uniform placement");
+    auto small = make_arena(256, 256);
+    const auto previous = allocation.handle.generation;
+    check(!nfsu::reserve_draw_uniforms(commands, small, allocation, error), "uniform budget refusal");
+    check_eq(small.stats().used_bytes, 0, "uniform refusal leaves arena unchanged");
+    check_eq(allocation.handle.generation, previous, "uniform refusal leaves output unchanged");
+    auto limits = nfsu::RenderLimits{};
+    limits.max_submitted_triangles = 0;
+    check(!nfsu::record_car_commands(fixture.scene, {}, limits, kSkinSource, commands, error), "triangle budget refusal");
+    check(commands.draws.empty() && commands.uploads.resources.empty(), "refusal clears prior commands and resources");
+    auto options = nfsu::RenderOptions{};
+    options.width = 0;
+    check(!nfsu::record_car_commands(fixture.scene, options, {}, kSkinSource, commands, error), "zero viewport refused");
+    fixture.scene.draws[0].mesh = nfsu::kNoHandle;
+    check(!nfsu::record_car_commands(fixture.scene, {}, {}, kSkinSource, commands, error), "invalid scene refused");
+    fixture = car_fixture(true);
+    fixture.scene.meshes[0].triangles[0].a = 65535;
+    check(!nfsu::record_car_commands(fixture.scene, {}, {}, kSkinSource, commands, error), "bad GPU vertex index refused");
+    check_has(error, "car group 0", "bad index names draw");
+}
+
+void test_track_commands_match_cpu() {
+    for (bool textured : {false, true}) {
+        auto fixture = track_fixture();
+        std::string error;
+        if (!textured) {
+            check(nfsu::build_track_scene(fixture.geometry, fixture.objects, {}, {}, fixture.scene, error),
+                  "prepare fallback track");
+        }
+        std::vector<nfsu::TrackVisibleInstance> visible;
+        for (std::size_t i : {4U, 0U, 3U, 1U, 2U}) {
+            nfsu::TrackVisibleInstance v;
+            v.section_index = 0; v.instance_index = i; visible.push_back(v);
+        }
+        for (auto order : {nfsu::TrackDrawOrder::visible_instance, nfsu::TrackDrawOrder::material_group}) {
+            nfsu::TrackDrawList list;
+            nfsu::TrackDrawListOptions selection;
+            selection.order = order;
+            check(nfsu::build_track_draw_list(fixture.scene, visible, selection, list, error), "build ordered track list");
+            nfsu::RenderOptions options;
+            options.width = 48; options.height = 32; options.cull = nfsu::CullMode::front;
+            nfsu::RecordedCommands commands;
+            if (!nfsu::record_track_commands(fixture.scene, list, options, {}, commands, error)) {
+                check(false, "record track: " + error); return;
+            }
+            nfsu::Frame frame;
+            nfsu::RenderStats stats;
+            nfsu::TrackRenderStats track;
+            std::vector<nfsu::ReferenceDraw> trace;
+            if (!nfsu::render_track_draw_list(fixture.scene, list, options, {}, frame, stats, track, error,
+                [&](const auto& d) { trace.push_back(d); })) {
+                check(false, "CPU track: " + error); return;
+            }
+            const auto mismatch = compare_draws(commands, trace, true);
+            check(mismatch.empty(), "track sequence: " + mismatch);
+            check_eq(commands.draws.size(), 6, "six track instance groups");
+            for (const auto& d : commands.draws) {
+                const auto& t = fixture.scene.instances[d.instance].transform;
+                for (std::size_t i = 0; i < 3; ++i) {
+                    for (std::size_t j = 0; j < 3; ++j)
+                        check(d.placement.rows[i*4+j] == t.linear[i*3+j], d.name + ": track linear transform");
+                    check(d.placement.rows[12+i] == t.translation[i], d.name + ": track translation");
+                }
+            }
+            options.material_state = nfsu::MaterialStateMode::retail;
+            check(!nfsu::record_track_commands(fixture.scene, list, options, {}, commands, error), "track retail refused");
+            options.material_state = nfsu::MaterialStateMode::off;
+            list.entries[0].instance = 0xFFFFFFFFU;
+            check(!nfsu::record_track_commands(fixture.scene, list, options, {}, commands, error), "invalid track list refused");
+            check(commands.draws.empty() && commands.uploads.resources.empty(), "track refusal is atomic");
+        }
+    }
+}
+
+
+void test_car_instances_and_uniform_layout() {
+    auto fixture = car_fixture(true);
+    auto& scene = fixture.scene;
+    scene.profile = nfsu::SelectionProfile::stock_car;
+    for (std::size_t mesh : {1U, 0U, 1U, 0U}) {
+        nfsu::PreparedInstance instance;
+        instance.mesh = mesh;
+        instance.transform[0] = -1;
+        instance.transform[12] = static_cast<float>(scene.instances.size());
+        instance.transform[13] = 2;
+        instance.transform[14] = 3;
+        scene.instances.push_back(instance);
+    }
+    nfsu::RenderOptions options;
+    options.width = 32; options.height = 24;
+    options.material_state = nfsu::MaterialStateMode::retail;
+    // The last material sorts ahead of the first, so an unchanged source
+    // order cannot accidentally pass the retail-order comparison.
+    for (auto& t : scene.textures) { t.layer_group = 1; t.layer_order = 3; }
+    scene.textures.back().layer_order = 0;
+    nfsu::RecordedCommands commands;
+    std::string error;
+    if (!nfsu::record_car_commands(scene, options, {}, kSkinSource, commands, error)) {
+        check(false, "instanced car: " + error); return;
+    }
+    nfsu::Frame frame;
+    nfsu::RenderStats stats;
+    std::vector<nfsu::ReferenceDraw> trace;
+    check(nfsu::render_scene(scene, options, {}, frame, stats, error,
+        [&](const auto& d) { trace.push_back(d); }), "instanced CPU render");
+    const auto mismatch = compare_draws(commands, trace, false);
+    check(mismatch.empty(), "instanced sequence: " + mismatch);
+    check_eq(commands.draws.size(), 6, "three groups each have two copies");
+    check(commands.draws.front().group != 0, "retail fixture actually changes order");
+    for (const auto& d : commands.draws) {
+        for (std::size_t i = 0; i < 16; ++i)
+            check(d.placement.rows[i] == scene.instances[d.instance].transform[i], d.name + ": car placement");
+    }
+    nfsu::CameraFrame camera;
+    check(nfsu::make_camera_frame(options.camera, options.width, options.height, camera, error), "camera frame");
+    check(commands.frame.eye[0] == static_cast<float>(camera.eye.x), "camera eye uniform");
+    check(commands.frame.projection[0] == static_cast<float>(camera.focal_x), "camera projection uniform");
+    // Concrete std140 member offsets and sizes, checked against every
+    // generated program rather than a second hand-written manifest.
+    const std::map<std::string, std::size_t> offsets = {
+        {"Frame.eye", offsetof(nfsu::DrawFrameUniform, eye)},
+        {"Frame.right", offsetof(nfsu::DrawFrameUniform, right)},
+        {"Frame.up", offsetof(nfsu::DrawFrameUniform, up)},
+        {"Frame.forward", offsetof(nfsu::DrawFrameUniform, forward)},
+        {"Frame.projection", offsetof(nfsu::DrawFrameUniform, projection)},
+        {"Frame.light", offsetof(nfsu::DrawFrameUniform, light)},
+        {"Frame.options", offsetof(nfsu::DrawFrameUniform, options)},
+        {"Instance.rows", offsetof(nfsu::DrawInstanceUniform, rows)},
+        {"Material.fallback", offsetof(nfsu::DrawMaterialUniform, fallback)},
+        {"Material.alpha", offsetof(nfsu::DrawMaterialUniform, alpha)},
+        {"Material.environment_min", offsetof(nfsu::DrawMaterialUniform, environment_min)},
+        {"Material.environment_range", offsetof(nfsu::DrawMaterialUniform, environment_range)},
+        {"Material.environment_color", offsetof(nfsu::DrawMaterialUniform, environment_color)}};
+    for (const auto& program : nfsu::shader_manifest::kPrograms) {
+        check_eq(program.block_count, 3, "three uniform blocks");
+        for (std::size_t i = 0; i < program.block_count; ++i) {
+            const auto& b = program.blocks[i];
+            const std::string name = b.name;
+            const auto size = name == "Frame" ? sizeof(nfsu::DrawFrameUniform) :
+                name == "Instance" ? sizeof(nfsu::DrawInstanceUniform) : sizeof(nfsu::DrawMaterialUniform);
+            check_eq(b.size, size, name + ": std140 size");
+            check_eq(b.binding, name == "Frame" ? 0 : name == "Instance" ? 1 : 2, name + ": uniform binding");
+        }
+        check_eq(program.member_count, offsets.size(), "all uniform members checked");
+        for (std::size_t i = 0; i < program.member_count; ++i) {
+            const auto& m = program.members[i];
+            const auto key = std::string(m.block) + "." + m.name;
+            const auto found = offsets.find(key);
+            check(found != offsets.end(), key + ": known uniform member");
+            if (found != offsets.end()) check_eq(m.offset, found->second, key + ": std140 offset");
+        }
+    }
+}
+
+
+void test_command_material_gates_and_empty_ranges() {
+    auto fixture = car_fixture(true);
+    nfsu::RenderOptions options;
+    options.material_state = nfsu::MaterialStateMode::retail;
+    options.coefficients.alpha_min = 0.25;
+    options.coefficients.alpha_range = 0.5;
+    options.coefficients.environment_min[0] = 0.75;
+    options.coefficients.environment_range[1] = 0.125;
+    options.coefficients.environment_color[2] = 128;
+    options.coefficients.environment_power = 4;
+    std::string error;
+    nfsu::RecordedCommands commands;
+    for (bool enabled : {false, true}) {
+        options.coefficients.environment_enabled = enabled;
+        for (std::uint32_t flags : {0U, 0x80U, 0x100U, 0x180U}) {
+            for (auto& d : fixture.scene.draws) {
+                d.flags = flags; store_u32(d.raw.data() + 56, flags);
+            }
+            if (!nfsu::record_car_commands(fixture.scene, options, {}, kSkinSource, commands, error)) {
+                check(false, "material gates: " + error); return;
+            }
+            const bool zero = enabled && flags == 0x100U;
+            const bool environment = enabled && flags == 0x180U;
+            for (const auto& d : commands.draws) {
+                check(d.material.alpha[0] == (zero ? 0.0F : 0.25F), d.name + ": diffuse alpha min gate");
+                check(d.material.alpha[1] == (zero ? 0.0F : 0.5F), d.name + ": diffuse alpha range gate");
+                check(d.material.alpha[2] == (zero ? 1.0F : 0.0F), d.name + ": diffuse colour gate");
+                check(d.material.environment_min[0] == (environment ? 0.75F : 0.0F), d.name + ": environment min gate");
+                check(d.material.environment_range[1] == (environment ? 0.125F : 0.0F), d.name + ": environment range gate");
+                check(d.material.environment_color[2] == (environment ? 128.0F : 0.0F), d.name + ": environment colour gate");
+                check(d.material.environment_color[3] == (environment ? 4.0F : 1.0F), d.name + ": environment power");
+                unsigned char color[4];
+                nfsu::fallback_color(fixture.scene.draws[d.group].texture_hash, color);
+                for (std::size_t i = 0; i < 3; ++i)
+                    check(d.material.fallback[i] == color[i], d.name + ": fallback colour");
+                check(d.material.fallback[3] == 1, d.name + ": fallback checker");
+            }
+        }
+    }
+    // A valid zero range contributes no GPU call or CPU submission.
+    fixture.scene.draws[0].index_count = 0;
+    store_u32(fixture.scene.draws[0].raw.data() + 12, 0);
+    options.width = 32; options.height = 24;
+    if (!nfsu::record_car_commands(fixture.scene, options, {}, kSkinSource, commands, error)) {
+        check(false, "empty range: " + error); return;
+    }
+    nfsu::Frame frame;
+    nfsu::RenderStats stats;
+    std::vector<nfsu::ReferenceDraw> trace;
+    check(nfsu::render_scene(fixture.scene, options, {}, frame, stats, error,
+        [&](const auto& d) { trace.push_back(d); }), "CPU empty range");
+    const auto mismatch = compare_draws(commands, trace, false);
+    check(mismatch.empty(), "empty range sequence: " + mismatch);
+    check_eq(commands.draws.size(), 2, "zero range emits no command");
+    options.coefficients.alpha_min = -1;
+    check(!nfsu::record_car_commands(fixture.scene, options, {}, kSkinSource, commands, error),
+          "invalid retail coefficients refused");
+}
+
 struct TestCase {
     const char* name;
     void (*run)();
 };
 
 const TestCase kTests[] = {
+    {"command_material_gates_and_empty_ranges", test_command_material_gates_and_empty_ranges},
+    {"car_instances_and_uniform_layout", test_car_instances_and_uniform_layout},
+    {"draw_commands_match_cpu", test_draw_commands_match_cpu},
+    {"draw_commands_resources_and_refusals", test_draw_commands_resources_and_refusals},
+    {"track_commands_match_cpu", test_track_commands_match_cpu},
     {"gate_accepts_rgba8", test_gate_accepts_rgba8},
     {"gate_refuses_every_pack_format", test_gate_refuses_every_pack_format},
     {"gate_refuses_malformed_rgba8", test_gate_refuses_malformed_rgba8},

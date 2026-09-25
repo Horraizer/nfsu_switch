@@ -5,7 +5,8 @@
 # CMakeLists.txt includes it before the desktop and Switch configures part,
 # so the console compiles these sources from the same lists and with the
 # same options as the desktop - every floating-point flag below included -
-# while every other library, program and test stays desktop only.
+# while draw-recording dependencies are shared separately by
+# cmake/draw_libraries.cmake. Other programs and tests stay desktop only.
 #
 # The first seven, nfsu_image to nfsu_render, were moved here from
 # CMakeLists.txt as they were, comments and all. nfsu_texture_export is

@@ -316,7 +316,8 @@ bool render_track_draw_list(
     Frame& frame,
     RenderStats& stats,
     TrackRenderStats& track_stats,
-    std::string& error) {
+    std::string& error,
+    const ReferenceDrawObserver& observe) {
     stats = RenderStats{};
     track_stats = TrackRenderStats{};
     if (options.material_state != MaterialStateMode::off) {
@@ -452,6 +453,12 @@ bool render_track_draw_list(
 
         const std::uint64_t first = draw.first_index;
         const std::uint64_t count = draw.index_count;
+        if (observe && count != 0) {
+            observe(ReferenceDraw{entry.draw, draw.mesh, entry.instance,
+                raster.texture ? draw.texture : kNoHandle,
+                draw.first_index, draw.index_count, true, true, true,
+                options.cull, raster.blend, raster.alpha_test, raster.alpha_ref});
+        }
         if ((first + count) / 3 > first / 3) {
             ++track_stats.entries_drawn;
             if (instance_drawn[entry.instance] == 0) {

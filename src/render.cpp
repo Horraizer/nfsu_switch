@@ -1148,7 +1148,8 @@ bool render_scene(
     const RenderLimits& limits,
     Frame& frame,
     RenderStats& stats,
-    std::string& error) {
+    std::string& error,
+    const ReferenceDrawObserver& observe) {
     stats = RenderStats{};
     CameraFrame camera;
     if (!make_camera_frame(options.camera, std::max<std::uint32_t>(options.width, 1),
@@ -1333,6 +1334,12 @@ bool render_scene(
                 instanced ? scene.instances[copy].transform : nullptr;
             if ((first + count) / 3 > first / 3) {
                 copy_drawn[copy] = 1;
+            }
+            if (observe && count != 0) {
+                observe(ReferenceDraw{d, draw.mesh, instanced ? copy : kNoHandle,
+                    raster.texture ? draw.texture : kNoHandle,
+                    draw.first_index, draw.index_count, true, true, true,
+                    options.cull, raster.blend, raster.alpha_test, raster.alpha_ref});
             }
             for (std::uint64_t t = first / 3; t < (first + count) / 3; ++t) {
                 const std::uint32_t id = next_id++;
