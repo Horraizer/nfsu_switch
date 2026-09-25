@@ -189,8 +189,15 @@ nfsu_case("--target without --eye" 1 "--eye and --target are given together" ""
 nfsu_case("--eye short of three floats" 1 "--eye needs three finite floats" ""
           "${missing}" 0 16 0 16 --eye 1 2)
 
-nfsu_case("--eye and --target together select the tree policy" 3
-          "camera given" ""
+# The needle here is "camera given", which comes from has_camera and is set
+# alongside the tree policy rather than by it (src/main.cpp). It proves
+# --eye and --target together are accepted and recorded as a camera, not
+# that the tree policy this file cannot reach without real geometry (see the
+# header comment above: no case here parses a region) actually takes effect.
+# docs/TRACK_BUDGET.md's "Faults only retail data can show" says the same:
+# a fault in the --eye/--target/--far cull camera is retail-only to see.
+nfsu_case("--eye and --target together are accepted and reported as a camera"
+          3 "camera given" ""
           "${missing}" 0 16 0 16 --eye 1 2 3 --target 4 5 6 --no-render
           --no-time)
 
@@ -521,6 +528,8 @@ nfsu_case("--view-margin accepts its documented maximum" 3 "budget: frame" ""
           "${missing}" 0 16 0 16 --repeat 1 --no-time --view-margin 100)
 nfsu_case("--view-yaw accepts its documented maximum" 3 "budget: frame" ""
           "${missing}" 0 16 0 16 --repeat 1 --no-time --view-yaw 36000)
+nfsu_case("--view-yaw accepts its documented minimum" 3 "budget: frame" ""
+          "${missing}" 0 16 0 16 --repeat 1 --no-time --view-yaw -36000)
 
 # The option LITERALS. Every one of these had only its misspelling driven,
 # so a handler that accepted the word and then did nothing with it, or that

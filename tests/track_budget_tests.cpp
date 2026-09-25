@@ -816,6 +816,34 @@ void test_budget_check_refusals() {
           "a refused set reports no exceedance even though one was over");
 }
 
+// The header promises that a refusal leaves `exceedances` EMPTY, not merely
+// "unchanged" or "not appended to". Every refusal case above starts from a
+// default-constructed, already-empty vector, so an implementation that
+// forgot to clear it beforehand would pass all of them too - the vector
+// stays empty because nothing was ever there to leave behind. Here it starts
+// pre-filled with a stale entry that does not correspond to anything in this
+// call's own limit set, so only an actual clear (not merely never pushing to
+// a fresh vector) can leave it empty afterward.
+void test_budget_check_refusal_clears_prefilled_exceedances() {
+    const nfsu::TrackBudgetCost cost = measured_cost();
+    std::vector<nfsu::TrackBudgetExceedance> over;
+    nfsu::TrackBudgetExceedance stale;
+    stale.name = "stale.counter";
+    stale.stage = nfsu::TrackBudgetStage::parse;
+    stale.value = 999;
+    stale.ceiling = 1;
+    over.push_back(stale);
+    std::string error;
+
+    check(!nfsu::check_track_budget(cost, {{"frame.draw_call", 1}}, over,
+                                    error),
+          "a limit on an unknown counter is still refused with a pre-filled"
+          " exceedances vector");
+    check(over.empty(),
+          "a refusal clears a pre-filled exceedances vector rather than"
+          " leaving the caller's stale entry in it");
+}
+
 // ---------------------------------------------------------------------------
 // Repetition comparison and sample statistics.
 //
@@ -1029,6 +1057,7 @@ int main() {
     test_render_gatherer();
     test_budget_check_boundaries();
     test_budget_check_refusals();
+    test_budget_check_refusal_clears_prefilled_exceedances();
     test_costs_equal();
     test_sample_summary();
 

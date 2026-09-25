@@ -899,10 +899,13 @@ target_link_libraries(nfsu_inspect_window PUBLIC nfsu_platform nfsu_input_camera
 # nfsu_memory depends on nothing but the standard library (its own comment
 # above), and nfsu_gpu_upload calls no deko3d function and reads only the
 # scene and draw-list types below it, so both joined this list when they
-# merged in from main.
+# merged in from main. nfsu_track_budget carries no floating-point flags and
+# reads no clock (its own comment above); it links nfsu_track_render and
+# calls no operating system function of its own.
 set(NFSU_NEUTRAL_LIBRARIES
     nfsu_image nfsu_core nfsu_scene nfsu_track nfsu_track_visibility
     nfsu_track_zones nfsu_track_draw_list nfsu_track_render nfsu_track_probe
+    nfsu_track_budget
     nfsu_stock_scene
     nfsu_texture_decode nfsu_body_skin nfsu_skin_inputs nfsu_runtime_skin
     nfsu_inspect nfsu_inspect_window nfsu_input nfsu_platform

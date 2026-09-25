@@ -506,9 +506,11 @@ set(templates
     "track-scene/PATHARG/0/16/0/16/--texture/PATHARG"
     "track-render/PATHARG/0/16/0/16/--texture/PATHARG/--out/PATHARG"
     # --repeat 1 is the smallest run this command will do, and it is chosen
-    # rather than the default so that a Cyrillic path drives the conversion
-    # twice - one warm-up and one repetition - instead of six times. Nothing
-    # here depends on the count; it is the runtime of 21 such runs that does.
+    # rather than the default so that this run reads the file twice - one
+    # warm-up and one repetition - instead of six times. The Cyrillic path
+    # itself is converted once, at parse time, regardless of --repeat: what
+    # repeats per run is the file read, not the conversion. Nothing here
+    # depends on the count; it is the runtime of 21 such runs that does.
     "track-budget/PATHARG/0/16/0/16/--texture/PATHARG/--repeat/1"
     "track-probe/PATHARG/0/16/0/16/--texture/PATHARG/--zones/PATHARG/--zone-point/0/0"
     "body-skin-inputs/240SX/--source/car-textures/PATHARG"

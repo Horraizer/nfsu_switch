@@ -424,14 +424,19 @@ five runs; the two spread columns are what the argument rests on.
 | `render` | 4.849 | 14.6% | 5.4% to 13.1% |
 | **all five** | **10.0** | **10.0%** | |
 
-One run in full, so the shape of a report is on the record:
+One run in full, so the shape of a report is on the record. This is pasted
+verbatim from an actual run of the command above; `format_double` prints the
+shortest round-trip `double`, so `median`, `mean`, `stddev`, `min` and `max`
+carry as many digits as that requires and will differ, digit for digit, on
+every machine and every run - only `samples 30` and the field order are
+fixed:
 
 ```text
-time: parse samples 30 min 0.3086 median 0.369 mean 0.37275 stddev 0.03775 max 0.5024 ms
-time: texture samples 30 min 3.623 median 3.82575 mean 3.83905 stddev 0.15172 max 4.2825 ms
-time: prepare samples 30 min 0.7894 median 0.83525 mean 0.84952 stddev 0.06190 max 1.0338 ms
-time: frame samples 30 min 0.0235 median 0.02465 mean 0.02486 stddev 0.00087 max 0.0268 ms
-time: render samples 30 min 4.2161 median 4.4406 mean 4.51846 stddev 0.24086 max 5.0459 ms
+time: parse samples 30 min 0.3318 median 0.35585 mean 0.36477999999999994 stddev 0.028802076074597414 max 0.4505 ms
+time: texture samples 30 min 3.6665 median 3.8269 mean 3.8413099999999996 stddev 0.13527709327715928 max 4.1819 ms
+time: prepare samples 30 min 0.7964 median 0.8446 mean 0.8772333333333333 stddev 0.12400522328635535 max 1.4825 ms
+time: frame samples 30 min 0.0227 median 0.0248 mean 0.025189999999999997 stddev 0.0026434499401741837 max 0.0377 ms
+time: render samples 30 min 4.2347 median 4.43125 mean 4.433803333333334 stddev 0.14174097181815148 max 4.8024 ms
 ```
 
 #### The build configuration, measured rather than asserted
@@ -859,8 +864,9 @@ build-release/nfsu_probe track-budget \
 
 Expected:
 
-1. `ctest` reports 30 tests passed, 0 failed, in both the default and the
-   Release configuration.
+1. `ctest` reports every test passed, 0 failed, in both the default and the
+   Release configuration. The total test count is not pinned here: it grows
+   as other branches merge, so a fixed number would go stale on its own.
 2. The run **exits 0** and writes nothing to standard error. This is the
    only place exit 0 is checked; `tests/track_budget_guards.cmake` explains
    why it cannot be.

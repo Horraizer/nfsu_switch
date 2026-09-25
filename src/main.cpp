@@ -1781,7 +1781,7 @@ struct TrackSceneArgs {
 // parameter that no call site states, and flipping it here silences the
 // per-source lines of `track-scene` and `track-render` - which nothing in
 // this repository asserts, so an independent mutation pass flipped it and
-// survived the whole suite. With three call sites, all in this file, and no
+// survived the whole suite. With two call sites, both in this file, and no
 // default, that mutation does not exist to be caught rather than being
 // caught by a test someone has to remember to write.
 bool decode_track_scene_textures(
