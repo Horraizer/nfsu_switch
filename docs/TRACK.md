@@ -802,6 +802,7 @@ decoded partially. Two examples from the same installation:
   handler is at 0x00472B05. The `0x80034100` chunk beside them is decoded
   in [`TRACK_OBJECTS.md`](TRACK_OBJECTS.md).
 - Everything about streaming: which regions are resident together and what
-  the `_NNNN` section numbers select. Nothing in this note decodes a
+  the `_NNNN` section numbers select; [`TRACK_WHOLE.md`](TRACK_WHOLE.md)
+  decodes the table that decides both. Nothing in this note decodes a
   visibility group or collision;
   [`TRACK_VISIBILITY.md`](TRACK_VISIBILITY.md) decodes the first.

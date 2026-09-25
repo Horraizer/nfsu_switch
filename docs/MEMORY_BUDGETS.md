@@ -528,6 +528,8 @@ Of issue #52's acceptance:
 - Every placeholder above. The Switch memory an application gets depends on
   the memory mode it runs in, and no figure for it is taken on trust here.
 - How many regions are resident at once, and so the streaming budget.
+  [`TRACK_WHOLE.md`](TRACK_WHOLE.md) measures what the retail loader keeps
+  for one race and sets it against the placeholders; the placeholders stay.
 - The GPU size of an image. `dkImageLayoutGetSize` decides it on hardware; the
   texels are a lower bound only.
 - Whether a deko3d memory block's GPU address is aligned to
