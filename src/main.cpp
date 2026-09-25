@@ -1322,7 +1322,8 @@ void print_track_contact(const char* label, nfsu::TrackContactStatus status,
     if (status == nfsu::TrackContactStatus::hit) {
         std::cout << ' ' << nfsu::track_contact_kind_name(contact.kind)
                   << " polygon " << contact.polygon << " triangle "
-                  << contact.triangle << " distance " << contact.distance
+                  << contact.triangle << " distance "
+                  << printable_zero(contact.distance)
                   << " point (" << contact.point[0] << ", " << contact.point[1]
                   << ", " << contact.point[2] << ") normal ("
                   << printable_zero(contact.normal[0]) << ", "

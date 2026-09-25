@@ -1105,6 +1105,13 @@ void test_windings_and_edges() {
 // 1/8-unit grid, and the first checks prove the #39 ray really misses it;
 // if a compiler change ever lets the ray meet it, those checks say so
 // rather than the rest passing for the wrong reason.
+//
+// Would also catch (review G1) the fallback's distance and its closed ends
+// going wrong: a contact exactly at a segment's start dropped (W2, t <= 0),
+// one exactly at its end dropped (W3, along >= max), and the distance
+// weighting the wrong corner's height (W6). On a flat quad every corner's
+// sheared height is the same, so no weighting can move the answer; the
+// sloped seam at the end of this test is where it shows.
 void test_edges_the_ray_misses() {
     const float py = 5.08984375F;
     const float first[4][2] = {{39.875F, 16.25F}, {60.75F, 9.125F},
@@ -1146,6 +1153,30 @@ void test_edges_the_ray_misses() {
     check(segment(world, below, above, c) == nfsu::TrackContactStatus::hit &&
               c.normal[2] == -1.0F && near(c.distance, 0.5F, 1e-5F),
           "a sweep up through the seam meets it facing down");
+    // A sweep that starts exactly on the seam - a wheel resting on the road
+    // - and one whose drop ends exactly on it. Both ends are closed, so both
+    // meet it: the first at distance 0, the second at its full length. The
+    // #39 ray misses both along the same line, so these are the fallback's.
+    const float on[3] = {on_seam[0], on_seam[1], py};
+    const float under[3] = {on_seam[0], on_seam[1], py - 1.0F};
+    const float over[3] = {on_seam[0], on_seam[1], py + 1.0F};
+    check(!nfsu::query_track_collision_ray(world.collision, on, fall, 1.0F, ray) &&
+              !nfsu::query_track_collision_ray(world.collision, over, fall, 1.0F, ray),
+          "the ray of issue #39 misses the seam from its surface and from 1 above");
+    // Each query runs before its check, so that the message reports this
+    // query's answer and not the previous one's.
+    const nfsu::TrackContactStatus starts = segment(world, on, under, c);
+    check(starts == nfsu::TrackContactStatus::hit &&
+              c.kind == nfsu::TrackContactKind::road && c.distance == 0.0F &&
+              c.point[2] == py && c.normal[2] == 1.0F,
+          "a sweep that starts exactly on the seam meets it at distance 0: got " +
+              std::string(nfsu::track_contact_status_name(starts)));
+    const nfsu::TrackContactStatus ends = segment(world, over, on, c);
+    check(ends == nfsu::TrackContactStatus::hit &&
+              c.kind == nfsu::TrackContactKind::road && c.distance == 1.0F &&
+              c.point[2] == py && c.normal[2] == 1.0F,
+          "a sweep that ends exactly on the seam meets it at its end: got " +
+              std::string(nfsu::track_contact_status_name(ends)));
     // Off the seam by a hundredth, each side is its own polygon, as the ray
     // agrees: the seam is closed without either polygon growing.
     check(column(world, 60.2F, 9.74F, 1000.0F, 0.0F, 2000.0F, c) ==
@@ -1179,6 +1210,56 @@ void test_edges_the_ray_misses() {
     check(column(edge, 43.9F, 19.3F, 1000.0F, 0.0F, 2000.0F, c) ==
               nfsu::TrackContactStatus::clear,
           "just beyond that edge the column is clear");
+
+    // A seam between two SLOPED quads, both on one plane rising about 0.2
+    // across and falling 0.1 along, snapped to the format's 1/256: every
+    // corner at its own height, so the fallback's distance has to weight
+    // each corner's height by the right edge function. The shared edge runs
+    // from (50.75, 29.75, 7.12109375) to (55.625, 20, 8.7578125), triangle
+    // 0's (c1, c2) edge in the first quad and triangle 1's (c2, c3) edge in
+    // the second, and (51.283203125, 28.68359375) is exactly 7/64 of the way
+    // along it, so the road there is at exactly
+    // 7.12109375 + 7/64 * 1.63671875 = 7.30010986328125.
+    const Corner sloped_first[4] = {{60.75F, 31.0F, 4.421875F},
+                                    {50.75F, 29.75F, 7.12109375F},
+                                    {55.625F, 20.0F, 8.7578125F},
+                                    {60.625F, 20.0F, 7.5859375F}};
+    const Corner sloped_second[4] = {{39.25F, 27.25F, 10.53125F},
+                                     {34.125F, 5.375F, 17.96875F},
+                                     {55.625F, 20.0F, 8.7578125F},
+                                     {50.75F, 29.75F, 7.12109375F}};
+    Image slope;
+    slope.polygons.push_back(polygon(sloped_first, 4)); // 0
+    slope.polygons.push_back(polygon(sloped_second, 7)); // 1
+    slope.cells.push_back(cell(48.0F, 16.0F, {0, 1}));
+    const nfsu::TrackContactWorld sloped = world_of(build(slope));
+    check(sloped.valid && sloped.counts.road_triangles == 4, "the sloped seam image is valid");
+    if (!sloped.valid) {
+        return;
+    }
+    const float road_height = 7.30010986328125F;
+    const float on_slope[3] = {51.283203125F, 28.68359375F, 40.0F};
+    check(!nfsu::query_track_collision_ray(sloped.collision, on_slope, fall, 80.0F, ray),
+          "the ray of issue #39 misses this sloped seam from both sides");
+    const nfsu::TrackContactStatus down_slope =
+        column(sloped, on_slope[0], on_slope[1], on_slope[2], 0.0F, 80.0F, c);
+    check(down_slope == nfsu::TrackContactStatus::hit && c.polygon <= 1 &&
+              c.kind == nfsu::TrackContactKind::road &&
+              near(c.point[2], road_height, 1e-4F) &&
+              near(c.distance, 40.0F - road_height, 1e-4F) && c.normal[2] > 0.9F,
+          "a column exactly on a sloped seam meets the road at its own height: got " +
+              std::string(nfsu::track_contact_status_name(down_slope)) + " at " +
+              text(c.point[2]) + ", want " + text(road_height));
+    // The same point by a sweep that ends exactly on it: the height is the
+    // end of the segment, and the distance its whole length.
+    const float slope_top[3] = {on_slope[0], on_slope[1], road_height + 2.0F};
+    const float slope_foot[3] = {on_slope[0], on_slope[1], road_height};
+    const nfsu::TrackContactStatus onto_slope = segment(sloped, slope_top, slope_foot, c);
+    check(onto_slope == nfsu::TrackContactStatus::hit && near(c.distance, 2.0F, 1e-4F) &&
+              near(c.point[2], road_height, 1e-4F),
+          "a sweep ending exactly on the sloped seam meets it at its end: got " +
+              std::string(nfsu::track_contact_status_name(onto_slope)) + " at " +
+              text(c.distance));
 }
 
 // ---------------------------------------------------------------------
