@@ -729,6 +729,241 @@ if(NFSU_BUILD_TESTS)
         PROPERTIES TIMEOUT 60)
 endif()
 
+# ---------------------------------------------------------------------------
+# The platform services boundary and controller input
+# ---------------------------------------------------------------------------
+#
+# docs/PLATFORM_SERVICES.md and docs/INPUT.md. Appended below everything
+# above rather than interleaved with it: the libraries above are unchanged
+# except where a call here adds a source or a link to one of them, and each
+# of those calls says why.
+
+# The controller model: buttons, sticks, dead zones, the remapping table,
+# the rules that turn frames into actions and the recorded text form of a
+# sequence of frames. Standard library only, and no clock: a frame carries
+# its own time. Floating-point contraction is disabled because a recording
+# is replayed and compared byte for byte, so a fused multiply-add in the
+# dead zone would move a stick value by an ulp and a camera with it.
+add_library(nfsu_input
+    src/input.cpp
+    src/input_recording.cpp
+)
+
+target_include_directories(nfsu_input
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_compile_features(nfsu_input PUBLIC cxx_std_17)
+nfsu_enable_warnings(nfsu_input)
+if(MSVC)
+    target_compile_options(nfsu_input PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_input PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+
+# The six service interfaces - filesystem, input, timing, logging, lifecycle
+# and display - and the code written against them alone. It links nfsu_input
+# because the input service reports controllers as its frames.
+add_library(nfsu_platform
+    src/platform.cpp
+)
+
+target_link_libraries(nfsu_platform PUBLIC nfsu_input)
+nfsu_enable_warnings(nfsu_platform)
+
+# Deterministic implementations of the six, which the tests drive. They read
+# no clock, no environment and no file.
+add_library(nfsu_platform_fakes
+    src/platform_fakes.cpp
+)
+
+target_link_libraries(nfsu_platform_fakes PUBLIC nfsu_platform)
+nfsu_enable_warnings(nfsu_platform_fakes)
+
+# The desktop timing and logging services: the steady clock and a stream.
+# Platform code, because it reads the machine's clock; the window's three
+# services are the Win32 backend, and the filesystem one is nfsu_arg_path.
+add_library(nfsu_platform_desktop
+    src/platform_desktop.cpp
+)
+
+target_link_libraries(nfsu_platform_desktop PUBLIC nfsu_platform)
+nfsu_enable_warnings(nfsu_platform_desktop)
+
+# The argument conversion is the desktop filesystem service: its three free
+# functions now go through the FileSystemService it implements, and the
+# argument loop they share moved into nfsu_platform unchanged.
+target_link_libraries(nfsu_arg_path PUBLIC nfsu_platform)
+
+# Controller input on the inspection camera. It drives an Inspector, never
+# a renderer, so it links nfsu_inspect and inherits that library's
+# link-time dependency on the CPU rasterizer's types and nothing more; the
+# comment on nfsu_inspect above says why that dependency exists. Contraction
+# is disabled for the reason it is disabled in nfsu_input.
+add_library(nfsu_input_camera
+    src/input_camera.cpp
+)
+
+target_link_libraries(nfsu_input_camera PUBLIC nfsu_input nfsu_inspect)
+nfsu_enable_warnings(nfsu_input_camera)
+if(MSVC)
+    target_compile_options(nfsu_input_camera PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_input_camera PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+
+# nfsu_inspect's orbit, pan and zoom decide the camera a recorded
+# controller session replays to (docs/INPUT.md), so contraction is disabled
+# there for the reason nfsu_render disables it. Measured, not assumed: GCC
+# 13 for AArch64 at -O3 fuses three multiply-adds into Inspector::orbit,
+# which fails nfsu_inspect_tests' "the orbit is reversible" and moves the
+# replayed session's per-frame digest; with these options both pass. x86-64
+# without FMA has nothing to fuse, so its builds are unchanged. Measured
+# once, in the worker's cloud session for this branch, cross-compiling and
+# running under QEMU there; not reproduced on the project's own toolchain,
+# and nothing here has run on a console.
+if(MSVC)
+    target_compile_options(nfsu_inspect PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_inspect PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+
+# The inspection session: everything the window procedure decided that is
+# not a window, now compiled on every platform beside the arithmetic in
+# src/inspect_window_common.cpp, and the frame loop a console backend runs.
+# The window backend chosen above implements three of the services it is
+# driven through.
+target_sources(nfsu_inspect_window PRIVATE src/inspect_session.cpp)
+target_link_libraries(nfsu_inspect_window PUBLIC nfsu_platform nfsu_input_camera)
+
+# Which libraries promise to call no operating system. The neutrality gate
+# below reads every source of each of these and fails, by file, line and
+# symbol, on a platform header, a platform call, a platform macro test or a
+# clock read. The list is taken from the comments above, not invented:
+# nfsu_core knows no operating system (nfsu_arg_path's comment), nfsu_scene
+# is backend-neutral, nfsu_track's parsers use only nfsu_core, the track
+# layers above them decode and open nothing, nfsu_stock_scene reads no
+# files, nfsu_body_skin depends on nothing but the standard library and the
+# two skin layers above it parse and draw nothing of their own, and
+# nfsu_inspect opens no window and calls no operating system. nfsu_image is
+# a TGA encoder over a std::ostream. nfsu_inspect_window is in it for its
+# neutral files; its one window backend is exempted by name below.
+# nfsu_memory depends on nothing but the standard library (its own comment
+# above), and nfsu_gpu_upload calls no deko3d function and reads only the
+# scene and draw-list types below it, so both joined this list when they
+# merged in from main.
+set(NFSU_NEUTRAL_LIBRARIES
+    nfsu_image nfsu_core nfsu_scene nfsu_track nfsu_track_visibility
+    nfsu_track_zones nfsu_track_draw_list nfsu_track_render nfsu_track_probe
+    nfsu_stock_scene
+    nfsu_texture_decode nfsu_body_skin nfsu_skin_inputs nfsu_runtime_skin
+    nfsu_inspect nfsu_inspect_window nfsu_input nfsu_platform
+    nfsu_platform_fakes nfsu_input_camera nfsu_memory nfsu_gpu_upload)
+
+# The libraries that are platform code on purpose, and are not read:
+# nfsu_arg_path decodes arguments with the Windows API, nfsu_render's frame
+# writer creates and publishes files with CreateFileW or open() and link(),
+# and nfsu_platform_desktop reads the steady clock. docs/PLATFORM_SERVICES.md
+# says what would move each one behind a service.
+set(NFSU_PLATFORM_LIBRARIES nfsu_arg_path nfsu_render nfsu_platform_desktop)
+
+# Sources of a neutral library that are platform code on purpose: the one
+# window backend, and src/texture.cpp for its texture-export rollback
+# helpers (remove_created, rollback_created_files, export_textures), which
+# predate this branch and genuinely touch the filesystem - fs::remove,
+# fs::rename, fs::create_directories - to clean up and write the files a
+# caller asked for. Finding 1 of the platform-services review (comment 2933
+# on PR #136) is what surfaced this: closing the qualifier gap it names
+# made nfsu_platform_neutrality fail on this pre-existing code the moment
+# the fixed gate could see it -
+#   src/texture.cpp:1877: remove - fs::remove(path, error);
+#   src/texture.cpp:1947: rename - fs::rename(partial, target, rename_error);
+#   src/texture.cpp:2026: create_directories - fs::create_directories(output_dir, error);
+# - which is the fixed gate working as intended, not a false positive: this
+# file was always platform code, only invisible to the gate's old rules.
+# The stub that replaces the window backend elsewhere is neutral and read;
+# src/texture.cpp has no such split yet, so the whole file is exempt for
+# now rather than only its export helpers, at the cost of not reading the
+# texture-decode code that makes up most of it. Splitting the export
+# helpers into their own platform-classified source is follow-up work, not
+# this fix round's: it would also touch src/render.cpp and include/nfsu/
+# texture.h, which the #132 fix on main already settled.
+set(NFSU_PLATFORM_SOURCES src/inspect_window_win32.cpp src/texture.cpp)
+
+# Every library target and each neutral one's sources, written for the gate
+# once the whole directory has been read, so that a library added anywhere
+# in this file - above this block or below it - is in the list the gate
+# classifies. A library in neither list fails the gate by name.
+function(nfsu_write_neutrality_manifest)
+    get_directory_property(targets DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                           BUILDSYSTEM_TARGETS)
+    set(manifest "")
+    foreach(target IN LISTS targets)
+        get_target_property(type ${target} TYPE)
+        if(type MATCHES "LIBRARY$")
+            string(APPEND manifest "library ${target}\n")
+        endif()
+    endforeach()
+    foreach(target IN LISTS NFSU_NEUTRAL_LIBRARIES)
+        string(APPEND manifest
+               "neutral ${target} $<JOIN:$<TARGET_PROPERTY:${target},SOURCES>,|>\n")
+    endforeach()
+    foreach(target IN LISTS NFSU_PLATFORM_LIBRARIES)
+        string(APPEND manifest "platform ${target}\n")
+    endforeach()
+    foreach(source IN LISTS NFSU_PLATFORM_SOURCES)
+        string(APPEND manifest "exempt ${source}\n")
+    endforeach()
+    file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/nfsu_platform_neutrality.txt
+         CONTENT "${manifest}")
+endfunction()
+cmake_language(DEFER CALL nfsu_write_neutrality_manifest)
+
+if(NFSU_BUILD_TESTS)
+    # The controller model and its camera, from recorded frames: the dead
+    # zone edges, the remapping refusals, connect and disconnect, conflicts,
+    # a stick pinned at its extreme, and a scripted session replayed to a
+    # camera that is pinned byte for byte.
+    add_executable(nfsu_input_tests
+        tests/input_tests.cpp
+    )
+
+    target_link_libraries(nfsu_input_tests PRIVATE nfsu_input_camera)
+    nfsu_enable_warnings(nfsu_input_tests)
+    if(MSVC)
+        target_compile_options(nfsu_input_tests PRIVATE /fp:precise)
+    else()
+        target_compile_options(nfsu_input_tests PRIVATE -ffp-contract=off -fno-fast-math)
+    endif()
+    add_test(NAME nfsu_input_tests COMMAND nfsu_input_tests)
+
+    # The session the window procedure used to be, driven through the fakes:
+    # drags, clicks, the wheel, keys, resizes, a lost capture and failed
+    # renders, then the frame loop with a controller. Also the neutral
+    # filesystem helpers and the desktop clock and log.
+    add_executable(nfsu_platform_tests
+        tests/platform_tests.cpp
+    )
+
+    target_link_libraries(nfsu_platform_tests
+        PRIVATE nfsu_inspect_window nfsu_platform_fakes nfsu_platform_desktop
+                nfsu_arg_path)
+    nfsu_enable_warnings(nfsu_platform_tests)
+    add_test(NAME nfsu_platform_tests COMMAND nfsu_platform_tests)
+
+    # The neutrality gate. It reads sources, not binaries, so it needs no
+    # build to have succeeded; tests/platform_neutrality.cmake says what each
+    # rule catches and what none of them can.
+    add_test(NAME nfsu_platform_neutrality
+        COMMAND ${CMAKE_COMMAND} -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                -DMANIFEST=${CMAKE_CURRENT_BINARY_DIR}/nfsu_platform_neutrality.txt
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/platform_neutrality.cmake)
+
+    set_tests_properties(
+        nfsu_input_tests nfsu_platform_tests nfsu_platform_neutrality
+        PROPERTIES TIMEOUT 60)
+endif()
+
 # Memory arenas and GPU upload bookkeeping for the Switch renderer, issues #52
 # and #50. Appended as one block, after the existing tests, so that the lists
 # above are not reordered.

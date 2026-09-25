@@ -131,7 +131,13 @@
   minimal libnx application into an NRO; the desktop targets are unchanged,
   and the desktop suite gains three tests that need no SDK
   ([`SWITCH_BUILD.md`](SWITCH_BUILD.md)). Nothing has run on hardware yet.
-- Add controller, filesystem, timing, and logging services.
+- Add controller, filesystem, timing, and logging services. The six service
+  interfaces, with desktop implementations and deterministic fakes, are in
+  place, and a gate keeps the neutral libraries from reaching the platform
+  around them ([`PLATFORM_SERVICES.md`](PLATFORM_SERVICES.md)). The
+  controller model, its recorded form and the inspection camera it drives
+  are in place ([`INPUT.md`](INPUT.md)). The libnx implementations are
+  still to do.
 - Add a deko3d renderer with offline-compiled shaders. The shader pipeline is
   in place: `uam` compiles the three shader stages at build time (the material
   variants are fixed-function state records, not separate compiled programs),
