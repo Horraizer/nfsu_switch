@@ -667,7 +667,12 @@ bool probe_track_scene(
     const TrackProbeOptions& options,
     TrackProbeReport& report,
     std::string& error) {
+    // Every failure below returns without touching `report` again, so it
+    // stays at this reset value; the report this call is building lives in
+    // `local` and is only published to the out parameter on success, which
+    // is what keeps a failure from leaving a partial report behind.
     report = TrackProbeReport{};
+    TrackProbeReport local;
     try {
         // The three reports have to be about the same two regions, or every
         // offset below describes something the caller did not ask about.
@@ -815,7 +820,7 @@ bool probe_track_scene(
             Vec3 axis;
             if (!normalize(given, axis)) {
                 cull_options.use_screen_size = false;
-                report.issues.push_back(TrackIssue{
+                local.issues.push_back(TrackIssue{
                     0, "the screen-size gate needs a non-zero finite forward "
                        "axis; it is disabled for this run"});
             } else {
@@ -825,7 +830,7 @@ bool probe_track_scene(
             }
         }
 
-        report.cost.sections = section_count;
+        local.cost.sections = section_count;
         for (std::size_t i = 0; i < section_count; ++i) {
             const TrackSection& section = objects.sections[i];
             TrackSectionProbe record;
@@ -839,11 +844,11 @@ bool probe_track_scene(
             record.nodes = section.nodes.size();
             record.tree_depth = section.tree_depth;
             if (!section.valid) {
-                report.sections.push_back(record);
+                local.sections.push_back(record);
                 continue;
             }
-            ++report.cost.valid_sections;
-            report.cost.instances += section.instances.size();
+            ++local.cost.valid_sections;
+            local.cost.instances += section.instances.size();
 
             const TrackSectionCull* summary = summaries[i];
             if (summary == nullptr) {
@@ -863,19 +868,19 @@ bool probe_track_scene(
             record.zone_position = zone_position;
             record.resident = resident;
             if (resident != summary->resident) {
-                report.issues.push_back(TrackIssue{
+                local.issues.push_back(TrackIssue{
                     section.offset,
                     "section " + std::to_string(section.number) +
                         ": the residency rule says " +
                         (resident ? "resident" : "not resident") +
                         " and the cull report says " +
                         (summary->resident ? "resident" : "not resident")});
-                ++report.cost.disagreements;
+                ++local.cost.disagreements;
                 resident = summary->resident;
                 record.resident = resident;
             }
             if (resident) {
-                ++report.cost.resident_sections;
+                ++local.cost.resident_sections;
             }
 
             const bool use_frustum =
@@ -894,12 +899,12 @@ bool probe_track_scene(
                 std::string reason;
                 if (!build_tree_shape(section, cull_options.limits, shape,
                                       reason)) {
-                    report.issues.push_back(TrackIssue{
+                    local.issues.push_back(TrackIssue{
                         section.offset,
                         "section " + std::to_string(section.number) +
                             ": the cull report walked this bounding tree and "
                             "this probe cannot: " + reason});
-                    ++report.cost.disagreements;
+                    ++local.cost.disagreements;
                 } else {
                     resolve_tree_codes(section, frustum, shape);
                     record.tree_walked = true;
@@ -1216,7 +1221,7 @@ bool probe_track_scene(
                     (!probe.placed || probe.mesh_name != select.mesh_name)) {
                     continue;
                 }
-                if (report.cost.probed >= options.limits.max_instances) {
+                if (local.cost.probed >= options.limits.max_instances) {
                     error = "the selection covers more than " +
                             std::to_string(options.limits.max_instances) +
                             " instances";
@@ -1224,49 +1229,54 @@ bool probe_track_scene(
                 }
 
                 for (TrackIssue& held : pending) {
-                    report.issues.push_back(std::move(held));
+                    local.issues.push_back(std::move(held));
                 }
-                report.cost.disagreements += pending_disagreements;
+                local.cost.disagreements += pending_disagreements;
                 ++record.probed;
-                ++report.cost.probed;
+                ++local.cost.probed;
                 if (probe.visible) {
                     ++record.visible;
-                    ++report.cost.visible;
+                    ++local.cost.visible;
                 }
                 if (probe.culler_visible) {
                     ++record.culler_visible;
-                    ++report.cost.culler_visible;
+                    ++local.cost.culler_visible;
                 }
                 if (probe.pruned_by_node != kTrackProbeNone) {
                     ++record.pruned;
-                    ++report.cost.pruned;
+                    ++local.cost.pruned;
                 }
                 if (probe.mask_gate == TrackGateVerdict::rejected) {
                     ++record.rejected_by_mask;
-                    ++report.cost.rejected_by_mask;
+                    ++local.cost.rejected_by_mask;
                 }
                 if (probe.box_gate == TrackGateVerdict::rejected) {
                     ++record.rejected_by_box;
-                    ++report.cost.rejected_by_box;
+                    ++local.cost.rejected_by_box;
                 }
                 if (probe.size_gate == TrackGateVerdict::rejected) {
                     ++record.rejected_by_size;
-                    ++report.cost.rejected_by_size;
+                    ++local.cost.rejected_by_size;
                 }
                 if (probe.placed) {
                     ++record.placed;
-                    ++report.cost.placed;
-                    report.cost.groups += probe.groups_drawable;
-                    report.cost.triangles += probe.triangles;
+                    ++local.cost.placed;
+                    local.cost.groups += probe.groups_drawable;
+                    local.cost.triangles += probe.triangles;
                 } else {
-                    ++report.cost.unplaced;
+                    ++local.cost.unplaced;
                 }
-                report.instances.push_back(std::move(probe));
+                local.instances.push_back(std::move(probe));
             }
-            report.sections.push_back(record);
+            local.sections.push_back(record);
         }
+        report = std::move(local);
         return true;
     } catch (const std::bad_alloc&) {
+        // `report` was never touched past the entry reset above: this
+        // function builds into `local` and only publishes it on success, so
+        // `report` is already empty here and this assignment is belt and
+        // braces rather than load-bearing.
         report = TrackProbeReport{};
         error = "not enough memory to probe the region";
         return false;

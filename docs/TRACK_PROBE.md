@@ -262,7 +262,7 @@ refuses only `--zone`.
 **This command writes nothing at all**, which makes it the one track command
 whose whole machine-readable contract is the exit status.
 `tests/track_probe_guards.cmake` asserts the absence of a `wrote:` line on all
-110 of its cases.
+123 of its cases.
 
 ### Every selection is explicit and deterministic
 
@@ -297,7 +297,7 @@ That is deliberate and it is a lesson taken from
 non-empty listing cannot be reached by any case that runs without input files,
 so `tests/track_render_guards.cmake` documents it as the one line no automated
 test pins. Printing the count either way removes the branch instead of
-excusing it, and three of this command's guard cases assert the line.
+excusing it, and eight of this command's guard cases assert the line.
 
 `--limit` bounds the instance listing and defaults to **4**, because an
 instance record is fourteen lines plus two per material group and a region's
@@ -582,7 +582,7 @@ no tree is walked. That last one is reachable the way a caller reaches it,
 six damaged trees plus the pending-node limit and its boundary drive it and
 the report has to answer rather than read past the end of a vector.
 
-`tests/track_probe_guards.cmake` is one CTest entry driving **122 cases**, each
+`tests/track_probe_guards.cmake` is one CTest entry driving **123 cases**, each
 asserting the exact exit status and the diagnostic and each banning any
 `wrote:` line. It exists for the reason `tests/track_render_guards.cmake`
 exists: an independent mutation pass over one command's block of
@@ -592,7 +592,7 @@ the command's body. A CMake script rather than more `add_test` entries because
 status carries the whole machine-readable contract: 1 for a usage error, 2 for
 a pipeline or selection failure, 3 for a run whose reports failed.
 
-**79 of the cases need no input file, and 43 need one**, and the split is the
+**80 of the cases need no input file, and 43 need one**, and the split is the
 one thing this script does that the render guards could not. A command driven
 with no input reaches every refusal and the whole body of a run that reads
 nothing - and reaches no line that only prints when a region holds an
@@ -816,7 +816,7 @@ Two of the six are not caught, and neither is a test that could be written:
 
 | Mutation | Why no input distinguishes it |
 | --- | --- |
-| the screen-size eye is not mapped to the raw slots | every instance of the fixture sits at world y and z of zero, so the mapped eye and the unmapped one are the same distance from all of them and the level does not move. The retail acceptance covers it: `level 113` under "One instance, end to end" changes if the mapping goes. |
+| the screen-size eye is not mapped to the raw slots | every instance of the fixture sits at world y and z of zero, so the mapped eye and the unmapped one are the same distance from all of them and the level does not move. The retail acceptance covers it, but not through the level: `level 113` under "One instance, end to end" does NOT move either, because that instance also sits at world `0,0,0` and the raw map is a signed axis permutation, so its distance from the eye is invariant under the mapping going wrong. What does move is the `cull: ... visible` and `draw list: ... visible` counts above the instance block, from 36 to 38 - measured directly, by copying the eye in world order in place of the mapping. |
 | the totals print a literal zero for `disagreements` | on code that is right the count IS zero however it is computed. It is a tripwire whose non-zero case is unreachable by construction, which is the same shape as the dead statistics [`TRACK_RENDER.md`](TRACK_RENDER.md) records. |
 
 The first of those two is closeable, and the cost is what left it open: one
@@ -835,7 +835,7 @@ does, is require the pristine refusal's own diagnostic.
 
 #### What survives of the independent pass, and why
 
-39 of that pass's 450 mutants are alive at the final head. They are listed
+38 of that pass's 450 mutants are alive at the final head. They are listed
 here by ID so a later session can re-run exactly these rather than guess,
 and grouped by the reason each is alive. **The grouping is a reading of each
 mutant, not a proof of each**: only the first group claims equivalence, and
@@ -850,7 +850,7 @@ them prints the same bytes (`C022` and `C069` exchange the probe's answer
 with the culler's, which differ only when `disagreements` is non-zero, and
 `disagreements` is zero whenever the probe is right).
 
-**A bound whose other side is unreachable from outside (14).** `L011`,
+**A bound whose other side is unreachable from outside (15).** `L011`,
 `L012`, `L014`, `L075`, `L097`, `L173`, `L174`, `L179`, `L214`, `L258`,
 `L259`, `L266`, `L279`, `L280`, `L281`. Each relaxes a `>=` to a `>` or
 drops a guard on an index the parser has already bounded, so reaching the
@@ -860,7 +860,7 @@ which is how the six damaged-tree cases already reach the tree walk; each of
 these would need its own such construction and none has one yet. That is the
 largest closeable block left and it is stated as work, not as equivalence.
 
-**The fixture cannot tell the two answers apart (11).** `L182` and `L183`
+**The fixture cannot tell the two answers apart (9).** `L182` and `L183`
 are the normalized forward axis, alive for exactly the reason the
 screen-size eye mapping is: every instance of the fixture sits at world
 `y = z = 0`. `L265` and `L276` need a mesh record the fixture does not
@@ -868,9 +868,22 @@ hold. `C037` and `C042` need a region whose bounds cannot be framed.
 `C074` is the 32-section listing limit, which needs a 32-section fixture.
 `C083` moves the probe's OWN issues to stdout, and the fixture raises none -
 the new stream case pins the parser's diagnostic instead, which is the same
-property one stage earlier. `C132` accepts an empty `--mesh` name, which
-selects nothing and prints a listing of zero either way. `C147` drops a line
-from the usage text that `nfsu_probe_usage_commands` does not require.
+property one stage earlier. `C147` drops a line from the usage text that
+`nfsu_probe_usage_commands` does not require.
+
+`C132` was listed here once, for accepting an empty `--mesh` name on the
+claim that an empty name selects nothing and prints an empty listing either
+way. That reason was never true - an empty name is not "no filter", and the
+pristine binary refuses it with `--mesh needs a prepared mesh name` exit 1
+the same as no name at all - and the real reason it survived was a gate
+blind spot: `tests/track_probe_guards.cmake`'s own "--mesh with an empty
+name" case built its command line through `nfsu_case`'s unquoted `${ARGN}`
+forwarding, which drops an empty list element, so the case silently handed
+the probe `--mesh` alone and duplicated the case above it rather than
+testing an empty value at all. The case now reaches the child process
+directly with the empty argument as a literal, `C132` exits 2 instead of 1
+under the mutant where the pristine binary exits 1, and it is CAUGHT. See
+"Mutation record: review of PR #138" below.
 
 One fixture change - a single instance placed off the `y = z = 0` plane -
 would close `L182`, `L183` and the screen-size eye mapping together. It is
@@ -878,6 +891,82 @@ not made here because every pinned string of the 43 data cases is derived
 from that fixture's geometry, so the change is a rewrite of the data half of
 the gate rather than an edit. It is recorded as a known hole with a known
 fix.
+
+#### Mutation record: review of PR #138
+
+A third, independent pass, for the review of pull request #138 (Gitea issue
+comment 2928), applied 15 mutants one at a time against the branch at
+`95a899d`, rebuilt, and re-ran the full suite plus the four pinned retail
+cases. It scored **5 caught, 10 survived, 0 unknown**.
+
+| ID | Location | `ctest` | Pinned retail |
+| --- | --- | --- | --- |
+| `L-sortfirst` | `src/track_probe.cpp:723`, drop the selection's `std::sort` (control) | CAUGHT | same |
+| `L-notree` | `src/track_probe.cpp:1062`, `visible = false` when the tree cannot be walked | CAUGHT | same |
+| `L-unplacedkey` | `src/track_probe.cpp:1203`, the unplaced lookup ignores the section | CAUGHT | same |
+| `L-sizebound` | `src/track_probe.cpp:1048`, `<` becomes `<=` | CAUGHT | same |
+| `L-flyafterturn` | `src/track_probe.cpp:561`, fly uses the pre-turn basis | CAUGHT | D differs |
+| `C-eye` | `src/main.cpp:2633`, screen eye copied in world order | SURVIVED | C differs (`cull: ... visible` 36 -> 38) |
+| `C-fwd` | `src/main.cpp:2637`, screen forward copied in world order | SURVIVED | same |
+| `C-exit0` | `src/main.cpp:2781`, exits 3 even when everything is ok | SURVIVED | all four exit 3 |
+| `C-exitok` | `src/main.cpp:2781`, exit status ignores `report.ok()` | SURVIVED | same (equivalent in practice) |
+| `C-zonenone` | `src/main.cpp:2557`, the no-polygon fallback uses `every`, not `no-zone` | SURVIVED | same |
+| `C-meshempty` | `src/main.cpp:4653`, drop `value.empty()` for `--mesh` | SURVIVED | same |
+| `L-levelcmp` | `src/track_probe.cpp:1082`, drop the screen-level comparison arm | SURVIVED | same |
+| `L-residissue` | `src/track_probe.cpp:866-873`, drop the residency issue and its count | SURVIVED | same |
+| `L-pruneroot` | `src/track_probe.cpp:245`, `prune_root[index] = up` | SURVIVED | same |
+| `L-bandorder` | `src/track_probe.cpp:283-293`, the zone list checked before the 26xx band | SURVIVED | same |
+
+**Four of the ten survivors are fixed on this branch and are now CAUGHT:**
+
+- `C-meshempty` - `tests/track_probe_guards.cmake`'s "--mesh with an empty
+  name" case now reaches the child process with a literal empty argument
+  instead of losing it to `${ARGN}`'s unquoted expansion, and the mutant
+  exits 2 where the pristine binary exits 1. See finding 3 above and `C132`
+  in "What survives of the independent pass, and why", which was the same
+  mutation under the older pass's numbering.
+- `L-residissue` - `tests/track_probe_tests.cpp`'s
+  `test_disagreement_is_reported` now asserts the exact disagreement count
+  (8: the section-level residency issue plus the seven instance-level ones
+  it cascades into) and the section-level issue's own text, rather than
+  `>= 1`, which the seven cascading issues alone satisfied. See finding 4.
+- `L-levelcmp` - the same test gained a fifth tampered case, over its own
+  cull (screen size on, a generous scale, so nothing else disagrees), that
+  flips a visible instance's recorded `screen_level` and asserts the
+  resulting disagreement.
+- `L-bandorder` - `test_residency_reasons` in `tests/track_probe_tests.cpp`
+  gained a case with section `2650` (inside the always-resident band) also
+  named at index 0 of its own zone list; the pristine binary reports
+  `always-resident-band` with no zone position, and the mutant reports
+  `zone-list-entry` at position 0.
+
+Each of the four was verified failing on the unfixed code and passing on the
+fixed code, and again by re-applying the mutation itself and watching the new
+case fail by name before being reverted.
+
+**Six survivors remain alive**, all for reasons the reviewer already
+recorded and none required by this fix round:
+
+- `C-eye` and `C-exit0` are caught by the pinned retail acceptance, same as
+  the reviewer found; nothing in `ctest` catches either.
+- `C-fwd` survives because no case has a camera off the world x axis with an
+  in-frustum instance above or below eye height, which is where a forward
+  axis left in world order wrongly size-rejects.
+- `C-exitok` is equivalent in practice: no probe issue is reachable on data
+  that parses, so nothing distinguishes "ignores `report.ok()`" from
+  "reads it".
+- `C-zonenone` survives because the `--zones` no-polygon fallback
+  (`src/main.cpp:2555-2558`) is never exercised by any case; a manual retail
+  check confirmed the pristine behaviour but no case pins it.
+- `L-pruneroot` needs an instance two or more levels below the node that
+  prunes it, so that `prune_root[up]` (the carried root) and `up` (the
+  immediate parent) differ. Both the shared fixture's tree and the retail
+  region's are one level deep (see "What the worker's own pass found" and
+  the retail provenance notes), so no existing data distinguishes the two,
+  and building a new, deeper tree fixture was judged bigger than the small
+  test this fix round's optional coverage was scoped to. It is recorded here
+  as a known hole with a known fix, the same as the screen-size eye mapping
+  above.
 
 ## Read-only retail acceptance
 
@@ -926,7 +1015,7 @@ build/nfsu_probe track-probe X:/Games/NFSU/Tracks/STREAML1RB.BUN \
 
 Expected:
 
-1. Both `ctest` runs report 30 tests passed, 0 failed.
+1. Both `ctest` runs report 32 tests passed, 0 failed.
 2. All six commands exit 0 and write nothing to standard error.
 3. The first prints `probe: instances 39 probed 39 visible 39 culler 39
    disagreements 0`, `probe: rejected by mask 0 box 0 size 0 pruned 0` and
@@ -938,12 +1027,19 @@ Expected:
    survivors above change, and this is the only place either is checked.
 4. The second prints `probe: instances 39 probed 39 visible 6 culler 6
    disagreements 0` and `probe: rejected by mask 0 box 14 size 0 pruned 19`.
-5. The third prints `probe: instances 39 probed 1 visible 1 culler 1
-   disagreements 0` and the instance block under "One instance, end to end",
-   whose gate line reads `size passed level 113`. That level is the other
-   line a command-layer survivor changes: it is the only check that the
-   screen-size eye reaches the gate in the raw slot order rather than the
-   world one.
+5. The third prints `cull: policy retail-tree held yes resident 1 degraded 0
+   visible 36` and `draw list: order visible instance visible 36 placed 17
+   unplaced 19 without groups 0` before its `probe:` lines, then `probe:
+   instances 39 probed 1 visible 1 culler 1 disagreements 0` and the
+   instance block under "One instance, end to end", whose gate line reads
+   `size passed level 113`. The `visible 36` on the two lines above - not
+   the level - is what a command-layer survivor changes: it is the only
+   check that the screen-size eye reaches the gate in the raw slot order
+   rather than the world one. `level 113` does NOT move under that survivor:
+   this instance sits at world `0,0,0`, and the raw map is a signed axis
+   permutation, so its distance from the eye is the same either way. A
+   reader checking this line by `level 113` alone would see no difference;
+   `visible 36` moving to `38` is the difference that exists.
 6. The fourth prints the same three counts as the second over a different
    visible set; see "The same visible count is not the same visible set".
 7. Every one of the six prints `probe: listed <L> of <M> sections` and

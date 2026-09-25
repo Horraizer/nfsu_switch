@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -1883,6 +1884,14 @@ void test_residency_reasons() {
          "zone-list-entry", 0},
         {303, nfsu::TrackResidencyRule::zone_list, {101, 202}, false,
          "not-in-zone-list", nfsu::kTrackProbeNone},
+        // A 26xx section the zone list ALSO names: residency_reason_of
+        // (src/track_probe.cpp) checks the always-resident band before the
+        // zone list and returns on the band alone, so this section's own
+        // presence in the list at index 0 is never consulted. A rule that
+        // checked the list first would report "zone-list-entry" at position
+        // 0 instead of the band, on the same resident verdict either way.
+        {2650, nfsu::TrackResidencyRule::zone_list, {2650, 303}, true,
+         "always-resident-band", nfsu::kTrackProbeNone},
     };
     for (const Case& item : cases) {
         const Fixture fixture = town(item.number);
@@ -2530,6 +2539,14 @@ void test_selection() {
                                         report, message),
                 message, "more than 3 instances",
                 "the instance limit is enforced");
+    // include/nfsu/track_probe.h promises the report is left empty on a
+    // failure. This limit fires mid-loop, after three instances and their
+    // section have already been pushed into it, which is exactly the shape
+    // that leaked a partial report before probe_track_scene built into a
+    // local and published it only on success.
+    check(report.sections.empty() && report.instances.empty() &&
+              report.issues.empty(),
+          "a failed probe leaves the report empty");
     // ONE BELOW the count is the case that separates `>=` from `>`: both
     // refuse a limit far below, and both accept one at or above, so only a
     // limit of exactly count - 1 tells them apart.
@@ -2684,7 +2701,30 @@ void test_disagreement_is_reported() {
                                      fixture.scene, moved, frustum,
                                      probe_options, second, message),
              "a disagreeing residency still produces a report", message);
-    check(second.cost.disagreements >= 1, "the residency disagreement counts");
+    // second.cost.disagreements is one counter for two shapes of
+    // disagreement: the section-level residency issue below, and the seven
+    // instance-level visibility issues that cascade from it (each instance
+    // of a section the cull report now calls not-resident disagrees with
+    // this probe's own, unmoved, visibility verdict). A bound of ">= 1" is
+    // satisfied by the seven cascading issues alone, so deleting the
+    // residency issue itself (src/track_probe.cpp) would still pass it. The
+    // exact count, and a direct check for the section-level issue's own
+    // text, both fail if that issue is dropped.
+    check_eq_u64(second.cost.disagreements, 8,
+                 "one section-level residency disagreement plus the seven "
+                 "instance-level ones it causes");
+    bool found_residency_issue = false;
+    for (const nfsu::TrackIssue& issue : second.issues) {
+        if (issue.message ==
+            "section 303: the residency rule says resident and the cull "
+            "report says not resident") {
+            found_residency_issue = true;
+            break;
+        }
+    }
+    check(found_residency_issue,
+          "the section-level residency disagreement raises its own issue, "
+          "naming the section and both verdicts");
     check(!second.ok(), "and the report is not ok");
     check(!second.sections[0].resident,
           "the culler's answer is the one carried forward");
@@ -2733,6 +2773,55 @@ void test_disagreement_is_reported() {
                              " disagreement is counted");
             check(!third.ok(), std::string("and the report is not ok for ") +
                                    item.what);
+        }
+    }
+
+    // A fifth arm of the same comparison: the screen level. It is guarded by
+    // `apply_gates && cull_options.use_screen_size`
+    // (src/track_probe.cpp), so none of the three tampers above - which run
+    // with the gate off - can reach it; this needs its own cull, with the
+    // gate on and a scale generous enough that it rejects nothing, so the
+    // only disagreement possible is the one this tampers into existence.
+    {
+        nfsu::TrackCameraBasis level_basis;
+        check_ok(nfsu::track_camera_basis(street_camera(), level_basis, error),
+                 "the screen-level tamper's camera has a basis", error);
+        nfsu::TrackCullOptions level_cull_options;
+        const float level_eye_world[3] = {
+            static_cast<float>(street_camera().eye.x),
+            static_cast<float>(street_camera().eye.y),
+            static_cast<float>(street_camera().eye.z)};
+        nfsu::track_raw_from_world(level_eye_world,
+                                   level_cull_options.screen_eye);
+        const float level_forward_world[3] = {
+            static_cast<float>(level_basis.forward.x),
+            static_cast<float>(level_basis.forward.y),
+            static_cast<float>(level_basis.forward.z)};
+        nfsu::track_raw_from_world(level_forward_world,
+                                   level_cull_options.screen_forward);
+        level_cull_options.use_screen_size = true;
+        level_cull_options.screen_scale = 1000.0F;
+
+        const nfsu::TrackCullReport level_cull = nfsu::cull_track_region(
+            fixture.objects, frustum, level_cull_options);
+        check(!level_cull.visible.empty(),
+              "the screen-level tamper's cull sees something");
+        if (!level_cull.visible.empty()) {
+            nfsu::TrackCullReport level_tampered = level_cull;
+            level_tampered.visible[0].screen_level += 1;
+            nfsu::TrackProbeOptions level_options;
+            level_options.cull = level_cull_options;
+            nfsu::TrackProbeReport level_report;
+            check_ok(nfsu::probe_track_scene(
+                         fixture.geometry, fixture.objects, fixture.scene,
+                         level_tampered, frustum, level_options, level_report,
+                         message),
+                     "a disagreeing screen level still produces a report",
+                     message);
+            check_eq_u64(level_report.cost.disagreements, 1,
+                         "the screen-level disagreement is counted");
+            check(!level_report.ok(),
+                  "and the report is not ok for a screen level");
         }
     }
 }
@@ -3393,6 +3482,17 @@ void test_determinism() {
 // path under the system temp directory, and the gate hands this one a
 // path inside its own build directory.
 bool write_fixture(const std::string& path) {
+    // The same refusal track-render --out makes (src/main.cpp), for the
+    // same reason: this is the only write path a test binary offers, and
+    // aiming it at a real file - by a typo, or by a caller that copied the
+    // wrong path - must not replace it. The guard that drives this always
+    // removes its own fixture first, so the refusal costs that case nothing.
+    std::error_code code;
+    if (std::filesystem::exists(path, code)) {
+        std::cerr << "error: --write-fixture " << path
+                   << " already exists; this command never replaces a file\n";
+        return false;
+    }
     const Bytes geometry = build_geometry(fixture_meshes(), kGeometryBase);
     const Bytes scenery =
         build_sections(two_sections(303, 310), kSceneryBase);

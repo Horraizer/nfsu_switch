@@ -636,13 +636,13 @@ if(NFSU_BUILD_TESTS)
 
 
     # The same treatment for `track-probe`, which is the command the render
-    # guards' own header argues every probe command deserves: 95 cases, each
+    # guards' own header argues every probe command deserves: 123 cases, each
     # asserting the exact exit status and the diagnostic. track-probe writes
     # no file, so the output rules of the render script have no counterpart
     # here and the exit status carries the whole machine-readable contract.
     #
-    # 64 of them need no input files, which is what tests/track_render_
-    # guards.cmake can do. The other 31 drive the command over a fixture
+    # 80 of them need no input files, which is what tests/track_render_
+    # guards.cmake can do. The other 43 drive the command over a fixture
     # nfsu_track_probe_tests writes on request - the same bytes its own
     # cases parse, at the same absolute offsets - because the listing limit,
     # the per-instance block and every total that is non-zero only over a

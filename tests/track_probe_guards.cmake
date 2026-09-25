@@ -202,11 +202,38 @@ nfsu_case("--lod-slot past the six" 1 "--lod-slot needs a slot from 0 to 5" ""
           "${missing}" 0 16 0 16 --lod-slot 6)
 nfsu_case("--mesh with no name" 1 "--mesh needs a prepared mesh name" ""
           "${missing}" 0 16 0 16 --mesh)
-# The other half of that guard: a value that is there and is empty.
-# The two are separate conditions and one can go while the other stands.
-nfsu_case("--mesh with an empty name" 1
-          "--mesh needs a prepared mesh name" ""
-          "${missing}" 0 16 0 16 --mesh "")
+# The other half of that guard: a value that is there and is empty. The two
+# are separate conditions and one can go while the other stands - which
+# nfsu_case cannot show here. execute_process(COMMAND ... ${ARGN} ...) expands
+# an unquoted list, and CMake drops an empty element on that expansion, so a
+# case built through nfsu_case's ${ARGN} forwarding would hand the probe
+# "--mesh" alone and silently duplicate the case above. The empty argument is
+# written as a literal in this case's own execute_process instead, which is
+# not subject to that expansion and reaches the child process as one.
+nfsu_count(NFSU_PROBE_CASES)
+execute_process(
+    COMMAND "${PROBE}" track-probe "${missing}" 0 16 0 16 --mesh ""
+    WORKING_DIRECTORY "${work}"
+    OUTPUT_VARIABLE mesh_empty_out
+    ERROR_VARIABLE mesh_empty_err
+    RESULT_VARIABLE mesh_empty_status)
+set(mesh_empty_text "${mesh_empty_out}${mesh_empty_err}")
+if(mesh_empty_text MATCHES "terminate called")
+    message(SEND_ERROR
+        "--mesh with an empty name: the run terminated on an exception:\n${mesh_empty_text}")
+elseif(NOT mesh_empty_status MATCHES "^[0-9]+$" OR mesh_empty_status GREATER 128)
+    message(SEND_ERROR
+        "--mesh with an empty name: exit status ${mesh_empty_status} is a crash, not a refusal")
+elseif(NOT mesh_empty_status EQUAL 1)
+    message(SEND_ERROR
+        "--mesh with an empty name: exit status ${mesh_empty_status}, expected 1\n${mesh_empty_text}")
+elseif(NOT mesh_empty_text MATCHES "--mesh needs a prepared mesh name")
+    message(SEND_ERROR
+        "--mesh with an empty name: expected the output to contain\n  --mesh needs a prepared mesh name\nand it reads\n${mesh_empty_text}")
+elseif(mesh_empty_text MATCHES "wrote:")
+    message(SEND_ERROR
+        "--mesh with an empty name: the command wrote a file\n${mesh_empty_text}")
+endif()
 nfsu_case("--limit is not a number" 1
           "--limit needs a decimal or 0x integer" ""
           "${missing}" 0 16 0 16 --limit notanumber)
@@ -508,6 +535,40 @@ set(geo_size "${CMAKE_MATCH_2}")
 set(obj_off "${CMAKE_MATCH_3}")
 set(obj_size "${CMAKE_MATCH_4}")
 
+# ---------------------------------------------------------------------------
+# --write-fixture MUST NEVER REPLACE A FILE THAT IS ALREADY THERE. Every case
+# above removes its own fixture first, which is exactly what hides a writer
+# that would happily truncate a real one - Tracks/STREAML1RB.BUN, aimed at by
+# a typo or a copied path, is one call away. A small protected file stands in
+# for that real target: the refusal must fire, must name the file, and the
+# file's bytes must read back exactly what was there before the attempt.
+# ---------------------------------------------------------------------------
+
+set(protected_fixture "${work}/protected.bin")
+file(WRITE "${protected_fixture}" "keep-me-untouched")
+nfsu_count(NFSU_PROBE_CASES)
+execute_process(
+    COMMAND "${TESTS}" --write-fixture "${protected_fixture}"
+    OUTPUT_VARIABLE protect_out
+    ERROR_VARIABLE protect_err
+    RESULT_VARIABLE protect_status)
+if(protect_status EQUAL 0)
+    message(SEND_ERROR
+        "--write-fixture over an existing file: exited 0, and it must refuse")
+endif()
+if(NOT "${protect_out}${protect_err}" MATCHES "already exists")
+    message(SEND_ERROR
+        "--write-fixture over an existing file: the refusal must name the "
+        "file as already existing, and the run reads\n${protect_out}${protect_err}")
+endif()
+file(READ "${protected_fixture}" protected_after)
+if(NOT protected_after STREQUAL "keep-me-untouched")
+    message(SEND_ERROR
+        "--write-fixture over an existing file must leave its bytes "
+        "untouched, and it now reads\n${protected_after}")
+endif()
+file(REMOVE "${protected_fixture}")
+
 # One explicit camera for every case below, so that no case depends on the
 # automatic framing and two cases never differ by the camera by accident.
 set(cam --eye -6 0 30 --look-at -6 0 0 --view-fov 10
@@ -633,10 +694,18 @@ nfsu_data_case("and only one of the two sections survives it" 3
                "probe: sections 2 valid 2 resident 1" "" ${cam}
                --residency no-zone --limit 0)
 
-# THE SCREEN-SIZE EYE, in the raw slot order. The level below is the retail
-# arithmetic over this instance's own radius from this eye; mapping the eye
-# with the world frame instead gives another number.
-nfsu_data_case("the screen-size eye is mapped to the raw slots" 3
+# THE SCREEN-SIZE EYE, in the raw slot order - though this case does not, in
+# fact, tell a correct mapping from a broken one: this instance is box
+# REJECTED, so the size gate is "not-applied" and the printed level is a
+# diagnostic rather than a gate verdict. Measured directly (temporarily
+# copying the eye in world order instead of mapping it, at src/main.cpp's
+# "the screen-size gate reads the SAME camera" site): the level, and the
+# "cull: ... visible" and "draw list: ... visible" lines above, are all
+# byte-identical to the pristine run for THIS fixture and THIS camera. The
+# mapping going wrong is caught nowhere in this file; the retail acceptance
+# in docs/TRACK_PROBE.md is what catches it, and only through its
+# "cull: ... visible" and draw-list lines, not through any level.
+nfsu_data_case("the screen-size eye reaches the gate in the raw slot order" 3
                "size not-applied level 14" "" ${cam}
                --screen-scale 40 --limit 1)
 
