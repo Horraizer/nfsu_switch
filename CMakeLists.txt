@@ -240,6 +240,12 @@ add_library(nfsu_render
 )
 
 target_link_libraries(nfsu_render PUBLIC nfsu_scene nfsu_image)
+# The POSIX frame writer rolls a failed write back with
+# rollback_created_files, which nfsu_core defines (src/texture.cpp). The link
+# is private because render.h exposes nothing of nfsu_core. The Windows
+# writer removes by handle and never calls it, which is why only a POSIX
+# build found the link missing (issue #132).
+target_link_libraries(nfsu_render PRIVATE nfsu_core)
 nfsu_enable_warnings(nfsu_render)
 if(MSVC)
     target_compile_options(nfsu_render PRIVATE /fp:precise)
@@ -844,5 +850,69 @@ if(NFSU_BUILD_TESTS)
 
     set_tests_properties(
         nfsu_input_tests nfsu_platform_tests nfsu_platform_neutrality
+        PROPERTIES TIMEOUT 60)
+endif()
+
+# Memory arenas and GPU upload bookkeeping for the Switch renderer, issues #52
+# and #50. Appended as one block, after the existing tests, so that the lists
+# above are not reordered.
+#
+# nfsu_memory is the bounded offset allocator of include/nfsu/memory_arena.h:
+# the four memory categories, their arenas and the plan that lays them out.
+# It depends on nothing but the standard library, because it manages ranges
+# rather than memory, so the CPU categories and the GPU one share it. See
+# docs/MEMORY_BUDGETS.md.
+add_library(nfsu_memory
+    src/memory_arena.cpp
+)
+
+target_include_directories(nfsu_memory
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_compile_features(nfsu_memory PUBLIC cxx_std_17)
+nfsu_enable_warnings(nfsu_memory)
+
+# What a prepared scene uploads, which texture formats may be uploaded, the
+# ledger that tracks every placement until the GPU is done with it, and the
+# budgets derived from the same structures. It reads PreparedCarScene and
+# PreparedTrackScene and nothing below them, so it links the draw-list layer
+# a backend links and never reaches past it. It calls no deko3d function;
+# see docs/GPU_UPLOAD.md for the half that needs hardware.
+add_library(nfsu_gpu_upload
+    src/gpu_upload.cpp
+    src/memory_budget.cpp
+)
+
+target_link_libraries(nfsu_gpu_upload PUBLIC nfsu_memory nfsu_track_draw_list)
+nfsu_enable_warnings(nfsu_gpu_upload)
+
+if(NFSU_BUILD_TESTS)
+    # The arenas alone: exact refusal boundaries, the fragmentation figures
+    # against an independent model, and thousands of load and release cycles
+    # that must end where they started.
+    add_executable(nfsu_memory_arena_tests
+        tests/memory_arena_tests.cpp
+    )
+
+    target_link_libraries(nfsu_memory_arena_tests PRIVATE nfsu_memory)
+    nfsu_enable_warnings(nfsu_memory_arena_tests)
+    add_test(NAME nfsu_memory_arena_tests COMMAND nfsu_memory_arena_tests)
+
+    # The tables over scenes built by the real preparation code, the format
+    # gate against the real decoder, and the ledger's lifetime rules. It links
+    # nfsu_runtime_skin to bind a generated skin the way the viewer does, and
+    # nfsu_texture_decode for decode_level.
+    add_executable(nfsu_gpu_upload_tests
+        tests/gpu_upload_tests.cpp
+    )
+
+    target_link_libraries(nfsu_gpu_upload_tests
+        PRIVATE nfsu_gpu_upload nfsu_runtime_skin nfsu_texture_decode)
+    nfsu_enable_warnings(nfsu_gpu_upload_tests)
+    add_test(NAME nfsu_gpu_upload_tests COMMAND nfsu_gpu_upload_tests)
+
+    # A hung test is killed and reported as a failure, as above.
+    set_tests_properties(nfsu_memory_arena_tests nfsu_gpu_upload_tests
         PROPERTIES TIMEOUT 60)
 endif()
