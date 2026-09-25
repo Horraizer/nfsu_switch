@@ -61,6 +61,7 @@ build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc 783 -8.5
 build/nfsu_probe car-placement X:/Games/NFSU/Global/GLOBALB.BUN 240SX
 build/nfsu_probe race-events X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/FrontEnd/FrontB.lzc
 build/nfsu_probe track-whole X:/Games/NFSU/Tracks/STREAML1RA.BUN X:/Games/NFSU/Tracks/TRACKB1003.lzc 1003 --texture X:/Games/NFSU/Tracks/TEX1003TRACK.BIN --texture X:/Games/NFSU/Global/INGAMEB.BUN --texture X:/Games/NFSU/Global/GLOBALB.BUN
+build/nfsu_probe track-stream-path X:/Games/NFSU/Tracks/STREAML1RA.BUN X:/Games/NFSU/Tracks/TRACKB1003.lzc 1003 --hand-path 1003 --texture X:/Games/NFSU/Tracks/TEX1003TRACK.BIN --texture X:/Games/NFSU/Global/INGAMEB.BUN --texture X:/Games/NFSU/Global/GLOBALB.BUN
 build/nfsu_probe part-markers X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN exhaust
 build/nfsu_probe body-skin-inputs 240SX --source car-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN --source car-vinyls X:/Games/NFSU/Cars/240SX/VINYLS.BIN --source other X:/Games/NFSU/Cars/TEXTURES.BIN --target-texture DUMMY_SKIN1 --vinyl 0 TRIBAL5 16 no-remap --doorline plain --base 200 30 30 128 --assemble
 ```
@@ -132,6 +133,17 @@ issue #52 for the desktop and for the Switch arena plan. `--set zones` and
 `--set stream` load the two bounds the rule sits inside, and `--out` draws
 the whole track with the CPU reference renderer and never replaces a file.
 See `docs/TRACK_WHOLE.md`.
+`track-stream-path` runs the section streamer of `speed.exe` along a path:
+the zone a car's look-ahead picks, the request rebuilt when that zone
+changes, and the loads and releases that keep the requested sections within
+a byte budget, 60 steps a second. It prints every step that did something
+and a SHA-256 of the whole sequence, loads each distinct resident set -
+exactly its byte ranges - to measure this project's own bytes for it against
+the desktop and Switch budgets, and with `--frame-every` and `--out` draws
+frames from only the resident sections. The path is a file of raw-slot
+vertices, or `--hand-path 1003`: a HAND-GIVEN polyline around the circuit of
+race 1, not the game's route. `--policy zone-only` and `--cost prepared` are
+labelled bounds, not retail rules. See `docs/TRACK_STREAMING.md`.
 `car-parts` parses the car part database of `GLOBAL/GLOBALB.BUN` and lists
 every part record: car type hash, slot, upgrade level, part name hash and
 the four per-LOD mesh hashes. A car type name lists only its records.

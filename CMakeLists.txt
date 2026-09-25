@@ -1061,3 +1061,58 @@ if(NFSU_BUILD_TESTS)
         PRIVATE nfsu_draw_commands nfsu_stock_frame nfsu_arg_path)
     nfsu_enable_warnings(nfsu_draw_commands_retail)
 endif()
+
+# Section residency along a path (issue #157): the streamer of speed.exe -
+# the zone key a car's look-ahead picks, the request it rebuilds when that
+# key changes, and the placements and releases that keep the wanted sections
+# within a byte budget - as a deterministic function of a streaming table, a
+# zone report, a cost per record and one position per fixed step. It reads
+# no file and no clock, so it is neutral, and it links nfsu_track_stream for
+# the table and nfsu_sha256 for the sequence hash. Its look-ahead picks a
+# zone with the strict polygon test of 0x005679B0, so floating-point
+# contraction is disabled for the reason nfsu_track_zones disables it. See
+# docs/TRACK_STREAMING.md.
+add_library(nfsu_track_residency
+    src/track_residency.cpp
+)
+
+target_link_libraries(nfsu_track_residency PUBLIC nfsu_track_stream nfsu_sha256)
+nfsu_enable_warnings(nfsu_track_residency)
+if(MSVC)
+    target_compile_options(nfsu_track_residency PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_track_residency PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_track_residency)
+
+# `track-stream-path` is the one command that needs it; linked on its own
+# line, as nfsu_track_stream is, so the lists above stay as they were.
+target_link_libraries(nfsu_probe PRIVATE nfsu_track_residency)
+
+if(NFSU_BUILD_TESTS)
+    # The streamer over synthetic zone graphs: entering, leaving and
+    # revisiting a zone, the start set, the look-ahead, the three-sample
+    # commit, a request that does not fit, the release order and the
+    # sequence hash, plus the path format and its sampling.
+    add_executable(nfsu_track_residency_tests
+        tests/track_residency_tests.cpp
+    )
+
+    target_link_libraries(nfsu_track_residency_tests PRIVATE nfsu_track_residency)
+    nfsu_enable_warnings(nfsu_track_residency_tests)
+    add_test(NAME nfsu_track_residency_tests COMMAND nfsu_track_residency_tests)
+
+    # What `track-stream-path` refuses, prints and exits with: every refusal
+    # with no input at all, and whole runs over the synthetic stream
+    # nfsu_track_stream_tests writes on request, frames included.
+    # tests/track_stream_path_guards.cmake says what each case is for.
+    add_test(NAME nfsu_probe_track_stream_path_guards
+        COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -DTESTS=$<TARGET_FILE:nfsu_track_stream_tests>
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/track_stream_path_guards.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+    set_tests_properties(nfsu_track_residency_tests
+        nfsu_probe_track_stream_path_guards
+        PROPERTIES TIMEOUT 120)
+endif()
