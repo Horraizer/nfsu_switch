@@ -13,9 +13,52 @@
 #include <system_error>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+// windows.h still defines near and far as empty macros, for source
+// compatibility with the 16-bit memory model. This file uses both as
+// ordinary identifiers - test_queries has an "op.near" field and
+// test_scratch_stamp a local named "near" - so without these two lines the
+// process id above costs this file six compile errors. WIN32_LEAN_AND_MEAN
+// does not exclude them; they come from minwindef.h, which windows.h always
+// pulls in.
+#undef near
+#undef far
+#else
+#include <unistd.h>
+#endif
+
 namespace {
 
 using Bytes = std::vector<unsigned char>;
+
+// A fixture name no other process shares, built the way
+// tests/arg_path_tests.cpp has built one since issue #87 and
+// tests/track_object_tests.cpp since issue #122.
+//
+// test_load used to build its fixture directory under the system temporary
+// directory at "nfsu_track_collision_tests", with nothing in the name to
+// make it this process's own, and it removes every file in it and then the
+// directory itself on the way out. CLAUDE.md says several sessions are
+// routinely live on this machine, each with its own build directory, so two
+// copies of this binary overlap whenever two of them run ctest at the same
+// time - and one copy's cleanup removed the other copy's fixtures while it
+// was still loading them. Issue #124 measured that: 130 of 360 contended
+// runs failed, the second worst of the eight files it covers.
+std::string unique_fixture(const std::string& label) {
+#ifdef _WIN32
+    const unsigned long pid = GetCurrentProcessId();
+#else
+    const unsigned long pid = static_cast<unsigned long>(getpid());
+#endif
+    return "nfsu_track_collision_" + label + "_" + std::to_string(pid);
+}
 
 // The format's own numbers, written as literals on purpose. A fixture
 // built out of the header's constants moves with them, so a mutation of a
@@ -1486,7 +1529,7 @@ void test_load() {
 
     std::error_code code;
     const std::filesystem::path dir =
-        std::filesystem::temp_directory_path(code) / "nfsu_track_collision_tests";
+        std::filesystem::temp_directory_path(code) / unique_fixture("tests");
     std::filesystem::create_directories(dir, code);
     const std::filesystem::path packed_path = dir / "packed.lzc";
     const std::filesystem::path raw_path = dir / "raw.bin";
@@ -1756,7 +1799,11 @@ void test_scratch_stamp() {
     indexed.scratch = 0x0245U;
     Polygon stamped_high = flat_quad(16.0F, 16.0F, 8.0F, 3.0F);
     stamped_high.scratch = kScratchStamp;
-    image.polygons = {stamped_low, indexed, stamped_high};
+    // A new vector moved in, not the braced list assigned: assignment into
+    // the empty vector compiles a std::copy into its storage, a null
+    // pointer, on a path GCC cannot rule out, and the Release build warns
+    // (-Wnonnull, issue #131).
+    image.polygons = std::vector<Polygon>{stamped_low, indexed, stamped_high};
     Cell cell;
     cell.center[0] = 16.0F;
     cell.center[1] = 16.0F;
@@ -1820,7 +1867,8 @@ void test_vertical_base() {
     Polygon high = flat_quad(16.0F, 16.0F, 8.0F, 0.50F);
     high.vertical_base = 94;
     Polygon plain = flat_quad(16.0F, 16.0F, 8.0F, 0.75F);
-    image.polygons = {low, high, plain};
+    // Moved in, not assigned, for the reason test_scratch_stamp gives.
+    image.polygons = std::vector<Polygon>{low, high, plain};
     Cell cell;
     cell.center[0] = 16.0F;
     cell.center[1] = 16.0F;

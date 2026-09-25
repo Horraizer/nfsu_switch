@@ -14,13 +14,50 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <system_error>
 #include <vector>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace fs = std::filesystem;
 
 namespace {
 
 using Bytes = std::vector<unsigned char>;
+
+// A fixture name no other process shares, built the way
+// tests/arg_path_tests.cpp has built one since issue #87 and
+// tests/track_object_tests.cpp since issue #122.
+//
+// test_load_track_region_reads_only_the_region used to name its fixture
+// "nfsu_track_region_test.bin" under the system temporary directory, with
+// nothing in the name to make it this process's own. CLAUDE.md says several
+// sessions are routinely live on this machine, each with its own build
+// directory, so two copies of this binary overlap whenever two of them run
+// ctest at the same time - and each one writes that single path with
+// std::ios::trunc and removes it again. A copy that called
+// load_track_region while another was between its open and its close read a
+// file that was missing, empty or half written, and the loader then
+// reported the region as outside a 0-byte file. Issue #124 measured that
+// exact diagnostic in 8 of 40 contended failures here.
+std::string unique_fixture(const std::string& label) {
+#ifdef _WIN32
+    const unsigned long pid = GetCurrentProcessId();
+#else
+    const unsigned long pid = static_cast<unsigned long>(getpid());
+#endif
+    return "nfsu_track_" + label + "_" + std::to_string(pid) + ".bin";
+}
 
 int g_failures = 0;
 int g_checks = 0;
@@ -1570,7 +1607,7 @@ void test_load_track_region_reads_only_the_region() {
     file.insert(file.end(), 1024, 0xEEU);
 
     const fs::path path =
-        fs::temp_directory_path() / "nfsu_track_region_test.bin";
+        fs::temp_directory_path() / unique_fixture("region_test");
     {
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         out.write(reinterpret_cast<const char*>(file.data()),

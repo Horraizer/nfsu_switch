@@ -14,13 +14,51 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <vector>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace fs = std::filesystem;
 
 namespace {
 
 using Bytes = std::vector<unsigned char>;
+
+// A fixture name no other process shares, built the way
+// tests/arg_path_tests.cpp has built one since issue #87 and
+// tests/track_object_tests.cpp since issue #122.
+//
+// test_export_safety used to build its fixture tree under the system
+// temporary directory at "nfsu_texture_export_test", with nothing in the
+// name to make it this process's own, and it opens and closes that tree
+// with fs::remove_all. CLAUDE.md says several sessions are routinely live
+// on this machine, each with its own build directory, so two copies of this
+// binary overlap whenever two of them run ctest at the same time - and
+// either one's remove_all deletes every file the other has just exported.
+//
+// This is the worst of the eight files issue #124 covers, and the
+// measurements say why: 409 of 480 contended runs failed, against 21 of 240
+// for nfsu_car_parts_tests. This test exports real files and reads them
+// back, so nearly the whole of it sits inside the window.
+std::string unique_fixture(const std::string& label) {
+#ifdef _WIN32
+    const unsigned long pid = GetCurrentProcessId();
+#else
+    const unsigned long pid = static_cast<unsigned long>(getpid());
+#endif
+    return "nfsu_texture_" + label + "_" + std::to_string(pid);
+}
 
 int g_failures = 0;
 
@@ -1771,7 +1809,7 @@ Bytes read_file(const fs::path& path) {
 }
 
 void test_export_safety() {
-    const fs::path root = fs::temp_directory_path() / "nfsu_texture_export_test";
+    const fs::path root = fs::temp_directory_path() / unique_fixture("export_test");
     std::error_code error;
     fs::remove_all(root, error);
     const fs::path input = root / "TEXTURES.BIN";
@@ -1830,12 +1868,30 @@ void test_export_safety() {
                                  refused) &&
               refused.error.find("refusing to overwrite") != std::string::npos,
           "existing target refused");
+    // The throwing overload of directory_iterator is what turned this
+    // file's contention failure into a crash. Issue #124's second half asks
+    // which of the eight files crash rather than merely fail, and this file
+    // is the one that does - not at a container subscript, which is how
+    // issue #122 crashed, but here. A concurrent copy's fs::remove_all takes
+    // root away, the throwing constructor then raises filesystem_error,
+    // nothing in this file catches it, and std::terminate calls abort. On
+    // Windows that is exit 0xC0000409, STATUS_STACK_BUFFER_OVERRUN, which
+    // is exactly the status issue #124 records for nfsu_texture_tests.
+    // Reproduced on its own: iterating a directory that is not there exits
+    // 0xC0000409 with "directory iterator cannot open directory".
+    //
+    // The unique name above closes the cause seen here. The error_code
+    // overload is what keeps any other transient failure a failure: it
+    // yields end() rather than throwing, the count stays 0, and the check
+    // below reports it.
+    std::error_code walk_error;
     std::size_t entries = 0;
-    for (const auto& entry : fs::directory_iterator(root / "out3")) {
+    for (const auto& entry : fs::directory_iterator(root / "out3", walk_error)) {
         (void)entry;
         ++entries;
     }
-    check(entries == 1U && read_file(existing) == marker, "nothing written, target kept");
+    check(!walk_error && entries == 1U && read_file(existing) == marker,
+          "nothing written, target kept");
 
     // Output directory equal to the input file.
     nfsu::TextureExportResult same;
@@ -1853,12 +1909,16 @@ void test_export_safety() {
                   std::string::npos &&
               failed.files.empty() && failed.not_removed.empty(),
           "failed export reports cleanup: " + failed.error);
+    // The second of the two throwing iterators, for the same reason.
+    std::error_code leftover_error;
     std::size_t leftover = 0;
-    for (const auto& entry : fs::directory_iterator(root / "out4")) {
+    for (const auto& entry : fs::directory_iterator(root / "out4", leftover_error)) {
         (void)entry;
         ++leftover;
     }
-    check(leftover == 0U, "failed export leaves no files");
+    // A walk that could not open out4 also counts zero, so the error has to
+    // be part of the assertion or a missing directory would read as a pass.
+    check(!leftover_error && leftover == 0U, "failed export leaves no files");
 
     // A failed export into a directory with an unrelated file keeps it.
     fs::create_directories(root / "out6", error);

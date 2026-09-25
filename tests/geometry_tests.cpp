@@ -13,13 +13,49 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <vector>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace fs = std::filesystem;
 
 namespace {
 
 using Bytes = std::vector<unsigned char>;
+
+// A fixture name no other process shares, built the way
+// tests/arg_path_tests.cpp has built one since issue #87 and
+// tests/track_object_tests.cpp since issue #122.
+//
+// test_file_loading used to name its fixture "nfsu_geometry_test.bin" under
+// the system temporary directory, with nothing in the name to make it this
+// process's own. CLAUDE.md says several sessions are routinely live on this
+// machine, each with its own build directory, so two copies of this binary
+// overlap whenever two of them run ctest at the same time - and each one
+// writes that single path with std::ios::trunc and removes it again. A copy
+// that called load_geometry_file while another was between its open and its
+// close read a file that was missing, empty or half written. Issue #124
+// measured that: 26 of 360 contended runs failed here, on "load from file",
+// "file size limit" and "missing file reported" in turn.
+std::string unique_fixture(const std::string& label) {
+#ifdef _WIN32
+    const unsigned long pid = GetCurrentProcessId();
+#else
+    const unsigned long pid = static_cast<unsigned long>(getpid());
+#endif
+    return "nfsu_geometry_" + label + "_" + std::to_string(pid) + ".bin";
+}
 
 int g_failures = 0;
 
@@ -1569,7 +1605,7 @@ void test_markers_withdrawn_when_a_later_check_fails() {
 
 void test_file_loading() {
 
-    const fs::path path = fs::temp_directory_path() / "nfsu_geometry_test.bin";
+    const fs::path path = fs::temp_directory_path() / unique_fixture("test");
     const Bytes bytes = build({quad_spec()}).bytes;
     {
         std::ofstream stream(path, std::ios::binary | std::ios::trunc);
