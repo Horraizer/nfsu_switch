@@ -243,10 +243,10 @@ target_link_libraries(nfsu_probe
             nfsu_track_probe nfsu_race_events
             nfsu_texture_decode nfsu_skin_inputs nfsu_stock_scene
             nfsu_arg_path)
-nfsu_enable_warnings(nfsu_probe)
 # `track-whole` (issue #156) is the one command that needs the whole-track
 # layer; it is linked on its own line so the list above stays as it was.
 target_link_libraries(nfsu_probe PRIVATE nfsu_track_stream)
+nfsu_enable_warnings(nfsu_probe)
 
 # Backend-neutral interactive inspection state: the camera the pointer
 # drives, the selected material group, the diagnostic views and the overlay
