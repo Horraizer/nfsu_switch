@@ -23,17 +23,19 @@ nx_create_nro(nfsu_switch_app
     NACP nfsu_switch_app.nacp)
 
 # The stock 240SX drawn by the CPU reference renderer on the console (issue
-# #141). It links the car-path libraries the top-level CMakeLists.txt
+# #141), painted with the runtime body skin and orbited with the left stick
+# (issue #148). It links the car-path libraries the top-level CMakeLists.txt
 # declares for both configures (cmake/car_libraries.cmake), so its scene,
-# frame and hash come from the same sources, compiled with the same options,
-# as the desktop's. It reads six files from the SD card, shows the frame
-# through a libnx framebuffer and reports on stdout, which nxlink carries to
-# the PC; it writes no file.
+# skin, camera, frame and hash come from the same sources, compiled with the
+# same options, as the desktop's. It reads six files from the SD card, shows
+# the frame through a libnx framebuffer and reports on stdout, which nxlink
+# carries to the PC; it writes no file.
 add_executable(nfsu_switch_car
     car_main.cpp
 )
 
-target_link_libraries(nfsu_switch_car PRIVATE nfsu_stock_frame nfsu_screen_text)
+target_link_libraries(nfsu_switch_car
+    PRIVATE nfsu_stock_frame nfsu_stock_view nfsu_screen_text)
 # gnu++17, as the libraries it links are compiled on the console; the
 # comment at the end of cmake/car_libraries.cmake says why it is named.
 set_target_properties(nfsu_switch_car PROPERTIES

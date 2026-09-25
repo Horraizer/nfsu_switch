@@ -92,6 +92,34 @@ std::string hex(std::uint32_t value) {
     return text;
 }
 
+// The viewer's hex32: "0x" and eight upper-case digits.
+std::string hex32(std::uint32_t value) {
+    static const char kDigits[] = "0123456789ABCDEF";
+    std::string text = "0x";
+    for (int shift = 28; shift >= 0; shift -= 4) {
+        text.push_back(kDigits[(value >> static_cast<unsigned int>(shift)) & 0xFU]);
+    }
+    return text;
+}
+
+// The viewer's ascii_quoted: printable ASCII kept, a quote, a backslash and
+// every other byte written as \xHH, all inside double quotes.
+std::string ascii_quoted(const std::string& text) {
+    static const char kDigits[] = "0123456789ABCDEF";
+    std::string out = "\"";
+    for (const char ch : text) {
+        const unsigned char byte = static_cast<unsigned char>(ch);
+        if (byte >= 0x20U && byte <= 0x7EU && ch != '"' && ch != '\\') {
+            out += ch;
+        } else {
+            out += "\\x";
+            out += kDigits[byte >> 4U];
+            out += kDigits[byte & 0xFU];
+        }
+    }
+    return out + "\"";
+}
+
 } // namespace
 
 const char* stock_frame_file_path(std::size_t index) noexcept {
@@ -134,6 +162,24 @@ StockSceneRequest stock_240sx_request() {
     return request;
 }
 
+StockFrameSkin stock_240sx_skin() {
+    StockFrameSkin skin;
+    skin.enabled = true;
+    skin.car = "240SX";
+    skin.selection.car_name = skin.car;
+    skin.selection.doorline = SkinDoorlineSelection{SkinDoorlineVariant::plain};
+    skin.selection.base_color = skin_pack_paint(30, 60, 160, 128);
+    return skin;
+}
+
+bool prepare_stock_frame(
+    const StockFrameInputs& inputs,
+    const StockSceneRequest& request,
+    StockFrame& frame,
+    std::string& error) {
+    return prepare_stock_frame(inputs, request, StockFrameSkin{}, frame, error);
+}
+
 // Each step names the lines of src/viewer_main.cpp's main() it mirrors. The
 // viewer reads a file inside each load_* call and then parses the bytes
 // with the matching parse_* call and its default limits; here the bytes are
@@ -142,6 +188,7 @@ StockSceneRequest stock_240sx_request() {
 bool prepare_stock_frame(
     const StockFrameInputs& inputs,
     const StockSceneRequest& request,
+    const StockFrameSkin& skin,
     StockFrame& frame,
     std::string& error) {
     frame.car_geometry = GeometryReport{};
@@ -156,6 +203,13 @@ bool prepare_stock_frame(
     frame.report = StockSceneReport{};
     frame.frame = Frame{};
     frame.stats = RenderStats{};
+    frame.skinned = false;
+    frame.skin_sources.clear();
+    frame.skin_plan = BodySkinInputPlan{};
+    frame.skin_owned_bytes = 0;
+    frame.skin = RuntimeSkin{};
+    frame.skin_binding = RuntimeSkinBinding{};
+    frame.skin_bound_names.clear();
     frame.issues.clear();
     frame.inputs_ok = false;
     error.clear();
@@ -346,7 +400,131 @@ bool prepare_stock_frame(
             }
         }
 
-        // The stock scene again, now bound to the decoded textures.
+        // The runtime body skin: the viewer's "if (skin.enabled)" block,
+        // step by step. Nothing here runs without it.
+        bool skin_ok = true;
+        if (skin.enabled) {
+            // Skin input sources in the order they are searched: the car's
+            // pack, then each shared source in order (there is no
+            // --skin-vinyls source). A pack the assembly layer would refuse
+            // offers no records instead, and a source left with no usable
+            // pack is not searched; either is an issue, as the viewer's
+            // "skin source" lines on its standard error are.
+            std::vector<SkinInputSource> skin_sources;
+            const auto add_source = [&](const std::vector<unsigned char>& source_bytes,
+                                        SkinSourceKind kind, const std::string& label,
+                                        const std::string& path,
+                                        const std::vector<const TexturePack*>& packs) {
+                SkinInputSource source;
+                source.bytes = &source_bytes;
+                source.kind = kind;
+                source.path = label;
+                for (const TexturePack* candidate : packs) {
+                    if (candidate != nullptr && candidate->tables_parsed &&
+                        candidate->parse_source == source_bytes.data() &&
+                        candidate->file_size == source_bytes.size()) {
+                        source.packs.push_back(candidate);
+                    } else {
+                        frame.issues.push_back(path + ": skin source " + label +
+                                               ": a pack has no parsed record tables and "
+                                               "offers no records");
+                        skin_ok = false;
+                    }
+                }
+                if (source.packs.empty()) {
+                    frame.issues.push_back(path + ": skin source " + label +
+                                           ": no usable pack, not searched");
+                    skin_ok = false;
+                    return;
+                }
+                frame.skin_sources.push_back(label);
+                skin_sources.push_back(std::move(source));
+            };
+            add_source(car_textures.bytes, SkinSourceKind::car_textures, "car-textures",
+                       car_textures.path, {&frame.car_pack});
+            for (std::size_t i = 0; i < frame.shared_sets.size(); ++i) {
+                std::vector<const TexturePack*> packs;
+                for (const TexturePack& shared_pack : frame.shared_sets[i].packs) {
+                    packs.push_back(&shared_pack);
+                }
+                add_source(*shared_bytes[i], SkinSourceKind::other,
+                           "shared-" + std::to_string(i + 1),
+                           inputs.file(kSharedTextureFiles[i]).path, packs);
+            }
+
+            BodySkinSelection selected = skin.selection;
+            selected.car_name = skin.car;
+            selected.target_hash = bin_hash(skin.target_name);
+            // Width and height stay as given, zero: they are taken from the
+            // target record.
+            const SkinInputLimits skin_limits;
+            std::string skin_error;
+            BodySkinInputPlan plan;
+            if (!plan_body_skin_inputs(selected, skin_sources, skin_limits, plan, skin_error)) {
+                error = "skin inputs: " + skin_error;
+                return false;
+            }
+            SkinTargetChoice choice;
+            if (!choose_skin_target_path(plan.target_texture, choice)) {
+                error = "skin target: " + choice.reason;
+                return false;
+            }
+            selected.target = choice.path;
+            AssembledSkinInputs assembled;
+            if (!assemble_body_skin_inputs(selected, skin_sources, skin_limits, assembled,
+                                           skin_error)) {
+                error = "skin inputs: " + skin_error;
+                return false;
+            }
+            if (!validate_assembled_skin_inputs(assembled, skin_error)) {
+                error = "skin inputs failed validation: " + skin_error;
+                return false;
+            }
+            SkinTargetSurface target_surface;
+            if (!read_skin_target_surface(skin_sources, assembled.plan().target_texture,
+                                          skin_limits, target_surface, skin_error)) {
+                error = "skin target: " + skin_error;
+                return false;
+            }
+            SkinMarkerCache markers;
+            if (!compose_runtime_skin(skin_sources, assembled, target_surface, markers,
+                                      frame.skin, skin_error)) {
+                error = "skin composite: " + skin_error;
+                return false;
+            }
+
+            // The target hash first, then <car>_SKIN1 unless body_bind is
+            // cleared. The generated texture carries the source index one
+            // past the real texture sources, as the viewer gives it.
+            std::vector<std::uint32_t> bound = {frame.skin.target_hash};
+            frame.skin_bound_names.push_back(skin.target_name);
+            if (skin.body_bind) {
+                const std::string body = skin.car + "_SKIN1";
+                bound.push_back(bin_hash(body));
+                frame.skin_bound_names.push_back(body);
+            }
+            if (!bind_runtime_skin(frame.skin, bound, frame.shared_sets.size() + 1,
+                                   frame.textures, frame.skin_binding, skin_error)) {
+                error = "skin binding: " + skin_error;
+                return false;
+            }
+            for (const SkinInputLayerInfo& input : assembled.plan().inputs) {
+                if (!input.usable) {
+                    frame.issues.push_back(
+                        std::string("skin: input ") + skin_source_role_name(input.role) +
+                        " skipped " + skin_skip_reason_name(input.skip_reason) +
+                        (input.skip_detail.empty() ? std::string()
+                                                   : " (" + input.skip_detail + ")"));
+                }
+            }
+            skin_ok = skin_ok && assembled.plan().skipped_inputs == 0;
+            frame.skin_plan = assembled.plan();
+            frame.skin_owned_bytes = assembled.owned_bytes();
+            frame.skinned = true;
+        }
+
+        // The stock scene again, now bound to the decoded textures and,
+        // with a skin, to the generated one.
         std::string stock_error;
         if (!prepare_stock_car_scene(sources, frame.textures, frame.parts, frame.car_types,
                                      request, scene_limits, frame.scene, frame.report,
@@ -356,12 +534,12 @@ bool prepare_stock_frame(
         }
 
         // The viewer's final "geometry.ok() && pack.ok() && sources_ok &&
-        // skin_ok && stock_ok"; there is no skin here.
+        // skin_ok && stock_ok"; skin_ok is true when there is no skin.
         bool ok = frame.car_geometry.ok() && frame.car_pack.ok();
         for (const TexturePackSet& set : frame.shared_sets) {
             ok = ok && set.ok();
         }
-        ok = ok && frame.parts.ok() && frame.car_types.ok();
+        ok = ok && skin_ok && frame.parts.ok() && frame.car_types.ok();
         for (const GeometryReport& source : frame.stock_geometry) {
             ok = ok && source.ok();
         }
@@ -502,6 +680,35 @@ std::string stock_frame_slots_line(const StockSceneReport& report) {
          << report.with_model << " drawn " << report.drawn << " by_fallback "
          << report.fell_back << " markers " << report.markers.size();
     return text.str();
+}
+
+std::vector<std::string> stock_frame_skin_lines(const StockFrame& frame) {
+    std::vector<std::string> lines;
+    if (!frame.skinned) {
+        return lines;
+    }
+    {
+        std::ostringstream text;
+        text << "skin: car " << ascii_quoted(frame.skin_plan.car_name) << " path "
+             << skin_target_type_name(frame.skin.path) << ' ' << frame.skin.width << 'x'
+             << frame.skin.height << " layers " << frame.skin.layers << " owned_bytes "
+             << frame.skin_owned_bytes << " skipped_inputs " << frame.skin_plan.skipped_inputs;
+        lines.push_back(text.str());
+    }
+    for (std::size_t i = 0; i < frame.skin_binding.hashes.size(); ++i) {
+        std::string line = "skin bound: hash " + hex32(frame.skin_binding.hashes[i]);
+        if (i < frame.skin_bound_names.size() && !frame.skin_bound_names[i].empty()) {
+            line += ' ' + ascii_quoted(frame.skin_bound_names[i]);
+        }
+        lines.push_back(line);
+    }
+    {
+        std::ostringstream text;
+        text << "skin generated: texture " << frame.skin_binding.texture_index << " source "
+             << frame.skin_binding.source << " bytes " << frame.skin_binding.bytes;
+        lines.push_back(text.str());
+    }
+    return lines;
 }
 
 } // namespace nfsu

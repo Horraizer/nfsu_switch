@@ -209,47 +209,6 @@ else()
     target_compile_options(nfsu_track_probe PRIVATE -ffp-contract=off -fno-fast-math)
 endif()
 
-# Body-skin pixel compositor reference. It depends on nothing but the
-# standard library, and it disables floating-point contraction so that the
-# traced truncation behaviour does not depend on FMA availability.
-add_library(nfsu_body_skin
-    src/body_skin.cpp
-)
-
-target_include_directories(nfsu_body_skin
-    PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-target_compile_features(nfsu_body_skin PUBLIC cxx_std_17)
-nfsu_enable_warnings(nfsu_body_skin)
-if(MSVC)
-    target_compile_options(nfsu_body_skin PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_body_skin PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
-
-# Body-skin input assembly: turns an explicit customization selection and
-# parsed texture packs into an owned BodySkinRequest. It sits between the
-# pack reader and the compositor and depends on both.
-add_library(nfsu_skin_inputs
-    src/skin_inputs.cpp
-)
-
-target_link_libraries(nfsu_skin_inputs PUBLIC nfsu_core nfsu_body_skin)
-nfsu_enable_warnings(nfsu_skin_inputs)
-
-# Runtime body skin: selects the compositor path from the real target
-# record, runs the proven composite over assembled inputs and binds the
-# generated texture into a decoded texture set. It parses no packs of its
-# own and does no floating-point work; the arithmetic lives in
-# nfsu_body_skin, which carries its own flags.
-add_library(nfsu_runtime_skin
-    src/runtime_skin.cpp
-)
-
-target_link_libraries(nfsu_runtime_skin PUBLIC nfsu_skin_inputs nfsu_scene)
-nfsu_enable_warnings(nfsu_runtime_skin)
-
 # The read-only inspector. It is declared after every library it uses.
 add_executable(nfsu_probe
     src/main.cpp
@@ -267,29 +226,17 @@ target_link_libraries(nfsu_probe
             nfsu_arg_path)
 nfsu_enable_warnings(nfsu_probe)
 
-# Backend-neutral interactive inspection state: the camera the pointer
-# drives, the selected material group, the diagnostic views and the overlay
-# text. It opens no window and calls no operating system, so it is tested
-# headlessly and a deko3d backend reuses it unchanged.
-add_library(nfsu_inspect
-    src/inspect.cpp
-)
+# nfsu_body_skin, nfsu_skin_inputs, nfsu_runtime_skin and nfsu_inspect were
+# declared here until issue #148 moved them, as they were, into
+# cmake/car_libraries.cmake: the Switch application composes the body skin
+# and orbits its camera with them, so the console builds them too.
 
-# Backend-neutral is about the windowing API, not about this link: the
-# state is declared in terms of RenderOptions, RenderLimits and OrbitCamera,
-# which live in nfsu_render, so the library carries a link-time dependency on
-# the CPU rasterizer even though it never calls render_scene. A deko3d
-# backend links it and submits its own frames; moving those three types into
-# a smaller target is the only thing that would drop the dependency, and
-# nothing needs that yet.
-target_link_libraries(nfsu_inspect PUBLIC nfsu_render)
-nfsu_enable_warnings(nfsu_inspect)
-
-# The desktop window that drives it. Exactly one backend is compiled: the
-# Win32 one, which needs nothing but user32 and gdi32, or a stub that fails
-# closed everywhere else. This is the only file in the project that talks to
-# a windowing API. src/inspect_window_common.cpp is the arithmetic every
-# backend shares and calls no operating system, so it is always compiled.
+# The desktop window that drives nfsu_inspect. Exactly one backend is
+# compiled: the Win32 one, which needs nothing but user32 and gdi32, or a
+# stub that fails closed everywhere else. This is the only file in the
+# project that talks to a windowing API. src/inspect_window_common.cpp is
+# the arithmetic every backend shares and calls no operating system, so it
+# is always compiled.
 if(WIN32)
     set(NFSU_INSPECT_WINDOW_SOURCE src/inspect_window_win32.cpp)
 else()
@@ -715,29 +662,11 @@ endif()
 # above rather than interleaved with it: the libraries above are unchanged
 # except where a call here adds a source or a link to one of them, and each
 # of those calls says why.
-
-# The controller model: buttons, sticks, dead zones, the remapping table,
-# the rules that turn frames into actions and the recorded text form of a
-# sequence of frames. Standard library only, and no clock: a frame carries
-# its own time. Floating-point contraction is disabled because a recording
-# is replayed and compared byte for byte, so a fused multiply-add in the
-# dead zone would move a stick value by an ulp and a camera with it.
-add_library(nfsu_input
-    src/input.cpp
-    src/input_recording.cpp
-)
-
-target_include_directories(nfsu_input
-    PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-target_compile_features(nfsu_input PUBLIC cxx_std_17)
-nfsu_enable_warnings(nfsu_input)
-if(MSVC)
-    target_compile_options(nfsu_input PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_input PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
+#
+# The controller model, nfsu_input, and the camera it drives,
+# nfsu_input_camera, were declared in this block until issue #148 moved
+# them, as they were and with nfsu_inspect's floating-point options, into
+# cmake/car_libraries.cmake, which the console builds too.
 
 # The six service interfaces - filesystem, input, timing, logging, lifecycle
 # and display - and the code written against them alone. It links nfsu_input
@@ -773,39 +702,6 @@ nfsu_enable_warnings(nfsu_platform_desktop)
 # argument loop they share moved into nfsu_platform unchanged.
 target_link_libraries(nfsu_arg_path PUBLIC nfsu_platform)
 
-# Controller input on the inspection camera. It drives an Inspector, never
-# a renderer, so it links nfsu_inspect and inherits that library's
-# link-time dependency on the CPU rasterizer's types and nothing more; the
-# comment on nfsu_inspect above says why that dependency exists. Contraction
-# is disabled for the reason it is disabled in nfsu_input.
-add_library(nfsu_input_camera
-    src/input_camera.cpp
-)
-
-target_link_libraries(nfsu_input_camera PUBLIC nfsu_input nfsu_inspect)
-nfsu_enable_warnings(nfsu_input_camera)
-if(MSVC)
-    target_compile_options(nfsu_input_camera PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_input_camera PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
-
-# nfsu_inspect's orbit, pan and zoom decide the camera a recorded
-# controller session replays to (docs/INPUT.md), so contraction is disabled
-# there for the reason nfsu_render disables it. Measured, not assumed: GCC
-# 13 for AArch64 at -O3 fuses three multiply-adds into Inspector::orbit,
-# which fails nfsu_inspect_tests' "the orbit is reversible" and moves the
-# replayed session's per-frame digest; with these options both pass. x86-64
-# without FMA has nothing to fuse, so its builds are unchanged. Measured
-# once, in the worker's cloud session for this branch, cross-compiling and
-# running under QEMU there; not reproduced on the project's own toolchain,
-# and nothing here has run on a console.
-if(MSVC)
-    target_compile_options(nfsu_inspect PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_inspect PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
-
 # The inspection session: everything the window procedure decided that is
 # not a window, now compiled on every platform beside the arithmetic in
 # src/inspect_window_common.cpp, and the frame loop a console backend runs.
@@ -837,7 +733,10 @@ target_link_libraries(nfsu_inspect_window PUBLIC nfsu_platform nfsu_input_camera
 # cmake/car_libraries.cmake: nfsu_sha256 and nfsu_screen_text use nothing but
 # the standard library, and nfsu_stock_frame reads its inputs with
 # std::ifstream, as nfsu_core's loaders do, and reads no clock - the
-# application times it from outside.
+# application times it from outside. nfsu_stock_view, which issue #148
+# added, is the control table and camera session of that application over
+# nfsu_input_camera and nfsu_render; it reads no clock either, because a
+# controller frame carries its own time.
 set(NFSU_NEUTRAL_LIBRARIES
     nfsu_image nfsu_core nfsu_scene nfsu_track nfsu_track_visibility
     nfsu_track_zones nfsu_track_draw_list nfsu_track_render nfsu_track_probe
@@ -846,7 +745,7 @@ set(NFSU_NEUTRAL_LIBRARIES
     nfsu_texture_decode nfsu_body_skin nfsu_skin_inputs nfsu_runtime_skin
     nfsu_inspect nfsu_inspect_window nfsu_input nfsu_platform
     nfsu_platform_fakes nfsu_input_camera nfsu_memory nfsu_gpu_upload
-    nfsu_sha256 nfsu_stock_frame nfsu_screen_text)
+    nfsu_sha256 nfsu_stock_frame nfsu_screen_text nfsu_stock_view)
 
 # The libraries that are platform code on purpose, and are not read:
 # nfsu_arg_path decodes arguments with the Windows API, nfsu_render's frame
@@ -1127,18 +1026,23 @@ if(NFSU_BUILD_TESTS)
     # layout: the whole frame, each input missing in turn, each one damaged
     # three ways, the report lines and the encoding against the file
     # write_frame_tga writes. It links nfsu_arg_path for its --frame and
-    # --write-fixture modes, which take a path on the command line.
+    # --write-fixture modes, which take a path on the command line. Since
+    # issue #148 also the painted frame and the console's controller
+    # session (nfsu_stock_view): the button mapping, the control table, the
+    # default-camera check and a recorded session over the synthetic car.
     add_executable(nfsu_stock_frame_tests
         tests/stock_frame_tests.cpp
     )
 
-    target_link_libraries(nfsu_stock_frame_tests PRIVATE nfsu_stock_frame nfsu_arg_path)
+    target_link_libraries(nfsu_stock_frame_tests
+        PRIVATE nfsu_stock_frame nfsu_stock_view nfsu_arg_path)
     nfsu_enable_warnings(nfsu_stock_frame_tests)
     add_test(NAME nfsu_stock_frame_tests COMMAND nfsu_stock_frame_tests)
 
     # The same synthetic files rendered by nfsu_viewer with the pinned
     # stock-car command and by the application's path, which must agree on
-    # every byte of the frame and every line of the render report.
+    # every byte of the frame and every line of the render report; then the
+    # same for the painted command (issue #148).
     # tests/stock_frame_viewer_match.cmake says what else it requires.
     add_test(NAME nfsu_stock_frame_viewer_match
         COMMAND ${CMAKE_COMMAND} -DVIEWER=$<TARGET_FILE:nfsu_viewer>

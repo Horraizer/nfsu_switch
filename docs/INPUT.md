@@ -309,6 +309,16 @@ These names were checked against libnx's own headers: `pad.h` for the calls,
 `hid.h` for the bit values and the stick range. Nothing here has run on a
 console.
 
+Issue #148 implements the button table as
+`nfsu::gamepad_buttons_from_npad` (`include/nfsu/stock_view.h`), neutral
+code a desktop test checks bit by bit, and `switch/car_main.cpp` checks its
+constants against libnx's enumerators at compile time. That application
+reads slot 0 only - `padConfigureInput(1, ...)` and
+`padInitializeDefault` - and binds its own table over the camera actions:
+the left stick orbits, - resets the camera and + exits
+([`SWITCH_BUILD.md`](SWITCH_BUILD.md)). It has not been run on a console
+either.
+
 ## Not decided yet
 
 - **A desktop controller.** The Win32 backend reports no controller. XInput
