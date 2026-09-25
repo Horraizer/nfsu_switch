@@ -1,10 +1,16 @@
 # Agent protocol
 
 Claude fills three seats in this repository: coordinator, worker and reviewer.
-The human is the project owner, not a message relay between agents.
+GPT fills the worker seat, and the reviewer seat for work Claude wrote, when
+the owner assigns it an issue or a pull request. The human is the project
+owner, not a message relay between agents.
 
-Until 2026-09-20 Codex was the coordinator and the independent reviewer. It no
-longer takes part. Comments posted before that date carry the `CODEX_` and
+Until 2026-09-20 Codex was the coordinator and the independent reviewer, and
+from then until 2026-09-25 it took no part. Since 2026-09-25 the owner runs
+OpenAI's GPT (GPT-6 Astra, through Codex on the owner's machine) as a worker
+and reviewer again; Claude stays the coordinator. The coordinator recommends
+which issues and pull requests go to GPT and labels them `agent/codex`; the
+owner assigns them. Comments posted before 2026-09-20 carry the `CODEX_` and
 `CLAUDE_` token prefixes; they mean what the neutral tokens below mean now.
 
 ## Roles
@@ -21,9 +27,10 @@ that was not told is a worker.
 
 ## Independence
 
-The reviewer used to be a different vendor's model. One model family now fills
-every seat, so independence here is entirely procedural, and the rules below
-bind.
+Work GPT writes is reviewed by Claude, and GPT may review work Claude wrote:
+where that pairing is available, use it. It relaxes nothing below. Shared
+priming, not shared weights, is what correlates two reviews, so the rules
+below bind whichever vendor fills which seat.
 
 - A reviewer must not be the session or the subagent that wrote the change.
 - A reviewer reaches its own verdict from the diff, the repository and the
@@ -59,6 +66,19 @@ agent: <model, and the session or subagent label>
 - Keep retail game files strictly read-only.
 - Follow the ASCII-only artifact rule below.
 - A worker does not merge pull requests.
+
+## Subagents and relays
+
+- A local subagent never posts to the board. It writes its handoff or verdict
+  to a file in its scratch directory, and the coordinator posts that text
+  verbatim with one trailing line saying that it relays, and for whom. The
+  `role` and `agent` lines inside stay the subagent's own.
+- A subagent told to stay out of the main checkout has still written into it.
+  After every subagent returns, run `git status --porcelain` in the main
+  checkout as well as in the subagent's worktree.
+- Choose the model by the job. A cheaper model runs a measurement someone else
+  wrote and pinned; review verdicts, and any work whose product is judgement,
+  stay with the strongest model available.
 
 ## Shared checkout
 
@@ -271,6 +291,13 @@ what it printed, not only by its exit status: a non-zero exit with no failure
 line and no summary line is an unknown result, not a kill.** Report unknowns as
 their own column. A sweep that cannot tell a kill from a crash has no score,
 and re-run its unknowns before quoting a number.
+
+Two harness traps have produced false results here since. Restoring a mutated
+source byte for byte gives it an older modification time than the object built
+from the mutant, so the next build keeps the mutant compiled in and every later
+mutant inherits its failure: touch each restored file. And a case appended
+after a CMake guard script's final summary runs after the verdict and cannot
+change it: put new cases beside the related ones.
 
 Issue #122 is what this rule was written against, and the crash was real
 rather than hypothetical. `nfsu_track_object_tests` named its fixture
