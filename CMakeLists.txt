@@ -24,9 +24,18 @@ function(nfsu_enable_warnings target)
     endif()
 endfunction()
 
-# The Switch build configures switch/ and nothing below this point: the
-# desktop programs and their tests are never built for the console, and a
-# desktop configure never enters this branch.
+# The car path - the parsers, the stock assembly, the texture decode, the
+# CPU reference renderer and the stock-car frame built from them - is
+# declared in one file that both configures read, so the Switch build
+# compiles those libraries from the same source lists and with the same
+# options as the desktop build. cmake/car_libraries.cmake says which they
+# are and why each is there.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/car_libraries.cmake)
+
+# The Switch build configures those libraries and switch/, and nothing below
+# this point: the desktop programs, the other libraries and every test of
+# them are never built for the console, and a desktop configure never enters
+# this branch.
 if(NINTENDO_SWITCH)
     if(NFSU_BUILD_TESTS)
         enable_testing()
@@ -34,17 +43,6 @@ if(NINTENDO_SWITCH)
     add_subdirectory(switch)
     return()
 endif()
-
-add_library(nfsu_image
-    src/image.cpp
-)
-
-target_include_directories(nfsu_image
-    PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-target_compile_features(nfsu_image PUBLIC cxx_std_17)
-nfsu_enable_warnings(nfsu_image)
 
 # One command-line argument turned into a filesystem path. It is the only
 # file outside the window backend that calls the Windows API, and it is
@@ -62,55 +60,6 @@ target_include_directories(nfsu_arg_path
 )
 target_compile_features(nfsu_arg_path PUBLIC cxx_std_17)
 nfsu_enable_warnings(nfsu_arg_path)
-
-add_library(nfsu_core
-    src/car_parts.cpp
-    src/chunk.cpp
-    src/geometry.cpp
-    src/part_placement.cpp
-    src/texture.cpp
-)
-
-target_include_directories(nfsu_core
-    PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-
-target_compile_features(nfsu_core PUBLIC cxx_std_17)
-target_link_libraries(nfsu_core PUBLIC nfsu_image)
-nfsu_enable_warnings(nfsu_core)
-
-# The texture-export file I/O split out of nfsu_core (issue #139): the
-# export helpers - remove_created, rollback_created_files and
-# export_textures - call fs::remove, fs::rename and fs::create_directories
-# directly to write, roll back and clean up the files a texture export asks
-# for, which is platform code the neutrality gate must not read. See
-# NFSU_PLATFORM_LIBRARIES below and docs/PLATFORM_SERVICES.md.
-add_library(nfsu_texture_export
-    src/texture_export.cpp
-)
-
-target_include_directories(nfsu_texture_export
-    PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-
-target_compile_features(nfsu_texture_export PUBLIC cxx_std_17)
-target_link_libraries(nfsu_texture_export PUBLIC nfsu_core)
-nfsu_enable_warnings(nfsu_texture_export)
-
-# Backend-neutral prepared car scene: mesh selection and material binding.
-# Its public data model depends only on in-memory mesh types.
-add_library(nfsu_scene
-    src/scene.cpp
-)
-
-target_include_directories(nfsu_scene
-    PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-target_compile_features(nfsu_scene PUBLIC cxx_std_17)
-nfsu_enable_warnings(nfsu_scene)
 
 # One explicitly selected, bounded track STREAM region: chunk-tree parsing
 # of the 24-byte track vertex layout, the scenery sections that place that
@@ -260,25 +209,6 @@ else()
     target_compile_options(nfsu_track_probe PRIVATE -ffp-contract=off -fno-fast-math)
 endif()
 
-# The stock-car profile of PreparedCarScene: the recovered stock part set,
-# its per-LOD mesh hashes and the recovered placement, turned into one
-# prepared draw list with an instance per drawn copy. It reads no files, so
-# it sits above the scene layer and beside the parsers it consumes.
-add_library(nfsu_stock_scene
-    src/stock_scene.cpp
-)
-
-target_link_libraries(nfsu_stock_scene PUBLIC nfsu_core nfsu_scene)
-nfsu_enable_warnings(nfsu_stock_scene)
-
-# Texture-pack decoding for prepared scenes. Backends do not depend on it.
-add_library(nfsu_texture_decode
-    src/texture_decode.cpp
-)
-
-target_link_libraries(nfsu_texture_decode PUBLIC nfsu_scene nfsu_core)
-nfsu_enable_warnings(nfsu_texture_decode)
-
 # Body-skin pixel compositor reference. It depends on nothing but the
 # standard library, and it disables floating-point contraction so that the
 # traced truncation behaviour does not depend on FMA availability.
@@ -319,28 +249,6 @@ add_library(nfsu_runtime_skin
 
 target_link_libraries(nfsu_runtime_skin PUBLIC nfsu_skin_inputs nfsu_scene)
 nfsu_enable_warnings(nfsu_runtime_skin)
-
-# Deterministic CPU reference renderer. Floating-point contraction is
-# disabled so that results do not depend on FMA availability.
-add_library(nfsu_render
-    src/render.cpp
-)
-
-target_link_libraries(nfsu_render PUBLIC nfsu_scene nfsu_image)
-# The POSIX frame writer rolls a failed write back with
-# rollback_created_files, which nfsu_texture_export now defines
-# (src/texture_export.cpp; issue #139 split it out of nfsu_core, which used
-# to hold it in src/texture.cpp). The link is private because render.h
-# exposes nothing of nfsu_texture_export. The Windows writer removes by
-# handle and never calls it, which is why only a POSIX build found the link
-# missing (issue #132).
-target_link_libraries(nfsu_render PRIVATE nfsu_texture_export)
-nfsu_enable_warnings(nfsu_render)
-if(MSVC)
-    target_compile_options(nfsu_render PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_render PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
 
 # The read-only inspector. It is declared after every library it uses.
 add_executable(nfsu_probe
@@ -909,7 +817,8 @@ target_link_libraries(nfsu_inspect_window PUBLIC nfsu_platform nfsu_input_camera
 # Which libraries promise to call no operating system. The neutrality gate
 # below reads every source of each of these and fails, by file, line and
 # symbol, on a platform header, a platform call, a platform macro test or a
-# clock read. The list is taken from the comments above, not invented:
+# clock read. The list is taken from the comments above and in
+# cmake/car_libraries.cmake, not invented:
 # nfsu_core knows no operating system (nfsu_arg_path's comment), nfsu_scene
 # is backend-neutral, nfsu_track's parsers use only nfsu_core, the track
 # layers above them decode and open nothing, nfsu_stock_scene reads no
@@ -923,7 +832,12 @@ target_link_libraries(nfsu_inspect_window PUBLIC nfsu_platform nfsu_input_camera
 # scene and draw-list types below it, so both joined this list when they
 # merged in from main. nfsu_track_budget carries no floating-point flags and
 # reads no clock (its own comment above); it links nfsu_track_render and
-# calls no operating system function of its own.
+# calls no operating system function of its own. The three libraries issue
+# #141 added for the Switch application are neutral by their comments in
+# cmake/car_libraries.cmake: nfsu_sha256 and nfsu_screen_text use nothing but
+# the standard library, and nfsu_stock_frame reads its inputs with
+# std::ifstream, as nfsu_core's loaders do, and reads no clock - the
+# application times it from outside.
 set(NFSU_NEUTRAL_LIBRARIES
     nfsu_image nfsu_core nfsu_scene nfsu_track nfsu_track_visibility
     nfsu_track_zones nfsu_track_draw_list nfsu_track_render nfsu_track_probe
@@ -931,7 +845,8 @@ set(NFSU_NEUTRAL_LIBRARIES
     nfsu_stock_scene
     nfsu_texture_decode nfsu_body_skin nfsu_skin_inputs nfsu_runtime_skin
     nfsu_inspect nfsu_inspect_window nfsu_input nfsu_platform
-    nfsu_platform_fakes nfsu_input_camera nfsu_memory nfsu_gpu_upload)
+    nfsu_platform_fakes nfsu_input_camera nfsu_memory nfsu_gpu_upload
+    nfsu_sha256 nfsu_stock_frame nfsu_screen_text)
 
 # The libraries that are platform code on purpose, and are not read:
 # nfsu_arg_path decodes arguments with the Windows API, nfsu_render's frame
@@ -1180,5 +1095,60 @@ if(NFSU_BUILD_TESTS)
         nfsu_shader_manifest_tests nfsu_shader_source_guards
         nfsu_switch_toolchain_diagnostics nfsu_switch_nro_synthetic_tests
         nfsu_switch_nro_synthetic_guards
+        PROPERTIES TIMEOUT 60)
+endif()
+
+# The stock-car frame the Switch application shows, and the three libraries
+# issue #141 added for it (cmake/car_libraries.cmake), tested here because
+# the console cannot run a test. Appended as one block, after the existing
+# tests, so that the lists above are not reordered.
+if(NFSU_BUILD_TESTS)
+    # FIPS 180-2's published examples, the padding boundaries against an
+    # independent implementation, and any split of a message across updates.
+    add_executable(nfsu_sha256_tests
+        tests/sha256_tests.cpp
+    )
+
+    target_link_libraries(nfsu_sha256_tests PRIVATE nfsu_sha256)
+    nfsu_enable_warnings(nfsu_sha256_tests)
+    add_test(NAME nfsu_sha256_tests COMMAND nfsu_sha256_tests)
+
+    # The font table, the pixels one glyph and a scaled glyph put down, the
+    # clipping at every edge of an image whose rows are padded, and wrapping.
+    add_executable(nfsu_screen_text_tests
+        tests/screen_text_tests.cpp
+    )
+
+    target_link_libraries(nfsu_screen_text_tests PRIVATE nfsu_screen_text)
+    nfsu_enable_warnings(nfsu_screen_text_tests)
+    add_test(NAME nfsu_screen_text_tests COMMAND nfsu_screen_text_tests)
+
+    # The application's four calls over six synthetic files in the game's
+    # layout: the whole frame, each input missing in turn, each one damaged
+    # three ways, the report lines and the encoding against the file
+    # write_frame_tga writes. It links nfsu_arg_path for its --frame and
+    # --write-fixture modes, which take a path on the command line.
+    add_executable(nfsu_stock_frame_tests
+        tests/stock_frame_tests.cpp
+    )
+
+    target_link_libraries(nfsu_stock_frame_tests PRIVATE nfsu_stock_frame nfsu_arg_path)
+    nfsu_enable_warnings(nfsu_stock_frame_tests)
+    add_test(NAME nfsu_stock_frame_tests COMMAND nfsu_stock_frame_tests)
+
+    # The same synthetic files rendered by nfsu_viewer with the pinned
+    # stock-car command and by the application's path, which must agree on
+    # every byte of the frame and every line of the render report.
+    # tests/stock_frame_viewer_match.cmake says what else it requires.
+    add_test(NAME nfsu_stock_frame_viewer_match
+        COMMAND ${CMAKE_COMMAND} -DVIEWER=$<TARGET_FILE:nfsu_viewer>
+                -DTESTS=$<TARGET_FILE:nfsu_stock_frame_tests>
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/nfsu_stock_frame_viewer_match
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/stock_frame_viewer_match.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+    set_tests_properties(
+        nfsu_sha256_tests nfsu_screen_text_tests nfsu_stock_frame_tests
+        nfsu_stock_frame_viewer_match
         PROPERTIES TIMEOUT 60)
 endif()

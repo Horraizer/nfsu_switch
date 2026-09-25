@@ -24,7 +24,10 @@ ctest --test-dir build --output-on-failure
 The Nintendo Switch build is opt-in and needs devkitPro; see
 [`docs/SWITCH_BUILD.md`](docs/SWITCH_BUILD.md). Its shaders are compiled
 offline and held to per-program interface manifests, as
-[`docs/SHADER_PIPELINE.md`](docs/SHADER_PIPELINE.md) describes.
+[`docs/SHADER_PIPELINE.md`](docs/SHADER_PIPELINE.md) describes. Its
+`nfsu_switch_car` application draws the stock 240SX with the CPU reference
+renderer on the console, from six game files on the SD card, and reports
+whether the frame is the one pinned on the desktop.
 
 ## Run
 

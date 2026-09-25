@@ -22,6 +22,33 @@ nx_generate_nacp(
 nx_create_nro(nfsu_switch_app
     NACP nfsu_switch_app.nacp)
 
+# The stock 240SX drawn by the CPU reference renderer on the console (issue
+# #141). It links the car-path libraries the top-level CMakeLists.txt
+# declares for both configures (cmake/car_libraries.cmake), so its scene,
+# frame and hash come from the same sources, compiled with the same options,
+# as the desktop's. It reads six files from the SD card, shows the frame
+# through a libnx framebuffer and reports on stdout, which nxlink carries to
+# the PC; it writes no file.
+add_executable(nfsu_switch_car
+    car_main.cpp
+)
+
+target_link_libraries(nfsu_switch_car PRIVATE nfsu_stock_frame nfsu_screen_text)
+# gnu++17, as the libraries it links are compiled on the console; the
+# comment at the end of cmake/car_libraries.cmake says why it is named.
+set_target_properties(nfsu_switch_car PROPERTIES
+    CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
+nfsu_enable_warnings(nfsu_switch_car)
+
+nx_generate_nacp(
+    OUTPUT nfsu_switch_car.nacp
+    NAME "nfsu_switch_car"
+    AUTHOR "nfsu_switch contributors"
+    VERSION "0.1.0")
+
+nx_create_nro(nfsu_switch_car
+    NACP nfsu_switch_car.nacp)
+
 # The offline shader pipeline (issue #49). Every stage source a manifest
 # names is compiled once by uam into a .dksh blob, with the TGSI uam writes
 # beside it, and every manifest is then checked against the blobs of its two
@@ -129,7 +156,15 @@ if(NFSU_BUILD_TESTS)
                 -DTITLE=nfsu_switch
                 -P ${PROJECT_SOURCE_DIR}/tests/switch_nro_check.cmake)
 
+    # The same for the stock-car application.
+    add_test(NAME nfsu_switch_car_nro
+        COMMAND ${CMAKE_COMMAND}
+                -DNRO=${CMAKE_CURRENT_BINARY_DIR}/nfsu_switch_car.nro
+                -DELF=$<TARGET_FILE:nfsu_switch_car>
+                -DTITLE=nfsu_switch_car
+                -P ${PROJECT_SOURCE_DIR}/tests/switch_nro_check.cmake)
+
     set_tests_properties(${NFSU_SWITCH_TESTS}
-        nfsu_switch_shader_blob_guards nfsu_switch_nro
+        nfsu_switch_shader_blob_guards nfsu_switch_nro nfsu_switch_car_nro
         PROPERTIES TIMEOUT 60)
 endif()
