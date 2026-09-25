@@ -1,28 +1,35 @@
 // The stock-car frame the Switch application builds (nfsu_stock_frame), on
-// synthetic inputs laid out as the game lays out its own, and the three
-// modes a script or a person drives it through:
+// synthetic inputs laid out as the game lays out its own, the controller
+// session it runs (nfsu_stock_view), and the modes a script or a person
+// drives it through:
 //
 //   nfsu_stock_frame_tests                    the unit tests below
 //   nfsu_stock_frame_tests --write-fixture D  writes the six synthetic files
 //                                             under D, refusing to replace any
-//   nfsu_stock_frame_tests --frame ROOT       runs the application's four
-//                                             calls over the six files under
-//                                             ROOT and prints what it prints
+//   nfsu_stock_frame_tests --frame ROOT       runs the application's calls
+//                                             for the unpainted frame over the
+//                                             six files under ROOT and prints
+//                                             what it prints
+//   nfsu_stock_frame_tests --painted-frame ROOT
+//                                             the same for the painted frame
 //
-// tests/stock_frame_viewer_match.cmake uses the last two to hold the frame
-// to nfsu_viewer's on the same files. --frame over the retail installation
-// is the desktop reproduction docs/SWITCH_BUILD.md shows; it reads the files
-// and writes nothing.
+// tests/stock_frame_viewer_match.cmake uses the last three to hold both
+// frames to nfsu_viewer's on the same files. --frame and --painted-frame
+// over the retail installation are the desktop reproductions
+// docs/SWITCH_BUILD.md shows; they read the files and write nothing.
 
 #include "nfsu/arg_path.h"
+#include "nfsu/input.h"
 #include "nfsu/render.h"
 #include "nfsu/sha256.h"
 #include "nfsu/stock_frame.h"
+#include "nfsu/stock_view.h"
 #include "nfsu/texture.h"
 
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -356,6 +363,17 @@ const std::string kSharedTexture = "SYNTH_SHARED_TEXTURE";
 const std::string kUnusedTexture = "SYNTH_UNUSED_TEXTURE";
 constexpr std::uint32_t kMissingTexture = 0x5EED0001U;
 
+// The runtime body skin's inputs, named as the retail files name them
+// (docs/RUNTIME_SKIN.md): the body's material groups name 240SX_SKIN1,
+// which no pack holds, so it is drawn with fallback until a skin is bound
+// to it; the target DUMMY_SKIN1 is in the shared Cars/TEXTURES.BIN, and
+// the plain doorline and its mask are in the car's own pack. All three
+// are A8R8G8B8 and 4x4, the target's size.
+const std::string kBodySkin = "240SX_SKIN1";
+const std::string kSkinTarget = "DUMMY_SKIN1";
+const std::string kDoorline = "240SX_DOORLINE";
+const std::string kDoorlineMask = "240SX_DOORLINE_MASK";
+
 Bytes car_geometry() {
     MeshSpec base{"240SX_BASE_A", kBaseA, {}, {}, {nfsu::bin_hash(kGlobalTexture)}, {}};
     add_box(base, -2.0F, 2.0F, 0.10F, 0.20F, -0.80F, 0.80F);
@@ -363,7 +381,8 @@ Bytes car_geometry() {
                   kBodyA,
                   {},
                   {},
-                  {nfsu::bin_hash(kCarTexture), kMissingTexture, nfsu::bin_hash(kSharedTexture)},
+                  {nfsu::bin_hash(kCarTexture), nfsu::bin_hash(kBodySkin),
+                   nfsu::bin_hash(kSharedTexture)},
                   {}};
     add_box(body, -1.90F, 1.90F, 0.30F, 1.00F, -0.78F, 0.78F);
     add_box(body, -0.90F, 0.60F, 1.00F, 1.40F, -0.65F, 0.65F);
@@ -518,23 +537,37 @@ void write_pack(Writer& w, const std::string& path, const std::vector<TextureSpe
     w.leaf(0x00000000U, Bytes(16, 0));
 }
 
-Bytes car_textures() {
+// with_doorline false leaves the doorline's source and mask out, which is
+// how a test makes the skin skip its one input.
+Bytes car_textures(bool with_doorline = true) {
     Writer w;
-    write_pack(w, "SYNTH\\240SX.tpk",
-               {{kCarTexture, {0xFFC03020U, 0xFF20C030U, 0xFF3020C0U, 0xFFE0E0E0U}}});
+    std::vector<TextureSpec> specs = {
+        {kCarTexture, {0xFFC03020U, 0xFF20C030U, 0xFF3020C0U, 0xFFE0E0E0U}}};
+    if (with_doorline) {
+        specs.push_back({kDoorline, {0x3B101010U, 0x3BF0F0F0U, 0x3B101010U, 0x3BF0F0F0U}});
+        specs.push_back(
+            {kDoorlineMask, {0x00000000U, 0x00FF00FFU, 0x00FFFF00U, 0x0000FFFFU}});
+    }
+    write_pack(w, "SYNTH\\240SX.tpk", specs);
     return w.bytes();
 }
 
-Bytes shared_car_textures() {
+// with_target false leaves DUMMY_SKIN1 out, so the skin has no target.
+Bytes shared_car_textures(bool with_target = true) {
     Writer w;
     // The car's own texture again, which source 0 shadows, GLOBALB.BUN's
     // again, which source 1 shadows, then this source's own. The copies are
     // black, so a decode that searched the sources in another order would
-    // draw another frame.
-    write_pack(w, "SYNTH\\CARS.tpk",
-               {{kCarTexture, {0xFF000000U, 0xFF000000U, 0xFF000000U, 0xFF000000U}},
-                {kGlobalTexture, {0xFF000000U, 0xFF000000U, 0xFF000000U, 0xFF000000U}},
-                {kSharedTexture, {0xFF40A0E0U, 0xFFE0A040U, 0xFF808080U, 0xFF104010U}}});
+    // draw another frame. Then the skin target, which no mesh names and so
+    // is never decoded.
+    std::vector<TextureSpec> specs = {
+        {kCarTexture, {0xFF000000U, 0xFF000000U, 0xFF000000U, 0xFF000000U}},
+        {kGlobalTexture, {0xFF000000U, 0xFF000000U, 0xFF000000U, 0xFF000000U}},
+        {kSharedTexture, {0xFF40A0E0U, 0xFFE0A040U, 0xFF808080U, 0xFF104010U}}};
+    if (with_target) {
+        specs.push_back({kSkinTarget, {0xBF7F7F7FU, 0xBF7F7F7FU, 0xBF7F7F7FU, 0xBF7F7F7FU}});
+    }
+    write_pack(w, "SYNTH\\CARS.tpk", specs);
     return w.bytes();
 }
 
@@ -706,39 +739,54 @@ bool write_fixture(const fs::path& root, const std::vector<Bytes>& files, std::s
 }
 
 // ---------------------------------------------------------------------------
-// The application's four calls, and what --frame prints about them.
+// The application's calls, and what --frame and --painted-frame print about
+// them.
 // ---------------------------------------------------------------------------
 
 struct Run {
     nfsu::StockFrameInputs inputs;
     nfsu::StockFrame frame;
+    nfsu::StockView view;
     nfsu::StockFrameImage image;
     bool read = false;
     bool prepared = false;
+    bool started = false;
     bool rendered = false;
     bool encoded = false;
     std::string error;
 };
 
-// Exactly the sequence switch/car_main.cpp runs, with its arguments.
-void run_frame(const fs::path& root, Run& run) {
+// The skin switch/car_main.cpp prepares with: the painted one by default,
+// none with --unpainted.
+nfsu::StockFrameSkin app_skin(bool painted) {
+    return painted ? nfsu::stock_240sx_skin() : nfsu::StockFrameSkin{};
+}
+
+// Exactly the sequence switch/car_main.cpp runs for the frame at the
+// default camera, with its arguments: read, prepare, start the view over
+// the prepared scene, render through the view, encode.
+void run_frame(const fs::path& root, Run& run, bool painted = false) {
     run.read = nfsu::read_stock_frame_inputs(root, run.inputs);
     if (!run.read) {
         return;
     }
     run.prepared = nfsu::prepare_stock_frame(run.inputs, nfsu::stock_240sx_request(),
-                                             run.frame, run.error);
+                                             app_skin(painted), run.frame, run.error);
     if (!run.prepared) {
         return;
     }
-    run.rendered = nfsu::render_stock_frame(run.frame, nfsu::RenderOptions{}, run.error);
+    run.started = run.view.start(run.frame.scene, run.error);
+    if (!run.started) {
+        return;
+    }
+    run.rendered = run.view.render(run.frame.frame, run.frame.stats, run.error);
     if (!run.rendered) {
         return;
     }
     run.encoded = nfsu::encode_stock_frame(run.frame.frame, run.image, run.error);
 }
 
-int frame_mode(const fs::path& root) {
+int frame_mode(const fs::path& root, bool painted) {
     using Clock = std::chrono::steady_clock;
     const auto ms = [](Clock::time_point a, Clock::time_point b) {
         return std::chrono::duration<double, std::milli>(b - a).count();
@@ -758,7 +806,7 @@ int frame_mode(const fs::path& root) {
         return 2;
     }
     run->prepared = nfsu::prepare_stock_frame(run->inputs, nfsu::stock_240sx_request(),
-                                              run->frame, run->error);
+                                              app_skin(painted), run->frame, run->error);
     const Clock::time_point t2 = Clock::now();
     for (const std::string& issue : run->frame.issues) {
         std::cout << "issue: " << issue << '\n';
@@ -767,14 +815,20 @@ int frame_mode(const fs::path& root) {
         std::cout << "result: not prepared: " << run->error << '\n';
         return 2;
     }
-    run->rendered = nfsu::render_stock_frame(run->frame, nfsu::RenderOptions{}, run->error);
+    run->started = run->view.start(run->frame.scene, run->error);
+    if (!run->started) {
+        std::cout << "result: no view: " << run->error << '\n';
+        return 2;
+    }
     const Clock::time_point t3 = Clock::now();
+    run->rendered = run->view.render(run->frame.frame, run->frame.stats, run->error);
+    const Clock::time_point t4 = Clock::now();
     if (!run->rendered) {
         std::cout << "result: not rendered: " << run->error << '\n';
         return 2;
     }
     run->encoded = nfsu::encode_stock_frame(run->frame.frame, run->image, run->error);
-    const Clock::time_point t4 = Clock::now();
+    const Clock::time_point t5 = Clock::now();
     if (!run->encoded) {
         std::cout << "result: not encoded: " << run->error << '\n';
         return 2;
@@ -783,11 +837,15 @@ int frame_mode(const fs::path& root) {
     for (const std::string& line : nfsu::stock_frame_stats_lines(run->frame.stats)) {
         std::cout << line << '\n';
     }
+    for (const std::string& line : nfsu::stock_frame_skin_lines(run->frame)) {
+        std::cout << line << '\n';
+    }
+    std::cout << "view_default " << (run->view.at_default() ? 1 : 0) << '\n';
     std::cout << "inputs_ok " << (run->frame.inputs_ok ? 1 : 0) << '\n';
     std::cout << "tga_bytes " << run->image.tga.size() << '\n';
     std::cout << "sha256 " << nfsu::sha256_hex(run->image.sha256) << '\n';
     std::printf("read_ms %.3f prepare_ms %.3f render_ms %.3f encode_sha256_ms %.3f\n",
-                ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, t4));
+                ms(t0, t1), ms(t1, t2), ms(t3, t4), ms(t4, t5));
     return 0;
 }
 
@@ -845,6 +903,31 @@ void test_file_layout() {
     check(std::string(nfsu::kStock240sxFrameSha256).size() == 64 &&
               nfsu::kStock240sxFrameBytes == 18U + 1280U * 720U * 4U,
           "the pinned frame is a 1280x720 32-bit TGA");
+    check(std::string(nfsu::kStock240sxPaintedFrameSha256).size() == 64 &&
+              nfsu::kStock240sxPaintedFrameBytes == nfsu::kStock240sxFrameBytes &&
+              std::string(nfsu::kStock240sxPaintedFrameSha256) !=
+                  nfsu::kStock240sxFrameSha256,
+          "the painted pin is another 1280x720 32-bit TGA");
+
+    // The painted command's skin options, one by one.
+    const nfsu::StockFrameSkin skin = nfsu::stock_240sx_skin();
+    check(skin.enabled && skin.car == "240SX" && skin.target_name == "DUMMY_SKIN1" &&
+              skin.body_bind,
+          "--skin-car 240SX, the default target, <car>_SKIN1 bound");
+    check(skin.selection.doorline &&
+              skin.selection.doorline->variant == nfsu::SkinDoorlineVariant::plain,
+          "--skin-doorline plain");
+    check(skin.selection.base_color == nfsu::skin_pack_paint(30, 60, 160, 128),
+          "--skin-base 30 60 160 128");
+    bool nothing_else = !skin.selection.hood_spoiler_vinyl;
+    for (const auto& layer : skin.selection.vinyl_layers) {
+        nothing_else = nothing_else && !layer;
+    }
+    for (const auto& color : skin.selection.special_colors) {
+        nothing_else = nothing_else && !color;
+    }
+    check(nothing_else, "no vinyl, no hood or spoiler vinyl, no special colour");
+    check(!nfsu::StockFrameSkin{}.enabled, "a default StockFrameSkin paints nothing");
 }
 
 // The synthetic stock car end to end: every input read and clean, every
@@ -904,7 +987,13 @@ void test_fixture_frame() {
           "a texture no stock mesh uses is not decoded");
     check(frame.textures.shadowed.size() == 2,
           "the car's pack and GLOBALB.BUN each shadow a copy in Cars/TEXTURES.BIN");
-    check(frame.wanted.size() == 4, "four texture hashes wanted");
+    check(frame.wanted.size() == 5, "five texture hashes wanted, 240SX_SKIN1 among them");
+    check(!frame.skinned && frame.skin_binding.hashes.empty() &&
+              nfsu::stock_frame_skin_lines(frame).empty() &&
+              texture_with_hash(frame.textures, nfsu::bin_hash(kBodySkin)) == nullptr,
+          "the unpainted frame has no skin, and nothing claims 240SX_SKIN1");
+    check(run->started && run->view.at_default() && !run->view.needs_render(),
+          "the frame was rendered through the view, at the default camera");
     check(frame.stats.groups_resolved > 0 && frame.stats.groups_unresolved > 0 &&
               frame.stats.pixels_drawn > 20000 && frame.stats.pixels_fallback > 0 &&
               frame.stats.pixels_fallback < frame.stats.pixels_drawn,
@@ -1086,11 +1175,428 @@ void test_encode_refuses_an_empty_frame() {
           "an empty frame is not encoded");
 }
 
+// ---------------------------------------------------------------------------
+// The painted frame and the console's controller session (issue #148).
+// ---------------------------------------------------------------------------
+
+// The six files as read_stock_frame_inputs leaves them once each was read.
+void fill_inputs(const std::vector<Bytes>& files, nfsu::StockFrameInputs& inputs) {
+    for (std::size_t i = 0; i < nfsu::kStockFrameFileCount; ++i) {
+        nfsu::StockFrameInput& input = inputs.files[i];
+        input.path = nfsu::stock_frame_file_path(i);
+        input.read = true;
+        input.error.clear();
+        input.bytes = files[i];
+    }
+}
+
+// The SHA-256 of a frame's TGA encoding, or why there is none.
+std::string frame_digest(const nfsu::Frame& frame) {
+    nfsu::StockFrameImage image;
+    std::string error;
+    if (!nfsu::encode_stock_frame(frame, image, error)) {
+        return "not encoded: " + error;
+    }
+    return nfsu::sha256_hex(image.sha256);
+}
+
+bool has_issue_starting(const nfsu::StockFrame& frame, const std::string& prefix) {
+    for (const std::string& issue : frame.issues) {
+        if (issue.compare(0, prefix.size(), prefix) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The synthetic car painted: the skin is composed from the car's doorline
+// and the shared target, bound under both hashes, and the body's groups,
+// which fall back without it, resolve to it. The rest of the frame - the
+// geometry, the instances - is the unpainted one's.
+void test_painted_fixture_frame() {
+    FixtureDirectory directory("painted");
+    std::string error;
+    check(write_fixture(directory.root, fixture_files(), error), "fixture: " + error);
+
+    auto painted = std::make_unique<Run>();
+    run_frame(directory.root, *painted, true);
+    check(painted->encoded, "the painted synthetic frame is made: " + painted->error);
+    auto plain = std::make_unique<Run>();
+    run_frame(directory.root, *plain, false);
+    check(plain->encoded, "the unpainted synthetic frame is made: " + plain->error);
+    if (!painted->encoded || !plain->encoded) {
+        return;
+    }
+    const nfsu::StockFrame& frame = painted->frame;
+    check(frame.inputs_ok && frame.issues.empty(), "the painted inputs are clean");
+    for (const std::string& issue : frame.issues) {
+        std::cerr << "  issue: " << issue << '\n';
+    }
+    check(frame.skinned, "the frame is skinned");
+    check(frame.skin_sources ==
+              std::vector<std::string>{"car-textures", "shared-1", "shared-2"},
+          "the skin searches the car's pack, then GLOBALB.BUN, then Cars/TEXTURES.BIN");
+    check(frame.skin.path == nfsu::SkinTargetType::type32 && frame.skin.width == 4 &&
+              frame.skin.height == 4 && frame.skin.layers == 1 &&
+              frame.skin.rgba.size() == 64,
+          "a 4x4 type-32 skin of one layer");
+    const nfsu::BodySkinInputPlan& plan = frame.skin_plan;
+    check(plan.car_name == "240SX" && plan.inputs.size() == 1 && plan.usable_inputs == 1 &&
+              plan.skipped_inputs == 0 &&
+              plan.inputs[0].role == nfsu::SkinSourceRole::doorline &&
+              plan.inputs[0].source_name == kDoorline &&
+              plan.inputs[0].mask_name == kDoorlineMask &&
+              plan.inputs[0].source.source_index == 0,
+          "the one input is the plain doorline, from the car's own pack");
+    check(plan.target_texture.resolved && plan.target_texture.source_index == 2 &&
+              plan.target_texture.stored_name == kSkinTarget,
+          "the target is DUMMY_SKIN1, from skin source 2, Cars/TEXTURES.BIN");
+    check(plan.base_color == nfsu::skin_pack_paint(30, 60, 160, 128) &&
+              plan.special_color_defaulted == std::array<bool, 4>{true, true, true, true},
+          "the base paint, and every special colour falling back to it");
+
+    const nfsu::RuntimeSkinBinding& binding = frame.skin_binding;
+    check(binding.hashes == std::vector<std::uint32_t>{0x530B82B0U, 0x77A20245U} &&
+              nfsu::bin_hash(kSkinTarget) == 0x530B82B0U &&
+              nfsu::bin_hash(kBodySkin) == 0x77A20245U,
+          "bound under DUMMY_SKIN1 and 240SX_SKIN1, in that order");
+    check(binding.source == 3 && binding.bytes == 64 && binding.displaced.empty() &&
+              binding.displaced_claims.empty() && binding.preserved_claims.empty() &&
+              binding.texture_index + 1 == frame.textures.textures.size(),
+          "as texture source 3, the last texture, displacing nothing");
+    const nfsu::RenderTexture& generated = frame.textures.textures.back();
+    check(generated.valid && generated.source == 3 && generated.rgba == frame.skin.rgba,
+          "the last texture is the generated skin");
+
+    const nfsu::RenderStats& paint = frame.stats;
+    const nfsu::RenderStats& bare = plain->frame.stats;
+    check(paint.unresolved_hashes + 1 == bare.unresolved_hashes &&
+              paint.groups_resolved > bare.groups_resolved &&
+              paint.pixels_fallback < bare.pixels_fallback &&
+              paint.pixels_drawn == bare.pixels_drawn && paint.instances == bare.instances &&
+              paint.triangles_submitted == bare.triangles_submitted,
+          "240SX_SKIN1 resolves once the skin is bound, and nothing else changes shape");
+    check(painted->image.sha256 != plain->image.sha256, "the painted frame is another frame");
+
+    const std::vector<std::string> lines = nfsu::stock_frame_skin_lines(frame);
+    const std::vector<std::string> expected = {
+        "skin: car \"240SX\" path type32 4x4 layers 1 owned_bytes " +
+            std::to_string(frame.skin_owned_bytes) + " skipped_inputs 0",
+        "skin bound: hash 0x530B82B0 \"DUMMY_SKIN1\"",
+        "skin bound: hash 0x77A20245 \"240SX_SKIN1\"",
+        "skin generated: texture " + std::to_string(binding.texture_index) +
+            " source 3 bytes 64"};
+    check(lines == expected, "the skin lines");
+    check(frame.skin_owned_bytes > 0, "the assembly owned its layer");
+
+    auto again = std::make_unique<Run>();
+    run_frame(directory.root, *again, true);
+    check(again->encoded && again->image.sha256 == painted->image.sha256,
+          "a second painted run agrees");
+}
+
+// The two ways the skin stops short, each as the viewer's --skin-car does:
+// no target is fatal, a skipped input is an issue.
+void test_skin_refusals() {
+    const std::size_t shared =
+        static_cast<std::size_t>(nfsu::StockFrameFile::shared_car_textures);
+    const std::size_t car = static_cast<std::size_t>(nfsu::StockFrameFile::car_textures);
+    {
+        std::vector<Bytes> files = fixture_files();
+        files[shared] = shared_car_textures(false);
+        auto run = std::make_unique<Run>();
+        fill_inputs(files, run->inputs);
+        std::string error;
+        const bool prepared =
+            nfsu::prepare_stock_frame(run->inputs, nfsu::stock_240sx_request(),
+                                      nfsu::stock_240sx_skin(), run->frame, error);
+        // The plan takes the target's size from the target record, so with
+        // no record the size is zero and the plan refuses; the viewer prints
+        // "error: skin inputs: the target has a zero dimension" and exits 2.
+        check(!prepared && error == "skin inputs: the target has a zero dimension" &&
+                  !run->frame.skinned,
+              "no DUMMY_SKIN1 anywhere: refused, as the viewer refuses it: " + error);
+        const bool unpainted = nfsu::prepare_stock_frame(
+            run->inputs, nfsu::stock_240sx_request(), run->frame, error);
+        check(unpainted, "the same files still make the unpainted frame: " + error);
+    }
+    {
+        std::vector<Bytes> files = fixture_files();
+        files[car] = car_textures(false);
+        auto run = std::make_unique<Run>();
+        fill_inputs(files, run->inputs);
+        std::string error;
+        const bool prepared =
+            nfsu::prepare_stock_frame(run->inputs, nfsu::stock_240sx_request(),
+                                      nfsu::stock_240sx_skin(), run->frame, error);
+        check(prepared, "no doorline: the skin is still composed: " + error);
+        check(run->frame.skinned && run->frame.skin.layers == 0 &&
+                  run->frame.skin_plan.skipped_inputs == 1 && !run->frame.inputs_ok &&
+                  has_issue_starting(run->frame,
+                                     "skin: input doorline skipped source_not_found"),
+              "the skipped doorline is an issue and the inputs are not clean");
+    }
+}
+
+// The view renders exactly what render_stock_frame renders at
+// RenderOptions{}: the same bytes, so the same hash.
+void test_view_renders_the_stock_frame() {
+    auto run = std::make_unique<Run>();
+    fill_inputs(fixture_files(), run->inputs);
+    std::string error;
+    check(nfsu::prepare_stock_frame(run->inputs, nfsu::stock_240sx_request(), run->frame, error),
+          "prepared: " + error);
+    check(nfsu::render_stock_frame(run->frame, nfsu::RenderOptions{}, error),
+          "render_stock_frame: " + error);
+    check(run->view.start(run->frame.scene, error), "the view starts: " + error);
+    nfsu::Frame through_view;
+    nfsu::RenderStats stats;
+    check(run->view.render(through_view, stats, error), "the view renders: " + error);
+    check(through_view.rgba() == run->frame.frame.rgba() &&
+              frame_digest(through_view) == frame_digest(run->frame.frame) &&
+              stats.pixels_drawn == run->frame.stats.pixels_drawn,
+          "the view's frame is render_stock_frame's, byte for byte");
+}
+
+// docs/INPUT.md's table, written out here by bit number rather than taken
+// from the constants the mapping itself uses.
+void test_npad_mapping() {
+    struct Row {
+        unsigned bit;
+        nfsu::GamepadButton button;
+    };
+    const Row rows[] = {
+        {0, nfsu::GamepadButton::face_east},       {1, nfsu::GamepadButton::face_south},
+        {2, nfsu::GamepadButton::face_north},      {3, nfsu::GamepadButton::face_west},
+        {4, nfsu::GamepadButton::stick_left},      {5, nfsu::GamepadButton::stick_right},
+        {6, nfsu::GamepadButton::shoulder_left},   {7, nfsu::GamepadButton::shoulder_right},
+        {8, nfsu::GamepadButton::trigger_left},    {9, nfsu::GamepadButton::trigger_right},
+        {10, nfsu::GamepadButton::start},          {11, nfsu::GamepadButton::select},
+        {12, nfsu::GamepadButton::dpad_left},      {13, nfsu::GamepadButton::dpad_up},
+        {14, nfsu::GamepadButton::dpad_right},     {15, nfsu::GamepadButton::dpad_down}};
+    std::uint32_t all = 0;
+    for (const Row& row : rows) {
+        const std::uint32_t got = nfsu::gamepad_buttons_from_npad(1ULL << row.bit);
+        check(got == nfsu::gamepad_button_bit(row.button),
+              "npad bit " + std::to_string(row.bit) + " is " +
+                  nfsu::gamepad_button_name(row.button));
+        check((all & got) == 0, "npad bit " + std::to_string(row.bit) + " is a new button");
+        all |= got;
+    }
+    check(all == nfsu::kGamepadButtonMask, "the sixteen bits are the sixteen buttons");
+    check(nfsu::gamepad_buttons_from_npad(0xFFFFULL) == nfsu::kGamepadButtonMask,
+          "all sixteen at once");
+    for (unsigned bit = 16; bit < 64; ++bit) {
+        check(nfsu::gamepad_buttons_from_npad(1ULL << bit) == 0,
+              "npad bit " + std::to_string(bit) + " is no button");
+    }
+    check(nfsu::gamepad_buttons_from_npad(~0ULL) == nfsu::kGamepadButtonMask,
+          "every bit set is the sixteen buttons and nothing more");
+    check(nfsu::kNpadButtonA == 1ULL && nfsu::kNpadButtonPlus == 1ULL << 10U &&
+              nfsu::kNpadButtonMinus == 1ULL << 11U && nfsu::kNpadButtonDown == 1ULL << 15U,
+          "the constants are libnx's bit numbers");
+}
+
+void test_view_bindings() {
+    const std::vector<nfsu::InputBinding> bindings = nfsu::stock_view_bindings();
+    std::string error;
+    check(nfsu::validate_input_bindings(nfsu::camera_action_kinds(), bindings, error),
+          "the control table validates: " + error);
+    const auto find = [&bindings](nfsu::GamepadControl control) -> const nfsu::InputBinding* {
+        for (const nfsu::InputBinding& binding : bindings) {
+            if (binding.control.kind == control.kind && binding.control.index == control.index) {
+                return &binding;
+            }
+        }
+        return nullptr;
+    };
+    const auto bound_to = [&find](nfsu::GamepadControl control, std::uint16_t action) {
+        const nfsu::InputBinding* binding = find(control);
+        return binding != nullptr && binding->action == action && !binding->invert;
+    };
+    check(bindings.size() == 4, "four controls are bound");
+    check(bound_to(nfsu::gamepad_control(nfsu::GamepadAxis::left_x),
+                   nfsu::camera_action_id(nfsu::CameraAction::orbit_x)) &&
+              bound_to(nfsu::gamepad_control(nfsu::GamepadAxis::left_y),
+                       nfsu::camera_action_id(nfsu::CameraAction::orbit_y)),
+          "the left stick orbits");
+    check(bound_to(nfsu::gamepad_control(nfsu::GamepadButton::select),
+                   nfsu::camera_command_action(nfsu::InspectorCommand::reset_camera)),
+          "- resets the camera");
+    check(bound_to(nfsu::gamepad_control(nfsu::GamepadButton::start),
+                   nfsu::camera_action_id(nfsu::CameraAction::exit_session)),
+          "+ exits");
+    check(find(nfsu::gamepad_control(nfsu::GamepadAxis::right_x)) == nullptr &&
+              find(nfsu::gamepad_control(nfsu::GamepadAxis::right_y)) == nullptr &&
+              find(nfsu::gamepad_control(nfsu::GamepadButton::trigger_left)) == nullptr &&
+              find(nfsu::gamepad_control(nfsu::GamepadButton::dpad_up)) == nullptr,
+          "the right stick, the triggers and the D-pad are not bound");
+}
+
+void test_default_check() {
+    check(nfsu::stock_view_is_default(nfsu::RenderOptions{}), "RenderOptions{} is the default");
+    int changed = 0;
+    const auto differs = [&changed](const std::string& what, auto change) {
+        nfsu::RenderOptions options;
+        change(options);
+        check(!nfsu::stock_view_is_default(options), what + " changed is not the default");
+        ++changed;
+    };
+    using O = nfsu::RenderOptions;
+    differs("width", [](O& o) { o.width = 1279; });
+    differs("height", [](O& o) { o.height = 721; });
+    differs("yaw by one ulp", [](O& o) { o.camera.yaw_deg = std::nextafter(35.0, 36.0); });
+    differs("pitch", [](O& o) { o.camera.pitch_deg = 16.0; });
+    differs("distance", [](O& o) { o.camera.distance = 6.0; });
+    differs("target x", [](O& o) { o.camera.target.x = 0.0; });
+    differs("target y", [](O& o) { o.camera.target.y = 0.0; });
+    differs("target z", [](O& o) { o.camera.target.z = 1.0; });
+    differs("fov", [](O& o) { o.camera.fov_y_deg = 40.0; });
+    differs("near", [](O& o) { o.camera.near_plane = 0.1; });
+    differs("far", [](O& o) { o.camera.far_plane = 50.0; });
+    differs("flip_v", [](O& o) { o.flip_v = true; });
+    differs("alpha_cutoff", [](O& o) { o.alpha_cutoff = 1; });
+    differs("vertex_color", [](O& o) { o.vertex_color = true; });
+    differs("cull", [](O& o) { o.cull = nfsu::CullMode::back; });
+    differs("shading", [](O& o) { o.shading = nfsu::ShadingMode::none; });
+    differs("material_state", [](O& o) { o.material_state = nfsu::MaterialStateMode::retail; });
+    differs("alpha_min", [](O& o) { o.coefficients.alpha_min = 0.5; });
+    differs("alpha_range", [](O& o) { o.coefficients.alpha_range = 0.5; });
+    for (int k = 0; k < 3; ++k) {
+        const std::string channel = std::to_string(k);
+        differs("environment_min " + channel,
+                [k](O& o) { o.coefficients.environment_min[k] = 1.0; });
+        differs("environment_range " + channel,
+                [k](O& o) { o.coefficients.environment_range[k] = 1.0; });
+        differs("environment_color " + channel,
+                [k](O& o) { o.coefficients.environment_color[k] = 1; });
+    }
+    differs("environment_power", [](O& o) { o.coefficients.environment_power = 2; });
+    differs("environment_enabled", [](O& o) { o.coefficients.environment_enabled = false; });
+    for (int k = 0; k < 4; ++k) {
+        differs("background " + std::to_string(k), [k](O& o) { o.background[k] = 0; });
+    }
+    check(changed == 34, "every field was changed once");
+}
+
+// A recorded session over the synthetic car, frame by frame, as the
+// console's loop runs it: step, then render while the frame is due, then
+// compare the hash only at the default camera.
+void test_view_session() {
+    auto run = std::make_unique<Run>();
+    fill_inputs(fixture_files(), run->inputs);
+    std::string error;
+    check(nfsu::prepare_stock_frame(run->inputs, nfsu::stock_240sx_request(),
+                                    nfsu::stock_240sx_skin(), run->frame, error),
+          "prepared: " + error);
+    nfsu::StockView& view = run->view;
+
+    // Before a scene is bound nothing moves and nothing renders.
+    check(!view.needs_render() && !view.step(nfsu::GamepadFrame{}).exit,
+          "no scene: no session");
+    nfsu::Frame nothing;
+    nfsu::RenderStats nothing_stats;
+    check(!view.render(nothing, nothing_stats, error) && error == "no scene to render",
+          "no scene: no render");
+
+    check(nfsu::render_stock_frame(run->frame, nfsu::RenderOptions{}, error),
+          "the pinned camera's frame: " + error);
+    const std::string pinned = frame_digest(run->frame.frame);
+
+    check(view.start(run->frame.scene, error), "the view starts: " + error);
+    check(view.needs_render() && view.at_default(), "the first frame is due, at the default");
+
+    const std::string text =
+        "nfsu-input 1\n"
+        "# + still held from launching the application: latched, no exit\n"
+        "0 0 start 0 0 0 0\n"
+        "# + released and the left stick fully right for 16 ms: an orbit\n"
+        "16000 0 - 32767 0 0 0\n"
+        "# the right stick alone, which is not bound: nothing\n"
+        "32000 0 - 0 0 32767 -32767\n"
+        "# the D-pad, not bound either, and the left stick fully up\n"
+        "48000 0 dpad_up 0 32767 0 0\n"
+        "# five seconds later, the left stick fully left: 100 ms of orbit\n"
+        "5048000 0 - -32767 0 0 0\n"
+        "# -: back to the default camera\n"
+        "5064000 0 select 0 0 0 0\n"
+        "# +: leave\n"
+        "5080000 0 start 0 0 0 0\n";
+    std::vector<nfsu::GamepadFrame> frames;
+    check(nfsu::parse_input_recording(text, frames, error) && frames.size() == 7,
+          "the recording parses: " + error);
+    if (frames.size() != 7) {
+        return;
+    }
+    nfsu::Frame shown;
+    nfsu::RenderStats stats;
+    const auto render = [&]() {
+        std::string render_error;
+        if (!view.render(shown, stats, render_error)) {
+            return "render failed: " + render_error;
+        }
+        return frame_digest(shown);
+    };
+    const auto close_to = [](double a, double b) { return std::fabs(a - b) < 1e-9; };
+
+    nfsu::StockViewStep step = view.step(frames[0]);
+    check(!step.exit && !step.camera.moving && view.needs_render() && view.at_default(),
+          "frame 0: + held since launch does not exit");
+    check(render() == pinned && !view.needs_render(),
+          "frame 0: the default camera's frame is the pinned camera's");
+
+    step = view.step(frames[1]);
+    const double yaw_1 = view.options().camera.yaw_deg;
+    check(!step.exit && step.camera.moving && view.needs_render() && !view.at_default(),
+          "frame 1: the left stick moves the camera away from the default");
+    check(close_to(yaw_1, 35.0 - 120.0 * 0.016) && view.options().camera.pitch_deg == 15.0,
+          "frame 1: right lowers yaw by 120 degrees a second for 16 ms");
+    const std::string moved = render();
+    check(moved != pinned && moved.size() == 64, "frame 1: another frame is rendered");
+
+    step = view.step(frames[2]);
+    check(!step.camera.moving && !view.needs_render() &&
+              view.options().camera.yaw_deg == yaw_1,
+          "frame 2: the right stick does nothing");
+
+    step = view.step(frames[3]);
+    const double pitch_3 = view.options().camera.pitch_deg;
+    check(step.camera.commands.empty() && view.options().camera.yaw_deg == yaw_1 &&
+              close_to(pitch_3, 15.0 + 120.0 * 0.016) && view.needs_render(),
+          "frame 3: the D-pad snaps no view, and up raises the pitch");
+    render();
+
+    step = view.step(frames[4]);
+    check(close_to(view.options().camera.yaw_deg, yaw_1 + 12.0) &&
+              view.options().camera.pitch_deg == pitch_3,
+          "frame 4: after a stall the orbit moves as 100 ms would, left raising yaw");
+    render();
+
+    step = view.step(frames[5]);
+    check(step.camera.commands ==
+                  std::vector<nfsu::InspectorCommand>{nfsu::InspectorCommand::reset_camera} &&
+              view.at_default() && view.needs_render() && !step.exit,
+          "frame 5: - returns the camera to the default, to the bit");
+    check(render() == pinned, "frame 5: and the frame is the pinned camera's again");
+
+    step = view.step(frames[6]);
+    check(step.exit, "frame 6: + exits");
+
+    // A new start forgets the controller: + held across it is latched again.
+    check(view.start(run->frame.scene, error), "the view starts again: " + error);
+    nfsu::GamepadFrame held = frames[6];
+    held.time_us += 16000;
+    check(!view.step(held).exit, "a restarted view latches a held +");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     if (argc == 3 && std::string(argv[1]) == "--frame") {
-        return frame_mode(nfsu::argument_path(argv[2]));
+        return frame_mode(nfsu::argument_path(argv[2]), false);
+    }
+    if (argc == 3 && std::string(argv[1]) == "--painted-frame") {
+        return frame_mode(nfsu::argument_path(argv[2]), true);
     }
     if (argc == 3 && std::string(argv[1]) == "--write-fixture") {
         std::string error;
@@ -1102,7 +1608,8 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (argc != 1) {
-        std::cerr << "usage: nfsu_stock_frame_tests [--frame ROOT | --write-fixture DIR]\n";
+        std::cerr << "usage: nfsu_stock_frame_tests [--frame ROOT | --painted-frame ROOT | "
+                     "--write-fixture DIR]\n";
         return 1;
     }
     test_file_layout();
@@ -1111,6 +1618,13 @@ int main(int argc, char** argv) {
     test_damaged_inputs();
     test_stats_lines();
     test_encode_refuses_an_empty_frame();
+    test_painted_fixture_frame();
+    test_skin_refusals();
+    test_view_renders_the_stock_frame();
+    test_npad_mapping();
+    test_view_bindings();
+    test_default_check();
+    test_view_session();
     if (g_failures != 0) {
         std::cerr << g_failures << " failure(s)\n";
         return 1;
