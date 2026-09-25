@@ -14,6 +14,10 @@
 #include <system_error>
 #include <utility>
 
+#if defined(_WIN32) && (defined(__SSE2__) || defined(_M_X64))
+#include <emmintrin.h>
+#endif
+
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -123,7 +127,16 @@ Vec3 cross(const Vec3& a, const Vec3& b) noexcept {
 }
 
 bool normalize(Vec3& v) noexcept {
-    const double length = std::sqrt(dot(v, v));
+    const double squared_length = dot(v, v);
+#if defined(_WIN32) && (defined(__SSE2__) || defined(_M_X64))
+    // MinGW's out-of-line sqrt uses x87 fsqrt and rounds twice near a
+    // binary64 midpoint; optimized builds use SSE2 sqrtsd. The explicit
+    // SSE2 operation gives both builds the same single rounding here.
+    const double length = _mm_cvtsd_f64(
+        _mm_sqrt_sd(_mm_setzero_pd(), _mm_set_sd(squared_length)));
+#else
+    const double length = std::sqrt(squared_length);
+#endif
     if (!(length > 0.0) || !std::isfinite(length)) {
         return false;
     }
