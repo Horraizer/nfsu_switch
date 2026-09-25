@@ -1474,37 +1474,6 @@ namespace {
            path.u8string();
 }
 
-// rollback_created_files itself, for a removal done by name: the same loop,
-// the same existence test and the same wording. It is declared in
-// nfsu/texture.h and defined in nfsu_core, which this library neither
-// includes nor links, so the POSIX writer below could not call it: every
-// POSIX build of this file failed to compile, and only the Windows branch,
-// which removes by handle, had ever been built.
-[[maybe_unused]] std::vector<fs::path> remove_created_by_name(
-    const std::vector<fs::path>& created, std::string& summary) {
-    std::vector<fs::path> failed;
-    for (const fs::path& path : created) {
-        std::error_code error;
-        fs::remove(path, error);
-        if (path_exists(path)) {
-            failed.push_back(path);
-        }
-    }
-    const std::size_t removed = created.size() - failed.size();
-    if (failed.empty()) {
-        summary = "removed all " + std::to_string(created.size()) +
-                  " files created by this export";
-    } else {
-        summary = "removed " + std::to_string(removed) + " of " +
-                  std::to_string(created.size()) +
-                  " files created by this export; could not remove:";
-        for (const fs::path& path : failed) {
-            summary += " " + path.u8string();
-        }
-    }
-    return failed;
-}
-
 // A "<target>.partial" file created exclusively by this process.
 class PartialFile {
 public:
@@ -1677,7 +1646,7 @@ private:
             created.push_back(linked_target_);
         }
         created.push_back(path_);
-        return remove_created_by_name(created, summary);
+        return rollback_created_files(created, summary);
     }
 
 private:
