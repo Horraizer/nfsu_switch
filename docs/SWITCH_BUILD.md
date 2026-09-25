@@ -375,22 +375,31 @@ desktop report line by line.
   FD6727333A94803A97FD26282CD89DF6F3D3295E0231F4A871A1B14089D28CE9`, the
   pinned hash, in a Debug and in a Release build.
 
-### What could still differ on the console
+### Floating-point contraction, closed by issue #91
 
-`nfsu_core` is compiled without `-ffp-contract=off` on both platforms, as it
-was before this application existed. On AArch64, GCC 16 at `-O2` fuses seven
-multiply-adds in `src/part_placement.cpp`, in
-`derive_cullable_part_placements` and `multiply_placement_matrix`, which the
-stock frame uses to place the wheels, the brakes, the exhausts and the plate;
-the desktop builds target x86-64 without FMA, so nothing is fused there, and
-no other object of the car path holds a fused instruction on the console. A
-desktop build of that one file with `-mfma` - GCC 13 then fuses six
-multiply-adds in the same two functions - gave bit-identical placements and
-instance transforms and the pinned frame, so contraction there is not
-expected to move this frame. That is a simulation on another compiler, not
-the console. If the console reports `DIFFERENT`, it is the first place to
-look; disabling contraction in `nfsu_core` would change the desktop's compile
-options too, and is a decision for its own issue.
+`nfsu_core` and `nfsu_stock_scene` used to compile without
+`-ffp-contract=off` on either platform. On AArch64, GCC 16 at `-O2` fused
+seven multiply-adds in `src/part_placement.cpp` - three `fmadd`, one `fmla`
+and three `fnmsub` - in `derive_cullable_part_placements` and
+`multiply_placement_matrix`, which the stock frame uses to place the wheels,
+the brakes, the exhausts and the plate; the desktop builds target x86-64
+without FMA, so nothing was fused there. A desktop build of that one file
+with `-mfma` - GCC 13 then fused six multiply-adds in the same two functions -
+gave bit-identical placements and instance transforms and the pinned frame,
+so contraction there was not expected to move this frame, but that was a
+simulation on another compiler, not the console, and nothing before issue #91
+pinned it there either.
+
+Issue #91 closed that gap: `cmake/car_libraries.cmake` now disables
+contraction on both targets, on both platforms, the same way the other car
+targets do. Recompiling `src/part_placement.cpp` with the exact
+`build-switch` command from `compile_commands.json`, `-S` in place of `-c`,
+shows the fix at the instruction level: the seven fused instructions above
+with the flags as they were, zero `fmadd`/`fmsub`/`fnmadd`/`fnmsub`/`fmla`/
+`fmls` with `-ffp-contract=off -fno-fast-math` added. The pinned stock-car
+frame (`FD672733...`) was re-checked after the pin and is unchanged, on the
+desktop; nothing here has run on a console, so whether it was ever at risk on
+one stays unobserved rather than closed.
 
 ## What is deliberately not covered yet
 
