@@ -761,12 +761,16 @@ target_link_libraries(nfsu_inspect_window PUBLIC nfsu_platform nfsu_input_camera
 # nfsu_inspect opens no window and calls no operating system. nfsu_image is
 # a TGA encoder over a std::ostream. nfsu_inspect_window is in it for its
 # neutral files; its one window backend is exempted by name below.
+# nfsu_memory depends on nothing but the standard library (its own comment
+# above), and nfsu_gpu_upload calls no deko3d function and reads only the
+# scene and draw-list types below it, so both joined this list when they
+# merged in from main.
 set(NFSU_NEUTRAL_LIBRARIES
     nfsu_image nfsu_core nfsu_scene nfsu_track nfsu_track_visibility
     nfsu_track_zones nfsu_track_draw_list nfsu_track_render nfsu_stock_scene
     nfsu_texture_decode nfsu_body_skin nfsu_skin_inputs nfsu_runtime_skin
     nfsu_inspect nfsu_inspect_window nfsu_input nfsu_platform
-    nfsu_platform_fakes nfsu_input_camera)
+    nfsu_platform_fakes nfsu_input_camera nfsu_memory nfsu_gpu_upload)
 
 # The libraries that are platform code on purpose, and are not read:
 # nfsu_arg_path decodes arguments with the Windows API, nfsu_render's frame
