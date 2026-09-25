@@ -3,6 +3,7 @@
 #include "nfsu/chunk.h"
 #include "nfsu/geometry.h"
 #include "nfsu/part_placement.h"
+#include "nfsu/race_events.h"
 #include "nfsu/skin_inputs.h"
 #include "nfsu/stock_scene.h"
 #include "nfsu/texture.h"
@@ -3875,6 +3876,204 @@ int run_stock_scene(const fs::path& database_path,
     return database.ok() && table.ok() && geometry_ok ? 0 : 3;
 }
 
+// race-events: the stream, pack and texture names of one track, as the
+// loading game flow formats them.
+std::string race_track_files(const nfsu::TrackInfoRecord& track) {
+    return "stream " + nfsu::track_stream_file_name(track) + " pack " +
+           nfsu::track_stream_pack_file_name(track) + " textures " +
+           nfsu::track_texture_file_name(track.number);
+}
+
+void print_race_table_issues(const char* label,
+                             const std::vector<nfsu::RaceTableIssue>& issues) {
+    for (const nfsu::RaceTableIssue& issue : issues) {
+        std::cerr << label << " issue at offset " << issue.offset << ": "
+                  << issue.message << '\n';
+    }
+}
+
+// Lists the track table of GLOBALB and the career event table of FRONTB, each
+// value with the absolute image offset it was read from, then the Underground
+// order: the event a new career enters, the events winning it opens, race 1
+// and the first circuit from race 1. Only the file names are printed, not
+// the directories, so the listing of one installation hashes the same
+// wherever it is installed. Read-only; writes nothing. docs/RACE_EVENTS.md.
+int run_race_events(const fs::path& globalb_path, const fs::path& frontb_path) {
+    std::vector<unsigned char> globalb_image;
+    const nfsu::TrackInfoTable tracks =
+        nfsu::load_track_info_table(globalb_path, globalb_image);
+    std::cout << "globalb: " << globalb_path.filename().string() << '\n';
+    std::cout << "globalb bytes: stored " << tracks.stored_size << " image "
+              << tracks.image_size << " jdlz " << (tracks.jdlz ? 1 : 0) << '\n';
+    print_race_table_issues("track table", tracks.issues);
+    if (tracks.ok()) {
+        std::cout << "track table: chunk offset " << tracks.chunk_offset
+                  << " records at " << tracks.record_offset << " count "
+                  << tracks.records.size() << '\n';
+        for (const nfsu::TrackInfoRecord& track : tracks.records) {
+            std::cout << "track " << track.number << " @" << track.offset
+                      << " number @" << track.offset + nfsu::kTrackInfoNumberOffset
+                      << " region " << track.region << " @"
+                      << track.offset + nfsu::kTrackInfoRegionOffset << " lap-skip "
+                      << static_cast<int>(track.lap_skip) << " @"
+                      << track.offset + nfsu::kTrackInfoLapSkipOffset
+                      << " number-copy " << track.number_copy << " @"
+                      << track.offset + nfsu::kTrackInfoNumberCopyOffset
+                      << " mode-mask " << hex32(track.mode_mask) << " @"
+                      << track.offset + nfsu::kTrackInfoModeMaskOffset << ' '
+                      << race_track_files(track) << " bundle "
+                      << nfsu::track_bundle_file_name(track.number) << '\n';
+        }
+    }
+
+    std::vector<unsigned char> frontb_image;
+    const nfsu::RaceEventTable events =
+        nfsu::load_race_event_table(frontb_path, frontb_image);
+    std::cout << "frontb: " << frontb_path.filename().string() << '\n';
+    std::cout << "frontb bytes: stored " << events.stored_size << " image "
+              << events.image_size << " jdlz " << (events.jdlz ? 1 : 0) << '\n';
+    print_race_table_issues("event table", events.issues);
+    if (!events.ok()) {
+        return 3;
+    }
+    std::cout << "event table: container offset " << events.container_offset
+              << " chunk offset " << events.chunk_offset << " records at "
+              << events.record_offset << " count " << events.records.size() << '\n';
+
+    const std::vector<nfsu::RaceTableIssue> missing =
+        nfsu::check_race_tracks(events, tracks);
+    print_race_table_issues("event table", missing);
+
+    std::size_t tournaments = 0;
+    std::size_t slots = 0;
+    std::array<std::size_t, 7> type_counts{};
+    for (const nfsu::RaceEventRecord& event : events.records) {
+        tournaments += event.kind == nfsu::kRaceEventKindTournament ? 1U : 0U;
+        slots += event.races.size();
+        ++type_counts[std::min<std::size_t>(event.type, type_counts.size() - 1)];
+        std::cout << "event " << event.number << " @" << event.offset << " kind "
+                  << event.kind << " @" << event.offset + nfsu::kRaceEventKindOffset
+                  << (event.kind == nfsu::kRaceEventKindTournament ? " tournament" : "")
+                  << " type " << nfsu::race_type_name(event.type) << " ("
+                  << event.type << ") @" << event.offset + nfsu::kRaceEventTypeOffset
+                  << " races " << event.race_count << " @"
+                  << event.offset + nfsu::kRaceEventRaceCountOffset
+                  << " prerequisites "
+                  << (event.prerequisite_mode == nfsu::kPrerequisitesAllOf ? "all-of"
+                                                                           : "any-of")
+                  << " @" << event.offset + nfsu::kRaceEventPrerequisiteModeOffset
+                  << " count " << event.prerequisite_count << " @"
+                  << event.offset + nfsu::kRaceEventPrerequisiteCountOffset << " [";
+        for (std::size_t p = 0; p < event.prerequisites.size(); ++p) {
+            std::cout << (p == 0 ? "" : " ") << event.prerequisites[p];
+        }
+        std::cout << "] @" << event.offset + nfsu::kRaceEventPrerequisiteOffset
+                  << '\n';
+        for (std::size_t r = 0; r < event.races.size(); ++r) {
+            const nfsu::RaceSlot& race = event.races[r];
+            std::cout << "  race " << r << " @" << race.offset << " track "
+                      << race.track << " laps " << static_cast<int>(race.laps)
+                      << " @" << race.offset + nfsu::kRaceSlotLapsOffset
+                      << " direction " << nfsu::race_direction_name(race.direction)
+                      << " (" << static_cast<int>(race.direction) << ") @"
+                      << race.offset + nfsu::kRaceSlotDirectionOffset;
+            const nfsu::TrackInfoRecord* track =
+                nfsu::find_track_info(tracks, race.track);
+            if (track != nullptr) {
+                std::cout << " region " << track->region << ' '
+                          << race_track_files(*track);
+            } else {
+                std::cout << " track-not-listed";
+            }
+            std::cout << '\n';
+        }
+    }
+    std::cout << "events: " << events.records.size() << " tournaments "
+              << tournaments << " race slots " << slots << '\n';
+    std::cout << "types:";
+    for (std::uint32_t t = 0; t < 6; ++t) {
+        std::cout << ' ' << nfsu::race_type_name(t) << ' ' << type_counts[t];
+    }
+    std::cout << " unknown " << type_counts[6] << '\n';
+
+    if (!tracks.ok() || !missing.empty()) {
+        return 3;
+    }
+
+    // The Underground order is the event number: the brief screen prints it
+    // with "Event %d" (0x004C5A40..0x004C5A47), and the availability test
+    // decides which numbers are offered.
+    std::cout << "underground order: ascending event number (0x004C5A40)\n";
+    std::cout << "new career enters: event " << nfsu::kNewCareerEventNumber
+              << " (0x004B383E)\n";
+    std::vector<std::uint8_t> status(nfsu::kRaceEventNumberLimit, 0);
+    status[nfsu::kNewCareerEventNumber] = nfsu::kEventStatusWon;
+    std::vector<std::uint32_t> opened;
+    for (const nfsu::RaceEventRecord& event : events.records) {
+        if (nfsu::race_event_available(events, event, status)) {
+            opened.push_back(event.number);
+        }
+    }
+    std::sort(opened.begin(), opened.end());
+    std::cout << "winning event " << nfsu::kNewCareerEventNumber << " opens:";
+    for (const std::uint32_t number : opened) {
+        std::cout << ' ' << number;
+    }
+    std::cout << '\n';
+
+    // Every used slot names a listed track here: check_race_tracks found
+    // none missing, and both tables are valid.
+    const auto describe = [&](const nfsu::RaceEventRecord& event) {
+        const nfsu::RaceSlot& race = event.races.front();
+        const nfsu::TrackInfoRecord* track = nfsu::find_track_info(tracks, race.track);
+        std::cout << "event " << event.number << " type "
+                  << nfsu::race_type_name(event.type) << " races "
+                  << event.race_count << " track " << race.track << " laps "
+                  << static_cast<int>(race.laps) << " direction "
+                  << nfsu::race_direction_name(race.direction) << " region "
+                  << track->region << ' ' << race_track_files(*track) << '\n';
+    };
+    std::cout << "race 1: ";
+    if (const nfsu::RaceEventRecord* race1 = nfsu::find_race_event(events, 1)) {
+        describe(*race1);
+    } else {
+        std::cout << "none\n";
+    }
+    const nfsu::RaceEventRecord* first_circuit = nullptr;
+    for (const nfsu::RaceEventRecord& event : events.records) {
+        if (event.number >= 1 &&
+            event.type == static_cast<std::uint32_t>(nfsu::RaceType::circuit) &&
+            event.kind != nfsu::kRaceEventKindNeverAvailable &&
+            (first_circuit == nullptr || event.number < first_circuit->number)) {
+            first_circuit = &event;
+        }
+    }
+    std::cout << "first circuit from race 1: ";
+    if (first_circuit != nullptr) {
+        describe(*first_circuit);
+    } else {
+        std::cout << "none\n";
+    }
+
+    std::map<std::string, std::size_t> circuit_streams;
+    for (const nfsu::RaceEventRecord& event : events.records) {
+        if (event.type != static_cast<std::uint32_t>(nfsu::RaceType::circuit)) {
+            continue;
+        }
+        for (const nfsu::RaceSlot& race : event.races) {
+            const nfsu::TrackInfoRecord* track =
+                nfsu::find_track_info(tracks, race.track);
+            ++circuit_streams[nfsu::track_stream_file_name(*track)];
+        }
+    }
+    std::cout << "circuit race slots by stream:";
+    for (const auto& [stream, count] : circuit_streams) {
+        std::cout << ' ' << stream << ' ' << count;
+    }
+    std::cout << '\n';
+    return 0;
+}
+
 void print_usage();
 
 // The single registration point for an nfsu_probe command. One entry carries
@@ -5418,6 +5617,16 @@ const Command kCommands[] = {
          }
          return run_car_placement(nfsu::argument_path(argv[2]),
                                   argc == 4 ? std::string(argv[3]) : "");
+     }},
+    {"race-events", " <GLOBALB.BUN> <FrontB.lzc>",
+     "      (either file raw or JDLZ-compressed, as the game ships them)\n",
+     [](int argc, char** argv) {
+         if (argc != 4) {
+             print_usage();
+             return 1;
+         }
+         return run_race_events(nfsu::argument_path(argv[2]),
+                                nfsu::argument_path(argv[3]));
      }},
     {"part-markers", " <GEOMETRY.BIN> [role]", "",
      [](int argc, char** argv) {

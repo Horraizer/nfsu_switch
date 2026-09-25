@@ -59,6 +59,7 @@ build/nfsu_probe track-probe X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268
 build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc
 build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc 783 -8.5
 build/nfsu_probe car-placement X:/Games/NFSU/Global/GLOBALB.BUN 240SX
+build/nfsu_probe race-events X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/FrontEnd/FrontB.lzc
 build/nfsu_probe part-markers X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN exhaust
 build/nfsu_probe body-skin-inputs 240SX --source car-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN --source car-vinyls X:/Games/NFSU/Cars/240SX/VINYLS.BIN --source other X:/Games/NFSU/Cars/TEXTURES.BIN --target-texture DUMMY_SKIN1 --vinyl 0 TRIBAL5 16 no-remap --doorline plain --base 200 30 30 128 --assemble
 ```
@@ -110,6 +111,16 @@ marker chunk parsed contributes nothing. Between them, the wheels and
 brakes come from the car type table and the exhaust and plate from markers,
 while every other installed part is drawn at the car's own matrix. See
 `docs/PART_PLACEMENT.md`.
+`race-events` lists the track table of `GLOBAL/GLOBALB.BUN` (or the
+compressed `GLOBALB.LZC` the game loads) and the career event table of
+`FRONTEND/FrontB.lzc`: per track its number, stream region and the stream,
+stream pack, texture pack and bundle file names the game builds from them;
+per event its number, kind, race type, and each race's track, lap count and
+direction, every value with the image offset it was read from. It ends with
+the Underground order - the event a new career enters, the events winning it
+opens, race 1 and the first circuit from race 1. It exits 3 if either table
+fails validation or a race names a track the track table does not hold. See
+`docs/RACE_EVENTS.md`.
 `car-parts` parses the car part database of `GLOBAL/GLOBALB.BUN` and lists
 every part record: car type hash, slot, upgrade level, part name hash and
 the four per-LOD mesh hashes. A car type name lists only its records.

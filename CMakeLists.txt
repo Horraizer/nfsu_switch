@@ -155,6 +155,19 @@ else()
     target_compile_options(nfsu_track_probe PRIVATE -ffp-contract=off -fno-fast-math)
 endif()
 
+# The career event table of FRONTEND/FrontB.lzc and the track table of
+# GLOBAL/GLOBALB.LZC it points into: which track, lap count and direction
+# each Underground-mode event runs, and the stream and texture file names
+# the game builds for a track. It links nfsu_core for the JDLZ decoder and
+# nothing else, decodes integers only and reads no clock, so it carries no
+# floating-point flags. See docs/RACE_EVENTS.md.
+add_library(nfsu_race_events
+    src/race_events.cpp
+)
+
+target_link_libraries(nfsu_race_events PUBLIC nfsu_core)
+nfsu_enable_warnings(nfsu_race_events)
+
 # The read-only inspector. It is declared after every library it uses.
 add_executable(nfsu_probe
     src/main.cpp
@@ -167,7 +180,7 @@ target_link_libraries(nfsu_probe
     PRIVATE nfsu_core nfsu_texture_export nfsu_track nfsu_track_visibility
             nfsu_track_zones
             nfsu_track_draw_list nfsu_track_render nfsu_track_budget
-            nfsu_track_probe
+            nfsu_track_probe nfsu_race_events
             nfsu_texture_decode nfsu_skin_inputs nfsu_stock_scene
             nfsu_arg_path)
 nfsu_enable_warnings(nfsu_probe)
@@ -391,6 +404,19 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_part_placement_tests)
     add_test(NAME nfsu_part_placement_tests COMMAND nfsu_part_placement_tests)
 
+    # The track and event tables over synthetic chunk images: every decoded
+    # field at its offset, every refusal at the offset it names, the
+    # availability rule of 0x005A0FC0, and the JDLZ load path through a
+    # literal-only blob. It also writes the fixture the race-events guards
+    # drive the probe over.
+    add_executable(nfsu_race_event_tests
+        tests/race_event_tests.cpp
+    )
+
+    target_link_libraries(nfsu_race_event_tests PRIVATE nfsu_race_events)
+    nfsu_enable_warnings(nfsu_race_event_tests)
+    add_test(NAME nfsu_race_event_tests COMMAND nfsu_race_event_tests)
+
     add_executable(nfsu_body_skin_tests
         tests/body_skin_tests.cpp
     )
@@ -547,6 +573,18 @@ if(NFSU_BUILD_TESTS)
                 -DTESTS=$<TARGET_FILE:nfsu_track_probe_tests>
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/track_probe_guards.cmake
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+    # What `race-events` refuses and exits with when it has no input at all,
+    # and what it prints and exits with over the three fixture files
+    # nfsu_race_event_tests writes on request: the whole listing, the
+    # Underground order lines, and the refusal of a race that names a track
+    # the track table does not hold. tests/race_events_guards.cmake says
+    # what each case is for.
+    add_test(NAME nfsu_probe_race_events_guards
+        COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -DTESTS=$<TARGET_FILE:nfsu_race_event_tests>
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/race_events_guards.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
     # nfsu_probe registers a command in one place, and print_usage() composes
     # the usage line out of the name main() dispatches on. This reads the
     # command inventory back out of three independent places - the kCommands
@@ -587,7 +625,7 @@ if(NFSU_BUILD_TESTS)
         nfsu_track_visibility_tests nfsu_track_zone_tests
         nfsu_track_draw_list_tests nfsu_track_render_tests
         nfsu_track_budget_tests nfsu_track_probe_tests
-        nfsu_part_placement_tests nfsu_body_skin_tests
+        nfsu_part_placement_tests nfsu_race_event_tests nfsu_body_skin_tests
         nfsu_stock_scene_tests
         nfsu_skin_inputs_tests nfsu_runtime_skin_tests nfsu_inspect_tests
         nfsu_viewer_dump_alias nfsu_viewer_stock_needs_car
@@ -597,6 +635,7 @@ if(NFSU_BUILD_TESTS)
         nfsu_probe_track_render_guards
         nfsu_probe_track_budget_guards
         nfsu_probe_track_probe_guards
+        nfsu_probe_race_events_guards
         PROPERTIES TIMEOUT 60)
 endif()
 
@@ -679,14 +718,16 @@ target_link_libraries(nfsu_inspect_window PUBLIC nfsu_platform nfsu_input_camera
 # cmake/car_libraries.cmake: nfsu_sha256 and nfsu_screen_text use nothing but
 # the standard library, and nfsu_stock_frame reads its inputs with
 # std::ifstream, as nfsu_core's loaders do, and reads no clock - the
-# application times it from outside. nfsu_stock_view, which issue #148
-# added, is the control table and camera session of that application over
-# nfsu_input_camera and nfsu_render; it reads no clock either, because a
-# controller frame carries its own time.
+# application times it from outside. nfsu_race_events (issue #155) decodes
+# two tables with nothing but the standard library and nfsu_core's JDLZ
+# decoder, and its loaders read with std::ifstream as nfsu_core's do.
+# nfsu_stock_view, which issue #148 added, is the control table and camera
+# session of that application over nfsu_input_camera and nfsu_render; it
+# reads no clock either, because a controller frame carries its own time.
 set(NFSU_NEUTRAL_LIBRARIES
     nfsu_image nfsu_core nfsu_scene nfsu_track nfsu_track_visibility
     nfsu_track_zones nfsu_track_draw_list nfsu_track_render nfsu_track_probe
-    nfsu_track_budget
+    nfsu_track_budget nfsu_race_events
     nfsu_stock_scene
     nfsu_texture_decode nfsu_body_skin nfsu_skin_inputs nfsu_runtime_skin
     nfsu_inspect nfsu_inspect_window nfsu_input nfsu_platform
