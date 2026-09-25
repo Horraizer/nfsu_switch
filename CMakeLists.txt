@@ -880,9 +880,6 @@ set(NFSU_NEUTRAL_LIBRARIES
     nfsu_inspect nfsu_inspect_window nfsu_input nfsu_platform
     nfsu_platform_fakes nfsu_input_camera nfsu_memory nfsu_gpu_upload nfsu_draw_commands
     nfsu_sha256 nfsu_stock_frame nfsu_screen_text)
-# nfsu_track_stream (issue #156) reads its files with std::ifstream, as
-# nfsu_core's loaders do, and reads no clock; its own comment above says so.
-list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_track_stream)
 
 # The libraries that are platform code on purpose, and are not read:
 # nfsu_arg_path decodes arguments with the Windows API, nfsu_render's frame
@@ -904,6 +901,11 @@ set(NFSU_PLATFORM_LIBRARIES nfsu_arg_path nfsu_render nfsu_texture_export nfsu_p
 # (NFSU_PLATFORM_LIBRARIES), so src/texture.cpp holds only the texture
 # decoder now and the gate reads it again.
 set(NFSU_PLATFORM_SOURCES src/inspect_window_win32.cpp)
+
+# Neutral as well: nfsu_track_stream (issue #156) reads its files with
+# std::ifstream, as nfsu_core's loaders do, and reads no clock; its own
+# comment above says so.
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_track_stream)
 
 # Every library target and each neutral one's sources, written for the gate
 # once the whole directory has been read, so that a library added anywhere
