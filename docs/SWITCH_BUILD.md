@@ -7,12 +7,17 @@ suite gains three tests of this work, which need no SDK -
 `nfsu_shader_manifest_tests`, `nfsu_shader_source_guards` and
 `nfsu_switch_toolchain_diagnostics`. A configure that names it builds the
 car-path libraries `cmake/car_libraries.cmake` declares for both configures,
-and `switch/`, and nothing else. It exists to prove the toolchain (issue #45),
+the draw-recording libraries of `cmake/draw_libraries.cmake`, and `switch/`. It exists to prove the toolchain (issue #45),
 to host the offline shader pipeline (issue #49,
 [`SHADER_PIPELINE.md`](SHADER_PIPELINE.md)), and to show the stock 240SX
 drawn by the CPU reference renderer on the console (issue #141), painted
 and orbited with the left stick (issue #148; "The stock car on the
 console" below).
+
+Issue #145 also builds the neutral draw recorder and its upload, arena and
+track draw-list dependencies through `cmake/draw_libraries.cmake`, on both
+platforms. They do not change either application's rendering path. See
+[`DRAW_COMMANDS.md`](DRAW_COMMANDS.md) for the command contract and tests.
 
 ## What it builds
 
@@ -45,7 +50,8 @@ runs on the build machine, not on a console:
 
 The desktop programs, the other libraries and every test are not configured
 for the console: the top-level `CMakeLists.txt` includes
-`cmake/car_libraries.cmake`, enters `switch/` and returns before it declares
+`cmake/car_libraries.cmake` and `cmake/draw_libraries.cmake`, enters `switch/`
+and returns before it declares
 any of them.
 
 ## Prerequisites
