@@ -929,8 +929,12 @@ never be changed by them by accident.
   compile time. `nfsu_render` is built with `-ffp-contract=off
   -fno-fast-math` (GCC/Clang) or `/fp:precise` (MSVC), so FMA contraction
   cannot change results.
-- Only `+ - * /`, `sqrt`, `floor` and `fmod` are used, and all of them are
-  correctly rounded or exact. No libm transcendental is used.
+- Only `+ - * /`, `det_sqrt`, `floor` and `fmod` are used. The shared
+  `det_sqrt` uses hardware `sqrtsd` on x86 and `fsqrt` on Switch AArch64,
+  giving one rounding to binary64. Issue #125 found that MinGW's out-of-line
+  libm `sqrt` instead double-rounds through x87 extended precision for some
+  inputs at `-O0` and `-Os`; it is not a correctly rounded substitute.
+  No libm transcendental is used.
 - Rendering is single-threaded and in a fixed order. Coverage uses integer
   edge functions. Depth ties are broken by triangle id.
 - Byte identity is verified for repeated runs of one build. Identity

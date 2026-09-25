@@ -1066,6 +1066,22 @@ void test_camera_basis() {
                     basis.right.z * basis.up_axis.z,
                 0.0, 1e-12, "right and up axis are perpendicular");
 
+    // sqrt(149^2 + 42^2) separates MinGW's x87 libm result from the
+    // correctly rounded SSE2 result. This is the camera in issue #125's
+    // track-probe reproduction and must print the same basis at every -O.
+    nfsu::TrackFreeCamera rounding = camera;
+    rounding.eye = nfsu::Vec3{450.0, 20.0, -80.0};
+    rounding.target = nfsu::Vec3{599.0, 62.0, -80.0};
+    rounding.far_plane = 60.0;
+    check_ok(nfsu::track_camera_basis(rounding, basis, error),
+             "track probe rounding camera has a basis", error);
+    check_exact(basis.distance, 154.80633061990713,
+                "track probe distance uses single-rounded sqrt");
+    check_exact(basis.forward.x, 0.9624929381333681,
+                "track probe forward x uses single-rounded sqrt");
+    check_exact(basis.forward.y, 0.271306734238936,
+                "track probe forward y uses single-rounded sqrt");
+
     // The two degenerate cases a basis has to refuse rather than invent.
     nfsu::TrackFreeCamera parallel = camera;
     parallel.up = nfsu::Vec3{0.0, 0.0, -1.0};

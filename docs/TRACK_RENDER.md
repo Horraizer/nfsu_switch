@@ -485,22 +485,31 @@ Release interpolated `0.054687499999999993`, the adjacent lower double
 The first differing instruction is earlier, in `normalize` while building
 the pitch-6 camera. Both builds enter with the same forward vector and
 `dot(v,v) = 0.99999999999999989`, the binary64 value immediately below 1.
-At `-O0`, MinGW GCC 13.2 calls its `sqrt`, whose `fldl; fsqrt; fstpl`
+At `-O0` and `-Os`, MinGW GCC 13.2 calls its `sqrt`, whose `fldl; fsqrt; fstpl`
 sequence rounds through x87 extended precision and returns `1` at this
-midpoint. At `-O3`, GCC emits `sqrtsd` and returns
+midpoint. At `-O2` and `-O3`, GCC emits `sqrtsd` and returns
 `0.99999999999999989` directly. Neither `-ffp-contract=off` nor
 `-fno-fast-math` prevents the compiler from choosing an out-of-line call
 at `-O0` and a hardware square root at `-O3`. The one-ulp camera basis
 change shifts projected `w`, and independent rounding in perspective
 interpolation puts that constant U on opposite sides of the texel boundary.
 
-On Windows x86 with SSE2, `normalize` now explicitly uses `sqrtsd` in
-both builds. The Debug and Release street frames both have the Release hash
-above. The five car hashes in [`RENDERER.md`](RENDERER.md), including the
+The shared `det_sqrt` now uses `sqrtsd` on SSE2 x86 and `fsqrt` on Switch
+AArch64, and the renderer and track camera call it at every double-precision
+square-root site. The Debug and Release street frames both have the Release
+hash above. The five car hashes in [`RENDERER.md`](RENDERER.md), including the
 stock wheel frame `FD672733...`, and the default region hash `D17D632B...`
 were rechecked unchanged in both builds, with fresh output files and
 unchanged retail-file manifests. The camera basis at pitch 6 is pinned by
 `nfsu_render_tests`.
+
+The street command was also rerun in the default, Debug, Release,
+RelWithDebInfo and MinSizeRel builds after the shared helper was applied to
+track framing, lighting and normals. All five fresh 3686418-byte TGA files
+are byte-identical with SHA-256 `20CCC85C62993298989CEDE3B3BFBBC0099F246573F2C3ED42BA9D0678B875A4`.
+The retail-file manifest matched before and after every run. Both region
+orders still have SHA-256 `D17D632B1648B46C26852E91B71BC27CC69D25216C8056AD15FD87E049EA9FD2`
+in the default and Release builds.
 
 ## Statistics
 
@@ -827,7 +836,7 @@ build-release/nfsu_probe track-render X:/Games/NFSU/Tracks/STREAML1RB.BUN \
 
 Expected:
 
-1. Both `ctest` runs report 46 tests passed, 0 failed.
+1. Both `ctest` runs report 48 tests passed, 0 failed.
 2. Both renders exit 0 and write nothing to standard error.
 3. The region view prints the scene, cull and draw-list lines
    [`TRACK_DRAW_LIST.md`](TRACK_DRAW_LIST.md) pins for this region,

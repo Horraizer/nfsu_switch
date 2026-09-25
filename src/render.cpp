@@ -14,7 +14,7 @@
 #include <system_error>
 #include <utility>
 
-#if defined(_WIN32) && (defined(__SSE2__) || defined(_M_X64))
+#if defined(__SSE2__) || defined(_M_X64)
 #include <emmintrin.h>
 #endif
 
@@ -127,16 +127,7 @@ Vec3 cross(const Vec3& a, const Vec3& b) noexcept {
 }
 
 bool normalize(Vec3& v) noexcept {
-    const double squared_length = dot(v, v);
-#if defined(_WIN32) && (defined(__SSE2__) || defined(_M_X64))
-    // MinGW's out-of-line sqrt uses x87 fsqrt and rounds twice near a
-    // binary64 midpoint; optimized builds use SSE2 sqrtsd. The explicit
-    // SSE2 operation gives both builds the same single rounding here.
-    const double length = _mm_cvtsd_f64(
-        _mm_sqrt_sd(_mm_setzero_pd(), _mm_set_sd(squared_length)));
-#else
-    const double length = std::sqrt(squared_length);
-#endif
+    const double length = det_sqrt(dot(v, v));
     if (!(length > 0.0) || !std::isfinite(length)) {
         return false;
     }
@@ -593,6 +584,19 @@ double det_cos_deg(double degrees) noexcept {
     case 2: return -cos_poly(x);
     default: return sin_poly(x);
     }
+}
+
+double det_sqrt(double value) noexcept {
+#if defined(__SSE2__) || defined(_M_X64)
+    // An explicit sqrtsd avoids MinGW's x87 libm path at -O0 and -Os.
+    return _mm_cvtsd_f64(_mm_sqrt_sd(_mm_setzero_pd(), _mm_set_sd(value)));
+#elif defined(__aarch64__)
+    double result;
+    __asm__ ("fsqrt %d0, %d1" : "=w" (result) : "w" (value));
+    return result;
+#else
+    return std::sqrt(value);
+#endif
 }
 
 bool validate_camera(const OrbitCamera& camera, std::string& error) {

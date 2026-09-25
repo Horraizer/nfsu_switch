@@ -53,7 +53,7 @@ Vec3 cross(const Vec3& a, const Vec3& b) noexcept {
 }
 
 bool normalize(const Vec3& v, Vec3& out) noexcept {
-    const double length = std::sqrt(dot(v, v));
+    const double length = det_sqrt(dot(v, v));
     if (!finite_value(length) || !(length > 0.0)) {
         return false;
     }
@@ -412,7 +412,7 @@ bool validate_track_free_camera(
         return false;
     }
     const Vec3 view = sub(camera.target, camera.eye);
-    const double distance = std::sqrt(dot(view, view));
+    const double distance = det_sqrt(dot(view, view));
     if (!finite_value(distance) || distance < kMinDistance ||
         distance > kMaxDistance) {
         error = "the eye-to-target distance must be within " +
@@ -431,7 +431,7 @@ bool track_camera_basis(
     }
     const Vec3 view = sub(camera.target, camera.eye);
     TrackCameraBasis built;
-    built.distance = std::sqrt(dot(view, view));
+    built.distance = det_sqrt(dot(view, view));
     if (!normalize(view, built.forward)) {
         error = "the camera eye is at its target, so there is no view "
                 "direction";
