@@ -204,6 +204,12 @@ recovered at 0x005679B0. Retail 1003 has 36 zones: 16 `RESET`, 2
 `NO_WRONG_WAY` or `WRONG_WAY` zone. Across the 31 tracks, `WRONG_WAY` zones
 occur on 1008 (one) and on the drag tracks, and `NO_WRONG_WAY` on none.
 
+The "path structure at 0x007372B0" that [`TRACK_WHOLE.md`](TRACK_WHOLE.md)
+found the section streamer consulting is this manager: the call it names,
+0x0044495C, and the one beside it at 0x004449EB are 0x004436D0 asking for
+a type-10 `TRACK_PATH_ZONE_STREAMER_PREDICTION` zone at a predicted point.
+The streamer reads that zone further; this note does not.
+
 ## The spline
 
 0x004432A0 builds one spline object per path (0x004432F2 allocates 0x2C

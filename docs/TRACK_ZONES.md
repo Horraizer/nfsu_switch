@@ -679,8 +679,11 @@ because that is the frame the polygons are stored in.
   and no instruction reads it.
 - What `0x00034153` is for: which code reads the record `0x004446C9`
   stores at `[eax + 0x598]`, and what its 5 to 37 section numbers select.
+  Answered in [`TRACK_WHOLE.md`](TRACK_WHOLE.md): 0x00444A28 reads it, and
+  its numbers are the zone keys a car's look-ahead may enter.
 - What `0x00034154`'s single number is used for downstream of the copy at
-  `0x00444BC6`.
+  `0x00444BC6`. Answered there too: 0x00444B50 requests that section for
+  the whole race.
 - Why a zone list always holds its key plus ten. The `+10` sibling is what
   the two list-editing helpers at `0x00446BB0` and `0x00446C90` add and
   remove, but what makes the game call them was not traced.
