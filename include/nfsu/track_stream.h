@@ -177,7 +177,10 @@ enum class TrackStreamSet {
     // is set, requested in that order and resolved as 0x00444D0E does,
     // including its 256-request stop. This is what the loader requests
     // before a car has a zone, and docs/TRACK_WHOLE.md shows the zones along
-    // the track's own route add nothing to it.
+    // the track's own route add nothing to it. The track byte counts only
+    // until that first set is loaded: 0x0044533B then stores 1 at the
+    // streamer's +0x178, and later requests leave the flagged records out,
+    // so they stay resident only until a request needs their room.
     permanent,
     // NOT a retail rule: the permanent set plus every section any zone of
     // the zone file lists. It is the most a position anywhere on the map

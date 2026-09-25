@@ -430,7 +430,13 @@ public:
         out_.requests.push_back(request);
         if (apply_limit_ && request.selected &&
             out_.records.size() >= kTrackStreamRequestLimit) {
-            // 0x00444D5B: the 256th entry is stored and the walk ends.
+            // 0x00444D5B checks the limit after marking a new record and
+            // before listing it: once 256 are listed, the next new record is
+            // marked but not listed, and the walk ends there. The records
+            // selected are the same as stopping here, at the 256th. Only
+            // the counters differ, and only past 256 selections: misses and
+            // repeats after the 256th, which retail still walks, are not
+            // counted here.
             stopped_ = true;
             out_.stopped_at_limit = true;
             return false;

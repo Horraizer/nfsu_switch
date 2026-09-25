@@ -1440,6 +1440,105 @@ void test_load_refusals() {
                      fixture.sections[6].bytes.size(),
                  "bytes read count only the ranges read");
 
+    // A section whose offset lies wholly past the end of its file (review
+    // 3462, F2). W1 above starts inside the file and ends one byte past it;
+    // here Z0 starts a whole 2048 bytes past the end, on a boundary no
+    // alignment rule refuses. The range test has to refuse the offset
+    // itself: file_size - offset would wrap, and the reader would copy bytes
+    // from beyond the buffer. The copy read here reserves room past the
+    // read, so that a broken range test fails the checks below rather than
+    // faulting; its size, which is the file size the loader sees, is the
+    // stream's.
+    {
+        Bytes stream = fixture.stream;
+        stream.reserve(stream.size() + 3 * kSectionStep);
+        const std::vector<unsigned char>* past_images[nfsu::kTrackStreamFileCount] = {
+            nullptr, &stream, nullptr};
+        Loaded past;
+        past.table = parse_table(fixture.trackb);
+        past.selection.records = {3};
+        past.selection.reasons = {nfsu::TrackStreamReason::stream_bound};
+        const std::uint64_t beyond = stream.size() + kSectionStep;
+        past.table.records[3].data_offset = static_cast<std::uint32_t>(beyond);
+        past.table.records[3].size = 64;
+        nfsu::TrackStreamLoad& refused = past.load;
+        check(nfsu::load_track_stream_sections_from_memory(past.table, past.selection,
+                                                           past_images,
+                                                           nfsu::TrackStreamLoadLimits{},
+                                                           refused, error),
+              "an offset past the file is an issue, not a failure: " + error);
+        const bool named = refused.sections.size() == 1 &&
+                           has_issue(refused.sections[0].issues, beyond,
+                                     "reaches " + std::to_string(beyond + 64) +
+                                         " in a file of " + std::to_string(stream.size()) +
+                                         " bytes");
+        check(refused.sections.size() == 1 && !refused.sections[0].loaded &&
+                  refused.sections[0].bytes.empty() && named,
+              "a section starting past the end of its file is refused by name");
+        check_eq_u64(refused.bytes_read, 0, "and nothing is read for it");
+    }
+
+    // The accepting side of the 128-byte alignment (review 3462, F3). X0's
+    // geometry and Y0's texture pack, copied byte for byte to offsets that
+    // are odd multiples of 128 - so no larger power of two divides them -
+    // load exactly as they do at their own 2048-byte boundaries: moving a
+    // section by a multiple of 128 keeps every alignment of the format.
+    {
+        Bytes shifted = fixture.stream;
+        const std::uint64_t x0_at = shifted.size() + 128U;
+        shifted.resize(static_cast<std::size_t>(x0_at), 0xEEU);
+        shifted.insert(shifted.end(), fixture.sections[2].bytes.begin(),
+                       fixture.sections[2].bytes.end());
+        const std::uint64_t y0_at =
+            ((shifted.size() + kSectionStep - 1) / kSectionStep) * kSectionStep + 384U;
+        shifted.resize(static_cast<std::size_t>(y0_at), 0xEEU);
+        shifted.insert(shifted.end(), fixture.sections[1].bytes.begin(),
+                       fixture.sections[1].bytes.end());
+        check(x0_at % 128 == 0 && (x0_at / 128) % 2 == 1 && y0_at % 128 == 0 &&
+                  (y0_at / 128) % 2 == 1,
+              "both new offsets are odd multiples of 128");
+
+        Loaded in_place;
+        in_place.table = parse_table(fixture.trackb);
+        in_place.selection.records = {1, 2};
+        in_place.selection.reasons = {nfsu::TrackStreamReason::fixed,
+                                      nfsu::TrackStreamReason::fixed};
+        Loaded moved = in_place;
+        moved.table.records[1].data_offset = static_cast<std::uint32_t>(y0_at);
+        moved.table.records[2].data_offset = static_cast<std::uint32_t>(x0_at);
+        const std::vector<unsigned char>* moved_images[nfsu::kTrackStreamFileCount] = {
+            nullptr, &shifted, nullptr};
+        check(nfsu::load_track_stream_sections_from_memory(in_place.table, in_place.selection,
+                                                           images,
+                                                           nfsu::TrackStreamLoadLimits{},
+                                                           in_place.load, error) &&
+                  nfsu::load_track_stream_sections_from_memory(
+                      moved.table, moved.selection, moved_images,
+                      nfsu::TrackStreamLoadLimits{}, moved.load, error),
+              "both loads run: " + error);
+        const auto& a = in_place.load;
+        const auto& b = moved.load;
+        const bool pair = a.sections.size() == 2 && b.sections.size() == 2;
+        check(pair && b.ok() && b.sections[0].loaded && b.sections[1].loaded &&
+                  b.sections[0].issues.empty() && b.sections[1].issues.empty(),
+              "Y0 at " + std::to_string(y0_at) + " and X0 at " + std::to_string(x0_at) +
+                  " load with no issue");
+        check(pair && a.ok() && b.sections[1].bytes == a.sections[1].bytes &&
+                  b.sections[1].mesh_count == a.sections[1].mesh_count &&
+                  b.sections[1].mesh_count == 2 &&
+                  b.geometry.cost.valid_meshes == a.geometry.cost.valid_meshes &&
+                  b.geometry.cost.valid_meshes == 2,
+              "X0 moved by a multiple of 128 decodes the same two meshes");
+        check(pair && b.sections[0].texture_packs == 1 &&
+                  b.sections[0].packs.packs.size() == 1 &&
+                  a.sections[0].packs.packs.size() == 1 &&
+                  b.sections[0].packs.packs[0].valid_texture_count() == 2 &&
+                  b.sections[0].packs.packs[0].valid_texture_count() ==
+                      a.sections[0].packs.packs[0].valid_texture_count(),
+              "Y0 moved by a multiple of 128 decodes the same two textures");
+        check_eq_u64(b.bytes_read, a.bytes_read, "the same bytes are read");
+    }
+
     // A selection naming a record past the table, and one whose two lists
     // disagree, are failures rather than issues.
     nfsu::TrackStreamSelection bad = loaded.selection;

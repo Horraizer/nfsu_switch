@@ -26,7 +26,10 @@ The answer first:
   track, every record whose track byte is set, and the lists of the zones
   two tracked positions stand in. Before any position is known the zone
   part is empty, so a race starts with exactly the first three parts
-  resident. For track 1003 that is **78 sections**.
+  resident. For track 1003 that is **78 sections**. The track byte counts
+  only until that first set is loaded: then 0x0044533B stores 1 at the
+  streamer's `+0x178`, later requests leave the flagged sections out, and
+  they stay resident until a request needs their room (below).
 - **The zones along the route add nothing to those 78.** The `0x00034153`
   record keyed on 1003 names the 13 zones the loader lets a car's look-ahead
   enter; their lists name 119 section numbers, 73 of which have a record, and
@@ -35,8 +38,9 @@ The answer first:
   zones name - 28 tracks of 28.
 - **`STREAML1RA_1003.BUN` contributes nothing**: it is 0 bytes on disk, the
   table declares it as 0 bytes, and no record names it.
-  **`TEX1003TRACK.BIN`** is loaded whole beside the stream and supplies the
-  sky and the track map. **`TRACKB1003.LZC`** supplies the table, the zones,
+  **`TEX1003TRACK.BIN`** is loaded whole beside the stream - the game flow
+  pushes `TRACKS\TEX%dTRACK.BIN` at 0x0044953E - and supplies the sky and
+  the track map. **`TRACKB1003.LZC`** supplies the table, the zones,
   the two lists and the collision ([`TRACK_COLLISION.md`](TRACK_COLLISION.md)).
 - **Totals for L1RA/1003** (the permanent set, loaded by `nfsu_probe
   track-whole`): 78 sections, 36471524 bytes read, 2095 meshes, 457564
@@ -177,12 +181,17 @@ into a buffer of int16 numbers:
 ```
 
 Then 0x00444D0E..0x00444D73 resolves the list: each number is looked up by
-+8 (0x00444D30), the first record that matches is marked requested
-(0x00444D51) and appended to the load list at streamer `+0x180`, a record
-already marked is skipped, a number no record carries is skipped, and the
-walk stops once 256 records are listed (0x00444D5B `cmp ecx, 0x100`).
-0x00444D80 then reads each listed section while its byte count plus 0x400
-fits the pool's free space (0x00444DD4..0x00444DDF).
++8 (0x00444D30), the first record that matches gets the counter at
+0x006F0888 - which 0x00585DBF only ever adds to - in its `+0x24`
+(0x00444D47), a record already marked is skipped,
+a record not yet marked is marked requested (0x00444D51) and appended to
+the load list at streamer `+0x180`, and a number no record carries is
+skipped. The limit is checked after the mark and before the append
+(0x00444D5B `cmp ecx, 0x100`): once 256 records are listed, the next record
+not yet marked is marked but not listed, and the walk ends there; numbers
+that miss or repeat after the 256th are still walked. 0x00444D80 then
+places each listed section while its byte count plus 0x400 fits the pool's
+free space (0x00444DD4..0x00444DDF).
 
 What each part contributes to a race:
 
@@ -193,21 +202,82 @@ What each part contributes to a race:
 | the debug section | appended when 0x0073612C and 0x00736130 are both set. Both lie in zero-initialised memory past the file's `.data`, 0x0073612C is written only as zero (0x00445D7F) and 0x00736130 is written by no instruction that names it; the one string beside that write is `Seeulator` | never, as traced |
 | the forced list at `+0x590` | filled only by 0x004444F0, whose callers are the front end's 0x0047BA47..0x0047BABC with section 2300; cleared by 0x00444590 from 0x0042228D and 0x0042424B | not in a race |
 | the two zone slots | the key of the zone each tracked position stands in, and the zone's own list. 0x004443FD..0x00444404 set both keys to -1 whenever the streamer is reset, so the part is empty until a position is known | position-dependent |
-| the track byte | every record whose +10 byte is set; the byte at `+0x178` is written only at 0x00444365 and 0x0044463C, both times as zero | always |
+| the track byte | every record whose +10 byte is set, while the streamer's byte at `+0x178` is 0 (0x00444C94..0x00444C9C). It is stored as 0 when the streamer is set up for a track (0x00444365 in 0x00444340, 0x0044463C in 0x004445C0) and as 1 at 0x0044533B once the first request set is loaded, below | the start of a race |
 
 A last step, 0x00444CCA..0x00444D0A, adds 50 to every `Y` number below 2550
 when 0x0078A320 is 2. Its other readers suggest a player count - 0x00456BBD
 reads the two records at 0x007361B4 and 0x007361B8 when it is 2 - but that
-reading is not traced further. No
-`L1RA` record is numbered 2550 or above, so for this stream the step could
-only drop sections, never add them, and this note loads the single-player
-set.
+reading is not traced further. The step can only produce numbers from
+2550 to 2599, and no `L1RA` record carries one - the `Y` records run from
+2500 to 2524, and the next numbers held are the `Z` records from 2600 - so
+for this stream the step could only drop sections, never add them, and
+this note loads the single-player set.
 
 **So the permanent set of a track is the four fixed numbers, its
-`0x00034154` list and its track bytes**, and it is resident from the start
-of a race: the streamer is initialised at 0x0044974D, once
-`TRACKB%d.LZC` has loaded (the callback 0x004496A0 is registered at
-0x004497F6), with both zone keys at -1.
+`0x00034154` list and its track bytes**, and it is what a race starts
+with: the streamer is initialised at 0x0044974D, once `TRACKB%d.LZC` has
+loaded (the callback 0x004496A0 is registered at 0x004497F6), with both
+zone keys at -1. "Permanent" is this note's name for that set. It is not a
+promise the loader keeps it, as the next section shows.
+
+### After the first load: `+0x178`, 0x004443E0 and 0x00444780
+
+The streamer's update 0x00445180, called at 0x00445071, rebuilds the
+request when 0x00444FB0 reports a change in a tracked slot's zone key, or
+the streamer's `+0x179` asks for one, and no read is in flight; otherwise
+it places and reads what is requested.
+The end of the pass that finds the whole request set loaded - no read in
+flight, and 0x00444D80's last pass deferred nothing - stores 1 at `+0x178`:
+
+```text
+004451DB  call 0x4443e0                      ; a rebuild: clear the old request
+0044526F  call 0x444b50                      ;   and build the new one
+00445280  call 0x444ee0                      ; place what is requested
+004452F6  call 0x4446e0                      ; start reads, at most 3 in flight
+00445302  mov  eax, dword ptr [edi + 0x10]   ; reads in flight
+00445307  jg   0x44531a                      ;   some: not done yet
+00445309  mov  al, byte ptr [edi + 0x15f]    ; 0x00444D80 deferred a record
+00445311  je   0x445322                      ;   none: the set is loaded
+00445323  mov  byte ptr [edi + 0x15d], 1
+00445331  mov  dword ptr [0x6f3dac], 1
+0044533B  mov  byte ptr [edi + 0x178], 1     ; from now on, no track byte
+```
+
+From then on 0x00444C94 skips the track-byte loop. Every rebuild first
+calls 0x004443E0, whose loop 0x00444460..0x00444471 stores 0 in `+0xB` of
+every listed record and empties the list, and then 0x00444B50 lists only
+the fixed four, the `0x00034154` list and the two slots' zone lists. A
+flagged section none of those names stays loaded (state 3 at `+0xC`) but is
+no longer marked requested. And 0x00444EE0 (0x00445280) runs, whenever
+0x00444D80 reports requested bytes it could not place, a loop that calls
+0x00444780 to free one loaded record whose `+0xB` is 0 - the one with the
+smallest `+0x24`, the least recently requested, since 0x00444D47 stamps
+`+0x24` each time a request names the record - up to 0x9C3C00 bytes, and
+calls 0x00444830, not traced here, when 0x00444780 finds nothing to free.
+So a flagged section is
+requested at the start of a race and afterwards only while a zone slot's
+list names it; once unrequested it is resident but evictable.
+
+Only 0x0044533B stores 1 there. Every instruction in `.text` with a
+memory operand at displacement `+0x178` was decoded: the byte-wide stores
+are 0x00444365 and 0x0044463C (both `bl`, which is 0 from `xor ebx, ebx` in
+each routine), 0x0044533B, and 0x004454C2, a second copy of 0x0044533B's
+last five instructions in bytes between two routines that no direct call or
+jump reaches and no dword of the file points to; the only byte-wide read
+is 0x00444C94. The earlier version of this note listed the first two and
+missed the third.
+
+What that means for a race on 1003 is an inference, not a trace. On the
+route nothing is evicted: every record the route zones' lists name is
+flagged (all 73, below), so a rebuild while both slots stand in route zones
+asks for nothing that is not already resident, 0x00444D80 has nothing to
+place, and 0x00444780 never runs. That holds only while the car's own slot
+is in one of those zones, and the slot's own point accepts any zone
+(0x00444A20) through the path structure this note does not decode. A zone
+off the route whose list names unflagged sections larger than the pool's
+free room - the 21808648-byte pool less the 14750908 bytes the flagged and
+fixed records keep, about 7 MB - makes 0x00444780 free flagged sections,
+least recently requested first.
 
 ### The pool the loader sizes for it: 0x00444AF0
 
@@ -268,8 +338,10 @@ stream holds.
 
 That is why the permanent set is the whole track and not a subset of it:
 the exporter marked every section the route's zones can request, and the
-loader keeps all of them from the start. A zone off the route can still
-request more, and those land in the 2 MiB of headroom.
+loader loads all of them before the race starts. A zone off the route can
+still request more; what fits the pool's free room is placed there, and
+what does not evicts loaded sections no current request names, flagged
+ones included, as the previous section traces.
 
 ### What is not decoded, and the bounds that stand in for it
 
@@ -277,13 +349,14 @@ What a tracked position adds depends on where the car is, and that is the
 path structure at 0x007372B0 and the route itself, neither of which is
 decoded here (the `0x00034121`..`0x00034134` chunks of the `TRACKB` image
 are the likely source and belong to #61). The measurement above says that
-for a car on the route of 1003 the answer is nothing, and that is an
-inference from the data plus the look-ahead rule, not a trace of the path
-code. So `track-whole` loads two bounds beside the permanent set:
+for a car on the route of 1003 the answer is nothing - no section added and
+none evicted - and that is an inference from the data plus the look-ahead
+rule, not a trace of the path code. So `track-whole` loads two bounds beside
+the permanent set:
 
 | `--set` | What it loads | Retail rule? |
 | --- | --- | --- |
-| `permanent` | the three always-requested parts above, resolved as 0x00444D0E does | yes |
+| `permanent` | the three parts requested at the start of a race, resolved as 0x00444D0E does | yes, for the start of a race |
 | `zones` | that, plus every section any zone of the file lists | no: what a position anywhere on the map could ask for |
 | `stream` | that, plus every other record of the stream or the pack file | no: the outer bound |
 
@@ -540,7 +613,11 @@ that places nothing, `Z0` and `X99` scenery that place `X0`'s meshes, a
 lists, and a `W1` section whose crowd mesh the decoder refuses.
 
 It pins, among other things: every record field at its offset; each refusal
-at its offset, and the accepting side of each boundary; the loader's order
+at its offset, and the accepting side of each boundary - including a
+section whose offset lies wholly past the end of its file, which is refused
+by name before anything is read, and two sections moved byte for byte to
+offsets that are odd multiples of 128, which load and decode exactly as
+they do at their own 2048-byte boundaries; the loader's order
 and reasons; that the `0x00034154` and `0x00034153` lists are read to their
 count and not their capacity (the fixture writes a real section number just
 past each count); the first list keyed on the track winning; the 256-record
@@ -548,7 +625,7 @@ stop at 255, 256 and 300; the pool formula on both of its branches; the
 merge's renumbering and cost sums; that the whole scene places instances
 across sections while the track section alone places one of its four; the
 per-section costs; and every budget row, at and one past its ceiling.
-379 checks.
+388 checks.
 
 `tests/track_whole_guards.cmake` drives the command in 56 cases: every
 option refusal and both sides of every bound with no input at all, then the
@@ -556,8 +633,9 @@ listing, the three sets, other tracks' lists, missing files and two rendered
 frames over the fixture the unit tests write with `--write-fixture`. The
 whole fixture listing is pinned by SHA-256.
 
-**Deliberate breaks, each applied alone to `src/track_stream.cpp`, rebuilt,
-run, then restored byte for byte and touched:**
+**Deliberate breaks, each applied alone to `src/track_stream.cpp` - the last
+row to `include/nfsu/track_stream.h` - rebuilt, run, then restored byte for
+byte and touched:**
 
 | Break | Result |
 | --- | --- |
@@ -565,12 +643,16 @@ run, then restored byte for byte and touched:**
 | drop the largest-section term of the pool | caught: 2 checks |
 | keep each section's own mesh numbering in the merge | caught: 17 checks, including `the whole scene builds` |
 | accept a section at any offset | caught: 2 checks |
+| drop `section.offset > file_size ||` from the range test, so `file_size - offset` wraps and the reader copies from past the buffer | caught: 2 checks, the first `a section starting past the end of its file is refused by name`; the 379 checks before the review let it through |
+| raise the alignment at the check from 128 to 256 | caught: 4 checks, the first `Y0 at 18816 and X0 at 16512 load with no issue`; the 379 checks before the review let it through |
+| raise `kTrackStreamSectionAlignment` itself to 256 | caught: 6 checks, the first `section alignment: got 256, want 128`; the 379 checks before the review caught it by the constant's own check alone |
 
-After the restore the file's SHA-256 matched the original and the suite
-passed, 379 checks. The first break is the one that matters on retail
-data: `TrackZoneSectionList` carries a list's full capacity, and reading it
-past the count is exactly how an earlier draft of this layer requested
-section 0.
+After each restore the file matched its kept copy byte for byte and the
+suite passed. The last three rows come from the review of this issue and
+were run against the 379-check suite and then the 388-check one. The first
+break is the one that matters on retail data: `TrackZoneSectionList`
+carries a list's full capacity, and reading it past the count is exactly
+how an earlier draft of this layer requested section 0.
 
 ## Observed
 
@@ -580,8 +662,14 @@ section 0.
   tracks except for the track byte at +10.
 - 0x00444B50 requests, in order, 2500, 2400, 2600 and 2499, the first
   `0x00034154` list keyed on the track, the lists of the zones two slots
-  stand in, and every record whose track byte is set; 0x00444D0E resolves
-  them by number and stops at 256.
+  stand in, and, while the streamer's `+0x178` is 0, every record whose
+  track byte is set; 0x00444D0E resolves them by number and stops at the
+  first new record past 256.
+- 0x00445180 stores 1 at `+0x178` (0x0044533B) on the pass that finds the
+  request set loaded. Each later rebuild clears every listed record's
+  `+0xB` (0x004443E0) before listing the new request, and 0x00444EE0 frees
+  loaded records whose `+0xB` is 0, least recently requested first
+  (0x00444780), whenever a requested record does not fit.
 - 0x00444AF0 sizes the streaming pool from the flagged and fixed records,
   and 0x004499A0 adds 2 MiB: 21808648 bytes for track 1003.
 - For every one of the 28 tracks with a `0x00034153` record keyed on itself,
@@ -594,15 +682,20 @@ section 0.
 
 - The track byte marks the sections the track's route can see, and the
   permanent set is therefore the whole track a race on it draws. The
-  loader's code proves the set is resident; that the route never leaves the
-  13 zones rests on the look-ahead rule and the data, not on the path code.
+  loader's code proves the set is loaded when a race starts and evictable
+  once it is; that the route never leaves the 13 zones, and so never
+  evicts one, rests on the look-ahead rule and the data, not on the path
+  code.
 - 0x0078A320 is the number of players, from its readers; its value in a
   career race was not traced.
 
 ## Unknown
 
 - What a tracked position adds: the path structure at 0x007372B0 that
-  0x00444870 consults before the zones, and the route chunks behind it.
+  0x00444870 consults before the zones, and the route chunks behind it -
+  and so whether a race on 1003 ever evicts a flagged section.
+- What 0x00444830 frees when 0x00444780 finds nothing to evict, and what
+  sets the streamer's `+0x179` to force a rebuild.
 - What file index 0 names, and what the `--` record's 79328 bytes are.
 - The word at record +32, which is close to but not equal to the section's
   byte sum (1448604 against 1448724 for `Z17`).
