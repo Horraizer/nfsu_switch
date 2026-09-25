@@ -110,7 +110,8 @@ nfsu::MemoryArena make_arena(std::uint64_t capacity, std::uint64_t max_alignment
     config.max_allocations = max_allocations;
     nfsu::MemoryArena arena;
     std::string error;
-    check(arena.create(config, error), "arena create: " + error);
+    const bool gpu_ok_1 = arena.create(config, error);
+    check(gpu_ok_1, "arena create: " + error);
     return arena;
 }
 
@@ -232,13 +233,13 @@ CarFixture car_fixture(bool with_skin) {
         skin.width = 8;
         skin.height = 4;
         skin.rgba.assign(8U * 4U * 4U, 0x60);
-        check(nfsu::bind_runtime_skin(skin, {kSkinHash}, kSkinSource, fixture.textures,
-                                      fixture.binding, error),
-              "bind the generated skin: " + error);
+        const bool gpu_ok_2 = nfsu::bind_runtime_skin(skin, {kSkinHash}, kSkinSource, fixture.textures,
+                                      fixture.binding, error);
+        check(gpu_ok_2, "bind the generated skin: " + error);
     }
-    check(nfsu::prepare_car_scene(fixture.geometry, fixture.textures, nfsu::MeshSelection{},
-                                  nfsu::SceneLimits{}, fixture.scene, error),
-          "prepare the car scene: " + error);
+    const bool gpu_ok_3 = nfsu::prepare_car_scene(fixture.geometry, fixture.textures, nfsu::MeshSelection{},
+                                  nfsu::SceneLimits{}, fixture.scene, error);
+    check(gpu_ok_3, "prepare the car scene: " + error);
     return fixture;
 }
 
@@ -556,9 +557,9 @@ TrackFixture track_fixture() {
     check(fixture.geometry.ok(), "the track geometry fixture parses");
     check(fixture.objects.ok(), "the track scenery fixture parses");
     std::string error;
-    check(nfsu::build_track_scene(fixture.geometry, fixture.objects, fixture.textures,
-                                  nfsu::TrackSceneOptions{}, fixture.scene, error),
-          "build the track scene: " + error);
+    const bool gpu_ok_4 = nfsu::build_track_scene(fixture.geometry, fixture.objects, fixture.textures,
+                                  nfsu::TrackSceneOptions{}, fixture.scene, error);
+    check(gpu_ok_4, "build the track scene: " + error);
     return fixture;
 }
 
@@ -620,9 +621,9 @@ void test_gate_accepts_rgba8() {
         nfsu::TextureUploadShape shape;
         std::string error;
         const std::uint64_t bytes = std::uint64_t{size.width} * size.height * 4U;
-        check(nfsu::check_texture_upload_format(nfsu::TextureUploadFormat::rgba8, size.width,
-                                                size.height, bytes, shape, error),
-              what + " is accepted: " + error);
+        const bool gpu_ok_5 = nfsu::check_texture_upload_format(nfsu::TextureUploadFormat::rgba8, size.width,
+                                                size.height, bytes, shape, error);
+        check(gpu_ok_5, what + " is accepted: " + error);
         check(shape.format == nfsu::TextureUploadFormat::rgba8, what + ": format");
         check_eq(shape.width, size.width, what + ": width");
         check_eq(shape.height, size.height, what + ": height");
@@ -634,9 +635,9 @@ void test_gate_accepts_rgba8() {
     nfsu::TextureUploadShape shape;
     std::string error;
     const std::uint32_t widest = static_cast<std::uint32_t>(nfsu::kMaxUploadResourceBytes / 4U);
-    check(nfsu::check_texture_upload_format(nfsu::TextureUploadFormat::rgba8, widest, 1,
-                                            nfsu::kMaxUploadResourceBytes, shape, error),
-          "the largest RGBA8 texture a block holds: " + error);
+    const bool gpu_ok_6 = nfsu::check_texture_upload_format(nfsu::TextureUploadFormat::rgba8, widest, 1,
+                                            nfsu::kMaxUploadResourceBytes, shape, error);
+    check(gpu_ok_6, "the largest RGBA8 texture a block holds: " + error);
     check(!nfsu::check_texture_upload_format(nfsu::TextureUploadFormat::rgba8, widest + 1U,
                                              1, nfsu::kMaxUploadResourceBytes + 4U, shape,
                                              error),
@@ -825,8 +826,8 @@ void test_car_table_is_exact() {
 
     nfsu::UploadTable table;
     std::string error;
-    check(nfsu::build_car_upload_table(scene, fixture.binding.source, table, error),
-          "car table: " + error);
+    const bool gpu_ok_7 = nfsu::build_car_upload_table(scene, fixture.binding.source, table, error);
+    check(gpu_ok_7, "car table: " + error);
     using Kind = nfsu::UploadResourceKind;
     using Life = nfsu::UploadLifetime;
     using Memory = nfsu::UploadMemory;
@@ -893,8 +894,8 @@ void test_generated_lifetime_follows_the_binding() {
         std::uint64_t generated;
     } cases[] = {{kSkinSource, 1}, {nfsu::kNoHandle, 0}, {kSkinSource + 1U, 0}, {0, 2}};
     for (const auto& c : cases) {
-        check(nfsu::build_car_upload_table(fixture.scene, c.source, table, error),
-              "car table: " + error);
+        const bool gpu_ok_8 = nfsu::build_car_upload_table(fixture.scene, c.source, table, error);
+        check(gpu_ok_8, "car table: " + error);
         check_eq(table.totals.generated_textures, c.generated,
                  "generated textures with source " + std::to_string(c.source));
         std::uint64_t named = 0;
@@ -910,8 +911,8 @@ void test_generated_lifetime_follows_the_binding() {
     // Without a skin, the skin hash resolves to nothing and no texture is
     // generated whatever source is named.
     CarFixture plain = car_fixture(false);
-    check(nfsu::build_car_upload_table(plain.scene, kSkinSource, table, error),
-          "plain car table: " + error);
+    const bool gpu_ok_9 = nfsu::build_car_upload_table(plain.scene, kSkinSource, table, error);
+    check(gpu_ok_9, "plain car table: " + error);
     check_eq(table.totals.textures, 2, "without a skin: two pack textures");
     check_eq(table.totals.generated_textures, 0, "without a skin: nothing generated");
 }
@@ -924,8 +925,8 @@ void test_tables_refuse_an_invalid_scene() {
     CarFixture fixture = car_fixture(true);
     nfsu::UploadTable table;
     std::string error;
-    check(nfsu::build_car_upload_table(fixture.scene, kSkinSource, table, error),
-          "car table before tampering: " + error);
+    const bool gpu_ok_10 = nfsu::build_car_upload_table(fixture.scene, kSkinSource, table, error);
+    check(gpu_ok_10, "car table before tampering: " + error);
     fixture.scene.textures[1].rgba.pop_back();
     check(!nfsu::build_car_upload_table(fixture.scene, kSkinSource, table, error),
           "a car scene with a short texture is refused");
@@ -934,8 +935,8 @@ void test_tables_refuse_an_invalid_scene() {
     check_eq(table.totals.resources, 0, "a refused car table has no totals");
 
     TrackFixture track = track_fixture();
-    check(nfsu::build_track_upload_table(track.scene, table, error),
-          "track table before tampering: " + error);
+    const bool gpu_ok_11 = nfsu::build_track_upload_table(track.scene, table, error);
+    check(gpu_ok_11, "track table before tampering: " + error);
     track.scene.region.meshes[1].vertices.pop_back();
     check(!nfsu::build_track_upload_table(track.scene, table, error),
           "a track scene with a vertex removed is refused");
@@ -955,7 +956,8 @@ void test_track_table_is_the_region_cost() {
     check_eq(region.textures.size(), 2, "the track region holds two textures");
     nfsu::UploadTable table;
     std::string error;
-    check(nfsu::build_track_upload_table(fixture.scene, table, error), "track table: " + error);
+    const bool gpu_ok_12 = nfsu::build_track_upload_table(fixture.scene, table, error);
+    check(gpu_ok_12, "track table: " + error);
     using Kind = nfsu::UploadResourceKind;
     using Life = nfsu::UploadLifetime;
     using Memory = nfsu::UploadMemory;
@@ -1016,13 +1018,13 @@ void test_empty_streams_are_counted_not_listed() {
     textures.textures.push_back(make_texture(kPaintHash, 4, 4, 0x40));
     nfsu::PreparedCarScene scene;
     std::string error;
-    check(nfsu::prepare_car_scene(geometry, textures, nfsu::MeshSelection{},
-                                  nfsu::SceneLimits{}, scene, error),
-          "a car with a mesh that draws nothing is prepared: " + error);
+    const bool gpu_ok_13 = nfsu::prepare_car_scene(geometry, textures, nfsu::MeshSelection{},
+                                  nfsu::SceneLimits{}, scene, error);
+    check(gpu_ok_13, "a car with a mesh that draws nothing is prepared: " + error);
     check_eq(scene.meshes.size(), 3, "the empty mesh is prepared");
     nfsu::UploadTable table;
-    check(nfsu::build_car_upload_table(scene, nfsu::kNoHandle, table, error),
-          "the table over it: " + error);
+    const bool gpu_ok_14 = nfsu::build_car_upload_table(scene, nfsu::kNoHandle, table, error);
+    check(gpu_ok_14, "the table over it: " + error);
     check_eq(table.totals.empty_buffers, 1, "one empty stream is counted");
     check_eq(table.totals.vertex_buffers, 3, "all three vertex buffers are listed");
     check_eq(table.totals.index_buffers, 2, "only the two drawn index buffers are listed");
@@ -1068,12 +1070,12 @@ void test_names_hashes_and_sources() {
 
     nfsu::PreparedCarScene scene;
     std::string error;
-    check(nfsu::prepare_car_scene(geometry, textures, nfsu::MeshSelection{}, nfsu::SceneLimits{},
-                                  scene, error),
-          "prepare the renamed car: " + error);
+    const bool gpu_ok_15 = nfsu::prepare_car_scene(geometry, textures, nfsu::MeshSelection{}, nfsu::SceneLimits{},
+                                  scene, error);
+    check(gpu_ok_15, "prepare the renamed car: " + error);
     nfsu::UploadTable table;
-    check(nfsu::build_car_upload_table(scene, nfsu::kNoHandle, table, error),
-          "its table: " + error);
+    const bool gpu_ok_16 = nfsu::build_car_upload_table(scene, nfsu::kNoHandle, table, error);
+    check(gpu_ok_16, "its table: " + error);
     std::vector<std::string> names;
     for (const nfsu::UploadResource& resource : table.resources) {
         names.push_back(resource.name);
@@ -1110,22 +1112,24 @@ void make_rig(Rig& rig, std::uint64_t buffer_bytes = 4096, std::uint64_t image_b
     rig.images = make_arena(image_bytes, 4096);
     rig.staging = make_arena(staging_bytes, 4096);
     std::string error;
-    check(rig.ledger.create(nfsu::UploadArenas{&rig.buffers, &rig.images, &rig.staging},
-                            nfsu::linear_image_layout, 256, error),
-          "ledger create: " + error);
+    const bool gpu_ok_17 = rig.ledger.create(nfsu::UploadArenas{&rig.buffers, &rig.images, &rig.staging},
+                            nfsu::linear_image_layout, 256, error);
+    check(gpu_ok_17, "ledger create: " + error);
 }
 
 nfsu::UploadTable table_of(const nfsu::PreparedCarScene& scene) {
     nfsu::UploadTable table;
     std::string error;
-    check(nfsu::build_car_upload_table(scene, kSkinSource, table, error), "car table: " + error);
+    const bool gpu_ok_18 = nfsu::build_car_upload_table(scene, kSkinSource, table, error);
+    check(gpu_ok_18, "car table: " + error);
     return table;
 }
 
 nfsu::UploadTable table_of(const nfsu::PreparedTrackScene& scene) {
     nfsu::UploadTable table;
     std::string error;
-    check(nfsu::build_track_upload_table(scene, table, error), "track table: " + error);
+    const bool gpu_ok_19 = nfsu::build_track_upload_table(scene, table, error);
+    check(gpu_ok_19, "track table: " + error);
     return table;
 }
 
@@ -1189,7 +1193,8 @@ void test_ledger_fences() {
     make_rig(rig);
     std::vector<nfsu::UploadHandle> handles;
     std::string error;
-    check(rig.ledger.upload_table(table, 10, handles, error), "upload at fence 10: " + error);
+    const bool gpu_ok_20 = rig.ledger.upload_table(table, 10, handles, error);
+    check(gpu_ok_20, "upload at fence 10: " + error);
     check_eq(handles.size(), table.resources.size(), "one handle per resource");
     placements(rig.ledger, handles, table, "fences");
     nfsu::UploadLedgerStats stats = rig.ledger.stats();
@@ -1212,8 +1217,10 @@ void test_ledger_fences() {
     // stays until 20.
     const nfsu::UploadResource& skin = table.resources[4];
     nfsu::UploadHandle late;
-    check(rig.ledger.upload(skin, 20, late, error), "upload a skin at 20: " + error);
-    check(rig.ledger.release(late, 15, error), "release it for last use at 15: " + error);
+    const bool gpu_ok_21 = rig.ledger.upload(skin, 20, late, error);
+    check(gpu_ok_21, "upload a skin at 20: " + error);
+    const bool gpu_ok_22 = rig.ledger.release(late, 15, error);
+    check(gpu_ok_22, "release it for last use at 15: " + error);
     rig.ledger.retire(15);
     check_eq(rig.ledger.stats().releasing, 1, "a copy in flight holds its image at 15");
     rig.ledger.retire(19);
@@ -1222,7 +1229,8 @@ void test_ledger_fences() {
     check_eq(rig.ledger.stats().releasing, 0, "and not at 20");
 
     // The converse: uploaded long ago, released for last use at 30.
-    check(rig.ledger.release_all(handles, 30, error), "release the car at 30: " + error);
+    const bool gpu_ok_23 = rig.ledger.release_all(handles, 30, error);
+    check(gpu_ok_23, "release the car at 30: " + error);
     stats = rig.ledger.stats();
     check_eq(stats.releasing, 7, "releasing after release_all");
     check_eq(stats.resident, 0, "nothing resident after release_all");
@@ -1342,10 +1350,12 @@ void test_leaks_are_reported_by_name() {
     make_rig(rig);
     std::vector<nfsu::UploadHandle> handles;
     std::string error;
-    check(rig.ledger.upload_table(table, 1, handles, error), "upload: " + error);
+    const bool gpu_ok_24 = rig.ledger.upload_table(table, 1, handles, error);
+    check(gpu_ok_24, "upload: " + error);
     for (std::size_t i = 0; i < handles.size(); ++i) {
         if (i != 3 && i != 6) {
-            check(rig.ledger.release(handles[i], 2, error), "release: " + error);
+            const bool gpu_ok_25 = rig.ledger.release(handles[i], 2, error);
+            check(gpu_ok_25, "release: " + error);
         }
     }
     check(rig.ledger.releasing().size() == 6, "six are releasing before the fence");
@@ -1377,8 +1387,10 @@ void test_double_release_is_refused_by_name() {
     const nfsu::UploadResource& paint = table.resources[5];
     nfsu::UploadHandle handle;
     std::string error;
-    check(rig.ledger.upload(paint, 1, handle, error), "upload: " + error);
-    check(rig.ledger.release(handle, 8, error), "release at 8: " + error);
+    const bool gpu_ok_26 = rig.ledger.upload(paint, 1, handle, error);
+    check(gpu_ok_26, "upload: " + error);
+    const bool gpu_ok_27 = rig.ledger.release(handle, 8, error);
+    check(gpu_ok_27, "release at 8: " + error);
     check(!rig.ledger.release(handle, 2, error), "a second release before the reclaim");
     check_has(error, "double release of car texture 1 hash 0x5C1A0002: already released at fence 8",
               "the second release names the resource and keeps the first fence");
@@ -1391,7 +1403,8 @@ void test_double_release_is_refused_by_name() {
               "after the reclaim it is still named");
 
     nfsu::UploadHandle next;
-    check(rig.ledger.upload(table.resources[0], 9, next, error), "a new upload: " + error);
+    const bool gpu_ok_28 = rig.ledger.upload(table.resources[0], 9, next, error);
+    check(gpu_ok_28, "a new upload: " + error);
     check_eq(next.slot, handle.slot, "the new upload takes the freed slot");
     check(!rig.ledger.release(handle, 10, error), "a release through the old handle");
     check_has(error, "double release of an upload reclaimed earlier", "a reused slot");
@@ -1407,6 +1420,48 @@ void test_double_release_is_refused_by_name() {
     check_has(error, "never issued", "a default handle");
     check_eq(rig.ledger.stats().refused_releases, 5, "five refused releases");
     check_eq(rig.ledger.stats().resident, 1, "the new upload is still resident");
+}
+
+// Defect: release_all that does not stop at the first refusal, or that
+// reports success despite one. A caller batches a frame's releases and
+// trusts a true return to mean every handle in the list is now releasing;
+// a regressed release_all that returns true after a refusal would leave the
+// handles after the refused one silently unreleased and never retried - the
+// generated skin case issue #137 names, but exercised here on plain buffers
+// so no staging arena is involved.
+void test_release_all_stops_at_first_refusal() {
+    CarFixture car = car_fixture(true);
+    const nfsu::UploadTable table = table_of(car.scene);
+    Rig rig;
+    make_rig(rig);
+    std::vector<nfsu::UploadHandle> handles;
+    std::string error;
+    const bool gpu_ok_29 = rig.ledger.upload_table(table, 1, handles, error);
+    check(gpu_ok_29, "upload: " + error);
+    check_eq(handles.size(), 7, "one handle per car table resource");
+
+    // handles[1] ("car mesh 0 BODY index buffer") is released ahead of time,
+    // so the batch below re-releases it and is refused on that entry.
+    const bool gpu_ok_30 = rig.ledger.release(handles[1], 5, error);
+    check(gpu_ok_30, "release ahead of time: " + error);
+    check_eq(rig.ledger.stats().releasing, 1, "one handle releasing before the batch");
+
+    const std::vector<nfsu::UploadHandle> batch{handles[0], handles[1], handles[2]};
+    const bool released_all = rig.ledger.release_all(batch, 9, error);
+    check(!released_all, "a batch with an already-released handle is refused");
+    check_has(error,
+              "double release of car mesh 0 BODY index buffer: already released at fence 5",
+              "the refusal names the double release, not a made-up reason");
+
+    nfsu::UploadRecord record;
+    check(rig.ledger.find(handles[0], record) && record.released,
+          "the handle ahead of the refused one was released before the batch stopped");
+    check(rig.ledger.find(handles[2], record) && !record.released,
+          "the handle after the refused one was never reached, so it is still resident");
+    check_eq(rig.ledger.stats().releasing, 2,
+             "only the two handles up to and including the refused one are releasing");
+    check_eq(rig.ledger.stats().resident, 5,
+             "the handle after the refused one, and the three never in the batch, stay resident");
 }
 
 // Defect: a handle the ledger never issued accepted as one it did. Two such
@@ -1438,8 +1493,10 @@ void test_handles_the_ledger_never_issued() {
     Rig fresh;
     make_rig(fresh);
     nfsu::UploadHandle first;
-    check(fresh.ledger.upload(table.resources[0], 1, first, error), "first: " + error);
-    check(fresh.ledger.release(first, 1, error), "release first: " + error);
+    const bool gpu_ok_31 = fresh.ledger.upload(table.resources[0], 1, first, error);
+    check(gpu_ok_31, "first: " + error);
+    const bool gpu_ok_32 = fresh.ledger.release(first, 1, error);
+    check(gpu_ok_32, "release first: " + error);
     fresh.ledger.retire(1);
     const nfsu::UploadHandle next_generation{first.slot, first.generation + 1U};
     check(!fresh.ledger.release(next_generation, 2, error),
@@ -1451,9 +1508,11 @@ void test_handles_the_ledger_never_issued() {
     // The slot is reused by a second upload, which is itself reclaimed; the
     // name left in the slot is the second one's now.
     nfsu::UploadHandle second;
-    check(fresh.ledger.upload(table.resources[2], 2, second, error), "second: " + error);
+    const bool gpu_ok_33 = fresh.ledger.upload(table.resources[2], 2, second, error);
+    check(gpu_ok_33, "second: " + error);
     check_eq(second.slot, first.slot, "the second upload reuses the slot");
-    check(fresh.ledger.release(second, 2, error), "release second: " + error);
+    const bool gpu_ok_34 = fresh.ledger.release(second, 2, error);
+    check(gpu_ok_34, "release second: " + error);
     fresh.ledger.retire(2);
     check(!fresh.ledger.release(first, 3, error), "the first handle after two reclaims");
     check_has(error, "its slot 0 has been reused",
@@ -1518,15 +1577,18 @@ void test_upload_table_is_all_or_nothing() {
         // reports list the retried table in table order.
         nfsu::ArenaConfig roomy = rig.buffers.config();
         roomy.capacity = 4096;
-        check(rig.buffers.create(roomy, error), "a roomier buffer arena: " + error);
+        const bool gpu_ok_35 = rig.buffers.create(roomy, error);
+        check(gpu_ok_35, "a roomier buffer arena: " + error);
         roomy = rig.images.config();
         roomy.capacity = 4096;
-        check(rig.images.create(roomy, error), "a roomier image arena: " + error);
+        const bool gpu_ok_36 = rig.images.create(roomy, error);
+        check(gpu_ok_36, "a roomier image arena: " + error);
         roomy = rig.staging.config();
         roomy.capacity = 1024;
-        check(rig.staging.create(roomy, error), "a roomier staging arena: " + error);
-        check(rig.ledger.upload_table(table, 1, handles, error),
-              std::string(c.what) + ": fits in room: " + error);
+        const bool gpu_ok_37 = rig.staging.create(roomy, error);
+        check(gpu_ok_37, "a roomier staging arena: " + error);
+        const bool gpu_ok_38 = rig.ledger.upload_table(table, 1, handles, error);
+        check(gpu_ok_38, std::string(c.what) + ": fits in room: " + error);
         std::vector<std::string> names;
         for (const nfsu::UploadResource& resource : table.resources) {
             names.push_back(resource.name);
@@ -1552,7 +1614,8 @@ void test_generated_skin_is_replaced_on_its_own() {
     make_rig(rig);
     std::vector<nfsu::UploadHandle> handles;
     std::string error;
-    check(rig.ledger.upload_table(table, 0, handles, error), "upload the car: " + error);
+    const bool gpu_ok_39 = rig.ledger.upload_table(table, 0, handles, error);
+    check(gpu_ok_39, "upload the car: " + error);
     rig.ledger.retire(0);
     const std::vector<Placed> car_before = placements(rig.ledger, handles, table, "car");
     // What a backend reads on a vinyl change to decide what to drop is the
@@ -1630,9 +1693,11 @@ void test_lost_placements_are_counted() {
     make_rig(rig);
     std::vector<nfsu::UploadHandle> handles;
     std::string error;
-    check(rig.ledger.upload_table(table, 1, handles, error), "upload: " + error);
+    const bool gpu_ok_40 = rig.ledger.upload_table(table, 1, handles, error);
+    check(gpu_ok_40, "upload: " + error);
     rig.buffers.reset();
-    check(rig.ledger.release_all(handles, 2, error), "release: " + error);
+    const bool gpu_ok_41 = rig.ledger.release_all(handles, 2, error);
+    check(gpu_ok_41, "release: " + error);
     rig.ledger.retire(2);
     check_eq(rig.ledger.stats().lost_placements, 4, "the four buffer placements are lost");
     check_eq(rig.images.stats().used_bytes, 0, "the image placements were reclaimed");
@@ -1673,10 +1738,11 @@ void test_ledger_creation_is_checked() {
                          nfsu::kMaxArenaAllocations + 1U, error),
           "one resource more than the cap");
     check_has(error, "max resources 4194305 is outside 1..4194304", "the resource cap is named");
-    check(ledger.create(nfsu::UploadArenas{&arena, &arena, nullptr}, nfsu::linear_image_layout,
-                        1, error),
-          "one arena for buffers and images, no staging: " + error);
-    check(ledger.upload(resource, 0, handle, error), "upload a buffer: " + error);
+    const bool gpu_ok_42 = ledger.create(nfsu::UploadArenas{&arena, &arena, nullptr}, nfsu::linear_image_layout,
+                        1, error);
+    check(gpu_ok_42, "one arena for buffers and images, no staging: " + error);
+    const bool gpu_ok_43 = ledger.upload(resource, 0, handle, error);
+    check(gpu_ok_43, "upload a buffer: " + error);
     nfsu::UploadHandle second;
     check(!ledger.upload(resource, 0, second, error), "the second of one");
     check_has(error, "already tracks 1 resources", "the resource limit says so");
@@ -1687,7 +1753,8 @@ void test_ledger_creation_is_checked() {
     nfsu::UploadResource texture = resource;
     texture.kind = nfsu::UploadResourceKind::texture;
     texture.memory = nfsu::UploadMemory::image;
-    check(ledger.release(handle, 0, error), "release: " + error);
+    const bool gpu_ok_44 = ledger.release(handle, 0, error);
+    check(gpu_ok_44, "release: " + error);
     ledger.retire(0);
     check(!ledger.upload(texture, 0, handle, error), "a texture with no staging arena");
     check_has(error, "has no staging arena", "the missing staging arena is named");
@@ -1702,11 +1769,12 @@ void test_ledger_creation_is_checked() {
     // The block limit is inclusive: exactly the largest block is accepted.
     nfsu::MemoryArena wide = make_arena(1ULL << 33U, 4096);
     nfsu::UploadLedger large;
-    check(large.create(nfsu::UploadArenas{&wide, &wide, &wide}, nfsu::linear_image_layout, 1,
-                       error),
-          "create over a wide arena: " + error);
+    const bool gpu_ok_45 = large.create(nfsu::UploadArenas{&wide, &wide, &wide}, nfsu::linear_image_layout, 1,
+                       error);
+    check(gpu_ok_45, "create over a wide arena: " + error);
     resource.bytes = nfsu::kMaxUploadResourceBytes;
-    check(large.upload(resource, 0, handle, error), "exactly the largest block: " + error);
+    const bool gpu_ok_46 = large.upload(resource, 0, handle, error);
+    check(gpu_ok_46, "exactly the largest block: " + error);
 
     // create() starts the fence count over. A ledger that kept the old
     // completed fence would, once its new uploads are numbered from 1 again,
@@ -1714,14 +1782,17 @@ void test_ledger_creation_is_checked() {
     nfsu::MemoryArena reused = make_arena(4096, 4096);
     nfsu::UploadLedger restarted;
     const nfsu::UploadArenas both{&reused, &reused, &reused};
-    check(restarted.create(both, nfsu::linear_image_layout, 4, error), "create: " + error);
+    const bool gpu_ok_47 = restarted.create(both, nfsu::linear_image_layout, 4, error);
+    check(gpu_ok_47, "create: " + error);
     restarted.retire(30);
     check_eq(restarted.stats().completed_fence, 30, "the first run reached fence 30");
-    check(restarted.create(both, nfsu::linear_image_layout, 4, error), "create again: " + error);
+    const bool gpu_ok_48 = restarted.create(both, nfsu::linear_image_layout, 4, error);
+    check(gpu_ok_48, "create again: " + error);
     check_eq(restarted.stats().completed_fence, 0, "create() starts the fences over");
     texture.memory = nfsu::UploadMemory::image;
     nfsu::UploadHandle staged;
-    check(restarted.upload(texture, 1, staged, error), "a texture at fence 1: " + error);
+    const bool gpu_ok_49 = restarted.upload(texture, 1, staged, error);
+    check(gpu_ok_49, "a texture at fence 1: " + error);
     restarted.retire(0);
     check_eq(restarted.stats().staged, 1, "its staging waits for fence 1");
     restarted.retire(1);
@@ -1740,18 +1811,23 @@ void test_create_again_keeps_old_handles_stale() {
     nfsu::UploadLedger ledger;
     std::string error;
     const nfsu::UploadArenas arenas{&arena, &arena, &arena};
-    check(ledger.create(arenas, nfsu::linear_image_layout, 4, error), "create: " + error);
+    const bool gpu_ok_50 = ledger.create(arenas, nfsu::linear_image_layout, 4, error);
+    check(gpu_ok_50, "create: " + error);
     nfsu::UploadResource resource;
     resource.name = "a buffer";
     resource.bytes = 16;
     resource.alignment = 4;
     nfsu::UploadHandle old;
-    check(ledger.upload(resource, 1, old, error), "upload: " + error);
-    check(ledger.release(old, 1, error), "release: " + error);
+    const bool gpu_ok_51 = ledger.upload(resource, 1, old, error);
+    check(gpu_ok_51, "upload: " + error);
+    const bool gpu_ok_52 = ledger.release(old, 1, error);
+    check(gpu_ok_52, "release: " + error);
     ledger.retire(1);
-    check(ledger.create(arenas, nfsu::linear_image_layout, 4, error), "create again: " + error);
+    const bool gpu_ok_53 = ledger.create(arenas, nfsu::linear_image_layout, 4, error);
+    check(gpu_ok_53, "create again: " + error);
     nfsu::UploadHandle fresh;
-    check(ledger.upload(resource, 2, fresh, error), "upload again: " + error);
+    const bool gpu_ok_54 = ledger.upload(resource, 2, fresh, error);
+    check(gpu_ok_54, "upload again: " + error);
     check_eq(fresh.slot, old.slot, "the slot number is reused");
     check(!ledger.release(old, 2, error), "a handle from before create() is refused");
     check_has(error, "double release of an upload reclaimed earlier", "the refusal");
@@ -1786,12 +1862,12 @@ void test_image_layout_query_is_honoured() {
     };
     nfsu::UploadLedger ledger;
     std::string error;
-    check(ledger.create(nfsu::UploadArenas{&buffers, &images, &staging}, query, 16, error),
-          "create: " + error);
+    const bool gpu_ok_55 = ledger.create(nfsu::UploadArenas{&buffers, &images, &staging}, query, 16, error);
+    check(gpu_ok_55, "create: " + error);
     nfsu::UploadHandle first;
     nfsu::UploadHandle second;
-    check(ledger.upload(paint, 0, first, error) && ledger.upload(paint, 0, second, error),
-          "two tiled textures: " + error);
+    const bool gpu_ok_56 = ledger.upload(paint, 0, first, error) && ledger.upload(paint, 0, second, error);
+    check(gpu_ok_56, "two tiled textures: " + error);
     nfsu::UploadRecord record;
     check(ledger.find(second, record), "the second is live");
     check_eq(record.placement.offset, 512, "the second image is placed after the first's layout");
@@ -1801,6 +1877,18 @@ void test_image_layout_query_is_honoured() {
     check_eq(ledger.stats().staged, 2, "two staging copies");
     check_eq(ledger.stats().staged_bytes, 128, "staged bytes are texels, not layouts");
     check_eq(ledger.stats().resident_bytes, 1024, "resident bytes are layouts");
+
+    // releasing_bytes must sum the same field as resident_bytes: the image's
+    // placement, which the layout query pads to 512, not its staging copy,
+    // which stays at the 64-byte texel size. The two differ here, so summing
+    // the wrong one is caught.
+    const bool gpu_ok_57 = ledger.release(second, 7, error);
+    check(gpu_ok_57, "release the second tiled image: " + error);
+    const nfsu::UploadLedgerStats released = ledger.stats();
+    check_eq(released.releasing, 1, "one image releasing");
+    check_eq(released.releasing_bytes, 512, "releasing bytes are the layout size, not the texel size");
+    check_eq(released.staged_bytes, 128, "staged bytes are unchanged by the release");
+    check_eq(images.stats().used_bytes, 1024, "the release alone does not reclaim the placement");
 
     layout_bytes = 63;
     check(!ledger.upload(paint, 0, first, error), "a layout smaller than the texels");
@@ -1890,7 +1978,8 @@ void test_switch_budget() {
              "GPU alignment");
     nfsu::MemoryPlan plan;
     std::string error;
-    check(plan.create(budget, error), "the Switch budget builds a plan: " + error);
+    const bool gpu_ok_58 = plan.create(budget, error);
+    check(gpu_ok_58, "the Switch budget builds a plan: " + error);
     check_eq(plan.cpu_bytes(),
              nfsu::kPersistentBudgetPlaceholder +
                  nfsu::kResidentRegionsPlaceholder * nfsu::kStreamingRegionBudgetPlaceholder +
@@ -1910,8 +1999,8 @@ void test_scene_requirement_places_the_table() {
     const nfsu::UploadTable table = table_of(track.scene);
     nfsu::SceneMemoryRequirement requirement;
     std::string error;
-    check(nfsu::upload_table_requirement(table, nfsu::linear_image_layout, requirement, error),
-          "requirement: " + error);
+    const bool gpu_ok_59 = nfsu::upload_table_requirement(table, nfsu::linear_image_layout, requirement, error);
+    check(gpu_ok_59, "requirement: " + error);
     check_eq(requirement.buffer_bytes, 318, "buffer bytes");
     check_eq(requirement.buffer_extent, 322, "buffer extent with the alignment gaps");
     check_eq(requirement.image_bytes, 92, "image bytes at the linear lower bound");
@@ -1926,8 +2015,8 @@ void test_scene_requirement_places_the_table() {
         alignment = 1024;
         return true;
     };
-    check(nfsu::upload_table_requirement(table, tiled, requirement, error),
-          "tiled requirement: " + error);
+    const bool gpu_ok_60 = nfsu::upload_table_requirement(table, tiled, requirement, error);
+    check(gpu_ok_60, "tiled requirement: " + error);
     check_eq(requirement.image_bytes, 2048, "two images of 1024 bytes");
     check_eq(requirement.image_extent, 2048, "placed back to back at 1024");
     check_eq(requirement.staging_batch_bytes, 92, "staging does not depend on the layout");
@@ -1968,8 +2057,8 @@ void test_scene_requirement_reads_the_whole_table() {
     const nfsu::UploadTable table = table_of(car.scene);
     nfsu::SceneMemoryRequirement requirement;
     std::string error;
-    check(nfsu::upload_table_requirement(table, nfsu::linear_image_layout, requirement, error),
-          "car requirement: " + error);
+    const bool gpu_ok_61 = nfsu::upload_table_requirement(table, nfsu::linear_image_layout, requirement, error);
+    check(gpu_ok_61, "car requirement: " + error);
     check_eq(requirement.staging_largest_bytes, 128, "the largest texture is the first one");
     check_eq(requirement.staging_batch_bytes, 216, "car staging for every texture at once");
     check_eq(requirement.buffer_bytes, 270, "car buffer bytes");
@@ -1982,8 +2071,8 @@ void test_scene_requirement_reads_the_whole_table() {
         alignment = 256;
         return true;
     };
-    check(nfsu::upload_table_requirement(table, spaced, requirement, error),
-          "spaced requirement: " + error);
+    const bool gpu_ok_62 = nfsu::upload_table_requirement(table, spaced, requirement, error);
+    check(gpu_ok_62, "spaced requirement: " + error);
     check_eq(requirement.image_bytes, 216, "spaced: the image bytes");
     check_eq(requirement.image_extent, 536, "spaced: 128 at 0, 64 at 256, 24 at 512");
 
@@ -1994,9 +2083,9 @@ void test_scene_requirement_reads_the_whole_table() {
                            return resource.kind == nfsu::UploadResourceKind::texture;
                        }),
         buffers_only.resources.end());
-    check(nfsu::upload_table_requirement(buffers_only, nfsu::linear_image_layout, requirement,
-                                         error),
-          "a table with no texture: " + error);
+    const bool gpu_ok_63 = nfsu::upload_table_requirement(buffers_only, nfsu::linear_image_layout, requirement,
+                                         error);
+    check(gpu_ok_63, "a table with no texture: " + error);
     check_eq(requirement.buffer_extent, 270, "no texture: the buffers");
     check_eq(requirement.image_bytes + requirement.image_extent + requirement.staging_batch_bytes +
                  requirement.staging_largest_bytes,
@@ -2028,8 +2117,8 @@ void test_scene_requirement_reads_the_whole_table() {
     wide.bytes = nfsu::kMaxArenaCapacity - 3U;
     wide.alignment = 4;
     single.resources.push_back(wide);
-    check(nfsu::upload_table_requirement(single, nfsu::linear_image_layout, requirement, error),
-          "a worst case of exactly kMaxArenaCapacity: " + error);
+    const bool gpu_ok_64 = nfsu::upload_table_requirement(single, nfsu::linear_image_layout, requirement, error);
+    check(gpu_ok_64, "a worst case of exactly kMaxArenaCapacity: " + error);
     check_eq(requirement.buffer_extent, nfsu::kMaxArenaCapacity - 3U,
              "the widest single buffer an arena can model");
 }
@@ -2050,9 +2139,9 @@ void test_frame_ceiling_is_the_full_draw_list() {
     }
     nfsu::TrackDrawList list;
     std::string error;
-    check(nfsu::build_track_draw_list(track.scene, visible, nfsu::TrackDrawListOptions{}, list,
-                                      error),
-          "the full draw list: " + error);
+    const bool gpu_ok_65 = nfsu::build_track_draw_list(track.scene, visible, nfsu::TrackDrawListOptions{}, list,
+                                      error);
+    check(gpu_ok_65, "the full draw list: " + error);
     const std::uint64_t bytes = list.entries.size() * sizeof(nfsu::TrackDrawListEntry);
     check_eq(list.entries.size(), 6, "four placed instances draw six groups");
     check_eq(nfsu::track_scene_frame_ceiling(track.scene), bytes,
@@ -2062,7 +2151,8 @@ void test_frame_ceiling_is_the_full_draw_list() {
         config.category = nfsu::MemoryCategory::transient;
         config.capacity = capacity;
         nfsu::MemoryArena frame;
-        check(frame.create(config, error), "frame arena: " + error);
+        const bool gpu_ok_66 = frame.create(config, error);
+        check(gpu_ok_66, "frame arena: " + error);
         nfsu::ArenaAllocation out;
         const nfsu::ArenaRefusal got =
             frame.allocate(bytes, alignof(nfsu::TrackDrawListEntry), out);
@@ -2094,6 +2184,7 @@ const TestCase kTests[] = {
     {"upload_release_upload_returns_to_a_known_state", test_upload_release_upload_returns_to_a_known_state},
     {"leaks_are_reported_by_name", test_leaks_are_reported_by_name},
     {"double_release_is_refused_by_name", test_double_release_is_refused_by_name},
+    {"release_all_stops_at_first_refusal", test_release_all_stops_at_first_refusal},
     {"handles_the_ledger_never_issued", test_handles_the_ledger_never_issued},
     {"upload_table_is_all_or_nothing", test_upload_table_is_all_or_nothing},
     {"generated_skin_is_replaced_on_its_own", test_generated_skin_is_replaced_on_its_own},
