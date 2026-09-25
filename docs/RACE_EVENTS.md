@@ -211,6 +211,12 @@ track twice, once with 0 and once with 1 (0x004BA182 and 0x004BA224 into
 +0x18 is non-zero (0x004BA293..0x004BA2F0). Drift tracks are left out of
 the second pass (0x004BA204..0x004BA209).
 
+A third, more direct reader: the brief screen (0x004C5AA7..0x004C5AB0)
+passes the event record's +0x7B (slot 0 direction) and +0x78 (slot 0
+track) to 0x004AD6D0, which formats `REVERSE_TRACK_NAME_%d` when the byte
+is non-zero and `TRACK_NAME_%d` when it is 0. The game's own UI names
+direction 0 forward this way.
+
 Data: only 0 and 1 occur, on 86 and 56 slots. No drift slot is 1, which
 matches drift tracks having no reverse entry in the quick-race list. And
 the up to five 12-byte entries at +0x38 that 0x005A0E64..0x005A0EB1 walks
@@ -236,8 +242,9 @@ second observation or a named reader:
 - +0xD4 to +0x127, three 0x1C-byte records that each begin with a short
   NUL-terminated name, and the word at +0x128.
 - The meaning of kinds 0 and 2 to 6. Kinds 2 and 3 matter to the
-  prerequisite rule below; kinds 3, 5 and 4 are events 111, 112 and 113,
-  the last three numbered events.
+  prerequisite rule below; kind 3 is not unique to event 111 - it is also
+  events 15, 47, 68 and 77, all time trials. Kinds 5 and 4 are events 112
+  and 113, the last two numbered events before the 120..122 gap.
 
 ## The Underground order
 

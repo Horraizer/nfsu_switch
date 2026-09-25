@@ -180,7 +180,12 @@ Bytes event_record(const EventSpec& spec) {
 }
 
 // Numbers out of order and with a gap, as the retail table has a gap at 85
-// and ends with 120..122.
+// and ends with 120..122. Event 10 is kind 3 (a time trial, as retail
+// events 15, 47, 68 and 77 are), and its prerequisite {9} is never won by
+// test_availability's main sequence, so it stays closed there until that
+// test sets its status directly. Event 11 is any-of {10}, exercising the
+// kind-3 half of the prerequisite rule (0x005A1068 cmp esi,3) the same way
+// event 9 already exercises the kind-2 half on event 7.
 std::vector<EventSpec> fixture_events() {
     return {
         {0, 0, 0, {{1003, 2, 0}}, 0, {0}},
@@ -192,6 +197,8 @@ std::vector<EventSpec> fixture_events() {
         {7, 2, 4, {{1102, 2, 1}}, 1, {3, 6}},
         {9, 0, 1, {{1210, 2, 1}}, 1, {7}},
         {120, 8, 0, {{1003, 3, 0}}, 0, {0}},
+        {10, 3, 4, {{1102, 2, 0}}, 0, {9}},
+        {11, 0, 0, {{1003, 2, 0}}, 1, {10}},
     };
 }
 
@@ -426,8 +433,8 @@ void test_event_table() {
     check(table.container_offset == kEventContainerOffset, "container offset");
     check(table.chunk_offset == kEventChunkOffset, "event chunk offset");
     check(table.record_offset == kEventPayloadOffset, "event record offset");
-    check(table.records.size() == 9, "nine event records");
-    if (table.records.size() != 9) {
+    check(table.records.size() == 11, "eleven event records");
+    if (table.records.size() != 11) {
         return;
     }
 
@@ -438,10 +445,13 @@ void test_event_table() {
     check(knockout.kind == 0, "kind from +0x04");
     check(knockout.type == 5, "type from +0x08");
     check(knockout.race_count == 1 && knockout.races.size() == 1, "one race");
-    check(knockout.races[0].offset == base + nfsu::kRaceEventRaceOffset, "race slot offset");
-    check(knockout.races[0].track == 1003, "race track from slot +0");
-    check(knockout.races[0].laps == 3, "race laps from slot +2");
-    check(knockout.races[0].direction == 1, "race direction from slot +3");
+    if (knockout.races.size() == 1) {
+        check(knockout.races[0].offset == base + nfsu::kRaceEventRaceOffset,
+              "race slot offset");
+        check(knockout.races[0].track == 1003, "race track from slot +0");
+        check(knockout.races[0].laps == 3, "race laps from slot +2");
+        check(knockout.races[0].direction == 1, "race direction from slot +3");
+    }
     check(knockout.prerequisite_mode == nfsu::kPrerequisitesAllOf &&
               knockout.prerequisite_count == 1 && knockout.prerequisites.size() == 1 &&
               knockout.prerequisites[0] == 0,
@@ -681,6 +691,21 @@ void test_availability() {
     check(opened(table, status) == std::vector<std::uint32_t>({5, 9}),
           "status 4 on a kind-2 prerequisite counts");
 
+    // Event 11 is any-of {10}, and 10 is kind 3 (a time trial): status 4
+    // or 5 on it counts, exactly as kind 2 does above (0x005A1068
+    // cmp esi, 3). Retail events 16, 17, 48, 69, 78 and 112 each depend
+    // on a kind-3 event the same way.
+    status[10] = 5;
+    check(opened(table, status) == std::vector<std::uint32_t>({5, 9, 11}),
+          "status 5 on a kind-3 prerequisite counts, matching kind 2");
+    status[10] = 4;
+    check(opened(table, status) == std::vector<std::uint32_t>({5, 9, 11}),
+          "status 4 on a kind-3 prerequisite counts, matching kind 2");
+    status[10] = 3;
+    check(opened(table, status) == std::vector<std::uint32_t>({5, 9}),
+          "an entered but unwon kind-3 prerequisite does not open its dependant");
+    status[10] = 0;
+
     check(!nfsu::race_event_available(table, table.records[1],
                                       std::vector<std::uint8_t>(10, 2)),
           "a status vector shorter than 256 is refused");
@@ -761,7 +786,7 @@ void test_load_from_file() {
         nfsu::load_race_event_table(directory / "FrontB.lzc", image);
     check(events.ok() && events.jdlz && events.stored_size == packed.size() &&
               events.image_size == frontb.size() && image == frontb &&
-              events.records.size() == 9,
+              events.records.size() == 11,
           "a JDLZ FrontB loads and parses");
 
     const nfsu::RaceEventTable missing =

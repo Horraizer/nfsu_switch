@@ -128,9 +128,11 @@ endif()
 # Every number here is the fixture's: the unit tests build the same bytes
 # and assert the same offsets. The records are deliberately out of number
 # order (5 before 3), one event is a three-race tournament, one is any-of,
-# and one is kind 8, which the availability rule never offers.
+# one is kind 8, which the availability rule never offers, and one is kind
+# 3, used as another event's prerequisite (the kind-3 half of the rule,
+# 0x005A1068 cmp esi, 3).
 nfsu_case("the fixture pair" 0
-          "globalb bytes: stored 1068 image 1068 jdlz 0\n;frontb bytes: stored 3514 image 3108 jdlz 1\n;track table: chunk offset 32 records at 40 count 4\n;track 1210 @544 number @652 region L1RB @608 lap-skip 1 @649 number-copy 1217 @654 mode-mask 0x00000002 @660 stream STREAML1RB.BUN pack STREAML1RB_1210.BUN textures TEX1210TRACK.BIN bundle TRACKB1210.LZC\n;event table: container offset 48 chunk offset 56 records at 64 count 9\n;event 6 @1724 kind 1 @1728 tournament type circuit (0) @1732 races 3 @1876 prerequisites all-of @1892 count 3 @1894 [1 2 5] @1880\n;  race 1 @1848 track 1003 laps 2 @1850 direction reverse (1) @1851 region L1RA stream STREAML1RA.BUN pack STREAML1RA_1003.BUN textures TEX1003TRACK.BIN\n;event 7 @2056 kind 2 @2060 type time-trial (4) @2064 races 1 @2208 prerequisites any-of @2224 count 2 @2226 [3 6] @2212\n;events: 9 tournaments 1 race slots 11\n;types: circuit 4 drag 1 sprint 1 drift 1 time-trial 1 lap-knockout 1 unknown 0\n;new career enters: event 0 (0x004B383E)\n;winning event 0 opens: 1 2 5\n;race 1: event 1 type circuit races 1 track 1003 laps 2 direction forward region L1RA stream STREAML1RA.BUN pack STREAML1RA_1003.BUN textures TEX1003TRACK.BIN\n;first circuit from race 1: event 1 type circuit races 1 track 1003 laps 2 direction forward region L1RA stream STREAML1RA.BUN pack STREAML1RA_1003.BUN textures TEX1003TRACK.BIN\n;circuit race slots by stream: STREAML1RA.BUN 5 STREAML1RB.BUN 1\n"
+          "globalb bytes: stored 1068 image 1068 jdlz 0\n;frontb bytes: stored 4261 image 3772 jdlz 1\n;track table: chunk offset 32 records at 40 count 4\n;track 1210 @544 number @652 region L1RB @608 lap-skip 1 @649 number-copy 1217 @654 mode-mask 0x00000002 @660 stream STREAML1RB.BUN pack STREAML1RB_1210.BUN textures TEX1210TRACK.BIN bundle TRACKB1210.LZC\n;event table: container offset 48 chunk offset 56 records at 64 count 11\n;event 6 @1724 kind 1 @1728 tournament type circuit (0) @1732 races 3 @1876 prerequisites all-of @1892 count 3 @1894 [1 2 5] @1880\n;  race 1 @1848 track 1003 laps 2 @1850 direction reverse (1) @1851 region L1RA stream STREAML1RA.BUN pack STREAML1RA_1003.BUN textures TEX1003TRACK.BIN\n;event 7 @2056 kind 2 @2060 type time-trial (4) @2064 races 1 @2208 prerequisites any-of @2224 count 2 @2226 [3 6] @2212\n;event 10 @3052 kind 3 @3056 type time-trial (4) @3060 races 1 @3204 prerequisites all-of @3220 count 1 @3222 [9] @3208\n;events: 11 tournaments 1 race slots 13\n;types: circuit 5 drag 1 sprint 1 drift 1 time-trial 2 lap-knockout 1 unknown 0\n;new career enters: event 0 (0x004B383E)\n;winning event 0 opens: 1 2 5\n;race 1: event 1 type circuit races 1 track 1003 laps 2 direction forward region L1RA stream STREAML1RA.BUN pack STREAML1RA_1003.BUN textures TEX1003TRACK.BIN\n;first circuit from race 1: event 1 type circuit races 1 track 1003 laps 2 direction forward region L1RA stream STREAML1RA.BUN pack STREAML1RA_1003.BUN textures TEX1003TRACK.BIN\n;circuit race slots by stream: STREAML1RA.BUN 6 STREAML1RB.BUN 1\n"
           "issue"
           "${globalb}" "${frontb}")
 
@@ -138,8 +140,8 @@ nfsu_case("the fixture pair" 0
 # changes this, where the needles above each watch one line.
 string(SHA256 listing_hash "${last_stdout}")
 string(LENGTH "${last_stdout}" listing_length)
-set(expected_hash "c3dfd16daaa827822b60ad2109c86bbb6618771934e06a1dd42d43010c74a899")
-set(expected_length 4419)
+set(expected_hash "0176e7846811113ba8bb68f98dfe6fa017e124d4fef3cfd25835b65ca1558bd6")
+set(expected_length 4961)
 if(NOT listing_hash STREQUAL expected_hash OR NOT listing_length EQUAL expected_length)
     nfsu_fail("the fixture listing is ${listing_length} bytes with SHA-256 ${listing_hash}\; expected ${expected_length} bytes with ${expected_hash}")
 endif()
@@ -148,7 +150,7 @@ endif()
 # (0x004ABC58), so the order lines are withheld and the run fails, but the
 # listing still shows the slot and says the track is not listed.
 nfsu_case("a race names a track the track table does not hold" 3
-          "event table issue at offset 1848: event 6 race 1 names track 1999, which is not in the track table;  race 1 @1848 track 1999 laps 2 @1850 direction reverse (1) @1851 track-not-listed\n;frontb bytes: stored 3108 image 3108 jdlz 0\n"
+          "event table issue at offset 1848: event 6 race 1 names track 1999, which is not in the track table;  race 1 @1848 track 1999 laps 2 @1850 direction reverse (1) @1851 track-not-listed\n;frontb bytes: stored 3772 image 3772 jdlz 0\n"
           "underground order;winning event;race 1: event"
           "${globalb}" "${broken}")
 
@@ -162,7 +164,7 @@ nfsu_case("the two files swapped" 3
 # A valid event table is still listed when the track table is missing, but
 # nothing that needs a track - the stream names, the order - is printed.
 nfsu_case("the event table without its track table" 3
-          "event table: container offset 48 chunk offset 56 records at 64 count 9\n;  race 0 @184 track 1003 laps 2 @186 direction forward (0) @187 track-not-listed\n"
+          "event table: container offset 48 chunk offset 56 records at 64 count 11\n;  race 0 @184 track 1003 laps 2 @186 direction forward (0) @187 track-not-listed\n"
           "region L1RA;race 1:;winning event"
           "${work}/missing_globalb.bun" "${frontb}")
 
