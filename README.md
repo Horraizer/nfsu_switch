@@ -61,6 +61,7 @@ build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc 783 -8.5
 build/nfsu_probe car-placement X:/Games/NFSU/Global/GLOBALB.BUN 240SX
 build/nfsu_probe vehicle-sim mixed --handling X:/Games/NFSU/Global/GLOBALB.BUN
 build/nfsu_probe race-events X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/FrontEnd/FrontB.lzc
+build/nfsu_probe track-whole X:/Games/NFSU/Tracks/STREAML1RA.BUN X:/Games/NFSU/Tracks/TRACKB1003.lzc 1003 --texture X:/Games/NFSU/Tracks/TEX1003TRACK.BIN --texture X:/Games/NFSU/Global/INGAMEB.BUN --texture X:/Games/NFSU/Global/GLOBALB.BUN
 build/nfsu_probe part-markers X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN exhaust
 build/nfsu_probe body-skin-inputs 240SX --source car-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN --source car-vinyls X:/Games/NFSU/Cars/240SX/VINYLS.BIN --source other X:/Games/NFSU/Cars/TEXTURES.BIN --target-texture DUMMY_SKIN1 --vinyl 0 TRIBAL5 16 no-remap --doorline plain --base 200 30 30 128 --assemble
 ```
@@ -135,6 +136,16 @@ the Underground order - the event a new career enters, the events winning it
 opens, race 1 and the first circuit from race 1. It exits 3 if either table
 fails validation or a race names a track the track table does not hold. See
 `docs/RACE_EVENTS.md`.
+`track-whole` loads the whole track one race uses rather than one bounded
+region of it. The track's `TRACKB####.LZC` carries the streaming table of
+its `STREAM*.BUN`; the command applies the loader rule recovered from
+`speed.exe` to pick the sections the game loads for that track number,
+reads exactly their byte ranges and nothing else, places them as one scene
+and prints each section's counts, the totals and the memory budgets of
+issue #52 for the desktop and for the Switch arena plan. `--set zones` and
+`--set stream` load the two bounds the rule sits inside, and `--out` draws
+the whole track with the CPU reference renderer and never replaces a file.
+See `docs/TRACK_WHOLE.md`.
 `car-parts` parses the car part database of `GLOBAL/GLOBALB.BUN` and lists
 every part record: car type hash, slot, upgrade level, part name hash and
 the four per-LOD mesh hashes. A car type name lists only its records.
