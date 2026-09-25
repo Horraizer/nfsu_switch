@@ -1,6 +1,8 @@
 # The car path: every library the stock-car frame of docs/RENDERER.md is
-# made with, from the parsers to the CPU reference renderer, and the three
-# small ones the Switch application that shows that frame adds (issue #141).
+# made with, from the parsers to the CPU reference renderer, the three
+# small ones the Switch application that shows that frame adds (issue #141),
+# and the runtime body skin and the controller camera that paint the car and
+# orbit it there (issue #148).
 # This file is the one place they are declared. The top-level
 # CMakeLists.txt includes it before the desktop and Switch configures part,
 # so the console compiles these sources from the same lists and with the
@@ -177,7 +179,8 @@ add_library(nfsu_stock_frame
 )
 
 target_link_libraries(nfsu_stock_frame
-    PUBLIC nfsu_stock_scene nfsu_texture_decode nfsu_render nfsu_sha256)
+    PUBLIC nfsu_stock_scene nfsu_texture_decode nfsu_render nfsu_sha256
+           nfsu_runtime_skin)
 nfsu_enable_warnings(nfsu_stock_frame)
 
 # Text drawn into an RGBA8 image with a built-in 5x7 font: how the Switch
@@ -195,6 +198,149 @@ target_include_directories(nfsu_screen_text
 target_compile_features(nfsu_screen_text PUBLIC cxx_std_17)
 nfsu_enable_warnings(nfsu_screen_text)
 
+# The runtime body skin and the controller camera (issue #148). The Switch
+# application composes the body skin the way nfsu_viewer's --skin-car does
+# and orbits its camera with the controller model of docs/INPUT.md, so the
+# console builds these too. The blocks below, down to nfsu_input_camera,
+# were moved here from CMakeLists.txt as they were, comments and all:
+# nfsu_body_skin, nfsu_skin_inputs and nfsu_runtime_skin from beside
+# nfsu_probe, nfsu_inspect from above the desktop window, and nfsu_inspect's
+# floating-point options, nfsu_input and nfsu_input_camera from the
+# platform services block. As for the first seven above, no source list,
+# option, link or dependency of any target differs on the desktop; only the
+# declaration order does.
+
+# Body-skin pixel compositor reference. It depends on nothing but the
+# standard library, and it disables floating-point contraction so that the
+# traced truncation behaviour does not depend on FMA availability.
+add_library(nfsu_body_skin
+    src/body_skin.cpp
+)
+
+target_include_directories(nfsu_body_skin
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_compile_features(nfsu_body_skin PUBLIC cxx_std_17)
+nfsu_enable_warnings(nfsu_body_skin)
+if(MSVC)
+    target_compile_options(nfsu_body_skin PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_body_skin PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+
+# Body-skin input assembly: turns an explicit customization selection and
+# parsed texture packs into an owned BodySkinRequest. It sits between the
+# pack reader and the compositor and depends on both.
+add_library(nfsu_skin_inputs
+    src/skin_inputs.cpp
+)
+
+target_link_libraries(nfsu_skin_inputs PUBLIC nfsu_core nfsu_body_skin)
+nfsu_enable_warnings(nfsu_skin_inputs)
+
+# Runtime body skin: selects the compositor path from the real target
+# record, runs the proven composite over assembled inputs and binds the
+# generated texture into a decoded texture set. It parses no packs of its
+# own and does no floating-point work; the arithmetic lives in
+# nfsu_body_skin, which carries its own flags.
+add_library(nfsu_runtime_skin
+    src/runtime_skin.cpp
+)
+
+target_link_libraries(nfsu_runtime_skin PUBLIC nfsu_skin_inputs nfsu_scene)
+nfsu_enable_warnings(nfsu_runtime_skin)
+
+# Backend-neutral interactive inspection state: the camera the pointer
+# drives, the selected material group, the diagnostic views and the overlay
+# text. It opens no window and calls no operating system, so it is tested
+# headlessly and a deko3d backend reuses it unchanged.
+add_library(nfsu_inspect
+    src/inspect.cpp
+)
+
+# Backend-neutral is about the windowing API, not about this link: the
+# state is declared in terms of RenderOptions, RenderLimits and OrbitCamera,
+# which live in nfsu_render, so the library carries a link-time dependency on
+# the CPU rasterizer even though it never calls render_scene. A deko3d
+# backend links it and submits its own frames; moving those three types into
+# a smaller target is the only thing that would drop the dependency, and
+# nothing needs that yet.
+target_link_libraries(nfsu_inspect PUBLIC nfsu_render)
+nfsu_enable_warnings(nfsu_inspect)
+
+# nfsu_inspect's orbit, pan and zoom decide the camera a recorded
+# controller session replays to (docs/INPUT.md), so contraction is disabled
+# there for the reason nfsu_render disables it. Measured, not assumed: GCC
+# 13 for AArch64 at -O3 fuses three multiply-adds into Inspector::orbit,
+# which fails nfsu_inspect_tests' "the orbit is reversible" and moves the
+# replayed session's per-frame digest; with these options both pass. x86-64
+# without FMA has nothing to fuse, so its builds are unchanged. Measured
+# once, in the worker's cloud session for this branch, cross-compiling and
+# running under QEMU there; not reproduced on the project's own toolchain,
+# and nothing here has run on a console.
+if(MSVC)
+    target_compile_options(nfsu_inspect PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_inspect PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+
+# The controller model: buttons, sticks, dead zones, the remapping table,
+# the rules that turn frames into actions and the recorded text form of a
+# sequence of frames. Standard library only, and no clock: a frame carries
+# its own time. Floating-point contraction is disabled because a recording
+# is replayed and compared byte for byte, so a fused multiply-add in the
+# dead zone would move a stick value by an ulp and a camera with it.
+add_library(nfsu_input
+    src/input.cpp
+    src/input_recording.cpp
+)
+
+target_include_directories(nfsu_input
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_compile_features(nfsu_input PUBLIC cxx_std_17)
+nfsu_enable_warnings(nfsu_input)
+if(MSVC)
+    target_compile_options(nfsu_input PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_input PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+
+# Controller input on the inspection camera. It drives an Inspector, never
+# a renderer, so it links nfsu_inspect and inherits that library's
+# link-time dependency on the CPU rasterizer's types and nothing more; the
+# comment on nfsu_inspect above says why that dependency exists. Contraction
+# is disabled for the reason it is disabled in nfsu_input.
+add_library(nfsu_input_camera
+    src/input_camera.cpp
+)
+
+target_link_libraries(nfsu_input_camera PUBLIC nfsu_input nfsu_inspect)
+nfsu_enable_warnings(nfsu_input_camera)
+if(MSVC)
+    target_compile_options(nfsu_input_camera PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_input_camera PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+
+# The stock car orbited on the console (issue #148): the application's
+# control table - the left stick orbits, - resets the camera, + exits -
+# over nfsu_input_camera's GamepadCamera, the Inspector camera it moves,
+# the check that the camera is the one the pinned frame was rendered from,
+# and the render at that camera. It reads no clock: a controller frame
+# carries its own time. It does no floating-point arithmetic of its own -
+# the camera's is nfsu_inspect's and nfsu_input_camera's, the render's
+# nfsu_render's, each with its own flags - so it carries none.
+# docs/SWITCH_BUILD.md.
+add_library(nfsu_stock_view
+    src/stock_view.cpp
+)
+
+target_link_libraries(nfsu_stock_view PUBLIC nfsu_input_camera nfsu_render)
+nfsu_enable_warnings(nfsu_stock_view)
+
 # The language the console compiles these as. Every target above asks for
 # cxx_std_17, and CMake reads that as a minimum: it adds no -std option when
 # the compiler's own default already meets it. The desktop's GCC 13 defaults
@@ -210,6 +356,7 @@ if(NINTENDO_SWITCH)
     set_target_properties(
         nfsu_image nfsu_core nfsu_texture_export nfsu_scene nfsu_stock_scene
         nfsu_texture_decode nfsu_render nfsu_sha256 nfsu_stock_frame
-        nfsu_screen_text
+        nfsu_screen_text nfsu_body_skin nfsu_skin_inputs nfsu_runtime_skin
+        nfsu_inspect nfsu_input nfsu_input_camera nfsu_stock_view
         PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
 endif()

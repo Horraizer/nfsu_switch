@@ -23,6 +23,15 @@
 # once more without --place-wheels, which draws a different assembly, and
 # that frame must differ from the application's.
 #
+# Then the painted frame (issue #148): the viewer with the same command and
+# the painted skin options, --skin-car 240SX --skin-doorline plain
+# --skin-base 30 60 160 128, against nfsu_stock_frame_tests --painted-frame,
+# the application's path with nfsu::stock_240sx_skin(). The same three
+# requirements hold, the report lines now including the viewer's "skin:",
+# "skin bound:" and "skin generated:" lines, and the painted frame must
+# differ from the unpainted one, so that a skin that painted nothing could
+# not pass.
+#
 # The work directory is this test's alone. It is removed whole before the
 # run, so no file of an earlier run can stand in for this one's, and again
 # after a pass; after a failure it is kept for inspection.
@@ -162,8 +171,91 @@ if(unplaced_hash STREQUAL frame_hash)
         "comparison above could not have told two assemblies apart")
 endif()
 
+# The painted frame (issue #148).
+set(PAINTED "${WORK}/viewer_painted.tga")
+execute_process(
+    COMMAND "${VIEWER}" ${viewer_inputs} "${PAINTED}" ${viewer_options} --place-wheels
+            --skin-car 240SX --skin-doorline plain --skin-base 30 60 160 128
+    RESULT_VARIABLE painted_result
+    OUTPUT_VARIABLE painted_output
+    ERROR_VARIABLE painted_error)
+string(REPLACE "\r\n" "\n" painted_output "${painted_output}")
+if(NOT painted_result EQUAL 0 OR NOT painted_error STREQUAL "")
+    message(FATAL_ERROR
+        "the painted viewer exited ${painted_result}; its standard error:\n${painted_error}")
+endif()
+if(NOT EXISTS "${PAINTED}")
+    message(FATAL_ERROR "the painted viewer wrote no frame")
+endif()
+file(SIZE "${PAINTED}" painted_size)
+file(SHA256 "${PAINTED}" painted_hash)
+string(TOUPPER "${painted_hash}" painted_hash)
+
+execute_process(
+    COMMAND "${TESTS}" --painted-frame "${ROOT}"
+    RESULT_VARIABLE app_result
+    OUTPUT_VARIABLE app_output
+    ERROR_VARIABLE app_error)
+string(REPLACE "\r\n" "\n" app_output "${app_output}")
+if(NOT app_result EQUAL 0 OR NOT app_error STREQUAL "")
+    message(FATAL_ERROR
+        "--painted-frame exited ${app_result}:\n${app_output}\n${app_error}")
+endif()
+if(NOT app_output MATCHES "\nsha256 ([0-9A-F]+)\n")
+    message(FATAL_ERROR "--painted-frame printed no sha256 line:\n${app_output}")
+endif()
+set(app_hash "${CMAKE_MATCH_1}")
+if(NOT app_output MATCHES "\ntga_bytes ([0-9]+)\n")
+    message(FATAL_ERROR "--painted-frame printed no tga_bytes line:\n${app_output}")
+endif()
+set(app_size "${CMAKE_MATCH_1}")
+if(NOT app_output MATCHES "\ninputs_ok 1\n" OR NOT app_output MATCHES "\nview_default 1\n")
+    message(FATAL_ERROR
+        "--painted-frame found issues or rendered away from the default camera:\n"
+        "${app_output}")
+endif()
+
+if(NOT painted_size EQUAL app_size)
+    message(FATAL_ERROR "the painted viewer wrote ${painted_size} bytes, the application's "
+                        "path encoded ${app_size}")
+endif()
+if(NOT painted_hash STREQUAL app_hash)
+    message(FATAL_ERROR
+        "the painted frames differ:\n  viewer      ${painted_hash}\n"
+        "  application ${app_hash}")
+endif()
+
+string(REGEX MATCHALL
+    "(stock slots|meshes|material groups|unresolved hashes|triangles submitted|triangles bad_index|triangles outside|triangles front|pixel tests|fragments|pixels drawn|drawn bounds|instances|skin|skin bound|skin generated): [^\n]*"
+    app_lines "${app_output}")
+list(LENGTH app_lines app_line_count)
+if(NOT app_line_count EQUAL 17)
+    message(FATAL_ERROR
+        "--painted-frame printed ${app_line_count} report lines, not 17:\n${app_output}")
+endif()
+foreach(line IN LISTS app_lines)
+    string(FIND "\n${painted_output}" "\n${line}\n" at)
+    if(at EQUAL -1)
+        message(FATAL_ERROR
+            "the application's path reports \"${line}\", which the painted viewer does "
+            "not:\n${painted_output}")
+    endif()
+endforeach()
+
+# A skin that painted nothing would pass everything above.
+if(app_hash STREQUAL frame_hash)
+    message(FATAL_ERROR
+        "the painted frame hashes the same as the unpainted one, so the skin changed "
+        "nothing on screen")
+endif()
+
+# The summary, only once every check above has run.
 message(STATUS
     "stock frame: the viewer and the application's path agree on ${frame_size} bytes, "
     "SHA-256 ${frame_hash}, and on all 13 report lines; without --place-wheels the "
     "viewer's frame is ${unplaced_hash}")
+message(STATUS
+    "painted frame: the viewer and the application's path agree on ${app_size} bytes, "
+    "SHA-256 ${app_hash}, and on all 17 report lines; the unpainted frame is "
+    "${frame_hash}")
 file(REMOVE_RECURSE "${WORK}")

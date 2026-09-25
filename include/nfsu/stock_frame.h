@@ -4,7 +4,9 @@
 #include "nfsu/geometry.h"
 #include "nfsu/part_placement.h"
 #include "nfsu/render.h"
+#include "nfsu/runtime_skin.h"
 #include "nfsu/sha256.h"
+#include "nfsu/skin_inputs.h"
 #include "nfsu/stock_scene.h"
 #include "nfsu/texture.h"
 #include "nfsu/texture_decode.h"
@@ -29,6 +31,17 @@ namespace nfsu {
 //
 // with every other option at its default. On the desktop that command
 // writes kStock240sxFrameBytes bytes whose SHA-256 is kStock240sxFrameSha256.
+//
+// The painted frame (issue #148) is the same command with the runtime body
+// skin composed and bound as the viewer's --skin-car route does it, from
+// the same six files:
+//
+//   ... --place-wheels --skin-car 240SX --skin-doorline plain
+//       --skin-base 30 60 160 128
+//
+// On the desktop that command writes kStock240sxPaintedFrameBytes bytes
+// whose SHA-256 is kStock240sxPaintedFrameSha256. stock_240sx_skin() is
+// that selection and says where each part of it comes from.
 //
 // It exists for the Switch application (switch/car_main.cpp), which cannot
 // run the viewer and writes no file, and for the desktop check that the two
@@ -61,6 +74,12 @@ const char* stock_frame_file_path(std::size_t index) noexcept;
 constexpr std::uint64_t kStock240sxFrameBytes = 3686418;
 constexpr const char* kStock240sxFrameSha256 =
     "FD6727333A94803A97FD26282CD89DF6F3D3295E0231F4A871A1B14089D28CE9";
+
+// The painted desktop frame, the command above with stock_240sx_skin(), as
+// docs/SWITCH_BUILD.md pins it.
+constexpr std::uint64_t kStock240sxPaintedFrameBytes = 3686418;
+constexpr const char* kStock240sxPaintedFrameSha256 =
+    "FE51E57AF3AC52E53B026E02E13ADF020A1B6B33B62102010E9132455D8FF9B2";
 
 // The largest file read: 256 MiB, the limit every parser these files go
 // through applies to its input.
@@ -101,6 +120,48 @@ bool read_stock_frame_inputs(const std::filesystem::path& root, StockFrameInputs
 // pass, and the wheels and brakes at the culling placements.
 StockSceneRequest stock_240sx_request();
 
+// The viewer's runtime body skin options (src/viewer_main.cpp SkinOptions)
+// that a stock frame can take: --skin-car, --skin-target, whether
+// <car>_SKIN1 is bound, and the customization selection. There is no
+// --skin-vinyls here: the car's VINYLS.BIN is not one of the six files, so
+// a selection that names a vinyl layer finds no record for it and the
+// frame reports the skipped input. There is no --skin-dump either: nothing
+// is written.
+struct StockFrameSkin {
+    // False: no skin, and the frame is the unpainted one of #141.
+    bool enabled = false;
+    // --skin-car NAME. The source names are built from it, and
+    // <car>_SKIN1 is the hash the body's material groups name.
+    std::string car;
+    // --skin-target NAME, hashed with bin_hash.
+    std::string target_name = "DUMMY_SKIN1";
+    // Bind <car>_SKIN1 as well as the target; --skin-no-body-bind clears it.
+    bool body_bind = true;
+    // The customization, exactly as the viewer's options fill it. car_name,
+    // target_hash and target are set by prepare_stock_frame - to car, to
+    // bin_hash(target_name) and to the path the target record proves - as
+    // the viewer sets them, so whatever they hold here is not used.
+    BodySkinSelection selection;
+};
+
+// The painted frame's skin: --skin-car 240SX --skin-doorline plain
+// --skin-base 30 60 160 128.
+//
+// - The doorline is the one the doorline helper at 0x005A96B0 picks for
+//   this stock car: no WIDE_BODY part is installed and the FRONT_BUMPER,
+//   REAR_BUMPER and BODY parts are all at upgrade level 0
+//   (docs/CAR_SCENE.md), so the helper's rule in nfsu/skin_inputs.h gives
+//   plain. Its source and mask are in the car's own TEXTURES.BIN.
+// - No vinyl, hood or spoiler vinyl: a stock car installs none.
+// - The base paint is a choice, not the game's. The front end installs a
+//   BASE_PAINT record named by CarTypeInfo +0xC5C (docs/CAR_SCENE.md), and
+//   that field is not decoded, so the stock colour is unknown. 30/60/160
+//   with GLOSS 128 is the value docs/RENDERER.md already renders the retail
+//   skin with. No special colour is set, so all four fall back to it.
+// - The target is DUMMY_SKIN1, in the shared Cars/TEXTURES.BIN, and
+//   240SX_SKIN1 is bound as well, as the viewer does by default.
+StockFrameSkin stock_240sx_skin();
+
 // What the frame is made of, kept so that a caller can report on it. It is
 // not copyable: it holds several megabytes, and nothing needs a second one.
 struct StockFrame {
@@ -124,9 +185,23 @@ struct StockFrame {
     StockSceneReport report;
     Frame frame;
     RenderStats stats;
-    // Every problem a parser or the decode reported, each prefixed with the
-    // path of the file it is about, in the order the viewer prints the same
-    // problems to its standard error.
+    // The runtime body skin, set only when prepare_stock_frame was given an
+    // enabled StockFrameSkin and composed and bound it. skin_sources are the
+    // labels of the skin input sources actually searched, in order, as the
+    // viewer prints them ("car-textures", "shared-1", "shared-2");
+    // skin_bound_names the name each bound hash was made from, in binding
+    // order.
+    bool skinned = false;
+    std::vector<std::string> skin_sources;
+    BodySkinInputPlan skin_plan;
+    std::uint64_t skin_owned_bytes = 0;
+    RuntimeSkin skin;
+    RuntimeSkinBinding skin_binding;
+    std::vector<std::string> skin_bound_names;
+    // Every problem a parser, the decode or the skin reported, each prefixed
+    // with the path of the file it is about - "skin:" for a selected skin
+    // input that was skipped, which is about no one file - in the order the
+    // viewer prints the same problems.
     std::vector<std::string> issues;
     // The viewer's exit status 3 condition, negated: true when no input
     // reported any issue.
@@ -139,10 +214,29 @@ struct StockFrame {
 // geometry source, a stock assembly the part database or the car type table
 // cannot give, or a decode that exceeds its budget. Also false if any input
 // was not read: this frame is compared with a pinned one, and a partial set
-// of inputs can only ever differ from it.
+// of inputs can only ever differ from it. This is the unpainted frame; it
+// is the overload below with a StockFrameSkin that is not enabled.
 bool prepare_stock_frame(
     const StockFrameInputs& inputs,
     const StockSceneRequest& request,
+    StockFrame& frame,
+    std::string& error);
+
+// The same, with the runtime body skin when skin.enabled: after the decode
+// and before the bound stock scene is prepared, exactly where the viewer
+// runs its --skin-car block, the skin input sources are the car's pack and
+// then each shared source in order, the inputs are planned, the target path
+// is chosen from the target record, the inputs are assembled and checked,
+// the target surface is read, the skin is composed and it is bound under
+// the target hash and, with body_bind, <car>_SKIN1, as texture source
+// 1 + the number of shared sources. Also false, with error set, wherever
+// the viewer's skin block stops with exit status 2; a selected input that
+// was skipped is an issue and clears inputs_ok, as it makes the viewer
+// exit 3.
+bool prepare_stock_frame(
+    const StockFrameInputs& inputs,
+    const StockSceneRequest& request,
+    const StockFrameSkin& skin,
     StockFrame& frame,
     std::string& error);
 
@@ -165,5 +259,10 @@ std::vector<std::string> stock_frame_stats_lines(const RenderStats& stats);
 
 // The viewer's "stock slots:" line for the same report.
 std::string stock_frame_slots_line(const StockSceneReport& report);
+
+// The viewer's "skin:", "skin bound:" and "skin generated:" lines for a
+// skinned frame, character for character, in the order it prints them.
+// Empty for a frame that is not skinned.
+std::vector<std::string> stock_frame_skin_lines(const StockFrame& frame);
 
 } // namespace nfsu
