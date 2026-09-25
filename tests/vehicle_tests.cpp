@@ -233,6 +233,12 @@ void test_record_round_trip() {
     check(get_u32(record, 0x370) == 0x39D1B717U, "drag 0.0004 at +0x370");
     check(get_u32(record, 0x1EC) == 0x3FE66666U, "front static friction 1.8 at +0x1EC");
     check(get_u32(record, 0x298) == 0xBE051EB8U, "front droop limit -0.13 at +0x298");
+    check(get_u32(record, 0x110) == 0x3E800000U && get_u32(record, 0x114) == 0U &&
+              get_u32(record, 0x118) == 0x3E8F5C29U,
+          "centre of mass (0.25, 0, 0.28) at +0x110");
+    check(get_u32(record, 0x230) == 0x3EEB4A9FU && get_u32(record, 0x244) == 0x400FC2F5U &&
+              get_u32(record, 0x258) == 0x4017847BU,
+          "inertia diagonal at +0x230, +0x244, +0x258");
     check(record[0x12C] == 0x11 && record[0x2DC] == 0x11, "bytes outside the fields are untouched");
 
     nfsu::VehicleHandling decoded;
@@ -297,8 +303,12 @@ void test_record_refusals() {
         {"a negative rear damping",
          [](std::vector<unsigned char>& r) { put_f32(r, 0x2AC, -1.0F); }, 0x2A8},
         {"a negative drag", [](std::vector<unsigned char>& r) { put_f32(r, 0x370, -0.1F); }, 0x370},
-        {"a front wheel behind the origin",
+        {"a front wheel apart from its pair",
          [](std::vector<unsigned char>& r) { put_f32(r, 0x120, -0.2F); }, 0x120},
+        {"a centre of mass behind the rear axle",
+         [](std::vector<unsigned char>& r) { put_f32(r, 0x110, -1.5F); }, 0x110},
+        {"a zero yaw inertia", [](std::vector<unsigned char>& r) { put_f32(r, 0x258, 0.0F); }, 0x258},
+        {"a NaN roll inertia", [&](std::vector<unsigned char>& r) { put_f32(r, 0x230, nan); }, 0x230},
         {"unequal rear longitudinals",
          [](std::vector<unsigned char>& r) { put_f32(r, 0x1B0, -1.0F); }, 0x180},
     };
@@ -347,10 +357,13 @@ void test_model_refusals() {
     spec.approx.max_steer = std::numeric_limits<double>::quiet_NaN();
     check(!nfsu::VehicleModel(spec).valid(), "a NaN approximation is refused");
     spec = nfsu::stock_240sx_vehicle_spec();
-    spec.handling.struts[1].spring = 1.0F;
-    const nfsu::VehicleModel soft(spec);
-    check(!soft.valid() && soft.error().find("static compression") != std::string::npos,
-          "a spring too soft to hold the car is refused: " + soft.error());
+    spec.handling.centre_of_mass[0] = 1.5F;
+    const nfsu::VehicleModel ahead(spec);
+    check(!ahead.valid() && ahead.error().find("+0x110") != std::string::npos,
+          "a centre of mass ahead of the front axle is refused: " + ahead.error());
+    spec = nfsu::stock_240sx_vehicle_spec();
+    spec.approx.tyre_force_lift = 1.5;
+    check(!nfsu::VehicleModel(spec).valid(), "a tyre force lift above 1 is refused");
 
     const nfsu::VehicleModel model = stock_model();
     check(model.valid(), "the stock model is valid: " + model.error());
@@ -472,44 +485,155 @@ void test_shift_search() {
 // Behaviour
 // ---------------------------------------------------------------------------
 
+// The recovered preload of 0x00475460 for the stock 240SX, in its own
+// operation order: the weight levered about the centre of mass between
+// wheel 0's and wheel 3's axles.
+double stock_preload(std::size_t wheel) {
+    const double weight = static_cast<double>(1.22F) * static_cast<double>(9.8F) * 1000.0;
+    const double cg = static_cast<double>(0.25F);
+    const double to_front = static_cast<double>(1.39F) - cg;
+    const double to_rear = static_cast<double>(-1.04878F) - cg;
+    const double wheelbase = to_front - to_rear;
+    const double rear_share = to_front / wheelbase * 0.5;
+    const double front_share = 0.5 - rear_share;
+    return weight * (wheel < 2 ? front_share : rear_share);
+}
+
 void test_rest() {
     const nfsu::VehicleModel model = stock_model();
     const std::vector<nfsu::VehicleTelemetry> run = run_builtin(model, "rest");
     check(run.size() == 240, "rest runs 240 steps");
-    const double weight = static_cast<double>(1.22F) * 1000.0 * static_cast<double>(9.8F);
+    const double weight = static_cast<double>(1.22F) * static_cast<double>(9.8F) * 1000.0;
     double worst_move = 0.0;
     double worst_speed = 0.0;
+    double worst_compression = 0.0;
     bool idle = true;
     for (const nfsu::VehicleTelemetry& t : run) {
         worst_move = std::max(worst_move, std::fabs(t.position.x) + std::fabs(t.position.y));
         worst_speed = std::max(worst_speed, speed_of(t));
+        for (const nfsu::VehicleWheelTelemetry& w : t.wheels) {
+            worst_compression = std::max(worst_compression, std::fabs(w.compression));
+        }
         idle = idle && t.engine_rpm == 800.0 && t.engine_torque == 0.0 &&
                t.gear == nfsu::kVehicleGearFirst;
     }
     check(idle, "at rest the engine idles in first with no torque");
-    // reset() levels the car on the lever rule, which leaves the contact
-    // points a few millimetres off the lever arms once the body is pitched;
-    // the struts take that up in micrometres.
-    check(worst_move < 1e-5, "the car stays put: " + num(worst_move));
-    check(worst_speed < 1e-4, "the car stays still: " + num(worst_speed));
-    check(speed_of(run.back()) < 1e-6, "and settles: " + num(speed_of(run.back())));
+    // The preload carries the static load, 53.3% front: 0.5 - a / 2L per
+    // front wheel with a = 1.39 - 0.25 and L = 2.43878.
+    check(near(stock_preload(0), 3183.6, 0.1) && near(stock_preload(2), 2794.4, 0.1),
+          "the preload per front and rear wheel: " + num(stock_preload(0)) + " " +
+              num(stock_preload(2)));
+    check(near(2.0 * stock_preload(0) + 2.0 * stock_preload(2), weight, weight * 1e-12),
+          "the preloads add up to the weight");
+    // reset() pitches the body by the axles' different radii, which moves
+    // the contact points a few millimetres off the lever arms; the struts
+    // take that up by less than a millimetre, and the car settles.
+    check(worst_compression < 1e-3, "every strut rests within 1 mm of zero: " +
+                                        num(worst_compression));
+    check(worst_move < 1e-4, "the car stays put: " + num(worst_move));
+    check(worst_speed < 1e-3, "the car stays still: " + num(worst_speed));
+    check(speed_of(run.back()) < 1e-4, "and settles: " + num(speed_of(run.back())));
     const nfsu::VehicleTelemetry& last = run.back();
     const double loads =
         last.wheels[0].load + last.wheels[1].load + last.wheels[2].load + last.wheels[3].load;
-    check(near(loads, weight, weight * 1e-9), "the struts carry the weight: " + num(loads));
-    // The lever rule with the centre of mass at the body origin.
-    const double front_share = 1.04878 / (1.39 + 1.04878);
-    check(near(last.wheels[0].load, weight * front_share * 0.5, 1.0) &&
-              last.wheels[0].load == last.wheels[1].load &&
-              last.wheels[2].load == last.wheels[3].load,
-          "front and rear loads by the lever rule: " + num(last.wheels[0].load) + " " +
+    check(near(loads, weight, weight * 1e-5), "the struts carry the weight: " + num(loads));
+    check(near(last.wheels[0].load, stock_preload(0), 0.005 * stock_preload(0)) &&
+              near(last.wheels[2].load, stock_preload(2), 0.005 * stock_preload(2)) &&
+              near(last.wheels[0].load, last.wheels[1].load, 1e-6) &&
+              near(last.wheels[2].load, last.wheels[3].load, 1e-6),
+          "front and rear loads within 0.5% of the preloads: " + num(last.wheels[0].load) + " " +
               num(last.wheels[2].load));
-    // The static compression of the recovered progressive spring:
-    // (1 + 5.4 x) * 35000 x = load.
-    const double x = last.wheels[0].compression;
-    check(near((1.0 + 5.4 * x) * 35000.0 * x, last.wheels[0].load, 1e-3),
-          "the front strut is at its static compression: " + num(x));
-    check(x > 0.0 && x < 0.125, "the static compression is inside the strut's range");
+    // The centre of mass: 0.28 above the body origin, whose wheel centres
+    // sit 0.08 up with the rear's 0.3135 m radius under them.
+    check(near(last.position.z, 0.3135 - 0.08 + 0.28, 0.02),
+          "the centre of mass about half a metre up: " + num(last.position.z));
+}
+
+// The recovered strut force, recomputed from the telemetry in the model's
+// operation order for every wheel on the ground whose strut is off its bump
+// limit: F = (1 + p max(x, 0)) k x + c(v) v + preload + ar (x - x_partner),
+// F >= 0, with v the change of x over the step.
+void check_strut_forces(const std::vector<nfsu::VehicleTelemetry>& run, const std::string& name,
+                        bool expect_extension) {
+    const float progressive[2] = {5.4F, 5.1F};
+    const float spring[2] = {35.0F, 30.0F};
+    const float bump[2] = {5.4F, 5.0F};
+    const float rebound[2] = {5.8F, 5.65F};
+    const float anti_roll[2] = {37.0F, 30.0F};
+    const std::size_t partner[4] = {1, 0, 3, 2};
+    std::array<double, 4> previous{};
+    std::size_t checked = 0;
+    std::size_t extended = 0;
+    bool ok = true;
+    for (const nfsu::VehicleTelemetry& t : run) {
+        for (std::size_t k = 0; k < 4; ++k) {
+            const std::size_t axle = k / 2;
+            const double x = t.wheels[k].compression;
+            if (t.wheels[k].contact && x < static_cast<double>(0.125F)) {
+                const double rate = (x - previous[k]) / nfsu::kVehicleStepSeconds;
+                const double positive = x > 0.0 ? x : 0.0;
+                double f = (static_cast<double>(progressive[axle]) * positive + 1.0) *
+                           (static_cast<double>(spring[axle]) * 1000.0) * x;
+                f = f + (rate > 0.0 ? static_cast<double>(bump[axle]) * 1000.0
+                                    : static_cast<double>(rebound[axle]) * 1000.0) *
+                            rate;
+                f = f + stock_preload(k);
+                f = f + (x - t.wheels[partner[k]].compression) *
+                            (static_cast<double>(anti_roll[axle]) * 1000.0);
+                f = f + 0.0 * 200000.0;
+                f = f > 0.0 ? f : 0.0;
+                if (t.wheels[k].load != f && ok) {
+                    check(false, name + ": strut " + std::to_string(k) + " at step " +
+                                     std::to_string(t.step) + ": " + num(t.wheels[k].load) +
+                                     " against " + num(f));
+                    ok = false;
+                }
+                ++checked;
+                extended += x < 0.0 ? 1U : 0U;
+            }
+            previous[k] = x;
+        }
+    }
+    check(checked > 1000, name + ": " + std::to_string(checked) + " strut forces recomputed");
+    if (expect_extension) {
+        check(extended > 100, name + ": " + std::to_string(extended) +
+                                  " of them with the strut extended below rest");
+    }
+}
+
+void test_strut_force() {
+    const nfsu::VehicleModel model = stock_model();
+    check_strut_forces(run_builtin(model, "mixed"), "mixed", true);
+    check_strut_forces(run_builtin(model, "brake"), "brake", true);
+
+    // Dropped from 3 m: past the bump limit the bump stop (an
+    // APPROXIMATION) holds the body up; the recovered rule alone caps the
+    // strut force at its value at the limit and lets the body sink on.
+    const auto lowest = [](const nfsu::VehicleModel& m) {
+        nfsu::VehicleState state;
+        m.reset(state, nfsu::VehiclePose{});
+        const double rest = state.position.z;
+        state.position.z = state.position.z + 3.0;
+        double low = 1e9;
+        nfsu::VehicleTelemetry t;
+        for (int i = 0; i < 240; ++i) {
+            if (!m.step(state, nfsu::VehicleInput{}, nfsu::VehicleFlatGround(), t)) {
+                return -1e9;
+            }
+            low = std::min(low, t.position.z - rest);
+        }
+        return low;
+    };
+    nfsu::VehicleSpec no_stop = nfsu::stock_240sx_vehicle_spec();
+    no_stop.approx.bump_stop_rate = 0.0;
+    const double with_stop = lowest(model);
+    const double without_stop = lowest(nfsu::VehicleModel(no_stop));
+    std::cout << "lowest point after a 3 m drop, with and without the bump stop: "
+              << num(with_stop) << ' ' << num(without_stop) << '\n';
+    check(with_stop > -0.25, "the bump stop holds a 3 m drop within 0.25 m of rest: " +
+                                 num(with_stop));
+    check(without_stop < with_stop - 0.05, "and without it the body sinks further: " +
+                                               num(without_stop));
 }
 
 void test_acceleration() {
@@ -721,9 +845,9 @@ void test_grip_limit() {
     // Below the limit the response is linear in the input; past it, five
     // times the input gains nothing.
     check(a_small > 1.8 * a_light, "linear below the limit: " + num(a_light) + " -> " + num(a_small));
-    // Past the limit more lock gains nothing: the front tyres slide further
-    // and fall from the static toward the sliding coefficient.
-    check(a_full <= a_half && a_full > 0.6 * a_half,
+    // Past the limit doubling the lock gains less than a fifth, where below
+    // it doubling the input doubles the response.
+    check(a_full < 1.2 * a_half && a_full > 0.6 * a_half,
           "saturated past the limit: " + num(a_half) + " -> " + num(a_full));
 
     // The handbrake locks the rear wheels, which then slide, and the car
@@ -884,6 +1008,104 @@ void test_drivetrain() {
     moving.segments.push_back(m);
     check(run_script(model, moving, 10).back().gear == nfsu::kVehicleGearFirst,
           "no reverse while moving");
+}
+
+// 0x004757D0 and 0x0047562C over the three drive layouts the retail racers
+// use - front (rear fraction 0), four-wheel (0.5) and rear (1) - with
+// unequal finals, so that the recovered cross-pairing of the finals is
+// pinned: the engine speed reads +0x2C8 on wheels 0 and 1 and +0x2CC on 2
+// and 3, the wheel torque the other way round. Recomputed bit for bit.
+void test_drive_layouts() {
+    const float fractions[3] = {0.0F, 0.5F, 1.0F};
+    const float final_front = 3.9F;
+    const float final_rear = 4.3F;
+    for (const float fraction : fractions) {
+        nfsu::VehicleSpec spec = nfsu::stock_240sx_vehicle_spec();
+        spec.handling.rear_drive_fraction = fraction;
+        spec.handling.final_drive_front = final_front;
+        spec.handling.final_drive_rear = final_rear;
+        const nfsu::VehicleModel model(spec);
+        const std::string name = "rear fraction " + num(static_cast<double>(fraction));
+        check(model.valid(), name + ": " + model.error());
+        const std::vector<nfsu::VehicleTelemetry> run = run_builtin(model, "mixed");
+        const double k = static_cast<double>(9.549304F);
+        const double rear = static_cast<double>(fraction);
+        int previous_gear = nfsu::kVehicleGearFirst;
+        bool rpm_ok = true;
+        bool torque_ok = true;
+        double front_drive = 0.0;
+        double rear_drive = 0.0;
+        for (const nfsu::VehicleTelemetry& t : run) {
+            const double front_term = (t.wheels[1].spin + t.wheels[0].spin) *
+                                      static_cast<double>(final_rear) * 0.5 * k;
+            const double rear_term = (t.wheels[3].spin + t.wheels[2].spin) *
+                                     static_cast<double>(final_front) * 0.5 * k;
+            const double term = rear < 0.2 ? front_term
+                                           : (!(rear > 0.8) ? (front_term + rear_term) * 0.5
+                                                            : rear_term);
+            const double rpm =
+                term * static_cast<double>(
+                           spec.handling.gear_ratios[static_cast<std::size_t>(t.gear)]);
+            rpm_ok = rpm_ok && t.wheel_rpm == rpm;
+            const double ratio = static_cast<double>(
+                spec.handling.gear_ratios[static_cast<std::size_t>(previous_gear)]);
+            const double front = static_cast<double>(final_front) * ratio * t.engine_torque *
+                                 (1.0 - rear) * 0.5;
+            const double back =
+                static_cast<double>(final_rear) * ratio * t.engine_torque * rear * 0.5;
+            torque_ok = torque_ok && t.wheels[0].drive_torque == front &&
+                        t.wheels[1].drive_torque == front && t.wheels[2].drive_torque == back &&
+                        t.wheels[3].drive_torque == back;
+            front_drive = std::max(front_drive, std::fabs(t.wheels[0].drive_torque));
+            rear_drive = std::max(rear_drive, std::fabs(t.wheels[2].drive_torque));
+            previous_gear = t.gear;
+        }
+        check(rpm_ok, name + ": the wheel rpm is the recovered expression");
+        check(torque_ok, name + ": the wheel torque is the recovered split");
+        check((fraction < 1.0F) == (front_drive > 0.0) && (fraction > 0.0F) == (rear_drive > 0.0),
+              name + ": the driven axles");
+    }
+}
+
+// 0x00475601..0x00475626: at exactly idle with the throttle below 0.05 the
+// crank gives nothing; at 0.05 and above it gives the torque curve's share.
+void test_idle_threshold() {
+    const nfsu::VehicleModel model = stock_model();
+    const auto first_torque = [&](double throttle) {
+        nfsu::VehicleState state;
+        model.reset(state, nfsu::VehiclePose{});
+        nfsu::VehicleInput input;
+        input.throttle = throttle;
+        nfsu::VehicleTelemetry t;
+        model.step(state, input, nfsu::VehicleFlatGround(), t);
+        return t.engine_torque;
+    };
+    check(first_torque(0.0499) == 0.0, "no torque at idle below the 0.05 throttle");
+    check(first_torque(0.04) == 0.0, "none at 0.04 either");
+    const double expected = (model.torque_curve(800.0) * 0.0501 - 0.0) * 1000.0;
+    check(first_torque(0.0501) == expected,
+          "above 0.05 the torque curve's share: " + num(first_torque(0.0501)) + " against " +
+              num(expected));
+    check(first_torque(0.3) == (model.torque_curve(800.0) * 0.3 - 0.0) * 1000.0,
+          "and at 0.3");
+}
+
+// 0x00475900..0x00475905: an automatic gearbox below first gear is put in
+// first without its speed being recomputed, so that one call sees the old
+// slot's ratio - neutral's zero - and the clamp gives idle.
+void test_forced_first_gear() {
+    const nfsu::VehicleModel model = stock_model();
+    nfsu::VehiclePose pose;
+    pose.speed = 15.0;
+    nfsu::VehicleState state;
+    check(model.reset(state, pose), "reset at 15 m/s");
+    state.gear = nfsu::kVehicleGearNeutral;
+    nfsu::VehicleTelemetry t;
+    check(model.step(state, nfsu::VehicleInput{}, nfsu::VehicleFlatGround(), t), "neutral step");
+    check(t.gear == nfsu::kVehicleGearFirst && t.wheel_rpm == 0.0 && t.engine_rpm == 800.0,
+          "first gear, with neutral's rpm for that call: " + num(t.wheel_rpm));
+    check(model.step(state, nfsu::VehicleInput{}, nfsu::VehicleFlatGround(), t), "next step");
+    check(t.wheel_rpm > 800.0, "and the next call reads first gear's: " + num(t.wheel_rpm));
 }
 
 struct NoGround final : nfsu::VehicleGround {
@@ -1326,6 +1548,10 @@ int main(int argc, char** argv) {
     test_shift_tables();
     test_shift_search();
     test_rest();
+    test_strut_force();
+    test_drive_layouts();
+    test_idle_threshold();
+    test_forced_first_gear();
     test_acceleration();
     test_braking();
     test_cornering();

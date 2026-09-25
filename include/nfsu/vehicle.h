@@ -112,11 +112,13 @@ struct VehicleAxleTyre {
 // One axle's strut block: +0x280 front, +0x2A0 rear (0x20 bytes each),
 // reached at 0x00475A94 as sub-object +0x170 + axle * 0x20. The force rule
 // at 0x00475B2E..0x00475BAC is
-//   F = (1 + progressive * max(x, 0)) * spring * x
-//       + damping(v) * v + anti_roll * (x - x_partner),  clamped to F >= 0
+//   F = (1 + progressive * max(x, 0)) * spring * x + damping(v) * v
+//       + preload_k + anti_roll * (x - x_partner),  clamped to F >= 0
 // where x is the compression in metres, v its rate, damping(v) is
-// damping_bump for v > 0 and damping_rebound otherwise. The record's units
-// are kN, kN/m and kN s/m.
+// damping_bump for v > 0 and damping_rebound otherwise, and preload_k is the
+// wheel's share of the car's weight written by 0x00475460 (the lever rule
+// about the centre of mass below), so the car rests at x = 0. The record's
+// units are kN, kN/m and kN s/m.
 struct VehicleAxleStrut {
     float progressive = 0.0F;     // +0x00, 1/m
     float spring = 0.0F;          // +0x04, kN/m
@@ -130,15 +132,28 @@ struct VehicleAxleStrut {
 // The fields of one CarTypeInfo record this model reads. Values are kept as
 // the stored floats, bit for bit; the model converts them to SI once.
 struct VehicleHandling {
+    // +0x110, +0x114, +0x118: the centre of mass in the body frame, metres.
+    // 0x004745B8..0x004745CF copies it into the rigid body (+0x1D0),
+    // 0x00588541..0x00588558 subtracts it from a wheel's position, and the
+    // strut preload of 0x00475460 levers the weight about its first
+    // component when the flag at 0x006FFDE4 is set, as it is in the retail
+    // data.
+    std::array<float, 3> centre_of_mass{};
     std::array<VehicleWheelGeometry, kVehicleWheelCount> wheels{};
     std::array<VehicleAxleTyre, 2> tyres{};     // [0] front, [1] rear
     float mass = 0.0F;                          // +0x220, tonnes (weight = 9.8 * mass kN)
     // +0x224, +0x228, +0x22C. Observed only: they equal the real car's
-    // length, width and height and no reader was traced. The model uses them
-    // for its APPROXIMATED inertia.
+    // length, width and height, and the inertia below is the box inertia of
+    // the mass over them; no reader of the three was traced.
     float length = 0.0F;
     float width = 0.0F;
     float height = 0.0F;
+    // +0x230, +0x244, +0x258: the diagonal of the 4x4 inertia matrix at
+    // +0x230, tonnes m^2 about the body axes. The rigid body keeps a pointer
+    // to +0x220 (0x0047415D, 0x00584806) and 0x00584B3D inverts the matrix
+    // at pointer +0x10. The other twelve entries are zero in every retail
+    // record.
+    std::array<float, 3> inertia{};
     std::array<VehicleAxleStrut, 2> struts{};   // [0] front, [1] rear
     float shift_fraction = 0.0F;                // +0x2C0
     float final_drive_rear = 0.0F;              // +0x2C8, sub +0x1B8: wheels 2 and 3
@@ -155,6 +170,9 @@ struct VehicleHandling {
 };
 
 // Record offsets of the fields above, for decoders and for reports.
+constexpr std::size_t kVehicleCentreOfMassOffset = 0x110;
+constexpr std::size_t kVehicleInertiaOffset = 0x230;
+constexpr std::size_t kVehicleInertiaStride = 0x14;
 constexpr std::size_t kVehicleWheelOffset = 0x120;
 constexpr std::size_t kVehicleWheelStride = 0x30;
 constexpr std::size_t kVehicleTyreOffset = 0x1E0;
@@ -231,10 +249,10 @@ struct VehicleApproximations {
     // Wheel, tyre and brake disc about the axle, kg m^2.
     double wheel_inertia = 1.2;
     // Brake torque per wheel at full brake input, N m: below what the
-    // recovered static friction holds at the static loads, so full braking
-    // does not lock a wheel, and about 1.1 g in all.
-    double brake_torque_front = 1200.0;
-    double brake_torque_rear = 750.0;
+    // recovered static friction holds on each axle at the loads full braking
+    // puts on it, so no wheel locks, and about 1.05 g from the brakes alone.
+    double brake_torque_front = 1400.0;
+    double brake_torque_rear = 450.0;
     // Handbrake torque on each rear wheel, N m.
     double handbrake_torque = 3000.0;
     // Road-wheel steering lock at standstill, rad, and the speed at which
@@ -265,13 +283,20 @@ struct VehicleApproximations {
     // The ground probe starts this far above each strut's attachment point,
     // so a strut pushed into a slope still finds the surface, m.
     double probe_lift = 0.5;
-    // Multiplies the box inertia computed from the record's dimensions.
-    double inertia_scale = 1.0;
     // Multiplies the recovered engine braking curve. At full strength it
     // brakes the car at about 0.5 g in first gear, where the recovered
     // automatic gearbox keeps it below 64 km/h, and with the brake on it
     // locks the rear wheels.
     double engine_brake_scale = 0.5;
+    // Where a tyre's force acts, as a fraction of the way from the contact
+    // point up to the centre of mass's height along the body's vertical: 0
+    // at the contact, 1 at the centre of mass (no load transfer at all).
+    // At the contact, the recovered centre of mass (about 0.5 m up) and
+    // friction (1.8) roll the car over at about 1.46 g, before the tyres
+    // slide; the game does not, so its tyre forces cannot act there with
+    // these values, and where they act was not traced. 0.6 leaves an
+    // effective height of about 0.2 m. At most 1.
+    double tyre_force_lift = 0.6;
     // Steps the automatic gearbox waits after a shift before it may shift
     // again: 36 is 0.3 s.
     std::uint32_t auto_shift_hold_steps = 36;
@@ -403,6 +428,8 @@ struct VehicleState {
 // Where reset() puts the car: the ground point under the centre of mass,
 // the heading (angle of the body's +x axis from world +x, counter-clockwise
 // seen from above) and a forward speed. The ground there is taken as level.
+// The state's position is the centre of mass; the body frame's origin, which
+// the car's meshes are placed in, is position - R * centre_of_mass.
 struct VehiclePose {
     VehicleVec3 ground;
     double heading = 0.0;
@@ -462,7 +489,7 @@ void encode_vehicle_telemetry(const VehicleTelemetry& record,
 // and Release builds produce it: the pin docs/VEHICLE.md records, which
 // nfsu_vehicle_tests requires and nfsu_switch_vehicle compares the
 // console's run against.
-constexpr const char* kVehiclePinnedMixedSha256 = "85900502ACB03DADD5F134C5950BCD899E9EBF5A2EB5A54025B2AB322FE0ADD5";
+constexpr const char* kVehiclePinnedMixedSha256 = "20724B57886697F99C9B5FF631CAE0B6797B7E47BA3F21A027E5F528135EC085";
 
 // SHA-256 over the encoded records of a run, in step order.
 class VehicleTelemetryHash {
@@ -503,12 +530,13 @@ public:
     double torque_curve(double rpm) const noexcept;
     double engine_brake_curve(double rpm) const noexcept;
 
-    // Puts the car on its struts over the pose's ground point, which it takes
-    // as level: every strut at the static compression the lever rule gives
-    // it, the body pitched as the two axles' compressions put it, moving
-    // forward at the pose's speed with the wheels rolling at it, first gear
-    // in either gearbox mode, and then the automatic shift rule applied
-    // once. Returns false on an invalid model or a non-finite pose.
+    // Puts the car on its struts with its centre of mass over the pose's
+    // ground point, which it takes as level: every strut at zero
+    // compression, where the recovered preloads carry the weight, the body
+    // pitched as the two axles' different radii put it, moving forward at
+    // the pose's speed with the wheels rolling at it, first gear in either
+    // gearbox mode, and then the automatic shift rule applied once. Returns
+    // false on an invalid model or a non-finite pose.
     bool reset(VehicleState& state, const VehiclePose& pose) const;
 
     // Advances the state by kVehicleStepSeconds. Returns false, leaving the
@@ -523,7 +551,11 @@ private:
         double mass = 0.0;
         double weight = 0.0;
         VehicleVec3 inertia;            // body-frame principal moments
+        VehicleVec3 centre_of_mass;     // body frame
+        // Each strut's attachment point relative to the centre of mass,
+        // body frame, and its static preload (0x00475460), N.
         std::array<VehicleVec3, kVehicleWheelCount> attach{};
+        std::array<double, kVehicleWheelCount> preload{};
         std::array<double, kVehicleWheelCount> radius{};
         std::array<double, 2> progressive{};
         std::array<double, 2> spring{};

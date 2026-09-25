@@ -223,6 +223,9 @@ bool finite_f32(float value) noexcept {
 // about where a field lives.
 template <typename Handling, typename Visitor>
 void visit_floats(Handling& h, Visitor&& visit) {
+    for (std::size_t i = 0; i < 3; ++i) {
+        visit(kVehicleCentreOfMassOffset + i * 4, h.centre_of_mass[i]);
+    }
     for (std::size_t k = 0; k < kVehicleWheelCount; ++k) {
         const std::size_t base = kVehicleWheelOffset + k * kVehicleWheelStride;
         visit(base + 0x00, h.wheels[k].longitudinal);
@@ -242,6 +245,9 @@ void visit_floats(Handling& h, Visitor&& visit) {
     visit(kVehicleLengthOffset, h.length);
     visit(kVehicleWidthOffset, h.width);
     visit(kVehicleHeightOffset, h.height);
+    for (std::size_t i = 0; i < 3; ++i) {
+        visit(kVehicleInertiaOffset + i * kVehicleInertiaStride, h.inertia[i]);
+    }
     for (std::size_t a = 0; a < 2; ++a) {
         const std::size_t base = kVehicleStrutOffset + a * kVehicleAxleStride;
         visit(base + 0x00, h.struts[a].progressive);
@@ -450,6 +456,8 @@ double vehicle_uniform_curve(const float* values, std::size_t count, double x0,
 
 VehicleHandling stock_240sx_handling() {
     VehicleHandling h;
+    // +0x110.. the centre of mass.
+    h.centre_of_mass = {0.25F, 0.0F, 0.28F};
     // +0x120.. the wheel table, docs/PART_PLACEMENT.md "Retail validation".
     const float lon[kVehicleWheelCount] = {1.39F, 1.39F, -1.04878F, -1.04878F};
     const float lat[kVehicleWheelCount] = {0.73F, -0.73F, -0.73F, 0.73F};
@@ -468,6 +476,8 @@ VehicleHandling stock_240sx_handling() {
     h.length = 4.52F;
     h.width = 1.69F;
     h.height = 1.29F;
+    // +0x230, +0x244, +0x258: the inertia diagonal.
+    h.inertia = {0.4595537F, 2.2462742F, 2.367461F};
     // +0x280 front and +0x2A0 rear struts.
     h.struts[0] = VehicleAxleStrut{5.4F, 35.0F, 5.4F, 5.8F, 37.0F, 0.125F, -0.13F};
     h.struts[1] = VehicleAxleStrut{5.1F, 30.0F, 5.0F, 5.65F, 30.0F, 0.125F, -0.13F};
@@ -531,6 +541,10 @@ bool check_vehicle_handling(const VehicleHandling& h,
         }
     }
     positive(kVehicleMassOffset, h.mass, "the mass");
+    for (std::size_t i = 0; i < 3; ++i) {
+        positive(kVehicleInertiaOffset + i * kVehicleInertiaStride, h.inertia[i],
+                 "a moment of inertia");
+    }
     positive(kVehicleLengthOffset, h.length, "the length");
     positive(kVehicleWidthOffset, h.width, "the width");
     positive(kVehicleHeightOffset, h.height, "the height");
@@ -565,17 +579,22 @@ bool check_vehicle_handling(const VehicleHandling& h,
     if (h.drag < 0.0F) {
         add_issue(issues, kVehicleDragOffset, "the drag must not be negative");
     }
-    // The model puts the centre of mass at the body origin, so the front
-    // axle must be ahead of it and the rear axle behind it.
+    // The preload levers the weight between wheel 0's and wheel 3's axles
+    // about the centre of mass, so each axle's pair must share one position
+    // and the centre of mass must lie between the axles.
     const float front = h.wheels[0].longitudinal;
     const float rear = h.wheels[2].longitudinal;
-    if (!(front > 0.0F) || h.wheels[1].longitudinal != front) {
+    if (h.wheels[1].longitudinal != front) {
         add_issue(issues, kVehicleWheelOffset,
-                  "wheels 0 and 1 must share one longitudinal position ahead of the origin");
+                  "wheels 0 and 1 must share one longitudinal position");
     }
-    if (!(rear < 0.0F) || h.wheels[3].longitudinal != rear) {
+    if (h.wheels[3].longitudinal != rear) {
         add_issue(issues, kVehicleWheelOffset + 2 * kVehicleWheelStride,
-                  "wheels 2 and 3 must share one longitudinal position behind the origin");
+                  "wheels 2 and 3 must share one longitudinal position");
+    }
+    if (!(h.centre_of_mass[0] < front) || !(h.centre_of_mass[0] > rear)) {
+        add_issue(issues, kVehicleCentreOfMassOffset,
+                  "the centre of mass must lie between the front and the rear axle");
     }
     return issues.size() == before;
 }
@@ -769,7 +788,7 @@ VehicleModel::VehicleModel(const VehicleSpec& spec) : spec_(spec) {
         a.longitudinal_stiffness, a.cornering_stiffness_front, a.cornering_stiffness_rear,
         a.slip_speed_floor,
         a.rolling_resistance, a.rolling_fade_speed, a.bump_stop_rate, a.probe_lift,
-        a.inertia_scale, a.engine_brake_scale};
+        a.engine_brake_scale, a.tyre_force_lift};
     for (const double value : approx_values) {
         if (!finite(value) || value < 0.0) {
             error_ = "an approximation is negative or not finite";
@@ -778,7 +797,7 @@ VehicleModel::VehicleModel(const VehicleSpec& spec) : spec_(spec) {
     }
     if (!(a.unit_scale > 0.0) || !(a.wheel_inertia > 0.0) || !(a.slip_speed_floor > 0.0) ||
         !(a.rolling_fade_speed > 0.0) || !(a.steer_speed_reference > 0.0) ||
-        !(a.inertia_scale > 0.0)) {
+        !(a.tyre_force_lift <= 1.0)) {
         error_ = "an approximation that divides must be positive";
         return;
     }
@@ -786,19 +805,38 @@ VehicleModel::VehicleModel(const VehicleSpec& spec) : spec_(spec) {
     const VehicleHandling& h = spec_.handling;
     const double unit = a.unit_scale;
     d_.mass = static_cast<double>(h.mass) * unit;
-    d_.weight = d_.mass * kGravity;
-    const double length = static_cast<double>(h.length);
-    const double width = static_cast<double>(h.width);
-    const double height = static_cast<double>(h.height);
-    const double box = d_.mass / 12.0 * a.inertia_scale;
-    d_.inertia = v3(box * (width * width + height * height),
-                    box * (length * length + height * height),
-                    box * (length * length + width * width));
+    // The weight as 0x0047549D..0x004754A3 forms it, mass times the engine
+    // object's 9.8, then in newtons.
+    d_.weight = static_cast<double>(h.mass) * kGravity * unit;
+    d_.inertia = v3(static_cast<double>(h.inertia[0]) * unit,
+                    static_cast<double>(h.inertia[1]) * unit,
+                    static_cast<double>(h.inertia[2]) * unit);
+    d_.centre_of_mass = v3(static_cast<double>(h.centre_of_mass[0]),
+                           static_cast<double>(h.centre_of_mass[1]),
+                           static_cast<double>(h.centre_of_mass[2]));
     for (std::size_t k = 0; k < kVehicleWheelCount; ++k) {
-        d_.attach[k] = v3(static_cast<double>(h.wheels[k].longitudinal),
-                          static_cast<double>(h.wheels[k].lateral),
-                          static_cast<double>(h.wheels[k].vertical));
+        d_.attach[k] = sub(v3(static_cast<double>(h.wheels[k].longitudinal),
+                              static_cast<double>(h.wheels[k].lateral),
+                              static_cast<double>(h.wheels[k].vertical)),
+                           d_.centre_of_mass);
         d_.radius[k] = static_cast<double>(h.wheels[k].radius);
+    }
+    // 0x00475460: the static preload of each strut, in its own operation
+    // order. With the retail flag at 0x006FFDE4 set, cg is the centre of
+    // mass's first component; a = wheel 0 - cg, L = a - (wheel 3 - cg),
+    // rear = a / L * 0.5 per rear wheel, front = 0.5 - rear per front wheel,
+    // each times the weight. The recovered total also adds a speed term,
+    // the argument times +0x37C, which is not reproduced (its argument,
+    // built at 0x004745E6..0x00474610, was not traced), so this is the
+    // preload at rest.
+    const double cg = static_cast<double>(h.centre_of_mass[0]);
+    const double to_front = static_cast<double>(h.wheels[0].longitudinal) - cg;
+    const double to_rear = static_cast<double>(h.wheels[3].longitudinal) - cg;
+    const double wheelbase = to_front - to_rear;
+    const double rear_share = to_front / wheelbase * 0.5;
+    const double front_share = 0.5 - rear_share;
+    for (std::size_t k = 0; k < kVehicleWheelCount; ++k) {
+        d_.preload[k] = d_.weight * (k < 2 ? front_share : rear_share);
     }
     for (std::size_t axle = 0; axle < 2; ++axle) {
         const VehicleAxleStrut& s = h.struts[axle];
@@ -852,24 +890,6 @@ VehicleModel::VehicleModel(const VehicleSpec& spec) : spec_(spec) {
             absolute(current) > kShiftRatioEpsilon ? next / current * shift : 0.0;
     }
     upshift_[static_cast<std::size_t>(top)] = redline;
-
-    // The car must rest on its struts: the static compression of each axle
-    // has to lie between its limits (reset() solves for it).
-    const double front = static_cast<double>(h.wheels[0].longitudinal);
-    const double rear = static_cast<double>(h.wheels[2].longitudinal);
-    const double front_share = -rear / (front - rear);
-    for (std::size_t axle = 0; axle < 2; ++axle) {
-        const double share = axle == 0 ? front_share : 1.0 - front_share;
-        const double load = d_.weight * share * 0.5;
-        const double k = d_.spring[axle];
-        const double p = d_.progressive[axle];
-        const double x = p > 0.0 ? (-k + vehicle_sqrt(k * k + 4.0 * p * k * load)) / (2.0 * p * k)
-                                 : load / k;
-        if (!(x > 0.0) || !(x < d_.bump_limit[axle])) {
-            error_ = "the car's static compression lies outside its strut limits";
-            return;
-        }
-    }
     valid_ = true;
 }
 
@@ -912,9 +932,11 @@ void VehicleModel::update_engine(VehicleState& state) const noexcept {
     };
     double rpm = wheel_term * ratio(state.gear);
     if (state.gearbox == VehicleGearbox::automatic && state.gear != kVehicleGearReverse) {
+        // 0x00475900..0x00475905 forces first gear without recomputing the
+        // speed, so the loops below and the clamp see the old slot's rpm
+        // for this one call.
         if (state.gear < kVehicleGearFirst) {
             state.gear = kVehicleGearFirst;
-            rpm = wheel_term * ratio(state.gear);
         }
         // The hold is an APPROXIMATION: the recovered rule shifts at once and
         // has no hysteresis, and this model's tyre slip drops the wheel speed
@@ -975,23 +997,19 @@ bool VehicleModel::reset(VehicleState& state, const VehiclePose& pose) const {
         !(absolute(pose.heading) < 1.0e6)) {
         return false;
     }
-    const VehicleHandling& h = spec_.handling;
-    const double front = static_cast<double>(h.wheels[0].longitudinal);
-    const double rear = static_cast<double>(h.wheels[2].longitudinal);
-    const double front_share = -rear / (front - rear);
-    std::array<double, 2> compression{};
+    // The preloads carry the lever-rule loads exactly, so every strut rests
+    // at zero compression and each attachment point one rolling radius
+    // above the ground; the axles' different radii pitch the body.
     std::array<double, 2> attach_height{};
     for (std::size_t axle = 0; axle < 2; ++axle) {
-        const double share = axle == 0 ? front_share : 1.0 - front_share;
-        const double load = d_.weight * share * 0.5;
-        const double k = d_.spring[axle];
-        const double p = d_.progressive[axle];
-        compression[axle] =
-            p > 0.0 ? (-k + vehicle_sqrt(k * k + 4.0 * p * k * load)) / (2.0 * p * k) : load / k;
         const std::size_t wheel = axle * 2;
-        attach_height[axle] = (d_.radius[wheel] + d_.radius[wheel + 1]) * 0.5 - compression[axle];
+        attach_height[axle] = (d_.radius[wheel] + d_.radius[wheel + 1]) * 0.5;
     }
-    // Pitch about the body's +y axis: a positive sine lowers the nose.
+    // Pitch about the body's +y axis: a positive sine lowers the nose. The
+    // heights here are of the attachment points relative to the centre of
+    // mass, so z0 is the centre of mass's height above the ground.
+    const double front = d_.attach[0].x;
+    const double rear = d_.attach[2].x;
     const double vertical_front = d_.attach[0].z;
     const double vertical_rear = d_.attach[2].z;
     const double s = ((attach_height[1] - vertical_rear) - (attach_height[0] - vertical_front)) /
@@ -1016,8 +1034,8 @@ bool VehicleModel::reset(VehicleState& state, const VehiclePose& pose) const {
     for (std::size_t k = 0; k < kVehicleWheelCount; ++k) {
         VehicleWheelState& wheel = next.wheels[k];
         wheel.spin = pose.speed / d_.radius[k];
-        wheel.compression = compression[k / 2];
-        wheel.previous_compression = compression[k / 2];
+        wheel.compression = 0.0;
+        wheel.previous_compression = 0.0;
         wheel.contact = true;
     }
     next.steer_angle = 0.0;
@@ -1147,6 +1165,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         const double positive = x > 0.0 ? x : 0.0;
         double f = (d_.progressive[axle] * positive + 1.0) * d_.spring[axle] * x;
         f = f + (rate > 0.0 ? d_.damping_bump[axle] : d_.damping_rebound[axle]) * rate;
+        f = f + d_.preload[k];
         f = f + (x - s.wheels[kAntiRollPartner[k]].compression) * d_.anti_roll[axle];
         f = f + overflow[k] * a.bump_stop_rate;
         strut_force[k] = f > 0.0 ? f : 0.0;
@@ -1263,7 +1282,12 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         const double rolling = -a.rolling_resistance * load * fade;
         const VehicleVec3 tyre = add(scale(along, fx + rolling), scale(across, fy));
         force = add(force, tyre);
-        torque = add(torque, cross(arm_contact, tyre));
+        // The tyre's force acts tyre_force_lift of the way from the contact
+        // up to the centre of mass's height along the body's vertical
+        // (APPROXIMATION, docs/VEHICLE.md).
+        const VehicleVec3 arm_tyre =
+            sub(arm_contact, scale(up, dot(arm_contact, up) * a.tyre_force_lift));
+        torque = add(torque, cross(arm_tyre, tyre));
 
         out.spin = spin;
         out.slip_ratio = (spin * radius - v_long) / denominator;

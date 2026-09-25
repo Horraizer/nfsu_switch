@@ -165,7 +165,7 @@ endif()
 
 # The pinned telemetry of docs/VEHICLE.md, through the probe.
 nfsu_case("the mixed script" 0
-          "vehicle-sim: script mixed segments 8 steps 2400 ;telemetry: records 2400 bytes 1171200 sha256 85900502ACB03DADD5F134C5950BCD899E9EBF5A2EB5A54025B2AB322FE0ADD5\n"
+          "vehicle-sim: script mixed segments 8 steps 2400 ;telemetry: records 2400 bytes 1171200 sha256 20724B57886697F99C9B5FF631CAE0B6797B7E47BA3F21A027E5F528135EC085\n"
           "error"
           mixed --every 0)
 set(mixed_hash "${last_hash}")
