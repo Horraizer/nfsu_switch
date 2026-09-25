@@ -477,6 +477,18 @@ bool near(float a, float b, float tolerance) {
     return std::fabs(a - b) <= tolerance;
 }
 
+// A query's answer for a failure message: its status, and a hit's polygon,
+// distance and height only when it hit, since a query that does not hit
+// leaves the contact as the previous query left it.
+std::string answer(nfsu::TrackContactStatus status, const nfsu::TrackContact& contact) {
+    std::string out = nfsu::track_contact_status_name(status);
+    if (status == nfsu::TrackContactStatus::hit) {
+        out += " polygon " + std::to_string(contact.polygon) + " at distance " +
+               text(contact.distance) + " height " + text(contact.point[2]);
+    }
+    return out;
+}
+
 nfsu::TrackContactStatus column(const nfsu::TrackContactWorld& world, float px,
                                 float pz, float py, float rise, float drop,
                                 nfsu::TrackContact& contact) {
@@ -1111,7 +1123,11 @@ void test_windings_and_edges() {
 // one exactly at its end dropped (W3, along >= max), and the distance
 // weighting the wrong corner's height (W6). On a flat quad every corner's
 // sheared height is the same, so no weighting can move the answer; the
-// sloped seam at the end of this test is where it shows.
+// sloped seam at the end of this test is where it shows. And (review 3482,
+// G2) the fallback's weight on corner a - the u term of its distance (U1)
+// and u's share of its determinant (U2) - going wrong: that weight is 0 on
+// every (b,c) edge, so only a contact on an (a,b) or (c,a) edge, such as a
+// wall's own diagonal, can show it.
 void test_edges_the_ray_misses() {
     const float py = 5.08984375F;
     const float first[4][2] = {{39.875F, 16.25F}, {60.75F, 9.125F},
@@ -1170,13 +1186,13 @@ void test_edges_the_ray_misses() {
               c.kind == nfsu::TrackContactKind::road && c.distance == 0.0F &&
               c.point[2] == py && c.normal[2] == 1.0F,
           "a sweep that starts exactly on the seam meets it at distance 0: got " +
-              std::string(nfsu::track_contact_status_name(starts)));
+              answer(starts, c));
     const nfsu::TrackContactStatus ends = segment(world, over, on, c);
     check(ends == nfsu::TrackContactStatus::hit &&
               c.kind == nfsu::TrackContactKind::road && c.distance == 1.0F &&
               c.point[2] == py && c.normal[2] == 1.0F,
           "a sweep that ends exactly on the seam meets it at its end: got " +
-              std::string(nfsu::track_contact_status_name(ends)));
+              answer(ends, c));
     // Off the seam by a hundredth, each side is its own polygon, as the ray
     // agrees: the seam is closed without either polygon growing.
     check(column(world, 60.2F, 9.74F, 1000.0F, 0.0F, 2000.0F, c) ==
@@ -1248,8 +1264,7 @@ void test_edges_the_ray_misses() {
               near(c.point[2], road_height, 1e-4F) &&
               near(c.distance, 40.0F - road_height, 1e-4F) && c.normal[2] > 0.9F,
           "a column exactly on a sloped seam meets the road at its own height: got " +
-              std::string(nfsu::track_contact_status_name(down_slope)) + " at " +
-              text(c.point[2]) + ", want " + text(road_height));
+              answer(down_slope, c) + ", want height " + text(road_height));
     // The same point by a sweep that ends exactly on it: the height is the
     // end of the segment, and the distance its whole length.
     const float slope_top[3] = {on_slope[0], on_slope[1], road_height + 2.0F};
@@ -1258,8 +1273,74 @@ void test_edges_the_ray_misses() {
     check(onto_slope == nfsu::TrackContactStatus::hit && near(c.distance, 2.0F, 1e-4F) &&
               near(c.point[2], road_height, 1e-4F),
           "a sweep ending exactly on the sloped seam meets it at its end: got " +
-              std::string(nfsu::track_contact_status_name(onto_slope)) + " at " +
-              text(c.distance));
+              answer(onto_slope, c));
+
+    // A wall's own (0,2) diagonal, met by an oblique sweep (review 3482,
+    // G2). The seams above put the fallback's contact on a triangle's (b,c)
+    // edge, where the edge function u is exactly 0, so the fallback's weight
+    // on corner a - the u term of its distance and u's share of its
+    // determinant - never counted. The diagonal is triangle 0's (c,a) edge
+    // and triangle 1's (a,b) edge, where u is not 0, and on a wall the
+    // diagonal runs from a bottom corner to a top one. Each sweep
+    // below passes through a point exactly on the diagonal at the middle of
+    // its length, so the contact is exactly half its length along. Both were
+    // found by a search over walls on the format's grid, and each first
+    // proves the #39 ray misses it along the same line, as the contact
+    // query computes that line.
+    struct DiagonalSweep {
+        const char* name;
+        float x0, z0, x1, z1, py0, py1;
+        float point[3];
+        float half[3];
+    };
+    const DiagonalSweep diagonal_sweeps[] = {
+        // 60/64 along the diagonal from (60.5, 23.375, 14.87890625) to
+        // (37.375, 19.75, 18.14453125).
+        {"a sweep rising through a wall", 60.5F, 23.375F, 37.375F, 19.75F, 14.87890625F, 18.14453125F,
+         {38.8203125F, 19.9765625F, 17.9404296875F}, {-1.0F, 1.375F, 1.75F}},
+        // 20/64 along the diagonal from (35.125, 15.375, 13.9453125) to
+        // (55.375, 23.375, 21.6484375).
+        {"a sweep nearly level through a wall", 35.125F, 15.375F, 55.375F, 23.375F, 13.9453125F,
+         21.6484375F, {41.453125F, 17.875F, 16.3525390625F}, {1.25F, -3.375F, 0.25F}},
+    };
+    for (const DiagonalSweep& sweep : diagonal_sweeps) {
+        Image wall_image;
+        wall_image.polygons.push_back(pier(sweep.x0, sweep.z0, sweep.x1, sweep.z1, sweep.py0,
+                                           sweep.py1));
+        wall_image.cells.push_back(cell(48.0F, 16.0F, {0}));
+        const nfsu::TrackContactWorld wall = world_of(build(wall_image));
+        check(wall.valid && wall.counts.wall_triangles == 2,
+              std::string(sweep.name) + ": the wall image is valid");
+        if (!wall.valid) {
+            continue;
+        }
+        const float from[3] = {sweep.point[0] - sweep.half[0], sweep.point[1] - sweep.half[1],
+                               sweep.point[2] - sweep.half[2]};
+        const float to[3] = {sweep.point[0] + sweep.half[0], sweep.point[1] + sweep.half[1],
+                             sweep.point[2] + sweep.half[2]};
+        const float delta[3] = {to[0] - from[0], to[1] - from[1], to[2] - from[2]};
+        const float length =
+            std::sqrt(delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]);
+        const float line[3] = {delta[0] / length, delta[1] / length, delta[2] / length};
+        check(!nfsu::query_track_collision_ray(wall.collision, from, line, length, ray),
+              std::string(sweep.name) +
+                  ": the ray of issue #39 misses the wall's diagonal from both triangles");
+        const double half_length = std::sqrt(
+            static_cast<double>(sweep.half[0]) * sweep.half[0] +
+            static_cast<double>(sweep.half[1]) * sweep.half[1] +
+            static_cast<double>(sweep.half[2]) * sweep.half[2]);
+        const nfsu::TrackContactStatus through = segment(wall, from, to, c);
+        check(through == nfsu::TrackContactStatus::hit && c.polygon == 0 &&
+                  c.kind == nfsu::TrackContactKind::wall &&
+                  near(c.distance, static_cast<float>(half_length), 1e-4F) &&
+                  near(c.point[0], sweep.point[0], 1e-4F) &&
+                  near(c.point[1], sweep.point[1], 1e-4F) &&
+                  near(c.point[2], sweep.point[2], 1e-4F) &&
+                  c.normal[0] * line[0] + c.normal[1] * line[1] + c.normal[2] * line[2] < 0.0F,
+              std::string(sweep.name) + ": a sweep through the wall's diagonal meets it " +
+                  text(static_cast<float>(half_length)) + " along, facing it: got " +
+                  answer(through, c));
+    }
 }
 
 // ---------------------------------------------------------------------

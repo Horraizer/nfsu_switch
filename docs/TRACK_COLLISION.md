@@ -1210,7 +1210,7 @@ and issue #39's column pin reads the same through the new command:
 
 ### Tests, and the breaks they catch
 
-`nfsu_track_contact_tests` runs 28178 checks over the synthetic sections:
+`nfsu_track_contact_tests` runs 28184 checks over the synthetic sections:
 the triangle table and its counts, every point and segment case above, the
 region-against-whole lattice with every column held to the #39 ray, the
 refusals and both caps at their exact boundaries, the memory plan including
@@ -1222,18 +1222,20 @@ across the root's quadrants, road wound both ways, a slope of exactly 60
 degrees in float, a contact exactly at a segment's end and at its start, a
 column on a deck's own outer edge above a road, and the edges the #39
 arithmetic misses: a flat seam, also met by sweeps that start and end
-exactly on it, a flat outer edge, and a seam between two sloped quads with
-its height pinned. Each test says in a comment which break it would catch.
+exactly on it, a flat outer edge, a seam between two sloped quads with its
+height pinned, and two walls' own (0,2) diagonals met by oblique sweeps
+with the distance pinned. Each test says in a comment which break it would
+catch, and a failure message reports the failing query's own answer.
 `nfsu_probe_track_contact_guards` drives the command over the same image
 written to disk, pinning exit status and output for 23 cases, and the
 fixture writer's refusal to replace a file.
 
 The first version of `src/track_contact.cpp`, run whole under these tests,
-fails 12 checks - two sweeps off a cell's corner, the cell cap twice, the
+fails 14 checks - two sweeps off a cell's corner, the cell cap twice, the
 flat seam as a column, as sweeps through it from above and from below and
-as sweeps that start and end on it, the flat outer edge, and the sloped
-seam as a column and as a sweep - and the guard case of the sweep off the
-corner.
+as sweeps that start and end on it, the flat outer edge, the sloped seam
+as a column and as a sweep, and the two walls' diagonals - and the guard
+case of the sweep off the corner.
 
 The sweep of deliberate breaks this note printed before the second review
 counted 33 of 34 caught, and that overstated the watertight fallback: it
@@ -1245,12 +1247,30 @@ own cases were all flat, where every corner's height is the same and no
 weighting can move the answer, and none put a fallback contact at either
 end of a segment. The rows marked G1 below are those three, each caught by
 a test added for it; the row after them, a full swap of the two weights,
-is caught by the same sloped seam. The sweep was rerun whole on
-the current tests with the second review's other fallback and cell breaks
-added: 45 breaks, each applied alone, the test program and the probe
-rebuilt and both run, and the file restored byte for byte and touched. A
-run counts as caught only with a non-zero exit, at least one `FAIL:` line
-and the `check(s) failed` summary, as `CLAUDE.md` requires.
+is caught by the same sloped seam.
+
+The 45-break sweep printed after that still overstated it. Every fallback
+contact those tests made lay on a triangle's (b,c) edge, where the edge
+function `u` is exactly 0, so the fallback's weight on corner a - the `u`
+term of its distance and `u`'s share of its determinant - never counted,
+and the third review found two breaks there that change retail answers
+while every test passed: on `TRACKB1003` the sweep `track-contact
+<TRACKB1003.lzc> 1473.10193 37.9745102 53.7840652 1467.63245 32.2598648
+54.9791183` meets wall polygon 0 4.00002 along, and under the two breaks
+2.41417 and 5.81821 along, and the sweep from `1468.14014 31.3876724
+54.1409225` to `1470.76611 34.7685776 60.8991165` meets the same wall
+3.99998 along and under either break passes through it. The rows marked G2
+are those two, caught by two
+oblique sweeps through walls' own (0,2) diagonals - an (a,b) and a (c,a)
+edge, where `u` is not 0 - that the #39 ray misses, found by a search over
+walls on the format's grid.
+
+The sweep was rerun whole on the current tests with the third review's
+other fallback breaks added: 50 breaks, each applied alone, the test
+program and the probe rebuilt and both run, and the file restored byte for
+byte and touched. A run counts as caught only with a non-zero exit, at
+least one `FAIL:` line and the `check(s) failed` summary, as `CLAUDE.md`
+requires.
 
 | Break | Result | First failure |
 | --- | --- | --- |
@@ -1268,58 +1288,83 @@ and the `check(s) failed` summary, as `CLAUDE.md` requires.
 | no cell answered as clear, not outside | caught, 8 | `a column no cell covers is outside` |
 | normal never turned to face the query | caught, 3 | `from outside, the normal faces -pz` |
 | the query's cell cap not passed on | caught, 3 | `three cells met over a cap of two refuse` |
-| slope read from `pz` instead of `py` | caught, 24 | `road triangles: got 6, want 15` |
+| slope read from `pz` instead of `py` | caught, 28 | `road triangles: got 6, want 15` |
 | a tie broken by visiting order | caught, 9 | `a tie goes to the lower polygon index at px 3` |
-| distance reported as a fraction of the segment | caught, 5125 | `two units down: got 0.200000003` |
+| distance reported as a fraction of the segment | caught, 5127 | `two units down: got 0.200000003` |
 | load peak forgets the image | caught, 1 | `the peak is the buffers and the parsed arrays together` |
 | the renderer map written as a reflection | caught, 3 | `slot (px, pz, py) is render (px, py, -pz)` |
 | a negative rise accepted | caught, 2 | `a negative rise or drop refuses` |
 | the length cap refusing its own length | caught, 1 | `a sweep exactly at the length cap runs` |
 | cells chosen from the segment's start only | caught, 6 | `of two barriers, the nearer: got polygon 2 at 4` |
-| the road threshold inverted | caught, 22 | `road triangles: got 10, want 15` |
+| the road threshold inverted | caught, 26 | `road triangles: got 10, want 15` |
 | a refused placement keeping what it placed | caught, 1 | `a refused world leaves nothing placed` |
 | resident bytes forgetting the triangle table | caught, 5 | `resident bytes are the five arrays` |
 | a cell's index-list slot taken as the polygon | caught, 9122 | `the higher surface first: got polygon 0 triangle 0` |
 | cells chosen by the bounding box | caught, 4 | `a sweep past the corner of every cell is outside, not clear` |
 | a corner touch not counted as meeting | caught, 5163 | `a wheel over the street finds the road` |
-| a square separated when three corners lie on one side | caught, 5 | `a sweep through a cell's corner meets the cell and is clear` |
+| a square separated when three corners lie on one side | caught, 7 | `a sweep through a cell's corner meets the cell and is clear` |
 | the cell cap refusing one cell late, `>` for `>=` | caught, 3 | `three cells met over a cap of two refuse` |
 | the cap counting the cells of the bounding box | caught, 1 | `inside one node, three cells met under a cap of three run` |
-| the watertight fallback removed | caught, 8 | `a column exactly on the seam meets the road` |
+| the watertight fallback removed | caught, 10 | `a column exactly on the seam meets the road` |
 | the watertight bounds made open | caught, 8 | `a column exactly on the seam meets the road` |
 | the watertight sign test dropping one edge function | caught, 835 | `the gap in the road surface is clear` |
 | the watertight determinant's sign ignored | caught, 1 | `a sweep up through the seam meets it facing down` |
-| the watertight determinant's sign inverted | caught, 6 | `a column exactly on the seam meets the road` |
-| the shear's handedness swap removed | caught, 5 | `a column exactly on the seam meets the road` |
+| the watertight determinant's sign inverted | caught, 8 | `a column exactly on the seam meets the road` |
+| the shear's handedness swap removed | caught, 6 | `a column exactly on the seam meets the road` |
 | the watertight test deciding first | caught, 112 | `hill: the ray query of issue #39 agrees at (1635, 707, 150)` |
 | G1: the fallback's `t < 0` made `t <= 0` | caught, 1 | `a sweep that starts exactly on the seam meets it at distance 0: got clear` |
 | G1: the fallback's `along > max_distance` made `>=` | caught, 2 | `a sweep that ends exactly on the seam meets it at its end: got clear` |
-| G1: the fallback's distance weighting `z[2]` for `z[1]` | caught, 2 | `a column exactly on a sloped seam meets the road at its own height: got hit at 8.7578125, want 7.30010986` |
-| the fallback's distance with `z[1]` and `z[2]` swapped | caught, 2 | `a column exactly on a sloped seam meets the road at its own height: got hit at 8.57879639, want 7.30010986` |
-| the watertight edge functions taken in float | survived | |
+| G1: the fallback's distance weighting `z[2]` for `z[1]` | caught, 2 | `a column exactly on a sloped seam meets the road at its own height: got hit polygon 0 at distance 31.2421875 height 8.7578125, want height 7.30010986` |
+| the fallback's distance with `z[1]` and `z[2]` swapped | caught, 2 | `a column exactly on a sloped seam meets the road at its own height: got hit polygon 0 at distance 31.4212036 height 8.57879639, want height 7.30010986` |
+| the fallback's distance weighting `z[0]` for `z[2]` | caught, 3 | `a column exactly on a sloped seam meets the road at its own height: got hit polygon 1 at distance 29.6627197 height 10.3372803, want height 7.30010986` |
+| G2: the fallback's distance weighting `z[1]` for `z[0]` | caught, 2 | `a sweep rising through a wall: a sweep through the wall's diagonal meets it 2.43990254 along, facing it: got hit polygon 0 at distance 2.72446704 height 18.1445312` |
+| G2: the fallback's determinant without `u`, `v + w` | caught, 2 | `a sweep rising through a wall: a sweep through the wall's diagonal meets it 2.43990254 along, facing it: got hit polygon 0 at distance 2.60256267 height 18.0570965` |
+| the fallback's `u` term dropped from its distance | caught, 3 | `a column that ends above the road is clear` |
+| the watertight edge function `u` taken in float | survived | |
+| all three watertight edge functions taken in float | survived | |
 | the dominant axis chosen by `>=`, a tie to the last axis | survived | |
 | the side test's rounding bound set to 0 | survived | |
 
-42 caught, 3 survived, none unknown. None of the three survivors changes an
-answer these tests or the retail lattices ask about, and each is recorded
-here as untested rather than as covered:
+46 caught, 4 survived, none unknown. Each survivor was run over oblique
+sweeps as well as the tests: through points a quarter, a half and three
+quarters along every edge of every triangle of `TRACKB1003` and
+`TRACKB1210` that is not degenerate, 8 units long with the edge point at
+the middle, in four directions - 611352 and 529632 sweeps - each answer
+compared with the current code's in polygon, triangle and distance:
 
-- Edge functions in float: the two products of an edge two triangles share
-  are the same two roundings in both, so the edge function is still
-  antisymmetric and the test still watertight. What double adds is the
-  exact sign where the two products round to the same float, which decides
-  only points within a float rounding of an edge; a search of 16 million
-  columns on the format's grid found no seam that it changes.
-- The dominant axis on a tie: any axis the direction is longest along gives
-  a valid watertight frame, so the choice between two equal ones is free.
-- A rounding bound of 0: the side test's inputs are floats, and the
-  difference of two floats is exact in double while their exponents are
-  within 28 of each other. Then each of the two products is its exact value
-  rounded once, and rounding never reverses an order, so the side comes out
-  with its exact sign or as 0, which keeps the square; the bound changes
-  nothing. It matters only when two coordinates differ in scale by more
-  than that, such as one within 1e-9 of zero beside one near 1000, and no
-  test places a segment there.
+- The dominant axis on a tie and a rounding bound of 0 change no answer
+  there. Any axis the direction is longest along gives a valid watertight
+  frame. The side test's inputs are floats, and the difference of two
+  floats is exact in double while their exponents are within 28 of each
+  other; then each product is its exact value rounded once, and rounding
+  never reverses an order, so the side comes out with its exact sign or as
+  0, which keeps the square. The bound matters only for coordinates that
+  differ in scale by more than that, which no test or sweep here has.
+- The edge functions in float do change answers, and only within a float
+  rounding of an edge: `u` alone in float differs on 1899 and 709 of those
+  sweeps, all three in float on 3941 and 2071. Decided in exact rational
+  arithmetic on `TRACKB1003`, of the 1899: at 214 the current code answers
+  clear where the segment really meets the triangle the variant names, at
+  3 the variant names a triangle the segment misses, 1271 name the same
+  triangle and differ only in the distance - by at most 2.4e-6 in the 1258
+  where the segment meets it exactly - and 411 name a different triangle.
+  So neither version is exact in that band - on an oblique
+  sweep the shear rounds each corner in float before the edge functions are
+  taken, and the exact sign the current code takes is the sign for those
+  rounded corners - and no test here pins an answer inside it. Within it
+  the float version shares an edge between two triangles as watertightly
+  as the double one: in float too the two products of that edge are the
+  same two roundings in both.
+
+What that band leaves on its own, measured with the same sweeps: 6304 of
+the 611352 on `TRACKB1003` answer clear although the segment, in exact
+arithmetic, meets the closed triangle it was aimed at. Every one lies
+within 4.5e-8 world units of an edge no neighbouring surface continues - a
+polygon's outer edge (5815), the (0,2) diagonal of a triangle stored in a
+quad slot, which is that triangle's outer edge (454), or the vertical edge
+where two walls meet at a convex corner (35) - and the #39 arithmetic
+misses every one of them too. On a column the shear is the identity and
+the lattices above have no such case.
 
 ### What this does not do
 
@@ -1330,6 +1375,9 @@ here as untested rather than as covered:
 - It is desktop only for now. `cmake/draw_libraries.cmake` is unchanged, so
   the Switch tree does not compile `nfsu_track_contact`; `nfsu_track`, which
   it does compile, is unchanged by this issue.
+- A sweep that meets a wall only within a float rounding of the wall quad's
+  own (0,2) diagonal, while the #39 arithmetic meets something farther
+  along, passes through the wall; issue #167 follows that up.
 
 ## Read-only retail acceptance
 
@@ -1424,7 +1472,9 @@ Expected:
     #39 arithmetic misses, met at the edge's own height: the edge runs from
     corner 1, (754, 205.25, 13153/256), to corner 2, (754, 209.625,
     13113/256), and 6/7 of the way along it, at pz 209, the height is
-    exactly 91831/1792 = 51.24498.
+    exactly 91831/1792 = 51.2449777. The contact's own point is
+    51.2449951 in float, 1.7e-5 above, the rounding of 1000 - 948.755005;
+    both print as 51.245.
 13. Running any of them twice gives byte-identical output.
 14. The SHA-256 and size of every file named above are unchanged
     afterwards.
