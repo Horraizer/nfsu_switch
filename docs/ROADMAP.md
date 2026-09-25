@@ -133,11 +133,18 @@
   ([`SWITCH_BUILD.md`](SWITCH_BUILD.md)). Nothing has run on hardware yet.
 - Add controller, filesystem, timing, and logging services.
 - Add a deko3d renderer with offline-compiled shaders. The shader pipeline is
-  in place: `uam` compiles the car and track material variants at build time,
+  in place: `uam` compiles the three shader stages at build time (the material
+  variants are fixed-function state records, not separate compiled programs),
   and every program's manifest is checked against its GLSL, its compiled
   shader and the C++ vertex structs
-  ([`SHADER_PIPELINE.md`](SHADER_PIPELINE.md)). The renderer that draws with
-  them is still to do.
+  ([`SHADER_PIPELINE.md`](SHADER_PIPELINE.md)). The CPU half of the renderer's
+  memory and upload path is also in place: persistent, streaming, transient
+  and GPU arenas with budgets and diagnostics
+  ([`MEMORY_BUDGETS.md`](MEMORY_BUDGETS.md)), and the upload table, format
+  gate and fence-gated upload ledger for prepared car and track scenes
+  ([`GPU_UPLOAD.md`](GPU_UPLOAD.md)). Nothing in either half has run on
+  hardware yet, and the upload budgets are placeholders until it does. The
+  renderer that draws with them is still to do.
 - Run the car viewer and track slice on hardware.
 
 ## M4: Playable race

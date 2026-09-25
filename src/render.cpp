@@ -1,6 +1,8 @@
 #include "nfsu/render.h"
 
 #include "nfsu/image.h"
+// rollback_created_files, which the POSIX writer's rollback calls.
+#include "nfsu/texture.h"
 
 #include <algorithm>
 #include <cfloat>
