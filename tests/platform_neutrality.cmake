@@ -194,7 +194,7 @@ string(CONCAT kPlatformMacros
 # parenthesis, which a declaration of that name also is. Separate variables
 # rather than one list, because a pattern holds '|' and '[' and a list would
 # split on them.
-set(kRuleCount 8)
+set(kRuleCount 11)
 foreach(rule RANGE 1 ${kRuleCount})
     set(kRule${rule}_call TRUE)
 endforeach()
@@ -224,10 +224,90 @@ set(kRule8_pattern "(^|[^A-Za-z0-9_])(${kClockTypes})([^A-Za-z0-9_]|$)")
 set(kRule8_group 2)
 set(kRule8_call FALSE)
 
+# Rule 9: the <cstdio>/<cstdlib> file-touching functions, reached bare,
+# through '::', or through 'std::' - the same three forms 'system' (rule 6)
+# already allows, because these are the same kind of call: declared by a
+# standard header the include rule must let in, so only the call name can
+# stop them. remove and rename are the two names <cstdio> and <filesystem>
+# both declare; rules 10 and 11 below catch the <filesystem> spelling.
+string(CONCAT kCstdioFileCalls
+    "fopen|freopen|fclose|fread|fwrite|remove|rename|tmpfile|tmpnam")
+set(kRule9_kind call)
+set(kRule9_pattern "${kStdPrefix}(${kCstdioFileCalls})[ \t]*\\(")
+set(kRule9_group 4)
+
+# Rules 10 and 11: the mutating std::filesystem free functions, invisible to
+# every rule above once they are qualified through anything but a bare '::'
+# or a literal 'std::' - the gap Finding 1 (comment 2933 on PR #136)
+# describes: a project-chosen alias ('namespace fs = std::filesystem;' then
+# 'fs::remove_all(...)') or the fully-spelled 'std::filesystem::remove(...)'
+# (the qualifier immediately before the name is 'filesystem::', not
+# 'std::'). Two rules because the two qualifier shapes need different
+# prefixes: rule 10 matches the qualifier 'filesystem::' itself, with an
+# optional leading 'std::'; rule 11 matches any OTHER single identifier used
+# as a namespace alias in front of '::'.
+#
+# Rule 11 excludes the alias 'std' (and 'filesystem', so a fully-qualified
+# call is not also reported through rule 11 as if 'filesystem' were a
+# project alias) because 'std::copy(' is <algorithm>'s element copy, used
+# throughout this codebase's neutral libraries (src/car_parts.cpp,
+# src/scene.cpp, src/track_scene.cpp, src/stock_scene.cpp, src/inspect.cpp),
+# and a textual rule cannot tell that overload from std::filesystem::copy,
+# so it must not fire on the bare 'std::' form. std::remove and std::rename,
+# the two names both headers declare, are still caught above by rule 9
+# regardless.
+#
+# 'current_path' and 'last_write_time' mutate only when called with an
+# argument (current_path) or two (last_write_time); nfsu_fs_call_mutates
+# below reads what follows the opening parenthesis on the same line and, if
+# it cannot tell, treats the call as a mutation - the conservative default
+# this file's "what it cannot see" section already asks for.
+string(CONCAT kFsMutatingCalls
+    "remove_all|remove|rename|copy_file|copy_symlink|copy|"
+    "create_directory_symlink|create_directories|create_directory|"
+    "create_hard_link|create_symlink|resize_file|permissions|"
+    "current_path|last_write_time")
+set(kFsQualifiedPrefix "(^|[^A-Za-z0-9_.>:])((std::)?filesystem::)")
+set(kFsAliasPrefix "(^|[^A-Za-z0-9_.>:])(([A-Za-z_][A-Za-z0-9_]*)::)")
+
+set(kRule10_kind call)
+set(kRule10_pattern "${kFsQualifiedPrefix}(${kFsMutatingCalls})[ \t]*\\(")
+set(kRule10_group 4)
+set(kRule10_arg_shape TRUE)
+
+set(kRule11_kind call)
+set(kRule11_pattern "${kFsAliasPrefix}(${kFsMutatingCalls})[ \t]*\\(")
+set(kRule11_group 4)
+set(kRule11_exclude_group 3)
+set(kRule11_exclude_list "std;filesystem")
+set(kRule11_arg_shape TRUE)
+
 set(kRuleText_include "includes a header that is neither C or C++ standard nor this project's")
 set(kRuleText_call "calls the operating system")
 set(kRuleText_macro "tests which platform it is built for")
 set(kRuleText_clock "reads a clock, an entropy source or the environment")
+
+# Whether a matched current_path/last_write_time call, given what follows
+# its opening parenthesis on this line, is the mutating overload rather
+# than the read-only one: current_path() with nothing before the closing
+# parenthesis is the getter; last_write_time(path) with no comma before its
+# closing parenthesis is the one-argument getter. Every other name in
+# kFsMutatingCalls mutates regardless of its arguments, and a call this
+# cannot resolve on one line is treated as a mutation - the same
+# conservative default.
+function(nfsu_fs_call_mutates symbol after out_var)
+    set(mutates TRUE)
+    if(symbol STREQUAL "current_path")
+        if(after MATCHES "^[ \t]*\\)")
+            set(mutates FALSE)
+        endif()
+    elseif(symbol STREQUAL "last_write_time")
+        if(after MATCHES "^[^,()]*\\)")
+            set(mutates FALSE)
+        endif()
+    endif()
+    set(${out_var} ${mutates} PARENT_SCOPE)
+endfunction()
 
 # Text split into one list element per physical line, with the placeholders
 # above standing in for the characters a list would read.
@@ -377,7 +457,11 @@ function(nfsu_scan text label dir out_findings out_includes out_lines)
         foreach(rule RANGE 1 ${kRuleCount})
             # Every match on the line, left to right, until one is a call:
             # a declaration of the name is skipped and the rest of the line
-            # read, so "void write(int) { write(x); }" is still caught.
+            # read, so "void write(int) { write(x); }" is still caught. A
+            # match whose qualifier is excluded (rule 11's 'std'/'filesystem'
+            # aliases) or whose argument shape says it does not mutate
+            # (rule 10/11's current_path/last_write_time) is skipped the
+            # same way.
             set(remainder "${code}")
             while(remainder MATCHES "${kRule${rule}_pattern}")
                 set(whole "${CMAKE_MATCH_0}")
@@ -387,16 +471,28 @@ function(nfsu_scan text label dir out_findings out_includes out_lines)
                 string(LENGTH "${lead}" lead_length)
                 math(EXPR name_at "${at} + ${lead_length}")
                 string(SUBSTRING "${remainder}" 0 ${name_at} before)
+                string(LENGTH "${whole}" whole_length)
+                math(EXPR next "${at} + ${whole_length}")
                 set(declared FALSE)
                 if(kRule${rule}_call)
                     nfsu_declared("${before}" declared)
                 endif()
-                if(NOT declared)
+                set(excluded FALSE)
+                if(NOT declared AND DEFINED kRule${rule}_exclude_group)
+                    set(qualifier "${CMAKE_MATCH_${kRule${rule}_exclude_group}}")
+                    if(qualifier IN_LIST kRule${rule}_exclude_list)
+                        set(excluded TRUE)
+                    endif()
+                endif()
+                set(mutates TRUE)
+                if(NOT declared AND NOT excluded AND kRule${rule}_arg_shape)
+                    string(SUBSTRING "${remainder}" ${next} -1 after)
+                    nfsu_fs_call_mutates("${symbol}" "${after}" mutates)
+                endif()
+                if(NOT declared AND NOT excluded AND mutates)
                     list(APPEND hits "${kRule${rule}_kind}|${symbol}")
                     break()
                 endif()
-                string(LENGTH "${whole}" whole_length)
-                math(EXPR next "${at} + ${whole_length}")
                 string(SUBSTRING "${remainder}" ${next} -1 remainder)
             endwhile()
         endforeach()
@@ -463,6 +559,35 @@ set(must_catch [==[
     if (ch == '"') ::close(descriptor); // a quote in a character literal
     if (ch == '\\') ::close(descriptor); /* a backslash in one */ x = GetTickCount();
     /* a block comment that ends */ ::unlink(path);
+    FILE* handle = fopen(name.c_str(), "rb");
+    FILE* reopened = freopen(name.c_str(), "rb", stdin);
+    std::fclose(handle);
+    std::fread(buffer, 1, size, handle);
+    std::fwrite(buffer, 1, size, handle);
+    std::remove(temp_path.c_str());
+    std::rename(old_path.c_str(), new_path.c_str());
+    std::tmpfile();
+    std::tmpnam(buffer);
+    std::filesystem::remove(target);
+    std::filesystem::remove_all(directory);
+    std::filesystem::rename(old_path, new_path);
+    std::filesystem::copy(source_dir, dest_dir);
+    std::filesystem::copy_file(source, target);
+    std::filesystem::copy_symlink(source, target);
+    std::filesystem::create_directory(output_dir);
+    std::filesystem::create_directories(output_dir);
+    std::filesystem::create_hard_link(existing, link_path);
+    std::filesystem::create_symlink(target, link_path);
+    std::filesystem::create_directory_symlink(target, link_path);
+    std::filesystem::resize_file(target, 0);
+    std::filesystem::permissions(target, perms);
+    std::filesystem::current_path(next_dir);
+    std::filesystem::last_write_time(target, stamp, write_error);
+// namespace fs = std::filesystem; assumed already in scope
+    fs::remove_all(directory);
+    fs::remove(path, error);
+    fs::rename(old_path, new_path);
+    fs::copy(source_dir, dest_dir);
 ]==])
 
 # No line here may be caught: ordinary code this repository already holds,
@@ -474,7 +599,14 @@ set(must_pass [==[
     stream.read(reinterpret_cast<char*>(data.data()), size);
     output->write(bytes, count);
     const std::filesystem::path path(text);
-    fs::remove(path, error);
+    std::filesystem::current_path();
+    fs::current_path();
+    const auto stamp = std::filesystem::last_write_time(target);
+    const auto stamp2 = fs::last_write_time(target);
+    std::copy(values.begin(), values.end(), out.begin());
+    session.rename(new_name);
+    exporter->remove_all();
+    static bool remove(const Item& item);
     if (byte >= 0x20U && byte <= 0x7EU && ch != '"' && ch != '\\') {
     // #include <windows.h>, ::open( and _WIN32, all in a comment
     error = "CreateFileW( failed: \" #ifdef _WIN32 \" and getenv(";

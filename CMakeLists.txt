@@ -780,8 +780,27 @@ set(NFSU_NEUTRAL_LIBRARIES
 set(NFSU_PLATFORM_LIBRARIES nfsu_arg_path nfsu_render nfsu_platform_desktop)
 
 # Sources of a neutral library that are platform code on purpose: the one
-# window backend. The stub that replaces it elsewhere is neutral and read.
-set(NFSU_PLATFORM_SOURCES src/inspect_window_win32.cpp)
+# window backend, and src/texture.cpp for its texture-export rollback
+# helpers (remove_created, rollback_created_files, export_textures), which
+# predate this branch and genuinely touch the filesystem - fs::remove,
+# fs::rename, fs::create_directories - to clean up and write the files a
+# caller asked for. Finding 1 of the platform-services review (comment 2933
+# on PR #136) is what surfaced this: closing the qualifier gap it names
+# made nfsu_platform_neutrality fail on this pre-existing code the moment
+# the fixed gate could see it -
+#   src/texture.cpp:1877: remove - fs::remove(path, error);
+#   src/texture.cpp:1947: rename - fs::rename(partial, target, rename_error);
+#   src/texture.cpp:2026: create_directories - fs::create_directories(output_dir, error);
+# - which is the fixed gate working as intended, not a false positive: this
+# file was always platform code, only invisible to the gate's old rules.
+# The stub that replaces the window backend elsewhere is neutral and read;
+# src/texture.cpp has no such split yet, so the whole file is exempt for
+# now rather than only its export helpers, at the cost of not reading the
+# texture-decode code that makes up most of it. Splitting the export
+# helpers into their own platform-classified source is follow-up work, not
+# this fix round's: it would also touch src/render.cpp and include/nfsu/
+# texture.h, which the #132 fix on main already settled.
+set(NFSU_PLATFORM_SOURCES src/inspect_window_win32.cpp src/texture.cpp)
 
 # Every library target and each neutral one's sources, written for the gate
 # once the whole directory has been read, so that a library added anywhere
