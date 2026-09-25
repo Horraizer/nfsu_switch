@@ -129,7 +129,8 @@ nfsu::MemoryArena make_arena(std::uint64_t base, std::uint64_t capacity,
     config.max_allocations = max_allocations;
     nfsu::MemoryArena arena;
     std::string error;
-    check(arena.create(config, error), "arena create: " + error);
+    const bool mem_ok_1 = arena.create(config, error);
+    check(mem_ok_1, "arena create: " + error);
     return arena;
 }
 
@@ -341,8 +342,8 @@ void test_create_refuses_bad_configurations() {
         config.max_allocations = c.max_allocations;
         std::string error;
         check(!arena.create(config, error), std::string("create accepted ") + c.what);
-        check(error.find(c.message) != std::string::npos,
-              std::string(c.what) + ": message '" + error + "' lacks '" + c.message + "'");
+        const bool mem_ok_2 = error.find(c.message) != std::string::npos;
+        check(mem_ok_2, std::string(c.what) + ": message '" + error + "' lacks '" + c.message + "'");
         check(same_stats(arena.stats(), before),
               std::string(c.what) + ": a refused create changed the arena");
     }
@@ -357,7 +358,8 @@ void test_create_refuses_bad_configurations() {
     largest.max_alignment = nfsu::kMaxArenaAlignment;
     largest.max_allocations = 1;
     std::string error;
-    check(arena.create(largest, error), "the largest configuration: " + error);
+    const bool mem_ok_3 = arena.create(largest, error);
+    check(mem_ok_3, "the largest configuration: " + error);
     nfsu::ArenaAllocation whole;
     check_refusal(arena.allocate(nfsu::kMaxArenaCapacity, nfsu::kMaxArenaAlignment, whole),
                   nfsu::ArenaRefusal::none, "the whole largest arena");
@@ -369,7 +371,8 @@ void test_create_refuses_bad_configurations() {
     top.capacity = 0xFFF;
     top.max_alignment = 16;
     top.max_allocations = 1;
-    check(arena.create(top, error), "a range ending at 2^64 - 1: " + error);
+    const bool mem_ok_4 = arena.create(top, error);
+    check(mem_ok_4, "a range ending at 2^64 - 1: " + error);
     nfsu::ArenaAllocation last;
     check_refusal(arena.allocate(0xFFF, 1, last), nfsu::ArenaRefusal::none,
                   "the whole range ending at 2^64 - 1");
@@ -904,7 +907,8 @@ void test_create_again_starts_every_figure_over() {
               busy.allocations == 3 && busy.releases == 1,
           "the figures are all nonzero before create()");
     std::string error;
-    check(arena.create(arena.config(), error), "create again: " + error);
+    const bool mem_ok_5 = arena.create(arena.config(), error);
+    check(mem_ok_5, "create again: " + error);
     const nfsu::ArenaStats fresh = arena.stats();
     const nfsu::ArenaStats empty = make_arena(0, 4096, 256, 8).stats();
     check(same_stats(fresh, empty), "create() again starts every figure over");
@@ -1086,7 +1090,8 @@ void test_create_again_keeps_old_handles_stale() {
     nfsu::ArenaAllocation before;
     check_refusal(arena.allocate(64, 16, before), nfsu::ArenaRefusal::none, "before");
     std::string error;
-    check(arena.create(arena.config(), error), "create again: " + error);
+    const bool mem_ok_6 = arena.create(arena.config(), error);
+    check(mem_ok_6, "create again: " + error);
     nfsu::ArenaAllocation after;
     check_refusal(arena.allocate(64, 16, after), nfsu::ArenaRefusal::none, "after");
     check_eq(after.handle.slot, before.handle.slot, "the slot number is reused");
@@ -1247,7 +1252,8 @@ void test_memory_plan_layout() {
     budget.max_allocations = {8, 16, 32, 64};
     nfsu::MemoryPlan plan;
     std::string error;
-    check(plan.create(budget, error), "plan create: " + error);
+    const bool mem_ok_7 = plan.create(budget, error);
+    check(mem_ok_7, "plan create: " + error);
     const std::uint64_t bases[] = {0, 1024, 4032, 0};
     std::array<nfsu::ArenaAllocation, nfsu::kMemoryCategoryCount> wholes{};
     for (std::size_t i = 0; i < nfsu::kMemoryCategoryCount; ++i) {
@@ -1282,8 +1288,8 @@ void test_memory_plan_layout() {
     nfsu::MemoryBudget broken = budget;
     broken.max_alignment[2] = 48;
     check(!plan.create(broken, error), "a budget with a bad alignment is refused");
-    check(error.find("transient arena") != std::string::npos,
-          "the refusal names the arena: " + error);
+    const bool mem_ok_8 = error.find("transient arena") != std::string::npos;
+    check(mem_ok_8, "the refusal names the arena: " + error);
     check_eq(plan.arena(nfsu::MemoryCategory::streaming).stats().used_bytes, 3000,
              "a refused budget leaves the plan as it was");
     check_eq(plan.cpu_bytes(), 4532, "a refused budget leaves cpu bytes");
@@ -1300,7 +1306,8 @@ void test_memory_plan_layout() {
     wraps.capacity[0] = nfsu::kMaxArenaCapacity;
     wraps.capacity[1] = nfsu::kMaxArenaCapacity;
     wraps.capacity[2] = nfsu::kMaxArenaCapacity;
-    check(plan.create(wraps, error), "three maximal CPU arenas fit in 64 bits: " + error);
+    const bool mem_ok_9 = plan.create(wraps, error);
+    check(mem_ok_9, "three maximal CPU arenas fit in 64 bits: " + error);
     check_eq(plan.cpu_bytes(), 3U * nfsu::kMaxArenaCapacity, "three maximal arenas end-to-end");
 }
 

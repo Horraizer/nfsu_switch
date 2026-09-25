@@ -327,12 +327,35 @@ was missing.
 | B3 | `src/memory_budget.cpp:167-171`: the guard on the placement pass removed | no test gave a layout query that answers differently when a table is placed than when it was sized | `scene_requirement_reads_the_whole_table`: a query answering 64 bytes, then 4096 |
 | B4 | `src/gpu_upload.cpp:532`: the lifetime an upload records not taken from its resource | no test read a record's lifetime back through `find()` | `generated_skin_is_replaced_on_its_own`: the skin's record reads back as generated, a pack texture's as scene |
 
-The other five survivors are named in the review's comment on the board, which
-this session could not reach, and not in the brief. They are not named here
-rather than guessed. Every mutant this branch's own two sweeps left alive in
-the same three files is listed below, with the test that now kills it or the
-reason it is still open; if any of the five is among them, the same holds for
-it, but without the review's list that cannot be confirmed.
+The other five survivors were not named at the time this section was first
+written: the review's comment naming them is on the board, which that session
+could not reach. Issue #137 supplies them from PR #134's description, which
+relays the review's own list. All nine are below, with the test that now
+kills each one or, for the one still open, why.
+
+| Survivor | Location | The gap | Closed by |
+| --- | --- | --- | --- |
+| N04 (B1) | `src/memory_arena.cpp:96` | `create()` reserves `max_allocations` free blocks, not `max_allocations + 1` | `arena_calls_never_allocate`: a two-sided split at the allocation limit |
+| N11 | `src/gpu_upload.cpp:36-38` | `printable()` could keep a byte above 0x7E instead of replacing it with `?` | `names_hashes_and_sources`: a mesh name built with byte 0xC3 must come back `?` |
+| N13 | `src/gpu_upload.cpp:656-665` | `release_all` could return true after a refused release, so a caller would not learn that the handles after it were never released | `release_all_stops_at_first_refusal`, added for issue #137: a batch that re-releases an already-released handle |
+| N17 | `src/gpu_upload.cpp:752` | `releasing_bytes` could sum `staging.size` instead of `placement.size` | `image_layout_query_is_honoured`, extended for issue #137: a tiled layout where the two sizes differ, 512 against 64 |
+| N23 | `src/memory_budget.cpp:55` | `role.count > kMaxArenaAllocations` dropped from the arena-size guard | still open: unreachable in this suite, see below |
+| N25 (B2) | `src/memory_budget.cpp:146` | `staging_largest_bytes` is the last texture's size, not the largest | `scene_requirement_reads_the_whole_table`: the car table, largest texture first |
+| N29 (B3) | `src/memory_budget.cpp:167-171` | the guard on the placement pass removed, so a layout query that answers differently when a table is placed than when it was sized goes unnoticed | `scene_requirement_reads_the_whole_table`: a query answering 64 bytes, then 4096 |
+| P07 | `src/gpu_upload.cpp:759` | `staged_bytes` could sum `placement.size` instead of `staging.size` | `image_layout_query_is_honoured`: the same tiled layout, 128 against 1024 |
+| P15 (B4) | `src/gpu_upload.cpp:532` | the lifetime an upload records not taken from its resource | `generated_skin_is_replaced_on_its_own`: the skin's record reads back as generated, a pack texture's as scene |
+
+N23 needs a role - the buffers or the images inside one
+`upload_table_requirement` call - with more than `kMaxArenaAllocations`
+(4194304) resources of one kind, while its accumulated `capacity` stays at or
+below `kMaxArenaCapacity` (2^48). Every resource is at least 1 byte, so the
+capacity bound alone is no obstacle to writing the mutant; the obstacle is
+building and iterating an `UploadTable` of over four million `UploadResource`
+entries, each carrying a `std::string` name, inside a unit test. That is the
+same order of cost this branch's sweeps already declined to pay for
+I-A07/I-G28's inclusive `kMaxArenaAllocations` bound elsewhere in these two
+documents, and it is declined here for the same reason: the suite pins the
+guard's behaviour below the cap and does not reach the cap itself.
 
 Each of B1 to B4 was shown both ways at `932cc01`: the survivor applied and
 only the named test run, then the file restored byte for byte and the same
@@ -347,6 +370,19 @@ test run again.
 
 At `7bb355d` the B1 survivor passes the same test, exit 0,
 `all memory arena tests passed`: the test there never reached the split.
+
+N11, N13, N17 and P07 were shown both ways in this branch, for issue #137: the
+survivor applied to `src/gpu_upload.cpp`, only the named test run and then the
+whole `nfsu_gpu_upload_tests` program, then the file restored byte for byte
+(`git status --porcelain` empty) and touched so the build would not keep the
+mutant's object file, rebuilt, and both run again.
+
+| Survivor | With the survivor | Restored |
+| --- | --- | --- |
+| N11 | exit 1, `FAIL: names keep printable bytes, replace the rest, skip an empty name`, `1 check(s) failed` | exit 0, `all gpu upload tests passed` |
+| N13 | exit 1, four `FAIL:` lines, the first `FAIL: a batch with an already-released handle is refused`, `4 check(s) failed` | exit 0, `all gpu upload tests passed` |
+| N17 | exit 1, `FAIL: releasing bytes are the layout size, not the texel size: got 64, want 512`, `1 check(s) failed` | exit 0, `all gpu upload tests passed` |
+| P07 | exit 1, `FAIL: staged bytes are texels, not layouts: got 1024, want 128` and `FAIL: staged bytes are unchanged by the release: got 1024, want 128`, `2 check(s) failed` | exit 0, `all gpu upload tests passed` |
 
 ### The independent pass
 
