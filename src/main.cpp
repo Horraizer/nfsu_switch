@@ -2,6 +2,7 @@
 #include "nfsu/car_parts.h"
 #include "nfsu/chunk.h"
 #include "nfsu/geometry.h"
+#include "nfsu/memory_budget.h"
 #include "nfsu/part_placement.h"
 #include "nfsu/race_events.h"
 #include "nfsu/skin_inputs.h"
@@ -12,6 +13,7 @@
 #include "nfsu/track.h"
 #include "nfsu/track_budget.h"
 #include "nfsu/track_collision.h"
+#include "nfsu/track_contact.h"
 #include "nfsu/track_draw_list.h"
 #include "nfsu/track_objects.h"
 #include "nfsu/track_probe.h"
@@ -1299,6 +1301,134 @@ int run_track_collision(
         std::cout << "probe ray: nothing under the column\n";
     }
     return 0;
+}
+
+// ---------------------------------------------------------------------------
+// track-contact: the whole track's collision, loaded once, its memory against
+// the budgets of issue #52, and one contact query. docs/TRACK_COLLISION.md,
+// "The whole circuit". Read-only; writes nothing.
+// ---------------------------------------------------------------------------
+
+// A negative zero prints as "-0", which says nothing a zero does not.
+float printable_zero(float value) {
+    return value == 0.0F ? 0.0F : value;
+}
+
+std::uint64_t permille(std::uint64_t part, std::uint64_t whole) {
+    return whole == 0 ? 0 : part * 1000U / whole;
+}
+
+void print_track_contact(const char* label, nfsu::TrackContactStatus status,
+                         const nfsu::TrackContact& contact) {
+    std::cout << label << ": " << nfsu::track_contact_status_name(status);
+    if (status == nfsu::TrackContactStatus::hit) {
+        std::cout << ' ' << nfsu::track_contact_kind_name(contact.kind)
+                  << " polygon " << contact.polygon << " triangle "
+                  << contact.triangle << " distance "
+                  << printable_zero(contact.distance)
+                  << " point (" << contact.point[0] << ", " << contact.point[1]
+                  << ", " << contact.point[2] << ") normal ("
+                  << printable_zero(contact.normal[0]) << ", "
+                  << printable_zero(contact.normal[1]) << ", "
+                  << printable_zero(contact.normal[2]) << ") up " << contact.up;
+    }
+    std::cout << '\n';
+}
+
+// query: 0 none, 1 a column at probe[0..1], 2 a segment from probe[0..2] to
+// probe[3..5].
+int run_track_contact(const fs::path& path, int query, const float probe[6]) {
+    const nfsu::TrackContactWorld world = nfsu::load_track_contact_world(path);
+    const nfsu::TrackCollisionReport& report = world.collision;
+    const nfsu::TrackContactMemory& memory = world.memory;
+
+    std::cout << "file: " << path.string() << '\n';
+    std::cout << "file size: " << report.file_size << " image bytes "
+              << memory.image_bytes << " unused packed bytes "
+              << report.cost.unused_packed_bytes << '\n';
+    std::cout << "collision: " << (world.valid ? "valid" : "refused")
+              << " polygons " << report.cost.polygons << " cells "
+              << report.cost.cells << " indices " << report.cost.indices
+              << " nodes " << report.cost.tree_nodes << '\n';
+    for (const nfsu::TrackIssue& issue : report.issues) {
+        std::cerr << "collision issue at " << issue.offset << ": "
+                  << issue.message << '\n';
+    }
+    if (!world.valid) {
+        return 3;
+    }
+    const nfsu::TrackCollisionCost& cost = report.cost;
+    std::cout << "bounds: px " << cost.stored_min[0] << " .. " << cost.stored_max[0]
+              << " pz " << cost.stored_min[1] << " .. " << cost.stored_max[1]
+              << " py " << cost.stored_min[2] << " .. " << cost.stored_max[2]
+              << '\n';
+    std::cout << "triangles: road " << world.counts.road_triangles << " wall "
+              << world.counts.wall_triangles << " degenerate "
+              << world.counts.degenerate_triangles << " (road when |normal py| >= "
+              << nfsu::kTrackContactRoadMinUp << ")\n";
+    std::cout << "frame: raw slot order (px, pz, py), py up, world units; "
+                 "render x = px, y = py, z = -pz\n";
+    std::cout << "memory resident: " << memory.resident_bytes << " bytes in "
+              << memory.resident_allocations << " allocations: polygons "
+              << memory.polygon_bytes << " cells " << memory.cell_bytes
+              << " indices " << memory.index_bytes << " nodes "
+              << memory.node_bytes << " triangles " << memory.triangle_bytes
+              << '\n';
+    std::cout << "memory stored: " << memory.stored_bytes
+              << " bytes as the file holds the same arrays\n";
+    std::cout << "memory load: packed " << memory.packed_bytes << " image "
+              << memory.image_bytes << " peak " << memory.load_peak_bytes << '\n';
+    std::cout << "memory ceiling: " << nfsu::track_contact_resident_ceiling(
+                                           nfsu::TrackCollisionLimits{})
+              << " resident bytes at the default collision limits\n";
+
+    nfsu::MemoryPlan plan;
+    std::string error;
+    if (!plan.create(nfsu::switch_memory_budget(), error)) {
+        std::cerr << "switch plan: " << error << '\n';
+        return 4;
+    }
+    nfsu::TrackContactPlacement placement;
+    if (!nfsu::place_track_contact_memory(memory, plan, placement)) {
+        std::cout << "switch plan: refused at " << placement.refused_part << ": "
+                  << nfsu::arena_refusal_name(placement.refusal) << '\n';
+        return 4;
+    }
+    std::cout << "switch plan: persistent " << placement.persistent_used_bytes
+              << " of " << placement.persistent_capacity << " bytes ("
+              << permille(placement.persistent_used_bytes,
+                          placement.persistent_capacity)
+              << " per mille) extent " << placement.persistent_extent
+              << "; streaming load peak " << placement.streaming_peak_bytes
+              << " of " << placement.streaming_capacity << " bytes ("
+              << permille(placement.streaming_peak_bytes,
+                          placement.streaming_capacity)
+              << " per mille), released\n";
+
+    if (query == 0) {
+        std::cout << "probe: no point given; no query was run\n";
+        return 0;
+    }
+    nfsu::TrackContact contact;
+    nfsu::TrackContactStatus status = nfsu::TrackContactStatus::refused;
+    if (query == 1) {
+        // The column issue #39's track-collision probe casts: from py 1000,
+        // above every retail track, down 2000, past the bottom of every one.
+        const float point[3] = {probe[0], probe[1], 1000.0F};
+        std::cout << "probe column: px " << probe[0] << " pz " << probe[1]
+                  << " from py 1000 down 2000\n";
+        status = nfsu::query_track_contact_point(world, point, 0.0F, 2000.0F,
+                                                 contact);
+        print_track_contact("probe column", status, contact);
+    } else {
+        std::cout << "probe segment: (" << probe[0] << ", " << probe[1] << ", "
+                  << probe[2] << ") to (" << probe[3] << ", " << probe[4] << ", "
+                  << probe[5] << ")\n";
+        status = nfsu::query_track_contact_segment(world, probe, probe + 3,
+                                                   contact);
+        print_track_contact("probe segment", status, contact);
+    }
+    return status == nfsu::TrackContactStatus::refused ? 5 : 0;
 }
 
 int run_track_objects(
@@ -6868,6 +6998,33 @@ const Command kCommands[] = {
          }
          return run_track_collision(nfsu::argument_path(argv[2]), argc == 5, slot0,
                                     slot1);
+     }},
+    {"track-contact", " <TRACKB####.lzc> [px pz | px pz py px pz py]", "",
+     [](int argc, char** argv) {
+         if (argc != 3 && argc != 5 && argc != 9) {
+             print_usage();
+             return 1;
+         }
+         float probe[6] = {0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F};
+         for (int i = 3; i < argc; ++i) {
+             const std::string value(argv[i]);
+             double number = 0.0;
+             std::size_t used = 0;
+             try {
+                 number = std::stod(value, &used);
+             } catch (const std::exception&) {
+                 used = 0;
+             }
+             const float narrowed = static_cast<float>(number);
+             if (used == 0 || used != value.size() || !std::isfinite(narrowed)) {
+                 std::cerr << "error: every coordinate must be a finite number, got '"
+                           << value << "'\n";
+                 return 1;
+             }
+             probe[i - 3] = narrowed;
+         }
+         const int query = argc == 3 ? 0 : (argc == 5 ? 1 : 2);
+         return run_track_contact(nfsu::argument_path(argv[2]), query, probe);
      }},
     {"car-placement", " <GLOBALB.BUN> [car-type]", "",
      [](int argc, char** argv) {

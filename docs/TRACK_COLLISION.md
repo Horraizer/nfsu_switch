@@ -17,13 +17,19 @@ placed. Both say collision is not decoded. This note decodes it:
    their units and the retail routine that turns one into world space,
 4. the leaf cells and the index list they slice, and
 5. the quadtree over those cells, whose shape is stored nowhere and is
-   recovered from the cell centres it has to reproduce.
+   recovered from the cell centres it has to reproduce, and
+6. for issue #158, the whole circuit of Underground race 1: why one
+   `TRACKB` file is all of its collision, the proof that it covers the
+   route, and the contact layer a vehicle queries, with its units, normals
+   and memory cost.
 
 It deliberately stops there. Five bytes of the polygon record are not
 explained here, the other twenty chunks of the same container are not
 decoded,
 and nothing here claims anything about dynamic collision, the car bodies
-the runtime builds, or how the game responds to a hit.
+the runtime builds, or how the game responds to a hit. The contact layer of
+the sixth part answers where the track is and which way it faces; what a
+contact does to a car is issue #60's.
 
 Reference samples for this document:
 
@@ -710,6 +716,707 @@ Running the decoder once over every one of the 31 tracks:
 Not one track raises an issue, and every rule in the list above holds on
 every one of them.
 
+## The whole circuit (issue #158)
+
+Issue #158 asks for the static collision of every section the first-lap
+circuit uses, loaded with its memory cost, with bounded point and segment
+queries that return road or wall contacts in the units and normals issue #60
+needs. The circuit is race 1 of Underground mode: event 1, a circuit on
+track 1003, `DT1 - Olympic Square`, stream region `L1RA`, 2 laps, forward
+([`RACE_EVENTS.md`](RACE_EVENTS.md)).
+
+The answer to "where" is short, and it changes what "extend to every
+section" means: **there is no per-section collision to assemble. The whole
+circuit's static collision is the whole of `Tracks/TRACKB1003.lzc`**, which
+the decoder above already parses in full. What this issue adds is the
+evidence for that, the proof that the file covers the circuit, and the layer
+a vehicle needs on top of the decode: `include/nfsu/track_contact.h` and
+`src/track_contact.cpp`, library `nfsu_track_contact`, and the probe command
+`track-contact`.
+
+The files this section's evidence rests on:
+
+| File | Size | SHA-256 |
+| --- | ---: | --- |
+| `Tracks/TRACKB1003.lzc` | 433352 | `ADA8206B5D66E3286BF582E2C7117FE0CC2BA9F6CADB756D922F7D32E7C696BA` |
+| `Tracks/STREAML1RA.BUN` | 92394688 | `2385556EC31142F7390434CA70152A9F3D629155AF991BB6595422FCB26A752E` |
+| `Tracks/STREAML1RA_1003.BUN` | 0 | `E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855` |
+| `Tracks/TEX1003TRACK.BIN` | 1086216 | `081B4D966C154D7B9823E70DD5031269A8D3293F8CD13ED515EF644F09573ED5` |
+| `Global/GLOBALB.BUN` | 2361176 | `39DF38FAC2BE7CA0F0D0A92E0113CAAEDA5B1C60E14436C612B3D0874AFC8DB9` |
+| `Tracks/TRACKB1210.lzc` | 244396 | `3EF7DDACDA744DD1F5C610AEDD791A5D4FA5E95C950C340BBE9B6F31D7370B07` |
+| `speed.exe` | 3178496 | `C0FAD450912952F53809A54690D235AA8B4E25B9F46650693C7CBEE1B4C074B7` |
+
+`GLOBALB.BUN` and not `Global/GlobalB.lzc`, for the reason
+[`RACE_EVENTS.md`](RACE_EVENTS.md) gives: the `.lzc` in this installation is
+a 2025 modification, and `GLOBALB.BUN` is byte for byte the decompression of
+the 2003 backup.
+
+### Where the whole circuit's collision is
+
+**The game holds exactly one static collision set.** Every chunk of a
+loaded file is offered to the loaders of one table: `0x00447DD8 push 0x2f`,
+`0x00447DDA push 0x7007e0`, `0x00447DE3 call 0x447ac0`, which is 47
+entries from 0x007007E0. The third, at 0x007007E8, is 0x00441ED0: it links
+`0x00034146` records into a list of its own and hands every other chunk to
+the collision loader with one fixed structure,
+
+```text
+00441F27  mov  eax, 0x77b130      ; the one collision structure
+00441F2C  call 0x441380           ; the five compares of the loader above
+```
+
+and 0x00441380 **stores** a pointer and a count for each of the five chunks
+into it (`0x00441393 mov [eax], esi`, `0x004413A4 mov [eax + 4], ecx` and
+so on); it does not append. The matching unloader, 0x00441F40 at table
+entry 0x007008A8, calls 0x00441480, which stores zero into the same fields.
+A second collision image would replace the first, not join it.
+
+**That set comes from one file per race.** The track-specific load formats
+`TRACKS\TRACKB%d.LZC` from the current track number and nothing else:
+
+```text
+00449791  mov  ebp, dword ptr [0x78a2f0]   ; the current track number
+004497BD  push ebp
+004497BE  push 0x6c9b38                    ; "TRACKS\TRACKB%d.LZC"
+004497CE  mov  dword ptr [0x77a91c], 0x6c9b4c
+                                           ; "GameFlowLoadingTrackSpecificPart1"
+004497EA  call 0x4482f0                    ; the load
+```
+
+`RACE_EVENTS.md` shows 0x0078A2F0 is the track number a career race
+copies out of the event (0x004ABC58..0x004ABC5C), so event 1 loads
+`TRACKB1003.LZC`. The path from the load at 0x004482F0 to the dispatch at
+0x00447AC0 is not traced instruction by instruction here.
+
+**No other file a race on 1003 loads carries any collision.** Besides the
+track-specific files, the global and track-common loads name theirs with
+literal paths, each referenced once, and hand each to the same bundle load
+at 0x004482F0 that `TRACKB` goes through; each car's files come from
+`CARS\`:
+
+| Load | Path | Referenced at |
+| --- | --- | --- |
+| global | `GLOBAL\GLOBALA.BUN` | `0x00448608 push 0x6c9e2c` |
+| global | `GLOBAL\GLOBALB.LZC` | `0x0044865F push 0x6c9e18` |
+| track common | `GLOBAL\INGAMEA.BUN` | `0x004492D7 push 0x6c9cac` |
+| track common | `GLOBAL\INGAMEB.LZC` | `0x0044933C push 0x6c9c78`, then `0x00449348` stores the phase name `GameFlowLoadingTrackCommonPart1` |
+| track specific | `TRACKS\TEX%dTRACK.BIN` | `0x0044953E push 0x6c9c00` |
+| track specific | `TRACKS\STREAM%s.BUN`, `TRACKS\STREAM%s_%d.BUN` | `0x0044970D`, `0x0044972C` |
+| track specific | `TRACKS\TRACKB%d.LZC` | `0x004497BE`, above |
+| each car | `CARS\%s\TEXTURES.BIN`, `CARS\%s\VINYLS.BIN`, and the shared files under `CARS\` | `0x0058BBDF`, `0x0058BC27` |
+
+`GLOBALB.BUN` and `INGAMEB.BUN` are named beside their `.LZC` at
+0x0044867C and 0x0044936D. Walked as chunk trees to the end, recursing into
+every id with bit 31 set, a JDLZ file decompressed first:
+
+| File | Chunks | Depths | Walk faults | Chunks with one of the five ids | Raw occurrences of the id bytes |
+| --- | ---: | --- | ---: | ---: | ---: |
+| `Tracks/STREAML1RA.BUN` | 49464 | 0 to 3 | 0 | 0 | 7, none at a chunk header |
+| `Tracks/STREAML1RA_1003.BUN` | 0 | - | 0 | 0 | 0 (the file is empty) |
+| `Tracks/TEX1003TRACK.BIN` | 13 | 0 to 2 | 0 | 0 | 0 |
+| `Global/GLOBALB.BUN`, byte for byte the image of the 2003 `GLOBALB.LZC.bacc` | 240 | 0 to 3 | 0 | 0 | 0 |
+| `Global/GLOBALA.BUN.bacc`, the 2003 `GLOBALA.BUN` | 20 | 0 to 2 | 0 | 0 | 0 |
+| `Global/InGameB.lzc`, decompressed, byte for byte `INGAMEB.BUN` | 224 | 0 to 3 | 0 | 0 | 1, not at a chunk header |
+| `Global/INGAMEA.BUN` | 0 | - | 0 | 0 | 0 (the file is empty) |
+| `Cars/`, all 120 files | 120853 | 0 to 3 | 0 | 0 | 35, none at a chunk header |
+
+`GLOBALA.BUN` in this installation is dated 2025, like `GlobalB.lzc`, and is
+388 bytes longer than its `.bacc`. Neither modified file changes the
+answer: `GLOBALA.BUN` walks as 23 chunks and `GlobalB.lzc` as 270, with
+none of the five ids in either, and nor do the other files under `Global/`,
+`DYNTEX.BIN` (14 chunks), `HUDTEX.BIN` (14) and the empty `CHARACTERSA.BIN`.
+
+`TRACKB1003.lzc` itself holds exactly one of each of the five, which
+`parse_track_collision` requires and reports valid. So the collision the
+game has for this circuit is that one image, all of it, and "every section
+the circuit uses" is a property of the image to check rather than a set of
+images to load.
+
+### The image covers the circuit
+
+Coverage needs the circuit's path, and `TRACKB1003.lzc` carries one.
+Container `0x80034147` holds `0x00034148`, 40 bytes, and `0x00034149`, 620
+bytes, which is 31 records of 20:
+
+| Offset | Type | Field |
+| --- | --- | --- |
+| +0 | f32 | slot 0, `px` |
+| +4 | f32 | slot 1, `pz` |
+| +8 | 8 bytes | `00 00 FF FF FF FF FF FF` in all 31 |
+| +16 | f32 | a running value: 0 at the first point, rising to 3200.343 at point 29, and 0 again at point 30 |
+
+The header stores 30 twice at +4 and +6 and 3318.270 at +12. The last point
+lies 4.89 units from the first, so the line is closed. The running value
+exceeds the straight-line length of the polyline by an amount that grows at
+every corner, 0.1 after the first and 25.9 by point 29, which is what a
+length measured along a curve through the points would do; that reading is
+an inference.
+
+Over all 31 `TRACKB` files the same container tells the race types apart
+without being asked: the eight tracks 1001-1008, where every circuit race
+runs, and the eight drift tracks 1301-1308 carry a closed line (the last
+point 0.5 to 4.9 units from the first), and the eight sprint tracks
+1102-1109 and the six drag tracks carry an open one (259 to 2652 units).
+`TRACKB1099`, which no quick-race mode offers, carries a closed one with a
+12.3-unit gap. **Observed:** a closed line on every loop track and an open
+one on every point-to-point track. **Inferred:** it is
+the race route. Decoding the route belongs to issue #61; here it is only a
+line to sample the collision along, and it is labelled as that.
+
+Sampled every world unit, 3316 samples, each probed with the column query
+below from py 1000 down 2000 (`nfsu_probe track-contact <file> px pz` does
+exactly this for one sample):
+
+| First contact down the column | Samples |
+| --- | ---: |
+| road | 2858 |
+| wall | 0 |
+| clear: a cell covers it, no surface under it | 428 |
+| outside: no cell at all | 30 |
+| **road within 10 world units to either side, perpendicular to the line** | **3316 of 3316** |
+
+The worst sample needs the full 10 units. The misses are the line running
+where no car drives: points 3 and 4 lie at pz -322.04, on the median of a
+divided road whose two carriageways are at pz -346..-328 and -304..-298 and
+whose median has no surface, and the rest are bends the straight chords
+cut across. Probed at the 31 points themselves, 28 hit road directly and
+points 3, 4 and 28 are clear. The route passes over the ground of 13 of the
+image's own visibility zones ([`TRACK_ZONES.md`](TRACK_ZONES.md)), in the
+order 1003, 1002, 1001, 1104, 1105, 1106, 1103, 1201 to 1206 and back to
+1003, and those 13 zones name 119 stream sections to draw between them:
+
+| Zone section | Route samples | A road surface under the sample | Farthest to road |
+| --- | ---: | ---: | ---: |
+| 1001 | 271 | 141 | 8.0 |
+| 1002 | 254 | 126 | 9.5 |
+| 1003 | 331 | 300 | 9.5 |
+| 1103 | 324 | 216 | 10.0 |
+| 1104 | 247 | 247 | 0 |
+| 1105 | 275 | 275 | 0 |
+| 1106 | 139 | 139 | 0 |
+| 1201 | 212 | 212 | 0 |
+| 1202 | 308 | 308 | 0 |
+| 1203 | 211 | 211 | 0 |
+| 1204 | 282 | 282 | 0 |
+| 1205 | 209 | 209 | 0 |
+| 1206 | 253 | 192 | 4.5 |
+
+**The collision is the track's own.** The same 3316 samples against other
+tracks' images:
+
+| Image | A road surface under the sample | Outside every cell |
+| --- | ---: | ---: |
+| `TRACKB1003` | 2858 | 30 |
+| `TRACKB1001` | 0 | 3316 |
+| `TRACKB1004` | 844 | 2334 |
+| `TRACKB1102` | 2651 | 191 |
+| `TRACKB1210` | 38 | 3223 |
+
+Another circuit of the same stream region covers none of this one's route,
+so the eight `L1RA` circuits do not share one city-wide collision: each
+track's file covers that track.
+
+Across a street, the walls are there: at the first route point, a sweep at
+py 56.5 from `(904.24, -94.76)` toward `(944, -74)` meets polygon 9768 as
+wall 14.562 units along, and the opposite sweep toward `(864, -115)` meets
+polygon 9770 15.373 units along, each normal facing back toward the route.
+
+### What `nfsu_track_contact` adds
+
+`load_track_contact_world` reads one `TRACKB` file exactly as
+`load_track_collision` does, releases the decompressed image as soon as it
+is parsed, and derives a table of two triangles per polygon, (0,1,2) and
+(0,2,3), each with its unit normal and whether it is road or wall. Two
+queries sit on it, both answering out of the game's own index through the
+same quadtree as the queries above:
+
+- `query_track_contact_segment(world, from, to)`: the first triangle the
+  segment crosses, road or wall. This is the sweep a body makes.
+- `query_track_contact_point(world, point, rise, drop)`: the segment from
+  `rise` above the point straight down to `drop` below it, first contact
+  from the top. This is the column a wheel probes, and under a bridge it
+  meets the deck before the road beneath.
+
+Each answers one of four statuses, which are the distinctions issue #60's
+airborne, out-of-bounds and reset cases need:
+
+| Status | Meaning |
+| --- | --- |
+| `hit` | a contact, filled |
+| `clear` | at least one leaf cell's closed square meets the query's horizontal projection, and nothing those cells name is met: airborne |
+| `outside` | no leaf cell's closed square meets any part of the query's horizontal projection: the index places no collision there, out of bounds |
+| `refused` | the world is not valid, an argument is null, not finite, zero-length, negative or over a cap |
+
+A contact carries the polygon index (the `n` of retail's `TrackPolygon<n>`),
+which triangle, road or wall, the distance from the segment's start in
+world units, the point, the unit normal and the cosine of the slope.
+
+**Bounded.** A segment longer than `max_length`, 4096 world units by
+default, is refused, and so is one that would meet more than `max_cells`
+leaf cells, 16384 by default, counting only the cells whose square the
+segment's horizontal projection meets: a cap refuses, it never truncates,
+because a truncated collision answer is a wrong one. Within the caps the
+work is the cells visited times the polygons each names, both bounded by the
+parsed arrays. A world whose report is not valid, and a world assembled by
+hand whose triangle table does not match its polygons, answer nothing.
+
+**Invalid geometry.** A triangle whose cross product is zero or not finite
+is degenerate: it gets no normal, is counted, and is never met. On the
+retail corpus that is exactly the 85710 records that repeat an adjacent
+corner in all three slots, one triangle each. A segment that lies in a
+triangle's plane never meets it, which is why a sweep along a barrier line
+is clear.
+
+### Which cells, and which triangle
+
+**Cells.** A query selects the leaf cells whose closed 32 by 32 square
+meets the horizontal projection of its segment. It walks the quadtree
+`query_track_collision_cells` walks, from the same root and in the same
+quadrant order, and prunes every node the segment misses: first by the box
+test that query makes, then by asking whether all four corners of the
+square lie strictly on one side of the segment's line. That side is a 2x2
+determinant in double, Shewchuk's orient2d, and a corner nearer the line
+than its rounding bound counts as on it, so a doubtful square is kept;
+keeping one can only add polygons for the triangle test to reject. A square
+the segment touches at a corner counts. For a column the footprint is a
+point and the cells are exactly the ones issue #39's ray selects. So
+`outside` means what the table above says, and the cell cap counts only the
+cells the segment meets, never the others its bounding box reaches.
+
+The review of this issue found the first version selecting cells by the
+segment's bounding box. `nfsu_probe track-contact <TRACKB1003.lzc> 731 486
+50 742 475 50`, a sweep passing 0.7 units diagonally off the corner of cell
+(720, 464) with no cell beyond that corner, printed `probe segment: clear`;
+it now prints `probe segment: outside`, as the columns at both of its ends
+and at its midpoint do. Over 300000 random segments per track, 0.5 to 60
+units long and a quarter of them horizontal, checked against every cell's
+square by an independent clip and against a brute force that tests every
+non-degenerate triangle in double with closed bounds through no game index:
+
+| Image | Hit | Clear | Outside | Clear with no cell met | Outside with a cell met | Brute force: missed, extra, other distance |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `TRACKB1003` | 40647 | 59395 | 199958 | 0 (the first version: 1318) | 0 | 0, 0, 0 |
+| `TRACKB1210` | 68298 | 102681 | 129021 | 0 (the first version: 1620) | 0 | 0, 0, 0 |
+
+**Triangles.** Issue #39's Moller-Trumbore arithmetic decides first: the
+nearest triangle it accepts among the triangles that are not degenerate, a
+tie going to the lower polygon and then the lower triangle. So wherever the
+first triangle `query_track_collision_ray` meets along the same line is not
+degenerate, the contact is that hit, bit for bit in polygon, triangle,
+distance and point. A degenerate triangle is the exception. The contact
+never meets one; the #39 ray does not skip one, and on an oblique line its
+float determinant for a triangle with two equal corners - a quad slot that
+repeats a corner - can come out nonzero, so it accepts the triangle at a
+distance that is only rounding. There the contact answers the nearest other
+contact instead. The review of this issue found `track-contact
+<TRACKB1003.lzc> 1478.58521 -8.32364178 61.1099014 1485.66479 -7.80135822
+57.4213486` answering `probe segment: clear` while the #39 ray reports
+polygon 536's degenerate triangle 1 at 3.692308; in exact arithmetic the
+segment meets the closed outer edge of the same polygon's triangle 0,
+3.99996 along, which the contact misses by rounding, a case measured under
+"Tests, and the breaks they catch" below. On the edge-aimed oblique sweeps
+described there, the first triangle the #39 ray meets is degenerate on 5076
+of the 611352 on `TRACKB1003` and 729 of the 529632 on `TRACKB1210`, and
+the contact answers farther along on 4978 and 715, nearer - through the
+watertight test - on 85 and 13, at the same distance on another triangle on
+0 and 1, and clear on 13 and 0; on every other sweep where the ray meets
+something the contact is that hit. It never happens on a column: for a
+vertical line the determinant of a triangle with two equal corners is
+exactly 0, and every retail degenerate triangle has two. Nor did it happen
+on any of 300000 random segments on each of the two tracks.
+
+That arithmetic is not watertight either. It rounds each barycentric on its
+own, and a point exactly on an edge can round outside every triangle that
+has it: the review found road seams on retail data that it misses from both
+sides, such as the column `track-contact <TRACKB1003.lzc> 961.1171875
+-244.921875`, on the edge polygons 1980 and 1986 share, which answered
+`clear`. So when it accepts nothing anywhere along the segment, the
+watertight test of Woop, Benthin and Wald (2013) decides instead. Each
+corner is sheared into the segment's frame in float by the same operations
+whichever triangle it belongs to, and an edge function over two corners is
+a difference of the same two products in both triangles that share the
+edge, so it has the same value with the opposite sign in each; taken in
+double, it has the exact sign for the sheared corners. A point on a shared
+edge is met by both triangles, a point beside it by the one it lies in, and
+a polygon's own outer edge is met too. On a column the shear only moves
+each corner to the column's start - exact wherever that difference is
+itself a float - so that sign is the triangle's own; on an oblique segment
+the corners are rounded in float as they are sheared, so a point within
+about a float rounding of an outer edge can go either way, as measured
+under "Tests, and the breaks they catch" below. That column now answers
+`hit road polygon 1980 triangle 0 distance 940.824`, and the sweep through
+the same point from py 59.5 down to 58.5 `hit road polygon 1980 triangle 0
+distance 0.324219`.
+
+Columns at 17 points along every edge two road polygons share, and at 15
+points inside every road quad's (0,2) diagonal, from py 1000 down 2000:
+
+| Image | Shared road edges | Columns on them | The #39 ray misses | The contact misses | Diagonal columns | The contact misses |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `TRACKB1003` | 10568 | 179656 | 4 | 0 | 87780 | 0 |
+| `TRACKB1210` | 8844 | 150348 | 4 | 0 | 80565 | 0 |
+| `TRACKB1107` | 25448 | 432616 | 20 | 0 | 191085 | 0 |
+
+**What that leaves.** The watertight test only adds contacts where the #39
+arithmetic meets nothing that is not degenerate, and on the lattices under
+"Region against whole" below every one it adds lies exactly on a triangle's
+edge: of the 17 columns where the ray meets nothing and the contact meets
+something, 16 are on a polygon's outer edge with nothing beyond it, such as
+(754, 209) on polygon 3101 of `TRACKB1003`, and 1 is on a seam, (694, -4)
+on polygon 1159 of `TRACKB1207`. The price of keeping every #39 hit on a
+triangle that is not degenerate bit for bit is the converse: where the #39
+arithmetic meets something farther along, a nearer surface met only on its
+own edge does not replace it. Two columns of those lattices are that case,
+both on `TRACKB1003` and both a polygon's outer edge above a lower road:
+(1690, 486) answers polygon 4247 where polygon 3972's edge is 0.1 units
+higher, and (979.5, 281.5) answers polygon 2315 where polygon 2259's edge
+is 0.93 units higher. Both are single points; issue #39's ray answers them
+the same way.
+
+### Units, frame and normals, for issue #60
+
+- **Units.** Every coordinate and distance is a world unit: the unit of the
+  collision records, of the render geometry and of the scenery translations.
+  One world unit is about one metre: the 240SX body measures 4.374 by 1.929
+  by 1.243 units against a real 4.31 by 1.815 by 1.315 m car
+  ([`TRACK_RENDER.md`](TRACK_RENDER.md)), and the aftermarket rim diameters
+  quantise to exact inches as metres, 0.29210 being 11.5 inches
+  ([`PART_PLACEMENT.md`](PART_PLACEMENT.md)).
+- **Frame.** The raw slot order of this note: component 0 is `px`,
+  component 1 is `pz`, component 2 is `py`, the vertical, and a larger `py`
+  is higher. Nothing in the layer applies the renderer's map.
+- **Conversion.** `track_slot_to_render` is the map of
+  [`FORMATS.md`](FORMATS.md): `x = px`, `y = py`, `z = -pz`, and
+  `track_render_to_slot` is its exact inverse. It is a rotation with
+  determinant +1, so a normal converts the same way, keeps its length, and a
+  road normal becomes the renderer's +y.
+- **Normals.** Unit length, in the raw slot order, and **facing the query**:
+  the dot product with the segment's direction is negative. The collision
+  is two-sided, so a barrier hit from either side reports the normal of the
+  side it was hit from, and a column from above onto a road reports a
+  normal with `py > 0`.
+- **Road or wall.** A triangle is road when the magnitude of its normal's
+  `py` component is at least 0.5, a slope of 60 degrees, and wall otherwise.
+  That is this project's rule, a compatibility approximation, and not the
+  game's: the retail surface type is not decoded. It was chosen where the
+  retail data is sparse. Over the 496280 non-degenerate triangles of all 31
+  tracks:
+
+  | `abs(normal py)` | Triangles |
+  | --- | ---: |
+  | below 0.05 | 96808 |
+  | 0.05 to 0.3 | 705 |
+  | 0.3 to 0.5 | 320 |
+  | 0.5 to 0.7 | 589 |
+  | 0.7 to 0.95 | 3092 |
+  | 0.95 and above | 394766 |
+
+  so moving the threshold anywhere between 0.3 and 0.7 reclassifies at most
+  909 of them. Under it the corpus is 398447 road, 97833 wall and 85710
+  degenerate triangles.
+
+### The decoded circuit: `L1RA`, track 1003
+
+```text
+file        Tracks/TRACKB1003.lzc
+packed      433352 bytes, 2 flag bytes unread
+image       961328 bytes, 43 top-level chunks
+```
+
+| | |
+| --- | ---: |
+| Polygons | 9958 |
+| Cells | 382, of which one is the sentinel |
+| Indices | 13818 |
+| Quadtree nodes | 243 |
+| Cell/polygon pairs | 13817 |
+| Unreferenced polygons | 0 |
+| Saturated vertical polygons | 1038 |
+| Polygons with a repeated corner | 2934 |
+| Road triangles | 14634 |
+| Wall triangles | 2348 |
+| Degenerate triangles | 2934 |
+
+```text
+stored bounds: px 664.25 .. 1771.5   pz -469.875 .. 822.5   py -127 .. 127
+```
+
+**Memory**, every figure a size times a `sizeof`, so the same on every
+64-bit build:
+
+| | Bytes |
+| --- | ---: |
+| Resident: polygons, 9958 of 96 | 955968 |
+| Resident: cells, 382 of 32 | 12224 |
+| Resident: indices, 13818 of 4 | 55272 |
+| Resident: quadtree nodes, 243 of 48 | 11664 |
+| Resident: triangles, 19916 of 20 | 398320 |
+| **Resident in all, 5 allocations** | **1433448** |
+| The same five arrays as the file stores them | 354348 |
+| Load buffers: the packed file and the image | 433352 + 961328 |
+| Load peak: both buffers and the four parsed arrays at once | 2429808 |
+
+The resident form is four times the stored one because the decoder keeps
+each polygon's world-space corners and offsets beside the raw record. That
+is a choice of this decoder, not a property of the format, and it is small
+against every budget below.
+
+**Against the budgets of issue #52** ([`MEMORY_BUDGETS.md`](MEMORY_BUDGETS.md)).
+The collision is loaded once per race and lives until the race ends, which
+is the persistent category; the load buffers are released when the load
+returns, which is not a frame, so they are placed in the streaming arena
+rather than the one-frame transient one. `place_track_contact_memory` does
+exactly that against the plan `switch_memory_budget()` builds, and releases
+the buffers afterwards:
+
+| Arena | Capacity | Held | Per mille |
+| --- | ---: | ---: | ---: |
+| persistent, the resident arrays | 67108864 | 1433448, extent 1433456 | 21 |
+| streaming, the load buffers at their peak, then released | 50331648 | 1394680 | 27 |
+
+On the desktop there is no arena plan, and the figure a budget has to hold is
+the derived ceiling: `track_contact_resident_ceiling` of the default
+`TrackCollisionLimits` is 30932992 bytes, every array at its limit, which
+fits the 64 MiB persistent placeholder by itself. Across the 31 retail
+tracks the largest resident world is `TRACKB1107` at 3483760 bytes and the
+largest load peak is 5491284, the same track.
+
+### Region against whole, and the pins of issue #39
+
+The pins above are untouched: the decoder, the parser rules and the three
+queries of issue #39 are not modified by this issue, `nfsu_track_collision_tests`
+passes unchanged, and the retail acceptance below reproduces every number
+this note already printed.
+
+**Synthetic.** `tests/track_contact_tests.cpp` builds four sections of track
+far apart, each in its own part of the quadtree - a street between two
+barriers with a gap in its surface, a hill with a 45-degree ramp and a
+70-degree face, a bridge deck over a road with a pier under it, and a slab
+across the world origin that every root quadrant shares - into one image,
+and each section alone into an image of its own. Over a lattice of columns
+from three heights and sweeps in four directions at six heights, **11694
+queries, 5446 of them contacts, answer bit for bit the same** over the
+whole and over the section alone, with only the polygon index offset by
+where the section sits in the whole. Every column of that lattice, 10830 of
+them, is also held to `query_track_collision_ray` of issue #39 over the
+whole image whatever either answers: at the 5112 where the ray meets
+something the column is the same polygon, triangle, distance and point, and
+where the ray meets nothing so does the column, since no column of that
+lattice lies on an edge the #39 arithmetic misses. The other side is held
+by its own images, found by a search over the format's own grid, that the
+ray misses and the contact meets: a flat seam, met by a column, by sweeps
+through it from both sides and by sweeps that start and that end exactly on
+it; a flat quad's outer edge; and a seam between two sloped quads, where the
+contact is pinned to the road's exact height there, 7.30010986328125, to
+1e-4.
+
+**Retail.** Columns from py 1000 down 2000 over each track's stored
+bounds, on three lattices: the one-unit lattice at half-unit offsets this
+note has used from the start, and the two the review of this issue used, a
+one-unit lattice on whole units and a 0.75-unit lattice offset by (0.37,
+0.61). Wherever the ray of issue #39 meets something, on every column of
+every lattice, the contact column is the same polygon, triangle, distance
+and point:
+
+| Image | Lattice | Columns | Ray hits | Contact hits | Clear | Outside | Ray hit, contact differs | Contact only, on an edge |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `TRACKB1210`, issue #39's own region | half-unit | 586677 | 125578 | 125578 | 153834 | 307265 | 0 | 0 |
+| `TRACKB1003`, the circuit | half-unit | 1432644 | 178769 | 178771 | 206861 | 1047012 | 0 | 2 |
+| `TRACKB1207`, issue #39's box pin | half-unit | 1058216 | 119675 | 119677 | 185571 | 752968 | 0 | 2 |
+| `TRACKB1210` | whole-unit | 589100 | 126044 | 126044 | 157830 | 305226 | 0 | 0 |
+| `TRACKB1003` | whole-unit | 1432644 | 178896 | 178903 | 212998 | 1040743 | 0 | 7 |
+| `TRACKB1207` | whole-unit | 1060827 | 120124 | 120130 | 189961 | 750736 | 0 | 6 |
+| `TRACKB1210` | 0.75, offset | 1039995 | 222949 | 222949 | 271682 | 545364 | 0 | 0 |
+| `TRACKB1003` | 0.75, offset | 2543148 | 316319 | 316319 | 368714 | 1858115 | 0 | 0 |
+| `TRACKB1207` | 0.75, offset | 1879890 | 212519 | 212519 | 329032 | 1338339 | 0 | 0 |
+
+The seven whole-unit columns of `TRACKB1003` the contact alone meets are
+the seven the review found answering clear over road, all on outer edges.
+
+and issue #39's column pin reads the same through the new command:
+`probe column: hit road polygon 5221 triangle 1 distance 1022.64 point
+(783, -8.5, -22.6387)`.
+
+### Tests, and the breaks they catch
+
+`nfsu_track_contact_tests` runs 28184 checks over the synthetic sections:
+the triangle table and its counts, every point and segment case above, the
+region-against-whole lattice with every column held to the #39 ray, the
+refusals and both caps at their exact boundaries, the memory plan including
+a refusal one byte short and a world built in memory, the coordinate map,
+and a load from a raw and a JDLZ-packed file. For the reviews of this issue
+it adds a sweep whose bounding box reaches a cell the segment does not, a
+sweep through a cell's corner, the cell cap inside one node of the tree and
+across the root's quadrants, road wound both ways, a slope of exactly 60
+degrees in float, a contact exactly at a segment's end and at its start, a
+column on a deck's own outer edge above a road, and the edges the #39
+arithmetic misses: a flat seam, also met by sweeps that start and end
+exactly on it, a flat outer edge, a seam between two sloped quads with its
+height pinned, and two walls' own (0,2) diagonals met by oblique sweeps
+with the distance pinned. Each test says in a comment which break it would
+catch, and a failure message reports the failing query's own answer.
+`nfsu_probe_track_contact_guards` drives the command over the same image
+written to disk, pinning exit status and output for 23 cases, and the
+fixture writer's refusal to replace a file.
+
+The first version of `src/track_contact.cpp`, run whole under these tests,
+fails 14 checks - two sweeps off a cell's corner, the cell cap twice, the
+flat seam as a column, as sweeps through it from above and from below and
+as sweeps that start and end on it, the flat outer edge, the sloped seam
+as a column and as a sweep, and the two walls' diagonals - and the guard
+case of the sweep off the corner.
+
+The sweep of deliberate breaks this note printed before the second review
+counted 33 of 34 caught, and that overstated the watertight fallback: it
+held no break of the fallback's distance or of its two closed ends, and
+the second review found three there - `t < 0` made `t <= 0`, `along >
+max_distance` made `>=`, and the distance weighting the wrong corner's
+height - that change retail answers while every test passed. The fallback's
+own cases were all flat, where every corner's height is the same and no
+weighting can move the answer, and none put a fallback contact at either
+end of a segment. The rows marked G1 below are those three, each caught by
+a test added for it; the row after them, a full swap of the two weights,
+is caught by the same sloped seam.
+
+The 45-break sweep printed after that still overstated it. Every fallback
+contact those tests made lay on a triangle's (b,c) edge, where the edge
+function `u` is exactly 0, so the fallback's weight on corner a - the `u`
+term of its distance and `u`'s share of its determinant - never counted,
+and the third review found two breaks there that change retail answers
+while every test passed: on `TRACKB1003` the sweep `track-contact
+<TRACKB1003.lzc> 1473.10193 37.9745102 53.7840652 1467.63245 32.2598648
+54.9791183` meets wall polygon 0 4.00002 along, and under the two breaks
+2.41417 and 5.81821 along, and the sweep from `1468.14014 31.3876724
+54.1409225` to `1470.76611 34.7685776 60.8991165` meets the same wall
+3.99998 along and under either break passes through it. The rows marked G2
+are those two, caught by two
+oblique sweeps through walls' own (0,2) diagonals - an (a,b) and a (c,a)
+edge, where `u` is not 0 - that the #39 ray misses, found by a search over
+walls on the format's grid.
+
+The sweep was rerun whole on the current tests with the third review's
+other fallback breaks added: 50 breaks, each applied alone, the test
+program and the probe rebuilt and both run, and the file restored byte for
+byte and touched. A run counts as caught only with a non-zero exit, at
+least one `FAIL:` line and the `check(s) failed` summary, as `CLAUDE.md`
+requires.
+
+| Break | Result | First failure |
+| --- | --- | --- |
+| the slope's magnitude dropped, `up = normal[2]` | caught, 3 | `both windings are road: got road 4 wall 2` |
+| the first contact made to beat the untouched starting best | caught, 4 | `a contact exactly at the segment's end is met: got polygon 12 at 10` |
+| the #39 test's `u + v > 1` made `>= 1` | caught, 1 | `a column on the deck's own edge meets the deck, not the road beneath: got polygon 2 at 7` |
+| the road threshold made exclusive | caught, 1 | `a slope exactly at the threshold is road: got road 0 wall 2` |
+| the #39 test's `u < 0` made `<= 0` | caught, 68 | `origin: the ray query of issue #39 agrees at (-29, -29, 150)` |
+| the #39 test's `t > max` made `>= max` | caught, 9 | `a tie goes to the lower polygon index at px 3` |
+| a same-polygon tie to the higher triangle | caught, 68 | `origin: the ray query of issue #39 agrees at (-29, -29, 150)` |
+| zero-size load buffers placed | caught, 1 | `a world with no load buffers is placed without asking the streaming arena` |
+| only the packed buffer released | caught, 1 | `the load buffers are released when the load is over` |
+| the triangle-table size check removed | caught, 1 | `a triangle table that does not match the polygons refuses` |
+| the column's rise ignored | caught, 2 | `a wheel sunk 1 unit finds the road above it` |
+| no cell answered as clear, not outside | caught, 8 | `a column no cell covers is outside` |
+| normal never turned to face the query | caught, 3 | `from outside, the normal faces -pz` |
+| the query's cell cap not passed on | caught, 3 | `three cells met over a cap of two refuse` |
+| slope read from `pz` instead of `py` | caught, 28 | `road triangles: got 6, want 15` |
+| a tie broken by visiting order | caught, 9 | `a tie goes to the lower polygon index at px 3` |
+| distance reported as a fraction of the segment | caught, 5127 | `two units down: got 0.200000003` |
+| load peak forgets the image | caught, 1 | `the peak is the buffers and the parsed arrays together` |
+| the renderer map written as a reflection | caught, 3 | `slot (px, pz, py) is render (px, py, -pz)` |
+| a negative rise accepted | caught, 2 | `a negative rise or drop refuses` |
+| the length cap refusing its own length | caught, 1 | `a sweep exactly at the length cap runs` |
+| cells chosen from the segment's start only | caught, 6 | `of two barriers, the nearer: got polygon 2 at 4` |
+| the road threshold inverted | caught, 26 | `road triangles: got 10, want 15` |
+| a refused placement keeping what it placed | caught, 1 | `a refused world leaves nothing placed` |
+| resident bytes forgetting the triangle table | caught, 5 | `resident bytes are the five arrays` |
+| a cell's index-list slot taken as the polygon | caught, 9122 | `the higher surface first: got polygon 0 triangle 0` |
+| cells chosen by the bounding box | caught, 4 | `a sweep past the corner of every cell is outside, not clear` |
+| a corner touch not counted as meeting | caught, 5163 | `a wheel over the street finds the road` |
+| a square separated when three corners lie on one side | caught, 7 | `a sweep through a cell's corner meets the cell and is clear` |
+| the cell cap refusing one cell late, `>` for `>=` | caught, 3 | `three cells met over a cap of two refuse` |
+| the cap counting the cells of the bounding box | caught, 1 | `inside one node, three cells met under a cap of three run` |
+| the watertight fallback removed | caught, 10 | `a column exactly on the seam meets the road` |
+| the watertight bounds made open | caught, 8 | `a column exactly on the seam meets the road` |
+| the watertight sign test dropping one edge function | caught, 835 | `the gap in the road surface is clear` |
+| the watertight determinant's sign ignored | caught, 1 | `a sweep up through the seam meets it facing down` |
+| the watertight determinant's sign inverted | caught, 8 | `a column exactly on the seam meets the road` |
+| the shear's handedness swap removed | caught, 6 | `a column exactly on the seam meets the road` |
+| the watertight test deciding first | caught, 112 | `hill: the ray query of issue #39 agrees at (1635, 707, 150)` |
+| G1: the fallback's `t < 0` made `t <= 0` | caught, 1 | `a sweep that starts exactly on the seam meets it at distance 0: got clear` |
+| G1: the fallback's `along > max_distance` made `>=` | caught, 2 | `a sweep that ends exactly on the seam meets it at its end: got clear` |
+| G1: the fallback's distance weighting `z[2]` for `z[1]` | caught, 2 | `a column exactly on a sloped seam meets the road at its own height: got hit polygon 0 at distance 31.2421875 height 8.7578125, want height 7.30010986` |
+| the fallback's distance with `z[1]` and `z[2]` swapped | caught, 2 | `a column exactly on a sloped seam meets the road at its own height: got hit polygon 0 at distance 31.4212036 height 8.57879639, want height 7.30010986` |
+| the fallback's distance weighting `z[0]` for `z[2]` | caught, 3 | `a column exactly on a sloped seam meets the road at its own height: got hit polygon 1 at distance 29.6627197 height 10.3372803, want height 7.30010986` |
+| G2: the fallback's distance weighting `z[1]` for `z[0]` | caught, 2 | `a sweep rising through a wall: a sweep through the wall's diagonal meets it 2.43990254 along, facing it: got hit polygon 0 at distance 2.72446704 height 18.1445312` |
+| G2: the fallback's determinant without `u`, `v + w` | caught, 2 | `a sweep rising through a wall: a sweep through the wall's diagonal meets it 2.43990254 along, facing it: got hit polygon 0 at distance 2.60256267 height 18.0570965` |
+| the fallback's `u` term dropped from its distance | caught, 3 | `a column that ends above the road is clear` |
+| the watertight edge function `u` taken in float | survived | |
+| all three watertight edge functions taken in float | survived | |
+| the dominant axis chosen by `>=`, a tie to the last axis | survived | |
+| the side test's rounding bound set to 0 | survived | |
+
+46 caught, 4 survived, none unknown. Each survivor was run over oblique
+sweeps as well as the tests: through points a quarter, a half and three
+quarters along every edge of every triangle of `TRACKB1003` and
+`TRACKB1210` that is not degenerate, 8 units long with the edge point at
+the middle, in four directions - 611352 and 529632 sweeps - each answer
+compared with the current code's in polygon, triangle and distance:
+
+- The dominant axis on a tie and a rounding bound of 0 change no answer
+  there. Any axis the direction is longest along gives a valid watertight
+  frame. The side test's inputs are floats, and the difference of two
+  floats is exact in double while their exponents are within 28 of each
+  other; then each product is its exact value rounded once, and rounding
+  never reverses an order, so the side comes out with its exact sign or as
+  0, which keeps the square. The bound matters only for coordinates that
+  differ in scale by more than that, which no test or sweep here has.
+- The edge functions in float do change answers, and only within a float
+  rounding of an edge: `u` alone in float differs on 1899 and 709 of those
+  sweeps, all three in float on 3941 and 2071. Decided in exact rational
+  arithmetic on `TRACKB1003`, of the 1899: at 214 the current code answers
+  clear where the segment really meets the triangle the variant names, at
+  3 the variant names a triangle the segment misses, 1271 name the same
+  triangle and differ only in the distance - by at most 2.4e-6 in the 1258
+  where the segment meets it exactly - and 411 name a different triangle.
+  So neither version is exact in that band - on an oblique
+  sweep the shear rounds each corner in float before the edge functions are
+  taken, and the exact sign the current code takes is the sign for those
+  rounded corners - and no test here pins an answer inside it. Within it
+  the float version shares an edge between two triangles as watertightly
+  as the double one: in float too the two products of that edge are the
+  same two roundings in both.
+
+What that band leaves on its own, measured with the same sweeps: 6304 of
+the 611352 on `TRACKB1003` answer clear although the segment, in exact
+arithmetic, meets the closed triangle it was aimed at. Every one lies on
+an edge no neighbouring surface continues - a polygon's outer edge (5815),
+the (0,2) diagonal of a triangle stored in a quad slot, which is that
+triangle's outer edge (454), or the vertical edge where two walls meet at a
+convex corner (35) - within a few float roundings of the sheared corners:
+at most 4.5e-8 world units on these sweeps, and up to 3.81e-6 on the
+review's, which swept in other directions. Those are measurements, not a
+bound, and not a tolerance a caller can rely on. The #39 ray meets nothing
+along 6291 of them; along the other 13 it meets the degenerate triangle of
+the same quad, at 0 to 3.53 units, where the segment really meets that
+quad's other triangle about 4 units along - the exception under
+"Triangles" above. On a column the shear is the identity and the lattices
+above have no such case.
+
+### What this does not do
+
+- It is not a vehicle model. Issue #60 decides what a contact does to a car;
+  this answers where the track is and which way it faces.
+- It tests segments and columns, not a swept box or sphere. A body wider
+  than a segment needs several, or a shape test this layer does not have.
+- It is desktop only for now. `cmake/draw_libraries.cmake` is unchanged, so
+  the Switch tree does not compile `nfsu_track_contact`; `nfsu_track`, which
+  it does compile, is unchanged by this issue.
+- A sweep that meets a wall only within a float rounding of the wall quad's
+  own (0,2) diagonal, while the #39 arithmetic meets something farther
+  along, passes through the wall; and on an oblique line the #39 ray can
+  meet a degenerate triangle the contact never meets, which leaves the
+  contact answering a farther surface or clear (under "Triangles" above).
+  Issue #167 follows both up.
+
 ## Read-only retail acceptance
 
 Every command below only reads. Nothing writes to the installation, and no
@@ -729,6 +1436,24 @@ build-release/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc
 build-release/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc 783 -8.5
 
 build-release/nfsu_probe track-collision X:/Games/NFSU/Tracks/STREAML1RB.BUN
+
+build-release/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc
+
+build-release/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc 904.24 -94.76
+
+build-release/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc 904.24 -94.76 56.5 944 -74 56.5
+
+build-release/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1210.lzc 783 -8.5
+
+build-release/nfsu_probe track-contact X:/Games/NFSU/Tracks/STREAML1RA.BUN
+
+build-release/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc 731 486 50 742 475 50
+
+build-release/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc 961.1171875 -244.921875
+
+build-release/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc 961.1171875 -244.921875 59.17578125 961.1171875 -244.921875 58.17578125
+
+build-release/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc 754 209
 ```
 
 Expected:
@@ -745,9 +1470,52 @@ Expected:
    chunk tree, so it is parsed as it stands and refused with `no
    0x00034130 quadtree chunk in the image`, which is the whole point of the
    first section of this note.
-4. Running any of them twice gives byte-identical output.
-5. The SHA-256 and size of every file named above are unchanged
-   afterwards.
+4. The fourth command exits 0 and writes nothing to standard error. Its
+   lines are the totals of "The decoded circuit" above: `collision: valid
+   polygons 9958 cells 382 indices 13818 nodes 243`, `triangles: road 14634
+   wall 2348 degenerate 2934 (road when |normal py| >= 0.5)`, `memory
+   resident: 1433448 bytes in 5 allocations: polygons 955968 cells 12224
+   indices 55272 nodes 11664 triangles 398320`, `memory stored: 354348
+   bytes as the file holds the same arrays`, `memory load: packed 433352
+   image 961328 peak 2429808`, `memory ceiling: 30932992 resident bytes at
+   the default collision limits` and `switch plan: persistent 1433448 of
+   67108864 bytes (21 per mille) extent 1433456; streaming load peak
+   1394680 of 50331648 bytes (27 per mille), released`.
+5. The fifth exits 0 and ends with `probe column: hit road polygon 2145
+   triangle 0 distance 944.586 point (904.24, -94.76, 55.4141) normal
+   (-0.0713877, 0.0141278, 0.997349) up 0.997349`: the road under the first
+   point of the route.
+6. The sixth exits 0 and ends with `probe segment: hit wall polygon 9768
+   triangle 1 distance 14.562 point (917.148, -88.0201, 56.5) normal
+   (-0.672366, -0.740219, 0) up 0`: the barrier beside it, its normal
+   facing back toward the route.
+7. The seventh exits 0 and ends with `probe column: hit road polygon 5221
+   triangle 1 distance 1022.64 point (783, -8.5, -22.6387) normal (0,
+   0.0212006, 0.999775) up 0.999775`: the second command's pin, through the
+   contact layer.
+8. The eighth exits 3 before reading the file: `STREAML1RA.BUN` is 92394688
+   bytes, over the 67108864 a collision file may be.
+9. The ninth exits 0 and ends with `probe segment: outside`: the sweep off
+   a cell's corner that the review of this issue found answering clear.
+10. The tenth exits 0 and ends with `probe column: hit road polygon 1980
+    triangle 0 distance 940.824 point (961.117, -244.922, 59.1758) normal
+    (0, 0, 1) up 1`: the seam the #39 arithmetic misses from both sides.
+11. The eleventh exits 0 and ends with `probe segment: hit road polygon
+    1980 triangle 0 distance 0 point (961.117, -244.922, 59.1758) normal
+    (0, 0, 1) up 1`: a sweep that starts exactly on that seam, met at its
+    start.
+12. The twelfth exits 0 and ends with `probe column: hit road polygon 3101
+    triangle 0 distance 948.755 point (754, 209, 51.245) normal (0.022816,
+    0.0356822, 0.999103) up 0.999103`: a sloped polygon's outer edge the
+    #39 arithmetic misses, met at the edge's own height: the edge runs from
+    corner 1, (754, 205.25, 13153/256), to corner 2, (754, 209.625,
+    13113/256), and 6/7 of the way along it, at pz 209, the height is
+    exactly 91831/1792 = 51.2449777. The contact's own point is
+    51.2449951 in float, 1.7e-5 above, the rounding of 1000 - 948.755005;
+    both print as 51.245.
+13. Running any of them twice gives byte-identical output.
+14. The SHA-256 and size of every file named above are unchanged
+    afterwards.
 
 ## Observed
 
@@ -800,6 +1568,40 @@ Expected:
   other 13 depths tried and none of the other three half extents tried
   reproduces them.
 
+- One static collision set is resident at a time: 0x00441ED0, entry
+  0x007007E8 of the 47-entry loader table 0x00447DE3 dispatches through,
+  hands the five chunks to 0x00441380 with the fixed structure 0x0077B130,
+  which stores rather than appends, and 0x00441F40 zeroes it. The race
+  loads it from `TRACKS\TRACKB%d.LZC` formatted with the current track
+  number at 0x004497BE.
+- `STREAML1RA.BUN`, `STREAML1RA_1003.BUN`, `TEX1003TRACK.BIN`,
+  `GLOBALB.BUN`, the images of `GLOBALB.LZC` and `InGameB.lzc`,
+  `GLOBALA.BUN`, the empty `INGAMEA.BUN` and all 120 files under `Cars/`
+  walk as chunk trees with no fault and none of the five collision ids at
+  any depth. The game flow loads each of the global and track-common files
+  by a literal path through the bundle load at 0x004482F0.
+- The closed line in `TRACKB1003.lzc`'s `0x00034149`, sampled every world
+  unit, has road collision within 10 units to either side at 3316 of 3316
+  samples and directly under it at 2858; the same samples find road under
+  0 in `TRACKB1001` and 844 in `TRACKB1004`.
+- Every circuit and drift track carries a closed line there and every
+  sprint and drag track an open one.
+- Over the 496280 non-degenerate retail triangles, 394766 have
+  `abs(normal py)` of 0.95 or more, 96808 less than 0.05, and 909 lie
+  between 0.3 and 0.7.
+- Wherever the ray of issue #39 meets something on the nine lattices
+  under "Region against whole", 11623141 columns in all, the contact column
+  is the same polygon, triangle, distance and point. The contact meets
+  something where the ray meets nothing at 17 of them, every one exactly on
+  a triangle's edge.
+- On every edge two road polygons share, sampled at 17 points, the #39
+  arithmetic misses 4 columns of `TRACKB1003`, 4 of `TRACKB1210` and 20 of
+  `TRACKB1107`, and the contact misses none.
+- On oblique sweeps aimed at points of every edge of every triangle, 611352
+  on `TRACKB1003` and 529632 on `TRACKB1210`, the first triangle the #39 ray
+  meets is degenerate on 5076 and 729, and on those alone the contact is not
+  the ray's hit; on 300000 random segments per track it never is.
+
 ## Inferred
 
 - Group 0 is world slot 0 (`px`) and group 1 is world slot 1 (`pz`). The
@@ -810,6 +1612,9 @@ Expected:
 - The `<NNNN>` of a `TRACKB` file names the same track section the
   `STREAM*_NNNN.BUN` and `TEX####TRACK.BIN` files name, from the file
   naming alone.
+
+- The `0x00034149` line is the race route, and its running value is a
+  length along a curve through the points. Issue #61 owns both.
 
 ## Unknown
 
@@ -852,6 +1657,18 @@ Expected:
 - Why `0x00034130` needs a tree at all when the cells carry their own
   centres, and what the runtime does when a query leaves the 32768-unit
   square the root covers.
+- What the game does over a column the index covers and no surface
+  meets, such as the median of the divided road at pz -322 on track 1003:
+  `track-contact` answers clear there, which a vehicle would read as
+  airborne, and whether the game has something else there - a barrier this
+  layer does not see, or nothing - is not known.
+- The game's own road and wall classification. The 0.5 threshold here is
+  this project's; the polygon's +1..+3 bytes, which may carry a surface
+  type, are not decoded.
+- How the contact layer behaves on the console. It is not compiled for the
+  Switch yet, and its determinism across the two compilers is not measured.
+- The instruction path from the bundle load at 0x004482F0 to the loader
+  table dispatch at 0x00447AC0.
 - Everything about dynamic collision: `CarCollisionBody`,
   `WorldObjectCollisionBody`, `DynamicCollisionBody` and the
   `AIWallCollision` pair at 0x007000DC are named in the executable and
