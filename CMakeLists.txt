@@ -790,21 +790,35 @@ if(NFSU_BUILD_TESTS)
     # tests/switch_nro_check.cmake against a synthetic NRO built from the
     # review's real measurements, and against each header corruption it
     # names, because this machine has no Switch SDK and so never runs the
-    # checker against a real build-switch output otherwise. A compiled test,
-    # not another CMake script: it needs binary content with NUL bytes in
-    # it, which CMake's own string(ASCII 0 ...) refuses to produce.
+    # checker against a real build-switch output otherwise. A compiled
+    # program, not a CMake script, writes the fixtures: it needs binary
+    # content with NUL bytes in it, which CMake's own string(ASCII 0 ...)
+    # refuses to produce. It only writes files - no process spawning, and no
+    # platform #ifdef - so its own ctest entry is a self-check of the write
+    # path (every fixture appears, and a second write refuses to overwrite
+    # the first). tests/switch_nro_synthetic_guards.cmake is the CMake
+    # script that runs it, then runs the checker against what it wrote and
+    # asserts every verdict (review comment 2942, R2): this file used to run
+    # the checker itself with the Win32 process-launch API under _WIN32 and
+    # the POSIX pair of process-launch calls under #else, and the #else half
+    # had never been built anywhere this branch was developed.
     add_executable(nfsu_switch_nro_synthetic_tests
         tests/switch_nro_synthetic_tests.cpp
     )
-    target_compile_definitions(nfsu_switch_nro_synthetic_tests PRIVATE
-        NFSU_CMAKE_COMMAND="${CMAKE_COMMAND}"
-        NFSU_SWITCH_NRO_CHECKER="${CMAKE_CURRENT_SOURCE_DIR}/tests/switch_nro_check.cmake")
     nfsu_enable_warnings(nfsu_switch_nro_synthetic_tests)
     add_test(NAME nfsu_switch_nro_synthetic_tests
         COMMAND nfsu_switch_nro_synthetic_tests)
 
+    add_test(NAME nfsu_switch_nro_synthetic_guards
+        COMMAND ${CMAKE_COMMAND}
+                -DWRITER=$<TARGET_FILE:nfsu_switch_nro_synthetic_tests>
+                -DCHECKER=${CMAKE_CURRENT_SOURCE_DIR}/tests/switch_nro_check.cmake
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/switch_nro_synthetic_guards.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
     set_tests_properties(
         nfsu_shader_manifest_tests nfsu_shader_source_guards
         nfsu_switch_toolchain_diagnostics nfsu_switch_nro_synthetic_tests
+        nfsu_switch_nro_synthetic_guards
         PROPERTIES TIMEOUT 60)
 endif()

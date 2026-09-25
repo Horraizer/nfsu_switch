@@ -232,6 +232,29 @@ nfsu_case("a centroid qualifier written before layout in the stage source"
     "layout (location = 2) in vec2 inTexcoord"
     "centroid layout (location = 2) in vec2 inTexcoord")
 
+# The prefix check used to list only flat, smooth, noperspective and
+# centroid, so `sample` - GLSL's other auxiliary storage qualifier, which
+# also changes interpolation - was silently dropped when written before
+# layout(...) (review comment 2942, R1): the declaration parsed as
+# unqualified and the checker printed "no drift" while the compiled shader
+# carried `sample`. The fix refuses ANY identifier between a statement
+# boundary and a matched layout(...), not a fixed list of four.
+nfsu_case("a sample qualifier written before layout in the stage source"
+    textured.frag.glsl car_textured.manifest
+    "qualifies a declaration before its layout(...)"
+    "layout (location = 1) in vec3 inColor"
+    "sample layout (location = 1) in vec3 inColor")
+
+# invariant is a third kind of qualifier the old fixed list never named
+# either - not an interpolation qualifier at all, but the same leading
+# position before layout(...) - on an output this time, since invariant
+# only applies to outputs.
+nfsu_case("an invariant qualifier written before layout in the stage source"
+    placed.vert.glsl car_textured.manifest
+    "qualifies a declaration before its layout(...)"
+    "layout (location = 0) out vec3 outWorld"
+    "invariant layout (location = 0) out vec3 outWorld")
+
 nfsu_case("a colour output moved in the stage source"
     textured.frag.glsl car_textured.manifest
     "textured.frag.glsl declares output location 1 (vec4 outColor), which the manifest does not"

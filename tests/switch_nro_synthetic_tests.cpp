@@ -5,9 +5,19 @@
 // tests/switch_nro_check.cmake is a CMake script, not C++, and CMake's own
 // string(ASCII 0 ...) refuses to produce a NUL byte - there is no way to
 // build an arbitrary binary fixture like an NRO from pure CMake script code.
-// This is a compiled test instead, which writes the fixture with a plain
-// std::ofstream in binary mode and then runs the checker script exactly as
-// switch/CMakeLists.txt does, as a subprocess, over each fixture in turn.
+// This program writes the fixtures with a plain std::ofstream in binary
+// mode; tests/switch_nro_synthetic_guards.cmake is what actually runs the
+// checker against them and asserts the results (review comment 2942, R2).
+//
+// This file used to run the checker itself, as a child process: the Win32
+// process-launch API under _WIN32, the POSIX pair of process-launch calls
+// under #else. The #else half had never been built anywhere this branch was
+// developed, which is exactly how issue #132 happened - code for the
+// platform nobody was building broke the first Linux build the moment it
+// was. So this file now launches no process of any kind and has no
+// platform #ifdef: it only builds the fixture bytes and writes them to a
+// directory its caller names. Invoked with no arguments it also runs a
+// small self-check of the write path itself (below main()'s comment).
 //
 // The synthetic NRO is built from the real measurements PART 2 of the
 // review gives for an actual devkitA64/uam build (166085 bytes total,
@@ -16,66 +26,22 @@
 // split rather than the real one, which the checks below never depend on
 // past their own consistency.
 
-#include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <random>
+#include <sstream>
 #include <string>
 #include <vector>
-
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#else
-#include <sys/wait.h>
-#include <unistd.h>
-#endif
-
-#ifndef NFSU_CMAKE_COMMAND
-#error "NFSU_CMAKE_COMMAND must be defined (the cmake executable this build uses)"
-#endif
-#ifndef NFSU_SWITCH_NRO_CHECKER
-#error "NFSU_SWITCH_NRO_CHECKER must be defined (tests/switch_nro_check.cmake)"
-#endif
 
 namespace fs = std::filesystem;
 
 namespace {
 
 using Bytes = std::vector<unsigned char>;
-
-int g_failures = 0;
-int g_checks = 0;
-
-void check(bool condition, const std::string& message) {
-    ++g_checks;
-    if (!condition) {
-        std::cerr << "test failure: " << message << '\n';
-        ++g_failures;
-    }
-}
-
-// A fixture name no other process shares, built the way
-// tests/track_object_tests.cpp builds one (CLAUDE.md, issue #122): two
-// sessions running ctest at once, each in its own build directory, is
-// routine here, and a shared name has already cost this suite a real,
-// intermittently reproducing crash once.
-std::string unique_fixture(const std::string& label) {
-#ifdef _WIN32
-    const unsigned long pid = GetCurrentProcessId();
-#else
-    const unsigned long pid = static_cast<unsigned long>(getpid());
-#endif
-    return "nfsu_switch_nro_synthetic_" + label + "_" + std::to_string(pid);
-}
 
 void write_binary(const fs::path& path, const Bytes& bytes) {
     std::ofstream stream(path, std::ios::binary | std::ios::trunc);
@@ -246,274 +212,70 @@ Bytes build_synthetic_elf() {
     return bytes;
 }
 
-struct CheckResult {
-    int exit_code = -1;
-    std::string output;
+// A text segment that does not start at file offset 0 (review comment
+// 2942, R3): every other field is shifted by the same amount so the fixture
+// stays otherwise self-consistent, and the real checker's text_offset check
+// - the very first segment check it runs - is the only thing that can catch
+// it. kShift is well under kModOffset (256), so MOD0 stays inside the
+// shifted text segment and that check does not also fire.
+Bytes build_text_offset_shifted_nro(const Bytes& control) {
+    constexpr std::uint32_t kShift = 64;
+    Bytes bytes = control;
+    bytes.insert(bytes.begin() + static_cast<std::ptrdiff_t>(kHeaderSize),
+                 kShift, 0x00);
+    patch_u32_le(bytes, kTextOffsetAt, kShift);
+    patch_u32_le(bytes, kRoOffsetAt, kShift + kTextSize);
+    patch_u32_le(bytes, kDataOffsetAt, kShift + kTextSize + kRoSize);
+    patch_u32_le(bytes, kImageSizeAt, kImageSize + kShift);
+    return bytes;
+}
+
+// One fixture this program can write: <name>.nro (or <name>.elf) inside
+// whatever directory it is told to use.
+struct Fixture {
+    std::string filename;
+    Bytes bytes;
 };
 
-// Every checker run passes a path from fs::temp_directory_path() or from
-// CMAKE_CURRENT_SOURCE_DIR, either of which can hold a space (this
-// project's own checkout can: "Game Dev") or a non-ASCII byte. That rules
-// out a single command STRING run through a shell: cmd.exe's /c parsing
-// keeps quote characters only in narrow cases (cmd /?, under "quote
-// characters on the command line are preserved"; this project's fixture
-// paths do not meet them, an executable path with no space inside its own
-// quotes among them), and otherwise strips only the first and the last
-// quote character on the whole line, which desyncs every other quoted
-// argument's pairing rather than failing cleanly. Argument vectors passed
-// straight to CreateProcess or execvp are not parsed by any shell at all,
-// so this runs the checker that way on both platforms instead.
-#ifdef _WIN32
-// The quoting CreateProcess's own command-line parser (and every C
-// runtime's argv startup code) expects: a backslash is literal unless it
-// immediately precedes a quote, N of them before a quote fold to N/2
-// backslashes plus, for odd N, one literal quote; unquoted, an argument
-// with no space, tab or quote needs nothing added.
-std::string win32_quote_arg(const std::string& arg) {
-    if (!arg.empty() &&
-        arg.find_first_of(" \t\"\n\v\r") == std::string::npos) {
-        return arg;
-    }
-    std::string result = "\"";
-    for (std::size_t i = 0;; ++i) {
-        std::size_t backslashes = 0;
-        while (i < arg.size() && arg[i] == '\\') {
-            ++backslashes;
-            ++i;
-        }
-        if (i == arg.size()) {
-            result.append(backslashes * 2, '\\');
-            break;
-        }
-        if (arg[i] == '"') {
-            result.append(backslashes * 2 + 1, '\\');
-            result.push_back('"');
-        } else {
-            result.append(backslashes, '\\');
-            result.push_back(arg[i]);
-        }
-    }
-    result.push_back('"');
-    return result;
-}
-
-CheckResult run_process(const std::vector<std::string>& argv) {
-    CheckResult result;
-    std::string command_line;
-    for (std::size_t i = 0; i < argv.size(); ++i) {
-        if (i != 0) {
-            command_line.push_back(' ');
-        }
-        command_line += win32_quote_arg(argv[i]);
-    }
-
-    SECURITY_ATTRIBUTES attributes{};
-    attributes.nLength = sizeof(attributes);
-    attributes.bInheritHandle = TRUE;
-    HANDLE read_end = nullptr;
-    HANDLE write_end = nullptr;
-    if (!CreatePipe(&read_end, &write_end, &attributes, 0)) {
-        result.output = "CreatePipe failed";
-        return result;
-    }
-    SetHandleInformation(read_end, HANDLE_FLAG_INHERIT, 0);
-
-    STARTUPINFOA startup{};
-    startup.cb = sizeof(startup);
-    startup.dwFlags = STARTF_USESTDHANDLES;
-    startup.hStdOutput = write_end;
-    startup.hStdError = write_end;
-    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-
-    PROCESS_INFORMATION process{};
-    std::vector<char> mutable_line(command_line.begin(), command_line.end());
-    mutable_line.push_back('\0');
-    const BOOL started =
-        CreateProcessA(nullptr, mutable_line.data(), nullptr, nullptr, TRUE,
-                        0, nullptr, nullptr, &startup, &process);
-    CloseHandle(write_end);
-    if (!started) {
-        CloseHandle(read_end);
-        result.output = "CreateProcess failed for: " + command_line;
-        return result;
-    }
-    std::array<char, 4096> buffer{};
-    DWORD read = 0;
-    while (ReadFile(read_end, buffer.data(),
-                     static_cast<DWORD>(buffer.size()), &read, nullptr) &&
-           read > 0) {
-        result.output.append(buffer.data(), read);
-    }
-    CloseHandle(read_end);
-    WaitForSingleObject(process.hProcess, INFINITE);
-    DWORD exit_code = 0;
-    GetExitCodeProcess(process.hProcess, &exit_code);
-    CloseHandle(process.hProcess);
-    CloseHandle(process.hThread);
-    result.exit_code = static_cast<int>(exit_code);
-    return result;
-}
-#else
-CheckResult run_process(const std::vector<std::string>& argv) {
-    CheckResult result;
-    int pipe_fds[2] = {-1, -1};
-    if (pipe(pipe_fds) != 0) {
-        result.output = "pipe() failed";
-        return result;
-    }
-    const pid_t child = fork();
-    if (child < 0) {
-        result.output = "fork() failed";
-        return result;
-    }
-    if (child == 0) {
-        dup2(pipe_fds[1], STDOUT_FILENO);
-        dup2(pipe_fds[1], STDERR_FILENO);
-        close(pipe_fds[0]);
-        close(pipe_fds[1]);
-        std::vector<char*> c_argv;
-        c_argv.reserve(argv.size() + 1);
-        for (const std::string& arg : argv) {
-            c_argv.push_back(const_cast<char*>(arg.c_str()));
-        }
-        c_argv.push_back(nullptr);
-        execvp(c_argv[0], c_argv.data());
-        _exit(127);
-    }
-    close(pipe_fds[1]);
-    std::array<char, 4096> buffer{};
-    ssize_t read_count = 0;
-    while ((read_count = read(pipe_fds[0], buffer.data(), buffer.size())) >
-           0) {
-        result.output.append(buffer.data(),
-                              static_cast<std::size_t>(read_count));
-    }
-    close(pipe_fds[0]);
-    int status = 0;
-    waitpid(child, &status, 0);
-    result.exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-    return result;
-}
-#endif
-
-// CMake's own message() wraps a long line at a column width and indents the
-// continuation, so a two- or three-word expected substring this file looks
-// for can straddle a wrap point that has nothing to do with the checker's
-// own logic. Every whitespace run - the wrap's newline and indentation
-// included - collapses to one space before any of this file's checks
-// search the output, so a wrap never turns a real match into a miss.
-std::string normalize_whitespace(const std::string& text) {
-    std::string result;
-    bool in_space = false;
-    for (char ch : text) {
-        const bool is_space =
-            ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' || ch == '\v';
-        if (is_space) {
-            if (!in_space && !result.empty()) {
-                result.push_back(' ');
-            }
-            in_space = true;
-        } else {
-            result.push_back(ch);
-            in_space = false;
-        }
-    }
-    while (!result.empty() && result.back() == ' ') {
-        result.pop_back();
-    }
-    return result;
-}
-
-CheckResult run_checker(const fs::path& nro, const fs::path& elf,
-                         const std::string& title) {
-    const std::vector<std::string> argv = {
-        fs::path(NFSU_CMAKE_COMMAND).string(),
-        "-DNRO=" + nro.string(),
-        "-DELF=" + elf.string(),
-        "-DTITLE=" + title,
-        "-P",
-        fs::path(NFSU_SWITCH_NRO_CHECKER).string(),
-    };
-    CheckResult result = run_process(argv);
-    result.output = normalize_whitespace(result.output);
-    return result;
-}
-
-} // namespace
-
-int main() {
-    const fs::path dir = fs::temp_directory_path();
-    const fs::path nro_path = dir / (unique_fixture("nro") + ".nro");
-    const fs::path elf_path = dir / (unique_fixture("elf") + ".elf");
-
+// Every fixture tests/switch_nro_synthetic_guards.cmake checks. The byte
+// patches mirror what PART 2 and F3 and N3 of review comment 2856, and R3
+// of review comment 2942, found; the CMake guard script names the exact
+// exit status and failure line each one expects, which has to be kept in
+// sync with the patch made here by hand - there is no way to derive one
+// language's expectation from the other's code.
+std::vector<Fixture> build_fixtures() {
+    std::vector<Fixture> out;
     const Bytes control = build_control_nro();
-    const Bytes elf = build_synthetic_elf();
-    write_binary(elf_path, elf);
+    out.push_back({"control.nro", control});
+    out.push_back({"control.elf", build_synthetic_elf()});
 
-    // The control case: the checker must accept the fixture built from the
-    // review's real measurements, exactly as it accepts a real build.
-    write_binary(nro_path, control);
-    {
-        const CheckResult result = run_checker(nro_path, elf_path, kTitle);
-        check(result.exit_code == 0,
-              "control: the synthetic NRO passes (exit " +
-                  std::to_string(result.exit_code) + "): " + result.output);
-        check(result.output.find("switch NRO check:") != std::string::npos,
-              "control: the checker prints its passing summary line");
-    }
-
-    // Each corruption is applied to a fresh copy of the control bytes, so
-    // cases never compound. must_fail asserts a non-zero exit and the given
-    // substring in a failure line; a case documented as a known gap asserts
-    // the opposite, that the corrupted file still passes, so a future fix
-    // that starts catching it is noticed here rather than silently assumed.
-    auto must_fail = [&](const std::string& label, Bytes bytes,
-                          const std::string& expect_substring) {
-        write_binary(nro_path, bytes);
-        const CheckResult result = run_checker(nro_path, elf_path, kTitle);
-        check(result.exit_code != 0,
-              label + ": the checker refuses it (exit " +
-                  std::to_string(result.exit_code) + "): " + result.output);
-        check(result.output.find(expect_substring) != std::string::npos,
-              label + ": the failure line names it - looked for `" +
-                  expect_substring + "` in: " + result.output);
-    };
-    auto must_pass = [&](const std::string& label, Bytes bytes) {
-        write_binary(nro_path, bytes);
-        const CheckResult result = run_checker(nro_path, elf_path, kTitle);
-        check(result.exit_code == 0,
-              label + ": still passes (exit " +
-                  std::to_string(result.exit_code) + "): " + result.output);
-    };
-
-    // The 5 header corruptions PART 2 already found caught, kept here as a
-    // regression check against the reordering this fix did.
+    // The 5 header corruptions PART 2 already found caught.
     {
         Bytes bytes = control;
         bytes.at(0x13) = static_cast<unsigned char>('1'); // NRO0 -> NRO1
-        must_fail("magic changed to NRO1", bytes, "no NRO0 magic");
+        out.push_back({"magic_nro1.nro", bytes});
     }
     {
         Bytes bytes = control;
         patch_u32_le(bytes, kImageSizeAt, 0xFFFFFFFFu);
-        must_fail("image size 0xFFFFFFFF", bytes, "is outside the file's");
+        out.push_back({"image_size_ffffffff.nro", bytes});
     }
     {
         Bytes bytes = control;
         patch_u32_le(bytes, kImageSizeAt, kImageSize - 0x1000u);
-        must_fail("image size - 0x1000", bytes, "the image size");
+        out.push_back({"image_size_minus_0x1000.nro", bytes});
     }
     {
         Bytes bytes = control;
         patch_u32_le(bytes, kImageSizeAt, 0);
-        must_fail("image size 0", bytes, "is outside the file's");
+        out.push_back({"image_size_zero.nro", bytes});
     }
     {
         Bytes bytes = control;
         for (std::size_t i = 0; i < kHeaderSize; ++i) {
             bytes.at(i) = 0;
         }
-        must_fail("first 0x80 bytes zeroed", bytes, "no NRO0 magic");
+        out.push_back({"header_zeroed.nro", bytes});
     }
 
     // The 4 header corruptions F3 adds checks for (review comment 2856):
@@ -522,57 +284,53 @@ int main() {
     {
         Bytes bytes = control;
         patch_u32_le(bytes, kVersionAt, 7);
-        must_fail("version 7", bytes, "the NRO version is 7, not 0");
+        out.push_back({"version_7.nro", bytes});
     }
     {
         Bytes bytes = control;
         patch_u32_le(bytes, kModOffsetAt, 0xFFFFFFF0u);
-        must_fail("MOD0 offset 0xFFFFFFF0", bytes,
-                   "the MOD0 offset 4294967280 is outside the text segment");
+        out.push_back({"mod_offset_bad.nro", bytes});
     }
     {
         Bytes bytes = control;
         patch_u32_le(bytes, kTextSizeAt, 0);
-        must_fail("text size 0", bytes, "the ro segment is at offset");
+        out.push_back({"text_size_zero.nro", bytes});
     }
     {
         Bytes bytes = control;
         patch_u32_le(bytes, kDataOffsetAt, 0xFFFFF000u);
-        must_fail("data offset 0xFFFFF000", bytes,
-                   "the data segment is at offset");
+        out.push_back({"data_offset_bad.nro", bytes});
     }
 
     // bss size (0x38) is the fifth field PART 2 found unread, and it stays
     // unread: there is no other value in the file to check it against, the
-    // same way the review's own suggested fix leaves it out. Documented as
-    // a known gap rather than silently assumed: this asserts the corrupted
-    // file still passes, so a change that starts catching it is noticed
-    // here.
+    // same way the review's own suggested fix leaves it out. This fixture
+    // is a known gap, not a regression: the guard script asserts it still
+    // passes, so a change that starts catching it is noticed there.
     {
         Bytes bytes = control;
         patch_u32_le(bytes, kBssSizeAt, 0xFFFFFFFFu);
-        must_pass("bss size 0xFFFFFFFF (known gap, not read)", bytes);
+        out.push_back({"bss_size_ffffffff.nro", bytes});
     }
 
-    // The asset and NACP corruptions PART 2 already found caught, kept here
-    // as a regression check.
+    // The asset and NACP corruptions PART 2 already found caught.
     {
         Bytes bytes = control;
         const std::size_t at = kImageSize + kAsetIconSizeAt;
         patch_u64_le(bytes, at, 0);
-        must_fail("icon size 0", bytes, "carries no icon");
+        out.push_back({"icon_size_zero.nro", bytes});
     }
     {
         Bytes bytes = control;
         const std::size_t at = kImageSize + kAsetNacpSizeAt;
         patch_u64_le(bytes, at, 0x3000);
-        must_fail("NACP size 0x3000", bytes, "is 12288 bytes, not 0x4000");
+        out.push_back({"nacp_size_3000.nro", bytes});
     }
     {
         Bytes bytes = control;
         const std::size_t at = kImageSize + kAsetNacpOffsetAt;
         patch_u64_le(bytes, at, kAsetNacpOffset + 1);
-        must_fail("NACP offset + 1", bytes, "runs past the file");
+        out.push_back({"nacp_offset_plus1.nro", bytes});
     }
     {
         Bytes bytes = control;
@@ -580,8 +338,7 @@ int main() {
             static_cast<std::size_t>(kImageSize + kAsetNacpOffset);
         bytes.at(title_at + 4) = static_cast<unsigned char>('a'); // switch -> swatch
         bytes.at(title_at + 5) = static_cast<unsigned char>('t');
-        must_fail("title nfsu_switch -> nfsu_swatch", bytes,
-                   "the NACP's first title is not");
+        out.push_back({"title_mismatch.nro", bytes});
     }
 
     // N3: an asset offset of 2^63 or more used to make nfsu_le call
@@ -594,39 +351,143 @@ int main() {
         Bytes bytes = control;
         const std::size_t at = kImageSize + kAsetIconOffsetAt;
         patch_u64_le(bytes, at, 0x8000000000000000ULL);
-        write_binary(nro_path, bytes);
-        const CheckResult result = run_checker(nro_path, elf_path, kTitle);
-        check(result.exit_code != 0,
-              "N3 icon offset 2^63: the checker refuses it (exit " +
-                  std::to_string(result.exit_code) + "): " + result.output);
-        check(result.output.find("runs past the file") != std::string::npos,
-              "N3 icon offset 2^63: a failure line names it: " +
-                  result.output);
-        check(result.output.find("cannot evaluate") == std::string::npos,
-              "N3 icon offset 2^63: no CMake math error leaked through: " +
-                  result.output);
+        out.push_back({"icon_offset_2pow63.nro", bytes});
     }
 
-    // The ELF must still be refused as an NRO, and accepted as an ELF -
-    // unrelated to F3, but the checker reads both files every run, and a
-    // change here would otherwise go unnoticed by this file's cases alone.
-    {
-        const CheckResult result = run_checker(elf_path, elf_path, kTitle);
-        check(result.exit_code != 0,
-              "the checker still refuses the ELF as an NRO: " +
-                  result.output);
-    }
+    // R3 (review comment 2942): a non-zero text segment offset, which used
+    // to have no case of its own - every other fixture here keeps text
+    // segment at offset 0, so a mutant that disabled that one check alone
+    // survived the sweep.
+    out.push_back(
+        {"text_offset_shifted.nro", build_text_offset_shifted_nro(control)});
 
+    return out;
+}
+
+bool path_exists(const fs::path& path) {
     std::error_code ignored;
-    fs::remove(nro_path, ignored);
-    fs::remove(elf_path, ignored);
+    return fs::exists(path, ignored);
+}
 
-    if (g_failures != 0) {
-        std::cerr << g_failures << " switch NRO synthetic test failures of "
-                  << g_checks << " checks\n";
+// Writes every fixture into `dir`, refusing to write any of them if any one
+// of their target paths already exists (CLAUDE.md, issue #122: two sessions
+// running ctest at once, each writing fixtures for this same program, is
+// routine, and a fixture silently overwritten out from under a running
+// checker is exactly how that issue's crash happened). Returns 0 on
+// success, 1 otherwise.
+int write_fixtures(const fs::path& dir) {
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) {
+        std::cerr << "could not create " << dir.string() << ": "
+                  << ec.message() << '\n';
         return 1;
     }
-    std::cout << "switch NRO synthetic tests passed (" << g_checks
+    const std::vector<Fixture> fixtures = build_fixtures();
+    for (const Fixture& fixture : fixtures) {
+        const fs::path path = dir / fixture.filename;
+        if (path_exists(path)) {
+            std::cerr << "refusing to overwrite an existing fixture: "
+                      << path.string() << '\n';
+            return 1;
+        }
+    }
+    for (const Fixture& fixture : fixtures) {
+        write_binary(dir / fixture.filename, fixture.bytes);
+    }
+    std::cout << "wrote " << fixtures.size()
+              << " switch NRO synthetic fixtures to " << dir.string()
+              << '\n';
+    return 0;
+}
+
+// A directory this process's own run does not share with another one:
+// several sessions running this program's self-check at once, each in its
+// own build directory, is routine here (CLAUDE.md, Shared checkout). This
+// file has no platform #ifdef, so it cannot call GetCurrentProcessId() or
+// getpid() the way tests/track_object_tests.cpp does for the same reason -
+// both need a header only one platform has. A high-resolution timestamp
+// combined with a std::random_device draw gives the same guarantee a
+// process id would: two runs never choose the same suffix.
+std::string unique_suffix() {
+    const auto now = std::chrono::high_resolution_clock::now()
+                          .time_since_epoch()
+                          .count();
+    std::random_device rd;
+    std::ostringstream oss;
+    oss << std::hex << static_cast<unsigned long long>(now) << '_' << rd();
+    return oss.str();
+}
+
+} // namespace
+
+// With no arguments: a self-check of write_fixtures() itself, run as an
+// ordinary ctest entry. tests/switch_nro_synthetic_guards.cmake is what
+// actually runs tests/switch_nro_check.cmake against these fixtures and
+// checks its verdicts; this only checks that writing them behaves as
+// documented - every fixture appears, and a second write into the same
+// directory refuses rather than silently replacing the first.
+//
+// With `--write-fixtures <dir>`: writes every fixture into <dir> and exits,
+// which is the mode tests/switch_nro_synthetic_guards.cmake drives.
+int main(int argc, char** argv) {
+    if (argc >= 2 && std::string(argv[1]) == "--write-fixtures") {
+        if (argc != 3) {
+            std::cerr << "--write-fixtures needs exactly one output "
+                         "directory argument\n";
+            return 1;
+        }
+        return write_fixtures(fs::path(argv[2]));
+    }
+    if (argc != 1) {
+        std::cerr
+            << "usage: nfsu_switch_nro_synthetic_tests [--write-fixtures <dir>]\n";
+        return 1;
+    }
+
+    int checks = 0;
+    int failures = 0;
+    auto check = [&](bool condition, const std::string& message) {
+        ++checks;
+        if (!condition) {
+            std::cerr << "test failure: " << message << '\n';
+            ++failures;
+        }
+    };
+
+    const fs::path dir = fs::temp_directory_path() /
+                          ("nfsu_switch_nro_synthetic_" + unique_suffix());
+    const int first = write_fixtures(dir);
+    check(first == 0, "the first write into a fresh directory succeeds");
+
+    const std::vector<Fixture> fixtures = build_fixtures();
+    for (const Fixture& fixture : fixtures) {
+        const fs::path path = dir / fixture.filename;
+        check(path_exists(path), "fixture " + fixture.filename + " was written");
+        if (path_exists(path)) {
+            std::error_code ec;
+            const std::uintmax_t size = fs::file_size(path, ec);
+            check(!ec && size == fixture.bytes.size(),
+                  "fixture " + fixture.filename + " is the expected size");
+        }
+    }
+
+    const int second = write_fixtures(dir);
+    check(second != 0,
+          "a second write into the same directory refuses to overwrite");
+
+    std::error_code ignored;
+    for (const Fixture& fixture : fixtures) {
+        fs::remove(dir / fixture.filename, ignored);
+    }
+    fs::remove(dir, ignored);
+
+    if (failures != 0) {
+        std::cerr << failures << " switch NRO synthetic test failures of "
+                  << checks << " checks\n";
+        return 1;
+    }
+    std::cout << "switch NRO synthetic tests passed (" << checks
               << " checks)\n";
     return 0;
 }

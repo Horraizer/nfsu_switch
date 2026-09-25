@@ -945,13 +945,24 @@ function(_nfsu_sm_parse_glsl file)
     # that pattern, so without this check it would be silently dropped: the
     # declaration parses as if unqualified (smooth), matching the manifest
     # by accident, while the compiled shader carries the qualifier that was
-    # actually written. This reader has no manifest field for centroid
-    # sampling at all, so every prefix qualifier is refused here rather than
-    # read and compared, the same way a body qualifier it cannot place two
-    # lines below is refused rather than guessed at.
-    set(prefix_scan " ${text}")
+    # actually written.
+    #
+    # `layout` is a GLSL keyword, so `layout(` (or `layout (`) can only ever
+    # open a fresh layout-qualifier clause - the sole text that can legally
+    # sit between a statement boundary (the start of the file, a `;`, which
+    # is `@` from here on, a `{` or a `}`) and a matched `layout(...)` is
+    # one prefix qualifier. So this refuses ANY identifier found there, not
+    # a fixed list of four: shaders/*.glsl (checked below, in the source
+    # every case here reads) writes no qualifier before a layout(...) at
+    # all, this reader has no manifest field for any of them, flat and
+    # smooth and noperspective included, only for the interpolation it
+    # reads after layout(...) two lines below - so every prefix qualifier is
+    # refused here rather than read and compared, the same way a body
+    # qualifier it cannot place two lines below is refused rather than
+    # guessed at.
+    set(prefix_scan "@${text}")
     while(TRUE)
-        string(REGEX MATCH " (flat|smooth|noperspective|centroid) layout ?[(]" hit "${prefix_scan}")
+        string(REGEX MATCH "[@{}] *([A-Za-z_][A-Za-z0-9_]*) +layout ?[(]" hit "${prefix_scan}")
         if(hit STREQUAL "")
             break()
         endif()
@@ -969,7 +980,6 @@ function(_nfsu_sm_parse_glsl file)
         string(LENGTH "${hit}" hit_len)
         math(EXPR after "${hit_at} + ${hit_len}")
         string(SUBSTRING "${prefix_scan}" ${after} -1 prefix_scan)
-        set(prefix_scan " ${prefix_scan}")
     endwhile()
 
     # Whatever is left must not declare an interface: an in, out or uniform
