@@ -1061,3 +1061,73 @@ if(NFSU_BUILD_TESTS)
         PRIVATE nfsu_draw_commands nfsu_stock_frame nfsu_arg_path)
     nfsu_enable_warnings(nfsu_draw_commands_retail)
 endif()
+
+# ---------------------------------------------------------------------------
+# Whole-track collision and its contact queries (issue #158)
+# ---------------------------------------------------------------------------
+#
+# Appended as one block, after everything above, so that no list above is
+# reordered. The static collision of a whole race track loaded once, with its
+# memory placed against the arena plan of issue #52, and the bounded point
+# and segment contact queries issue #60 needs, with the units, normals and
+# coordinate conversion that issue asks for. It reads the collision
+# nfsu_track already decodes; see docs/TRACK_COLLISION.md, "The whole
+# circuit". It is desktop only for now: the Switch tree does not configure
+# this block, because nothing on the console queries collision yet.
+#
+# Floating-point contraction is disabled for the reason nfsu_track_visibility
+# disables it: every answer here turns on a strict comparison - a determinant
+# against zero, a barycentric coordinate against 0 and 1, a slope against
+# kTrackContactRoadMinUp - so a fused multiply-add would move a boundary
+# case, and with it a contact the documentation pins.
+add_library(nfsu_track_contact
+    src/track_contact.cpp
+)
+
+target_link_libraries(nfsu_track_contact PUBLIC nfsu_track nfsu_memory)
+nfsu_enable_warnings(nfsu_track_contact)
+if(MSVC)
+    target_compile_options(nfsu_track_contact PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_track_contact PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+
+# Neutral: it decodes nothing of its own, reads files only through
+# load_track_collision's std::ifstream, calls no operating system function and
+# reads no clock. Appended to the list rather than written into it, for the
+# reason this block is appended at all; the manifest is written once the whole
+# directory has been read, so it sees this.
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_track_contact)
+
+# `track-contact` loads a whole track through it, and places the load in the
+# Switch arena plan, which switch_memory_budget() in nfsu_gpu_upload builds.
+target_link_libraries(nfsu_probe PRIVATE nfsu_track_contact nfsu_gpu_upload)
+
+if(NFSU_BUILD_TESTS)
+    # Synthetic images of four separate sections of track: the triangle table,
+    # road and wall, point and segment contacts and their normals, a query
+    # inside one section against the same query over that section alone, the
+    # refusals and caps, the memory plan and the coordinate map. It links
+    # nfsu_arg_path for its --write-fixture mode, which takes paths on the
+    # command line.
+    add_executable(nfsu_track_contact_tests
+        tests/track_contact_tests.cpp
+    )
+
+    target_link_libraries(nfsu_track_contact_tests PRIVATE nfsu_track_contact nfsu_arg_path)
+    nfsu_enable_warnings(nfsu_track_contact_tests)
+    add_test(NAME nfsu_track_contact_tests COMMAND nfsu_track_contact_tests)
+
+    # What `track-contact` refuses, prints and exits with, over the fixture
+    # the tests above write on request. A script for the reason
+    # tests/track_render_guards.cmake gives: the exit status is half of what
+    # is pinned, and PASS_REGULAR_EXPRESSION would ignore it.
+    add_test(NAME nfsu_probe_track_contact_guards
+        COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -DTESTS=$<TARGET_FILE:nfsu_track_contact_tests>
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/track_contact_guards.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+    set_tests_properties(nfsu_track_contact_tests nfsu_probe_track_contact_guards
+        PROPERTIES TIMEOUT 60)
+endif()

@@ -58,6 +58,9 @@ build/nfsu_probe track-probe X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268
 build/nfsu_probe track-probe X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 23011344 4168 --texture X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN --mesh TRSABC_ROAD_CHOP14 --screen-scale 120
 build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc
 build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc 783 -8.5
+build/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc
+build/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc 904.24 -94.76
+build/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc 904.24 -94.76 56.5 944 -74 56.5
 build/nfsu_probe car-placement X:/Games/NFSU/Global/GLOBALB.BUN 240SX
 build/nfsu_probe race-events X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/FrontEnd/FrontB.lzc
 build/nfsu_probe track-whole X:/Games/NFSU/Tracks/STREAML1RA.BUN X:/Games/NFSU/Tracks/TRACKB1003.lzc 1003 --texture X:/Games/NFSU/Tracks/TEX1003TRACK.BIN --texture X:/Games/NFSU/Global/INGAMEB.BUN --texture X:/Games/NFSU/Global/GLOBALB.BUN
@@ -269,6 +272,21 @@ structure: the leaf cells that column touches, the polygons in a 16 by 16
 box around it, and a ray straight down. See `docs/TRACK_COLLISION.md` for
 the byte evidence, the retail code every record size comes from, the
 coordinate units and what is still unknown.
+`track-contact` loads the static collision of a whole race track - one
+`TRACKB<NNNN>.lzc` is the whole circuit's collision, because the game keeps
+exactly one such set resident and loads it once per race - and adds what a
+vehicle needs: every triangle's unit normal and whether it is road or wall,
+the resident and load-time bytes, the largest collision the loader admits,
+and the load placed in the Switch arena plan of `docs/MEMORY_BUDGETS.md`.
+Given `px pz` it probes the column there; given two points `px pz py` it
+sweeps the segment between them. Either answers hit, clear (a cell lies
+under the query and nothing on it is met), outside (no cell lies under any
+part of it, which is out of bounds) or refused, and a hit carries the
+polygon, the distance in world units, the point and a normal that faces the
+query. A column exactly on the seam between two polygons meets them. It
+exits 3 for a collision that fails its checks, 4 if the Switch plan cannot
+hold it and 5 for a refused query. See `docs/TRACK_COLLISION.md`,
+"The whole circuit".
 `stock-parts` applies the game's stock-part rules to one car type and
 prints the chosen record per slot with each LOD mesh hash resolved against
 the `GEOMETRY.BIN` files given after the car type, including the mesh the
