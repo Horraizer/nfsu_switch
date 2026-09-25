@@ -1,5 +1,7 @@
 #include "nfsu/arg_path.h"
 
+#include "nfsu/platform.h"
+
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -90,6 +92,22 @@ std::size_t extended_prefix_length(const char* text) {
 }
 #endif
 
+// The desktop FileSystemService (include/nfsu/platform.h). This file is
+// where the conversion has always lived, and it stays the only place that
+// asks Windows for the code page; the class only puts it behind the
+// interface, so that the programs below and a console that implements the
+// interface differently reach it the same way.
+class ArgumentPathFileSystem final : public FileSystemService {
+public:
+    bool argument_to_path(const char* text, fs::path& out, std::string& reason) override {
+#ifdef _WIN32
+        return argument_to_path_in_code_page(text, GetACP(), out, reason);
+#else
+        return argument_to_path_in_code_page(text, 0U, out, reason);
+#endif
+    }
+};
+
 } // namespace
 
 bool argument_to_path_in_code_page(
@@ -152,36 +170,27 @@ bool argument_to_path_in_code_page(
 #endif
 }
 
+FileSystemService& desktop_file_system() {
+    static ArgumentPathFileSystem files;
+    return files;
+}
+
+// The three calls the programs make, each now a call through the desktop
+// service. check_arguments and argument_path were the loop and the fallback
+// that src/platform.cpp now holds as check_argument_paths and
+// argument_path_or_empty, moved there unchanged; tests/arg_path_tests.cpp
+// and tests/path_arguments.cmake pin that nothing a program prints or
+// returns moved with them.
 bool argument_to_path(const char* text, fs::path& out, std::string& reason) {
-#ifdef _WIN32
-    return argument_to_path_in_code_page(text, GetACP(), out, reason);
-#else
-    return argument_to_path_in_code_page(text, 0U, out, reason);
-#endif
+    return desktop_file_system().argument_to_path(text, out, reason);
 }
 
 bool check_arguments(int argc, char** argv, int first, std::string& reason) {
-    if (argv == nullptr) {
-        return true;
-    }
-    for (int i = first; i < argc; ++i) {
-        fs::path ignored;
-        std::string detail;
-        if (!argument_to_path(argv[i], ignored, detail)) {
-            reason = "argument " + std::to_string(i) + " " + detail;
-            return false;
-        }
-    }
-    return true;
+    return check_argument_paths(desktop_file_system(), argc, argv, first, reason);
 }
 
 fs::path argument_path(const char* text) {
-    fs::path path;
-    std::string ignored;
-    if (!argument_to_path(text, path, ignored)) {
-        return fs::path();
-    }
-    return path;
+    return argument_path_or_empty(desktop_file_system(), text);
 }
 
 } // namespace nfsu

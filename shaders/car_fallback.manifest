@@ -1,0 +1,45 @@
+# Interface manifest: the car path's fallback draw.
+#
+# One material group of a PreparedCarScene whose binding is unresolved,
+# unusable or an invalid slot, drawn by render_scene (src/render.cpp) with
+# the fallback checker. Such a group has no bound texture-info record, so
+# no retail state reaches it in either material state. Record kinds:
+# docs/SHADER_PIPELINE.md.
+
+format 1
+program car_fallback
+
+stage kind=vertex source=placed.vert.glsl
+stage kind=fragment source=fallback.frag.glsl
+
+buffer index=0 stride=36 struct=nfsu::MeshVertex header=nfsu/mesh.h
+attribute location=0 name=position type=vec3 format=float32x3 buffer=0 offset=0 members=px,py,pz
+attribute location=1 name=color type=vec3 format=unorm8x4 buffer=0 offset=24 members=color
+attribute location=2 name=texcoord type=vec2 format=float32x2 buffer=0 offset=28 members=u,v
+
+varying location=0 name=world type=vec3 interpolation=smooth
+varying location=1 name=color type=vec3 interpolation=smooth
+varying location=2 name=texcoord type=vec2 interpolation=smooth
+
+block name=Frame binding=0 stages=vertex,fragment size=112
+member block=Frame name=eye type=vec4 offset=0
+member block=Frame name=right type=vec4 offset=16
+member block=Frame name=up type=vec4 offset=32
+member block=Frame name=forward type=vec4 offset=48
+member block=Frame name=projection type=vec4 offset=64
+member block=Frame name=light type=vec4 offset=80
+member block=Frame name=options type=uvec4 offset=96
+
+block name=Instance binding=1 stages=vertex size=64
+member block=Instance name=rows type=vec4[4] offset=0
+
+block name=Material binding=2 stages=fragment size=80
+member block=Material name=fallback type=vec4 offset=0
+member block=Material name=alpha type=vec4 offset=16
+member block=Material name=environment_min type=vec4 offset=32
+member block=Material name=environment_range type=vec4 offset=48
+member block=Material name=environment_color type=vec4 offset=64
+
+output location=0 name=color type=vec4 format=rgba8
+
+variant name=opaque alpha_test=always blend=off depth_test=less_equal depth_write=on color_write=rgb cull=none

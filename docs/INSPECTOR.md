@@ -113,11 +113,18 @@ arrive later without reopening any of this:
   text. The only mention of the CPU renderer is
   `inspection_buffers_of(const Frame&)`, a convenience for the backend that
   has one.
+- `include/nfsu/inspect_session.h` and `src/inspect_session.cpp` hold what
+  the window decides that is not a window: what a drag, a click, a wheel
+  notch and a key do, the size of the next frame, when to render, and how
+  the view and the highlight become the pixels shown. They reach the
+  platform only through the services of `include/nfsu/platform.h`
+  ([`PLATFORM_SERVICES.md`](PLATFORM_SERVICES.md)), are compiled on every
+  platform, and are tested headlessly through fakes.
 - `include/nfsu/inspect_window.h` and `src/inspect_window_win32.cpp` hold
-  the window: user32 and gdi32 only, no external dependency, no graphics API
-  and no shader. The frame is a device-independent bitmap and the overlay is
-  GDI text. `src/inspect_window_none.cpp` takes its place elsewhere and
-  fails closed.
+  the window, which is now those services for one window: user32 and gdi32
+  only, no external dependency, no graphics API and no shader. The frame is
+  a device-independent bitmap and the overlay is GDI text.
+  `src/inspect_window_none.cpp` takes its place elsewhere and fails closed.
 - Picking needs a backend to number its triangles the way the CPU renderer
   does. That rule is now written down once, in the scene layer, as
   `prepared_draw_order` and `prepared_triangle_ranges`
@@ -183,9 +190,12 @@ takes a moment to rasterize is therefore immediate, and
 `nfsu_inspect` is the state, `nfsu_inspect_window` the backend; the viewer
 links the second, which links the first. The window backend is chosen by
 `if(WIN32)` in `CMakeLists.txt` and nothing else selects it.
-`src/inspect_window_common.cpp` is the part of a backend that is not a
-window, `pan_delta_for` so far; it calls no operating system, is compiled on
-every platform and is therefore tested with everything else.
+`src/inspect_window_common.cpp`, `pan_delta_for`, and
+`src/inspect_session.cpp`, the session, are the parts of a backend that are
+not a window; they call no operating system, are compiled on every platform
+and are therefore tested with everything else, the session by
+`tests/platform_tests.cpp` through the fakes of
+`include/nfsu/platform_fakes.h`.
 
 `nfsu_inspect_tests` covers the layer headlessly. No test opens a window:
 one that did would wait for a person. It checks that the prepared order is
@@ -230,6 +240,9 @@ and for a mesh subset with `--cull`, `--shading`, `--vertex-color` and
   `--mesh-index` territory.
 - The overlay is GDI text at the top left and does not wrap; a `detail` line
   longer than the window is cut off at its edge.
-- The window is Windows only. A deko3d backend on hardware, and an X11 or
-  Wayland one on a workstation, both implement `inspect_window.h` without
-  touching anything above.
+- The window is Windows only. An X11 or Wayland window on a workstation
+  implements the display, input and lifecycle services and drives the same
+  session; a console runs `run_inspection_loop` over its own services, with
+  a controller moving the camera ([`INPUT.md`](INPUT.md)). A deko3d backend
+  also replaces the session's CPU render step, which is not decided
+  ([`PLATFORM_SERVICES.md`](PLATFORM_SERVICES.md)).

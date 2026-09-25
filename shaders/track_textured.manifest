@@ -1,0 +1,51 @@
+# Interface manifest: the track path's textured draw.
+#
+# One TrackDrawList entry whose group's binding is resolved, drawn by
+# render_track_draw_list (src/track_render.cpp). That function refuses
+# MaterialStateMode::retail, because the retail state is proven for the car
+# draw path only, so the one variant here is the opaque one. Record kinds:
+# docs/SHADER_PIPELINE.md.
+
+format 1
+program track_textured
+
+stage kind=vertex source=placed.vert.glsl
+stage kind=fragment source=textured.frag.glsl
+
+# PreparedTrackMesh::vertices uploaded as they are: one interleaved buffer
+# of nfsu::TrackVertex, which carries no normal.
+buffer index=0 stride=24 struct=nfsu::TrackVertex header=nfsu/track.h
+attribute location=0 name=position type=vec3 format=float32x3 buffer=0 offset=0 members=px,py,pz
+attribute location=1 name=color type=vec3 format=unorm8x4 buffer=0 offset=12 members=color
+attribute location=2 name=texcoord type=vec2 format=float32x2 buffer=0 offset=16 members=u,v
+
+varying location=0 name=world type=vec3 interpolation=smooth
+varying location=1 name=color type=vec3 interpolation=smooth
+varying location=2 name=texcoord type=vec2 interpolation=smooth
+
+block name=Frame binding=0 stages=vertex,fragment size=112
+member block=Frame name=eye type=vec4 offset=0
+member block=Frame name=right type=vec4 offset=16
+member block=Frame name=up type=vec4 offset=32
+member block=Frame name=forward type=vec4 offset=48
+member block=Frame name=projection type=vec4 offset=64
+member block=Frame name=light type=vec4 offset=80
+member block=Frame name=options type=uvec4 offset=96
+
+# The placed instance's TrackTransform: rows 0..2 from `linear`, row 3 from
+# `translation`.
+block name=Instance binding=1 stages=vertex size=64
+member block=Instance name=rows type=vec4[4] offset=0
+
+block name=Material binding=2 stages=fragment size=80
+member block=Material name=fallback type=vec4 offset=0
+member block=Material name=alpha type=vec4 offset=16
+member block=Material name=environment_min type=vec4 offset=32
+member block=Material name=environment_range type=vec4 offset=48
+member block=Material name=environment_color type=vec4 offset=64
+
+texture name=baseTexture binding=0 stage=fragment type=sampler2D filter=nearest wrap=repeat
+
+output location=0 name=color type=vec4 format=rgba8
+
+variant name=opaque alpha_test=always blend=off depth_test=less_equal depth_write=on color_write=rgb cull=none
