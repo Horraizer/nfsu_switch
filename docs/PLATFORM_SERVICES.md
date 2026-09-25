@@ -14,7 +14,7 @@ A library that CMakeLists.txt lists in `NFSU_NEUTRAL_LIBRARIES` calls no
 operating system. It reaches the platform only through the six interfaces in
 `include/nfsu/platform.h` - filesystem, input, timing, logging, lifecycle and
 display - which it is handed, never through a header, a call, a platform
-test or a clock of its own. Platform code lives in exactly three libraries
+test or a clock of its own. Platform code lives in exactly four libraries
 and one source file, each named below with the reason it cannot be neutral.
 `tests/platform_neutrality.cmake` enforces the rule on every CTest run and
 fails by file, line and symbol; see **The neutrality gate** below.
@@ -38,6 +38,7 @@ was read off, not decided here.
 | `nfsu_platform`, `nfsu_platform_fakes` | neutral | the interfaces, the code written against them alone, and the test fakes |
 | `nfsu_arg_path` | platform | decodes arguments with `MultiByteToWideChar` and `GetACP` |
 | `nfsu_render` | platform | its frame writer creates and publishes files with `CreateFileW` and `SetFileInformationByHandle`, or `open`, `link` and `unlink` |
+| `nfsu_texture_export` | platform | the texture-export helpers moved out of `nfsu_core` (issue #139): `fs::remove`, `fs::rename` and `fs::create_directories` write, roll back and clean up the files an export call asked for |
 | `nfsu_platform_desktop` | platform | reads the steady clock |
 
 Reading files is not on the platform side. The parsers open files with
@@ -45,6 +46,14 @@ Reading files is not on the platform side. The parsers open files with
 standard C++ that every supported toolchain provides - devkitA64's newlib
 and libstdc++ reach the SD card and RomFS through their devoptab mounts -
 so they stay neutral and the gate reads them.
+
+Writing them is not. `nfsu_texture_export` (`src/texture_export.cpp`) holds
+the three texture-export helpers - `remove_created`, `rollback_created_files`
+and `export_textures` - which used to live in `src/texture.cpp` behind a
+whole-file exemption (issue #139). They call `fs::remove`, `fs::rename` and
+`fs::create_directories` directly to write, roll back and clean up the files
+an export call asked for, which is why they are platform code rather than
+something the gate reads.
 
 The programs, `nfsu_probe` and `nfsu_viewer`, are desktop programs and are
 not libraries; the gate does not read them. A console build would have its
@@ -113,6 +122,28 @@ publication. Horizon's own file-system rename refuses an existing target,
 which is the primitive a libnx publish would use; that is not verified here.
 Moving the writer behind this service, with those two operations, is what
 would let `nfsu_render` join the neutral list.
+
+Also not behind it: `nfsu_texture_export`'s `export_textures` and
+`rollback_created_files` (issue #139 moved their file I/O out of
+`nfsu_core`, but decided against a service migration in the same change;
+this is that decision, recorded). The export path needs more than the
+create-and-publish pair above: a `.partial` create, a publish rename that
+refuses to replace an existing target, `fs::create_directories` for the
+output directory, `fs::remove` for rollback, and the `fs::symlink_status` /
+`fs::equivalent` checks behind its overwrite refusal. Growing
+`FileSystemService` to cover that - and the frame writer's own two
+operations at the same time, since the shapes match (an exclusive `.partial`
+then a non-replacing publish) - is a real interface design task, not the
+trivial migration this issue allows; it belongs with the frame writer's own
+move, above. It also buys less today than the frame writer does:
+`nfsu_probe`, the only caller of `export_textures`, is a desktop tool - the
+top of `CMakeLists.txt` returns before it ever configures `nfsu_probe`,
+`nfsu_render` or `nfsu_texture_export` for `NINTENDO_SWITCH`, which builds
+`switch/main.cpp` instead - so unlike the frame writer, which M3 will run on
+the console, `export_textures` has no console caller to serve yet. This
+issue's job was narrower and is done: the file I/O is out of the neutral
+core and classified, so a future change to the texture decoder next to it
+cannot hide platform code behind the same exemption again.
 
 ### Input
 

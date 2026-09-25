@@ -1,5 +1,6 @@
 #include "nfsu/image.h"
 #include "nfsu/texture.h"
+#include "nfsu/texture_export.h"
 
 #include <algorithm>
 #include <array>
