@@ -4,6 +4,7 @@
 #include "nfsu/geometry.h"
 #include "nfsu/part_placement.h"
 #include "nfsu/race_events.h"
+#include "nfsu/race_route.h"
 #include "nfsu/skin_inputs.h"
 #include "nfsu/stock_scene.h"
 #include "nfsu/texture.h"
@@ -4074,6 +4075,364 @@ int run_race_events(const fs::path& globalb_path, const fs::path& frontb_path) {
     return 0;
 }
 
+// race-route: the route of one career event over its TRACKB bundle, and
+// optionally a replay of positions through it. docs/RACE_ROUTE.md.
+
+// The largest path file race-route reads, and the most positions in it.
+constexpr std::uint64_t kRacePathFileLimit = 64ULL * 1024ULL * 1024ULL;
+constexpr std::size_t kRacePathPositionLimit = 2000000;
+// One replay step: this project's choice, not a retail constant. It only
+// matters to the wrong-way test's speed gate.
+constexpr float kRaceStepSeconds = 1.0F / 60.0F;
+// The spacing of a built-in drive, 0.5 per step, which at 60 steps a second
+// is 30 per second: fast enough for the wrong-way speed gate of 10 mph.
+constexpr float kRaceDriveSpacing = 0.5F;
+
+const char* race_zone_type_name(std::uint32_t type) {
+    // The executable's own names for the eleven types, 0x00700964..
+    // 0x0070098C in order.
+    static constexpr const char* kNames[] = {
+        "NO_WRONG_WAY", "WRONG_WAY", "RESET", "RESET_TO_POINT", "TRAFFIC_DENSITY",
+        "TUNNEL", "DRIFT_GATE", "DRIFT_HOT_SPOT", "TUTORIAL", "SHORTCUT",
+        "TRACK_PATH_ZONE_STREAMER_PREDICTION"};
+    return type < 11 ? kNames[type] : "unknown";
+}
+
+void print_race_route_issues(const std::vector<nfsu::RaceRouteIssue>& issues) {
+    for (const nfsu::RaceRouteIssue& issue : issues) {
+        std::cerr << "trackb issue at offset " << issue.offset << ": " << issue.message
+                  << '\n';
+    }
+}
+
+// A path file: one position per line, two decimal numbers - the horizontal
+// raw slots slot0 and slot1 the markers and nodes use - separated by spaces,
+// tabs or carriage returns. Blank lines and lines whose first non-blank
+// character is '#' are skipped. Every other line must hold exactly two
+// finite numbers and nothing else, and there must be at least one;
+// anything else is refused with the line number, and nothing is replayed.
+bool read_race_path_file(const fs::path& path, std::vector<float>& points,
+                         std::string& error) {
+    points.clear();
+    std::error_code code;
+    const std::uintmax_t size = fs::file_size(path, code);
+    if (code) {
+        error = "cannot size the path file: " + code.message();
+        return false;
+    }
+    if (static_cast<std::uint64_t>(size) > kRacePathFileLimit) {
+        error = "the path file is " + std::to_string(size) + " bytes, over the limit of " +
+                std::to_string(kRacePathFileLimit);
+        return false;
+    }
+    std::string text(static_cast<std::size_t>(size), '\0');
+    {
+        std::ifstream stream(path, std::ios::binary);
+        if (!stream || (size != 0 && !stream.read(text.data(),
+                                                  static_cast<std::streamsize>(size)))) {
+            error = "cannot read the path file";
+            return false;
+        }
+    }
+    std::size_t line_number = 0;
+    std::size_t at = 0;
+    while (at < text.size()) {
+        std::size_t end = text.find('\n', at);
+        if (end == std::string::npos) {
+            end = text.size();
+        }
+        std::string_view line(text.data() + at, end - at);
+        at = end + 1;
+        ++line_number;
+        if (!line.empty() && line.back() == '\r') {
+            line.remove_suffix(1);
+        }
+        const auto blank = [](char ch) { return ch == ' ' || ch == '\t' || ch == '\r'; };
+        std::size_t p = 0;
+        while (p < line.size() && blank(line[p])) {
+            ++p;
+        }
+        if (p == line.size() || line[p] == '#') {
+            continue;
+        }
+        const std::string where = "path file line " + std::to_string(line_number) + ": ";
+        float values[2] = {0.0F, 0.0F};
+        for (int k = 0; k < 2; ++k) {
+            while (p < line.size() && blank(line[p])) {
+                ++p;
+            }
+            const char* first = line.data() + p;
+            const char* last = line.data() + line.size();
+            const char* stop = first;
+            while (stop < last && !blank(*stop)) {
+                ++stop;
+            }
+            if (first == stop) {
+                error = where + "expected two numbers, found " + std::to_string(k);
+                return false;
+            }
+            const auto result = std::from_chars(first, stop, values[k]);
+            if (result.ec != std::errc() || result.ptr != stop || !std::isfinite(values[k])) {
+                error = where + "'" + std::string(first, stop) + "' is not a finite number";
+                return false;
+            }
+            p = static_cast<std::size_t>(stop - line.data());
+        }
+        while (p < line.size() && blank(line[p])) {
+            ++p;
+        }
+        if (p != line.size()) {
+            error = where + "expected two numbers and nothing after them";
+            return false;
+        }
+        if (points.size() / 2 >= kRacePathPositionLimit) {
+            error = where + "more than " + std::to_string(kRacePathPositionLimit) + " positions";
+            return false;
+        }
+        points.push_back(values[0]);
+        points.push_back(values[1]);
+    }
+    if (points.empty()) {
+        error = "the path file holds no position";
+        return false;
+    }
+    return true;
+}
+
+struct RaceRouteArgs {
+    std::uint32_t event = 0;
+    std::optional<fs::path> path;
+    std::string drive;
+    int skip_from = -1;
+    int skip_to = -1;
+};
+
+// Lists the route of one event - the race's laps and direction, the path,
+// its nodes, the markers, the zones and the boundaries with the percentage
+// each was measured at - and, given a path file or a built-in drive,
+// replays it one fixed step per position and prints every crossing, lap,
+// finish and wrong-way change. Read-only; writes nothing. Prints only file
+// names, not directories. docs/RACE_ROUTE.md.
+int run_race_route(const fs::path& globalb_path, const fs::path& frontb_path,
+                   const fs::path& trackb_path, const RaceRouteArgs& args) {
+    std::vector<unsigned char> globalb_image;
+    const nfsu::TrackInfoTable tracks =
+        nfsu::load_track_info_table(globalb_path, globalb_image);
+    std::cout << "globalb: " << globalb_path.filename().string() << '\n';
+    print_race_table_issues("track table", tracks.issues);
+    std::vector<unsigned char> frontb_image;
+    const nfsu::RaceEventTable events =
+        nfsu::load_race_event_table(frontb_path, frontb_image);
+    std::cout << "frontb: " << frontb_path.filename().string() << '\n';
+    print_race_table_issues("event table", events.issues);
+    std::vector<unsigned char> trackb_image;
+    const nfsu::RaceRouteTrack track = nfsu::load_race_route_track(trackb_path, trackb_image);
+    std::cout << "trackb: " << trackb_path.filename().string() << '\n';
+    std::cout << "trackb bytes: stored " << track.stored_size << " image " << track.image_size
+              << " jdlz " << (track.jdlz ? 1 : 0) << '\n';
+    print_race_route_issues(track.issues);
+    if (!tracks.ok() || !events.ok() || !track.ok()) {
+        return 3;
+    }
+
+    const nfsu::RaceEventRecord* event = nfsu::find_race_event(events, args.event);
+    if (event == nullptr) {
+        std::cerr << "error: the event table holds no event " << args.event << '\n';
+        return 3;
+    }
+    const nfsu::RaceSlot& race = event->races.front();
+    const nfsu::TrackInfoRecord* info = nfsu::find_track_info(tracks, race.track);
+    std::cout << "event " << event->number << " @" << event->offset << " type "
+              << nfsu::race_type_name(event->type) << " (" << event->type << ") race 0 of "
+              << event->races.size() << " @" << race.offset << " track " << race.track
+              << " laps " << static_cast<int>(race.laps) << " @"
+              << race.offset + nfsu::kRaceSlotLapsOffset << " direction "
+              << nfsu::race_direction_name(race.direction) << " ("
+              << static_cast<int>(race.direction) << ") @"
+              << race.offset + nfsu::kRaceSlotDirectionOffset << '\n';
+    if (info == nullptr) {
+        std::cerr << "error: event " << event->number << " names track " << race.track
+                  << ", which is not in the track table\n";
+        return 3;
+    }
+    const std::string bundle = nfsu::track_bundle_file_name(info->number);
+    std::cout << "track " << info->number << " @" << info->offset << " lap-skip "
+              << static_cast<int>(info->lap_skip) << " @"
+              << info->offset + nfsu::kTrackInfoLapSkipOffset << " bundle " << bundle << '\n';
+    if (lower_ascii(trackb_path.filename().string()) != lower_ascii(bundle)) {
+        std::cerr << "error: event " << event->number << " loads " << bundle << ", not "
+                  << trackb_path.filename().string() << '\n';
+        return 3;
+    }
+
+    nfsu::RaceRoute route;
+    std::string error;
+    if (!nfsu::build_race_route(track, race.laps, race.direction, info->lap_skip, route,
+                                error)) {
+        std::cerr << "error: " << error << '\n';
+        return 3;
+    }
+    std::cout << "race: laps " << route.laps << " (0x004342A4) direction "
+              << (route.reverse ? "reverse" : "forward") << " point-to-point "
+              << (route.point_to_point ? 1 : 0) << '\n';
+
+    const nfsu::TrackPathRecord& path = track.paths.front();
+    std::cout << "path container @" << track.container_offset << " records @"
+              << track.path_chunk_offset << " nodes @" << track.node_chunk_offset << " zones @"
+              << track.zone_chunk_offset << '\n';
+    std::cout << "path 0 @" << path.offset << " closed " << static_cast<int>(path.closed)
+              << " @" << path.offset + 1 << " nodes " << path.first << ".." << path.end
+              << " count " << path.count << " @" << path.offset + 6 << " length "
+              << format_float(path.length) << " @" << path.offset + 12 << " scale "
+              << format_float(path.distance_scale) << " @" << path.offset + 16 << " offset "
+              << format_float(path.distance_offset) << " @" << path.offset + 8 << '\n';
+    float worst = 0.0F;
+    for (std::size_t i = 0; i < route.spline.count; ++i) {
+        const float running = route.spline.points[i * 3 + 2];
+        const float stored = track.nodes[route.spline.first_node + i].distance;
+        worst = std::max(worst, std::fabs(stored - running));
+    }
+    std::cout << "spline: uniform closed Catmull-Rom (0x007376B0), length "
+              << format_float(route.spline.spline_length)
+              << " (0x0059D9F0, 16 chords per segment); node distances differ from it by "
+                 "at most "
+              << format_float(worst) << '\n';
+    for (std::size_t n = 0; n < track.nodes.size(); ++n) {
+        const nfsu::TrackPathNode& node = track.nodes[n];
+        const bool on_path = n >= route.spline.first_node &&
+                             n < route.spline.first_node + route.spline.count;
+        std::cout << "node " << n << " @" << node.offset << " x " << format_float(node.x)
+                  << " y " << format_float(node.y) << " distance "
+                  << format_float(node.distance) << " @" << node.offset + 16;
+        if (on_path) {
+            std::cout << " percent " << format_float(nfsu::race_node_percent(route, track, n));
+        } else {
+            std::cout << " not-on-path";
+        }
+        std::cout << '\n';
+    }
+    std::cout << "markers: chunk @" << track.marker_chunk_offset << " records @"
+              << track.marker_record_offset << " count " << track.markers.size() << '\n';
+    for (std::size_t m = 0; m < track.markers.size(); ++m) {
+        const nfsu::TrackMarker& marker = track.markers[m];
+        const char* name = nfsu::track_marker_name(marker.name_hash);
+        std::cout << "marker " << m << " @" << marker.offset << ' '
+                  << (name != nullptr ? name : "unnamed") << ' ' << hex32(marker.name_hash)
+                  << " param " << marker.param << " x " << format_float(marker.position[0])
+                  << " y " << format_float(marker.position[1]) << " z "
+                  << format_float(marker.position[2]) << " angle " << hex32(marker.angle)
+                  << '\n';
+    }
+    std::cout << "zones: " << track.zones.size() << '\n';
+    for (std::size_t z = 0; z < track.zones.size(); ++z) {
+        const nfsu::TrackPathZone& zone = track.zones[z];
+        std::cout << "zone " << z << " @" << zone.offset << ' ' << race_zone_type_name(zone.type)
+                  << " (" << zone.type << ") direction-filter "
+                  << static_cast<int>(zone.direction_filter) << " box "
+                  << format_float(zone.box_min[0]) << ' ' << format_float(zone.box_min[1])
+                  << ' ' << format_float(zone.box_max[0]) << ' ' << format_float(zone.box_max[1])
+                  << " vertices " << zone.vertex_count << '\n';
+    }
+    std::cout << "boundaries (0x00434810): " << route.boundaries.size() << " start "
+              << route.start << " finish " << route.finish << '\n';
+    for (std::size_t b = 0; b < route.boundaries.size(); ++b) {
+        const nfsu::RaceBoundary& boundary = route.boundaries[b];
+        std::cout << "boundary " << b << ' ' << boundary.name;
+        if (boundary.marker >= 0) {
+            std::cout << " marker " << boundary.marker << " @"
+                      << track.markers[static_cast<std::size_t>(boundary.marker)].offset;
+        } else {
+            std::cout << " default";
+        }
+        std::cout << " percent " << format_float(boundary.percent) << " distance "
+                  << format_float(boundary.percent * 0.01F * route.spline.path_length);
+        if (static_cast<int>(b) == route.start) {
+            std::cout << " start";
+        }
+        if (static_cast<int>(b) == route.finish) {
+            std::cout << " finish";
+        }
+        std::cout << '\n';
+    }
+    std::cout << "lap rule: a forward crossing of boundary " << route.finish
+              << " within " << format_float(nfsu::kRaceCrossingWindow)
+              << " percent adds a lap, a backward one takes it back (0x004338C0); finished at "
+              << route.laps << " laps\n";
+
+    std::vector<float> points;
+    std::string source;
+    if (args.path.has_value()) {
+        if (!read_race_path_file(*args.path, points, error)) {
+            std::cerr << "error: " << error << '\n';
+            return 3;
+        }
+        source = "path " + args.path->filename().string();
+    } else if (!args.drive.empty()) {
+        nfsu::RaceDrive drive;
+        if (!nfsu::make_race_drive(route, track, args.drive == "backward", args.skip_from,
+                                   args.skip_to, kRaceDriveSpacing, drive, error)) {
+            std::cerr << "error: " << error << '\n';
+            return 3;
+        }
+        points = std::move(drive.points);
+        source = "drive " + args.drive + " from marker " + std::to_string(drive.grid_marker) +
+                 " through " + std::to_string(drive.nodes.size()) + " nodes";
+        if (args.skip_from >= 0) {
+            source += ", jumping from node " + std::to_string(args.skip_from) + " to node " +
+                      std::to_string(args.skip_to) + " past " + std::to_string(drive.skipped);
+        }
+    } else {
+        return 0;
+    }
+
+    const std::size_t steps = points.size() / 2 - 1;
+    std::cout << "replay: " << source << ", " << points.size() / 2 << " positions, " << steps
+              << " steps of 1/60 s\n";
+    nfsu::RaceProgress progress;
+    nfsu::start_race_progress(route, track, points.data(), progress);
+    std::cout << "start: x " << format_float(points[0]) << " y " << format_float(points[1])
+              << " percent " << format_float(progress.previous_percent) << " next boundary "
+              << progress.next_boundary << '\n';
+    std::vector<nfsu::RaceProgressEvent> happened;
+    for (std::size_t s = 1; s <= steps && !progress.finished; ++s) {
+        happened.clear();
+        nfsu::step_race_progress(route, track, progress, &points[s * 2], kRaceStepSeconds,
+                                 happened);
+        for (const nfsu::RaceProgressEvent& event_line : happened) {
+            std::cout << "step " << event_line.step << ' '
+                      << nfsu::race_event_kind_name(event_line.kind);
+            switch (event_line.kind) {
+            case nfsu::RaceEventKind::crossed_forward:
+            case nfsu::RaceEventKind::crossed_backward:
+            case nfsu::RaceEventKind::missed_forward:
+            case nfsu::RaceEventKind::missed_backward:
+                std::cout << " boundary " << event_line.index << ' '
+                          << route.boundaries[static_cast<std::size_t>(event_line.index)].name;
+                break;
+            case nfsu::RaceEventKind::reset_zone:
+                std::cout << " zone " << event_line.index;
+                break;
+            case nfsu::RaceEventKind::recovered:
+                std::cout << " node " << event_line.index;
+                break;
+            default:
+                break;
+            }
+            std::cout << " lap " << event_line.lap << " percent "
+                      << format_float(event_line.percent) << '\n';
+        }
+    }
+    std::cout << "result: steps " << progress.step << " laps "
+              << nfsu::race_laps_completed(progress) << " of " << route.laps << " finished "
+              << (progress.finished ? "yes at step " + std::to_string(progress.finish_step)
+                                    : std::string("no"))
+              << " lap-counter " << progress.lap << " highest " << progress.max_lap
+              << " checkpoint " << progress.checkpoint << " highest-checkpoint "
+              << progress.max_checkpoint << " next-boundary " << progress.next_boundary
+              << " wrong-way " << (progress.wrong_way ? "yes" : "no") << '\n';
+    return 0;
+}
+
 void print_usage();
 
 // The single registration point for an nfsu_probe command. One entry carries
@@ -5627,6 +5986,60 @@ const Command kCommands[] = {
          }
          return run_race_events(nfsu::argument_path(argv[2]),
                                 nfsu::argument_path(argv[3]));
+     }},
+    {"race-route", " <GLOBALB.BUN> <FrontB.lzc> <TRACKB####.lzc> <event>",
+     "      [--path <FILE> | --drive <forward|backward> [--skip <node> <node>]]\n"
+     "      (the route of the event's first race over the bundle it loads;\n"
+     "       --path replays one position per line, slot0 and slot1, and\n"
+     "       --drive replays the built-in drive of docs/RACE_ROUTE.md)\n",
+     [](int argc, char** argv) {
+         if (argc < 6) {
+             print_usage();
+             return 1;
+         }
+         RaceRouteArgs args;
+         std::uint64_t event = 0;
+         if (!parse_u64(argv[5], event) || event > 0xFFFFFFFFULL) {
+             std::cerr << "error: the event must be a number\n";
+             return 1;
+         }
+         args.event = static_cast<std::uint32_t>(event);
+         for (int i = 6; i < argc; ++i) {
+             const std::string option = argv[i];
+             if (option == "--path" && i + 1 < argc && !args.path.has_value()) {
+                 args.path = nfsu::argument_path(argv[++i]);
+             } else if (option == "--drive" && i + 1 < argc && args.drive.empty()) {
+                 args.drive = argv[++i];
+                 if (args.drive != "forward" && args.drive != "backward") {
+                     std::cerr << "error: --drive is forward or backward\n";
+                     return 1;
+                 }
+             } else if (option == "--skip" && i + 2 < argc && args.skip_from < 0) {
+                 std::uint64_t from = 0;
+                 std::uint64_t to = 0;
+                 if (!parse_u64(argv[i + 1], from) || !parse_u64(argv[i + 2], to) ||
+                     from > 32767 || to > 32767) {
+                     std::cerr << "error: --skip takes two node numbers\n";
+                     return 1;
+                 }
+                 args.skip_from = static_cast<int>(from);
+                 args.skip_to = static_cast<int>(to);
+                 i += 2;
+             } else {
+                 std::cerr << "error: unexpected or repeated argument '" << option << "'\n";
+                 return 1;
+             }
+         }
+         if (args.path.has_value() && !args.drive.empty()) {
+             std::cerr << "error: --path and --drive are two replays; give one\n";
+             return 1;
+         }
+         if (args.skip_from >= 0 && args.drive.empty()) {
+             std::cerr << "error: --skip needs --drive\n";
+             return 1;
+         }
+         return run_race_route(nfsu::argument_path(argv[2]), nfsu::argument_path(argv[3]),
+                               nfsu::argument_path(argv[4]), args);
      }},
     {"part-markers", " <GEOMETRY.BIN> [role]", "",
      [](int argc, char** argv) {

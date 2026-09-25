@@ -60,6 +60,7 @@ build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc
 build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc 783 -8.5
 build/nfsu_probe car-placement X:/Games/NFSU/Global/GLOBALB.BUN 240SX
 build/nfsu_probe race-events X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/FrontEnd/FrontB.lzc
+build/nfsu_probe race-route X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/FrontEnd/FrontB.lzc X:/Games/NFSU/Tracks/TRACKB1003.lzc 1 --drive forward
 build/nfsu_probe part-markers X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN exhaust
 build/nfsu_probe body-skin-inputs 240SX --source car-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN --source car-vinyls X:/Games/NFSU/Cars/240SX/VINYLS.BIN --source other X:/Games/NFSU/Cars/TEXTURES.BIN --target-texture DUMMY_SKIN1 --vinyl 0 TRIBAL5 16 no-remap --doorline plain --base 200 30 30 128 --assemble
 ```
@@ -121,6 +122,20 @@ the Underground order - the event a new career enters, the events winning it
 opens, race 1 and the first circuit from race 1. It exits 3 if either table
 fails validation or a race names a track the track table does not hold. See
 `docs/RACE_EVENTS.md`.
+`race-route` takes the same two tables, the `TRACKB####.lzc` bundle the
+event's first race loads and an event number, and lists that race's route:
+its lap count and direction, the track path of chunk `0x80034147` with every
+node's distance and percentage, the position markers of `0x00034146`, the
+zones, and the start line, split boundaries and finish line as percentages
+of the path, each projected from its marker. With `--path <FILE>` (one
+position per line, two numbers) or `--drive forward|backward` (optionally
+`--skip <node> <node>`, a one-step jump) it replays the positions one fixed
+step each and prints every boundary crossed forward or backward, every
+boundary passed but not counted, each completed lap, the finish and the
+wrong-way flag. It exits 3 if a table or the bundle fails validation, the
+bundle is not the one the event loads, the path is open (a point-to-point
+track, not implemented) or a path file line is malformed. See
+`docs/RACE_ROUTE.md`.
 `car-parts` parses the car part database of `GLOBAL/GLOBALB.BUN` and lists
 every part record: car type hash, slot, upgrade level, part name hash and
 the four per-LOD mesh hashes. A car type name lists only its records.

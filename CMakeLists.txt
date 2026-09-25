@@ -168,6 +168,28 @@ add_library(nfsu_race_events
 target_link_libraries(nfsu_race_events PUBLIC nfsu_core)
 nfsu_enable_warnings(nfsu_race_events)
 
+# The route of one race over a TRACKB bundle (issue #61): the track path
+# spline of chunk 0x80034147, the position markers of 0x00034146, the start,
+# split and finish percentages projected from them, and the lap, crossing
+# and wrong-way rules a fixed-step position sequence is replayed through. It
+# links nfsu_core for the JDLZ decoder and nfsu_track_zones for the polygon
+# test 0x005679B0, reads with std::ifstream as nfsu_core's loaders do and
+# reads no clock. Floating-point contraction is disabled for the reason
+# nfsu_track_zones disables it: every lap and crossing verdict is a
+# comparison of a float the spline arithmetic produced, and a fused
+# multiply-add would move it. See docs/RACE_ROUTE.md.
+add_library(nfsu_race_route
+    src/race_route.cpp
+)
+
+target_link_libraries(nfsu_race_route PUBLIC nfsu_core nfsu_track_zones)
+nfsu_enable_warnings(nfsu_race_route)
+if(MSVC)
+    target_compile_options(nfsu_race_route PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_race_route PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+
 # The read-only inspector. It is declared after every library it uses.
 add_executable(nfsu_probe
     src/main.cpp
@@ -180,7 +202,7 @@ target_link_libraries(nfsu_probe
     PRIVATE nfsu_core nfsu_texture_export nfsu_track nfsu_track_visibility
             nfsu_track_zones
             nfsu_track_draw_list nfsu_track_render nfsu_track_budget
-            nfsu_track_probe nfsu_race_events
+            nfsu_track_probe nfsu_race_events nfsu_race_route
             nfsu_texture_decode nfsu_skin_inputs nfsu_stock_scene
             nfsu_arg_path)
 nfsu_enable_warnings(nfsu_probe)
@@ -417,6 +439,26 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_race_event_tests)
     add_test(NAME nfsu_race_event_tests COMMAND nfsu_race_event_tests)
 
+    # The race route over synthetic TRACKB images: every decoded field at
+    # its offset, every refusal, the spline and its arc length, the
+    # coordinate, the boundaries, lap counting, the start/finish crossing, a
+    # missed boundary, a reverse crossing, a path grazing a boundary and the
+    # wrong way. It also writes the fixture the race-route guards drive the
+    # probe over.
+    add_executable(nfsu_race_route_tests
+        tests/race_route_tests.cpp
+    )
+
+    target_link_libraries(nfsu_race_route_tests PRIVATE nfsu_race_route)
+    nfsu_enable_warnings(nfsu_race_route_tests)
+    if(MSVC)
+        target_compile_options(nfsu_race_route_tests PRIVATE /fp:precise)
+    else()
+        target_compile_options(nfsu_race_route_tests PRIVATE -ffp-contract=off -fno-fast-math)
+    endif()
+    add_test(NAME nfsu_race_route_tests COMMAND nfsu_race_route_tests)
+    set_tests_properties(nfsu_race_route_tests PROPERTIES TIMEOUT 60)
+
     add_executable(nfsu_body_skin_tests
         tests/body_skin_tests.cpp
     )
@@ -585,6 +627,19 @@ if(NFSU_BUILD_TESTS)
                 -DTESTS=$<TARGET_FILE:nfsu_race_event_tests>
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/race_events_guards.cmake
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+    # What `race-route` refuses and exits with, and what it prints over a
+    # synthetic TRACKB bundle nfsu_race_route_tests writes on request beside
+    # the race-events fixture pair: the route listing, a replayed path file,
+    # the built-in drives, and every malformed path line refused.
+    # tests/race_route_guards.cmake says what each case is for.
+    add_test(NAME nfsu_probe_race_route_guards
+        COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -DTESTS=$<TARGET_FILE:nfsu_race_route_tests>
+                -DEVENT_TESTS=$<TARGET_FILE:nfsu_race_event_tests>
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/race_route_guards.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(nfsu_probe_race_route_guards PROPERTIES TIMEOUT 60)
     # nfsu_probe registers a command in one place, and print_usage() composes
     # the usage line out of the name main() dispatches on. This reads the
     # command inventory back out of three independent places - the kCommands
@@ -733,6 +788,11 @@ set(NFSU_NEUTRAL_LIBRARIES
     nfsu_inspect nfsu_inspect_window nfsu_input nfsu_platform
     nfsu_platform_fakes nfsu_input_camera nfsu_memory nfsu_gpu_upload nfsu_draw_commands
     nfsu_sha256 nfsu_stock_frame nfsu_screen_text nfsu_stock_view)
+# nfsu_race_route (issue #61) decodes a TRACKB bundle with nothing but the
+# standard library, nfsu_core's JDLZ decoder and nfsu_track_zones' polygon
+# test, reads with std::ifstream as nfsu_core's loaders do, and reads no
+# clock: a replay step carries its own duration.
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_route)
 
 # The libraries that are platform code on purpose, and are not read:
 # nfsu_arg_path decodes arguments with the Windows API, nfsu_render's frame
