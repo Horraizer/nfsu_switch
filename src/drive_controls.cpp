@@ -3,6 +3,7 @@
 #include <cfloat>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -304,11 +305,23 @@ bool parse_decimal(const std::string& text, double& out) {
 std::string format_decimal(double value);
 
 // True when the text form holds `value` exactly: the fixed decimal
-// format_decimal writes reads back as the same double.
+// format_decimal writes reads back as the same double, bit for bit. A
+// negative zero reads back as a positive zero under == but not under the
+// bit pattern, so it is refused here like any other value the file cannot
+// state.
 bool representable(double value) {
+    if (!finite(value) || !(value >= 0.0) || value > 1.0e9) {
+        return false;
+    }
     double back = 0.0;
-    return finite(value) && value >= 0.0 && value <= 1.0e9 &&
-           parse_vehicle_decimal(format_decimal(value), back) && back == value;
+    if (!parse_vehicle_decimal(format_decimal(value), back)) {
+        return false;
+    }
+    std::uint64_t value_bits = 0;
+    std::uint64_t back_bits = 0;
+    std::memcpy(&value_bits, &value, sizeof(value_bits));
+    std::memcpy(&back_bits, &back, sizeof(back_bits));
+    return value_bits == back_bits;
 }
 
 std::string format_decimal(double value) {

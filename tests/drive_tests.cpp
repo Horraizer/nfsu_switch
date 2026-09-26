@@ -195,12 +195,21 @@ void test_config_round_trip() {
         double value;
         std::string directive;
     };
+    // Negative zero is its own case, not a fixed decimal that reads back to
+    // it: representable() must refuse it for every field whose range check
+    // lets -0.0 through (throttle-floor's `< 0.0` and steer-analog-rate's
+    // `zero_allowed && value == 0.0`, both true for -0.0). The other four
+    // fields require a rate or a speed strictly above 0, so -0.0 is already
+    // refused before reaching representable(), by a different, unrelated
+    // message; adding it there would not exercise this fix.
     const Unstated unstated[] = {
         {nullptr, &nfsu::DriveSteerFilter::centre_rate, 1e-7, "steer-centre-rate"},
         {nullptr, &nfsu::DriveSteerFilter::centre_rate, 1.0 / 3.0, "steer-centre-rate"},
         {nullptr, &nfsu::DriveSteerFilter::analog_rate, 0.1 + 0.2, "steer-analog-rate"},
+        {nullptr, &nfsu::DriveSteerFilter::analog_rate, -0.0, "steer-analog-rate"},
         {nullptr, &nfsu::DriveSteerFilter::digital_rate_speed, 20.0000001, "steer-digital-rate"},
         {&nfsu::DriveControlsConfig::throttle_floor, nullptr, 0.30000001, "throttle-floor"},
+        {&nfsu::DriveControlsConfig::throttle_floor, nullptr, -0.0, "throttle-floor"},
         {&nfsu::DriveControlsConfig::reverse_speed, nullptr, 2.0 / 3.0, "reverse-assist"},
     };
     for (const Unstated& u : unstated) {
@@ -471,6 +480,18 @@ void test_sources_and_remapping() {
     const double f = (half - 0.0) / (static_cast<double>(0.575F) - 0.0);
     const double expected = (1.0 - f) * 0.0 + f * static_cast<double>(0.437F);
     check(input.throttle == expected, "the retail curve's first segment: " + num(input.throttle));
+    // A second-segment point, past the y0 == 0 case where (1 - f) * y0 +
+    // f * y1 and the algebraically equal y0 + f * (y1 - y0) are bit-
+    // identical: at x = 0.78872 the two forms round differently (review
+    // note N3), so this pins the game's own form rather than the other one.
+    const double x0b = static_cast<double>(0.575F);
+    const double y0b = static_cast<double>(0.437F);
+    const double x1b = static_cast<double>(0.797F);
+    const double y1b = static_cast<double>(0.62F);
+    const double fb = (0.78872 - x0b) / (x1b - x0b);
+    const double expectedb = (1.0 - fb) * y0b + fb * y1b;
+    check(nfsu::drive_retail_throttle_curve(0.78872) == expectedb,
+          "the retail curve's second segment: " + num(nfsu::drive_retail_throttle_curve(0.78872)));
     check(nfsu::drive_retail_throttle_curve(0.0) == 0.0 &&
               nfsu::drive_retail_throttle_curve(1.0) == 1.0 &&
               nfsu::drive_retail_throttle_curve(static_cast<double>(0.95F)) ==
