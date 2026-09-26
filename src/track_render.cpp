@@ -62,7 +62,7 @@ void extend_bounds_from_raw_box(
 // The sine of the half-angle whose tangent is t, for t > 0, without a libm
 // transcendental: sin = t / sqrt(1 + t^2).
 double sine_of_half_angle(double t) noexcept {
-    return t / std::sqrt(1.0 + t * t);
+    return t / det_sqrt(1.0 + t * t);
 }
 
 } // namespace
@@ -227,7 +227,7 @@ bool frame_track_bounds(
         const double half = (bounds.max[k] - bounds.min[k]) * 0.5;
         radius_squared += half * half;
     }
-    const double radius = std::sqrt(radius_squared);
+    const double radius = det_sqrt(radius_squared);
     if (!finite_value(radius) || !finite_value(centre[0]) ||
         !finite_value(centre[1]) || !finite_value(centre[2])) {
         error = "the bounds are too large to frame";
@@ -395,12 +395,10 @@ bool render_track_draw_list(
     }
 
     Vec3 light{kLightX, kLightY, kLightZ};
-    // normalize() is file-local to src/render.cpp; the length is computed
-    // here rather than exported, because a second declaration of a two-line
-    // helper is a second thing to keep in step.
+    // Keep the lighting vector on the same square-root path as the camera.
     {
         const double length =
-            std::sqrt(light.x * light.x + light.y * light.y + light.z * light.z);
+            det_sqrt(light.x * light.x + light.y * light.y + light.z * light.z);
         if (length > 0.0) {
             light.x /= length;
             light.y /= length;
@@ -508,9 +506,9 @@ bool render_track_draw_list(
                           world[2].z - world[0].z};
             Vec3 normal{e0.y * e1.z - e0.z * e1.y, e0.z * e1.x - e0.x * e1.z,
                         e0.x * e1.y - e0.y * e1.x};
-            const double length = std::sqrt(normal.x * normal.x +
-                                            normal.y * normal.y +
-                                            normal.z * normal.z);
+            const double length = det_sqrt(normal.x * normal.x +
+                                           normal.y * normal.y +
+                                           normal.z * normal.z);
             const bool has_normal = length > 0.0 && finite_value(length);
             if (has_normal) {
                 normal.x /= length;

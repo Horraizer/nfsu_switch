@@ -454,73 +454,83 @@ in separate processes from each of two build directories, with the output
 deleted by exact name first and both sides required to have written a file
 and printed nothing on standard error.
 
-**Across optimisation levels there is one divergence, and it is in
-`src/render.cpp`, not in this layer.**
+**The measured views are now byte-identical across optimisation levels.**
 
 | View | Release (-O3) | Debug and the default (-O0) |
 | --- | --- | --- |
 | region, `material-group` | `D17D632B...` | same |
 | region, `visible-instance` | `D17D632B...` | same |
-| street-level (below) | `20CCC85C...` | `F691A28D...` |
+| street-level (below) | `20CCC85C...` | same |
 
 The third column covers two configurations, not one: an explicit
 `-DCMAKE_BUILD_TYPE=Debug` and the default with no build type, which
 carries no `-O` flag and so compiles at `-O0` as well. Both were measured.
 
-The street view's two frames differ in **61 pixels of 921600**, all of them
-in the two-column strip `x 656..657`, `y 299..401`, which is one
-near-vertical silhouette edge of a brick building seen almost edge-on.
-Every statistic of the two runs is identical - the same pixel tests, the
-same fragments, the same 471545 written, the same 365723 drawn and the same
-drawn bounds - so coverage and depth agree and only the sampled texel
-differs. The deltas run from 9 to 48, which is a neighbouring texel of a
-detailed texture rather than a rounding step.
+Before the square-root fix, the same street command exited 0 with empty
+standard error and wrote 3686418 bytes in each build, but gave these
+different SHA-256 values:
 
-Four things were measured, in this order:
+```text
+Debug   F691A28D96876C7F864FA04FF54E5FB265B6F2C3A33A2E2B00EE9E3704F771AC
+Release 20CCC85C62993298989CEDE3B3BFBBC0099F246573F2C3ED42BA9D0678B875A4
+```
 
-1. The fp flags are applied in both builds: `-O3 -ffp-contract=off
-   -fno-fast-math` and `-g -ffp-contract=off -fno-fast-math`, read out of
-   `ninja -t commands`.
-2. Adding `-ffp-contract=off -fno-fast-math` to `CMAKE_CXX_FLAGS` globally,
-   so that every translation unit carries them, changes nothing: the same
-   two hashes.
-3. Compiling **only `src/render.cpp` at `-O0`** inside an otherwise
-   `-O3` Release build reproduces the Debug hash exactly,
-   `F691A28D96876C7F864FA04FF54E5FB265B6F2C3A33A2E2B00EE9E3704F771AC`, and
-   compiling **only `src/track_render.cpp` at `-O0`** in the same build
-   changes nothing at all. The second half is the negative control, and it
-   is an independent reviewer's rather than this branch's: the divergence
-   is inside the translation unit this branch does not touch, and is not
-   inside the one it adds.
-4. The car path does not reproduce it. All five
-   [`RENDERER.md`](RENDERER.md) reference hashes are identical in Release
-   and in Debug, and so is a deliberately hostile car view - grazing angle,
-   `--near 0.0001 --far 90000`, `--fov 120`. An independent reviewer tried
-   five such views on `origin/main` across `-O0` and `-O3`, including a
-   distance of 900 at `--fov 1` and a target at `9000,0,0`, and every one
-   is byte-identical. That is the expected result rather than a gap:
-   `origin/main` has no path that renders geometry hundreds of units from
-   the origin, which is the whole point of the paragraph below.
+The files differed at 61 pixels, all in `x 656..657`, `y 299..401`.
+Coverage, depth and every reported statistic agreed. At pixel `(656,299)`,
+triangle 2602 has constant source U `0.0546875` at all three vertices and
+uses a 128-wide texture. Debug interpolated U as `0.0546875` (texel 7);
+Release interpolated `0.054687499999999993`, the adjacent lower double
+(texel 6). This is a texel selection change, not a colour rounding change.
 
-What separates the two scenes is magnitude. A car sits within a few units
-of the origin; this region's vertices are 436 to 865 units out, so
-`world - eye` in `project_point` cancels about nine bits before the
-perspective-correct interpolation in `Rasterizer::fill` divides by an
-interpolated `w` that spans three orders of magnitude across a grazing
-wall. That is the regime where two instruction schedules of the same
-expression can land on different texels.
+The first differing instruction is earlier, in `normalize` while building
+the pitch-6 camera. Both builds enter with the same forward vector and
+`dot(v,v) = 0.99999999999999989`, the binary64 value immediately below 1.
+At `-O0` and `-Os`, MinGW GCC 13.2 calls its `sqrt`, whose `fldl; fsqrt; fstpl`
+sequence rounds through x87 extended precision and returns `1` at this
+midpoint. At `-O2` and `-O3`, GCC emits `sqrtsd` and returns
+`0.99999999999999989` directly. Neither `-ffp-contract=off` nor
+`-fno-fast-math` prevents the compiler from choosing an out-of-line call
+at `-O0` and a hardware square root at `-O3`. The one-ulp camera basis
+change shifts projected `w`, and independent rounding in perspective
+interpolation puts that constant U on opposite sides of the texel boundary.
 
-**This is a pre-existing property of the reference rasterizer that a track
-scene is the first to reach, and it is not fixed here.** Fixing it means
-editing `src/render.cpp`, which is the one file this branch keeps untouched
-so that the car reference hashes hold by construction. It wants its own
-issue. [`RENDERER.md`](RENDERER.md)'s determinism section claims byte
-identity for repeated runs of one build and says identity across compilers
-has not been measured; that claim is still true, and this note is the first
-measurement that shows where it stops.
+The shared `det_sqrt` now uses `sqrtsd` on SSE2 x86 and `fsqrt` on Switch
+AArch64, and the renderer and track camera call it at every double-precision
+square-root site. The Debug and Release street frames both have the Release
+hash above. The five car hashes in [`RENDERER.md`](RENDERER.md), including the
+stock wheel frame `FD672733...` at that original fix, and the default region hash `D17D632B...`
+were rechecked unchanged in both builds, with fresh output files and
+unchanged retail-file manifests. The camera basis at pitch 6 is pinned by
+`nfsu_render_tests`.
 
-The default view - the one this note pins a hash for - is identical across
-both optimisation levels.
+The street command was also rerun in the default, Debug, Release,
+RelWithDebInfo and MinSizeRel builds after the shared helper was applied to
+track framing, lighting and normals. All five fresh 3686418-byte TGA files
+are byte-identical with SHA-256 `20CCC85C62993298989CEDE3B3BFBBC0099F246573F2C3ED42BA9D0678B875A4`.
+The retail-file manifest matched before and after every run. Both region
+orders still have SHA-256 `D17D632B1648B46C26852E91B71BC27CC69D25216C8056AD15FD87E049EA9FD2`
+in the default and Release builds.
+
+The framing square roots are pinned independently in
+`nfsu_track_render_tests`. Bounds from `(0,0,0)` to `(298,84,0)` at the
+default framing options give distance `540.55042310081103` and far plane
+`869.19594215089774`. Bounds from `(0,0,0)` to `(2,0,0)` at vertical fov
+`37.48` give distance `3.2682363941296151` and far plane
+`5.3352954926620191`. Replacing only the radius helper call with library
+`sqrt` fails the first pair; replacing only the half-angle call fails the
+second pair. Each test passes again after the helper is restored.
+
+The painted stock car command of `SWITCH_BUILD.md` with `--yaw 76` is also
+closed by the same fix. On main `8972f92`, Debug wrote SHA-256
+`0DC727BD8CA0B17B3A0290634698254095B88CCDEEBEF954A6373A1E30829A43`
+and Release wrote
+`DF5EC96B728FECF14DC3B5301F647C97B0252B153693AF0FD7F23B8F6E07406D`.
+With the square-root fix both builds write the latter hash. Every frame is
+3686418 bytes, and each run leaves the retail-file manifest unchanged.
+The merged issue #161 separately re-pinned the default stock wheel frame to
+`E7A042A5...` and the painted default frame to `52B9303A...`, as
+[`SWITCH_BUILD.md`](SWITCH_BUILD.md) records. Both current pins match in
+Debug and Release with and without the square-root fix on that main base.
 
 ## Statistics
 
@@ -847,7 +857,7 @@ build-release/nfsu_probe track-render X:/Games/NFSU/Tracks/STREAML1RB.BUN \
 
 Expected:
 
-1. Both `ctest` runs report 28 tests passed, 0 failed.
+1. Both `ctest` runs report `100% tests passed, 0 tests failed`.
 2. Both renders exit 0 and write nothing to standard error.
 3. The region view prints the scene, cull and draw-list lines
    [`TRACK_DRAW_LIST.md`](TRACK_DRAW_LIST.md) pins for this region,
@@ -869,12 +879,8 @@ Expected:
    facade and the tower above it. 365723 pixels drawn, drawn bounds
    `x 248..1156 y 0..719`, 3686418 bytes, SHA-256
    `20CCC85C62993298989CEDE3B3BFBBC0099F246573F2C3ED42BA9D0678B875A4`.
-   **This one is configuration-dependent**: a Release build gives that
-   hash, and the default configuration - which carries no `-O` flag, so
-   GCC compiles at `-O0` - and an explicit Debug build both give
-   `F691A28D96876C7F864FA04FF54E5FB265B6F2C3A33A2E2B00EE9E3704F771AC`.
-   That is why it has a Release recipe of its own; see "Determinism" for
-   the 61 pixels involved and where they come from.
+   Debug, Release and the default configuration now give the same hash.
+   See "Determinism" for the pre-fix 61-pixel difference and its cause.
 5. Running either twice in separate processes, from the same build
    directory, gives byte-identical output.
 6. Re-running with `--out` naming a file that exists is refused with

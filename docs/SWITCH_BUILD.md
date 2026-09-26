@@ -569,26 +569,27 @@ nfsu_viewer <Cars/240SX/GEOMETRY.BIN> <Cars/240SX/TEXTURES.BIN> left.tga
 
 Every other option is at its default, pitch 15 among them. It writes 3686418
 bytes and exits 0 with nothing on standard error. "Before" is `9974ff5`,
-"after" this change, each built Debug and Release:
+"after" issue #161, each built Debug and Release. The current column also
+includes the square-root determinism fix in issue #125:
 
-| Camera | Build | Before issue #161 | After |
+| Camera | Build | Before issue #161 | Current (after #161 and #125) |
 | --- | --- | --- | --- |
 | `--yaw -94`, the left side | Debug and Release | `FF2324A7851FFB5FC624C38FB6D5F063EA976868D36BE0A1921302EDC478A7C0` | `1E5FA0BE9F3B876BDA36A3F17B22A17371F54017FF72B285E75AA1E93CA7F897` |
-| `--yaw 76`, the right side | Debug | `0DC727BD8CA0B17B3A0290634698254095B88CCDEEBEF954A6373A1E30829A43` | the same |
-| `--yaw 76`, the right side | Release | `DF5EC96B728FECF14DC3B5301F647C97B0252B153693AF0FD7F23B8F6E07406D` | the same |
+| `--yaw 76`, the right side | default and Debug | `0DC727BD8CA0B17B3A0290634698254095B88CCDEEBEF954A6373A1E30829A43` | `DF5EC96B728FECF14DC3B5301F647C97B0252B153693AF0FD7F23B8F6E07406D` |
+| `--yaw 76`, the right side | Release | `DF5EC96B728FECF14DC3B5301F647C97B0252B153693AF0FD7F23B8F6E07406D` | `DF5EC96B728FECF14DC3B5301F647C97B0252B153693AF0FD7F23B8F6E07406D` |
 
 The application's own calls - `prepare_stock_frame` and
 `render_stock_frame` from `nfsu_stock_frame`, run from a scratch program
 that is not tracked - give the same hashes as the viewer of the same build,
 checked for both builds of this change and the Debug build of `9974ff5`.
 
-The two builds disagree at `--yaw 76`, before this change as after it, and
-this change does not touch it: 271 pixels near the two right wheels are
-drawn by the same triangles of the body's material group 2 in both builds,
-blue in one and black in the other, with every report line equal. That is a
-difference in how the two builds texture those pixels, outside issue #161.
-At the default camera, the only one the console compares, the two builds
-agree, and they agree at `--yaw -94`.
+Before issue #125, Debug and Release disagreed at `--yaw 76`: 271 pixels
+near the two right wheels were blue in one and black in the other, with
+every report line equal. Issue #125 closes that divergence with the shared
+correctly-rounded square-root helper. The current `DF5EC96B...` pin above
+was reproduced twice in separate processes in each of default, Debug and
+Release; all three are byte-identical. The default camera and `--yaw -94`
+pins are unchanged. This is desktop evidence; it adds no console validation.
 
 **The cause.** The stand-in placed all four wheel copies, and all four
 brake copies, as pure translations to the culling placements, determinant

@@ -24,6 +24,9 @@ struct Vec3 {
 // and IEEE basic operations only, so results do not depend on the C library.
 double det_sin_deg(double degrees) noexcept;
 double det_cos_deg(double degrees) noexcept;
+// One rounding to binary64 on the supported x86 and AArch64 render targets.
+// MinGW's out-of-line sqrt can round twice through x87 extended precision.
+double det_sqrt(double value) noexcept;
 
 // Orbit camera in the Y-up world frame world = (px, py, -pz):
 //   eye = target + distance * (cos(pitch) cos(yaw), sin(pitch),
