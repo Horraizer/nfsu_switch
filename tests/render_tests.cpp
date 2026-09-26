@@ -382,6 +382,18 @@ void test_camera() {
     const nfsu::ClipVertex mirrored = nfsu::project_point(frame, {1.0, 0.0, 0.0});
     check(mirrored.x < 0.0 && mirrored.x == -front.x,
           "yaw -90 is the mirror view of yaw 90");
+
+    // At pitch 6, forward dot forward is the double immediately below 1.
+    // MinGW's x87 sqrt rounds it through extended precision to 1, while
+    // SSE2 rounds directly to that lower double. Pin the camera basis that
+    // keeps the street-view texture coordinate on the same side of a texel.
+    camera.yaw_deg = 0.0;
+    camera.pitch_deg = 6.0;
+    check(nfsu::make_camera_frame(camera, 1280, 720, frame, error),
+          "pitch 6 camera frame");
+    check(frame.forward.x == -0.9945218953682734 &&
+              frame.forward.y == -0.10452846326765348,
+          "pitch 6 camera basis uses single-rounded sqrt");
 }
 
 void test_projection() {
