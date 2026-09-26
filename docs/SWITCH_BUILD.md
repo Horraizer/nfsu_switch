@@ -87,8 +87,16 @@ any of them.
 
 ## Prerequisites
 
-- Host Python 3.8 or newer for the checked offline derivative-constant
-  correction and its tests ([SHADER_DERIVATIVES.md](SHADER_DERIVATIVES.md)).
+- Host Python 3.8 or newer, found by CMake's `FindPython3`, for the checked
+  offline derivative-constant correction and its tests
+  ([SHADER_DERIVATIVES.md](SHADER_DERIVATIVES.md)). Both desktop and Switch
+  builds require it while `NFSU_BUILD_TESTS` is `ON`, the default. The Switch
+  build also requires it with tests disabled, for the shader correction.
+  In MSYS2's shell CMake searches MSYS2's `PATH`, which by default contains
+  no Windows Python. Install MSYS2's own interpreter with `pacman -S python`,
+  or name an existing Windows interpreter on the configure line with
+  `-DPython3_EXECUTABLE=/c/<path>/python.exe` (quote the argument when its
+  path contains spaces).
 
 - CMake 3.21 or newer for the Switch build (the desktop build still needs
   only 3.20), and a generator. The commands below use Ninja.
@@ -117,10 +125,11 @@ sudo dkp-pacman -S switch-dev
 On Windows, devkitPro installs through its own installer into an MSYS2
 environment, and its CMake files refuse a native Windows CMake: the Switch
 build is configured from devkitPro's MSYS2 shell with the CMake installed
-there (`pacman -S cmake`). That route was not run for this branch. Issue
-#141 later ran it: the Switch tree was configured, built and tested from
-MSYS2's `bash -l` with devkitA64 r30 (`aarch64-none-elf-gcc` 16.1.0) and
-libnx 4.12.0, as "The stock car on the console" below shows.
+there (`pacman -S cmake`) and a Python it can find (see Prerequisites).
+Issue #141 exercised this Windows route: the Switch tree was configured,
+built and tested from MSYS2's `bash -l` with devkitA64 r30
+(`aarch64-none-elf-gcc` 16.1.0) and libnx 4.12.0, as "The stock car on the
+console" below shows.
 
 ### How the SDK used for this branch's evidence was installed
 
@@ -191,6 +200,20 @@ The Switch build, in a build directory of its own:
 ```text
 export DEVKITPRO=/opt/devkitpro
 cmake -S . -B build-switch -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/switch-toolchain.cmake -DCMAKE_BUILD_TYPE=Release
+cmake --build build-switch
+ctest --test-dir build-switch --output-on-failure
+```
+
+Alternatively, in MSYS2's `bash -l`, use an existing Windows Python instead
+of installing the MSYS2 `python` package. Replace `/c/<path>/python.exe`
+with its MSYS2 path; keep the quotes if the path contains spaces:
+
+```text
+export DEVKITPRO=/opt/devkitpro
+cmake -S . -B build-switch -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE=cmake/switch-toolchain.cmake \
+  -DCMAKE_BUILD_TYPE=Release \
+  "-DPython3_EXECUTABLE=/c/<path>/python.exe"
 cmake --build build-switch
 ctest --test-dir build-switch --output-on-failure
 ```
