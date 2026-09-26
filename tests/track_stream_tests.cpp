@@ -690,6 +690,162 @@ Fixture make_fixture() {
     return fixture;
 }
 
+// ---------------------------------------------------------------------------
+// A second, minimal fixture for the F4 share guarantee (review comment 3689
+// on issue #157, mutants 53, 54 and 56 of that review's sweep): two sections
+// that carry their own texture pack for the SAME hash, so the candidate
+// scene's real decode shadows one of them while an isolated, decode-alone
+// share must still charge each one the full cost. It is unrelated to
+// make_fixture(), on purpose: touching that shared fixture would re-pin
+// every hash in tests/track_stream_path_guards.cmake for a gap this issue
+// calls non-blocking.
+//
+//   record 0  'SA'  number 2500  pack (SHARE) + a mesh naming it    fixed
+//   record 1  'SB'  number    1  pack (SHARE) + a mesh naming it too  track byte
+//
+// SA is one of the four fixed numbers, so it is requested, and its pack
+// decoded, before SB's track-flagged request. In the real candidate scene
+// SB's claim on SHARE is shadowed by SA's and retains nothing; a section's
+// prepared share is supposed to be an upper bound on what it could add on
+// its own, so SB's share must still be the full texture even though the
+// full-candidate build charges it nothing.
+// ---------------------------------------------------------------------------
+
+constexpr std::uint32_t kShareTexture = 0xBBBB0001U;
+constexpr std::uint32_t kShareMesh = 0x6001U;
+constexpr std::uint32_t kShareMeshB = 0x6002U;
+// 32x32 A8R8G8B8: 4096 retained bytes, well past the retail placement slack
+// (0x400) and block header (0x58) that a tiny 2x2 texture would be lost
+// under: place_pass never admits anything within about 1112 bytes of the
+// budget, so a texture has to be bigger than that margin before an
+// undercounted share (mutant 56) can admit something whose real bytes then
+// read back over the same budget.
+constexpr std::uint32_t kShareTextureSide = 32;
+
+// A one-texture pack of a chosen side length, otherwise laid out exactly as
+// write_pack() lays out its fixed 2x2 textures.
+void write_sized_pack(Writer& w, std::uint32_t hash, std::uint32_t side,
+                      unsigned char fill) {
+    w.begin(nfsu::kTexturePackRootId);
+    w.begin(nfsu::kTextureInfoContainerId);
+
+    const std::string path = "Location1\\Share.tpk";
+    Bytes header(nfsu::kTexturePackHeaderSize, 0);
+    put_u32(header, 0, 4);
+    std::memcpy(&header[4], "TRACK", 5);
+    std::memcpy(&header[32], path.data(), path.size());
+    put_u32(header, 96, nfsu::bin_hash(path));
+    w.leaf(nfsu::kTexturePackHeaderId, header);
+
+    Bytes hash_table;
+    append_u32(hash_table, hash);
+    append_u32(hash_table, 0);
+    w.leaf(nfsu::kTextureHashTableId, hash_table);
+
+    const std::uint32_t bytes = side * side * 4U;
+    Bytes info_table(nfsu::kTextureInfoRecordSize, 0);
+    std::memcpy(&info_table[nfsu::kTextureNameOffset], "T0", 2);
+    put_u32(info_table, 36, hash);
+    put_u32(info_table, 48, 0);
+    put_u32(info_table, 56, bytes);
+    put_u32(info_table, 64, bytes);
+    put_u16(info_table, 68, static_cast<std::uint16_t>(side));
+    put_u16(info_table, 70, static_cast<std::uint16_t>(side));
+    // check_dimensions (src/texture.cpp) requires 1 << log2 == side.
+    unsigned char side_log2 = 0;
+    while ((1U << side_log2) < side) {
+        ++side_log2;
+    }
+    info_table[72] = side_log2;
+    info_table[73] = side_log2;
+    info_table[74] = 0x20;  // A8R8G8B8
+    info_table[78] = 1;     // one level
+    w.leaf(nfsu::kTextureInfoTableId, info_table);
+
+    Bytes format_table(nfsu::kTextureFormatRecordSize, 0);
+    put_u32(format_table, 20, 21);  // D3DFMT_A8R8G8B8
+    w.leaf(nfsu::kTextureFormatTableId, format_table);
+    w.end();  // info container
+
+    w.begin(nfsu::kTextureDataContainerId);
+    Bytes data_header(24, 0);
+    put_u32(data_header, 8, 1);
+    put_u32(data_header, 12, nfsu::bin_hash(path));
+    w.leaf(nfsu::kTextureDataHeaderId, data_header);
+    w.begin(nfsu::kTextureDataId);
+    while (w.at() % nfsu::kTextureDataAlignment != 0) {
+        w.bytes().push_back(0x11);
+    }
+    w.append_bytes(Bytes(bytes, fill));
+    w.end();  // data chunk
+    w.end();  // data container
+    w.end();  // root
+}
+
+Bytes shares_section_bytes(std::uint64_t offset, int kind) {
+    Writer w(offset);
+    switch (kind) {
+        case 1:  // SA: the pack plus a mesh that wants it
+            write_sized_pack(w, kShareTexture, kShareTextureSide, 0x41);
+            write_geometry(w, {mesh("SHAREA", kShareMesh, kShareTexture, 3, 1)});
+            break;
+        case 2:
+            // SB: the pack plus its own mesh naming it too. Whichever
+            // resident set is actually built recomputes "wanted" from only
+            // that set's own geometry (main.cpp's build_stream_path_scene),
+            // unlike the once-off "shares" pass, which reads it from the
+            // whole candidate; SB needs its own claim so that a resident set
+            // holding SB alone still decodes SHARE for real.
+            write_sized_pack(w, kShareTexture, kShareTextureSide, 0x42);
+            write_geometry(w, {mesh("SHAREB", kShareMeshB, kShareTexture, 3, 1)});
+            break;
+        default:
+            break;
+    }
+    w.leaf(0x00000000U, Bytes(8, 0));
+    return w.bytes();
+}
+
+Fixture make_shares_fixture() {
+    Fixture fixture;
+    const char* names[] = {"SA", "SB"};
+    const std::int16_t numbers[] = {2500, 1};
+    for (int k = 0; k < 2; ++k) {
+        SectionSpec spec;
+        spec.name = names[k];
+        spec.number = numbers[k];
+        spec.track_flag = k == 1 ? 1 : 0;
+        const std::uint64_t offset = fixture.stream.size();
+        spec.offset = static_cast<std::uint32_t>(offset);
+        spec.bytes = shares_section_bytes(offset, k + 1);
+        spec.resident = static_cast<std::uint32_t>(spec.bytes.size());
+        fixture.stream.insert(fixture.stream.end(), spec.bytes.begin(), spec.bytes.end());
+        while (fixture.stream.size() % kSectionStep != 0) {
+            fixture.stream.push_back(0xEEU);
+        }
+        fixture.sections.push_back(spec);
+    }
+
+    Bytes table;
+    for (const SectionSpec& spec : fixture.sections) {
+        append(table, stream_record(spec));
+    }
+    Bytes sizes;
+    append_u32(sizes, 64);
+    append_u32(sizes, static_cast<std::uint32_t>(fixture.stream.size()));
+    append_u32(sizes, 0);
+
+    Bytes& trackb = fixture.trackb;
+    append(trackb, chunk(0x00000000U, Bytes(24, 0)));
+    append(trackb, chunk(kTableChunk, table));
+    append(trackb, chunk(kSizesChunk, sizes));
+    // The zone container is unrelated to SA and SB (fixed and track-flag
+    // records need no zone at all); make_fixture()'s own container is a
+    // proven-valid one, reused as inert filler so parse_track_zones succeeds.
+    append(trackb, zone_container());
+    return fixture;
+}
+
 nfsu::TrackStreamTable parse_table(const Bytes& image) {
     return nfsu::parse_track_stream_table(image.data(), image.size());
 }
@@ -1763,15 +1919,39 @@ bool write_fixture(const std::vector<std::string>& paths) {
     return ok;
 }
 
+// --write-shares-fixture <trackb> <stream>: lays the minimal F4 share
+// fixture (make_shares_fixture, above) down for the new cases in
+// tests/track_stream_path_guards.cmake. Never replaces a file.
+bool write_shares_fixture(const std::vector<std::string>& paths) {
+    for (const std::string& path : paths) {
+        std::error_code code;
+        if (fs::exists(path, code)) {
+            std::cerr << "error: --write-shares-fixture " << path
+                      << " already exists; this command never replaces a file\n";
+            return false;
+        }
+    }
+    const Fixture fixture = make_shares_fixture();
+    const bool ok =
+        write_file(paths[0], fixture.trackb) && write_file(paths[1], fixture.stream);
+    if (!ok) {
+        std::cerr << "failed to write the shares fixture\n";
+    }
+    return ok;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     if (argc == 5 && std::string(argv[1]) == "--write-fixture") {
         return write_fixture({argv[2], argv[3], argv[4]}) ? 0 : 1;
     }
+    if (argc == 4 && std::string(argv[1]) == "--write-shares-fixture") {
+        return write_shares_fixture({argv[2], argv[3]}) ? 0 : 1;
+    }
     if (argc != 1) {
         std::cerr << "usage: nfsu_track_stream_tests [--write-fixture <trackb> <stream> "
-                     "<texture>]\n";
+                     "<texture>] [--write-shares-fixture <trackb> <stream>]\n";
         return 1;
     }
     test_constants();

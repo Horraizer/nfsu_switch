@@ -1026,15 +1026,23 @@ that are not degenerate among the polygons the selected cells name:
   the corners moved to the segment's start, five 3x3 determinants decide
   it: `u`, `v` and `w`, which side of each edge the segment's line passes,
   and the side of the triangle's plane each endpoint lies on. Each is taken
-  with a bound on its own rounding - 16 units in the last place of double
-  times the sum of its six terms' magnitudes, twice what the eight roundings
-  on the way to any term can reach - and a sign that rounding could hide
-  counts as zero, which rejects nothing. So every closed triangle the exact
-  segment meets is met: on a seam, on a polygon's outer edge, at a corner,
-  at either end of the segment. The one exception is a segment within that
-  rounding of parallel to the triangle's plane, which is edge-on and never a
-  contact, as a segment lying in the plane is not. Nothing depends on which
-  triangle a corner belongs to, so a shared edge is met from both sides.
+  with a bound on its own rounding - 16u, with u the unit roundoff (2^-53,
+  so 16u is 8 ulp of 1.0), times the sum of its six terms' magnitudes,
+  twice what the eight roundings on the way to any term can reach - and a
+  sign that rounding could hide counts as zero, which rejects nothing. So
+  every closed triangle the exact segment meets is met: on a seam, on a
+  polygon's outer edge, at a corner, at either end of the segment. The one
+  exception is a segment within that rounding of parallel to the
+  triangle's plane, which is edge-on and never a contact, as a segment
+  lying in the plane is not - the angle that counts as parallel is not a
+  fixed tolerance: it scales with the square of D, the corners' distance
+  from the segment's start (not the sweep's own length - a short sweep can
+  still meet a long wall whose corners are far away), at most about
+  2.2e-11 * D^2 rad on retail geometry, since nonzero normals are at least
+  1/2048 long on the format's grid. So it is at most about 2e-9 rad when
+  the corners are 10 units from the start, and at most about 4e-4 rad at
+  D = 4096, the `max_length` cap (#60). Nothing depends on which triangle a
+  corner belongs to, so a shared edge is met from both sides.
 
 Issue #39's answer stands unless the conservative test meets a triangle
 whose crossing is nearer, for certain and by more than 2^-23 of the

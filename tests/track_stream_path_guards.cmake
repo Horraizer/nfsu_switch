@@ -350,6 +350,69 @@ if(NOT alias_before STREQUAL alias_after)
     nfsu_fail("the refused run changed the path file")
 endif()
 
+# ---------------------------------------------------------------------------
+# The F4 share guarantee (review comment 3689 on issue #157): a section's
+# prepared share must be an upper bound on what it could add to any resident
+# set on its own, decoded as if that section were the only one loaded. The
+# fixture above cannot exercise this: only Y0 carries a texture pack, so
+# nothing is ever shadowed. This second, minimal fixture (write-shares-
+# fixture) gives two sections, SA (2500, fixed) and SB (a track-flagged
+# record), each with its own pack for the same texture hash and its own mesh
+# naming it. SA is requested first, so the real candidate scene decodes the
+# texture through SA and SB's claim is shadowed; a correct share still
+# charges SB the texture's full bytes, decoded alone. Mutants 53, 54 and 56
+# of that review's sweep have no ctest: no case here ever produces a real
+# MEASURED OVER line, because a section's share is always a safe upper
+# bound. This is a separate, purpose-built fixture rather than a change to
+# make_fixture() above: giving any of its zone-reachable sections a second
+# texture pack would change its own byte size, which is also the "table"
+# currency's per-record cost, and would re-pin every hash and byte count in
+# every case above for a gap the issue calls non-blocking.
+# ---------------------------------------------------------------------------
+
+set(shares_trackb "${work}/shares_trackb.lzc")
+set(shares_stream "${work}/shares_stream.bun")
+execute_process(
+    COMMAND "${TESTS}" --write-shares-fixture "${shares_trackb}" "${shares_stream}"
+    OUTPUT_VARIABLE shares_fixture_text
+    ERROR_VARIABLE shares_fixture_error
+    RESULT_VARIABLE shares_fixture_status)
+if(NOT shares_fixture_status EQUAL 0 OR NOT EXISTS "${shares_trackb}" OR
+   NOT EXISTS "${shares_stream}")
+    message(FATAL_ERROR
+        "the shares fixture could not be written: ${shares_fixture_status}\n"
+        "${shares_fixture_text}${shares_fixture_error}")
+endif()
+set(shares_path "${work}/shares_path.txt")
+file(WRITE "${shares_path}" "0 0 0\n1 0 0\n")
+set(shares_run "${shares_stream}" "${shares_trackb}" 1003 --path "${shares_path}"
+    --speed 60 --cost prepared)
+
+# At this budget SA (its own 4096-byte texture plus a 78-byte mesh, share
+# 4174) never fits the retail placement slack (0x400) and block header
+# (0x58), so it is never resident, and neither does SB decode-alone (share
+# 4174 too, the same texture and an equally sized mesh): a correct share
+# never lets a resident set's real bytes pass the budget. SB's share
+# undercounted by mutant 56 (78, the mesh alone, the texture credited only
+# to SA in the once-off candidate scene) fits easily, admits SB alone, and
+# SB then decodes the texture for real (nothing shadows it when SA is not
+# resident): 4174 real bytes against a budget of 2000.
+nfsu_case("the shares fixture: a correct share never over-admits" 0
+          "cost: shares 8348 texture files 0 candidate scene measured 4252;measured: every step against the budget 2000: largest 0, steps over 0"
+          "MEASURED OVER" ${shares_run} --budget 2000 --list events)
+
+# Mutant 54 (measured-over made inclusive, > to >=; review comment 3802 on
+# issue #173, F2): the argument above (place_pass never admits anything
+# within the retail placement slack and block header of the budget) only
+# covers a NON-EMPTY resident set. At budget 0 nothing is ever admitted -
+# every step's resident set is empty, measuring 0 bytes - and the correct
+# comparison 0 > 0 is false, so no case above exercises the boundary at 0.
+# Mutant 54's 0 >= 0 is true, and reports "MEASURED OVER the budget by 0"
+# on every step of the empty resident set.
+nfsu_case("the shares fixture: a zero budget measures zero, not over" 0
+          "budget: given 0 streamer 0;measured: every step against the budget 0: largest 0, steps over 0"
+          "MEASURED OVER" ${shares_run} --budget 0 --list events)
+
 message(STATUS "track-stream-path guards: ${cases} cases, ${failures} failed")
 if(failures GREATER 0)
     message(FATAL_ERROR "${failures} of ${cases} track-stream-path cases failed")

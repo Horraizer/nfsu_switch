@@ -224,7 +224,7 @@ next to it sums the list instead). 0x00444EE0 runs that pass and, while it
 reports an unplaced sum, loops:
 
 ```text
-00444F00  cmp  ebp, 0x9c3c00                 ; released more than 10240000
+00444F00  cmp  ebp, 0x9c3c00                 ; released more than 10238976
 00444F06  jg   0x444f42                      ;   bytes this call: give the
 00444F42  xor  al, al                        ;   frame up
 00444F11  call 0x444e90                      ; free what the pass placed
@@ -236,10 +236,13 @@ reports an unplaced sum, loops:
 ```
 
 The limit test at 0x00444F00 comes before each release, not after it: a
-call that has released anything up to 0x9C3C00 bytes goes on to release one
-more record whatever its size, so one call can release 0x9C3C00 bytes plus
-its largest record - a 19561872-byte `Y0` released at 10239999 bytes makes
-29801871 in one call - and the next test gives the frame up.
+call that has released anything up to 0x9C3C00 (10238976) bytes goes on to
+release one more record whatever its size, so one call can release
+10238976 bytes plus its largest record - not `Y0`, which is one of the
+four fixed numbers and so is always requested and never released, but on
+1003 the largest record that is ever released, `401` at 1730080 bytes,
+released at 10238976 bytes makes 11969056 in one call - and the next test
+gives the frame up.
 
 0x00444780 walks the table and releases the record in state 3 whose `+0xB`
 is 0 - loaded and named by no current request - with the smallest `+0x24`
