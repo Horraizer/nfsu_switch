@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <memory>
 #include <vector>
 
 namespace nfsu {
@@ -292,6 +293,22 @@ struct TrackResidencyRun {
     std::uint64_t route_query_samples = 0;
     // Per record, after the last step.
     std::vector<std::uint8_t> resident;
+};
+
+// Incremental equivalent of simulate_track_residency, for a live car.
+// Borrowed table/zones/costs/options must outlive this non-copyable session.
+// start returns the startup transitions; advance returns one path transition.
+class TrackResidencySession {
+public:
+    TrackResidencySession();
+    ~TrackResidencySession();
+    bool start(const TrackStreamTable&, const TrackZoneReport&, std::uint32_t,
+               const std::vector<TrackResidencyCost>&, const TrackResidencyOptions&,
+               std::vector<TrackResidencyStep>& startup, std::string& error);
+    bool advance(const TrackResidencySample&, TrackResidencyStep&, std::string& error);
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 // Runs the streamer: first the start steps - no live slot, a rebuild forced

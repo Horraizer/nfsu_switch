@@ -12,6 +12,10 @@ inspector. It validates the expected game layout and walks NFS chunk containers
 without loading whole asset files into memory. `nfsu_viewer` renders a decoded
 car to a screenshot with a portable CPU reference renderer, and with
 `--interactive` opens a desktop window on the same scene for inspection.
+`nfsu_race` integrates a full two-lap event 1 with collision, streaming,
+controls, chase camera and lap timing. It replays a checked-in scripted
+controller recording or opens a live keyboard window on Windows; see
+[`docs/DESKTOP_RACE.md`](docs/DESKTOP_RACE.md) for commands and deterministic pins.
 
 ## Build
 
