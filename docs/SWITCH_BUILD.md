@@ -27,6 +27,8 @@ platforms. They do not change either application's rendering path. See
 | `nfsu_switch_app_nro` | `nfsu_switch_app.nro`, `nfsu_switch_app.nacp` | That ELF packaged by `elf2nro` with the libnx default icon and a NACP titled `nfsu_switch`. |
 | `nfsu_switch_car` | `nfsu_switch_car.elf` | The stock 240SX: it reads six game files from the SD card, builds the stock scene, composes and binds the body skin, renders it at 1280x720 with the CPU reference renderer, shows it through a libnx framebuffer and reports the render time and the frame's SHA-256 against the pinned desktop frame; then the left stick orbits the camera, - returns it to the default and + exits. |
 | `nfsu_switch_car_nro` | `nfsu_switch_car.nro`, `nfsu_switch_car.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_car`. |
+| `nfsu_switch_assets` | `nfsu_switch_assets.elf` | The asset check of issue #47: it reads the config file `sdmc:/config/nfsu_switch/assets.cfg` if there is one, checks that the SD card holds the 12 retail files the first lap needs - by name, size and SHA-256 - and shows the report and the files still to copy on screen; + exits. [`SWITCH_ASSETS.md`](SWITCH_ASSETS.md). |
+| `nfsu_switch_assets_nro` | `nfsu_switch_assets.nro`, `nfsu_switch_assets.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_assets`. |
 | `nfsu_switch_shaders` | `shaders/*.dksh`, `shaders/*.tgsi` | Every GLSL stage a manifest in `shaders/` names, compiled by `uam`, and each manifest checked against the result. |
 
 Under `build-switch/` itself, the configure also builds the car-path
@@ -35,7 +37,10 @@ libraries `nfsu_switch_car` links: `nfsu_image`, `nfsu_core`,
 `nfsu_texture_decode`, `nfsu_render`, `nfsu_sha256`, `nfsu_stock_frame`,
 `nfsu_screen_text`, the skin layers `nfsu_body_skin`, `nfsu_skin_inputs`
 and `nfsu_runtime_skin`, the camera and controller layers `nfsu_inspect`,
-`nfsu_input` and `nfsu_input_camera`, and `nfsu_stock_view`.
+`nfsu_input` and `nfsu_input_camera`, and `nfsu_stock_view`; and, for
+`nfsu_switch_assets`, the asset manifest and check `nfsu_assets` and the
+console's filesystem service `nfsu_posix_file_system`
+(`cmake/asset_libraries.cmake`).
 
 `nfsu_switch_app` links libnx, which devkitPro's platform file adds to every
 link, and nothing else. Neither application loads a shader. The CTest suite
@@ -47,6 +52,7 @@ runs on the build machine, not on a console:
 | `nfsu_switch_shader_blob_guards` | The same check made to fail: eleven cases, nine changed stage sources compiled with `uam` and two blobs checked with the TGSI of another compile, each named by its finding. |
 | `nfsu_switch_nro` | The ELF is AArch64; the NRO has its `NRO0` header, an `ASET` section, the icon and a 0x4000-byte NACP titled `nfsu_switch`; the reader refuses a file that is not an NRO. |
 | `nfsu_switch_car_nro` | The same checks for `nfsu_switch_car.nro`, whose NACP is titled `nfsu_switch_car`. |
+| `nfsu_switch_assets_nro` | The same checks for `nfsu_switch_assets.nro`, whose NACP is titled `nfsu_switch_assets`. |
 
 The desktop programs, the other libraries and every test are not configured
 for the console: the top-level `CMakeLists.txt` includes
@@ -277,8 +283,13 @@ Two frames are pinned, both from the viewer on the retail files, read-only:
 
 | Frame | Viewer options added to the stock command of [`RENDERER.md`](RENDERER.md) | TGA bytes | SHA-256 |
 | --- | --- | ---: | --- |
-| painted, the default (issue #148) | `--skin-car 240SX --skin-doorline plain --skin-base 30 60 160 128` | 3686418 | `FE51E57AF3AC52E53B026E02E13ADF020A1B6B33B62102010E9132455D8FF9B2` |
-| unpainted, `--unpainted` (issue #141) | none | 3686418 | `FD6727333A94803A97FD26282CD89DF6F3D3295E0231F4A871A1B14089D28CE9` |
+| painted, the default (issue #148) | `--skin-car 240SX --skin-doorline plain --skin-base 30 60 160 128` | 3686418 | `52B9303A822F82242717B3A2F363BE6584E4A24B533B69B6AA78EED6DFBED994` |
+| unpainted, `--unpainted` (issue #141) | none | 3686418 | `E7A042A560E807EE74595449275FFBDC1AE0A0BF321CE06EEF434BC5B1C8274A` |
+
+Issue #161 re-pinned both, because both showed the defect it fixed: two
+pixels of the front-left wheel's backing quad above the far fender. They
+were `FE51E57A...` painted and `FD672733...` unpainted; "The left side of
+the car (issue #161)" below has the reason and the evidence.
 
 The painted pin was produced with this command, from a Debug and from a
 Release build, both writing the same file and the same report:
@@ -296,7 +307,7 @@ layer - the plain doorline, `240SX_DOORLINE` and `240SX_DOORLINE_MASK` from
 the car's own `TEXTURES.BIN` - composed into `DUMMY_SKIN1` from
 `Cars/TEXTURES.BIN` and bound under `0x530B82B0` (`DUMMY_SKIN1`) and
 `0x77A20245` (`240SX_SKIN1`), displacing nothing. Against the unpainted frame
-the geometry is the same - 24 meshes, 30 instances, 6137 triangles, 116748
+the geometry is the same - 24 meshes, 30 instances, 6137 triangles, 116746
 pixels drawn - and the body's groups now resolve: 52 of 79 material groups
 instead of 20, 5904 textured triangles instead of 2610, and 33795 fallback
 pixels instead of 103808. The body is blue with its door lines; the windows
@@ -317,11 +328,13 @@ in `include/nfsu/stock_frame.h` records it:
   [`RENDERER.md`](RENDERER.md) already renders the retail skin with.
 
 The #141 frame was reported `EQUAL` on the owner's console in the review of
-pull request #143. Nothing that issue #148 added has been run on a console or
-an emulator: the branch built the NRO and checked it as a file, and ran
-everything else on the desktop. What the screen shows, how the stick feels,
-what nxlink delivers and how long the console takes are what the code says,
-not something observed.
+pull request #143, against the pin of that time. Nothing that issue #148
+added had been run on a console or an emulator when it merged: the branch
+built the NRO and checked it as a file, and ran everything else on the
+desktop. What the screen shows, how the stick feels, what nxlink delivers
+and how long the console takes are what the code says, not something
+observed. The one console observation since is the owner's, orbiting the
+painted car of pull request #160, which is how issue #161 was found.
 
 ### The six inputs
 
@@ -416,7 +429,7 @@ Left stick orbits, - resets the camera, + exits.
 ```
 
 or `result: DIFFERENT from the pinned desktop frame, 3686418 bytes, sha256
-FE51...` in its place. The first four lines are issue #141's, with
+52B9...` in its place. The first four lines are issue #141's, with
 `painted` or `unpainted` in the first; the last two are replaced every frame.
 Once the stick has moved the camera, the `tga_bytes` and `result:` lines
 give way to `the hash is compared only at the default camera; - returns to
@@ -511,9 +524,9 @@ targets do. Recompiling `src/part_placement.cpp` with the exact
 shows the fix at the instruction level: the seven fused instructions above
 with the flags as they were, zero `fmadd`/`fmsub`/`fnmadd`/`fnmsub`/`fmla`/
 `fmls` with `-ffp-contract=off -fno-fast-math` added. The pinned stock-car
-frame (`FD672733...`) was re-checked after the pin and is unchanged, on the
-desktop; nothing here has run on a console, so whether it was ever at risk on
-one stays unobserved rather than closed.
+frame (`FD672733...`, since re-pinned by issue #161) was re-checked after
+the pin and is unchanged, on the desktop; nothing here has run on a console,
+so whether it was ever at risk on one stays unobserved rather than closed.
 
 Issue #148 added the skin layers, the camera, `nfsu_stock_view` and the
 orbit loop to the console build. A census of every object in the Switch
@@ -524,14 +537,120 @@ owner's console before the pin. If the console reports the painted frame
 `DIFFERENT` while `--unpainted` is `EQUAL`, the skin layers are the place to
 look first.
 
+### The left side of the car (issue #161)
+
+Orbiting the painted car of issue #148 on the console, the owner saw the two
+wheels on the car's left, at a yaw of about -94, drawn as flat dark squares,
+while the right side, at about +76, looked right. The console runs the same
+CPU reference code as the desktop, so the desktop viewer reproduces it with
+the orbit option added to the painted command above:
+
+```text
+nfsu_viewer <Cars/240SX/GEOMETRY.BIN> <Cars/240SX/TEXTURES.BIN> left.tga
+    --shared-textures <Global/GLOBALB.BUN> --shared-textures <Cars/TEXTURES.BIN>
+    --stock-car 240SX --stock-parts <Global/GLOBALB.BUN>
+    --stock-geometry <Cars/BRAKES/GEOMETRY.BIN> --stock-geometry <Cars/PLATES/GEOMETRY.BIN>
+    --place-wheels --skin-car 240SX --skin-doorline plain --skin-base 30 60 160 128
+    --yaw -94
+```
+
+Every other option is at its default, pitch 15 among them. It writes 3686418
+bytes and exits 0 with nothing on standard error. "Before" is `9974ff5`,
+"after" this change, each built Debug and Release:
+
+| Camera | Build | Before issue #161 | After |
+| --- | --- | --- | --- |
+| `--yaw -94`, the left side | Debug and Release | `FF2324A7851FFB5FC624C38FB6D5F063EA976868D36BE0A1921302EDC478A7C0` | `1E5FA0BE9F3B876BDA36A3F17B22A17371F54017FF72B285E75AA1E93CA7F897` |
+| `--yaw 76`, the right side | Debug | `0DC727BD8CA0B17B3A0290634698254095B88CCDEEBEF954A6373A1E30829A43` | the same |
+| `--yaw 76`, the right side | Release | `DF5EC96B728FECF14DC3B5301F647C97B0252B153693AF0FD7F23B8F6E07406D` | the same |
+
+The application's own calls - `prepare_stock_frame` and
+`render_stock_frame` from `nfsu_stock_frame`, run from a scratch program
+that is not tracked - give the same hashes as the viewer of the same build,
+checked for both builds of this change and the Debug build of `9974ff5`.
+
+The two builds disagree at `--yaw 76`, before this change as after it, and
+this change does not touch it: 271 pixels near the two right wheels are
+drawn by the same triangles of the body's material group 2 in both builds,
+blue in one and black in the other, with every report line equal. That is a
+difference in how the two builds texture those pixels, outside issue #161.
+At the default camera, the only one the console compares, the two builds
+agree, and they agree at `--yaw -94`.
+
+**The cause.** The stand-in placed all four wheel copies, and all four
+brake copies, as pure translations to the culling placements, determinant
++1, while the retail draw half-turns the wheel model of positions 0 and 3,
+the left pair, about the vertical axis and reflects their brake model
+laterally, before positioning them. The wheel model is authored for the
+right-hand side, with its rim at the lateral-zero edge and a flat backing
+quad 0.2 inboard, so each left wheel carried that quad 0.2 outboard of its
+rim, in front of it from the left. With the default material state, which
+does not apply `240SX_TIRE`'s alpha test, the quad draws opaque: the dark
+square. The issue's first guess, a mirrored placement flipping the winding
+under back-face culling, does not hold: no placement was mirrored, the
+reference culls nothing by default, and the retail draw draws the wheel
+two-sided too. [`PART_PLACEMENT.md`](PART_PLACEMENT.md), "Which way the
+wheel and brake models face", has the instructions, the multiply order and
+the mesh measurements.
+
+**The fix.** Wheel copies 0 and 3 are now `car_wheel_half_turn() *
+translation` and brake copies 0 and 3 `car_brake_reflection() *
+translation`, which is the retail order with the untraced lateral terms
+left out. The copies stay stand-ins in the report, because the lateral
+term, the spin and the steering are still not reproduced. The half turn
+uses an exact -1 and 0 where the game's sine gives -1.0000036 and -0.0;
+with the game's values the `--yaw -94` frame would differ in 3 pixels and
+the pinned frames not at all ([`PART_PLACEMENT.md`](PART_PLACEMENT.md),
+"The half turn", has the hashes). From the left
+the wheels now look as the right-hand ones always did: the rim and the tyre,
+the brake disc and caliper in the hub, and the corners of the backing quad
+showing past the tyre where it is not alpha-tested away, as they do on the
+right.
+
+**The pins.** At the default camera the front-left wheel's backing quad
+showed through as two black pixels, x 931..932, y 385, above the far
+fender. A scratch program that maps a pixel's triangle id back to its
+group, copy and mesh triangle, as the inspector does, names both as
+triangle 180 of `240SX_KIT00_WHEEL_A`, copy 0: one of the quad's two
+triangles in material record 1, which also holds a 20-triangle barrel
+inside the rim. The same program with the old pure translations put back
+into the prepared scene reproduces `FE51E57A...` exactly. With the fix
+the two pixels are background, and no
+other pixel of either frame changed, so both pins above were re-pinned:
+`FE51E57A...` to `52B9303A...` painted and `FD672733...` to `E7A042A5...`
+unpainted. The pinned frames themselves showed the defect.
+
+**Tests.** `nfsu_stock_frame_tests` builds the synthetic car with a wheel
+authored the retail way, renders it from yaw -90 and +90 through the
+application's calls and requires the pixel on each near-side wheel to be
+that wheel's rim, not its backing quad; on the old placement both left
+wheels fail. `nfsu_stock_scene_tests` requires the half turn on wheel
+copies 0 and 3, the reflection on brake copies 0 and 3 and neither on 1
+and 2, and `nfsu_part_placement_tests` the two matrices themselves.
+
+**On the console.** An NRO carries its pin and its placement together: one
+built before this change compares the old frame with the old pin, and one
+built from it compares the new frame with the new pin, `52B9303A...`
+painted and `E7A042A5...` with `--unpainted`. At the default camera the two
+frames differ only in the two pixels above, so the screen looks the same
+there; orbiting to the left shows wheels on both sides only with the new
+NRO.
+
 ## What is deliberately not covered yet
 
-- Nothing issue #148 added has run on a console or an emulator. Both
-  applications are checked as files: an AArch64 ELF and a well-formed NRO
-  each. That the painted frame is the pinned one there, that the stick
+- Nothing issue #148 added had run on a console or an emulator when it
+  merged. Both applications are checked as files: an AArch64 ELF and a
+  well-formed NRO each. That the painted frame is the pinned one there,
+  that the stick
   orbits the camera, how fast the frame loop runs and that + exits cleanly
   is what the code and the desktop tests say, not something observed. The
-  unpainted frame of issue #141 is the one console result on record.
+  unpainted frame of issue #141 is the one console result on record, and
+  the owner's orbit of the #160 NRO that found issue #161 the one console
+  observation of the painted car.
+- The issue #161 change has not run on a console. The owner's view
+  of the left side came from the NRO of pull request #160; that the NRO
+  built from this change shows wheels there and reports its new pin
+  `EQUAL` is what the desktop frames say.
 - There is no deko3d device. `nfsu_switch_car` draws with the CPU reference
   renderer; neither application loads a shader, and the compiled `.dksh`
   files are not packaged into an NRO's RomFS; how the deko3d renderer carries

@@ -171,11 +171,13 @@ if(NFSU_BUILD_TESTS)
         PROPERTIES TIMEOUT 60)
 endif()
 
-# The race route of issue #61, which cmake/race_libraries.cmake declares for
-# both configures. Nothing on the console links it yet; building it here is
-# what lets the tree check the precondition #159 rests on, that the lap
-# logic compiles on the console to the same float arithmetic as on the
-# desktop: its objects hold no fused multiply-add.
+# The race route of issue #61 and the section streamer of issue #157, which
+# cmake/race_libraries.cmake and cmake/residency_libraries.cmake declare for
+# both configures. Nothing on the console links either yet; building them
+# here is what lets the tree check the precondition #159 rests on, and the
+# equivalent for the streamer, that each compiles on the console to the same
+# float arithmetic as on the desktop: their objects hold no fused
+# multiply-add. Appended as one block so that nothing above is reordered.
 if(NFSU_BUILD_TESTS)
     if(NOT CMAKE_OBJDUMP)
         message(FATAL_ERROR "no objdump was found for the Switch toolchain")
@@ -187,4 +189,50 @@ if(NFSU_BUILD_TESTS)
                 -DLABEL=nfsu_race_route
                 -P ${PROJECT_SOURCE_DIR}/tests/race_route_fma_census.cmake)
     set_tests_properties(nfsu_switch_race_route_fma_census PROPERTIES TIMEOUT 60)
+    add_test(NAME nfsu_switch_track_residency_fma_census
+        COMMAND ${CMAKE_COMMAND}
+                -DOBJDUMP=${CMAKE_OBJDUMP}
+                "-DOBJECTS=$<TARGET_OBJECTS:nfsu_track_residency>"
+                -DLABEL=nfsu_track_residency
+                -P ${PROJECT_SOURCE_DIR}/tests/track_residency_fma_census.cmake)
+    set_tests_properties(nfsu_switch_track_residency_fma_census
+        PROPERTIES TIMEOUT 60)
+endif()
+
+# The asset check of issue #47: whether the SD card holds the retail files
+# the first lap needs, shown on screen. It links the manifest and the check
+# cmake/asset_libraries.cmake declares for both configures, the console's
+# file system service beside them and the screen font, and nothing that
+# renders. It reads the config file and the files the set names, for
+# reading only, and writes no file. Appended as one block, so that nothing
+# above is reordered. docs/SWITCH_ASSETS.md.
+add_executable(nfsu_switch_assets
+    assets_main.cpp
+)
+
+target_link_libraries(nfsu_switch_assets
+    PRIVATE nfsu_assets nfsu_posix_file_system nfsu_screen_text)
+# gnu++17, as the libraries it links are compiled on the console.
+set_target_properties(nfsu_switch_assets PROPERTIES
+    CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
+nfsu_enable_warnings(nfsu_switch_assets)
+
+nx_generate_nacp(
+    OUTPUT nfsu_switch_assets.nacp
+    NAME "nfsu_switch_assets"
+    AUTHOR "nfsu_switch contributors"
+    VERSION "0.1.0")
+
+nx_create_nro(nfsu_switch_assets
+    NACP nfsu_switch_assets.nacp)
+
+if(NFSU_BUILD_TESTS)
+    # What elf2nro wrote, as for the other two applications.
+    add_test(NAME nfsu_switch_assets_nro
+        COMMAND ${CMAKE_COMMAND}
+                -DNRO=${CMAKE_CURRENT_BINARY_DIR}/nfsu_switch_assets.nro
+                -DELF=$<TARGET_FILE:nfsu_switch_assets>
+                -DTITLE=nfsu_switch_assets
+                -P ${PROJECT_SOURCE_DIR}/tests/switch_nro_check.cmake)
+    set_tests_properties(nfsu_switch_assets_nro PROPERTIES TIMEOUT 60)
 endif()
