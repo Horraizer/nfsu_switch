@@ -149,6 +149,11 @@ void test_ticks_per_frame() {
     check(nfsu::race_ticks_per_frame(120) == 33, "a 120 Hz frame adds 33 ticks");
     check(nfsu::race_ticks_per_frame(144) == 28, "a 144 Hz frame adds 28 ticks");
     check(nfsu::race_ticks_per_frame(1) == 4000, "a one-second frame adds 4000 ticks");
+    // Rates whose frame, as a float, times 3600 lands just below a whole
+    // number, so that only the + 0.5 of 0x00585CDD rounds it to it.
+    check(nfsu::race_ticks_per_frame(13) == 308, "a 13 Hz frame adds 308 ticks");
+    check(nfsu::race_ticks_per_frame(17) == 236, "a 17 Hz frame adds 236 ticks");
+    check(nfsu::race_ticks_per_frame(30) == 133, "a 30 Hz frame adds 133 ticks");
     check(nfsu::race_ticks_per_frame(0) == 0, "no frame rate, no ticks");
     check(nfsu::race_ticks_per_frame(3601) == 0, "a frame shorter than a unit is refused");
     check(nfsu::race_ticks_per_frame(-60) == 0, "a negative rate is refused");
@@ -477,6 +482,18 @@ void test_backdate() {
     check(event1.last(nfsu::RaceTimingEventKind::lap) != nullptr &&
               event1.last(nfsu::RaceTimingEventKind::lap)->value == 50,
           "event 1's line crossed 0.3766 units back at 30 a second: 50 ticks");
+    // A line near the path's seam: 99.9 percent, crossed to 0.1, is 0.2
+    // past it once the difference is wrapped (0x00433675..0x00433697), 2
+    // units, 267 ticks at 30 a second.
+    nfsu::RaceRoute seam = hand_route(2);
+    seam.boundaries[0].percent = 99.9F;
+    Race wrap(seam);
+    wrap.countdown();
+    wrap.at(200, forward(0, 0, 99.9F));
+    wrap.at(1000, new_lap(1, 0.1F), 30.0F);
+    check(wrap.last(nfsu::RaceTimingEventKind::lap) != nullptr &&
+              wrap.last(nfsu::RaceTimingEventKind::lap)->value == 267,
+          "a crossing over the seam is dated back by the wrapped difference");
     // An absurd distance saturates rather than overflowing.
     nfsu::RaceRoute huge = hand_route(2);
     huge.spline.path_length = 1.0e30F;

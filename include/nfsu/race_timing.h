@@ -60,7 +60,7 @@ constexpr float kRaceLapHoldSeconds = 3.0F;
 constexpr std::int32_t kRaceTicksLimit = 1 << 29;
 
 // 0x00586690 and the `fmul [0x006CC9FC]`, `fadd [0x006CC7DC]`, `_ftol` its
-// five callers follow it with: a time in ticks rounded to the nearest
+// callers follow it with: a time in ticks rounded to the nearest
 // hundredth of a second, half up, in float as the executable computes it.
 // It gives 40 * n for most n hundredths and 40 * n + 1 for a few, where the
 // float product of n, 0.01 and 4000 lands just above 40 * n and 0x00438800
@@ -79,8 +79,8 @@ std::int32_t race_ticks_per_frame(int frames_per_second) noexcept;
 // A time in ticks as M:SS.hh, split as 0x005864F0 splits it: whole seconds
 // ticks / 4000, milliseconds (ticks % 4000) * 1000 / 4000, hundredths
 // milliseconds / 10, all truncated; minutes include the hours. A negative
-// time is its magnitude with a leading '-'. kRaceNoTime is "--:--.--",
-// which is what 0x00586580 prints for it.
+// time is its magnitude with a leading '-'. kRaceNoTime is "--:--.--":
+// 0x00586580 prints dashes for it (0x0058658C..0x005865A4).
 std::string format_race_ticks(std::int32_t ticks);
 
 // ---------------------------------------------------------------------
@@ -322,8 +322,9 @@ int race_countdown_value(const RaceTimingConfig& config, const RaceTimingState& 
 // Whether a racer's car is held where it stands for the next step: every
 // stage but racing holds it (0x00434BB0..0x00434C00 call the driver's hold
 // method, vtable +0x1C, for them and its release, +0x20, for racing), and
-// go comes in the race status update after the frame's physics
-// (0x00421137..0x00421155), so a car first moves on the step after go.
+// go comes in the race status update, the last call of the world's
+// per-frame update after its per-car calls (0x00420FC0..0x00421155), so a
+// car first moves on the step after go.
 bool race_car_held(const RaceTimingState& state) noexcept;
 
 // One frame, in the order 0x00435570 runs it after the frame's physics:

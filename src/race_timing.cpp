@@ -19,8 +19,8 @@ constexpr float kTicksPerSecondFloat = 4000.0F;
 constexpr float kHalf = 0.5F;
 // [0x006CC7BC] = 0x3F800000.
 constexpr float kOne = 1.0F;
-// 0x3C23D70A, the resolution the five callers of 0x00586690 push
-// (0x004339B7, 0x004355D0, 0x00434C14, 0x00434C89, 0x0043514C), and
+// 0x3C23D70A, the resolution the race's calls of 0x00586690 push
+// (0x004339B7, 0x004355D0, 0x00434C14 and 0x00434C89 among them), and
 // [0x006CC79C], the percent 0x004336E5 scales a distance by.
 constexpr float kHundredth = 0.01F;
 // [0x006CC7E0] = 0x45610000 and [0x006CC7E4] = 0x3991A2B4: the frame's
