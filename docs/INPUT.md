@@ -236,9 +236,14 @@ Every library on the path from a frame to a camera is compiled with
 floating-point contraction disabled: `nfsu_input`, `nfsu_input_camera`,
 `nfsu_inspect`, whose `orbit`, `pan` and `zoom` do the camera arithmetic,
 and `nfsu_render`, whose `make_camera_frame` gives `pan` the camera's axes.
-The library calls on the path are `std::sqrt`, which IEEE 754 requires to
-be correctly rounded, and `std::floor` and `std::fmod`, which are exact;
-sine and cosine are the renderer's own polynomials, `det_sin_deg` and
+The one square root on the path, the dead zone's, is `det_sqrt`, not
+`std::sqrt`: issue #165 found that MinGW's out-of-line libm `std::sqrt`,
+although IEEE 754 requires a correctly rounded result, rounds twice through
+x87 extended precision at `-O0` and `-Os` for some inputs, the same defect
+issue #125 found in the renderer (`docs/RENDERER.md`, "Determinism").
+`det_sqrt` gives one hardware rounding to binary64 instead, on every build.
+The other library calls on the path, `std::floor` and `std::fmod`, are
+exact; sine and cosine are the renderer's own polynomials, `det_sin_deg` and
 `det_cos_deg`, not the library's. So a recorded session replays to the same
 camera bits wherever double arithmetic is IEEE 754 binary64 without extended
 precision, as it is on x86-64 and AArch64.

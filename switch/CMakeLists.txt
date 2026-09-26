@@ -395,3 +395,25 @@ if(NFSU_BUILD_TESTS)
                 -P ${PROJECT_SOURCE_DIR}/tests/switch_nro_check.cmake)
     set_tests_properties(nfsu_switch_drive_nro PROPERTIES TIMEOUT 60)
 endif()
+
+# Same deko3d draw path, offscreen readback and on-screen CPU comparison.
+# No game asset is packaged; only the already-checked offline shaders.
+add_executable(nfsu_switch_compare compare_main.cpp deko_renderer.cpp)
+target_link_libraries(nfsu_switch_compare PRIVATE
+    nfsu_draw_commands nfsu_stock_frame nfsu_screen_text nfsu_frame_compare deko3d)
+set_target_properties(nfsu_switch_compare PROPERTIES
+    CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
+nfsu_enable_warnings(nfsu_switch_compare)
+nx_generate_nacp(OUTPUT nfsu_switch_compare.nacp NAME "nfsu_switch_compare"
+    AUTHOR "nfsu_switch contributors" VERSION "0.1.0")
+nx_create_nro(nfsu_switch_compare NACP nfsu_switch_compare.nacp
+    ROMFS nfsu_switch_deko_romfs)
+if(NFSU_BUILD_TESTS)
+    add_test(NAME nfsu_switch_compare_nro
+        COMMAND ${CMAKE_COMMAND}
+            -DNRO=${CMAKE_CURRENT_BINARY_DIR}/nfsu_switch_compare.nro
+            -DELF=$<TARGET_FILE:nfsu_switch_compare>
+            -DTITLE=nfsu_switch_compare -DSHADERS=${NFSU_SHADER_OUTPUT}
+            -P ${PROJECT_SOURCE_DIR}/tests/switch_deko_romfs_check.cmake)
+    set_tests_properties(nfsu_switch_compare_nro PROPERTIES TIMEOUT 60)
+endif()

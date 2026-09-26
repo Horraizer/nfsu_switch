@@ -1,6 +1,7 @@
 #include "nfsu/input.h"
 
-#include <cmath>
+#include "nfsu/det_sqrt.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -11,9 +12,13 @@
 // docs/INPUT.md says why it is that rule.
 //
 // Floating point here is plain IEEE arithmetic with contraction disabled by
-// CMakeLists.txt, and the one library call is std::sqrt, which IEEE 754
-// requires to be correctly rounded. So the actions one frame produces do
-// not depend on the build or on whether the machine fuses a multiply-add.
+// CMakeLists.txt, and the one square root is det_sqrt, one hardware
+// rounding to binary64. It used to be std::sqrt, which IEEE 754 requires to
+// be correctly rounded but which MinGW's out-of-line libm implementation is
+// not: at -O0 and -Os it rounds twice, through x87 extended precision
+// (issue #165, the same defect issue #125 found in the renderer). So the
+// actions one frame produces do not depend on the build or on whether the
+// machine fuses a multiply-add.
 
 namespace nfsu {
 
@@ -117,7 +122,7 @@ StickVector apply_stick_dead_zone(
     if (squared <= inner * inner) {
         return out;
     }
-    const double length = std::sqrt(static_cast<double>(squared));
+    const double length = det_sqrt(static_cast<double>(squared));
     double scale = 1.0;
     if (squared < outer * outer) {
         // In inner..outer, so the fraction is in 0..1. The square root of an

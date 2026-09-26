@@ -816,7 +816,7 @@ set(NFSU_NEUTRAL_LIBRARIES
     nfsu_texture_decode nfsu_body_skin nfsu_skin_inputs nfsu_runtime_skin
     nfsu_inspect nfsu_inspect_window nfsu_input nfsu_platform
     nfsu_platform_fakes nfsu_input_camera nfsu_memory nfsu_gpu_upload nfsu_draw_commands
-    nfsu_sha256 nfsu_stock_frame nfsu_screen_text nfsu_stock_view)
+    nfsu_sha256 nfsu_stock_frame nfsu_screen_text nfsu_stock_view nfsu_frame_compare)
 # nfsu_race_route (issue #61) decodes a TRACKB bundle with nothing but the
 # standard library, nfsu_core's JDLZ decoder and nfsu_track_zones' polygon
 # test, reads with std::ifstream as nfsu_core's loaders do, and reads no
@@ -829,9 +829,16 @@ list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_route)
 # nfsu_texture_export's export helpers (issue #139, split out of nfsu_core)
 # call fs::remove, fs::rename and fs::create_directories to write, roll back
 # and clean up the files a texture export asks for, and nfsu_platform_desktop
-# reads the steady clock. docs/PLATFORM_SERVICES.md says what would move each
-# one behind a service.
-set(NFSU_PLATFORM_LIBRARIES nfsu_arg_path nfsu_render nfsu_texture_export nfsu_platform_desktop)
+# reads the steady clock. nfsu_det_sqrt (issue #165, cmake/car_libraries.cmake)
+# calls no operating system either, but its source picks an intrinsic header
+# and an inline-asm path by architecture - <emmintrin.h> is neither a C or
+# C++ standard header nor this project's - which the include rule below
+# cannot tell apart from a platform header, and is not asked to: the rule is
+# deliberately an allowlist rather than a denylist of platform headers (see
+# its own comment below), so anything outside the allowed standard headers
+# and this project's own is platform code by that rule alone. docs/
+# PLATFORM_SERVICES.md says what would move each one behind a service.
+set(NFSU_PLATFORM_LIBRARIES nfsu_arg_path nfsu_render nfsu_texture_export nfsu_platform_desktop nfsu_det_sqrt)
 
 # Sources of a neutral library that are platform code on purpose: the one
 # window backend. src/texture.cpp used to be exempted here too, whole, for
@@ -1133,6 +1140,13 @@ add_library(nfsu_track_contact
 )
 
 target_link_libraries(nfsu_track_contact PUBLIC nfsu_track nfsu_memory)
+# PRIVATE: track_contact.h exposes nothing of det_sqrt. sweep_of's one
+# double-precision square root was std::sqrt, not correctly rounded at -O0
+# (issue #165, the same MinGW libm defect issue #125 found in the renderer
+# and issue #165 also fixed in the controller dead zone); it now calls
+# det_sqrt through nfsu/det_sqrt.h, a project header, which keeps this
+# library's own source neutral under the include rule below.
+target_link_libraries(nfsu_track_contact PRIVATE nfsu_det_sqrt)
 nfsu_enable_warnings(nfsu_track_contact)
 if(MSVC)
     target_compile_options(nfsu_track_contact PRIVATE /fp:precise)
@@ -1442,4 +1456,12 @@ if(NFSU_BUILD_TESTS)
 
     set_tests_properties(nfsu_drive_tests nfsu_probe_drive_replay_guards
         PROPERTIES TIMEOUT 120)
+endif()
+
+# Whole-frame comparison metrics for the console proof of issue #147.
+if(NFSU_BUILD_TESTS)
+    add_executable(nfsu_frame_compare_tests tests/frame_compare_tests.cpp)
+    target_link_libraries(nfsu_frame_compare_tests PRIVATE nfsu_frame_compare)
+    nfsu_enable_warnings(nfsu_frame_compare_tests)
+    add_test(NAME nfsu_frame_compare_tests COMMAND nfsu_frame_compare_tests)
 endif()

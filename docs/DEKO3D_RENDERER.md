@@ -126,7 +126,9 @@ The #145 notes carried into #146 are addressed explicitly:
 
 The Switch CTest suite checks the new AArch64 ELF, NRO header/icon/title,
 bounded RomFS section and exact bytes of all three checked shader blobs
-inside it. It runs on the build host. GPU pixel comparison/readback belongs
-to #147; track residency and reclaiming CPU decoded pixels belong to #171.
-Neither is implemented here. Cache behavior, image byte order, presentation,
+inside it. It runs on the build host. Issue #147 adds offscreen readback
+and a separate on-screen comparison application, documented in
+[FRAME_COMPARISON.md](FRAME_COMPARISON.md); it has not run on hardware.
+Track residency and reclaiming CPU decoded pixels belong to #171 and are
+not implemented here. Cache behavior, image byte order, presentation,
 error screens and + exit await the coordinator/owner's hardware run.

@@ -18,7 +18,9 @@
 # configure declares its targets and nothing else: no source list, option,
 # link or dependency of any target differs. The neutrality gate's manifest
 # lists the libraries in declaration order, and the gate reads that list as
-# a set.
+# a set. nfsu_det_sqrt, declared between nfsu_texture_decode and nfsu_render
+# below, is not one of the seven: issue #165 added it here, new, rather than
+# moving it from anywhere.
 #
 # ${CMAKE_CURRENT_SOURCE_DIR} and the relative source paths below mean the
 # repository root, exactly as they did in CMakeLists.txt, because include()
@@ -127,13 +129,47 @@ add_library(nfsu_texture_decode
 target_link_libraries(nfsu_texture_decode PUBLIC nfsu_scene nfsu_core)
 nfsu_enable_warnings(nfsu_texture_decode)
 
+# The correctly rounded double-precision square root (issue #165, moved out
+# of nfsu_render, which used to define it): one hardware rounding to
+# binary64, docs/RENDERER.md "Determinism" says why the library's own sqrt
+# cannot be trusted for it at -O0 and -Os. include/nfsu/det_sqrt.h is the
+# only header its callers need; nfsu_render's public header, render.h,
+# includes it too, so every earlier `#include "nfsu/render.h"` still finds
+# nfsu::det_sqrt. Its own source picks an intrinsic header and an inline-asm
+# path by architecture (see src/det_sqrt.cpp), which is why it is classified
+# platform code (NFSU_PLATFORM_LIBRARIES in CMakeLists.txt) rather than
+# neutral, although it calls no operating system: the neutrality gate's
+# include rule does not distinguish an operating-system header from a
+# compiler-intrinsics one. Declared here, ahead of nfsu_render and
+# nfsu_input below, which both link it; nfsu_track_contact links it too,
+# from the desktop-only block near the end of CMakeLists.txt.
+add_library(nfsu_det_sqrt
+    src/det_sqrt.cpp
+)
+
+target_include_directories(nfsu_det_sqrt
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_compile_features(nfsu_det_sqrt PUBLIC cxx_std_17)
+nfsu_enable_warnings(nfsu_det_sqrt)
+if(MSVC)
+    target_compile_options(nfsu_det_sqrt PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_det_sqrt PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+
 # Deterministic CPU reference renderer. Floating-point contraction is
 # disabled so that results do not depend on FMA availability.
 add_library(nfsu_render
     src/render.cpp
 )
 
-target_link_libraries(nfsu_render PUBLIC nfsu_scene nfsu_image)
+# PUBLIC: render.h declares det_sqrt (via nfsu/det_sqrt.h) and callers that
+# link nfsu_render publicly - nfsu_track_render, and nfsu_track_probe and
+# nfsu_stock_view above it - resolve the symbol through this link, as they
+# already did when det_sqrt lived in nfsu_render itself.
+target_link_libraries(nfsu_render PUBLIC nfsu_scene nfsu_image nfsu_det_sqrt)
 # The POSIX frame writer rolls a failed write back with
 # rollback_created_files, which nfsu_texture_export now defines
 # (src/texture_export.cpp; issue #139 split it out of nfsu_core, which used
@@ -287,8 +323,13 @@ endif()
 
 # The controller model: buttons, sticks, dead zones, the remapping table,
 # the rules that turn frames into actions and the recorded text form of a
-# sequence of frames. Standard library only, and no clock: a frame carries
-# its own time. Floating-point contraction is disabled because a recording
+# sequence of frames. Standard library and the correctly rounded det_sqrt
+# only, and no clock: a frame carries its own time. The dead zone's one
+# square root used to be std::sqrt, which is not correctly rounded at -O0
+# (issue #165, the same MinGW libm defect issue #125 found in the
+# renderer); it now calls det_sqrt through nfsu/det_sqrt.h, which is a
+# project header, and is linked below rather than exposed - input.h states
+# nothing of it. Floating-point contraction is disabled because a recording
 # is replayed and compared byte for byte, so a fused multiply-add in the
 # dead zone would move a stick value by an ulp and a camera with it.
 add_library(nfsu_input
@@ -301,6 +342,7 @@ target_include_directories(nfsu_input
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 target_compile_features(nfsu_input PUBLIC cxx_std_17)
+target_link_libraries(nfsu_input PRIVATE nfsu_det_sqrt)
 nfsu_enable_warnings(nfsu_input)
 if(MSVC)
     target_compile_options(nfsu_input PRIVATE /fp:precise)
@@ -341,6 +383,18 @@ add_library(nfsu_stock_view
 target_link_libraries(nfsu_stock_view PUBLIC nfsu_input_camera nfsu_render)
 nfsu_enable_warnings(nfsu_stock_view)
 
+# SDK-free whole-frame acceptance metrics and amplified RGBA8 difference
+# for issue #147. Standard library only; no clock, file or device access.
+add_library(nfsu_frame_compare src/frame_compare.cpp)
+target_include_directories(nfsu_frame_compare PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(nfsu_frame_compare PUBLIC cxx_std_17)
+nfsu_enable_warnings(nfsu_frame_compare)
+if(MSVC)
+    target_compile_options(nfsu_frame_compare PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_frame_compare PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+
 # The language the console compiles these as. Every target above asks for
 # cxx_std_17, and CMake reads that as a minimum: it adds no -std option when
 # the compiler's own default already meets it. The desktop's GCC 13 defaults
@@ -356,7 +410,7 @@ if(NINTENDO_SWITCH)
     set_target_properties(
         nfsu_image nfsu_core nfsu_texture_export nfsu_scene nfsu_stock_scene
         nfsu_texture_decode nfsu_render nfsu_sha256 nfsu_stock_frame
-        nfsu_screen_text nfsu_body_skin nfsu_skin_inputs nfsu_runtime_skin
+        nfsu_screen_text nfsu_frame_compare nfsu_body_skin nfsu_skin_inputs nfsu_runtime_skin
         nfsu_inspect nfsu_input nfsu_input_camera nfsu_stock_view
         PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
 endif()
