@@ -25,6 +25,7 @@
 #include "nfsu/track_stream.h"
 #include "nfsu/track_visibility.h"
 #include "nfsu/track_zones.h"
+#include "nfsu/vehicle.h"
 
 #include <algorithm>
 #include <array>
@@ -4235,6 +4236,293 @@ int run_race_events(const fs::path& globalb_path, const fs::path& frontb_path) {
     return 0;
 }
 
+// vehicle-sim: the vehicle model of docs/VEHICLE.md over one scripted input
+// sequence on flat ground. Prints the gearbox thresholds, one telemetry line
+// every `every` steps and the last step, and the SHA-256 of the telemetry
+// records, which docs/VEHICLE.md pins. With a GLOBALB.BUN, the car's
+// handling is read out of its car type table first and compared with the
+// built-in table. Read-only; writes nothing.
+struct VehicleSimArgs {
+    std::string script_name;
+    bool has_script_file = false;
+    fs::path script_file;
+    bool has_steps = false;
+    std::uint64_t steps = 0;
+    std::uint64_t every = 120;
+    bool has_handling = false;
+    fs::path handling_file;
+    bool has_car = false;
+    std::string car = "240SX";
+};
+
+std::string vehicle_fixed(double value, int decimals) {
+    std::ostringstream text;
+    text << std::fixed << std::setprecision(decimals) << value;
+    return text.str();
+}
+
+std::string vehicle_gear_name(int gear) {
+    if (gear == nfsu::kVehicleGearReverse) {
+        return std::string(1, 'R');
+    }
+    if (gear == nfsu::kVehicleGearNeutral) {
+        return "N";
+    }
+    return std::to_string(gear - nfsu::kVehicleGearFirst + 1);
+}
+
+void print_vehicle_line(const char* label, const nfsu::VehicleTelemetry& t) {
+    std::cout << label << " step " << t.step << " t "
+              << vehicle_fixed(static_cast<double>(t.step) * nfsu::kVehicleStepSeconds, 3)
+              << " pos " << vehicle_fixed(t.position.x, 3) << ' '
+              << vehicle_fixed(t.position.y, 3) << ' ' << vehicle_fixed(t.position.z, 4)
+              << " kmh " << vehicle_fixed(t.forward_speed * 3.6, 2) << " lateral "
+              << vehicle_fixed(t.lateral_speed, 3) << " yaw-rate "
+              << vehicle_fixed(t.angular_velocity.z, 4) << " rpm "
+              << vehicle_fixed(t.engine_rpm, 1) << " gear " << vehicle_gear_name(t.gear)
+              << " in " << vehicle_fixed(t.throttle, 2) << ' ' << vehicle_fixed(t.brake, 2)
+              << ' ' << vehicle_fixed(t.steer, 2) << (t.handbrake ? " hb" : "")
+              << " steer-angle " << vehicle_fixed(t.steer_angle, 4) << " load";
+    for (const nfsu::VehicleWheelTelemetry& w : t.wheels) {
+        std::cout << ' ' << vehicle_fixed(w.load, 0);
+    }
+    std::cout << " sliding ";
+    for (const nfsu::VehicleWheelTelemetry& w : t.wheels) {
+        std::cout << (w.sliding ? '1' : '0');
+    }
+    std::cout << '\n';
+}
+
+// Reads the handling of one car type out of a GLOBALB.BUN: the car type
+// table through nfsu_core, then the record's bytes at the offset it gives.
+int load_vehicle_handling(const fs::path& path, const std::string& car,
+                          nfsu::VehicleHandling& out) {
+    const nfsu::CarTypeTable table = nfsu::load_car_type_table(path);
+    std::cout << "handling file: " << path.filename().string() << " bytes " << table.file_size
+              << '\n';
+    print_car_type_issues(table);
+    if (!table.ok()) {
+        std::cerr << "error: the car type table is not valid\n";
+        return 3;
+    }
+    const std::size_t found = nfsu::find_car_type(table, car);
+    if (found == nfsu::kNoCarType) {
+        std::cerr << "error: no car type is named '" << car << "'\n";
+        return 3;
+    }
+    const nfsu::CarTypeRecord& record = table.records[found];
+    std::vector<unsigned char> bytes(nfsu::kVehicleRecordSize);
+    std::ifstream stream(path, std::ios::binary);
+    stream.seekg(static_cast<std::streamoff>(record.offset));
+    stream.read(reinterpret_cast<char*>(bytes.data()),
+                static_cast<std::streamsize>(bytes.size()));
+    if (!stream || stream.gcount() != static_cast<std::streamsize>(bytes.size())) {
+        std::cerr << "error: failed to read the car type record at offset " << record.offset
+                  << '\n';
+        return 3;
+    }
+    std::vector<nfsu::VehicleHandlingIssue> issues;
+    if (!nfsu::decode_vehicle_handling(bytes.data(), bytes.size(), out, issues)) {
+        for (const nfsu::VehicleHandlingIssue& issue : issues) {
+            std::cerr << "handling issue: record " << record.index << " at offset "
+                      << record.offset << ' ' << issue.message << '\n';
+        }
+        std::cerr << "error: the handling of '" << car << "' cannot drive the model\n";
+        return 3;
+    }
+    const std::size_t differs =
+        nfsu::compare_vehicle_handling(out, nfsu::stock_240sx_handling());
+    std::cout << "handling: car type " << record.index << ' ' << record.name << " record @"
+              << record.offset << ' ';
+    if (differs == nfsu::kVehicleRecordSize) {
+        std::cout << "equal to the built-in 240SX table\n";
+    } else {
+        std::cout << "differs from the built-in 240SX table first at record "
+                  << hex32(static_cast<std::uint32_t>(differs)) << " @"
+                  << record.offset + differs << '\n';
+    }
+    return 0;
+}
+
+int run_vehicle_sim(const VehicleSimArgs& args) {
+    nfsu::VehicleScript script;
+    if (args.has_script_file) {
+        std::ifstream stream(args.script_file, std::ios::binary);
+        if (!stream) {
+            std::cerr << "error: cannot open the script " << args.script_file.string() << '\n';
+            return 2;
+        }
+        const nfsu::VehicleScriptLimits limits;
+        std::vector<char> buffer(limits.max_bytes + 1);
+        stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const std::string text(buffer.data(), static_cast<std::size_t>(stream.gcount()));
+        std::string error;
+        if (!nfsu::parse_vehicle_script(text, script, error, limits)) {
+            std::cerr << "error: script " << args.script_file.filename().string() << ": "
+                      << error << '\n';
+            return 2;
+        }
+        script.name = args.script_file.filename().string();
+    } else if (!nfsu::builtin_vehicle_script(args.script_name, script)) {
+        std::cerr << "error: no built-in script is named '" << args.script_name
+                  << "'; the names are";
+        for (const std::string& name : nfsu::builtin_vehicle_script_names()) {
+            std::cerr << ' ' << name;
+        }
+        std::cerr << '\n';
+        return 1;
+    }
+
+    nfsu::VehicleSpec spec = nfsu::stock_240sx_vehicle_spec();
+    if (args.has_handling) {
+        const int loaded = load_vehicle_handling(args.handling_file, args.car, spec.handling);
+        if (loaded != 0) {
+            return loaded;
+        }
+    } else {
+        std::cout << "handling: built-in 240SX table (RECOVERED, docs/VEHICLE.md)\n";
+    }
+    const nfsu::VehicleModel model(spec);
+    if (!model.valid()) {
+        std::cerr << "error: the model refuses this car: " << model.error() << '\n';
+        return 3;
+    }
+
+    const std::uint64_t steps = args.has_steps ? args.steps : script.total_steps();
+    std::cout << "vehicle-sim: script " << script.name << " segments "
+              << script.segments.size() << " steps " << steps << " of 1/"
+              << nfsu::kVehicleStepsPerSecond << " s gearbox "
+              << (script.gearbox == nfsu::VehicleGearbox::manual ? "manual" : "automatic")
+              << " speed " << vehicle_fixed(script.speed, 6) << " m/s\n";
+    const int top =
+        nfsu::kVehicleGearFirst + static_cast<int>(spec.handling.forward_gears) - 1;
+    std::cout << "shift up rpm:";
+    for (int g = nfsu::kVehicleGearFirst; g <= top; ++g) {
+        std::cout << ' ' << vehicle_gear_name(g) << ':'
+                  << vehicle_fixed(model.upshift_rpm()[static_cast<std::size_t>(g)], 2);
+    }
+    std::cout << "\nshift down rpm:";
+    for (int g = nfsu::kVehicleGearFirst + 1; g <= top; ++g) {
+        std::cout << ' ' << vehicle_gear_name(g) << ':'
+                  << vehicle_fixed(model.downshift_rpm()[static_cast<std::size_t>(g)], 2);
+    }
+    std::cout << '\n';
+
+    nfsu::VehiclePose pose;
+    pose.speed = script.speed;
+    pose.gearbox = script.gearbox;
+    nfsu::VehicleState state;
+    if (!model.reset(state, pose)) {
+        std::cerr << "error: the model refused the starting pose\n";
+        return 4;
+    }
+    const nfsu::VehicleFlatGround ground(0.0);
+    nfsu::VehicleTelemetryHash hash;
+    nfsu::VehicleTelemetry telemetry;
+    for (std::uint64_t i = 0; i < steps; ++i) {
+        if (!model.step(state, script.input_at(i), ground, telemetry)) {
+            std::cerr << "error: the model stopped at step " << i + 1
+                      << ": the state is no longer finite\n";
+            return 4;
+        }
+        hash.add(telemetry);
+        if (args.every != 0 && (i + 1) % args.every == 0 && i + 1 != steps) {
+            print_vehicle_line("at", telemetry);
+        }
+    }
+    if (steps != 0) {
+        print_vehicle_line("final", telemetry);
+    }
+    const std::uint64_t records = hash.records();
+    const std::string digest = nfsu::sha256_hex(hash.finish());
+    std::cout << "telemetry: records " << records << " bytes "
+              << records * nfsu::kVehicleTelemetryRecordBytes << " sha256 " << digest << '\n';
+    return 0;
+}
+
+// Parses everything after "vehicle-sim". Both paths are converted here,
+// before anything is read, so a path argument the platform cannot decode is
+// refused before any work.
+int parse_vehicle_sim(int argc, char** argv, VehicleSimArgs& args) {
+    const auto number = [&](int& i, const std::string& name, std::uint64_t& out) {
+        if (i + 1 >= argc) {
+            std::cerr << "error: " << name << " needs a value\n";
+            return false;
+        }
+        ++i;
+        if (!parse_u64(std::string(argv[i]), out) || out > 12000000U) {
+            std::cerr << "error: " << name
+                      << " must be a decimal or 0x integer no larger than 12000000\n";
+            return false;
+        }
+        return true;
+    };
+    bool has_name = false;
+    bool has_every = false;
+    for (int i = 2; i < argc; ++i) {
+        const std::string argument(argv[i]);
+        if (argument == "--script" || argument == "--handling") {
+            const bool script = argument == "--script";
+            if (script ? args.has_script_file : args.has_handling) {
+                std::cerr << "error: " << argument << " is given twice\n";
+                return 1;
+            }
+            if (i + 1 >= argc) {
+                std::cerr << "error: " << argument << " needs a file\n";
+                return 1;
+            }
+            ++i;
+            if (script) {
+                args.has_script_file = true;
+                args.script_file = nfsu::argument_path(argv[i]);
+            } else {
+                args.has_handling = true;
+                args.handling_file = nfsu::argument_path(argv[i]);
+            }
+        } else if (argument == "--steps" || argument == "--every") {
+            const bool steps = argument == "--steps";
+            if (steps ? args.has_steps : has_every) {
+                std::cerr << "error: " << argument << " is given twice\n";
+                return 1;
+            }
+            if (!number(i, argument, steps ? args.steps : args.every)) {
+                return 1;
+            }
+            (steps ? args.has_steps : has_every) = true;
+        } else if (argument == "--car") {
+            if (args.has_car) {
+                std::cerr << "error: --car is given twice\n";
+                return 1;
+            }
+            if (i + 1 >= argc) {
+                std::cerr << "error: --car needs a car type name\n";
+                return 1;
+            }
+            ++i;
+            args.has_car = true;
+            args.car = argv[i];
+        } else if (argument.size() > 1 && argument[0] == '-') {
+            std::cerr << "error: unknown option " << argument << '\n';
+            return 1;
+        } else if (has_name) {
+            std::cerr << "error: give one script name only\n";
+            return 1;
+        } else {
+            has_name = true;
+            args.script_name = argument;
+        }
+    }
+    if (has_name == args.has_script_file) {
+        std::cerr << "error: give either a built-in script name or --script <FILE>\n";
+        return 1;
+    }
+    if (args.has_car && !args.has_handling) {
+        std::cerr << "error: --car needs --handling <GLOBALB.BUN>\n";
+        return 1;
+    }
+    return 0;
+}
+
 // ---------------------------------------------------------------------------
 // track-whole: every section of one track's STREAM file that speed.exe loads
 // for a race on that track, loaded together and placed as one scene. See
@@ -7554,6 +7842,17 @@ const Command kCommands[] = {
          }
          return run_car_placement(nfsu::argument_path(argv[2]),
                                   argc == 4 ? std::string(argv[3]) : "");
+     }},
+    {"vehicle-sim", " <script-name> | --script <FILE>",
+     "      [--steps N] [--every N] [--handling <GLOBALB.BUN> [--car NAME]]\n"
+     "      (script names: rest accelerate brake corner slide top-speed manual mixed)\n",
+     [](int argc, char** argv) {
+         VehicleSimArgs args;
+         const int parsed = parse_vehicle_sim(argc, argv, args);
+         if (parsed != 0) {
+             return parsed;
+         }
+         return run_vehicle_sim(args);
      }},
     {"race-events", " <GLOBALB.BUN> <FrontB.lzc>",
      "      (either file raw or JDLZ-compressed, as the game ships them)\n",
