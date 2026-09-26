@@ -489,8 +489,8 @@ command (devkitA64 GCC 16.1.0, `-O2`), `-S` in place of `-c`:
 
 | Source | Options | fmadd | fmsub | fnmadd | fnmsub | fmla | fmls | total fused | fmul |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `src/drive_controls.cpp` | as configured | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 12 |
-| | without the two options | 3 | 0 | 0 | 0 | 0 | 0 | 3 | 9 |
+| `src/drive_controls.cpp` | as configured | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 13 |
+| | without the two options | 3 | 0 | 0 | 0 | 0 | 0 | 3 | 10 |
 | `src/chase_camera.cpp` | as configured | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 66 |
 | | without the two options | 33 | 1 | 0 | 6 | 0 | 0 | 40 | 31 |
 | `src/drive_session.cpp` | as configured | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 40 |
