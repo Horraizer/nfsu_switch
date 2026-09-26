@@ -169,6 +169,84 @@ bool triangle_limits(std::uint64_t source, std::uint64_t submitted,
 }
 } // namespace
 
+bool validate_recorded_commands(const RecordedCommands& commands, std::string& error) {
+    error.clear();
+    const auto fail = [&](const std::string& name, const char* reason) {
+        error = name + ": " + reason; return false;
+    };
+    if (!commands.width || !commands.height || commands.width > 16384 || commands.height > 16384)
+        return fail("draw commands", "invalid viewport");
+    const auto& resources = commands.uploads.resources;
+    for (const auto& r : resources) {
+        if (!r.data || !r.bytes || r.bytes > kMaxUploadResourceBytes)
+            return fail(r.name, "invalid upload payload");
+        if (r.kind == UploadResourceKind::texture) {
+            TextureUploadShape shape;
+            if (!check_texture_upload_format(r.texture.format, r.texture.width,
+                    r.texture.height, r.bytes, shape, error)) { error = r.name + ": " + error; return false; }
+            if (r.texture.row_bytes != shape.row_bytes || r.texture.bytes != shape.bytes)
+                return fail(r.name, "invalid texture shape");
+        } else if ((r.kind != UploadResourceKind::vertex_buffer && r.kind != UploadResourceKind::index_buffer) ||
+                   !r.element_bytes || r.elements > kMaxUploadResourceBytes / r.element_bytes ||
+                   r.elements * r.element_bytes != r.bytes)
+            return fail(r.name, "invalid buffer shape");
+    }
+    for (const auto& d : commands.draws) {
+        bool known = false;
+        for (const auto& program : sm::kPrograms) if (d.program == &program) known = true;
+        if (!known) return fail(d.name, "unknown shader program");
+        if (d.program->buffer_count != 1 || d.program->buffers[0].index != 0 ||
+            d.program->attribute_count != 3 || d.program->texture_count > 1)
+            return fail(d.name, "unsupported shader interface");
+        unsigned locations = 0;
+        for (std::size_t i = 0; i < d.program->attribute_count; ++i) {
+            const auto& a = d.program->attributes[i];
+            if (a.location >= 3 || (locations & (1U << a.location)) || a.buffer != 0 ||
+                (a.format != sm::VertexFormat::float32x2 && a.format != sm::VertexFormat::float32x3 &&
+                 a.format != sm::VertexFormat::unorm8x4))
+                return fail(d.name, "unsupported vertex attribute");
+            locations |= 1U << a.location;
+        }
+        // These are the layouts of the four compiled programs, held together
+        // by the manifest tests; never accept an arbitrary interface pointer.
+        const bool textured = d.program->texture_count != 0;
+        if (std::strcmp(d.program->vertex_source, "placed.vert.glsl") != 0 ||
+            std::strcmp(d.program->fragment_source, textured ? "textured.frag.glsl" : "fallback.frag.glsl") != 0 ||
+            (textured && (d.program->textures[0].filter != sm::Filter::nearest ||
+                          d.program->textures[0].wrap != sm::Wrap::repeat)))
+            return fail(d.name, "unsupported shader or sampler");
+        if (d.vertex_resource >= resources.size() || d.index_resource >= resources.size())
+            return fail(d.name, "buffer resource out of range");
+        const auto& v = resources[d.vertex_resource];
+        const auto& idx = resources[d.index_resource];
+        if (v.kind != UploadResourceKind::vertex_buffer || idx.kind != UploadResourceKind::index_buffer ||
+            v.element_bytes != d.program->buffers[0].stride || idx.element_bytes != 2 ||
+            d.first_vertex != 0 || d.vertex_count != v.elements || !d.index_count ||
+            d.first_index % 3 || d.index_count % 3 ||
+            std::uint64_t{d.first_index} + d.index_count > idx.elements)
+            return fail(d.name, "invalid vertex or index range");
+        for (std::uint64_t i = d.first_index; i < std::uint64_t{d.first_index} + d.index_count; ++i) {
+            std::uint16_t index;
+            std::memcpy(&index, idx.data + i*2, 2);
+            if (index >= d.vertex_count) return fail(d.name, "index references missing vertex");
+        }
+        if (textured != (d.texture_resource != kNoHandle) ||
+            (textured && (d.texture_resource >= resources.size() ||
+                          resources[d.texture_resource].kind != UploadResourceKind::texture)))
+            return fail(d.name, "invalid texture binding");
+        const auto& p = d.pipeline;
+        if (static_cast<unsigned>(p.alpha_test) > static_cast<unsigned>(sm::CompareOp::always) ||
+            static_cast<unsigned>(p.depth_test) > static_cast<unsigned>(sm::CompareOp::always) ||
+            static_cast<unsigned>(p.blend_src) > static_cast<unsigned>(sm::BlendFactor::one_minus_dst_color) ||
+            static_cast<unsigned>(p.blend_dst) > static_cast<unsigned>(sm::BlendFactor::one_minus_dst_color) ||
+            static_cast<unsigned>(p.blend_op) > static_cast<unsigned>(sm::BlendOp::max) ||
+            static_cast<unsigned>(p.color_write) > static_cast<unsigned>(sm::ColorWrite::rgba) ||
+            static_cast<unsigned>(p.cull) > static_cast<unsigned>(sm::Cull::front) || p.alpha_ref > 255)
+            return fail(d.name, "invalid pipeline state");
+    }
+    return true;
+}
+
 bool record_car_commands(const PreparedCarScene& scene, const RenderOptions& options,
                          const RenderLimits& limits, std::size_t generated_texture_source,
                          RecordedCommands& commands, std::string& error) {

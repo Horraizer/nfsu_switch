@@ -19,6 +19,11 @@ track draw-list dependencies through `cmake/draw_libraries.cmake`, on both
 platforms. They do not change either application's rendering path. See
 [`DRAW_COMMANDS.md`](DRAW_COMMANDS.md) for the command contract and tests.
 
+Issue #146 adds `nfsu_switch_deko3d`, which executes those commands with
+deko3d and packages the checked offline shaders in its NRO RomFS.
+[DEKO3D_RENDERER.md](DEKO3D_RENDERER.md) covers running it, ownership,
+synchronization and the hardware evidence still needed.
+
 ## What it builds
 
 | Target | Output, under `build-switch/switch/` | What it is |
@@ -30,6 +35,8 @@ platforms. They do not change either application's rendering path. See
 | `nfsu_switch_assets` | `nfsu_switch_assets.elf` | The asset check of issue #47: it reads the config file `sdmc:/config/nfsu_switch/assets.cfg` if there is one, checks that the SD card holds the 12 retail files the first lap needs - by name, size and SHA-256 - and shows the report and the files still to copy on screen; + exits. [`SWITCH_ASSETS.md`](SWITCH_ASSETS.md). |
 | `nfsu_switch_assets_nro` | `nfsu_switch_assets.nro`, `nfsu_switch_assets.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_assets`. |
 | `nfsu_switch_shaders` | `shaders/*.dksh`, `shaders/*.tgsi` | Every GLSL stage a manifest in `shaders/` names, compiled by `uam`, and each manifest checked against the result. |
+| `nfsu_switch_deko3d` | `nfsu_switch_deko3d.elf` | The stock scene recorded by #145 and executed on a deko3d graphics queue; 1280x720, + exits, read-only SD inputs. |
+| `nfsu_switch_deko3d_nro` | `nfsu_switch_deko3d.nro`, `nfsu_switch_deko3d.nacp` | The GPU application packaged with a NACP and RomFS containing the three checked offline shader stages. |
 
 Under `build-switch/` itself, the configure also builds the car-path
 libraries `nfsu_switch_car` links: `nfsu_image`, `nfsu_core`,
@@ -43,7 +50,8 @@ console's filesystem service `nfsu_posix_file_system`
 (`cmake/asset_libraries.cmake`).
 
 `nfsu_switch_app` links libnx, which devkitPro's platform file adds to every
-link, and nothing else. Neither application loads a shader. The CTest suite
+link, and nothing else. The original minimal and CPU car applications load
+no shader; the #146 application loads only its packaged offline blobs. The CTest suite
 runs on the build machine, not on a console:
 
 | Test | What it checks |
@@ -53,6 +61,7 @@ runs on the build machine, not on a console:
 | `nfsu_switch_nro` | The ELF is AArch64; the NRO has its `NRO0` header, an `ASET` section, the icon and a 0x4000-byte NACP titled `nfsu_switch`; the reader refuses a file that is not an NRO. |
 | `nfsu_switch_car_nro` | The same checks for `nfsu_switch_car.nro`, whose NACP is titled `nfsu_switch_car`. |
 | `nfsu_switch_assets_nro` | The same checks for `nfsu_switch_assets.nro`, whose NACP is titled `nfsu_switch_assets`. |
+| `nfsu_switch_deko3d_nro` | The GPU application's AArch64 ELF, NRO and NACP title, then its bounded RomFS section containing the exact bytes of every checked shader stage. |
 
 The desktop programs, the other libraries and every test are not configured
 for the console: the top-level `CMakeLists.txt` includes
@@ -71,7 +80,7 @@ any of them.
   | --- | --- |
   | `devkitA64` (`devkita64-gcc`, `devkita64-binutils`) | the `aarch64-none-elf-` compilers and tools |
   | `libnx` | `libnx.a`, `switch.specs`, the headers, the default icon |
-  | `deko3d` | `libdeko3d.a` and `deko3d.h`; checked now, linked by the renderer later |
+| `deko3d` | `libdeko3d.a` and `deko3d.h`; linked by `nfsu_switch_deko3d` (issue #146) |
   | `uam` | the offline shader compiler |
   | `switch-tools` | `elf2nro`, `nacptool` |
   | `switch-cmake`, `devkita64-cmake`, `dkp-cmake-common-utils` | devkitPro's CMake toolchain and platform files |
@@ -651,10 +660,9 @@ NRO.
   of the left side came from the NRO of pull request #160; that the NRO
   built from this change shows wheels there and reports its new pin
   `EQUAL` is what the desktop frames say.
-- There is no deko3d device. `nfsu_switch_car` draws with the CPU reference
-  renderer; neither application loads a shader, and the compiled `.dksh`
-  files are not packaged into an NRO's RomFS; how the deko3d renderer carries
-  them is its decision.
+- `nfsu_switch_car` still draws with the CPU reference renderer. Issue #146
+  adds a separate deko3d application with offline shaders in RomFS; its
+  device, upload, presentation and exit paths have not run on hardware.
 - Only the car-path libraries are compiled for the console, the skin,
   inspection and controller layers among them since issue #148. Whether
   the track and platform layers build against devkitA64's newlib is
