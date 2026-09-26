@@ -34,6 +34,17 @@ namespace nfsu {
 // no file and no clock; the same inputs give the same sequence of loads and
 // releases and the same per-step bytes, and track_residency_sequence_sha256
 // pins the whole sequence.
+//
+// The same in every build, too: the step and the path sampling call no
+// library mathematics at all. A square root is the one operation they need
+// that IEEE 754 arithmetic does not spell directly, and a compiler is free to
+// take it from the C library in one build and inline the hardware
+// instruction in another; MinGW's libm sqrt is not correctly rounded, so the
+// two disagreed (review comment 3630, F1). track_residency_sqrt below is
+// correctly rounded by construction, in integer arithmetic, and every root
+// here goes through it. The library is also compiled with floating-point
+// contraction disabled, on the desktop and on the console, where a
+// fused-instruction census checks its object (switch/CMakeLists.txt).
 
 // ---------------------------------------------------------------------------
 // The tracked slot: 0x00444870 and 0x00444FB0
@@ -92,9 +103,12 @@ constexpr std::uint64_t kTrackResidencyPlacementSlack = 0x400;
 // ...the pool's largest free block (0x00565810) less this, 0x00444DC9
 // `sub eax, 0x58`.
 constexpr std::uint64_t kTrackResidencyBlockHeader = 0x58;
-// 0x00444F00 and 0x00444F08 `cmp ..., 0x9c3c00`: one call of 0x00444EE0
-// stops releasing, and gives the frame up, once it has released more than
-// this many bytes.
+// 0x00444F00 and 0x00444F08 `cmp ..., 0x9c3c00` / `jg`: one call of
+// 0x00444EE0 stops releasing, and gives the frame up, once it has released
+// more than this many bytes. The test comes BEFORE each release, so a call
+// that has released anything up to this many bytes still releases one more
+// record of any size: one call can release this many bytes plus its largest
+// record, and a limit of 0 still releases one.
 constexpr std::uint64_t kTrackResidencyReleasePassLimit = 0x9C3C00;
 // 0x006CC8B0: the counter 0x00444D47 stamps a request with advances 60
 // times a second (0x00585D70). One step of this model is one such tick.
@@ -144,14 +158,33 @@ struct TrackResidencyLookAhead {
 // from the car, before the first point with no accepted key
 // (0x00444A7B..0x00444A9C).
 //
-// Retail computes the offsets in x87 registers and this in float32, with
-// contraction disabled; the two can pick different zones for a point within
+// Retail computes the offsets in x87 registers (fsqrt at 0x00444887) and
+// this in float32, with contraction disabled and the speed's root taken by
+// track_residency_sqrtf; the two can pick different zones for a point within
 // rounding of a polygon edge.
 std::int32_t track_residency_slot_key(
     const TrackZoneReport& zones,
     const TrackZoneSectionList* route,
     const TrackResidencySample& sample,
     TrackResidencyLookAhead* detail = nullptr) noexcept;
+
+// ---------------------------------------------------------------------------
+// A square root that is the same in every build
+// ---------------------------------------------------------------------------
+
+// The square root of x rounded to the nearest double, ties to even - the
+// result IEEE 754 requires of sqrt - computed with integer arithmetic only:
+// no library call, no hardware square root, no floating-point operation. So
+// it is the same in a build that would have called the C library and in one
+// that would have inlined sqrtsd. +0 and -0 give themselves, +infinity gives
+// itself, and a negative number or a NaN gives a quiet NaN.
+double track_residency_sqrt(double x) noexcept;
+
+// The same for a float: track_residency_sqrt of the float widened to double,
+// then narrowed. Rounding twice is harmless here because 53 >= 2 * 24 + 2
+// (Figueroa: a square root rounded to p' >= 2p + 2 bits and then to p bits is
+// the square root rounded once to p bits).
+float track_residency_sqrtf(float x) noexcept;
 
 // ---------------------------------------------------------------------------
 // The streamer

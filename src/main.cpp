@@ -4900,6 +4900,40 @@ nfsu::TrackStreamReason stream_path_reason(const nfsu::TrackStreamTable& table,
                : nfsu::TrackStreamReason::zone_list;
 }
 
+// Every problem a load raised, each naming its section, printed once per
+// table record however many resident sets load that record again, as
+// track-whole prints its own. `reported` holds one flag per table record and
+// one more for the file-level issues.
+void print_stream_path_load_issues(const nfsu::TrackStreamLoad& load,
+                                   std::vector<std::uint8_t>& reported) {
+    if (!load.issues.empty() && reported.back() == 0) {
+        reported.back() = 1;
+        print_track_whole_issues("stream", load.issues);
+    }
+    for (const nfsu::TrackStreamSection& section : load.sections) {
+        if (section.record >= reported.size() - 1 || reported[section.record] != 0) {
+            continue;
+        }
+        reported[section.record] = 1;
+        const std::string label =
+            "section " + section.name + " (" + std::to_string(section.number) + ")";
+        print_track_whole_issues(label.c_str(), section.issues);
+        print_track_whole_issues((label + " geometry").c_str(), section.geometry.issues);
+        print_track_whole_issues((label + " object").c_str(), section.objects.issues);
+        for (const nfsu::TextureIssue& issue : section.packs.issues) {
+            std::cerr << label << " pack issue at " << (section.offset + issue.offset)
+                      << ": " << issue.message << '\n';
+        }
+        for (const nfsu::TexturePack& pack : section.packs.packs) {
+            for (const nfsu::TextureIssue& issue : pack.issues) {
+                std::cerr << label << " pack issue at "
+                          << (section.offset + issue.offset) << ": " << issue.message
+                          << '\n';
+            }
+        }
+    }
+}
+
 // Loads exactly `records`, in that order, and builds and costs them as
 // track-whole builds and costs its set.
 bool build_stream_path_scene(const nfsu::TrackStreamTable& table,
@@ -4908,6 +4942,7 @@ bool build_stream_path_scene(const nfsu::TrackStreamTable& table,
                              const std::vector<std::size_t>& records,
                              const nfsu::TrackStreamFiles& files,
                              StreamPathTextureFiles& texture_files,
+                             std::vector<std::uint8_t>& reported,
                              StreamPathScene& out,
                              StreamPathMeasure& measure,
                              std::string& error) {
@@ -4921,6 +4956,7 @@ bool build_stream_path_scene(const nfsu::TrackStreamTable& table,
                                           out.load, error)) {
         return false;
     }
+    print_stream_path_load_issues(out.load, reported);
     const std::vector<std::uint32_t> wanted =
         nfsu::track_region_texture_hashes(out.load.geometry);
     std::vector<nfsu::RenderTextureSource> sources;
@@ -5175,6 +5211,7 @@ int run_track_stream_path(const fs::path& stream_path,
     std::vector<nfsu::TrackResidencyCost> costs;
     std::uint64_t outside = 0;
     bool reports_ok = zones.ok() && table.ok();
+    std::vector<std::uint8_t> reported(table.records.size() + 1, 0);
     if (args.cost == StreamPathCost::table) {
         costs = nfsu::track_residency_table_costs(table);
         std::cout << "cost: table (place the byte count read, hold the bytes"
@@ -5192,7 +5229,8 @@ int run_track_stream_path(const fs::path& stream_path,
         auto scene = std::make_unique<StreamPathScene>();
         StreamPathMeasure measure;
         if (!build_stream_path_scene(table, zones, track, candidate.records, files,
-                                     texture_files, *scene, measure, error)) {
+                                     texture_files, reported, *scene, measure,
+                                     error)) {
             std::cerr << "error: " << error << '\n';
             return 2;
         }
@@ -5204,30 +5242,69 @@ int run_track_stream_path(const fs::path& stream_path,
             std::cerr << "error: " << error << '\n';
             return 2;
         }
+        // Each section's share is an upper bound on what it can add to ANY
+        // resident set (review comment 3630, F4): its valid meshes' vertex
+        // and index bytes, every one of its scenery instances whether or not
+        // it places, and the RGBA8 bytes of every texture its own packs
+        // decode that the candidate geometry wants - decoded from that
+        // section alone, so a texture another pack shadows in the candidate
+        // scene is still charged to every pack that holds it. The texture
+        // files are charged the same way, once, off the top of the budget.
+        // A resident set's measured bytes are then at most the sum of its
+        // shares plus the files', which the step loop below checks.
+        const std::vector<std::uint32_t> wanted =
+            nfsu::track_region_texture_hashes(scene->load.geometry);
+        std::vector<nfsu::RenderTextureSource> section_sources;
+        std::vector<std::size_t> section_owner;
+        nfsu::track_stream_texture_sources(scene->load, &wanted, section_sources,
+                                           section_owner);
+        std::vector<std::uint64_t> section_texture(scene->load.sections.size(), 0);
+        nfsu::RenderTextureLimits texture_limits;
+        texture_limits.max_total_bytes = kTrackWholeTextureBytes;
+        for (std::size_t k = 0; k < section_sources.size(); ++k) {
+            nfsu::RenderTextureSet alone;
+            if (!nfsu::decode_render_texture_sources({section_sources[k]},
+                                                     texture_limits, alone, error)) {
+                std::cerr << "error: " << error << '\n';
+                return 2;
+            }
+            section_texture[section_owner[k]] += alone.decoded_bytes;
+        }
+        for (std::size_t i = 0; i < texture_files.bytes.size(); ++i) {
+            nfsu::RenderTextureSource source;
+            source.bytes = &texture_files.bytes[i];
+            for (const nfsu::TexturePack& pack : texture_files.sets[i].packs) {
+                source.packs.push_back(&pack);
+            }
+            source.complete = texture_files.sets[i].complete;
+            source.wanted = &wanted;
+            nfsu::RenderTextureSet alone;
+            if (!nfsu::decode_render_texture_sources({source}, texture_limits, alone,
+                                                     error)) {
+                std::cerr << "error: " << error << '\n';
+                return 2;
+            }
+            outside += alone.decoded_bytes;
+        }
         costs.assign(table.records.size(), nfsu::TrackResidencyCost{});
         std::uint64_t shares = 0;
         for (std::size_t s = 0; s < scene->load.sections.size(); ++s) {
             const nfsu::TrackStreamSectionCost& c = section_costs[s];
             const std::uint64_t share =
                 c.vertices * nfsu::kTrackVertexStride +
-                c.triangles * nfsu::kFaceStride + c.retained_texture_bytes +
-                c.placed_instances *
+                c.triangles * nfsu::kFaceStride + section_texture[s] +
+                c.instances *
                     static_cast<std::uint64_t>(sizeof(nfsu::PreparedTrackInstance));
             costs[scene->load.sections[s].record].place_bytes = share;
             costs[scene->load.sections[s].record].held_bytes = share;
             shares += share;
         }
-        for (const nfsu::RenderTexture& texture : scene->scene.region.textures) {
-            if (texture.source >= scene->section_sources) {
-                outside += texture.rgba.size();
-            }
-        }
-        std::cout << "cost: prepared (each section's share of the scene of the "
-                  << candidate.records.size()
-                  << " sections any zone lists: its vertex, index, instance and"
-                     " RGBA8 texture bytes)\n";
+        std::cout << "cost: prepared (for each of the " << candidate.records.size()
+                  << " sections any zone lists, an upper bound on what it adds to"
+                     " any resident set: its vertex and index bytes, all its"
+                     " instances, and every wanted texture its packs decode)\n";
         std::cout << "cost: shares " << shares << " texture files " << outside
-                  << " scene " << measure.resident_bytes << '\n';
+                  << " candidate scene measured " << measure.resident_bytes << '\n';
     }
 
     const nfsu::MemoryBudget switch_budget = nfsu::switch_memory_budget();
@@ -5290,6 +5367,12 @@ int run_track_stream_path(const fs::path& stream_path,
     nfsu::Sha256 cost_hash;
     std::size_t next_frame = 0;
     std::uint64_t frames_written = 0;
+    // In the prepared currency the budget and the measured bytes are the same
+    // bytes, so every step's resident set is checked against it; the shares
+    // above make an excess impossible, and this is what would report one.
+    const bool measured_currency = args.cost == StreamPathCost::prepared;
+    std::uint64_t measured_over_steps = 0;
+    std::uint64_t measured_largest = 0;
     for (const nfsu::TrackResidencyStep& step : run.steps) {
         for (const std::size_t r : step.releases) {
             resident.erase(std::remove(resident.begin(), resident.end(), r),
@@ -5314,8 +5397,8 @@ int run_track_stream_path(const fs::path& stream_path,
                 if (!resident.empty()) {
                     auto scene = std::make_unique<StreamPathScene>();
                     if (!build_stream_path_scene(table, zones, track, resident,
-                                                 files, texture_files, *scene,
-                                                 measure, error)) {
+                                                 files, texture_files, reported,
+                                                 *scene, measure, error)) {
                         std::cerr << "error: " << error << '\n';
                         return 2;
                     }
@@ -5349,16 +5432,27 @@ int run_track_stream_path(const fs::path& stream_path,
                                       std::to_string(now.resident_bytes) + "\n";
         cost_hash.update(cost_line.data(), cost_line.size());
 
+        const bool measured_over =
+            measured_currency && now.resident_bytes > budget;
+        if (measured_currency && now.resident_bytes > measured_largest) {
+            measured_largest = now.resident_bytes;
+        }
+        measured_over_steps += measured_over ? 1U : 0U;
         const bool frame_step = step.on_path && next_frame < frame_samples.size() &&
                                 frame_samples[next_frame] == step.sample;
         const bool event = step.rebuilt || !step.loads.empty() ||
                            !step.releases.empty() || step.over_budget ||
                            step.release_capped || step.unplaced_bytes != 0 ||
-                           frame_step;
+                           frame_step || measured_over;
         if (args.list == StreamPathList::all ||
             (args.list == StreamPathList::events && event)) {
             std::cout << nfsu::track_residency_step_line(table, step) << " set "
-                      << set << " resident bytes " << now.resident_bytes << '\n';
+                      << set << " resident bytes " << now.resident_bytes;
+            if (measured_over) {
+                std::cout << " MEASURED OVER the budget by "
+                          << (now.resident_bytes - budget);
+            }
+            std::cout << '\n';
         }
         if (!frame_step) {
             continue;
@@ -5373,7 +5467,8 @@ int run_track_stream_path(const fs::path& stream_path,
             auto scene = std::make_unique<StreamPathScene>();
             StreamPathMeasure again;
             if (!build_stream_path_scene(table, zones, track, resident, files,
-                                         texture_files, *scene, again, error)) {
+                                         texture_files, reported, *scene, again,
+                                         error)) {
                 std::cerr << "error: " << error << '\n';
                 return 2;
             }
@@ -5455,6 +5550,14 @@ int run_track_stream_path(const fs::path& stream_path,
     std::cout << "peak: resident bytes " << peak_bytes << " at step " << peak_step
               << " set " << peak_set << " sections "
               << sets[peak_set].records.size() << '\n';
+    if (measured_currency) {
+        std::cout << "measured: every step against the budget " << budget
+                  << ": largest " << measured_largest << ", steps over "
+                  << measured_over_steps << '\n';
+    } else {
+        std::cout << "measured: not compared with the budget, which is in the"
+                     " table's bytes; the rows above compare it with #52\n";
+    }
     print_stream_path_rows(sets[peak_set].rows);
     std::cout << "sequence: sha256 "
               << nfsu::sha256_hex(nfsu::track_residency_sequence_sha256(table, run))

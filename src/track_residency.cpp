@@ -1,9 +1,10 @@
 #include "nfsu/track_residency.h"
 
 #include <algorithm>
-#include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
+#include <locale>
 #include <sstream>
 
 namespace nfsu {
@@ -390,6 +391,9 @@ private:
         unplace();
         std::uint64_t unplaced = place_pass();
         while (unplaced != 0) {
+            // 0x00444F00 / 0x00444F06 `jg`: the limit is tested before each
+            // release, so the release after the test may carry the total
+            // past it by one whole record.
             if (released > options_.release_pass_limit) {
                 // 0x00444F42: the frame is given up. The tentative
                 // placements stay until the next pass frees them first.
@@ -510,8 +514,9 @@ std::int32_t track_residency_slot_key(
     const float pz = sample.position[1];
     const float vx = sample.velocity[0];
     const float vz = sample.velocity[1];
-    // 0x00444877..0x00444887.
-    const float speed = std::sqrt(vx * vx + vz * vz);
+    // 0x00444877..0x00444887: fsqrt in retail, a correctly rounded root
+    // here, so that no build takes it from the C library.
+    const float speed = track_residency_sqrtf(vx * vx + vz * vz);
     out.route_query_skipped = speed > kTrackResidencyRouteQuerySpeed;
     float dx = 0.0F;
     float dz = 0.0F;
@@ -561,6 +566,89 @@ std::int32_t track_residency_slot_key(
     }
     out.key = result;
     return result;
+}
+
+double track_residency_sqrt(double x) noexcept {
+    std::uint64_t bits = 0;
+    std::memcpy(&bits, &x, sizeof(bits));
+    const std::uint64_t sign = bits >> 63;
+    const std::uint64_t biased = (bits >> 52) & 0x7FFU;
+    std::uint64_t fraction = bits & ((std::uint64_t{1} << 52) - 1U);
+    if (biased == 0 && fraction == 0) {
+        return x;  // +0 and -0
+    }
+    if (biased == 0x7FFU && fraction == 0 && sign == 0) {
+        return x;  // +infinity
+    }
+    if (sign != 0 || biased == 0x7FFU) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    // x = m * 2^e with m in [2^52, 2^53), subnormals normalised.
+    std::uint64_t m = 0;
+    std::int64_t e = 0;
+    if (biased == 0) {
+        m = fraction;
+        e = -1074;
+        while (m < (std::uint64_t{1} << 52)) {
+            m <<= 1U;
+            --e;
+        }
+    } else {
+        m = fraction | (std::uint64_t{1} << 52);
+        e = static_cast<std::int64_t>(biased) - 1075;
+    }
+    // An even exponent, so that sqrt(2^e) is a power of two: m in [2^52, 2^54).
+    if ((e & 1) != 0) {
+        m <<= 1U;
+        --e;
+    }
+    // The integer root of N = m * 2^54, a number of at most 108 bits, one
+    // bit a turn from the top pair down (the digit-by-digit method). The
+    // root q lies in [2^53, 2^54): 53 bits, one more for rounding, and the
+    // remainder says whether anything lies below that. N's low 54 bits are
+    // zero, so its pairs come from m and then are zero; the remainder stays
+    // below 2q + 1 < 2^55, so nothing here needs more than 64 bits.
+    std::uint64_t q = 0;
+    std::uint64_t r = 0;
+    for (int pair = 53; pair >= 0; --pair) {
+        const int shift = 2 * pair - 54;
+        const std::uint64_t digits = shift >= 0 ? (m >> shift) & 3U : 0U;
+        r = (r << 2U) | digits;
+        const std::uint64_t trial = (q << 2U) | 1U;
+        if (r >= trial) {
+            r -= trial;
+            q = (q << 1U) | 1U;
+        } else {
+            q <<= 1U;
+        }
+    }
+    // sqrt(x) = sqrt(N) * 2^(e/2 - 27) = q.rest * 2^(e/2 - 27). Round the
+    // 54-bit q to 53 bits, to nearest and ties to even; an exact tie cannot
+    // happen for a root, but the rule is the standard's.
+    std::uint64_t mantissa = q >> 1U;
+    const bool half = (q & 1U) != 0;
+    const bool below = r != 0;
+    std::int64_t exponent = e / 2 - 26;  // of mantissa's lowest bit
+    if (half && (below || (mantissa & 1U) != 0)) {
+        ++mantissa;
+        if (mantissa == (std::uint64_t{1} << 53)) {
+            mantissa >>= 1U;
+            ++exponent;
+        }
+    }
+    // mantissa * 2^exponent with mantissa in [2^52, 2^53): the biased
+    // exponent of the result is exponent + 52 + 1023. The root of any
+    // positive double is a normal double, so it is always in range.
+    const std::uint64_t out_biased = static_cast<std::uint64_t>(exponent + 1075);
+    const std::uint64_t out =
+        (out_biased << 52) | (mantissa & ((std::uint64_t{1} << 52) - 1U));
+    double result = 0.0;
+    std::memcpy(&result, &out, sizeof(result));
+    return result;
+}
+
+float track_residency_sqrtf(float x) noexcept {
+    return static_cast<float>(track_residency_sqrt(static_cast<double>(x)));
 }
 
 const char* track_residency_policy_name(TrackResidencyPolicy policy) noexcept {
@@ -732,7 +820,9 @@ bool parse_field(const std::string& text, double& value) {
     std::istringstream stream(text);
     stream.imbue(std::locale::classic());
     stream >> value;
-    return !stream.fail() && std::isfinite(value);
+    // Finite: infinity minus itself is a NaN, and a NaN fails every
+    // comparison.
+    return !stream.fail() && value - value == 0.0;
 }
 
 } // namespace
@@ -785,7 +875,8 @@ bool parse_track_residency_path(
         TrackResidencyVertex vertex;
         for (std::size_t k = 0; k < 3; ++k) {
             if (!parse_field(fields[k], vertex.slot[k]) ||
-                std::fabs(vertex.slot[k]) > limits.max_coordinate) {
+                vertex.slot[k] > limits.max_coordinate ||
+                vertex.slot[k] < -limits.max_coordinate) {
                 error = "path line " + std::to_string(line_number) + " field " +
                         std::to_string(k + 1) + " is not a decimal number from " +
                         std::to_string(-limits.max_coordinate) + " to " +
@@ -821,7 +912,7 @@ double track_residency_path_length(
     for (std::size_t k = 1; k < vertices.size(); ++k) {
         const double dx = vertices[k].slot[0] - vertices[k - 1].slot[0];
         const double dz = vertices[k].slot[1] - vertices[k - 1].slot[1];
-        length += std::sqrt(dx * dx + dz * dz);
+        length += track_residency_sqrt(dx * dx + dz * dz);
     }
     return length;
 }
@@ -836,7 +927,9 @@ bool sample_track_residency_path(
     const TrackResidencyPathLimits& limits) {
     samples.clear();
     points.clear();
-    if (!(speed > 0.0) || !std::isfinite(speed)) {
+    // Finite and positive: infinity minus itself is a NaN, and a NaN fails
+    // every comparison.
+    if (!(speed > 0.0) || !(speed - speed == 0.0)) {
         error = "the speed must be a positive number";
         return false;
     }
@@ -860,7 +953,7 @@ bool sample_track_residency_path(
     for (std::size_t k = 1; k < vertices.size(); ++k) {
         const double dx = vertices[k].slot[0] - vertices[k - 1].slot[0];
         const double dz = vertices[k].slot[1] - vertices[k - 1].slot[1];
-        const double length = std::sqrt(dx * dx + dz * dz);
+        const double length = track_residency_sqrt(dx * dx + dz * dz);
         if (!(length > 0.0)) {
             continue;
         }
@@ -878,13 +971,25 @@ bool sample_track_residency_path(
         return false;
     }
     const double step = speed / static_cast<double>(ticks_per_second);
-    const double count_real = std::ceil(total / step);
-    if (!(count_real + 1.0 <= static_cast<double>(limits.max_samples))) {
+    const double steps = total / step;
+    // The ceiling of `steps` without a library call: it is below the sample
+    // limit here, so the truncation fits and the comparison is exact.
+    if (!(steps + 1.0 <= static_cast<double>(limits.max_samples))) {
         error = "the path needs more than " + std::to_string(limits.max_samples) +
                 " samples at this speed";
         return false;
     }
-    const std::size_t count = static_cast<std::size_t>(count_real) + 1;
+    std::size_t whole = static_cast<std::size_t>(steps);
+    if (static_cast<double>(whole) < steps) {
+        ++whole;
+    }
+    if (!(static_cast<double>(whole) + 1.0 <=
+          static_cast<double>(limits.max_samples))) {
+        error = "the path needs more than " + std::to_string(limits.max_samples) +
+                " samples at this speed";
+        return false;
+    }
+    const std::size_t count = whole + 1;
     samples.reserve(count);
     points.reserve(count);
     std::size_t segment = 0;

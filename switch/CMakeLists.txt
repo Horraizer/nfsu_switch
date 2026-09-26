@@ -170,3 +170,22 @@ if(NFSU_BUILD_TESTS)
         nfsu_switch_shader_blob_guards nfsu_switch_nro nfsu_switch_car_nro
         PROPERTIES TIMEOUT 60)
 endif()
+
+# The section streamer of issue #157, which cmake/residency_libraries.cmake
+# declares for both configures. Nothing on the console links it yet; building
+# it here is what lets this tree check that it compiles on the console to the
+# same float arithmetic as on the desktop: its object holds no fused
+# multiply-add. Appended as one block so that nothing above is reordered.
+if(NFSU_BUILD_TESTS)
+    if(NOT CMAKE_OBJDUMP)
+        message(FATAL_ERROR "no objdump was found for the Switch toolchain")
+    endif()
+    add_test(NAME nfsu_switch_track_residency_fma_census
+        COMMAND ${CMAKE_COMMAND}
+                -DOBJDUMP=${CMAKE_OBJDUMP}
+                "-DOBJECTS=$<TARGET_OBJECTS:nfsu_track_residency>"
+                -DLABEL=nfsu_track_residency
+                -P ${PROJECT_SOURCE_DIR}/tests/track_residency_fma_census.cmake)
+    set_tests_properties(nfsu_switch_track_residency_fma_census
+        PROPERTIES TIMEOUT 60)
+endif()

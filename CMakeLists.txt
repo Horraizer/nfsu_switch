@@ -32,6 +32,8 @@ endfunction()
 # are and why each is there.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/car_libraries.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/draw_libraries.cmake)
+# The section streamer (issue #157), for both configures.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/residency_libraries.cmake)
 
 # The Switch build configures the shared car and draw libraries and switch/,
 # and nothing below this point: the desktop programs, the other libraries and every test of
@@ -1132,27 +1134,13 @@ if(NFSU_BUILD_TESTS)
         PROPERTIES TIMEOUT 60)
 endif()
 
-# Section residency along a path (issue #157): the streamer of speed.exe -
-# the zone key a car's look-ahead picks, the request it rebuilds when that
-# key changes, and the placements and releases that keep the wanted sections
-# within a byte budget - as a deterministic function of a streaming table, a
-# zone report, a cost per record and one position per fixed step. It reads
-# no file and no clock, so it is neutral, and it links nfsu_track_stream for
-# the table and nfsu_sha256 for the sequence hash. Its look-ahead picks a
-# zone with the strict polygon test of 0x005679B0, so floating-point
-# contraction is disabled for the reason nfsu_track_zones disables it. See
+# Section residency along a path (issue #157). nfsu_track_residency is
+# declared for both configures in cmake/residency_libraries.cmake, with its
+# floating-point options; on the desktop it also links nfsu_track_stream,
+# whose table lookup and zone test it calls. It reads no file and no clock
+# and calls no library mathematics, so it is neutral. See
 # docs/TRACK_STREAMING.md.
-add_library(nfsu_track_residency
-    src/track_residency.cpp
-)
-
-target_link_libraries(nfsu_track_residency PUBLIC nfsu_track_stream nfsu_sha256)
-nfsu_enable_warnings(nfsu_track_residency)
-if(MSVC)
-    target_compile_options(nfsu_track_residency PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_track_residency PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
+target_link_libraries(nfsu_track_residency PUBLIC nfsu_track_stream)
 list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_track_residency)
 
 # `track-stream-path` is the one command that needs it; linked on its own

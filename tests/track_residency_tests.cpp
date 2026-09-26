@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -752,9 +753,11 @@ void test_release_cap() {
             check(step.loads.empty(), "a capped step starts no read");
         }
     }
-    // The first release passes the limit of 250 and gives the step up; the
-    // next step's call starts its count again, releases one more and fits
-    // both.
+    // The limit is tested before each release (0x00444F00), so the first
+    // release goes ahead with 0 released and carries the call to 300, past
+    // the limit of 250 by one whole record; the next test gives the step up.
+    // The next step's call starts its count again, releases one more and
+    // fits both.
     check_text(capped, "101;", "one release, then the step is given up");
     check_text(history(corridor, out, true), "-101 -111 +104 +114",
                "the releases finish on the next step");
@@ -856,8 +859,10 @@ void test_request_limit() {
           "the 256th loads and the 257th does not");
 }
 
-// The release limit is exclusive: a call may release exactly the limit and
-// go on.
+// The release limit is tested before each release and is exclusive: a call
+// that has released exactly the limit goes on and releases one more record,
+// so one call can release the limit plus a record (0x00444F00 / 0x00444F06
+// `jg`). A limit of 0 still releases one record a call.
 void test_release_cap_boundary() {
     const Corridor corridor = make_corridor();
     std::vector<nfsu::TrackResidencySample> samples;
@@ -877,12 +882,84 @@ void test_release_cap_boundary() {
                        numbers(corridor, step.loads);
         }
     }
-    check_text(one_step, "101 111 / 104 114", "both releases and both loads in one step");
+    check_text(one_step, "101 111 / 104 114",
+               "one call releases 600 bytes against a limit of 300");
     options.release_pass_limit = 299;
     if (run(corridor, samples, options, out)) {
         check_eq_u64(out.release_capped_steps, 1, "299 caps after the first release");
     }
+    options.release_pass_limit = 0;
+    if (run(corridor, samples, options, out)) {
+        std::string capped;
+        for (const nfsu::TrackResidencyStep& step : out.steps) {
+            if (step.release_capped) {
+                capped += numbers(corridor, step.releases) + ";";
+            }
+        }
+        check_text(capped, "101;", "a limit of 0 still releases one record a call");
+        check_text(history(corridor, out, true), "-101 -111 +104 +114",
+                   "a limit of 0: the second release on the next step");
+    }
 }
+
+// Review comment 3630, F3a: the release order by stamp, where one release is
+// enough and the candidates' stamps differ. After A then B, the unrequested
+// loaded sections in C are 111, last requested when A was entered, and 101,
+// 102 and 112, last requested when B was. 0x00444780 releases the smallest
+// stamp: 111, not 101, which is first in table order among the rest.
+void test_release_prefers_least_recent() {
+    const Corridor corridor = make_corridor();
+    std::vector<nfsu::TrackResidencySample> samples;
+    repeat(samples, 50.0F, 4);   // A
+    repeat(samples, 150.0F, 6);  // B: 112 and 103 fit beside the start set
+    repeat(samples, 250.0F, 6);  // C: 113 fits, 104 needs one release
+    nfsu::TrackResidencyRun out;
+    if (!run(corridor, samples, plain_options(3200), out)) {
+        return;
+    }
+    check_text(history(corridor, out, true), "+112 +103 -111 +113 +104",
+               "the least recently requested goes, not the first in table order");
+    check_eq_u64(out.releases, 1, "one release is enough");
+    check_text(resident_numbers(corridor, out),
+               "2500 2400 2600 2499 2603 101 102 112 103 113 104", "resident at the end");
+}
+
+// Review comment 3630, F3b: 0x00444F20 `jg` counts a release that freed no
+// bytes as no release at all. The zero-byte section is released, and the
+// call then gives the request up (0x00444F23 -> 0x00444830 -> 0x00444F48)
+// although 101 could have been released next and would have made room.
+void test_zero_byte_release_gives_up() {
+    const Corridor corridor = make_corridor();
+    std::vector<nfsu::TrackResidencySample> samples;
+    repeat(samples, 50.0F, 4);   // A
+    repeat(samples, 150.0F, 6);  // B
+    repeat(samples, 250.0F, 6);  // C
+    std::vector<nfsu::TrackResidencyCost> costs =
+        nfsu::track_residency_table_costs(corridor.table);
+    costs[record_of(corridor, 111)].place_bytes = 0;
+    costs[record_of(corridor, 111)].held_bytes = 0;
+    nfsu::TrackResidencyRun out;
+    std::string error;
+    check(nfsu::simulate_track_residency(corridor.table, corridor.zones, kTrack, costs,
+                                         samples, plain_options(2900), out, error),
+          "the run: " + error);
+    check_text(history(corridor, out, true), "+112 +103 -111 +113",
+               "the zero-byte release ends the call, and 104 is given up");
+    std::size_t over = 0;
+    for (const nfsu::TrackResidencyStep& step : out.steps) {
+        if (step.over_budget) {
+            ++over;
+            check(step.on_path && step.unplaced_bytes == 300 &&
+                      numbers(corridor, step.releases) == "111",
+                  "the step that gives 104 up");
+        }
+    }
+    check_eq_u64(over, 1, "one step gives up");
+    check(out.resident[record_of(corridor, 101)] == 1 &&
+              out.resident[record_of(corridor, 104)] == 0,
+          "101 stays and 104 never loads");
+}
+
 
 void test_no_route_record() {
     const Corridor corridor = make_corridor(false);
@@ -946,6 +1023,146 @@ void test_sequence_hash() {
                                                                      moved)) != a,
               "a different path gives a different hash");
     }
+}
+
+// ---------------------------------------------------------------------------
+// The square root (review comment 3630, F1)
+// ---------------------------------------------------------------------------
+
+double double_of(std::uint64_t bits) {
+    double value = 0.0;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+std::uint64_t bits_of(double value) {
+    std::uint64_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+// 64 x 64 -> 128 bits, as (high, low), from 32-bit halves.
+void multiply_wide(std::uint64_t a, std::uint64_t b, std::uint64_t& high,
+                   std::uint64_t& low) {
+    const std::uint64_t a0 = a & 0xFFFFFFFFU;
+    const std::uint64_t a1 = a >> 32U;
+    const std::uint64_t b0 = b & 0xFFFFFFFFU;
+    const std::uint64_t b1 = b >> 32U;
+    const std::uint64_t p00 = a0 * b0;
+    const std::uint64_t p01 = a0 * b1;
+    const std::uint64_t p10 = a1 * b0;
+    const std::uint64_t p11 = a1 * b1;
+    const std::uint64_t middle = (p00 >> 32U) + (p01 & 0xFFFFFFFFU) + (p10 & 0xFFFFFFFFU);
+    low = (p00 & 0xFFFFFFFFU) | (middle << 32U);
+    high = p11 + (p01 >> 32U) + (p10 >> 32U) + (middle >> 32U);
+}
+
+// -1, 0 or 1 as a * 2^sa compares with b * 2^sb, for 128-bit a and b given as
+// (high, low) and shifts that keep both within 128 bits.
+int compare_scaled(std::uint64_t ah, std::uint64_t al, int sa, std::uint64_t bh,
+                   std::uint64_t bl, int sb) {
+    const int common = sa < sb ? sa : sb;
+    auto shift_left = [](std::uint64_t& h, std::uint64_t& l, int by) {
+        for (int k = 0; k < by; ++k) {
+            h = (h << 1U) | (l >> 63U);
+            l <<= 1U;
+        }
+    };
+    shift_left(ah, al, sa - common);
+    shift_left(bh, bl, sb - common);
+    if (ah != bh) {
+        return ah < bh ? -1 : 1;
+    }
+    if (al != bl) {
+        return al < bl ? -1 : 1;
+    }
+    return 0;
+}
+
+// True when y is sqrt(x) rounded to nearest, checked exactly: x lies strictly
+// between the squares of the two midpoints around y. x and y positive,
+// normal, and not so far apart in exponent that the shifts overflow (the
+// callers stay within [2^-200, 2^200]).
+bool is_correctly_rounded_root(double x, double y) {
+    const std::uint64_t xb = bits_of(x);
+    const std::uint64_t yb = bits_of(y);
+    const std::uint64_t xm = (xb & ((std::uint64_t{1} << 52) - 1U)) | (std::uint64_t{1} << 52);
+    const int xe = static_cast<int>((xb >> 52) & 0x7FFU) - 1075;
+    const std::uint64_t ym = (yb & ((std::uint64_t{1} << 52) - 1U)) | (std::uint64_t{1} << 52);
+    const int ye = static_cast<int>((yb >> 52) & 0x7FFU) - 1075;
+    // Midpoints (2ym - 1) * 2^(ye-1) and (2ym + 1) * 2^(ye-1); below a power
+    // of two the lower neighbour is half as far: (4ym - 1) * 2^(ye-2).
+    std::uint64_t lh = 0;
+    std::uint64_t ll = 0;
+    int ls = 0;
+    if (ym == (std::uint64_t{1} << 52)) {
+        multiply_wide(4 * ym - 1, 4 * ym - 1, lh, ll);
+        ls = 2 * (ye - 2);
+    } else {
+        multiply_wide(2 * ym - 1, 2 * ym - 1, lh, ll);
+        ls = 2 * (ye - 1);
+    }
+    std::uint64_t uh = 0;
+    std::uint64_t ul = 0;
+    multiply_wide(2 * ym + 1, 2 * ym + 1, uh, ul);
+    const int us = 2 * (ye - 1);
+    // x as a 128-bit number shifted to meet each bound: compare x * 2^xe.
+    const int lower = compare_scaled(0, xm, xe, lh, ll, ls);
+    const int upper = compare_scaled(0, xm, xe, uh, ul, us);
+    return lower > 0 && upper < 0;
+}
+
+void test_sqrt() {
+    // Exact squares, both signs of zero, infinity, a negative and a NaN.
+    check(nfsu::track_residency_sqrt(4.0) == 2.0 && nfsu::track_residency_sqrt(1.0) == 1.0 &&
+              nfsu::track_residency_sqrt(0.25) == 0.5 &&
+              nfsu::track_residency_sqrt(1004004.0) == 1002.0,
+          "exact squares");
+    check(bits_of(nfsu::track_residency_sqrt(0.0)) == 0 &&
+              bits_of(nfsu::track_residency_sqrt(-0.0)) == (std::uint64_t{1} << 63),
+          "both zeros keep their sign");
+    const double infinity = std::numeric_limits<double>::infinity();
+    check(nfsu::track_residency_sqrt(infinity) == infinity, "infinity");
+    const double negative = nfsu::track_residency_sqrt(-1.0);
+    const double nan = nfsu::track_residency_sqrt(std::numeric_limits<double>::quiet_NaN());
+    check(negative != negative && nan != nan, "a negative and a NaN give a NaN");
+    // Bit patterns of correctly rounded roots, from a correctly rounded
+    // reference (Python's math.sqrt over the hardware instruction).
+    check_eq_u64(bits_of(nfsu::track_residency_sqrt(2.0)), 0x3FF6A09E667F3BCDULL, "sqrt 2");
+    check_eq_u64(bits_of(nfsu::track_residency_sqrt(3.0)), 0x3FFBB67AE8584CAAULL, "sqrt 3");
+    check_eq_u64(bits_of(nfsu::track_residency_sqrt(1e-300)), 0x20CA2FE76A3F9475ULL,
+                 "sqrt 1e-300");
+    check_eq_u64(bits_of(nfsu::track_residency_sqrt(double_of(1))), 0x1E60000000000000ULL,
+                 "sqrt of the smallest subnormal is 2^-537");
+    check_eq_u64(bits_of(nfsu::track_residency_sqrt(std::numeric_limits<double>::max())),
+                 0x5FEFFFFFFFFFFFFFULL, "sqrt of the largest double");
+    // The review's case: 1000^2 + 69^2 = 1004761. MinGW's libm gave
+    // 1002.3776733347565 (0x408F53057998EACE); the correctly rounded root,
+    // which sqrtsd gives, is 0x408F53057998EACF.
+    check_eq_u64(bits_of(nfsu::track_residency_sqrt(1004761.0)), 0x408F53057998EACFULL,
+                 "sqrt 1004761, the review's segment");
+    check(is_correctly_rounded_root(1004761.0, nfsu::track_residency_sqrt(1004761.0)) &&
+              !is_correctly_rounded_root(1004761.0, double_of(0x408F53057998EACEULL)),
+          "the exact check tells the two apart");
+    // Many values, each checked exactly: a linear congruential walk over the
+    // bits of doubles in [2^-200, 2^200].
+    std::uint64_t state = 0x9E3779B97F4A7C15ULL;
+    int wrong = 0;
+    for (int k = 0; k < 200000; ++k) {
+        state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+        const std::uint64_t fraction = state >> 12U;
+        const std::uint64_t biased = 823 + ((state >> 3U) % 400U);
+        const double x = double_of((biased << 52U) | fraction);
+        if (!is_correctly_rounded_root(x, nfsu::track_residency_sqrt(x))) {
+            ++wrong;
+        }
+    }
+    check_eq_u64(static_cast<std::uint64_t>(wrong), 0, "200000 roots, each exact");
+    // Every float root agrees with its double root narrowed, and a few by bits.
+    check_eq_u64(float_bits(nfsu::track_residency_sqrtf(2.0F)), 0x3FB504F3U, "sqrtf 2");
+    check_eq_u64(float_bits(nfsu::track_residency_sqrtf(900.0F)), 0x41F00000U, "sqrtf 900");
+    check_eq_u64(float_bits(nfsu::track_residency_sqrtf(1e-40F)), 0x1E3CE4E7U,
+                 "sqrtf of a subnormal float");
 }
 
 // ---------------------------------------------------------------------------
@@ -1064,6 +1281,33 @@ void test_path_sampling() {
           "71 samples over a limit of 70");
 }
 
+// Review comment 3630, F1: this path's one segment is 1000 by 69, whose
+// length MinGW's libm rounded down by one ulp at -O0 while -O3 inlined
+// sqrtsd, and at this speed that ulp decided the sample count: 401 in the
+// default and Debug builds, 402 in Release. The correctly rounded length is
+// the larger, and ceil(1002.3776733347567 / (150.35665100021347 / 60)) is
+// 401, so there are 402 samples in every build now.
+void test_path_is_build_independent() {
+    std::vector<nfsu::TrackResidencyVertex> vertices;
+    std::string error;
+    check(nfsu::parse_track_residency_path("0 0 0\n1000 69 0\n", vertices, error),
+          "the review's path parses");
+    const double length = nfsu::track_residency_path_length(vertices);
+    check_eq_u64(bits_of(length), 0x408F53057998EACFULL,
+                 "its length is 1002.3776733347567, correctly rounded");
+    std::vector<nfsu::TrackResidencySample> samples;
+    std::vector<nfsu::TrackResidencyPathPoint> points;
+    check(nfsu::sample_track_residency_path(vertices, 150.35665100021347, 60, samples,
+                                            points, error),
+          "it samples");
+    check_eq_u64(samples.size(), 402, "402 samples in every build");
+    if (samples.size() == 402) {
+        check(points[401].distance == length && samples[401].position[0] == 1000.0F,
+              "the last sample is the end");
+        check(points[400].distance < length, "the one before it is not");
+    }
+}
+
 void test_hand_path() {
     std::vector<nfsu::TrackResidencyVertex> vertices;
     std::string error;
@@ -1099,11 +1343,15 @@ int main() {
     test_refusals();
     test_request_limit();
     test_release_cap_boundary();
+    test_release_prefers_least_recent();
+    test_zero_byte_release_gives_up();
     test_no_route_record();
     test_sequence_hash();
     test_path_parse();
     test_path_sampling();
+    test_path_is_build_independent();
     test_hand_path();
+    test_sqrt();
     if (g_failures != 0) {
         std::cerr << g_failures << " check(s) failed of " << g_checks << '\n';
         return 1;

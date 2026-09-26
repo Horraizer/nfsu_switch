@@ -256,10 +256,48 @@ nfsu_case("a budget the start set does not fit" 0
           "budget: given 3000 streamer 3000;step 0 start sample 0 key -1 zone -1 rebuild 1 placed 1 loads 2500,2600 releases - unplaced 1336 over 1 capped 0 loaded 0 requested 6 resident 2 held 992;summary: steps 205 start 4 path 201 rebuilds 4 loads 3 releases 0 over-budget steps 5 unplaced steps 5 capped steps 0;sequence: sha256 AE7C9A409009BF5E40E02411FF4B8536C15CA26F33FEFFFD029E98A263BC2F10 steps 205"
           "" ${run} --budget 3000)
 
-# The project's own bytes as the currency, against the Switch arena.
+# The project's own bytes as the currency, against the Switch arena. Each
+# section is charged an upper bound on what it can add to any resident set
+# (review comment 3630, F4), and every step's measured bytes are checked
+# against the budget. The table currency says it does not compare them.
 nfsu_case("the prepared currency" 0
-          "cost: prepared (each section's share of the scene of the 7 sections any zone lists: its vertex, index, instance and RGBA8 texture bytes);budget: switch-arena 50331648 streamer;summary: steps 208 start 7 path 201 rebuilds 4 loads 7 releases 0 over-budget steps 0"
-          "" ${run} --cost prepared)
+          "cost: prepared (for each of the 7 sections any zone lists, an upper bound on what it adds to any resident set: its vertex and index bytes, all its instances, and every wanted texture its packs decode);cost: shares 1874 texture files 32 candidate scene measured 1746;budget: switch-arena 50331648 streamer 50331616;summary: steps 208 start 7 path 201 rebuilds 4 loads 7 releases 0 over-budget steps 0;measured: every step against the budget 50331648: largest 1746, steps over 0"
+          "MEASURED OVER" ${run} --cost prepared)
+nfsu_case("the prepared currency under a budget the start set does not fit" 0
+          "budget: given 1400 streamer 1368;step 0 start sample 0 key -1 zone -1 rebuild 1 placed 1 loads 2500,2600 releases - unplaced 234 over 1;summary: steps 204 start 3 path 201 rebuilds 4 loads 2 releases 0 over-budget steps 5;measured: every step against the budget 1400: largest 94, steps over 0"
+          "MEASURED OVER" ${run} --cost prepared --budget 1400)
+nfsu_case("the table currency does not compare measured bytes" 0
+          "measured: not compared with the budget, which is in the table's bytes" ""
+          ${run})
+
+# Review comment 3630, F1: a segment of 1000 by 69 at this speed gave 401
+# samples where MinGW's libm rounded its length down and 402 where the
+# compiler inlined sqrtsd. The root is now correctly rounded in every build.
+set(review_path "${work}/review_f1.txt")
+file(WRITE "${review_path}" "0 0 0\n1000 69 0\n")
+nfsu_case("the review's path gives 402 samples in every build" 0
+          "path: review_f1.txt vertices 2 length 1002.3776733347567;path: speed 150.35665100021347 steps per second 60 samples 402"
+          "" "${stream}" "${trackb}" 1003 --path "${review_path}"
+          --speed 150.35665100021347 --list none)
+
+# A load that raises issues names each section once, however many resident
+# sets load it again, and the run exits 3 (review comment 3630, N5). Here the
+# texture file stands in for the stream, so every range passes its end.
+nfsu_case("a wrong stream file names each section once" 3
+          "section Y0 (2500) issue at 0: section 'Y0' reaches 912 in a file of 896 bytes;section J9 (1009) issue at 12288: section 'J9' reaches 13240 in a file of 896 bytes;summary: steps 208"
+          "" "${texture}" "${trackb}" 1003 --path "${path}" --speed 60 --list none)
+# The issues go to standard error; count them there.
+execute_process(
+    COMMAND "${PROBE}" track-stream-path "${texture}" "${trackb}" 1003 --path "${path}"
+            --speed 60 --list none
+    OUTPUT_VARIABLE ignored_out
+    ERROR_VARIABLE issue_text
+    RESULT_VARIABLE ignored_status)
+string(REGEX MATCHALL "section Y0 \\(2500\\) issue" y0_issues "${issue_text}")
+list(LENGTH y0_issues y0_count)
+if(NOT y0_count EQUAL 1)
+    nfsu_fail("the Y0 issue was printed ${y0_count} times, expected once")
+endif()
 
 # --list all prints every step; --list none prints no step and no set rows.
 nfsu_case("--list all" 0 "step 207 path sample 200 key 1003 zone 1003 rebuild 0 placed 0" ""
