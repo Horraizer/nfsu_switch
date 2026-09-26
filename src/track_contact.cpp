@@ -1,5 +1,7 @@
 #include "nfsu/track_contact.h"
 
+#include "nfsu/det_sqrt.h"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -199,7 +201,14 @@ Sweep sweep_of(const float from[3], const float to[3]) {
         sweep.low[axis] = std::min(from[axis], to[axis]);
         sweep.high[axis] = std::max(from[axis], to[axis]);
     }
-    sweep.length = std::sqrt(squared);
+    // det_sqrt, not std::sqrt: MinGW's out-of-line libm sqrt is not
+    // correctly rounded at -O0 (issue #165, the same defect issue #125
+    // found in the renderer). squared is a sum of squared doubles, so this
+    // is the one double-precision library sqrt on this file's replayed
+    // path; the two float ones (derive_triangle's face normal and
+    // query_track_contact_segment's own direction length) round once by
+    // construction and need no change.
+    sweep.length = det_sqrt(squared);
     return sweep;
 }
 
