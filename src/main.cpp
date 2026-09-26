@@ -1,4 +1,5 @@
 #include "nfsu/arg_path.h"
+#include "nfsu/assets.h"
 #include "nfsu/car_parts.h"
 #include "nfsu/chunk.h"
 #include "nfsu/geometry.h"
@@ -318,6 +319,33 @@ int run_summary(const fs::path& root) {
     std::cout << "layout: " << (layout_ok ? "supported" : "needs review")
               << '\n';
     return layout_ok ? 0 : 3;
+}
+
+// asset-check: whether `root` holds the retail files one set names, each
+// found by name without regard to ASCII case, sized, and hashed only when
+// its size is right, through the desktop file system service. It prints
+// the report the console application shows, with every hash in full, and
+// reads nothing the set does not name. Exit 0 when every file matches, 2
+// when the root cannot be listed, 3 for any other install.
+// docs/SWITCH_ASSETS.md.
+int run_asset_check(const fs::path& root, const nfsu::AssetManifest& manifest) {
+    nfsu::AssetCheckReport report;
+    std::string reason;
+    if (!nfsu::check_asset_install(nfsu::desktop_file_system(), root, manifest, report,
+                                   reason)) {
+        std::cerr << "error: " << reason << '\n';
+        return 1;
+    }
+    const std::string root_text = root.generic_string();
+    std::cout << "asset-check: root " << root_text << '\n';
+    for (const nfsu::AssetLine& line :
+         nfsu::asset_report_lines(report, root_text, nfsu::AssetReportForm::desktop)) {
+        std::cout << line.text << '\n';
+    }
+    if (!report.root_listed) {
+        return 2;
+    }
+    return report.verdict == nfsu::AssetVerdict::complete ? 0 : 3;
 }
 
 int run_chunks(const fs::path& path, std::size_t display_limit) {
@@ -5604,6 +5632,35 @@ struct Command {
 const Command kCommands[] = {
     {"summary", " <game-root>", "",
      [](int, char** argv) { return run_summary(nfsu::argument_path(argv[2])); }},
+    {"asset-check", " <root> [--set <first-lap|stock-car|event-1>]",
+     "      (the retail files a set needs under root: each found by name\n"
+     "       without regard to ASCII case, then checked by size and SHA-256;\n"
+     "       reads nothing else and writes nothing; first-lap is the default)\n",
+     [](int argc, char** argv) {
+         if (argc != 3 && argc != 5) {
+             print_usage();
+             return 1;
+         }
+         std::string set = "first-lap";
+         if (argc == 5) {
+             const std::string option(argv[3]);
+             if (option != "--set") {
+                 std::cerr << "error: unknown option " << option << '\n';
+                 return 1;
+             }
+             set = argv[4];
+         }
+         nfsu::AssetManifest manifest;
+         if (!nfsu::retail_asset_manifest(set, manifest)) {
+             std::cerr << "error: --set must be one of";
+             for (const std::string& name : nfsu::retail_asset_manifest_names()) {
+                 std::cerr << ' ' << name;
+             }
+             std::cerr << '\n';
+             return 1;
+         }
+         return run_asset_check(nfsu::argument_path(argv[2]), manifest);
+     }},
     {"chunks", " <file> [display-limit]", "",
      [](int argc, char** argv) {
          std::size_t limit = 128;

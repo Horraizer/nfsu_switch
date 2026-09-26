@@ -28,12 +28,17 @@ offline and held to per-program interface manifests, as
 `nfsu_switch_car` application draws the stock 240SX with the CPU reference
 renderer on the console, from six game files on the SD card, painted with
 the runtime body skin, reports whether the frame is the one pinned on the
-desktop, and lets the left stick orbit the camera.
+desktop, and lets the left stick orbit the camera. Its `nfsu_switch_assets`
+application shows whether the SD card holds the retail files the first lap
+needs, and which to copy; [`docs/SWITCH_ASSETS.md`](docs/SWITCH_ASSETS.md)
+lists them and says where they go.
 
 ## Run
 
 ```text
 build/nfsu_probe summary X:/Games/NFSU
+build/nfsu_probe asset-check X:/Games/NFSU
+build/nfsu_probe asset-check F:/nfsu --set stock-car
 build/nfsu_probe chunks X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN 64
 build/nfsu_probe meshes X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN
 build/nfsu_probe obj X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN build/240sx.obj
@@ -79,6 +84,18 @@ entry plus its `build/nfsu_probe` line in the list above:
 table, out of the built program's usage text and out of this file, and fails
 unless all three name the same commands. A command that is not registered is
 named as unknown and refused with exit 1.
+
+`asset-check` checks that a directory holds the retail files a set needs,
+by name, size and SHA-256, and prints one line per file, a verdict -
+`complete`, `missing files`, `partial`, `wrong version` or `unreadable` -
+and the files still to copy. Names are matched without regard to ASCII
+case, a file of the wrong size is never read, and nothing is written. The
+default set, `first-lap`, is the twelve files one lap of Underground-mode
+race 1 in the stock 240SX needs; `stock-car` and `event-1` are its two
+halves. Run it on the game's own folder, or on the SD card before it goes
+into the console, where `nfsu_switch_assets` shows the same report. It
+exits 0 when every file matches, 2 when the root cannot be listed and 3
+otherwise. See `docs/SWITCH_ASSETS.md`.
 
 `meshes` lists every mesh with its name, vertex count, face count and
 validation status. `obj` writes all valid meshes to a diagnostic OBJ file at

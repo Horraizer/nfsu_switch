@@ -2,6 +2,7 @@
 
 #include "nfsu/input.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -35,9 +36,16 @@ namespace nfsu {
 
 // What the programs need from a filesystem beyond what the C++ standard
 // library already gives every platform: turning a command-line argument into
-// a path it can open. Reading a file stays std::ifstream in the parsers,
-// which every supported toolchain provides; see docs/PLATFORM_SERVICES.md
-// for what that leaves the platform to supply.
+// a path it can open, and - since issue #47 - three read-only calls the
+// asset check (include/nfsu/assets.h) makes to find and verify the retail
+// files a feature needs: a bounded directory listing, a file's size, and a
+// bounded read of a byte range. Reading a file stays std::ifstream in the
+// parsers, which every supported toolchain provides; see
+// docs/PLATFORM_SERVICES.md for what that leaves the platform to supply.
+//
+// Every call below is read-only. None creates, writes, renames, removes or
+// locks anything, and a reason is always a printable ASCII sentence that
+// does not repeat the path: the caller names the path.
 class FileSystemService {
 public:
     virtual ~FileSystemService() = default;
@@ -49,6 +57,41 @@ public:
     // src/arg_path.cpp (docs/PATH_ARGUMENTS.md).
     virtual bool argument_to_path(
         const char* text, std::filesystem::path& out, std::string& reason) = 0;
+
+    // The names directly inside `directory`, in the order the platform
+    // lists them, without "." and "..": each the bytes the file system
+    // stores, with no directory part. Returns false, with `names` emptied
+    // and `reason` set, when the directory cannot be listed - "does not
+    // exist", "is not a directory", or a failure to read it - and when it
+    // holds more than `max_names` names, which is refused rather than
+    // truncated so that no caller ever matches against half a listing.
+    virtual bool list_directory(
+        const std::filesystem::path& directory,
+        std::size_t max_names,
+        std::vector<std::string>& names,
+        std::string& reason) = 0;
+
+    // The size in bytes of the regular file at `path`. False, with `size`
+    // untouched and `reason` set, when there is nothing there, when it is a
+    // directory or anything else that is not a regular file, or when it
+    // cannot be sized.
+    virtual bool file_size(
+        const std::filesystem::path& path, std::uint64_t& size, std::string& reason) = 0;
+
+    // Reads bytes offset .. offset + count - 1 of the file at `path` into
+    // `buffer`, which holds at least `count` bytes (it may be null when
+    // `count` is 0), and sets `got` to the number read: fewer than `count`
+    // only where the file ends first, and 0 for an offset at or past its
+    // end. The file is opened for reading only and closed again before the
+    // call returns. False, with `got` 0 and `reason` set, when the file
+    // cannot be opened, positioned or read.
+    virtual bool read_file(
+        const std::filesystem::path& path,
+        std::uint64_t offset,
+        unsigned char* buffer,
+        std::size_t count,
+        std::size_t& got,
+        std::string& reason) = 0;
 };
 
 // Checks arguments `first` through `argc - 1` through `files`, in order, and
