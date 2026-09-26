@@ -36,7 +36,9 @@ platforms. They do not change either application's rendering path. See
 Under `build-switch/` itself, the configure also builds the car-path
 libraries `nfsu_switch_car` links: `nfsu_image`, `nfsu_core`,
 `nfsu_texture_export`, `nfsu_scene`, `nfsu_stock_scene`,
-`nfsu_texture_decode`, `nfsu_render`, `nfsu_sha256`, `nfsu_stock_frame`,
+`nfsu_texture_decode`, `nfsu_det_sqrt` (issue #165, the correctly rounded
+square root the renderer, the controller dead zone and track contact
+share), `nfsu_render`, `nfsu_sha256`, `nfsu_stock_frame`,
 `nfsu_screen_text`, the skin layers `nfsu_body_skin`, `nfsu_skin_inputs`
 and `nfsu_runtime_skin`, the camera and controller layers `nfsu_inspect`,
 `nfsu_input` and `nfsu_input_camera`, and `nfsu_stock_view`; the vehicle

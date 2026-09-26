@@ -493,13 +493,16 @@ void test_dead_zone_determinism() {
     // zone (inner 3000, outer 30000) at x=3184, y=61. squared =
     // 3184^2 + 61^2 = 10141577, strictly between 3000^2 and 30000^2, so the
     // fallback branch runs and (length - inner) cancels most of length's
-    // significant bits, which is what turns an 18-ulp difference in the
-    // square root into an 18-ulp difference in x. Linked against the
-    // library sqrt, a default (-O0) build gave x=0x1.bff3a1d7de2afp-8,
-    // y=0x1.129fa766c0ce6p-13; every build whose compiler inlined a
-    // hardware sqrtsd (-O2, -O3, and MSVC's /fp:precise) gave
-    // x=0x1.bff3a1d7de2c1p-8, y=0x1.129fa766c0cf2p-13. det_sqrt makes every
-    // build give the second pair.
+    // significant bits, which is what turns a 1-ulp difference in the
+    // square root (0x1.8e12b25ffa47cp+11 against 0x1.8e12b25ffa47dp+11 for
+    // squared=10141577) into an 18-ulp difference in x and a 12-ulp one in
+    // y. Linked against the library sqrt, a default (-O0) build gave
+    // x=0x1.bff3a1d7de2afp-8, y=0x1.129fa766c0ce6p-13; every build whose
+    // compiler inlines a hardware sqrtsd (-O2 and -O3; MSVC's /fp:precise
+    // would give the same correctly rounded root, though that was not
+    // measured here) would give x=0x1.bff3a1d7de2c1p-8,
+    // y=0x1.129fa766c0cf2p-13. det_sqrt makes every build give the second
+    // pair.
     const nfsu::StickDeadZone zone;
     const nfsu::StickVector v = nfsu::apply_stick_dead_zone(zone, 3184, 61);
     check(v.x == 0x1.bff3a1d7de2c1p-8,
