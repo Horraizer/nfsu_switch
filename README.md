@@ -68,6 +68,7 @@ build/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc 904.24 -94.76
 build/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc 904.24 -94.76 56.5 944 -74 56.5
 build/nfsu_probe car-placement X:/Games/NFSU/Global/GLOBALB.BUN 240SX
 build/nfsu_probe vehicle-sim mixed --handling X:/Games/NFSU/Global/GLOBALB.BUN
+build/nfsu_probe drive-replay --demo --root X:/Games/NFSU --render-every 120 --out build/shots/drive
 build/nfsu_probe race-events X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/FrontEnd/FrontB.lzc
 build/nfsu_probe track-whole X:/Games/NFSU/Tracks/STREAML1RA.BUN X:/Games/NFSU/Tracks/TRACKB1003.lzc 1003 --texture X:/Games/NFSU/Tracks/TEX1003TRACK.BIN --texture X:/Games/NFSU/Global/INGAMEB.BUN --texture X:/Games/NFSU/Global/GLOBALB.BUN
 build/nfsu_probe race-route X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/FrontEnd/FrontB.lzc X:/Games/NFSU/Tracks/TRACKB1003.lzc 1 --drive forward
@@ -149,6 +150,23 @@ equal the built-in recovered table. It exits 1 on an argument it refuses, 2
 on a script file it cannot read or parse, and 3 on a handling file that
 cannot drive the model. See `docs/VEHICLE.md` for the model, the recovered
 and approximated constants, the script format and the pinned telemetry.
+`drive-replay` replays a recorded controller stream - the built-in
+demonstration with `--demo`, or a file in the recorded form of
+`docs/INPUT.md` with `--input` - through the driving controls (the default
+Switch layout, or a remapping file given with `--controls`), the vehicle
+model on flat ground and the chase camera, one 1/60 s tick per recorded
+frame, and prints a line every `--every` frames (60 by default, 0 for
+none) and the SHA-256 of the whole stream. With `--root`, the game's
+folder, it also renders the painted stock 240SX from the chase camera over
+a checkered ground with the CPU reference renderer every `--render-every`
+frames (120 by default, 640x360 unless `--width` and `--height` say
+otherwise), prints each frame's SHA-256, and with `--out` writes
+`PREFIX-NNNNNN.tga`, never replacing a file. It exits 1 on an argument it
+refuses, 2 on a recording or controls file it cannot read or parse or a
+frame it cannot write, 3 on a root that cannot give the stock frame and 4
+when a step is refused. See
+`docs/CONTROLS_CAMERA.md` for the controls, the camera, the file format
+and the pins.
 `race-events` lists the track table of `GLOBAL/GLOBALB.BUN` (or the
 compressed `GLOBALB.LZC` the game loads) and the career event table of
 `FRONTEND/FrontB.lzc`: per track its number, stream region and the stream,

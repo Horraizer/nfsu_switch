@@ -42,6 +42,10 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/asset_libraries.cmake)
 # The vehicle model of issue #58, for both configures as well; it links
 # nfsu_sha256 from cmake/car_libraries.cmake, so it is included after it.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/vehicle_libraries.cmake)
+# The driving controls and the chase camera of issue #59, for both configures;
+# they link nfsu_input and nfsu_render from cmake/car_libraries.cmake and
+# nfsu_vehicle from the file above, so they are included after both.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/drive_libraries.cmake)
 
 # The Switch build configures the shared car and draw libraries and switch/,
 # and nothing below this point: the desktop programs, the other libraries and every test of
@@ -1391,6 +1395,67 @@ if(NFSU_BUILD_TESTS)
 
     set_tests_properties(nfsu_race_timing_tests nfsu_probe_race_timing_guards
         PROPERTIES TIMEOUT 60)
+endif()
+
+# ---------------------------------------------------------------------------
+# The driving controls and the chase camera (issue #59)
+# ---------------------------------------------------------------------------
+#
+# Appended as one block, after everything above, so that no list above is
+# reordered: the three libraries are declared in cmake/drive_libraries.cmake
+# for both configures, and this block adds what only the desktop has - the
+# probe's link, the neutrality classification and the tests.
+#
+# `drive-replay` replays a recorded controller stream through the controls,
+# the vehicle model on flat ground and the chase camera, prints the stream's
+# hash, and renders the stock car from the chase camera with the CPU
+# reference renderer at fixed frames. docs/CONTROLS_CAMERA.md.
+target_link_libraries(nfsu_probe PRIVATE nfsu_drive_session nfsu_stock_frame)
+
+# All three are neutral by their comment in cmake/drive_libraries.cmake: they
+# read no file, no clock and no environment and call nothing but the standard
+# library and the project's own libraries. nfsu_drive_session links
+# nfsu_render for its rasterizer, as nfsu_stock_view does, and nfsu_render is
+# classified on its own. The manifest is written once the whole directory has
+# been read, so these appends are in the list the gate reads.
+list(APPEND NFSU_NEUTRAL_LIBRARIES
+    nfsu_drive_controls nfsu_chase_camera nfsu_drive_session)
+
+if(NFSU_BUILD_TESTS)
+    # The controls, the camera and the session from recorded frames: the
+    # config file and its refusals by name, calibration, remapping, digital
+    # against analog, the speed-sensitive steering filter, the reverse
+    # assist, the recovered camera tables rebuilt to their retail hashes,
+    # the angle arithmetic, the target heading, the lag, the camera's
+    # smoothing and collision response, the renderer's camera, and the
+    # demonstration's pinned hash. It carries the libraries' floating-point
+    # options because it recomputes their expressions and compares them bit
+    # for bit.
+    add_executable(nfsu_drive_tests
+        tests/drive_tests.cpp
+    )
+    target_link_libraries(nfsu_drive_tests PRIVATE nfsu_drive_session nfsu_arg_path)
+    nfsu_enable_warnings(nfsu_drive_tests)
+    if(MSVC)
+        target_compile_options(nfsu_drive_tests PRIVATE /fp:precise)
+    else()
+        target_compile_options(nfsu_drive_tests PRIVATE -ffp-contract=off -fno-fast-math)
+    endif()
+    add_test(NAME nfsu_drive_tests COMMAND nfsu_drive_tests)
+
+    # What `drive-replay` refuses, prints and exits with, over files this
+    # test writes, and the frames it renders from the synthetic stock-car
+    # root nfsu_stock_frame_tests writes. tests/drive_replay_guards.cmake
+    # says what each case is for.
+    add_test(NAME nfsu_probe_drive_replay_guards
+        COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -DFIXTURE=$<TARGET_FILE:nfsu_stock_frame_tests>
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/nfsu_probe_drive_replay_guards
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/drive_replay_guards.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+    set_tests_properties(nfsu_drive_tests nfsu_probe_drive_replay_guards
+        PROPERTIES TIMEOUT 120)
 endif()
 
 # Whole-frame comparison metrics for the console proof of issue #147.
