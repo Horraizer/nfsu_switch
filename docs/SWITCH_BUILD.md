@@ -30,6 +30,8 @@ platforms. They do not change either application's rendering path. See
 | `nfsu_switch_assets` | `nfsu_switch_assets.elf` | The asset check of issue #47: it reads the config file `sdmc:/config/nfsu_switch/assets.cfg` if there is one, checks that the SD card holds the 12 retail files the first lap needs - by name, size and SHA-256 - and shows the report and the files still to copy on screen; + exits. [`SWITCH_ASSETS.md`](SWITCH_ASSETS.md). |
 | `nfsu_switch_assets_nro` | `nfsu_switch_assets.nro`, `nfsu_switch_assets.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_assets`. |
 | `nfsu_switch_shaders` | `shaders/*.dksh`, `shaders/*.tgsi` | Every GLSL stage a manifest in `shaders/` names, compiled by `uam`, and each manifest checked against the result. |
+| `nfsu_switch_vehicle` | `nfsu_switch_vehicle.elf` | The vehicle model of issue #58: runs the eight built-in scripted input sequences through `nfsu_vehicle` and prints each telemetry hash, and whether `mixed` is the one pinned on the desktop ([`VEHICLE.md`](VEHICLE.md), "On the console"); + exits. Not yet run on a console. |
+| `nfsu_switch_vehicle_nro` | `nfsu_switch_vehicle.nro`, `nfsu_switch_vehicle.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_vehicle`. |
 
 Under `build-switch/` itself, the configure also builds the car-path
 libraries `nfsu_switch_car` links: `nfsu_image`, `nfsu_core`,
@@ -37,7 +39,9 @@ libraries `nfsu_switch_car` links: `nfsu_image`, `nfsu_core`,
 `nfsu_texture_decode`, `nfsu_render`, `nfsu_sha256`, `nfsu_stock_frame`,
 `nfsu_screen_text`, the skin layers `nfsu_body_skin`, `nfsu_skin_inputs`
 and `nfsu_runtime_skin`, the camera and controller layers `nfsu_inspect`,
-`nfsu_input` and `nfsu_input_camera`, and `nfsu_stock_view`; and, for
+`nfsu_input` and `nfsu_input_camera`, and `nfsu_stock_view`; the vehicle
+model `nfsu_vehicle`, which `cmake/vehicle_libraries.cmake` declares for
+both configures and `nfsu_switch_vehicle` links (issue #58); and, for
 `nfsu_switch_assets`, the asset manifest and check `nfsu_assets` and the
 console's filesystem service `nfsu_posix_file_system`
 (`cmake/asset_libraries.cmake`).
@@ -53,6 +57,8 @@ runs on the build machine, not on a console:
 | `nfsu_switch_nro` | The ELF is AArch64; the NRO has its `NRO0` header, an `ASET` section, the icon and a 0x4000-byte NACP titled `nfsu_switch`; the reader refuses a file that is not an NRO. |
 | `nfsu_switch_car_nro` | The same checks for `nfsu_switch_car.nro`, whose NACP is titled `nfsu_switch_car`. |
 | `nfsu_switch_assets_nro` | The same checks for `nfsu_switch_assets.nro`, whose NACP is titled `nfsu_switch_assets`. |
+| `nfsu_switch_vehicle_nro` | The same checks for `nfsu_switch_vehicle.nro`, whose NACP is titled `nfsu_switch_vehicle`. |
+| `nfsu_switch_vehicle_fma_census` | `nfsu_vehicle`'s console objects, disassembled with the toolchain's `objdump`, hold no `fmadd`, `fmsub`, `fnmadd`, `fnmsub`, `fmla` or `fmls`, and do hold `fmul`. This tree cannot run AArch64 code, so it asserts that precondition of the pinned telemetry hash rather than the hash. |
 
 The desktop programs, the other libraries and every test are not configured
 for the console: the top-level `CMakeLists.txt` includes
