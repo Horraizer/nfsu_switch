@@ -328,10 +328,13 @@ either.
 - **Held commands repeating.** A held D-pad fires once; the keyboard repeats.
 - **Which controller owns the camera.** Every connected controller drives it,
   added up. Per-player cameras are open.
-- **Driving controls.** A second action set - steering, throttle, brake -
-  over this model and this recorded form, with analog triggers where a pad
-  has them.
-- **Keeping a remapping.** Tables are values; no file format stores one.
+- **Driving controls.** Issue #59 added them over this model and this
+  recorded form, with a table and rules of their own rather than a second
+  action set for `InputMapper`: each stick axis is read alone, with its own
+  dead zone and no square root. [`CONTROLS_CAMERA.md`](CONTROLS_CAMERA.md).
+- **Keeping a remapping.** The camera's tables are values and no file
+  format stores one; the driving controls' table has a text file,
+  `nfsu-controls 1` ([`CONTROLS_CAMERA.md`](CONTROLS_CAMERA.md)).
 - **Recording the pointer and keys.** Only controller frames are recorded.
 
 ## Where this lives

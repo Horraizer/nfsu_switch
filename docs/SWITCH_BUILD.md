@@ -32,6 +32,8 @@ platforms. They do not change either application's rendering path. See
 | `nfsu_switch_shaders` | `shaders/*.dksh`, `shaders/*.tgsi` | Every GLSL stage a manifest in `shaders/` names, compiled by `uam`, and each manifest checked against the result. |
 | `nfsu_switch_vehicle` | `nfsu_switch_vehicle.elf` | The vehicle model of issue #58: runs the eight built-in scripted input sequences through `nfsu_vehicle` and prints each telemetry hash, and whether `mixed` is the one pinned on the desktop ([`VEHICLE.md`](VEHICLE.md), "On the console"); + exits. Not yet run on a console. |
 | `nfsu_switch_vehicle_nro` | `nfsu_switch_vehicle.nro`, `nfsu_switch_vehicle.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_vehicle`. |
+| `nfsu_switch_drive` | `nfsu_switch_drive.elf` | The driving controls and chase camera of issue #59: replays the built-in demonstration through `nfsu_drive_session` and prints the stream hash and whether it is the one pinned on the desktop, then drives the same session live from the pad on the text console - speed, gear, inputs and camera as numbers, no picture yet; - puts the car back at the start and + exits ([`CONTROLS_CAMERA.md`](CONTROLS_CAMERA.md)). Not yet run on a console. |
+| `nfsu_switch_drive_nro` | `nfsu_switch_drive.nro`, `nfsu_switch_drive.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_drive`. |
 
 Under `build-switch/` itself, the configure also builds the car-path
 libraries `nfsu_switch_car` links: `nfsu_image`, `nfsu_core`,
@@ -44,7 +46,10 @@ model `nfsu_vehicle`, which `cmake/vehicle_libraries.cmake` declares for
 both configures and `nfsu_switch_vehicle` links (issue #58); and, for
 `nfsu_switch_assets`, the asset manifest and check `nfsu_assets` and the
 console's filesystem service `nfsu_posix_file_system`
-(`cmake/asset_libraries.cmake`).
+(`cmake/asset_libraries.cmake`); and the driving controls, the chase camera
+and the drive session of issue #59, `nfsu_drive_controls`,
+`nfsu_chase_camera` and `nfsu_drive_session` (`cmake/drive_libraries.cmake`),
+which `nfsu_switch_drive` links.
 
 `nfsu_switch_app` links libnx, which devkitPro's platform file adds to every
 link, and nothing else. Neither application loads a shader. The CTest suite
@@ -58,6 +63,8 @@ runs on the build machine, not on a console:
 | `nfsu_switch_car_nro` | The same checks for `nfsu_switch_car.nro`, whose NACP is titled `nfsu_switch_car`. |
 | `nfsu_switch_assets_nro` | The same checks for `nfsu_switch_assets.nro`, whose NACP is titled `nfsu_switch_assets`. |
 | `nfsu_switch_vehicle_nro` | The same checks for `nfsu_switch_vehicle.nro`, whose NACP is titled `nfsu_switch_vehicle`. |
+| `nfsu_switch_drive_fma_census` | The same census over `nfsu_drive_controls`, `nfsu_chase_camera` and `nfsu_drive_session`, the precondition of the demonstration's pinned stream hash ([`CONTROLS_CAMERA.md`](CONTROLS_CAMERA.md)). |
+| `nfsu_switch_drive_nro` | The NRO checks for `nfsu_switch_drive.nro`, whose NACP is titled `nfsu_switch_drive`. |
 | `nfsu_switch_vehicle_fma_census` | `nfsu_vehicle`'s console objects, disassembled with the toolchain's `objdump`, hold no `fmadd`, `fmsub`, `fnmadd`, `fnmsub`, `fmla` or `fmls`, and do hold `fmul`. This tree cannot run AArch64 code, so it asserts that precondition of the pinned telemetry hash rather than the hash. |
 
 The desktop programs, the other libraries and every test are not configured
