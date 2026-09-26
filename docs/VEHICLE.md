@@ -548,14 +548,25 @@ scripts through the AArch64 compile of the same sources and options, prints
 each hash and its run time, and for `mixed` prints `result: EQUAL to the
 pinned desktop telemetry` or `DIFFERENT from`. The Switch CTest suite runs
 on the build machine, which cannot execute AArch64 code, so it asserts the
-census above and the NRO's structure, not the hash. **Nothing here has run
-on a console**: the console's hash is unobserved until someone runs
+census above and the NRO's structure, not the hash. It is run with
 
 ```text
 nxlink -s build-switch/switch/nfsu_switch_vehicle.nro
 ```
 
-and reads the `result:` line.
+and the `result:` line read off the screen.
+
+**On the owner's Switch** (2026-09-26, PR #169 comment 3856): the NRO built
+from 5521427, the head that passed review, printed the eight hashes of the
+table above, every one of them, and `result: EQUAL to the pinned desktop
+telemetry`. The model gives bit-identical telemetry on the console and the
+desktop for every built-in script. `top-speed`, 14400 steps, took 326 ms
+there: about 22.6 microseconds a step. A later head can give a different
+NRO file with the same instructions: the build ID the NRO carries at +0x40
+is a hash over the whole ELF, debug information included, so a moved
+comment or an unused declaration in a header changes it. Whether a later
+NRO still runs the model that ran on the console is a question for the
+instructions of its objects, not for the file's hash.
 
 ## Scripted input
 

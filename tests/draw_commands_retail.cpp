@@ -60,7 +60,8 @@ int main(int argc, char** argv) {
         }
         const auto hash = nfsu::sha256_hex(image.sha256);
         if (mode == nfsu::MaterialStateMode::off &&
-            (hash != "FD6727333A94803A97FD26282CD89DF6F3D3295E0231F4A871A1B14089D28CE9" || image.tga.size() != 3686418)) {
+            (hash != nfsu::kStock240sxFrameSha256 ||
+             image.tga.size() != nfsu::kStock240sxFrameBytes)) {
             std::cerr << "FAIL: pinned stock frame changed: " << hash << '\n';
             return 1;
         }

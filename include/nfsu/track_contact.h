@@ -255,33 +255,47 @@ struct TrackContactQueryLimits {
 // the two select the same cells. A square the segment only touches, at a
 // corner or along a side, counts as met.
 //
-// WHICH TRIANGLE. Issue #39's arithmetic decides first: the nearest
-// triangle its Moller-Trumbore test accepts among the triangles that are
-// not degenerate. So wherever the first triangle query_track_collision_ray
-// meets along the same line is not degenerate, this answers with the same
-// polygon, triangle, distance and point. The #39 ray does not skip a
-// degenerate triangle, and on an oblique line its float determinant for a
-// triangle with two equal corners can come out nonzero and accept it, at
-// a distance that is only rounding; this never meets one, so there it
-// answers the nearest other contact - farther along, nearer through the
-// watertight test below, or clear. A column never meets that case on
-// retail data: for a vertical line the determinant of a triangle with two
-// equal corners is exactly 0, and every retail degenerate triangle has two
-// equal corners. The #39 test is not
-// watertight either, and a point exactly on an edge can round outside
-// every triangle that has it - a seam between two road polygons among
-// them. So when it accepts nothing anywhere along the segment, a watertight
-// test decides instead, and what it adds lies on a triangle's edge: a seam,
-// or a polygon's own outer edge. What this leaves as issue #39 answers it:
-// where the #39 test meets something farther along, a nearer surface met
-// only on its edge is not preferred to it. docs/TRACK_COLLISION.md counts
-// each case on the retail lattices and on oblique sweeps.
+// WHICH TRIANGLE. The nearest surface the segment meets, whichever test
+// finds it (issue #167). Two tests run over the triangles that are not
+// degenerate. One is issue #39's Moller-Trumbore arithmetic, in float along
+// the rounded direction, which is not watertight: a point exactly on an
+// edge can round outside every triangle that has it - a seam between two
+// road polygons, a polygon's outer edge, a wall quad's own (0,2) diagonal.
+// The other is a conservative test in double on the segment's own two
+// endpoints, which meets every closed triangle the segment meets, on an
+// edge, at a corner or at either end of the segment. Issue #39's answer
+// stands unless the conservative test meets a triangle that is nearer, for
+// certain, than where the segment crosses the plane of the triangle #39
+// names, by more than 2^-23 of the segment's length - one rounding of a
+// float distance that long; then that triangle is the answer, at its own
+// distance, and so it is where #39 meets nothing. So wherever the #39
+// arithmetic names a nearest surface, the answer is its polygon, triangle,
+// distance and point bit for bit: every column of the retail lattices in
+// docs/TRACK_COLLISION.md is, but the three that stand exactly on a raised
+// polygon's outer edge. And where it rounded a nearer surface away - the
+// wall quad's diagonal a sweep passed through to a farther surface, the
+// outer edge of a step a column went past to the road beneath - or met
+// only a triangle with two equal corners, which it can accept by rounding
+// on an oblique line and which no contact ever meets, the conservative
+// test answers.
+//
+// What that leaves. The conservative test can meet a triangle the segment
+// misses by less than its own rounding, about 1e-14 world units on a sweep
+// a few units long; a segment within that rounding of parallel to a
+// triangle's plane is edge-on and meets nothing there. An answer of the #39
+// arithmetic keeps its float rounding: on a sweep nearly parallel to a
+// surface its distance along the sweep can be off by a unit while its point
+// stays on the surface, and where it accepts a triangle the segment misses
+// by a float rounding of its edge that contact is kept. A surface less than
+// the margin above nearer than #39's does not replace it.
+// docs/TRACK_COLLISION.md counts every case on the retail lattices and on
+// sweeps checked against an exact brute force.
 //
 // It answers out of the same index and carries the same guarantee as
 // query_track_collision_ray (see WHAT A QUERY ANSWERS in track_collision.h):
-// a contact is real; clear and outside mean the index places nothing there
-// that meets the segment, which for a retail image misses nothing that
-// crosses the segment with positive area. Because every cell a query visits
+// a contact is real, within the rounding above; clear and outside mean the
+// index places nothing there that the segment meets, which for a retail
+// image misses nothing the segment crosses. Because every cell a query visits
 // lies under the query, a query inside one part of the track answers
 // exactly as it would over a collision image holding only that part;
 // tests/track_contact_tests.cpp holds that over synthetic multi-section

@@ -446,6 +446,89 @@ void test_marker_transform() {
     }
 }
 
+// The determinant of the upper 3x3 block, the part a row vector's position
+// goes through.
+float determinant3(const float m[16]) {
+    return m[0] * (m[5] * m[10] - m[6] * m[9]) - m[1] * (m[4] * m[10] - m[6] * m[8]) +
+           m[2] * (m[4] * m[9] - m[5] * m[8]);
+}
+
+// A point in the raw slot frame (longitudinal, lateral, vertical) times m.
+void apply3(const float m[16], const float in[3], float out[3]) {
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        out[axis] = in[0] * m[axis] + in[1] * m[4 + axis] + in[2] * m[8 + axis] +
+                    m[12 + axis];
+    }
+}
+
+// Issue #161: which wheel and brake models the draw turns, and how.
+void test_wheel_and_brake_orientation() {
+    // 0 and 3, by index: the wheel draw multiplies the half turn in for the
+    // wheels of culling entries 0 and 3, the brake draw the reflection for
+    // entries 6 and 9, which are positions 0 and 3 again.
+    check(nfsu::car_wheel_turned_by_draw(0), "wheel 0 is turned");
+    check(!nfsu::car_wheel_turned_by_draw(1), "wheel 1 is not turned");
+    check(!nfsu::car_wheel_turned_by_draw(2), "wheel 2 is not turned");
+    check(nfsu::car_wheel_turned_by_draw(3), "wheel 3 is turned");
+    check(!nfsu::car_wheel_turned_by_draw(4), "there is no wheel 4");
+
+    // 0x0040B930 at 0x8000: cos into 0 and 5, +sin into 1, -sin into 4, 1
+    // into 10 and 15. At a half turn that is -1, 0, 0, -1, 1, 1.
+    float turn[16];
+    nfsu::car_wheel_half_turn(turn);
+    const float expected_turn[16] = {-1.0F, 0.0F,  0.0F, 0.0F,
+                                     0.0F,  -1.0F, 0.0F, 0.0F,
+                                     0.0F,  0.0F,  1.0F, 0.0F,
+                                     0.0F,  0.0F,  0.0F, 1.0F};
+    for (std::size_t i = 0; i < 16; ++i) {
+        check(turn[i] == expected_turn[i], "half turn element " + std::to_string(i));
+    }
+    check(determinant3(turn) == 1.0F, "the half turn is a rotation");
+
+    // The 240SX wheel model's rim is at its lateral-zero edge and its
+    // backing quad at +0.2006, the inboard side of a right wheel. The half
+    // turn moves the backing quad to -0.2006, the inboard side of a left
+    // wheel, and leaves the height alone.
+    const float backing[3] = {0.3087F, 0.2006F, 0.3103F};
+    float turned[3];
+    apply3(turn, backing, turned);
+    check(turned[0] == -0.3087F && turned[1] == -0.2006F && turned[2] == 0.3103F,
+          "the half turn maps (lon, lat, vert) to (-lon, -lat, vert)");
+
+    // 0x005703A3..0x00570439: diag(1, -1, 1, 1).
+    float reflection[16];
+    nfsu::car_brake_reflection(reflection);
+    const float expected_reflection[16] = {1.0F, 0.0F,  0.0F, 0.0F,
+                                           0.0F, -1.0F, 0.0F, 0.0F,
+                                           0.0F, 0.0F,  1.0F, 0.0F,
+                                           0.0F, 0.0F,  0.0F, 1.0F};
+    for (std::size_t i = 0; i < 16; ++i) {
+        check(reflection[i] == expected_reflection[i],
+              "brake reflection element " + std::to_string(i));
+    }
+    check(determinant3(reflection) == -1.0F, "the brake reflection reverses the winding");
+    // The caliper of BRAKE_KIT00_B sits behind the disc; the reflection
+    // keeps it there, where a half turn would have moved it in front.
+    const float caliper[3] = {-0.1763F, 0.0168F, 0.1720F};
+    float reflected[3];
+    apply3(reflection, caliper, reflected);
+    check(reflected[0] == -0.1763F && reflected[1] == -0.0168F && reflected[2] == 0.1720F,
+          "the reflection negates the lateral only");
+
+    // Premultiplying a position by either one keeps the position: the model
+    // is turned about its own origin and then placed, as v * H * W does.
+    const float position[16] = {1.0F,  0.0F,  0.0F,  0.0F,
+                                0.0F,  1.0F,  0.0F,  0.0F,
+                                0.0F,  0.0F,  1.0F,  0.0F,
+                                1.39F, 0.73F, 0.08F, 1.0F};
+    float placed[16];
+    nfsu::multiply_placement_matrix(turn, position, placed);
+    for (std::size_t i = 0; i < 16; ++i) {
+        const float want = i < 12 ? expected_turn[i] : position[i];
+        check(placed[i] == want, "half turn then position, element " + std::to_string(i));
+    }
+}
+
 void test_part_names() {
     check(std::string(nfsu::cullable_car_part_name(nfsu::CullableCarPart::tire_fl)) ==
               "CULLABLE_CAR_PART_TIRE_FL",
@@ -1208,6 +1291,7 @@ int main() {
     test_part_names();
     test_marker_names();
     test_marker_transform();
+    test_wheel_and_brake_orientation();
     test_valid_table();
     test_malformed_structure();
     test_malformed_counts_and_offsets();
