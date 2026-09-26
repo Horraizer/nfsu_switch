@@ -254,19 +254,38 @@ subtracted (0x0059CD8D..0x0059CDA5). The spline interpolates the fourth
 value like a coordinate, and **that interpolated value is the distance
 along the path**.
 
+Every one of those points goes through 0x0059D350 and so through the wrap
+of 0x0059CE10, the first point of a segment included: 0x0059DA4F..0x0059DA73
+load `(float)i` and call 0x0059D350 with it. The wrap, `(t / n - floor(t /
+n)) * n` in float, does not always give `i` back: with 99 control points
+`i = 7` wraps to 6.9999995 and the point is evaluated on segment 6 at
+u = 0.9999995. Of the counts of the 17 closed retail paths, 21, 22, 26, 27,
+35, 37, 41, 53 and 99 have such an `i`, and 11 of the 17 paths (1001, 1004,
+1006, 1007, 1008, 1099, 1302, 1303, 1306, 1307, 1308) measure differently
+for it; 1003's 30 and the test circle's 16 do not. The first two rounds of
+this project evaluated that first point directly on segment `i` at u = 0;
+the third follows retail (review comment 3633, G1).
+
 The data agrees exactly with that reading. For all 17 closed paths in the
 installation, the running lengths of a uniform closed Catmull-Rom spline
-through the nodes, measured with 16 chords per segment in float in the
-retail order, match every node's stored `+0x10` distance to within 0.004
-and the record's stored length to within 0.004. The worst of both is 1001,
-0.00390625 (the probe prints the node figure for every track it builds);
-for 1003 the worst node is 0.0009765625 off and the spline measures 3318.27
-against the stored 3318.2698. The first version of this note said 0.0025
-and 0.003: 1001 gives 0.0029296875 in the first version's order, and more
-than 0.0025 in either. Neither order fits every stored value better. The
-chord polygon through the same nodes, the obvious alternative, is 3292.269
-long and misses node 1's stored 110.2589 by 0.05 and the worst node by
-25.9.
+through the nodes, measured as 0x0059D9F0 measures them - 16 chords per
+segment, every point through the wrap, in float in the retail order - match
+every node's stored `+0x10` distance to within 0.005 and the record's
+stored length to within 0.005. The worst of both is 1001: 0.0048828125 for
+a node and 0.0048828 for the length, 4410.5776 measured against 4410.5728
+stored (the probe prints the node figure for every track it builds). For
+1003 the worst node is 0.0009765625 off and the spline measures 3318.27
+against the stored 3318.2698. The loops measure 99.99993 to 100.00011
+percent of their stored lengths. Earlier versions of this note said 0.0025
+and 0.003, then 0.004: those measured 1001 with the first point of each
+segment evaluated directly, 0.0029296875 in the first version's summation
+order and 0.00390625 in retail's, not as retail measures it. Neither order
+fits every stored value better: through the wrap, the first version's order
+gives 1001 0.00390625 but 1003 0.00146484375, and by the worst node five
+paths fit it better, ten fit retail's better and two fit both equally. The
+order is read from the disassembly, not from the fit. The chord polygon
+through the same nodes, the obvious alternative, is 3292.269 long and
+misses node 1's stored 110.2589 by 0.05 and the worst node by 25.9.
 
 ## A car on the path: `TrackPathCoordinate`
 
@@ -580,8 +599,10 @@ no clock, and is classified neutral for the platform-neutrality gate.
   index of 0x00443450 needs sorted types); a zone vertex count above 15, the
   most a record holds; anything not finite; a node or marker further than
   1e6 from the origin on either horizontal axis (not a retail rule: retail
-  stays within 2000, and a coordinate of 1e30 is finite while its square
-  is not). Every rule holds for all 31 retail bundles.
+  nodes and markers stay within 2332 - the largest is 2331.67, on 1106, and
+  1001, 1004, 1102, 1107, 1108 and 1109 also pass 2000 - and a coordinate
+  of 1e30 is finite while its square is not). Every rule holds for all 31
+  retail bundles.
 - `build_track_path_spline`, `evaluate_track_path` and
   `update_track_path_coordinate` are the spline and the coordinate.
   A track with more than one path, a linked node or an open path is refused
@@ -590,7 +611,7 @@ no clock, and is classified neutral for the platform-neutrality gate.
   approximated. So is a path whose record's length, scale and offset do
   not measure the spline's own loop as 0 to 100 percent, to within 1 at
   either end: every rule above wraps a percent by one lap, and retail loops
-  measure 100 to within 0.0001 percent. A path length of 1e-30 or a scale
+  measure 99.99993 to 100.00011 percent. A path length of 1e-30 or a scale
   of 1e12, which the first version accepted and then never finished
   replaying, is refused here by name. Every wrap this project adds (the
   next boundary, the drive's end) is bounded to two turns besides.
@@ -678,7 +699,8 @@ gains four lines (`wrong-way-off` on entering the zone, `wrong-way-on` two
 steps later, twice); and the angle is now 0x00564DB0's, which changes no
 verdict of these five runs. No crossing, lap or finish moved to another
 step. The hashes are the same from the default, the Release and the Debug
-build.
+build. The third round (G1 and G2 of review comment 3633) changes none of
+them: 1003's 30 control points wrap exactly, and G2 only adds a test.
 
 **Two laps, finished.** The drive runs from grid slot 0 through 61 nodes,
 0.5 a step:
@@ -784,7 +806,9 @@ the direction filter; the recovery rule; and a load from a file, and a
 fixture writer that does not replace one. The review's round added:
 `track_angle` at the cardinal and diagonal directions, the review's two
 near-tie directions, the four threshold steps, and two grids of 4096
-directions each against the SHA-256 of an independent model's answers,
+directions each against the SHA-256 of a model's answers (a numpy float32
+transcription of the disassembly the worker wrote outside the repository;
+the round-2 reviewer reproduced those digests with a model of their own),
 and the table against the executable's SHA-256; the wrong-way flag at
 20023 and 20024 units off, and at 18203 and 18204 once on or still off,
 with steps whose angles are exact; a reset zone of height 0 and of 48
@@ -797,8 +821,19 @@ length in the retail order (0x441D07B6; the first version's order gives
 and nodes at 1e30, -1e30 and 3e38, a marker at 2e6, a length of 1e-30, a
 scale of 1e12 and 3e38, an offset of 50 and a length 11 percent long all
 refused, and a route of absurd percents built by hand replaying in bounded
-time. `tests/race_route_guards.cmake` (ctest
-`nfsu_probe_race_route_guards`) drives the command: the usage and option
+time. The third round added: a 41-gon, made by a float rotation recurrence
+that is exact on every platform, whose node 2 measures 0x41F531E4 with the
+first point through the wrap and would measure 0x41F531E2 without it; the
+derivative at t = 0.07 on the circle, (0xBF91B380, 0x421A888A) in the
+retail order of weight 0's additions and (0xBF91B3A0, 0x421A888B) in the
+other; a loop that starts at 5 percent and ends at 100, which only the
+start's bound refuses; a race of no laps driven over the line 130
+times, whose lap byte wraps upward to -128 after 127; two directions whose
+`x * x + y * y` is exactly the angle routine's minimum, 1e-4 in float,
+which is not above it (0 and 16384, where taking the minimum itself would
+give 1044 and 15340); and, on the route of absurd percents, that the next
+boundary is never one whose percent is absurd.
+`tests/race_route_guards.cmake` (ctest `nfsu_probe_race_route_guards`) drives the command: the usage and option
 refusals, three missing files, the listing and the forward drive over the
 fixture pinned by SHA-256, the backward drive, both skips, a reverse event,
 a missing event, another track's bundle, a skip outside the path, a path
@@ -808,9 +843,10 @@ at 1e30) each exiting 3 with its reason.
 
 ### Deliberate breaks
 
-Forty mutants of `src/race_route.cpp`, each applied alone: the first 28
-are the review's own sweep of the first version (comment 3575), redone on
-this code, and 29 to 40 break what this round added. For each, only
+Sixty mutants of `src/race_route.cpp`, each applied alone: the first 28
+are the first review's sweep of the first version (comment 3575), 29 to 40
+break what the second round added, and 41 to 60 were written for the third
+round against review comment 3633's sweep of the second. For each, only
 `nfsu_race_route_tests` and `nfsu_probe` were rebuilt; the unit binary ran
 under a 60-second limit and `ctest -R race_route_guards` after it; the
 source was then restored byte for byte and touched. A run is classified by
@@ -862,24 +898,54 @@ otherwise; a mutant survives only when both passed.
 | 38 | one table slope off by one | killed | passed | killed |
 | 39 | twelve intervals made eleven | killed | passed | killed |
 | 40 | off-path at 300 not 5000 | killed | passed | killed |
+| 41 | G1 arc start evaluated directly | killed | passed | killed |
+| 42 | G2 weights[0] in the w, y, x, z order | killed | passed | killed |
+| 43 | loop start bound 1 made 60 | killed | passed | killed |
+| 44 | forward lap increment not wrapped | killed | passed | killed |
+| 45 | marker coordinate limit removed | killed | passed | killed |
+| 46 | loop end bound 1 made 20 | killed | passed | killed |
+| 47 | quadrant 1 adds | killed | killed | killed |
+| 48 | steep on a tie made shallow | killed | passed | killed |
+| 49 | row shift 11 made 12 | killed | passed | killed |
+| 50 | correction floor instead of trunc | killed | passed | killed |
+| 51 | negative sine from 0x8000 | killed | passed | killed |
+| 52 | steep ratio uses the absolute y | killed | passed | killed |
+| 53 | table angle row 32 off by one | killed | passed | killed |
+| 54 | off-path reported every step | killed | passed | killed |
+| 55 | off-path does not stop recovery | killed | passed | killed |
+| 56 | hysteresis 1819 | killed | passed | killed |
+| 57 | x output in the w, y, x, z order | killed | killed | killed |
+| 58 | percent_ahead fallback 0 | killed | passed | killed |
+| 59 | minimum-square test made >= | killed | passed | killed |
+| 60 | steep minimum-square test made >= | killed | passed | killed |
 
-Totals: 40 mutants, 40 killed, 0 survived, 0 other. The source's SHA-256 was the same after the sweep as before it, and the
-restored build passed. Mutant 29 puts back the first version's unbounded
-wraps: the unit binary never returns from the route of absurd percents,
-which is F1 of the review reproduced. Mutant 39 was an equivalent mutant
-for `track_angle` - its ratio never reaches the third of the arcsine's
-twelve intervals - until the test of `track_arcsine_angle` over its whole
-range was added for it. Mutant 37, finishing on `>=` rather than `==`, is
-killed only by the lap byte's wrap: with an ordinary integer the two are the
-same.
+Totals: 60 mutants, 60 killed, 0 survived, 0 other. The source's SHA-256
+was the same after the sweep as before it, and the restored build passed.
+Mutant 29 puts back the first version's unbounded wraps: the unit binary
+never returns from the route of absurd percents, which is F1 of the first
+review reproduced. Mutant 39 was an equivalent mutant for `track_angle` -
+its ratio never reaches the third of the arcsine's twelve intervals - until
+the test of `track_arcsine_angle` over its whole range was added for it.
+Mutant 37, finishing on `>=` rather than `==`, is killed only by the lap
+byte's wrap: with an ordinary integer the two are the same.
 
-The review's ten survivors are among the 28 - the three wrong-way angle
-rules (9, 10, 28), the laps-0 guard (6), the reverse split defaults (15),
-the wrap of a default above 100 (17), the closed wrap to the last node (20),
-the first marker of a name (22), the count of three (24) and the step
-halving (26) - and each is now killed by a test written for it. The first
-version's own twelve mutants, all killed then, overlap these, and every
-test that killed them is still in place.
+The first review's ten survivors are among the first 28 - the three
+wrong-way angle rules (9, 10, 28), the laps-0 guard (6), the reverse split
+defaults (15), the wrap of a default above 100 (17), the closed wrap to the
+last node (20), the first marker of a name (22), the count of three (24)
+and the step halving (26) - and each is killed by a test written for it.
+The second review's six survivors are 41 to 44, 58 and 59 here: the arc
+start through the wrap (its 50, G1) and weight 0's order (its 47, G2), each
+killed by a test with a pinned float; the loop start's bound (its 32),
+killed by a loop from 5 to 100 percent; the forward lap byte (its 44),
+killed by a race of no laps driven 130 times; and the two it called
+equivalent in practice (its 33 and 49). Of those, 58 is equivalent on every
+route `build_race_route` makes, but a route built by hand reaches it, and
+the test now checks that such a route's next boundary is never an absurd
+one; 59 is reached by any direction whose `x * x + y * y` rounds to exactly
+1e-4 in float, such as (0.009949874, 0.001), and 60 is its twin on the
+other branch. A sweep run before those two checks were added left 58 and 59
+the only survivors of the same first 59.
 
 ## Approximations, labelled
 

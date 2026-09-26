@@ -106,6 +106,9 @@ struct TrackSpec {
     float length = 0.0F;  // 0: measure it with the library and write that
     std::vector<MarkerSpec> markers;
     std::vector<ZoneSpec> zones;
+    // When not empty, the nodes themselves, one per node, instead of the
+    // sixteen of the circle.
+    std::vector<std::array<float, 2>> points;
 };
 
 float circle_x(double degrees, double radius) {
@@ -185,8 +188,13 @@ Bytes node_payload(const TrackSpec& spec) {
     const float scale = spec.radius / 100.0F;
     for (std::size_t n = 0; n < spec.nodes; ++n) {
         const std::size_t at = n * nfsu::kTrackPathNodeSize;
-        put_f32(payload, at, kCircle[n % 16][0] * scale);
-        put_f32(payload, at + 4, kCircle[n % 16][1] * scale);
+        if (spec.points.empty()) {
+            put_f32(payload, at, kCircle[n % 16][0] * scale);
+            put_f32(payload, at + 4, kCircle[n % 16][1] * scale);
+        } else {
+            put_f32(payload, at, spec.points[n][0]);
+            put_f32(payload, at + 4, spec.points[n][1]);
+        }
         payload[at + 8] = 0;
         put_u16(payload, at + 0x0A, 0xFFFFU);
         put_u16(payload, at + 0x0C, 0xFFFFU);
@@ -954,9 +962,11 @@ std::uint32_t float_bits(float value) {
     return bits;
 }
 
-// 0x00564DB0 against an independent model of it (a numpy float32
-// transcription of the disassembly, kept with the review's evidence), and
-// the table against the executable's bytes.
+// 0x00564DB0 against a model of it - a numpy float32 transcription of the
+// disassembly this project's worker wrote beside the code, not in the
+// repository; the round-2 reviewer of PR #168 reproduced all three digests
+// and the table's with a model of their own - and the table against the
+// executable's bytes.
 void test_track_angle() {
     struct Case {
         float x;
@@ -975,6 +985,10 @@ void test_track_angle() {
         // The wrong-way thresholds below, as dyadic steps.
         {-5960.0F / 16384.0F, 1.0F, 20023}, {-5962.0F / 16384.0F, 1.0F, 20024},
         {-2888.0F / 16384.0F, 1.0F, 18203}, {-2889.0F / 16384.0F, 1.0F, 18204},
+        // x * x + y * y exactly the minimum, 1e-4 in float (0x38D1B717):
+        // not above it, so a ratio of 0 on either branch. Taking the
+        // minimum itself would give 1044 and 15340.
+        {0.009949874F, 0.001F, 0}, {0.001F, 0.009949874F, 16384},
     };
     for (const Case& c : cases) {
         const std::uint16_t got = nfsu::track_angle(c.x, c.y);
@@ -983,7 +997,7 @@ void test_track_angle() {
                                   ", expected " + std::to_string(c.angle));
     }
     // 4096 directions on two grids, hashed as little-endian 16-bit angles;
-    // the digests are the independent model's.
+    // the digests are the model's.
     unsigned char grid[4096 * 2];
     unsigned char grid2[4096 * 2];
     for (int i = 0; i < 4096; ++i) {
@@ -1156,6 +1170,28 @@ void test_off_path() {
 // +0x08 is a signed byte: 129 backward crossings from -1 wrap it to 126,
 // and the next forward crossing is a new highest lap, 127. The race is not
 // finished: 0x00435A43 finishes on equality with the lap count.
+// The other way: a race of no laps driven forward 130 times over the line.
+// The counter climbs to 127, the 129th crossing wraps it to -128, which is
+// no new highest lap, and the 130th makes it -127: 127 laps complete.
+void test_lap_counter_width_forward() {
+    const nfsu::RaceRouteTrack track = parse(track_image(circle_spec()));
+    const nfsu::RaceRoute route = circle_route(track, 0, 0);
+    std::vector<std::array<float, 2>> points;
+    arc(points, 80.0, 80.0 + 130.0 * 360.0, 5.0);
+    const Replay run = replay(route, track, points);
+    int laps = 0;
+    int forward = 0;
+    for (const nfsu::RaceProgressEvent& event : run.events) {
+        laps += event.kind == nfsu::RaceEventKind::lap_complete ? 1 : 0;
+        forward += event.kind == nfsu::RaceEventKind::crossed_forward && event.index == 0 ? 1 : 0;
+    }
+    check(forward == 130 && laps == 127 && run.progress.lap == -127 &&
+              run.progress.max_lap == 127,
+          "the lap byte wraps upward: " + std::to_string(forward) + " crossings, " +
+              std::to_string(laps) + " laps, counter " + std::to_string(run.progress.lap) +
+              ", highest " + std::to_string(run.progress.max_lap));
+}
+
 void test_lap_counter_width() {
     const nfsu::RaceRouteTrack track = parse(track_image(circle_spec()));
     const nfsu::RaceRoute route = circle_route(track, 2, 0);
@@ -1287,6 +1323,63 @@ void test_secant_halving() {
               " evaluations, fraction " + std::to_string(coordinate.fraction));
 }
 
+// 0x0059D9F0 evaluates the first point of each segment through 0x0059D350
+// at (float)i, so through the wrap of 0x0059CE10, which with 41 control
+// points gives 1.9999999 for i = 2 and ten other near misses. A 41-gon made
+// by a float rotation recurrence (exact on every platform) has node 2's
+// running length 0x41F531E4 that way; evaluated directly on segment i at
+// u = 0 it would be 0x41F531E2. The model gives both.
+void test_arc_start_through_wrap() {
+    const auto bits_float = [](std::uint32_t bits) {
+        float value = 0.0F;
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    };
+    const float c = bits_float(0x3F7CFFF2U);  // cos(2 pi / 41) in float
+    const float s = bits_float(0x3E1C5018U);  // sin(2 pi / 41) in float
+    TrackSpec spec = circle_spec();
+    spec.nodes = 41;
+    float x = 100.0F;
+    float y = 0.0F;
+    for (int k = 0; k < 41; ++k) {
+        spec.points.push_back({x, y});
+        const float nx = x * c - y * s;
+        const float ny = x * s + y * c;
+        x = nx;
+        y = ny;
+    }
+    const nfsu::RaceRouteTrack track = parse(track_image(spec));
+    nfsu::TrackPathSpline spline;
+    std::string error;
+    check(track.ok() && nfsu::build_track_path_spline(track, false, spline, error),
+          "the 41-gon builds: " + error);
+    if (spline.count != 41) {
+        return;
+    }
+    check(float_bits(spline.points[2 * 3 + 2]) == 0x41F531E4U,
+          "node 2's running length through the wrap: " +
+              std::to_string(float_bits(spline.points[2 * 3 + 2])));
+    check(float_bits(spline.spline_length) == 0x441D13FAU, "the 41-gon's loop length");
+}
+
+// The derivative's half of 0x005AC449's order: the weight of control point
+// 0 summed w, y, z, x. Its derivative basis row is (-0.5, 2, -1.5, 0), so
+// the order moves the tangent; at t = 0.07 on the circle the retail order
+// gives (0xBF91B380, 0x421A888A), the w, y, x, z order (0xBF91B3A0,
+// 0x421A888B). The model gives both.
+void test_derivative_order() {
+    const nfsu::RaceRouteTrack track = parse(track_image(circle_spec()));
+    nfsu::TrackPathSpline spline;
+    std::string error;
+    check(nfsu::build_track_path_spline(track, false, spline, error), "the circle builds");
+    float slope[3];
+    nfsu::evaluate_track_path(spline, 0.07F, 1, slope);
+    check(float_bits(slope[0]) == 0xBF91B380U && float_bits(slope[1]) == 0x421A888AU &&
+              float_bits(slope[2]) == 0x421D07C4U,
+          "the derivative at 0.07 in the retail order: " + std::to_string(float_bits(slope[0])) +
+              " " + std::to_string(float_bits(slope[1])));
+}
+
 // Data the parser once let through that made the replay loop forever.
 void test_absurd_data() {
     const TrackSpec spec = circle_spec();
@@ -1318,6 +1411,20 @@ void test_absurd_data() {
         {record + 8, 50.0F, "an offset of 50"},
         {record + 12, 700.0F, "a length 11 percent long"},
     };
+    {
+        // An offset of 5 percent with a scale of 0.95: the loop still ends
+        // at 100 percent, so only the start's bound refuses it.
+        Bytes image = track_image(spec);
+        put_f32(image, record + 8, 31.40602F);
+        put_f32(image, record + 16, 0.95F);
+        const nfsu::RaceRouteTrack track = parse(image);
+        nfsu::RaceRoute route;
+        std::string error;
+        check(track.ok() && !nfsu::build_race_route(track, 2, 0, 0, route, error) &&
+                  error.find("measure its own loop") != std::string::npos &&
+                  error.find("to 100") != std::string::npos,
+              "a loop that starts at 5 percent and ends at 100 is refused: " + error);
+    }
     for (const Field& field : fields) {
         Bytes image = track_image(spec);
         put_f32(image, field.at, field.value);
@@ -1340,6 +1447,9 @@ void test_absurd_data() {
     arc(points, 80.0, 100.0, 1.0);
     const Replay run = replay(route, track, points);
     check(run.progress.step == points.size() - 1, "a route of absurd percents replays");
+    // An absurd percent reads as a whole lap ahead, never as the nearest.
+    check(run.progress.next_boundary == 0,
+          "an absurd boundary is never the next: " + std::to_string(run.progress.next_boundary));
     nfsu::RaceDrive drive;
     std::string error;
     route.boundaries[0].percent = -1.0e20F;
@@ -1429,6 +1539,9 @@ int main(int argc, char** argv) {
     test_reset_answers_no();
     test_off_path();
     test_lap_counter_width();
+    test_lap_counter_width_forward();
+    test_arc_start_through_wrap();
+    test_derivative_order();
     test_no_laps();
     test_boundary_details();
     test_count_bound();

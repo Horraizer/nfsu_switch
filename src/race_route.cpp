@@ -1172,12 +1172,16 @@ bool build_track_path_spline(const RaceRouteTrack& track,
     }
     // 0x0059D9F0: each control point's running length is the length so
     // far; each segment adds 16 chords, measured between points evaluated
-    // at i + k / 16 while the loop length is still zero.
+    // at i + k / 16 while the loop length is still zero. The first point of
+    // each segment is evaluated at the parameter (float)i through 0x0059D350
+    // too (0x0059DA4F..0x0059DA73), and so through the wrap of 0x0059CE10,
+    // which for many counts does not give i back: with 99 control points,
+    // i = 7 wraps to 6.9999995 and is evaluated on segment 6.
     float running = 0.0F;
     for (std::size_t i = 0; i < spline.count; ++i) {
         spline.points[i * 3 + 2] = running;
         float previous[3];
-        evaluate_segment(spline, static_cast<std::ptrdiff_t>(i), 0.0F, 0, 0.0F, previous);
+        evaluate_at(spline, static_cast<float>(i), 0, 0.0F, previous);
         for (int k = 1; k <= kArcChords; ++k) {
             const float t = static_cast<float>(i) +
                             static_cast<float>(k) / static_cast<float>(kArcChords);
@@ -1196,7 +1200,7 @@ bool build_track_path_spline(const RaceRouteTrack& track,
     // the spline's own running length into a percent, and every rule above
     // wraps a percent by one lap at most (0x00433665..0x004336D5), so a
     // path whose loop does not measure 100 percent cannot be raced. Retail
-    // loops measure 100 to within 0.0001 percent; a loop that measures
+    // loops measure 99.99993 to 100.00011 percent; a loop that measures
     // outside 99..101, or a start outside -1..1, is refused by name rather
     // than replayed on percents that mean nothing.
     const float start = spline.distance_offset / spline.path_length * kWrapWhole;

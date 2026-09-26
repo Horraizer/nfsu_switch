@@ -170,9 +170,10 @@ struct RaceRouteIssue {
 };
 
 // Not a retail rule: the largest magnitude a node or marker coordinate may
-// have on either horizontal axis. Retail positions stay within 2000 of the
-// origin; a coordinate of 1e30 is finite, but its square is not, and the
-// percents built from it mean nothing. docs/RACE_ROUTE.md.
+// have on either horizontal axis. Retail nodes and markers stay within
+// 2332 of the origin (2331.67, on 1106); a coordinate of 1e30 is finite,
+// but its square is not, and the percents built from it mean nothing.
+// docs/RACE_ROUTE.md.
 constexpr float kRaceRouteCoordinateLimit = 1.0e6F;
 
 struct RaceRouteLimits {
