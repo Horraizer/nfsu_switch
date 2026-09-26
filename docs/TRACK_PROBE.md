@@ -197,7 +197,7 @@ below, a quarter turn and then a 5-unit dolly lands at `x = -1`; the same two
 moves the other way round land somewhere else, and the suite asserts that they
 differ rather than asserting the order in a comment.
 
-No libm transcendental is used: `det_sin_deg`, `det_cos_deg` and `sqrt` only,
+No libm transcendental is used: `det_sin_deg`, `det_cos_deg` and `det_sqrt` only,
 the same restriction the renderer and the framing keep.
 
 ### What the defaults are
@@ -490,6 +490,15 @@ run was required to have written a non-empty file, and every exit status was
 | `--mesh TRSABC_ROAD_CHOP14 --screen-scale 120 --limit 1` | `D234ECD0CC96F3E5F15C85E841A2168510F8CD6655389545CC70F9F81E3F8713` | 5143 |
 | the street camera turned and flown, `--limit 0` | `E666BC2F8D05B6DC42D6C25AFB582F20CBDFADC4B283BAE013202BEA5D3EBF08` | 3139 |
 
+The fix for issue #125 reran all four commands in default, Debug, Release,
+RelWithDebInfo and MinSizeRel. For each command, all five raw outputs are
+byte-identical, and each also matches the pre-fix Release binary at the same
+installation path. No numeric field or pin moved. The absolute source paths
+are printed in the output, so their spelling is part of each SHA-256. Passing
+the retail paths with forward slashes reproduced all four hashes above;
+passing the same paths with backslashes changed the hashes but not the
+reported values.
+
 **Capture those in a shell that writes raw bytes.** An earlier round of
 this table was measured through PowerShell's `>`, which in this environment
 writes UTF-8 WITH A BYTE ORDER MARK: every hash was the hash of three bytes
@@ -504,17 +513,25 @@ The three configurations are the default with no build type, an explicit
 Release and an explicit Debug, which is the same set
 [`TRACK_RENDER.md`](TRACK_RENDER.md) measures.
 
-**Why this layer can claim what the renderer cannot.** Issue #125 is open
-against `src/render.cpp`: the CPU rasterizer is not bit-identical across
-optimisation levels for geometry hundreds of units from the origin, and
-[`TRACK_RENDER.md`](TRACK_RENDER.md) records a street view that differs in 61
-pixels between `-O0` and `-O3`. **Nothing here rasterizes.** The probe reads
-decoded records, composes a camera and classifies boxes, and every translation
-unit that does arithmetic reaching its output - `nfsu_track_probe`,
-`nfsu_track_visibility`, `nfsu_track_render`'s placement and framing - is
-compiled with `-ffp-contract=off -fno-fast-math`. So the divergence that
-bounds the renderer's claim cannot reach this one, and the table above is a
-measurement of that rather than an assumption.
+**The camera shares the renderer's square-root rule.** Issue #125 found that
+MinGW's out-of-line x87 `sqrt` can double-round at `-O0` and `-Os`, while
+optimized code uses a correctly rounded hardware square root. The probe
+does not rasterize, but its camera distance and basis used to reach that
+same library call. Both the probe and the renderer now use `det_sqrt`, so
+the camera arithmetic takes the same single-rounded path across build
+types. `-ffp-contract=off -fno-fast-math` still prevents FMA contraction;
+those flags alone did not prevent the square-root divergence. The table
+above is a measurement of the listed commands, and the issue #125 camera
+case is pinned in `nfsu_track_probe_tests`.
+
+The review's separate camera case, `--eye 450 20 -80 --look-at 599 62 -80
+--view-far 60 --limit 2`, now prints a 4667-byte report, using forward-slash
+source paths as above, with SHA-256
+`BA2565408F95DB3E3178704A6A25FD5408749A1B954360D13BDE856EA4B9E479`
+in each of those five build types on the same installation. Its camera
+distance is `154.80633061990713`; before this fix, the default and Debug
+builds printed `154.80633061990716` and 4669 bytes. Each run checked the
+retail-file manifest before and after and found it unchanged.
 
 Two numbers are printed as the FLOAT's own shortest round trip rather than the
 widened double's, through `format_float`: every decoded field of a track
@@ -1015,7 +1032,7 @@ build/nfsu_probe track-probe X:/Games/NFSU/Tracks/STREAML1RB.BUN \
 
 Expected:
 
-1. Both `ctest` runs report 32 tests passed, 0 failed.
+1. Both `ctest` runs report `100% tests passed, 0 tests failed`.
 2. All six commands exit 0 and write nothing to standard error.
 3. The first prints `probe: instances 39 probed 39 visible 39 culler 39
    disagreements 0`, `probe: rejected by mask 0 box 0 size 0 pruned 0` and

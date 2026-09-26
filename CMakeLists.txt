@@ -956,6 +956,11 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_gpu_upload_tests)
     add_test(NAME nfsu_gpu_upload_tests COMMAND nfsu_gpu_upload_tests)
 
+    add_executable(nfsu_draw_execution_tests tests/draw_execution_tests.cpp)
+    target_link_libraries(nfsu_draw_execution_tests PRIVATE nfsu_draw_commands)
+    nfsu_enable_warnings(nfsu_draw_execution_tests)
+    add_test(NAME nfsu_draw_execution_tests COMMAND nfsu_draw_execution_tests)
+
     # A hung test is killed and reported as a failure, as above.
     set_tests_properties(nfsu_memory_arena_tests nfsu_gpu_upload_tests
         PROPERTIES TIMEOUT 60)

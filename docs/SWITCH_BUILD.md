@@ -19,6 +19,11 @@ track draw-list dependencies through `cmake/draw_libraries.cmake`, on both
 platforms. They do not change either application's rendering path. See
 [`DRAW_COMMANDS.md`](DRAW_COMMANDS.md) for the command contract and tests.
 
+Issue #146 adds `nfsu_switch_deko3d`, which executes those commands with
+deko3d and packages the checked offline shaders in its NRO RomFS.
+[DEKO3D_RENDERER.md](DEKO3D_RENDERER.md) covers running it, ownership,
+synchronization and the hardware evidence still needed.
+
 ## What it builds
 
 | Target | Output, under `build-switch/switch/` | What it is |
@@ -30,6 +35,8 @@ platforms. They do not change either application's rendering path. See
 | `nfsu_switch_assets` | `nfsu_switch_assets.elf` | The asset check of issue #47: it reads the config file `sdmc:/config/nfsu_switch/assets.cfg` if there is one, checks that the SD card holds the 12 retail files the first lap needs - by name, size and SHA-256 - and shows the report and the files still to copy on screen; + exits. [`SWITCH_ASSETS.md`](SWITCH_ASSETS.md). |
 | `nfsu_switch_assets_nro` | `nfsu_switch_assets.nro`, `nfsu_switch_assets.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_assets`. |
 | `nfsu_switch_shaders` | `shaders/*.dksh`, `shaders/*.tgsi` | Every GLSL stage a manifest in `shaders/` names, compiled by `uam`, and each manifest checked against the result. |
+| `nfsu_switch_deko3d` | `nfsu_switch_deko3d.elf` | The stock scene recorded by #145 and executed on a deko3d graphics queue; 1280x720, + exits, read-only SD inputs. |
+| `nfsu_switch_deko3d_nro` | `nfsu_switch_deko3d.nro`, `nfsu_switch_deko3d.nacp` | The GPU application packaged with a NACP and RomFS containing the three checked offline shader stages. |
 | `nfsu_switch_vehicle` | `nfsu_switch_vehicle.elf` | The vehicle model of issue #58: runs the eight built-in scripted input sequences through `nfsu_vehicle` and prints each telemetry hash, and whether `mixed` is the one pinned on the desktop ([`VEHICLE.md`](VEHICLE.md), "On the console"); + exits. Not yet run on a console. |
 | `nfsu_switch_vehicle_nro` | `nfsu_switch_vehicle.nro`, `nfsu_switch_vehicle.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_vehicle`. |
 | `nfsu_switch_vehicle_track` | `nfsu_switch_vehicle_track.elf` | The car on the track of issue #60: runs the thirteen proving-ground scenarios through `nfsu_vehicle_track` and, when `sdmc:/nfsu/Tracks/TRACKB1003.lzc` is on the card, the six circuit scenarios, and prints each telemetry hash and whether it is the one pinned on the desktop ([`VEHICLE_TRACK.md`](VEHICLE_TRACK.md), "On the console"); + exits. Not yet run on a console. |
@@ -52,7 +59,8 @@ console's filesystem service `nfsu_posix_file_system`
 (`cmake/asset_libraries.cmake`).
 
 `nfsu_switch_app` links libnx, which devkitPro's platform file adds to every
-link, and nothing else. Neither application loads a shader. The CTest suite
+link, and nothing else. The original minimal and CPU car applications load
+no shader; the #146 application loads only its packaged offline blobs. The CTest suite
 runs on the build machine, not on a console:
 
 | Test | What it checks |
@@ -62,6 +70,7 @@ runs on the build machine, not on a console:
 | `nfsu_switch_nro` | The ELF is AArch64; the NRO has its `NRO0` header, an `ASET` section, the icon and a 0x4000-byte NACP titled `nfsu_switch`; the reader refuses a file that is not an NRO. |
 | `nfsu_switch_car_nro` | The same checks for `nfsu_switch_car.nro`, whose NACP is titled `nfsu_switch_car`. |
 | `nfsu_switch_assets_nro` | The same checks for `nfsu_switch_assets.nro`, whose NACP is titled `nfsu_switch_assets`. |
+| `nfsu_switch_deko3d_nro` | The GPU application's AArch64 ELF, NRO and NACP title, then its bounded RomFS section containing the exact bytes of every checked shader stage. |
 | `nfsu_switch_vehicle_nro` | The same checks for `nfsu_switch_vehicle.nro`, whose NACP is titled `nfsu_switch_vehicle`. |
 | `nfsu_switch_vehicle_fma_census` | `nfsu_vehicle`'s console objects, disassembled with the toolchain's `objdump`, hold no `fmadd`, `fmsub`, `fnmadd`, `fnmsub`, `fmla` or `fmls`, and do hold `fmul`. This tree cannot run AArch64 code, so it asserts that precondition of the pinned telemetry hash rather than the hash. |
 | `nfsu_switch_vehicle_track_nro` | The same checks for `nfsu_switch_vehicle_track.nro`, whose NACP is titled `nfsu_switch_vehicle_track`. |
@@ -84,7 +93,7 @@ any of them.
   | --- | --- |
   | `devkitA64` (`devkita64-gcc`, `devkita64-binutils`) | the `aarch64-none-elf-` compilers and tools |
   | `libnx` | `libnx.a`, `switch.specs`, the headers, the default icon |
-  | `deko3d` | `libdeko3d.a` and `deko3d.h`; checked now, linked by the renderer later |
+  | `deko3d` | `libdeko3d.a` and `deko3d.h`; linked by `nfsu_switch_deko3d` (issue #146) |
   | `uam` | the offline shader compiler |
   | `switch-tools` | `elf2nro`, `nacptool` |
   | `switch-cmake`, `devkita64-cmake`, `dkp-cmake-common-utils` | devkitPro's CMake toolchain and platform files |
@@ -569,26 +578,27 @@ nfsu_viewer <Cars/240SX/GEOMETRY.BIN> <Cars/240SX/TEXTURES.BIN> left.tga
 
 Every other option is at its default, pitch 15 among them. It writes 3686418
 bytes and exits 0 with nothing on standard error. "Before" is `9974ff5`,
-"after" this change, each built Debug and Release:
+"after" issue #161, each built Debug and Release. The current column also
+includes the square-root determinism fix in issue #125:
 
-| Camera | Build | Before issue #161 | After |
+| Camera | Build | Before issue #161 | Current (after #161 and #125) |
 | --- | --- | --- | --- |
 | `--yaw -94`, the left side | Debug and Release | `FF2324A7851FFB5FC624C38FB6D5F063EA976868D36BE0A1921302EDC478A7C0` | `1E5FA0BE9F3B876BDA36A3F17B22A17371F54017FF72B285E75AA1E93CA7F897` |
-| `--yaw 76`, the right side | Debug | `0DC727BD8CA0B17B3A0290634698254095B88CCDEEBEF954A6373A1E30829A43` | the same |
-| `--yaw 76`, the right side | Release | `DF5EC96B728FECF14DC3B5301F647C97B0252B153693AF0FD7F23B8F6E07406D` | the same |
+| `--yaw 76`, the right side | default and Debug | `0DC727BD8CA0B17B3A0290634698254095B88CCDEEBEF954A6373A1E30829A43` | `DF5EC96B728FECF14DC3B5301F647C97B0252B153693AF0FD7F23B8F6E07406D` |
+| `--yaw 76`, the right side | Release | `DF5EC96B728FECF14DC3B5301F647C97B0252B153693AF0FD7F23B8F6E07406D` | `DF5EC96B728FECF14DC3B5301F647C97B0252B153693AF0FD7F23B8F6E07406D` |
 
 The application's own calls - `prepare_stock_frame` and
 `render_stock_frame` from `nfsu_stock_frame`, run from a scratch program
 that is not tracked - give the same hashes as the viewer of the same build,
 checked for both builds of this change and the Debug build of `9974ff5`.
 
-The two builds disagree at `--yaw 76`, before this change as after it, and
-this change does not touch it: 271 pixels near the two right wheels are
-drawn by the same triangles of the body's material group 2 in both builds,
-blue in one and black in the other, with every report line equal. That is a
-difference in how the two builds texture those pixels, outside issue #161.
-At the default camera, the only one the console compares, the two builds
-agree, and they agree at `--yaw -94`.
+Before issue #125, Debug and Release disagreed at `--yaw 76`: 271 pixels
+near the two right wheels were blue in one and black in the other, with
+every report line equal. Issue #125 closes that divergence with the shared
+correctly-rounded square-root helper. The current `DF5EC96B...` pin above
+was reproduced twice in separate processes in each of default, Debug and
+Release; all three are byte-identical. The default camera and `--yaw -94`
+pins are unchanged. This is desktop evidence; it adds no console validation.
 
 **The cause.** The stand-in placed all four wheel copies, and all four
 brake copies, as pure translations to the culling placements, determinant
@@ -664,10 +674,9 @@ NRO.
   of the left side came from the NRO of pull request #160; that the NRO
   built from this change shows wheels there and reports its new pin
   `EQUAL` is what the desktop frames say.
-- There is no deko3d device. `nfsu_switch_car` draws with the CPU reference
-  renderer; neither application loads a shader, and the compiled `.dksh`
-  files are not packaged into an NRO's RomFS; how the deko3d renderer carries
-  them is its decision.
+- `nfsu_switch_car` still draws with the CPU reference renderer. Issue #146
+  adds a separate deko3d application with offline shaders in RomFS; its
+  device, upload, presentation and exit paths have not run on hardware.
 - Only the car-path libraries are compiled for the console, the skin,
   inspection and controller layers among them since issue #148. Whether
   the track and platform layers build against devkitA64's newlib is

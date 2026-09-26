@@ -548,32 +548,32 @@ The second writes twelve 1280x720 frames of 3686418 bytes, at samples 0,
 600, ..., 6600 - every 10 seconds of the lap - all from set 38, the 78
 sections:
 
-| Frame | Where | default and Debug (`-O0`) | Release (`-O3`), where it differs |
-| --- | --- | --- | --- |
-| `lap-000000` | zone 1003, the start | `FAC9DFD0DCDFEAB6C319061398840005BA7B0A5261164A0D965314936346C3EC` | `D2419529C69702CCD202F38DFF8F712B9AD3712557D9C9BBF78DD09ECA3A9F86` |
-| `lap-000600` | under the bridge, 1001 | `28168F3E33EF36DB93DE8934D396BF408E14678ED95D66EB56D83752D2F0826D` | `3FC42D6C17AC58793EEA70F5BE97898F7A16F8458D8A45E3FEB9861D4FB5C603` |
-| `lap-001200` | north, 1104 | `06F93C9ADC207369E59B6C0BBC70A8CE825E27BCB09197CC89B6831186C0F197` | same |
-| `lap-001800` | the boulevard, 1105 | `E0A17F9F4561E8E78825C86EC293D73A03CE4955C5090FDF2DD68FEA091DD2B2` | same |
-| `lap-002400` | north, 1106 | `F09E7434A0694C5025FA48264E75596299C89A715991D60589FC6E70B942F160` | `690C48053F4593F9D0769E24E315F1E124AAB8CE092F5420CBADEC2B0D9B2E44` |
-| `lap-003000` | north, 1103 | `061D9C66AE8A17C7B1490BDD2609E4DE376AC22B9E9B06E6A28A1A9C3F121B7B` | `14F9E2D4F2D9BF43B7C3AB52901AAAC9CEC146CD21C20639ADA21D886CD0B980` |
-| `lap-003600` | the arc, 1202 | `109244974D2932FC5F91E66EEF4CCBC8506F420FF162E6C4DAB177DE19595DC6` | same |
-| `lap-004200` | the diagonal, 1203 | `D92062E1C1B24767A690F5E0B5F20F29515576D48233C8A68157796254F4EB13` | same |
-| `lap-004800` | the avenue, 1204 | `43DBCFABC97E6E99A123E7938D4DB0E38664E6F952D9E1488DD0A96D87739B4A` | same |
-| `lap-005400` | the western junction, 1205 | `3A607CEBB80BAF7F1D8A79B56F5C2EFF46B4ECBFDB33BE3ADD2CC37E123EA8F6` | same |
-| `lap-006000` | south, 1206 | `D38E34D69ACB9D3E770E6D03D29623538DA5E24728F20A9122B782C9C7F51686` | same |
-| `lap-006600` | the curve into 1003 | `15D252B0C00CBA53B81489702F431809D5EEB8B2F43ED45F0462DB4D82D70909` | same |
+| Frame | Where | SHA-256 (default, Debug and Release) |
+| --- | --- | --- |
+| `lap-000000` | zone 1003, the start | `D2419529C69702CCD202F38DFF8F712B9AD3712557D9C9BBF78DD09ECA3A9F86` |
+| `lap-000600` | under the bridge, 1001 | `3FC42D6C17AC58793EEA70F5BE97898F7A16F8458D8A45E3FEB9861D4FB5C603` |
+| `lap-001200` | north, 1104 | `06F93C9ADC207369E59B6C0BBC70A8CE825E27BCB09197CC89B6831186C0F197` |
+| `lap-001800` | the boulevard, 1105 | `E0A17F9F4561E8E78825C86EC293D73A03CE4955C5090FDF2DD68FEA091DD2B2` |
+| `lap-002400` | north, 1106 | `690C48053F4593F9D0769E24E315F1E124AAB8CE092F5420CBADEC2B0D9B2E44` |
+| `lap-003000` | north, 1103 | `14F9E2D4F2D9BF43B7C3AB52901AAAC9CEC146CD21C20639ADA21D886CD0B980` |
+| `lap-003600` | the arc, 1202 | `109244974D2932FC5F91E66EEF4CCBC8506F420FF162E6C4DAB177DE19595DC6` |
+| `lap-004200` | the diagonal, 1203 | `D92062E1C1B24767A690F5E0B5F20F29515576D48233C8A68157796254F4EB13` |
+| `lap-004800` | the avenue, 1204 | `43DBCFABC97E6E99A123E7938D4DB0E38664E6F952D9E1488DD0A96D87739B4A` |
+| `lap-005400` | the western junction, 1205 | `3A607CEBB80BAF7F1D8A79B56F5C2EFF46B4ECBFDB33BE3ADD2CC37E123EA8F6` |
+| `lap-006000` | south, 1206 | `D38E34D69ACB9D3E770E6D03D29623538DA5E24728F20A9122B782C9C7F51686` |
+| `lap-006600` | the curve into 1003 | `15D252B0C00CBA53B81489702F431809D5EEB8B2F43ED45F0462DB4D82D70909` |
 
 Each configuration ran every pin twice in separate processes, with the
 outputs deleted by exact name first; every pair was byte-identical and no
-run wrote to standard error. **Four frames differ in Release**, by few
-pixels and within the bounds shown, which is the `-O0` against `-O3`
-divergence [`TRACK_RENDER.md`](TRACK_RENDER.md) traces to `src/render.cpp`
-(issue #125): `lap-000000` 61 pixels of 921600, at most 11 in any channel,
-inside `x 66..738, y 321..400`; `lap-000600` 8 pixels, at most 21, in
-`x 394..1172, y 259..263`; `lap-002400` 1 pixel, by 1; `lap-003000` 6
-pixels, at most 19, in `x 180..227, y 261..271`. The frames run's own
-listing - including every frame's triangle, pixel and fallback counts - is
-the same in all three.
+run wrote to standard error. **Issue #125 closed the `-O0` against `-O3`
+divergence.** The shared correctly-rounded square-root helper makes default
+and Debug draw the former Release frames. The default/Debug pins moved from
+`FAC9DFD0...` to `D2419529...` at sample 0, `28168F3E...` to `3FC42D6C...`
+at 600, `F09E7434...` to `690C4805...` at 2400, and `061D9C66...` to
+`14F9E2D4...` at 3000. Release and the other eight frames are unchanged.
+All twelve frames now agree in default, Debug and Release. The frames run's
+own listing, including every frame's triangle, pixel and fallback counts,
+is also the same in all three.
 
 ### What the frames show
 
@@ -598,6 +598,11 @@ carries, the 417 unusable and 2 unresolved draw-list entries
 [`TRACK_WHOLE.md`](TRACK_WHOLE.md) lists.
 
 ## Nothing earlier moved
+
+This section records the original streaming branch before issue #125.
+For current pins after that fix, see the table above,
+[`TRACK_WHOLE.md`](TRACK_WHOLE.md), [`TRACK_RENDER.md`](TRACK_RENDER.md) and
+[`TRACK_PROBE.md`](TRACK_PROBE.md).
 
 `src/track.cpp`, `src/track_objects.cpp`, `src/track_scene.cpp`,
 `src/track_draw_list.cpp`, `src/render.cpp`, `src/track_render.cpp`,
