@@ -161,8 +161,9 @@ a checkered ground with the CPU reference renderer every `--render-every`
 frames (120 by default, 640x360 unless `--width` and `--height` say
 otherwise), prints each frame's SHA-256, and with `--out` writes
 `PREFIX-NNNNNN.tga`, never replacing a file. It exits 1 on an argument it
-refuses, 2 on a recording or controls file it cannot read or parse, 3 on a
-root that cannot give the stock frame and 4 when a step is refused. See
+refuses, 2 on a recording or controls file it cannot read or parse or a
+frame it cannot write, 3 on a root that cannot give the stock frame and 4
+when a step is refused. See
 `docs/CONTROLS_CAMERA.md` for the controls, the camera, the file format
 and the pins.
 `race-events` lists the track table of `GLOBAL/GLOBALB.BUN` (or the

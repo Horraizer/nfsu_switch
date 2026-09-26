@@ -52,6 +52,13 @@ void check(bool condition, const std::string& message) {
     }
 }
 
+// For a condition that sets `error`: the message is joined inside, after
+// the condition has been evaluated, where a message built among the
+// arguments could read `error` before the call had set it.
+void check_error(bool condition, const std::string& message, const std::string& error) {
+    check(condition, message + error);
+}
+
 std::string num(double value) {
     char text[64];
     std::snprintf(text, sizeof(text), "%.17g", value);
@@ -87,15 +94,16 @@ std::uint32_t bit(nfsu::GamepadButton button) {
 nfsu::DriveControlsConfig parse_or_fail(const std::string& text) {
     nfsu::DriveControlsConfig config;
     std::string error;
-    check(nfsu::parse_drive_controls_config(text, config, error),
-          "a configuration that should parse was refused: " + error);
+    const bool parsed = nfsu::parse_drive_controls_config(text, config, error);
+    check(parsed, "a configuration that should parse was refused: " + error);
     return config;
 }
 
 nfsu::DriveControls controls_with(const nfsu::DriveControlsConfig& config) {
     nfsu::DriveControls controls;
     std::string error;
-    check(controls.configure(config, error), "configure refused: " + error);
+    const bool configured = controls.configure(config, error);
+    check(configured, "configure refused: " + error);
     return controls;
 }
 
@@ -124,13 +132,92 @@ void test_config_round_trip() {
     check(again.throttle_floor == config.throttle_floor &&
               again.steer.digital_rate == config.steer.digital_rate,
           "the round trip keeps every value bit for bit");
-    for (std::size_t i = 0; i < config.bindings.size(); ++i) {
+    check(again.bindings.size() == config.bindings.size(),
+          "the round trip keeps the table's " + std::to_string(config.bindings.size()) +
+              " bindings: " + std::to_string(again.bindings.size()));
+    for (std::size_t i = 0; i < config.bindings.size() && i < again.bindings.size(); ++i) {
         const nfsu::DriveBinding& a = config.bindings[i];
         const nfsu::DriveBinding& b = again.bindings[i];
         check(a.action == b.action && a.control.kind == b.control.kind &&
                   a.control.index == b.control.index && a.part == b.part && a.invert == b.invert,
               "binding " + std::to_string(i) + " round-trips");
     }
+    // Every value the parser can produce comes back bit for bit, at the
+    // edges of each range and through the six decimal places.
+    const char* const kDecimals[] = {"0",     "0.000001", "0.1",       "0.3",
+                                     "0.333333", "0.9",   "1",         "4.999999",
+                                     "5",     "7.25",     "123.456789", "999.999999",
+                                     "1000"};
+    for (const char* decimal : kDecimals) {
+        const std::string value = decimal;
+        std::string file = "nfsu-controls 1\nsteer-centre-rate " + value +
+                           "\nsteer-analog-rate " + value + "\nsteer-digital-rate " + value +
+                           " " + value + "\n";
+        nfsu::DriveControlsConfig parsed;
+        std::string error;
+        const bool rates_ok = value != "0" && nfsu::parse_drive_controls_config(file, parsed, error);
+        if (value != "0") {
+            check(rates_ok, "rates of " + value + " parse: " + error);
+            const nfsu::DriveControlsConfig back = parse_or_fail(nfsu::format_drive_controls_config(parsed));
+            check(back.steer.centre_rate == parsed.steer.centre_rate &&
+                      back.steer.analog_rate == parsed.steer.analog_rate &&
+                      back.steer.digital_rate == parsed.steer.digital_rate &&
+                      back.steer.digital_rate_speed == parsed.steer.digital_rate_speed,
+                  "rates of " + value + " round-trip bit for bit");
+        }
+        const double number = [&value] {
+            double out = 0.0;
+            nfsu::parse_vehicle_decimal(value, out);
+            return out;
+        }();
+        if (number <= 0.9) {
+            file = "nfsu-controls 1\nthrottle-floor " + value + "\n";
+            const bool floor_ok = nfsu::parse_drive_controls_config(file, parsed, error);
+            check(floor_ok, "a floor of " + value + " parses: " + error);
+            const nfsu::DriveControlsConfig back = parse_or_fail(nfsu::format_drive_controls_config(parsed));
+            check(back.throttle_floor == parsed.throttle_floor,
+                  "a floor of " + value + " round-trips bit for bit");
+        }
+        if (number > 0.0 && number <= 5.0) {
+            file = "nfsu-controls 1\nreverse-assist on " + value + " 7\n";
+            const bool speed_ok = nfsu::parse_drive_controls_config(file, parsed, error);
+            check(speed_ok, "a reverse speed of " + value + " parses: " + error);
+            const nfsu::DriveControlsConfig back = parse_or_fail(nfsu::format_drive_controls_config(parsed));
+            check(back.reverse_speed == parsed.reverse_speed && back.reverse_hold_steps == 7,
+                  "a reverse speed of " + value + " round-trips bit for bit");
+        }
+    }
+    // A value the file cannot state is refused by validate, by directive,
+    // and nothing the parser accepts can be one.
+    struct Unstated {
+        double nfsu::DriveControlsConfig::*field;
+        double nfsu::DriveSteerFilter::*rate;
+        double value;
+        std::string directive;
+    };
+    const Unstated unstated[] = {
+        {nullptr, &nfsu::DriveSteerFilter::centre_rate, 1e-7, "steer-centre-rate"},
+        {nullptr, &nfsu::DriveSteerFilter::centre_rate, 1.0 / 3.0, "steer-centre-rate"},
+        {nullptr, &nfsu::DriveSteerFilter::analog_rate, 0.1 + 0.2, "steer-analog-rate"},
+        {nullptr, &nfsu::DriveSteerFilter::digital_rate_speed, 20.0000001, "steer-digital-rate"},
+        {&nfsu::DriveControlsConfig::throttle_floor, nullptr, 0.30000001, "throttle-floor"},
+        {&nfsu::DriveControlsConfig::reverse_speed, nullptr, 2.0 / 3.0, "reverse-assist"},
+    };
+    for (const Unstated& u : unstated) {
+        nfsu::DriveControlsConfig bad = nfsu::default_drive_controls_config();
+        if (u.field != nullptr) {
+            bad.*u.field = u.value;
+        } else {
+            bad.steer.*u.rate = u.value;
+        }
+        std::string error;
+        check_error(!nfsu::validate_drive_controls_config(bad, error) &&
+                  error == u.directive +
+                               " holds a value the file cannot state: not a fixed decimal of at"
+                               " most six places",
+              "an unstatable " + u.directive + " of " + num(u.value) + " is refused: ", error);
+    }
+
     // CR LF, comments, blank lines and spaces are accepted; a directive
     // replaces only its own default, and the first bind replaces the table.
     const nfsu::DriveControlsConfig mixed = parse_or_fail(
@@ -194,13 +281,30 @@ void test_config_refusals() {
         {"nfsu-controls 1\nsteer-digital-rate 5\n",
          "line 2: steer-digital-rate: needs <per-second> <speed>"},
         {"nfsu-controls 1\nsteer-centre-rate 0\n",
-         "steer-centre-rate needs a rate above 0 and at most 1000"},
+         "line 2: steer-centre-rate: needs a rate above 0 and at most 1000"},
         {"nfsu-controls 1\nsteer-analog-rate 2000\n",
-         "steer-analog-rate needs 0 or a rate above 0 and at most 1000"},
+         "line 2: steer-analog-rate: needs 0 or a rate above 0 and at most 1000"},
+        {"nfsu-controls 1\n# rates\nsteer-digital-rate 0 20\n",
+         "line 3: steer-digital-rate: needs a rate and a speed above 0 and at most 1000"},
+        {"nfsu-controls 1\nsteer-digital-rate 5 1001\n",
+         "line 2: steer-digital-rate: needs a rate and a speed above 0 and at most 1000"},
+        {"nfsu-controls 1\nthrottle-floor 00.3\n",
+         "line 2: throttle-floor: needs one canonical decimal from 0 to 0.9"},
+        {"# a comment\nbind steer left_x\n", "line 1: the header must be 'nfsu-controls 1'"},
+        {"nfsu-controls 1\n" + [] {
+             std::string binds;
+             for (int i = 0; i < 33; ++i) {
+                 binds += "bind steer left_x\n";
+             }
+             return binds;
+         }(),
+         "line 34: bind: more than 32 bindings"},
         {"nfsu-controls 1\nreverse-assist maybe\n",
          "line 2: reverse-assist: needs <on|off> [<speed> <hold steps>]"},
         {"nfsu-controls 1\nreverse-assist on 6 30\n",
-         "reverse-assist needs a speed above 0 and at most 5 m/s"},
+         "line 2: reverse-assist: needs a speed above 0 and at most 5 m/s"},
+        {"nfsu-controls 1\nreverse-assist on 0 30\n",
+         "line 2: reverse-assist: needs a speed above 0 and at most 5 m/s"},
         {"nfsu-controls 1\nreverse-assist on 1 5000\n",
          "line 2: reverse-assist: needs a canonical decimal speed and whole hold steps"},
         {"nfsu-controls 1\n" + std::string(nfsu::kMaxDriveConfigBytes, '#'),
@@ -227,14 +331,14 @@ void test_config_refusals() {
           "an empty table is refused");
     table = nfsu::default_drive_controls_config();
     table.bindings[3].part = nfsu::DriveAxisPart::positive;
-    check(!nfsu::validate_drive_controls_config(table, error) &&
+    check_error(!nfsu::validate_drive_controls_config(table, error) &&
               error == "binding 3: trigger_right is a button and has no half",
-          "a half on a button is refused: " + error);
+          "a half on a button is refused: ", error);
     table = nfsu::default_drive_controls_config();
     table.axes[1].inner = -1;
-    check(!nfsu::validate_drive_controls_config(table, error) &&
+    check_error(!nfsu::validate_drive_controls_config(table, error) &&
               contains(error, "axis left_y: the calibration needs 0 <= inner < outer"),
-          "a negative inner edge is refused: " + error);
+          "a negative inner edge is refused: ", error);
     nfsu::DriveControls controls;
     const double floor_before = controls.config().throttle_floor;
     table.axes[1].inner = 0;
@@ -283,6 +387,48 @@ void test_axis_calibration() {
           "the steer axis is read alone: " + num(right_only) + " " + num(diagonal));
 }
 
+void test_calibration_through_update() {
+    // Each axis read with its own zone: steer bound to one axis at a time,
+    // that axis given a zone no other axis has, the value read back from
+    // update() at a raw position where the zones disagree.
+    static const char* const kAxes[] = {"left_x", "left_y", "right_x", "right_y"};
+    for (int a = 0; a < 4; ++a) {
+        const std::int32_t inner = 1000 + 1500 * a;
+        const std::int32_t outer = 31000 - 1000 * a;
+        std::string text = std::string("nfsu-controls 1\nbind steer ") + kAxes[a] + "\n";
+        for (int b = 0; b < 4; ++b) {
+            const std::int32_t zone_inner = b == a ? inner : 5000;
+            const std::int32_t zone_outer = b == a ? outer : 20000;
+            text += std::string("axis ") + kAxes[b] + " " + std::to_string(zone_inner) + " " +
+                    std::to_string(zone_outer) + "\n";
+        }
+        nfsu::DriveControls controls = controls_with(parse_or_fail(text));
+        const std::int32_t raw = 16000;
+        std::int32_t axes[4] = {0, 0, 0, 0};
+        axes[a] = raw;
+        controls.update(pad(0, axes[0], axes[1], axes[2], axes[3]));
+        const double want = static_cast<double>(raw - inner) / static_cast<double>(outer - inner);
+        const double other = static_cast<double>(raw - 5000) / static_cast<double>(20000 - 5000);
+        check(controls.frame_state().steer_analog == want && want != other,
+              std::string("axis ") + kAxes[a] + " is read with its own zone: " +
+                  num(controls.frame_state().steer_analog) + " against " + num(want));
+    }
+    // A file's zone on a throttle half reaches step(): right_y at 1000 and
+    // 31000 reads 16000 as exactly 0.5, where the default zone reads 13/27.
+    nfsu::DriveControls controls = controls_with(parse_or_fail(
+        "nfsu-controls 1\nbind throttle right_y+\naxis right_y 1000 31000\n"
+        "throttle-floor 0\n"));
+    controls.update(pad(0));
+    controls.update(pad(0, 0, 0, 0, 16000));
+    check(controls.step(10.0, nfsu::kVehicleGearFirst, nfsu::VehicleGearbox::automatic).throttle ==
+              0.5,
+          "right_y 1000..31000 throttles 0.5 at 16000");
+    controls.update(pad(0, 0, 0, 0, 2000));
+    check(controls.step(10.0, nfsu::kVehicleGearFirst, nfsu::VehicleGearbox::automatic).throttle ==
+              1.0 / 30.0,
+          "and 1/30 at 2000, inside the default zone's inner edge");
+}
+
 void test_sources_and_remapping() {
     using nfsu::GamepadButton;
     const auto first = nfsu::kVehicleGearFirst;
@@ -322,8 +468,8 @@ void test_sources_and_remapping() {
     controls = controls_with(config);
     controls.update(pad(0, 0, 0, 0, 16500));
     input = controls.step(10.0, first, automatic);
-    const double expected = 0.0 + (half - 0.0) / (static_cast<double>(0.575F) - 0.0) *
-                                      (static_cast<double>(0.437F) - 0.0);
+    const double f = (half - 0.0) / (static_cast<double>(0.575F) - 0.0);
+    const double expected = (1.0 - f) * 0.0 + f * static_cast<double>(0.437F);
     check(input.throttle == expected, "the retail curve's first segment: " + num(input.throttle));
     check(nfsu::drive_retail_throttle_curve(0.0) == 0.0 &&
               nfsu::drive_retail_throttle_curve(1.0) == 1.0 &&
@@ -341,8 +487,8 @@ void test_sources_and_remapping() {
     controls.update(pad(bit(GamepadButton::face_east)));
     check(controls.step(0.0, first, automatic).throttle == 1.0, "A drives the throttle");
 
-    // A digital source overrides the analog one (0x0046186E, 0x00461957,
-    // 0x00461DDE), even when two buttons cancel.
+    // A digital value that is not centred decides (0x0046186E, 0x00461957,
+    // 0x00461DDE); a centred one hands the action to the analog source.
     controls = nfsu::DriveControls();
     controls.update(pad(0));
     controls.update(pad(bit(GamepadButton::dpad_left), 16500));
@@ -352,8 +498,47 @@ void test_sources_and_remapping() {
           "D-pad left and a stick right: the button decides");
     controls.update(pad(0));
     controls.update(pad(bit(GamepadButton::dpad_left) | bit(GamepadButton::dpad_right), 32767));
-    check(controls.frame_state().steer_from_button && controls.frame_state().steer_digital == 0.0,
-          "two opposite buttons are a centred digital steer, not the stick");
+    check(!controls.frame_state().steer_from_button &&
+              controls.frame_state().steer_digital == 0.0 &&
+              controls.frame_state().steer_analog == 1.0,
+          "two opposite buttons are a centred digital steer, which hands over to the stick");
+    input = controls.step(0.0, first, automatic);
+    check(controls.steer() == 1.0 && input.steer == -1.0,
+          "and step() then steers with the stick, at once");
+
+    // The same rule where it acts, in step(), for each of the three actions,
+    // with both sources held on one frame.
+    controls = nfsu::DriveControls();
+    controls.update(pad(0));
+    controls.update(pad(bit(GamepadButton::dpad_left), 32767));
+    input = controls.step(0.0, first, automatic);
+    check(controls.steer() == -5.0 * nfsu::kVehicleStepSeconds &&
+              input.steer == 5.0 * nfsu::kVehicleStepSeconds,
+          "D-pad left held with the stick full right steers left, at the button's rate: " +
+              num(controls.steer()));
+    input = controls.step(0.0, first, automatic);
+    check(controls.steer() == -10.0 * nfsu::kVehicleStepSeconds,
+          "and keeps steering left on the next step");
+    nfsu::DriveControlsConfig both = parse_or_fail(
+        "nfsu-controls 1\nbind steer left_x\nbind throttle trigger_right\n"
+        "bind throttle right_y+\nbind brake trigger_left\nbind brake right_y-\n");
+    const double shaped = both.throttle_floor + (1.0 - both.throttle_floor) * half;
+    controls = controls_with(both);
+    controls.update(pad(0));
+    controls.update(pad(0, 0, 0, 0, 16500));
+    input = controls.step(10.0, first, automatic);
+    check(input.throttle == shaped, "the stick alone gives its shaped throttle");
+    controls.update(pad(bit(GamepadButton::trigger_right), 0, 0, 0, 16500));
+    input = controls.step(10.0, first, automatic);
+    check(input.throttle == 1.0, "ZR held with the stick half up: ZR decides, 1 not " +
+                                     num(shaped) + ": " + num(input.throttle));
+    controls.update(pad(0, 0, 0, 0, -16500));
+    input = controls.step(10.0, first, automatic);
+    check(input.brake == half, "the stick alone gives its brake");
+    controls.update(pad(bit(GamepadButton::trigger_left), 0, 0, 0, -16500));
+    input = controls.step(10.0, first, automatic);
+    check(input.brake == 1.0,
+          "ZL held with the stick half down: ZL decides, 1 not 0.5: " + num(input.brake));
     // Two slots add and clamp.
     nfsu::GamepadFrame two = pad(0, 22000);
     two.pads[1].connected = true;
@@ -583,8 +768,9 @@ void test_camera_tables() {
 
     nfsu::ChaseCameraTable decoded;
     std::string error;
-    check(nfsu::decode_chase_camera_table(record.data(), record.size(), decoded, error),
-          "the built-in block decodes: " + error);
+    const bool decoded_ok =
+        nfsu::decode_chase_camera_table(record.data(), record.size(), decoded, error);
+    check(decoded_ok, "the built-in block decodes: " + error);
     check(record_with(decoded) == record, "decode and encode round-trip");
     nfsu::ChaseCameraAnchor anchor;
     check(nfsu::find_chase_anchor(stock, false, 4, anchor) && anchor.pitch == 3040 &&
@@ -967,14 +1153,15 @@ void test_render_camera() {
     view.forward = {std::cos(p) * std::cos(h), std::cos(p) * std::sin(h), -std::sin(p)};
     nfsu::OrbitCamera camera;
     std::string error;
-    check(nfsu::drive_render_camera(view, nfsu::ChaseFovMode::vertical_4_3, 1280, 720, camera,
+    check_error(nfsu::drive_render_camera(view, nfsu::ChaseFovMode::vertical_4_3, 1280, 720, camera,
                                     error),
-          "the renderer takes the camera: " + error);
+          "the renderer takes the camera: ", error);
     const nfsu::Vec3 eye = nfsu::orbit_eye(camera);
     check(near(eye.x, 10.0, 1e-12) && near(eye.y, 2.0, 1e-12) && near(eye.z, 5.0, 1e-12),
           "the renderer's eye is the view's, in its y-up frame");
     nfsu::CameraFrame frame;
-    check(nfsu::make_camera_frame(camera, 1280, 720, frame, error), "a camera frame: " + error);
+    check_error(nfsu::make_camera_frame(camera, 1280, 720, frame, error), "a camera frame: ",
+                error);
     check(near(frame.forward.x, view.forward.x, 1e-12) &&
               near(frame.forward.y, view.forward.z, 1e-12) &&
               near(frame.forward.z, -view.forward.y, 1e-12),
@@ -1032,8 +1219,8 @@ void test_render_camera() {
     const unsigned char background[4] = {40, 44, 52, 255};
     check(image.reset(96, 54, background, nfsu::RenderLimits{}, error), "a frame");
     nfsu::RenderStats stats;
-    check(nfsu::drive_draw_ground(options, {0.0, 0.0, 0.0}, image, stats, error),
-          "the ground draws: " + error);
+    check_error(nfsu::drive_draw_ground(options, {0.0, 0.0, 0.0}, image, stats, error),
+          "the ground draws: ", error);
     std::size_t base_shade = 0;
     std::size_t dark_shade = 0;
     std::size_t sky = 0;
@@ -1128,8 +1315,8 @@ void test_session() {
     // The recorded form replays to the same stream.
     std::vector<nfsu::GamepadFrame> parsed;
     std::string error;
-    check(nfsu::parse_input_recording(nfsu::format_input_recording(demo), parsed, error),
-          "the demonstration's recorded form parses: " + error);
+    const bool recorded = nfsu::parse_input_recording(nfsu::format_input_recording(demo), parsed, error);
+    check(recorded, "the demonstration's recorded form parses: " + error);
     check(run_demo(setup, parsed).digest == a.digest, "and replays to the same stream");
 
     // A remapped table drives a different car: ZR no longer accelerates.
@@ -1191,6 +1378,7 @@ int main(int argc, char** argv) {
     test_config_round_trip();
     test_config_refusals();
     test_axis_calibration();
+    test_calibration_through_update();
     test_sources_and_remapping();
     test_steer_filter();
     test_edges_and_latching();

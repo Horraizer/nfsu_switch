@@ -304,7 +304,12 @@ public:
     // False, with nothing changed, otherwise.
     bool set_pov(int pov) noexcept;
     int pov() const noexcept { return pov_; }
-    // The next POV of kChasePovs that the list names.
+    // The next POV of kChasePovs that the list names. The lag and the
+    // heading it chases carry over, so the new view starts where the old one
+    // was looking. APPROXIMATION: speed.exe builds its type-1 mover with
+    // the lag zeroed (0x00489398) and the previous target seeded from car
+    // +0x3B4 (0x0048938E); whether a POV change rebuilds the mover or keeps
+    // it was not traced.
     void next_pov() noexcept;
 
     // Puts the camera straight behind the subject, with no lag and nothing

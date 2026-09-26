@@ -111,7 +111,11 @@ bool rate_ok(double value, bool zero_allowed) noexcept {
 
 // 0x00454F30, the pair-table evaluator speed.exe applies the throttle curve
 // with: at or below the first input the first output, at or past the last
-// the last, otherwise linear between the two pairs the value falls between.
+// the last, otherwise linear between the two pairs the value falls between,
+// in its own form (0x00454FA9..0x00454FCD): f = (x - x0) / (x1 - x0), then
+// (1 - f) * y0 + f * y1. In double here, where the game computes in x87
+// extended precision and stores a float, so the curve is the game's to a
+// rounding, not to the bit.
 double pair_table(const float* pairs, std::size_t count, double x) noexcept {
     if (!(x > static_cast<double>(pairs[0]))) {
         return static_cast<double>(pairs[1]);
@@ -125,7 +129,8 @@ double pair_table(const float* pairs, std::size_t count, double x) noexcept {
         const double x1 = static_cast<double>(pairs[2 * i + 2]);
         const double y1 = static_cast<double>(pairs[2 * i + 3]);
         if (x >= x0 && x < x1) {
-            return y0 + (x - x0) / (x1 - x0) * (y1 - y0);
+            const double f = (x - x0) / (x1 - x0);
+            return (1.0 - f) * y0 + f * y1;
         }
     }
     return static_cast<double>(pairs[2 * (count - 1) + 1]);
@@ -294,6 +299,16 @@ bool parse_decimal(const std::string& text, double& out) {
         }
     }
     return true;
+}
+
+std::string format_decimal(double value);
+
+// True when the text form holds `value` exactly: the fixed decimal
+// format_decimal writes reads back as the same double.
+bool representable(double value) {
+    double back = 0.0;
+    return finite(value) && value >= 0.0 && value <= 1.0e9 &&
+           parse_vehicle_decimal(format_decimal(value), back) && back == value;
 }
 
 std::string format_decimal(double value) {
@@ -465,6 +480,23 @@ bool validate_drive_controls_config(const DriveControlsConfig& config, std::stri
         error = "reverse-assist needs a speed above 0 and at most 5 m/s and at most 1200 steps";
         return false;
     }
+    const struct {
+        const char* directive;
+        double value;
+    } decimals[] = {{"throttle-floor", config.throttle_floor},
+                    {"steer-digital-rate", config.steer.digital_rate},
+                    {"steer-digital-rate", config.steer.digital_rate_speed},
+                    {"steer-centre-rate", config.steer.centre_rate},
+                    {"steer-analog-rate", config.steer.analog_rate},
+                    {"reverse-assist", config.reverse_speed}};
+    for (const auto& decimal : decimals) {
+        if (!representable(decimal.value)) {
+            error = std::string(decimal.directive) +
+                    " holds a value the file cannot state: not a fixed decimal of at most"
+                    " six places";
+            return false;
+        }
+    }
     return true;
 }
 
@@ -489,8 +521,9 @@ bool parse_drive_controls_config(const std::string& text,
         error = "line 1: the header must be 'nfsu-controls 1'";
         return false;
     }
-    // Header first: a file whose first non-comment line is not the header is
-    // refused on that line rather than on line 1 when a comment precedes it.
+    // The header belongs on line 1. A first directive that is not the header
+    // is refused on line 1, where the header is missing; a header that
+    // follows a comment or a blank line is refused on its own line.
     if (lines[0].number != 1) {
         error = "line " + std::to_string(lines[0].number) +
                 ": the header 'nfsu-controls 1' must be the first line";
@@ -587,14 +620,27 @@ bool parse_drive_controls_config(const std::string& text,
                 error = where + "needs <per-second> <speed>, canonical decimals";
                 return false;
             }
+            if (!rate_ok(config.steer.digital_rate, false) ||
+                !rate_ok(config.steer.digital_rate_speed, false)) {
+                error = where + "needs a rate and a speed above 0 and at most 1000";
+                return false;
+            }
         } else if (directive == "steer-centre-rate") {
             if (args != 1 || !parse_decimal(line.fields[1], config.steer.centre_rate)) {
                 error = where + "needs one canonical decimal";
                 return false;
             }
+            if (!rate_ok(config.steer.centre_rate, false)) {
+                error = where + "needs a rate above 0 and at most 1000";
+                return false;
+            }
         } else if (directive == "steer-analog-rate") {
             if (args != 1 || !parse_decimal(line.fields[1], config.steer.analog_rate)) {
                 error = where + "needs one canonical decimal";
+                return false;
+            }
+            if (!rate_ok(config.steer.analog_rate, true)) {
+                error = where + "needs 0 or a rate above 0 and at most 1000";
                 return false;
             }
         } else if (directive == "reverse-assist") {
@@ -608,7 +654,13 @@ bool parse_drive_controls_config(const std::string& text,
                 std::uint64_t hold = 0;
                 if (!parse_decimal(line.fields[2], config.reverse_speed) ||
                     !parse_count(line.fields[3], kMaxDriveReverseHoldSteps, hold)) {
-                    error = where + "needs a canonical decimal speed and whole hold steps";
+                    error = where + "needs a canonical decimal speed and whole hold steps"
+                                    " from 0 to 1200";
+                    return false;
+                }
+                if (!(config.reverse_speed > 0.0) ||
+                    config.reverse_speed > kMaxDriveReverseSpeed) {
+                    error = where + "needs a speed above 0 and at most 5 m/s";
                     return false;
                 }
                 config.reverse_hold_steps = static_cast<std::uint32_t>(hold);
@@ -775,12 +827,13 @@ void DriveControls::update(const GamepadFrame& frame) {
     state.steer_analog = clamp(analog[steer], -1.0, 1.0);
     state.throttle_analog = shape_throttle(config_, clamp(analog[throttle], 0.0, 1.0));
     state.brake_analog = clamp(analog[brake], 0.0, 1.0);
-    // A button source that is held but cancelled by an opposite one still
-    // decides the source: two buttons pushing both ways are a centred
-    // digital steer, not a hand-over to the stick.
-    state.steer_from_button = from_button[steer];
-    state.throttle_from_button = from_button[throttle];
-    state.brake_from_button = from_button[brake];
+    // The digital value decides unless it is centred (0x0046186E,
+    // 0x00461957, 0x00461DDE): two steer buttons pushing both ways add to a
+    // centred digital steer and hand the steer to the stick, as a centred
+    // byte does in speed.exe.
+    state.steer_from_button = from_button[steer] && state.steer_digital != 0.0;
+    state.throttle_from_button = from_button[throttle] && state.throttle_digital != 0.0;
+    state.brake_from_button = from_button[brake] && state.brake_digital != 0.0;
     const auto edge = [&](DriveAction action) {
         const std::size_t index = static_cast<std::size_t>(action);
         return held[index] && !held_[index];

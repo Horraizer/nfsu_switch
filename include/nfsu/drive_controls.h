@@ -176,7 +176,12 @@ DriveControlsConfig default_drive_controls_config();
 // calibration outside 0 <= inner < outer <= 32767; a floor outside
 // 0..kMaxDriveThrottleFloor; a rate outside 0 < rate <= kMaxDriveRate (the
 // analog rate may also be 0); a reverse speed outside 0 < v <= 5 m/s; more
-// than kMaxDriveReverseHoldSteps hold steps.
+// than kMaxDriveReverseHoldSteps hold steps; and a floor, rate, speed or
+// reverse speed that the file cannot state - one that is not the double a
+// fixed decimal of at most six places reads as, 1e-7 or 1/3 for instance -
+// named by its directive. Every configuration this accepts therefore has a
+// text form, which is what lets format_drive_controls_config promise a round
+// trip.
 bool validate_drive_controls_config(const DriveControlsConfig& config, std::string& error);
 
 // The remapping file, ASCII, one directive per line:
@@ -199,14 +204,17 @@ bool validate_drive_controls_config(const DriveControlsConfig& config, std::stri
 // replaces only its own default. Decimals are read as integer / 10^k, as
 // the vehicle script reads them, so every platform reads the same double.
 //
-// Refused, naming the line and the directive or token at fault: a missing
-// or different header; a byte outside printable ASCII (a tab included); an
-// unknown directive, action, control or keyword; a wrong number of fields;
-// a number that is not canonical or out of range; a directive other than
-// `bind` given twice; and anything validate_drive_controls_config refuses,
-// with the line of the offending binding where there is one. Lines end in
-// LF or CR LF; blank lines are ignored. At most kMaxDriveConfigBytes.
-// Nothing is changed unless the whole text is accepted.
+// Refused, naming the line and the directive or token at fault: a header
+// that is missing or different (on line 1, where it belongs) or that follows
+// a comment or blank line (on its own line); a byte outside printable ASCII
+// (a tab included); an unknown directive, action, control or keyword; a
+// wrong number of fields; a number that is not canonical or out of the
+// range validate_drive_controls_config states for it; a directive other
+// than `bind` given twice; more than kMaxDriveBindings bindings; and a table
+// validate_drive_controls_config refuses, with the line of the offending
+// binding. Lines end in LF or CR LF; blank lines are ignored. At most
+// kMaxDriveConfigBytes. Nothing is changed unless the whole text is
+// accepted.
 constexpr std::size_t kMaxDriveConfigBytes = 64U * 1024U;
 
 bool parse_drive_controls_config(const std::string& text,
@@ -214,7 +222,10 @@ bool parse_drive_controls_config(const std::string& text,
                                  std::string& error);
 
 // The canonical text of a configuration: every directive, the bindings in
-// table order, LF line ends. Parsing it gives the same configuration.
+// table order, LF line ends. For a configuration validate_drive_controls_config
+// accepts, parsing it gives the same configuration, every double bit for bit;
+// for one it refuses the text is written anyway and parsing it may refuse it
+// or read a nearby value.
 std::string format_drive_controls_config(const DriveControlsConfig& config);
 
 // What one controller frame asked for, before any per-step filtering.
@@ -228,9 +239,16 @@ struct DriveFrameState {
     double steer_analog = 0.0;
     double throttle_analog = 0.0;
     double brake_analog = 0.0;
-    // A button source of the action is held on this frame. RECOVERED rule:
-    // speed.exe lets a digital steer, throttle or brake override the analog
-    // one (0x0046186E, 0x00461957, 0x00461DDE), and so does step().
+    // The digital value decides on this frame: a button source is held and
+    // the buttons' sum is not centred. RECOVERED rule: speed.exe takes the
+    // digital steer byte unless it is centred, 0x80 (0x0046186E), and the
+    // digital throttle and brake bytes unless they are 0 (0x00461957,
+    // 0x00461DDE), and hands the action to the analog byte otherwise; so
+    // does step(). A throttle or brake button cannot be inverted, so for
+    // them a held button is a digital value of 1. Two opposite steer buttons
+    // add to a centred digital steer, which hands the steer to the stick as
+    // a centred byte would; what byte the game's own joystick layer makes of
+    // two opposite buttons was not traced (APPROXIMATION).
     bool steer_from_button = false;
     bool throttle_from_button = false;
     bool brake_from_button = false;

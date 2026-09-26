@@ -73,12 +73,12 @@ would start). The automatic gearbox is the vehicle model's recovered rule
 
 | Rule | Value | Label and reason |
 | --- | --- | --- |
-| a button source of steer, throttle or brake overrides the axis sources | as speed.exe | RECOVERED (the table above); two opposite buttons are a centred digital steer, not a hand-over to the stick |
+| a digital steer, throttle or brake decides unless it is centred; a centred one hands the action to the axis sources | a held throttle or brake button is a digital 1; steer buttons add, clamped to -1..1 | RECOVERED (the table above: 0x0046186E takes the steer byte unless it is 0x80, 0x00461957 and 0x00461DDE the throttle and brake bytes unless they are 0). Two opposite steer buttons add to a centred digital steer and hand the steer to the stick, as a centred byte does in speed.exe; what byte the game's own joystick layer makes of two opposite buttons was not traced, so that case is APPROXIMATION |
 | a stick axis is read on its own, with its own dead zone | `axis <name> <inner> <outer>`, default 3000 and 30000, linear between, exact 0 at or inside inner | APPROXIMATION of the calibration: the game's joystick layer was not traced. Axial, not radial, so that pushing the steering stick up does not change the steering, and so that no square root is on the path |
 | steer sign | the player's +1 is right; `VehicleInput::steer` is the negation, +1 left | the model's convention (docs/VEHICLE.md) |
 | a digital throttle or brake | exactly 1 while held | the owner's ZR and ZL; docs/VEHICLE.md, "Throttle deadband": a digital throttle is unaffected by the model's engine-braking deadband |
 | an analog throttle | `floor + (1 - floor) * value` above 0, `throttle-floor` 0.30, and 0 inside the dead zone | APPROXIMATION, from the same section of docs/VEHICLE.md: with the model's engine braking a throttle at or below about 0.30 is net engine braking, so a stick's lower third would slow the car it is asked to drive |
-| the retail throttle curve | `throttle-curve retail` applies the curve at 0x00700374 before the floor | RECOVERED curve, not the default: the game applies it only under a flag whose writer was not traced, and at 0.2 it gives 0.152, which the model would turn into engine braking |
+| the retail throttle curve | `throttle-curve retail` applies the curve at 0x00700374 before the floor, evaluated as 0x00454F30 does, `(1 - f) * y0 + f * y1` (0x00454FA9..0x00454FCD), in double where the game keeps x87 precision and stores a float | RECOVERED curve and form, not the default: the game applies it only under a flag whose writer was not traced, and at 0.2 it gives 0.152, which the model would turn into engine braking |
 | a button steer's rate | away from centre at `5 / (1 + v / 20)` per second, v the speed: full input in 0.2 s at rest, 0.4 s at 20 m/s, 0.6 s at 40 m/s | APPROXIMATION: the speed-sensitive steering. The model already narrows its lock with speed and slews the road wheels at 3 rad/s, but at 30 m/s its full lock is reached in 25 ms, so a D-pad tap is a jerk. The rate gives a button a way to ask for part of the lock. It never scales the lock itself: full input always asks for the model's full lock |
 | toward centre | 8 per second, from either source; a reversal returns to centre first | APPROXIMATION: a release settles in 0.125 s |
 | a stick steer | passed through (`steer-analog-rate 0`) | the stick is its own filter; a rate would add lag |
@@ -144,18 +144,30 @@ reverse-assist on 1 30
   `steer-digital-rate <rate> <speed>`, `steer-centre-rate`,
   `steer-analog-rate` and `reverse-assist <on|off> [<speed> <steps>]` each
   replace only their own default.
-- Decimals are canonical fixed decimals read as integer / 10^k, as the
-  vehicle script reads them, so every platform reads the same double: no
-  sign, no leading zero, no trailing zero after the point.
-- Refused, naming the line and the directive or token at fault: a missing
-  or other header; a byte outside printable ASCII, a tab included; an unknown
+- Decimals are canonical fixed decimals of at most six places, read as
+  integer / 10^k, as the vehicle script reads them, so every platform reads
+  the same double: no sign, no leading zero, no trailing zero after the
+  point.
+- Refused, naming the line and the directive or token at fault: a header
+  that is missing or other (on line 1) or after a comment or blank line (on
+  its own line); a byte outside printable ASCII, a tab included; an unknown
   directive, action, control or keyword; a wrong number of fields; a number
-  out of range or not canonical; a directive other than `bind` given twice;
+  not canonical or out of its range - a floor above 0.9, a rate or the rate's
+  speed of 0 or above 1000 (an analog rate may be 0), a reverse speed of 0 or
+  above 5 m/s, more than 1200 hold steps, an axis edge above 32767 or an
+  inner edge not below the outer (`line 2: steer-analog-rate: needs 0 or a
+  rate above 0 and at most 1000`); a directive other than `bind` given twice;
   a stick axis on a digital action (`line 2: bind: right_x is a stick axis
   and cannot drive handbrake`); a throttle or brake on a whole signed axis
-  or inverted; one control, or one half of an axis, bound twice; a
-  calibration with inner not below outer; more than 32 bindings or 64 KiB.
-  Nothing is changed unless the whole text is accepted.
+  or inverted; one control, or one half of an axis, bound twice; more than
+  32 bindings (`line 34: bind: more than 32 bindings`) or 64 KiB. Nothing is
+  changed unless the whole text is accepted.
+- `format_drive_controls_config` writes every configuration the controls
+  accept so that parsing the text gives it back, every double bit for bit:
+  `validate_drive_controls_config` refuses, naming the directive, a floor,
+  rate, speed or reverse speed that is not the double some fixed decimal of
+  at most six places reads as - 1e-7 or 1/3 set in memory, say - since no
+  file could state it.
 
 `drive-replay --controls <FILE>` reads one. The console will read the same
 text from the SD card; the application that does is the race application
@@ -196,10 +208,9 @@ Peugeot. POVs 0, 1 and 4 get the chase treatment below - the tests at
 0x00489E5E..0x00489E6D, repeated at 0x00489EBA, 0x00489F04 and 0x0048A374 -
 and 2 and 3 are fixed to the car and are not implemented here.
 
-For a chase POV the distance behind is `-along`: the update adds a
-speed-dependent pull-back to it (0x00489DEE..0x00489E1C), but the pull-back
-is `0.0 / 500 * [+0x384] * 1.0` (0x006CC7A4, 0x006FBEF8, 0x006FBEF0), zero,
-so the distance and height are the table's. RECOVERED. The word at +0x2 is
+For a chase POV the distance behind is `-along`, the height `height`, plus
+a pull-back that this layer does not reproduce (below). RECOVERED values;
+the distance held fixed at them is APPROXIMATION. The word at +0x2 is
 read into the eye's pitch: 0x0048AAF5..0x0048AB2D rotates the camera by its
 negation. POV 4, the high one, has 16.70 degrees and the others 0, so it is
 read as a look-down angle: INFERENCE, because the axis of 0x0040BA40 was not
@@ -264,6 +275,30 @@ anchors share the frame of the wheel and part tables (APPROXIMATION).
 
 **What was read and is not reproduced.**
 
+- The pull-back. 0x00489DCD..0x00489E1C computes `p = max(0, 500 - 2.237 *
+  [car +0x3D0]) / 500 * [view +0x384]` (500 at 0x006FBEF8, 2.237 at
+  0x006CC9F0 - metres a second to miles an hour - and 0 when 500 - 2.237 v
+  is negative, 0x00489DDF..0x00489DEE), or 0 when [view +0x32C] is set
+  (0x00489DF4..0x00489E08). The distance behind is then `-along` plus p
+  times a factor of the zoom-out blend below (0x00489ED2..0x00489EDE), and a
+  p below 0 also adds 0.2 p to the height, lowering the eye
+  (0x00489F15..0x00489F34). [view +0x384] is live state: the update eases it
+  (0x00489A19..0x00489DC7) toward a target [view +0x388] that it builds
+  (0x00489941..0x00489C3C) from a history of the last 20 ticks at view
+  +0x334..+0x380, shifted once per 1/60 s tick (0x00489902..0x00489922),
+  whose entries come from a vector of the car at +0x80..+0x88 turned into
+  the car's frame (0x004897F1..0x00489850): 0.045 times its first component
+  when that is below -0.3, 0.6 times it when that is above 0.7, 0 otherwise
+  (0x00489855..0x004898C7), the target clamped to -1..6 m
+  (0x00489B94..0x00489BD2). [view +0x32C] is the constructor's fourth
+  argument (0x004893F1), which the factory takes from the player's byte
+  +0x28 (0x0042C7FA); what that byte means and what the car's +0x80 vector
+  is were not traced. So in a race where the byte is 0 the game's eye moves
+  up to 6 m farther back, less at speed - up to 6 * (500 - mph) / 500 m -
+  and up to 1 m nearer, as that history crosses its thresholds, where this
+  layer holds the anchor's distance. APPROXIMATION of the distance, with the
+  pull-back UNKNOWN in its input.
+
 - A zoom-out: when a flag of the player's (+0x29 of the object at view
   +0x20) is clear, a blend at view +0x38 moves the distance toward 18 m, the
   height toward -3 and the pitch toward 0x1450 (0x0048A6CE..0x0048A784;
@@ -294,16 +329,16 @@ not there.
 | Rule | Value | Label |
 | --- | --- | --- |
 | anchors | the single-player list of CarTypeInfo +0xB50, POVs 0, 1 and 4 | RECOVERED |
-| distance, height | `-along`, `height`, no speed pull-back | RECOVERED |
+| distance, height | `-along`, `height`, held there | RECOVERED values; APPROXIMATION to hold them: the game's pull-back (above) is not reproduced, its input not traced |
 | pitch | the anchor's word, looking down | RECOVERED value, INFERENCE of the direction |
 | target heading | the blend of heading and velocity by t(speed), 8 to 13 m/s, the reversing reflection | RECOVERED |
 | lag | the spring above, integer, per camera update | RECOVERED; the factor held at 1 |
 | update rate | once per 1/60 s tick, dt 1/60 | the game updates once per rendered frame; its world ticks at 60 Hz (docs/VEHICLE.md) |
 | anchor point | the body frame's origin | APPROXIMATION |
 | roll | none: the camera's up is the world's, tilted only by the pitch | APPROXIMATION (the tilt is not reproduced) |
-| field of view | the POV's word as the horizontal field of view of a 4:3 view, its vertical angle, 56.75 degrees, kept on any frame (`vertical_4_3`); `horizontal` keeps the width instead, 44.11 degrees high on 16:9 | INFERENCE of the axis; APPROXIMATION of the widening: the Switch is 16:9 and this is the picture the game drew on its own 4:3 screen, widened, where `horizontal` crops the top and bottom and cuts the car's bumper at POV 1 |
+| field of view | the POV's word as the horizontal field of view of a 4:3 view, its vertical angle, 56.75 degrees, kept on any frame (`vertical_4_3`); `horizontal` keeps the width instead, 44.11 degrees high on 16:9 | INFERENCE of the axis; APPROXIMATION of the widening: the Switch is 16:9 and this is the picture the game drew on its own 4:3 screen, widened, where `horizontal` would crop the top and bottom, 44.11 degrees against 56.75. Even with the 4:3 height, POV 1 puts the rear plate on the frame's bottom edge (frame 840 below) |
 | clip planes | near 0.5 m, far 2000 m | 0.5 is what 0x0048ACD0 writes into view +0xBC for every chase POV (0.4 for POV 3, 0x006FBF1C); that +0xBC is the near plane was not traced. Far is invented |
-| first POV, cycle | POV 0 first, then 1, then 4 (`next_pov`) | APPROXIMATION: the game's initial POV bytes were not traced; POV 0 is the one that shows the whole car on a 4:3 view |
+| first POV, cycle | POV 0 first, then 1, then 4 (`next_pov`); a change keeps the lag and the heading it chases, so the new view starts where the old one looked | APPROXIMATION: the game's initial POV bytes were not traced; POV 0 is the one that shows the whole car on a 4:3 view. speed.exe builds its mover with the lag zeroed (0x00489398) and the previous target seeded from car +0x3B4 (0x0048938E); whether a POV change rebuilds it or keeps it was not traced |
 | collision | the segment from the pivot - the anchor point raised to the eye's height - to the eye is asked of a `ChaseCameraWorld`; a hit pulls the eye in along it to 0.2 m short, at once; once clear it moves back out at 6 m/s | APPROXIMATION: no recovered rule to follow. `ChaseCameraOpenWorld`, nothing to hit, is the default |
 
 **Camera collision is the caller's.** `ChaseCameraWorld::clear_fraction(from,
@@ -332,7 +367,10 @@ the reach) and the frame's camera and reset edges. `DriveSession` keeps the
 SHA-256 of the records in order.
 
 **The demonstration**, `drive_demo_recording()`: 1380 frames, 23 s, of a
-pad in slot 0 stamped `frame * 1000000 / 60` microseconds.
+pad in slot 0 stamped `frame * 1000000 / 60` microseconds. The ranges below
+are the recording's frames, from 0; the events are the probe's frame
+numbers, the count of ticks done, from 1, as `drive-replay --every 1` prints
+them.
 
 | Frames | Held | What happens |
 | --- | --- | --- |
@@ -341,10 +379,10 @@ pad in slot 0 stamped `frame * 1000000 / 60` microseconds.
 | 390-569 | ZR, left stick at -16384 | a stick-steered bend to the left, up to 125 km/h |
 | 570-689 | ZR, D-pad right | a button-steered bend to the right, 137 km/h, the fastest |
 | 690-809 | ZL, left stick full right | braking into a right turn, down to 49 km/h |
-| 810 | B, X, stick full left | the handbrake, and the camera from POV 0 to POV 1 |
-| 811-869 | B, stick full left | the handbrake turn; the camera lags by up to 2853 units, 15.7 degrees |
-| 870-929 | nothing | coasting |
-| 930-1169 | ZL | the car stops at frame 960; after 0.25 s below 1 m/s the assist selects reverse at frame 962, and the brake drives it backwards to -63 km/h |
+| 810 | B, X, stick full left | the handbrake, and the camera from POV 0 to POV 1 at frame 811 |
+| 811-869 | B, stick full left | the handbrake turn; the lag grows to 2769 units, 15.2 degrees, at frame 870 |
+| 870-929 | nothing | coasting; the lag peaks at 2853 units, 15.7 degrees, at frames 873 and 874, then closes |
+| 930-1169 | ZL | the car stops at frame 954; after 0.25 s below 1 m/s the assist selects reverse at frame 962, and the brake drives it backwards to -63 km/h |
 | 1170-1379 | ZR | in reverse the throttle brakes; stopped, the assist selects first at frame 1268, and the car drives forward again, 35 km/h at the end |
 
 **The pin.** Through `default_drive_session_setup()` - the stock 240SX,
@@ -386,8 +424,8 @@ file. The car is placed by composing each stock instance's transform with
 the car's body-to-world transform (`drive_place_instances`); the ground is
 16 m tiles out to 160 m, checkered every 4 m by the renderer's own fallback
 pattern. It exits 1 on an argument it refuses, 2 on a recording or controls
-file it cannot read or parse, 3 on a root that cannot give the stock frame
-and 4 when a step is refused. The path arguments follow
+file it cannot read or parse or a frame it cannot write, 3 on a root that
+cannot give the stock frame and 4 when a step is refused. The path arguments follow
 [`PATH_ARGUMENTS.md`](PATH_ARGUMENTS.md); all four are converted as the
 arguments are parsed.
 
@@ -467,9 +505,9 @@ Switch build and fails on any fused instruction.
 
 | What | Pinned by |
 | --- | --- |
-| the file | the default text and its round trip bit for bit; a partial file keeps the other defaults; 34 refusals, each naming its line and token, each leaving the configuration unchanged; the in-memory table's own refusals |
-| calibration | the inner edge reads exactly 0, one unit past it 1/27000, the outer edge full, -32768 and out-of-range values the clamped extreme, symmetry at every seventh value, a 0..32767 zone; the steering axis read alone when the stick is also pushed up |
-| sources and remapping | ZR exactly 1 and ZL exactly 1; half of an axis half is floor + (1 - floor) / 2 bit for bit; the dead zone gives 0, not the floor; the retail curve's segment, points and ends; a remapped throttle on A with ZR driving nothing; a button beating the stick, two opposite buttons centring it, two pads adding and cancelling |
+| the file | the default text and its round trip bit for bit; every value from 0.000001 to 1000 the parser can produce round-trips bit for bit as a floor, a rate and a reverse speed; a partial file keeps the other defaults; 40 refusals, each naming its line and token, each leaving the configuration unchanged; the in-memory table's own refusals, six unstatable values among them |
+| calibration | the inner edge reads exactly 0, one unit past it 1/27000, the outer edge full, -32768 and out-of-range values the clamped extreme, symmetry at every seventh value, a 0..32767 zone; the steering axis read alone when the stick is also pushed up; through update(), each of the four axes read with its own zone where the zones disagree, and a file's `axis right_y 1000 31000` reaching step() as a throttle of exactly 0.5 at 16000 and 1/30 at 2000 |
+| sources and remapping | ZR exactly 1 and ZL exactly 1; half of an axis half is floor + (1 - floor) / 2 bit for bit; the dead zone gives 0, not the floor; the retail curve's segment, points and ends; a remapped throttle on A with ZR driving nothing; in step(), with both sources held, D-pad left beating the stick full right, ZR beating a half-up stick and ZL a half-down one; two opposite buttons handing the steer to the stick; two pads adding and cancelling |
 | the steering filter | the first step at rate(v) / 120 at 0, 20 and 40 m/s, full lock in 24, 48 and 72 steps; release in 15; a reversal through centre; a stick at once, its release at the centre rate; `steer-analog-rate` |
 | edges | a shift edge on the first step only, no repeat when held; camera and reset edges; buttons held at connect latched; a disconnect ending everything; a reconnect latching again; stray bits ignored |
 | the reverse assist | the down request on the 30th step of the brake below 1 m/s, the swap in reverse, the up request on the 30th step of the throttle; none while moving, with both pedals, with the manual gearbox, or switched off |
