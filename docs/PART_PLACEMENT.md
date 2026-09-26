@@ -216,8 +216,10 @@ by the `2 * pi / 65536` at `0x006CC980`, so `0x4000` is a quarter turn.
 `0x0040BA40` writes the cosine into elements 0 and 10, `-sin` into element 2
 and `+sin` into element 8, so the turn is in the longitudinal-vertical plane,
 about the lateral axis. `0x00564B10` is a ninth-order Taylor sine, so at a
-quarter turn it returns `1.00000358` rather than exactly 1, while the cosine
-does come out exactly `-0.0`. `nfsu::car_marker_quarter_turn` writes the
+quarter turn it returns `1.00000358` rather than exactly 1 (`0x3F80001E`
+replayed in double precision, `0x3F80001D` in single; which precision the
+x87 runs at there was not traced), while the cosine does come out exactly
+`-0.0`. `nfsu::car_marker_quarter_turn` writes the
 exact 0 and 1 instead. That 3.6e-06 difference is deliberate. It was the
 only place this project knowingly departed from the instruction stream
 until issue #161 made the same substitution for the wheels' half turn
@@ -588,10 +590,24 @@ vertical axis, and `0x8000` is half of a full turn, so it maps
 vertical)`, determinant +1. The game's sine `0x00564B10` (read, and replayed
 from the constants it loads at `0x006CC7BC`, `0x006CC8A8`, `0x006CC980` and
 `0x006CCA40..0x006CCA90`) gives
-`-1.0000036` (`0xBF80001E`) for the cosine and `-0.0` for the sine there.
+`-1.0000036` (`0xBF80001E`, replayed in double and in single precision
+alike) for the cosine and `-0.0` for the sine there.
 `nfsu::car_wheel_half_turn` writes -1 and 0 exactly: the same deliberate
 3.6e-06 departure the quarter turn makes above, and the second place this
-project knowingly departs from the instruction stream.
+project knowingly departs from the instruction stream. It costs pixels, and
+the cost was measured by rendering the stock frame through
+`nfsu_stock_frame` with wheel copies 0 and 3 built from the game's values
+instead - `0xBF80001E` in elements 0 and 5, `-0.0` in element 1, `+0.0` in
+element 4, multiplied by the same translation - in a Debug and a Release
+build. The two pinned default frames, painted and unpainted, and both
+`--yaw 76` frames are unchanged. The `--yaw -94` frame differs in 3
+pixels: painted it would be
+`E6D44CD16B66B1117AF7A74C503A24A854700B75328DBAF0CDB57B2F271ED384` instead
+of `1E5FA0BE9F3B876BDA36A3F17B22A17371F54017FF72B285E75AA1E93CA7F897`,
+unpainted `D11F7C234D2C2EA788B51FC8C40771263103BBB6DBF370F560A269F4CE61CBDD`
+instead of `1286133E85F339CCFA456990D7866173EA324994BF8DC71403ECC463DD5240C6`.
+The copies are stand-ins whose lateral term is missing altogether, so the
+exact values were kept.
 
 **The brake reflection.** `0x005703B4..0x0057041B` zero twelve elements of
 a local at `esp + 0x60`, `0x00570426` stores 1.0 into element 15, and
@@ -635,17 +651,29 @@ nothing in either block reads the sign of a lateral. Wheels 0 and 3 are the
 left pair, lateral positive, in all 35 retail car types.
 
 **Why.** Both models are authored for the right-hand side of the car.
-`240SX_KIT00_WHEEL_A` spans lateral `0.0018..0.2006`, measured from the
-retail mesh. Its material 2, key `0x22719FA9` - the key the wheel draw
-rebinds at `0x0056FDD4` from `CarRenderInfo + 0x4D8` - is 319 triangles at
-lateral `0.0102..0.0559` within 0.222 of the axle; its material 0, key
-`0x78743CA1`, is 160 triangles over the whole width out to radius 0.311;
-and its material 1, key `0x010CB64A`, is one flat quad of two triangles at
-lateral `0.2006`, 0.617 by 0.621. By place and shape those are the rim,
-the tyre and a backing quad behind the rim (inferred). At a right wheel,
-lateral -0.73, the rim is outboard and the quad inboard; the half turn
-keeps it so at a left wheel. `BRAKE_KIT00_B`, in the same way, is a flat
-quad at lateral `-0.0037`, 0.31 square, and 25 triangles at longitudinal
+`240SX_KIT00_WHEEL_A`, mesh 304 of `Cars/240SX/GEOMETRY.BIN`, measured from
+the retail file, spans lateral `0.0018..0.2006`; the axle is its lateral
+axis, and a radius below is the distance from it. Its three material
+records cover all 501 triangles in order:
+
+| Record | Key | Indices | Triangles | Lateral | Radius |
+| ---: | --- | ---: | ---: | --- | --- |
+| 0 | `0x78743CA1` | 0 + 480 | 160 | `0.0018..0.2006` | `0.2117..0.3150` |
+| 1 | `0x010CB64A` | 480 + 66 | 22 | `0.0490..0.2006` | `0.1791..0.4379` |
+| 2 | `0x22719FA9` | 546 + 957 | 319 | `0.0102..0.0559` | `0.0341..0.2227` |
+
+Record 2's key is the one the wheel draw rebinds at `0x0056FDD4` from
+`CarRenderInfo + 0x4D8`. Record 1 is two shapes: triangles 180 and 181, a
+flat quad at lateral `0.2006`, 0.617 by 0.621, wound to face +lateral; and
+triangles 160..179, a ten-sided open barrel of radius `0.1791..0.1892` over
+lateral `0.0490..0.2006`, wound to face the axle. (At LOD B and C,
+`240SX_KIT00_WHEEL_B` and `_C`, record 1 is the quad alone, 6 indices.) By
+place and shape record 0 is the tyre, record 2 the rim, and record 1 a
+backing quad behind the rim and the inside of the rim's barrel (inferred).
+At a right wheel, lateral -0.73, the rim is outboard and the quad inboard;
+the half turn keeps it so at a left wheel. `BRAKE_KIT00_B`, in the same
+way, has a record 1 that is one flat quad of two triangles at lateral
+`-0.0037`, 0.31 square, and a record 0 of 25 triangles at longitudinal
 `-0.176..-0.021` and vertical `-0.039..0.172`, behind and above it: a disc
 and a caliper by inference. The reflection keeps the caliper behind the
 disc on the left, where a half turn would move it in front.

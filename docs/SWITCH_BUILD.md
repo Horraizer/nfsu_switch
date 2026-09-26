@@ -591,7 +591,11 @@ the mesh measurements.
 translation` and brake copies 0 and 3 `car_brake_reflection() *
 translation`, which is the retail order with the untraced lateral terms
 left out. The copies stay stand-ins in the report, because the lateral
-term, the spin and the steering are still not reproduced. From the left
+term, the spin and the steering are still not reproduced. The half turn
+uses an exact -1 and 0 where the game's sine gives -1.0000036 and -0.0;
+with the game's values the `--yaw -94` frame would differ in 3 pixels and
+the pinned frames not at all ([`PART_PLACEMENT.md`](PART_PLACEMENT.md),
+"The half turn", has the hashes). From the left
 the wheels now look as the right-hand ones always did: the rim and the tyre,
 the brake disc and caliper in the hub, and the corners of the backing quad
 showing past the tyre where it is not alpha-tested away, as they do on the
@@ -600,8 +604,12 @@ right.
 **The pins.** At the default camera the front-left wheel's backing quad
 showed through as two black pixels, x 931..932, y 385, above the far
 fender. A scratch program that maps a pixel's triangle id back to its
-group and copy, as the inspector does, names both as material 1 of
-`240SX_KIT00_WHEEL_A`, copy 0. With the fix they are background, and no
+group, copy and mesh triangle, as the inspector does, names both as
+triangle 180 of `240SX_KIT00_WHEEL_A`, copy 0: one of the quad's two
+triangles in material record 1, which also holds a 20-triangle barrel
+inside the rim. The same program with the old pure translations put back
+into the prepared scene reproduces `FE51E57A...` exactly. With the fix
+the two pixels are background, and no
 other pixel of either frame changed, so both pins above were re-pinned:
 `FE51E57A...` to `52B9303A...` painted and `FD672733...` to `E7A042A5...`
 unpainted. The pinned frames themselves showed the defect.

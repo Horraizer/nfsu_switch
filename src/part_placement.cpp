@@ -769,7 +769,7 @@ bool car_marker_name_at(std::size_t index,
 void car_marker_quarter_turn(float out[16]) noexcept {
     // 0x0040BA71 and 0x0040BA7D store the cosine into elements 0 and 10,
     // 0x0040BA69 stores -sin into element 2 and 0x0040BA75 stores +sin into
-    // element 8. At a quarter turn cos is 0 and sin is 1 exactly.
+    // element 8. Exact 0 and 1 stand in for the game's -0.0 and 1.0000036.
     for (std::size_t i = 0; i < 16; ++i) {
         out[i] = 0.0F;
     }

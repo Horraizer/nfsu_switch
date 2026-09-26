@@ -280,8 +280,8 @@ bool car_marker_name_at(std::size_t index,
 // (0x0056F62E and 0x0056F6D1 for the exhaust, 0x0056F7CE..0x0056F87B for
 // the plate). 0x0040BA40 writes cos into elements 0 and 10, -sin into 2 and
 // +sin into 8, so the turn is a quarter turn in the longitudinal-vertical
-// plane, about the lateral axis. At 0x4000 the sine is exactly 1 and the
-// cosine exactly 0, so the matrix is exact and no trigonometry is needed.
+// plane, about the lateral axis. At 0x4000 the game's sine 0x00564B10 gives
+// 1.0000036 and -0.0; this writes an exact 1 and 0 (docs/PART_PLACEMENT.md).
 void car_marker_quarter_turn(float out[16]) noexcept;
 
 // out = a * b, row-major, the row-vector convention the game uses
