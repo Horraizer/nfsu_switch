@@ -1,0 +1,62 @@
+# Real AArch64 objects: contraction fast must fail, off must pass, and each
+# of the six forbidden mnemonics must be recognised independently.
+cmake_minimum_required(VERSION 3.20)
+file(MAKE_DIRECTORY "${WORK}")
+file(WRITE "${WORK}/arithmetic.cpp" "double arithmetic(double a, double b, double c) { return a*b+c; }\n")
+foreach(mode IN ITEMS fast off)
+    execute_process(COMMAND "${COMPILER}" -O2 -fno-fast-math -ffp-contract=${mode}
+        -c "${WORK}/arithmetic.cpp" -o "${WORK}/${mode}.o"
+        RESULT_VARIABLE status OUTPUT_VARIABLE out ERROR_VARIABLE err)
+    if(NOT status EQUAL 0 OR NOT err STREQUAL "")
+        message(FATAL_ERROR "fixture compilation failed: ${status} ${out} ${err}")
+    endif()
+endforeach()
+function(check_case name entries expected)
+    file(WRITE "${WORK}/${name}.txt" "${entries}")
+    execute_process(COMMAND ${CMAKE_COMMAND} -DOBJDUMP=${OBJDUMP}
+        -DMANIFEST=${WORK}/${name}.txt -DTREE=${WORK} -P "${CHECKER}"
+        RESULT_VARIABLE status OUTPUT_VARIABLE out ERROR_VARIABLE err)
+    set(text "${out}${err}")
+    if(expected STREQUAL "PASS")
+        if(NOT status EQUAL 0 OR NOT text MATCHES "PASS: whole Switch tree")
+            message(FATAL_ERROR "${name}: expected pass: ${status}\n${text}")
+        endif()
+    elseif(status EQUAL 0 OR NOT text MATCHES "${expected}")
+        message(FATAL_ERROR "${name}: expected refusal '${expected}': ${status}\n${text}")
+    endif()
+    message(STATUS "PASS: ${name}: ${expected}")
+endfunction()
+check_case(fast "fixture|${WORK}/fast.o\n" "1 fused multiply-add instruction")
+check_case(off "fixture|${WORK}/off.o\n" PASS)
+check_case(empty "" "no object to census")
+check_case(malformed "fixture|\n" "malformed manifest entry")
+check_case(missing "fixture|${WORK}/missing.o\n" "object does not exist")
+check_case(duplicate "fixture|${WORK}/off.o\nfixture|${WORK}/off.o\n" "duplicate object")
+file(WRITE "${WORK}/invalid.o" "not an object\n")
+check_case(invalid "fixture|${WORK}/invalid.o\n" "objdump failed")
+file(WRITE "${WORK}/integer.S" ".text\n.global fixture\nfixture:\n ret\n")
+execute_process(COMMAND "${COMPILER}" -c "${WORK}/integer.S"
+    -o "${WORK}/integer.o" RESULT_VARIABLE status
+    OUTPUT_VARIABLE out ERROR_VARIABLE err)
+if(NOT status EQUAL 0 OR NOT err STREQUAL "")
+    message(FATAL_ERROR "integer fixture compilation failed: ${status} ${out} ${err}")
+endif()
+check_case(no_fmul "fixture|${WORK}/integer.o\n" "objects hold no fmul at all")
+check_case(mixed "fixture|${WORK}/integer.o\nfixture|${WORK}/off.o\n" PASS)
+foreach(instruction IN ITEMS fmadd fmsub fnmadd fnmsub fmla fmls)
+    if(instruction MATCHES "^fml[as]$")
+        set(operands "v0.4s, v1.4s, v2.4s")
+    else()
+        set(operands "d0, d1, d2, d3")
+    endif()
+    file(WRITE "${WORK}/${instruction}.S"
+        ".text\n.global fixture\nfixture:\n fmul d0, d0, d1\n ${instruction} ${operands}\n ret\n")
+    execute_process(COMMAND "${COMPILER}" -c "${WORK}/${instruction}.S"
+        -o "${WORK}/${instruction}.o" RESULT_VARIABLE status
+        OUTPUT_VARIABLE out ERROR_VARIABLE err)
+    if(NOT status EQUAL 0 OR NOT err STREQUAL "")
+        message(FATAL_ERROR "${instruction}: fixture compilation failed: ${status} ${out} ${err}")
+    endif()
+    check_case(${instruction} "fixture|${WORK}/${instruction}.o\n" "1 fused multiply-add instruction")
+endforeach()
+message(STATUS "PASS: all FMA census guards passed")

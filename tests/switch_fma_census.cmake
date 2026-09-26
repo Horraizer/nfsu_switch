@@ -1,67 +1,65 @@
-# The fused multiply-add census of issue #91, as a test over the objects a
-# Switch build wrote: every object named in OBJECTS is disassembled with
-# OBJDUMP, and the run fails if any holds a fused instruction - fmadd,
-# fmsub, fnmadd, fnmsub, or the vector fmla and fmls. It also fails when the
-# objects hold no floating-point multiply at all, so that an empty or wrong
-# object list cannot pass by having nothing to fuse.
-#
-# docs/SWITCH_BUILD.md explains why a fused instruction matters: this
-# project pins byte-identical output across the desktop and the console,
-# the desktop's x86-64 target has no FMA to fuse with, and devkitA64's GCC
-# fuses at -O2 unless contraction is disabled. docs/VEHICLE.md gives the
-# counts for nfsu_vehicle with and without its options.
-#
-#   cmake -DOBJDUMP=<aarch64 objdump> -DOBJECTS=<a;b;...> -DLABEL=<name>
-#         -P tests/switch_fma_census.cmake
-
+# One census over every project object in the generated Switch target manifest.
+# Integer-only objects are included and can legitimately have zero fmul.
 cmake_minimum_required(VERSION 3.20)
-
-if(NOT DEFINED OBJDUMP OR NOT DEFINED OBJECTS OR NOT DEFINED LABEL)
-    message(FATAL_ERROR "OBJDUMP, OBJECTS and LABEL must all be defined")
-endif()
+foreach(required IN ITEMS OBJDUMP MANIFEST TREE)
+    if(NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
+        message(FATAL_ERROR "${required} must be defined")
+    endif()
+endforeach()
 if(NOT EXISTS "${OBJDUMP}")
-    message(FATAL_ERROR "${LABEL}: the objdump ${OBJDUMP} does not exist")
+    message(FATAL_ERROR "objdump does not exist: ${OBJDUMP}")
 endif()
-
-set(objects ${OBJECTS})
-list(LENGTH objects object_count)
-if(object_count LESS 1)
-    message(FATAL_ERROR "${LABEL}: no object to census")
+if(NOT EXISTS "${MANIFEST}")
+    message(FATAL_ERROR "manifest does not exist: ${MANIFEST}")
 endif()
-
+file(STRINGS "${MANIFEST}" entries)
+if(NOT entries)
+    message(FATAL_ERROR "no object to census")
+endif()
+set(objects "")
+set(targets "")
 set(total_fused 0)
 set(total_multiplies 0)
-foreach(object IN LISTS objects)
-    if(NOT EXISTS "${object}")
-        message(FATAL_ERROR "${LABEL}: the object ${object} does not exist")
+foreach(entry IN LISTS entries)
+    if(NOT entry MATCHES "^([^|]+)[|](.+)$")
+        message(FATAL_ERROR "malformed manifest entry: ${entry}")
     endif()
-    execute_process(
-        COMMAND "${OBJDUMP}" -d "${object}"
-        OUTPUT_VARIABLE listing
-        ERROR_VARIABLE listing_error
-        RESULT_VARIABLE status)
-    if(NOT status EQUAL 0)
-        message(FATAL_ERROR "${LABEL}: ${OBJDUMP} -d ${object} failed (${status}):\n${listing_error}")
+    set(target "${CMAKE_MATCH_1}")
+    set(object "${CMAKE_MATCH_2}")
+    if(object IN_LIST objects)
+        message(FATAL_ERROR "duplicate object: ${object}")
+    endif()
+    list(APPEND objects "${object}")
+    list(APPEND targets "${target}")
+    if(NOT EXISTS "${object}")
+        message(FATAL_ERROR "object does not exist: ${object}")
+    endif()
+    execute_process(COMMAND "${OBJDUMP}" -d "${object}"
+        OUTPUT_VARIABLE listing ERROR_VARIABLE listing_error RESULT_VARIABLE status)
+    if(NOT status EQUAL 0 OR NOT listing_error STREQUAL "")
+        message(FATAL_ERROR "objdump failed for ${object} (${status}): ${listing_error}")
+    endif()
+    if(NOT listing MATCHES "file format elf64-littleaarch64" OR
+       NOT listing MATCHES "Disassembly of section")
+        message(FATAL_ERROR "not an AArch64 code object: ${object}")
     endif()
     string(REGEX MATCHALL "\t(fmadd|fmsub|fnmadd|fnmsub|fmla|fmls)[ \t]" fused "${listing}")
     string(REGEX MATCHALL "\tfmul[ \t]" multiplies "${listing}")
     list(LENGTH fused fused_count)
     list(LENGTH multiplies multiply_count)
-    get_filename_component(name "${object}" NAME)
-    message(STATUS "${LABEL}: ${name}: ${multiply_count} fmul, ${fused_count} fused")
+    file(RELATIVE_PATH name "${TREE}" "${object}")
+    message(STATUS "${target}: ${name}: ${multiply_count} fmul, ${fused_count} fused")
     math(EXPR total_fused "${total_fused}+${fused_count}")
     math(EXPR total_multiplies "${total_multiplies}+${multiply_count}")
 endforeach()
-
-if(total_multiplies EQUAL 0)
-    message(FATAL_ERROR
-        "${LABEL}: the objects hold no fmul at all, so this census would pass "
-        "them without having looked at any floating-point code")
-endif()
-
+list(REMOVE_DUPLICATES targets)
+list(LENGTH targets target_count)
+list(LENGTH objects object_count)
+message(STATUS "census: ${target_count} targets, ${object_count} objects, ${total_multiplies} fmul, ${total_fused} fused")
 if(total_fused GREATER 0)
-    message(FATAL_ERROR
-        "${LABEL}: ${total_fused} fused multiply-add instruction(s); the library "
-        "must be compiled with -ffp-contract=off -fno-fast-math")
+    message(FATAL_ERROR "${total_fused} fused multiply-add instruction(s); every target must disable contraction")
 endif()
-message(STATUS "${LABEL}: ${object_count} object(s), no fused instruction")
+if(total_multiplies EQUAL 0)
+    message(FATAL_ERROR "objects hold no fmul at all")
+endif()
+message(STATUS "PASS: whole Switch tree has no fused instruction")

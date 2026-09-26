@@ -568,9 +568,11 @@ orders used here are those of the x87 routine that follows it, at
 
 The console builds the library too (`cmake/race_libraries.cmake`, which
 both configures read), and the Switch tree's
-`nfsu_switch_race_route_fma_census` disassembles its objects and those of
-`nfsu_track_zones` with the toolchain's objdump and fails on any fused
-multiply-add (`tests/race_route_fma_census.cmake`). devkitA64's GCC fuses at
+`nfsu_switch_fma_census` disassembles every project object, including its
+objects and those of `nfsu_track_zones` (issue #175,
+[FLOATING_POINT.md](FLOATING_POINT.md)), with the toolchain's objdump. It
+fails on any fused
+multiply-add (`tests/switch_fma_census.cmake`). devkitA64's GCC fuses at
 -O2 unless contraction is off; the census is the check that it is. Measured
 on this branch: `race_route.o` holds 76 `fmul` and no fused instruction;
 the same source compiled by the same command less `-ffp-contract=off`

@@ -1,3 +1,6 @@
+# All floating-point flags below are inherited from the project-wide rule
+# in cmake/floating_point.cmake (issue #175); no target owns a separate pin.
+
 # The race route of issue #61 and the zone decoder it links, declared once
 # for both configures: the top-level CMakeLists.txt includes this file after
 # cmake/car_libraries.cmake and cmake/draw_libraries.cmake, whose nfsu_core
@@ -22,11 +25,6 @@ add_library(nfsu_track_zones
 
 target_link_libraries(nfsu_track_zones PUBLIC nfsu_track_visibility)
 nfsu_enable_warnings(nfsu_track_zones)
-if(MSVC)
-    target_compile_options(nfsu_track_zones PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_track_zones PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
 
 # The route of one race over a TRACKB bundle (issue #61): the track path
 # spline of chunk 0x80034147, the position markers of 0x00034146, the start,
@@ -48,11 +46,6 @@ add_library(nfsu_race_route
 
 target_link_libraries(nfsu_race_route PUBLIC nfsu_core nfsu_track_zones)
 nfsu_enable_warnings(nfsu_race_route)
-if(MSVC)
-    target_compile_options(nfsu_race_route PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_race_route PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
 
 # gnu++17 on the console, as for the car-path libraries; the comment at the
 # end of cmake/car_libraries.cmake says why.
@@ -79,11 +72,6 @@ add_library(nfsu_race_timing
 
 target_link_libraries(nfsu_race_timing PUBLIC nfsu_race_route)
 nfsu_enable_warnings(nfsu_race_timing)
-if(MSVC)
-    target_compile_options(nfsu_race_timing PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_race_timing PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
 
 # gnu++17 on the console, as for the two libraries above.
 if(NINTENDO_SWITCH)

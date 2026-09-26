@@ -697,8 +697,8 @@ race-timing's four path conversions in `src/main.cpp`, reverted alone to
 
 ### The console
 
-`switch/CMakeLists.txt` builds the library in the Switch tree and runs issue
-#91's census over its object (`nfsu_switch_race_timing_fma_census`).
+The Switch tree builds the library and includes its object in issue #175's
+whole-tree census (`nfsu_switch_fma_census`, [FLOATING_POINT.md](FLOATING_POINT.md)).
 Measured on this branch with devkitA64: `race_timing.o` holds 18 `fmul` and
 no fused instruction; the same source compiled by the same command less
 `-ffp-contract=off -fno-fast-math` holds 14 `fmul` and 4 fused

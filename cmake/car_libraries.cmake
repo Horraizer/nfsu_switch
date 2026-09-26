@@ -1,3 +1,6 @@
+# All floating-point flags below are inherited from the project-wide rule
+# in cmake/floating_point.cmake (issue #175); no target owns a separate pin.
+
 # The car path: every library the stock-car frame of docs/RENDERER.md is
 # made with, from the parsers to the CPU reference renderer, the three
 # small ones the Switch application that shows that frame adds (issue #141),
@@ -62,11 +65,6 @@ nfsu_enable_warnings(nfsu_core)
 # claims are byte-identity claims, and an unpinned target holds one by
 # accident rather than by construction, so contraction is disabled here as
 # it already is on the targets above and below.
-if(MSVC)
-    target_compile_options(nfsu_core PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_core PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
 
 # The texture-export file I/O split out of nfsu_core (issue #139): the
 # export helpers - remove_created, rollback_created_files and
@@ -115,11 +113,6 @@ nfsu_enable_warnings(nfsu_stock_scene)
 # instance transforms from the placements nfsu_core derives, so a fused
 # multiply-add here would sit next to the ones issue #83 measured in
 # src/part_placement.cpp rather than instead of them.
-if(MSVC)
-    target_compile_options(nfsu_stock_scene PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_stock_scene PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
 
 # Texture-pack decoding for prepared scenes. Backends do not depend on it.
 add_library(nfsu_texture_decode
@@ -153,11 +146,6 @@ target_include_directories(nfsu_det_sqrt
 )
 target_compile_features(nfsu_det_sqrt PUBLIC cxx_std_17)
 nfsu_enable_warnings(nfsu_det_sqrt)
-if(MSVC)
-    target_compile_options(nfsu_det_sqrt PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_det_sqrt PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
 
 # Deterministic CPU reference renderer. Floating-point contraction is
 # disabled so that results do not depend on FMA availability.
@@ -179,11 +167,6 @@ target_link_libraries(nfsu_render PUBLIC nfsu_scene nfsu_image nfsu_det_sqrt)
 # missing (issue #132).
 target_link_libraries(nfsu_render PRIVATE nfsu_texture_export)
 nfsu_enable_warnings(nfsu_render)
-if(MSVC)
-    target_compile_options(nfsu_render PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_render PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
 
 # SHA-256 (FIPS 180-4) over bytes in memory. docs/ pins every reference
 # frame by the SHA-256 of its TGA file, printed by a host tool, and the
@@ -259,11 +242,6 @@ target_include_directories(nfsu_body_skin
 )
 target_compile_features(nfsu_body_skin PUBLIC cxx_std_17)
 nfsu_enable_warnings(nfsu_body_skin)
-if(MSVC)
-    target_compile_options(nfsu_body_skin PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_body_skin PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
 
 # Body-skin input assembly: turns an explicit customization selection and
 # parsed texture packs into an owned BodySkinRequest. It sits between the
@@ -315,11 +293,6 @@ nfsu_enable_warnings(nfsu_inspect)
 # once, in the worker's cloud session for this branch, cross-compiling and
 # running under QEMU there; not reproduced on the project's own toolchain,
 # and nothing here has run on a console.
-if(MSVC)
-    target_compile_options(nfsu_inspect PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_inspect PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
 
 # The controller model: buttons, sticks, dead zones, the remapping table,
 # the rules that turn frames into actions and the recorded text form of a
@@ -344,11 +317,6 @@ target_include_directories(nfsu_input
 target_compile_features(nfsu_input PUBLIC cxx_std_17)
 target_link_libraries(nfsu_input PRIVATE nfsu_det_sqrt)
 nfsu_enable_warnings(nfsu_input)
-if(MSVC)
-    target_compile_options(nfsu_input PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_input PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
 
 # Controller input on the inspection camera. It drives an Inspector, never
 # a renderer, so it links nfsu_inspect and inherits that library's
@@ -361,11 +329,6 @@ add_library(nfsu_input_camera
 
 target_link_libraries(nfsu_input_camera PUBLIC nfsu_input nfsu_inspect)
 nfsu_enable_warnings(nfsu_input_camera)
-if(MSVC)
-    target_compile_options(nfsu_input_camera PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_input_camera PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
 
 # The stock car orbited on the console (issue #148): the application's
 # control table - the left stick orbits, - resets the camera, + exits -
@@ -389,11 +352,6 @@ add_library(nfsu_frame_compare src/frame_compare.cpp)
 target_include_directories(nfsu_frame_compare PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(nfsu_frame_compare PUBLIC cxx_std_17)
 nfsu_enable_warnings(nfsu_frame_compare)
-if(MSVC)
-    target_compile_options(nfsu_frame_compare PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_frame_compare PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
 
 # The language the console compiles these as. Every target above asks for
 # cxx_std_17, and CMake reads that as a minimum: it adds no -std option when

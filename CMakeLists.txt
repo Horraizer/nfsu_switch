@@ -14,6 +14,9 @@ endif()
 
 project(nfsu_switch LANGUAGES CXX)
 
+# One arithmetic policy before any target or subdirectory (issue #175).
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/floating_point.cmake)
+
 option(NFSU_BUILD_TESTS "Build unit tests" ON)
 
 function(nfsu_enable_warnings target)
@@ -52,6 +55,10 @@ if(NINTENDO_SWITCH)
         enable_testing()
     endif()
     add_subdirectory(switch)
+    if(NFSU_BUILD_TESTS)
+        include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/switch_fma_census.cmake)
+        nfsu_switch_fma_census()
+    endif()
     return()
 endif()
 
@@ -98,11 +105,6 @@ add_library(nfsu_track_render
 
 target_link_libraries(nfsu_track_render PUBLIC nfsu_render nfsu_track_draw_list)
 nfsu_enable_warnings(nfsu_track_render)
-if(MSVC)
-    target_compile_options(nfsu_track_render PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_track_render PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
 
 # The desktop track slice's cost accounting: the four stages' own reports
 # rearranged into one named, stage-tagged counter table, and the budget
@@ -143,11 +145,6 @@ add_library(nfsu_track_probe
 
 target_link_libraries(nfsu_track_probe PUBLIC nfsu_track_render)
 nfsu_enable_warnings(nfsu_track_probe)
-if(MSVC)
-    target_compile_options(nfsu_track_probe PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_track_probe PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
 
 # The career event table of FRONTEND/FrontB.lzc and the track table of
 # GLOBAL/GLOBALB.LZC it points into: which track, lap count and direction
@@ -359,11 +356,6 @@ if(NFSU_BUILD_TESTS)
 
     target_link_libraries(nfsu_track_zone_tests PRIVATE nfsu_track_zones)
     nfsu_enable_warnings(nfsu_track_zone_tests)
-    if(MSVC)
-        target_compile_options(nfsu_track_zone_tests PRIVATE /fp:precise)
-    else()
-        target_compile_options(nfsu_track_zone_tests PRIVATE -ffp-contract=off -fno-fast-math)
-    endif()
     add_test(NAME nfsu_track_zone_tests COMMAND nfsu_track_zone_tests)
 
     add_executable(nfsu_track_draw_list_tests
@@ -464,11 +456,6 @@ if(NFSU_BUILD_TESTS)
 
     target_link_libraries(nfsu_race_route_tests PRIVATE nfsu_race_route nfsu_sha256)
     nfsu_enable_warnings(nfsu_race_route_tests)
-    if(MSVC)
-        target_compile_options(nfsu_race_route_tests PRIVATE /fp:precise)
-    else()
-        target_compile_options(nfsu_race_route_tests PRIVATE -ffp-contract=off -fno-fast-math)
-    endif()
     add_test(NAME nfsu_race_route_tests COMMAND nfsu_race_route_tests)
     set_tests_properties(nfsu_race_route_tests PROPERTIES TIMEOUT 60)
 
@@ -892,11 +879,6 @@ if(NFSU_BUILD_TESTS)
 
     target_link_libraries(nfsu_input_tests PRIVATE nfsu_input_camera)
     nfsu_enable_warnings(nfsu_input_tests)
-    if(MSVC)
-        target_compile_options(nfsu_input_tests PRIVATE /fp:precise)
-    else()
-        target_compile_options(nfsu_input_tests PRIVATE -ffp-contract=off -fno-fast-math)
-    endif()
     add_test(NAME nfsu_input_tests COMMAND nfsu_input_tests)
 
     # The session the window procedure used to be, driven through the fakes:
@@ -1144,11 +1126,6 @@ target_link_libraries(nfsu_track_contact PUBLIC nfsu_track nfsu_memory)
 # library's own source neutral under the include rule below.
 target_link_libraries(nfsu_track_contact PRIVATE nfsu_det_sqrt)
 nfsu_enable_warnings(nfsu_track_contact)
-if(MSVC)
-    target_compile_options(nfsu_track_contact PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_track_contact PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
 
 # Neutral: it decodes nothing of its own, reads files only through
 # load_track_collision's std::ifstream, calls no operating system function and
@@ -1316,11 +1293,6 @@ if(NFSU_BUILD_TESTS)
 
     target_link_libraries(nfsu_vehicle_tests PRIVATE nfsu_vehicle nfsu_arg_path)
     nfsu_enable_warnings(nfsu_vehicle_tests)
-    if(MSVC)
-        target_compile_options(nfsu_vehicle_tests PRIVATE /fp:precise)
-    else()
-        target_compile_options(nfsu_vehicle_tests PRIVATE -ffp-contract=off -fno-fast-math)
-    endif()
     add_test(NAME nfsu_vehicle_tests COMMAND nfsu_vehicle_tests)
 
     # What `vehicle-sim` refuses, prints and exits with, over no input, over
@@ -1370,11 +1342,6 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_race_timing_tests
         PRIVATE nfsu_race_timing nfsu_platform_fakes nfsu_sha256)
     nfsu_enable_warnings(nfsu_race_timing_tests)
-    if(MSVC)
-        target_compile_options(nfsu_race_timing_tests PRIVATE /fp:precise)
-    else()
-        target_compile_options(nfsu_race_timing_tests PRIVATE -ffp-contract=off -fno-fast-math)
-    endif()
     add_test(NAME nfsu_race_timing_tests COMMAND nfsu_race_timing_tests)
 
     # What `race-timing` refuses, prints and exits with, over the same

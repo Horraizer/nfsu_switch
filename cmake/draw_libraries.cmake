@@ -1,3 +1,6 @@
+# All floating-point flags below are inherited from the project-wide rule
+# in cmake/floating_point.cmake (issue #175); no target owns a separate pin.
+
 # Shared neutral draw-recording dependencies, built on desktop and Switch.
 
 # One explicitly selected, bounded track STREAM region: chunk-tree parsing
@@ -32,11 +35,6 @@ add_library(nfsu_track_visibility
 
 target_link_libraries(nfsu_track_visibility PUBLIC nfsu_track)
 nfsu_enable_warnings(nfsu_track_visibility)
-if(MSVC)
-    target_compile_options(nfsu_track_visibility PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_track_visibility PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
 
 # The composition layer of the track path: the prepared region of
 # src/track_scene.cpp placed by the scenery instances of
