@@ -59,6 +59,8 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/drive_libraries.cmake)
 # vehicle libraries above, so it is included after them.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/vehicle_track_libraries.cmake)
 
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/track_slice_libraries.cmake)
+
 # The Switch build configures the shared car and draw libraries and switch/,
 # and nothing below this point: the desktop programs, the other libraries and every test of
 # them are never built for the console, and a desktop configure never enters
@@ -171,25 +173,6 @@ add_library(nfsu_race_events
 
 target_link_libraries(nfsu_race_events PUBLIC nfsu_core)
 nfsu_enable_warnings(nfsu_race_events)
-
-# The whole track one race loads (issue #156): the streaming table of a
-# track's TRACKB file, the recovered rule that picks which of its sections
-# speed.exe loads, the bounded read of exactly those byte ranges, and their
-# merge into one geometry report and one scenery report that the existing
-# scene layer places as one scene. It links the zone decoder because the
-# rule reads two of the zone file's lists, nfsu_texture_decode for the
-# per-section texture sources, and nfsu_gpu_upload for the budgets of issue
-# #52. It reads its files with std::ifstream, as nfsu_core's loaders do,
-# reads no clock and makes no decision from a floating-point result - it
-# only takes the minimum and maximum of bounds the parsers computed. It
-# still inherits the global floating-point policy. See docs/TRACK_WHOLE.md.
-add_library(nfsu_track_stream
-    src/track_stream.cpp
-)
-
-target_link_libraries(nfsu_track_stream
-    PUBLIC nfsu_track_zones nfsu_texture_decode nfsu_gpu_upload)
-nfsu_enable_warnings(nfsu_track_stream)
 
 # nfsu_race_route, the route of one race over a TRACKB bundle (issue #61),
 # is declared in cmake/race_libraries.cmake, which both configures read.
@@ -1467,4 +1450,12 @@ if(NFSU_BUILD_TESTS)
 
     set_tests_properties(nfsu_vehicle_track_tests nfsu_probe_vehicle_track_guards
         PROPERTIES TIMEOUT 120)
+endif()
+
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_track_slice)
+if(NFSU_BUILD_TESTS)
+    add_executable(nfsu_track_slice_tests tests/track_slice_tests.cpp)
+    target_link_libraries(nfsu_track_slice_tests PRIVATE nfsu_track_slice nfsu_posix_file_system)
+    nfsu_enable_warnings(nfsu_track_slice_tests)
+    add_test(NAME nfsu_track_slice_tests COMMAND nfsu_track_slice_tests)
 endif()

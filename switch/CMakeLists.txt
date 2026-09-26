@@ -399,3 +399,29 @@ if(NFSU_BUILD_TESTS)
     set_tests_properties(nfsu_switch_vehicle_track_nro
         PROPERTIES TIMEOUT 60)
 endif()
+
+# Event-1 bounded track slice (#54). The RomFS contains only checked shaders.
+add_executable(nfsu_switch_track track_main.cpp deko_renderer.cpp)
+set(NFSU_TRACK_BUILD_TAG "local" CACHE STRING "Track diagnostic build label for hardware photos")
+if(NOT NFSU_TRACK_BUILD_TAG MATCHES "^[A-Za-z0-9._-]+$")
+    message(FATAL_ERROR "NFSU_TRACK_BUILD_TAG must be an ASCII identifier")
+endif()
+target_compile_definitions(nfsu_switch_track PRIVATE NFSU_TRACK_BUILD_TAG="${NFSU_TRACK_BUILD_TAG}")
+target_link_libraries(nfsu_switch_track PRIVATE nfsu_track_slice
+    nfsu_posix_file_system nfsu_screen_text deko3d)
+set_target_properties(nfsu_switch_track PROPERTIES
+    CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
+nfsu_enable_warnings(nfsu_switch_track)
+nx_generate_nacp(OUTPUT nfsu_switch_track.nacp NAME "nfsu_switch_track"
+    AUTHOR "nfsu_switch contributors" VERSION "0.1.0")
+nx_create_nro(nfsu_switch_track NACP nfsu_switch_track.nacp
+    ROMFS nfsu_switch_deko_romfs)
+if(NFSU_BUILD_TESTS)
+    add_test(NAME nfsu_switch_track_nro
+        COMMAND ${CMAKE_COMMAND}
+            -DNRO=${CMAKE_CURRENT_BINARY_DIR}/nfsu_switch_track.nro
+            -DELF=$<TARGET_FILE:nfsu_switch_track>
+            -DTITLE=nfsu_switch_track -DSHADERS=${NFSU_SHADER_OUTPUT}
+            -P ${PROJECT_SOURCE_DIR}/tests/switch_deko_romfs_check.cmake)
+    set_tests_properties(nfsu_switch_track_nro PROPERTIES TIMEOUT 60)
+endif()

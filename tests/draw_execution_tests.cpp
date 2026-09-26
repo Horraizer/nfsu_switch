@@ -184,7 +184,7 @@ int main() {
     execution_refuse("executor width", "1280x720", [](auto& c) { c.width = 1279; });
     execution_refuse("executor height", "1280x720", [](auto& c) { c.height = 721; });
     execution_refuse("4097 draws", "4096", [](auto& c) { c.draws.resize(4097, c.draws[0]); });
-    execution_refuse("4097 resources", "4096", [](auto& c) { c.uploads.resources.resize(4097, c.uploads.resources[0]); });
+    execution_refuse("8193 resources", "8192", [](auto& c) { c.uploads.resources.resize(8193, c.uploads.resources[0]); });
     execution_refuse("2048 uniforms exceed budget", "transient", [](auto& c) { c.draws.resize(2048, c.draws[0]); });
     auto many = good; many.draws.resize(2047, many.draws[0]);
     check(plan_draw_execution(many, plan, error) && plan.uniform_bytes == 1048320,
@@ -193,6 +193,18 @@ int main() {
     check(plan_draw_execution(many, plan, error) && plan.descriptor_bytes == 131104 &&
           plan.sampler_offset == 131072 && plan.command_bytes == 16846848,
           "4096 resources fit with separate sampler descriptor");
+    check(validate_draw_update(good.uploads, good, 1, error), "same uploads can update draws");
+    check(!validate_draw_update(good.uploads, good, 0, error), "update capacity refused");
+    auto updated = good; updated.uploads.resources[0].data = reinterpret_cast<const unsigned char*>(indices);
+    check(!validate_draw_update(good.uploads, updated, 1, error), "changed borrowed payload refused");
+    updated = good;
+    updated.uploads.resources[1].data = reinterpret_cast<const unsigned char*>(std::uintptr_t{1});
+    check(!validate_draw_update(good.uploads, updated, 1, error), "changed index pointer refused before validation reads it");
+    updated = good; updated.uploads.resources.push_back(updated.uploads.resources[0]);
+    check(!validate_draw_update(good.uploads, updated, 1, error), "changed resource count refused");
+    many = good; many.uploads.resources.resize(8192, many.uploads.resources[0]);
+    check(plan_draw_execution(many, plan, error) && plan.descriptor_bytes == 262176,
+          "8192 resources fit the track descriptor bound");
     // Two individually valid large textures must not overflow the staging
     // block together. The plan checks sizes without dereferencing payloads.
     many = good; many.uploads.resources.push_back(texture(16384, 32768));

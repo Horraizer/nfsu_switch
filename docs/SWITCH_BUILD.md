@@ -736,3 +736,10 @@ NRO.
 - A Debug Switch build was not run. The Windows (MSYS2) route was run for
   issue #141, as the Prerequisites section says.
 - No CI runs the Switch build.
+
+## Bounded event-1 track diagnostic
+
+`nfsu_switch_track.nro` checks the first-lap assets under `sdmc:/nfsu`, then
+draws the streamed track with deko3d and shows timing, memory, draw and
+collision diagnostics for a photograph. See [SWITCH_TRACK.md](SWITCH_TRACK.md)
+for controls, installation and the pending hardware acceptance check.

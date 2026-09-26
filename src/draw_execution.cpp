@@ -34,8 +34,8 @@ bool plan_draw_execution(const RecordedCommands& c, DrawExecutionPlan& plan, std
         error = "deko3d executor requires opaque background alpha (255)"; return false;
     }
     if (c.width != 1280 || c.height != 720 || c.draws.size() > 4096 ||
-        c.uploads.resources.size() > 4096) {
-        error = "deko3d stock executor: requires 1280x720 and at most 4096 draws/resources";
+        c.uploads.resources.size() > 8192) {
+        error = "deko3d stock executor: requires 1280x720 and at most 4096 draws and 8192 resources";
         return false;
     }
     const std::uint64_t uniform_bytes = (1 + 2 * c.draws.size()) * kDekoUniformBufferAlignment;
@@ -65,6 +65,26 @@ bool plan_draw_execution(const RecordedCommands& c, DrawExecutionPlan& plan, std
     }
     plan = out;
     return true;
+}
+
+bool validate_draw_update(const UploadTable& uploaded, const RecordedCommands& next,
+                          std::size_t draw_capacity, std::string& error) {
+    error.clear();
+    if (next.draws.size() > draw_capacity) { error = "updated draws exceed reserved capacity"; return false; }
+    if (uploaded.resources.size() != next.uploads.resources.size()) {
+        error = "updated upload table changed size"; return false;
+    }
+    for (std::size_t i = 0; i < uploaded.resources.size(); ++i) {
+        const auto& a = uploaded.resources[i]; const auto& b = next.uploads.resources[i];
+        if (a.kind != b.kind || a.data != b.data || a.bytes != b.bytes ||
+            a.element_bytes != b.element_bytes || a.elements != b.elements ||
+            a.texture.format != b.texture.format || a.texture.width != b.texture.width ||
+            a.texture.height != b.texture.height || a.texture.row_bytes != b.texture.row_bytes) {
+            error = "updated payload differs from uploaded resource " + std::to_string(i); return false;
+        }
+    }
+    DrawExecutionPlan plan;
+    return plan_draw_execution(next, plan, error);
 }
 
 } // namespace nfsu

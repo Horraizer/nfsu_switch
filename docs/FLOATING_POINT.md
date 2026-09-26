@@ -106,6 +106,15 @@ paths are relative to the build tree.
 | `switch/CMakeFiles/nfsu_switch_vehicle.dir/vehicle_main.o` | 0 | 0 | 0 | 0 |
 | `switch/CMakeFiles/nfsu_switch_vehicle_track.dir/vehicle_track_main.o` | 0 | 0 | 0 | 0 |
 
+## Track slice extension (#54)
+
+The whole-tree census automatically adds `nfsu_track_stream` (one object),
+`nfsu_track_slice` (one object) and `nfsu_switch_track` (two objects).
+The earlier before/after table remains the historical #175 measurement.
+The #54 Release build has 48 targets and 63 objects, with zero fused
+instructions; its generated object manifest is the authoritative current
+inventory. No per-target flag or additional census was added.
+
 ## Deliberate break and restore
 
 With the global rule present, temporarily append this after the declaration

@@ -8,7 +8,8 @@ namespace nfsu {
 // Switch-only owner of the device, queue, resident uploads and swapchain.
 // The borrowed commands and their scene must stay alive through close().
 // All work uses one queue; presentation waits for each frame's fence before
-// reusing command memory. This deliberately starts with a static stock frame.
+// reusing command memory. Updates replace only draw selection and uniforms;
+// the uploaded scene remains resident.
 class DekoRenderer {
 public:
     DekoRenderer();
@@ -17,7 +18,11 @@ public:
     DekoRenderer& operator=(const DekoRenderer&) = delete;
     // Offscreen mode owns no native window, so a diagnostic framebuffer may
     // stay open. Both modes record exactly the same draw path.
-    bool open(const RecordedCommands& commands, std::string& error, bool presentation = true);
+    bool open(const RecordedCommands& commands, std::string& error, bool presentation = true,
+              std::size_t draw_capacity = 0);
+    // Reuses resident GPU resources; called after the preceding frame completes.
+    bool update(const RecordedCommands& commands, std::string& error);
+    std::uint64_t gpu_bytes() const noexcept;
     // Offscreen only. Tight top-first RGBA8 after a completed GPU copy and
     // fence. Times include command recording/submission/wait; upload and
     // allocation are excluded. No CPU rasterizer is invoked here.

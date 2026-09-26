@@ -69,7 +69,7 @@ The GPU figure places each image using `bounded_image_layout`, rounds buffer,
 image and staging extents to 4096 bytes, includes tight and padded staging
 copies simultaneously, and reserves 64 MiB for the bounded executor's
 commands, uniforms, descriptors, shaders and 1280x720 presentation/depth
-images. This reserve applies to the existing <=4096-resource/draw executor;
+images. This reserve applies to the bounded executor (8192 resources, 2047 draw uniform slots for #54);
 the whole resident set's all-visible draw list is not a promised executable
 frame. #54 selects a bounded visible slice. The real backend queries deko3d
 image sizes and checks every memory block against 256 MiB, refusing before
