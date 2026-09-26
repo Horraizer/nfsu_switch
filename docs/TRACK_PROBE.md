@@ -525,8 +525,9 @@ above is a measurement of the listed commands, and the issue #125 camera
 case is pinned in `nfsu_track_probe_tests`.
 
 The review's separate camera case, `--eye 450 20 -80 --look-at 599 62 -80
---view-far 60 --limit 2`, now prints a 4667-byte report with SHA-256
-`54BD350241FC744AD2928B952BF20B20944F59B4ADA7B72DC14A58BFB8E84855`
+--view-far 60 --limit 2`, now prints a 4667-byte report, using forward-slash
+source paths as above, with SHA-256
+`BA2565408F95DB3E3178704A6A25FD5408749A1B954360D13BDE856EA4B9E479`
 in each of those five build types on the same installation. Its camera
 distance is `154.80633061990713`; before this fix, the default and Debug
 builds printed `154.80633061990716` and 4669 bytes. Each run checked the
@@ -1031,7 +1032,7 @@ build/nfsu_probe track-probe X:/Games/NFSU/Tracks/STREAML1RB.BUN \
 
 Expected:
 
-1. Both `ctest` runs report 48 tests passed, 0 failed.
+1. Both `ctest` runs report 56 tests passed, 0 failed.
 2. All six commands exit 0 and write nothing to standard error.
 3. The first prints `probe: instances 39 probed 39 visible 39 culler 39
    disagreements 0`, `probe: rejected by mask 0 box 0 size 0 pruned 0` and

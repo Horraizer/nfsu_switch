@@ -498,7 +498,7 @@ The shared `det_sqrt` now uses `sqrtsd` on SSE2 x86 and `fsqrt` on Switch
 AArch64, and the renderer and track camera call it at every double-precision
 square-root site. The Debug and Release street frames both have the Release
 hash above. The five car hashes in [`RENDERER.md`](RENDERER.md), including the
-stock wheel frame `FD672733...`, and the default region hash `D17D632B...`
+stock wheel frame `FD672733...` at that original fix, and the default region hash `D17D632B...`
 were rechecked unchanged in both builds, with fresh output files and
 unchanged retail-file manifests. The camera basis at pitch 6 is pinned by
 `nfsu_render_tests`.
@@ -510,6 +510,27 @@ are byte-identical with SHA-256 `20CCC85C62993298989CEDE3B3BFBBC0099F246573F2C3E
 The retail-file manifest matched before and after every run. Both region
 orders still have SHA-256 `D17D632B1648B46C26852E91B71BC27CC69D25216C8056AD15FD87E049EA9FD2`
 in the default and Release builds.
+
+The framing square roots are pinned independently in
+`nfsu_track_render_tests`. Bounds from `(0,0,0)` to `(298,84,0)` at the
+default framing options give distance `540.55042310081103` and far plane
+`869.19594215089774`. Bounds from `(0,0,0)` to `(2,0,0)` at vertical fov
+`37.48` give distance `3.2682363941296151` and far plane
+`5.3352954926620191`. Replacing only the radius helper call with library
+`sqrt` fails the first pair; replacing only the half-angle call fails the
+second pair. Each test passes again after the helper is restored.
+
+The painted stock car command of `SWITCH_BUILD.md` with `--yaw 76` is also
+closed by the same fix. On main `8972f92`, Debug wrote SHA-256
+`0DC727BD8CA0B17B3A0290634698254095B88CCDEEBEF954A6373A1E30829A43`
+and Release wrote
+`DF5EC96B728FECF14DC3B5301F647C97B0252B153693AF0FD7F23B8F6E07406D`.
+With the square-root fix both builds write the latter hash. Every frame is
+3686418 bytes, and each run leaves the retail-file manifest unchanged.
+The merged issue #161 separately re-pinned the default stock wheel frame to
+`E7A042A5...` and the painted default frame to `52B9303A...`, as
+[`SWITCH_BUILD.md`](SWITCH_BUILD.md) records. Both current pins match in
+Debug and Release with and without the square-root fix on that main base.
 
 ## Statistics
 
@@ -836,7 +857,7 @@ build-release/nfsu_probe track-render X:/Games/NFSU/Tracks/STREAML1RB.BUN \
 
 Expected:
 
-1. Both `ctest` runs report 48 tests passed, 0 failed.
+1. Both `ctest` runs report 56 tests passed, 0 failed.
 2. Both renders exit 0 and write nothing to standard error.
 3. The region view prints the scene, cull and draw-list lines
    [`TRACK_DRAW_LIST.md`](TRACK_DRAW_LIST.md) pins for this region,

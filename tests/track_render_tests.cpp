@@ -7,7 +7,9 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -46,8 +48,10 @@ void check_close(double got, double want, double tolerance,
 }
 
 void check_exact(double got, double want, const std::string& what) {
-    check(got == want, what + ": got " + std::to_string(got) + ", want " +
-                           std::to_string(want));
+    std::ostringstream message;
+    message << std::setprecision(17) << what << ": got " << got
+            << ", want " << want;
+    check(got == want, message.str());
 }
 
 // The same as check, for a call that reports through an out-parameter.
@@ -1455,6 +1459,32 @@ void test_framing_numbers() {
           "a narrower frame stands the camera farther back: got " +
               std::to_string(taller.distance) + ", was " +
               std::to_string(camera.distance));
+}
+
+void test_framing_radius_is_single_rounded() {
+    nfsu::OrbitCamera camera;
+    std::string error;
+    check_ok(nfsu::frame_track_bounds(box(0, 0, 0, 298, 84, 0), 1280, 720,
+                                     {}, camera, error),
+             "the sqrt(23965) framing box frames", error);
+    check_exact(camera.distance, 540.55042310081103,
+                "framing radius uses single-rounded sqrt: distance");
+    check_exact(camera.far_plane, 869.19594215089774,
+                "framing radius uses single-rounded sqrt: far plane");
+}
+
+void test_framing_half_angle_is_single_rounded() {
+    nfsu::TrackFramingOptions options;
+    options.fov_y_deg = 37.48;
+    nfsu::OrbitCamera camera;
+    std::string error;
+    check_ok(nfsu::frame_track_bounds(box(0, 0, 0, 2, 0, 0), 1280, 720,
+                                     options, camera, error),
+             "the fov 37.48 framing box frames", error);
+    check_exact(camera.distance, 3.2682363941296151,
+                "framing half-angle uses single-rounded sqrt: distance");
+    check_exact(camera.far_plane, 5.3352954926620191,
+                "framing half-angle uses single-rounded sqrt: far plane");
 }
 
 void test_framing_is_a_function_of_its_inputs() {
@@ -2950,6 +2980,8 @@ int main() {
 
     test_framing_contains_the_box();
     test_framing_numbers();
+    test_framing_radius_is_single_rounded();
+    test_framing_half_angle_is_single_rounded();
     test_framing_is_a_function_of_its_inputs();
     test_framing_refusals();
     test_framing_a_single_point();
