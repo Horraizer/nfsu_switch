@@ -71,6 +71,7 @@ endif()
 file(GLOB NFSU_SHADER_MANIFESTS CONFIGURE_DEPENDS
     ${PROJECT_SOURCE_DIR}/shaders/*.manifest)
 set(NFSU_SHADER_CHECKER ${PROJECT_SOURCE_DIR}/cmake/shader_manifest.cmake)
+set(NFSU_SHADER_DERIVATIVES ${PROJECT_SOURCE_DIR}/tools/uam_derivatives.py)
 set(NFSU_SHADER_OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 set(NFSU_SHADER_COMPILED "")
 set(NFSU_SHADER_STAMPS "")
@@ -80,6 +81,7 @@ foreach(manifest IN LISTS NFSU_SHADER_MANIFESTS)
     nfsu_shader_manifest_stages(${manifest} program vertex_source fragment_source)
     set(check_arguments "")
     set(check_inputs "")
+    set(check_derivatives "")
     foreach(stage IN ITEMS vertex fragment)
         set(source ${${stage}_source})
         get_filename_component(stem ${source} NAME)
@@ -96,8 +98,11 @@ foreach(manifest IN LISTS NFSU_SHADER_MANIFESTS)
             add_custom_command(
                 OUTPUT ${dksh} ${tgsi}
                 COMMAND ${CMAKE_COMMAND} -E make_directory ${NFSU_SHADER_OUTPUT}
-                COMMAND ${NX_UAM_EXE} -s ${uam_stage} -o ${dksh} -t ${tgsi} ${source}
-                DEPENDS ${source} ${NX_UAM_EXE}
+                COMMAND ${NX_UAM_EXE} -s ${uam_stage} -o ${dksh}.raw -t ${tgsi} ${source}
+                COMMAND ${Python3_EXECUTABLE} ${NFSU_SHADER_DERIVATIVES}
+                    ${dksh}.raw ${tgsi} ${dksh}
+                BYPRODUCTS ${dksh}.raw
+                DEPENDS ${source} ${NX_UAM_EXE} ${NFSU_SHADER_DERIVATIVES}
                 COMMENT "Compiling ${stem}.glsl with uam"
                 VERBATIM)
         endif()
@@ -105,6 +110,8 @@ foreach(manifest IN LISTS NFSU_SHADER_MANIFESTS)
         list(APPEND check_arguments
             -D${stage_upper}_DKSH=${dksh} -D${stage_upper}_TGSI=${tgsi})
         list(APPEND check_inputs ${dksh} ${tgsi})
+        list(APPEND check_derivatives COMMAND ${Python3_EXECUTABLE}
+            ${NFSU_SHADER_DERIVATIVES} --check ${dksh} ${tgsi})
     endforeach()
 
     # The stamp is removed before the check and written only when it finds
@@ -113,9 +120,10 @@ foreach(manifest IN LISTS NFSU_SHADER_MANIFESTS)
     add_custom_command(
         OUTPUT ${stamp}
         COMMAND ${CMAKE_COMMAND} -E rm -f ${stamp}
+        ${check_derivatives}
         COMMAND ${CMAKE_COMMAND} -DMODE=blob -DMANIFEST=${manifest}
                 ${check_arguments} -DSTAMP=${stamp} -P ${NFSU_SHADER_CHECKER}
-        DEPENDS ${manifest} ${check_inputs} ${NFSU_SHADER_CHECKER}
+        DEPENDS ${manifest} ${check_inputs} ${NFSU_SHADER_CHECKER} ${NFSU_SHADER_DERIVATIVES}
         COMMENT "Checking ${program} against its compiled shaders"
         VERBATIM)
     list(APPEND NFSU_SHADER_STAMPS ${stamp})
@@ -126,6 +134,13 @@ endforeach()
 add_custom_target(nfsu_switch_shaders ALL DEPENDS ${NFSU_SHADER_STAMPS})
 
 if(NFSU_BUILD_TESTS)
+    add_test(NAME nfsu_uam_derivatives_tests
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/uam_derivatives_tests.py)
+    foreach(stage IN ITEMS placed.vert textured.frag fallback.frag)
+        add_test(NAME nfsu_switch_derivatives_${stage}
+            COMMAND ${Python3_EXECUTABLE} ${NFSU_SHADER_DERIVATIVES} --check
+                ${NFSU_SHADER_OUTPUT}/${stage}.dksh ${NFSU_SHADER_OUTPUT}/${stage}.tgsi)
+    endforeach()
     # Appended to below, once per program; never set anywhere before this,
     # so without this a stray -DNFSU_SWITCH_TESTS from the invoking
     # environment would reach set_tests_properties along with the real

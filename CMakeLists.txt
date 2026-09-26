@@ -19,6 +19,11 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/floating_point.cmake)
 
 option(NFSU_BUILD_TESTS "Build unit tests" ON)
 
+# Host-only offline shader data correction; never linked into a target.
+if(NINTENDO_SWITCH OR NFSU_BUILD_TESTS)
+    find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
+endif()
+
 function(nfsu_enable_warnings target)
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4 /permissive-)
@@ -1413,6 +1418,8 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_frame_compare_tests PRIVATE nfsu_frame_compare)
     nfsu_enable_warnings(nfsu_frame_compare_tests)
     add_test(NAME nfsu_frame_compare_tests COMMAND nfsu_frame_compare_tests)
+    add_test(NAME nfsu_uam_derivatives_tests
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/uam_derivatives_tests.py)
 endif()
 
 # ---------------------------------------------------------------------------
