@@ -342,6 +342,60 @@ if(NFSU_BUILD_TESTS)
     set_tests_properties(nfsu_switch_race_timing_fma_census PROPERTIES TIMEOUT 60)
 endif()
 
+# The driving controls and the chase camera of issue #59, which
+# cmake/drive_libraries.cmake declares for both configures. Appended as one
+# block so that nothing above is reordered.
+#
+# Their fused multiply-add census: the demonstration's stream hash is pinned
+# on the desktop (docs/CONTROLS_CAMERA.md), and this tree cannot run an
+# AArch64 program to compare it, so it asserts the precondition the pin rests
+# on - that the three libraries compile on the console to the same float
+# arithmetic, with no fused instruction - with the census script the vehicle
+# model's census uses.
+if(NFSU_BUILD_TESTS)
+    add_test(NAME nfsu_switch_drive_fma_census
+        COMMAND ${CMAKE_COMMAND}
+                -DOBJDUMP=${CMAKE_OBJDUMP}
+                "-DOBJECTS=$<TARGET_OBJECTS:nfsu_drive_controls>;$<TARGET_OBJECTS:nfsu_chase_camera>;$<TARGET_OBJECTS:nfsu_drive_session>"
+                -DLABEL=nfsu_drive
+                -P ${PROJECT_SOURCE_DIR}/tests/switch_fma_census.cmake)
+    set_tests_properties(nfsu_switch_drive_fma_census PROPERTIES TIMEOUT 60)
+endif()
+
+# The application that runs them on the console: the built-in demonstration
+# with its hash against the desktop pin, then the pad driving the same
+# session live on the text console. It reads no file and writes none.
+add_executable(nfsu_switch_drive
+    drive_main.cpp
+)
+
+target_link_libraries(nfsu_switch_drive PRIVATE nfsu_drive_session nfsu_stock_view)
+# gnu++17, as the libraries it links are compiled on the console; the
+# comment at the end of cmake/car_libraries.cmake says why it is named.
+set_target_properties(nfsu_switch_drive PROPERTIES
+    CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
+nfsu_enable_warnings(nfsu_switch_drive)
+
+nx_generate_nacp(
+    OUTPUT nfsu_switch_drive.nacp
+    NAME "nfsu_switch_drive"
+    AUTHOR "nfsu_switch contributors"
+    VERSION "0.1.0")
+
+nx_create_nro(nfsu_switch_drive
+    NACP nfsu_switch_drive.nacp)
+
+if(NFSU_BUILD_TESTS)
+    # The NRO and its ELF, as for the other applications.
+    add_test(NAME nfsu_switch_drive_nro
+        COMMAND ${CMAKE_COMMAND}
+                -DNRO=${CMAKE_CURRENT_BINARY_DIR}/nfsu_switch_drive.nro
+                -DELF=$<TARGET_FILE:nfsu_switch_drive>
+                -DTITLE=nfsu_switch_drive
+                -P ${PROJECT_SOURCE_DIR}/tests/switch_nro_check.cmake)
+    set_tests_properties(nfsu_switch_drive_nro PROPERTIES TIMEOUT 60)
+endif()
+
 # Same deko3d draw path, offscreen readback and on-screen CPU comparison.
 # No game asset is packaged; only the already-checked offline shaders.
 add_executable(nfsu_switch_compare compare_main.cpp deko_renderer.cpp)

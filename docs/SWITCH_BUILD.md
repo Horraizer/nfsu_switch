@@ -46,6 +46,8 @@ buttons, timing convention and `nxlink -a <ip>` deployment command.
 | `nfsu_switch_compare_nro` | `nfsu_switch_compare.nro`, `nfsu_switch_compare.nacp` | The comparison application packaged with checked offline shader blobs in RomFS; no game assets. |
 | `nfsu_switch_vehicle` | `nfsu_switch_vehicle.elf` | The vehicle model of issue #58: runs the eight built-in scripted input sequences through `nfsu_vehicle` and prints each telemetry hash, and whether `mixed` is the one pinned on the desktop ([`VEHICLE.md`](VEHICLE.md), "On the console"); + exits. Not yet run on a console. |
 | `nfsu_switch_vehicle_nro` | `nfsu_switch_vehicle.nro`, `nfsu_switch_vehicle.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_vehicle`. |
+| `nfsu_switch_drive` | `nfsu_switch_drive.elf` | The driving controls and chase camera of issue #59: replays the built-in demonstration through `nfsu_drive_session` and prints the stream hash and whether it is the one pinned on the desktop, then drives the same session live from the pad on the text console - speed, gear, inputs and camera as numbers, no picture yet; - puts the car back at the start and + exits ([`CONTROLS_CAMERA.md`](CONTROLS_CAMERA.md)). Not yet run on a console. |
+| `nfsu_switch_drive_nro` | `nfsu_switch_drive.nro`, `nfsu_switch_drive.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_drive`. |
 | `nfsu_switch_vehicle_track` | `nfsu_switch_vehicle_track.elf` | The car on the track of issue #60: runs the thirteen proving-ground scenarios through `nfsu_vehicle_track` and, when `sdmc:/nfsu/Tracks/TRACKB1003.lzc` is on the card, the six circuit scenarios, and prints each telemetry hash and whether it is the one pinned on the desktop ([`VEHICLE_TRACK.md`](VEHICLE_TRACK.md), "On the console"); + exits. Not yet run on a console. |
 | `nfsu_switch_vehicle_track_nro` | `nfsu_switch_vehicle_track.nro`, `nfsu_switch_vehicle_track.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_vehicle_track`. |
 
@@ -65,7 +67,10 @@ which `cmake/vehicle_track_libraries.cmake` declares for both configures
 and `nfsu_switch_vehicle_track` links (issue #60); and, for
 `nfsu_switch_assets`, the asset manifest and check `nfsu_assets` and the
 console's filesystem service `nfsu_posix_file_system`
-(`cmake/asset_libraries.cmake`).
+(`cmake/asset_libraries.cmake`); and the driving controls, the chase camera
+and the drive session of issue #59, `nfsu_drive_controls`,
+`nfsu_chase_camera` and `nfsu_drive_session` (`cmake/drive_libraries.cmake`),
+which `nfsu_switch_drive` links.
 
 `nfsu_switch_app` links libnx, which devkitPro's platform file adds to every
 link, and nothing else. The original minimal and CPU car applications load
@@ -82,6 +87,8 @@ runs on the build machine, not on a console:
 | `nfsu_switch_deko3d_nro` | The GPU application's AArch64 ELF, NRO and NACP title, then its bounded RomFS section containing the exact bytes of every checked shader stage. |
 | `nfsu_switch_compare_nro` | The comparison application's AArch64 ELF, NRO and NACP title, and its bounded RomFS with the exact checked offline shader stage bytes. |
 | `nfsu_switch_vehicle_nro` | The same checks for `nfsu_switch_vehicle.nro`, whose NACP is titled `nfsu_switch_vehicle`. |
+| `nfsu_switch_drive_fma_census` | The same census over `nfsu_drive_controls`, `nfsu_chase_camera` and `nfsu_drive_session`, the precondition of the demonstration's pinned stream hash ([`CONTROLS_CAMERA.md`](CONTROLS_CAMERA.md)). |
+| `nfsu_switch_drive_nro` | The NRO checks for `nfsu_switch_drive.nro`, whose NACP is titled `nfsu_switch_drive`. |
 | `nfsu_switch_vehicle_fma_census` | `nfsu_vehicle`'s console objects, disassembled with the toolchain's `objdump`, hold no `fmadd`, `fmsub`, `fnmadd`, `fnmsub`, `fmla` or `fmls`, and do hold `fmul`. This tree cannot run AArch64 code, so it asserts that precondition of the pinned telemetry hash rather than the hash. |
 | `nfsu_switch_vehicle_track_nro` | The same checks for `nfsu_switch_vehicle_track.nro`, whose NACP is titled `nfsu_switch_vehicle_track`. |
 | `nfsu_switch_vehicle_track_fma_census` | The same census over `nfsu_vehicle_track`'s and `nfsu_track_contact`'s console objects ([`VEHICLE_TRACK.md`](VEHICLE_TRACK.md), "Determinism"). |
