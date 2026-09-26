@@ -99,6 +99,7 @@ void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pa
         require(bool(in) && replay.load(text,error), "bundled replay: "+error);
     }
     RaceGpuScene scene; Progress progress(screen,pad);
+    const auto heap_before_load = mallinfo();
     const auto load_start = armGetSystemTick();
     require(scene.load(posix_file_system(), root, error, &progress), error);
     screen.show({"ASSETS PASS. Preparing event 1, stock 240SX and race course..."});
@@ -107,6 +108,7 @@ void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pa
     require(persistent <= kPersistentBudgetPlaceholder, "race persistent payload exceeds 64 MiB");
     RaceGpuFrame frame; require(scene.frame(race.session(),frame,error),error);
     const double load_ms = ms(armGetSystemTick()-load_start);
+    const auto heap_after_load = mallinfo();
     screen.show({"ASSETS PASS. Uploading track and car to deko3d..."});
     const auto upload_start = armGetSystemTick();
     DekoRenderer renderer;
@@ -181,7 +183,10 @@ void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pa
             race.resident_count(),(unsigned long long)scene.track.streaming_bytes,(unsigned long long)persistent));
         lines.push_back(format("GPU blocks %llu / 268435456 | uniforms 1048320 / 1048576 | resources %zu",
             (unsigned long long)renderer.gpu_bytes(),frame.commands.uploads.resources.size()));
-        lines.push_back(format("MALLOC in-use %zu | allocator arena %zu (current sample; loader peak unmeasured)",heap.uordblks,heap.arena));
+        lines.push_back(format("MALLOC in-use: before load %zu | after load %zu | now %zu bytes",
+            heap_before_load.uordblks,heap_after_load.uordblks,heap.uordblks));
+        lines.push_back(format("MALLOC arena: before load %zu | after load %zu | now %zu bytes (extent, not live peak)",
+            heap_before_load.arena,heap_after_load.arena,heap.arena));
         if (replay_mode) {
             const char* verdict = finished ? (replay.exhausted() && race.matches_event1_replay()?"EQUAL":"DIFFERENT") : "RUNNING";
             lines.push_back(std::string("REPLAY ")+verdict+" | state-sha256 "+race.sequence_hash());

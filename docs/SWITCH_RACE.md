@@ -88,7 +88,9 @@ capacity refusal and mismatched cameras. The retail run checks every step
 hash and the result, uploads/retires the combined table through the neutral
 ledger, and validates thirteen selected race views. `--sample-draws` also
 checks one view per second; `--full-draws` checks every tick's draw commands.
-No desktop trace is described as console execution evidence.
+The Release retail check sampled 814 views across both laps, with at most
+1824 combined draws; all contained the car and visible track. No desktop
+trace is described as console execution evidence.
 
 ## Drawing, residency and memory
 
@@ -136,8 +138,13 @@ rule and remain until the scene closes.
 These are payload plans, not a claim that all C++ allocations use offset
 arenas. Scenery metadata, strings, capacity slack, command metadata and
 loading scratch use the ordinary allocator. The panel separately reports
-`mallinfo().uordblks` (currently allocated malloc space) and `.arena`
-(allocator arena), plus actual deko3d GPU block bytes. They may overlap;
+`mallinfo().uordblks` (allocated malloc space) and `.arena` (allocator
+extent) before loading, after preparing the track/car/course and initial
+commands, and on every displayed frame. The after-load sample precedes GPU
+upload; the current sample includes renderer/readback allocations. Compare
+these samples to the baseline to measure retained scene cost. Arena extent
+is not peak live memory: transient loader live-allocation peaks remain
+unmeasured. Actual deko3d GPU block bytes are reported too. They may overlap;
 do not add them. In particular, #198 photo 4378's `svcGetInfo` process-used
 number reported kernel process memory usage, not allocator live blocks.
 Those values alone do not establish scene occupancy or free heap. Current malloc
