@@ -394,6 +394,10 @@ barriers, which a hand-drawn line need not.
 
 ## `nfsu_probe track-stream-path`
 
+The opt-in `--gpu-textures` path keeps native DXT blocks, prints a CPU/GPU
+budget line for every step and refuses CPU frame output. See
+[TRACK_GPU_TEXTURES.md](TRACK_GPU_TEXTURES.md). The default pins below are unchanged.
+
 ```text
 nfsu_probe track-stream-path <STREAM.BUN> <TRACKB####.lzc> <track-number>
     (--path <FILE> | --hand-path 1003) [--speed <units/s>]

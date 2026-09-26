@@ -1114,7 +1114,7 @@ bool track_stream_section_costs(
                 source_owner[texture.source] < costs.size()) {
                 TrackStreamSectionCost& cost = costs[source_owner[texture.source]];
                 ++cost.retained_textures;
-                cost.retained_texture_bytes += texture.rgba.size();
+                cost.retained_texture_bytes += texture.payload().size();
             }
         }
     } catch (const std::bad_alloc&) {

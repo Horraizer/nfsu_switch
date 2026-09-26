@@ -20,7 +20,9 @@ struct GeometryReport;
 // source/pack/record provenance is carried as opaque metadata. See
 // docs/RENDERER.md.
 
-// Decoded top level of one pack texture, rows top to bottom.
+enum class RenderTextureStorage { rgba8, dxt1, dxt3 };
+
+// Top level of one pack texture. Compressed blocks are opt-in for GPU use.
 struct RenderTexture {
     // Info +36 of the record.
     std::uint32_t hash = 0;
@@ -34,6 +36,11 @@ struct RenderTexture {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::vector<unsigned char> rgba;
+    RenderTextureStorage storage = RenderTextureStorage::rgba8;
+    std::vector<unsigned char> blocks;
+    const std::vector<unsigned char>& payload() const noexcept {
+        return storage == RenderTextureStorage::rgba8 ? rgba : blocks;
+    }
     bool valid = false;
     std::string problem;
     // Provenance: caller source index, pack index within that source and
@@ -60,8 +67,8 @@ struct RenderTexture {
 
     // True if value is hash or one of the first claim_count claims.
     bool claims_hash(std::uint32_t value) const noexcept;
-    // True if valid, width and height are positive and rgba holds exactly
-    // width * height * 4 bytes.
+    // True if valid and exactly one payload holds the expected top level.
+    // DXT rows contain ceil(width / 4) blocks, with ceil(height / 4) rows.
     bool usable() const noexcept;
 };
 
@@ -235,7 +242,7 @@ struct SceneLimits {
     std::uint64_t max_triangles = 1U << 22;
     // Triangles over all drawable ranges; ranges may overlap.
     std::uint64_t max_draw_triangles = 1U << 24;
-    // RGBA8 bytes of the textures copied into the scene.
+    // Payload bytes (RGBA8 or native DXT) of the textures copied into the scene.
     std::uint64_t max_texture_bytes = 128ULL * 1024ULL * 1024ULL;
     // Geometry sources a scene may be built from. The single-source
     // profiles always use one.

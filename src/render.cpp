@@ -1176,6 +1176,12 @@ bool render_scene(
     // Everything the loop below indexes is checked here, before the frame
     // is allocated: mesh and texture handles, drawable ranges, texture
     // sizes and the id range.
+    for (const auto& texture : scene.textures) {
+        if (texture.storage != RenderTextureStorage::rgba8) {
+            error = "CPU rendering requires RGBA8 textures; GPU blocks are upload-only";
+            return false;
+        }
+    }
     if (!validate_prepared_scene(scene, error)) {
         error = "invalid prepared scene: " + error;
         return false;

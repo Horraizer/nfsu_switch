@@ -148,6 +148,16 @@ int main() {
     check(copy.row_pitch_bytes <= 52 &&
           std::memcmp(staged.data() + copy.row_pitch_bytes, pixels.data() + 12, 12) == 0,
           "copy engine reads second padded row intact");
+    for (const auto format : {TextureUploadFormat::dxt1, TextureUploadFormat::dxt3}) {
+        auto native = r;
+        native.bytes = format == TextureUploadFormat::dxt1 ? 32 : 64;
+        check(check_texture_upload_format(format, 5, 7, native.bytes, native.texture, error),
+              "partial DXT edge blocks are accepted");
+        check(plan_texture_copy(native, copy, error) && copy.row_pitch_bytes == 32 &&
+              copy.staging_bytes == 64, "DXT copy counts block rows, not pixel rows");
+        native.bytes -= 1;
+        check(!plan_texture_copy(native, copy, error), "truncated DXT block is refused");
+    }
     r.texture.row_bytes = 1;
     copy.row_pitch_bytes = 99;
     check(!plan_texture_copy(r, copy, error) && copy.row_pitch_bytes == 0, "copy refusal resets plan");

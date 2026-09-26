@@ -4,7 +4,7 @@
 
 namespace nfsu {
 
-// SDK-free fields for one depth-1 RGBA8 buffer-to-image copy. Both pitch
+// SDK-free fields for one depth-1 RGBA8/BC1/BC2 buffer-to-image copy. Both pitch
 // and layer stride are BYTES, never texels or rows. layer_stride_bytes is
 // zero because this executor copies no second layer. Padding is optional
 // for deko3d's copy engine; this executor retains 32-byte padded rows.

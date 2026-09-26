@@ -124,8 +124,14 @@ bool RenderTexture::claims_hash(std::uint32_t value) const noexcept {
 bool RenderTexture::usable() const noexcept {
     // Both factors are below 2^32, so pixels cannot overflow.
     const std::uint64_t pixels = std::uint64_t{width} * height;
-    return valid && pixels > 0 && pixels <= UINT64_MAX / 4U &&
-           std::uint64_t{rgba.size()} == pixels * 4U;
+    if (!valid || !width || !height) return false;
+    if (storage == RenderTextureStorage::rgba8)
+        return blocks.empty() && pixels <= UINT64_MAX / 4U && rgba.size() == pixels * 4U;
+    if (storage != RenderTextureStorage::dxt1 && storage != RenderTextureStorage::dxt3)
+        return false;
+    const auto count = ((std::uint64_t{width} + 3) / 4) * ((std::uint64_t{height} + 3) / 4);
+    const unsigned stride = storage == RenderTextureStorage::dxt1 ? 8 : 16;
+    return rgba.empty() && count <= UINT64_MAX / stride && blocks.size() == count * stride;
 }
 
 bool render_alpha_test_enabled(std::uint8_t alpha_test_mode) noexcept {
@@ -570,7 +576,7 @@ bool prepare_scene_meshes(
                     const RenderTexture& texture = textures.textures[binding.texture_index];
                     auto found = handles.find(binding.texture_index);
                     if (found == handles.end()) {
-                        const std::uint64_t bytes = texture.rgba.size();
+                        const std::uint64_t bytes = texture.payload().size();
                         if (!add_within(texture_bytes, bytes, limits.max_texture_bytes,
                                         texture_bytes)) {
                             error = "prepared textures would exceed " +
