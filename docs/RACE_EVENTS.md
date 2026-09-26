@@ -226,7 +226,8 @@ two words a track number and a 0 or 1 equal to one of its own event's
 (track, direction) pairs.
 
 What reverse does to the route is not traced: 0x004435E0 and 0x004430B0
-were not read.
+were not read. [`RACE_ROUTE.md`](RACE_ROUTE.md) has since traced
+0x004435E0 and the reverse measure of the track path.
 
 ### Not decoded
 

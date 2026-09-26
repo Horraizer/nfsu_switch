@@ -69,6 +69,7 @@ build/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc 904.24 -94.76
 build/nfsu_probe car-placement X:/Games/NFSU/Global/GLOBALB.BUN 240SX
 build/nfsu_probe race-events X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/FrontEnd/FrontB.lzc
 build/nfsu_probe track-whole X:/Games/NFSU/Tracks/STREAML1RA.BUN X:/Games/NFSU/Tracks/TRACKB1003.lzc 1003 --texture X:/Games/NFSU/Tracks/TEX1003TRACK.BIN --texture X:/Games/NFSU/Global/INGAMEB.BUN --texture X:/Games/NFSU/Global/GLOBALB.BUN
+build/nfsu_probe race-route X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/FrontEnd/FrontB.lzc X:/Games/NFSU/Tracks/TRACKB1003.lzc 1 --drive forward
 build/nfsu_probe track-stream-path X:/Games/NFSU/Tracks/STREAML1RA.BUN X:/Games/NFSU/Tracks/TRACKB1003.lzc 1003 --hand-path 1003 --texture X:/Games/NFSU/Tracks/TEX1003TRACK.BIN --texture X:/Games/NFSU/Global/INGAMEB.BUN --texture X:/Games/NFSU/Global/GLOBALB.BUN
 build/nfsu_probe part-markers X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN exhaust
 build/nfsu_probe body-skin-inputs 240SX --source car-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN --source car-vinyls X:/Games/NFSU/Cars/240SX/VINYLS.BIN --source other X:/Games/NFSU/Cars/TEXTURES.BIN --target-texture DUMMY_SKIN1 --vinyl 0 TRIBAL5 16 no-remap --doorline plain --base 200 30 30 128 --assemble
@@ -153,6 +154,23 @@ issue #52 for the desktop and for the Switch arena plan. `--set zones` and
 `--set stream` load the two bounds the rule sits inside, and `--out` draws
 the whole track with the CPU reference renderer and never replaces a file.
 See `docs/TRACK_WHOLE.md`.
+`race-route` takes the same two tables, the `TRACKB####.lzc` bundle the
+event's first race loads and an event number, and lists that race's route:
+its lap count and direction, the track path of chunk `0x80034147` with every
+node's distance and percentage, the position markers of `0x00034146`, the
+zones, and the start line, split boundaries and finish line as percentages
+of the path, each projected from its marker. With `--path <FILE>` (one
+position per line, two numbers) or `--drive forward|backward` (optionally
+`--skip <node> <node>`, a one-step jump) it replays the positions one fixed
+step each and prints every boundary crossed forward or backward, every
+boundary passed but not counted, each completed lap, the finish, the
+wrong-way flag, each reset zone entered and each time the car goes more
+than 5000 from the path. It exits 3 if a table or the bundle fails
+validation, the bundle is not the one the event loads, the path is open
+(a point-to-point track, not implemented) or its length, scale and offset
+do not measure its own loop as 100 percent, or a path file line is
+malformed. See
+`docs/RACE_ROUTE.md`.
 `track-stream-path` runs the section streamer of `speed.exe` along a path:
 the zone a car's look-ahead picks, the request rebuilt when that zone
 changes, and the loads and releases that keep the requested sections within

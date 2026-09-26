@@ -171,15 +171,24 @@ if(NFSU_BUILD_TESTS)
         PROPERTIES TIMEOUT 60)
 endif()
 
-# The section streamer of issue #157, which cmake/residency_libraries.cmake
-# declares for both configures. Nothing on the console links it yet; building
-# it here is what lets this tree check that it compiles on the console to the
-# same float arithmetic as on the desktop: its object holds no fused
+# The race route of issue #61 and the section streamer of issue #157, which
+# cmake/race_libraries.cmake and cmake/residency_libraries.cmake declare for
+# both configures. Nothing on the console links either yet; building them
+# here is what lets the tree check the precondition #159 rests on, and the
+# equivalent for the streamer, that each compiles on the console to the same
+# float arithmetic as on the desktop: their objects hold no fused
 # multiply-add. Appended as one block so that nothing above is reordered.
 if(NFSU_BUILD_TESTS)
     if(NOT CMAKE_OBJDUMP)
         message(FATAL_ERROR "no objdump was found for the Switch toolchain")
     endif()
+    add_test(NAME nfsu_switch_race_route_fma_census
+        COMMAND ${CMAKE_COMMAND}
+                -DOBJDUMP=${CMAKE_OBJDUMP}
+                "-DOBJECTS=$<TARGET_OBJECTS:nfsu_race_route>;$<TARGET_OBJECTS:nfsu_track_zones>"
+                -DLABEL=nfsu_race_route
+                -P ${PROJECT_SOURCE_DIR}/tests/race_route_fma_census.cmake)
+    set_tests_properties(nfsu_switch_race_route_fma_census PROPERTIES TIMEOUT 60)
     add_test(NAME nfsu_switch_track_residency_fma_census
         COMMAND ${CMAKE_COMMAND}
                 -DOBJDUMP=${CMAKE_OBJDUMP}
