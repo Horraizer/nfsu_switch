@@ -13,7 +13,7 @@ installation for `X:/Games/NFSU`. Outputs must be new paths outside that tree.
 
 ```text
 build-release/nfsu_race --root X:/Games/NFSU --input tests/recordings/event1.txt
-build-release/nfsu_race --root X:/Games/NFSU --input tests/recordings/event1.txt --out build-race-frames --frames 180,600,6000,22000,40000,43564
+build-release/nfsu_race --root X:/Games/NFSU --input tests/recordings/event1.txt --out build-race-frames --frames 180,600,6000,11344,12459,13128,24300,35396,36510,37177,48336
 build-release/nfsu_race --root X:/Games/NFSU --live
 ```
 
@@ -21,7 +21,8 @@ The replay exits 0 only after normal completion, with all requested frames
 written and exactly all recorded input consumed. Missing input, trailing
 input, a frame after the finish, a simulation error, an existing output, or
 the 120000-tick ceiling is an error (exit 1). `--out` also writes `states.txt`:
-one completed 60 Hz tick number and its SHA-256 per line. Without `--out`,
+one completed 60 Hz tick number and its SHA-256 per line, plus
+`trajectory.csv` with both 120 Hz physics samples (described below). Without `--out`,
 the replay writes no file. Images are 640x360, top-first RGBA TGA with the HUD.
 
 The Windows live backend uses user32/gdi32 and displays the same CPU frame.
@@ -104,26 +105,51 @@ changes the car pose, route progress, timing state, collision, or reset
 state. It connects a neutral pad through the 163 countdown ticks, then
 chooses an input every six ticks (10 Hz):
 
-- Look ahead `8 + 0.5 * horizontal_speed` metres, approximating parameter
-  distance with the current spline derivative's horizontal magnitude.
-- Use the signed lateral offset of that target relative to the car's
+- Look ahead a fixed 12 metres, approximating parameter distance with the
+  current spline derivative's horizontal magnitude. Keeping that distance
+  while braking avoids tightening the pursuit target into a wall at low speed.
+- For event 1, shift the target laterally using the authored lane-offset
+  table in `RaceRouteDriver::sample`. It is a piecewise-linear function of
+  the target's wrapped spline parameter, not elapsed time or lap number.
+  Offsets are metres along the target tangent's left normal. They were
+  chosen from the decoded collision map and verified by the full trajectory:
+
+  | Parameter range | Lane choice |
+  | --- | --- |
+  | 0.7-5.0 | Ramp right, up to 12 m, around the split road and southern median; return to zero. |
+  | 7.5-8.8 | Up to 6 m left through the diagonal road's narrowing. |
+  | 12.1-13.5 | Ramp right to 10 m at 12.3 and 15 m at 12.5, then return; the spline crosses the left barrier here. |
+  | 21.5-24.5 | Ramp 12 m left of the long median, then reduce to 4 m before the corner. |
+  | 24.5-29.3 | Hold 4 m through the corner, reach 12 m at 25.8, stay east of the trees and inside the diagonal barrier, taper from 28.9 to zero at 29.3. |
+
+  Elsewhere the offset is zero. The table closes continuously at 30/0.
+  The CLI explicitly selects `event1_forward`; synthetic courses use
+  `progress_spline`. This is an event-specific authored driving line, not
+  a general obstacle planner or recovered retail AI.
+- Compare normalized spline tangents now and approximately 30 m ahead.
+  If their Euclidean difference is `turn`, target speed is
+  `max(6, 10 / (1 + 2 * turn))` m/s. This reduces speed before corners.
+  Throttle switches on below target minus 0.5 m/s and off above target plus
+  0.5 m/s; brake above target plus 0.7 m/s, replacing throttle. The pinned
+  input brakes for 5208 ticks; brake and throttle never occur together.
+- Use the signed lateral offset of the target relative to the car's
   quaternion forward axis, divided by target distance, with gain 1.8 and a
   clamp at one. Map to raw stick magnitude `27000 * magnitude + 3000`, then
   quantize toward zero in units of 256. Positive stick turns right.
-- Cruise with throttle hysteresis: on below 9.5 m/s, off above 10.5 m/s;
-  brake above 12 m/s. Keep the last decision for six ticks.
+  Keep the last decision for six ticks.
 
-The spline briefly traverses a reset zone and is not itself a guaranteed
-driving line. This finite look-ahead trajectory completes both laps on the
-collision surface without entering a reset: zero resets in the pinned run.
-It is a conservative completion driver, not a racing AI or a retail driving
-model change.
+The original round-1 recording was not clean: review 4300 found the lap-1
+rollover at steps 11411-11535 and the lap-2 tree wedge at 33175-33700.
+Zero resets did not prove otherwise: the sliding upside-down car stayed
+above the recovery rule's 2 m/s threshold. The new recording replaces it;
+physics, collision and reset rules are unchanged. The progress spline is
+only a progress reference and is not itself a guaranteed driving line.
 
-`tests/recordings/event1.txt` has 4054 run-length records, 45391 bytes, LF
+`tests/recordings/event1.txt` has 4895 run-length records, 54142 bytes, LF
 line endings pinned by `.gitattributes`, and SHA-256:
 
 ```text
-0308B3B94954F7C47DA6522151D8FB90E2D1F954D65B628C5F967263A834BC82
+CED29AB7D90F0861AFE2C0B604D0EDDFB4F769BEB067944F8E9C7DB0B892E0AC
 ```
 
 Its ASCII header is `NFSU_RACE_INPUT 1`; each following row is
@@ -137,11 +163,11 @@ rejects malformed fields, unknown button bits, non-ASCII and extra fields.
 Fresh Debug and Release runs on Windows x64, MinGW GCC 13.2.0, match:
 
 ```text
-event 1 track 1003 laps 2 outcome finished steps 43564 resets 0
-lap 1 ticks 1497480 time 6:14.37
-lap 2 ticks 1410360 time 5:52.59
-total ticks 2907840 time 12:06.96
-state-sha256 1FFF1EB3932B6044C81A9D5671FE6D3D45B7D82ACB8B511D2E1441519E127F0D
+event 1 track 1003 laps 2 outcome finished steps 48336 resets 0
+lap 1 ticks 1616400 time 6:44.10
+lap 2 ticks 1611200 time 6:42.80
+total ticks 3227600 time 13:26.90
+state-sha256 79776F6DD3FC2727C99D3F6AD69A16E623BDEEB5CFFD2261458A15FC7F5B3BF9
 stream loads 78 releases 0 bytes-read 36471524
 ```
 
@@ -159,11 +185,11 @@ transition lines, each with LF. Each subsequent tick contributes its raw
 - That tick's `track_residency_step_line` plus LF, followed by ascending
   resident table indices as little-endian uint32 values.
 
-The 43564 individual hashes are identical line for line between builds.
-Their `states.txt` is 3081938 bytes and hashes to:
+The 48336 individual hashes are identical line for line between builds.
+Their `states.txt` is 3420750 bytes and hashes to:
 
 ```text
-440C844BC13D8C502735120708C590B3CB7237C17254EA8A15F52CA3F5E9A6A4
+E4D4D6E955D59F7FF11C3318BC455D08B7903CA46BBDE8E1FC3F2AC32AEA54E5
 ```
 
 The session compiles with floating-point contraction and fast-math disabled.
@@ -178,23 +204,55 @@ The step is the completed 1-based controller tick.
 
 | Step | TGA SHA-256 |
 | --- | --- |
-| 180 | `31FFD8366842E6B051112CB103784A875CED47AFA4EA36A1370FC9BC13A900C2` |
-| 600 | `C097A3DFF189EA00B6EB43FC71EAFBD581553D2F7A4BFE80E1B2FB502204AD73` |
-| 6000 | `97F1458970990349A44C50225C5239A2E20CB33327CFEE5D988EF8DC3A3B6274` |
-| 22000 | `A37F1A53EFDB8E74B85AA0F298D4E8C0FD74B1F1C382B0F4A5D00961F9CCA9C4` |
-| 40000 | `2476F4069F955DBCAC084CB575DB491317B1700E29106E7418A7CC83190B80BB` |
-| 43564 | `2BF5E5AC93E2A6BB6D14FCF93DAF490C0D178B1CE5ECC49FF62432C08AD7ACCC` |
+| 180 | `5D73DFD7BCC18B8083D3AB665598536FF2E0EB03D1E88113FD1B6279464B7778` |
+| 600 | `AC75E21E5D22A1178A44D97371B724174D876023D4F8FA545122C2E227FB91AE` |
+| 6000 | `54DA8171ECBF48CAE088915353DD2B252085AD84A028CDA7959747D57F82A90F` |
+| 11344 | `74F748B23DC2E5043F7D425EE7E34C2D7BF6EDA91DBA28D881A706DF6FCF817E` |
+| 12459 | `40D98F3157FA3DC204A2D58C0E5B6127FE0DA568392790DDF872215B82C7B5D0` |
+| 13128 | `C164D894FCFFF34C491D6DC2B9FA8E9AB136682BA5C16DA7D0FC79EBAB0AC492` |
+| 24300 | `778CD48EE6A442D63DA98225B5F380B3C96515952E8940B0EB517F3818927F35` |
+| 35396 | `6AED610D9CD2DC552A617D860D914BE3D135932D7FD1EE45918A0B4B12CEF903` |
+| 36510 | `E1E822E4A1543E6B04F037D8116DE28E861EE80BE3095E32D4ED8E5CEFFD8672` |
+| 37177 | `DB8931A3B26F9C0B580AF8D0B47F37411D4CEBB0D14D8D00CF5D9147307FF852` |
+| 48336 | `41CB803526F6300E6566F746A9513AA8C7C9E2B9B7154EDBD9F0953694CE3C01` |
 
-Inspected frames 6000, 22000 and 43564: the chase view follows the blue 240SX
-on the city road; at 6000 the car follows yellow road markings between
-buildings, at 22000 it approaches the broad junction near the lap boundary,
-and at 43564 it is just past the line with LAP 2 / 2, LAST 5:52.59 and
-FINISHED 12:06.96. The car and road meet coherently. Opaque foliage and some
-unresolved checkered surfaces remain visible, especially at the junction
-and finish; these pins preserve the current CPU reference rendering.
+Inspected the corner (11344, 35396), tree median (12459, 36510) and former
+rollover barrier (13128, 37177) on both laps: the car follows the paved lane,
+upright and clear of the trees and barrier. Frame 24300 shows the second lap
+starting at CURRENT 0:00.19, LAST 6:44.10. Frame 48336 shows CURRENT and LAST
+6:42.80, FINISHED 13:26.90. Opaque foliage and unresolved checkered surfaces
+remain; these pins preserve the current CPU reference rendering.
+
+## Continuous trajectory audit
+
+`--out` writes `trajectory.csv` in the classic locale, with 17 significant
+digits, LF and columns `tick,physics,lap,x,y,z,speed,up,contacts,road_wheels,resets`.
+`physics` is the 1-based 120 Hz step; `tick` is the enclosing 60 Hz controller
+step. Countdown does not step physics and emits no sample. Position,
+horizontal speed, orientation and body-contact counts come from the existing
+post-collision telemetry; `up = 1 - 2*(qx*qx + qy*qy)`. Road-wheel counts use
+that physics step's wheel probes. No samples are filtered out after GO.
+The CSV has 96346 samples, 11120490 bytes and SHA-256:
+
+```text
+8203932E99CDA190CEE81C6171705224AC7CC4EE910246805350605304F1D439
+```
+
+The regenerated run has zero body-contact samples, zero resets, no inversion
+or tilt past 45 degrees, and no sample with all four wheels unsupported.
+Minimum up is 0.9806514207882611 (11.29 degrees from vertical). After tick
+600, minimum horizontal speed is 5.211024131499977 m/s: neither median stall
+remains. Four road-wheel probes hit in 95854 samples, three in 232, two in
+146 and one in 114; this is not a claim that every wheel remains grounded.
+The checker verifies the CSV pin and also requires complete ordered pairs,
+zero contacts/resets, up >= 0.98, at least one road wheel, and speed >= 5 m/s
+after the launch allowance through tick 600. Thus merely finishing with zero
+resets cannot pass this audit again. The fixed images additionally show the
+lane choice at the previously troublesome locations on both laps.
 
 The reproducible check uses fresh directories, verifies process success,
-result lines, every state row, every frame file and the printed hashes, and
+result lines, every state row, every frame file, the printed hashes and the
+continuous trajectory checks, and
 optionally regenerates the recording independently in each build:
 
 ```text
@@ -207,24 +265,24 @@ also run from the actual non-ASCII-named owner workspace.
 
 ## Desktop cost and gates
 
-Intel Core i7-12700K, Windows x64, Release, six requested renders over the
+Intel Core i7-12700K, Windows x64, Release, eleven requested renders over the
 full replay; warm local files. Timings are observations, never hash inputs.
 The program reports count, total, mean and maximum for every stage.
 
 | Stage | Calls | Mean ms/call | Maximum ms |
 | --- | ---: | ---: | ---: |
-| Controls, two physics steps, route, timing, camera, record encoding | 43564 | 0.1155 | 0.848 |
-| Residency decision | 43564 | 0.0016 | 0.054 |
-| Hashing and per-step text output | 43564 | 0.0111 | 0.209 |
-| Stream section read/parse | 39 | 0.814 | 10.23 |
-| Scene merge, texture decode, draw list | 1 | 92.95 | 92.95 |
-| CPU track/car render, depth composition, HUD | 6 | 102.17 | 115.61 |
+| Controls, two physics steps, route, timing, camera, record encoding | 48336 | 0.1276 | 1.079 |
+| Residency decision | 48336 | 0.0019 | 0.095 |
+| Hashing and per-step text output | 48336 | 0.0118 | 0.192 |
+| Stream section read/parse | 39 | 0.930 | 11.34 |
+| Scene merge, texture decode, draw list | 1 | 107.64 | 107.64 |
+| CPU track/car render, depth composition, HUD | 11 | 111.44 | 132.77 |
 
 Stream I/O and scene preparation above are startup costs for this run.
-TGA writing, initial collision/car loading and window blitting are outside
+TGA/trajectory writing, initial collision/car loading and window blitting are outside
 these stage measurements. The renderer dominates: this is a working desktop
 integration, with no claim of 60 Hz rendering on this CPU. The four-frame
-hidden live smoke also completed at roughly 104 ms per render.
+hidden live smoke also completed; its timing depends on concurrent load.
 
 Validation: full desktop Debug and Release CTest, 70/70 each; full Switch
 Release build and CTest, 15/15; no build warnings. This uses `origin/main`
@@ -233,9 +291,14 @@ which includes `nfsu_race_session`. New tests cover the pad
 recording format, countdown holding gravity, connected-neutral input before
 throttle, two physics steps per tick, deterministic integrated state, reset
 and camera edges, camera contact, depth composition and CLI output guards.
+Round 2 additionally tests unknown button bits, a refused camera segment,
+an actual two-lap synthetic drive with lap/current/last/finish HUD checks,
+and refusal to advance after finish without changing state. The HUD and
+live clock initialization now handle failure returns.
 The existing residency cases additionally compare incremental and batch
 transitions. Retail verification regenerated the exact recording in both
-builds and replayed it to the same result, states and six frames.
+builds and replayed it to the same result, states, eleven frames and complete
+120 Hz trajectory.
 
 The SDK build used a writable `TMPDIR`; its default sandbox `/tmp` was not
 writable. Full desktop CTest was run outside the restricted sandbox because

@@ -30,7 +30,8 @@ bool run_race_window(const std::function<void(const GamepadFrame&)>& tick,
     if (!window) { UnregisterClassA(cls.lpszClassName,instance); error="cannot create race window"; return false; }
     if (!smoke) ShowWindow(window,SW_SHOW);
     try {
-        RaceStepClock clock; make_race_step_clock(60,4,clock,error);
+        RaceStepClock clock;
+        if (!make_race_step_clock(60,4,clock,error)) throw std::runtime_error(error);
         std::uint64_t ticks=0, frames=0;
         while (IsWindow(window)) {
             MSG msg;

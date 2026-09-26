@@ -186,8 +186,41 @@ GamepadFrame RaceRouteDriver::sample(const RaceSession& session) {
         const auto& spline = session.course().route.spline;
         float derivative[3], target[3]; evaluate_track_path(spline,coord.parameter,1,derivative);
         const double norm = vehicle_sqrt(double(derivative[0])*derivative[0]+double(derivative[1])*derivative[1]);
-        const double v = speed(state), look = 8+v*0.5;
-        evaluate_track_path(spline,coord.parameter+static_cast<float>(look/std::max(norm,1.0)),0,target);
+        // Fixed look-ahead does not collapse when braking or accelerating.
+        const double v = speed(state);
+        const float parameter = coord.parameter + static_cast<float>(12/std::max(norm,1.0));
+        evaluate_track_path(spline,parameter,0,target);
+        if (line_ == RaceDrivingLine::event1_forward) {
+            // Authored lane offsets from the track-1003 collision map. The
+            // progress spline crosses medians and even runs outside barriers;
+            // it measures progress, not a drivable centre line. Positive is left.
+            // Linear ramps, including the 30->0 seam; metres, not pose changes.
+            constexpr double lanes[][2] = {
+                {0,0},{0.7,0},{1.15,-12},{1.5,-10},{2,-5},{2.5,-10},{4,-10},{5,0},
+                {7.5,0},{8.2,6},{8.5,6},{8.8,0},{9.5,0},{12.1,0},{12.3,-10},
+                {12.5,-15},{12.9,-10},{13.5,0},{21.5,0},{22,12},{23.5,12},
+                {24.5,4},{25.2,4},{25.8,12},{28.9,12},{29.3,0},{30,0}};
+            double p = parameter;
+            while (p >= 30) p -= 30;
+            double offset = 0;
+            for (std::size_t i = 1; i < sizeof(lanes)/sizeof(*lanes); ++i) {
+                if (p > lanes[i][0]) continue;
+                const double f = (p-lanes[i-1][0])/(lanes[i][0]-lanes[i-1][0]);
+                offset = lanes[i-1][1] + f*(lanes[i][1]-lanes[i-1][1]);
+                break;
+            }
+            float tangent[3]; evaluate_track_path(spline,parameter,1,tangent);
+            const double length = vehicle_sqrt(double(tangent[0])*tangent[0]+double(tangent[1])*tangent[1]);
+            target[0] -= static_cast<float>(offset*tangent[1]/std::max(length,1.0));
+            target[1] += static_cast<float>(offset*tangent[0]/std::max(length,1.0));
+        }
+        float preview[3];
+        evaluate_track_path(spline,coord.parameter+static_cast<float>(30/std::max(norm,1.0)),1,preview);
+        const double pn = vehicle_sqrt(double(preview[0])*preview[0]+double(preview[1])*preview[1]);
+        const double ux = derivative[0]/std::max(norm,1.0)-preview[0]/std::max(pn,1.0);
+        const double uy = derivative[1]/std::max(norm,1.0)-preview[1]/std::max(pn,1.0);
+        const double turn = vehicle_sqrt(ux*ux+uy*uy);
+        const double desired = std::max(6.0,10/(1+2*turn));
         const auto& q = state.orientation;
         const double fx = 1-2*(q.y*q.y+q.z*q.z), fy = 2*(q.x*q.y+q.w*q.z);
         const double dx = target[0]-state.position.x, dy = target[1]-state.position.y;
@@ -195,10 +228,10 @@ GamepadFrame RaceRouteDriver::sample(const RaceSession& session) {
         const double steer = std::clamp(-(fx*dy-fy*dx)/std::max(distance,1.0)*1.8,-1.0,1.0);
         int raw = steer == 0 ? 0 : static_cast<int>(steer*27000+(steer>0?3000:-3000));
         raw = (raw/256)*256;
-        if (v < 9.5) accelerating_ = true;
-        if (v > 10.5) accelerating_ = false;
+        if (v < desired-0.5) accelerating_ = true;
+        if (v > desired+0.5) accelerating_ = false;
         std::uint32_t buttons = accelerating_ ? gamepad_button_bit(GamepadButton::trigger_right) : 0;
-        if (v > 12) buttons |= gamepad_button_bit(GamepadButton::trigger_left);
+        if (v > desired+0.7) buttons = gamepad_button_bit(GamepadButton::trigger_left);
         held_ = race_input_frame({1,buttons,raw},session.timing().step);
     }
     held_.time_us = session.timing().step*1000000/60;
@@ -206,7 +239,9 @@ GamepadFrame RaceRouteDriver::sample(const RaceSession& session) {
 }
 
 std::vector<std::string> race_session_hud(const RaceSession& session) {
-    RaceHud hud; race_timing_hud(session.course().route,session.timing_config(),session.timing(),0,hud);
+    RaceHud hud;
+    if (!race_timing_hud(session.course().route,session.timing_config(),session.timing(),0,hud))
+        return {"RACE HUD UNAVAILABLE"};
     const auto& r = session.timing().racers[0];
     const int lap = std::min(hud.lap+1,hud.laps);
     const int current = hud.finished ? r.lap_ticks[r.highest_lap] :

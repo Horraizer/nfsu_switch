@@ -31,6 +31,7 @@ public:
     const ChaseCameraView& camera() const { return view_; }
     const VehicleSpec& spec() const { return spec_; }
     const VehicleTrackTelemetry& telemetry() const { return track_telemetry_[1]; }
+    const std::array<VehicleTrackTelemetry,2>& physics_telemetry() const { return track_telemetry_; }
     const std::vector<std::uint8_t>& record() const { return record_; }
     const VehicleTrackCourse& course() const { return course_; }
 private:
@@ -47,7 +48,7 @@ private:
     RaceTimingState timing_;
     std::vector<RaceTimingEvent> timing_events_;
     VehicleInput inputs_[2]{};
-    VehicleTrackTelemetry track_telemetry_[2]{};
+    std::array<VehicleTrackTelemetry,2> track_telemetry_{};
     std::vector<std::uint8_t> record_;
     bool started_ = false;
 };
@@ -64,13 +65,17 @@ std::string format_race_input(const std::vector<RaceInputRun>& runs);
 GamepadFrame race_input_frame(const RaceInputRun& run, std::uint64_t tick);
 void append_race_input(std::vector<RaceInputRun>& runs, const GamepadFrame& pad);
 
-// A conservative pure-pursuit driver of the recovered progress spline.
-// It changes controller values only: 10 m/s cruise, 10 Hz decisions and
-// quantized steering. It never places, advances or resets the car itself.
+enum class RaceDrivingLine { progress_spline, event1_forward };
+
+// Pure pursuit with curvature braking, 10 Hz decisions and quantized steering.
+// Event 1 selects authored lane offsets; other courses follow their spline.
+// This changes controller values only, never pose, progress or reset state.
 class RaceRouteDriver {
 public:
+    explicit RaceRouteDriver(RaceDrivingLine line = RaceDrivingLine::progress_spline) : line_(line) {}
     GamepadFrame sample(const RaceSession& session);
 private:
+    RaceDrivingLine line_;
     std::uint64_t ticks_ = 0;
     bool accelerating_ = true;
     GamepadFrame held_;

@@ -11,6 +11,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iomanip>
+#include <locale>
 #include <map>
 #include <memory>
 #include <set>
@@ -221,17 +223,31 @@ int run(int argc, char** argv) {
         sequence.update(line.data(),line.size());
     }
     RaceSession session(course); require(session.start(error),error);
-    RaceRouteDriver driver; std::vector<RaceInputRun> recording;
-    std::ofstream states;
+    RaceRouteDriver driver(RaceDrivingLine::event1_forward); std::vector<RaceInputRun> recording;
+    std::ofstream states, trajectory;
     if (!output.empty()) {
         require(fs::create_directory(output),"cannot create output directory");
         states.open(output/"states.txt",std::ios::binary); require(bool(states),"cannot create state hashes");
+        trajectory.open(output/"trajectory.csv",std::ios::binary);
+        require(bool(trajectory),"cannot create trajectory audit");
+        trajectory.imbue(std::locale::classic()); trajectory << std::setprecision(17);
+        trajectory << "tick,physics,lap,x,y,z,speed,up,contacts,road_wheels,resets\n";
     }
     Cost simulation,streaming,hashing;
     std::size_t run_index=0,run_tick=0; std::uint64_t resets=0;
     auto tick=[&](const GamepadFrame& pad) {
         auto begin=Clock::now(); require(session.advance(pad,error),error); simulation.add(begin);
         resets=session.telemetry().resets;
+        if (trajectory.is_open()) for (const auto& t : session.physics_telemetry()) {
+            if (!t.step) continue; // Countdown holds the pose without physics.
+            const auto& q=t.orientation;
+            const double up=1-2*(q.x*q.x+q.y*q.y);
+            const double v=vehicle_sqrt(t.velocity.x*t.velocity.x+t.velocity.y*t.velocity.y);
+            const auto wheels=std::count(t.wheel_surface.begin(),t.wheel_surface.end(),VehicleTrackSurface::road);
+            trajectory << session.timing().step << ',' << t.step << ',' << t.lap << ','
+                << t.position.x << ',' << t.position.y << ',' << t.position.z << ','
+                << v << ',' << up << ',' << t.contacts << ',' << wheels << ',' << t.resets << '\n';
+        }
         begin=Clock::now(); const auto& car=session.car();
         TrackResidencySample sample; sample.position[0]=float(car.position.x); sample.position[1]=float(car.position.y);
         sample.velocity[0]=float(car.velocity.x); sample.velocity[1]=float(car.velocity.y);
@@ -277,6 +293,7 @@ int run(int argc, char** argv) {
         if (!generate.empty()) write_text(generate,format_race_input(recording));
     }
     if (states.is_open()) { states.flush(); require(bool(states),"state hash write failed"); }
+    if (trajectory.is_open()) { trajectory.flush(); require(bool(trajectory),"trajectory write failed"); }
     const auto& result=session.timing().racers[0];
     std::cout << "event 1 track 1003 laps " << result.highest_lap << " outcome " << race_outcome_name(session.timing().outcome)
               << " steps " << session.timing().step << " resets " << resets << '\n';
