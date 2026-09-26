@@ -512,9 +512,10 @@ Switch" rests on the census and on the model's own console run
   dropped for the one root. No answer changes: every contact output of [`TRACK_COLLISION.md`](TRACK_COLLISION.md)'s
   retail acceptance, `nfsu_track_contact_tests`, and the other pins listed
   under "Nothing earlier moved" are byte for byte what `origin/main` gives.
-- **The census.** `nfsu_switch_vehicle_track_fma_census` disassembles
-  `nfsu_vehicle_track`'s and `nfsu_track_contact`'s console objects and
-  fails on any fused instruction. Recompiling each with the exact
+- **The census.** `nfsu_switch_fma_census` disassembles
+  every project console object, including `nfsu_vehicle_track` and
+  `nfsu_track_contact`, and fails on any fused instruction. The following
+  measurements preceded the project-wide rule. Recompiling each with the exact
   `build-switch` command, `-S` for `-c`:
 
   | Object | As configured: fused / fmul | `-ffp-contract=off -fno-fast-math` removed: fused / fmul |
@@ -523,14 +524,11 @@ Switch" rests on the census and on the model's own console run
   | `vehicle_track_course.o` | 0 / 35 | 21 / 14 |
   | `track_contact.o` | 0 / 81 | 43 / 38 |
 
-  The rest of the step is `nfsu_vehicle` and `nfsu_race_route` with
-  `nfsu_track_zones`, which have their own censuses, and the geometry
-  `nfsu_track`'s decoder builds once. That decoder has no contraction
-  option, and its object holds one fused instruction on this path - in
-  `parse_polygons`, the corner height `base + slot2 * (1/256)` - whose
-  product is an int16 times a power of two and so exact: fused or not, the
-  corner is the same float. Its other 19 are in issue #39's ray query,
-  which the step does not call.
+  The rest of the step and the geometry decoder now inherit the same
+  project-wide contraction rule and participate in the same whole-tree
+  census. The decoder previously held 20 fused instructions (one in
+  `parse_polygons`, 19 in the ray query); all are now unfused. See
+  [FLOATING_POINT.md](FLOATING_POINT.md) for current per-object counts.
 
 ## Cost
 

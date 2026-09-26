@@ -24,13 +24,13 @@
 # None reads a file, a clock or the environment, and none calls an operating
 # system: the caller supplies the frames, the record bytes and the world.
 #
-# Floating-point contraction is disabled on all three for the reason every
+# The project-wide rule disables contraction on all three for the reason every
 # library whose output is pinned disables it: the demonstration's hash is
 # pinned in docs/CONTROLS_CAMERA.md and must be the same bits on the desktop
 # and on the console, and devkitA64's GCC fuses multiply-adds at -O2 where
 # the desktop's x86-64 target has no FMA to fuse with. The Switch tree
 # disassembles their objects and fails on any fused instruction
-# (nfsu_switch_drive_fma_census).
+# (nfsu_switch_fma_census).
 add_library(nfsu_drive_controls
     src/drive_controls.cpp
 )
@@ -54,11 +54,6 @@ foreach(target IN ITEMS nfsu_drive_controls nfsu_chase_camera nfsu_drive_session
     )
     target_compile_features(${target} PUBLIC cxx_std_17)
     nfsu_enable_warnings(${target})
-    if(MSVC)
-        target_compile_options(${target} PRIVATE /fp:precise)
-    else()
-        target_compile_options(${target} PRIVATE -ffp-contract=off -fno-fast-math)
-    endif()
     # gnu++17 on the console, as for the car-path libraries; the comment at
     # the end of cmake/car_libraries.cmake says why it is named there.
     if(NINTENDO_SWITCH)

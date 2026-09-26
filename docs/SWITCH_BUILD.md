@@ -87,11 +87,10 @@ runs on the build machine, not on a console:
 | `nfsu_switch_deko3d_nro` | The GPU application's AArch64 ELF, NRO and NACP title, then its bounded RomFS section containing the exact bytes of every checked shader stage. |
 | `nfsu_switch_compare_nro` | The comparison application's AArch64 ELF, NRO and NACP title, and its bounded RomFS with the exact checked offline shader stage bytes. |
 | `nfsu_switch_vehicle_nro` | The same checks for `nfsu_switch_vehicle.nro`, whose NACP is titled `nfsu_switch_vehicle`. |
-| `nfsu_switch_drive_fma_census` | The same census over `nfsu_drive_controls`, `nfsu_chase_camera` and `nfsu_drive_session`, the precondition of the demonstration's pinned stream hash ([`CONTROLS_CAMERA.md`](CONTROLS_CAMERA.md)). |
+| `nfsu_switch_fma_census_guards` | Real AArch64 fast/off objects, each forbidden mnemonic, and invalid census inputs. |
+| `nfsu_switch_fma_census` | Every project object of every Switch library and executable, disassembled with the toolchain's `objdump`, holds no `fmadd`, `fmsub`, `fnmadd`, `fnmsub`, `fmla` or `fmls`, and the complete census includes `fmul`. See [FLOATING_POINT.md](FLOATING_POINT.md) for all per-object counts. |
 | `nfsu_switch_drive_nro` | The NRO checks for `nfsu_switch_drive.nro`, whose NACP is titled `nfsu_switch_drive`. |
-| `nfsu_switch_vehicle_fma_census` | `nfsu_vehicle`'s console objects, disassembled with the toolchain's `objdump`, hold no `fmadd`, `fmsub`, `fnmadd`, `fnmsub`, `fmla` or `fmls`, and do hold `fmul`. This tree cannot run AArch64 code, so it asserts that precondition of the pinned telemetry hash rather than the hash. |
 | `nfsu_switch_vehicle_track_nro` | The same checks for `nfsu_switch_vehicle_track.nro`, whose NACP is titled `nfsu_switch_vehicle_track`. |
-| `nfsu_switch_vehicle_track_fma_census` | The same census over `nfsu_vehicle_track`'s and `nfsu_track_contact`'s console objects ([`VEHICLE_TRACK.md`](VEHICLE_TRACK.md), "Determinism"). |
 
 The desktop programs, the other libraries and every test are not configured
 for the console: the top-level `CMakeLists.txt` includes
@@ -556,9 +555,11 @@ so contraction there was not expected to move this frame, but that was a
 simulation on another compiler, not the console, and nothing before issue #91
 pinned it there either.
 
-Issue #91 closed that gap: `cmake/car_libraries.cmake` now disables
-contraction on both targets, on both platforms, the same way the other car
-targets do. Recompiling `src/part_placement.cpp` with the exact
+Issue #91 closed that gap for those targets. Issue #175 folds that policy
+into `cmake/floating_point.cmake` for every project target in both configures;
+[the whole-tree census](FLOATING_POINT.md) also closes the two track objects
+that the individual library pins missed. Recompiling `src/part_placement.cpp`
+with the exact
 `build-switch` command from `compile_commands.json`, `-S` in place of `-c`,
 shows the fix at the instruction level: the seven fused instructions above
 with the flags as they were, zero `fmadd`/`fmsub`/`fnmadd`/`fnmsub`/`fmla`/

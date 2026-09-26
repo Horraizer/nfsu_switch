@@ -29,11 +29,6 @@ target_link_libraries(nfsu_track_contact PUBLIC nfsu_track nfsu_memory)
 # Its two float roots take det_sqrt too since issue #60.
 target_link_libraries(nfsu_track_contact PRIVATE nfsu_det_sqrt)
 nfsu_enable_warnings(nfsu_track_contact)
-if(MSVC)
-    target_compile_options(nfsu_track_contact PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_track_contact PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
 
 # nfsu_vehicle_track: the model of docs/VEHICLE.md on a track's collision -
 # the ground its wheels stand on, its hull against the track, the resets -
@@ -41,10 +36,10 @@ endif()
 # TRACKB bundle only through load_track_contact_world and
 # load_race_route_track, with std::ifstream, and reads no clock.
 #
-# Floating-point contraction is disabled for the reason nfsu_vehicle's is:
+# The project-wide rule disables contraction for the reason nfsu_vehicle's is:
 # the telemetry of a scripted run on a course is pinned byte for byte and
 # must be the same bits on the desktop and on the console. The Switch tree's
-# nfsu_switch_vehicle_track_fma_census checks this library's objects and
+# nfsu_switch_fma_census checks this library's objects and
 # nfsu_track_contact's.
 add_library(nfsu_vehicle_track
     src/vehicle_track.cpp
@@ -58,11 +53,6 @@ target_link_libraries(nfsu_vehicle_track
 # root, and vehicle_track.h exposes nothing of it.
 target_link_libraries(nfsu_vehicle_track PRIVATE nfsu_det_sqrt)
 nfsu_enable_warnings(nfsu_vehicle_track)
-if(MSVC)
-    target_compile_options(nfsu_vehicle_track PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_vehicle_track PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
 
 # gnu++17 on the console, as for the car-path libraries; the comment at the
 # end of cmake/car_libraries.cmake says why it is named there.

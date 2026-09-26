@@ -1,3 +1,6 @@
+# All floating-point flags below are inherited from the project-wide rule
+# in cmake/floating_point.cmake (issue #175); no target owns a separate pin.
+
 # Shared neutral draw-recording dependencies, built on desktop and Switch.
 
 # One explicitly selected, bounded track STREAM region: chunk-tree parsing
@@ -21,8 +24,7 @@ nfsu_enable_warnings(nfsu_track)
 
 # Which scenery instances a camera can see: the recovered frustum test, the
 # bounding-tree traversal it drives and the explicit fallbacks. It is its
-# own target so that floating-point contraction can be disabled here without
-# changing how the parsers beside it are compiled: every decision this
+# own target and inherits the project-wide contraction rule: every decision this
 # library makes is a strict comparison of a plane distance against zero, so
 # a fused multiply-add would move a boundary case and the visible set with
 # it. See docs/TRACK_VISIBILITY.md.
@@ -32,11 +34,6 @@ add_library(nfsu_track_visibility
 
 target_link_libraries(nfsu_track_visibility PUBLIC nfsu_track)
 nfsu_enable_warnings(nfsu_track_visibility)
-if(MSVC)
-    target_compile_options(nfsu_track_visibility PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_track_visibility PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
 
 # The composition layer of the track path: the prepared region of
 # src/track_scene.cpp placed by the scenery instances of
@@ -46,11 +43,11 @@ endif()
 # links this and never reaches past it to the culler or the parsers. See
 # docs/TRACK_DRAW_LIST.md.
 #
-# No floating-point flags: this library makes no decision from an
+# This library inherits the global policy but makes no decision from an
 # arithmetic result. It copies the transform track_instance_transform
 # returns and totals integer counts, so there is nothing here for a fused
 # multiply-add to move. nfsu_track_visibility, where that is not true,
-# carries its own.
+# inherits the same rule.
 add_library(nfsu_track_draw_list
     src/track_draw_list.cpp
 )

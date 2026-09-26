@@ -480,8 +480,9 @@ in place of `-c`:
 | `-ffp-contract=off -fno-fast-math` removed | 148 | 25 | 4 | 27 | 2 | 0 | 206 | 146 |
 
 `src/vehicle_script.cpp` has no fused instruction either way. The Switch
-test `nfsu_switch_vehicle_fma_census` disassembles both objects of every
-Switch build and fails on any fused instruction.
+test `nfsu_switch_fma_census` includes both objects in its census of every
+project object and fails on any fused instruction (issue #175,
+[FLOATING_POINT.md](FLOATING_POINT.md)).
 
 ## The telemetry and its pin
 

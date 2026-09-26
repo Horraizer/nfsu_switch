@@ -1,3 +1,6 @@
+# All floating-point flags below are inherited from the project-wide rule
+# in cmake/floating_point.cmake (issue #175); no target owns a separate pin.
+
 # The section streamer of issue #157, declared once for both configures: the
 # top-level CMakeLists.txt includes this file after cmake/car_libraries.cmake,
 # whose nfsu_sha256 it links, and before the desktop and Switch configures
@@ -13,12 +16,12 @@
 # rounded in integer arithmetic (review comment 3630, F1). See
 # docs/TRACK_STREAMING.md.
 #
-# Floating-point contraction is pinned off, as nfsu_core's is (issue #91):
+# The project-wide rule disables contraction, including nfsu_core (issue #91):
 # every zone the look-ahead picks and every sample of a path is a comparison
 # of a float the arithmetic produced, the desktop's x86-64 target has no FMA
 # to fuse with, and devkitA64's GCC fuses a multiply-add at -O2 unless told
-# not to. switch/CMakeLists.txt checks the console object for fused
-# instructions (tests/track_residency_fma_census.cmake).
+# not to. The top-level CMakeLists.txt registers the whole-tree check through
+# cmake/switch_fma_census.cmake after all Switch targets are declared.
 #
 # On the desktop the top-level CMakeLists.txt also links nfsu_track_stream,
 # whose table lookup and zone test it calls. The console builds neither of
@@ -36,11 +39,6 @@ target_include_directories(nfsu_track_residency
 target_compile_features(nfsu_track_residency PUBLIC cxx_std_17)
 target_link_libraries(nfsu_track_residency PUBLIC nfsu_sha256)
 nfsu_enable_warnings(nfsu_track_residency)
-if(MSVC)
-    target_compile_options(nfsu_track_residency PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_track_residency PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
 
 # gnu++17 on the console, as for the car-path libraries; the comment at the
 # end of cmake/car_libraries.cmake says why.

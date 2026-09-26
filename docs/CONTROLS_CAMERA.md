@@ -18,7 +18,7 @@ All three are declared for both configures in `cmake/drive_libraries.cmake`
 and classified neutral for `nfsu_platform_neutrality`. The probe command is
 `drive-replay`, the tests `nfsu_drive_tests` and
 `nfsu_probe_drive_replay_guards`, and on the console `nfsu_switch_drive`
-with the census `nfsu_switch_drive_fma_census`.
+with the census `nfsu_switch_fma_census`.
 
 Labels, as in [`VEHICLE.md`](VEHICLE.md):
 
@@ -480,8 +480,8 @@ no clock is read, and angles are 16-bit integers as the game keeps them. The
 controls read each stick axis alone, with one integer subtraction and one
 division, so there is no square root in them at all; `nfsu_input`'s radial
 dead zone, whose square root issue #165 is routing through a correctly
-rounded one, is not on this path. The three libraries are compiled with
-`-ffp-contract=off -fno-fast-math` (`/fp:precise` under MSVC), and each
+rounded one, is not on this path. The three libraries inherit the project-wide
+`-fno-fast-math -ffp-contract=off` rule (`/fp:precise` under MSVC), and each
 source refuses to compile unless `FLT_EVAL_METHOD` is 0.
 
 On the console, recompiling each source with the exact `build-switch`
@@ -496,8 +496,9 @@ command (devkitA64 GCC 16.1.0, `-O2`), `-S` in place of `-c`:
 | `src/drive_session.cpp` | as configured | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 40 |
 | | without the two options | 12 | 2 | 1 | 6 | 0 | 0 | 21 | 19 |
 
-`nfsu_switch_drive_fma_census` disassembles the three objects of every
-Switch build and fails on any fused instruction.
+`nfsu_switch_fma_census` disassembles every project object of the Switch
+build, including these three, and fails on any fused instruction. See
+[FLOATING_POINT.md](FLOATING_POINT.md) for the current whole-tree counts.
 
 ## Tests
 

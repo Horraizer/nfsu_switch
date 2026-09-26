@@ -349,8 +349,10 @@ The library is also compiled with floating-point contraction disabled
 (`-ffp-contract=off -fno-fast-math`), as `nfsu_core` is (issue #91), and
 `cmake/residency_libraries.cmake` declares it for both configures, so the
 console compiles it from the same source and options. The Switch tree runs
-`nfsu_switch_track_residency_fma_census` (`tests/track_residency_fma_census.cmake`)
-over its object: 18 `fmul`, 0 fused. With the option changed to
+`nfsu_switch_fma_census` (`tests/switch_fma_census.cmake`)
+over every project object, including this one (issue #175,
+[FLOATING_POINT.md](FLOATING_POINT.md)). The original library measurement
+was 18 `fmul`, 0 fused. With the option changed to
 `-ffp-contract=fast` as a deliberate break, the same object holds 8 `fmul`
 and 10 fused multiply-adds and the census fails the tree's `ctest`. Nothing
 on the console links the library yet: it calls the table lookup of

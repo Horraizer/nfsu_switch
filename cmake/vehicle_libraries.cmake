@@ -1,3 +1,6 @@
+# All floating-point flags below are inherited from the project-wide rule
+# in cmake/floating_point.cmake (issue #175); no target owns a separate pin.
+
 # The vehicle model of issue #58, declared once for both configures: the
 # top-level CMakeLists.txt includes this file before the desktop and Switch
 # configures part, as it includes cmake/car_libraries.cmake, so the console
@@ -31,11 +34,6 @@ target_include_directories(nfsu_vehicle
 target_compile_features(nfsu_vehicle PUBLIC cxx_std_17)
 target_link_libraries(nfsu_vehicle PUBLIC nfsu_sha256)
 nfsu_enable_warnings(nfsu_vehicle)
-if(MSVC)
-    target_compile_options(nfsu_vehicle PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_vehicle PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
 
 # gnu++17 on the console, as for the car-path libraries; the comment at the
 # end of cmake/car_libraries.cmake says why it is named there.

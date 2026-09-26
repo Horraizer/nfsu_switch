@@ -171,46 +171,6 @@ if(NFSU_BUILD_TESTS)
         PROPERTIES TIMEOUT 60)
 endif()
 
-# The fused multiply-add censuses. The race route of issue #61 and the
-# section streamer of issue #157, which cmake/race_libraries.cmake and
-# cmake/residency_libraries.cmake declare for both configures, and the
-# vehicle model of issue #58, which cmake/vehicle_libraries.cmake declares.
-# Nothing on the console links the first two yet; building them here is
-# what lets the tree check the precondition #159 rests on, and the
-# equivalent for the streamer, that each compiles on the console to the same
-# float arithmetic as on the desktop: their objects hold no fused
-# multiply-add. The vehicle's census asserts the precondition its desktop
-# telemetry pin rests on, since this tree cannot run an AArch64 program to
-# compare the hash itself. Each census keeps its own script and label.
-# Appended as one block so that nothing above is reordered.
-if(NFSU_BUILD_TESTS)
-    if(NOT CMAKE_OBJDUMP)
-        message(FATAL_ERROR "no objdump was found for the Switch toolchain")
-    endif()
-    add_test(NAME nfsu_switch_vehicle_fma_census
-        COMMAND ${CMAKE_COMMAND}
-                -DOBJDUMP=${CMAKE_OBJDUMP}
-                "-DOBJECTS=$<TARGET_OBJECTS:nfsu_vehicle>"
-                -DLABEL=nfsu_vehicle
-                -P ${PROJECT_SOURCE_DIR}/tests/switch_fma_census.cmake)
-    set_tests_properties(nfsu_switch_vehicle_fma_census PROPERTIES TIMEOUT 60)
-    add_test(NAME nfsu_switch_race_route_fma_census
-        COMMAND ${CMAKE_COMMAND}
-                -DOBJDUMP=${CMAKE_OBJDUMP}
-                "-DOBJECTS=$<TARGET_OBJECTS:nfsu_race_route>;$<TARGET_OBJECTS:nfsu_track_zones>"
-                -DLABEL=nfsu_race_route
-                -P ${PROJECT_SOURCE_DIR}/tests/race_route_fma_census.cmake)
-    set_tests_properties(nfsu_switch_race_route_fma_census PROPERTIES TIMEOUT 60)
-    add_test(NAME nfsu_switch_track_residency_fma_census
-        COMMAND ${CMAKE_COMMAND}
-                -DOBJDUMP=${CMAKE_OBJDUMP}
-                "-DOBJECTS=$<TARGET_OBJECTS:nfsu_track_residency>"
-                -DLABEL=nfsu_track_residency
-                -P ${PROJECT_SOURCE_DIR}/tests/track_residency_fma_census.cmake)
-    set_tests_properties(nfsu_switch_track_residency_fma_census
-        PROPERTIES TIMEOUT 60)
-endif()
-
 # The asset check of issue #47: whether the SD card holds the retail files
 # the first lap needs, shown on screen. It links the manifest and the check
 # cmake/asset_libraries.cmake declares for both configures, the console's
@@ -327,41 +287,8 @@ if(NFSU_BUILD_TESTS)
     set_tests_properties(nfsu_switch_vehicle_nro PROPERTIES TIMEOUT 60)
 endif()
 
-# The race state machine of issue #62, which cmake/race_libraries.cmake
-# declares for both configures: its console object holds no fused
-# multiply-add, so that it rounds every time exactly as the desktop does.
-# The census is issue #91's own script, over this library's objects.
-# Appended as one block, so that nothing above is reordered.
-if(NFSU_BUILD_TESTS)
-    add_test(NAME nfsu_switch_race_timing_fma_census
-        COMMAND ${CMAKE_COMMAND}
-                -DOBJDUMP=${CMAKE_OBJDUMP}
-                "-DOBJECTS=$<TARGET_OBJECTS:nfsu_race_timing>"
-                -DLABEL=nfsu_race_timing
-                -P ${PROJECT_SOURCE_DIR}/tests/switch_fma_census.cmake)
-    set_tests_properties(nfsu_switch_race_timing_fma_census PROPERTIES TIMEOUT 60)
-endif()
-
-# The driving controls and the chase camera of issue #59, which
-# cmake/drive_libraries.cmake declares for both configures. Appended as one
-# block so that nothing above is reordered.
-#
-# Their fused multiply-add census: the demonstration's stream hash is pinned
-# on the desktop (docs/CONTROLS_CAMERA.md), and this tree cannot run an
-# AArch64 program to compare it, so it asserts the precondition the pin rests
-# on - that the three libraries compile on the console to the same float
-# arithmetic, with no fused instruction - with the census script the vehicle
-# model's census uses.
-if(NFSU_BUILD_TESTS)
-    add_test(NAME nfsu_switch_drive_fma_census
-        COMMAND ${CMAKE_COMMAND}
-                -DOBJDUMP=${CMAKE_OBJDUMP}
-                "-DOBJECTS=$<TARGET_OBJECTS:nfsu_drive_controls>;$<TARGET_OBJECTS:nfsu_chase_camera>;$<TARGET_OBJECTS:nfsu_drive_session>"
-                -DLABEL=nfsu_drive
-                -P ${PROJECT_SOURCE_DIR}/tests/switch_fma_census.cmake)
-    set_tests_properties(nfsu_switch_drive_fma_census PROPERTIES TIMEOUT 60)
-endif()
-
+# The driving controls and chase camera of issue #59 inherit the global
+# floating-point policy; the whole-tree census covers their objects.
 # The application that runs them on the console: the built-in demonstration
 # with its hash against the desktop pin, then the pad driving the same
 # session live on the text console. It reads no file and writes none.
@@ -454,20 +381,6 @@ if(NFSU_BUILD_TESTS)
                 -DTITLE=nfsu_switch_vehicle_track
                 -P ${PROJECT_SOURCE_DIR}/tests/switch_nro_check.cmake)
 
-    # The fused multiply-add census of issue #91 over every object the step
-    # with collision compiles that nfsu_vehicle's and nfsu_race_route's
-    # censuses above do not already cover: this layer's and the track
-    # contact queries'. The telemetry docs/VEHICLE_TRACK.md pins must be the
-    # same bits here as on the desktop, and devkitA64's GCC fuses at -O2
-    # unless contraction is off; the counts with and without the options
-    # are in that document.
-    add_test(NAME nfsu_switch_vehicle_track_fma_census
-        COMMAND ${CMAKE_COMMAND}
-                -DOBJDUMP=${CMAKE_OBJDUMP}
-                "-DOBJECTS=$<TARGET_OBJECTS:nfsu_vehicle_track>;$<TARGET_OBJECTS:nfsu_track_contact>"
-                -DLABEL=nfsu_vehicle_track
-                -P ${PROJECT_SOURCE_DIR}/tests/switch_fma_census.cmake)
-
-    set_tests_properties(nfsu_switch_vehicle_track_nro nfsu_switch_vehicle_track_fma_census
+    set_tests_properties(nfsu_switch_vehicle_track_nro
         PROPERTIES TIMEOUT 60)
 endif()
