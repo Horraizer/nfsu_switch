@@ -331,19 +331,37 @@ together they do, and moving the lift or the engine braking then changes
 no count in either set, so both keep the values round 2 chose them for. The
 three spins left in the extended set are all locks the default steering
 cannot reach: 1.5 times the default lock at 20 m/s, and 1.5 and 2 times at
-25 m/s. Past the default lock the car snaps into oversteer inside a window
-of locks, not past a threshold: with the lock held fixed and the speed held
-by the controller, it spins from 1.3 to 1.6 times the default lock at
-20 m/s, from 1.5 to 2.5 times at 25 m/s and from 1.75 to 3 times at 30 m/s
-(4 times at 30 m/s reaches 19.7 degrees, and 20.7 with a constant 0.6
-throttle), and nowhere up to 2.5 times (0.54 rad) at 15 m/s. Below the window
-the car corners at the limit; above it the front tyres saturate first and
-it runs wide. `test_snap_oversteer` pins the window's lower edge at 20 and
-25 m/s: 1.25 times at 20 m/s and 1.4 times at 25 m/s corner steadily, 1.4
-times at 20 m/s and 1.5 times at 25 m/s spin.
-Further understeer costs cornering at full input: 9 / 21 would clear one
-more extended run and give 1.15 g at 20 m/s where 10 / 20 gives 1.28 and
-11 / 19 1.43 ("Drivability").
+25 m/s. Further understeer costs cornering at full input: 9 / 21 would
+clear one more extended run and give 1.15 g at 20 m/s where 10 / 20 gives
+1.28 and 11 / 19 1.43 ("Drivability").
+
+At 20, 25 and 30 m/s, past the default lock, the car snaps into oversteer
+inside a window of locks, not past a threshold. The window was swept with
+the lock held fixed at f times the default full-input lock, f from 1.00 in
+steps of 0.05 up to the largest step within the full 0.55 rad, for five
+seconds each from the speed, with `run_steady`'s speed controller; a spin
+is more than 20 degrees of sideslip while the car moves faster than
+3 m/s. The cells give f and, in brackets, the largest sideslip in
+degrees:
+
+| speed | swept | last steady sample below | spinning samples | first steady sample above |
+| --- | --- | --- | --- | --- |
+| 15 m/s | 1.00 to 2.55 | - | none (the largest sideslip is 9.6, at 1.30) | - |
+| 20 m/s | 1.00 to 3.75 | 1.25 (1.8) | every one from 1.30 (31.1) to 1.65 (22.0) | 1.70 (18.9) |
+| 25 m/s | 1.00 to 5.30 | 1.40 (2.9) | every one from 1.45 (51.5) to 2.60 (20.5) | 2.65 (18.4) |
+| 30 m/s | 1.00 to 7.25 | 1.65 (3.6) | every one from 1.70 (93.4) to 3.95 (21.0) | 4.00 (19.7) |
+
+Each edge lies between the two samples beside it, so it is known to 0.05
+times the default lock and no better. With a constant 0.6 throttle instead
+of the controller every sample falls on the same side except one: at
+30 m/s 4.00 also spins (20.7), and 4.05 is the first steady sample above
+(19.5). Just above the window the sideslip is still close to the
+20-degree mark (18.9, 18.4 and 19.7 degrees at the first steady samples);
+no sample above the window spins, and at the largest one the sideslip is
+1.6 degrees at 20 m/s, 3.0 at 25 and 4.4 at 30. `test_snap_oversteer`
+brackets the lower edge at 20 and 25 m/s: 1.25 times at 20 m/s and 1.4
+times at 25 m/s corner steadily, 1.4 times at 20 m/s and 1.5 times at
+25 m/s spin. No test pins the upper edges.
 
 The coupling of engine and wheels at 0x00475667..0x00475797 was traced
 first, since a recovered limit would beat an invented one, and not
@@ -639,8 +657,9 @@ built-in scripts, for #59 to map a controller onto:
   coefficient; a stock 240SX manages about 0.85 g. The default steering
   reaches it only at about 1.25 times its lock, so from 10 to 30 m/s full
   input leaves 0.2 to 0.6 g in hand, which is the margin that keeps it
-  out of the snap window, from 1.3 times the lock at 20 m/s ("The spin
-  matrix"). Below the
+  out of the snap window. That window's lower edge lies between 1.25 and
+  1.30 times the lock at 20 m/s, between 1.40 and 1.45 at 25 and between
+  1.65 and 1.70 at 30 ("The spin matrix"). Below the
   limit the car understeers; the handbrake slides the rear and turns it
   in.
 - **For #59's driver and corner speeds**: plan with the figures above, not

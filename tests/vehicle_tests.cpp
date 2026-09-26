@@ -1028,9 +1028,12 @@ void test_full_lock_matrix() {
 // 20 m/s and 1.5 times at 25 m/s spin: the body swings past 25 degrees and
 // the speed falls below 0.3 of the start. The steady side keeps within 5
 // degrees and 0.85 of the speed. The default steering cannot reach these
-// locks. This pins the lower edge of the window docs/VEHICLE.md
-// describes; at larger locks the front tyres saturate first and the car
-// stops spinning again (2 times at 20 m/s, 3 times at 25 m/s).
+// locks. This brackets the lower edge of the window docs/VEHICLE.md
+// measures, which a 0.05-step sweep puts between 1.25 and 1.30 times at
+// 20 m/s and between 1.40 and 1.45 times at 25 m/s. At larger locks the
+// car stops spinning again: no sample from 1.70 times at 20 m/s or from
+// 2.65 times at 25 m/s up spins in that sweep. No check here pins those
+// upper edges.
 void test_snap_oversteer() {
     nfsu::VehicleSpec spec = nfsu::stock_240sx_vehicle_spec();
     const double reference = spec.approx.steer_speed_reference;
