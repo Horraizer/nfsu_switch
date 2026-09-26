@@ -358,8 +358,8 @@ the demonstration's 1380 records, 1689120 bytes, hash to
 desktop build, and `nfsu_probe_drive_replay_guards` requires the probe to
 print it for the built-in demonstration, for the same frames read back from
 the recorded form of docs/INPUT.md, and for those with the default controls
-given as a file. The desktop Debug (the default configure, no `-O`) and
-Release builds give it. `nfsu_switch_drive` prints it on the console with
+given as a file. The default configure (no build type, no `-O`),
+`-DCMAKE_BUILD_TYPE=Debug` and `-DCMAKE_BUILD_TYPE=Release` all give it. `nfsu_switch_drive` prints it on the console with
 `result: EQUAL to the pinned desktop stream` or `DIFFERENT from`; it has not
 run on a console yet.
 
@@ -392,48 +392,41 @@ and 4 when a step is refused. The path arguments follow
 arguments are parsed.
 
 **The frames.** `drive-replay --demo --every 0 --root <game> --render-every
-120`, 640x360, from both desktop builds:
+120`, 640x360. The whole report - every frame line and the stream line - is
+byte for byte the same from the default configure, `-DCMAKE_BUILD_TYPE=Debug`
+and `-DCMAKE_BUILD_TYPE=Release`, and these eleven are the pins:
 
-| Frame | POV | Debug and Release | SHA-256 |
-| ---: | ---: | --- | --- |
-| 120 | 0 | equal | `FBDA103A7452A600D22F1DC80EFE3C1E609A0C369E48C9E41FF08000C8BB0D16` |
-| 240 | 0 | equal | `08EAF9CE1B98CBC2E62107641DC0D4E099F978B450146D5C5C5A5519C591061D` |
-| 360 | 0 | equal | `F1484BA7DFC6E1A1F890B6A901F10686BAFCB9A9B10E360344BD0C9D84FA8D16` |
-| 480 | 0 | equal | `4F72D023B25D142B651C62E7202AB46D94FC80AD77F5B50A23B68FC8B16BC6B1` |
-| 600 | 0 | equal | `E3AA6EBCA2560EAB92516DE6BCDFD88D6B7E2059C01B6AD5E6049CCEFBB2C0DB` |
-| 960 | 1 | equal | `29A6A1DF461C7842249E8EB51098399CBBCA10865D2F1C5036D035C6C12A898A` |
-| 1080 | 1 | equal | `B4FE674BBE251E6D89E509723232D799F70CA8893576972D1FCF39CA2D8F5F33` |
-| 1200 | 1 | equal | `9E18FB9C275A52D50BD08C663A0B1188BE0C393D4EC9FB2250EB5FF808DBBAC2` |
-| 1320 | 1 | equal | `5B96764C86E0103BF5FD2FA3881BAB9A9E0765780D5DC74EB7D25DE849096189` |
+| Frame | POV | SHA-256 |
+| ---: | ---: | --- |
+| 120 | 0 | `FBDA103A7452A600D22F1DC80EFE3C1E609A0C369E48C9E41FF08000C8BB0D16` |
+| 240 | 0 | `08EAF9CE1B98CBC2E62107641DC0D4E099F978B450146D5C5C5A5519C591061D` |
+| 360 | 0 | `F1484BA7DFC6E1A1F890B6A901F10686BAFCB9A9B10E360344BD0C9D84FA8D16` |
+| 480 | 0 | `4F72D023B25D142B651C62E7202AB46D94FC80AD77F5B50A23B68FC8B16BC6B1` |
+| 600 | 0 | `E3AA6EBCA2560EAB92516DE6BCDFD88D6B7E2059C01B6AD5E6049CCEFBB2C0DB` |
+| 720 | 0 | `140B36D51C07230887BC5999D24613264ECF9E9EC5EA58C8EC07A6A457C0C069` |
+| 840 | 1 | `496CA5992765BEB3AD990EE65DCAEADF414423FA55D4B7EE8C2F88CC38B7D422` |
+| 960 | 1 | `29A6A1DF461C7842249E8EB51098399CBBCA10865D2F1C5036D035C6C12A898A` |
+| 1080 | 1 | `B4FE674BBE251E6D89E509723232D799F70CA8893576972D1FCF39CA2D8F5F33` |
+| 1200 | 1 | `9E18FB9C275A52D50BD08C663A0B1188BE0C393D4EC9FB2250EB5FF808DBBAC2` |
+| 1320 | 1 | `5B96764C86E0103BF5FD2FA3881BAB9A9E0765780D5DC74EB7D25DE849096189` |
 
-Those nine are the pins. The same command's frames 720 and 840 are not
-pinned, because the two builds disagree on them, by 12 and 51 pixels:
+Frames 720 and 840 needed PR #162 (issue #125). Before it, the default and
+Debug builds gave `1D03ECAE...04F5` and `634293EC...39EF` for them, 12 and 51
+pixels off the Release frames: `normalize` in `src/render.cpp` took
+`std::sqrt`, which MinGW's libm computes in x87 extended precision at `-O0`
+and rounds twice. The stream those builds drove was already equal to the bit,
+so the difference was the renderer's alone; `det_sqrt` gives the one-rounding
+root in every build, and the Release values, the correctly rounded ones, are
+the pins above.
 
-| Frame | Debug | Release |
-| ---: | --- | --- |
-| 720 | `1D03ECAE0C3C6B39A70CAB702923C98BFCF8818FF5C136824F74BF15EFF304F5` | `140B36D51C07230887BC5999D24613264ECF9E9EC5EA58C8EC07A6A457C0C069` |
-| 840 | `634293ECDBC832554298CA825AAEECA43058B6D5492FEC24C859BBEB03BD39EF` | `496CA5992765BEB3AD990EE65DCAEADF414423FA55D4B7EE8C2F88CC38B7D422` |
-
-That is issue #125, in `src/render.cpp`, not this layer: the stream the two
-builds drive - every input, every telemetry record, every camera - is equal
-to the bit (the pin above), and so is the renderer's camera handed to
-`render_scene`. `normalize` in `src/render.cpp` takes `std::sqrt`, which
-MinGW's libm computes in x87 extended precision at `-O0` and double-rounds,
-while `-O2` inlines `sqrtsd`. Measured: with that one call replaced by a
-square root in basic operations, both builds give the same frames 720 and
-840 (the source then restored byte for byte and touched). PR #162 routes it
-through a correctly rounded root; once it lands, these two should be
-measured again, and the Release column is the value a correctly rounded
-root gives today.
-
-The stream through the same run hashes to the pin above, and every pinned
-frame equals the SHA-256 of the file `--out` writes. Frame 870 at 1280x720,
+The stream through the same run hashes to the pin above, and every frame
+equals the SHA-256 of the file `--out` writes. Frame 870 at 1280x720,
 the handbrake turn, shows the lag: the car is turned 15 degrees from the
 camera, its left side in view.
 
 In CTest, `nfsu_probe_drive_replay_guards` renders frames 690 and 1380 at
 160x90 from the synthetic stock-frame inputs `nfsu_stock_frame_tests`
-writes, and pins them in both desktop builds:
+writes, and pins them in every desktop build:
 `6AC1AC77783A5E4B693ABDC521F68BFB0D5DF5BEDF589E328FE285D41DCA4D24` and
 `F9CAA668F9ADAA7F495B037261586EF4DB3A16BDA695D0CB46C55B3856C1F313`, each
 equal to CMake's own `file(SHA256)` of the TGA written.
@@ -470,7 +463,7 @@ Switch build and fails on any fused instruction.
 
 ## Tests
 
-`nfsu_drive_tests`, in both desktop builds:
+`nfsu_drive_tests`, in every desktop build:
 
 | What | Pinned by |
 | --- | --- |
