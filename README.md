@@ -70,6 +70,7 @@ build/nfsu_probe car-placement X:/Games/NFSU/Global/GLOBALB.BUN 240SX
 build/nfsu_probe race-events X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/FrontEnd/FrontB.lzc
 build/nfsu_probe track-whole X:/Games/NFSU/Tracks/STREAML1RA.BUN X:/Games/NFSU/Tracks/TRACKB1003.lzc 1003 --texture X:/Games/NFSU/Tracks/TEX1003TRACK.BIN --texture X:/Games/NFSU/Global/INGAMEB.BUN --texture X:/Games/NFSU/Global/GLOBALB.BUN
 build/nfsu_probe race-route X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/FrontEnd/FrontB.lzc X:/Games/NFSU/Tracks/TRACKB1003.lzc 1 --drive forward
+build/nfsu_probe race-timing X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/FrontEnd/FrontB.lzc X:/Games/NFSU/Tracks/TRACKB1003.lzc 1 --drive forward
 build/nfsu_probe track-stream-path X:/Games/NFSU/Tracks/STREAML1RA.BUN X:/Games/NFSU/Tracks/TRACKB1003.lzc 1003 --hand-path 1003 --texture X:/Games/NFSU/Tracks/TEX1003TRACK.BIN --texture X:/Games/NFSU/Global/INGAMEB.BUN --texture X:/Games/NFSU/Global/GLOBALB.BUN
 build/nfsu_probe part-markers X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN exhaust
 build/nfsu_probe body-skin-inputs 240SX --source car-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN --source car-vinyls X:/Games/NFSU/Cars/240SX/VINYLS.BIN --source other X:/Games/NFSU/Cars/TEXTURES.BIN --target-texture DUMMY_SKIN1 --vinyl 0 TRIBAL5 16 no-remap --doorline plain --base 200 30 30 128 --assemble
@@ -171,6 +172,18 @@ validation, the bundle is not the one the event loads, the path is open
 do not measure its own loop as 100 percent, or a path file line is
 malformed. See
 `docs/RACE_ROUTE.md`.
+`race-timing` takes the same arguments and runs the race state machine of
+issue #62 over the event's route, 60 steps a second from the start of the
+countdown: the car holds the replay's first position until the step after
+go, then takes one position a step (`--path <FILE>` or `--drive
+forward|backward`, optionally `--skip <node> <node>`, and one of them is
+required). It prints the route's boundaries, the clock's rules, every stage
+and countdown change, every forward crossing with its split or lap time or
+the reason it timed nothing, every wrong-way change and reset, the finish,
+each lap's time, the result, the race and the HUD's lap timer. Times are
+`speed.exe`'s ticks of 1/4000 s rounded to hundredths, printed as `M:SS.hh`
+with the ticks beside them. It exits 3 on the refusals of `race-route` and
+0 otherwise. See `docs/RACE_TIMING.md`.
 `track-stream-path` runs the section streamer of `speed.exe` along a path:
 the zone a car's look-ahead picks, the request rebuilt when that zone
 changes, and the loads and releases that keep the requested sections within

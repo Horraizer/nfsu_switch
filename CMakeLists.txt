@@ -1258,3 +1258,59 @@ if(NFSU_BUILD_TESTS)
     set_tests_properties(nfsu_asset_tests nfsu_probe_asset_check_guards
         PROPERTIES TIMEOUT 60)
 endif()
+
+# ---------------------------------------------------------------------------
+# The race state machine (issue #62)
+# ---------------------------------------------------------------------------
+#
+# Appended as one block, so that no list above is reordered. nfsu_race_timing
+# is declared in cmake/race_libraries.cmake for both configures; this block
+# adds what only the desktop has - the classification, the probe's link and
+# the tests. See docs/RACE_TIMING.md.
+#
+# nfsu_race_timing is neutral: it links nfsu_race_route, reads no file and
+# no clock, and takes real time only as the microseconds its caller reads
+# from the TimingService interface of include/nfsu/platform.h.
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_timing)
+
+# `race-timing` is the one command that needs it; linked on its own line so
+# the lists above stay as they were.
+target_link_libraries(nfsu_probe PRIVATE nfsu_race_timing)
+
+if(NFSU_BUILD_TESTS)
+    # The state machine over hand-made routes and progress events and over a
+    # synthetic circle driven through nfsu_race_route: every stage change,
+    # the countdown's edges, the hundredths rounding against a digest of a
+    # transcription of 0x00586690, split, lap and total times at exact step
+    # boundaries, the backdate, a restart mid-race, a quit, the wrong way, a
+    # reset zone, the results with opponents, the HUD, every refusal, and
+    # the step clock driven by the platform's fake timing service.
+    add_executable(nfsu_race_timing_tests
+        tests/race_timing_tests.cpp
+    )
+
+    target_link_libraries(nfsu_race_timing_tests
+        PRIVATE nfsu_race_timing nfsu_platform_fakes nfsu_sha256)
+    nfsu_enable_warnings(nfsu_race_timing_tests)
+    if(MSVC)
+        target_compile_options(nfsu_race_timing_tests PRIVATE /fp:precise)
+    else()
+        target_compile_options(nfsu_race_timing_tests PRIVATE -ffp-contract=off -fno-fast-math)
+    endif()
+    add_test(NAME nfsu_race_timing_tests COMMAND nfsu_race_timing_tests)
+
+    # What `race-timing` refuses, prints and exits with, over the same
+    # fixture files the race-route guards drive: the refusals, the forward,
+    # backward and skipping drives pinned by SHA-256, a path file and a
+    # malformed one. tests/race_timing_guards.cmake says what each case is
+    # for.
+    add_test(NAME nfsu_probe_race_timing_guards
+        COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -DTESTS=$<TARGET_FILE:nfsu_race_route_tests>
+                -DEVENT_TESTS=$<TARGET_FILE:nfsu_race_event_tests>
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/race_timing_guards.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+    set_tests_properties(nfsu_race_timing_tests nfsu_probe_race_timing_guards
+        PROPERTIES TIMEOUT 60)
+endif()
