@@ -201,13 +201,13 @@ reads `argv[0]`.
   still cannot open a file is not mistaken for a working one.
 * `tests/path_arguments.cmake` - what the two programs do: the exit status,
   the diagnostic, the absence of the terminate this issue was about, and a
-  Cyrillic path driven through every path *position* in turn, which is 68
-  across the thirty-two probe commands and 8 across the viewer - the two
+  Cyrillic path driven through every path *position* in turn, which is 72
+  across the thirty-three probe commands and 8 across the viewer - the two
   numbers the gate itself prints, read out of its own `every position:`
   lines rather than counted by hand. Positions, not commands: the first
   version drove one position per program, and an independent review
   reverted nine individual call sites that each kept the suite green and
-  each reproduced the crash. Reverting any one of the 73
+  each reproduced the crash. Reverting any one of the 77
   conversion sites now fails the suite, measured one at a time - the 39
   that predate `nfsu_probe track-probe`, `nfsu_probe track-budget` and
   `nfsu_probe race-events`, track-probe's own three when it arrived,
@@ -217,8 +217,9 @@ reads `argv[0]`.
   track-stream-path's own six when it arrived, `nfsu_probe asset-check`'s
   one when it arrived, vehicle-sim's own two (`--script` and
   `--handling`) when it arrived, race-timing's own four when it arrived,
-  and `nfsu_probe drive-replay`'s own four (`--input`, `--controls`,
-  `--root` and `--out`) when it arrived, each of which
+  `nfsu_probe drive-replay`'s own four (`--input`, `--controls`,
+  `--root` and `--out`) when it arrived, and vehicle-track's own four
+  (its three files and `--script`) when it arrived, each of which
   `nfsu_path_arguments` refused. The file
   also refuses, in the source and before it runs anything, the three
   spellings that turn an argument into a path without the conversion; that

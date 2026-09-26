@@ -1530,9 +1530,16 @@ is caught above. Why the nine change nothing:
   this answers where the track is and which way it faces.
 - It tests segments and columns, not a swept box or sphere. A body wider
   than a segment needs several, or a shape test this layer does not have.
-- It is desktop only for now. `cmake/draw_libraries.cmake` is unchanged, so
-  the Switch tree does not compile `nfsu_track_contact`; `nfsu_track`, which
-  it does compile, is unchanged by this issue.
+- It was desktop only until issue #60, which moved the library's
+  declaration, as it was, into `cmake/vehicle_track_libraries.cmake` so that
+  the Switch tree compiles it for the vehicle's step, with a fused
+  multiply-add census over its object. Issue #165 put the sweep's double
+  square root through `det_sqrt`; issue #60 routed the two float ones
+  through it as well, rounded to float, so that the step references no
+  library root. A correctly rounded root is what the library gives for a
+  float in every build, so no answer changes: `nfsu_track_contact_tests`
+  and the retail acceptance below give the same output as before. See
+  [`VEHICLE_TRACK.md`](VEHICLE_TRACK.md).
 - It is not exact arithmetic end to end. Issue #167 closed the wall
   diagonals a sweep passed through, the raised edges a column went past,
   the degenerate triangles the #39 arithmetic accepts and the watertight

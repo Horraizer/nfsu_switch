@@ -46,6 +46,10 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/vehicle_libraries.cmake)
 # they link nfsu_input and nfsu_render from cmake/car_libraries.cmake and
 # nfsu_vehicle from the file above, so they are included after both.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/drive_libraries.cmake)
+# The vehicle on the track (issue #60) and the track contact queries it
+# steps on (issue #158), for both configures; it links the draw, race and
+# vehicle libraries above, so it is included after them.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/vehicle_track_libraries.cmake)
 
 # The Switch build configures the shared car and draw libraries and switch/,
 # and nothing below this point: the desktop programs, the other libraries and every test of
@@ -1127,32 +1131,10 @@ endif()
 # and segment contact queries issue #60 needs, with the units, normals and
 # coordinate conversion that issue asks for. It reads the collision
 # nfsu_track already decodes; see docs/TRACK_COLLISION.md, "The whole
-# circuit". It is desktop only for now: the Switch tree does not configure
-# this block, because nothing on the console queries collision yet.
-#
-# Floating-point contraction is disabled for the reason nfsu_track_visibility
-# disables it: every answer here turns on a strict comparison - a determinant
-# against zero, a barycentric coordinate against 0 and 1, a slope against
-# kTrackContactRoadMinUp - so a fused multiply-add would move a boundary
-# case, and with it a contact the documentation pins.
-add_library(nfsu_track_contact
-    src/track_contact.cpp
-)
-
-target_link_libraries(nfsu_track_contact PUBLIC nfsu_track nfsu_memory)
-# PRIVATE: track_contact.h exposes nothing of det_sqrt. sweep_of's one
-# double-precision square root was std::sqrt, not correctly rounded at -O0
-# (issue #165, the same MinGW libm defect issue #125 found in the renderer
-# and issue #165 also fixed in the controller dead zone); it now calls
-# det_sqrt through nfsu/det_sqrt.h, a project header, which keeps this
-# library's own source neutral under the include rule below.
-target_link_libraries(nfsu_track_contact PRIVATE nfsu_det_sqrt)
-nfsu_enable_warnings(nfsu_track_contact)
-if(MSVC)
-    target_compile_options(nfsu_track_contact PRIVATE /fp:precise)
-else()
-    target_compile_options(nfsu_track_contact PRIVATE -ffp-contract=off -fno-fast-math)
-endif()
+# circuit". The library itself, nfsu_track_contact, is declared with its
+# floating-point options in cmake/vehicle_track_libraries.cmake since issue
+# #60, because the vehicle's step on the console queries it; this block
+# keeps what only the desktop has.
 
 # Neutral: it decodes nothing of its own, reads files only through
 # load_track_collision's std::ifstream, calls no operating system function and
@@ -1464,4 +1446,56 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_frame_compare_tests PRIVATE nfsu_frame_compare)
     nfsu_enable_warnings(nfsu_frame_compare_tests)
     add_test(NAME nfsu_frame_compare_tests COMMAND nfsu_frame_compare_tests)
+endif()
+
+# ---------------------------------------------------------------------------
+# The vehicle on the track (issue #60)
+# ---------------------------------------------------------------------------
+#
+# Appended as one block, after everything above, so that no list above is
+# reordered: nfsu_vehicle_track is declared in
+# cmake/vehicle_track_libraries.cmake for both configures, and this block
+# adds what only the desktop has - the probe's link, the neutrality
+# classification and the tests.
+#
+# `vehicle-track` runs the model with collision on event 1's circuit or on
+# the proving ground; it reads the two tables through nfsu_race_events,
+# which the probe already links.
+target_link_libraries(nfsu_probe PRIVATE nfsu_vehicle_track)
+
+# Neutral by its comment in cmake/vehicle_track_libraries.cmake: it reads a
+# TRACKB bundle only through the collision and route loaders, with
+# std::ifstream, calls no operating system function and reads no clock.
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_vehicle_track)
+
+if(NFSU_BUILD_TESTS)
+    # The layer over synthetic geometry: the ground adapter's answers, the
+    # hull table's source bytes, road, slope, walls at several angles, a
+    # seam, a drop, out of bounds, the resets, the refusals, and the pinned
+    # telemetry of every proving-ground scenario. It carries the library's
+    # floating-point options because it recomputes some of its expressions.
+    add_executable(nfsu_vehicle_track_tests
+        tests/vehicle_track_tests.cpp
+    )
+
+    target_link_libraries(nfsu_vehicle_track_tests PRIVATE nfsu_vehicle_track nfsu_det_sqrt)
+    nfsu_enable_warnings(nfsu_vehicle_track_tests)
+    if(MSVC)
+        target_compile_options(nfsu_vehicle_track_tests PRIVATE /fp:precise)
+    else()
+        target_compile_options(nfsu_vehicle_track_tests PRIVATE -ffp-contract=off -fno-fast-math)
+    endif()
+    add_test(NAME nfsu_vehicle_track_tests COMMAND nfsu_vehicle_track_tests)
+
+    # What `vehicle-track` refuses, prints and exits with, over no input,
+    # over script files this test writes, and over every proving-ground
+    # scenario, whose hash it requires. tests/vehicle_track_guards.cmake says
+    # what each case is for.
+    add_test(NAME nfsu_probe_vehicle_track_guards
+        COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/vehicle_track_guards.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+    set_tests_properties(nfsu_vehicle_track_tests nfsu_probe_vehicle_track_guards
+        PROPERTIES TIMEOUT 120)
 endif()

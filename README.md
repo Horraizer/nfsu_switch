@@ -73,6 +73,8 @@ build/nfsu_probe race-events X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/Fron
 build/nfsu_probe track-whole X:/Games/NFSU/Tracks/STREAML1RA.BUN X:/Games/NFSU/Tracks/TRACKB1003.lzc 1003 --texture X:/Games/NFSU/Tracks/TEX1003TRACK.BIN --texture X:/Games/NFSU/Global/INGAMEB.BUN --texture X:/Games/NFSU/Global/GLOBALB.BUN
 build/nfsu_probe race-route X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/FrontEnd/FrontB.lzc X:/Games/NFSU/Tracks/TRACKB1003.lzc 1 --drive forward
 build/nfsu_probe race-timing X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/FrontEnd/FrontB.lzc X:/Games/NFSU/Tracks/TRACKB1003.lzc 1 --drive forward
+build/nfsu_probe vehicle-track X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/FrontEnd/FrontB.lzc X:/Games/NFSU/Tracks/TRACKB1003.lzc 1 wall
+build/nfsu_probe vehicle-track --proving-ground leave
 build/nfsu_probe track-stream-path X:/Games/NFSU/Tracks/STREAML1RA.BUN X:/Games/NFSU/Tracks/TRACKB1003.lzc 1003 --hand-path 1003 --texture X:/Games/NFSU/Tracks/TEX1003TRACK.BIN --texture X:/Games/NFSU/Global/INGAMEB.BUN --texture X:/Games/NFSU/Global/GLOBALB.BUN
 build/nfsu_probe part-markers X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN exhaust
 build/nfsu_probe body-skin-inputs 240SX --source car-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN --source car-vinyls X:/Games/NFSU/Cars/240SX/VINYLS.BIN --source other X:/Games/NFSU/Cars/TEXTURES.BIN --target-texture DUMMY_SKIN1 --vinyl 0 TRIBAL5 16 no-remap --doorline plain --base 200 30 30 128 --assemble
@@ -216,6 +218,19 @@ each lap's time, the result, the race and the HUD's lap timer. Times are
 `speed.exe`'s ticks of 1/4000 s rounded to hundredths, printed as `M:SS.hh`
 with the ticks beside them. It exits 3 on the refusals of `race-route` and
 0 otherwise. See `docs/RACE_TIMING.md`.
+`vehicle-track` drives the vehicle model of `vehicle-sim` on a track's
+collision: the wheels on its road, the car's body against its walls and
+road, and the resets out of bounds, in reset zones and far from the route.
+With the same two tables, the bundle and an event number it starts on grid
+slot 0 of the event's first race; with `--proving-ground` it uses a small
+course built in code instead. It runs a built-in scenario or a script file
+given with `--script`, and prints the course, the start, a line every
+`--every` steps (120 by default, 0 for none), every contact streak, reset
+and race event, the last step, a summary and the SHA-256 of the per-step
+telemetry, and for a built-in scenario whether it is the pinned one. It
+exits 1 on an argument it refuses, 2 on a script file it cannot read or
+parse, 3 on a course it cannot build, and 4 if the model or the session
+refuses a step. See `docs/VEHICLE_TRACK.md`.
 `track-stream-path` runs the section streamer of `speed.exe` along a path:
 the zone a car's look-ahead picks, the request rebuilt when that zone
 changes, and the loads and releases that keep the requested sections within

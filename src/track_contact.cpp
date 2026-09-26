@@ -12,6 +12,15 @@ namespace {
 
 static_assert(std::numeric_limits<float>::is_iec559, "IEEE-754 float32 required");
 
+// The two float square roots were std::sqrt until issue #60 put this layer
+// on the vehicle's step, which must reference no library mathematics. They
+// take det_sqrt's correctly rounded double root and round it to float,
+// which is the correctly rounded float root, since 53 >= 2 * 24 + 2: the
+// same bits std::sqrt gives in every build.
+float contact_sqrtf(float x) noexcept {
+    return static_cast<float>(det_sqrt(static_cast<double>(x)));
+}
+
 // The split docs/TRACK_COLLISION.md justifies and query_track_collision_ray
 // uses: triangle 0 is corners (0,1,2) and triangle 1 is (0,2,3).
 constexpr std::size_t kTriangleCorners[2][3] = {{0, 1, 2}, {0, 2, 3}};
@@ -45,8 +54,8 @@ TrackContactTriangle derive_triangle(
     const float cross[3] = {edge1[1] * edge2[2] - edge1[2] * edge2[1],
                             edge1[2] * edge2[0] - edge1[0] * edge2[2],
                             edge1[0] * edge2[1] - edge1[1] * edge2[0]};
-    const float length = std::sqrt(cross[0] * cross[0] + cross[1] * cross[1] +
-                                   cross[2] * cross[2]);
+    const float length = contact_sqrtf(cross[0] * cross[0] + cross[1] * cross[1] +
+                                       cross[2] * cross[2]);
     TrackContactTriangle out;
     // A repeated corner, or three collinear ones, give a zero cross product.
     // Such a triangle has no normal and no area, and the determinant test
@@ -205,12 +214,10 @@ Sweep sweep_of(const float from[3], const float to[3]) {
     // correctly rounded at -O0 (issue #165, the same defect issue #125
     // found in the renderer). squared is a sum of squared doubles, so this
     // is the one double-precision library sqrt on this file's replayed
-    // path; the two float ones (derive_triangle's face normal and
-    // query_track_contact_segment's own direction length) need no change.
-    // At -O0 and -Os, MinGW's linked sqrtf rounds twice - flds; fsqrt;
-    // fstps, an x87 root rounded to 64 bits and then to binary32 - but that
-    // is still correctly rounded, since 64 >= 2*24+2, and at -O2 and -O3
-    // the site is sqrtss directly.
+    // path. The two float ones (derive_triangle's face normal and
+    // query_track_contact_segment's own direction length) go through
+    // contact_sqrtf, which takes det_sqrt too, so that no library root is
+    // referenced on the vehicle's step (issue #60).
     sweep.length = det_sqrt(squared);
     return sweep;
 }
@@ -827,7 +834,7 @@ TrackContactStatus query_track_contact_segment(
     }
     const float delta[3] = {to[0] - from[0], to[1] - from[1], to[2] - from[2]};
     const float length =
-        std::sqrt(delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]);
+        contact_sqrtf(delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]);
     if (!std::isfinite(length) || !(length > 0.0F) || length > limits.max_length) {
         return TrackContactStatus::refused;
     }
