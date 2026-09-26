@@ -24,11 +24,20 @@ struct TrackSlice {
     std::uint64_t texture_bytes = 0;
 };
 
+// Synchronous parsing checkpoints. Exceptions propagate for cancellation and
+// unwind temporary buffers; callbacks may sample the platform allocator.
+class TrackSliceLoadObserver {
+public:
+    virtual ~TrackSliceLoadObserver() = default;
+    virtual void checkpoint(const char* phase) = 0;
+};
+
 // Runs the #47 first-lap asset check before parsing. All paths are resolved
 // from that manifest, read-only. Failure leaves slice empty.
 bool load_track_slice(FileSystemService& files, const std::filesystem::path& root,
                       TrackSlice& slice, std::string& error,
-                      AssetCheckObserver* observer = nullptr);
+                      AssetCheckObserver* observer = nullptr,
+                      TrackSliceLoadObserver* loading = nullptr);
 
 struct TrackSliceFrame {
     RecordedCommands commands;

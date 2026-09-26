@@ -8,7 +8,8 @@
 namespace nfsu {
 
 bool load_track_slice(FileSystemService& files, const std::filesystem::path& root,
-                      TrackSlice& slice, std::string& error, AssetCheckObserver* observer) {
+                      TrackSlice& slice, std::string& error, AssetCheckObserver* observer,
+                      TrackSliceLoadObserver* loading) {
     slice = {}; error.clear();
     TrackSlice result;
     AssetManifest manifest;
@@ -20,6 +21,10 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
             if (file.status != AssetStatus::ok) error += "\n" + file.expected.path + ": " + file.detail;
         return false;
     }
+    const auto checkpoint = [&](const char* phase) {
+        if (loading) loading->checkpoint(phase);
+    };
+    checkpoint("track table");
     const auto path = [&](const char* relative) -> std::filesystem::path {
         for (const auto& file : result.assets.files)
             if (asset_names_match(file.expected.path, relative)) return root / file.found_as;
@@ -46,11 +51,13 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         streams.pack = path("Tracks/STREAML1RA_1003.BUN");
         TrackStreamLoadLimits limits;
         limits.max_total_bytes = kPersistentBudgetPlaceholder;
+        limits.poll = [&] { checkpoint("stream sections"); };
         TrackStreamLoad load;
         if (!load_track_stream_sections(table, selected, streams, limits, load, error) || !load.ok()) {
             if (error.empty()) error = "event-1 streamed section parse failed";
             return false;
         }
+        checkpoint("sections parsed and merged");
         result.sections = selected.records.size();
         result.input_bytes = load.bytes_read;
         // The merged reports own their arrays. Drop per-section parser
@@ -69,6 +76,7 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         std::vector<TexturePackSet> external_packs(3);
         const char* names[] = {"Tracks/TEX1003TRACK.BIN", "Global/INGAMEB.BUN", "Global/GLOBALB.BUN"};
         for (std::size_t i = 0; i < 3; ++i) {
+            checkpoint(names[i]);
             external_packs[i] = load_texture_pack_set(path(names[i]), external_bytes[i]);
             if (!external_packs[i].complete) { error = std::string("incomplete texture source: ") + names[i]; return false; }
             RenderTextureSource source;
@@ -79,8 +87,10 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         RenderTextureLimits texture_limits;
         texture_limits.gpu_blocks = true;
         texture_limits.max_total_bytes = kStreamingRegionBudgetPlaceholder;
+        texture_limits.before_allocate = [&](std::uint64_t) { checkpoint("texture decoding"); };
         RenderTextureSet textures;
         if (!decode_render_texture_sources(sources, texture_limits, textures, error)) return false;
+        checkpoint("textures decoded");
         // RenderTexture owns every retained block. No scene preparation
         // consults the pack parser or its borrowed source bytes again.
         sources.clear();
@@ -89,7 +99,9 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         std::vector<std::vector<unsigned char>>().swap(external_bytes);
         TrackSceneOptions options;
         options.region.max_texture_bytes = kStreamingRegionBudgetPlaceholder;
+        checkpoint("scene preparation");
         if (!build_track_scene(load.geometry, load.objects, textures, options, result.scene, error)) return false;
+        checkpoint("scene prepared");
         result.texture_bytes = result.scene.region.cost.texture_bytes;
         result.streaming_bytes = result.scene.region.cost.vertex_buffer_bytes +
             result.scene.region.cost.index_buffer_bytes + result.texture_bytes +
@@ -102,14 +114,17 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         // Raw section bytes, parser mesh copies, external packs and the
         // temporary texture set die here, before collision loading and GPU allocation.
     }
+    checkpoint("collision loading");
     result.contacts = load_track_contact_world(trackb);
     if (!result.contacts.valid || result.contacts.memory.resident_bytes > kPersistentBudgetPlaceholder) {
         error = "track collision is invalid or exceeds the persistent payload plan"; return false;
     }
+    checkpoint("collision loaded");
     std::vector<TrackResidencyVertex> vertices;
     std::vector<TrackResidencySample> samples;
     if (!parse_track_residency_path(kTrackResidencyHandPath1003, vertices, error) ||
         !sample_track_residency_path(vertices, 30.0, 60, samples, result.path, error)) return false;
+    checkpoint("path sampled");
     slice = std::move(result);
     return true;
 }

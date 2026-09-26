@@ -1335,6 +1335,32 @@ bool load_fixture(const Fixture& fixture, nfsu::TrackStreamSet set, Loaded& out)
     return ok;
 }
 
+void test_load_poll_and_cancel() {
+    const Fixture fixture = make_fixture();
+    Loaded loaded;
+    if (!load_fixture(fixture, nfsu::TrackStreamSet::permanent, loaded)) return;
+    const std::vector<unsigned char>* images[nfsu::kTrackStreamFileCount] = {
+        nullptr, &fixture.stream, &fixture.texture_file};
+    std::string error;
+    nfsu::TrackStreamLoad out;
+    nfsu::TrackStreamLoadLimits limits;
+    unsigned polls = 0;
+    limits.poll = [&] { ++polls; };
+    check(nfsu::load_track_stream_sections_from_memory(loaded.table, loaded.selection,
+          images, limits, out, error), "polled parsing succeeds");
+    check(polls >= 4 * loaded.selection.records.size(),
+          "parsing and merging service the observer repeatedly between sections");
+    struct Cancel {};
+    polls = 0;
+    limits.poll = [&] { if (++polls == 3) throw Cancel{}; };
+    bool cancelled = false;
+    try {
+        nfsu::load_track_stream_sections_from_memory(loaded.table, loaded.selection,
+            images, limits, out, error);
+    } catch (const Cancel&) { cancelled = true; }
+    check(cancelled && polls == 3, "parsing cancellation propagates immediately before remaining sections");
+}
+
 void test_load_and_merge() {
     const Fixture fixture = make_fixture();
     Loaded loaded;
@@ -1961,6 +1987,7 @@ int main(int argc, char** argv) {
     test_permanent_selection();
     test_bound_sets();
     test_request_limit();
+    test_load_poll_and_cancel();
     test_load_and_merge();
     test_whole_scene_places_across_sections();
     test_load_refusals();
