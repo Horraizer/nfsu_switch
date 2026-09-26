@@ -9,7 +9,7 @@
 # This file is the one place they are declared. The top-level
 # CMakeLists.txt includes it before the desktop and Switch configures part,
 # so the console compiles these sources from the same lists and with the
-# same options as the desktop - every floating-point flag below included -
+# same options as the desktop, including the project-wide floating-point rule,
 # while draw-recording dependencies are shared separately by
 # cmake/draw_libraries.cmake. Other programs and tests stay desktop only.
 #
@@ -56,15 +56,15 @@ target_include_directories(nfsu_core
 target_compile_features(nfsu_core PUBLIC cxx_std_17)
 target_link_libraries(nfsu_core PUBLIC nfsu_image)
 nfsu_enable_warnings(nfsu_core)
-# Floating-point contraction pinned (issue #91): devkitA64 GCC 16.1.0 fuses
+# The project-wide contraction rule also covers issue #91: devkitA64 GCC 16.1.0 fuses
 # seven multiply-adds in src/part_placement.cpp, in
 # derive_cullable_part_placements and multiply_placement_matrix, which place
 # the wheels, brakes, exhaust and plate of the stock frame (issue #83,
 # docs/SWITCH_BUILD.md). No difference in the pinned frame has been observed
 # from that fusion on either platform, but this repository's determinism
 # claims are byte-identity claims, and an unpinned target holds one by
-# accident rather than by construction, so contraction is disabled here as
-# it already is on the targets above and below.
+# accident rather than by construction, so cmake/floating_point.cmake
+# disables contraction for every target.
 
 # The texture-export file I/O split out of nfsu_core (issue #139): the
 # export helpers - remove_created, rollback_created_files and
@@ -108,7 +108,7 @@ add_library(nfsu_stock_scene
 
 target_link_libraries(nfsu_stock_scene PUBLIC nfsu_core nfsu_scene)
 nfsu_enable_warnings(nfsu_stock_scene)
-# Floating-point contraction pinned (issue #91), for the same reason as
+# The same project-wide rule covers issue #91 here, for the same reason as
 # nfsu_core just above: src/stock_scene.cpp builds the wheel and brake
 # instance transforms from the placements nfsu_core derives, so a fused
 # multiply-add here would sit next to the ones issue #83 measured in
@@ -135,7 +135,7 @@ nfsu_enable_warnings(nfsu_texture_decode)
 # include rule does not distinguish an operating-system header from a
 # compiler-intrinsics one. Declared here, ahead of nfsu_render and
 # nfsu_input below, which both link it; nfsu_track_contact links it too,
-# from the desktop-only block near the end of CMakeLists.txt.
+# from cmake/vehicle_track_libraries.cmake on both platforms.
 add_library(nfsu_det_sqrt
     src/det_sqrt.cpp
 )
@@ -171,8 +171,8 @@ nfsu_enable_warnings(nfsu_render)
 # SHA-256 (FIPS 180-4) over bytes in memory. docs/ pins every reference
 # frame by the SHA-256 of its TGA file, printed by a host tool, and the
 # Switch application writes no file, so it needs a digest of its own to
-# report the same number. Standard library and integer arithmetic only, so
-# it carries no floating-point flags.
+# report the same number. Standard library and integer arithmetic only;
+# it still inherits the global floating-point policy.
 add_library(nfsu_sha256
     src/sha256.cpp
 )
@@ -191,8 +191,8 @@ nfsu_enable_warnings(nfsu_sha256)
 # nfsu_stock_frame_viewer_match holds it to the viewer on the same files.
 # It reads its inputs with std::ifstream, as nfsu_core's loaders do, writes
 # nothing and reads no clock. It does no floating-point arithmetic of its
-# own - it hands the options to nfsu_render, which carries its own flags -
-# so it carries none. docs/SWITCH_BUILD.md.
+# own - it hands the options to nfsu_render. Both inherit the global policy.
+# docs/SWITCH_BUILD.md.
 add_library(nfsu_stock_frame
     src/stock_frame.cpp
 )
@@ -257,7 +257,7 @@ nfsu_enable_warnings(nfsu_skin_inputs)
 # record, runs the proven composite over assembled inputs and binds the
 # generated texture into a decoded texture set. It parses no packs of its
 # own and does no floating-point work; the arithmetic lives in
-# nfsu_body_skin, which carries its own flags.
+# nfsu_body_skin; both inherit the global policy.
 add_library(nfsu_runtime_skin
     src/runtime_skin.cpp
 )
@@ -337,7 +337,7 @@ nfsu_enable_warnings(nfsu_input_camera)
 # and the render at that camera. It reads no clock: a controller frame
 # carries its own time. It does no floating-point arithmetic of its own -
 # the camera's is nfsu_inspect's and nfsu_input_camera's, the render's
-# nfsu_render's, each with its own flags - so it carries none.
+# nfsu_render's. All inherit the global policy.
 # docs/SWITCH_BUILD.md.
 add_library(nfsu_stock_view
     src/stock_view.cpp

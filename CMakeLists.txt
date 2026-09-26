@@ -45,6 +45,14 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/asset_libraries.cmake)
 # The vehicle model of issue #58, for both configures as well; it links
 # nfsu_sha256 from cmake/car_libraries.cmake, so it is included after it.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/vehicle_libraries.cmake)
+# The driving controls and the chase camera of issue #59, for both configures;
+# they link nfsu_input and nfsu_render from cmake/car_libraries.cmake and
+# nfsu_vehicle from the file above, so they are included after both.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/drive_libraries.cmake)
+# The vehicle on the track (issue #60) and the track contact queries it
+# steps on (issue #158), for both configures; it links the draw, race and
+# vehicle libraries above, so it is included after them.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/vehicle_track_libraries.cmake)
 
 # The Switch build configures the shared car and draw libraries and switch/,
 # and nothing below this point: the desktop programs, the other libraries and every test of
@@ -113,8 +121,8 @@ nfsu_enable_warnings(nfsu_track_render)
 # fifth source of truth: every counter it exposes is a field some other
 # layer already computed.
 #
-# It carries no floating-point flags, and that is a statement rather than an
-# omission: this library does no floating-point arithmetic at all. Every
+# It inherits the global floating-point policy but does no floating-point
+# arithmetic itself. Every
 # counter it touches is an integer count or an integer byte total, so there
 # is nothing here for contraction to move, exactly as for
 # nfsu_track_draw_list. It also reads no clock - see the header for why a
@@ -150,8 +158,8 @@ nfsu_enable_warnings(nfsu_track_probe)
 # GLOBAL/GLOBALB.LZC it points into: which track, lap count and direction
 # each Underground-mode event runs, and the stream and texture file names
 # the game builds for a track. It links nfsu_core for the JDLZ decoder and
-# nothing else, decodes integers only and reads no clock, so it carries no
-# floating-point flags. See docs/RACE_EVENTS.md.
+# nothing else, decodes integers only and reads no clock. It still inherits
+# the global floating-point policy. See docs/RACE_EVENTS.md.
 add_library(nfsu_race_events
     src/race_events.cpp
 )
@@ -168,8 +176,8 @@ nfsu_enable_warnings(nfsu_race_events)
 # per-section texture sources, and nfsu_gpu_upload for the budgets of issue
 # #52. It reads its files with std::ifstream, as nfsu_core's loaders do,
 # reads no clock and makes no decision from a floating-point result - it
-# only takes the minimum and maximum of bounds the parsers computed - so it
-# carries no floating-point flags. See docs/TRACK_WHOLE.md.
+# only takes the minimum and maximum of bounds the parsers computed. It
+# still inherits the global floating-point policy. See docs/TRACK_WHOLE.md.
 add_library(nfsu_track_stream
     src/track_stream.cpp
 )
@@ -778,7 +786,7 @@ target_link_libraries(nfsu_inspect_window PUBLIC nfsu_platform nfsu_input_camera
 # nfsu_memory depends on nothing but the standard library (its own comment
 # above), and nfsu_gpu_upload calls no deko3d function and reads only the
 # scene and draw-list types below it, so both joined this list when they
-# merged in from main. nfsu_track_budget carries no floating-point flags and
+# merged in from main. nfsu_track_budget does no floating-point arithmetic and
 # reads no clock (its own comment above); it links nfsu_track_render and
 # calls no operating system function of its own. The three libraries issue
 # #141 added for the Switch application are neutral by their comments in
@@ -1105,27 +1113,10 @@ endif()
 # and segment contact queries issue #60 needs, with the units, normals and
 # coordinate conversion that issue asks for. It reads the collision
 # nfsu_track already decodes; see docs/TRACK_COLLISION.md, "The whole
-# circuit". It is desktop only for now: the Switch tree does not configure
-# this block, because nothing on the console queries collision yet.
-#
-# Floating-point contraction is disabled for the reason nfsu_track_visibility
-# disables it: every answer here turns on a strict comparison - a determinant
-# against zero, a barycentric coordinate against 0 and 1, a slope against
-# kTrackContactRoadMinUp - so a fused multiply-add would move a boundary
-# case, and with it a contact the documentation pins.
-add_library(nfsu_track_contact
-    src/track_contact.cpp
-)
-
-target_link_libraries(nfsu_track_contact PUBLIC nfsu_track nfsu_memory)
-# PRIVATE: track_contact.h exposes nothing of det_sqrt. sweep_of's one
-# double-precision square root was std::sqrt, not correctly rounded at -O0
-# (issue #165, the same MinGW libm defect issue #125 found in the renderer
-# and issue #165 also fixed in the controller dead zone); it now calls
-# det_sqrt through nfsu/det_sqrt.h, a project header, which keeps this
-# library's own source neutral under the include rule below.
-target_link_libraries(nfsu_track_contact PRIVATE nfsu_det_sqrt)
-nfsu_enable_warnings(nfsu_track_contact)
+# circuit". The library itself, nfsu_track_contact, is declared in
+# cmake/vehicle_track_libraries.cmake since issue
+# #60, because the vehicle's step on the console queries it; this block
+# keeps what only the desktop has.
 
 # Neutral: it decodes nothing of its own, reads files only through
 # load_track_collision's std::ifstream, calls no operating system function and
@@ -1360,10 +1351,113 @@ if(NFSU_BUILD_TESTS)
         PROPERTIES TIMEOUT 60)
 endif()
 
+# ---------------------------------------------------------------------------
+# The driving controls and the chase camera (issue #59)
+# ---------------------------------------------------------------------------
+#
+# Appended as one block, after everything above, so that no list above is
+# reordered: the three libraries are declared in cmake/drive_libraries.cmake
+# for both configures, and this block adds what only the desktop has - the
+# probe's link, the neutrality classification and the tests.
+#
+# `drive-replay` replays a recorded controller stream through the controls,
+# the vehicle model on flat ground and the chase camera, prints the stream's
+# hash, and renders the stock car from the chase camera with the CPU
+# reference renderer at fixed frames. docs/CONTROLS_CAMERA.md.
+target_link_libraries(nfsu_probe PRIVATE nfsu_drive_session nfsu_stock_frame)
+
+# All three are neutral by their comment in cmake/drive_libraries.cmake: they
+# read no file, no clock and no environment and call nothing but the standard
+# library and the project's own libraries. nfsu_drive_session links
+# nfsu_render for its rasterizer, as nfsu_stock_view does, and nfsu_render is
+# classified on its own. The manifest is written once the whole directory has
+# been read, so these appends are in the list the gate reads.
+list(APPEND NFSU_NEUTRAL_LIBRARIES
+    nfsu_drive_controls nfsu_chase_camera nfsu_drive_session)
+
+if(NFSU_BUILD_TESTS)
+    # The controls, the camera and the session from recorded frames: the
+    # config file and its refusals by name, calibration, remapping, digital
+    # against analog, the speed-sensitive steering filter, the reverse
+    # assist, the recovered camera tables rebuilt to their retail hashes,
+    # the angle arithmetic, the target heading, the lag, the camera's
+    # smoothing and collision response, the renderer's camera, and the
+    # demonstration's pinned hash. It carries the libraries' floating-point
+    # options because it recomputes their expressions and compares them bit
+    # for bit.
+    add_executable(nfsu_drive_tests
+        tests/drive_tests.cpp
+    )
+    target_link_libraries(nfsu_drive_tests PRIVATE nfsu_drive_session nfsu_arg_path)
+    nfsu_enable_warnings(nfsu_drive_tests)
+    add_test(NAME nfsu_drive_tests COMMAND nfsu_drive_tests)
+
+    # What `drive-replay` refuses, prints and exits with, over files this
+    # test writes, and the frames it renders from the synthetic stock-car
+    # root nfsu_stock_frame_tests writes. tests/drive_replay_guards.cmake
+    # says what each case is for.
+    add_test(NAME nfsu_probe_drive_replay_guards
+        COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -DFIXTURE=$<TARGET_FILE:nfsu_stock_frame_tests>
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/nfsu_probe_drive_replay_guards
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/drive_replay_guards.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+    set_tests_properties(nfsu_drive_tests nfsu_probe_drive_replay_guards
+        PROPERTIES TIMEOUT 120)
+endif()
+
 # Whole-frame comparison metrics for the console proof of issue #147.
 if(NFSU_BUILD_TESTS)
     add_executable(nfsu_frame_compare_tests tests/frame_compare_tests.cpp)
     target_link_libraries(nfsu_frame_compare_tests PRIVATE nfsu_frame_compare)
     nfsu_enable_warnings(nfsu_frame_compare_tests)
     add_test(NAME nfsu_frame_compare_tests COMMAND nfsu_frame_compare_tests)
+endif()
+
+# ---------------------------------------------------------------------------
+# The vehicle on the track (issue #60)
+# ---------------------------------------------------------------------------
+#
+# Appended as one block, after everything above, so that no list above is
+# reordered: nfsu_vehicle_track is declared in
+# cmake/vehicle_track_libraries.cmake for both configures, and this block
+# adds what only the desktop has - the probe's link, the neutrality
+# classification and the tests.
+#
+# `vehicle-track` runs the model with collision on event 1's circuit or on
+# the proving ground; it reads the two tables through nfsu_race_events,
+# which the probe already links.
+target_link_libraries(nfsu_probe PRIVATE nfsu_vehicle_track)
+
+# Neutral by its comment in cmake/vehicle_track_libraries.cmake: it reads a
+# TRACKB bundle only through the collision and route loaders, with
+# std::ifstream, calls no operating system function and reads no clock.
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_vehicle_track)
+
+if(NFSU_BUILD_TESTS)
+    # The layer over synthetic geometry: the ground adapter's answers, the
+    # hull table's source bytes, road, slope, walls at several angles, a
+    # seam, a drop, out of bounds, the resets, the refusals, and the pinned
+    # telemetry of every proving-ground scenario. It carries the library's
+    # floating-point options because it recomputes some of its expressions.
+    add_executable(nfsu_vehicle_track_tests
+        tests/vehicle_track_tests.cpp
+    )
+
+    target_link_libraries(nfsu_vehicle_track_tests PRIVATE nfsu_vehicle_track nfsu_det_sqrt)
+    nfsu_enable_warnings(nfsu_vehicle_track_tests)
+    add_test(NAME nfsu_vehicle_track_tests COMMAND nfsu_vehicle_track_tests)
+
+    # What `vehicle-track` refuses, prints and exits with, over no input,
+    # over script files this test writes, and over every proving-ground
+    # scenario, whose hash it requires. tests/vehicle_track_guards.cmake says
+    # what each case is for.
+    add_test(NAME nfsu_probe_vehicle_track_guards
+        COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/vehicle_track_guards.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+    set_tests_properties(nfsu_vehicle_track_tests nfsu_probe_vehicle_track_guards
+        PROPERTIES TIMEOUT 120)
 endif()

@@ -15,7 +15,7 @@
 # is handed, which is what makes it neutral (the top-level CMakeLists.txt
 # lists it). It uses the interface only, so it needs the header and not the
 # nfsu_platform library, which the console does not build. It does no
-# floating-point arithmetic, so it carries no floating-point flags.
+# floating-point arithmetic, but still inherits the global policy.
 add_library(nfsu_assets
     src/assets.cpp
 )

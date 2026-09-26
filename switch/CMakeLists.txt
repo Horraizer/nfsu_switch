@@ -287,6 +287,42 @@ if(NFSU_BUILD_TESTS)
     set_tests_properties(nfsu_switch_vehicle_nro PROPERTIES TIMEOUT 60)
 endif()
 
+# The driving controls and chase camera of issue #59 inherit the global
+# floating-point policy; the whole-tree census covers their objects.
+# The application that runs them on the console: the built-in demonstration
+# with its hash against the desktop pin, then the pad driving the same
+# session live on the text console. It reads no file and writes none.
+add_executable(nfsu_switch_drive
+    drive_main.cpp
+)
+
+target_link_libraries(nfsu_switch_drive PRIVATE nfsu_drive_session nfsu_stock_view)
+# gnu++17, as the libraries it links are compiled on the console; the
+# comment at the end of cmake/car_libraries.cmake says why it is named.
+set_target_properties(nfsu_switch_drive PROPERTIES
+    CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
+nfsu_enable_warnings(nfsu_switch_drive)
+
+nx_generate_nacp(
+    OUTPUT nfsu_switch_drive.nacp
+    NAME "nfsu_switch_drive"
+    AUTHOR "nfsu_switch contributors"
+    VERSION "0.1.0")
+
+nx_create_nro(nfsu_switch_drive
+    NACP nfsu_switch_drive.nacp)
+
+if(NFSU_BUILD_TESTS)
+    # The NRO and its ELF, as for the other applications.
+    add_test(NAME nfsu_switch_drive_nro
+        COMMAND ${CMAKE_COMMAND}
+                -DNRO=${CMAKE_CURRENT_BINARY_DIR}/nfsu_switch_drive.nro
+                -DELF=$<TARGET_FILE:nfsu_switch_drive>
+                -DTITLE=nfsu_switch_drive
+                -P ${PROJECT_SOURCE_DIR}/tests/switch_nro_check.cmake)
+    set_tests_properties(nfsu_switch_drive_nro PROPERTIES TIMEOUT 60)
+endif()
+
 # Same deko3d draw path, offscreen readback and on-screen CPU comparison.
 # No game asset is packaged; only the already-checked offline shaders.
 add_executable(nfsu_switch_compare compare_main.cpp deko_renderer.cpp)
@@ -307,4 +343,44 @@ if(NFSU_BUILD_TESTS)
             -DTITLE=nfsu_switch_compare -DSHADERS=${NFSU_SHADER_OUTPUT}
             -P ${PROJECT_SOURCE_DIR}/tests/switch_deko_romfs_check.cmake)
     set_tests_properties(nfsu_switch_compare_nro PROPERTIES TIMEOUT 60)
+endif()
+
+# The vehicle on the track on the console (issue #60): runs every built-in
+# scenario of docs/VEHICLE_TRACK.md through nfsu_vehicle_track - declared
+# for both configures in cmake/vehicle_track_libraries.cmake, with the
+# track contact queries it steps on - over the proving ground, and over
+# event 1's circuit when its TRACKB file is on the card, and reports each
+# telemetry hash and whether it is the one pinned on the desktop. Appended
+# as one block so that nothing above is reordered.
+add_executable(nfsu_switch_vehicle_track
+    vehicle_track_main.cpp
+)
+
+target_link_libraries(nfsu_switch_vehicle_track PRIVATE nfsu_vehicle_track)
+# gnu++17, as the libraries it links are compiled on the console; the
+# comment at the end of cmake/car_libraries.cmake says why it is named.
+set_target_properties(nfsu_switch_vehicle_track PROPERTIES
+    CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
+nfsu_enable_warnings(nfsu_switch_vehicle_track)
+
+nx_generate_nacp(
+    OUTPUT nfsu_switch_vehicle_track.nacp
+    NAME "nfsu_switch_vehicle_track"
+    AUTHOR "nfsu_switch contributors"
+    VERSION "0.1.0")
+
+nx_create_nro(nfsu_switch_vehicle_track
+    NACP nfsu_switch_vehicle_track.nacp)
+
+if(NFSU_BUILD_TESTS)
+    # The NRO and its ELF, as for the other applications.
+    add_test(NAME nfsu_switch_vehicle_track_nro
+        COMMAND ${CMAKE_COMMAND}
+                -DNRO=${CMAKE_CURRENT_BINARY_DIR}/nfsu_switch_vehicle_track.nro
+                -DELF=$<TARGET_FILE:nfsu_switch_vehicle_track>
+                -DTITLE=nfsu_switch_vehicle_track
+                -P ${PROJECT_SOURCE_DIR}/tests/switch_nro_check.cmake)
+
+    set_tests_properties(nfsu_switch_vehicle_track_nro
+        PROPERTIES TIMEOUT 60)
 endif()

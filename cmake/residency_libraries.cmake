@@ -16,12 +16,12 @@
 # rounded in integer arithmetic (review comment 3630, F1). See
 # docs/TRACK_STREAMING.md.
 #
-# Floating-point contraction is pinned off, as nfsu_core's is (issue #91):
+# The project-wide rule disables contraction, including nfsu_core (issue #91):
 # every zone the look-ahead picks and every sample of a path is a comparison
 # of a float the arithmetic produced, the desktop's x86-64 target has no FMA
 # to fuse with, and devkitA64's GCC fuses a multiply-add at -O2 unless told
-# not to. switch/CMakeLists.txt checks the console object for fused
-# instructions (tests/switch_fma_census.cmake).
+# not to. The top-level CMakeLists.txt registers the whole-tree check through
+# cmake/switch_fma_census.cmake after all Switch targets are declared.
 #
 # On the desktop the top-level CMakeLists.txt also links nfsu_track_stream,
 # whose table lookup and zone test it calls. The console builds neither of

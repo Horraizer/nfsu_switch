@@ -46,6 +46,10 @@ buttons, timing convention and `nxlink -a <ip>` deployment command.
 | `nfsu_switch_compare_nro` | `nfsu_switch_compare.nro`, `nfsu_switch_compare.nacp` | The comparison application packaged with checked offline shader blobs in RomFS; no game assets. |
 | `nfsu_switch_vehicle` | `nfsu_switch_vehicle.elf` | The vehicle model of issue #58: runs the eight built-in scripted input sequences through `nfsu_vehicle` and prints each telemetry hash, and whether `mixed` is the one pinned on the desktop ([`VEHICLE.md`](VEHICLE.md), "On the console"); + exits. Not yet run on a console. |
 | `nfsu_switch_vehicle_nro` | `nfsu_switch_vehicle.nro`, `nfsu_switch_vehicle.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_vehicle`. |
+| `nfsu_switch_drive` | `nfsu_switch_drive.elf` | The driving controls and chase camera of issue #59: replays the built-in demonstration through `nfsu_drive_session` and prints the stream hash and whether it is the one pinned on the desktop, then drives the same session live from the pad on the text console - speed, gear, inputs and camera as numbers, no picture yet; - puts the car back at the start and + exits ([`CONTROLS_CAMERA.md`](CONTROLS_CAMERA.md)). Not yet run on a console. |
+| `nfsu_switch_drive_nro` | `nfsu_switch_drive.nro`, `nfsu_switch_drive.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_drive`. |
+| `nfsu_switch_vehicle_track` | `nfsu_switch_vehicle_track.elf` | The car on the track of issue #60: runs the thirteen proving-ground scenarios through `nfsu_vehicle_track` and, when `sdmc:/nfsu/Tracks/TRACKB1003.lzc` is on the card, the six circuit scenarios, and prints each telemetry hash and whether it is the one pinned on the desktop ([`VEHICLE_TRACK.md`](VEHICLE_TRACK.md), "On the console"); + exits. Not yet run on a console. |
+| `nfsu_switch_vehicle_track_nro` | `nfsu_switch_vehicle_track.nro`, `nfsu_switch_vehicle_track.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_vehicle_track`. |
 
 Under `build-switch/` itself, the configure also builds the car-path
 libraries `nfsu_switch_car` links: `nfsu_image`, `nfsu_core`,
@@ -57,10 +61,16 @@ share), `nfsu_render`, `nfsu_sha256`, `nfsu_stock_frame`,
 and `nfsu_runtime_skin`, the camera and controller layers `nfsu_inspect`,
 `nfsu_input` and `nfsu_input_camera`, and `nfsu_stock_view`; the vehicle
 model `nfsu_vehicle`, which `cmake/vehicle_libraries.cmake` declares for
-both configures and `nfsu_switch_vehicle` links (issue #58); and, for
+both configures and `nfsu_switch_vehicle` links (issue #58); the contact
+layer `nfsu_track_contact` and the car on the track `nfsu_vehicle_track`,
+which `cmake/vehicle_track_libraries.cmake` declares for both configures
+and `nfsu_switch_vehicle_track` links (issue #60); and, for
 `nfsu_switch_assets`, the asset manifest and check `nfsu_assets` and the
 console's filesystem service `nfsu_posix_file_system`
-(`cmake/asset_libraries.cmake`).
+(`cmake/asset_libraries.cmake`); and the driving controls, the chase camera
+and the drive session of issue #59, `nfsu_drive_controls`,
+`nfsu_chase_camera` and `nfsu_drive_session` (`cmake/drive_libraries.cmake`),
+which `nfsu_switch_drive` links.
 
 `nfsu_switch_app` links libnx, which devkitPro's platform file adds to every
 link, and nothing else. The original minimal and CPU car applications load
@@ -79,6 +89,8 @@ runs on the build machine, not on a console:
 | `nfsu_switch_vehicle_nro` | The same checks for `nfsu_switch_vehicle.nro`, whose NACP is titled `nfsu_switch_vehicle`. |
 | `nfsu_switch_fma_census_guards` | Real AArch64 fast/off objects, each forbidden mnemonic, and invalid census inputs. |
 | `nfsu_switch_fma_census` | Every project object of every Switch library and executable, disassembled with the toolchain's `objdump`, holds no `fmadd`, `fmsub`, `fnmadd`, `fnmsub`, `fmla` or `fmls`, and the complete census includes `fmul`. See [FLOATING_POINT.md](FLOATING_POINT.md) for all per-object counts. |
+| `nfsu_switch_drive_nro` | The NRO checks for `nfsu_switch_drive.nro`, whose NACP is titled `nfsu_switch_drive`. |
+| `nfsu_switch_vehicle_track_nro` | The same checks for `nfsu_switch_vehicle_track.nro`, whose NACP is titled `nfsu_switch_vehicle_track`. |
 
 The desktop programs, the other libraries and every test are not configured
 for the console: the top-level `CMakeLists.txt` includes
