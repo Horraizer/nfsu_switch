@@ -75,48 +75,73 @@ It draws its report with the project's own font into a 1280x720 framebuffer,
 at the text scale of issue #141's application: 106 columns and 40 lines.
 While the check runs, the bottom line names the file being checked and, for
 a large one, how far through it the hash is. Then the screen holds, from the
-top:
+top, summary first, so that the verdict and the files to copy come right
+after the title:
 
 ```text
 nfsu_switch_assets: the retail files the first lap needs, on this SD card (issue #47)
 config: sdmc:/config/nfsu_switch/assets.cfg not found; root sdmc:/nfsu (the default)
 set first-lap: one timed lap of event 1 in the stock 240SX (issue #159), 12 files, 108907646 bytes
-<12 lines, one per file>
 install: <VERDICT> - <n> of 12 files ok: <n> missing, <n> wrong size, <n> wrong version, <n> unreadable
-copy these <n> files from the game's installation folder, keeping the folders:
-  <path> -> sdmc:/nfsu/<path>
+copy these <n> files from the game's installation folder to the same paths under sdmc:/nfsu:
+  <path>  <bytes> bytes
+<12 lines, one per file>
 read <bytes> bytes in <n> reads and <n> directory listings
-checked in <seconds> s
-Press + to exit.
+checked in <seconds> s. Press + to exit.
 ```
 
 A complete card says `install: COMPLETE - all 12 files match by name, size
-and SHA-256` in green and `nothing to copy`. Each file line starts with its
-status - `ok` in green, `MISSING`, `WRONG SIZE`, `WRONG VERSION`,
-`UNREADABLE` or `AMBIGUOUS` in red - then the file's path and what was found:
+and SHA-256` in green and `nothing to copy` in place of the copy lines. Each
+file line starts with its status - `ok` in green, `MISSING`, `WRONG SIZE`,
+`WRONG VERSION`, `UNREADABLE` or `AMBIGUOUS` in red - then the file's path
+and what was found:
 
 ```text
 ok            Cars/240SX/GEOMETRY.BIN  4780816 bytes, sha256 matches
 MISSING       Tracks/STREAML1RA.BUN  no Tracks in the root
-WRONG SIZE    Tracks/STREAML1RA.BUN  52428800 bytes, expected 92394688: shorter than the retail file: an interrupted copy?
-WRONG VERSION Global/GLOBALB.BUN  2361176 bytes, sha256 0123456789ABCDEF... expected 39DF38FAC2BE7CA0...
+WRONG SIZE    Tracks/STREAML1RA.BUN  52428800 bytes, expected 92394688: shorter: an interrupted copy?
+WRONG VERSION Global/GLOBALB.BUN  2361176 bytes, sha256 01234567... expected 39DF38FA...
 ```
 
 and a file found under another case adds `(found as <path on the card>)`.
+On the console a hash is shown by its first 8 digits and a wrong size says
+only which way it is wrong, so that every file line of the first-lap set
+fits the 106 columns; `nfsu_asset_tests` holds that for every status. With
+the title, the config and the status line, a card on which all 12 files are
+wrong fits the 40 lines. If a report ever does not fit - a config root long
+enough to wrap every line, say - the first lines win and the last line that
+fits says how many more do not, so what is cut is the tail of the per-file
+lines, never the verdict or the files to copy.
 
-On the owner's card as it is today - the six stock-car files and nothing
-else - the code predicts the six stock-car lines `ok` (if those copies are
-the retail files, which issue #141's `EQUAL` frame makes likely), then
-`MISSING` for `FrontEnd/FrontB.lzc` (`no FrontEnd in the root`),
-`Global/INGAMEB.BUN` (`no INGAMEB.BUN in Global`) and the four track files
-(`no Tracks in the root`), the verdict `install: MISSING FILES - 6 of 12
-files ok: 6 missing, 0 wrong size, 0 wrong version, 0 unreadable`, and six
-copy lines. That is what the code and the desktop tests say; it has not been
-seen on a console.
+What the code predicts, from the same calls the application makes, run on
+the desktop over the retail files (`issue47-opus-r2` harness, not in the
+tree); neither has been seen on a console:
 
-`+` exits, and so does a request from the system to close. The application
-opens every file for reading only and writes nothing, on the card or
-anywhere else.
+- **With all 12 files copied**: the title, the config line, the set line,
+  `install: COMPLETE - all 12 files match by name, size and SHA-256` and
+  `nothing to copy` in green, twelve green `ok` lines, `read 108907646 bytes
+  in 123 reads and 8 directory listings`, and `checked in <seconds> s. Press
+  + to exit.` - 19 lines.
+- **With only the six stock-car files** (the card as it was before the rest
+  were staged): the title, the config line, the set line, `install: MISSING
+  FILES - 6 of 12 files ok: 6 missing, 0 wrong size, 0 wrong version, 0
+  unreadable`, `copy these 6 files from the game's installation folder to
+  the same paths under sdmc:/nfsu:` and six copy lines - `FrontEnd/FrontB.lzc
+  4182578 bytes`, `Global/INGAMEB.BUN 1670080 bytes`, `Tracks/STREAML1RA.BUN
+  92394688 bytes`, `Tracks/STREAML1RA_1003.BUN 0 bytes`,
+  `Tracks/TEX1003TRACK.BIN 1086216 bytes`, `Tracks/TRACKB1003.lzc 433352
+  bytes` - then the twelve file lines, the six car files `ok` and `MISSING`
+  for `FrontEnd/FrontB.lzc` (`no FrontEnd in the root`), `Global/INGAMEB.BUN`
+  (`no INGAMEB.BUN in Global`) and the four track files (`no Tracks in the
+  root`), `read 9140732 bytes in 19 reads and 6 directory listings`, and the
+  status line - 25 lines.
+
+`+` exits, and so does a request from the system to close, while the check
+runs as well as after it: the application services the system and reads
+the + button before each file and after every chunk it hashes, at most 1
+MiB, and the HOME menu suspends it there as it does at the final prompt. The
+application opens every file for reading only and writes nothing, on the
+card or anywhere else.
 
 ## The manifest
 
@@ -259,17 +284,25 @@ root = sdmc:/games/nfsu
 - Every other line is `key = value`, spaces and tabs around either ignored.
   The only key is `root`, and it is given exactly once.
 - The root is absolute on the SD card: `sdmc:/` and then folder names
-  separated by `/`, none empty, `.` or `..`, and none holding `"`, `*`, `:`,
-  `<`, `>`, `?`, `|` or a backslash; at most 200 bytes. A trailing `/` is
-  dropped. `sdmc:/` alone, the card's top level, is allowed.
+  separated by `/`, none empty, `.` or `..`, and none holding a tab, `"`,
+  `*`, `:`, `<`, `>`, `?`, `|` or a backslash; at most 200 bytes. A tab is
+  allowed around the key and the value, not inside the root. A trailing `/`
+  is dropped. `sdmc:/` alone, the card's top level, is allowed.
 
 A config file that is present and breaks any of these, is larger, cannot be
 read, or has two spellings in its folder, is **refused, not ignored**: the
 application shows `config: <file> REFUSED: <what is wrong, with the line
-number>`, says to fix or delete it, checks nothing, and lists the files the
-set needs under the root. A root that parses and does not exist is applied,
-and the check then says `root <root> cannot be listed: it does not exist`,
-with every file missing.
+number>`, then `Fix the file, or delete it to use sdmc:/nfsu. Nothing was
+checked.`, checks nothing, and lists the files the set needs under the root.
+The same holds when whether there is a config file cannot be told, because a
+folder it would be in - the card's top level included - cannot be listed or
+holds more than 4096 names: `config: <file> REFUSED: cannot be looked for:
+sdmc:/ holds more than 4096 names` (or `... sdmc:/ cannot be listed (errno
+N)`), then `Whether there is a config file cannot be told, so nothing was
+checked.` A file that may be there is never taken for one that is not (review
+comment 3761). A root that parses and does not exist is applied, and the
+check then says `root <root> cannot be listed: it does not exist`, with
+every file missing.
 
 The config file is read by `nfsu_switch_assets`. Issue #141's
 `nfsu_switch_car` still takes its root as an argument, as before; the lap
@@ -282,8 +315,9 @@ nfsu_probe asset-check <root> [--set <first-lap|stock-car|event-1>]
 ```
 
 It runs the same check through the desktop file system service and prints
-`asset-check: root <root>` followed by the report lines above, with every
-hash in full. It exits 0 when every file matches, 2 when the root cannot be
+`asset-check: root <root>` followed by the report in its desktop form: the
+set, one line per file with every hash in full, the verdict, each file to
+copy as `<path> -> <root>/<path>`, and what was read. It exits 0 when every file matches, 2 when the root cannot be
 listed, 3 for any other install, and 1 for a usage error: a missing root, a
 second positional, an option that is not `--set` or a set that is not one.
 The root goes through the path-argument conversion of
@@ -357,22 +391,26 @@ the check; moving the loaders onto them is the lap application's work.
 - `nfsu_asset_tests`: the three sets against the pinned table, against the
   six files `stock_frame_file_path` names and against the names
   `nfsu_race_events` formats for track 1003 (`TRACKB1003.LZC` found as
-  `Tracks/TRACKB1003.lzc`); the naming rule; 17 manifest refusals; over the
-  fake, a complete install with every read's offset and size, a missing
-  file and a missing folder, a file cut short and one too long, one bit
-  changed in a 2.5 MiB file, every name in another case, two spellings of
-  one file and of one folder, a folder that will not list, a read that fails
-  part way, a folder in a file's place, a file that grows and one that
-  shrinks while it is read, an absent root, a root that is a file, 4096 and
-  4097 names in a folder, and the verdict order; 5 config files accepted and
-  22 refused by line and reason; the config file absent, applied, found in
-  another case, refused for its bytes, for being 4097 bytes (and unread),
-  for being a folder, unreadable, changed while read or spelled twice; the
-  console's whole report for a complete card, a moved root, a root that is
-  not there, a refused config, and the first-lap set on an empty card; and
-  over real directories under the build tree, six installs through the
-  desktop and the console services, which must agree, plus each of the
-  three calls directly.
+  `Tracks/TRACKB1003.lzc`); the naming rule, a prefix included; 18 manifest
+  refusals; over the fake, a complete install with every read's offset and
+  size, a missing file and a missing folder, a file cut short and one too
+  long, one bit changed in a 2.5 MiB file, every name in another case, two
+  spellings of one file and of one folder, a folder that will not list, a
+  read that fails part way, a folder in a file's place, a file that grows and
+  one that shrinks while it is read, an absent root, a root that is a file,
+  4096 and 4097 names in a folder, and the verdict order; both forms of the
+  report, line by line, with no `(found as ...)` on a lookup that stopped
+  part way; that every console line of the first-lap set fits 106 columns
+  and the whole screen 40 lines, for every status; 5 config files accepted
+  and 24 refused by line and reason, a tab inside the root among them; the
+  config file absent, applied, found in another case, refused for its bytes,
+  for being 4097 bytes (and unread), for being a folder, unreadable, shrunk
+  or grown while read, spelled twice, and when the card's top level holds
+  more than 4096 names or will not list; the console's whole report for a
+  complete card, a moved root, a root that is not there, a refused config,
+  and the first-lap set on an empty card; and over real directories under
+  the build tree, six installs through the desktop and the console services,
+  which must agree, plus each of the three calls directly.
 - `nfsu_probe_asset_check_guards`: the command's usage errors, a root that
   is not there, a file as the root, an empty root, a mixed first-lap install
   written by the script - one file right, two of the right size and the
@@ -391,13 +429,22 @@ checking a file whose size is wrong, dropping the probe past the end,
 letting the config parser accept any byte but NUL, exiting 0 for every
 verdict, listing `.` and `..` on the console and dropping the desktop
 listing bound each failed `nfsu_asset_tests` or the guards, and the tree
-passed again once each was restored.
+passed again once each was restored. For review comment 3761 the two
+top-level cases were written first and failed against the code as it was,
+six failures with the old `not found; root sdmc:/nfsu (the default)` line on
+screen; and the fixes and the new cases were each undone in turn - the
+top-level refusal, the tab refusal, the `(found as ...)` condition, the
+console's short wrong-size wording and 8-digit hashes - and so were three
+mutants the review found surviving: a name match that accepts a prefix, hash
+digits past `F`, and a config file that grew while it was read. Each failed
+`nfsu_asset_tests`, and each passed again once restored.
 
 ## What is not known
 
 - **Nothing here has run on a console.** `nfsu_switch_assets` is built with
   no warning and checked as a file; what it shows is what the code and the
-  desktop tests say. How long the check takes there - 104 MiB read from the
+  desktop tests say. Whether + and a close request during the check leave
+  as promptly on the console as the code says is not observed either. How long the check takes there - 104 MiB read from the
   card and hashed by the CPU - is unmeasured, and so is the SD card's speed.
 - **How the console's calls behave on the card itself.** What was checked
   is the linked code: the NRO's ELF holds libnx's SD card device

@@ -322,6 +322,9 @@ void test_naming_rule() {
     check(nfsu::asset_names_match("Tracks", "tRACKS"), "mixed case folds");
     check(nfsu::asset_names_match("", ""), "two empty names match");
     check(!nfsu::asset_names_match("Tracks", "Track"), "lengths differ");
+    // Review comment 3761, N3 (M3): the shorter name first as well.
+    check(!nfsu::asset_names_match("Track", "Tracks"), "a prefix is not a match");
+    check(!nfsu::asset_names_match("", "a"), "nor is the empty name");
     check(!nfsu::asset_names_match("GLOBALB.BUN", "GLOBALB.BIN"), "one letter differs");
     check(!nfsu::asset_names_match("@", "`"), "0x40 and 0x60 are not a letter pair");
     check(!nfsu::asset_names_match("[", "{"), "0x5B and 0x7B are not a letter pair");
@@ -373,6 +376,10 @@ void test_validation() {
          "not 64 upper-case"},
         {"short hash",
          [](nfsu::AssetManifest& m) { m.files[0].sha256 = std::string(63, 'A'); },
+         "not 64 upper-case"},
+        // Review comment 3761, N3 (M12): upper case, and not hexadecimal.
+        {"digit G",
+         [](nfsu::AssetManifest& m) { m.files[0].sha256 = std::string(63, 'A') + "G"; },
          "not 64 upper-case"},
         {"same file twice",
          [](nfsu::AssetManifest& m) { m.files[3].path = "tracks/trackb1003.LZC"; },
@@ -454,19 +461,38 @@ void test_complete() {
                                        "1 2621447/2621447", "2 100/100"},
           "and every chunk");
 
-    check_lines(texts(nfsu::asset_report_lines(report, "sdmc:/nfsu", false)),
+    check_lines(texts(nfsu::asset_report_lines(report, "sdmc:/nfsu",
+                                               nfsu::AssetReportForm::console)),
                 {
                     "set synthetic: four synthetic files, 4 files, 2624547 bytes",
+                    "install: COMPLETE - all 4 files match by name, size and SHA-256",
+                    "nothing to copy",
                     "ok            Cars/240SX/GEOMETRY.BIN  3000 bytes, sha256 matches",
                     "ok            Global/GLOBALB.BUN  2621447 bytes, sha256 matches",
                     "ok            Tracks/TRACKB1003.lzc  100 bytes, sha256 matches",
                     "ok            Tracks/STREAML1RA_1003.BUN  0 bytes, sha256 matches",
+                    "read 2624547 bytes in 9 reads and 5 directory listings",
+                },
+                "the complete report, console form: the verdict first");
+    check_lines(texts(nfsu::asset_report_lines(report, "D:/nfsu",
+                                               nfsu::AssetReportForm::desktop)),
+                {
+                    "set synthetic: four synthetic files, 4 files, 2624547 bytes",
+                    "ok            Cars/240SX/GEOMETRY.BIN  3000 bytes, sha256 " +
+                        s.manifest.files[0].sha256,
+                    "ok            Global/GLOBALB.BUN  2621447 bytes, sha256 " +
+                        s.manifest.files[1].sha256,
+                    "ok            Tracks/TRACKB1003.lzc  100 bytes, sha256 " +
+                        s.manifest.files[2].sha256,
+                    "ok            Tracks/STREAML1RA_1003.BUN  0 bytes, sha256 " +
+                        s.manifest.files[3].sha256,
                     "install: COMPLETE - all 4 files match by name, size and SHA-256",
                     "nothing to copy",
                     "read 2624547 bytes in 9 reads and 5 directory listings",
                 },
-                "the complete report, console form");
-    const std::vector<nfsu::AssetLine> full = nfsu::asset_report_lines(report, "D:/nfsu", true);
+                "the complete report, desktop form: the files first");
+    const std::vector<nfsu::AssetLine> full =
+        nfsu::asset_report_lines(report, "D:/nfsu", nfsu::AssetReportForm::desktop);
     check_equal(full[1].text,
                 "ok            Cars/240SX/GEOMETRY.BIN  3000 bytes, sha256 " +
                     s.manifest.files[0].sha256,
@@ -492,7 +518,7 @@ void test_missing() {
               "named with the directory it is not in: " + report.files[2].detail);
         check(report.count(nfsu::AssetStatus::ok) == 3, "the other three still checked");
         const std::vector<std::string> lines =
-            texts(nfsu::asset_report_lines(report, "sdmc:/nfsu", false));
+            texts(nfsu::asset_report_lines(report, "sdmc:/nfsu", nfsu::AssetReportForm::desktop));
         check_lines(std::vector<std::string>(lines.begin() + 5, lines.end()),
                     {
                         "install: MISSING FILES - 3 of 4 files ok: 1 missing, 0 wrong size, 0 "
@@ -505,6 +531,22 @@ void test_missing() {
                     "the missing report's tail");
         check_equal(lines[3], "MISSING       Tracks/TRACKB1003.lzc  no TRACKB1003.lzc in Tracks",
                     "the missing line");
+        check_lines(texts(nfsu::asset_report_lines(report, "sdmc:/nfsu",
+                                                   nfsu::AssetReportForm::console)),
+                    {
+                        "set synthetic: four synthetic files, 4 files, 2624547 bytes",
+                        "install: MISSING FILES - 3 of 4 files ok: 1 missing, 0 wrong size, 0 "
+                        "wrong version, 0 unreadable",
+                        "copy this file from the game's installation folder to the same path "
+                        "under sdmc:/nfsu:",
+                        "  Tracks/TRACKB1003.lzc  100 bytes",
+                        "ok            Cars/240SX/GEOMETRY.BIN  3000 bytes, sha256 matches",
+                        "ok            Global/GLOBALB.BUN  2621447 bytes, sha256 matches",
+                        "MISSING       Tracks/TRACKB1003.lzc  no TRACKB1003.lzc in Tracks",
+                        "ok            Tracks/STREAML1RA_1003.BUN  0 bytes, sha256 matches",
+                        "read 2624447 bytes in 7 reads and 5 directory listings",
+                    },
+                    "the missing report, console form");
     }
     {
         // A whole directory missing: both files under it, named by the
@@ -518,14 +560,19 @@ void test_missing() {
               "a missing directory is named");
         check(report.count(nfsu::AssetStatus::missing) == 2 && report.listings == 4,
               "and nothing under it is listed");
-        const std::vector<std::string> lines =
-            texts(nfsu::asset_report_lines(report, "sdmc:/nfsu/", false));
+        const std::vector<std::string> lines = texts(
+            nfsu::asset_report_lines(report, "sdmc:/nfsu/", nfsu::AssetReportForm::desktop));
         check_equal(lines[6], "copy these 2 files from the game's installation folder, keeping "
                               "the folders:",
                     "the plural copy line");
         check_equal(lines[8],
                     "  Tracks/STREAML1RA_1003.BUN -> sdmc:/nfsu/Tracks/STREAML1RA_1003.BUN",
                     "a root spelled with a trailing slash is not doubled");
+        const std::vector<std::string> console = texts(
+            nfsu::asset_report_lines(report, "sdmc:/nfsu", nfsu::AssetReportForm::console));
+        check_equal(console[2], "copy these 2 files from the game's installation folder to the "
+                                "same paths under sdmc:/nfsu:",
+                    "the console's plural copy line");
     }
 }
 
@@ -549,7 +596,15 @@ void test_wrong_size() {
                                                : "longer than the retail file"),
               "says which way: " + file.detail);
         const std::vector<std::string> lines =
-            texts(nfsu::asset_report_lines(report, "sdmc:/nfsu", false));
+            texts(nfsu::asset_report_lines(report, "sdmc:/nfsu", nfsu::AssetReportForm::desktop));
+        const std::vector<std::string> console =
+            texts(nfsu::asset_report_lines(report, "sdmc:/nfsu", nfsu::AssetReportForm::console));
+        check_equal(console[6],
+                    "WRONG SIZE    Tracks/TRACKB1003.lzc  " + std::to_string(size) +
+                        " bytes, expected 100: " +
+                        (size < 100 ? "shorter: an interrupted copy?" : "longer"),
+                    "the console's wrong-size line");
+        check_equal(console[3], "  Tracks/TRACKB1003.lzc  100 bytes", "the console's copy line");
         check_equal(lines[3],
                     "WRONG SIZE    Tracks/TRACKB1003.lzc  " + std::to_string(size) +
                         " bytes, expected 100: " + file.detail,
@@ -575,22 +630,26 @@ void test_wrong_hash() {
               file.sha256 == hash_of(changed) && file.bytes_read == changed.size(),
           "the whole file hashed, one bit off");
     const std::vector<std::string> lines =
-        texts(nfsu::asset_report_lines(report, "sdmc:/nfsu", false));
-    check_equal(lines[2],
+        texts(nfsu::asset_report_lines(report, "sdmc:/nfsu", nfsu::AssetReportForm::console));
+    check_equal(lines[5],
                 "WRONG VERSION Global/GLOBALB.BUN  2621447 bytes, sha256 " +
-                    hash_of(changed).substr(0, 16) + "... expected " +
-                    s.manifest.files[1].sha256.substr(0, 16) + "...",
+                    hash_of(changed).substr(0, 8) + "... expected " +
+                    s.manifest.files[1].sha256.substr(0, 8) + "...",
                 "the console's short hashes");
     const std::vector<std::string> full =
-        texts(nfsu::asset_report_lines(report, "sdmc:/nfsu", true));
+        texts(nfsu::asset_report_lines(report, "sdmc:/nfsu", nfsu::AssetReportForm::desktop));
     check_equal(full[2],
                 "WRONG VERSION Global/GLOBALB.BUN  2621447 bytes, sha256 " + hash_of(changed) +
                     " expected " + s.manifest.files[1].sha256,
                 "the desktop's full hashes");
-    check_equal(lines[5],
+    check_equal(lines[1],
                 "install: WRONG VERSION - 3 of 4 files ok: 0 missing, 0 wrong size, 1 wrong "
                 "version, 0 unreadable",
-                "the wrong-version verdict");
+                "the wrong-version verdict, first on the console");
+    check_equal(full[5],
+                "install: WRONG VERSION - 3 of 4 files ok: 0 missing, 0 wrong size, 1 wrong "
+                "version, 0 unreadable",
+                "and after the files on the desktop");
 }
 
 void test_case_insensitive() {
@@ -606,8 +665,8 @@ void test_case_insensitive() {
           "found as the file system spells it");
     check(report.listings == 5, "tracks listed once for both of its files");
     const std::vector<std::string> lines =
-        texts(nfsu::asset_report_lines(report, "sdmc:/nfsu", false));
-    check_equal(lines[3],
+        texts(nfsu::asset_report_lines(report, "sdmc:/nfsu", nfsu::AssetReportForm::console));
+    check_equal(lines[5],
                 "ok            Tracks/TRACKB1003.lzc  100 bytes, sha256 matches (found as "
                 "tracks/trackb1003.LZC)",
                 "the line says where");
@@ -630,11 +689,18 @@ void test_ambiguous() {
                   reads_of(files, "sdmc:/nfsu/Tracks/TRACKB1003.LZC") == 0,
               "neither is read");
         const std::vector<std::string> lines =
-            texts(nfsu::asset_report_lines(report, "sdmc:/nfsu", false));
+            texts(nfsu::asset_report_lines(report, "sdmc:/nfsu", nfsu::AssetReportForm::desktop));
         check_equal(lines[5],
                     "install: UNREADABLE - 3 of 4 files ok: 0 missing, 0 wrong size, 0 wrong "
                     "version, 1 unreadable",
                     "ambiguous counts as unreadable");
+        // Review comment 3761, N2: the lookup stopped at Tracks, so there is
+        // no place the file was found as.
+        check(!report.files[2].found && report.files[2].found_as == "Tracks", "not found");
+        check_equal(lines[3],
+                    "AMBIGUOUS     Tracks/TRACKB1003.lzc  Tracks holds 2 names that match "
+                    "TRACKB1003.lzc: \"TRACKB1003.LZC\" \"TRACKB1003.lzc\"",
+                    "the ambiguous line names no partial path as found");
     }
     {
         nfsu::FakeFileSystem files;
@@ -665,6 +731,12 @@ void test_unreadable() {
                   report.files[1].bytes_read == nfsu::kAssetReadChunkBytes && !report.files[1].hashed,
               "a read that fails part way: " + report.files[1].detail);
         check(report.count(nfsu::AssetStatus::unreadable) == 3, "three unreadable");
+        const std::vector<std::string> lines = texts(
+            nfsu::asset_report_lines(report, "sdmc:/nfsu", nfsu::AssetReportForm::desktop));
+        check_equal(lines[3],
+                    "UNREADABLE    Tracks/TRACKB1003.lzc  Tracks cannot be listed: cannot be "
+                    "listed (errno 5)",
+                    "a folder that will not list names no partial path as found");
     }
     {
         nfsu::FakeFileSystem files;
@@ -719,7 +791,7 @@ void test_root() {
                   report.verdict == nfsu::AssetVerdict::missing_files && report.listings == 1,
               "every file missing, the root asked for once");
         const std::vector<std::string> lines =
-            texts(nfsu::asset_report_lines(report, "sdmc:/nfsu", false));
+            texts(nfsu::asset_report_lines(report, "sdmc:/nfsu", nfsu::AssetReportForm::desktop));
         check_equal(lines[1], "root sdmc:/nfsu cannot be listed: it does not exist",
                     "the root line");
         check_equal(lines[2],
@@ -845,6 +917,11 @@ void test_config_parse() {
         {"# only a comment\n", "sets no root"},
         {"", "sets no root"},
         {"root = sdmc:/n\rfsu\n", "line 1 holds a carriage return that does not end it"},
+        // Review comment 3761, N1: a tab passes the byte check, and a FAT
+        // name cannot hold one.
+        {"root = sdmc:/a\tb\n",
+         "line 1: the root holds a tab, which a folder name on the SD card cannot"},
+        {"root = sdmc:/games/\tnfsu\n", "the root holds a tab"},
     };
     for (const Bad& bad : bads) {
         std::string root = "unchanged";
@@ -957,6 +1034,18 @@ void test_config_load() {
               "a file that changed is refused: " + config.detail);
     }
     {
+        // Review comment 3761, N3 (M20): sized at 10 and holding 18, so the
+        // bounded read of 11 bytes gets all 11.
+        nfsu::FakeFileSystem files;
+        files.add_file(file, bytes_of("root = sdmc:/nfsu\n"));
+        files.report_size(file, 10);
+        const nfsu::AssetConfig config =
+            nfsu::load_asset_config(files, "sdmc:/", nfsu::kConsoleAssetConfig, "sdmc:/nfsu");
+        check(config.state == nfsu::AssetConfigState::refused &&
+                  config.detail == "changed while it was read: 11 bytes where it was sized at 10",
+              "a file that grew is refused: " + config.detail);
+    }
+    {
         nfsu::FakeFileSystem files;
         files.add_file(file, bytes_of("root = sdmc:/nfsu\n"));
         files.add_file("sdmc:/config/nfsu_switch/ASSETS.CFG", bytes_of("root = sdmc:/x\n"));
@@ -965,6 +1054,45 @@ void test_config_load() {
         check(config.state == nfsu::AssetConfigState::refused &&
                   contains(config.detail, "cannot be read: config/nfsu_switch holds 2 names"),
               "two spellings of the config file are refused: " + config.detail);
+    }
+    // Review comment 3761, F1: the card's top level cannot be listed - more
+    // names than the bound, or a listing error - so whether a config file is
+    // there cannot be told. It is refused, not taken as absent, and nothing
+    // is checked: not the root it names, and not the default.
+    for (int variant = 0; variant < 2; ++variant) {
+        nfsu::FakeFileSystem files;
+        files.add_file(file, bytes_of("root = sdmc:/games\n"));
+        files.add_directory("sdmc:/games");
+        files.add_directory("sdmc:/nfsu");
+        std::string why;
+        if (variant == 0) {
+            for (std::size_t i = 0; i < nfsu::kAssetMaxDirectoryNames + 4 - 3; ++i) {
+                files.add_directory("sdmc:/d" + std::to_string(i));
+            }
+            why = "sdmc:/ holds more than 4096 names";
+        } else {
+            files.fail_listing("sdmc:", "cannot be listed (errno 5)");
+            why = "sdmc:/ cannot be listed (errno 5)";
+        }
+        const std::string label = variant == 0 ? "over the bound" : "a listing error";
+        const nfsu::AssetConfig config =
+            nfsu::load_asset_config(files, "sdmc:/", nfsu::kConsoleAssetConfig, "sdmc:/nfsu");
+        check(config.state == nfsu::AssetConfigState::refused && config.root.empty() &&
+                  config.detail == "cannot be looked for: " + why,
+              "a card whose top level will not list refuses the config, " + label + ": " +
+                  config.detail);
+        const nfsu::ConsoleAssetCheck run =
+            nfsu::run_console_asset_check(files, nfsu::ConsoleAssetSetup{}, synthetic().manifest);
+        check(!run.checked && files.listed() == std::vector<std::string>{"sdmc:", "sdmc:"},
+              "and checks nothing, " + label);
+        check(run.lines.size() >= 2 &&
+                  run.lines[0].text == "config: sdmc:/config/nfsu_switch/assets.cfg REFUSED: "
+                                       "cannot be looked for: " +
+                                           why &&
+                  run.lines[1].text ==
+                      "Whether there is a config file cannot be told, so nothing was checked.",
+              "and says so on screen, " + label + ": " +
+                  (run.lines.empty() ? std::string() : run.lines[0].text));
     }
 }
 
@@ -988,9 +1116,9 @@ void test_console_run() {
                     "config: sdmc:/config/nfsu_switch/assets.cfg not found; root sdmc:/nfsu (the "
                     "default)",
                     "the config line");
-        check(run.lines.size() == 9 && run.lines[6].text == "install: COMPLETE - all 4 files "
+        check(run.lines.size() == 9 && run.lines[2].text == "install: COMPLETE - all 4 files "
                                                             "match by name, size and SHA-256",
-              "then the report");
+              "then the report, verdict first");
     }
     {
         nfsu::FakeFileSystem files;
@@ -1056,6 +1184,22 @@ void test_console_run() {
                 "default)",
                 "set first-lap: one timed lap of event 1 in the stock 240SX (issue #159), 12 "
                 "files, 108907646 bytes",
+                "install: MISSING FILES - 0 of 12 files ok: 12 missing, 0 wrong size, 0 wrong "
+                "version, 0 unreadable",
+                "copy these 12 files from the game's installation folder to the same paths "
+                "under sdmc:/nfsu:",
+                "  Cars/240SX/GEOMETRY.BIN  4780816 bytes",
+                "  Cars/240SX/TEXTURES.BIN  697340 bytes",
+                "  Cars/BRAKES/GEOMETRY.BIN  69408 bytes",
+                "  Cars/PLATES/GEOMETRY.BIN  1184 bytes",
+                "  Cars/TEXTURES.BIN  1230808 bytes",
+                "  FrontEnd/FrontB.lzc  4182578 bytes",
+                "  Global/GLOBALB.BUN  2361176 bytes",
+                "  Global/INGAMEB.BUN  1670080 bytes",
+                "  Tracks/STREAML1RA.BUN  92394688 bytes",
+                "  Tracks/STREAML1RA_1003.BUN  0 bytes",
+                "  Tracks/TEX1003TRACK.BIN  1086216 bytes",
+                "  Tracks/TRACKB1003.lzc  433352 bytes",
                 "MISSING       Cars/240SX/GEOMETRY.BIN  no Cars in the root",
                 "MISSING       Cars/240SX/TEXTURES.BIN  no Cars in the root",
                 "MISSING       Cars/BRAKES/GEOMETRY.BIN  no Cars in the root",
@@ -1068,24 +1212,78 @@ void test_console_run() {
                 "MISSING       Tracks/STREAML1RA_1003.BUN  no Tracks in the root",
                 "MISSING       Tracks/TEX1003TRACK.BIN  no Tracks in the root",
                 "MISSING       Tracks/TRACKB1003.lzc  no Tracks in the root",
-                "install: MISSING FILES - 0 of 12 files ok: 12 missing, 0 wrong size, 0 wrong "
-                "version, 0 unreadable",
-                "copy these 12 files from the game's installation folder, keeping the folders:",
-                "  Cars/240SX/GEOMETRY.BIN -> sdmc:/nfsu/Cars/240SX/GEOMETRY.BIN",
-                "  Cars/240SX/TEXTURES.BIN -> sdmc:/nfsu/Cars/240SX/TEXTURES.BIN",
-                "  Cars/BRAKES/GEOMETRY.BIN -> sdmc:/nfsu/Cars/BRAKES/GEOMETRY.BIN",
-                "  Cars/PLATES/GEOMETRY.BIN -> sdmc:/nfsu/Cars/PLATES/GEOMETRY.BIN",
-                "  Cars/TEXTURES.BIN -> sdmc:/nfsu/Cars/TEXTURES.BIN",
-                "  FrontEnd/FrontB.lzc -> sdmc:/nfsu/FrontEnd/FrontB.lzc",
-                "  Global/GLOBALB.BUN -> sdmc:/nfsu/Global/GLOBALB.BUN",
-                "  Global/INGAMEB.BUN -> sdmc:/nfsu/Global/INGAMEB.BUN",
-                "  Tracks/STREAML1RA.BUN -> sdmc:/nfsu/Tracks/STREAML1RA.BUN",
-                "  Tracks/STREAML1RA_1003.BUN -> sdmc:/nfsu/Tracks/STREAML1RA_1003.BUN",
-                "  Tracks/TEX1003TRACK.BIN -> sdmc:/nfsu/Tracks/TEX1003TRACK.BIN",
-                "  Tracks/TRACKB1003.lzc -> sdmc:/nfsu/Tracks/TRACKB1003.lzc",
                 "read 0 bytes in 0 reads and 1 directory listings",
             },
             "the first-lap report on an empty card");
+    }
+}
+
+// Review comment 3761, N6: the console form of the first-lap report for a
+// card on which every file is wrong the same way. Every line fits the
+// screen's 106 columns, so nothing wraps, and the whole report with the
+// application's title, config and status lines fits its 40 rows.
+void test_console_fits() {
+    nfsu::AssetManifest first;
+    nfsu::retail_asset_manifest("first-lap", first);
+    for (const nfsu::AssetStatus status :
+         {nfsu::AssetStatus::ok, nfsu::AssetStatus::missing, nfsu::AssetStatus::wrong_size,
+          nfsu::AssetStatus::wrong_hash}) {
+        for (const bool shorter : {true, false}) {
+            nfsu::AssetCheckReport report;
+            report.manifest = first.name;
+            report.title = first.title;
+            report.root_listed = true;
+            for (const nfsu::AssetFile& expected : first.files) {
+                nfsu::AssetFileReport file;
+                file.expected = expected;
+                file.status = status;
+                file.found = status != nfsu::AssetStatus::missing;
+                file.found_as = expected.path;
+                file.sized = true;
+                file.size = expected.size;
+                file.sha256 = expected.sha256;
+                if (status == nfsu::AssetStatus::missing) {
+                    file.detail = "no " + expected.path.substr(expected.path.rfind('/') + 1) +
+                                  " in " + expected.path.substr(0, expected.path.rfind('/'));
+                } else if (status == nfsu::AssetStatus::wrong_size) {
+                    // The widest sizes a file of this set can be reported at.
+                    file.size = shorter && expected.size > 0 ? 10000000 : 99999999;
+                    if (shorter && expected.size <= 10000000) {
+                        file.size = expected.size > 0 ? expected.size - 1 : 1;
+                    }
+                    file.detail = file.size < expected.size
+                                      ? "shorter than the retail file: an interrupted copy?"
+                                      : "longer than the retail file";
+                } else if (status == nfsu::AssetStatus::wrong_hash) {
+                    file.sha256 = std::string(64, 'F');
+                }
+                ++report.counts[static_cast<std::size_t>(status)];
+                report.files.push_back(file);
+            }
+            report.verdict = status == nfsu::AssetStatus::ok ? nfsu::AssetVerdict::complete
+                           : status == nfsu::AssetStatus::missing
+                               ? nfsu::AssetVerdict::missing_files
+                           : status == nfsu::AssetStatus::wrong_size
+                               ? nfsu::AssetVerdict::partial
+                               : nfsu::AssetVerdict::wrong_version;
+            report.bytes_read = 108907646;
+            report.reads = 123;
+            report.listings = 8;
+            const std::vector<nfsu::AssetLine> lines =
+                nfsu::asset_report_lines(report, "sdmc:/nfsu", nfsu::AssetReportForm::console);
+            std::size_t widest = 0;
+            for (const nfsu::AssetLine& line : lines) {
+                widest = std::max(widest, line.text.size());
+            }
+            const std::string label = std::string(nfsu::asset_status_name(status)) +
+                                      (shorter ? ", shorter" : ", longer");
+            check(widest <= 106, "every console line fits 106 columns, " + label + ": " +
+                                     std::to_string(widest));
+            // Title, config, the report, and the status line.
+            check(2 + lines.size() + 1 <= 40,
+                  "the whole screen fits 40 rows, " + label + ": " +
+                      std::to_string(2 + lines.size() + 1));
+        }
     }
 }
 
@@ -1259,6 +1457,7 @@ int main() {
     test_config_parse();
     test_config_load();
     test_console_run();
+    test_console_fits();
     test_disk();
     if (g_failures != 0) {
         std::cerr << g_failures << " failure(s)\n";

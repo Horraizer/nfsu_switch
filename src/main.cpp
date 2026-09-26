@@ -338,7 +338,8 @@ int run_asset_check(const fs::path& root, const nfsu::AssetManifest& manifest) {
     }
     const std::string root_text = root.generic_string();
     std::cout << "asset-check: root " << root_text << '\n';
-    for (const nfsu::AssetLine& line : nfsu::asset_report_lines(report, root_text, true)) {
+    for (const nfsu::AssetLine& line :
+         nfsu::asset_report_lines(report, root_text, nfsu::AssetReportForm::desktop)) {
         std::cout << line.text << '\n';
     }
     if (!report.root_listed) {

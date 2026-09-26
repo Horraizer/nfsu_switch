@@ -394,10 +394,6 @@ std::string padded(const std::string& text, std::size_t width) {
     return text.size() >= width ? text + " " : text + std::string(width - text.size(), ' ');
 }
 
-std::string short_hash(const std::string& hash, bool full) {
-    return full || hash.size() <= 16 ? hash : hash.substr(0, 16) + "...";
-}
-
 // Checks a root path from a config file; see parse_asset_config.
 bool normalise_console_root(const std::string& value, std::string& root, std::string& why) {
     static const std::string prefix = "sdmc:/";
@@ -435,6 +431,12 @@ bool normalise_console_root(const std::string& value, std::string& root, std::st
             return false;
         }
         for (const char c : part) {
+            if (!printable(c)) {
+                why = std::string(c == '\t' ? "holds a tab" : "holds the byte " +
+                                               hex_byte(static_cast<unsigned char>(c))) +
+                      ", which a folder name on the SD card cannot";
+                return false;
+            }
             if (c == '"' || c == '*' || c == ':' || c == '<' || c == '>' || c == '?' ||
                 c == '|') {
                 why = std::string("holds the character ") + c +
@@ -639,6 +641,7 @@ bool check_asset_install(
         AssetFileReport file;
         file.expected = expected;
         const AssetResolution found = index.resolve(expected.path);
+        file.found = found.lookup == AssetLookup::found;
         file.found_as = found.found_as;
         if (!found.root_listed) {
             static const std::string prefix = "the root ";
@@ -678,61 +681,74 @@ bool check_asset_install(
 // ---------------------------------------------------------------------------
 
 std::vector<AssetLine> asset_report_lines(
-    const AssetCheckReport& report, const std::string& root_text, bool full_hashes) {
-    std::vector<AssetLine> lines;
+    const AssetCheckReport& report, const std::string& root_text, AssetReportForm form) {
+    const bool console = form == AssetReportForm::console;
     std::uint64_t total = 0;
     for (const AssetFileReport& file : report.files) {
         total += file.expected.size;
     }
-    lines.push_back(AssetLine{"set " + report.manifest + ": " + report.title + ", " +
-                                  std::to_string(report.files.size()) + " files, " +
-                                  std::to_string(total) + " bytes",
-                              AssetTone::plain});
+    std::vector<AssetLine> head;
+    head.push_back(AssetLine{"set " + report.manifest + ": " + report.title + ", " +
+                                 std::to_string(report.files.size()) + " files, " +
+                                 std::to_string(total) + " bytes",
+                             AssetTone::plain});
     if (!report.root_listed) {
-        lines.push_back(AssetLine{"root " + root_text + " cannot be listed: it " +
-                                      report.root_problem,
-                                  AssetTone::bad});
+        head.push_back(AssetLine{"root " + root_text + " cannot be listed: it " +
+                                     report.root_problem,
+                                 AssetTone::bad});
     }
+
+    std::vector<AssetLine> files;
     constexpr std::size_t kLabelWidth = 14;
+    constexpr std::size_t kConsoleHashDigits = 8;
     for (const AssetFileReport& file : report.files) {
         std::string text = padded(status_label(file.status), kLabelWidth) + file.expected.path;
         switch (file.status) {
         case AssetStatus::ok:
             text += "  " + std::to_string(file.size) + " bytes, sha256 " +
-                    (full_hashes ? file.sha256 : std::string("matches"));
+                    (console ? std::string("matches") : file.sha256);
             break;
         case AssetStatus::missing:
             text += "  " + file.detail;
             break;
         case AssetStatus::wrong_size:
             text += "  " + std::to_string(file.size) + " bytes, expected " +
-                    std::to_string(file.expected.size) + ": " + file.detail;
+                    std::to_string(file.expected.size) + ": " +
+                    (!console ? file.detail
+                              : file.size < file.expected.size
+                                    ? std::string("shorter: an interrupted copy?")
+                                    : std::string("longer"));
             break;
         case AssetStatus::wrong_hash:
             text += "  " + std::to_string(file.size) + " bytes, sha256 " +
-                    short_hash(file.sha256, full_hashes) + " expected " +
-                    short_hash(file.expected.sha256, full_hashes);
+                    (console ? file.sha256.substr(0, kConsoleHashDigits) + "..." : file.sha256) +
+                    " expected " +
+                    (console ? file.expected.sha256.substr(0, kConsoleHashDigits) + "..."
+                             : file.expected.sha256);
             break;
         case AssetStatus::unreadable:
         case AssetStatus::ambiguous:
             text += "  " + file.detail;
             break;
         }
-        if (file.status != AssetStatus::missing && !file.found_as.empty() &&
-            file.found_as != file.expected.path) {
+        // Only a file that was found has a place to name; a lookup that
+        // stopped part way names the folder it stopped at in its detail.
+        if (file.found && file.found_as != file.expected.path) {
             text += " (found as " + file.found_as + ")";
         }
-        lines.push_back(AssetLine{text, file.status == AssetStatus::ok ? AssetTone::good
-                                                                      : AssetTone::bad});
+        files.push_back(AssetLine{text, file.status == AssetStatus::ok ? AssetTone::good
+                                                                       : AssetTone::bad});
     }
+
+    std::vector<AssetLine> verdict;
     const std::size_t ok = report.count(AssetStatus::ok);
     if (report.verdict == AssetVerdict::complete) {
-        lines.push_back(AssetLine{"install: COMPLETE - all " + std::to_string(ok) +
-                                      " files match by name, size and SHA-256",
-                                  AssetTone::good});
-        lines.push_back(AssetLine{"nothing to copy", AssetTone::good});
+        verdict.push_back(AssetLine{"install: COMPLETE - all " + std::to_string(ok) +
+                                        " files match by name, size and SHA-256",
+                                    AssetTone::good});
+        verdict.push_back(AssetLine{"nothing to copy", AssetTone::good});
     } else {
-        lines.push_back(AssetLine{
+        verdict.push_back(AssetLine{
             "install: " + upper(asset_verdict_name(report.verdict)) + " - " +
                 std::to_string(ok) + " of " + std::to_string(report.files.size()) +
                 " files ok: " + std::to_string(report.count(AssetStatus::missing)) +
@@ -744,23 +760,36 @@ std::vector<AssetLine> asset_report_lines(
                 " unreadable",
             AssetTone::bad});
         const std::size_t copy = report.files.size() - ok;
-        lines.push_back(AssetLine{"copy " + std::string(copy == 1 ? "this file" : "these ") +
-                                      (copy == 1 ? "" : std::to_string(copy) + " files") +
-                                      " from the game's installation folder, keeping "
-                                      "the folders:",
-                                  AssetTone::note});
+        const std::string what = copy == 1 ? std::string("this file")
+                                           : "these " + std::to_string(copy) + " files";
+        verdict.push_back(AssetLine{
+            "copy " + what + " from the game's installation folder" +
+                (console ? " to the same " + std::string(copy == 1 ? "path" : "paths") +
+                               " under " + root_text + ":"
+                         : std::string(", keeping the folders:")),
+            AssetTone::note});
         for (const AssetFileReport& file : report.files) {
             if (file.status != AssetStatus::ok) {
-                lines.push_back(AssetLine{"  " + file.expected.path + " -> " +
-                                              join_root(root_text, file.expected.path),
-                                          AssetTone::plain});
+                verdict.push_back(AssetLine{
+                    "  " + file.expected.path +
+                        (console ? "  " + std::to_string(file.expected.size) + " bytes"
+                                 : " -> " + join_root(root_text, file.expected.path)),
+                    AssetTone::plain});
             }
         }
     }
-    lines.push_back(AssetLine{"read " + std::to_string(report.bytes_read) + " bytes in " +
-                                  std::to_string(report.reads) + " reads and " +
-                                  std::to_string(report.listings) + " directory listings",
-                              AssetTone::plain});
+
+    const AssetLine read{"read " + std::to_string(report.bytes_read) + " bytes in " +
+                             std::to_string(report.reads) + " reads and " +
+                             std::to_string(report.listings) + " directory listings",
+                         AssetTone::plain};
+
+    std::vector<AssetLine> lines = head;
+    const std::vector<AssetLine>& first = console ? verdict : files;
+    const std::vector<AssetLine>& second = console ? files : verdict;
+    lines.insert(lines.end(), first.begin(), first.end());
+    lines.insert(lines.end(), second.begin(), second.end());
+    lines.push_back(read);
     return lines;
 }
 
@@ -849,13 +878,26 @@ AssetConfig load_asset_config(
     AssetConfig config;
     config.file = join_root(sd_root, relative);
     const AssetResolution found = resolve_asset_path(files, fs::path(sd_root), relative);
-    if (found.lookup == AssetLookup::missing) {
+    if (found.lookup == AssetLookup::missing && found.root_listed) {
         config.state = AssetConfigState::absent;
         config.root = default_root;
         config.detail = found.detail;
         return config;
     }
     config.state = AssetConfigState::refused;
+    config.advice = "Fix the file, or delete it to use " + default_root + ". Nothing was checked.";
+    if (!found.root_listed || found.lookup == AssetLookup::unreadable) {
+        // A folder the file would be in could not be listed - review comment
+        // 3761, F1: the card's top level too - so the file may be there.
+        static const std::string prefix = "the root ";
+        config.detail = "cannot be looked for: " +
+                        (found.root_listed ? found.detail
+                         : found.detail.compare(0, prefix.size(), prefix) == 0
+                             ? sd_root + " " + found.detail.substr(prefix.size())
+                             : found.detail);
+        config.advice = "Whether there is a config file cannot be told, so nothing was checked.";
+        return config;
+    }
     if (found.lookup != AssetLookup::found) {
         config.detail = "cannot be read: " + found.detail;
         return config;
@@ -914,9 +956,7 @@ ConsoleAssetCheck run_console_asset_check(
     case AssetConfigState::refused:
         result.lines.push_back(
             AssetLine{"config: " + config.file + " REFUSED: " + config.detail, AssetTone::bad});
-        result.lines.push_back(AssetLine{"Fix the file, or delete it to use " +
-                                             setup.default_root + ". Nothing was checked.",
-                                         AssetTone::bad});
+        result.lines.push_back(AssetLine{config.advice, AssetTone::bad});
         result.lines.push_back(AssetLine{"set " + manifest.name + " needs these " +
                                              std::to_string(manifest.files.size()) +
                                              " files under the root:",
@@ -935,7 +975,8 @@ ConsoleAssetCheck run_console_asset_check(
         return result;
     }
     result.checked = true;
-    for (AssetLine& line : asset_report_lines(result.report, config.root, false)) {
+    for (AssetLine& line :
+         asset_report_lines(result.report, config.root, AssetReportForm::console)) {
         result.lines.push_back(std::move(line));
     }
     return result;

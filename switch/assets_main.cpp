@@ -9,7 +9,9 @@
 // verdict, the files still to copy and how long the check took. Nothing
 // goes to stdout or the network: the report is read, and photographed,
 // from the screen. Every file is opened for reading only and nothing is
-// written anywhere. + exits.
+// written anywhere. + exits, and so does a request from the system to close,
+// during the check as well as after it; the HOME button suspends it there
+// too.
 
 #include "nfsu/assets.h"
 #include "nfsu/posix_file_system.h"
@@ -63,8 +65,12 @@ struct Line {
 };
 
 // The report from the top of the screen down, wrapped to its width, with
-// one status line after it. When there are more lines than fit, the last
-// ones win, so the verdict and the files to copy stay on screen.
+// the status after it. When there are more lines than fit, the first ones
+// win and the last line that fits says how many do not: the report comes
+// summary first (nfsu::AssetReportForm::console), so what a full screen
+// cuts off is the tail of the per-file lines, never the title, the config,
+// the verdict or the files to copy. The status - the progress, then the
+// time and "Press + to exit." - is always shown.
 class Screen {
 public:
     bool open() {
@@ -114,11 +120,22 @@ public:
         }
         const nfsu::ScreenImage image{pixels, kScreenWidth, kScreenHeight, stride};
         nfsu::fill_screen_rect(image, 0, 0, kScreenWidth, kScreenHeight, kBackground);
-        shown_.assign(lines_.begin(), lines_.end());
+        const std::size_t room =
+            kScreenLines > status_.size() ? kScreenLines - status_.size() : 0;
+        if (lines_.size() <= room) {
+            shown_.assign(lines_.begin(), lines_.end());
+        } else if (room > 0) {
+            const std::size_t kept = room - 1;
+            shown_.assign(lines_.begin(), lines_.begin() + static_cast<std::ptrdiff_t>(kept));
+            shown_.push_back(Line{"... " + std::to_string(lines_.size() - kept) +
+                                      " more lines do not fit on the screen",
+                                  kNote});
+        } else {
+            shown_.clear();
+        }
         shown_.insert(shown_.end(), status_.begin(), status_.end());
-        const std::size_t first = shown_.size() > kScreenLines ? shown_.size() - kScreenLines : 0;
-        for (std::size_t i = first; i < shown_.size(); ++i) {
-            nfsu::draw_screen_text(image, 0, static_cast<std::int64_t>((i - first) * kLineHeight),
+        for (std::size_t i = 0; i < shown_.size() && i < kScreenLines; ++i) {
+            nfsu::draw_screen_text(image, 0, static_cast<std::int64_t>(i * kLineHeight),
                                    shown_[i].text, kTextScale, shown_[i].ink, kPaper);
         }
         framebufferEnd(&framebuffer_);
@@ -132,13 +149,23 @@ private:
     std::vector<Line> shown_;
 };
 
-// Keeps the screen alive while the check runs: which file, and how far
-// through a large one.
+// Thrown out of the check when + is pressed or the system asks the
+// application to close while it runs, and caught in main(), which then
+// closes the screen and returns. The check holds nothing but memory - no
+// file stays open between the service's calls - so leaving it this way
+// frees everything it held.
+struct ExitRequested {};
+
+// Keeps the application alive while the check runs: the system's messages
+// and the + button between files and after every chunk hashed, which is at
+// most kAssetReadChunkBytes, and on screen which file and how far through a
+// large one.
 class Progress final : public nfsu::AssetCheckObserver {
 public:
-    explicit Progress(Screen& screen) : screen_(screen) {}
+    Progress(Screen& screen, PadState& pad) : screen_(screen), pad_(pad) {}
 
     void file_started(std::size_t index, std::size_t total, const nfsu::AssetFile& file) override {
+        keep_alive();
         current_ = "checking " + std::to_string(index + 1) + " of " + std::to_string(total) +
                    ": " + file.path + " (" + std::to_string(file.size) + " bytes)";
         next_ = kProgressStep;
@@ -147,6 +174,7 @@ public:
     }
 
     void file_progress(std::size_t, std::uint64_t hashed, std::uint64_t size) override {
+        keep_alive();
         if (hashed < next_ || size == 0) {
             return;
         }
@@ -156,7 +184,21 @@ public:
     }
 
 private:
+    // appletMainLoop services the system: it returns false once the system
+    // asks the application to close, and it holds the application, as the
+    // wait for + does, while the HOME menu has the screen.
+    void keep_alive() {
+        if (!appletMainLoop()) {
+            throw ExitRequested{};
+        }
+        padUpdate(&pad_);
+        if ((padGetButtonsDown(&pad_) & HidNpadButton_Plus) != 0) {
+            throw ExitRequested{};
+        }
+    }
+
     Screen& screen_;
+    PadState& pad_;
     std::string current_;
     std::uint64_t next_ = kProgressStep;
 };
@@ -170,13 +212,16 @@ std::string seconds(std::uint64_t start, std::uint64_t end) {
     return text;
 }
 
-void check_first_lap(Screen& screen) {
+// Runs the check and puts its report on the screen. Returns the time the
+// check took, as the status line shows it, or nothing when there was no
+// check.
+std::string check_first_lap(Screen& screen, PadState& pad) {
     nfsu::AssetManifest manifest;
     if (!nfsu::retail_asset_manifest("first-lap", manifest)) {
         screen.add("this build holds no first-lap set", kBad);
-        return;
+        return "";
     }
-    Progress progress(screen);
+    Progress progress(screen, pad);
     const std::uint64_t start = armGetSystemTick();
     const nfsu::ConsoleAssetCheck result = nfsu::run_console_asset_check(
         nfsu::posix_file_system(), nfsu::ConsoleAssetSetup{}, manifest, &progress);
@@ -185,9 +230,7 @@ void check_first_lap(Screen& screen) {
     for (const nfsu::AssetLine& line : result.lines) {
         screen.add(line.text, ink_for(line.tone));
     }
-    if (result.checked) {
-        screen.add("checked in " + seconds(start, end) + " s", kPlain);
-    }
+    return result.checked ? "checked in " + seconds(start, end) + " s. " : std::string();
 }
 
 } // namespace
@@ -204,8 +247,12 @@ int main() {
                kPlain);
     screen.present();
 
+    std::string timing;
+    bool leave = false;
     try {
-        check_first_lap(screen);
+        timing = check_first_lap(screen, pad);
+    } catch (const ExitRequested&) {
+        leave = true;
     } catch (const std::bad_alloc&) {
         screen.add("stopped: out of memory", kBad);
     } catch (const std::exception& caught) {
@@ -216,8 +263,8 @@ int main() {
 
     // appletMainLoop returns false when the system asks the application to
     // close, so either way out of this loop reaches the shutdown below.
-    screen.set_status("Press + to exit.", kPlain);
-    while (appletMainLoop()) {
+    screen.set_status(timing + "Press + to exit.", kPlain);
+    while (!leave && appletMainLoop()) {
         padUpdate(&pad);
         if ((padGetButtonsDown(&pad) & HidNpadButton_Plus) != 0) {
             break;

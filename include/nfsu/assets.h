@@ -153,7 +153,10 @@ const char* asset_status_name(AssetStatus status) noexcept;
 struct AssetFileReport {
     AssetFile expected;
     AssetStatus status = AssetStatus::missing;
-    // Where it was found, as AssetResolution::found_as.
+    // True when the whole path was found; found_as is then where.
+    bool found = false;
+    // As AssetResolution::found_as: the whole path when found, otherwise
+    // the directories reached before the lookup stopped.
     std::string found_as;
     bool sized = false;
     std::uint64_t size = 0;
@@ -246,15 +249,26 @@ struct AssetLine {
     AssetTone tone = AssetTone::plain;
 };
 
-// The report as the desktop command prints it and the console shows it: the
-// set, the root if it could not be listed, one line per file, the verdict,
-// the files to copy, and what was read. `root_text` is how the root is
-// spelled in the copy lines. With `full_hashes` every hash is printed in
-// full; without, a matching hash is "matches" and a differing one shows its
-// first 16 digits, which is what fits a console line. Every line is
-// printable ASCII.
+enum class AssetReportForm : std::uint8_t {
+    // What nfsu_probe asset-check prints: the set, the root if it could not
+    // be listed, one line per file with every hash in full, the verdict,
+    // each file to copy as "<path> -> <root>/<path>", and what was read.
+    desktop,
+    // What nfsu_switch_assets shows, summary first so that the verdict and
+    // the files to copy are never what a full screen cuts off: the set, the
+    // root if it could not be listed, the verdict, the files to copy with
+    // their sizes under one line naming the root, one line per file, and
+    // what was read. A matching hash is "matches", a differing one shows
+    // its first 8 digits, and a size that differs says only which way, so
+    // that every file line fits the screen's 106 columns.
+    console
+};
+
+// The report as lines of `form`. `root_text` is how the root is spelled in
+// the lines that name it. Every line is printable ASCII apart from what
+// `root_text` itself holds, which is printed as it is given.
 std::vector<AssetLine> asset_report_lines(
-    const AssetCheckReport& report, const std::string& root_text, bool full_hashes);
+    const AssetCheckReport& report, const std::string& root_text, AssetReportForm form);
 
 // ---------------------------------------------------------------------------
 // The console: its root and the config file that moves it
@@ -273,7 +287,8 @@ constexpr std::size_t kAssetRootMaxBytes = 200;
 // CR LF; blank lines and lines whose first other character is '#' ignored;
 // exactly one "root = <path>" line, the path absolute on the SD card -
 // "sdmc:/" and folder names separated by '/', none empty, "." or "..", and
-// none holding a character a FAT name cannot. Sets `root` to the path with
+// none holding a character a FAT name cannot: a tab, '"', '*', ':', '<',
+// '>', '?', '|' or a backslash. Sets `root` to the path with
 // any trailing '/' removed ("sdmc:/" itself stays as it is). False, with
 // `root` untouched and `reason` naming the line and what is wrong with it.
 bool parse_asset_config(const std::string& text, std::string& root, std::string& reason);
@@ -283,7 +298,9 @@ enum class AssetConfigState : std::uint8_t {
     absent,
     // The config file named a root, which is used.
     applied,
-    // There is a config file and it was refused: nothing is checked.
+    // There is a config file and it was refused, or whether there is one
+    // cannot be told because a folder on its path - the card's top level
+    // included - could not be listed: nothing is checked.
     refused
 };
 
@@ -296,6 +313,8 @@ struct AssetConfig {
     std::string root;
     // Why it was refused, or why it counts as absent.
     std::string detail;
+    // When refused, one sentence saying what to do about it.
+    std::string advice;
 };
 
 // Looks for `relative` under `sd_root` by the naming rule and, when it is
@@ -303,6 +322,11 @@ struct AssetConfig {
 // parses it. A config file that is present but cannot be read, is larger
 // than the bound or does not parse is refused, not ignored: a root the
 // owner asked for and did not get would otherwise be checked in silence.
+// For the same reason a folder on its path that cannot be listed - "sdmc:/"
+// itself included, whether it fails or holds more than
+// kAssetMaxDirectoryNames names - refuses rather than counts as absent:
+// the file may be there. Only a lookup that listed every folder it needed
+// and found no match is absent.
 AssetConfig load_asset_config(
     FileSystemService& files,
     const std::string& sd_root,
@@ -321,9 +345,9 @@ struct ConsoleAssetCheck {
     // the manifest was valid.
     bool checked = false;
     AssetCheckReport report;
-    // What the console shows: the config line, then asset_report_lines,
-    // or, when the config was refused, the refusal and the files the set
-    // needs.
+    // What the console shows: the config line, then asset_report_lines in
+    // the console form, or, when the config was refused, the refusal, its
+    // advice and the files the set needs.
     std::vector<AssetLine> lines;
 };
 
