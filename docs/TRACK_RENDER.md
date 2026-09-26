@@ -857,7 +857,7 @@ build-release/nfsu_probe track-render X:/Games/NFSU/Tracks/STREAML1RB.BUN \
 
 Expected:
 
-1. Both `ctest` runs report 56 tests passed, 0 failed.
+1. Both `ctest` runs report `100% tests passed, 0 tests failed`.
 2. Both renders exit 0 and write nothing to standard error.
 3. The region view prints the scene, cull and draw-list lines
    [`TRACK_DRAW_LIST.md`](TRACK_DRAW_LIST.md) pins for this region,

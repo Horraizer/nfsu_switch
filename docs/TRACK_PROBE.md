@@ -1032,7 +1032,7 @@ build/nfsu_probe track-probe X:/Games/NFSU/Tracks/STREAML1RB.BUN \
 
 Expected:
 
-1. Both `ctest` runs report 56 tests passed, 0 failed.
+1. Both `ctest` runs report `100% tests passed, 0 tests failed`.
 2. All six commands exit 0 and write nothing to standard error.
 3. The first prints `probe: instances 39 probed 39 visible 39 culler 39
    disagreements 0`, `probe: rejected by mask 0 box 0 size 0 pruned 0` and
