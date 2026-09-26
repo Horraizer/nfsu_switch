@@ -188,7 +188,7 @@ bool prepare(
                 if (handle == kNoHandle) {
                     const RenderTexture& source =
                         textures.textures[binding.texture_index];
-                    const std::uint64_t bytes = source.rgba.size();
+                    const std::uint64_t bytes = source.payload().size();
                     std::uint64_t total = region.cost.texture_bytes;
                     if (!add_within(total, bytes, limits.max_texture_bytes,
                                     total)) {
@@ -576,7 +576,7 @@ bool validate_prepared_track_region(
             error = "prepared texture " + std::to_string(i) + " is unusable";
             return false;
         }
-        texture_bytes += texture.rgba.size();
+        texture_bytes += texture.payload().size();
     }
 
     const TrackDrawCost& cost = region.cost;

@@ -1817,6 +1817,26 @@ void test_texture_decode() {
               set.textures[3].rgba.empty(),
           "corrupt blob falls back without retaining pixels");
 
+    for (const auto format : {nfsu::PixelFormat::dxt1, nfsu::PixelFormat::dxt3}) {
+        auto native_pack = pack;
+        native_pack.textures.resize(1);
+        auto& record = native_pack.textures[0];
+        record.format = format;
+        const std::uint64_t top = format == nfsu::PixelFormat::dxt1 ? 8 : 16;
+        record.top_level_size = top;
+        nfsu::RenderTextureLimits native_limits;
+        native_limits.gpu_blocks = true;
+        native_limits.max_total_bytes = top;
+        nfsu::RenderTextureSet native;
+        check(nfsu::decode_render_textures(bytes, native_pack, native_limits, native, error) &&
+              native.textures.size() == 1 && native.textures[0].usable() &&
+              native.textures[0].rgba.empty() && native.textures[0].blocks.size() == top &&
+              native.decoded_bytes == top, "native DXT top level only: " + error);
+        native_limits.max_total_bytes = top - 1;
+        check(!nfsu::decode_render_textures(bytes, native_pack, native_limits, native, error) &&
+              native.textures.empty(), "native DXT checks the budget before retaining blocks");
+    }
+
     // One byte less: fatal, before the allocation for record 1.
     limits.max_total_bytes = 127;
     std::vector<std::uint64_t> allocations;

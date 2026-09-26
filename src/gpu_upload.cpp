@@ -101,8 +101,12 @@ bool add_texture(const std::string& name, std::size_t source, const RenderTextur
                  UploadLifetime lifetime, UploadTable& table, std::string& error) {
     TextureUploadShape shape;
     std::string refusal;
-    if (!check_texture_upload_format(TextureUploadFormat::rgba8, texture.width,
-                                     texture.height, texture.rgba.size(), shape,
+    const auto format = texture.storage == RenderTextureStorage::dxt1 ? TextureUploadFormat::dxt1 :
+                        texture.storage == RenderTextureStorage::dxt3 ? TextureUploadFormat::dxt3 :
+                        TextureUploadFormat::rgba8;
+    if (!texture.usable()) { error = name + ": invalid texture payload"; return false; }
+    if (!check_texture_upload_format(format, texture.width,
+                                     texture.height, texture.payload().size(), shape,
                                      refusal)) {
         error = name + ": " + refusal;
         return false;
@@ -113,11 +117,11 @@ bool add_texture(const std::string& name, std::size_t source, const RenderTextur
     resource.memory = UploadMemory::image;
     resource.name = name;
     resource.source = source;
-    resource.data = texture.rgba.data();
+    resource.data = texture.payload().data();
     resource.bytes = shape.bytes;
     resource.alignment = kTextureStagingAlignment;
     resource.element_bytes = shape.texel_bytes;
-    resource.elements = std::uint64_t{shape.width} * shape.height;
+    resource.elements = shape.bytes / shape.texel_bytes;
     resource.texture_hash = texture.hash;
     resource.texture = shape;
     table.resources.push_back(std::move(resource));
@@ -178,9 +182,9 @@ bool check_texture_upload_format(
                               texture_upload_format_name(format) + " is not uploadable: ";
     switch (format) {
     case TextureUploadFormat::rgba8:
-        break;
     case TextureUploadFormat::dxt1:
     case TextureUploadFormat::dxt3:
+        break;
     case TextureUploadFormat::a8r8g8b8:
         error = named + "the decode path turns a " + texture_upload_format_name(format) +
                 " level into RGBA8 and no prepared scene holds the stored payload;"
@@ -198,7 +202,7 @@ bool check_texture_upload_format(
         return false;
     }
     if (width == 0 || height == 0) {
-        error = "RGBA8 texture " + std::to_string(width) + "x" + std::to_string(height) +
+        error = std::string(texture_upload_format_name(format)) + " texture " + std::to_string(width) + "x" + std::to_string(height) +
                 " has a zero dimension";
         return false;
     }
@@ -206,30 +210,35 @@ bool check_texture_upload_format(
     // product is checked rather than trusted.
     std::uint64_t texels = 0;
     std::uint64_t want = 0;
-    if (!checked_multiply(width, height, texels) ||
-        !checked_multiply(texels, kRgba8TexelBytes, want)) {
-        error = "RGBA8 texture " + std::to_string(width) + "x" + std::to_string(height) +
+    const bool compressed = format != TextureUploadFormat::rgba8;
+    const std::uint64_t columns = compressed ? (std::uint64_t{width} + 3) / 4 : width;
+    const std::uint64_t rows = compressed ? (std::uint64_t{height} + 3) / 4 : height;
+    const std::uint64_t stride = !compressed ? kRgba8TexelBytes :
+                               format == TextureUploadFormat::dxt1 ? 8 : 16;
+    if (!checked_multiply(columns, rows, texels) ||
+        !checked_multiply(texels, stride, want)) {
+        error = std::string(texture_upload_format_name(format)) + " texture " + std::to_string(width) + "x" + std::to_string(height) +
                 " is larger than 2^64 - 1 bytes";
         return false;
     }
     if (byte_count != want) {
-        error = "RGBA8 texture " + std::to_string(width) + "x" + std::to_string(height) +
+        error = std::string(texture_upload_format_name(format)) + " texture " + std::to_string(width) + "x" + std::to_string(height) +
                 " needs exactly " + std::to_string(want) + " bytes, got " +
                 std::to_string(byte_count);
         return false;
     }
     if (want > kMaxUploadResourceBytes) {
-        error = "RGBA8 texture " + std::to_string(width) + "x" + std::to_string(height) +
+        error = std::string(texture_upload_format_name(format)) + " texture " + std::to_string(width) + "x" + std::to_string(height) +
                 " is " + std::to_string(want) + " bytes, more than the " +
                 std::to_string(kMaxUploadResourceBytes) +
                 " bytes one deko3d memory block can hold";
         return false;
     }
-    shape.format = TextureUploadFormat::rgba8;
+    shape.format = format;
     shape.width = width;
     shape.height = height;
-    shape.texel_bytes = kRgba8TexelBytes;
-    shape.row_bytes = std::uint64_t{width} * kRgba8TexelBytes;
+    shape.texel_bytes = stride;
+    shape.row_bytes = columns * stride;
     shape.bytes = want;
     return true;
 }
@@ -384,6 +393,28 @@ bool build_track_upload_table(
 // ---------------------------------------------------------------------------
 // The ledger
 // ---------------------------------------------------------------------------
+
+bool bounded_image_layout(const UploadResource& texture,
+                          std::uint64_t& bytes, std::uint64_t& alignment,
+                          std::string& error) {
+    bytes = alignment = 0;
+    TextureUploadShape shape;
+    if (texture.kind != UploadResourceKind::texture ||
+        !check_texture_upload_format(texture.texture.format, texture.texture.width,
+            texture.texture.height, texture.bytes, shape, error)) {
+        if (error.empty()) error = texture.name + ": expected a texture";
+        return false;
+    }
+    if (shape.width > 16384 || shape.height > 16384) {
+        error = texture.name + ": image exceeds the 2D dimension limit";
+        return false;
+    }
+    bytes = ((shape.row_bytes + 63) & ~std::uint64_t{63}) *
+            ((shape.rows() + 127) & ~std::uint64_t{127});
+    bytes = (bytes + 4095) & ~std::uint64_t{4095};
+    alignment = kDekoMemBlockAlignment;
+    return true;
+}
 
 bool linear_image_layout(const UploadResource& texture,
                          std::uint64_t& bytes,

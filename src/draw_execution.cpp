@@ -17,7 +17,7 @@ bool plan_texture_copy(const UploadResource& r, TextureCopyPlan& plan, std::stri
     // Shape validation bounds the product to kMaxUploadResourceBytes.
     // Adding at most 31 bytes per row remains safe in uint64_t.
     const auto pitch = (shape.row_bytes + 31) & ~std::uint64_t{31};
-    const auto bytes = pitch * shape.height;
+    const auto bytes = pitch * shape.rows();
     if (pitch > kMaxUploadResourceBytes || bytes > kMaxUploadResourceBytes) {
         error = r.name + ": padded texture copy exceeds block limit"; return false;
     }

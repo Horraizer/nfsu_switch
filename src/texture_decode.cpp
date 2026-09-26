@@ -131,8 +131,13 @@ bool decode_sources(
                                               : record.problem;
                         continue;
                     }
-                    const std::uint64_t retained =
-                        std::uint64_t{record.width} * record.height * 4U;
+                    const bool compressed = limits.gpu_blocks &&
+                        (record.format == PixelFormat::dxt1 || record.format == PixelFormat::dxt3);
+                    std::uint64_t retained = std::uint64_t{record.width} * record.height * 4U;
+                    if (compressed && !level_size(record.format, record.width, record.height, retained)) {
+                        texture.problem = "invalid compressed texture size";
+                        continue;
+                    }
                     if (retained > limits.max_total_bytes ||
                         result.decoded_bytes > limits.max_total_bytes - retained) {
                         error = "decoded textures would exceed " +
@@ -157,15 +162,20 @@ bool decode_sources(
                                          unused, problem) ||
                         !level_size(record.format, record.width, record.height, top) ||
                         top > payload.size() ||
-                        !decode_level(record.format, record.width, record.height,
+                        (!compressed && (!decode_level(record.format, record.width, record.height,
                                       payload.data(), static_cast<std::size_t>(top),
                                       texture.rgba, problem) ||
-                        texture.rgba.size() != retained) {
+                        texture.rgba.size() != retained))) {
                         texture.rgba.clear();
                         texture.rgba.shrink_to_fit();
                         texture.problem =
                             problem.empty() ? "texture decode failed" : problem;
                         continue;
+                    }
+                    if (compressed) {
+                        texture.storage = record.format == PixelFormat::dxt1 ?
+                            RenderTextureStorage::dxt1 : RenderTextureStorage::dxt3;
+                        texture.blocks.assign(payload.begin(), payload.begin() + static_cast<std::size_t>(top));
                     }
                     texture.width = record.width;
                     texture.height = record.height;
