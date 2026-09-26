@@ -42,7 +42,10 @@ constexpr std::int32_t kRaceTicksPerSecond = 4000;
 constexpr std::int32_t kRaceWorldStartTicks = 4000;
 // 0x00434316..0x00434327: the countdown step at +0x0C of the race status,
 // [0x006B79E0] = 0.9 (0x3F666666), or [0x006B79E4] = 1.0 when 0x0078A368 is
-// set. A career race does not set it (docs/RACE_TIMING.md).
+// set. Its two writers are 0x004B5122, which clears it, and 0x004B64DC,
+// which copies an option whose one writer is 0x00568AA6; the career race
+// start 0x004ABC20 writes neither, and this model takes it as clear
+// (docs/RACE_TIMING.md).
 constexpr float kRaceCountdownStepSeconds = 0.9F;
 constexpr float kRaceCountdownStepSecondsFlagged = 1.0F;
 // The per-lap arrays of the lap record: eleven slots (0x004343BE `mov ecx,
@@ -79,8 +82,14 @@ std::int32_t race_ticks_per_frame(int frames_per_second) noexcept;
 // A time in ticks as M:SS.hh, split as 0x005864F0 splits it: whole seconds
 // ticks / 4000, milliseconds (ticks % 4000) * 1000 / 4000, hundredths
 // milliseconds / 10, all truncated; minutes include the hours. A negative
-// time is its magnitude with a leading '-'. kRaceNoTime is "--:--.--":
-// 0x00586580 prints dashes for it (0x0058658C..0x005865A4).
+// time is its magnitude with a leading '-'. 0 and kRaceNoTime are both
+// "0:00.00": 0x00586580 hands either to 0x00586090 as four zero fields
+// (0x0058658C..0x005865A9), and 0x00586090 writes digits over every
+// placeholder of the template it picks (0x005863A6..0x00586461). Dashes on
+// the HUD come from the HUD's own tests, not from here (race_timing_hud).
+// The field widths, the separators (by language, 0x006EE6F0) and a
+// leading space for a single-digit minute are 0x00586090's and not
+// reproduced: this is the digits only.
 std::string format_race_ticks(std::int32_t ticks);
 
 // ---------------------------------------------------------------------
@@ -321,13 +330,22 @@ int race_countdown_value(const RaceTimingConfig& config, const RaceTimingState& 
 
 // Whether a racer's car is held where it stands for the next step: every
 // stage but racing holds it (0x00434BB0..0x00434C00 call the driver's hold
-// method, vtable +0x1C, for them and its release, +0x20, for racing), and
-// go comes in the race status update, the last call of the world's
-// per-frame update after its per-car calls (0x00420FC0..0x00421155), so a
-// car first moves on the step after go.
+// method, vtable +0x1C, for them and its release, +0x20, for racing). Go
+// comes in the race status update 0x00435570, the last call of the world's
+// per-frame update (0x00421155), after the car's path coordinate - what the
+// lap update reads - was updated for the frame (0x00420E3D -> 0x00426930 ->
+// 0x00426AFE); so the go frame's lap update cannot see a move the release
+// caused. That the lap update first sees the car move on the step after go
+// is this model's APPROXIMATION: it is one step later if the car's
+// position is integrated between 0x00420E3D and 0x00421155, and one
+// earlier if the player's car, whose driver class is not traced, is not
+// held on the go frame. docs/RACE_TIMING.md gives event 1's times either
+// way.
 bool race_car_held(const RaceTimingState& state) noexcept;
 
-// One frame, in the order 0x00435570 runs it after the frame's physics:
+// One frame, in the order 0x00435570 runs it after the frame's car updates
+// (the step's progress events stand for their result; race_car_held says
+// what that assumes):
 // the countdown's go (0x00435570..0x004355B5), the race time
 // (0x004355BA..0x004355EF), each unfinished racer's events (0x004338C0,
 // 0x00435600..0x00435630), the finish (0x00435A17..0x00435A5D); then the
@@ -375,7 +393,11 @@ struct RaceResultRow {
 std::vector<RaceResultRow> race_timing_results(const RaceRoute& route,
                                                const RaceTimingState& state);
 
-// What the HUD of one racer reads on the last step processed.
+// What the HUD of one racer reads on the last step processed, at that
+// step's world time. Retail's HUD reads the world timer 0x0073AD34 itself
+// (0x004A19DE, 0x004A19F5); when it runs relative to the timer's advance
+// 0x00585E00 is not traced, so the running lap timer and the 3 s hold may
+// be one frame off retail's: an APPROXIMATION, display only.
 struct RaceHud {
     // 0x00434D10, as race_countdown_value.
     int countdown = 0;
@@ -384,11 +406,15 @@ struct RaceHud {
     std::int32_t race_ticks = 0;
     // The lap timer (0x004A19B1..0x004A1A38): the world time since the lap
     // start, unrounded, or for kRaceLapHoldSeconds after a completed lap
-    // that lap's time; invalid before the race goes.
+    // that lap's time; invalid while there is no lap start, when retail
+    // shows a text instead (0x004A1A58..0x004A1A60, string hash
+    // 0x61C9B7A2).
     bool lap_time_valid = false;
     bool lap_time_held = false;
     std::int32_t lap_ticks = 0;
-    // The best lap at the finish line (0x004A1A91..0x004A1AE0).
+    // The best lap at the finish line (0x004A1A91..0x004A1AE0). Invalid only
+    // for a best of 0, where retail shows "--:--:--" (0x006C72DC); the empty
+    // kRaceNoTime is valid and formats as 0:00.00, as retail's does.
     bool best_lap_valid = false;
     std::int32_t best_lap_ticks = 0;
     // Laps completed (the lap counter, never below 0) and the race's.

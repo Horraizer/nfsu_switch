@@ -22,9 +22,16 @@ a two-lap forward circuit on track 1003,
   and 1 from the moment the countdown starts, and the race **goes on the
   first frame whose world time is at least 3 x 0.9 s after it** - at 67
   ticks a frame, 162 frames. "Go" stays on the HUD for 0.9 s more.
-- **The car cannot move before go.** Every stage but racing holds each
-  driver, and go is set after the frame's physics, so a car first moves
-  on the frame after go.
+- **A car first moves on the frame after go - an approximation.** Every
+  stage but racing holds each driver (the player's driver class is not
+  traced), and go is set in the race status update, after the frame's
+  update of the car's path coordinate that the lap update reads - so the
+  go frame's lap update cannot see a move the release caused. This model
+  has the lap update see the car move first on the frame after go. Were
+  the car's position integrated between that coordinate update and the
+  status update, it would be one frame later, and event 1's laps would read
+  1:50.65 and 1:50.53 (3:41.18); were the player's car not held on the go
+  frame, one frame earlier: 1:50.62 and 1:50.53 (3:41.15).
 - **Times are rounded to hundredths.** The race start, the race time and
   every crossing are rounded to the nearest 1/100 s, half up, by
   `0x00586690` in float - which returns 40 ticks a hundredth, and for a
@@ -87,14 +94,20 @@ frame's updates), 0x00585E00 adds the frame's world time to it:
 ```
 
 and counts the frame (`0x006F08A4`, 0x00585E8B..0x00585EAD). No remainder is
-carried: each frame's time is rounded on its own.
+carried here: each frame's world time is rounded to ticks on its own.
 
-The frame's world time comes from its real time. 0x00585C54..0x00585CE8
-clamp the measured frame against the display period (`[0x006CC7B0]` = 1/60,
-`0x3C888889`, with `0x006F0880` set, `[0x006CC7D0]` = 1/50 without) and
-round it to whole 3600ths of a second, `(int)(dt * [0x006CC7E0] + 0.5)` with
-`[0x006CC7E0]` = 3600.0; 0x00585D52..0x00585D63 store the units at
-`0x00734568` and the seconds, units times `[0x006CC7E4]` = 1/3600
+The frame's world time comes from its real time, which does carry a
+remainder. 0x00585C54..0x00585CD1 take the measured frame plus the
+remainder R kept at `0x00734570`, raise it to at least the display period
+(`[0x006CC7B0]` = 1/60, `0x3C888889`, with `0x006F0880` set,
+`[0x006CC7D0]` = 1/50 without) and lower it to at most `0x006F0894` - by
+inference the frame's count of vertical blanks - times the period:
+`dt = min(blanks * period, max(R + measured, period))`. 0x00585CD5..
+0x00585CE8 round it to whole 3600ths of a second, `(int)(dt * [0x006CC7E0]
++ 0.5)` with `[0x006CC7E0]` = 3600.0, and
+0x00585CEE..0x00585D1A keep `R = dt - (int)(units * [0x006CCDE8] + 0.5) *
+0.00025`, with `[0x006CCDE8]` = 1.1111112; 0x00585D52..0x00585D63 store the
+units at `0x00734568` and the seconds, units times `[0x006CC7E4]` = 1/3600
 (`0x3991A2B4`), at `0x0073AD38`. The race path of the main loop hands that
 through the frame pacer 0x00420110 (which multiplies by a time scale at
 +0x2E0, 1.0 unless slowed, 0x004202EC..0x004202F1) and 0x0043A8A0 (which
@@ -110,10 +123,10 @@ ticks   = (int)(0.016666668 * 4000 + 0.5)    = (int)67.16667 = 67
 67 ticks is 16.75 ms. `nfsu::race_ticks_per_frame` is that arithmetic in
 float; it gives 67 at 60 frames a second, 80 at 50, 53 at 75, 40 at 100,
 33 at 120, 28 at 144, 133 at 30, and 308 at 13 (where the `+ 0.5` of the
-units decides). That a 60 Hz frame is measured as exactly the period is
-inference: the clamp's inputs are the vertical blank count `0x006F0894`
-and the measured time, and with the display at 60 Hz every frame is one
-period.
+units decides). At 60 Hz the remainder settles at `1/60 - 67/4000` =
+-1/12000 s, so `R + measured` is just below the period and the floor makes
+every frame exactly 1/60 s. That a 60 Hz frame is one blank, and so one
+period, is inference from the display rate.
 
 The timer is set to 0xFA0, 4000 ticks, when a race's world is built
 (0x0041F7DA, in 0x0041F6E0, which the race set-up calls at 0x00421FB9) and
@@ -180,13 +193,36 @@ For every stage but racing, 0x00434B50 calls each racing driver's vtable
 +0x1C, and for racing +0x20 (0x00434BB0..0x00434C00). In the AI driver's
 class (vtable 0x006C8AD0) +0x1C is 0x004607F0, which sets a hold flag at
 +0x278, and +0x20 is 0x00461510, which clears it; the player's driver class
-was not traced. The race status update 0x00435570 is the last call of the
-world's per-frame update (0x00421155), after its per-car calls over the
-world's car list (0x00420FC0..0x00421100), a call with the frame's time
-(0x00421012) and each player's wrong-way test (0x00430730,
-0x00421130..0x00421144); so the frame in which the race goes has already
-moved every car, held. That the cars' physics runs among those calls is
-inference from their order, not traced into the calls.
+was not traced.
+
+When does a released car first move, as the lap update sees it? The main
+loop sets the frame's time (0x00447942) and calls the world's per-frame
+update 0x00420B40 (0x00447969), whose last call is the race status update
+0x00435570 (0x00421155); the timer advances after it (0x00447A1A). Inside
+0x00420B40, the loop 0x00420E2B..0x00420E4B calls 0x00426930 for every car
+of the world, and that updates the car's path coordinate from its position
++0x60 (0x00426A9B..0x00426AFE, calling 0x00443A10) - the coordinate whose
+fraction 0x004338C0 reads. So the lap update of a frame sees the car where
+it stood at that call, and the release, inside 0x00435570, comes after it:
+the go frame's lap update cannot see a move the release caused. Where the
+position itself is integrated was not traced. Just before that loop the
+world update calls 0x00420310, which calls every active object of the list
+at `0x00779C70` through its vtable +0x28 with the frame's time, and
+0x00420380, which tests pairs of objects for overlap (0x004203F8..
+0x0042042A); by their shape these are the simulation step, which would make
+the lap update see the first move on the frame after go. That is what this
+model assumes - an approximation, labelled below. If the position were
+integrated after the coordinate update and before 0x00435570 (among
+0x00420E51..0x00421146, 0x00421012 among them), the first move would be
+seen a frame later; if the player's car were not held on the go frame, a
+frame earlier. Replayed through the same route events, event 1's forward
+drive gives:
+
+| First move seen | Lap 1 | Lap 2 | Race time |
+| --- | ---: | ---: | ---: |
+| one step earlier (step 162) | 1:50.62 (442480) | 1:50.53 (442120) | 3:41.15 (884600) |
+| this model (step 163) | 1:50.63 (442520) | 1:50.54 (442160) | 3:41.17 (884680) |
+| one step later (step 164) | 1:50.65 (442600) | 1:50.53 (442120) | 3:41.18 (884720) |
 
 ### The countdown: 0x00434D10
 
@@ -212,12 +248,13 @@ gone from frame 216. For T = 1.0 the edges are 4000, 8000 and 12000
 ticks, and "go" stays through exactly 4000 ticks (1.0 in float) and is gone
 at 4001.
 
-What `0x0078A368` is was not traced to a name: it is copied from the race
-option `0x0073466C` (0x004B649D..0x004B64DC), which a network or quick-race
-stream sets (0x00568AA6), a time limit of 1200000 ticks (300 s) is stored
-at `0x0078A310` when it is set (0x004B64FD..0x004B6501), 0x004B5122 clears it,
-and the career race start 0x004ABC20..0x004ABC80 does not write it. This
-project takes it as clear for a career race: T = 0.9.
+What `0x0078A368` is was not traced to a name. It has two writers:
+0x004B5122 clears it, and 0x004B64DC copies the option `0x0073466C`, whose
+one writer, 0x00568AA6, stores a value read from a bit stream; a time limit
+of 1200000 ticks (300 s) is stored at `0x0078A310` when it is set
+(0x004B64FD..0x004B6501). The career race start 0x004ABC20..0x004ABC80
+writes neither. Which of the two setup paths a career race takes was not
+traced; this project takes the flag as clear: T = 0.9.
 
 ### Go: 0x00434B50(4)
 
@@ -275,6 +312,14 @@ The split, lap and total are skipped when the lap start is empty (0 or
 0x7FFFFFFF, 0x004339EF..0x004339FC), but the crossing is still stored. The
 arrays are 5 boundaries and 11 laps wide (0x00433400..0x00433412,
 0x004343BE..0x004343D0); the bests start at 0x7FFFFFFF (0x00433408).
+
+Not modelled: when the object at `0x007345D0` holds a non-zero first word
+(0x004339DA..0x004339E9), 0x004338C0 times none of that and, for a race
+type `0x0078A30C` of 2, stores only the line's time since the lap start and
+the line's crossing (0x00433A72..0x00433A9F). By inference that object is
+replay playback: the race set-up creates it (0x00421F73) and the frame
+pacer 0x00420110 reads a stream through it when its first word is set. A
+career race, as far as traced, does not take that branch.
 
 ### The backdate: 0x00433650
 
@@ -375,23 +420,36 @@ What the on-screen timers read, for the milestone's lap timer:
 
 - **The lap timer** (`CurrentLapTime`, 0x004A19B1..0x004A1A38): when the lap
   start `[car + 0x24 + 4 * start]` is set, the world time since it,
-  **unrounded**, every frame; when the car has just completed a lap (+0x0D),
-  that lap's time (`[car + 0x38 + 4 * finish]`) instead, held while it is at
-  most 3.0 s old (`[0x006CC7AC]`). Before go, a text in place of a time.
+  **unrounded**, read from `0x0073AD34` itself (0x004A19DE, 0x004A19F5);
+  when the car has just completed a lap (+0x0D), that lap's time
+  (`[car + 0x38 + 4 * finish]`) instead, held while it is at most 3.0 s old
+  (`[0x006CC7AC]`). Without a lap start, a text in place of a time
+  (0x004A1A58..0x004A1A60, string hash 0x61C9B7A2).
 - **The best lap** (`BestLapTime`, 0x004A1A91..0x004A1AE0):
-  `[car + 0x60 + 4 * finish]`; dashes for 0 (0x006C72DC) or for the empty
-  0x7FFFFFFF, which 0x00586580 prints as its template.
+  `[car + 0x60 + 4 * finish]`; "--:--:--" (0x006C72DC) for a best of 0
+  (0x004A1AB0..0x004A1ABD), and any other value through 0x00586580 - the
+  empty 0x7FFFFFFF, which a car holds until its first timed lap, included.
 - **The format** (0x00586580, 0x005864F0, 0x00586090): whole seconds
   `ticks / 4000`, milliseconds `(ticks % 4000) * 1000 / 4000` and
-  hundredths `milliseconds / 10`, all truncated, laid into a two-digit
-  template per field (0x006B9618..0x006B9648). This project prints
-  `M:SS.hh`.
+  hundredths `milliseconds / 10`, all truncated. 0x00586580 hands 0 and
+  0x7FFFFFFF alike to 0x00586090 as four zero fields (0x0058658C..
+  0x005865A9). 0x00586090 picks a template (0x006B9570..0x006B9648) by
+  language (0x006EE6F0), by its flags (the HUD passes 4, 0x004A1A33) and by
+  whether the hours, the minutes or the seconds are the first non-zero
+  field, and writes the digits over every placeholder of it (0x005860A8..
+  0x00586461) - so a zero time and the empty time both print as a zero time
+  (" 0:00.00" in the variant with a point), and the HUD's only dashes are
+  the ones it chooses itself above. This project prints the digits,
+  `M:SS.hh`, without the widths, the separators or a leading space.
 - **The countdown**: 0x00434D10 above.
 
 `nfsu::race_timing_hud` answers the same questions from the state after a
 step: the countdown value, the race time, the lap timer (running or held),
 the best lap, the laps completed and the race's, the wrong-way flag and the
-finish. The first-lap build reads it once a frame, after running the steps
+finish. It reads the world time of the step it follows; when retail's HUD
+runs relative to the timer's advance (0x00585E00) was not traced, so the
+running lap timer and the 3 s hold may differ from retail's by one frame
+(labelled below). The first-lap build reads it once a frame, after running the steps
 the step clock hands out, and formats each time with
 `nfsu::format_race_ticks`.
 
@@ -462,13 +520,16 @@ the default, the Release and the Debug build:
 ```text
 T="build/nfsu_probe race-timing $R/Global/GLOBALB.BUN $R/FrontEnd/FrontB.lzc $R/Tracks/TRACKB1003.lzc 1"
 $T --drive forward               34 lines 2469 bytes  B3ECE3B489FCBF3A0367EDA0394302B28A51C5E0772DA8C618AF02A6CD0BFD56
-$T --drive backward              36 lines 2370 bytes  236EA9F66D08CC58D0F4538223806FEECA1336834C78C395AA72C3D4AFD6727A
+$T --drive backward              36 lines 2367 bytes  CF8D4752D487DF07F99DB4A1568DA6209D7831A7BB03EAF595DBCB52C9870D11
 $T --drive forward --skip 23 3   33 lines 2428 bytes  DE68AE9C6B7B7A46C0A61BEC0DE817C7E67AFD4DB4FE7689C2D2554F9BADF67D
 $T --drive forward --skip 10 20  33 lines 2338 bytes  EFCCB2CCF7F17B2D5D59F80E5A6AE2379B6F3DCC62B6AC91BB85C56A134C6A57
 ```
 
 The five `race-route` pins of [`RACE_ROUTE.md`](RACE_ROUTE.md) are unchanged
-from the same builds.
+from the same builds. Review comment 3941 (F2) changed the backward drive's
+pin, which was 2370 bytes with `236EA9F6...D6727A`: its empty best lap and
+fastest lap now print as 0x00586580 prints 0x7FFFFFFF, a zero time, where
+the first round printed dashes. The other three are as they were.
 
 **Two laps, finished.** The route replay's crossings (its steps 6, 6605 and
 13204) come 162 steps later here, the car having held the grid through go:
@@ -513,8 +574,8 @@ step 163 tick 14921 wrong-way-on
 step 3131 tick 213777 reset-zone zone 13 (the clock runs on)
 step 3131 tick 213777 wrong-way-off after 0:49.71 (198856)
 step 3133 tick 213911 wrong-way-on
-result: racer 0 not-finished position 0 laps 0 of 2 time none best-lap --:--.-- (2147483647)
-race: outcome running stage racing steps 13419 go-step 162 race-start 14840 race-time 3:42.04 (888160) fastest-lap --:--.-- (2147483647) wrong-way yes wrong-way-steps 13252 resets 2
+result: racer 0 not-finished position 0 laps 0 of 2 time none best-lap 0:00.00 (2147483647)
+race: outcome running stage racing steps 13419 go-step 162 race-start 14840 race-time 3:42.04 (888160) fastest-lap 0:00.00 (2147483647) wrong-way yes wrong-way-steps 13252 resets 2
 ```
 
 **A skipped split.** Jumping from node 23 to node 3 misses split 1 on lap 1,
@@ -556,7 +617,13 @@ time); two laps with every time exact, the first crossing untimed, the
 totals, the bests, the fastest lap and the finish; the backdate (667 ticks
 for 5 units at 30 a second, 0 at a speed of 1, 20000 just above 1, 50 for
 event 1's first crossing, 267 across the path's seam, and saturation at
-2^29); a backward crossing of the line; a missed split; a restart mid-race
+2^29, and 378 ticks for a length, difference and speed where both other
+orders of the distance's two products give 377); a backward crossing of the
+line; a missed split; three laps, whose last total is the previous total
+plus the lap; a highest lap passing the count without equalling it, which
+finishes nothing; a time of 0 and the empty time printing alike, a lap timer
+of exactly 0 on the go step of a race started at 3986, and a best lap of 0
+left to the HUD's dashes; a restart mid-race
 timing exactly as a fresh race and a restart after the finish; a quit; the
 wrong way and a reset zone ending nothing; the clock limit; three racers
 finishing in order with the unfinished last and an opponent's lap not the
@@ -579,9 +646,10 @@ path file and a missing one.
 
 ### Deliberate breaks
 
-Twenty mutants of `src/race_timing.cpp`, each applied alone in this
-worker's worktree; for each only `nfsu_race_timing_tests` and `nfsu_probe`
-were rebuilt, the unit binary ran under a 60-second limit and `ctest -R
+Twenty-five mutants of `src/race_timing.cpp`, each applied alone in this
+worker's worktree - the first round's twenty, and five for review comment
+3941: its N5 survivors 14, 20 and 22 and the two halves of its F2. For each
+only `nfsu_race_timing_tests` and `nfsu_probe` were rebuilt, the unit binary ran under a 60-second limit and `ctest -R
 race_timing_guards` after it, and the source was then restored byte for
 byte and touched. A run is classified by what it printed: *killed* when the
 unit binary printed a `test failure:` line or the guards a `CMake Error`,
@@ -609,15 +677,23 @@ unit binary printed a `test failure:` line or the guards a `CMake Error`,
 | 18 | the step clock does not hand out step 0 | killed | passed |
 | 19 | the step clock replays a stall | killed | passed |
 | 20 | the HUD holds a lap without its time | killed | killed |
+| 21 | backdate distance as `L * (past * 0.01)` (review 14) | killed | passed |
+| 22 | lap total adds the previous lap (review 20) | killed | passed |
+| 23 | finish when the highest lap reaches or passes the count (review 22) | killed | passed |
+| 24 | the empty time prints dashes | killed | killed |
+| 25 | the empty best lap is not formatted | killed | killed |
 
-Totals: 20 mutants, 19 killed, 1 equivalent. Mutant 06 is equivalent for
+Totals: 25 mutants, 24 killed, 1 equivalent, 0 unknown; the table is the
+fix round's sweep over the final source, whose guard pins it ran against. Mutant 06 is equivalent for
 every T: `T + T` is an exact doubling, so `(T + T) + T` and `T * 3.0` both
 round the same exact value once. Mutant 07 survived the first sweep, when
 every rate tested landed just above a whole number of units; the checks at
 13 and 17 frames a second were added for it, and a rerun of it alone then
-killed it. Each of race-timing's four path conversions in `src/main.cpp`,
-reverted alone to `fs::path(argv[k])`, is refused by
-`nfsu_path_arguments`.
+killed it. The review's mutant 25, the lap timer's hold while under rather
+than at most 3 s, is equivalent: no whole tick count converts to exactly
+3.0 (11999 ticks are 2.99975 s and 12000 are 3.0000002). Each of
+race-timing's four path conversions in `src/main.cpp`, reverted alone to
+`fs::path(argv[k])`, is refused by `nfsu_path_arguments`.
 
 ### The console
 
@@ -632,6 +708,18 @@ on.
 
 ## Approximations, labelled
 
+- **The first move.** The lap update sees a released car move first on the
+  step after go. The traced order rules out the go step's own lap update
+  seeing a move the release caused; where the car's position is integrated
+  in the frame, and what the player's driver's hold does, were not traced.
+  One step later or earlier gives the event 1 times of the table under
+  **Stages**: a hundredth or two on each lap and on the race time.
+- **The HUD's moment.** `race_timing_hud` reads the world time of the step
+  it follows; retail's HUD reads the timer itself at a point in the frame
+  that was not traced. At most a frame on the running lap timer and on the
+  3 s hold; display only.
+- **The format** prints digits only, `M:SS.hh`, not 0x00586090's widths,
+  language separators or leading space.
 - **The step.** A step is one 60 Hz frame and adds 67 ticks, the retail
   arithmetic for a frame of exactly the display period. The retail frame is
   measured, and a frame that runs long or short adds other counts.
@@ -665,7 +753,9 @@ on.
 
 - How many frames retail spends between building the race and starting the
   countdown, with and without the flyby.
-- The player's driver class, and what its hold does to the controls.
+- Where in the frame a car's position is integrated; the player's driver
+  class, and what its hold does to the controls.
+- When the HUD's timers run relative to the world timer's advance.
 - What `0x0078A368`, `0x0073465C` and the race type `0x0078A30C` are by name.
 - The finish statuses 2 to 9 and the paths that give them.
 - What the results screen (`PostRaceResults.fng`) shows beyond the times and

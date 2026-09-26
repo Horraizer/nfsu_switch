@@ -212,7 +212,10 @@ void test_format() {
     check(nfsu::format_race_ticks(64761) == "0:16.19", "the +1 artifact shows as its hundredth");
     check(nfsu::format_race_ticks(14400000) == "60:00.00", "an hour is 60 minutes");
     check(nfsu::format_race_ticks(-40) == "-0:00.01", "a negative time");
-    check(nfsu::format_race_ticks(nfsu::kRaceNoTime) == "--:--.--", "no time");
+    // 0x00586580 hands 0 and 0x7FFFFFFF alike to 0x00586090 as four zero
+    // fields, which prints a zero time (review comment 3941, F2).
+    check(nfsu::format_race_ticks(nfsu::kRaceNoTime) == "0:00.00",
+          "the empty time prints as a zero time");
     check(nfsu::format_race_ticks(-2147483647 - 1) == "-8947:50.91", "the most negative");
 }
 
@@ -494,6 +497,19 @@ void test_backdate() {
     check(wrap.last(nfsu::RaceTimingEventKind::lap) != nullptr &&
               wrap.last(nfsu::RaceTimingEventKind::lap)->value == 267,
           "a crossing over the seam is dated back by the wrapped difference");
+    // The distance is (length * past) * 0.01, in that order (0x004336D5..
+    // 0x004336E5): with this length, difference and speed the retail order
+    // gives 378 ticks, and both other orders 377 (review comment 3941, N5).
+    nfsu::RaceRoute order = hand_route(2);
+    order.spline.path_length = 4026.5205078125F;
+    order.boundaries[0].percent = 0.0F;
+    Race ordered(order);
+    ordered.countdown();
+    ordered.at(200, forward(0, 0, 0.0F));
+    ordered.at(1000, new_lap(1, 0.14077050983905792F), 60.05990982055664F);
+    check(ordered.last(nfsu::RaceTimingEventKind::lap) != nullptr &&
+              ordered.last(nfsu::RaceTimingEventKind::lap)->value == 378,
+          "the distance is multiplied in the retail order");
     // An absurd distance saturates rather than overflowing.
     nfsu::RaceRoute huge = hand_route(2);
     huge.spline.path_length = 1.0e30F;
@@ -525,6 +541,72 @@ void test_backward_line() {
     check(again != nullptr && again->step == 540 && again->value == 1,
           "the re-crossing is untimed");
     check(race.count(nfsu::RaceTimingEventKind::lap) == 1, "one lap");
+}
+
+// A time of 0 and the empty time format alike, and the HUD's dashes are its
+// own (review comment 3941, F2).
+void test_zero_times() {
+    check(nfsu::format_race_ticks(0) == nfsu::format_race_ticks(nfsu::kRaceNoTime),
+          "0 and the empty time print the same");
+    // A start phase that puts go on a whole hundredth: 3986 + 10854 is 14840,
+    // so the lap timer reads exactly 0 on the go step.
+    nfsu::RaceRoute route = hand_route(2);
+    nfsu::RaceTimingConfig config;
+    std::string error;
+    nfsu::make_race_timing_config(60, 1, config, error);
+    config.start_ticks = 3986;
+    nfsu::RaceTimingState state;
+    check(nfsu::start_race_timing(route, config, state, error), "a race at 3986 starts");
+    Timing timing;
+    nfsu::set_race_stage(state, nfsu::RaceStage::countdown, timing);
+    nfsu::RaceTimingInput input;
+    while (state.step < 163) {
+        nfsu::step_race_timing(route, config, state, &input, timing, error);
+    }
+    nfsu::RaceHud hud;
+    nfsu::race_timing_hud(route, config, state, 0, hud);
+    check(state.go_ticks == 14840 && hud.lap_time_valid && hud.lap_ticks == 0 &&
+              nfsu::format_race_ticks(hud.lap_ticks) == "0:00.00",
+          "the go step's lap timer of 0 prints as 0:00.00, as 0x00586580 prints it");
+    // A lap of 0 - crossed on the go step itself, at no speed - is a best lap
+    // of 0, which the HUD shows as its dashes (0x004A1AB0..0x004A1ABD).
+    Race zero(hand_route(2));
+    zero.countdown();
+    zero.at(162, new_lap(1, 25.0F));
+    nfsu::race_timing_hud(zero.route, zero.config, zero.state, 0, hud);
+    check(zero.racer().lap_ticks[1] == 0 && !hud.best_lap_valid && hud.best_lap_ticks == 0,
+          "a best lap of 0 is not formatted");
+}
+
+// Three laps: the time at each lap's end is the previous total plus the lap
+// (0x00433A55..0x00433A66), not the previous lap plus it (review comment
+// 3941, N5).
+void test_three_laps() {
+    Race race(hand_route(3));
+    race.countdown();
+    run_two_laps(race);
+    race.at(1600, new_lap(3, 25.0F));
+    const nfsu::RaceRacerTiming& racer = race.racer();
+    check(racer.lap_ticks[3] == 111200 - 71000 && racer.lap_total_ticks[3] == 96360 &&
+              racer.lap_total_ticks[3] == racer.lap_total_ticks[2] + racer.lap_ticks[3],
+          "lap 3's total is the race time at its end");
+    check(racer.finish_valid && racer.finish_ticks == 96360 && racer.position == 1,
+          "three laps finish at the sum");
+}
+
+// A highest lap that passes the count without equalling it - the lap byte's
+// wrap can make one - finishes nothing: 0x00435A39..0x00435A43 compare for
+// equality (review comment 3941, N5).
+void test_lap_past_the_count() {
+    Race race(hand_route(2));
+    race.countdown();
+    race.at(170, forward(0, 0, 25.0F));
+    race.at(500, new_lap(1, 25.0F));
+    race.at(1000, new_lap(3, 25.0F));
+    check(race.racer().highest_lap == 3 &&
+              race.racer().status == nfsu::RacerStatus::not_finished &&
+              race.state.outcome == nfsu::RaceOutcome::running,
+          "a highest lap of 3 in a race of 2 does not finish it");
 }
 
 // A split passed beyond the window is no crossing: no split time, and the
@@ -722,8 +804,10 @@ void test_hud() {
     check(nfsu::race_timing_hud(race.route, race.config, race.state, 0, hud),
           "a HUD before anything");
     check(hud.countdown == 0 && !hud.race_time_valid && !hud.lap_time_valid &&
-              !hud.best_lap_valid && hud.lap == 0 && hud.laps == 2,
+              hud.lap == 0 && hud.laps == 2,
           "nothing to show before the countdown");
+    check(hud.best_lap_valid && hud.best_lap_ticks == nfsu::kRaceNoTime,
+          "the empty best lap goes through the formatter, as 0x004A1AE0 sends it");
     check(!nfsu::race_timing_hud(race.route, race.config, race.state, 1, hud),
           "no second racer");
     race.countdown();
@@ -1149,6 +1233,9 @@ int main() {
     test_backdate();
     test_backward_line();
     test_missed_split();
+    test_zero_times();
+    test_three_laps();
+    test_lap_past_the_count();
     test_restart();
     test_quit();
     test_wrong_way_and_reset();

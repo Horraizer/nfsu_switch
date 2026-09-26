@@ -5106,8 +5106,10 @@ int run_track_whole(const fs::path& stream_path,
 // The largest path file race-route reads, and the most positions in it.
 constexpr std::uint64_t kRacePathFileLimit = 64ULL * 1024ULL * 1024ULL;
 constexpr std::size_t kRacePathPositionLimit = 2000000;
-// One replay step: this project's choice, not a retail constant. It only
-// matters to the wrong-way test's speed gate.
+// One replay step: this project's choice, not a retail constant. It
+// matters to the wrong-way test's speed gate, and to race-timing, which
+// takes a replayed car's speed - and with it a crossing's backdate - as the
+// step's length over it.
 constexpr float kRaceStepSeconds = 1.0F / 60.0F;
 // The spacing of a built-in drive, 0.5 per step, which at 60 steps a second
 // is 30 per second: fast enough for the wrong-way speed gate of 10 mph.
@@ -5736,15 +5738,17 @@ int run_race_timing(const fs::path& globalb_path, const fs::path& frontb_path,
               << " resets " << racer.resets << '\n';
     nfsu::RaceHud hud;
     nfsu::race_timing_hud(route, config, state, 0, hud);
+    // Where retail's HUD shows no time: a text for the lap timer without a
+    // lap start (0x004A1A58), "--:--:--" for a best lap of 0 (0x004A1ABD).
     std::cout << "hud: countdown " << race_countdown_text(hud.countdown) << " race-time "
               << (hud.race_time_valid ? nfsu::format_race_ticks(hud.race_ticks)
-                                      : std::string("--:--.--"))
+                                      : std::string("none"))
               << " lap-time "
               << (hud.lap_time_valid ? nfsu::format_race_ticks(hud.lap_ticks)
-                                     : std::string("--:--.--"))
+                                     : std::string("text"))
               << (hud.lap_time_held ? " held" : "") << " best-lap "
               << (hud.best_lap_valid ? nfsu::format_race_ticks(hud.best_lap_ticks)
-                                     : std::string("--:--.--"))
+                                     : std::string("--:--:--"))
               << " lap " << hud.lap << " of " << hud.laps << " wrong-way "
               << (hud.wrong_way ? "yes" : "no") << " finished " << (hud.finished ? "yes" : "no")
               << " position " << hud.position << '\n';

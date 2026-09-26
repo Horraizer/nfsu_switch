@@ -177,10 +177,12 @@ nfsu_pin("event 1 forward drive" 2339 "38f9c8822e653bb5b447664ec11b470f6973a4db4
 # The same number of nodes the other way round: the car goes the wrong way
 # from its first move, the lap counter falls, and the race never finishes.
 nfsu_case("event 1: the backward drive" 0
-          "step 163 tick 14921 wrong-way-on\n;route crossed-backward boundary 2 SplitTimeBoundary2 lap -1;route crossed-backward boundary 0 ForwardStartLine lap -2;replay: the positions ran out after step;result: racer 0 not-finished position 0 laps 0 of 2 time none best-lap --:--.--;race: outcome running stage racing;wrong-way yes"
+          "step 163 tick 14921 wrong-way-on\n;route crossed-backward boundary 2 SplitTimeBoundary2 lap -1;route crossed-backward boundary 0 ForwardStartLine lap -2;replay: the positions ran out after step;result: racer 0 not-finished position 0 laps 0 of 2 time none best-lap 0:00.00 (2147483647);race: outcome running stage racing;wrong-way yes"
           "lap 1 boundary;finished position 1;split boundary"
           "${globalb}" "${frontb}" "${trackb}" 1 --drive backward)
-nfsu_pin("event 1 backward drive" 2066 "1d71a3fbccb8001fe8e9d3693005f249c57dc2b0e7b849804a012b8b10c30698")
+# Review comment 3941 (F2) re-pinned this one: the empty best lap now prints
+# as 0x00586580 prints it, a zero time, where the first round printed dashes.
+nfsu_pin("event 1 backward drive" 2063 "617292f291183fbfd6da8b17a299ad9fa314afc0443de83bc05832099a3444b3")
 
 # Jumping from node 7 (43.75 percent) to node 13 (81.25): split 1 at 50 is
 # missed, so it has no time on that lap, and the lap still counts.

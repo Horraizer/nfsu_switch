@@ -405,8 +405,10 @@ std::int32_t race_ticks_per_frame(int frames_per_second) noexcept {
 }
 
 std::string format_race_ticks(std::int32_t ticks) {
+    // 0x0058658C..0x005865A9: 0 and 0x7FFFFFFF go to 0x00586090 as four
+    // zero fields, which it prints as a zero time (0x005863A6..0x00586461).
     if (ticks == kRaceNoTime) {
-        return "--:--.--";
+        ticks = 0;
     }
     const bool negative = ticks < 0;
     const std::int64_t magnitude = negative ? -static_cast<std::int64_t>(ticks) : ticks;
@@ -802,10 +804,10 @@ bool race_timing_hud(const RaceRoute& route, const RaceTimingConfig& config,
             result.lap_ticks = wrap_sub(now, record.crossing_ticks[0]);
         }
     }
-    // 0x004A1A91..0x004A1ABB: a best lap of 0 shows dashes, as does the
-    // empty kRaceNoTime (0x00586590..0x00586598).
+    // 0x004A1A91..0x004A1ABB: a best lap of 0 shows "--:--:--" (0x006C72DC);
+    // any other, the empty kRaceNoTime included, goes through 0x00586580.
     const std::int32_t best = record.best_split_ticks[static_cast<std::size_t>(route.finish)];
-    result.best_lap_valid = best != 0 && best != kRaceNoTime;
+    result.best_lap_valid = best != 0;
     result.best_lap_ticks = best;
     result.lap = record.lap < 0 ? 0 : record.lap;
     result.laps = route.laps;
