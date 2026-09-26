@@ -341,6 +341,18 @@ add_library(nfsu_stock_view
 target_link_libraries(nfsu_stock_view PUBLIC nfsu_input_camera nfsu_render)
 nfsu_enable_warnings(nfsu_stock_view)
 
+# SDK-free whole-frame acceptance metrics and amplified RGBA8 difference
+# for issue #147. Standard library only; no clock, file or device access.
+add_library(nfsu_frame_compare src/frame_compare.cpp)
+target_include_directories(nfsu_frame_compare PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(nfsu_frame_compare PUBLIC cxx_std_17)
+nfsu_enable_warnings(nfsu_frame_compare)
+if(MSVC)
+    target_compile_options(nfsu_frame_compare PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_frame_compare PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+
 # The language the console compiles these as. Every target above asks for
 # cxx_std_17, and CMake reads that as a minimum: it adds no -std option when
 # the compiler's own default already meets it. The desktop's GCC 13 defaults
@@ -356,7 +368,7 @@ if(NINTENDO_SWITCH)
     set_target_properties(
         nfsu_image nfsu_core nfsu_texture_export nfsu_scene nfsu_stock_scene
         nfsu_texture_decode nfsu_render nfsu_sha256 nfsu_stock_frame
-        nfsu_screen_text nfsu_body_skin nfsu_skin_inputs nfsu_runtime_skin
+        nfsu_screen_text nfsu_frame_compare nfsu_body_skin nfsu_skin_inputs nfsu_runtime_skin
         nfsu_inspect nfsu_input nfsu_input_camera nfsu_stock_view
         PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
 endif()

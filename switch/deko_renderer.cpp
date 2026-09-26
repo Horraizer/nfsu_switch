@@ -42,7 +42,7 @@ struct DekoRenderer::Impl {
     std::vector<dk::UniqueMemBlock> blocks;
     dk::UniqueSwapchain swapchain;
     dk::UniqueCmdBuf cmd;
-    dk::MemBlock buffers, images, staging, uniforms, descriptors, command_memory;
+    dk::MemBlock buffers, images, staging, uniforms, descriptors, command_memory, readback;
     MemoryArena buffer_arena, image_arena, staging_arena, uniform_arena;
     UploadLedger ledger;
     std::vector<UploadHandle> handles;
@@ -166,7 +166,7 @@ struct DekoRenderer::Impl {
         return true;
     }
 
-    bool open(const RecordedCommands& source, std::string& error) {
+    bool open(const RecordedCommands& source, std::string& error, bool presentation) {
         if (commands) { error = "deko3d renderer open is one-shot"; return false; }
         DrawExecutionPlan plan;
         if (!plan_draw_execution(source, plan, error)) return false;
@@ -274,11 +274,12 @@ struct DekoRenderer::Impl {
             !shader("textured.frag", DkStage_Fragment, textured, error) ||
             !shader("fallback.frag", DkStage_Fragment, fallback, error)) return false;
         dk::ImageLayout color_layout, depth_layout;
-        dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender | DkImageFlags_UsagePresent)
+        dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender | (presentation ? DkImageFlags_UsagePresent : 0))
             .setFormat(DkImageFormat_RGBA8_Unorm).setDimensions(source.width, source.height).initialize(color_layout);
         dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender)
             .setFormat(DkImageFormat_ZF32).setDimensions(source.width, source.height).initialize(depth_layout);
-        for (auto& color : colors) {
+        for (std::size_t i = 0; i < (presentation ? 2U : 1U); ++i) {
+            auto& color = colors[i];
             dk::MemBlock memory;
             if (!block(color_layout.getSize(), kImageFlags, "present image", memory, error)) return false;
             color.initialize(color_layout, memory, 0);
@@ -286,29 +287,22 @@ struct DekoRenderer::Impl {
         dk::MemBlock depth_memory;
         if (!block(depth_layout.getSize(), kImageFlags, "depth image", depth_memory, error)) return false;
         depth.initialize(depth_layout, depth_memory, 0);
-        const std::array<const DkImage*, 2> targets{&colors[0], &colors[1]};
-        swapchain = dk::SwapchainMaker{device, nwindowGetDefault(), targets}.create();
-        if (!swapchain || !healthy(error)) {
-            if (error.empty()) error = "deko3d swapchain creation failed";
-            return false;
+        if (presentation) {
+            const std::array<const DkImage*, 2> targets{&colors[0], &colors[1]};
+            swapchain = dk::SwapchainMaker{device, nwindowGetDefault(), targets}.create();
+            if (!swapchain || !healthy(error)) {
+                if (error.empty()) error = "deko3d swapchain creation failed";
+                return false;
+            }
         }
         std::printf("deko3d: %zu draws, %zu uploads, %llu bytes of GPU blocks (placeholder budget)\n",
             source.draws.size(), handles.size(), static_cast<unsigned long long>(gpu_bytes));
         return true;
     }
 
-    bool present(std::string& error) {
-        if (!swapchain || !healthy(error)) {
-            if (error.empty()) error = "deko3d renderer is not open";
-            return false;
-        }
-        const int slot = queue.acquireImage(swapchain);
-        if (!healthy(error) || slot < 0 || slot >= 2) {
-            if (error.empty()) error = "deko3d swapchain image acquisition failed";
-            return false;
-        }
+    void record_frame(const dk::Image& target) {
         begin();
-        dk::ImageView color_view{colors[slot]}, depth_view{depth};
+        dk::ImageView color_view{target}, depth_view{depth};
         cmd.bindRenderTargets(&color_view, &depth_view);
         cmd.setViewports(0, {{0, 0, static_cast<float>(commands->width), static_cast<float>(commands->height), 0, 1}});
         cmd.setScissors(0, {{0, 0, commands->width, commands->height}});
@@ -364,9 +358,61 @@ struct DekoRenderer::Impl {
                             static_cast<std::int32_t>(draw.first_vertex), 0);
         }
         cmd.barrier(DkBarrier_Fragments, 0);
+    }
+
+    bool present(std::string& error) {
+        if (!swapchain || !healthy(error)) {
+            if (error.empty()) error = "deko3d renderer is not open";
+            return false;
+        }
+        const int slot = queue.acquireImage(swapchain);
+        if (!healthy(error) || slot < 0 || slot >= 2) {
+            if (error.empty()) error = "deko3d swapchain image acquisition failed";
+            return false;
+        }
+        record_frame(colors[slot]);
         if (!submit(error)) return false;
         queue.presentImage(swapchain, slot);
         queue.flush();
+        return healthy(error);
+    }
+
+    bool capture(std::vector<unsigned char>& rgba, double& render_ms,
+                 double& readback_ms, std::string& error) {
+        rgba.clear(); render_ms = readback_ms = 0;
+        if (!commands || !queue || !cmd || swapchain || !healthy(error)) {
+            if (error.empty()) error = "capture requires an open offscreen renderer";
+            return false;
+        }
+        const std::uint32_t pitch = commands->width * 4;
+        const std::size_t bytes = std::size_t{pitch} * commands->height;
+        constexpr std::size_t guard = 32;
+        if (!readback && !block(bytes + 2*guard,
+                DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuUncached,
+                "frame readback", readback, error)) return false;
+        auto* data = static_cast<unsigned char*>(readback.getCpuAddr());
+        std::memset(data, 0xCD, bytes + 2*guard);
+        const auto render_start = armGetSystemTick();
+        record_frame(colors[0]);
+        if (!submit(error)) return false;
+        render_ms = armTicksToNs(armGetSystemTick() - render_start) / 1000000.0;
+        const auto copy_start = armGetSystemTick();
+        begin();
+        cmd.barrier(DkBarrier_Full, DkInvalidateFlags_L2Cache);
+        dk::ImageView view{colors[0]};
+        // deko3d uses rowLength as a BYTE pitch. Depth 1 needs no layer
+        // stride. No flipping or swizzling is done by the comparison.
+        cmd.copyImageToBuffer(view, {0, 0, 0, commands->width, commands->height, 1},
+                              {readback.getGpuAddr() + guard, pitch, 0});
+        cmd.barrier(DkBarrier_Full, DkInvalidateFlags_L2Cache);
+        if (!submit(error)) return false;
+        readback_ms = armTicksToNs(armGetSystemTick() - copy_start) / 1000000.0;
+        for (std::size_t i = 0; i < guard; ++i) {
+            if (data[i] != 0xCD || data[guard+bytes+i] != 0xCD) {
+                error = "GPU readback overwrote a guard region"; return false;
+            }
+        }
+        rgba.assign(data + guard, data + guard + bytes);
         return healthy(error);
     }
 
@@ -400,10 +446,16 @@ DekoRenderer::~DekoRenderer() {
     try { std::string ignored; impl_->shutdown(ignored); }
     catch (...) { if (impl_->queue) impl_->queue.waitIdle(); }
 }
-bool DekoRenderer::open(const RecordedCommands& commands, std::string& error) {
+bool DekoRenderer::open(const RecordedCommands& commands, std::string& error, bool presentation) {
     error.clear();
-    try { return impl_->open(commands, error); }
+    try { return impl_->open(commands, error, presentation); }
     catch (const std::bad_alloc&) { error = "not enough memory for deko3d renderer"; return false; }
+}
+bool DekoRenderer::capture(std::vector<unsigned char>& rgba, double& render_ms,
+                           double& readback_ms, std::string& error) {
+    error.clear();
+    try { return impl_->capture(rgba, render_ms, readback_ms, error); }
+    catch (const std::bad_alloc&) { rgba.clear(); error = "not enough memory for GPU readback"; return false; }
 }
 bool DekoRenderer::present(std::string& error) { error.clear(); return impl_->present(error); }
 bool DekoRenderer::close(std::string& error) {
