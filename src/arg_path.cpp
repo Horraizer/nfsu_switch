@@ -3,9 +3,16 @@
 #include "nfsu/platform.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <exception>
+#include <fstream>
+#include <ios>
+#include <limits>
+#include <new>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #ifdef _WIN32
@@ -97,6 +104,13 @@ std::size_t extended_prefix_length(const char* text) {
 // asks Windows for the code page; the class only puts it behind the
 // interface, so that the programs below and a console that implements the
 // interface differently reach it the same way.
+//
+// Its three read-only calls (issue #47) are std::filesystem and
+// std::ifstream, which take the wide path argument_to_path builds on
+// Windows, so a root under a Cyrillic directory lists and reads as any
+// other. Every error is taken as a std::error_code rather than thrown, and
+// no reason quotes the operating system's own message: on this machine that
+// message is localised, and a reason has to stay ASCII.
 class ArgumentPathFileSystem final : public FileSystemService {
 public:
     bool argument_to_path(const char* text, fs::path& out, std::string& reason) override {
@@ -105,6 +119,113 @@ public:
 #else
         return argument_to_path_in_code_page(text, 0U, out, reason);
 #endif
+    }
+
+    bool list_directory(const fs::path& directory, std::size_t max_names,
+                        std::vector<std::string>& names, std::string& reason) override {
+        names.clear();
+        std::error_code error;
+        const fs::file_status status = fs::status(directory, error);
+        if (status.type() == fs::file_type::not_found) {
+            reason = "does not exist";
+            return false;
+        }
+        if (!error && status.type() != fs::file_type::directory) {
+            reason = "is not a directory";
+            return false;
+        }
+        error.clear();
+        fs::directory_iterator entry(directory, error);
+        if (error) {
+            reason = "cannot be listed (error " + std::to_string(error.value()) + ")";
+            return false;
+        }
+        std::size_t seen = 0;
+        for (; entry != fs::directory_iterator(); entry.increment(error)) {
+            if (error) {
+                break;
+            }
+            ++seen;
+            if (seen > max_names) {
+                names.clear();
+                reason = "holds more than " + std::to_string(max_names) + " names";
+                return false;
+            }
+            // A name this standard library cannot spell in UTF-8 is not
+            // listed: it cannot equal any name a caller asks for, all of
+            // which are ASCII, and it still counts against the bound.
+            try {
+                names.push_back(entry->path().filename().string());
+            } catch (const std::bad_alloc&) {
+                throw;
+            } catch (const std::exception&) {
+            }
+        }
+        if (error) {
+            names.clear();
+            reason = "cannot be listed (error " + std::to_string(error.value()) + ")";
+            return false;
+        }
+        return true;
+    }
+
+    bool file_size(const fs::path& path, std::uint64_t& size, std::string& reason) override {
+        std::error_code error;
+        const fs::file_status status = fs::status(path, error);
+        if (status.type() == fs::file_type::not_found) {
+            reason = "does not exist";
+            return false;
+        }
+        if (error) {
+            reason = "cannot be sized (error " + std::to_string(error.value()) + ")";
+            return false;
+        }
+        if (status.type() == fs::file_type::directory) {
+            reason = "is a directory, not a file";
+            return false;
+        }
+        if (status.type() != fs::file_type::regular) {
+            reason = "is not a regular file";
+            return false;
+        }
+        const std::uintmax_t bytes = fs::file_size(path, error);
+        if (error) {
+            reason = "cannot be sized (error " + std::to_string(error.value()) + ")";
+            return false;
+        }
+        size = static_cast<std::uint64_t>(bytes);
+        return true;
+    }
+
+    bool read_file(const fs::path& path, std::uint64_t offset, unsigned char* buffer,
+                   std::size_t count, std::size_t& got, std::string& reason) override {
+        got = 0;
+        std::ifstream stream(path, std::ios::in | std::ios::binary);
+        if (!stream) {
+            reason = "cannot be opened for reading";
+            return false;
+        }
+        if (offset > static_cast<std::uint64_t>(std::numeric_limits<std::streamoff>::max()) ||
+            count > static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max())) {
+            reason = "cannot be read at byte " + std::to_string(offset);
+            return false;
+        }
+        stream.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+        if (!stream) {
+            reason = "cannot be positioned at byte " + std::to_string(offset);
+            return false;
+        }
+        if (count == 0) {
+            return true;
+        }
+        stream.read(reinterpret_cast<char*>(buffer), static_cast<std::streamsize>(count));
+        const std::streamsize taken = stream.gcount();
+        if (stream.bad() || (!stream && !stream.eof()) || taken < 0) {
+            reason = "cannot be read at byte " + std::to_string(offset);
+            return false;
+        }
+        got = static_cast<std::size_t>(taken);
+        return true;
     }
 };
 

@@ -30,6 +30,167 @@ bool FakeFileSystem::argument_to_path(
     return true;
 }
 
+std::string FakeFileSystem::tree_name(const std::string& path) {
+    std::string name;
+    std::string component;
+    const auto flush = [&]() {
+        if (!component.empty()) {
+            if (!name.empty()) {
+                name += '/';
+            }
+            name += component;
+            component.clear();
+        }
+    };
+    for (const char c : path) {
+        if (c == '/') {
+            flush();
+        } else {
+            component += c;
+        }
+    }
+    flush();
+    return name;
+}
+
+void FakeFileSystem::add_parents(const std::string& name) {
+    std::size_t slash = name.find('/');
+    while (slash != std::string::npos) {
+        nodes_[name.substr(0, slash)].directory = true;
+        slash = name.find('/', slash + 1);
+    }
+}
+
+void FakeFileSystem::add_directory(const std::string& path) {
+    const std::string name = tree_name(path);
+    add_parents(name);
+    nodes_[name].directory = true;
+}
+
+void FakeFileSystem::add_file(const std::string& path, std::vector<unsigned char> bytes) {
+    const std::string name = tree_name(path);
+    add_parents(name);
+    Node& node = nodes_[name];
+    node = Node{};
+    node.bytes = std::move(bytes);
+}
+
+void FakeFileSystem::report_size(const std::string& path, std::uint64_t size) {
+    Node& node = nodes_[tree_name(path)];
+    node.size_reported = true;
+    node.reported_size = size;
+}
+
+void FakeFileSystem::fail_listing(const std::string& path, const std::string& reason) {
+    Node& node = nodes_[tree_name(path)];
+    node.listing_fails = true;
+    node.listing_reason = reason;
+}
+
+void FakeFileSystem::fail_read(
+    const std::string& path, std::uint64_t offset, const std::string& reason) {
+    Node& node = nodes_[tree_name(path)];
+    node.read_fails = true;
+    node.read_fail_offset = offset;
+    node.read_reason = reason;
+}
+
+bool FakeFileSystem::list_directory(
+    const std::filesystem::path& directory,
+    std::size_t max_names,
+    std::vector<std::string>& names,
+    std::string& reason) {
+    names.clear();
+    const std::string name = tree_name(directory.generic_string());
+    listed_.push_back(name);
+    const auto found = nodes_.find(name);
+    if (found == nodes_.end()) {
+        reason = "does not exist";
+        return false;
+    }
+    if (!found->second.directory) {
+        reason = "is not a directory";
+        return false;
+    }
+    if (found->second.listing_fails) {
+        reason = found->second.listing_reason;
+        return false;
+    }
+    const std::string prefix = name + "/";
+    for (const auto& entry : nodes_) {
+        if (entry.first.size() > prefix.size() &&
+            entry.first.compare(0, prefix.size(), prefix) == 0 &&
+            entry.first.find('/', prefix.size()) == std::string::npos) {
+            if (names.size() == max_names) {
+                names.clear();
+                reason = "holds more than " + std::to_string(max_names) + " names";
+                return false;
+            }
+            names.push_back(entry.first.substr(prefix.size()));
+        }
+    }
+    return true;
+}
+
+bool FakeFileSystem::file_size(
+    const std::filesystem::path& path, std::uint64_t& size, std::string& reason) {
+    const std::string name = tree_name(path.generic_string());
+    sized_.push_back(name);
+    const auto found = nodes_.find(name);
+    if (found == nodes_.end()) {
+        reason = "does not exist";
+        return false;
+    }
+    if (found->second.directory) {
+        reason = "is a directory, not a file";
+        return false;
+    }
+    size = found->second.size_reported ? found->second.reported_size
+                                       : static_cast<std::uint64_t>(found->second.bytes.size());
+    return true;
+}
+
+bool FakeFileSystem::read_file(
+    const std::filesystem::path& path,
+    std::uint64_t offset,
+    unsigned char* buffer,
+    std::size_t count,
+    std::size_t& got,
+    std::string& reason) {
+    got = 0;
+    ReadCall call;
+    call.path = tree_name(path.generic_string());
+    call.offset = offset;
+    call.count = count;
+    reads_.push_back(call);
+    const auto found = nodes_.find(call.path);
+    if (found == nodes_.end()) {
+        reason = "does not exist";
+        return false;
+    }
+    const Node& node = found->second;
+    if (node.directory) {
+        reason = "is a directory, not a file";
+        return false;
+    }
+    if (node.read_fails && count > 0 && offset + count > node.read_fail_offset) {
+        reason = node.read_reason;
+        return false;
+    }
+    if (offset >= node.bytes.size()) {
+        return true;
+    }
+    const std::uint64_t available = node.bytes.size() - offset;
+    const std::size_t take =
+        available < count ? static_cast<std::size_t>(available) : count;
+    for (std::size_t i = 0; i < take; ++i) {
+        buffer[i] = node.bytes[static_cast<std::size_t>(offset) + i];
+    }
+    got = take;
+    reads_.back().got = take;
+    return true;
+}
+
 void FakeInput::push_event(const InputEvent& event) { events_.push_back(event); }
 
 void FakeInput::push_gamepads(const GamepadFrame& frame) { gamepads_.push_back(frame); }

@@ -27,6 +27,8 @@ platforms. They do not change either application's rendering path. See
 | `nfsu_switch_app_nro` | `nfsu_switch_app.nro`, `nfsu_switch_app.nacp` | That ELF packaged by `elf2nro` with the libnx default icon and a NACP titled `nfsu_switch`. |
 | `nfsu_switch_car` | `nfsu_switch_car.elf` | The stock 240SX: it reads six game files from the SD card, builds the stock scene, composes and binds the body skin, renders it at 1280x720 with the CPU reference renderer, shows it through a libnx framebuffer and reports the render time and the frame's SHA-256 against the pinned desktop frame; then the left stick orbits the camera, - returns it to the default and + exits. |
 | `nfsu_switch_car_nro` | `nfsu_switch_car.nro`, `nfsu_switch_car.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_car`. |
+| `nfsu_switch_assets` | `nfsu_switch_assets.elf` | The asset check of issue #47: it reads the config file `sdmc:/config/nfsu_switch/assets.cfg` if there is one, checks that the SD card holds the 12 retail files the first lap needs - by name, size and SHA-256 - and shows the report and the files still to copy on screen; + exits. [`SWITCH_ASSETS.md`](SWITCH_ASSETS.md). |
+| `nfsu_switch_assets_nro` | `nfsu_switch_assets.nro`, `nfsu_switch_assets.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_assets`. |
 | `nfsu_switch_shaders` | `shaders/*.dksh`, `shaders/*.tgsi` | Every GLSL stage a manifest in `shaders/` names, compiled by `uam`, and each manifest checked against the result. |
 
 Under `build-switch/` itself, the configure also builds the car-path
@@ -35,7 +37,10 @@ libraries `nfsu_switch_car` links: `nfsu_image`, `nfsu_core`,
 `nfsu_texture_decode`, `nfsu_render`, `nfsu_sha256`, `nfsu_stock_frame`,
 `nfsu_screen_text`, the skin layers `nfsu_body_skin`, `nfsu_skin_inputs`
 and `nfsu_runtime_skin`, the camera and controller layers `nfsu_inspect`,
-`nfsu_input` and `nfsu_input_camera`, and `nfsu_stock_view`.
+`nfsu_input` and `nfsu_input_camera`, and `nfsu_stock_view`; and, for
+`nfsu_switch_assets`, the asset manifest and check `nfsu_assets` and the
+console's filesystem service `nfsu_posix_file_system`
+(`cmake/asset_libraries.cmake`).
 
 `nfsu_switch_app` links libnx, which devkitPro's platform file adds to every
 link, and nothing else. Neither application loads a shader. The CTest suite
@@ -47,6 +52,7 @@ runs on the build machine, not on a console:
 | `nfsu_switch_shader_blob_guards` | The same check made to fail: eleven cases, nine changed stage sources compiled with `uam` and two blobs checked with the TGSI of another compile, each named by its finding. |
 | `nfsu_switch_nro` | The ELF is AArch64; the NRO has its `NRO0` header, an `ASET` section, the icon and a 0x4000-byte NACP titled `nfsu_switch`; the reader refuses a file that is not an NRO. |
 | `nfsu_switch_car_nro` | The same checks for `nfsu_switch_car.nro`, whose NACP is titled `nfsu_switch_car`. |
+| `nfsu_switch_assets_nro` | The same checks for `nfsu_switch_assets.nro`, whose NACP is titled `nfsu_switch_assets`. |
 
 The desktop programs, the other libraries and every test are not configured
 for the console: the top-level `CMakeLists.txt` includes

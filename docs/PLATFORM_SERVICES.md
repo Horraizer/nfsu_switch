@@ -40,6 +40,8 @@ was read off, not decided here.
 | `nfsu_render` | platform | its frame writer creates and publishes files with `CreateFileW` and `SetFileInformationByHandle`, or `open`, `link` and `unlink` |
 | `nfsu_texture_export` | platform | the texture-export helpers moved out of `nfsu_core` (issue #139): `fs::remove`, `fs::rename` and `fs::create_directories` write, roll back and clean up the files an export call asked for |
 | `nfsu_platform_desktop` | platform | reads the steady clock |
+| `nfsu_assets` | neutral | the retail asset manifest and its check (issue #47): every file it reaches, it reaches through the filesystem service it is handed |
+| `nfsu_posix_file_system` | platform | the console's filesystem service (issue #47): `opendir`, `readdir`, `closedir` and `stat` |
 
 Reading files is not on the platform side. The parsers open files with
 `std::ifstream` and size them with `std::filesystem::file_size`, both
@@ -87,6 +89,17 @@ caller in the programs yet, and say so.
 bool FileSystemService::argument_to_path(const char* text,
                                          std::filesystem::path& out,
                                          std::string& reason);
+// Issue #47: three read-only calls.
+bool FileSystemService::list_directory(const std::filesystem::path& directory,
+                                       std::size_t max_names,
+                                       std::vector<std::string>& names,
+                                       std::string& reason);
+bool FileSystemService::file_size(const std::filesystem::path& path,
+                                  std::uint64_t& size, std::string& reason);
+bool FileSystemService::read_file(const std::filesystem::path& path,
+                                  std::uint64_t offset, unsigned char* buffer,
+                                  std::size_t count, std::size_t& got,
+                                  std::string& reason);
 ```
 
 **Asked for by** both programs, through `nfsu::check_arguments` and
@@ -111,6 +124,32 @@ UTF-8 and need no decoding. Arguments reach a homebrew application from the
 loader, and from `nxlink -a` during development. Mounting the SD card is done
 by libnx's default application init; mounting RomFS is not wanted, because
 game data may never be bundled with the application.
+
+**The three read-only calls** (issue #47, [`SWITCH_ASSETS.md`](SWITCH_ASSETS.md))
+are what a program needs to find and verify the retail files on a medium it
+did not write: a directory listing bounded by a name count, a file's size,
+and a read of one byte range, which opens the file for reading only and
+closes it again. None creates, writes, renames, removes or locks anything.
+They are **asked for by** the asset check in `nfsu_assets`, which
+`nfsu_probe asset-check` runs through the desktop service and
+`nfsu_switch_assets` through the console's; the parsers still read with
+`std::ifstream`, as above. Each **fails** by returning false with a
+printable ASCII reason that does not repeat the path - "does not exist", "is
+not a directory", "is a directory, not a file", "holds more than N names",
+"cannot be opened for reading", or an error number - and a listing over its
+bound is refused rather than truncated. A read that meets the end of the
+file returns fewer bytes, or none, and succeeds. The **desktop** answers
+them with `std::filesystem` and `std::ifstream` over the wide paths
+`argument_to_path` builds, and quotes no operating-system message, since
+that message is localised. The **console** service is `posix_file_system()`
+in `src/posix_file_system.cpp`: newlib's `opendir`, `readdir`, `closedir`
+and `stat`, which libnx routes to the SD card, and `std::ifstream`, with the
+end of a listing read as the end whether `readdir` leaves `errno` alone
+there - which devkitPro's newlib does, by the disassembly of the linked code
+([`SWITCH_ASSETS.md`](SWITCH_ASSETS.md)) - or sets it to `ENOENT`. It is built on the desktop as well, where MinGW
+supplies the same calls, only so that the tests run it over real
+directories. The **fake** answers from an in-memory tree and records every
+call.
 
 **Not behind it yet:** the frame writer in `nfsu_render`. It needs an
 exclusive create and a publish that never replaces a file, and it gets them
@@ -452,6 +491,8 @@ source of a neutral library that must be platform code goes in
   desktop timing and logging services (`nfsu_platform_desktop`).
 - `include/nfsu/arg_path.h`, `src/arg_path.cpp` - the desktop filesystem
   service.
+- `include/nfsu/posix_file_system.h`, `src/posix_file_system.cpp` - the
+  console's filesystem service (`nfsu_posix_file_system`, issue #47).
 - `include/nfsu/inspect_session.h`, `src/inspect_session.cpp` - the session
   and the frame loop; `src/inspect_window_win32.cpp` - the desktop display,
   input and lifecycle.

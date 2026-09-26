@@ -34,6 +34,9 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/car_libraries.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/draw_libraries.cmake)
 # The section streamer (issue #157), for both configures.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/residency_libraries.cmake)
+# The retail asset manifest, its check and the console's file system (issue
+# #47), for both configures; it links nfsu_sha256 from cmake/car_libraries.cmake.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/asset_libraries.cmake)
 
 # The Switch build configures the shared car and draw libraries and switch/,
 # and nothing below this point: the desktop programs, the other libraries and every test of
@@ -1173,4 +1176,54 @@ if(NFSU_BUILD_TESTS)
     set_tests_properties(nfsu_track_residency_tests
         nfsu_probe_track_stream_path_guards
         PROPERTIES TIMEOUT 120)
+endif()
+
+# ---------------------------------------------------------------------------
+# Retail assets: the manifest, the check and the console's file system
+# (issue #47)
+# ---------------------------------------------------------------------------
+#
+# Appended as one block, after everything above, so that no list above is
+# reordered. Both libraries are declared in cmake/asset_libraries.cmake for
+# both configures; this block adds what only the desktop has - the probe's
+# link, the classification and the tests. See docs/SWITCH_ASSETS.md.
+#
+# nfsu_assets is neutral: it reaches files only through the FileSystemService
+# it is handed and reads no clock (its own comment in that file).
+# nfsu_posix_file_system is platform code on purpose: it calls opendir,
+# readdir, closedir and stat, which is what the console's service is.
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_assets)
+list(APPEND NFSU_PLATFORM_LIBRARIES nfsu_posix_file_system)
+
+# `asset-check` runs the check against a directory through the desktop
+# service; linked on its own line so the lists above stay as they were.
+target_link_libraries(nfsu_probe PRIVATE nfsu_assets)
+
+if(NFSU_BUILD_TESTS)
+    # The manifests against the files the other layers name, the naming
+    # rule, every classification over a fake file system and over real
+    # directories through both services, the bounds of every read, the
+    # config file and the console's whole report. It links nfsu_stock_frame
+    # and nfsu_race_events only to compare their file names with the sets.
+    add_executable(nfsu_asset_tests
+        tests/asset_tests.cpp
+    )
+
+    target_link_libraries(nfsu_asset_tests
+        PRIVATE nfsu_assets nfsu_platform_fakes nfsu_arg_path nfsu_posix_file_system
+                nfsu_stock_frame nfsu_race_events)
+    nfsu_enable_warnings(nfsu_asset_tests)
+    add_test(NAME nfsu_asset_tests COMMAND nfsu_asset_tests
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+    # What `asset-check` refuses, prints and exits with, over directories the
+    # script writes. A script for the reason tests/track_render_guards.cmake
+    # gives: the exit status is half of what is pinned.
+    add_test(NAME nfsu_probe_asset_check_guards
+        COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/asset_check_guards.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+    set_tests_properties(nfsu_asset_tests nfsu_probe_asset_check_guards
+        PROPERTIES TIMEOUT 60)
 endif()
