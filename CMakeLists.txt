@@ -53,6 +53,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/drive_libraries.cmake)
 # steps on (issue #158), for both configures; it links the draw, race and
 # vehicle libraries above, so it is included after them.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/vehicle_track_libraries.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/race_session_libraries.cmake)
 
 # The Switch build configures the shared car and draw libraries and switch/,
 # and nothing below this point: the desktop programs, the other libraries and every test of
@@ -1460,4 +1461,24 @@ if(NFSU_BUILD_TESTS)
 
     set_tests_properties(nfsu_vehicle_track_tests nfsu_probe_vehicle_track_guards
         PROPERTIES TIMEOUT 120)
+endif()
+
+# Race integration is clock-free; only the desktop executable owns I/O and UI.
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_session)
+add_executable(nfsu_race src/race_main.cpp src/race_window.cpp)
+target_link_libraries(nfsu_race PRIVATE nfsu_race_session nfsu_race_events
+    nfsu_track_residency nfsu_track_render nfsu_stock_frame nfsu_screen_text)
+nfsu_enable_warnings(nfsu_race)
+if(WIN32)
+    target_link_libraries(nfsu_race PRIVATE user32 gdi32)
+endif()
+if(NFSU_BUILD_TESTS)
+    add_executable(nfsu_race_session_tests tests/race_session_tests.cpp)
+    target_link_libraries(nfsu_race_session_tests PRIVATE nfsu_race_session)
+    nfsu_enable_warnings(nfsu_race_session_tests)
+    add_test(NAME nfsu_race_session_tests COMMAND nfsu_race_session_tests)
+    add_test(NAME nfsu_race_guards
+        COMMAND ${CMAKE_COMMAND} -DRACE=$<TARGET_FILE:nfsu_race>
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/race-guards
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/race_guards.cmake)
 endif()

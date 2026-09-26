@@ -307,6 +307,25 @@ bool run(const Corridor& corridor, const std::vector<nfsu::TrackResidencySample>
         nfsu::track_residency_table_costs(corridor.table), samples, options, out,
         error);
     check(ok, "the simulation runs: " + error);
+    if (ok) {
+        const auto costs = nfsu::track_residency_table_costs(corridor.table);
+        nfsu::TrackResidencySession live;
+        std::vector<nfsu::TrackResidencyStep> incremental;
+        check(live.start(corridor.table,corridor.zones,kTrack,costs,options,incremental,error),
+              "incremental startup: " + error);
+        for (const auto& sample : samples) {
+            nfsu::TrackResidencyStep step;
+            check(live.advance(sample,step,error),"incremental sample: " + error);
+            incremental.push_back(std::move(step));
+        }
+        check(incremental.size()==out.steps.size(),"incremental and batch step counts match");
+        for (std::size_t i=0;i<std::min(incremental.size(),out.steps.size());++i)
+            check(nfsu::track_residency_step_line(corridor.table,incremental[i])==
+                  nfsu::track_residency_step_line(corridor.table,out.steps[i]),
+                  "incremental and batch transitions match at " + std::to_string(i));
+        check(!live.start(corridor.table,corridor.zones,kTrack,costs,options,incremental,error),
+              "cannot restart a live streamer");
+    }
     return ok;
 }
 

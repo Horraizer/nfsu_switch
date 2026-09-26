@@ -743,6 +743,45 @@ bool simulate_track_residency(
     return true;
 }
 
+struct TrackResidencySession::Impl {
+    Streamer streamer;
+    TrackResidencyRun counters;
+    std::size_t index = 0, sample = 0;
+    Impl(const TrackStreamTable& t, const TrackZoneReport& z, std::uint32_t track,
+         const std::vector<TrackResidencyCost>& c, const TrackResidencyOptions& o)
+        : streamer(t,z,track,c,o) {}
+};
+TrackResidencySession::TrackResidencySession() = default;
+TrackResidencySession::~TrackResidencySession() = default;
+bool TrackResidencySession::start(const TrackStreamTable& t, const TrackZoneReport& z,
+    std::uint32_t track, const std::vector<TrackResidencyCost>& c,
+    const TrackResidencyOptions& o, std::vector<TrackResidencyStep>& startup, std::string& error) {
+    if (impl_) { error = "residency session already started"; return false; }
+    // Reuse all batch validation, including bounded startup. The empty path
+    // allocates only startup history; a live session never retains its history.
+    TrackResidencyRun check;
+    if (!simulate_track_residency(t,z,track,c,{},o,check,error)) return false;
+    auto next = std::make_unique<Impl>(t,z,track,c,o);
+    next->streamer.force_rebuild();
+    startup.clear();
+    while (!next->streamer.set_loaded()) {
+        TrackResidencyStep step;
+        next->streamer.step(next->index++,nullptr,step,next->counters);
+        startup.push_back(std::move(step));
+    }
+    next->streamer.place_car();
+    impl_ = std::move(next);
+    return true;
+}
+bool TrackResidencySession::advance(const TrackResidencySample& sample,
+                                   TrackResidencyStep& step, std::string& error) {
+    if (!impl_) { error = "residency session not started"; return false; }
+    impl_->streamer.step(impl_->index++,&sample,step,impl_->counters);
+    step.on_path = true;
+    step.sample = impl_->sample++;
+    return true;
+}
+
 std::string track_residency_step_line(
     const TrackStreamTable& table, const TrackResidencyStep& step) {
     std::ostringstream line;
