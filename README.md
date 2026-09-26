@@ -67,6 +67,7 @@ build/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc
 build/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc 904.24 -94.76
 build/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc 904.24 -94.76 56.5 944 -74 56.5
 build/nfsu_probe car-placement X:/Games/NFSU/Global/GLOBALB.BUN 240SX
+build/nfsu_probe vehicle-sim mixed --handling X:/Games/NFSU/Global/GLOBALB.BUN
 build/nfsu_probe race-events X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/FrontEnd/FrontB.lzc
 build/nfsu_probe track-whole X:/Games/NFSU/Tracks/STREAML1RA.BUN X:/Games/NFSU/Tracks/TRACKB1003.lzc 1003 --texture X:/Games/NFSU/Tracks/TEX1003TRACK.BIN --texture X:/Games/NFSU/Global/INGAMEB.BUN --texture X:/Games/NFSU/Global/GLOBALB.BUN
 build/nfsu_probe race-route X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/FrontEnd/FrontB.lzc X:/Games/NFSU/Tracks/TRACKB1003.lzc 1 --drive forward
@@ -135,6 +136,19 @@ marker chunk parsed contributes nothing. Between them, the wheels and
 brakes come from the car type table and the exhaust and plate from markers,
 while every other installed part is drawn at the car's own matrix. See
 `docs/PART_PLACEMENT.md`.
+`vehicle-sim` runs the fixed-step vehicle model over a built-in scripted
+input sequence (`rest`, `accelerate`, `brake`, `corner`, `slide`,
+`top-speed`, `manual`, `mixed`) or a script file given with `--script`, on
+flat ground, and prints the automatic gearbox's shift thresholds, a
+telemetry line every `--every` steps (120 by default, 0 for none), the last
+step, and the SHA-256 of the per-step telemetry records. `--steps` runs a
+different number of steps; past the script's end there is no input. With
+`--handling` it reads the car's handling fields out of the car type table of
+`GLOBAL/GLOBALB.BUN` first (`--car`, 240SX by default) and says whether they
+equal the built-in recovered table. It exits 1 on an argument it refuses, 2
+on a script file it cannot read or parse, and 3 on a handling file that
+cannot drive the model. See `docs/VEHICLE.md` for the model, the recovered
+and approximated constants, the script format and the pinned telemetry.
 `race-events` lists the track table of `GLOBAL/GLOBALB.BUN` (or the
 compressed `GLOBALB.LZC` the game loads) and the career event table of
 `FRONTEND/FrontB.lzc`: per track its number, stream region and the stream,

@@ -171,17 +171,29 @@ if(NFSU_BUILD_TESTS)
         PROPERTIES TIMEOUT 60)
 endif()
 
-# The race route of issue #61 and the section streamer of issue #157, which
-# cmake/race_libraries.cmake and cmake/residency_libraries.cmake declare for
-# both configures. Nothing on the console links either yet; building them
-# here is what lets the tree check the precondition #159 rests on, and the
+# The fused multiply-add censuses. The race route of issue #61 and the
+# section streamer of issue #157, which cmake/race_libraries.cmake and
+# cmake/residency_libraries.cmake declare for both configures, and the
+# vehicle model of issue #58, which cmake/vehicle_libraries.cmake declares.
+# Nothing on the console links the first two yet; building them here is
+# what lets the tree check the precondition #159 rests on, and the
 # equivalent for the streamer, that each compiles on the console to the same
 # float arithmetic as on the desktop: their objects hold no fused
-# multiply-add. Appended as one block so that nothing above is reordered.
+# multiply-add. The vehicle's census asserts the precondition its desktop
+# telemetry pin rests on, since this tree cannot run an AArch64 program to
+# compare the hash itself. Each census keeps its own script and label.
+# Appended as one block so that nothing above is reordered.
 if(NFSU_BUILD_TESTS)
     if(NOT CMAKE_OBJDUMP)
         message(FATAL_ERROR "no objdump was found for the Switch toolchain")
     endif()
+    add_test(NAME nfsu_switch_vehicle_fma_census
+        COMMAND ${CMAKE_COMMAND}
+                -DOBJDUMP=${CMAKE_OBJDUMP}
+                "-DOBJECTS=$<TARGET_OBJECTS:nfsu_vehicle>"
+                -DLABEL=nfsu_vehicle
+                -P ${PROJECT_SOURCE_DIR}/tests/switch_fma_census.cmake)
+    set_tests_properties(nfsu_switch_vehicle_fma_census PROPERTIES TIMEOUT 60)
     add_test(NAME nfsu_switch_race_route_fma_census
         COMMAND ${CMAKE_COMMAND}
                 -DOBJDUMP=${CMAKE_OBJDUMP}
@@ -237,10 +249,48 @@ if(NFSU_BUILD_TESTS)
     set_tests_properties(nfsu_switch_assets_nro PROPERTIES TIMEOUT 60)
 endif()
 
+# The vehicle model on the console (issue #58): runs every built-in scripted
+# input sequence of docs/VEHICLE.md through nfsu_vehicle - declared for both
+# configures in cmake/vehicle_libraries.cmake - and reports each telemetry
+# hash and whether "mixed" is the one pinned on the desktop. Appended as one
+# block so that nothing above is reordered; nfsu_vehicle's fused
+# multiply-add census is in the census block above.
+add_executable(nfsu_switch_vehicle
+    vehicle_main.cpp
+)
+
+target_link_libraries(nfsu_switch_vehicle PRIVATE nfsu_vehicle)
+# gnu++17, as the libraries it links are compiled on the console; the
+# comment at the end of cmake/car_libraries.cmake says why it is named.
+set_target_properties(nfsu_switch_vehicle PROPERTIES
+    CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
+nfsu_enable_warnings(nfsu_switch_vehicle)
+
+nx_generate_nacp(
+    OUTPUT nfsu_switch_vehicle.nacp
+    NAME "nfsu_switch_vehicle"
+    AUTHOR "nfsu_switch contributors"
+    VERSION "0.1.0")
+
+nx_create_nro(nfsu_switch_vehicle
+    NACP nfsu_switch_vehicle.nacp)
+
+if(NFSU_BUILD_TESTS)
+    # The NRO and its ELF, as for the other two applications.
+    add_test(NAME nfsu_switch_vehicle_nro
+        COMMAND ${CMAKE_COMMAND}
+                -DNRO=${CMAKE_CURRENT_BINARY_DIR}/nfsu_switch_vehicle.nro
+                -DELF=$<TARGET_FILE:nfsu_switch_vehicle>
+                -DTITLE=nfsu_switch_vehicle
+                -P ${PROJECT_SOURCE_DIR}/tests/switch_nro_check.cmake)
+
+    set_tests_properties(nfsu_switch_vehicle_nro PROPERTIES TIMEOUT 60)
+endif()
+
 # The race state machine of issue #62, which cmake/race_libraries.cmake
 # declares for both configures: its console object holds no fused
 # multiply-add, so that it rounds every time exactly as the desktop does.
-# The census is the race route's own script, over this library's objects.
+# The census is issue #91's own script, over this library's objects.
 # Appended as one block, so that nothing above is reordered.
 if(NFSU_BUILD_TESTS)
     add_test(NAME nfsu_switch_race_timing_fma_census
@@ -248,6 +298,6 @@ if(NFSU_BUILD_TESTS)
                 -DOBJDUMP=${CMAKE_OBJDUMP}
                 "-DOBJECTS=$<TARGET_OBJECTS:nfsu_race_timing>"
                 -DLABEL=nfsu_race_timing
-                -P ${PROJECT_SOURCE_DIR}/tests/race_route_fma_census.cmake)
+                -P ${PROJECT_SOURCE_DIR}/tests/switch_fma_census.cmake)
     set_tests_properties(nfsu_switch_race_timing_fma_census PROPERTIES TIMEOUT 60)
 endif()
