@@ -65,8 +65,12 @@ struct StockSceneRequest {
     // produces with PreparedInstance::placement_exact false: the
     // longitudinal and vertical components are the record's, the lateral
     // one is a stand-in for a term the executable computes differently,
-    // and the spin, steering, mirroring and half turns the draw applies are
-    // not there at all.
+    // and the spin, the steering and the lateral scale the draw applies are
+    // not there at all. What it does carry is which way each model faces
+    // (issue #161): at positions 0 and 3, where car_wheel_turned_by_draw
+    // holds, the wheel copy is car_wheel_half_turn() * translation and the
+    // brake copy car_brake_reflection() * translation, the order the draw
+    // multiplies them in; positions 1 and 2 are the translation alone.
     bool place_wheels_from_culling_table = false;
 };
 

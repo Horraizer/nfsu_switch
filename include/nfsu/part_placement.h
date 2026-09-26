@@ -297,6 +297,43 @@ void multiply_placement_matrix(const float a[16],
 // `out` untouched, if any element of the marker matrix is not finite.
 bool car_marker_placement(const MeshMarker& marker, float out[16]) noexcept;
 
+// ---------------------------------------------------------------------
+// Which way the wheel and brake models face (issue #161)
+// ---------------------------------------------------------------------
+//
+// CarRenderInfo::Render draws all four wheels from one wheel model and all
+// four brakes from one brake model, and the models are authored for the
+// right-hand side of the car: 240SX_KIT00_WHEEL_A spans lateral 0.0018 ..
+// 0.2006 with its rim at the lateral-zero edge and a flat backing quad at
+// +0.2006, so at a right wheel, whose lateral is negative, the rim faces
+// out. For wheel positions 0 and 3 the draw turns the wheel model and
+// reflects the brake model first. docs/PART_PLACEMENT.md, "Which way the
+// wheel and brake models face", gives the instructions and the multiply
+// order.
+
+// True for the positions whose wheel the draw half-turns and whose brake it
+// reflects: 0 and 3, by index. The code tests no lateral sign; 0 and 3 are
+// the two left wheels, lateral positive, in all 35 retail car types.
+bool car_wheel_turned_by_draw(std::size_t wheel) noexcept;
+
+// The half turn. 0x0056FCE3 loads 0x8000 of a full turn into esi and
+// 0x0056FD87 calls 0x0040B930, which writes the cosine into elements 0 and
+// 5, +sin into element 1, -sin into element 4 and 1 into elements 10 and
+// 15: a turn in the longitudinal-lateral plane, about the vertical axis,
+// which maps (longitudinal, lateral, vertical) to (-longitudinal,
+// -lateral, vertical). Its determinant is +1, so it keeps the winding.
+// The game's sine 0x00564B10 gives -1.0000036 (0xBF80001E) for the cosine
+// and -0.0 for the sine at a half turn; this writes -1 and 0 exactly, the
+// substitution car_marker_quarter_turn makes for the quarter turn.
+void car_wheel_half_turn(float out[16]) noexcept;
+
+// The brake reflection, diag(1, -1, 1, 1): 0x005703A3..0x00570439 builds
+// it from the floats 1.0, -1.0 and 1.0 at 0x006B5DDC, 0x006B5DE0 and
+// 0x006B5DE4 and a literal 1.0 in element 15. It negates the lateral axis
+// only, so the caliper stays at the longitudinal side it was authored on,
+// and its determinant is -1, so it reverses the winding.
+void car_brake_reflection(float out[16]) noexcept;
+
 // One decoded car type record. Only the fields a traced instruction reads
 // are decoded; everything else stays in `raw`.
 struct CarTypeRecord {

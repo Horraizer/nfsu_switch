@@ -491,7 +491,13 @@ wheel and the brake report `placement unreproduced` and draw nothing
 unless the caller opts in with `place_wheels_from_culling_table`, because
 the drawn wheel and brake matrices are not reproduced by this project; the
 opt-in places them at the culling placements and marks every instance it
-produces as not exact.
+produces as not exact. It does turn the left pair the way the draw does:
+the wheel models of positions 0 and 3 are half-turned about the vertical
+axis and their brake models reflected laterally, because both models are
+authored for the right-hand side. Before issue #161 they were not, and a
+camera on the car's left saw the two left wheels as their backing quads
+([`PART_PLACEMENT.md`](PART_PLACEMENT.md), "Which way the wheel and brake
+models face").
 
 Measured with `nfsu_probe stock-scene GLOBALB.BUN 240SX <LOD>
 Cars/240SX/GEOMETRY.BIN Cars/BRAKES/GEOMETRY.BIN Cars/PLATES/GEOMETRY.BIN
