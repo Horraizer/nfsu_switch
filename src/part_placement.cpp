@@ -769,7 +769,7 @@ bool car_marker_name_at(std::size_t index,
 void car_marker_quarter_turn(float out[16]) noexcept {
     // 0x0040BA71 and 0x0040BA7D store the cosine into elements 0 and 10,
     // 0x0040BA69 stores -sin into element 2 and 0x0040BA75 stores +sin into
-    // element 8. At a quarter turn cos is 0 and sin is 1 exactly.
+    // element 8. Exact 0 and 1 stand in for the game's -0.0 and 1.0000036.
     for (std::size_t i = 0; i < 16; ++i) {
         out[i] = 0.0F;
     }
@@ -813,6 +813,44 @@ bool car_marker_placement(const MeshMarker& marker, float out[16]) noexcept {
     car_marker_quarter_turn(turn);
     multiply_placement_matrix(turn, marker.matrix, out);
     return true;
+}
+
+bool car_wheel_turned_by_draw(std::size_t wheel) noexcept {
+    // The wheel draw multiplies the half turn in for the wheels whose
+    // visibility bytes it read from CarRenderInfo +0x1C18 and +0x1C78
+    // (0x0056FEA9, 0x00570138), and the brake draw the reflection for the
+    // brakes of +0x1CD8 and +0x1D38 (0x00570446, 0x0057069E): culling
+    // entries 0 and 3, and 6 and 9, which are wheel positions 0 and 3.
+    return wheel == 0 || wheel == 3;
+}
+
+void car_wheel_half_turn(float out[16]) noexcept {
+    // 0x0040B947 stores +sin into element 1 and 0x0040B954 -sin into
+    // element 4; 0x0040B957 and 0x0040B95B store the cosine into elements
+    // 0 and 5; 0x0040B975 and 0x0040B984 store 1 into elements 10 and 15,
+    // and the stores between them zero the rest. At a half turn cos is -1
+    // and sin is 0.
+    for (std::size_t i = 0; i < 16; ++i) {
+        out[i] = 0.0F;
+    }
+    out[0] = -1.0F;
+    out[5] = -1.0F;
+    out[10] = 1.0F;
+    out[15] = 1.0F;
+}
+
+void car_brake_reflection(float out[16]) noexcept {
+    // 0x00570431, 0x00570435 and 0x00570439 store the floats of 0x006B5DDC,
+    // 0x006B5DE0 and 0x006B5DE4 into elements 0, 5 and 10; 0x00570426
+    // stores 1.0 into element 15, and the twelve stores before it zero the
+    // rest.
+    for (std::size_t i = 0; i < 16; ++i) {
+        out[i] = 0.0F;
+    }
+    out[0] = 1.0F;
+    out[5] = -1.0F;
+    out[10] = 1.0F;
+    out[15] = 1.0F;
 }
 
 } // namespace nfsu

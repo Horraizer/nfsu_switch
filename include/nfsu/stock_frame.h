@@ -71,15 +71,19 @@ constexpr std::size_t kStockFrameFileCount = 6;
 const char* stock_frame_file_path(std::size_t index) noexcept;
 
 // The desktop frame of the command above, as docs/RENDERER.md pins it.
+// Issue #161 re-pinned both frames: the left wheels are now half-turned as
+// the retail draw turns them, and at this camera that removes two pixels
+// of the front-left wheel's backing quad, which showed above the far
+// fender. They were FD672733... unpainted and FE51E57A... painted.
 constexpr std::uint64_t kStock240sxFrameBytes = 3686418;
 constexpr const char* kStock240sxFrameSha256 =
-    "FD6727333A94803A97FD26282CD89DF6F3D3295E0231F4A871A1B14089D28CE9";
+    "E7A042A560E807EE74595449275FFBDC1AE0A0BF321CE06EEF434BC5B1C8274A";
 
 // The painted desktop frame, the command above with stock_240sx_skin(), as
 // docs/SWITCH_BUILD.md pins it.
 constexpr std::uint64_t kStock240sxPaintedFrameBytes = 3686418;
 constexpr const char* kStock240sxPaintedFrameSha256 =
-    "FE51E57AF3AC52E53B026E02E13ADF020A1B6B33B62102010E9132455D8FF9B2";
+    "52B9303A822F82242717B3A2F363BE6584E4A24B533B69B6AA78EED6DFBED994";
 
 // The largest file read: 256 MiB, the limit every parser these files go
 // through applies to its input.

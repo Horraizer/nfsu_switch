@@ -435,10 +435,30 @@ bool build_stock_scene(
         } else if (entry.placement == StockPlacement::wheel_table) {
             const std::array<std::size_t, kCarWheelCount>& table =
                 kind == SlotClass::wheel ? kWheelPlacements : kBrakePlacements;
+            // The one part of the drawn matrix this stand-in does carry:
+            // the draw turns the wheel model of positions 0 and 3 by half a
+            // turn and reflects their brake model, before the model is
+            // positioned (docs/PART_PLACEMENT.md). The models are authored
+            // for the right-hand side, so without it the two left wheels
+            // show the inboard side of the model, the rim's backing quad,
+            // to a camera on the left (issue #161).
+            float turn[16];
+            if (kind == SlotClass::wheel) {
+                car_wheel_half_turn(turn);
+            } else {
+                car_brake_reflection(turn);
+            }
             draft.placement_exact = false;
             for (std::size_t w = 0; w < table.size(); ++w) {
                 draft.copy = w;
-                translation_matrix(placements[table[w]].position, draft.transform);
+                float position[16];
+                translation_matrix(placements[table[w]].position, position);
+                if (car_wheel_turned_by_draw(w)) {
+                    multiply_placement_matrix(turn, position, draft.transform);
+                } else {
+                    std::copy(std::begin(position), std::end(position),
+                              std::begin(draft.transform));
+                }
                 drafts.push_back(draft);
                 ++entry.instance_count;
             }
