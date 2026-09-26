@@ -257,20 +257,23 @@ struct VehicleApproximations {
     double handbrake_torque = 3000.0;
     // Road-wheel steering lock at standstill, rad, and the speed at which
     // the lock has halved, m/s: lock(v) = max_steer / (1 + (v / ref)^2).
-    // Falling with the square of the speed keeps a full input near the
-    // lateral grip limit at every speed, as the path radius a given
-    // acceleration allows grows with the square of the speed.
+    // Falling with the square of the speed keeps what a full input asks of
+    // the tyres much the same at every speed, as the path radius a given
+    // acceleration allows grows with the square of the speed: with the
+    // tyres below, 0.96 to 1.34 g from 30 down to 15 m/s, under the 1.55 g
+    // the car holds at the limit (docs/VEHICLE.md, "Drivability").
     double max_steer = 0.55;
     double steer_speed_reference = 12.0;
     // How fast the road wheels follow the input, rad/s.
     double steer_rate = 3.0;
     // Tyre force per unit load per unit slip, before the friction limit:
     // longitudinal per unit slip ratio, lateral per unit tan(slip angle).
-    // The rear is stiffer than the front so that the car understeers
-    // below the limit.
+    // The rear is twice as stiff as the front so that the car understeers
+    // below the limit and full steering input does not spin it
+    // (docs/VEHICLE.md, "The spin matrix").
     double longitudinal_stiffness = 12.0;
-    double cornering_stiffness_front = 12.0;
-    double cornering_stiffness_rear = 18.0;
+    double cornering_stiffness_front = 10.0;
+    double cornering_stiffness_rear = 20.0;
     // The slip denominator never falls below this speed, m/s, so the tyre is
     // a damper rather than a divide by zero at a standstill.
     double slip_speed_floor = 2.0;
@@ -297,6 +300,14 @@ struct VehicleApproximations {
     // these values, and where they act was not traced. 0.6 leaves an
     // effective height of about 0.2 m. At most 1.
     double tyre_force_lift = 0.6;
+    // Limit the engine's torque at each wheel on the ground, driving or
+    // braking, to what the tyre's peak friction has left beside the lateral
+    // force its slip angle asks for: |T| <= radius * sqrt((mu_static *
+    // load)^2 - Fy^2). An ideal traction control, which stops power
+    // oversteer and lift-off oversteer at full steering input; the recovered
+    // wheel coupling at 0x00475667..0x00475797 was not reproduced, so how the
+    // game keeps its cars from them is unknown.
+    bool traction_limit = true;
     // Steps the automatic gearbox waits after a shift before it may shift
     // again: 36 is 0.3 s.
     std::uint32_t auto_shift_hold_steps = 36;
@@ -445,7 +456,8 @@ struct VehicleWheelTelemetry {
     double slip_lateral = 0.0;  // v_lat / max(|v_long|, floor)
     double force_long = 0.0;    // N, along the wheel's heading on the ground
     double force_lat = 0.0;     // N, toward the wheel's left on the ground
-    double drive_torque = 0.0;  // N m from the engine
+    double drive_torque = 0.0;  // N m from the engine, as the recovered split gives it
+    double drive_applied = 0.0; // N m of it that reached the wheel, after the traction limit
     std::uint32_t surface = 0;
     bool contact = false;
     bool sliding = false;
@@ -477,10 +489,10 @@ struct VehicleTelemetry {
 // every integer and flag as an unsigned integer, all little-endian, in the
 // order docs/VEHICLE.md lists. It is what the telemetry hash covers: the
 // step (u64), four vectors, five doubles, the gear (u32), three doubles,
-// the handbrake (u32), the steer angle, then per wheel eight doubles and
+// the handbrake (u32), the steer angle, then per wheel nine doubles and
 // three u32 (surface, contact, sliding).
 constexpr std::size_t kVehicleTelemetryRecordBytes =
-    8 + 4 * 24 + 5 * 8 + 4 + 3 * 8 + 4 + 8 + kVehicleWheelCount * (8 * 8 + 3 * 4);
+    8 + 4 * 24 + 5 * 8 + 4 + 3 * 8 + 4 + 8 + kVehicleWheelCount * (9 * 8 + 3 * 4);
 void encode_vehicle_telemetry(const VehicleTelemetry& record,
                               std::array<std::uint8_t, kVehicleTelemetryRecordBytes>& out) noexcept;
 
@@ -489,7 +501,7 @@ void encode_vehicle_telemetry(const VehicleTelemetry& record,
 // and Release builds produce it: the pin docs/VEHICLE.md records, which
 // nfsu_vehicle_tests requires and nfsu_switch_vehicle compares the
 // console's run against.
-constexpr const char* kVehiclePinnedMixedSha256 = "20724B57886697F99C9B5FF631CAE0B6797B7E47BA3F21A027E5F528135EC085";
+constexpr const char* kVehiclePinnedMixedSha256 = "B9EE418C4829E3ACC12EFC906EFD89A6381376E4E334EDD82AE7E9F37DFCF8E3";
 
 // SHA-256 over the encoded records of a run, in step order.
 class VehicleTelemetryHash {

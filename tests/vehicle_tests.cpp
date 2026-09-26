@@ -363,7 +363,9 @@ void test_model_refusals() {
           "a centre of mass ahead of the front axle is refused: " + ahead.error());
     spec = nfsu::stock_240sx_vehicle_spec();
     spec.approx.tyre_force_lift = 1.5;
-    check(!nfsu::VehicleModel(spec).valid(), "a tyre force lift above 1 is refused");
+    const nfsu::VehicleModel lifted(spec);
+    check(!lifted.valid() && lifted.error().find("tyre force lift") != std::string::npos,
+          "a tyre force lift above 1 is refused by name: " + lifted.error());
 
     const nfsu::VehicleModel model = stock_model();
     check(model.valid(), "the stock model is valid: " + model.error());
@@ -719,6 +721,37 @@ void test_braking() {
         held = held && std::fabs(run[i].forward_speed) <= 0.01;
     }
     check(held, "the held brake keeps the car stopped");
+
+    // The automatic gearbox shifts down as the car slows: never up, each
+    // shift once the rpm in the old gear has fallen below its down
+    // threshold, and into a gear whose up threshold is not already passed.
+    // The car ends the run in first.
+    const auto& up = model.upshift_rpm();
+    const auto& down = model.downshift_rpm();
+    const std::array<float, 8> ratios = nfsu::stock_240sx_handling().gear_ratios;
+    int downshifts = 0;
+    for (std::size_t i = 1; i < run.size(); ++i) {
+        const int from = run[i - 1].gear;
+        const int to = run[i].gear;
+        if (to == from) {
+            continue;
+        }
+        const double old_rpm = run[i].wheel_rpm *
+                               static_cast<double>(ratios[static_cast<std::size_t>(from)]) /
+                               static_cast<double>(ratios[static_cast<std::size_t>(to)]);
+        const bool ok = to < from && old_rpm < down[static_cast<std::size_t>(from)] &&
+                        run[i].wheel_rpm <= up[static_cast<std::size_t>(to)];
+        check(ok, "braking shift at step " + std::to_string(run[i].step) + " from slot " +
+                      std::to_string(from) + " to " + std::to_string(to) + " at " +
+                      num(old_rpm) + " rpm");
+        downshifts += to < from ? 1 : 0;
+    }
+    check(run.front().gear > nfsu::kVehicleGearFirst && downshifts >= 1,
+          "braking from 100 km/h shifts down from slot " + std::to_string(run.front().gear) +
+              " " + std::to_string(downshifts) + " times");
+    check(run.back().gear == nfsu::kVehicleGearFirst,
+          "the automatic gearbox shifts down to first while braking: it ends in slot " +
+              std::to_string(run.back().gear));
 }
 
 // Holds a speed with the throttle and a steer constant, from that speed.
@@ -818,53 +851,311 @@ void test_cornering() {
           "90% of the yaw rate after " + std::to_string(ninety) + " steps");
 }
 
+// Sideslip of the body, degrees: the angle between its heading and its
+// velocity (the test may use libm; the model never does).
+double sideslip_deg(const nfsu::VehicleTelemetry& t) {
+    return std::atan2(t.lateral_speed, t.forward_speed) * 57.29577951308232;
+}
+
+struct Regime {
+    double max_slip = 0.0;   // degrees, while above 3 m/s
+    double min_speed = 1e9;
+    double end_ay = 0.0;
+    bool front_slid = false;
+};
+
+Regime regime_of(const std::vector<nfsu::VehicleTelemetry>& run) {
+    Regime r;
+    for (const nfsu::VehicleTelemetry& t : run) {
+        const double speed = std::sqrt(t.velocity.x * t.velocity.x + t.velocity.y * t.velocity.y);
+        r.min_speed = std::min(r.min_speed, speed);
+        if (speed > 3.0) {
+            r.max_slip = std::max(r.max_slip, std::fabs(sideslip_deg(t)));
+        }
+        r.front_slid = r.front_slid || (t.wheels[0].sliding && t.wheels[1].sliding);
+    }
+    if (run.size() >= 2) {
+        r.end_ay = lateral_acceleration(run[run.size() - 2], run[run.size() - 1]);
+    }
+    return r;
+}
+
+// Constant inputs from a speed, no controller: what a digital gamepad asks.
+std::vector<nfsu::VehicleTelemetry> run_constant(const nfsu::VehicleModel& model, double speed,
+                                                 double steer, double throttle, double brake,
+                                                 std::uint64_t steps) {
+    std::vector<nfsu::VehicleTelemetry> out;
+    nfsu::VehiclePose pose;
+    pose.speed = speed;
+    nfsu::VehicleState state;
+    check(model.reset(state, pose), "constant reset");
+    nfsu::VehicleInput input;
+    input.steer = steer;
+    input.throttle = throttle;
+    input.brake = brake;
+    for (std::uint64_t i = 0; i < steps; ++i) {
+        nfsu::VehicleTelemetry t;
+        if (!model.step(state, input, nfsu::VehicleFlatGround(), t)) {
+            check(false, "constant step");
+            break;
+        }
+        out.push_back(t);
+    }
+    return out;
+}
+
+// The grip limit in the stable regime. With the lock held fixed at 15 m/s,
+// where the default full input gives 0.215 rad, the response is linear up
+// to that input and saturates past it: from 1.25 to 2 times the default
+// lock the car corners at the same 1.55 g with its rear tyres sliding,
+// under the rear's recovered 1.7, and stays steady - the body within 10
+// degrees of its path and the speed above 0.6 of the start, where a spin
+// in this model swings past 25 degrees and falls below 0.3 of the speed
+// (test_snap_oversteer). The controller holds the speed below the limit;
+// past it the tyres' drag takes up to a third of it.
 void test_grip_limit() {
-    // The tyres' limit, apart from the steering aid: with the lock held at
-    // 0.55 rad at every speed, 20 m/s asks up to 90 m/s^2 of the tyres.
     nfsu::VehicleSpec spec = nfsu::stock_240sx_vehicle_spec();
+    const double v = 15.0;
+    const double ratio = v / spec.approx.steer_speed_reference;
+    const double lock = spec.approx.max_steer / (1.0 + ratio * ratio);
     spec.approx.steer_speed_reference = 1.0e6;
     const nfsu::VehicleModel fixed(spec);
-    const double v = 20.0;
-    const std::vector<nfsu::VehicleTelemetry> full = run_steady(fixed, v, 1.0, 600);
-    const std::vector<nfsu::VehicleTelemetry> half = run_steady(fixed, v, 0.5, 600);
-    const std::vector<nfsu::VehicleTelemetry> small = run_steady(fixed, v, 0.1, 600);
-    const std::vector<nfsu::VehicleTelemetry> light = run_steady(fixed, v, 0.05, 600);
-    const double a_full = lateral_acceleration(full[598], full[599]);
-    const double a_half = lateral_acceleration(half[598], half[599]);
-    const double a_small = lateral_acceleration(small[598], small[599]);
-    const double a_light = lateral_acceleration(light[598], light[599]);
-    std::cout << "lateral acceleration at 20 m/s by steer 0.05 0.1 0.5 1: " << num(a_light)
-              << ' ' << num(a_small) << ' ' << num(a_half) << ' ' << num(a_full) << '\n';
-    bool front_slid = false;
-    for (std::size_t i = 300; i < full.size(); ++i) {
-        front_slid = front_slid || (full[i].wheels[0].sliding && full[i].wheels[1].sliding);
+    const double factors[6] = {0.25, 0.5, 1.0, 1.25, 1.5, 2.0};
+    std::array<double, 6> ay{};
+    std::array<bool, 6> rear_slid{};
+    std::array<bool, 6> any_slid{};
+    for (std::size_t i = 0; i < 6; ++i) {
+        const std::vector<nfsu::VehicleTelemetry> run =
+            run_steady(fixed, v, lock * factors[i] / spec.approx.max_steer, 600);
+        const Regime r = regime_of(run);
+        ay[i] = r.end_ay;
+        for (std::size_t s = 300; s < run.size(); ++s) {
+            const auto& w = run[s].wheels;
+            rear_slid[i] = rear_slid[i] || (w[2].sliding || w[3].sliding);
+            any_slid[i] = any_slid[i] || w[0].sliding || w[1].sliding || w[2].sliding || w[3].sliding;
+        }
+        check(r.max_slip < 10.0, "steady at " + num(factors[i]) + " times the lock: sideslip " +
+                                     num(r.max_slip) + " deg");
+        check(r.min_speed > 0.6 * v, "keeps its speed at " + num(factors[i]) +
+                                         " times the lock: " + num(r.min_speed));
     }
-    check(front_slid, "full lock at 20 m/s slides both front tyres");
-    // The recovered coefficients bound the lateral acceleration.
-    check(a_full > 0.0 && a_full < 1.8 * 9.8, "lateral acceleration under mu g: " + num(a_full));
-    // Below the limit the response is linear in the input; past it, five
-    // times the input gains nothing.
-    check(a_small > 1.8 * a_light, "linear below the limit: " + num(a_light) + " -> " + num(a_small));
-    // Past the limit doubling the lock gains less than a fifth, where below
-    // it doubling the input doubles the response.
-    check(a_full < 1.2 * a_half && a_full > 0.6 * a_half,
-          "saturated past the limit: " + num(a_half) + " -> " + num(a_full));
+    std::cout << "lateral acceleration at 15 m/s by lock 0.25 0.5 1 1.25 1.5 2:";
+    for (const double a : ay) {
+        std::cout << ' ' << num(a);
+    }
+    std::cout << '\n';
+    // Below the limit doubling the lock doubles the response, and the
+    // default full input slides no tyre.
+    check(ay[1] > 1.9 * ay[0] && ay[1] < 2.1 * ay[0],
+          "linear below the limit: " + num(ay[0]) + " -> " + num(ay[1]));
+    check(!any_slid[2] && ay[2] > 1.2 * 9.8,
+          "the default full input grips at " + num(ay[2]));
+    // Past it the rear tyres slide and more lock gains nothing: 1.5 and 2
+    // times the lock stay within 2% of 1.25 times, under the rear's 1.7 g.
+    for (std::size_t i = 3; i < 6; ++i) {
+        check(rear_slid[i], "the rear tyres slide at " + num(factors[i]) + " times the lock");
+        check(near(ay[i], ay[3], 0.02 * ay[3]) && ay[i] < 1.7 * 9.8,
+              "saturated at " + num(factors[i]) + " times the lock: " + num(ay[i]) +
+                  " against " + num(ay[3]));
+    }
+    check(ay[3] > ay[2], "the limit lies past the default full input: " + num(ay[2]) + " -> " +
+                             num(ay[3]));
 
     // The handbrake locks the rear wheels, which then slide, and the car
     // yaws faster than it would on the same steer without it.
     const nfsu::VehicleModel model = stock_model();
     const std::vector<nfsu::VehicleTelemetry> plain = run_steady(model, 20.0, 0.4, 480);
     const std::vector<nfsu::VehicleTelemetry> pulled = run_steady(model, 20.0, 0.4, 480, true);
-    bool rear_slid = false;
+    bool handbrake_slid = false;
     for (std::size_t i = 240; i < 300; ++i) {
-        rear_slid = rear_slid || (pulled[i].wheels[2].sliding && pulled[i].wheels[3].sliding);
+        handbrake_slid =
+            handbrake_slid || (pulled[i].wheels[2].sliding && pulled[i].wheels[3].sliding);
     }
-    check(rear_slid, "the handbrake slides the rear wheels");
+    check(handbrake_slid, "the handbrake slides the rear wheels");
     check(pulled[300].wheels[2].spin == 0.0 && pulled[300].wheels[3].spin == 0.0,
           "the handbrake holds the rear wheels still");
     check(pulled[300].angular_velocity.z > plain[300].angular_velocity.z * 1.2,
           "the handbrake turns the car in: " + num(pulled[300].angular_velocity.z) +
               " against " + num(plain[300].angular_velocity.z));
+}
+
+// Every full-input run a digital gamepad can ask for - the Switch's ZR and
+// ZL give 0 or 1 - and a half throttle between: throttle 0, 0.5 and 1 at 8
+// to 35 m/s, and half and full brake with full lock at 30 m/s. None spins:
+// the body stays within 20 degrees of its path while above 3 m/s, where a
+// spin in the round-2 model reached 46 to 163 degrees. Without the traction
+// limit, full throttle at 10 m/s spins.
+void test_full_lock_matrix() {
+    const nfsu::VehicleModel model = stock_model();
+    const double speeds[] = {8.0, 10.0, 12.0, 15.0, 18.0, 20.0, 22.0, 25.0, 30.0, 35.0};
+    const double throttles[] = {0.0, 0.5, 1.0};
+    int spins = 0;
+    double worst = 0.0;
+    for (const double throttle : throttles) {
+        for (const double v : speeds) {
+            const Regime r = regime_of(run_constant(model, v, 1.0, throttle, 0.0, 600));
+            worst = std::max(worst, r.max_slip);
+            if (r.max_slip > 20.0) {
+                ++spins;
+                check(false, "full lock at " + num(v) + " m/s, throttle " + num(throttle) +
+                                 " spins: " + num(r.max_slip) + " deg");
+            }
+        }
+    }
+    for (const double brake : {0.5, 1.0}) {
+        const Regime r = regime_of(run_constant(model, 30.0, 1.0, 0.0, brake, 480));
+        worst = std::max(worst, r.max_slip);
+        if (r.max_slip > 20.0) {
+            ++spins;
+            check(false, "brake " + num(brake) + " with full lock at 30 m/s spins: " +
+                             num(r.max_slip) + " deg");
+        }
+    }
+    std::cout << "full-lock matrix: " << spins << " spins of 32, worst sideslip " << num(worst)
+              << " deg\n";
+
+    nfsu::VehicleSpec no_limit = nfsu::stock_240sx_vehicle_spec();
+    no_limit.approx.traction_limit = false;
+    const Regime power = regime_of(run_constant(nfsu::VehicleModel(no_limit), 10.0, 1.0, 1.0, 0.0, 600));
+    check(power.max_slip > 40.0,
+          "without the traction limit full throttle at full lock from 10 m/s spins: " +
+              num(power.max_slip) + " deg");
+}
+
+// Past the steering's reach the car snaps into oversteer. With the lock
+// held at a multiple of the default full-input lock, 1.25 times at 20 m/s
+// and 1.4 times at 25 m/s corner steadily at the limit, and 1.4 times at
+// 20 m/s and 1.5 times at 25 m/s spin: the body swings past 25 degrees and
+// the speed falls below 0.3 of the start. The steady side keeps within 5
+// degrees and 0.85 of the speed. The default steering cannot reach these
+// locks; this pins the behaviour docs/VEHICLE.md describes.
+void test_snap_oversteer() {
+    nfsu::VehicleSpec spec = nfsu::stock_240sx_vehicle_spec();
+    const double reference = spec.approx.steer_speed_reference;
+    spec.approx.steer_speed_reference = 1.0e6;
+    const nfsu::VehicleModel fixed(spec);
+    struct Case {
+        double speed;
+        double factor;
+        bool spins;
+    };
+    const Case cases[4] = {{20.0, 1.25, false}, {20.0, 1.4, true}, {25.0, 1.4, false}, {25.0, 1.5, true}};
+    for (const Case& c : cases) {
+        const double ratio = c.speed / reference;
+        const double lock = spec.approx.max_steer / (1.0 + ratio * ratio) * c.factor;
+        const Regime r = regime_of(run_steady(fixed, c.speed, lock / spec.approx.max_steer, 600));
+        const std::string what = num(c.factor) + " times the default lock at " + num(c.speed) +
+                                 " m/s: sideslip " + num(r.max_slip) + " deg, lowest speed " +
+                                 num(r.min_speed);
+        if (c.spins) {
+            check(r.max_slip > 25.0 && r.min_speed < 0.3 * c.speed, "spins at " + what);
+        } else {
+            check(r.max_slip < 5.0 && r.min_speed > 0.85 * c.speed, "steady at " + what);
+        }
+    }
+}
+
+// Where the tyre forces act. In steady cornering the load difference across
+// the track balances the roll moment of the lateral forces about the centre
+// of mass, so dF * track / 2 = m * ay * h, and h must be (1 - 0.6) of the
+// centre of mass's height at half input from 20 m/s: tyre_force_lift is
+// 0.6.
+void test_tyre_force_height() {
+    const nfsu::VehicleModel model = stock_model();
+    const std::vector<nfsu::VehicleTelemetry> run = run_steady(model, 20.0, 0.5, 600);
+    const nfsu::VehicleTelemetry& t = run.back();
+    const double ay = lateral_acceleration(run[run.size() - 2], t);
+    // A left turn: wheels 1 and 2 are on the outside.
+    const double difference =
+        (t.wheels[1].load + t.wheels[2].load) - (t.wheels[0].load + t.wheels[3].load);
+    const double mass = static_cast<double>(1.22F) * 1000.0;
+    const double height = difference * static_cast<double>(0.73F) / (mass * ay);
+    const double expected = (1.0 - 0.6) * t.position.z;
+    // Measured 3.2% high at this input and 4.1% at full input, growing with
+    // the body's roll, which this balance leaves out. A lift of 0.5 or 0.7
+    // would move it by a quarter.
+    check(near(height, expected, 0.08 * expected),
+          "the lateral forces act at 0.4 of the centre of mass's height: " + num(height) +
+              " m against " + num(expected));
+}
+
+// The traction limit, recomputed from the telemetry for every wheel on the
+// ground whose tyre did not slide: the applied torque is the recovered
+// split clamped to radius * sqrt((mu * load)^2 - Fy^2), and 0 where the
+// lateral force alone reaches the peak.
+void test_traction_limit() {
+    const nfsu::VehicleModel model = stock_model();
+    const float mu[2] = {1.8F, 1.7F};
+    const float radius[2] = {0.288F, 0.3135F};
+    std::size_t checked = 0;
+    std::size_t bound = 0;
+    bool ok = true;
+    const std::vector<std::vector<nfsu::VehicleTelemetry>> runs = {
+        run_builtin(model, "mixed"), run_builtin(model, "accelerate"),
+        run_constant(model, 10.0, 1.0, 1.0, 0.0, 600)};
+    for (const std::vector<nfsu::VehicleTelemetry>& run : runs) {
+        for (const nfsu::VehicleTelemetry& t : run) {
+            for (std::size_t k = 0; k < 4; ++k) {
+                const nfsu::VehicleWheelTelemetry& w = t.wheels[k];
+                if (!w.contact || w.sliding) {
+                    continue;
+                }
+                const std::size_t axle = k / 2;
+                const double peak = static_cast<double>(mu[axle]) * w.load;
+                const double fy = w.force_lat;
+                const double room = fy * fy < peak * peak ? peak * peak - fy * fy : 0.0;
+                const double limit = std::sqrt(room) * static_cast<double>(radius[axle]);
+                const double expected =
+                    w.drive_torque < -limit ? -limit : (w.drive_torque > limit ? limit : w.drive_torque);
+                if (std::fabs(w.drive_applied - expected) > 1e-9 * (1.0 + std::fabs(expected)) && ok) {
+                    check(false, "traction limit at step " + std::to_string(t.step) + " wheel " +
+                                     std::to_string(k) + ": " + num(w.drive_applied) +
+                                     " against " + num(expected));
+                    ok = false;
+                }
+                ++checked;
+                bound += w.drive_applied != w.drive_torque ? 1U : 0U;
+            }
+        }
+    }
+    // And the applied torque, not the recovered one, is what turns the
+    // wheel: with no brake on it, a wheel's spin changes by exactly
+    // (applied - force_long * radius) / inertia per second, whether its
+    // tyre grips, slides or is off the ground.
+    const double inertia = nfsu::stock_240sx_vehicle_spec().approx.wheel_inertia;
+    std::size_t balanced = 0;
+    bool balance_ok = true;
+    for (const std::vector<nfsu::VehicleTelemetry>& run : runs) {
+        for (std::size_t i = 1; i < run.size(); ++i) {
+            const nfsu::VehicleTelemetry& t = run[i];
+            if (t.brake > 0.0) {
+                continue;
+            }
+            for (std::size_t k = 0; k < 4; ++k) {
+                if (k >= 2 && t.handbrake) {
+                    continue;
+                }
+                const nfsu::VehicleWheelTelemetry& w = t.wheels[k];
+                const double arm = static_cast<double>(radius[k / 2]);
+                const double change = inertia * (w.spin - run[i - 1].wheels[k].spin);
+                const double torque = (1.0 / 120.0) * (w.drive_applied - w.force_long * arm);
+                const double size = inertia * std::fabs(w.spin) + std::fabs(w.drive_applied) +
+                                    std::fabs(w.force_long * arm);
+                if (std::fabs(change - torque) > 1e-9 * size && balance_ok) {
+                    check(false, "wheel balance at step " + std::to_string(t.step) + " wheel " +
+                                     std::to_string(k) + ": " + num(change) + " against " +
+                                     num(torque));
+                    balance_ok = false;
+                }
+                ++balanced;
+            }
+        }
+    }
+    check(balanced > 20000, std::to_string(balanced) + " wheel-steps balanced");
+    std::cout << "traction limit: " << checked << " wheel-steps checked, binding on " << bound
+              << ", " << balanced << " balanced" << '\n';
+    check(checked > 10000, std::to_string(checked) + " wheel-steps checked");
+    check(bound > 100, "the limit binds on " + std::to_string(bound) + " of them");
 }
 
 void test_top_speed() {
@@ -1405,10 +1696,17 @@ void test_telemetry_encoding() {
     check(bytes[144] == 6 && bytes[145] == 0, "the gear at 144");
     // Then three doubles: the handbrake at 172.
     check(bytes[172] == 1, "the handbrake at 172");
-    // Then the steer angle to 184 and four wheels of 76 bytes, the last
+    // Then the steer angle to 184 and four wheels of 84 bytes, the last
     // wheel's sliding flag in the record's last four bytes.
-    check(bytes[484] == 1 && bytes[487] == 0 && 184 + 4 * 76 == nfsu::kVehicleTelemetryRecordBytes,
+    check(bytes[516] == 1 && bytes[519] == 0 && 184 + 4 * 84 == nfsu::kVehicleTelemetryRecordBytes,
           "the last wheel's sliding flag ends the record");
+    // The applied drive torque follows the recovered one in each wheel:
+    // wheel 0's eighth and ninth doubles, at 184 + 56 and 184 + 64.
+    t.wheels[0].drive_applied = 1.0;
+    nfsu::encode_vehicle_telemetry(t, bytes);
+    check(bytes[184 + 64 + 6] == 0xF0 && bytes[184 + 64 + 7] == 0x3F && bytes[184 + 56 + 7] == 0,
+          "the applied drive torque at 248");
+    t.wheels[0].drive_applied = 0.0;
 
     nfsu::VehicleTelemetryHash a;
     nfsu::VehicleTelemetryHash b;
@@ -1556,6 +1854,10 @@ int main(int argc, char** argv) {
     test_braking();
     test_cornering();
     test_grip_limit();
+    test_full_lock_matrix();
+    test_snap_oversteer();
+    test_tyre_force_height();
+    test_traction_limit();
     test_top_speed();
     test_drivetrain();
     test_input_sanitising();

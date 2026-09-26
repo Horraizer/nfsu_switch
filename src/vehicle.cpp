@@ -753,6 +753,7 @@ void encode_vehicle_telemetry(const VehicleTelemetry& r,
         e.f64(w.force_long);
         e.f64(w.force_lat);
         e.f64(w.drive_torque);
+        e.f64(w.drive_applied);
         e.u32(w.surface);
         e.u32(w.contact ? 1U : 0U);
         e.u32(w.sliding ? 1U : 0U);
@@ -796,9 +797,12 @@ VehicleModel::VehicleModel(const VehicleSpec& spec) : spec_(spec) {
         }
     }
     if (!(a.unit_scale > 0.0) || !(a.wheel_inertia > 0.0) || !(a.slip_speed_floor > 0.0) ||
-        !(a.rolling_fade_speed > 0.0) || !(a.steer_speed_reference > 0.0) ||
-        !(a.tyre_force_lift <= 1.0)) {
+        !(a.rolling_fade_speed > 0.0) || !(a.steer_speed_reference > 0.0)) {
         error_ = "an approximation that divides must be positive";
+        return;
+    }
+    if (!(a.tyre_force_lift <= 1.0)) {
+        error_ = "the tyre force lift must lie between 0 and 1";
         return;
     }
 
@@ -1206,6 +1210,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         if (!wheel.contact) {
             wheel.spin = apply_brake(wheel.spin + dt * drive / inertia);
             out.spin = wheel.spin;
+            out.drive_applied = drive;
             continue;
         }
 
@@ -1230,6 +1235,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         if (!(along_length > 1.0e-9)) {
             wheel.spin = apply_brake(wheel.spin + dt * drive / inertia);
             out.spin = wheel.spin;
+            out.drive_applied = drive;
             continue;
         }
         along = scale(along, 1.0 / along_length);
@@ -1240,12 +1246,28 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         const double v_lat = dot(point_velocity, across);
         const double denominator =
             absolute(v_long) > a.slip_speed_floor ? absolute(v_long) : a.slip_speed_floor;
+        const double cornering = k < 2 ? a.cornering_stiffness_front : a.cornering_stiffness_rear;
+        double fy = -cornering * load * v_lat / denominator;
+        const double peak = d_.static_friction[axle] * load;
+        const double slide = d_.sliding_friction[axle] * load;
+
+        // The traction limit (APPROXIMATION): the engine's torque at this
+        // wheel, driving or braking, is held to what the peak friction
+        // leaves beside the lateral force the slip angle asks for. Where
+        // that force alone passes the peak, vehicle_sqrt's answer for a
+        // negative argument, 0, leaves the engine no torque at this wheel.
+        double applied = drive;
+        if (a.traction_limit) {
+            const double limit = vehicle_sqrt(peak * peak - fy * fy) * radius;
+            applied = clamp(drive, -limit, limit);
+        }
+        out.drive_applied = applied;
 
         // Longitudinal: the wheel's spin solved implicitly against a linear
         // tyre, with the brake as a friction torque that can lock it.
         const double k_long = a.longitudinal_stiffness * load / denominator;
         const double implicit_mass = inertia + dt * k_long * radius * radius;
-        const double base = inertia * wheel.spin + dt * (drive + k_long * radius * v_long);
+        const double base = inertia * wheel.spin + dt * (applied + k_long * radius * v_long);
         double spin = base / implicit_mass;
         if (brake_torque > 0.0) {
             if (spin == 0.0) {
@@ -1257,15 +1279,11 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             }
         }
         double fx = k_long * (spin * radius - v_long);
-        const double cornering = k < 2 ? a.cornering_stiffness_front : a.cornering_stiffness_rear;
-        double fy = -cornering * load * v_lat / denominator;
 
         // The friction circle: up to the static coefficient the linear
         // force stands; past it the force falls toward the sliding
         // coefficient (APPROXIMATION of the shape; the two coefficients are
         // the tyre block's +0x0C and +0x10).
-        const double peak = d_.static_friction[axle] * load;
-        const double slide = d_.sliding_friction[axle] * load;
         const double demand = vehicle_sqrt(fx * fx + fy * fy);
         bool sliding = false;
         if (demand > peak) {
@@ -1274,7 +1292,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             fx = fx * factor;
             fy = fy * factor;
             sliding = true;
-            spin = apply_brake(wheel.spin + dt * (drive - fx * radius) / inertia);
+            spin = apply_brake(wheel.spin + dt * (applied - fx * radius) / inertia);
         }
         wheel.spin = spin;
 

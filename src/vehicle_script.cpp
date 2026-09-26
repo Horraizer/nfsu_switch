@@ -305,9 +305,9 @@ bool builtin_vehicle_script(const std::string& name, VehicleScript& out) {
         g.push_back(segment(1200, 0.5, 0.0, 0.2));
     } else if (name == "slide") {
         // From 25 m/s: straight for half a second, full left input for
-        // three seconds, which the speed-dependent lock keeps near the grip
-        // limit, then the handbrake with half the input for one second,
-        // which slides the rear, then straight and off the handbrake.
+        // three seconds, then the handbrake with half the input for one
+        // second, which slides the rear, then straight and off the
+        // handbrake.
         s.speed = 25.0;
         g.push_back(segment(60, 0.3, 0.0, 0.0));
         g.push_back(segment(360, 0.3, 0.0, 1.0));
