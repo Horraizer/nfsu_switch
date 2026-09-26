@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <limits>
 #include <utility>
 
@@ -9,6 +11,20 @@ namespace nfsu {
 namespace {
 
 static_assert(std::numeric_limits<float>::is_iec559, "IEEE-754 float32 required");
+static_assert(std::numeric_limits<double>::is_iec559, "IEEE-754 float64 required");
+
+// The square roots below were std::sqrt until issue #60 put this layer on
+// the vehicle's step, which must give the same bits on every build. A
+// correctly rounded root is one answer, and IEEE-754 requires it of the
+// hardware instruction both targets have (sqrtsd, AArch64 fsqrt); but a
+// build that calls the library instead - MinGW at -O0 reaches libmingwex's
+// x87 fsqrt, which rounds twice for a double - need not give it. This
+// computes it with integers only. A float root taken through it is
+// correctly rounded too: rounding a correctly rounded double root of a
+// float to float is innocuous, since 53 >= 2 * 24 + 2.
+float contact_sqrtf(float x) noexcept {
+    return static_cast<float>(track_contact_sqrt(static_cast<double>(x)));
+}
 
 // The split docs/TRACK_COLLISION.md justifies and query_track_collision_ray
 // uses: triangle 0 is corners (0,1,2) and triangle 1 is (0,2,3).
@@ -43,8 +59,8 @@ TrackContactTriangle derive_triangle(
     const float cross[3] = {edge1[1] * edge2[2] - edge1[2] * edge2[1],
                             edge1[2] * edge2[0] - edge1[0] * edge2[2],
                             edge1[0] * edge2[1] - edge1[1] * edge2[0]};
-    const float length = std::sqrt(cross[0] * cross[0] + cross[1] * cross[1] +
-                                   cross[2] * cross[2]);
+    const float length = contact_sqrtf(cross[0] * cross[0] + cross[1] * cross[1] +
+                                       cross[2] * cross[2]);
     TrackContactTriangle out;
     // A repeated corner, or three collinear ones, give a zero cross product.
     // Such a triangle has no normal and no area, and the determinant test
@@ -199,7 +215,7 @@ Sweep sweep_of(const float from[3], const float to[3]) {
         sweep.low[axis] = std::min(from[axis], to[axis]);
         sweep.high[axis] = std::max(from[axis], to[axis]);
     }
-    sweep.length = std::sqrt(squared);
+    sweep.length = track_contact_sqrt(squared);
     return sweep;
 }
 
@@ -815,7 +831,7 @@ TrackContactStatus query_track_contact_segment(
     }
     const float delta[3] = {to[0] - from[0], to[1] - from[1], to[2] - from[2]};
     const float length =
-        std::sqrt(delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]);
+        contact_sqrtf(delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]);
     if (!std::isfinite(length) || !(length > 0.0F) || length > limits.max_length) {
         return TrackContactStatus::refused;
     }
@@ -921,6 +937,87 @@ TrackContactStatus query_track_contact_point(
     const float from[3] = {point[0], point[1], point[2] + rise};
     const float to[3] = {point[0], point[1], point[2] - drop};
     return query_track_contact_segment(world, from, to, contact, limits);
+}
+
+double track_contact_sqrt(double x) noexcept {
+    std::uint64_t bits = 0;
+    std::memcpy(&bits, &x, sizeof(bits));
+    const std::uint64_t sign = bits >> 63;
+    const std::uint64_t biased = (bits >> 52) & 0x7FFU;
+    const std::uint64_t fraction = bits & ((std::uint64_t{1} << 52) - 1U);
+    if (biased == 0 && fraction == 0) {
+        return x;  // +0 and -0
+    }
+    if (biased == 0x7FFU && fraction == 0 && sign == 0) {
+        return x;  // +infinity
+    }
+    if (sign != 0 || biased == 0x7FFU) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    // x = m * 2^e with m in [2^52, 2^53), a subnormal normalised first.
+    std::uint64_t m = 0;
+    std::int64_t e = 0;
+    if (biased == 0) {
+        m = fraction;
+        e = -1074;
+        while (m < (std::uint64_t{1} << 52)) {
+            m <<= 1U;
+            --e;
+        }
+    } else {
+        m = fraction | (std::uint64_t{1} << 52);
+        e = static_cast<std::int64_t>(biased) - 1075;
+    }
+    // An even exponent, so that the root of 2^e is a power of two: m is then
+    // in [2^52, 2^54).
+    if ((e & 1) != 0) {
+        m <<= 1U;
+        --e;
+    }
+    // The integer root of N = m * 2^54, at most 108 bits, one bit a turn
+    // from the top pair of bits down (the digit-by-digit method). The root q
+    // lies in [2^53, 2^54): 53 bits and one more for rounding, and the
+    // remainder r says whether anything lies below that. N's low 54 bits are
+    // zero, so its pairs come from m and then are zero; r stays below
+    // 2q + 1 < 2^55, so nothing here needs more than 64 bits. It is the
+    // method of track_residency_sqrt (issue #157), which issue #165 is to
+    // make the one both layers call.
+    std::uint64_t q = 0;
+    std::uint64_t r = 0;
+    for (int pair = 53; pair >= 0; --pair) {
+        const int shift = 2 * pair - 54;
+        const std::uint64_t digits =
+            shift >= 0 ? (m >> static_cast<unsigned>(shift)) & 3U : 0U;
+        r = (r << 2U) | digits;
+        const std::uint64_t trial = (q << 2U) | 1U;
+        if (r >= trial) {
+            r -= trial;
+            q = (q << 1U) | 1U;
+        } else {
+            q <<= 1U;
+        }
+    }
+    // The root is q.rest * 2^(e/2 - 27). Round the 54-bit q to 53 bits, to
+    // nearest and ties to even; a root never ties exactly, but the rule is
+    // the standard's.
+    std::uint64_t mantissa = q >> 1U;
+    const bool half = (q & 1U) != 0;
+    const bool below = r != 0;
+    std::int64_t exponent = e / 2 - 26;  // of the mantissa's lowest bit
+    if (half && (below || (mantissa & 1U) != 0)) {
+        ++mantissa;
+        if (mantissa == (std::uint64_t{1} << 53)) {
+            mantissa >>= 1U;
+            ++exponent;
+        }
+    }
+    // The root of a positive double is a normal double, always in range.
+    const std::uint64_t out_biased = static_cast<std::uint64_t>(exponent + 1075);
+    const std::uint64_t out =
+        (out_biased << 52) | (mantissa & ((std::uint64_t{1} << 52) - 1U));
+    double result = 0.0;
+    std::memcpy(&result, &out, sizeof(result));
+    return result;
 }
 
 void track_slot_to_render(const float slot[3], float render[3]) noexcept {

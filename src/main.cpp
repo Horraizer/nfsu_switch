@@ -26,6 +26,7 @@
 #include "nfsu/track_visibility.h"
 #include "nfsu/track_zones.h"
 #include "nfsu/vehicle.h"
+#include "nfsu/vehicle_track.h"
 
 #include <algorithm>
 #include <array>
@@ -5459,6 +5460,375 @@ int run_race_route(const fs::path& globalb_path, const fs::path& frontb_path,
 }
 
 // ---------------------------------------------------------------------------
+// vehicle-track: the vehicle model of docs/VEHICLE.md on a track's collision,
+// with its body against the track and its resets - docs/VEHICLE_TRACK.md.
+// The course is event 1's circuit, read from the retail files as race-route
+// reads them, with the car on grid slot 0, or the proving ground, which is
+// built in code. The run is a built-in scenario or a script file of
+// docs/VEHICLE.md's form, started on the grid. It prints the course, the
+// start, a line every `every` steps, every contact streak, reset and race
+// event, the last step, a summary and the SHA-256 of the telemetry, which
+// docs/VEHICLE_TRACK.md pins, and for a built-in scenario whether it equals
+// the pin. Read-only; writes nothing.
+// ---------------------------------------------------------------------------
+
+struct VehicleTrackArgs {
+    bool proving_ground = false;
+    fs::path globalb;
+    fs::path frontb;
+    fs::path trackb;
+    std::uint32_t event = 0;
+    std::string scenario;
+    bool has_script = false;
+    fs::path script_file;
+    bool has_steps = false;
+    std::uint64_t steps = 0;
+    std::uint64_t every = 120;
+};
+
+void print_vehicle_track_line(const char* label, const nfsu::VehicleTrackTelemetry& t) {
+    const double w = t.orientation.w;
+    const double x = t.orientation.x;
+    const double y = t.orientation.y;
+    const double z = t.orientation.z;
+    const double forward_x = 1.0 - 2.0 * (y * y + z * z);
+    const double forward_y = 2.0 * (x * y + w * z);
+    const double forward_z = 2.0 * (x * z - w * y);
+    const double up_z = 1.0 - 2.0 * (x * x + y * y);
+    const double along =
+        t.velocity.x * forward_x + t.velocity.y * forward_y + t.velocity.z * forward_z;
+    const std::uint16_t heading = nfsu::track_angle(static_cast<float>(forward_x),
+                                                    static_cast<float>(forward_y));
+    std::cout << label << " step " << t.step << " t "
+              << vehicle_fixed(static_cast<double>(t.step) * nfsu::kVehicleStepSeconds, 3)
+              << " pos " << vehicle_fixed(t.position.x, 3) << ' '
+              << vehicle_fixed(t.position.y, 3) << ' ' << vehicle_fixed(t.position.z, 4)
+              << " kmh " << vehicle_fixed(along * 3.6, 2) << " heading "
+              << hex32(heading) << " up " << vehicle_fixed(up_z, 4) << " gear "
+              << vehicle_gear_name(t.model.gear) << " wheels";
+    for (nfsu::VehicleTrackSurface surface : t.wheel_surface) {
+        std::cout << ' ' << nfsu::vehicle_track_surface_name(surface);
+    }
+    std::cout << " hull " << t.hull_hits << " contacts " << t.contacts << " lap " << t.lap
+              << " percent " << format_float(t.percent) << '\n';
+}
+
+int run_vehicle_track(const VehicleTrackArgs& args) {
+    nfsu::VehicleTrackCourse course;
+    std::string error;
+    nfsu::VehicleTrackCourseKind kind = nfsu::VehicleTrackCourseKind::proving_ground;
+    if (args.proving_ground) {
+        if (!nfsu::build_vehicle_proving_ground(course, error)) {
+            std::cerr << "error: the proving ground did not build: " << error << '\n';
+            return 3;
+        }
+        std::cout << "course: proving ground, built in code, " << course.world.collision.polygons.size()
+                  << " polygons, route of " << course.route.spline.count << " nodes, "
+                  << course.track.zones.size() << " zones\n";
+    } else {
+        kind = nfsu::VehicleTrackCourseKind::circuit;
+        std::vector<unsigned char> globalb_image;
+        const nfsu::TrackInfoTable tracks =
+            nfsu::load_track_info_table(args.globalb, globalb_image);
+        print_race_table_issues("track table", tracks.issues);
+        std::vector<unsigned char> frontb_image;
+        const nfsu::RaceEventTable events =
+            nfsu::load_race_event_table(args.frontb, frontb_image);
+        print_race_table_issues("event table", events.issues);
+        if (!tracks.ok() || !events.ok()) {
+            std::cerr << "error: the track or event table is not valid\n";
+            return 3;
+        }
+        const nfsu::RaceEventRecord* event = nfsu::find_race_event(events, args.event);
+        if (event == nullptr) {
+            std::cerr << "error: the event table holds no event " << args.event << '\n';
+            return 3;
+        }
+        const nfsu::RaceSlot& race = event->races.front();
+        const nfsu::TrackInfoRecord* info = nfsu::find_track_info(tracks, race.track);
+        if (info == nullptr) {
+            std::cerr << "error: event " << event->number << " names track " << race.track
+                      << ", which is not in the track table\n";
+            return 3;
+        }
+        const std::string bundle = nfsu::track_bundle_file_name(info->number);
+        if (lower_ascii(args.trackb.filename().string()) != lower_ascii(bundle)) {
+            std::cerr << "error: event " << event->number << " loads " << bundle << ", not "
+                      << args.trackb.filename().string() << '\n';
+            return 3;
+        }
+        std::cout << "event " << event->number << " race 0 track " << race.track << " laps "
+                  << static_cast<int>(race.laps) << " direction "
+                  << nfsu::race_direction_name(race.direction) << " lap-skip "
+                  << static_cast<int>(info->lap_skip) << " bundle " << bundle << '\n';
+        if (!nfsu::load_vehicle_track_course(args.trackb, race.laps, race.direction,
+                                             info->lap_skip, 0, course, error)) {
+            std::cerr << "error: " << error << '\n';
+            return 3;
+        }
+        std::cout << "course: " << course.name << ", " << course.world.collision.polygons.size()
+                  << " polygons, route of " << course.route.spline.count << " nodes, "
+                  << course.track.zones.size() << " zones\n";
+    }
+    const nfsu::TrackMarker& grid =
+        course.track.markers[static_cast<std::size_t>(course.start_marker)];
+    std::cout << "start: grid slot 0 marker " << course.start_marker << " x "
+              << format_float(grid.position[0]) << " y " << format_float(grid.position[1])
+              << " z " << format_float(grid.position[2]) << " angle "
+              << hex32(grid.angle) << " ground " << vehicle_fixed(course.start.ground.z, 4)
+              << '\n';
+
+    nfsu::VehicleTrackScenario scenario;
+    if (args.has_script) {
+        std::ifstream stream(args.script_file, std::ios::binary);
+        if (!stream) {
+            std::cerr << "error: cannot open the script " << args.script_file.string() << '\n';
+            return 2;
+        }
+        const nfsu::VehicleScriptLimits limits;
+        std::vector<char> buffer(limits.max_bytes + 1);
+        stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const std::string text(buffer.data(), static_cast<std::size_t>(stream.gcount()));
+        if (!nfsu::parse_vehicle_script(text, scenario.script, error, limits)) {
+            std::cerr << "error: script " << args.script_file.filename().string() << ": "
+                      << error << '\n';
+            return 2;
+        }
+        scenario.name = args.script_file.filename().string();
+        scenario.script.name = scenario.name;
+        scenario.description = "a script file, from the start";
+    } else if (!nfsu::vehicle_track_scenario(kind, args.scenario, scenario)) {
+        std::cerr << "error: no built-in scenario is named '" << args.scenario
+                  << "'; the names are";
+        for (const nfsu::VehicleTrackScenario& s : nfsu::vehicle_track_scenarios(kind)) {
+            std::cerr << ' ' << s.name;
+        }
+        std::cerr << '\n';
+        return 1;
+    }
+
+    const nfsu::VehicleModel model(nfsu::stock_240sx_vehicle_spec());
+    if (!model.valid()) {
+        std::cerr << "error: the model refuses the built-in 240SX: " << model.error() << '\n';
+        return 4;
+    }
+    nfsu::VehicleTrackSession session(model, course);
+    if (!session.valid()) {
+        std::cerr << "error: " << session.error() << '\n';
+        return 4;
+    }
+    const nfsu::VehiclePose pose = nfsu::vehicle_track_scenario_pose(course.start, scenario);
+    if (!session.start(pose)) {
+        std::cerr << "error: the model refused the starting pose\n";
+        return 4;
+    }
+    const std::uint64_t steps = args.has_steps ? args.steps : scenario.script.total_steps();
+    std::cout << "scenario " << scenario.name << ": " << scenario.description << '\n';
+    std::cout << "scenario start: forward " << vehicle_fixed(scenario.forward, 3) << " left "
+              << vehicle_fixed(scenario.left, 3) << " up " << vehicle_fixed(scenario.up, 3)
+              << " turn " << scenario.turn << " ground " << vehicle_fixed(pose.ground.x, 3)
+              << ' ' << vehicle_fixed(pose.ground.y, 3) << ' ' << vehicle_fixed(pose.ground.z, 4)
+              << " speed " << vehicle_fixed(pose.speed, 3) << " steps " << steps << " of 1/"
+              << nfsu::kVehicleStepsPerSecond << " s\n";
+
+    nfsu::VehicleTrackTelemetryHash hash;
+    nfsu::VehicleTrackTelemetry telemetry;
+    std::uint64_t contact_steps = 0;
+    std::uint64_t impulses = 0;
+    std::uint64_t off_road_steps = 0;
+    double deepest = 0.0;
+    // A contact streak is steps with contact less than 12 steps (0.1 s)
+    // apart: a car held against a wall touches it every few steps.
+    constexpr std::uint64_t kStreakGap = 12;
+    std::uint64_t streak = 0;
+    std::uint64_t streak_last = 0;
+    double streak_depth = 0.0;
+    std::uint64_t streak_impulses = 0;
+    nfsu::VehicleTrackReset pending = nfsu::VehicleTrackReset::none;
+    for (std::uint64_t i = 0; i < steps; ++i) {
+        if (!session.step(scenario.script.input_at(i), telemetry)) {
+            std::cerr << "error: the session stopped at step " << i + 1
+                      << ": the model refused the step\n";
+            return 4;
+        }
+        hash.add(telemetry);
+        bool off_road = false;
+        for (nfsu::VehicleTrackSurface surface : telemetry.wheel_surface) {
+            off_road = off_road || surface != nfsu::VehicleTrackSurface::road;
+        }
+        off_road_steps += off_road ? 1U : 0U;
+        impulses += telemetry.impulses;
+        if (telemetry.contacts > 0) {
+            ++contact_steps;
+            deepest = std::max(deepest, telemetry.deepest_depth);
+            if (streak == 0) {
+                std::cout << "contact step " << telemetry.step << " polygon "
+                          << telemetry.deepest_polygon << ' '
+                          << nfsu::vehicle_track_surface_name(telemetry.deepest_surface)
+                          << " depth " << vehicle_fixed(telemetry.deepest_depth, 4)
+                          << " hull " << telemetry.hull_hits << " impulse "
+                          << vehicle_fixed(telemetry.impulse.x, 1) << ' '
+                          << vehicle_fixed(telemetry.impulse.y, 1) << ' '
+                          << vehicle_fixed(telemetry.impulse.z, 1) << '\n';
+                streak_depth = 0.0;
+                streak_impulses = 0;
+            }
+            ++streak;
+            streak_last = telemetry.step;
+            streak_depth = std::max(streak_depth, telemetry.deepest_depth);
+            streak_impulses += telemetry.impulses;
+        } else if (streak != 0 && telemetry.step - streak_last >= kStreakGap) {
+            std::cout << "contact-end step " << streak_last << ": " << streak
+                      << " steps with contact, deepest " << vehicle_fixed(streak_depth, 4)
+                      << " impulses " << streak_impulses << '\n';
+            streak = 0;
+        }
+        if (telemetry.pending != nfsu::VehicleTrackReset::none &&
+            telemetry.pending != pending) {
+            std::cout << "reset-requested step " << telemetry.step << ' '
+                      << nfsu::vehicle_track_reset_name(telemetry.pending) << '\n';
+        }
+        pending = telemetry.pending;
+        if (telemetry.bounds == nfsu::VehicleTrackBoundsCheck::none) {
+            std::cout << "bounds step " << telemetry.step
+                      << ": no collision under the car nor one unit along +x\n";
+        }
+        if (telemetry.reset != nfsu::VehicleTrackReset::none) {
+            const nfsu::VehicleTrackResetInfo& reset = session.last_reset();
+            std::cout << "reset step " << telemetry.step << ' '
+                      << nfsu::vehicle_track_reset_name(telemetry.reset);
+            if (!reset.performed) {
+                std::cout << " not performed\n";
+            } else {
+                if (reset.node >= 0) {
+                    std::cout << " node " << reset.node;
+                }
+                if (reset.zone >= 0) {
+                    std::cout << " zone " << reset.zone;
+                }
+                std::cout << " ground " << vehicle_fixed(reset.pose.ground.x, 3) << ' '
+                          << vehicle_fixed(reset.pose.ground.y, 3) << ' '
+                          << vehicle_fixed(reset.pose.ground.z, 4) << " heading "
+                          << hex32(reset.heading_units) << " speed "
+                          << vehicle_fixed(reset.pose.speed, 3) << '\n';
+            }
+        }
+        if (telemetry.tick) {
+            for (const nfsu::RaceProgressEvent& event : session.events()) {
+                std::cout << "race step " << telemetry.step << ' '
+                          << nfsu::race_event_kind_name(event.kind) << " index " << event.index
+                          << " lap " << event.lap << " percent " << format_float(event.percent)
+                          << '\n';
+            }
+        }
+        if (args.every != 0 && (i + 1) % args.every == 0 && i + 1 != steps) {
+            print_vehicle_track_line("at", telemetry);
+        }
+    }
+    if (streak != 0) {
+        std::cout << "contact-end step " << streak_last << ": " << streak
+                  << " steps with contact, deepest " << vehicle_fixed(streak_depth, 4)
+                  << " impulses " << streak_impulses << " (in contact to the end)\n";
+    }
+    if (steps != 0) {
+        print_vehicle_track_line("final", telemetry);
+    }
+    std::cout << "summary: steps " << steps << " contact-steps " << contact_steps
+              << " impulses " << impulses << " deepest " << vehicle_fixed(deepest, 4)
+              << " resets " << telemetry.resets << " steps-with-a-wheel-off-road "
+              << off_road_steps << '\n';
+    const std::uint64_t records = hash.records();
+    const std::string digest = nfsu::sha256_hex(hash.finish());
+    std::cout << "telemetry: records " << records << " bytes "
+              << records * nfsu::kVehicleTrackTelemetryRecordBytes << " sha256 " << digest
+              << '\n';
+    if (!scenario.pinned.empty() && !args.has_steps) {
+        std::cout << "pinned: " << (digest == scenario.pinned ? "EQUAL to" : "DIFFERENT from")
+                  << " docs/VEHICLE_TRACK.md " << scenario.pinned << '\n';
+    }
+    return 0;
+}
+
+// Parses everything after "vehicle-track". Every path is converted here,
+// before anything is read, so a path argument the platform cannot decode is
+// refused before any work.
+int parse_vehicle_track(int argc, char** argv, VehicleTrackArgs& args) {
+    int i = 2;
+    if (argc > 2 && std::string(argv[2]) == "--proving-ground") {
+        args.proving_ground = true;
+        i = 3;
+    } else {
+        if (argc < 7) {
+            std::cerr << "error: vehicle-track needs <GLOBALB.BUN> <FrontB.lzc> "
+                         "<TRACKB####.lzc> <event> and a scenario or --script <FILE>, "
+                         "or --proving-ground and a scenario or --script <FILE>\n";
+            return 1;
+        }
+        args.globalb = nfsu::argument_path(argv[2]);
+        args.frontb = nfsu::argument_path(argv[3]);
+        args.trackb = nfsu::argument_path(argv[4]);
+        std::uint64_t event = 0;
+        if (!parse_u64(std::string(argv[5]), event) || event > 0xFFFFFFFFULL) {
+            std::cerr << "error: the event must be a number\n";
+            return 1;
+        }
+        args.event = static_cast<std::uint32_t>(event);
+        i = 6;
+    }
+    bool has_name = false;
+    bool has_every = false;
+    for (; i < argc; ++i) {
+        const std::string argument(argv[i]);
+        if (argument == "--script") {
+            if (args.has_script) {
+                std::cerr << "error: --script is given twice\n";
+                return 1;
+            }
+            if (i + 1 >= argc) {
+                std::cerr << "error: --script needs a file\n";
+                return 1;
+            }
+            ++i;
+            args.has_script = true;
+            args.script_file = nfsu::argument_path(argv[i]);
+        } else if (argument == "--steps" || argument == "--every") {
+            const bool steps = argument == "--steps";
+            if (steps ? args.has_steps : has_every) {
+                std::cerr << "error: " << argument << " is given twice\n";
+                return 1;
+            }
+            if (i + 1 >= argc) {
+                std::cerr << "error: " << argument << " needs a value\n";
+                return 1;
+            }
+            ++i;
+            std::uint64_t value = 0;
+            if (!parse_u64(std::string(argv[i]), value) || value > 12000000U) {
+                std::cerr << "error: " << argument
+                          << " must be a decimal or 0x integer no larger than 12000000\n";
+                return 1;
+            }
+            (steps ? args.steps : args.every) = value;
+            (steps ? args.has_steps : has_every) = true;
+        } else if (argument.size() > 1 && argument[0] == '-') {
+            std::cerr << "error: unknown option " << argument << '\n';
+            return 1;
+        } else if (has_name) {
+            std::cerr << "error: give one scenario name only\n";
+            return 1;
+        } else {
+            has_name = true;
+            args.scenario = argument;
+        }
+    }
+    if (has_name == args.has_script) {
+        std::cerr << "error: give either a built-in scenario name or --script <FILE>\n";
+        return 1;
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // track-stream-path: the sections speed.exe's streamer keeps resident while
 // one car drives a path, step by step, and what each resident set costs. See
 // docs/TRACK_STREAMING.md.
@@ -7853,6 +8223,22 @@ const Command kCommands[] = {
              return parsed;
          }
          return run_vehicle_sim(args);
+     }},
+    {"vehicle-track", " <GLOBALB.BUN> <FrontB.lzc> <TRACKB####.lzc> <event>",
+     "      (<scenario> | --script <FILE>) [--steps N] [--every N], or\n"
+     "      vehicle-track --proving-ground (<scenario> | --script <FILE>) [...]\n"
+     "      (event 1's circuit from grid slot 0, or the proving ground built\n"
+     "       in code; circuit scenarios: grid drive wall wall-square drop\n"
+     "       leave; proving-ground scenarios: rest drive slope wall\n"
+     "       wall-glance wall-fast wall-square wall-oblique drop leave zone\n"
+     "       zone-point far; docs/VEHICLE_TRACK.md)\n",
+     [](int argc, char** argv) {
+         VehicleTrackArgs args;
+         const int parsed = parse_vehicle_track(argc, argv, args);
+         if (parsed != 0) {
+             return parsed;
+         }
+         return run_vehicle_track(args);
      }},
     {"race-events", " <GLOBALB.BUN> <FrontB.lzc>",
      "      (either file raw or JDLZ-compressed, as the game ships them)\n",

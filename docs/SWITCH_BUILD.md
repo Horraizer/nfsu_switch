@@ -32,6 +32,8 @@ platforms. They do not change either application's rendering path. See
 | `nfsu_switch_shaders` | `shaders/*.dksh`, `shaders/*.tgsi` | Every GLSL stage a manifest in `shaders/` names, compiled by `uam`, and each manifest checked against the result. |
 | `nfsu_switch_vehicle` | `nfsu_switch_vehicle.elf` | The vehicle model of issue #58: runs the eight built-in scripted input sequences through `nfsu_vehicle` and prints each telemetry hash, and whether `mixed` is the one pinned on the desktop ([`VEHICLE.md`](VEHICLE.md), "On the console"); + exits. Not yet run on a console. |
 | `nfsu_switch_vehicle_nro` | `nfsu_switch_vehicle.nro`, `nfsu_switch_vehicle.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_vehicle`. |
+| `nfsu_switch_vehicle_track` | `nfsu_switch_vehicle_track.elf` | The car on the track of issue #60: runs the thirteen proving-ground scenarios through `nfsu_vehicle_track` and, when `sdmc:/nfsu/Tracks/TRACKB1003.lzc` is on the card, the six circuit scenarios, and prints each telemetry hash and whether it is the one pinned on the desktop ([`VEHICLE_TRACK.md`](VEHICLE_TRACK.md), "On the console"); + exits. Not yet run on a console. |
+| `nfsu_switch_vehicle_track_nro` | `nfsu_switch_vehicle_track.nro`, `nfsu_switch_vehicle_track.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_vehicle_track`. |
 
 Under `build-switch/` itself, the configure also builds the car-path
 libraries `nfsu_switch_car` links: `nfsu_image`, `nfsu_core`,
@@ -41,7 +43,10 @@ libraries `nfsu_switch_car` links: `nfsu_image`, `nfsu_core`,
 and `nfsu_runtime_skin`, the camera and controller layers `nfsu_inspect`,
 `nfsu_input` and `nfsu_input_camera`, and `nfsu_stock_view`; the vehicle
 model `nfsu_vehicle`, which `cmake/vehicle_libraries.cmake` declares for
-both configures and `nfsu_switch_vehicle` links (issue #58); and, for
+both configures and `nfsu_switch_vehicle` links (issue #58); the contact
+layer `nfsu_track_contact` and the car on the track `nfsu_vehicle_track`,
+which `cmake/vehicle_track_libraries.cmake` declares for both configures
+and `nfsu_switch_vehicle_track` links (issue #60); and, for
 `nfsu_switch_assets`, the asset manifest and check `nfsu_assets` and the
 console's filesystem service `nfsu_posix_file_system`
 (`cmake/asset_libraries.cmake`).
@@ -59,6 +64,8 @@ runs on the build machine, not on a console:
 | `nfsu_switch_assets_nro` | The same checks for `nfsu_switch_assets.nro`, whose NACP is titled `nfsu_switch_assets`. |
 | `nfsu_switch_vehicle_nro` | The same checks for `nfsu_switch_vehicle.nro`, whose NACP is titled `nfsu_switch_vehicle`. |
 | `nfsu_switch_vehicle_fma_census` | `nfsu_vehicle`'s console objects, disassembled with the toolchain's `objdump`, hold no `fmadd`, `fmsub`, `fnmadd`, `fnmsub`, `fmla` or `fmls`, and do hold `fmul`. This tree cannot run AArch64 code, so it asserts that precondition of the pinned telemetry hash rather than the hash. |
+| `nfsu_switch_vehicle_track_nro` | The same checks for `nfsu_switch_vehicle_track.nro`, whose NACP is titled `nfsu_switch_vehicle_track`. |
+| `nfsu_switch_vehicle_track_fma_census` | The same census over `nfsu_vehicle_track`'s and `nfsu_track_contact`'s console objects ([`VEHICLE_TRACK.md`](VEHICLE_TRACK.md), "Determinism"). |
 
 The desktop programs, the other libraries and every test are not configured
 for the console: the top-level `CMakeLists.txt` includes

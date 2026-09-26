@@ -286,3 +286,57 @@ if(NFSU_BUILD_TESTS)
 
     set_tests_properties(nfsu_switch_vehicle_nro PROPERTIES TIMEOUT 60)
 endif()
+
+# The vehicle on the track on the console (issue #60): runs every built-in
+# scenario of docs/VEHICLE_TRACK.md through nfsu_vehicle_track - declared
+# for both configures in cmake/vehicle_track_libraries.cmake, with the
+# track contact queries it steps on - over the proving ground, and over
+# event 1's circuit when its TRACKB file is on the card, and reports each
+# telemetry hash and whether it is the one pinned on the desktop. Appended
+# as one block so that nothing above is reordered.
+add_executable(nfsu_switch_vehicle_track
+    vehicle_track_main.cpp
+)
+
+target_link_libraries(nfsu_switch_vehicle_track PRIVATE nfsu_vehicle_track)
+# gnu++17, as the libraries it links are compiled on the console; the
+# comment at the end of cmake/car_libraries.cmake says why it is named.
+set_target_properties(nfsu_switch_vehicle_track PROPERTIES
+    CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
+nfsu_enable_warnings(nfsu_switch_vehicle_track)
+
+nx_generate_nacp(
+    OUTPUT nfsu_switch_vehicle_track.nacp
+    NAME "nfsu_switch_vehicle_track"
+    AUTHOR "nfsu_switch contributors"
+    VERSION "0.1.0")
+
+nx_create_nro(nfsu_switch_vehicle_track
+    NACP nfsu_switch_vehicle_track.nacp)
+
+if(NFSU_BUILD_TESTS)
+    # The NRO and its ELF, as for the other applications.
+    add_test(NAME nfsu_switch_vehicle_track_nro
+        COMMAND ${CMAKE_COMMAND}
+                -DNRO=${CMAKE_CURRENT_BINARY_DIR}/nfsu_switch_vehicle_track.nro
+                -DELF=$<TARGET_FILE:nfsu_switch_vehicle_track>
+                -DTITLE=nfsu_switch_vehicle_track
+                -P ${PROJECT_SOURCE_DIR}/tests/switch_nro_check.cmake)
+
+    # The fused multiply-add census of issue #91 over every object the step
+    # with collision compiles that nfsu_vehicle's and nfsu_race_route's
+    # censuses above do not already cover: this layer's and the track
+    # contact queries'. The telemetry docs/VEHICLE_TRACK.md pins must be the
+    # same bits here as on the desktop, and devkitA64's GCC fuses at -O2
+    # unless contraction is off; the counts with and without the options
+    # are in that document.
+    add_test(NAME nfsu_switch_vehicle_track_fma_census
+        COMMAND ${CMAKE_COMMAND}
+                -DOBJDUMP=${CMAKE_OBJDUMP}
+                "-DOBJECTS=$<TARGET_OBJECTS:nfsu_vehicle_track>;$<TARGET_OBJECTS:nfsu_track_contact>"
+                -DLABEL=nfsu_vehicle_track
+                -P ${PROJECT_SOURCE_DIR}/tests/switch_fma_census.cmake)
+
+    set_tests_properties(nfsu_switch_vehicle_track_nro nfsu_switch_vehicle_track_fma_census
+        PROPERTIES TIMEOUT 60)
+endif()
