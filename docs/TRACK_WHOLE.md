@@ -536,8 +536,7 @@ build/nfsu_probe track-whole X:/Games/NFSU/Tracks/STREAML1RA.BUN \
 | Frame | Configuration | Bytes | SHA-256 |
 | --- | --- | ---: | --- |
 | overview | default, Debug and Release | 3686418 | `DD32C4BF685C79F630EABF6EBD4F500933A901BBA7249D1D19D826C99192C9A0` |
-| street | default and Debug (`-O0`) | 3686418 | `009D20F2DFC5F2D17289E3AAEA150B644A71F16089AFC2CA08279DF16B134B6D` |
-| street | Release (`-O3`) | 3686418 | `58140093C341138E086D3E7ADD6B0F56947E75854FD41AE5EB3482288BD3407D` |
+| street | default, Debug and Release | 3686418 | `58140093C341138E086D3E7ADD6B0F56947E75854FD41AE5EB3482288BD3407D` |
 
 Each was rendered twice in separate processes in each of the three
 configurations, with the output deleted by exact name first; every pair was
@@ -560,13 +559,13 @@ markings, a row of shopfronts and the towers behind them. 912050 pixels are
 drawn, none of them fallback; 252355 of the 656347 submitted triangles
 rasterize and 402656 are outside the frustum.
 
-**Why the street view has two hashes.** The Debug and Release frames differ
-in **6 pixels of 921600**, all inside `x 906..941, y 261..292`, by at most 5
-in any channel. That is the divergence [`TRACK_RENDER.md`](TRACK_RENDER.md)
-records for its own street view and traces to `src/render.cpp` at `-O0`
-against `-O3` (issue #125): geometry hundreds of units from the origin, at a
-grazing angle. The overview, whose camera is far above everything, is
-identical in all three.
+**Issue #125 closed the street-view divergence.** The shared correctly-rounded
+square-root helper makes default and Debug (`-O0`) draw the former Release
+(`-O3`) frame. Their old pin `009D20F2...` moves to `58140093...`; Release
+and the overview are unchanged. Before the fix the two street frames differed
+in 6 pixels of 921600, inside `x 906..941, y 261..292`, by at most 5 in any
+channel. The table above was reproduced twice in separate processes in each
+of default, Debug and Release after #125, and all three now agree.
 
 The command's own listing is pinned as well: the permanent run above
 without `--out` exits 0, writes nothing to standard error and prints 319
@@ -577,6 +576,10 @@ Git Bash). The listing names its files without their directories, so the
 hash does not depend on where the installation lives.
 
 ## Nothing M2 pinned has moved
+
+This section records the original whole-track branch before issue #125.
+For current pins after that fix, see the table above and
+[`TRACK_RENDER.md`](TRACK_RENDER.md) and [`TRACK_PROBE.md`](TRACK_PROBE.md).
 
 Every pin of [`TRACK_RENDER.md`](TRACK_RENDER.md),
 [`TRACK_PROBE.md`](TRACK_PROBE.md) and [`TRACK_BUDGET.md`](TRACK_BUDGET.md)

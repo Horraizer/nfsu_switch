@@ -167,9 +167,9 @@ constexpr double kMaxTrackFramingMargin = 100.0;
 // Every clamp is a validate_camera bound, so the camera this returns always
 // passes validate_camera, and this function says so by running it.
 //
-// No libm transcendental is used: det_sin_deg, det_cos_deg and sqrt only,
-// which is the same restriction the renderer itself keeps, so the camera is
-// reproducible wherever the frames are.
+// No libm transcendental is used: det_sin_deg, det_cos_deg and det_sqrt only.
+// The shared square-root helper keeps this camera on the renderer's
+// single-rounded path across optimisation levels.
 //
 // Fails, with error set and camera untouched, on bounds that are not valid,
 // on a non-finite or out-of-range framing option, on a zero width or
