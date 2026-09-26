@@ -195,12 +195,21 @@ constexpr std::size_t kVehicleTorqueOffset = 0x310;
 constexpr std::size_t kVehicleEngineBrakeOffset = 0x358;
 constexpr std::size_t kVehicleDragOffset = 0x370;
 
-// The 240SX's record, index 18 of the retail GLOBAL/GLOBALB.BUN (SHA-256
-// 39DF38FA...8DB9), at absolute file offset 1736752. Small recovered
-// constants with their source, not a copy of the file: docs/VEHICLE.md lists
-// each one. `nfsu_probe vehicle-sim --handling` compares a decoded record
-// against this table field by field.
+// The 240SX's record, index 18 of chunk 0x00034600 in the retail
+// Global/GLOBALB.BUN (SHA-256 39DF38FA...8DB9), at absolute file offset
+// 1736752. A small numeric table from a retail file, kept in the source
+// under the owner's rule of PR #169 comment 3860: it states its source and
+// the SHA-256 of the bytes it reproduces, and nfsu_vehicle_tests rebuilds
+// those bytes from it. It reproduces 316 of the record's 3216 bytes, the 79
+// fields encode_vehicle_handling writes, in 23 runs from +0x110 to +0x373
+// (docs/VEHICLE.md lists them); every other byte of the record is not held
+// here. Those 316 bytes, taken in offset order, hash to
+// kVehicle240sxRecordBytesSha256. `nfsu_probe vehicle-sim --handling`
+// compares a decoded record against this table field by field.
 VehicleHandling stock_240sx_handling();
+constexpr std::size_t kVehicle240sxRecordBytes = 316;
+constexpr const char* kVehicle240sxRecordBytesSha256 =
+    "54394827CC13AEE7DE095524810B790A238FFC24763E7C2A2BA236A1A2430DBD";
 
 struct VehicleHandlingIssue {
     // Offset of the offending field inside the record.

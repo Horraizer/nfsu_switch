@@ -454,6 +454,11 @@ double vehicle_uniform_curve(const float* values, std::size_t count, double x0,
 // The recovered handling
 // ---------------------------------------------------------------------------
 
+// Source: Global/GLOBALB.BUN (SHA-256 39DF38FA...8DB9), chunk 0x00034600,
+// record 18 (240SX) at file offset 1736752. The 316 record bytes this table
+// reproduces, in offset order, hash to
+// 54394827CC13AEE7DE095524810B790A238FFC24763E7C2A2BA236A1A2430DBD
+// (kVehicle240sxRecordBytesSha256); nfsu_vehicle_tests checks it.
 VehicleHandling stock_240sx_handling() {
     VehicleHandling h;
     // +0x110.. the centre of mass.

@@ -58,6 +58,37 @@ table `stock_240sx_handling()`; on the retail file it prints
 `handling: car type 18 240SX record @1736752 equal to the built-in 240SX
 table`.
 
+The built-in table is a small numeric table from a retail file, kept in the
+source under the owner's rule recorded on PR #169 (comment 3860): it states
+its source, `Global/GLOBALB.BUN` (SHA-256 39DF38FA...8DB9), chunk
+0x00034600, record 18 at file offset 1736752, and the SHA-256 of the bytes
+it reproduces, and a test rebuilds those bytes from it. It does not
+reproduce the whole record. It reproduces 316 of its 3216 bytes: the 79
+fields in "The fields the model reads" below, which are the bytes
+`encode_vehicle_handling` writes, in 23 runs:
+
+    +0x110..+0x11B  +0x120..+0x12B  +0x130..+0x133  +0x150..+0x15B
+    +0x160..+0x163  +0x180..+0x18B  +0x190..+0x193  +0x1B0..+0x1BB
+    +0x1C0..+0x1C3  +0x1E0..+0x1F3  +0x200..+0x213  +0x220..+0x233
+    +0x244..+0x247  +0x258..+0x25B  +0x280..+0x29B  +0x2A0..+0x2BB
+    +0x2C0..+0x2C3  +0x2C8..+0x2D3  +0x2D8..+0x2DB  +0x2E0..+0x30B
+    +0x310..+0x333  +0x358..+0x363  +0x370..+0x373
+
+Those 316 bytes, concatenated in offset order, hash to
+
+    54394827CC13AEE7DE095524810B790A238FFC24763E7C2A2BA236A1A2430DBD
+
+both as the retail record holds them and as the built-in table encodes
+them (every one of the 316 is equal). `kVehicle240sxRecordBytesSha256`
+holds the hash beside the table, and `nfsu_vehicle_tests`
+(`test_record_source`) encodes the table into an all-0x00 and an all-0xFF
+record image, takes the bytes that are equal in both - the ones the
+encoder writes - and requires 316 of them in those 23 runs, hashing to
+that value. It needs no retail file. The other 2900 bytes of the record,
+which the table does not hold, are not covered; for identification only,
+the whole 3216-byte record hashes to
+212F69AD8E739250F95E04C54FB6613A39A7C76014CB402DF966F64B5D9FFF9B.
+
 ### The fields the model reads
 
 | Record offset | Field | 240SX | Label and evidence |
@@ -577,6 +608,7 @@ same as the built-in ones.
 | the arithmetic | `vehicle_sqrt` within 4e-16 relative of the library root and exact on perfect squares; sine and cosine within 2e-15 on [-102, 102] |
 | the curve | 0x00583EA0's interpolation, ends and quirk; the 240SX's torque points at 800 + 900 i rpm |
 | the record | the retail values' stored bits at their offsets, the centre of mass and inertia among them; the round trip; 24 refusals, each by its offset |
+| the record's source | the built-in table, encoded into an all-0x00 and an all-0xFF image, writes 316 bytes in 23 runs from +0x110 to +0x373, and they hash to the retail record's `54394827...0DBD` |
 | the model's refusals | no mass and a centre of mass ahead of the front axle, each by its offset; a negative, NaN or zero-divisor approximation; a tyre force lift above 1, by name; reset and step on an invalid model, a non-finite pose or state, or a gear past top |
 | the gearbox tables | the 240SX's thresholds; the crossing at, and not one search step before, each threshold; 40 synthetic cars against a restatement of the search, some crossing between the points of a 100 rpm grid |
 | rest | the recovered preloads, 3183.6 and 2794.4 N, add up to 9.8 * 1.22 t; every strut stays within 1 mm of zero compression, the loads within 0.5% of the preloads, the car within 0.1 mm, and it settles below 1e-4 m/s; the centre of mass about half a metre up |

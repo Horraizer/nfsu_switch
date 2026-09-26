@@ -263,6 +263,40 @@ void test_record_round_trip() {
           "a changed gear count is found at +0x2D8");
 }
 
+// The owner's rule for numeric tables from retail files (PR #169 comment
+// 3860): the built-in 240SX table must rebuild exactly the record bytes it
+// states the hash of. The bytes it reproduces are the ones the encoder
+// writes: encoded into an all-0x00 and an all-0xFF image, a written byte is
+// the same in both and an untouched one is not. No retail file is needed.
+void test_record_source() {
+    std::vector<unsigned char> low(nfsu::kVehicleRecordSize, 0x00);
+    std::vector<unsigned char> high(nfsu::kVehicleRecordSize, 0xFF);
+    nfsu::encode_vehicle_handling(nfsu::stock_240sx_handling(), low.data(), low.size());
+    nfsu::encode_vehicle_handling(nfsu::stock_240sx_handling(), high.data(), high.size());
+    std::vector<unsigned char> bytes;
+    std::size_t runs = 0;
+    std::size_t first = nfsu::kVehicleRecordSize;
+    std::size_t last = 0;
+    for (std::size_t i = 0; i < nfsu::kVehicleRecordSize; ++i) {
+        if (low[i] != high[i]) {
+            continue;
+        }
+        runs += (i == 0 || low[i - 1] != high[i - 1]) ? 1U : 0U;
+        first = std::min(first, i);
+        last = i;
+        bytes.push_back(low[i]);
+    }
+    check(bytes.size() == nfsu::kVehicle240sxRecordBytes,
+          "the built-in table reproduces " + std::to_string(bytes.size()) + " record bytes");
+    check(runs == 23 && first == 0x110 && last == 0x373,
+          "in " + std::to_string(runs) + " runs from byte " + std::to_string(first) +
+              " to byte " + std::to_string(last) +
+              ", expected 23 runs from 272 (+0x110) to 883 (+0x373)");
+    const std::string hash = nfsu::sha256_hex(nfsu::sha256(bytes.data(), bytes.size()));
+    check(hash == nfsu::kVehicle240sxRecordBytesSha256,
+          "the built-in 240SX table rebuilds the retail record's bytes: " + hash);
+}
+
 void test_record_refusals() {
     struct Case {
         const char* what;
@@ -1880,6 +1914,7 @@ int main(int argc, char** argv) {
     test_sin_cos();
     test_uniform_curve();
     test_record_round_trip();
+    test_record_source();
     test_record_refusals();
     test_model_refusals();
     test_shift_tables();
