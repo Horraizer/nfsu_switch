@@ -104,7 +104,10 @@ struct DekoRenderer::Impl {
 
     dk::ImageLayout texture_layout(const UploadResource& resource) {
         dk::ImageLayout layout;
-        dk::ImageLayoutMaker{device}.setFormat(DkImageFormat_RGBA8_Unorm)
+        const auto format = resource.texture.format == TextureUploadFormat::dxt1 ? DkImageFormat_RGBA_BC1 :
+                            resource.texture.format == TextureUploadFormat::dxt3 ? DkImageFormat_RGBA_BC2 :
+                            DkImageFormat_RGBA8_Unorm;
+        dk::ImageLayoutMaker{device}.setFormat(format)
             .setDimensions(resource.texture.width, resource.texture.height).initialize(layout);
         return layout;
     }
@@ -186,6 +189,12 @@ struct DekoRenderer::Impl {
                                                     std::uint64_t& alignment, std::string& e) {
             const auto layout = texture_layout(r);
             bytes = layout.getSize(); alignment = layout.getAlignment();
+            std::uint64_t bound = 0, bound_alignment = 0;
+            if (!bounded_image_layout(r, bound, bound_alignment, e)) return false;
+            if (bytes > bound || alignment > bound_alignment) {
+                e = r.name + ": deko3d layout exceeds the desktop image bound";
+                return false;
+            }
             return healthy(e) && bytes && alignment;
         };
         SceneMemoryRequirement need;
@@ -233,7 +242,7 @@ struct DekoRenderer::Impl {
                 padded_staging.push_back(padded); offset = padded.offset;
             }
             auto* dst = static_cast<unsigned char*>(staging.getCpuAddr()) + offset;
-            for (std::uint32_t y = 0; y < r.texture.height; ++y)
+            for (std::uint32_t y = 0; y < r.texture.rows(); ++y)
                 std::memcpy(dst + y*pitch, r.data + y*r.texture.row_bytes,
                             static_cast<std::size_t>(r.texture.row_bytes));
             textures[i].initialize(texture_layout(r), images, static_cast<std::uint32_t>(placement.placement.offset));

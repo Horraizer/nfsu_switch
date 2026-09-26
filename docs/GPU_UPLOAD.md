@@ -45,7 +45,7 @@ Three things come out of it:
 | vertex buffer, car | `PreparedMesh::vertices` | vertices x 36 | `MeshVertex` | 4 | buffer |
 | vertex buffer, track | `PreparedTrackMesh::vertices` | vertices x 24 | `TrackVertex` | 4 | buffer |
 | index buffer | `PreparedMesh::triangles`, `PreparedTrackMesh::triangles` | triangles x 6 | one `u16` index | 2 | buffer |
-| texture | `PreparedCarScene::textures`, `PreparedTrackRegion::textures` | width x height x 4 | one RGBA8 texel | 32, staging | image |
+| texture | `PreparedCarScene::textures`, `PreparedTrackRegion::textures` | exact top-level bytes | RGBA texel or DXT block | 32, staging | image |
 
 The table lists, in this order, each prepared mesh's vertex buffer and then
 its index buffer, in mesh order, and then the textures in scene order. Each
@@ -64,7 +64,7 @@ resource.
 - **A triangle list is already the index stream.** `MeshTriangle` is three
   `u16` with the alignment of one, so `triangles.data()` is the stream
   `DkIdxFormat_Uint16` reads, and the index count is three per triangle.
-- **A texture is its decoded top level**, RGBA8 as the format gate below
+- **A texture is its prepared top level**, RGBA8 or native DXT as the format gate below
   accepts it: `rgba.data()`, `width * 4` bytes per row.
 - **Names** are ASCII and unique within a table, and carry the prepared
   position so that two meshes with one stored name stay apart:
@@ -126,12 +126,6 @@ texture of the set is used, which the test fixture arranges and checks.
   through its own palette into 32-bit pixels before anything samples it
   ([`BODY_SKIN.md`](BODY_SKIN.md)); this project does not implement that
   expansion, so there is no palette to upload.
-- **Compressed blocks.** The decode path turns DXT1, DXT3 and A8R8G8B8 into
-  RGBA8, and no prepared scene keeps the stored payload. deko3d has formats
-  that would sample DXT1 and DXT3 directly (`DkImageFormat_RGBA_BC1` and
-  `DkImageFormat_RGBA_BC2`, deko3d.h lines 447 and 448), which would cut the
-  texture memory of those formats to an eighth and a quarter. That is the
-  obvious next step and the gate refuses it until someone proves it.
 - **Instance transforms, draw lists and per-frame constants.** They are
   per-draw data. How a backend passes them - uniform buffers at
   `DK_UNIFORM_BUF_ALIGNMENT`, 256 bytes (deko3d.h line 150), or anything else -
@@ -141,55 +135,43 @@ texture of the set is used, which the test fixture arranges and checks.
 
 ## The format gate
 
-`check_texture_upload_format` accepts one format and refuses the rest. The
-list is not invented; it is `PixelFormat` of
-[`include/nfsu/texture.h`](../include/nfsu/texture.h), one entry per stored
-payload, plus the one format the decode path produces from any of them:
+`check_texture_upload_format` accepts RGBA8, DXT1 and DXT3 top levels.
+The default preparation path still decodes to RGBA8; setting
+`RenderTextureLimits::gpu_blocks` preserves DXT blocks for GPU-only use.
+CPU renderers explicitly reject a compressed scene before sampling it.
 
-| Format | What produces it | `decode_level` | In a prepared scene | Gate |
-| --- | --- | --- | --- | --- |
-| RGBA8 | `decode_level`, and `bind_runtime_skin` for the generated skin | its output | every texture | **accepted** |
-| DXT1 | a pack record the parser classifies as DXT1 | decodes to RGBA8 | as RGBA8 only | refused |
-| DXT3 | a pack record the parser classifies as DXT3 | decodes to RGBA8 | as RGBA8 only | refused |
-| A8R8G8B8 | a pack record the parser classifies as A8R8G8B8 | reorders to RGBA8 | as RGBA8 only | refused |
-| P8 | a pack record the parser classifies as P8 | refuses: "P8 level requires a 256-entry palette" | never | refused |
-| unsupported | nothing: the pack parser rejects the record | never tried | never | refused |
+| Format | Default preparation | GPU preparation | Upload |
+| --- | --- | --- | --- |
+| RGBA8 | decoder or generated skin | unchanged | RGBA8_Unorm |
+| DXT1 | decode to RGBA8 | keep top-level blocks | RGBA_BC1 |
+| DXT3 | decode to RGBA8 | keep top-level blocks | RGBA_BC2 |
+| A8R8G8B8 | reorder to RGBA8 | reorder to RGBA8 | raw format refused |
+| P8 | unusable without palette expansion | unchanged | refused |
+| unsupported | parser rejects | unchanged | refused |
 
-Where each column comes from: `classify_format` in `src/texture.cpp` for the
-parser, `decode_level` in the same file for the decode, `decode_sources` in
-`src/texture_decode.cpp` for what a `RenderTexture` keeps - a record only when
-its top level decodes to exactly `width * height * 4` bytes - and
-`bind_runtime_skin` in `src/runtime_skin.cpp`, which refuses a generated skin
-of any other size.
+Dimensions must be nonzero and the payload must be exact: `width*height*4`
+for RGBA8, `ceil(width/4)*ceil(height/4)*8` for DXT1, and twice that for
+DXT3. Checked arithmetic and the single-block ceiling also apply.
+`RenderTexture::usable()` rejects mixed RGBA/block payloads. The stored mip
+tail is never retained. Per-texture state, source precedence and unusable
+claims follow the same rules in both preparation modes.
 
-RGBA8 is accepted when both dimensions are nonzero, the byte count is exactly
-`width * height * 4` computed without overflow, and that is at most
-`kMaxUploadResourceBytes`, the largest placement one deko3d memory block can
-hold. The product is checked rather than trusted: `(2^32 - 1)^2 * 4` wraps
-64 bits to `2^64 - 2^35 + 4`, and a gate that multiplied without checking
-would accept exactly that byte count.
+The uploader copies DXT in block rows, including partial edge blocks. Its
+row pitch is bytes, rounded to 32, and its staging size uses block-row count,
+not pixel height. Synthetic tests cover 5x7 edge blocks, truncated payloads,
+texture-set limits, deferred upload and draw fences, and an oversized section
+whose allocations must roll back completely.
 
-Every refusal names the format and says why it is not produced:
-
-```text
-texture format DXT1 is not uploadable: the decode path turns a DXT1 level into RGBA8 and no prepared scene holds the stored payload; upload the decoded RGBA8
-texture format P8 is not uploadable: decode_level refuses a P8 level because it does not carry its 256-entry palette, and nothing in this project expands one through its palette, so no P8 texture reaches a prepared scene
-texture format unsupported is not uploadable: the pack parser rejects a record of this format before any decode is tried
-```
-
-A8R8G8B8 is the case a careless gate gets wrong. It has four bytes per texel
-exactly like RGBA8, so a gate that decided by byte count would accept it, and
-a backend would upload B, G, R, A as R, G, B, A. The test offers every stored
-format with a byte count that would be right for RGBA8, and requires each to
-be refused by name.
-
-Two tests hold the gate to its sources. One runs `decode_level` itself on a
-well-formed level of every pack format, 5x3 so the DXT edge blocks are
-cropped, and requires what it decodes to be exactly an RGBA8 image the gate
-accepts and every stored payload, decodable or not, to be refused; if
-`decode_level` ever learns P8, that test is where the gate has to follow. The
-other requires the gate to spell every pack format exactly as
-`pixel_format_name` does.
+`bounded_image_layout` provides a conservative desktop bound for non-array,
+one-level 2D images, up to 16384 in each dimension. It rounds row bytes to
+64 and row count to 128 (at most 16 eight-row GOBs), then to 4096 bytes.
+This follows deko3d's `pickTileSize`, `adjustTileSize` and `calcLevelOffset`
+in [dk_image.cpp](https://github.com/devkitPro/deko3d/blob/350f2b00a3e76ecd4f00191f8c5d6544ffbcb9db/source/dk_image.cpp).
+The backend queries the real layout and refuses any result exceeding this
+bound. `linear_image_layout` remains a lower bound for historical reports.
+See [TRACK_GPU_TEXTURES.md](TRACK_GPU_TEXTURES.md) for the lap budget and
+CPU-copy release rule. Console visual equivalence is part of #54's hardware
+check; desktop pins exercise the unchanged default path.
 
 For a validated scene the gate cannot refuse: both scene validators already
 require every texture to be `usable()`, which is the same size rule, and under
@@ -298,7 +280,7 @@ run on hardware for this project.
 | A fence is signalled on a queue and waited on or polled | the fence numbers `retire()` takes | API: `dkQueueSignalFence` and `dkFenceWait`, deko3d.h lines 1335 and 1246 |
 | A `CpuCached` block needs `dkMemBlockFlushCpuCache` over each range the CPU wrote | not modelled: this layer places buffers in `CpuUncached` memory | API: deko3d.h line 1244 |
 | An image copied on the same queue it is sampled on needs a barrier and an image-cache invalidation before it is sampled | not modelled; the backend records it | API: `dkCmdBufBarrier` and `DkInvalidateFlags_Image`, deko3d.h lines 1266 and 346. Which barrier mode suffices is **unverified**: the sample avoids the question by waiting for the whole transfer queue |
-| RGBA8 is uploaded as `DkImageFormat_RGBA8_Unorm` | the one accepted format | API: deko3d.h line 418. Byte order on hardware, and whether any retail texture is sRGB, are **unverified** |
+| RGBA8 is uploaded as `DkImageFormat_RGBA8_Unorm` | the default prepared format | API: deko3d.h line 418. Byte order on hardware, and whether any retail texture is sRGB, are **unverified** |
 
 The constants `src/gpu_upload.cpp` needs are restated in
 `include/nfsu/gpu_upload.h` rather than included, so that the desktop build

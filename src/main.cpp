@@ -6585,6 +6585,7 @@ enum class StreamPathBudget { pool, switch_region, switch_arena, bytes };
 enum class StreamPathList { events, all, none };
 
 struct TrackStreamPathArgs {
+    bool gpu_textures = false;
     bool has_path_file = false;
     fs::path path_file;
     bool has_hand_path = false;
@@ -6632,6 +6633,9 @@ struct StreamPathMeasure {
     std::uint64_t placed = 0;
     std::uint64_t texture_bytes = 0;
     std::uint64_t resident_bytes = 0;
+    std::uint64_t cpu_upload_peak = 0;
+    std::uint64_t gpu_peak = 0;
+    std::uint64_t largest_section = 0;
     std::vector<nfsu::TrackWholeBudgetRow> rows;
     std::uint64_t over = 0;
 };
@@ -6707,6 +6711,7 @@ bool build_stream_path_scene(const nfsu::TrackStreamTable& table,
                              const std::vector<std::size_t>& records,
                              const nfsu::TrackStreamFiles& files,
                              StreamPathTextureFiles& texture_files,
+                             bool gpu_textures,
                              std::vector<std::uint8_t>& reported,
                              StreamPathScene& out,
                              StreamPathMeasure& measure,
@@ -6742,6 +6747,7 @@ bool build_stream_path_scene(const nfsu::TrackStreamTable& table,
     }
     nfsu::RenderTextureLimits texture_limits;
     texture_limits.max_total_bytes = kTrackWholeTextureBytes;
+    texture_limits.gpu_blocks = gpu_textures;
     if (!nfsu::decode_render_texture_sources(sources, texture_limits,
                                              out.textures, error)) {
         return false;
@@ -6772,8 +6778,8 @@ bool build_stream_path_scene(const nfsu::TrackStreamTable& table,
         return false;
     }
     nfsu::SceneMemoryRequirement gpu;
-    if (!nfsu::upload_table_requirement(upload, nfsu::linear_image_layout, gpu,
-                                        error)) {
+    if (!nfsu::upload_table_requirement(upload, gpu_textures ? nfsu::bounded_image_layout :
+                                      nfsu::linear_image_layout, gpu, error)) {
         return false;
     }
     nfsu::TrackBudgetCost prepared;
@@ -6786,6 +6792,45 @@ bool build_stream_path_scene(const nfsu::TrackStreamTable& table,
     measure.texture_bytes = prepared.prepare_texture_bytes;
     measure.resident_bytes = prepared.prepare_resident_bytes;
     measure.rows.clear();
+    if (gpu_textures) {
+        // Preparation temporarily owns both the decoded set and the scene's
+        // copy. The set is released immediately after preparation; retained
+        // blocks stay with their section until eviction. GPU staging has its
+        // own budget and is reclaimed only after the upload fence.
+        measure.cpu_upload_peak = prepared.prepare_resident_bytes + out.textures.decoded_bytes;
+        const auto aligned = [](std::uint64_t n) { return (n + 4095) & ~std::uint64_t{4095}; };
+        // Staging includes tight and padded copies simultaneously, plus the
+        // ledger's per-resource alignment. Reserve 64 MiB for bounded draw
+        // commands, uniforms, shaders, descriptors and presentation targets.
+        std::uint64_t staging = upload.resources.size() * 32;
+        for (const auto& r : upload.resources) {
+            if (r.kind != nfsu::UploadResourceKind::texture) continue;
+            const auto pitch = (r.texture.row_bytes + 31) & ~std::uint64_t{31};
+            staging += r.bytes;
+            if (pitch != r.texture.row_bytes) staging += pitch * r.texture.rows() + 31;
+        }
+        measure.gpu_peak = aligned(gpu.buffer_extent) + aligned(gpu.image_extent) +
+                           aligned(staging) + 64 * nfsu::kMiB;
+        std::vector<nfsu::TrackStreamSectionCost> section_costs;
+        if (!nfsu::track_stream_section_costs(out.load, out.scene, out.source_owner,
+                                             section_costs, error)) return false;
+        for (const auto& c : section_costs) {
+            measure.largest_section = std::max(measure.largest_section,
+                c.vertices * nfsu::kTrackVertexStride + c.triangles * nfsu::kFaceStride +
+                c.instances * sizeof(nfsu::PreparedTrackInstance) + c.retained_texture_bytes);
+        }
+        const auto row = [&](const char* name, std::uint64_t value, std::uint64_t ceiling) {
+            measure.rows.push_back({nfsu::TrackWholePlatform::switch_plan, name, value, ceiling, value <= ceiling});
+        };
+        row("streaming.retained", measure.resident_bytes, nfsu::kResidentRegionsPlaceholder * nfsu::kStreamingRegionBudgetPlaceholder);
+        row("streaming.prepare_peak", measure.cpu_upload_peak, nfsu::kResidentRegionsPlaceholder * nfsu::kStreamingRegionBudgetPlaceholder);
+        row("streaming.largest_section", measure.largest_section, nfsu::kStreamingRegionBudgetPlaceholder);
+        row("gpu.peak_bound", measure.gpu_peak, nfsu::kGpuBudgetPlaceholder);
+        measure.over = 0;
+        for (const auto& r : measure.rows) measure.over += r.within ? 0 : 1;
+        out.textures = nfsu::RenderTextureSet{};
+        return true;
+    }
     nfsu::track_whole_budget_rows(out.scene, out.textures.decoded_bytes,
                                   prepared.prepare_resident_bytes, gpu,
                                   measure.rows);
@@ -6820,6 +6865,10 @@ int run_track_stream_path(const fs::path& stream_path,
                           const fs::path& trackb_path,
                           std::uint32_t track,
                           const TrackStreamPathArgs& args) {
+    if (args.gpu_textures && args.has_frames) {
+        std::cerr << "error: --gpu-textures is upload-only; CPU frames require RGBA8\n";
+        return 1;
+    }
     std::vector<fs::path> inputs;
     inputs.push_back(stream_path);
     inputs.push_back(trackb_path);
@@ -6994,7 +7043,7 @@ int run_track_stream_path(const fs::path& stream_path,
         auto scene = std::make_unique<StreamPathScene>();
         StreamPathMeasure measure;
         if (!build_stream_path_scene(table, zones, track, candidate.records, files,
-                                     texture_files, reported, *scene, measure,
+                                     texture_files, args.gpu_textures, reported, *scene, measure,
                                      error)) {
             std::cerr << "error: " << error << '\n';
             return 2;
@@ -7026,6 +7075,7 @@ int run_track_stream_path(const fs::path& stream_path,
         std::vector<std::uint64_t> section_texture(scene->load.sections.size(), 0);
         nfsu::RenderTextureLimits texture_limits;
         texture_limits.max_total_bytes = kTrackWholeTextureBytes;
+        texture_limits.gpu_blocks = args.gpu_textures;
         for (std::size_t k = 0; k < section_sources.size(); ++k) {
             nfsu::RenderTextureSet alone;
             if (!nfsu::decode_render_texture_sources({section_sources[k]},
@@ -7162,7 +7212,7 @@ int run_track_stream_path(const fs::path& stream_path,
                 if (!resident.empty()) {
                     auto scene = std::make_unique<StreamPathScene>();
                     if (!build_stream_path_scene(table, zones, track, resident,
-                                                 files, texture_files, reported,
+                                                 files, texture_files, args.gpu_textures, reported,
                                                  *scene, measure, error)) {
                         std::cerr << "error: " << error << '\n';
                         return 2;
@@ -7186,6 +7236,12 @@ int run_track_stream_path(const fs::path& stream_path,
             }
         }
         const StreamPathMeasure& now = sets[set];
+        if (args.gpu_textures) {
+            std::cout << "gpu-budget step " << step.index << " cpu-streaming " << now.resident_bytes
+                      << " cpu-prepare-peak " << now.cpu_upload_peak << " gpu-peak-bound " << now.gpu_peak
+                      << " largest-section " << now.largest_section << " within " << (now.over == 0) << '\n';
+            if (now.over) reports_ok = false;
+        }
         if (now.resident_bytes > peak_bytes || step.index == 0) {
             peak_bytes = now.resident_bytes;
             peak_step = step.index;
@@ -7232,7 +7288,7 @@ int run_track_stream_path(const fs::path& stream_path,
             auto scene = std::make_unique<StreamPathScene>();
             StreamPathMeasure again;
             if (!build_stream_path_scene(table, zones, track, resident, files,
-                                         texture_files, reported, *scene, again,
+                                         texture_files, args.gpu_textures, reported, *scene, again,
                                          error)) {
                 std::cerr << "error: " << error << '\n';
                 return 2;
@@ -9341,7 +9397,7 @@ const Command kCommands[] = {
      "      [--budget <pool|switch-region|switch-arena|BYTES>]\n"
      "      [--pack <STREAM_NNNN.BUN>] [--texture <file>]...\n"
      "      [--list <events|all|none>] [--frame-every <N> --out <PREFIX>]\n"
-     "      [--width <N>] [--height <N>]\n"
+     "      [--width <N>] [--height <N>] [--gpu-textures]\n"
      "      (runs the section streamer of speed.exe along a path, 60 steps\n"
      "       a second, and measures every resident set it meets; hand-1003\n"
      "       is a HAND-GIVEN path, not the game's route. --out writes\n"
@@ -9363,7 +9419,7 @@ const Command kCommands[] = {
          static const char* const kFlags[] = {
              "--path",   "--hand-path", "--speed",       "--policy", "--cost",
              "--budget", "--pack",      "--texture",     "--list",
-             "--frame-every", "--out",  "--width",       "--height"};
+             "--frame-every", "--out",  "--width",       "--height", "--gpu-textures"};
          std::vector<std::string> seen;
          const auto given = [&seen](const char* flag) {
              return std::find(seen.begin(), seen.end(), flag) != seen.end();
@@ -9382,7 +9438,9 @@ const Command kCommands[] = {
              seen.push_back(flag);
              const bool has_value = i + 1 < argc;
              const std::string value = has_value ? argv[i + 1] : std::string();
-             if (flag == "--path") {
+             if (flag == "--gpu-textures") {
+                 args.gpu_textures = true;
+             } else if (flag == "--path") {
                  if (!has_value) {
                      std::cerr << "error: --path needs a path\n";
                      return 1;

@@ -28,7 +28,7 @@ struct TrackSceneLimits {
     std::uint64_t max_triangles = 1ULL << 22;
     // Triangles over all drawable ranges; ranges may overlap.
     std::uint64_t max_draw_triangles = 1ULL << 24;
-    // RGBA8 bytes of the textures copied into the prepared region.
+    // Payload bytes (RGBA8 or native DXT) of the textures copied into the prepared region.
     std::uint64_t max_texture_bytes = 128ULL * 1024ULL * 1024ULL;
 };
 
@@ -98,7 +98,7 @@ struct TrackDrawCost {
     // is not bounded by triangles.
     std::uint64_t drawn_triangles = 0;
     std::uint64_t largest_draw_triangles = 0;
-    // Textures retained and their RGBA8 bytes.
+    // Textures retained and their payload bytes (RGBA8 or native DXT).
     std::uint64_t textures = 0;
     std::uint64_t texture_bytes = 0;
     // Texture binds a backend issues if it walks the draws in this order

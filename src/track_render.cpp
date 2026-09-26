@@ -338,6 +338,12 @@ bool render_track_draw_list(
     }
     // Everything the loop below indexes is checked here, before the frame is
     // allocated: the scene's own invariants, then the list against the scene.
+    for (const auto& texture : scene.region.textures) {
+        if (texture.storage != RenderTextureStorage::rgba8) {
+            error = "CPU rendering requires RGBA8 textures; GPU blocks are upload-only";
+            return false;
+        }
+    }
     if (!validate_prepared_track_scene(scene, error)) {
         error = "invalid prepared track scene: " + error;
         return false;

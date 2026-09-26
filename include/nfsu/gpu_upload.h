@@ -58,27 +58,13 @@ constexpr std::uint64_t kMaxUploadResourceBytes = 0xFFFFF000ULL;
 // The format gate
 // ---------------------------------------------------------------------------
 
-// Every texel encoding a texture can arrive in. The list is not invented: it
-// is PixelFormat of include/nfsu/texture.h, one entry per stored payload,
-// plus rgba8, which is the one thing the decode path produces from any of
-// them.
-//
-//   * src/texture_decode.cpp builds every RenderTexture the prepared scenes
-//     copy, and it keeps a record only when decode_level turns its top level
-//     into RGBA8 of exactly width * height * 4 bytes.
-//   * decode_level (src/texture.cpp) does that for DXT1, DXT3 and A8R8G8B8,
-//     and refuses P8 because the level alone does not carry its palette.
-//   * The pack parser rejects every other format before a decode is tried.
-//   * bind_runtime_skin (src/runtime_skin.cpp) puts the generated body skin
-//     into the set as RGBA8 too, and refuses one of any other size.
-//
-// So rgba8 is the only format a prepared scene can hold, and the only one
-// the gate accepts.
+// RGBA8 is the desktop/default preparation path. GPU preparation may retain
+// the retail DXT1/DXT3 top level (BC1/BC2); no mip chain is uploaded.
 enum class TextureUploadFormat {
     // RenderTexture::rgba and RuntimeSkin::rgba: four bytes per texel in
     // R, G, B, A order, rows top to bottom, the top level only.
     rgba8,
-    // The stored payloads of the pack formats, none of which is uploadable.
+    // Native DXT blocks are uploadable; raw A8R8G8B8 and P8 are not.
     dxt1,
     dxt3,
     a8r8g8b8,
@@ -101,13 +87,16 @@ struct TextureUploadShape {
     std::uint64_t texel_bytes = 0;
     std::uint64_t row_bytes = 0;
     std::uint64_t bytes = 0;
+    std::uint64_t rows() const noexcept {
+        return format == TextureUploadFormat::dxt1 || format == TextureUploadFormat::dxt3 ?
+               (std::uint64_t{height} + 3) / 4 : height;
+    }
 };
 
-// The gate. Accepts rgba8 with both dimensions nonzero, with byte_count
-// equal to width * height * 4, and with that at most
-// kMaxUploadResourceBytes. Refuses everything else, leaving `shape` zeroed
-// and `error` naming the format and the rule it broke; for a pack format the
-// message says why the decode path does not produce it.
+// Accepts nonzero RGBA8, DXT1 or DXT3 with exactly the top-level byte count
+// and at most kMaxUploadResourceBytes. row_bytes is a row of texels for
+// RGBA8 or blocks for DXT. texel_bytes is correspondingly 4, 8 or 16.
+// Refusal leaves shape zeroed and error names the violated rule.
 bool check_texture_upload_format(
     TextureUploadFormat format,
     std::uint32_t width,
@@ -289,10 +278,18 @@ using ImageLayoutQuery = std::function<bool(const UploadResource& texture,
                                             std::uint64_t& alignment,
                                             std::string& error)>;
 
-// The stand-in a desktop build passes: the linear RGBA8 size and the staging
+// The lower-bound stand-in: the linear payload size and the staging
 // alignment. A block-linear layout is at least that big, so a budget
 // computed with it is a lower bound, never a measurement. It refuses a
 // resource that is not a texture.
+// Conservative bound for one-level, non-array 2D RGBA8/BC1/BC2 images.
+// Maxwell GOBs are 64 bytes by 8 rows; a tile is at most 16 GOBs high.
+// Round every image to a whole 64-byte by 128-row tile and align to 4096.
+// The Switch still queries its actual layout before allocating.
+bool bounded_image_layout(const UploadResource& texture,
+                          std::uint64_t& bytes, std::uint64_t& alignment,
+                          std::string& error);
+
 bool linear_image_layout(const UploadResource& texture,
                          std::uint64_t& bytes,
                          std::uint64_t& alignment,

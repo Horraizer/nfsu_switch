@@ -13,7 +13,10 @@ namespace nfsu {
 // Backend-neutral preparation of decoded textures for PreparedCarScene.
 // This layer understands parsed texture packs; render backends do not.
 struct RenderTextureLimits {
-    // Upper bound on the RGBA8 bytes of all retained top levels together.
+    // Keep DXT1/DXT3 top levels in their native GPU format. CPU rendering
+    // requires the default RGBA8 path. Other supported formats still decode.
+    bool gpu_blocks = false;
+    // Upper bound on the payload bytes of all retained top levels together.
     std::uint64_t max_total_bytes = 128ULL * 1024ULL * 1024ULL;
     // Test hook called before each retained top-level allocation.
     std::function<void(std::uint64_t)> before_allocate;

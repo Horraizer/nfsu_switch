@@ -653,7 +653,7 @@ void test_gate_accepts_rgba8() {
 // accepts it and the backend uploads B, G, R, A as R, G, B, A: red and blue
 // swapped on every such texture. Each pack format is offered with a byte
 // count that would be right for RGBA8, and each must be refused by name.
-void test_gate_refuses_every_pack_format() {
+void test_gate_refuses_invalid_native_payloads() {
     for (const nfsu::TextureUploadFormat format : kPackFormats) {
         const std::string name = nfsu::texture_upload_format_name(format);
         nfsu::TextureUploadShape shape;
@@ -661,7 +661,7 @@ void test_gate_refuses_every_pack_format() {
         std::string error;
         check(!nfsu::check_texture_upload_format(format, 4, 4, 64, shape, error),
               name + " is refused");
-        check_has(error, "texture format " + name + " is not uploadable", name);
+        check_has(error, name, name);
         check_eq(shape.bytes, 0, name + ": the refusal zeroes the shape");
         check_eq(shape.width, 0, name + ": the refusal zeroes the width");
     }
@@ -671,7 +671,7 @@ void test_gate_refuses_every_pack_format() {
     nfsu::check_texture_upload_format(nfsu::TextureUploadFormat::p8, 4, 4, 16, shape, error);
     check_has(error, "256-entry palette", "the P8 refusal names the missing palette");
     nfsu::check_texture_upload_format(nfsu::TextureUploadFormat::dxt1, 4, 4, 8, shape, error);
-    check_has(error, "upload the decoded RGBA8", "the DXT1 refusal says what to upload");
+    check_eq(shape.bytes, 8, "native DXT1 top level is accepted");
     nfsu::check_texture_upload_format(nfsu::TextureUploadFormat::unsupported, 4, 4, 64, shape,
                                       error);
     check_has(error, "pack parser rejects", "the unsupported refusal names the parser");
@@ -795,9 +795,11 @@ void test_gate_follows_decode_level() {
                                                     height, rgba.size(), shape, refusal),
                   name + ": the gate accepts what decode_level produced: " + refusal);
         }
-        check(!nfsu::check_texture_upload_format(format.upload, width, height, level.size(),
-                                                 shape, refusal),
-              name + ": the gate refuses the stored payload");
+        const bool native = format.upload == nfsu::TextureUploadFormat::dxt1 ||
+                            format.upload == nfsu::TextureUploadFormat::dxt3;
+        check(nfsu::check_texture_upload_format(format.upload, width, height, level.size(),
+                                                 shape, refusal) == native,
+              name + ": only DXT native payloads are uploadable");
     }
 }
 
@@ -1133,6 +1135,49 @@ nfsu::UploadTable table_of(const nfsu::PreparedTrackScene& scene) {
     const bool gpu_ok_19 = nfsu::build_track_upload_table(scene, table, error);
     check(gpu_ok_19, "track table: " + error);
     return table;
+}
+
+void test_native_track_section_lifetime() {
+    TrackFixture fixture = track_fixture();
+    auto& scene = fixture.scene;
+    scene.region.cost.texture_bytes = 0;
+    for (auto& texture : scene.region.textures) {
+        texture.storage = nfsu::RenderTextureStorage::dxt1;
+        texture.rgba.clear();
+        texture.blocks.assign(((texture.width + 3) / 4) * ((texture.height + 3) / 4) * 8, 0x5A);
+        scene.region.cost.texture_bytes += texture.blocks.size();
+    }
+    auto table = table_of(scene);
+    nfsu::SceneMemoryRequirement need;
+    std::string error;
+    check(nfsu::upload_table_requirement(table, nfsu::bounded_image_layout, need, error),
+          "native section bound: " + error);
+    Rig rig;
+    make_rig(rig, 4096, need.image_extent, 4096);
+    check(rig.ledger.create({&rig.buffers, &rig.images, &rig.staging},
+                            nfsu::bounded_image_layout, 256, error), "bounded native ledger");
+    std::vector<nfsu::UploadHandle> handles;
+    check(rig.ledger.upload_table(table, 10, handles, error), "native section upload: " + error);
+    check(rig.staging.stats().used_bytes > 0, "native blocks staged before fence");
+    rig.ledger.retire(9);
+    check(rig.staging.stats().used_bytes > 0, "native staging survives incomplete upload");
+    rig.ledger.retire(10);
+    check_eq(rig.staging.stats().used_bytes, 0, "native staging released at upload fence");
+    check(rig.ledger.release_all(handles, 20, error), "evict native section");
+    rig.ledger.retire(19);
+    check(rig.images.stats().used_bytes > 0, "native images survive last draw fence");
+    rig.ledger.retire(20);
+    check_eq(rig.images.stats().used_bytes, 0, "native section images released");
+    check_eq(rig.buffers.stats().used_bytes, 0, "native section geometry released");
+    Rig small;
+    make_rig(small, 4096, need.image_extent - 1, 4096);
+    check(small.ledger.create({&small.buffers, &small.images, &small.staging},
+                              nfsu::bounded_image_layout, 256, error), "small native ledger");
+    check(!small.ledger.upload_table(table, 1, handles, error) && !error.empty(),
+          "oversized native section returns a diagnostic");
+    check_eq(small.images.stats().used_bytes, 0, "refused native section rolls back images");
+    check_eq(small.buffers.stats().used_bytes, 0, "refused native section rolls back geometry");
+    check_eq(small.staging.stats().used_bytes, 0, "refused native section rolls back staging");
 }
 
 struct Placed {
@@ -2509,13 +2554,14 @@ struct TestCase {
 };
 
 const TestCase kTests[] = {
+    {"native_track_section_lifetime", test_native_track_section_lifetime},
     {"command_material_gates_and_empty_ranges", test_command_material_gates_and_empty_ranges},
     {"car_instances_and_uniform_layout", test_car_instances_and_uniform_layout},
     {"draw_commands_match_cpu", test_draw_commands_match_cpu},
     {"draw_commands_resources_and_refusals", test_draw_commands_resources_and_refusals},
     {"track_commands_match_cpu", test_track_commands_match_cpu},
     {"gate_accepts_rgba8", test_gate_accepts_rgba8},
-    {"gate_refuses_every_pack_format", test_gate_refuses_every_pack_format},
+    {"gate_refuses_every_pack_format", test_gate_refuses_invalid_native_payloads},
     {"gate_refuses_malformed_rgba8", test_gate_refuses_malformed_rgba8},
     {"gate_names_are_the_parser_names", test_gate_names_are_the_parser_names},
     {"gate_follows_decode_level", test_gate_follows_decode_level},
