@@ -7,6 +7,7 @@
 #include "nfsu/part_placement.h"
 #include "nfsu/race_events.h"
 #include "nfsu/race_route.h"
+#include "nfsu/race_timing.h"
 #include "nfsu/skin_inputs.h"
 #include "nfsu/stock_scene.h"
 #include "nfsu/texture.h"
@@ -5105,8 +5106,10 @@ int run_track_whole(const fs::path& stream_path,
 // The largest path file race-route reads, and the most positions in it.
 constexpr std::uint64_t kRacePathFileLimit = 64ULL * 1024ULL * 1024ULL;
 constexpr std::size_t kRacePathPositionLimit = 2000000;
-// One replay step: this project's choice, not a retail constant. It only
-// matters to the wrong-way test's speed gate.
+// One replay step: this project's choice, not a retail constant. It
+// matters to the wrong-way test's speed gate, and to race-timing, which
+// takes a replayed car's speed - and with it a crossing's backdate - as the
+// step's length over it.
 constexpr float kRaceStepSeconds = 1.0F / 60.0F;
 // The spacing of a built-in drive, 0.5 per step, which at 60 steps a second
 // is 30 per second: fast enough for the wrong-way speed gate of 10 mph.
@@ -5455,6 +5458,300 @@ int run_race_route(const fs::path& globalb_path, const fs::path& frontb_path,
               << " checkpoint " << progress.checkpoint << " highest-checkpoint "
               << progress.max_checkpoint << " next-boundary " << progress.next_boundary
               << " wrong-way " << (progress.wrong_way ? "yes" : "no") << '\n';
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// race-timing: the race state machine of issue #62 over one career event's
+// route - the countdown, the race clock, split, lap and total times, the
+// finish and the result - replaying a path file or a built-in drive from
+// the countdown to the finish. docs/RACE_TIMING.md.
+// ---------------------------------------------------------------------------
+
+std::string race_ticks_text(std::int32_t ticks) {
+    return nfsu::format_race_ticks(ticks) + " (" + std::to_string(ticks) + ")";
+}
+
+std::string race_countdown_text(int value) {
+    if (value == 4) {
+        return "go";
+    }
+    if (value == 0) {
+        return "off";
+    }
+    return std::to_string(value);
+}
+
+void print_race_timing_event(const nfsu::RaceRoute& route, const nfsu::RaceTimingState& state,
+                             const nfsu::RaceTimingEvent& event) {
+    std::cout << "step " << event.step << " tick " << event.now << ' ';
+    const auto boundary_name = [&route](int index) {
+        return route.boundaries[static_cast<std::size_t>(index)].name;
+    };
+    switch (event.kind) {
+    case nfsu::RaceTimingEventKind::stage:
+        std::cout << "stage "
+                  << nfsu::race_stage_name(static_cast<nfsu::RaceStage>(event.value));
+        break;
+    case nfsu::RaceTimingEventKind::countdown:
+        std::cout << "countdown " << race_countdown_text(event.value);
+        break;
+    case nfsu::RaceTimingEventKind::go:
+        std::cout << "go race-start " << event.ticks;
+        break;
+    case nfsu::RaceTimingEventKind::split:
+        std::cout << "split boundary " << event.boundary << ' ' << boundary_name(event.boundary)
+                  << " lap " << event.lap << " time " << race_ticks_text(event.ticks)
+                  << " crossing " << event.crossing << " backdate " << event.value;
+        break;
+    case nfsu::RaceTimingEventKind::lap: {
+        std::cout << "lap " << event.lap << " boundary " << event.boundary << ' '
+                  << boundary_name(event.boundary) << " time " << race_ticks_text(event.ticks);
+        if (event.lap >= 0 && event.lap < nfsu::kRaceLapSlots && event.racer >= 0) {
+            const nfsu::RaceRacerTiming& racer =
+                state.racers[static_cast<std::size_t>(event.racer)];
+            std::cout << " total "
+                      << race_ticks_text(racer.lap_total_ticks[static_cast<std::size_t>(event.lap)]);
+        }
+        std::cout << " crossing " << event.crossing << " backdate " << event.value;
+        break;
+    }
+    case nfsu::RaceTimingEventKind::untimed:
+        std::cout << "untimed boundary " << event.boundary << ' ' << boundary_name(event.boundary)
+                  << " lap " << event.lap
+                  << (event.value == 1 ? " (no new checkpoint)" : " (no lap start)");
+        break;
+    case nfsu::RaceTimingEventKind::finished:
+        std::cout << "finished position " << event.value << " time "
+                  << race_ticks_text(event.ticks);
+        break;
+    case nfsu::RaceTimingEventKind::wrong_way_on:
+        std::cout << "wrong-way-on";
+        break;
+    case nfsu::RaceTimingEventKind::wrong_way_off:
+        std::cout << "wrong-way-off after " << race_ticks_text(event.ticks);
+        break;
+    case nfsu::RaceTimingEventKind::reset_zone:
+        std::cout << "reset-zone zone " << event.value << " (the clock runs on)";
+        break;
+    case nfsu::RaceTimingEventKind::off_path:
+        std::cout << "off-path node " << event.value << " (the clock runs on)";
+        break;
+    case nfsu::RaceTimingEventKind::restarted:
+    case nfsu::RaceTimingEventKind::quit:
+    case nfsu::RaceTimingEventKind::clock_limit:
+        std::cout << nfsu::race_timing_event_kind_name(event.kind);
+        break;
+    }
+    std::cout << '\n';
+}
+
+// Lists the route's boundaries and the clock's rules, then replays a path
+// file or a built-in drive through nfsu::step_race_progress and the race
+// state machine, 60 steps a second from the start of the countdown: the car
+// holds the replay's first position until the step after go, then takes one
+// position a step. Prints every stage and countdown change, every timed and
+// untimed crossing with its time, every wrong-way change and reset, the
+// finish, each lap's time and the result. Read-only; writes nothing.
+int run_race_timing(const fs::path& globalb_path, const fs::path& frontb_path,
+                    const fs::path& trackb_path, const RaceRouteArgs& args) {
+    std::vector<unsigned char> globalb_image;
+    const nfsu::TrackInfoTable tracks =
+        nfsu::load_track_info_table(globalb_path, globalb_image);
+    std::cout << "globalb: " << globalb_path.filename().string() << '\n';
+    print_race_table_issues("track table", tracks.issues);
+    std::vector<unsigned char> frontb_image;
+    const nfsu::RaceEventTable events =
+        nfsu::load_race_event_table(frontb_path, frontb_image);
+    std::cout << "frontb: " << frontb_path.filename().string() << '\n';
+    print_race_table_issues("event table", events.issues);
+    std::vector<unsigned char> trackb_image;
+    const nfsu::RaceRouteTrack track = nfsu::load_race_route_track(trackb_path, trackb_image);
+    std::cout << "trackb: " << trackb_path.filename().string() << '\n';
+    print_race_route_issues(track.issues);
+    if (!tracks.ok() || !events.ok() || !track.ok()) {
+        return 3;
+    }
+    const nfsu::RaceEventRecord* event = nfsu::find_race_event(events, args.event);
+    if (event == nullptr) {
+        std::cerr << "error: the event table holds no event " << args.event << '\n';
+        return 3;
+    }
+    const nfsu::RaceSlot& race = event->races.front();
+    const nfsu::TrackInfoRecord* info = nfsu::find_track_info(tracks, race.track);
+    std::cout << "event " << event->number << " type " << nfsu::race_type_name(event->type)
+              << " (" << event->type << ") track " << race.track << " laps "
+              << static_cast<int>(race.laps) << " direction "
+              << nfsu::race_direction_name(race.direction) << '\n';
+    if (info == nullptr) {
+        std::cerr << "error: event " << event->number << " names track " << race.track
+                  << ", which is not in the track table\n";
+        return 3;
+    }
+    const std::string bundle = nfsu::track_bundle_file_name(info->number);
+    if (lower_ascii(trackb_path.filename().string()) != lower_ascii(bundle)) {
+        std::cerr << "error: event " << event->number << " loads " << bundle << ", not "
+                  << trackb_path.filename().string() << '\n';
+        return 3;
+    }
+    nfsu::RaceRoute route;
+    std::string error;
+    if (!nfsu::build_race_route(track, race.laps, race.direction, info->lap_skip, route,
+                                error)) {
+        std::cerr << "error: " << error << '\n';
+        return 3;
+    }
+    std::cout << "route: laps " << route.laps << " direction "
+              << (route.reverse ? "reverse" : "forward") << " boundaries "
+              << route.boundaries.size() << " start " << route.start << " finish "
+              << route.finish << " path-length " << format_float(route.spline.path_length)
+              << '\n';
+    for (std::size_t b = 0; b < route.boundaries.size(); ++b) {
+        std::cout << "boundary " << b << ' ' << route.boundaries[b].name << " percent "
+                  << format_float(route.boundaries[b].percent) << '\n';
+    }
+
+    nfsu::RaceTimingConfig config;
+    if (!nfsu::make_race_timing_config(60, 1, config, error)) {
+        std::cerr << "error: " << error << '\n';
+        return 3;
+    }
+    nfsu::RaceTimingState state;
+    if (!nfsu::start_race_timing(route, config, state, error)) {
+        std::cerr << "error: " << error << '\n';
+        return 3;
+    }
+    std::cout << "clock: " << nfsu::kRaceTicksPerSecond
+              << " ticks a second (0x006CC9FC), the world timer built at "
+              << config.start_ticks << " (0x0041F7DA), " << config.steps_per_second
+              << " steps a second of " << config.ticks_per_step
+              << " ticks (0x00585CD5..0x00585E90), times rounded to 1/100 s (0x00586690)\n";
+    std::cout << "countdown: three steps of " << format_float(config.countdown_step_seconds)
+              << " s (0x006B79E0), go at " << format_float(config.countdown_step_seconds * 3.0F)
+              << " s (0x00434D9F)\n";
+
+    std::vector<float> points;
+    std::string source;
+    if (args.path.has_value()) {
+        if (!read_race_path_file(*args.path, points, error)) {
+            std::cerr << "error: " << error << '\n';
+            return 3;
+        }
+        source = "path " + args.path->filename().string();
+    } else {
+        nfsu::RaceDrive drive;
+        if (!nfsu::make_race_drive(route, track, args.drive == "backward", args.skip_from,
+                                   args.skip_to, kRaceDriveSpacing, drive, error)) {
+            std::cerr << "error: " << error << '\n';
+            return 3;
+        }
+        points = std::move(drive.points);
+        source = "drive " + args.drive + " from marker " + std::to_string(drive.grid_marker) +
+                 " through " + std::to_string(drive.nodes.size()) + " nodes";
+        if (args.skip_from >= 0) {
+            source += ", jumping from node " + std::to_string(args.skip_from) + " to node " +
+                      std::to_string(args.skip_to) + " past " + std::to_string(drive.skipped);
+        }
+    }
+    const std::size_t positions = points.size() / 2;
+    std::cout << "replay: " << source << ", " << positions
+              << " positions; the car holds position 0 until the step after go\n";
+
+    std::vector<nfsu::RaceTimingEvent> happened;
+    nfsu::set_race_stage(state, nfsu::RaceStage::countdown, happened);
+    nfsu::RaceProgress progress;
+    nfsu::start_race_progress(route, track, points.data(), progress);
+    std::size_t next = 1;
+    float at[2] = {points[0], points[1]};
+    std::vector<nfsu::RaceProgressEvent> moved;
+    bool ended = false;
+    while (state.outcome == nfsu::RaceOutcome::running) {
+        for (const nfsu::RaceTimingEvent& line : happened) {
+            print_race_timing_event(route, state, line);
+        }
+        happened.clear();
+        float speed = 0.0F;
+        if (!nfsu::race_car_held(state)) {
+            if (next >= positions) {
+                ended = true;
+                break;
+            }
+            const float dx = points[next * 2] - at[0];
+            const float dy = points[next * 2 + 1] - at[1];
+            speed = std::sqrt(dy * dy + dx * dx) / kRaceStepSeconds;
+            at[0] = points[next * 2];
+            at[1] = points[next * 2 + 1];
+            ++next;
+        }
+        moved.clear();
+        if (!progress.finished) {
+            nfsu::step_race_progress(route, track, progress, at, kRaceStepSeconds, moved);
+        }
+        for (const nfsu::RaceProgressEvent& step_event : moved) {
+            if (step_event.kind == nfsu::RaceEventKind::crossed_backward ||
+                step_event.kind == nfsu::RaceEventKind::missed_forward ||
+                step_event.kind == nfsu::RaceEventKind::missed_backward) {
+                std::cout << "step " << state.step << " tick " << state.now_ticks << " route "
+                          << nfsu::race_event_kind_name(step_event.kind) << " boundary "
+                          << step_event.index << ' '
+                          << route.boundaries[static_cast<std::size_t>(step_event.index)].name
+                          << " lap " << step_event.lap << " percent "
+                          << format_float(step_event.percent) << '\n';
+            }
+        }
+        nfsu::RaceTimingInput input;
+        input.events = moved.data();
+        input.event_count = moved.size();
+        input.speed = speed;
+        if (!nfsu::step_race_timing(route, config, state, &input, happened, error)) {
+            std::cerr << "error: " << error << '\n';
+            return 3;
+        }
+    }
+    for (const nfsu::RaceTimingEvent& line : happened) {
+        print_race_timing_event(route, state, line);
+    }
+    if (ended) {
+        std::cout << "replay: the positions ran out after step "
+                  << (state.step == 0 ? 0 : state.step - 1) << '\n';
+    }
+
+    const nfsu::RaceRacerTiming& racer = state.racers.front();
+    for (int lap = 1; lap < nfsu::kRaceLapSlots && lap <= racer.highest_lap; ++lap) {
+        const auto slot = static_cast<std::size_t>(lap);
+        std::cout << "lap-time " << lap << ' ' << race_ticks_text(racer.lap_ticks[slot])
+                  << " total " << race_ticks_text(racer.lap_total_ticks[slot]) << '\n';
+    }
+    for (const nfsu::RaceResultRow& row : nfsu::race_timing_results(route, state)) {
+        std::cout << "result: racer " << row.racer << ' ' << nfsu::racer_status_name(row.status)
+                  << " position " << row.position << " laps " << row.laps << " of "
+                  << route.laps << " time "
+                  << (row.total_valid ? race_ticks_text(row.total_ticks) : std::string("none"))
+                  << " best-lap " << race_ticks_text(row.best_lap_ticks) << '\n';
+    }
+    std::cout << "race: outcome " << nfsu::race_outcome_name(state.outcome) << " stage "
+              << nfsu::race_stage_name(state.stage) << " steps " << state.step << " go-step "
+              << state.go_step << " race-start " << state.race_start_ticks << " race-time "
+              << race_ticks_text(state.race_ticks) << " fastest-lap "
+              << race_ticks_text(state.fastest_lap_ticks) << " wrong-way "
+              << (racer.wrong_way ? "yes" : "no") << " wrong-way-steps " << racer.wrong_way_steps
+              << " resets " << racer.resets << '\n';
+    nfsu::RaceHud hud;
+    nfsu::race_timing_hud(route, config, state, 0, hud);
+    // Where retail's HUD shows no time: a text for the lap timer without a
+    // lap start (0x004A1A58), "--:--:--" for a best lap of 0 (0x004A1ABD).
+    std::cout << "hud: countdown " << race_countdown_text(hud.countdown) << " race-time "
+              << (hud.race_time_valid ? nfsu::format_race_ticks(hud.race_ticks)
+                                      : std::string("none"))
+              << " lap-time "
+              << (hud.lap_time_valid ? nfsu::format_race_ticks(hud.lap_ticks)
+                                     : std::string("text"))
+              << (hud.lap_time_held ? " held" : "") << " best-lap "
+              << (hud.best_lap_valid ? nfsu::format_race_ticks(hud.best_lap_ticks)
+                                     : std::string("--:--:--"))
+              << " lap " << hud.lap << " of " << hud.laps << " wrong-way "
+              << (hud.wrong_way ? "yes" : "no") << " finished " << (hud.finished ? "yes" : "no")
+              << " position " << hud.position << '\n';
     return 0;
 }
 
@@ -8150,6 +8447,66 @@ const Command kCommands[] = {
          }
          return run_race_route(nfsu::argument_path(argv[2]), nfsu::argument_path(argv[3]),
                                nfsu::argument_path(argv[4]), args);
+     }},
+    {"race-timing", " <GLOBALB.BUN> <FrontB.lzc> <TRACKB####.lzc> <event>",
+     "      (--path <FILE> | --drive <forward|backward> [--skip <node> <node>])\n"
+     "      (the race state machine over the event's first race, 60 steps a\n"
+     "       second: the countdown, the race clock, split, lap and total times,\n"
+     "       the finish and the result; the replay holds its first position\n"
+     "       until the step after go. docs/RACE_TIMING.md)\n",
+     [](int argc, char** argv) {
+         if (argc < 6) {
+             print_usage();
+             return 1;
+         }
+         RaceRouteArgs args;
+         std::uint64_t event = 0;
+         if (!parse_u64(argv[5], event) || event > 0xFFFFFFFFULL) {
+             std::cerr << "error: the event must be a number\n";
+             return 1;
+         }
+         args.event = static_cast<std::uint32_t>(event);
+         for (int i = 6; i < argc; ++i) {
+             const std::string option = argv[i];
+             if (option == "--path" && i + 1 < argc && !args.path.has_value()) {
+                 args.path = nfsu::argument_path(argv[++i]);
+             } else if (option == "--drive" && i + 1 < argc && args.drive.empty()) {
+                 args.drive = argv[++i];
+                 if (args.drive != "forward" && args.drive != "backward") {
+                     std::cerr << "error: --drive is forward or backward\n";
+                     return 1;
+                 }
+             } else if (option == "--skip" && i + 2 < argc && args.skip_from < 0) {
+                 std::uint64_t from = 0;
+                 std::uint64_t to = 0;
+                 if (!parse_u64(argv[i + 1], from) || !parse_u64(argv[i + 2], to) ||
+                     from > 32767 || to > 32767) {
+                     std::cerr << "error: --skip takes two node numbers\n";
+                     return 1;
+                 }
+                 args.skip_from = static_cast<int>(from);
+                 args.skip_to = static_cast<int>(to);
+                 i += 2;
+             } else {
+                 std::cerr << "error: unexpected or repeated argument '" << option << "'\n";
+                 return 1;
+             }
+         }
+         if (args.path.has_value() && !args.drive.empty()) {
+             std::cerr << "error: --path and --drive are two replays; give one\n";
+             return 1;
+         }
+         if (!args.path.has_value() && args.drive.empty()) {
+             std::cerr << "error: race-timing replays a path file or a drive; give --path "
+                          "or --drive\n";
+             return 1;
+         }
+         if (args.skip_from >= 0 && args.drive.empty()) {
+             std::cerr << "error: --skip needs --drive\n";
+             return 1;
+         }
+         return run_race_timing(nfsu::argument_path(argv[2]), nfsu::argument_path(argv[3]),
+                                nfsu::argument_path(argv[4]), args);
      }},
     {"track-stream-path",
      " <STREAM.BUN> <TRACKB####.lzc> <track-number>",
