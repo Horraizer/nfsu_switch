@@ -551,6 +551,59 @@ void test_walls() {
     }
 }
 
+// The friction impulse against a wall, from a car in the air - no tyre
+// force - 20 over the road, its side 0.01 into the north wall, closing at
+// 0.05 m/s and sliding along it at 0.75: mu j, scaled by the slide below
+// 1 m/s (0x0046C0E4..0x0046C0FB, [0x007000A8]), so the friction impulse is
+// mu times the slide times the normal one. mu is 0.1 for a car whose up
+// axis's vertical part is above 0.7 ([0x006CCA04]) and 0.3 otherwise
+// (0x0046C00C..0x0046C0A3). Returns that ratio, and the step's telemetry.
+double wall_friction_ratio(double roll_degrees, nfsu::VehicleTrackTelemetry& t) {
+    const nfsu::VehicleTrackCourse course = proving_ground();
+    nfsu::VehicleTrackSession session(stock_model(), course);
+    check(session.start(course.start), "the car starts");
+    nfsu::VehicleState s = session.state();
+    const double half = roll_degrees * 3.14159265358979323846 / 360.0;
+    s.orientation = nfsu::VehicleQuat{std::cos(half), std::sin(half), 0.0, 0.0};
+    s.angular_velocity = {0.0, 0.0, 0.0};
+    s.velocity = {0.75, 0.05, 0.0};
+    // How far the hull reaches along +y from the centre of mass.
+    nfsu::VehicleTrackTelemetry frame;
+    frame.orientation = s.orientation;
+    double reach = -1e9;
+    for (const nfsu::VehicleVec3& p : hull_in_world(frame)) {
+        reach = std::max(reach, p.y);
+    }
+    s.position = {48.0, 96.01 - reach - 0.05 / 120.0, 20.0};
+    check(session.start(s), "the car starts in the air by the north wall");
+    check(session.step(nfsu::VehicleInput{}, t), "the step runs");
+    check(t.contacts == 1 && t.impulses == 1 &&
+              t.deepest_surface == nfsu::VehicleTrackSurface::wall,
+          "the car's side meets the north wall once, contacts " + std::to_string(t.contacts));
+    const double normal = std::fabs(t.impulse.y);
+    const double along = std::sqrt(t.impulse.x * t.impulse.x + t.impulse.z * t.impulse.z);
+    return normal > 0.0 ? along / normal : 0.0;
+}
+
+void test_wall_friction() {
+    nfsu::VehicleTrackTelemetry t;
+    // Upright, sliding at 0.754 (0.75 along x, 0.082 down): 0.1 x 0.754.
+    const double upright = wall_friction_ratio(0.0, t);
+    check(upright > 0.07 && upright < 0.08 && t.impulse.x < 0.0,
+          "upright, the friction is 0.1 of the normal impulse scaled by a slide under 1 m/s, "
+          "got " + text(upright));
+    // Rolled 30 degrees, the up axis's vertical part 0.866: still upright.
+    const double rolled = wall_friction_ratio(30.0, t);
+    check(rolled > 0.07 && rolled < 0.08,
+          "rolled 30 degrees, up.z 0.866 is above 0.7 and the car still slides with 0.1, got " +
+              text(rolled));
+    // Rolled 50 degrees, 0.643: 0.3.
+    const double tilted = wall_friction_ratio(50.0, t);
+    check(tilted > 0.21 && tilted < 0.24,
+          "rolled 50 degrees, up.z 0.643 is below 0.7 and the car slides with 0.3, got " +
+              text(tilted));
+}
+
 // A point just inside a wall on a car already leaving it: the separation
 // moves it out and no impulse is given (0x0046BD89..0x0046BD98), where the
 // smallest-impulse rule would otherwise push it away at 0.3 m/s.
@@ -734,6 +787,59 @@ void test_bounds_side_probe() {
           "one unit along +x the check finds the road, and nothing is reset");
 }
 
+// Road one unit along -x only: the check looks along +x alone
+// (0x00426B32..0x00426B3A adds [0x006CC7BC] to x), so a car over a hole that
+// runs 2 m east of it and ends 0.5 m west of it is out of bounds.
+void test_bounds_side_probe_east_only() {
+    nfsu::VehicleTrackLayout layout;
+    layout.name = "hole";
+    const float spans[4][4] = {{0.0F, 64.0F, 0.0F, 31.5F},
+                               {0.0F, 64.0F, 32.5F, 64.0F},
+                               {0.0F, 31.5F, 31.5F, 32.5F},
+                               {34.0F, 64.0F, 31.5F, 32.5F}};
+    for (const auto& s : spans) {
+        nfsu::VehicleTrackQuad q;
+        const float c[4][3] = {{s[0], s[2], 10.0F}, {s[1], s[2], 10.0F},
+                               {s[1], s[3], 10.0F}, {s[0], s[3], 10.0F}};
+        std::memcpy(q.corner, c, sizeof(c));
+        layout.quads.push_back(q);
+    }
+    layout.grid[0] = 8.0F;
+    layout.grid[1] = 8.0F;
+    layout.grid[2] = 10.0F;
+    nfsu::VehicleTrackCourse course;
+    std::string error;
+    const bool built = nfsu::build_vehicle_track_course(layout, course, error);
+    check(built, "the course with a hole builds: " + error);
+    nfsu::VehicleTrackSession session(stock_model(), course);
+    nfsu::VehiclePose pose;
+    pose.ground = {32.0, 32.0, 10.0};
+    pose.heading = nfsu::vehicle_track_heading(0x4000);
+    check(session.start(pose), "the car starts over the hole");
+    nfsu::VehicleTrackTelemetry t;
+    nfsu::VehicleTrackBoundsCheck checked = nfsu::VehicleTrackBoundsCheck::not_run;
+    nfsu::VehicleTrackReset asked = nfsu::VehicleTrackReset::none;
+    for (int i = 0; i < 60; ++i) {
+        check(session.step(nfsu::VehicleInput{}, t), "a step over the hole runs");
+        if (t.bounds != nfsu::VehicleTrackBoundsCheck::not_run) {
+            checked = t.bounds;
+            asked = t.pending;
+        }
+    }
+    const nfsu::TrackVehicleGround ground(course.world);
+    const auto surface = [&](double x) {
+        return ground.probe({x, t.position.y, 12.0}, {0.0, 0.0, -1.0}, 4.0).surface;
+    };
+    check(surface(t.position.x) == nfsu::VehicleTrackSurface::clear &&
+              surface(t.position.x + 1.0) == nfsu::VehicleTrackSurface::clear &&
+              surface(t.position.x - 1.0) == nfsu::VehicleTrackSurface::road,
+          "nothing lies under the car nor one unit east, and road lies one unit west, at " +
+              text(t.position.x) + " " + text(t.position.y));
+    check(checked == nfsu::VehicleTrackBoundsCheck::none &&
+              asked == nfsu::VehicleTrackReset::out_of_bounds,
+          "the check does not look west: the car is out of bounds");
+}
+
 void test_zones_and_off_path() {
     const nfsu::VehicleTrackCourse course = proving_ground();
     // RESET: asked for on the tick the zone is entered, performed on the
@@ -785,7 +891,7 @@ void test_zones_and_off_path() {
 }
 
 // A small course: a road slab and, when asked, a deck over part of it.
-nfsu::VehicleTrackCourse deck_course(float deck, bool with_route) {
+nfsu::VehicleTrackCourse deck_course(float deck, bool with_route, float half = 8.0F) {
     nfsu::VehicleTrackLayout layout;
     layout.name = "deck";
     for (float x = 0.0F; x < 64.0F; x += 32.0F) {
@@ -799,8 +905,9 @@ nfsu::VehicleTrackCourse deck_course(float deck, bool with_route) {
     }
     if (deck > 0.0F) {
         nfsu::VehicleTrackQuad q;
-        const float c[4][3] = {{24.0F, 24.0F, deck}, {40.0F, 24.0F, deck},
-                               {40.0F, 40.0F, deck}, {24.0F, 40.0F, deck}};
+        const float lo = 32.0F - half;
+        const float hi = 32.0F + half;
+        const float c[4][3] = {{lo, lo, deck}, {hi, lo, deck}, {hi, hi, deck}, {lo, hi, deck}};
         std::memcpy(q.corner, c, sizeof(c));
         layout.quads.push_back(q);
     }
@@ -857,6 +964,43 @@ void test_sunk() {
 
 // The reset skips a node with no ground under it (0x00431701..0x00431743):
 // a course with a hole where the nearest nodes are.
+// The margin: a surface more than 0.25 over the position ([0x006CC90C]).
+// A deck a metre square over the centre of mass only, clear of the wheels,
+// with the body's collision off so that nothing touches it: 0.2 over the
+// centre of mass the car stays, 0.3 over it it is reset. The heights are on
+// the collision's 1/256 grid.
+void test_sunk_margin() {
+    for (float deck : {10.703125F, 10.80078125F}) {
+        const nfsu::VehicleTrackCourse course = deck_course(deck, true, 0.5F);
+        nfsu::VehicleTrackApproximations approx;
+        approx.body_contact = false;
+        nfsu::VehicleTrackSession session(stock_model(), course, approx);
+        nfsu::VehiclePose pose;
+        pose.ground = {32.0, 32.0, 10.0};
+        check(session.start(pose), "the car starts under the small deck");
+        nfsu::VehicleTrackTelemetry first;
+        nfsu::VehicleTrackTelemetry second;
+        check(session.step(nfsu::VehicleInput{}, first) &&
+                  session.step(nfsu::VehicleInput{}, second),
+              "two steps under the small deck run");
+        const double over = static_cast<double>(deck) - first.position.z;
+        check(first.model.wheels[0].contact && first.model.wheels[1].contact &&
+                  first.model.wheels[2].contact && first.model.wheels[3].contact &&
+                  std::fabs(first.position.x - 32.0) < 0.4 &&
+                  std::fabs(first.position.y - 32.0) < 0.4,
+              "all four wheels are down and the centre of mass is under the deck");
+        if (deck < 10.75F) {
+            check(over > 0.18 && over < 0.23 && second.tick &&
+                      second.reset == nfsu::VehicleTrackReset::none,
+                  "a deck 0.2 over the centre of mass is within the margin, got " + text(over));
+        } else {
+            check(over > 0.28 && over < 0.33 && second.tick &&
+                      second.reset == nfsu::VehicleTrackReset::sunk,
+                  "a deck 0.3 over the centre of mass resets the car, got " + text(over));
+        }
+    }
+}
+
 // The same deck over a car in the air, a metre over the road with no wheel
 // down: not sunk (0x0042A4DB needs the car's +0x3CC to be 4).
 void test_sunk_needs_wheels() {
@@ -961,10 +1105,15 @@ void test_manual_and_approximations() {
         check(t.position.x == 32.0 && t.position.y == 40.0,
               "onto the nearest node with ground, (32, 40)");
     }
-    // Upside down: off by default; on, a car on its roof is reset.
+    // Upside down: off by default; on, as the first lap runs, a car on its
+    // roof is reset.
+    const nfsu::VehicleTrackApproximations lap = nfsu::vehicle_track_first_lap_approximations();
+    check(lap.body_contact && lap.upside_down_steps == 120 && lap.stuck_steps == 0,
+          "the first lap runs with the upside-down reset on after a second, nothing else "
+          "changed");
     for (int on = 0; on < 2; ++on) {
-        nfsu::VehicleTrackApproximations approx;
-        approx.upside_down_steps = on == 1 ? 120 : 0;
+        const nfsu::VehicleTrackApproximations approx =
+            on == 1 ? lap : nfsu::VehicleTrackApproximations{};
         nfsu::VehicleTrackSession session(stock_model(), course, approx);
         check(session.start(course.start), "the car starts");
         nfsu::VehicleState flipped = session.state();
@@ -1189,13 +1338,16 @@ int main() {
     test_slope();
     test_walls();
     test_separating_contact();
+    test_wall_friction();
     test_drop();
     test_impulse_clamps();
     test_out_of_bounds();
     test_bounds_side_probe();
+    test_bounds_side_probe_east_only();
     test_zones_and_off_path();
     test_sunk();
     test_sunk_needs_wheels();
+    test_sunk_margin();
     test_reset_skips_holes();
     test_manual_and_approximations();
     test_refusals();

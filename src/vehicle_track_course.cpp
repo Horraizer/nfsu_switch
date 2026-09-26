@@ -232,25 +232,25 @@ std::vector<VehicleTrackScenario> proving_ground_scenarios() {
         scenario("wall", "full throttle from (32, 80) at 45 degrees into the north wall at "
                          "pz 96, then along it",
                  0.0, 32.0, 0.0, kTurn45, {segment(480, 1.0, 0.0, 0.0)},
-                 "020DF7D7F17417B8B910DF5FEFD4C7348D1BAAD2AA7F43E4FD79CA424A57FCCA"),
+                 "1B4E823836D8A5C89A4F83D469A93716C8215CCF6105FA5B1EB73C52A590183F"),
         scenario("wall-glance", "full throttle from (32, 88) at 15 degrees into the north "
                                 "wall",
                  0.0, 40.0, 0.0, kTurn15, {segment(600, 1.0, 0.0, 0.0)},
-                 "488358807B29C82084128D3E4D313CD7E3B37A22331054FBFC7F2650FA05C801"),
+                 "A8CBD1B047CDB1AB1DEE241E6AE0F08C8C64452A25020A2C5D6970D6EF9FA23A"),
         scenario("wall-fast", "from (32, 88) at 35 m/s, 15 degrees into the north wall, "
                               "full throttle: an upright car above 30 m/s",
                  0.0, 40.0, 0.0, kTurn15, {segment(240, 1.0, 0.0, 0.0)},
-                 "81C2B19E3A5F48226800BB1E799057D5A82F1A0B55A3EDCAADF3048EA135AE63", 35.0),
+                 "5290BE387D92655B91ABEB16311F4ACEFFBEE5377795FD3F97EA70451DAD6517", 35.0),
         scenario("wall-square", "full throttle from (48, 80) straight at the north wall",
                  16.0, 32.0, 0.0, kTurn90, {segment(480, 1.0, 0.0, 0.0)},
-                 "B52AE87C8D3B95B39F85DD8E4C66E4F706330E4B0BF55D2AFA7F294BE8BB1B2B"),
+                 "EE7FCBFC75A22E6FD93E94A2333E5102CC9C9FEA059F00BE0A0333FED3938B5B"),
         scenario("wall-oblique", "full throttle from (128, 48) along -y into the oblique wall "
                                  "from (112, 8) to (160, 36)",
                  96.0, 0.0, 0.0, -kTurn90, {segment(480, 1.0, 0.0, 0.0)},
-                 "26357029FBD71692A9C28A0B59BB7E0A3205A208C33235D517AC71C8211B34D0"),
+                 "0A7ABFBAF1E1CCF928FA4A4AF4CF47D1FAFBD494944BAEEB9403999ED5683407"),
         scenario("drop", "dropped from five metres above the start, no input", 0.0, 0.0, 5.0,
                  0, {segment(360, 0.0, 0.0, 0.0)},
-                 "5FBA104986E9C1F0B15E7DA2DBFE8E522EE35F28023FCB51FDC0F70B4909909A"),
+                 "C23FF8D9C84D990E56F36673D1494AA28DAA56222667050FD1B24E0F798DCE72"),
         scenario("leave", "full throttle from (176, 20) along -y off the open edge at pz 0, "
                           "over no cell: out of bounds, then reset",
                  144.0, -28.0, 0.0, -kTurn90, {segment(600, 1.0, 0.0, 0.0)},
@@ -283,14 +283,14 @@ std::vector<VehicleTrackScenario> circuit_scenarios() {
         scenario("wall", "full throttle from the grid turned 60 degrees left, into the wall "
                          "10.6 m to the left, then along it",
                  0.0, 0.0, 0.0, kTurn60, {segment(480, 1.0, 0.0, 0.0)},
-                 "14B496DA18A0F4A80388FA74E5BB99ED30FAE0379CF82CAF73ECC29C7464FFDF"),
+                 "58DD1D520E7F8451DC410984CD933DCA951D5E4F015BAF76F70F0BA39A2A316A"),
         scenario("wall-square", "full throttle from the grid turned 90 degrees left, "
                                 "straight at that wall",
                  0.0, 0.0, 0.0, kTurn90, {segment(360, 1.0, 0.0, 0.0)},
-                 "561463AAA8EEE915F3CA9AA0C158A7CE61D9F4FD033666C33CD70D8CA19A7532"),
+                 "90307C728F9FA8C68570108D3B3FA198727E3860CFB12D10F6F767E29B106BF0"),
         scenario("drop", "dropped from five metres above the grid, no input", 0.0, 0.0, 5.0, 0,
                  {segment(360, 0.0, 0.0, 0.0)},
-                 "E4EDACA8A9D665AE3FB6ADB6433FEF53E242F49EF7F9AD2CE6F6AA9F5265A173"),
+                 "CF520902A784D7BD1070130FED20FC550709635AB4011BD85EBA1822813ACE61"),
         scenario("leave", "20 m left of the grid, over no collision cell, no input: it falls, "
                           "is out of bounds, and is reset",
                  0.0, 20.0, 1.0, 0, {segment(360, 0.0, 0.0, 0.0)},

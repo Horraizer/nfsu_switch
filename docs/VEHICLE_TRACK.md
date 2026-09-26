@@ -126,10 +126,16 @@ velocity of the contact point along it:
   [0x006B727C]): **the car collides as at least 1.85 t**, where the 240SX
   weighs 1.22;
 - its inverse inertia is scaled by 1 when the car's +0x38 is 1 and by 0.4
-  ([0x006B7280]) otherwise (0x0046A0C0). +0x38 is a collision state the
-  constructor sets to 0 (0x0042575C) and the frame update 0x0042A530 moves
-  between 0 and 2, and from 1 back to 0; nothing found sets 1, so **a car in
-  ordinary driving takes 0.4**;
+  ([0x006B7280]) otherwise (0x0046A0C0). +0x38 is a collision state: the
+  constructor sets 0 (0x0042575C); 0x00465D00, which the collision record's
+  update 0x00465830 calls (0x004658B0), sets 1 (0x00465EC0) and zeroes the
+  car's +0x4CC (0x00465EC3) after a hit of |J| >= 30 t m/s ([0x006B72BC])
+  while +0x38 is 0, when the pair is car-vs-car (both bodies of kind 0) or a
+  car against a body of kind 4 (0x004663D0); and the frame update 0x0042A530
+  returns it to 0 once all four wheels are down and the time since +0x4CC
+  exceeds [0x006B7C00], and moves it between 0 and 2. A track polygon is
+  kind 3, so **a car that meets only the track takes 0.4**; after a hard hit
+  on another car it takes 1 until that time runs out;
 - j = -(1 + e) vn / (1/m + n . ((I^-1 (r x n)) x r)), with r the arm from
   the centre of mass (0x0046BE0F..0x0046BE8C, 0x0046BA50);
 - **j is at least 0.3 / max(1/m_a, 1/m_b)** ([0x0070009C],
@@ -148,9 +154,17 @@ velocity of the contact point along it:
   ([0x006B7258]) against its velocity, and its arm is shortened by
   |J| / (|J| + v / 1.75) ([0x006B7260]), J in t m/s, v in m/s, when
   |J| + v > 1: at speed a wall costs a little and turns the car less;
-- with all four wheels on the ground (the car's +0x3CC is 4), the arm loses
-  its part along the car's up axis (0x0046C416..0x0046C495): a hit does not
-  roll or pitch a planted car.
+- the four-wheel lever blocks (0x0046C3FE..0x0046C52C), which for a car
+  with all four wheels on the ground (+0x3CC is 4) drop the arm's part along
+  its up axis, run only when the collision record's +0x10 is set
+  (0x0046C3F3..0x0046C3F8, the record in edi since 0x0046C16F). The
+  record's constructor 0x00465640 clears it (0x004656B7), and the one
+  writer that sets it is 0x00465EB4, in the block of 0x00465D00 that sets
+  +0x38 above: a car-vs-car or car-vs-kind-4 hit of 30 t m/s or more. A
+  track polygon is kind 3, so **against the track the impulse turns the car
+  about its full arm**, planted or not. This layer applies no lever rule.
+  (Round one of this branch applied it to every planted car, labelled
+  RECOVERED; review comment 4166 found the gate.)
 
 **Applying it**, 0x0046A260 and 0x00584F60: the impulse is scaled by
 (1/1.85) / (1/m) when the car is lighter than 1.85 t, so the car answers as
@@ -158,18 +172,26 @@ the collision mass would; the rigid body then clamps the linear impulse to
 1000 t m/s ([0x006B5B4C]) and r x J to 10 t m^2/s ([0x006B5B50]), scales the
 angular part by the same factor, 1 or 0.4, and adds both to its momenta.
 
-**Nothing breaks.** Besides the two bodies' momenta the solver writes only
-the collision record (0x00465830), which accumulates the impulse and picks
+**Nothing breaks.** Besides the two bodies' momenta the solver writes the
+collision record (0x00465830), which accumulates the impulse and picks
 effects and sounds by the surface table's thresholds (0x006EF2D0, stride
-0x94, +0x80..+0x90; 0x00598260). No damage or deformation was found on that
-path; this layer models none.
+0x94, +0x80..+0x90; 0x00598260), and through the record's 0x00465D00 the
+car's +0x874 (0x00465E28, on a hit of 35 t m/s, or 15 against two kind-4
+models, while the car's +0x28 is 1) and its +0x38 and +0x4CC (above). No
+damage or deformation was found on that path; this layer models none.
 
 ### The wheels' ground
 
 0x00440A40 answers the height under a point from the planes of the polygons
-under it - -(a x + b z - d) / c, 0x00440AA9..0x00440BBE - considering
-surfaces up to 1.0 above the point (0x00440B11..0x00440B1A), through a cache
-of polygons within 8 of it (0x00440B04). Whether the wheels use it was not
+under it - -(a x + b z - d) / c, 0x00440AA9..0x00440BBE. It first answers
+the car's cached last polygon (+0x2B0 of the cache at the car's +0x540)
+whenever the point lies inside it horizontally, at any height
+(0x00440A59..0x00440ACB; 0x004400E0 is a two-dimensional edge test). Then,
+through a cache of polygons within 8 of the point (0x00440B04), it considers
+surfaces up to 1.0 above the point (0x00440B11..0x00440B1A) and answers the
+first polygon the point lies strictly inside at once, not the highest
+(0x00440BD6..0x00440BEB); when nothing lies under that limit it makes a
+second pass with none (0x00440C18..0x00440C2C). Whether the wheels use it was not
 traced. The model of issue #58 casts a segment per wheel along the body's
 down axis; this layer answers that cast from the track (below).
 
@@ -181,21 +203,23 @@ A reset is a flag, the car's +0x87C, set by:
   5000 from the tracked path node** (0x00426BA2), which
   [`RACE_ROUTE.md`](RACE_ROUTE.md) recovered and reports;
 - **out of bounds** (0x00426B03..0x00426B59): on every 32nd frame - the
-  frame counter 0x006F08A4 plus 7, modulo 32, is 0 - a car whose position
-  has no collision polygon under it, from 99999.1 down (0x00440CE0 over
+  frame counter 0x006F08A4 plus 7, modulo 32, is 0 - a car whose +0x28 is
+  set (0x00426B19..0x00426B1E) and whose position has no collision polygon
+  under it, from 99999.1 down (0x00440CE0 over
   0x00440A40), nor under the point one unit further along +x
   ([0x006CC7BC]), is flagged;
 - the other writers of 0x00428080, which sets it: **sunk**, 0x0042A4D0,
   called every frame just before the flag is read (0x0042650F): with all
   four wheels down and a flag at [car+0x3C]+0x1C set, a surface the ground
-  query finds above the car's position by more than 0.25 ([0x006CC90C])
-  resets the car at once; and three not traced here (0x0044B4E3 in the AI,
+  query 0x00440A40 answers above the car's position by more than 0.25
+  ([0x006CC90C]) resets the car at once; and three not traced here (0x0044B4E3 in the AI,
   0x00479FD5 and 0x0047ACE8);
 - the reset button, input event 0x99, `JOY_EVENT_RESET_CAR` (the name table
   entry at 0x006F1974); its handler was not traced.
 
 No rule that resets an upside-down or a stuck player's car was found among
-these.
+these: in retail, as far as this was traced, an overturned player's car
+stays overturned until one of them fires or the player presses reset.
 
 A `RESET_TO_POINT` zone does not set the flag: 0x00427ED0 puts the car at the
 zone's point, facing its direction, at **8.0** ([0x00700D58], through
@@ -333,17 +357,20 @@ double as its bits, every integer and flag as a u32, little-endian;
 | --- | --- | --- |
 | the body's shape test | the hull's 37 points, each probed from the centre of mass; a polygon is met where a point lies beyond it | the witness (0x00472830, 0x00472950) that tests the hull against a polygon was not traced; a thin surface met between two points is not seen, which a surface a few metres across never is |
 | separated means | the move's reach along the normal covers the deepest point's depth | same |
-| contacts per step | one per polygon met, at its deepest point, in polygon order, once a step | the broad phase and the order of pairs were not traced |
+| contacts per step | one per polygon met, at its deepest point, in polygon order, once a step; the car's upright flag, speed and forward axis are taken once before the contacts | the broad phase and the order of pairs were not traced; retail recomputes those three for each pair, which differs only when a step has two or more contacts |
+| a separation that fails | no move | after 20 tries retail leaves the pair's separation (+0x20) as it was and 0x0046B80F..0x0046B87B still moves the bodies by it; there is no pair record here |
 | when the body is resolved | after every model step, 120 Hz | where the collision pass sits against the 60 Hz tick was not traced |
-| the car's collision state | +0x38 not 1: angular factor 0.4 | nothing found sets 1 |
+| the car's collision state | +0x38 taken as 0 for every contact: angular factor 0.4, no lever rule | only a car-vs-car or car-vs-kind-4 hit sets 1 (0x00465EC0); here there is one car and the track, whose polygons are kind 3 |
 | the sunk check's flag | [car+0x3C]+0x1C taken as set | what sets it was not traced |
+| the sunk check's query | the first surface a column meets from 1.0 above the centre of mass down to 0.25 above it | 0x00440A40 answers the car's cached last polygon first at any height, then the first polygon the point is strictly inside, and makes a second pass with no upper limit (above); the cache is not modelled. A car 1.5 m under its last polygon, four wheels down on a lower surface, is reset by retail and not here |
+| the out-of-bounds check's gate | the car's +0x28 taken as set | as [`RACE_ROUTE.md`](RACE_ROUTE.md) takes it |
 | which reset branch | the nearest node, 0x004314A0's no-route branch | the car's route object and the AI routes of chunk 0x00034121 are not decoded ([`RACE_ROUTE.md`](RACE_ROUTE.md)); whether the player's car has a route was not traced |
 | the reset's height | the first surface under the node from above the course | 0x00427C50 writes a height of 0, and how the car then meets the ground was not traced |
 | the grid's height | the first surface from 2 above the marker to 8 below it | retail copies the marker's height (0x00422766); on track 1003 slot 0's marker is 3 mm above the road |
 | the tick's order | the reset, then the progress, then the out-of-bounds check | the wrong-way pass 0x00430730 that finds the zones runs apart from the car update; its order against it was not traced |
 | the frame counter's phase | ticks counted from the start of the run | as in [`RACE_ROUTE.md`](RACE_ROUTE.md) |
 | walls under a wheel | no ground | the model takes any upward-facing hit as ground |
-| upside down | off unless `upside_down_steps` is set: the up axis below the horizon at under 2 m/s for that many steps asks for a reset | no retail rule was found; a controller can map the reset button instead |
+| upside down | off unless `upside_down_steps` is set: the up axis below the horizon at under 2 m/s for that many steps asks for a reset; **on for the first lap**, 120 steps (below) | no retail rule was found; a controller can map the reset button instead |
 | stuck | off unless `stuck_steps` is set: throttle of 0.5 or more at under 0.5 m/s for that many steps | same |
 | the restitution's other halving | only the side-hit case of 0x0046C620 | none other was found |
 | the replay's previous position | moved with the car on a reset | the route layer's wrong-way stand-in reads a position step as the heading, and a reset is not a drive |
@@ -374,6 +401,12 @@ and a grid point; the tests build four more with it.
 Every run below is the stock 240SX, the built-in table of
 [`VEHICLE.md`](VEHICLE.md). "Debug" is the default configure, as there.
 
+Round two moved nine of the nineteen, all by dropping the four-wheel lever
+rule for track contacts (above): on the proving ground `wall`,
+`wall-glance`, `wall-fast`, `wall-square`, `wall-oblique` and `drop`, and
+on the circuit `wall`, `wall-square` and `drop` - every run in which a
+planted car's body meets the track. The other ten are unchanged.
+
 ### The proving ground
 
 ```text
@@ -386,12 +419,12 @@ build-release/nfsu_probe vehicle-track --proving-ground <scenario>
 | `rest` | at the start, the brake held for two seconds | 240 | `C67E6C0839F2CF29F89CA1381BC16A17A7DB2F9BF04944BE23A7313B814158C9` |
 | `drive` | full throttle for six seconds from (64, 48) across the seams at px 96 and 128 | 720 | `2D61E7FC354F7394BA4DC2721298041E7799D276BF3F9075C18DBB114D3BB79C` |
 | `slope` | full throttle from (152, 48) up the ramp onto the plateau | 780 | `712498B9A7053B6A1B8628AF44BF45019491DEAE5D81EE34F0A79F9DCC34FB3C` |
-| `wall` | full throttle from (32, 80) at 45 degrees into the north wall, then along it | 480 | `020DF7D7F17417B8B910DF5FEFD4C7348D1BAAD2AA7F43E4FD79CA424A57FCCA` |
-| `wall-glance` | the same at 15 degrees from (32, 88) | 600 | `488358807B29C82084128D3E4D313CD7E3B37A22331054FBFC7F2650FA05C801` |
-| `wall-fast` | from (32, 88) at 35 m/s, 15 degrees into the north wall | 240 | `81C2B19E3A5F48226800BB1E799057D5A82F1A0B55A3EDCAADF3048EA135AE63` |
-| `wall-square` | full throttle from (48, 80) straight at the north wall | 480 | `B52AE87C8D3B95B39F85DD8E4C66E4F706330E4B0BF55D2AFA7F294BE8BB1B2B` |
-| `wall-oblique` | full throttle from (128, 48) along -y into the oblique wall | 480 | `26357029FBD71692A9C28A0B59BB7E0A3205A208C33235D517AC71C8211B34D0` |
-| `drop` | dropped from five metres above the start, no input | 360 | `5FBA104986E9C1F0B15E7DA2DBFE8E522EE35F28023FCB51FDC0F70B4909909A` |
+| `wall` | full throttle from (32, 80) at 45 degrees into the north wall, then along it | 480 | `1B4E823836D8A5C89A4F83D469A93716C8215CCF6105FA5B1EB73C52A590183F` |
+| `wall-glance` | the same at 15 degrees from (32, 88) | 600 | `A8CBD1B047CDB1AB1DEE241E6AE0F08C8C64452A25020A2C5D6970D6EF9FA23A` |
+| `wall-fast` | from (32, 88) at 35 m/s, 15 degrees into the north wall | 240 | `5290BE387D92655B91ABEB16311F4ACEFFBEE5377795FD3F97EA70451DAD6517` |
+| `wall-square` | full throttle from (48, 80) straight at the north wall | 480 | `EE7FCBFC75A22E6FD93E94A2333E5102CC9C9FEA059F00BE0A0333FED3938B5B` |
+| `wall-oblique` | full throttle from (128, 48) along -y into the oblique wall | 480 | `0A7ABFBAF1E1CCF928FA4A4AF4CF47D1FAFBD494944BAEEB9403999ED5683407` |
+| `drop` | dropped from five metres above the start, no input | 360 | `C23FF8D9C84D990E56F36673D1494AA28DAA56222667050FD1B24E0F798DCE72` |
 | `leave` | full throttle from (176, 20) along -y off the open edge: out of bounds, reset | 600 | `34AC6A755315958245AC729D589C8AF651045D41A9F68AE75913AA1B6A28BDC7` |
 | `zone` | 0.6 throttle from (128, 60) into the `RESET` zone | 600 | `7B063440CD041607AB943115A820FBCFC437D1ACA765A773B2A3B202F6291491` |
 | `zone-point` | 0.6 throttle from (152, 60) into the `RESET_TO_POINT` zone | 720 | `1F01302B371D1F019746930FC80EFB2D7A58866B3B894A583B2DD434A009589B` |
@@ -425,9 +458,9 @@ build-release/nfsu_probe vehicle-track $R/Global/GLOBALB.BUN $R/FrontEnd/FrontB.
 | --- | --- | ---: | --- |
 | `grid` | the brake held three seconds: settles, creeping 0.05 m down the 3.4-degree slope (the model's tyre is a damper at a standstill, [`VEHICLE.md`](VEHICLE.md)) | 360 | `36EF7514BA785600CB8647909664F4586A458B1E72FDF517E89C102679DEC8AD` |
 | `drive` | full throttle four seconds up the road: 77 km/h at pz 341, the start line crossed on step 132, every wheel on road | 480 | `1F5F4F438A19E6BBFD3C78D433419D9938755A90A0AC73FA58660EECCA0B821E` |
-| `wall` | turned 60 degrees left into the wall 10.6 m away: meets polygon 9374 on step 242 at 36 km/h, ends against it nose-in | 480 | `14B496DA18A0F4A80388FA74E5BB99ED30FAE0379CF82CAF73ECC29C7464FFDF` |
-| `wall-square` | turned 90 degrees, straight at it, over the 10 cm kerb at px 1638.5: polygon 9374 on step 231, depth 0.0786 | 360 | `561463AAA8EEE915F3CA9AA0C158A7CE61D9F4FD033666C33CD70D8CA19A7532` |
-| `drop` | from five metres: the body meets road polygon 6772 on landing, step 130, and the car settles | 360 | `E4EDACA8A9D665AE3FB6ADB6433FEF53E242F49EF7F9AD2CE6F6AA9F5265A173` |
+| `wall` | turned 60 degrees left into the wall 10.6 m away: meets polygon 9374 on step 242 at 36 km/h, ends against it at 0.6 km/h | 480 | `58DD1D520E7F8451DC410984CD933DCA951D5E4F015BAF76F70F0BA39A2A316A` |
+| `wall-square` | turned 90 degrees, straight at it, over the 10 cm kerb at px 1638.5: polygon 9374 on step 231, depth 0.0786 | 360 | `90307C728F9FA8C68570108D3B3FA198727E3860CFB12D10F6F767E29B106BF0` |
+| `drop` | from five metres: the body meets road polygon 6772 on landing, step 130, and at 3 s the car rolls on at 4.4 km/h | 360 | `CF520902A784D7BD1070130FED20FC550709635AB4011BD85EBA1822813ACE61` |
 | `leave` | 20 m left of the grid and 1 up, over no cell: `bounds step 50`, then `reset step 52 out-of-bounds node 11 ground 1646.375 268.575 57.8409 heading 0x00004305 speed 0.000` | 360 | `452446A156A82F802E2B26333E5C24064C91286CABA221D63841E2E0CC324483` |
 
 The whole standard output of each, CR LF folded to LF, is the same in the
@@ -457,22 +490,26 @@ Switch" rests on the census and on the model's own console run
 
 - Every operation in the step is IEEE-754 on doubles and floats compiled
   without contraction; square roots are `vehicle_sqrt` (the model's) and
-  `track_contact_sqrt`; nothing reads a clock or calls library mathematics.
+  `det_sqrt` (issue #165); nothing reads a clock or calls library
+  mathematics.
   `src/vehicle_track.cpp` refuses to compile unless `FLT_EVAL_METHOD` is 0.
 - **The contact layer's square roots.** `src/track_contact.cpp` called
   `std::sqrt` three times: two on floats and, at the old line 202, one on a
   double, the sweep's length, which every query on the step reaches. A
   build that calls the library for it - MinGW at `-O0` reaches libmingwex's
   x87 `fsqrt`, which rounds a double twice - need not give the correctly
-  rounded root the hardware instruction of every other build gives. All
-  three now go through `track_contact_sqrt`, a correctly rounded root in
-  integers only (the digit-by-digit method of `track_residency_sqrt`); a
-  float root taken through it is correctly rounded too, since rounding a
-  correctly rounded double root of a float to float is innocuous
-  (53 >= 2 * 24 + 2). Issue #165 is to make one such root the project's;
-  PR #162's `det_sqrt` lives in the platform library `nfsu_render` and uses
-  the hardware instruction, so this neutral layer does not link it. No
-  answer changes: every contact output of [`TRACK_COLLISION.md`](TRACK_COLLISION.md)'s
+  rounded root the hardware instruction of every other build gives. PR #189
+  (issue #165) put the double one through `det_sqrt`, which is that
+  instruction in every build (`sqrtsd`, AArch64 `fsqrt`), in the platform
+  library `nfsu_det_sqrt` that the neutral `nfsu_input` and
+  `nfsu_track_contact` link. This branch takes the two float ones through
+  it as well, rounding its double root to float - the correctly rounded
+  float root, since 53 >= 2 * 24 + 2 - so that no library root is
+  referenced on the step, and so do this layer's three float roots (a hull
+  point's arm, a node's distance, a loop's chords). Round one used an
+  integer-only root of its own, `track_contact_sqrt`; review comment 4166
+  measured it equal to `sqrtsd` on every float and 8e9 doubles, and it was
+  dropped for the one root. No answer changes: every contact output of [`TRACK_COLLISION.md`](TRACK_COLLISION.md)'s
   retail acceptance, `nfsu_track_contact_tests`, and the other pins listed
   under "Nothing earlier moved" are byte for byte what `origin/main` gives.
 - **The census.** `nfsu_switch_vehicle_track_fma_census` disassembles
@@ -482,7 +519,7 @@ Switch" rests on the census and on the model's own console run
 
   | Object | As configured: fused / fmul | `-ffp-contract=off -fno-fast-math` removed: fused / fmul |
   | --- | --- | --- |
-  | `vehicle_track.o` | 0 / 186 | 103 / 90 |
+  | `vehicle_track.o` | 0 / 180 | 98 / 89 |
   | `vehicle_track_course.o` | 0 / 35 | 21 / 14 |
   | `track_contact.o` | 0 / 81 | 43 / 38 |
 
@@ -499,11 +536,13 @@ Switch" rests on the census and on the model's own console run
 
 Timed on this machine, the best of five runs each of a one-step and a
 12000-step run on the circuit (full throttle and a slight steer, 100 s,
-through 285 steps of wall contact), the difference over 12000: **77.4
-microseconds a step in Release** and 245.0 in Debug. That is 41 segment
-queries a step - 4 wheel casts and 37 hull probes, about 1.8 microseconds
+through 588 steps of wall contact), the difference over 12000: **56.4
+microseconds a step in Release** and 207.7 in Debug. That is 41 segment
+queries a step - 4 wheel casts and 37 hull probes, about 1.3 microseconds
 each - the model's own step, the tick's checks and the telemetry hash; at
-120 steps a second, 9.3 ms of every second in Release. The console's is not
+120 steps a second, 6.8 ms of every second in Release. Round one measured
+77.4, when every query also took an integer-only square root of 54 turns;
+`det_sqrt` is one instruction. The console's is not
 measured; the NRO prints each scenario's run time, and the model's alone
 took 22.6 microseconds a step there ([`VEHICLE.md`](VEHICLE.md)).
 
@@ -521,15 +560,16 @@ took 22.6 microseconds a step there ([`VEHICLE.md`](VEHICLE.md)).
 | slope | on the ramp the car rides half a metre over it and reaches the plateau; the brake holds it to a creep |
 | walls at 15, 45 and 90 degrees, at 35 m/s, and oblique | contacts and impulses; no hull point ends a step more than 0.12 beyond the wall; the centre of mass stays 0.7 from it; the first contact is with a wall; square on, the car ends at rest against it; at 15 and 45 degrees it ends along it, moving; at 35 m/s it slides on above 25 m/s, turning at most 2 rad/s |
 | airborne and landing | over clear air; lands; no hull point 5 cm into the road; at rest three seconds later |
+| friction against a wall | a car in the air sliding 0.75 m/s along the north wall: the friction impulse is 0.1 of the normal one times the slide upright and rolled 30 degrees (up.z 0.866), 0.3 times it rolled 50 degrees (0.643) |
 | the clamps | a car falling at 4000 m/s, its step ending 0.1 into the road: one contact, the impulse held to 1000 t m/s exactly and its moment held, the car turning under 20 rad/s; no proving-ground scenario reaches either, and the first needs a fall of about 1850 m/s |
 | out of bounds | the check runs on exactly every 32nd tick; off the open edge it finds nothing and asks; the reset on the next tick onto node 10, moving 0.1 along +x, on the road's height |
-| the side probe | a car resting across a gap a metre wide, its centre of mass over the gap: the check finds the road one unit along +x, and nothing is reset |
+| the side probe | a car resting across a gap a metre wide, its centre of mass over the gap: the check finds the road one unit along +x, and nothing is reset; over a hole with road one unit along -x only, it is out of bounds |
 | zones and off the path | `RESET` asks on entry and resets on the next tick onto node 15 facing -x; `RESET_TO_POINT` resets at once to (40, 56) at 8.1 along +x; 5000 from the route, off the path on the first tick and reset on the second |
-| sunk | a deck 0.5 over the centre of mass with four wheels down resets on the first tick; 1.125 over it does not; a car a metre over the road with no wheel down, the deck 0.5 over its centre of mass, is not sunk |
+| sunk | a deck 0.5 over the centre of mass with four wheels down resets on the first tick; 1.125 over it does not; a car a metre over the road with no wheel down, the deck 0.5 over its centre of mass, is not sunk; with the body's collision off, a deck a metre square 0.2 over the centre of mass is within the 0.25 margin and one 0.3 over it resets |
 | a hole | the reset skips the nearest nodes, over a hole, for the nearest with ground, the first of two equal; the jump back against the path is not read as driving the wrong way |
 | a separating contact | a nose 0.01 inside a wall on a car leaving it at 0.05 m/s is moved out and given no impulse |
-| the contact layer's square root | `track_contact_sqrt` against fourteen correctly rounded roots as bits - five of them rounded up - and on +-0, infinity, NaN and negatives |
-| the reset button and the approximations | a request is performed once on the next tick; upside down and stuck reset when on and never when off |
+| the square root | `det_sqrt` against fourteen correctly rounded roots as bits - five of them rounded up - and on +-0, infinity, NaN and negatives |
+| the reset button and the approximations | a request is performed once on the next tick; upside down and stuck reset when on and never when off; the first lap's approximations are the defaults with the upside-down reset on after 120 steps |
 | refusals | a course whose collision is not valid, a model that is not, an empty hull, 257 points, a NaN point, a negative approximation, a step before the start, a state or a pose that is not finite; no route: the reset reported, not performed; a triangle's degenerate half never met; the image builder's refusals |
 | determinism | the record's layout, 760 bytes; every proving-ground pin; the same run twice |
 
@@ -602,12 +642,30 @@ them. The sweep's script is not tracked.
 | 44 | no lead velocity after a reset to a point | killed | killed | - | killed | "the RESET_TO_POINT zone puts the car at (40, 56) moving +x at 8 plus 0.1" |
 | 45 | lead of 0 instead of 0.1 | killed | killed | - | killed | "the car is put on node 10, (176, 40), moving 0.1" |
 
+That sweep ran on round one's code. Round two (review comment 4166)
+dropped the four-wheel lever rule, which break 12 had removed, and added the
+friction, east-only side probe and sunk-margin tests above for four values
+the reviewer's own sweep found unpinned. The same harness, over the round
+two code:
+
+| # | Break | Unit tests | Guards | Verdict | First failure |
+| --- | --- | --- | --- | --- | --- |
+| L1 | the lever rule put back for a planted car's track contacts | killed | killed | killed | the `wall` pin: its hash is round one's exactly |
+| B01 | side probe at x - 1 | killed | passed | killed | "the check does not look west: the car is out of bounds" |
+| I05 | friction ramp below 0.5 m/s | killed | killed | killed | "upright, the friction is 0.1 of the normal impulse scaled by a slide under 1 m/s" |
+| I14 | upright threshold 0.9 | killed | passed | killed | "rolled 30 degrees, up.z 0.866 is above 0.7 and the car still slides with 0.1" |
+| R05 | sunk column down to z | killed | passed | killed | "a deck 0.2 over the centre of mass is within the margin" |
+
+The reviewer's other survivors are left as they are: they are equivalent in
+practice or test this project's own approximations.
+
 ## What is not known
 
 - The witness's shape test and closest points (0x00472830, 0x00472950),
   the broad phase, and the order and number of pairs a frame resolves.
 - Where the collision pass runs against the physics step and the 60 Hz tick.
-- What sets the car's +0x38 to 1, and the flag at [car+0x3C]+0x1C.
+- What +0x38's value 2 means (0x0042A530), and what sets the flag at
+  [car+0x3C]+0x1C.
 - Whether the wheels use 0x00440A40, and where the struts' forces are applied
   ([`VEHICLE.md`](VEHICLE.md)).
 - The player's route object: whether it has a route, which point is current,
@@ -628,21 +686,35 @@ orientation place the car and the camera; `progress()` holds the lap
 counter and the percent the timing of #62 reads, and `events()` the tick's
 crossings, laps and finish; `request_reset()` is the reset button. Resets
 happen by themselves off the track, in reset zones and far from the route.
-The step costs about 77 microseconds on the desktop. The console lap needs
+
+**The first lap runs with the upside-down reset on.** Nothing in retail
+rights an overturned player's car (above), and nothing in this layer
+did: review comment 4166 drove a car at 35 m/s round event 1 with round
+one's rules and found it leaving the ground at the crest near (1351, 484)
+and ending on its roof; and the first lap (#159) may come before a reset
+button is mapped (#59). So the session is built with
+`vehicle_track_first_lap_approximations()`: the defaults, with the car
+reset onto the route after 120 steps (one second) with its up axis below
+the horizon at under 2 m/s. It is an APPROXIMATION of the reset button, not
+a retail rule, and with a button mapped it can be turned off. The probe and
+the pins keep the defaults, in which it is off.
+The step costs about 56 microseconds on the desktop. The console lap needs
 the same TRACKB file on the card and the deko3d renderer.
 
 ## Nothing earlier moved
 
-Built from `origin/main` at f892678 with `git archive`, Debug and Release,
-against this branch's two builds: the standard output and exit status of all
-17 commands of [`TRACK_COLLISION.md`](TRACK_COLLISION.md)'s retail
-acceptance, the nine `vehicle-sim` runs of [`VEHICLE.md`](VEHICLE.md) (the
-eight built-in scripts and `mixed` over the retail handling) and the five
-`race-route` runs of [`RACE_ROUTE.md`](RACE_ROUTE.md) are byte for byte the
-same in all four; `mixed` still hashes to `B9EE418C...CF8E3` and the
-race-route listing to `3A764B95...3F00`. The comparison was run again with
-this branch's builds after `origin/main` at 174af93 was merged into it, with
-the same result.
+Built from `origin/main` at 2f5e747 with `git archive`, default and
+Release, against this branch's default, Debug and Release builds: the
+standard output and exit status of all 17 commands of
+[`TRACK_COLLISION.md`](TRACK_COLLISION.md)'s retail acceptance, the nine
+`vehicle-sim` runs of [`VEHICLE.md`](VEHICLE.md) (the eight built-in
+scripts and `mixed` over the retail handling), the five `race-route` runs of
+[`RACE_ROUTE.md`](RACE_ROUTE.md) and the four `race-timing` runs of
+[`RACE_TIMING.md`](RACE_TIMING.md) are byte for byte the same in all five;
+`mixed` still hashes to `B9EE418C...CF8E3`, the race-route listing to
+`3A764B95...3F00` and the race-timing runs to `B3ECE3B4...`,
+`CF8D4752...`, `DE68AE9C...` and `EFCCB2CC...`. Round one made the same
+comparison against f892678 and after merging 174af93.
 
 ## Read-only
 

@@ -286,7 +286,9 @@ double vehicle_track_heading(std::int64_t units) noexcept {
 // and the first move that clears `needed` - the deepest point's depth
 // along the normal, which is this project's stand-in for "the hull and the
 // polygon no longer intersect" - is the answer. After 20 tries retail
-// leaves the separation it had; here that is none.
+// leaves the pair's separation as it was and still moves the bodies by it
+// (0x0046B80F..0x0046B87B); here there is no pair record and no move
+// (APPROXIMATION, docs/VEHICLE_TRACK.md).
 bool vehicle_track_separation(const float normal[3], double needed,
                               VehicleVec3& move) noexcept {
     float step = kVehicleTrackSeparationFirstStep;
@@ -478,6 +480,12 @@ Sha256Digest VehicleTrackTelemetryHash::finish() noexcept {
 // The session
 // ---------------------------------------------------------------------------
 
+VehicleTrackApproximations vehicle_track_first_lap_approximations() noexcept {
+    VehicleTrackApproximations approx;
+    approx.upside_down_steps = 120;
+    return approx;
+}
+
 VehicleTrackSession::VehicleTrackSession(const VehicleModel& model,
                                          const VehicleTrackCourse& course,
                                          const VehicleTrackApproximations& approx,
@@ -600,9 +608,11 @@ bool VehicleTrackSession::sunk(const VehicleState& s) const {
             return false;
         }
     }
-    // The surface the ground query 0x00440A40 finds from the car's position,
-    // which reaches 1.0 above it, lying more than 0.25 above it: the first
-    // surface a column meets from 1.0 above down to 0.25 above.
+    // APPROXIMATION of 0x00440A40, the ground query 0x0042A4D0 asks: the
+    // first surface a column meets from 1.0 above the position down to 0.25
+    // above it. Retail answers the car's cached last polygon first, at any
+    // height, then the first polygon the point is strictly inside, and makes
+    // a second pass with no upper limit (docs/VEHICLE_TRACK.md).
     const float from[3] = {static_cast<float>(s.position.x), static_cast<float>(s.position.y),
                            static_cast<float>(s.position.z + kVehicleTrackSunkReach)};
     const float to[3] = {from[0], from[1],
@@ -666,10 +676,6 @@ void VehicleTrackSession::resolve_body(VehicleState& s, VehicleTrackTelemetry& t
     });
 
     const VehicleVec3 up = r.column(2);
-    bool planted = true;
-    for (const VehicleWheelState& wheel : s.wheels) {
-        planted = planted && wheel.contact;
-    }
     const double unit = model_->spec().approx.unit_scale;
     const double inverse_mass = 1.0 / mass_;
     const double floor_inverse_mass = 1.0 / collision_mass_;
@@ -770,9 +776,13 @@ void VehicleTrackSession::resolve_body(VehicleState& s, VehicleTrackTelemetry& t
         if (slide > kVehicleTrackSlideEpsilon) {
             impulse = add(impulse, scale(tangential, -1.0 / slide * jt));
         }
-        // 0x0046C416..0x0046C495: with all four wheels on the ground the
-        // impulse acts at the centre of mass's height along the body's up
-        // axis, so a hit does not roll or pitch a planted car.
+        // The impulse turns the car about its full arm. Retail's four-wheel
+        // lever blocks (0x0046C3FE..0x0046C52C), which would drop the arm's
+        // part along the up axis of a car with all four wheels down, run
+        // only when the collision record's +0x10 is set
+        // (0x0046C3F3..0x0046C3F8), and only 0x00465EB4 sets it: for a
+        // car-vs-car or car-vs-kind-4 hit of 30 t m/s or more. A track
+        // polygon is kind 3, so they never run against the track.
         VehicleVec3 lever = arm;
         // 0x0046C223..0x0046C3D9: an upright car faster than 30 m/s loses a
         // horizontal impulse of 0.4 t m/s against its velocity, and its arm
@@ -788,9 +798,6 @@ void VehicleTrackSession::resolve_body(VehicleState& s, VehicleTrackTelemetry& t
                     size_t_m_s / (car_speed / kVehicleTrackFastArm + size_t_m_s);
                 lever = scale(lever, shorten);
             }
-        }
-        if (planted) {
-            lever = sub(lever, scale(up, dot(lever, up)));
         }
         // 0x0046A260, then 0x00584F60's two clamps and the angular factor.
         VehicleVec3 applied = scale(impulse, mass_scale);
@@ -815,9 +822,9 @@ void VehicleTrackSession::resolve_body(VehicleState& s, VehicleTrackTelemetry& t
 }
 
 // 0x00427CD2..0x00427D10: after a reset the velocity is the car's forward
-// axis at the speed plus 0.1; the stored speed and the wheels' spins take
-// the speed itself (0x00427CBA, 0x00427D36..0x00427D7E), as the model's
-// reset gives them.
+// axis at the speed plus 0.1; the stored speed takes the speed itself
+// (0x00427CBA) and each wheel's spin the speed over its radius
+// (0x00427D36..0x00427D7E), as the model's reset gives them.
 void VehicleTrackSession::lead_velocity(VehicleState& s, double speed) noexcept {
     const Mat3 r = rotation(s.orientation);
     s.velocity = scale(r.column(0), speed + kVehicleTrackResetSpeedLead);

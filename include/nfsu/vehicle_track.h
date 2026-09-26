@@ -94,9 +94,12 @@ constexpr double kVehicleTrackAngularLimit = static_cast<double>(10.0F);    // [
 // 0x0046A0C0 and 0x0046A260: the angular part of a collision - the inverse
 // inertia in the solver's denominator and the angular impulse applied - is
 // scaled by 1 for a car whose +0x38 is 1 and by 0.4 otherwise. +0x38 is a
-// collision state: the constructor sets 0 (0x0042575C) and the frame update
-// 0x0042A530 moves it between 0 and 2 and from 1 back to 0; nothing found
-// sets 1, so a car in ordinary driving takes 0.4.
+// collision state: the constructor sets 0 (0x0042575C); 0x00465D00, called
+// from the collision record's update (0x004658B0), sets 1 (0x00465EC0) after
+// a car-vs-car or car-vs-kind-4 hit of 30 t m/s or more while it is 0; and
+// the frame update 0x0042A530 returns it to 0 once all four wheels are down
+// and the time since that hit (+0x4CC) has run out. A track polygon is kind
+// 3, so a car that meets only the track takes 0.4.
 constexpr double kVehicleTrackAngularFactor = static_cast<double>(0.4F);   // [0x006B7280]
 // 0x0046B260: the separation search. The bodies are moved apart along the
 // track polygon's normal, turned to face the car (0x0046B070), by a
@@ -117,8 +120,9 @@ constexpr std::uint32_t kVehicleTrackBoundsPeriod = 32;
 constexpr std::uint32_t kVehicleTrackBoundsPhase = 7;
 constexpr double kVehicleTrackBoundsSideStep = static_cast<double>(1.0F);  // [0x006CC7BC]
 // Sunk: 0x0042A4D0, every frame, a car with all four wheels on the ground
-// that finds a surface above its position, within the 1.0 the ground query
-// 0x00440A40 reaches above the point, and more than 0.25 above it, is reset.
+// whose ground query 0x00440A40 answers a surface more than 0.25 above its
+// position is reset. The query is approximated by a column from 1.0 above
+// the position (the reach of its first pass) down to 0.25 above it.
 constexpr double kVehicleTrackSunkMargin = static_cast<double>(0.25F);  // [0x006CC90C]
 constexpr double kVehicleTrackSunkReach = static_cast<double>(1.0F);    // 0x00440B1A
 // The reset: 0x004314A0 puts the player's car on the nearest track path
@@ -126,8 +130,8 @@ constexpr double kVehicleTrackSunkReach = static_cast<double>(1.0F);    // 0x004
 // puts it at the zone's point at 8.0 (0x00427F24).
 constexpr double kVehicleTrackResetToPointSpeed = static_cast<double>(8.0F);  // [0x00700D58]
 // 0x00427CD2..0x00427D10: 0x00427C50 sets the velocity along the car's
-// forward axis to the speed plus 0.1, and the stored speed and the wheels'
-// spins to the speed itself.
+// forward axis to the speed plus 0.1, the stored speed to the speed, and
+// each wheel's spin to the speed over its radius.
 constexpr double kVehicleTrackResetSpeedLead = static_cast<double>(0.1F);  // [0x006CC7B8]
 
 // ---------------------------------------------------------------------------
@@ -307,7 +311,7 @@ bool build_vehicle_track_course(const VehicleTrackLayout& layout,
 // that holds one of everything docs/VEHICLE_TRACK.md tests - a seam between
 // two road slabs, a slope, walls met square, at 45 and 15 degrees and an
 // oblique one, an open edge over no cell, a RESET and a RESET_TO_POINT
-// zone, and a pad more than 5000 from the route - with a closed route of 26
+// zone, and a pad more than 5000 from the route - with a closed route of 24
 // nodes round it. Its layout is in docs/VEHICLE_TRACK.md.
 bool build_vehicle_proving_ground(VehicleTrackCourse& course, std::string& error);
 
@@ -337,7 +341,7 @@ enum class VehicleTrackReset : std::uint8_t {
     zone_to_point = 2,   // a RESET_TO_POINT zone (RECOVERED, 0x00427F01..0x00427F36)
     off_path = 3,        // more than 5000 from the tracked node (RECOVERED, 0x00426BA2)
     out_of_bounds = 4,   // no collision under the car (RECOVERED, 0x00426B59)
-    sunk = 5,            // a surface just above the car (RECOVERED, 0x0042A51B)
+    sunk = 5,            // a surface just above the car (0x0042A51B; query approximated)
     manual = 6,          // asked for; retail's JOY_EVENT_RESET_CAR, handler not traced
     upside_down = 7,     // APPROXIMATION, off by default
     stuck = 8,           // APPROXIMATION, off by default
@@ -377,6 +381,12 @@ struct VehicleTrackApproximations {
     double stuck_throttle = 0.5;
     double stuck_speed = 0.5;
 };
+
+// What the first lap (issue #159) runs with: everything as above, and the
+// upside-down reset on after one second (120 steps), so that an overturned
+// car is put back on the route when no reset button is mapped. Retail has
+// no such rule for the player; docs/VEHICLE_TRACK.md says why it is on.
+VehicleTrackApproximations vehicle_track_first_lap_approximations() noexcept;
 
 // ---------------------------------------------------------------------------
 // Telemetry

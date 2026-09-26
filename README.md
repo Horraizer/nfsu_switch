@@ -211,7 +211,8 @@ given with `--script`, and prints the course, the start, a line every
 and race event, the last step, a summary and the SHA-256 of the per-step
 telemetry, and for a built-in scenario whether it is the pinned one. It
 exits 1 on an argument it refuses, 2 on a script file it cannot read or
-parse, and 3 on a course it cannot build. See `docs/VEHICLE_TRACK.md`.
+parse, 3 on a course it cannot build, and 4 if the model or the session
+refuses a step. See `docs/VEHICLE_TRACK.md`.
 `track-stream-path` runs the section streamer of `speed.exe` along a path:
 the zone a car's look-ahead picks, the request rebuilt when that zone
 changes, and the loads and releases that keep the requested sections within
