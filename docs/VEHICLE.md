@@ -331,34 +331,61 @@ together they do, and moving the lift or the engine braking then changes
 no count in either set, so both keep the values round 2 chose them for. The
 three spins left in the extended set are all locks the default steering
 cannot reach: 1.5 times the default lock at 20 m/s, and 1.5 and 2 times at
-25 m/s. Past about 1.4 times the default lock at 20 to 25 m/s the car snaps
-into oversteer (`test_snap_oversteer`: 1.25 times at 20 m/s and 1.4 times at
-25 m/s corner steadily, 1.4 times at 20 m/s and 1.5 times at 25 m/s spin).
+25 m/s. Past the default lock the car snaps into oversteer inside a window
+of locks, not past a threshold: with the lock held fixed and the speed held
+by the controller, it spins from 1.3 to 1.6 times the default lock at
+20 m/s, from 1.5 to 2.5 times at 25 m/s and from 1.75 to 3 times at 30 m/s
+(4 times at 30 m/s reaches 19.7 degrees, and 20.7 with a constant 0.6
+throttle), and nowhere up to 2.5 times (0.54 rad) at 15 m/s. Below the window
+the car corners at the limit; above it the front tyres saturate first and
+it runs wide. `test_snap_oversteer` pins the window's lower edge at 20 and
+25 m/s: 1.25 times at 20 m/s and 1.4 times at 25 m/s corner steadily, 1.4
+times at 20 m/s and 1.5 times at 25 m/s spin.
 Further understeer costs cornering at full input: 9 / 21 would clear one
 more extended run and give 1.15 g at 20 m/s where 10 / 20 gives 1.28 and
 11 / 19 1.43 ("Drivability").
 
 The coupling of engine and wheels at 0x00475667..0x00475797 was traced
 first, since a recovered limit would beat an invented one, and not
-settled; what was read is under "What is not known". Its speed table is
-smallest at zero speed and largest from 20 up, so nothing read suggests it
-is what would hold a car's drive back at 8 to 12 m/s, and the traction
-limit stands in for it, labelled.
+settled; what was read is under "What is not known". It subtracts from
+each driven wheel's torque a term scaled by that wheel's drive fraction,
+which is the shape a slip feedback would have, and its speed table gives
+0.38 to 0.42 at 8 to 12 m/s, 76 to 84% of its largest value. But the
+term also multiplies a per-wheel value whose writer was not found, so what
+it does at 8 to 12 m/s is unknown. The traction limit stands in for it,
+labelled.
 
 ### What is not known
 
 - The tyre force curves: the lateral family of 0x00587740 (six curves by
   slip angle, blended, and a seventh past them) and the longitudinal
   coupling of 0x00475667..0x00475797, including the 0.008 divisor
-  (0x006B71B8) and the speed table 0x00705E78. Round 3 read this much of
-  the coupling: the table holds three (speed, value) pairs, (0, 0.05),
-  (2, 0.322) and (20, 0.5), read through the curve evaluator 0x00583EA0
-  at the car's speed; each wheel's result is a sum divided by the 0.008,
-  in which the brake enters as -0.5 times the brake input times the
-  wheel's spin clamped to +-20, and the table's value, divided by two
-  further operands, scales a per-wheel value at [edi + 0x74 + 8 k] whose
-  writer was not found. Without that operand the rule cannot be
-  reproduced. The model's tyre is the largest approximation here.
+  (0x006B71B8) and the speed table 0x00705E78. What was read of the
+  coupling, the second half of the per-wheel loop of 0x00475530 (the
+  engine's virtual slot 6):
+  - The speed table's descriptor at 0x00705E78 points at three (x, y)
+    pairs at 0x00705E60: (0, 0.05), (2, 0.322) and (20, 0.5). 0x00475742
+    pushes it and 0x00475747 calls 0x00583F20, the pair-table evaluator:
+    linear between pairs, the end values held outside them, `ret 8`. It is
+    not 0x00583EA0, the uniform curve of the torque curves above. Its
+    argument is the length of the three-float vector at +0xA0 of the
+    object at engine +0x14, read here as the car's velocity; at 8, 10 and
+    12 m/s the table gives 0.381, 0.401 and 0.421.
+  - 0x0047574C..0x00475767: for a driven wheel, one whose drive fraction
+    ([esp + 0x10], set at 0x00475562 and 0x00475572: 1 - the rear
+    fraction at the front, the rear fraction at the rear) is above 0, the
+    table's value becomes table / (A * B) * fraction, with A = 1.25
+    (0x006B71A0) and B = 1 (0x006B71BC), both scaled up when engine
+    +0x138 is above 1 (0x004756C6..0x0047570F). An undriven wheel keeps
+    the undivided table value.
+  - 0x0047576B..0x00475781: the wheel's result is (B * drive + brake -
+    that * [edi + 0x74 + 8 k]) / 0.008, where drive is the wheel's share
+    of the crank torque (0x00475655..0x00475661) and brake is 2.5 times
+    the brake input (engine +0x12C) times the wheel's spin clamped to
+    +-20 times -0.2, that is -0.5 * brake * spin.
+  - What writes [edi + 0x74 + 8 k] was not found. Without it the rule
+    cannot be reproduced.
+  The model's tyre is the largest approximation here.
 - Where the struts' and tyres' forces are applied, the brakes, the
   steering and the clutch, none of which was traced; what sets body +0x138,
   which doubles the yaw inertia; where the physics applies drag, and car
@@ -546,7 +573,7 @@ same as the built-in ones.
 | the spin matrix | the 32 runs of "The spin matrix": none passes 20 degrees of sideslip above 3 m/s (the worst is 16.0); without the traction limit full throttle at full lock from 10 m/s passes 40 |
 | snap oversteer | with the lock held fixed, 1.25 times the default at 20 m/s and 1.4 times at 25 m/s steady (within 5 degrees, above 0.85 of the speed), 1.4 times at 20 m/s and 1.5 times at 25 m/s spin (past 25 degrees, below 0.3 of the speed) |
 | the tyre force height | at half input from 20 m/s, the load moved across the track puts the lateral forces at 0.4 of the centre of mass's height within 8%, which is `tyre_force_lift` = 0.6 (measured 3.2% high, 4.1% at full input, growing with the body's roll, which the balance leaves out; a lift of 0.5 or 0.7 moves it by a quarter) |
-| the traction limit | recomputed for every wheel on the ground whose tyre grips, over `mixed`, `accelerate` and full throttle at full lock from 10 m/s: 26380 wheel-steps, 622 of them held by the limit; and every unbraked wheel's spin changes by exactly (applied torque - longitudinal force * radius) / inertia per second, gripping, sliding or in the air, over 25428 wheel-steps |
+| the traction limit | recomputed for every wheel on the ground whose tyre grips, over `mixed`, `accelerate`, full throttle at full lock from 10 m/s and full throttle from rest dropped from 3 m: 26760 wheel-steps, 644 of them held by the limit; every unbraked wheel's spin changes by exactly (applied torque - longitudinal force * radius) / inertia per second, gripping, sliding or in the air, over 26384 wheel-steps; in the air a wheel gets the whole recovered split and no longitudinal force, over 120 driven wheel-steps from the drop |
 | top speed | 216 to 252 km/h (232.5) in fifth below the redline after two minutes, settled; the tyres' drive balances the recovered drag plus rolling resistance within 1% |
 | the drivetrain | the wheel rpm is the recovered expression, bit for bit, at every step of `mixed`; the engine speed its clamp; full-throttle crank torque the torque curve; rear drive only, half each; the limiter; manual up, up, down on the steps asked; neutral drives nothing; manual and automatic reverse |
 | inputs and ground | NaN and out-of-range inputs sanitised; a state with any non-finite value refused and left untouched; a ground that answers nothing gives free fall; a normal five units long gives the flat ground's telemetry exactly; a normal facing away, a distance before the segment and one past it are misses; the flat ground's segment rule; the same run turned 90 degrees and moved follows the same path |
@@ -581,7 +608,11 @@ the applied torque left out of the record (the layout); and the engine
 braking at 0.25, which only the pin catches. The traction limit's clamp of
 the lateral force to the peak was taken out of the code as an equivalent
 mutant: `vehicle_sqrt` answers 0 for a negative argument, which is what the
-clamp gave.
+clamp gave. Round 4 added the three the review of comment 3666 found
+surviving on the branch for a wheel in the air - the engine's torque
+ignored, doubled, and reported as 0 applied - which no run reached until
+the driven drop; the wheel balance and the whole-split check now kill all
+three.
 
 ## Drivability
 
@@ -599,18 +630,37 @@ built-in scripts, for #59 to map a controller onto:
   downshifts add engine braking. From 150 km/h 72.9 m, from 200 km/h
   131.0 m. No wheel locks. Unchanged in round 3.
 - **Cornering** at full input, held at speed: 1.13 g at 10 m/s, 1.34 at
-  15, 1.28 at 20, 1.13 at 25 and 0.96 at 30. Round 2 gave 1.24, 1.59, 1.64,
-  1.48 and 1.32 (review comment 3622 measured 1.65, 1.50 and 1.34 at 20, 25
-  and 30 with its own harness). The car's limit is about 1.55 g, from the
-  recovered friction, 1.8 front and 1.7 rear, used as a Coulomb
+  15, 1.28 at 20, 1.13 at 25, 0.96 at 30, 0.81 at 35 and 0.68 at 40.
+  Round 2 gave 1.24, 1.59, 1.64, 1.48 and 1.32 from 10 to 30 m/s. Review
+  comment 3666 measured 1.09, 1.34, 1.30, 1.15, 0.98 and 0.69 g at 10, 15,
+  20, 25, 30 and 40 m/s with its own speed controller; the small
+  differences are the controllers. The car's limit is about 1.55 g, from
+  the recovered friction, 1.8 front and 1.7 rear, used as a Coulomb
   coefficient; a stock 240SX manages about 0.85 g. The default steering
-  reaches it only at about 1.25 times its lock, so full input now leaves
-  0.2 to 0.6 g in hand, which is the margin that keeps it from the snap
-  past about 1.4 times the lock ("The spin matrix"). Below the limit the
-  car understeers; the handbrake slides the rear and turns it in. For #59:
-  a `steer_speed_reference` of 13 m/s instead of 12 keeps the spin matrix
-  at 0 of 32 (3 of 46) and gives 1.43 g at 20 m/s, 1.28 at 25 and 1.10 at
-  30, for less margin to the snap; 14 m/s spins once in the 32.
+  reaches it only at about 1.25 times its lock, so from 10 to 30 m/s full
+  input leaves 0.2 to 0.6 g in hand, which is the margin that keeps it
+  out of the snap window, from 1.3 times the lock at 20 m/s ("The spin
+  matrix"). Below the
+  limit the car understeers; the handbrake slides the rear and turns it
+  in.
+- **For #59's driver and corner speeds**: plan with the figures above, not
+  with the 1.55 g limit. The review's pure-pursuit driver on its 1272 m
+  street course (comment 3666, its own harness, not run here) ran wide by
+  up to 25 m when it planned corners at 1.4 g, and held within 5.5 m at
+  1.1 g; understeer is the safe failure. The other way out is a
+  `steer_speed_reference` of 13 m/s instead of 12: it keeps the spin
+  matrix at 0 of 32 (3 of 46) and gives 1.43 g at 20 m/s, 1.28 at 25 and
+  1.10 at 30, for less margin to the snap window; 14 m/s spins once in the
+  32.
+- **The traction limit is an ideal traction control** (review note N17):
+  no wheel on the ground ever gets more engine torque, driving or
+  braking, than its tyre has left beside the cornering force, so the
+  model cannot power-slide the 240SX or kick its tail out on a lift-off;
+  only the handbrake slides the rear. A Drift event that wants power
+  slides can set `traction_limit` to false, and then gets the spins the
+  spin matrix records for it (7 of 32 at full input, full throttle at
+  full lock from 8 to 12 m/s among them), which its own assists would
+  have to handle.
 - **Braking in a turn** (review note N9): full brake from 22 m/s with a
   steer of 0.2 saturates a rear tyre on 86 of 480 steps (115 in round 2)
   with at most 2.9 degrees of sideslip; half brake with full lock from

@@ -1028,7 +1028,9 @@ void test_full_lock_matrix() {
 // 20 m/s and 1.5 times at 25 m/s spin: the body swings past 25 degrees and
 // the speed falls below 0.3 of the start. The steady side keeps within 5
 // degrees and 0.85 of the speed. The default steering cannot reach these
-// locks; this pins the behaviour docs/VEHICLE.md describes.
+// locks. This pins the lower edge of the window docs/VEHICLE.md
+// describes; at larger locks the front tyres saturate first and the car
+// stops spinning again (2 times at 20 m/s, 3 times at 25 m/s).
 void test_snap_oversteer() {
     nfsu::VehicleSpec spec = nfsu::stock_240sx_vehicle_spec();
     const double reference = spec.approx.steer_speed_reference;
@@ -1079,10 +1081,31 @@ void test_tyre_force_height() {
               " m against " + num(expected));
 }
 
+// Full throttle from rest, dropped from 3 m: the driven wheels spin up in
+// the air before the car lands.
+std::vector<nfsu::VehicleTelemetry> run_driven_drop(const nfsu::VehicleModel& model) {
+    std::vector<nfsu::VehicleTelemetry> out;
+    nfsu::VehicleState state;
+    check(model.reset(state, nfsu::VehiclePose{}), "drop reset");
+    state.position.z = state.position.z + 3.0;
+    nfsu::VehicleInput input;
+    input.throttle = 1.0;
+    for (int i = 0; i < 240; ++i) {
+        nfsu::VehicleTelemetry t;
+        if (!model.step(state, input, nfsu::VehicleFlatGround(), t)) {
+            check(false, "drop step");
+            break;
+        }
+        out.push_back(t);
+    }
+    return out;
+}
+
 // The traction limit, recomputed from the telemetry for every wheel on the
 // ground whose tyre did not slide: the applied torque is the recovered
 // split clamped to radius * sqrt((mu * load)^2 - Fy^2), and 0 where the
-// lateral force alone reaches the peak.
+// lateral force alone reaches the peak. A wheel in the air gets the
+// recovered split whole.
 void test_traction_limit() {
     const nfsu::VehicleModel model = stock_model();
     const float mu[2] = {1.8F, 1.7F};
@@ -1092,7 +1115,7 @@ void test_traction_limit() {
     bool ok = true;
     const std::vector<std::vector<nfsu::VehicleTelemetry>> runs = {
         run_builtin(model, "mixed"), run_builtin(model, "accelerate"),
-        run_constant(model, 10.0, 1.0, 1.0, 0.0, 600)};
+        run_constant(model, 10.0, 1.0, 1.0, 0.0, 600), run_driven_drop(model)};
     for (const std::vector<nfsu::VehicleTelemetry>& run : runs) {
         for (const nfsu::VehicleTelemetry& t : run) {
             for (std::size_t k = 0; k < 4; ++k) {
@@ -1121,10 +1144,13 @@ void test_traction_limit() {
     // And the applied torque, not the recovered one, is what turns the
     // wheel: with no brake on it, a wheel's spin changes by exactly
     // (applied - force_long * radius) / inertia per second, whether its
-    // tyre grips, slides or is off the ground.
+    // tyre grips, slides or is off the ground. The drop puts driven wheels
+    // in the air, where the force is 0 and the whole split is applied.
     const double inertia = nfsu::stock_240sx_vehicle_spec().approx.wheel_inertia;
     std::size_t balanced = 0;
+    std::size_t airborne = 0;
     bool balance_ok = true;
+    bool air_ok = true;
     for (const std::vector<nfsu::VehicleTelemetry>& run : runs) {
         for (std::size_t i = 1; i < run.size(); ++i) {
             const nfsu::VehicleTelemetry& t = run[i];
@@ -1143,17 +1169,27 @@ void test_traction_limit() {
                                     std::fabs(w.force_long * arm);
                 if (std::fabs(change - torque) > 1e-9 * size && balance_ok) {
                     check(false, "wheel balance at step " + std::to_string(t.step) + " wheel " +
-                                     std::to_string(k) + ": " + num(change) + " against " +
-                                     num(torque));
+                                     std::to_string(k) + (w.contact ? "" : " in the air") + ": " +
+                                     num(change) + " against " + num(torque));
                     balance_ok = false;
                 }
                 ++balanced;
+                if (!w.contact) {
+                    if ((w.drive_applied != w.drive_torque || w.force_long != 0.0) && air_ok) {
+                        check(false, "in the air at step " + std::to_string(t.step) + " wheel " +
+                                         std::to_string(k) + " the whole split is applied: " +
+                                         num(w.drive_applied) + " of " + num(w.drive_torque));
+                        air_ok = false;
+                    }
+                    airborne += w.drive_torque != 0.0 ? 1U : 0U;
+                }
             }
         }
     }
     check(balanced > 20000, std::to_string(balanced) + " wheel-steps balanced");
+    check(airborne > 100, std::to_string(airborne) + " of them driven in the air");
     std::cout << "traction limit: " << checked << " wheel-steps checked, binding on " << bound
-              << ", " << balanced << " balanced" << '\n';
+              << ", " << balanced << " balanced, " << airborne << " driven in the air" << '\n';
     check(checked > 10000, std::to_string(checked) + " wheel-steps checked");
     check(bound > 100, "the limit binds on " + std::to_string(bound) + " of them");
 }
