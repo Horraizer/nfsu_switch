@@ -482,7 +482,7 @@ Switch" rests on the census and on the model's own console run
 
   | Object | As configured: fused / fmul | `-ffp-contract=off -fno-fast-math` removed: fused / fmul |
   | --- | --- | --- |
-  | `vehicle_track.o` | 0 / 183 | 103 / 87 |
+  | `vehicle_track.o` | 0 / 186 | 103 / 90 |
   | `vehicle_track_course.o` | 0 / 35 | 21 / 14 |
   | `track_contact.o` | 0 / 81 | 43 / 38 |
 
@@ -499,8 +499,8 @@ Switch" rests on the census and on the model's own console run
 
 Timed on this machine, the best of five runs each of a one-step and a
 12000-step run on the circuit (full throttle and a slight steer, 100 s,
-through 285 steps of wall contact), the difference over 12000: **77.5
-microseconds a step in Release** and 245.7 in Debug. That is 41 segment
+through 285 steps of wall contact), the difference over 12000: **77.4
+microseconds a step in Release** and 245.0 in Debug. That is 41 segment
 queries a step - 4 wheel casts and 37 hull probes, about 1.8 microseconds
 each - the model's own step, the tick's checks and the telemetry hash; at
 120 steps a second, 9.3 ms of every second in Release. The console's is not
@@ -628,7 +628,7 @@ orientation place the car and the camera; `progress()` holds the lap
 counter and the percent the timing of #62 reads, and `events()` the tick's
 crossings, laps and finish; `request_reset()` is the reset button. Resets
 happen by themselves off the track, in reset zones and far from the route.
-The step costs about 78 microseconds on the desktop. The console lap needs
+The step costs about 77 microseconds on the desktop. The console lap needs
 the same TRACKB file on the card and the deko3d renderer.
 
 ## Nothing earlier moved
@@ -640,7 +640,9 @@ acceptance, the nine `vehicle-sim` runs of [`VEHICLE.md`](VEHICLE.md) (the
 eight built-in scripts and `mixed` over the retail handling) and the five
 `race-route` runs of [`RACE_ROUTE.md`](RACE_ROUTE.md) are byte for byte the
 same in all four; `mixed` still hashes to `B9EE418C...CF8E3` and the
-race-route listing to `3A764B95...3F00`.
+race-route listing to `3A764B95...3F00`. The comparison was run again with
+this branch's builds after `origin/main` at 174af93 was merged into it, with
+the same result.
 
 ## Read-only
 
