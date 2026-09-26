@@ -71,6 +71,7 @@ build/nfsu_probe vehicle-sim mixed --handling X:/Games/NFSU/Global/GLOBALB.BUN
 build/nfsu_probe race-events X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/FrontEnd/FrontB.lzc
 build/nfsu_probe track-whole X:/Games/NFSU/Tracks/STREAML1RA.BUN X:/Games/NFSU/Tracks/TRACKB1003.lzc 1003 --texture X:/Games/NFSU/Tracks/TEX1003TRACK.BIN --texture X:/Games/NFSU/Global/INGAMEB.BUN --texture X:/Games/NFSU/Global/GLOBALB.BUN
 build/nfsu_probe race-route X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/FrontEnd/FrontB.lzc X:/Games/NFSU/Tracks/TRACKB1003.lzc 1 --drive forward
+build/nfsu_probe race-timing X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/FrontEnd/FrontB.lzc X:/Games/NFSU/Tracks/TRACKB1003.lzc 1 --drive forward
 build/nfsu_probe vehicle-track X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/FrontEnd/FrontB.lzc X:/Games/NFSU/Tracks/TRACKB1003.lzc 1 wall
 build/nfsu_probe vehicle-track --proving-ground leave
 build/nfsu_probe track-stream-path X:/Games/NFSU/Tracks/STREAML1RA.BUN X:/Games/NFSU/Tracks/TRACKB1003.lzc 1003 --hand-path 1003 --texture X:/Games/NFSU/Tracks/TEX1003TRACK.BIN --texture X:/Games/NFSU/Global/INGAMEB.BUN --texture X:/Games/NFSU/Global/GLOBALB.BUN
@@ -187,6 +188,30 @@ validation, the bundle is not the one the event loads, the path is open
 do not measure its own loop as 100 percent, or a path file line is
 malformed. See
 `docs/RACE_ROUTE.md`.
+`race-timing` takes the same arguments and runs the race state machine of
+issue #62 over the event's route, 60 steps a second from the start of the
+countdown: the car holds the replay's first position until the step after
+go, then takes one position a step (`--path <FILE>` or `--drive
+forward|backward`, optionally `--skip <node> <node>`, and one of them is
+required). It prints the route's boundaries, the clock's rules, every stage
+and countdown change, every forward crossing with its split or lap time or
+the reason it timed nothing, every wrong-way change and reset, the finish,
+each lap's time, the result, the race and the HUD's lap timer. Times are
+`speed.exe`'s ticks of 1/4000 s rounded to hundredths, printed as `M:SS.hh`
+with the ticks beside them. It exits 3 on the refusals of `race-route` and
+0 otherwise. See `docs/RACE_TIMING.md`.
+`vehicle-track` drives the vehicle model of `vehicle-sim` on a track's
+collision: the wheels on its road, the car's body against its walls and
+road, and the resets out of bounds, in reset zones and far from the route.
+With the same two tables, the bundle and an event number it starts on grid
+slot 0 of the event's first race; with `--proving-ground` it uses a small
+course built in code instead. It runs a built-in scenario or a script file
+given with `--script`, and prints the course, the start, a line every
+`--every` steps (120 by default, 0 for none), every contact streak, reset
+and race event, the last step, a summary and the SHA-256 of the per-step
+telemetry, and for a built-in scenario whether it is the pinned one. It
+exits 1 on an argument it refuses, 2 on a script file it cannot read or
+parse, and 3 on a course it cannot build. See `docs/VEHICLE_TRACK.md`.
 `track-stream-path` runs the section streamer of `speed.exe` along a path:
 the zone a car's look-ahead picks, the request rebuilt when that zone
 changes, and the loads and releases that keep the requested sections within

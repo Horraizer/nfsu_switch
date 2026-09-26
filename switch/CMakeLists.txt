@@ -327,6 +327,21 @@ if(NFSU_BUILD_TESTS)
     set_tests_properties(nfsu_switch_vehicle_nro PROPERTIES TIMEOUT 60)
 endif()
 
+# The race state machine of issue #62, which cmake/race_libraries.cmake
+# declares for both configures: its console object holds no fused
+# multiply-add, so that it rounds every time exactly as the desktop does.
+# The census is issue #91's own script, over this library's objects.
+# Appended as one block, so that nothing above is reordered.
+if(NFSU_BUILD_TESTS)
+    add_test(NAME nfsu_switch_race_timing_fma_census
+        COMMAND ${CMAKE_COMMAND}
+                -DOBJDUMP=${CMAKE_OBJDUMP}
+                "-DOBJECTS=$<TARGET_OBJECTS:nfsu_race_timing>"
+                -DLABEL=nfsu_race_timing
+                -P ${PROJECT_SOURCE_DIR}/tests/switch_fma_census.cmake)
+    set_tests_properties(nfsu_switch_race_timing_fma_census PROPERTIES TIMEOUT 60)
+endif()
+
 # The vehicle on the track on the console (issue #60): runs every built-in
 # scenario of docs/VEHICLE_TRACK.md through nfsu_vehicle_track - declared
 # for both configures in cmake/vehicle_track_libraries.cmake, with the
