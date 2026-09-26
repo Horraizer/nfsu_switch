@@ -28,12 +28,17 @@ offline and held to per-program interface manifests, as
 `nfsu_switch_car` application draws the stock 240SX with the CPU reference
 renderer on the console, from six game files on the SD card, painted with
 the runtime body skin, reports whether the frame is the one pinned on the
-desktop, and lets the left stick orbit the camera.
+desktop, and lets the left stick orbit the camera. Its `nfsu_switch_assets`
+application shows whether the SD card holds the retail files the first lap
+needs, and which to copy; [`docs/SWITCH_ASSETS.md`](docs/SWITCH_ASSETS.md)
+lists them and says where they go.
 
 ## Run
 
 ```text
 build/nfsu_probe summary X:/Games/NFSU
+build/nfsu_probe asset-check X:/Games/NFSU
+build/nfsu_probe asset-check F:/nfsu --set stock-car
 build/nfsu_probe chunks X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN 64
 build/nfsu_probe meshes X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN
 build/nfsu_probe obj X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN build/240sx.obj
@@ -58,8 +63,13 @@ build/nfsu_probe track-probe X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268
 build/nfsu_probe track-probe X:/Games/NFSU/Tracks/STREAML1RB.BUN 23015540 178268 23011344 4168 --texture X:/Games/NFSU/Tracks/STREAML1RB_1210.BUN --mesh TRSABC_ROAD_CHOP14 --screen-scale 120
 build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc
 build/nfsu_probe track-collision X:/Games/NFSU/Tracks/TRACKB1210.lzc 783 -8.5
+build/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc
+build/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc 904.24 -94.76
+build/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc 904.24 -94.76 56.5 944 -74 56.5
 build/nfsu_probe car-placement X:/Games/NFSU/Global/GLOBALB.BUN 240SX
 build/nfsu_probe race-events X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/FrontEnd/FrontB.lzc
+build/nfsu_probe track-whole X:/Games/NFSU/Tracks/STREAML1RA.BUN X:/Games/NFSU/Tracks/TRACKB1003.lzc 1003 --texture X:/Games/NFSU/Tracks/TEX1003TRACK.BIN --texture X:/Games/NFSU/Global/INGAMEB.BUN --texture X:/Games/NFSU/Global/GLOBALB.BUN
+build/nfsu_probe track-stream-path X:/Games/NFSU/Tracks/STREAML1RA.BUN X:/Games/NFSU/Tracks/TRACKB1003.lzc 1003 --hand-path 1003 --texture X:/Games/NFSU/Tracks/TEX1003TRACK.BIN --texture X:/Games/NFSU/Global/INGAMEB.BUN --texture X:/Games/NFSU/Global/GLOBALB.BUN
 build/nfsu_probe part-markers X:/Games/NFSU/Cars/240SX/GEOMETRY.BIN exhaust
 build/nfsu_probe body-skin-inputs 240SX --source car-textures X:/Games/NFSU/Cars/240SX/TEXTURES.BIN --source car-vinyls X:/Games/NFSU/Cars/240SX/VINYLS.BIN --source other X:/Games/NFSU/Cars/TEXTURES.BIN --target-texture DUMMY_SKIN1 --vinyl 0 TRIBAL5 16 no-remap --doorline plain --base 200 30 30 128 --assemble
 ```
@@ -74,6 +84,18 @@ entry plus its `build/nfsu_probe` line in the list above:
 table, out of the built program's usage text and out of this file, and fails
 unless all three name the same commands. A command that is not registered is
 named as unknown and refused with exit 1.
+
+`asset-check` checks that a directory holds the retail files a set needs,
+by name, size and SHA-256, and prints one line per file, a verdict -
+`complete`, `missing files`, `partial`, `wrong version` or `unreadable` -
+and the files still to copy. Names are matched without regard to ASCII
+case, a file of the wrong size is never read, and nothing is written. The
+default set, `first-lap`, is the twelve files one lap of Underground-mode
+race 1 in the stock 240SX needs; `stock-car` and `event-1` are its two
+halves. Run it on the game's own folder, or on the SD card before it goes
+into the console, where `nfsu_switch_assets` shows the same report. It
+exits 0 when every file matches, 2 when the root cannot be listed and 3
+otherwise. See `docs/SWITCH_ASSETS.md`.
 
 `meshes` lists every mesh with its name, vertex count, face count and
 validation status. `obj` writes all valid meshes to a diagnostic OBJ file at
@@ -121,6 +143,27 @@ the Underground order - the event a new career enters, the events winning it
 opens, race 1 and the first circuit from race 1. It exits 3 if either table
 fails validation or a race names a track the track table does not hold. See
 `docs/RACE_EVENTS.md`.
+`track-whole` loads the whole track one race uses rather than one bounded
+region of it. The track's `TRACKB####.LZC` carries the streaming table of
+its `STREAM*.BUN`; the command applies the loader rule recovered from
+`speed.exe` to pick the sections the game loads for that track number,
+reads exactly their byte ranges and nothing else, places them as one scene
+and prints each section's counts, the totals and the memory budgets of
+issue #52 for the desktop and for the Switch arena plan. `--set zones` and
+`--set stream` load the two bounds the rule sits inside, and `--out` draws
+the whole track with the CPU reference renderer and never replaces a file.
+See `docs/TRACK_WHOLE.md`.
+`track-stream-path` runs the section streamer of `speed.exe` along a path:
+the zone a car's look-ahead picks, the request rebuilt when that zone
+changes, and the loads and releases that keep the requested sections within
+a byte budget, 60 steps a second. It prints every step that did something
+and a SHA-256 of the whole sequence, loads each distinct resident set -
+exactly its byte ranges - to measure this project's own bytes for it against
+the desktop and Switch budgets, and with `--frame-every` and `--out` draws
+frames from only the resident sections. The path is a file of raw-slot
+vertices, or `--hand-path 1003`: a HAND-GIVEN polyline around the circuit of
+race 1, not the game's route. `--policy zone-only` and `--cost prepared` are
+labelled bounds, not retail rules. See `docs/TRACK_STREAMING.md`.
 `car-parts` parses the car part database of `GLOBAL/GLOBALB.BUN` and lists
 every part record: car type hash, slot, upgrade level, part name hash and
 the four per-LOD mesh hashes. A car type name lists only its records.
@@ -258,6 +301,22 @@ structure: the leaf cells that column touches, the polygons in a 16 by 16
 box around it, and a ray straight down. See `docs/TRACK_COLLISION.md` for
 the byte evidence, the retail code every record size comes from, the
 coordinate units and what is still unknown.
+`track-contact` loads the static collision of a whole race track - one
+`TRACKB<NNNN>.lzc` is the whole circuit's collision, because the game keeps
+exactly one such set resident and loads it once per race - and adds what a
+vehicle needs: every triangle's unit normal and whether it is road or wall,
+the resident and load-time bytes, the largest collision the loader admits,
+and the load placed in the Switch arena plan of `docs/MEMORY_BUDGETS.md`.
+Given `px pz` it probes the column there; given two points `px pz py` it
+sweeps the segment between them. Either answers hit, clear (a cell lies
+under the query and nothing on it is met), outside (no cell lies under any
+part of it, which is out of bounds) or refused, and a hit carries the
+polygon, the distance in world units, the point and a normal that faces the
+query. A column exactly on the seam between two polygons meets them, and
+a sweep reports the nearest surface it meets even where issue #39's ray
+rounds that surface's edge away. It exits 3 for a collision that fails its
+checks, 4 if the Switch plan cannot hold it and 5 for a refused query. See
+`docs/TRACK_COLLISION.md`, "The whole circuit".
 `stock-parts` applies the game's stock-part rules to one car type and
 prints the chosen record per slot with each LOD mesh hash resolved against
 the `GEOMETRY.BIN` files given after the car type, including the mesh the

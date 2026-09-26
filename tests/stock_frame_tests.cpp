@@ -374,7 +374,30 @@ const std::string kSkinTarget = "DUMMY_SKIN1";
 const std::string kDoorline = "240SX_DOORLINE";
 const std::string kDoorlineMask = "240SX_DOORLINE_MASK";
 
-Bytes car_geometry() {
+// A wheel model authored the way the retail 240SX_KIT00_WHEEL_A is (issue
+// #161): that mesh spans lateral 0.0018..0.2006, with its rim at the
+// lateral-zero edge and a flat backing quad at +0.2006, so it is a
+// right-hand wheel whose outer face looks along -lateral. Here the rim is
+// quad 0, textured with the GLOBALB texture, at lateral 0, and the backing
+// quad is quad 1, textured with the car's own, at lateral +0.2. Both are
+// 0.5 square about the model's origin.
+void add_handed_wheel(MeshSpec& mesh) {
+    mesh.texture_hashes = {nfsu::bin_hash(kGlobalTexture), nfsu::bin_hash(kCarTexture)};
+    for (const float lateral : {0.0F, 0.2F}) {
+        const std::uint16_t first = static_cast<std::uint16_t>(mesh.vertices.size());
+        mesh.vertices.insert(mesh.vertices.end(), {{-0.25F, -0.25F, lateral, 0.0F, 0.0F},
+                                                   {0.25F, -0.25F, lateral, 1.0F, 0.0F},
+                                                   {0.25F, 0.25F, lateral, 1.0F, 1.0F},
+                                                   {-0.25F, 0.25F, lateral, 0.0F, 1.0F}});
+        mesh.quads.push_back({first, static_cast<std::uint16_t>(first + 1),
+                              static_cast<std::uint16_t>(first + 2),
+                              static_cast<std::uint16_t>(first + 3)});
+    }
+}
+
+// handed_wheel swaps the fixture's box wheel, which looks the same from
+// either side, for the retail-shaped one above.
+Bytes car_geometry(bool handed_wheel = false) {
     MeshSpec base{"240SX_BASE_A", kBaseA, {}, {}, {nfsu::bin_hash(kGlobalTexture)}, {}};
     add_box(base, -2.0F, 2.0F, 0.10F, 0.20F, -0.80F, 0.80F);
     MeshSpec body{"240SX_BODY_A",
@@ -396,7 +419,11 @@ Bytes car_geometry() {
                    {kRightExhaust, -2.05F, -0.50F, 0.20F}}};
     add_box(rear, -2.10F, -1.90F, 0.20F, 0.60F, -0.80F, 0.80F);
     MeshSpec wheel{"240SX_WHEEL_A", kWheelA, {}, {}, {nfsu::bin_hash(kGlobalTexture)}, {}};
-    add_box(wheel, -0.30F, 0.30F, -0.30F, 0.30F, -0.10F, 0.10F);
+    if (handed_wheel) {
+        add_handed_wheel(wheel);
+    } else {
+        add_box(wheel, -0.30F, 0.30F, -0.30F, 0.30F, -0.10F, 0.10F);
+    }
     MeshSpec exhaust{"240SX_EXHAUST_A", kExhaustA, {}, {}, {kMissingTexture}, {}};
     add_box(exhaust, -0.15F, 0.05F, -0.05F, 0.05F, -0.05F, 0.05F);
     return build_geometry({base, body, rear, wheel, exhaust});
@@ -1358,6 +1385,134 @@ void test_view_renders_the_stock_frame() {
           "the view's frame is render_stock_frame's, byte for byte");
 }
 
+// What drew one pixel of a rendered stock frame.
+struct PixelOwner {
+    bool drawn = false;
+    std::uint32_t mesh_hash = 0;
+    std::size_t material = 0;
+    std::uint32_t slot = 0;
+    std::uint32_t copy = 0;
+};
+
+// The owner of the pixel a point lands on, the point given in the raw slot
+// frame (longitudinal, lateral, vertical) and projected with the camera
+// the frame was rendered with. The group comes from the frame's triangle
+// id and the ranges prepared_triangle_ranges gives for the order
+// render_scene submitted in; the copy from the id's position inside that
+// group's range, which holds one run of triangles per drawn copy in the
+// order prepared_mesh_instances gives.
+bool owner_at(const nfsu::StockFrame& frame, const nfsu::RenderOptions& options,
+              const float (&point)[3], PixelOwner& owner, std::string& error) {
+    owner = PixelOwner{};
+    nfsu::CameraFrame camera;
+    if (!nfsu::make_camera_frame(options.camera, options.width, options.height, camera,
+                                 error)) {
+        return false;
+    }
+    const nfsu::ClipVertex clip =
+        nfsu::project_point(camera, nfsu::Vec3{point[0], point[2], -static_cast<double>(point[1])});
+    if (!(clip.w > 0.0)) {
+        error = "the point is behind the camera";
+        return false;
+    }
+    const double sx = (clip.x / clip.w + 1.0) * 0.5 * options.width;
+    const double sy = (1.0 - clip.y / clip.w) * 0.5 * options.height;
+    if (!(sx >= 0.0 && sy >= 0.0 && sx < options.width && sy < options.height)) {
+        error = "the point is outside the frame";
+        return false;
+    }
+    const std::size_t pixel = static_cast<std::size_t>(std::floor(sy)) * options.width +
+                              static_cast<std::size_t>(std::floor(sx));
+    const std::uint32_t id = frame.frame.ids()[pixel];
+    if (id == nfsu::kNoTriangle) {
+        return true;
+    }
+    std::vector<std::uint32_t> order;
+    std::vector<nfsu::PreparedTriangleRange> ranges;
+    nfsu::PreparedMeshInstances copies;
+    if (!nfsu::prepared_draw_order(frame.scene,
+                                   options.material_state == nfsu::MaterialStateMode::retail,
+                                   order, nullptr, error) ||
+        !nfsu::prepared_triangle_ranges(frame.scene, order, ranges, error) ||
+        !nfsu::prepared_mesh_instances(frame.scene, copies, error)) {
+        return false;
+    }
+    for (const nfsu::PreparedTriangleRange& range : ranges) {
+        if (id < range.first_id || id - range.first_id >= range.count) {
+            continue;
+        }
+        const nfsu::PreparedDraw& draw = frame.scene.draws[range.draw];
+        const std::uint32_t per_copy = draw.index_count / 3;
+        const std::size_t copy = (id - range.first_id) / per_copy;
+        const nfsu::PreparedInstance& instance =
+            frame.scene.instances[copies.order[copies.first[draw.mesh] + copy]];
+        owner.drawn = true;
+        owner.mesh_hash = instance.mesh_hash;
+        owner.material = draw.material_index;
+        owner.slot = instance.part_slot;
+        owner.copy = instance.copy;
+        return true;
+    }
+    error = "no range holds triangle " + std::to_string(id);
+    return false;
+}
+
+// Issue #161. The owner orbited the painted stock car to its left side and
+// saw both wheels there drawn as flat dark squares: the wheel model is
+// authored for the right-hand side, and the stand-in placed the left
+// wheels without the half turn the retail draw gives wheels 0 and 3, so a
+// camera on the left saw each left wheel's inboard backing quad in front
+// of its rim. With a retail-shaped wheel, a camera square to either side
+// must see the near-side wheels' rims.
+void test_wheels_face_out_on_both_sides() {
+    std::vector<Bytes> files = fixture_files();
+    files[static_cast<std::size_t>(nfsu::StockFrameFile::car_geometry)] = car_geometry(true);
+    auto run = std::make_unique<Run>();
+    fill_inputs(files, run->inputs);
+    std::string error;
+    check(nfsu::prepare_stock_frame(run->inputs, nfsu::stock_240sx_request(), run->frame, error),
+          "the handed-wheel car is prepared: " + error);
+    check(run->frame.inputs_ok, "the handed-wheel inputs are clean");
+    if (run->frame.scene.instances.empty()) {
+        return;
+    }
+    struct Side {
+        const char* name;
+        double yaw;
+        std::size_t wheels[2];
+    };
+    // yaw -90 puts the eye on the car's left, where lateral is positive;
+    // wheels 0 and 3 are the left pair of write_car_types.
+    const Side sides[] = {{"left", -90.0, {0, 3}}, {"right", 90.0, {1, 2}}};
+    for (const Side& side : sides) {
+        nfsu::RenderOptions options;
+        options.camera.yaw_deg = side.yaw;
+        options.camera.pitch_deg = 0.0;
+        check(nfsu::render_stock_frame(run->frame, options, error),
+              std::string("rendered from the ") + side.name + ": " + error);
+        for (const std::size_t w : side.wheels) {
+            // A point in the plane of the wheel's centre, 0.22 below it:
+            // inside the 0.5 square rim, and on a line of sight that passes
+            // under the brake box (0.18 about the centre, 0.12 either side
+            // of that plane) and under the base and the body. On the old
+            // placement the same line meets the left wheels' backing quad
+            // first, 0.2 outboard of the rim.
+            const float* centre = run->frame.report.placements[w].position;
+            const float point[3] = {centre[0], centre[1], centre[2] - 0.22F};
+            PixelOwner owner;
+            const std::string what =
+                std::string("from the ") + side.name + ", wheel " + std::to_string(w);
+            check(owner_at(run->frame, options, point, owner, error), what + ": " + error);
+            check(owner.drawn && owner.mesh_hash == kWheelA && owner.slot == 17 &&
+                      owner.copy == w,
+                  what + " is what the camera sees there");
+            check(owner.material == 0,
+                  what + " shows its rim (material 0), not its backing quad (material " +
+                      std::to_string(owner.material) + ")");
+        }
+    }
+}
+
 // docs/INPUT.md's table, written out here by bit number rather than taken
 // from the constants the mapping itself uses.
 void test_npad_mapping() {
@@ -1621,6 +1776,7 @@ int main(int argc, char** argv) {
     test_painted_fixture_frame();
     test_skin_refusals();
     test_view_renders_the_stock_frame();
+    test_wheels_face_out_on_both_sides();
     test_npad_mapping();
     test_view_bindings();
     test_default_check();

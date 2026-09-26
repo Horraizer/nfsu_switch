@@ -368,7 +368,11 @@ with it.
   slots report `placement unreproduced` and contribute nothing.
   `place_wheels_from_culling_table` opts in to four copies each at the
   culling placements of `derive_cullable_part_placements`, with
-  `placement_exact` false on every instance it produces.
+  `placement_exact` false on every instance it produces. Copies 0 and 3,
+  the left pair, are first turned the way the retail draw turns them:
+  `car_wheel_half_turn() * translation` for the wheel and
+  `car_brake_reflection() * translation` for the brake (issue #161,
+  `docs/PART_PLACEMENT.md`, "Which way the wheel and brake models face").
 - Several slots may name one mesh. It is prepared once and drawn once per
   slot, which is also how the wheel's four copies share one mesh.
 
@@ -522,11 +526,12 @@ culling placements as a stand-in and not the matrix the game draws them
 with, and `instances:` counts them apart. The picture shows what those
 matrices give and nothing more: the lateral component is a term
 `docs/PART_PLACEMENT.md` traces but does not reproduce, and the spin and
-steering angles, the half turn wheels 0 and 3 take and the `(1, -1, 1, 1)`
-reflection brakes 0 and 3 take are not there at all, which shows in the
-render as one side's copies facing the wrong way. Without the option
-neither slot contributes a copy, and the frame holds no wheel at all rather
-than a wheel in a place this project cannot defend.
+steering angles are not there at all. The half turn wheels 0 and 3 take
+and the `(1, -1, 1, 1)` reflection brakes 0 and 3 take are there since
+issue #161; before it one side's copies faced the wrong way, and a camera
+on the car's left saw each left wheel's backing quad in front of its rim.
+Without the option neither slot contributes a copy, and the frame holds no
+wheel at all rather than a wheel in a place this project cannot defend.
 
 ## Frames and camera
 
@@ -1132,14 +1137,25 @@ each from the culling placements:
 
 - 24 slots draw, from 24 meshes, in 30 instances: `instances: 30 exact 22
   stand_in 8`. 79 material groups (20 resolved), 6137 triangles submitted,
-  116748 pixels drawn, drawn bounds x 390..973, y 232..552. SHA-256
-  `FD6727333A94803A97FD26282CD89DF6F3D3295E0231F4A871A1B14089D28CE9`.
+  116746 pixels drawn, drawn bounds x 390..973, y 232..552. SHA-256
+  `E7A042A560E807EE74595449275FFBDC1AE0A0BF321CE06EEF434BC5B1C8274A`.
 - The four copies of each land under the four arches, which is the
   confirmation recorded under "Instances" above. They are a stand-in: the
-  near-side wheels are drawn unmirrored, because the mirroring the retail
-  draw applies is part of the matrix this project did not reproduce. The
-  report says so on its `stock wheels:` and `instances:` lines, and the 8
-  stand-in copies are exactly the two slots' four copies each.
+  lateral term, the spin and the steering of the retail matrix are not
+  reproduced. The report says so on its `stock wheels:` and `instances:`
+  lines, and the 8 stand-in copies are exactly the two slots' four copies
+  each. The left pair of each is half-turned or reflected as the retail
+  draw does it (issue #161).
+- Issue #161 re-pinned this frame. It was
+  `FD6727333A94803A97FD26282CD89DF6F3D3295E0231F4A871A1B14089D28CE9`, with
+  116748 pixels drawn, while the left wheels were pure translations: the
+  front-left wheel's backing quad then sat 0.2 outboard of its rim and
+  showed as two black pixels at x 931..932, y 385, above the far fender.
+  Those two pixels are background now and nothing else in the frame
+  changed. The report's `triangles front` and `back` counts move from 3553
+  and 2576 to 3061 and 3068, because the turned wheels now face the other
+  way and the reflected brakes are wound the other way; `pixel tests` and
+  `fragments` move with them.
 
 ### Runtime body skin
 

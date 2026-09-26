@@ -32,6 +32,11 @@ endfunction()
 # are and why each is there.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/car_libraries.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/draw_libraries.cmake)
+# The section streamer (issue #157), for both configures.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/residency_libraries.cmake)
+# The retail asset manifest, its check and the console's file system (issue
+# #47), for both configures; it links nfsu_sha256 from cmake/car_libraries.cmake.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/asset_libraries.cmake)
 
 # The Switch build configures the shared car and draw libraries and switch/,
 # and nothing below this point: the desktop programs, the other libraries and every test of
@@ -168,6 +173,25 @@ add_library(nfsu_race_events
 target_link_libraries(nfsu_race_events PUBLIC nfsu_core)
 nfsu_enable_warnings(nfsu_race_events)
 
+# The whole track one race loads (issue #156): the streaming table of a
+# track's TRACKB file, the recovered rule that picks which of its sections
+# speed.exe loads, the bounded read of exactly those byte ranges, and their
+# merge into one geometry report and one scenery report that the existing
+# scene layer places as one scene. It links the zone decoder because the
+# rule reads two of the zone file's lists, nfsu_texture_decode for the
+# per-section texture sources, and nfsu_gpu_upload for the budgets of issue
+# #52. It reads its files with std::ifstream, as nfsu_core's loaders do,
+# reads no clock and makes no decision from a floating-point result - it
+# only takes the minimum and maximum of bounds the parsers computed - so it
+# carries no floating-point flags. See docs/TRACK_WHOLE.md.
+add_library(nfsu_track_stream
+    src/track_stream.cpp
+)
+
+target_link_libraries(nfsu_track_stream
+    PUBLIC nfsu_track_zones nfsu_texture_decode nfsu_gpu_upload)
+nfsu_enable_warnings(nfsu_track_stream)
+
 # The read-only inspector. It is declared after every library it uses.
 add_executable(nfsu_probe
     src/main.cpp
@@ -183,6 +207,9 @@ target_link_libraries(nfsu_probe
             nfsu_track_probe nfsu_race_events
             nfsu_texture_decode nfsu_skin_inputs nfsu_stock_scene
             nfsu_arg_path)
+# `track-whole` (issue #156) is the one command that needs the whole-track
+# layer; it is linked on its own line so the list above stays as it was.
+target_link_libraries(nfsu_probe PRIVATE nfsu_track_stream)
 nfsu_enable_warnings(nfsu_probe)
 
 # nfsu_body_skin, nfsu_skin_inputs, nfsu_runtime_skin and nfsu_inspect were
@@ -417,6 +444,19 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_race_event_tests)
     add_test(NAME nfsu_race_event_tests COMMAND nfsu_race_event_tests)
 
+    # The whole-track layer over synthetic multi-section streams: a TRACKB
+    # image carrying a streaming table and a zone container, and a stream
+    # of several sections at their own offsets, parsed by the real parsers.
+    # It also writes the fixture the track-whole guards drive the probe over.
+    add_executable(nfsu_track_stream_tests
+        tests/track_stream_tests.cpp
+    )
+
+    target_link_libraries(nfsu_track_stream_tests PRIVATE nfsu_track_stream)
+    nfsu_enable_warnings(nfsu_track_stream_tests)
+    add_test(NAME nfsu_track_stream_tests COMMAND nfsu_track_stream_tests)
+    set_tests_properties(nfsu_track_stream_tests PROPERTIES TIMEOUT 60)
+
     add_executable(nfsu_body_skin_tests
         tests/body_skin_tests.cpp
     )
@@ -585,6 +625,17 @@ if(NFSU_BUILD_TESTS)
                 -DTESTS=$<TARGET_FILE:nfsu_race_event_tests>
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/race_events_guards.cmake
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+    # What `track-whole` refuses, prints and exits with: every refusal with
+    # no input at all, and the whole listing over the synthetic stream
+    # nfsu_track_stream_tests writes on request. tests/track_whole_guards.cmake
+    # says what each case is for.
+    add_test(NAME nfsu_probe_track_whole_guards
+        COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -DTESTS=$<TARGET_FILE:nfsu_track_stream_tests>
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/track_whole_guards.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(nfsu_probe_track_whole_guards PROPERTIES TIMEOUT 60)
     # nfsu_probe registers a command in one place, and print_usage() composes
     # the usage line out of the name main() dispatches on. This reads the
     # command inventory back out of three independent places - the kCommands
@@ -754,6 +805,11 @@ set(NFSU_PLATFORM_LIBRARIES nfsu_arg_path nfsu_render nfsu_texture_export nfsu_p
 # (NFSU_PLATFORM_LIBRARIES), so src/texture.cpp holds only the texture
 # decoder now and the gate reads it again.
 set(NFSU_PLATFORM_SOURCES src/inspect_window_win32.cpp)
+
+# Neutral as well: nfsu_track_stream (issue #156) reads its files with
+# std::ifstream, as nfsu_core's loaders do, and reads no clock; its own
+# comment above says so.
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_track_stream)
 
 # Every library target and each neutral one's sources, written for the gate
 # once the whole directory has been read, so that a library added anywhere
@@ -1009,4 +1065,165 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_draw_commands_retail
         PRIVATE nfsu_draw_commands nfsu_stock_frame nfsu_arg_path)
     nfsu_enable_warnings(nfsu_draw_commands_retail)
+endif()
+
+# ---------------------------------------------------------------------------
+# Whole-track collision and its contact queries (issue #158)
+# ---------------------------------------------------------------------------
+#
+# Appended as one block, after everything above, so that no list above is
+# reordered. The static collision of a whole race track loaded once, with its
+# memory placed against the arena plan of issue #52, and the bounded point
+# and segment contact queries issue #60 needs, with the units, normals and
+# coordinate conversion that issue asks for. It reads the collision
+# nfsu_track already decodes; see docs/TRACK_COLLISION.md, "The whole
+# circuit". It is desktop only for now: the Switch tree does not configure
+# this block, because nothing on the console queries collision yet.
+#
+# Floating-point contraction is disabled for the reason nfsu_track_visibility
+# disables it: every answer here turns on a strict comparison - a determinant
+# against zero, a barycentric coordinate against 0 and 1, a slope against
+# kTrackContactRoadMinUp - so a fused multiply-add would move a boundary
+# case, and with it a contact the documentation pins.
+add_library(nfsu_track_contact
+    src/track_contact.cpp
+)
+
+target_link_libraries(nfsu_track_contact PUBLIC nfsu_track nfsu_memory)
+nfsu_enable_warnings(nfsu_track_contact)
+if(MSVC)
+    target_compile_options(nfsu_track_contact PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_track_contact PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+
+# Neutral: it decodes nothing of its own, reads files only through
+# load_track_collision's std::ifstream, calls no operating system function and
+# reads no clock. Appended to the list rather than written into it, for the
+# reason this block is appended at all; the manifest is written once the whole
+# directory has been read, so it sees this.
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_track_contact)
+
+# `track-contact` loads a whole track through it, and places the load in the
+# Switch arena plan, which switch_memory_budget() in nfsu_gpu_upload builds.
+target_link_libraries(nfsu_probe PRIVATE nfsu_track_contact nfsu_gpu_upload)
+
+if(NFSU_BUILD_TESTS)
+    # Synthetic images of four separate sections of track: the triangle table,
+    # road and wall, point and segment contacts and their normals, a query
+    # inside one section against the same query over that section alone, the
+    # refusals and caps, the memory plan and the coordinate map. It links
+    # nfsu_arg_path for its --write-fixture mode, which takes paths on the
+    # command line.
+    add_executable(nfsu_track_contact_tests
+        tests/track_contact_tests.cpp
+    )
+
+    target_link_libraries(nfsu_track_contact_tests PRIVATE nfsu_track_contact nfsu_arg_path)
+    nfsu_enable_warnings(nfsu_track_contact_tests)
+    add_test(NAME nfsu_track_contact_tests COMMAND nfsu_track_contact_tests)
+
+    # What `track-contact` refuses, prints and exits with, over the fixture
+    # the tests above write on request. A script for the reason
+    # tests/track_render_guards.cmake gives: the exit status is half of what
+    # is pinned, and PASS_REGULAR_EXPRESSION would ignore it.
+    add_test(NAME nfsu_probe_track_contact_guards
+        COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -DTESTS=$<TARGET_FILE:nfsu_track_contact_tests>
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/track_contact_guards.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+    set_tests_properties(nfsu_track_contact_tests nfsu_probe_track_contact_guards
+        PROPERTIES TIMEOUT 60)
+endif()
+
+# Section residency along a path (issue #157). nfsu_track_residency is
+# declared for both configures in cmake/residency_libraries.cmake, with its
+# floating-point options; on the desktop it also links nfsu_track_stream,
+# whose table lookup and zone test it calls. It reads no file and no clock
+# and calls no library mathematics, so it is neutral. See
+# docs/TRACK_STREAMING.md.
+target_link_libraries(nfsu_track_residency PUBLIC nfsu_track_stream)
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_track_residency)
+
+# `track-stream-path` is the one command that needs it; linked on its own
+# line, as nfsu_track_stream is, so the lists above stay as they were.
+target_link_libraries(nfsu_probe PRIVATE nfsu_track_residency)
+
+if(NFSU_BUILD_TESTS)
+    # The streamer over synthetic zone graphs: entering, leaving and
+    # revisiting a zone, the start set, the look-ahead, the three-sample
+    # commit, a request that does not fit, the release order and the
+    # sequence hash, plus the path format and its sampling.
+    add_executable(nfsu_track_residency_tests
+        tests/track_residency_tests.cpp
+    )
+
+    target_link_libraries(nfsu_track_residency_tests PRIVATE nfsu_track_residency)
+    nfsu_enable_warnings(nfsu_track_residency_tests)
+    add_test(NAME nfsu_track_residency_tests COMMAND nfsu_track_residency_tests)
+
+    # What `track-stream-path` refuses, prints and exits with: every refusal
+    # with no input at all, and whole runs over the synthetic stream
+    # nfsu_track_stream_tests writes on request, frames included.
+    # tests/track_stream_path_guards.cmake says what each case is for.
+    add_test(NAME nfsu_probe_track_stream_path_guards
+        COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -DTESTS=$<TARGET_FILE:nfsu_track_stream_tests>
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/track_stream_path_guards.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+    set_tests_properties(nfsu_track_residency_tests
+        nfsu_probe_track_stream_path_guards
+        PROPERTIES TIMEOUT 120)
+endif()
+
+# ---------------------------------------------------------------------------
+# Retail assets: the manifest, the check and the console's file system
+# (issue #47)
+# ---------------------------------------------------------------------------
+#
+# Appended as one block, after everything above, so that no list above is
+# reordered. Both libraries are declared in cmake/asset_libraries.cmake for
+# both configures; this block adds what only the desktop has - the probe's
+# link, the classification and the tests. See docs/SWITCH_ASSETS.md.
+#
+# nfsu_assets is neutral: it reaches files only through the FileSystemService
+# it is handed and reads no clock (its own comment in that file).
+# nfsu_posix_file_system is platform code on purpose: it calls opendir,
+# readdir, closedir and stat, which is what the console's service is.
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_assets)
+list(APPEND NFSU_PLATFORM_LIBRARIES nfsu_posix_file_system)
+
+# `asset-check` runs the check against a directory through the desktop
+# service; linked on its own line so the lists above stay as they were.
+target_link_libraries(nfsu_probe PRIVATE nfsu_assets)
+
+if(NFSU_BUILD_TESTS)
+    # The manifests against the files the other layers name, the naming
+    # rule, every classification over a fake file system and over real
+    # directories through both services, the bounds of every read, the
+    # config file and the console's whole report. It links nfsu_stock_frame
+    # and nfsu_race_events only to compare their file names with the sets.
+    add_executable(nfsu_asset_tests
+        tests/asset_tests.cpp
+    )
+
+    target_link_libraries(nfsu_asset_tests
+        PRIVATE nfsu_assets nfsu_platform_fakes nfsu_arg_path nfsu_posix_file_system
+                nfsu_stock_frame nfsu_race_events)
+    nfsu_enable_warnings(nfsu_asset_tests)
+    add_test(NAME nfsu_asset_tests COMMAND nfsu_asset_tests
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+    # What `asset-check` refuses, prints and exits with, over directories the
+    # script writes. A script for the reason tests/track_render_guards.cmake
+    # gives: the exit status is half of what is pinned.
+    add_test(NAME nfsu_probe_asset_check_guards
+        COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:nfsu_probe>
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/asset_check_guards.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+    set_tests_properties(nfsu_asset_tests nfsu_probe_asset_check_guards
+        PROPERTIES TIMEOUT 60)
 endif()

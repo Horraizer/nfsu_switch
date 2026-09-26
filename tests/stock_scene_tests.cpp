@@ -514,6 +514,31 @@ void test_mirror_and_pass_lod_rules() {
     check(slot_of(report, 16).lod == 0, "the brake takes LOD A in the front end");
 }
 
+// The upper 3x3 block a wheel or brake copy should carry: the half turn
+// for wheel positions 0 and 3, the lateral reflection for their brakes, and
+// the identity for positions 1 and 2 (issue #161).
+std::array<float, 9> expected_orientation(bool brake, std::size_t position) {
+    if (position == 1 || position == 2) {
+        return {1.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 1.0F};
+    }
+    if (brake) {
+        return {1.0F, 0.0F, 0.0F, 0.0F, -1.0F, 0.0F, 0.0F, 0.0F, 1.0F};
+    }
+    return {-1.0F, 0.0F, 0.0F, 0.0F, -1.0F, 0.0F, 0.0F, 0.0F, 1.0F};
+}
+
+bool has_orientation(const nfsu::PreparedInstance& instance,
+                     const std::array<float, 9>& expected) {
+    for (std::size_t row = 0; row < 3; ++row) {
+        for (std::size_t column = 0; column < 3; ++column) {
+            if (instance.transform[row * 4 + column] != expected[row * 3 + column]) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 // With the culling table opted in, the wheel and the brake draw four
 // copies each, at the four wheel positions, and none of them claims to be
 // the drawn matrix.
@@ -547,10 +572,34 @@ void test_wheel_placement() {
         check(instance.transform[12] == position[0] &&
                   instance.transform[13] == position[1] &&
                   instance.transform[14] == position[2] &&
-                  instance.transform[15] == 1.0F && instance.transform[0] == 1.0F,
+                  instance.transform[15] == 1.0F,
               "wheel copy " + std::to_string(w) + " sits at its wheel position");
+        // The wheel model is authored for the right-hand side. The draw
+        // half-turns it at positions 0 and 3, the two left wheels, so that
+        // the rim faces out there too; without that a camera on the left
+        // sees the inboard backing quad (issue #161).
+        check(has_orientation(instance, expected_orientation(false, w)),
+              "wheel copy " + std::to_string(w) +
+                  (w == 0 || w == 3 ? " is half-turned" : " is not turned"));
         check(instance.copy == w && instance.part_slot == 17,
               "wheel copy " + std::to_string(w) + " provenance");
+    }
+    const nfsu::StockSlotReport& brake = slot_of(report, 16);
+    for (std::size_t w = 0; w < nfsu::kCarWheelCount; ++w) {
+        const nfsu::PreparedInstance& instance = scene.instances[brake.first_instance + w];
+        const float* position = report.placements[6 + w].position;
+        check(!instance.placement_exact,
+              "brake copy " + std::to_string(w) + " is not an exact placement");
+        check(instance.transform[12] == position[0] &&
+                  instance.transform[13] == position[1] &&
+                  instance.transform[14] == position[2] &&
+                  instance.transform[15] == 1.0F,
+              "brake copy " + std::to_string(w) + " sits at its wheel position");
+        check(has_orientation(instance, expected_orientation(true, w)),
+              "brake copy " + std::to_string(w) +
+                  (w == 0 || w == 3 ? " is reflected" : " is not reflected"));
+        check(instance.copy == w && instance.part_slot == 16,
+              "brake copy " + std::to_string(w) + " provenance");
     }
     std::string validation_error;
     check(nfsu::validate_prepared_scene(scene, validation_error),

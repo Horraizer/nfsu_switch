@@ -108,8 +108,12 @@ build/nfsu_draw_commands_retail.exe <retail-root>
 
 Take file manifests before and after running it. It records and compares the
 stock 240SX in both material modes and checks every instance matrix. Its off
-mode must produce the 3686418-byte TGA with SHA-256
-`FD6727333A94803A97FD26282CD89DF6F3D3295E0231F4A871A1B14089D28CE9`.
+mode must produce the unpainted stock frame `include/nfsu/stock_frame.h`
+pins, `kStock240sxFrameBytes` and `kStock240sxFrameSha256`: since issue #161
+the 3686418-byte TGA with SHA-256
+`E7A042A560E807EE74595449275FFBDC1AE0A0BF321CE06EEF434BC5B1C8274A`
+(`FD6727333A94803A97FD26282CD89DF6F3D3295E0231F4A871A1B14089D28CE9` before
+it, when the program spelled the hash out itself).
 It is deliberately outside CTest, so the normal gates require no retail data.
 No retail or derived asset is tracked.
 

@@ -216,10 +216,14 @@ by the `2 * pi / 65536` at `0x006CC980`, so `0x4000` is a quarter turn.
 `0x0040BA40` writes the cosine into elements 0 and 10, `-sin` into element 2
 and `+sin` into element 8, so the turn is in the longitudinal-vertical plane,
 about the lateral axis. `0x00564B10` is a ninth-order Taylor sine, so at a
-quarter turn it returns `1.00000358` rather than exactly 1, while the cosine
-does come out exactly `-0.0`. `nfsu::car_marker_quarter_turn` writes the
-exact 0 and 1 instead. That 3.6e-06 difference is deliberate and is the only
-place this project knowingly departs from the instruction stream.
+quarter turn it returns `1.00000358` rather than exactly 1 (`0x3F80001E`
+replayed in double precision, `0x3F80001D` in single; which precision the
+x87 runs at there was not traced), while the cosine does come out exactly
+`-0.0`. `nfsu::car_marker_quarter_turn` writes the
+exact 0 and 1 instead. That 3.6e-06 difference is deliberate. It was the
+only place this project knowingly departed from the instruction stream
+until issue #161 made the same substitution for the wheels' half turn
+("Which way the wheel and brake models face" below).
 
 ### Why the quarter turn is not optional
 
@@ -564,13 +568,154 @@ mesh's own `MARKER_BRAKE` marker.
 Wheels 0 and 3 are additionally turned by a half turn built at `0x0056FCE3`
 and `0x0056FD87`, and brakes 0 and 3 by the diagonal
 `(1, -1, 1, 1)` at `0x005703A3..0x00570439`, which is a reflection rather
-than a rotation.
+than a rotation. The next section traces both, and the multiply order.
 
 **This project does not reproduce that lateral expression.** The operand
 selection and the sign rule were traced, but the exact floating-point
 stack order was not verified, so `nfsu::part_placement` exposes the wheel
 records and the culling placements and stops there. Anything that needs the
 drawn wheel matrix must trace `0x0056F945..0x0056FBCF` first.
+
+### Which way the wheel and brake models face (observed, issue #161)
+
+**The half turn.** `0x0056FCEF..0x0056FD7C` write an identity into a local
+at `esp + 0x60`; `0x0056FCE3` loads `esi = 0x8000` and `0x0056FD87` calls
+`0x0040B930` into a second local, which `0x0056FD9E` multiplies into the
+first. `0x0040B930` stores `sin(esi + 0x4000)`, the cosine, into elements
+0 and 5 (`0x0040B957`, `0x0040B95B`), `+sin` into element 1 (`0x0040B947`),
+`-sin` into element 4 (`0x0040B954`), 1 into elements 10 and 15 and zero
+elsewhere. That is a turn in the longitudinal-lateral plane, about the
+vertical axis, and `0x8000` is half of a full turn, so it maps
+`(longitudinal, lateral, vertical)` to `(-longitudinal, -lateral,
+vertical)`, determinant +1. The game's sine `0x00564B10` (read, and replayed
+from the constants it loads at `0x006CC7BC`, `0x006CC8A8`, `0x006CC980` and
+`0x006CCA40..0x006CCA90`) gives
+`-1.0000036` (`0xBF80001E`, replayed in double and in single precision
+alike) for the cosine and `-0.0` for the sine there.
+`nfsu::car_wheel_half_turn` writes -1 and 0 exactly: the same deliberate
+3.6e-06 departure the quarter turn makes above, and the second place this
+project knowingly departs from the instruction stream. It costs pixels, and
+the cost was measured by rendering the stock frame through
+`nfsu_stock_frame` with wheel copies 0 and 3 built from the game's values
+instead - `0xBF80001E` in elements 0 and 5, `-0.0` in element 1, `+0.0` in
+element 4, multiplied by the same translation - in a Debug and a Release
+build. The two pinned default frames, painted and unpainted, and both
+`--yaw 76` frames are unchanged. The `--yaw -94` frame differs in 3
+pixels: painted it would be
+`E6D44CD16B66B1117AF7A74C503A24A854700B75328DBAF0CDB57B2F271ED384` instead
+of `1E5FA0BE9F3B876BDA36A3F17B22A17371F54017FF72B285E75AA1E93CA7F897`,
+unpainted `D11F7C234D2C2EA788B51FC8C40771263103BBB6DBF370F560A269F4CE61CBDD`
+instead of `1286133E85F339CCFA456990D7866173EA324994BF8DC71403ECC463DD5240C6`.
+The copies are stand-ins whose lateral term is missing altogether, so the
+exact values were kept.
+
+**The brake reflection.** `0x005703B4..0x0057041B` zero twelve elements of
+a local at `esp + 0x60`, `0x00570426` stores 1.0 into element 15, and
+`0x00570431`, `0x00570435` and `0x00570439` store the floats at
+`0x006B5DDC`, `0x006B5DE0` and `0x006B5DE4` - 1.0, -1.0 and 1.0 in the
+retail file - into elements 0, 5 and 10. `nfsu::car_brake_reflection` is
+that matrix. Its determinant is -1.
+
+**Which copies, in which order.** The wheel draw reads the visibility byte
+of culling entries 0..3 (`0x0056FCA6..0x0056FCC9`) and draws each visible
+wheel through `0x005AC69C`, `out = a * b` with row vectors:
+
+| Wheel | Row-vector chain | Multiplies |
+| ---: | --- | --- |
+| 0 | `X0 * H * W0 * Q0 * C` | `0x0056FEBE`, `0x0056FED7`, `0x0056FEF4`, `0x0056FF0B` |
+| 1 | `X1 * W1 * Q1 * C` | `0x0056FFB4`, `0x0056FFD1`, `0x0056FFEB` |
+| 2 | `X2 * W2 * Q2 * C` | `0x00570081`, `0x0057009E`, `0x005700BB` |
+| 3 | `X3 * H * W3 * Q3 * C` | `0x0057014D`, `0x0057016C`, `0x00570189`, `0x005701A6` |
+
+and the brake draw, from culling entries 6..9 (`0x00570239..0x0057024E`):
+
+| Brake | Row-vector chain | Multiplies |
+| ---: | --- | --- |
+| 0 | `R * B0 * P0 * C` | `0x00570457`, `0x00570474`, `0x00570487` |
+| 1 | `B1 * P1 * C` | `0x0057053B`, `0x00570555` |
+| 2 | `B2 * P2 * C` | `0x005705FA`, `0x00570617` |
+| 3 | `R * B3 * P3 * C` | `0x005706B4`, `0x005706D1`, `0x005706EE` |
+
+`H` is the half turn, `R` the reflection, `W_k` and `B_k` the node wheel
+and brake matrices of the parameters `ebp + 0x18` and `ebp + 0x1C`, and `C`
+the matrix at `[esp + 0x3C]` that the exhaust and plate draws also
+multiply last. `X_k`, `Q_k` and `P_k` are the locals the lateral
+expression above writes, at `esp + 0x1E0`, `esp + 0x3E0` and `esp + 0x2E0`
+plus `k * 0x40`: identities with element 13, a lateral offset, written, and
+in `X_k` element 5, a scale of the lateral axis, as well
+(`0x0056FA4B`, `0x0056FA66`, `0x0056FB64`, `0x0056FBAC`). So the half turn
+acts on the wheel model in its own frame, after the lateral scale and
+before the wheel is spun, steered and positioned, and the reflection acts
+on the brake model before its matrix. The index is all that selects them:
+nothing in either block reads the sign of a lateral. Wheels 0 and 3 are the
+left pair, lateral positive, in all 35 retail car types.
+
+**Why.** Both models are authored for the right-hand side of the car.
+`240SX_KIT00_WHEEL_A`, mesh 304 of `Cars/240SX/GEOMETRY.BIN`, measured from
+the retail file, spans lateral `0.0018..0.2006`; the axle is its lateral
+axis, and a radius below is the distance from it. Its three material
+records cover all 501 triangles in order:
+
+| Record | Key | Indices | Triangles | Lateral | Radius |
+| ---: | --- | ---: | ---: | --- | --- |
+| 0 | `0x78743CA1` | 0 + 480 | 160 | `0.0018..0.2006` | `0.2117..0.3150` |
+| 1 | `0x010CB64A` | 480 + 66 | 22 | `0.0490..0.2006` | `0.1791..0.4379` |
+| 2 | `0x22719FA9` | 546 + 957 | 319 | `0.0102..0.0559` | `0.0341..0.2227` |
+
+Record 2's key is the one the wheel draw rebinds at `0x0056FDD4` from
+`CarRenderInfo + 0x4D8`. Record 1 is two shapes: triangles 180 and 181, a
+flat quad at lateral `0.2006`, 0.617 by 0.621, wound to face +lateral; and
+triangles 160..179, a ten-sided open barrel of radius `0.1791..0.1892` over
+lateral `0.0490..0.2006`, wound to face the axle. (At LOD B and C,
+`240SX_KIT00_WHEEL_B` and `_C`, record 1 is the quad alone, 6 indices.) By
+place and shape record 0 is the tyre, record 2 the rim, and record 1 a
+backing quad behind the rim and the inside of the rim's barrel (inferred).
+At a right wheel, lateral -0.73, the rim is outboard and the quad inboard;
+the half turn keeps it so at a left wheel. `BRAKE_KIT00_B`, in the same
+way, has a record 1 that is one flat quad of two triangles at lateral
+`-0.0037`, 0.31 square, and a record 0 of 25 triangles at longitudinal
+`-0.176..-0.021` and vertical `-0.039..0.172`, behind and above it: a disc
+and a caliper by inference. The reflection keeps the caliper behind the
+disc on the left, where a half turn would move it in front.
+
+**Culling plays no part in the wheel.** All three wheel groups bind
+`240SX_TIRE`, whose texture-info `+85` is 1 and `+86` is 0, so the
+per-draw rule of [`MATERIALS.md`](MATERIALS.md) ("Depth writes and
+culling") gives the wheel the alpha test and, under the car effect,
+`D3DCULL_NONE`: the retail wheel is two-sided whichever way it faces, and
+the half turn is what decides which face is outboard. The half turn is a
+rotation and keeps the winding anyway. The caliper's texture,
+`BRAKE_GLOBAL` (`0x17F9F794`), has `+86` = 1, for which the same rule gives
+`D3DCULL_CW`, and the reflection reverses the winding of brakes 0 and 3. No
+instruction of the wheel or brake block itself writes a render state;
+whether `0x0040C910`, or the `0x00544390` the brake block calls before it
+on one branch, compensates for a reflected matrix was not traced. The CPU
+reference applies no per-draw cull mode, so none of this shows in its
+frames.
+
+**Also in the brake block, not reproduced.** Before each brake draw the
+block points the brake model's `+0x10` at `CarRenderInfo + 0xE2C` for
+brakes 0 and 3 and at `+0xE4C` for brakes 1 and 2, with `+0x14` = 2
+(`0x0057049B`, `0x00570569`, `0x0057062B`, `0x00570702`). `0x0040C98A`
+hands a model whose `+0x10` is set to `0x0053F540`, which walks that many
+16-byte entries and looks textures up through `0x005461C0`: a per-side
+texture substitution for the brake, whose tables were not decoded.
+
+**What the stand-in carries.** With `place_wheels_from_culling_table`, wheel
+copy `k` is `car_wheel_half_turn() * translation(p_k)` and brake copy `k` is
+`car_brake_reflection() * translation(p_k)` when `car_wheel_turned_by_draw(k)`
+holds, that is for `k` = 0 and 3, and `translation(p_k)` alone for 1 and 2,
+with `p_k` the culling placement. That is the draw's order with `X_k`,
+`Q_k`, `P_k`, the spin and steering in `W_k`, and the texture substitution
+left out, so every such copy is still `placement_exact` false. Before issue
+#161 no copy carried `H` or `R`: all eight were pure translations,
+determinant +1, and the two left wheels showed the inboard side of the
+right-hand model outboard. A camera on the car's left then saw each left
+wheel's backing quad in front of its rim - with the default material state,
+which does not apply the alpha test, as a flat dark square the size of the
+wheel, and with `--material-state retail` as a black disc. The frames and
+hashes are in [`SWITCH_BUILD.md`](SWITCH_BUILD.md), "The left side of the
+car (issue #161)".
 
 ## The coordinate frame (observed, then inferred)
 
@@ -743,7 +888,10 @@ placed there from their markers, exactly as above. The wheel and the brake
 are not: the profile reports them as `placement unreproduced` and draws
 nothing for them, because of the lateral expression below, and the opt-in
 that places them at the culling placements marks every instance it
-produces as not exact.
+produces as not exact. Since issue #161 the opt-in does carry which way
+each model faces: the half turn on wheels 0 and 3 and the reflection on
+brakes 0 and 3, in the draw's order ("Which way the wheel and brake models
+face" above).
 
 `nfsu_viewer --stock-car NAME` renders that profile, applying each instance
 transform ([`RENDERER.md`](RENDERER.md), "Instances"). The distinction
@@ -755,8 +903,13 @@ the output presents a culling placement as the drawn matrix.
 ## Unknown
 
 - The lateral expression the wheel draw builds at
-  `0x0056F945..0x0056FBCF`, and therefore the drawn wheel and brake
-  matrices. The inputs are identified; the arithmetic is not reproduced.
+  `0x0056F945..0x0056FBCF`, and therefore the lateral offsets and scale of
+  the drawn wheel and brake matrices (`X_k`, `Q_k` and `P_k` above). The
+  inputs are identified; the arithmetic is not reproduced. Which way the
+  models face is decoded and reproduced (issue #161); the spin and the
+  steering are traced to `0x004B1A31..0x004B1A7E` and not reproduced.
+- The brake's per-side texture substitution tables at `CarRenderInfo +
+  0xE2C` and `+0xE4C`, and what fills them.
 - Wheel fields `+0x14`, `+0x1C` and `+0x20` beyond the addresses that read
   them. `+0x14` is equal within an axle and the other two mirror the sign of
   the lateral, but no name is claimed for any of them.

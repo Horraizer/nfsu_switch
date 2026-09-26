@@ -7,6 +7,7 @@
 #include <deque>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -23,6 +24,16 @@ namespace nfsu {
 
 // Accepts every argument as the path of its own bytes, except the ones a
 // test told it to refuse.
+//
+// Its read-only calls (issue #47) answer from an in-memory tree the test
+// builds, not from any disk. A path is named by its '/'-separated
+// components with empty ones dropped, so "sdmc:/nfsu/Cars" and
+// "sdmc:/nfsu/Cars/" are one directory and "sdmc:/" is the directory
+// "sdmc:". Names compare byte for byte: the tree is case-sensitive, as a
+// POSIX file system is, so two names that differ only in case can both be
+// in it. A listing comes out in byte order. Every call is recorded, so a
+// test can require that each read stayed inside its bounds and that a file
+// which failed its size check was never read at all.
 class FakeFileSystem final : public FileSystemService {
 public:
     // Refuses `argument` from now on, with `reason` as the sentence.
@@ -34,9 +45,71 @@ public:
     // Every argument asked about, in order; "(null)" for a null one.
     const std::vector<std::string>& asked() const noexcept { return asked_; }
 
+    // Adds a directory, and every directory above it.
+    void add_directory(const std::string& path);
+    // Adds a file holding `bytes`, replacing one of that name, and every
+    // directory above it.
+    void add_file(const std::string& path, std::vector<unsigned char> bytes);
+    // From now on file_size reports `size` for the file at `path` whatever
+    // it holds, as a file that changed after it was sized would look.
+    void report_size(const std::string& path, std::uint64_t size);
+    // From now on listing the directory at `path` fails with `reason`.
+    void fail_listing(const std::string& path, const std::string& reason);
+    // From now on a read of the file at `path` that would reach byte
+    // `offset` fails with `reason`.
+    void fail_read(const std::string& path, std::uint64_t offset, const std::string& reason);
+
+    bool list_directory(
+        const std::filesystem::path& directory,
+        std::size_t max_names,
+        std::vector<std::string>& names,
+        std::string& reason) override;
+    bool file_size(
+        const std::filesystem::path& path, std::uint64_t& size, std::string& reason) override;
+    bool read_file(
+        const std::filesystem::path& path,
+        std::uint64_t offset,
+        unsigned char* buffer,
+        std::size_t count,
+        std::size_t& got,
+        std::string& reason) override;
+
+    struct ReadCall {
+        std::string path;
+        std::uint64_t offset = 0;
+        std::size_t count = 0;
+        std::size_t got = 0;
+    };
+    // Every directory listed and every file sized, by tree name, and every
+    // read, in the order they were asked for, failed ones included.
+    const std::vector<std::string>& listed() const noexcept { return listed_; }
+    const std::vector<std::string>& sized() const noexcept { return sized_; }
+    const std::vector<ReadCall>& reads() const noexcept { return reads_; }
+
+    // The tree name of a path: its non-empty components joined by '/'.
+    static std::string tree_name(const std::string& path);
+
 private:
+    struct Node {
+        bool directory = false;
+        std::vector<unsigned char> bytes;
+        bool size_reported = false;
+        std::uint64_t reported_size = 0;
+        bool listing_fails = false;
+        std::string listing_reason;
+        bool read_fails = false;
+        std::uint64_t read_fail_offset = 0;
+        std::string read_reason;
+    };
+
+    void add_parents(const std::string& name);
+
     std::vector<std::pair<std::string, std::string>> refusals_;
     std::vector<std::string> asked_;
+    std::map<std::string, Node> nodes_;
+    std::vector<std::string> listed_;
+    std::vector<std::string> sized_;
+    std::vector<ReadCall> reads_;
 };
 
 class FakeInput final : public InputService {
