@@ -58,7 +58,10 @@ integer counts, including the accepting 99-percent boundary.
 
 ## Metric and difference convention
 
-The owner confirmed RGB PSNR before implementation. Its formula is
+The coordinator recorded the owner's RGB PSNR decision on 2026-09-26 in
+[issue #147, comment 4164](https://git.accad.pro/murzintsevav/nfsu-switch/issues/147#issuecomment-4164).
+This answers PR #191 review note N1; the earlier claim that confirmation
+preceded implementation was unsupported. Its formula is
 `10*log10(255^2 * 3*N / RGB_squared_error)`, with N every image pixel,
 including background. Perfect RGB has infinite PSNR. Alpha is excluded from
 PSNR so a constant alpha channel cannot inflate the score; alpha remains
@@ -111,3 +114,8 @@ ready for the owner to run; its four numbers, frame times, pin status,
 difference view and + exit still need that run and photo. A passing host
 suite or a self-comparison test is not evidence that the real GPU meets
 99 percent / 35 dB. Track residency (#171) is outside this change.
+
+## Lighting follow-up
+
+[SHADER_DERIVATIVES.md](SHADER_DERIVATIVES.md) records the uam derivative
+constant defect behind the first console FAIL and the offline build fix.

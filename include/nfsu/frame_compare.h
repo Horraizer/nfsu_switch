@@ -18,7 +18,8 @@ struct RgbaFrameView {
 };
 
 // Fixed acceptance from issue #147. Exact/within-two and maximum include
-// all four channels; PSNR uses RGB only (owner confirmed), every pixel.
+// all four channels; PSNR uses RGB only, every pixel. Owner decision:
+// https://git.accad.pro/murzintsevav/nfsu-switch/issues/147#issuecomment-4164
 constexpr double kFrameCompareMinPsnrDb = 35.0;
 constexpr unsigned kFrameDifferenceAmplification = 16;
 struct FrameComparison {

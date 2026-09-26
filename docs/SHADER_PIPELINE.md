@@ -421,3 +421,10 @@ branch's sources compile to:
 The blobs are written to `build-switch/switch/shaders/`. They are not yet
 packaged into the application; the renderer will decide whether they travel
 in the NRO's RomFS or are linked in.
+
+## Derivative compiler state
+
+Issue #147 found that uam leaves its implicit dFdy multiplier at zero.
+The offline build now initializes and checks that compiler data before
+packaging. [SHADER_DERIVATIVES.md](SHADER_DERIVATIVES.md) records the cause,
+evidence, exact scope of the correction and hardware acceptance limits.

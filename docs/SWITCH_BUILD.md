@@ -87,6 +87,9 @@ any of them.
 
 ## Prerequisites
 
+- Host Python 3.8 or newer for the checked offline derivative-constant
+  correction and its tests ([SHADER_DERIVATIVES.md](SHADER_DERIVATIVES.md)).
+
 - CMake 3.21 or newer for the Switch build (the desktop build still needs
   only 3.20), and a generator. The commands below use Ninja.
 - devkitPro with the `switch-dev` package group. The build uses these
