@@ -14,8 +14,8 @@ A library that CMakeLists.txt lists in `NFSU_NEUTRAL_LIBRARIES` calls no
 operating system. It reaches the platform only through the six interfaces in
 `include/nfsu/platform.h` - filesystem, input, timing, logging, lifecycle and
 display - which it is handed, never through a header, a call, a platform
-test or a clock of its own. Platform code lives in exactly four libraries
-and one source file, each named below with the reason it cannot be neutral.
+test or a clock of its own. Platform code lives in six libraries and one
+source file, each named below with the reason it cannot be neutral.
 `tests/platform_neutrality.cmake` enforces the rule on every CTest run and
 fails by file, line and symbol; see **The neutrality gate** below.
 
@@ -42,6 +42,7 @@ was read off, not decided here.
 | `nfsu_platform_desktop` | platform | reads the steady clock |
 | `nfsu_assets` | neutral | the retail asset manifest and its check (issue #47): every file it reaches, it reaches through the filesystem service it is handed |
 | `nfsu_posix_file_system` | platform | the console's filesystem service (issue #47): `opendir`, `readdir`, `closedir` and `stat` |
+| `nfsu_det_sqrt` | platform | the correctly rounded double square root shared by the renderer, the controller dead zone and track contact (issue #165); its source picks `<emmintrin.h>` or an inline-asm path by architecture, neither of which is a C or C++ standard header or this project's own |
 
 Reading files is not on the platform side. The parsers open files with
 `std::ifstream` and size them with `std::filesystem::file_size`, both

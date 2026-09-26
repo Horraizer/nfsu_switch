@@ -1,5 +1,6 @@
 #pragma once
 
+#include "nfsu/det_sqrt.h"
 #include "nfsu/scene.h"
 
 #include <cstddef>
@@ -24,9 +25,10 @@ struct Vec3 {
 // and IEEE basic operations only, so results do not depend on the C library.
 double det_sin_deg(double degrees) noexcept;
 double det_cos_deg(double degrees) noexcept;
-// One rounding to binary64 on the supported x86 and AArch64 render targets.
-// MinGW's out-of-line sqrt can round twice through x87 extended precision.
-double det_sqrt(double value) noexcept;
+// det_sqrt is declared in nfsu/det_sqrt.h (included above), which keeps
+// every earlier `#include "nfsu/render.h"` still bringing nfsu::det_sqrt
+// into scope; issue #165 moved its definition into its own small platform
+// library so nfsu_input and nfsu_track_contact could call it too.
 
 // Orbit camera in the Y-up world frame world = (px, py, -pz):
 //   eye = target + distance * (cos(pitch) cos(yaw), sin(pitch),

@@ -14,10 +14,6 @@
 #include <system_error>
 #include <utility>
 
-#if defined(__SSE2__) || defined(_M_X64)
-#include <emmintrin.h>
-#endif
-
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -584,19 +580,6 @@ double det_cos_deg(double degrees) noexcept {
     case 2: return -cos_poly(x);
     default: return sin_poly(x);
     }
-}
-
-double det_sqrt(double value) noexcept {
-#if defined(__SSE2__) || defined(_M_X64)
-    // An explicit sqrtsd avoids MinGW's x87 libm path at -O0 and -Os.
-    return _mm_cvtsd_f64(_mm_sqrt_sd(_mm_setzero_pd(), _mm_set_sd(value)));
-#elif defined(__aarch64__)
-    double result;
-    __asm__ ("fsqrt %d0, %d1" : "=w" (result) : "w" (value));
-    return result;
-#else
-    return std::sqrt(value);
-#endif
 }
 
 bool validate_camera(const OrbitCamera& camera, std::string& error) {
