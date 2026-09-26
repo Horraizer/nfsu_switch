@@ -1683,6 +1683,42 @@ void test_conservative_bounds() {
               "got " + answer(met, c));
     }
 
+    // The case above, mirrored through px = 0 (review comment 3802 on issue
+    // #173, F1): every corner, both sweep ends and the cell centre negate
+    // px. In conservative_triangle every double product and sum that px
+    // enters is then negated exactly, so u, v, w, start, det and end all
+    // change sign bit for bit; the edge's rounding residual was negative
+    // with det > 0 above and is now positive with det < 0, the branch
+    // mutant B5 (certain_sign's positive branch ignoring its bound,
+    // src/track_contact.cpp:243) changes. Issue #39's Moller-Trumbore sees
+    // its own intermediates negated in pairs - its det and inv change sign,
+    // its u, v and t come out bit-identical - so the ray still misses, and
+    // the query still depends on the conservative test alone.
+    const Corner mirrored_corners[4] = {{-1.625F, 1.625F, 1.609375F},
+                                        {-3.375F, 1.875F, 2.73046875F},
+                                        {-3.25F, 4.375F, 1.921875F},
+                                        {-1.75F, 4.375F, 1.32421875F}};
+    Image mirrored_image;
+    mirrored_image.polygons.push_back(polygon(mirrored_corners, 5));
+    mirrored_image.cells.push_back(cell(-16.0F, 16.0F, {0}));
+    const nfsu::TrackContactWorld mirrored = world_of(build(mirrored_image));
+    check(mirrored.valid, "the mirrored origin image is valid");
+    if (mirrored.valid) {
+        const float from[3] = {-0x1.4b282ep+1F, 0x1.3849dep+1F, 0x1.58364p-1F};
+        const float to[3] = {-0x1.a75f48p-1F, 0x1.aad888p-1F, 0x1.53667p+1F};
+        const float mid[3] = {-1.70703125F, 1.63671875F, 1.66192626953125F};
+        float line[3];
+        const float length = line_of(from, to, line);
+        check(!nfsu::query_track_collision_ray(mirrored.collision, from, line, length, ray),
+              "the ray of issue #39 misses the mirrored edge near the origin too");
+        const nfsu::TrackContactStatus met = segment(mirrored, from, to, c);
+        check(met == nfsu::TrackContactStatus::hit && c.polygon == 0 && c.triangle == 0 &&
+                  near(c.distance, 0.5F * length, 1e-5F) && near(c.point[0], mid[0], 1e-5F) &&
+                  near(c.point[1], mid[1], 1e-5F) && near(c.point[2], mid[2], 1e-5F),
+              "the mirror of a sweep with many bits exactly through an outer edge still "
+              "meets it at its midpoint: got " + answer(met, c));
+    }
+
     // A sweep between two rounded floats, from 4 units before a point 51/64
     // of the way along a sloped quad's outer edge to 4 units beyond it:
     // to - from is not a float, and the segment between the two ends meets

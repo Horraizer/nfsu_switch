@@ -701,7 +701,7 @@ Fixture make_fixture() {
 // calls non-blocking.
 //
 //   record 0  'SA'  number 2500  pack (SHARE) + a mesh naming it    fixed
-//   record 1  'SB'  number    1  pack (SHARE) only                  track byte
+//   record 1  'SB'  number    1  pack (SHARE) + a mesh naming it too  track byte
 //
 // SA is one of the four fixed numbers, so it is requested, and its pack
 // decoded, before SB's track-flagged request. In the real candidate scene

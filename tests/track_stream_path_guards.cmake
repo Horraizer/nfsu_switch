@@ -401,6 +401,18 @@ nfsu_case("the shares fixture: a correct share never over-admits" 0
           "cost: shares 8348 texture files 0 candidate scene measured 4252;measured: every step against the budget 2000: largest 0, steps over 0"
           "MEASURED OVER" ${shares_run} --budget 2000 --list events)
 
+# Mutant 54 (measured-over made inclusive, > to >=; review comment 3802 on
+# issue #173, F2): the argument above (place_pass never admits anything
+# within the retail placement slack and block header of the budget) only
+# covers a NON-EMPTY resident set. At budget 0 nothing is ever admitted -
+# every step's resident set is empty, measuring 0 bytes - and the correct
+# comparison 0 > 0 is false, so no case above exercises the boundary at 0.
+# Mutant 54's 0 >= 0 is true, and reports "MEASURED OVER the budget by 0"
+# on every step of the empty resident set.
+nfsu_case("the shares fixture: a zero budget measures zero, not over" 0
+          "budget: given 0 streamer 0;measured: every step against the budget 0: largest 0, steps over 0"
+          "MEASURED OVER" ${shares_run} --budget 0 --list events)
+
 message(STATUS "track-stream-path guards: ${cases} cases, ${failures} failed")
 if(failures GREATER 0)
     message(FATAL_ERROR "${failures} of ${cases} track-stream-path cases failed")
