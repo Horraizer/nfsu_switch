@@ -92,16 +92,17 @@ void fill_resident(TrackContactWorld& world) {
 }
 
 // Moller-Trumbore, in exactly the arithmetic query_track_collision_ray uses,
-// so that wherever that query meets something a segment down the same
-// column gives the same polygon, triangle, distance and point. It also hands
-// back the determinant, whose sign says which side was hit:
+// so that wherever that query names the nearest surface a segment along the
+// same line gives the same polygon, triangle, distance and point. It also
+// hands back the determinant, whose sign says which side was hit:
 // det = edge1 . (direction x edge2) = -(direction . (edge1 x edge2)).
 //
-// Its bounds are strict and its barycentrics are rounded, so it is not
-// watertight: a point exactly on an edge two triangles share can round
-// outside both, and the review of issue #158 found road seams on retail
-// data that it misses from either side. watertight_triangle below closes
-// them.
+// Its barycentrics are rounded in float, so it is not watertight: a point
+// exactly on an edge two triangles share can round outside both, and the
+// review of issue #158 found road seams on retail data that it misses from
+// either side, and wall quads' own (0,2) diagonals that it misses while it
+// meets a farther surface (issue #167). conservative_triangle below is the
+// test that decides whether a nearer surface was missed.
 bool segment_triangle(
     const float origin[3],
     const float direction[3],
@@ -152,113 +153,228 @@ bool segment_triangle(
     return true;
 }
 
-// The frame of the watertight test of Woop, Benthin and Wald (2013): kz is
-// the axis the direction is longest along, kx and ky the other two in an
-// order that keeps the frame's handedness, and the shear maps the direction
-// onto kz.
-struct Shear {
-    std::size_t kx = 0;
-    std::size_t ky = 1;
-    std::size_t kz = 2;
-    float sx = 0.0F;
-    float sy = 0.0F;
-    float sz = 1.0F;
+// The unit roundoff of double, 2^-53.
+constexpr double kUnitRoundoff = 1.0 / 9007199254740992.0;
+
+// A bound on the rounding of one 3x3 determinant below, relative to its
+// permanent - the same sum with every product taken in magnitude. Each of
+// the determinant's six terms is the product of three differences of two
+// floats and meets at most eight roundings on its way to the result: the
+// three differences, the product of two of them, their difference inside a
+// cross product, the product with the third, and two sums. So the error is
+// at most gamma(8) = 8u / (1 - 8u) times the exact permanent (Higham,
+// Accuracy and Stability of Numerical Algorithms, 3.1), and the permanent as
+// computed is within a few u of the exact one. 16u, twice that, is the bound.
+// Every input is a finite float, so nothing here overflows or underflows: a
+// product of three differences of finite floats, when it is not zero, lies
+// between 2^-447 and 2^387 in magnitude.
+constexpr double kDeterminantBound = 16.0 * kUnitRoundoff;
+
+// How much nearer, as a fraction of the segment, a surface the conservative
+// test meets has to be, for certain, before it replaces the answer of issue
+// #39's arithmetic: 2^-23, one rounding of a float distance as long as the
+// segment. A difference below it is one the answer's float distance cannot
+// express, and there #39's answer stands bit for bit.
+constexpr double kNearerMargin = 1.0 / 8388608.0;
+
+// The segment as conservative_triangle decides on it: its start exactly,
+// to - from rounded at most once per component, and its closed bounding box,
+// whose corners are the endpoints' own floats.
+struct Sweep {
+    double start[3] = {0.0, 0.0, 0.0};
+    double delta[3] = {0.0, 0.0, 0.0};
+    double length = 0.0;
+    float low[3] = {0.0F, 0.0F, 0.0F};
+    float high[3] = {0.0F, 0.0F, 0.0F};
 };
 
-Shear shear_for(const float direction[3]) {
-    Shear shear;
-    std::size_t kz = 0;
-    for (std::size_t axis = 1; axis < 3; ++axis) {
-        if (std::fabs(direction[axis]) > std::fabs(direction[kz])) {
-            kz = axis;
-        }
+Sweep sweep_of(const float from[3], const float to[3]) {
+    Sweep sweep;
+    double squared = 0.0;
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        sweep.start[axis] = static_cast<double>(from[axis]);
+        sweep.delta[axis] =
+            static_cast<double>(to[axis]) - static_cast<double>(from[axis]);
+        squared += sweep.delta[axis] * sweep.delta[axis];
+        sweep.low[axis] = std::min(from[axis], to[axis]);
+        sweep.high[axis] = std::max(from[axis], to[axis]);
     }
-    std::size_t kx = (kz + 1) % 3;
-    std::size_t ky = (kx + 1) % 3;
-    if (direction[kz] < 0.0F) {
-        std::swap(kx, ky);
-    }
-    shear.kx = kx;
-    shear.ky = ky;
-    shear.kz = kz;
-    shear.sx = direction[kx] / direction[kz];
-    shear.sy = direction[ky] / direction[kz];
-    shear.sz = 1.0F / direction[kz];
-    return shear;
+    sweep.length = std::sqrt(squared);
+    return sweep;
 }
 
-// A watertight segment/triangle test. Each corner is moved to the segment's
-// start and sheared into the frame above in float, by the same operations
-// whichever triangle it belongs to, so a corner two triangles share lands
-// on the same two floats in both. An edge function over two such corners is
-// then the difference of two products that are the same two products, in
-// the other order, in the triangle across the edge: it comes out with the
-// same value and the opposite sign in each. A point exactly on a shared edge
-// therefore gives zero in both and is met by both, and a point beside it is
-// met by the one it lies in, never by neither. The bounds are closed, so a
-// triangle's own outer edge is met too. The products are taken in double,
-// where a product of two floats is exact and the difference is rounded once,
-// so each edge function has the exact sign for the sheared corners. For a
-// column the shear only moves each corner to the column's start, exact
-// wherever that difference is itself a float, and then the sign is the
-// triangle's own: a point off an outer edge by less than a float rounding
-// is not taken as on it. For an oblique segment the corners are rounded in
-// float as they are sheared, so a point within about a float rounding of an
-// outer edge can be decided either way; a shared edge stays watertight.
+// What conservative_triangle finds. `plane` says the segment's line is not
+// within rounding of parallel to the triangle's plane, and then `along` is
+// where it crosses that plane, as a fraction of the segment, within `error`.
+// `met` says the closed triangle is met; `side` is then the sign of
+// (to - from) . normal: -1 when the stored normal already faces the start.
+struct Crossing {
+    bool plane = false;
+    double along = 0.0;
+    double error = 0.0;
+    bool met = false;
+    int side = 0;
+};
+
+void cross_with_magnitude(const double p[3], const double q[3], double out[3],
+                          double magnitude[3]) {
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        const std::size_t j = (axis + 1) % 3;
+        const std::size_t k = (axis + 2) % 3;
+        const double first = p[j] * q[k];
+        const double second = p[k] * q[j];
+        out[axis] = first - second;
+        magnitude[axis] = std::fabs(first) + std::fabs(second);
+    }
+}
+
+double dot(const double p[3], const double q[3]) {
+    return p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+}
+
+double dot_magnitude(const double p[3], const double magnitude[3]) {
+    return std::fabs(p[0]) * magnitude[0] + std::fabs(p[1]) * magnitude[1] +
+           std::fabs(p[2]) * magnitude[2];
+}
+
+// -1, 0 or +1: the sign of an exact value computed as `value` with an error
+// of at most `bound`, and 0 where the rounding could hide it.
+int certain_sign(double value, double bound) {
+    if (value > bound) {
+        return 1;
+    }
+    return value < -bound ? -1 : 0;
+}
+
+// Whether the closed segment meets a closed triangle, decided on the
+// segment's own endpoints rather than on a rounded direction. With the
+// corners moved to the segment's start, A, B and C, and d = to - from, five
+// determinants decide it:
 //
-// The determinant is the sum of the edge functions, which is
-// -(direction . (edge1 x edge2)) scaled by 1 / |direction[kz]|, so its sign
-// means what segment_triangle's does. A segment edge-on to the triangle
-// gives zero and is not a contact, as there.
-bool watertight_triangle(
-    const float origin[3],
-    const Shear& shear,
-    const float a[3],
-    const float b[3],
-    const float c[3],
-    float max_distance,
-    float& distance,
-    float& determinant) {
-    const float* corners[3] = {a, b, c};
-    float x[3];
-    float y[3];
-    float z[3];
-    for (std::size_t i = 0; i < 3; ++i) {
-        const float relative[3] = {corners[i][0] - origin[0],
-                                   corners[i][1] - origin[1],
-                                   corners[i][2] - origin[2]};
-        x[i] = relative[shear.kx] - shear.sx * relative[shear.kz];
-        y[i] = relative[shear.ky] - shear.sy * relative[shear.kz];
-        z[i] = shear.sz * relative[shear.kz];
+//   u = d . (B x C), v = d . (C x A), w = d . (A x B)
+//       which side of each edge the segment's line passes; the line meets
+//       the closed triangle exactly when none of them has the opposite sign
+//       to the others, and u + v + w = d . ((B - A) x (C - A)) = d . normal;
+//   start = A . (B x C), end = start - (u + v + w)
+//       which side of the triangle's plane each endpoint lies on; the
+//       segment reaches the plane when they do not share a sign, at the
+//       fraction start / (u + v + w) of its length.
+//
+// Each is taken in double with its own rounding bound (kDeterminantBound),
+// and a sign the rounding could hide counts as 0, which rejects nothing. So
+// the test is conservative: every closed triangle the exact segment meets is
+// met - on an edge or a corner, a shared one or a triangle's own outer edge,
+// and at either end of the segment - except where the segment lies within
+// rounding of parallel to the plane, which is edge-on and never a contact,
+// as a segment in the plane is not. The converse is not exact: a triangle
+// the segment misses by less than that rounding - about 1e-14 world units on
+// a sweep a few units long, growing with the square of the distances from
+// the segment's start - may be met. Nothing about it depends on which
+// triangle a corner belongs to, so a point on a shared edge is met by both
+// triangles, never by neither.
+Crossing conservative_triangle(const Sweep& sweep, const float a[3],
+                               const float b[3], const float c[3]) {
+    Crossing out;
+    double corner_a[3];
+    double corner_b[3];
+    double corner_c[3];
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        corner_a[axis] = static_cast<double>(a[axis]) - sweep.start[axis];
+        corner_b[axis] = static_cast<double>(b[axis]) - sweep.start[axis];
+        corner_c[axis] = static_cast<double>(c[axis]) - sweep.start[axis];
     }
-    // The edge opposite each corner: u over (b, c), v over (c, a), w over
-    // (a, b).
-    const double u = static_cast<double>(x[2]) * static_cast<double>(y[1]) -
-                     static_cast<double>(y[2]) * static_cast<double>(x[1]);
-    const double v = static_cast<double>(x[0]) * static_cast<double>(y[2]) -
-                     static_cast<double>(y[0]) * static_cast<double>(x[2]);
-    const double w = static_cast<double>(x[1]) * static_cast<double>(y[0]) -
-                     static_cast<double>(y[1]) * static_cast<double>(x[0]);
-    if ((u < 0.0 || v < 0.0 || w < 0.0) && (u > 0.0 || v > 0.0 || w > 0.0)) {
-        return false;
-    }
+    double bc[3];
+    double bc_magnitude[3];
+    double ca[3];
+    double ca_magnitude[3];
+    double ab[3];
+    double ab_magnitude[3];
+    cross_with_magnitude(corner_b, corner_c, bc, bc_magnitude);
+    cross_with_magnitude(corner_c, corner_a, ca, ca_magnitude);
+    cross_with_magnitude(corner_a, corner_b, ab, ab_magnitude);
+    const double* d = sweep.delta;
+    const double u = dot(d, bc);
+    const double u_bound = kDeterminantBound * dot_magnitude(d, bc_magnitude);
+    const double v = dot(d, ca);
+    const double v_bound = kDeterminantBound * dot_magnitude(d, ca_magnitude);
+    const double w = dot(d, ab);
+    const double w_bound = kDeterminantBound * dot_magnitude(d, ab_magnitude);
+    const double start = dot(corner_a, bc);
+    const double start_bound =
+        kDeterminantBound * dot_magnitude(corner_a, bc_magnitude);
     const double det = u + v + w;
-    if (!(std::fabs(det) > 0.0)) {
-        return false;
+    const double det_bound =
+        u_bound + v_bound + w_bound +
+        4.0 * kUnitRoundoff * (std::fabs(u) + std::fabs(v) + std::fabs(w));
+    const double end = start - det;
+    const double end_bound = start_bound + det_bound +
+                             4.0 * kUnitRoundoff * (std::fabs(start) + std::fabs(det));
+    // Within rounding of parallel to the plane: edge-on, never a contact.
+    if (!(std::fabs(det) > det_bound)) {
+        return out;
     }
-    const double t = (u * static_cast<double>(z[0]) + v * static_cast<double>(z[1]) +
-                      w * static_cast<double>(z[2])) /
-                     det;
-    if (!std::isfinite(t) || t < 0.0) {
-        return false;
+    out.plane = true;
+    out.along = start / det;
+    out.error = (start_bound + std::fabs(out.along) * det_bound) /
+                    (std::fabs(det) - det_bound) +
+                4.0 * kUnitRoundoff * std::fabs(out.along);
+    const int side = det > 0.0 ? 1 : -1;
+    // The line passes outside an edge for certain.
+    if (certain_sign(u, u_bound) == -side || certain_sign(v, v_bound) == -side ||
+        certain_sign(w, w_bound) == -side) {
+        return out;
     }
-    const float along = static_cast<float>(t);
-    if (!std::isfinite(along) || along > max_distance) {
-        return false;
+    // The plane lies before the start, or beyond the end, for certain.
+    if (certain_sign(start, start_bound) == -side ||
+        certain_sign(end, end_bound) == side) {
+        return out;
     }
-    distance = along;
-    determinant = det > 0.0 ? 1.0F : -1.0F;
-    return true;
+    out.met = true;
+    out.side = side;
+    return out;
+}
+
+// A margin on the fraction of the segment in box_meets_segment's clip, 2^-30,
+// far above the clip's own rounding: each fraction is a difference of two
+// floats divided by another such difference, three roundings, so within 4u
+// of its exact value, and a fraction that decides anything lies in [0, 1].
+constexpr double kClipMargin = 1.0 / 1073741824.0;
+
+// Whether the segment can meet the triangle's closed bounding box. First
+// the two boxes, compared as floats and so exactly; then the segment is
+// clipped to the triangle's box axis by axis, in double, and rejected only
+// when the parts of it within each axis's slab are apart by more than
+// kClipMargin. A triangle this rejects cannot meet the segment.
+bool box_meets_segment(const Sweep& sweep, const float a[3], const float b[3],
+                       const float c[3]) {
+    float low[3];
+    float high[3];
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        low[axis] = std::min(a[axis], std::min(b[axis], c[axis]));
+        high[axis] = std::max(a[axis], std::max(b[axis], c[axis]));
+        if (high[axis] < sweep.low[axis] || low[axis] > sweep.high[axis]) {
+            return false;
+        }
+    }
+    double enter = 0.0;
+    double leave = 1.0;
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        // No movement along this axis: the box test above already holds the
+        // segment within the slab.
+        if (sweep.delta[axis] == 0.0) {
+            continue;
+        }
+        double first =
+            (static_cast<double>(low[axis]) - sweep.start[axis]) / sweep.delta[axis];
+        double second =
+            (static_cast<double>(high[axis]) - sweep.start[axis]) / sweep.delta[axis];
+        if (first > second) {
+            std::swap(first, second);
+        }
+        enter = std::max(enter, first);
+        leave = std::min(leave, second);
+    }
+    return enter <= leave + kClipMargin;
 }
 
 // Lexicographic on (distance, polygon, triangle), so the answer does not
@@ -404,24 +520,18 @@ bool segment_cells(const TrackCollisionReport& report,
     return true;
 }
 
-enum class TriangleTest : std::uint8_t {
-    moller_trumbore = 0,
-    watertight = 1,
-};
-
-// The nearest crossing one test accepts among the named polygons, ordered by
-// better(); a polygon named by several cells is simply tested again and
-// loses the tie to itself. best.distance starts at the segment's length, so
-// a crossing exactly at the segment's end is still found.
-bool nearest_crossing(const TrackContactWorld& world,
-                      const std::vector<std::uint32_t>& named,
-                      const float from[3],
-                      const float direction[3],
-                      float length,
-                      TriangleTest test,
-                      TrackContact& best,
-                      float& best_det) {
-    const Shear shear = shear_for(direction);
+// The nearest triangle issue #39's arithmetic accepts among the named
+// polygons, ordered by better(); a polygon named by several cells is simply
+// tested again and loses the tie to itself. best.distance starts at the
+// segment's length, so a crossing exactly at the segment's end is still
+// found.
+bool nearest_moller_trumbore(const TrackContactWorld& world,
+                             const std::vector<std::uint32_t>& named,
+                             const float from[3],
+                             const float direction[3],
+                             float length,
+                             TrackContact& best,
+                             float& best_det) {
     bool found = false;
     best = TrackContact{};
     best.distance = length;
@@ -436,13 +546,8 @@ bool nearest_crossing(const TrackContactWorld& world,
             const float* c = polygon.corner[kTriangleCorners[t][2]];
             float distance = 0.0F;
             float det = 0.0F;
-            const bool met =
-                test == TriangleTest::moller_trumbore
-                    ? segment_triangle(from, direction, a, b, c, best.distance,
-                                       distance, det)
-                    : watertight_triangle(from, shear, a, b, c, best.distance,
-                                          distance, det);
-            if (!met) {
+            if (!segment_triangle(from, direction, a, b, c, best.distance, distance,
+                                  det)) {
                 continue;
             }
             if (found && !better(distance, polygon_index, t, best)) {
@@ -453,6 +558,63 @@ bool nearest_crossing(const TrackContactWorld& world,
             best.triangle = t;
             best.distance = distance;
             best_det = det;
+        }
+    }
+    return found;
+}
+
+// The conservative test on one polygon's triangle: the query uses it for the
+// plane of the triangle issue #39's arithmetic names.
+Crossing crossing_of(const TrackContactWorld& world, const Sweep& sweep,
+                     std::size_t polygon_index, std::size_t t) {
+    const TrackCollisionPolygon& polygon = world.collision.polygons[polygon_index];
+    return conservative_triangle(sweep, polygon.corner[kTriangleCorners[t][0]],
+                                 polygon.corner[kTriangleCorners[t][1]],
+                                 polygon.corner[kTriangleCorners[t][2]]);
+}
+
+// The nearest triangle conservative_triangle meets among the named
+// polygons, in the same order: its distance is the crossing's fraction of
+// the segment times the segment's length, rounded to float and clamped to
+// the query's own length, so a contact at either end is found and two
+// triangles that share the crossing point tie as they do under better().
+// `crossing` receives the winner's own crossing.
+bool nearest_conservative(const TrackContactWorld& world,
+                          const std::vector<std::uint32_t>& named,
+                          const Sweep& sweep,
+                          float length,
+                          TrackContact& best,
+                          Crossing& crossing) {
+    bool found = false;
+    best = TrackContact{};
+    best.distance = length;
+    for (const std::uint32_t polygon_index : named) {
+        const TrackCollisionPolygon& polygon = world.collision.polygons[polygon_index];
+        for (std::size_t t = 0; t < kTrianglesPerPolygon; ++t) {
+            if (world.triangles[polygon_index * kTrianglesPerPolygon + t].degenerate) {
+                continue;
+            }
+            const float* a = polygon.corner[kTriangleCorners[t][0]];
+            const float* b = polygon.corner[kTriangleCorners[t][1]];
+            const float* c = polygon.corner[kTriangleCorners[t][2]];
+            if (!box_meets_segment(sweep, a, b, c)) {
+                continue;
+            }
+            const Crossing here = conservative_triangle(sweep, a, b, c);
+            if (!here.met) {
+                continue;
+            }
+            const double fraction = std::min(1.0, std::max(0.0, here.along));
+            const float distance =
+                std::min(static_cast<float>(fraction * sweep.length), length);
+            if (found && !better(distance, polygon_index, t, best)) {
+                continue;
+            }
+            found = true;
+            best.polygon = polygon_index;
+            best.triangle = t;
+            best.distance = distance;
+            crossing = here;
         }
     }
     return found;
@@ -690,20 +852,43 @@ TrackContactStatus query_track_contact_segment(
         }
     }
 
-    // Issue #39's arithmetic decides first, over the triangles that are not
-    // degenerate, so that wherever the first triangle its ray meets is not
-    // degenerate this answers with the same polygon, triangle, distance and
-    // point. Only when it meets nothing anywhere along the segment does the
-    // watertight test decide, and what it adds lies on a triangle's edge:
-    // a seam between two polygons that rounding put outside both, or a
-    // polygon's outer edge.
+    // The nearest surface the segment meets, whichever test finds it (issue
+    // #167). Both tests run over the triangles that are not degenerate. The
+    // conservative test meets every closed triangle the segment meets, so its
+    // nearest contact is never beyond the first surface the segment meets by
+    // more than a rounding of the float distance. Issue #39's arithmetic is
+    // kept wherever it names a nearest surface: its answer stands unless the
+    // conservative test meets a triangle whose crossing is nearer, for
+    // certain and by more than kNearerMargin, than where the segment crosses
+    // the plane of the triangle #39 names - which happens where #39 rounded a
+    // nearer surface away, such as a wall quad's own (0,2) diagonal in front
+    // of a farther wall. Where #39 meets nothing, the conservative test
+    // answers alone.
+    const Sweep sweep = sweep_of(from, to);
     TrackContact best;
     float best_det = 0.0F;
-    if (!nearest_crossing(world, named, from, direction, length,
-                          TriangleTest::moller_trumbore, best, best_det) &&
-        !nearest_crossing(world, named, from, direction, length,
-                          TriangleTest::watertight, best, best_det)) {
+    TrackContact nearest;
+    Crossing nearest_crossing;
+    const bool ray_met =
+        nearest_moller_trumbore(world, named, from, direction, length, best, best_det);
+    const bool conservative_met =
+        nearest_conservative(world, named, sweep, length, nearest, nearest_crossing);
+    if (!ray_met && !conservative_met) {
         return TrackContactStatus::clear;
+    }
+    bool replace = !ray_met;
+    if (ray_met && conservative_met) {
+        const Crossing named_by_ray =
+            crossing_of(world, sweep, best.polygon, best.triangle);
+        replace = named_by_ray.plane &&
+                  nearest_crossing.along + nearest_crossing.error + kNearerMargin <
+                      named_by_ray.along - named_by_ray.error;
+    }
+    if (replace) {
+        best = nearest;
+        // side < 0 means (to - from) . normal < 0, which is what a positive
+        // determinant of the #39 test means.
+        best_det = nearest_crossing.side < 0 ? 1.0F : -1.0F;
     }
 
     const TrackContactTriangle& triangle =
