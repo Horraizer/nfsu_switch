@@ -425,3 +425,44 @@ if(NFSU_BUILD_TESTS)
             -P ${PROJECT_SOURCE_DIR}/tests/switch_deko_romfs_check.cmake)
     set_tests_properties(nfsu_switch_track_nro PROPERTIES TIMEOUT 60)
 endif()
+
+# Event 1: checked shaders plus authored controller input, never game assets.
+set(NFSU_RACE_BUILD_TAG "local" CACHE STRING "Race build identifier for hardware photographs")
+if(NOT NFSU_RACE_BUILD_TAG MATCHES "^[A-Za-z0-9._-]+$")
+    message(FATAL_ERROR "NFSU_RACE_BUILD_TAG must be an ASCII identifier")
+endif()
+add_executable(nfsu_switch_race race_main.cpp deko_renderer.cpp)
+target_link_libraries(nfsu_switch_race PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_screen_text nfsu_stock_view deko3d)
+target_compile_definitions(nfsu_switch_race PRIVATE NFSU_RACE_BUILD_TAG="${NFSU_RACE_BUILD_TAG}")
+set_target_properties(nfsu_switch_race PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
+nfsu_enable_warnings(nfsu_switch_race)
+set(NFSU_RACE_ROMFS ${CMAKE_CURRENT_BINARY_DIR}/race_romfs)
+set(NFSU_RACE_ASSETS "")
+foreach(stage IN ITEMS placed.vert textured.frag fallback.frag)
+    set(blob ${NFSU_RACE_ROMFS}/shaders/${stage}.dksh)
+    add_custom_command(OUTPUT ${blob}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${NFSU_RACE_ROMFS}/shaders
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${NFSU_SHADER_OUTPUT}/${stage}.dksh ${blob}
+        DEPENDS ${NFSU_SHADER_OUTPUT}/${stage}.dksh ${NFSU_SHADER_STAMPS} VERBATIM)
+    list(APPEND NFSU_RACE_ASSETS ${blob})
+endforeach()
+set(NFSU_RACE_INPUT ${PROJECT_SOURCE_DIR}/tests/recordings/event1.txt)
+add_custom_command(OUTPUT ${NFSU_RACE_ROMFS}/event1.txt
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${NFSU_RACE_ROMFS}
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${NFSU_RACE_INPUT} ${NFSU_RACE_ROMFS}/event1.txt
+    DEPENDS ${NFSU_RACE_INPUT} VERBATIM)
+list(APPEND NFSU_RACE_ASSETS ${NFSU_RACE_ROMFS}/event1.txt)
+add_custom_target(nfsu_switch_race_romfs DEPENDS ${NFSU_RACE_ASSETS})
+set_target_properties(nfsu_switch_race_romfs PROPERTIES
+    DKP_ASSET_FOLDER ${NFSU_RACE_ROMFS} DKP_ASSET_FILES "${NFSU_RACE_ASSETS}")
+nx_generate_nacp(OUTPUT nfsu_switch_race.nacp NAME "nfsu_switch_race"
+    AUTHOR "nfsu_switch contributors" VERSION "0.1.0")
+nx_create_nro(nfsu_switch_race NACP nfsu_switch_race.nacp ROMFS nfsu_switch_race_romfs)
+if(NFSU_BUILD_TESTS)
+    add_test(NAME nfsu_switch_race_nro COMMAND ${CMAKE_COMMAND}
+        -DNRO=${CMAKE_CURRENT_BINARY_DIR}/nfsu_switch_race.nro
+        -DELF=$<TARGET_FILE:nfsu_switch_race> -DTITLE=nfsu_switch_race
+        -DSHADERS=${NFSU_SHADER_OUTPUT} -DREPLAY=${NFSU_RACE_INPUT}
+        -P ${PROJECT_SOURCE_DIR}/tests/switch_race_romfs_check.cmake)
+    set_tests_properties(nfsu_switch_race_nro PROPERTIES TIMEOUT 60)
+endif()

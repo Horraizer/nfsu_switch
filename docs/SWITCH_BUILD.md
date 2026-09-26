@@ -743,3 +743,10 @@ NRO.
 draws the streamed track with deko3d and shows timing, memory, draw and
 collision diagnostics for a photograph. See [SWITCH_TRACK.md](SWITCH_TRACK.md)
 for controls, installation and the pending hardware acceptance check.
+
+## Event 1 with live pad and replay (#196)
+
+`nfsu_switch_race.nro` combines the shared race session with the GPU track
+and car. See [SWITCH_RACE.md](SWITCH_RACE.md) for SD installation, controls,
+replay pins, memory and per-stage timing. Set `-DNFSU_RACE_BUILD_TAG=<ASCII-id>`
+to identify the tested package in hardware photographs.

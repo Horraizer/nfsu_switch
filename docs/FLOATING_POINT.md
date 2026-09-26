@@ -190,3 +190,10 @@ cmake --build build-ascii-switch
 ctest --test-dir build-ascii-switch --output-on-failure
 ctest --test-dir build-ascii-switch -V -R fma_census
 ```
+
+## Switch race extension (#196)
+
+The global policy also covers `nfsu_race_events`, `nfsu_race_run` (two
+objects) and `nfsu_switch_race` (two objects). The current Release census
+has 52 targets and 69 objects, with zero fused instructions. No local flag
+pins or separate census are introduced.

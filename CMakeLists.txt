@@ -61,6 +61,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/vehicle_track_libraries.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/race_session_libraries.cmake)
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/track_slice_libraries.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/race_run_libraries.cmake)
 
 # The Switch build configures the shared car and draw libraries and switch/,
 # and nothing below this point: the desktop programs, the other libraries and every test of
@@ -161,19 +162,6 @@ add_library(nfsu_track_probe
 
 target_link_libraries(nfsu_track_probe PUBLIC nfsu_track_render)
 nfsu_enable_warnings(nfsu_track_probe)
-
-# The career event table of FRONTEND/FrontB.lzc and the track table of
-# GLOBAL/GLOBALB.LZC it points into: which track, lap count and direction
-# each Underground-mode event runs, and the stream and texture file names
-# the game builds for a track. It links nfsu_core for the JDLZ decoder and
-# nothing else, decodes integers only and reads no clock. It still inherits
-# the global floating-point policy. See docs/RACE_EVENTS.md.
-add_library(nfsu_race_events
-    src/race_events.cpp
-)
-
-target_link_libraries(nfsu_race_events PUBLIC nfsu_core)
-nfsu_enable_warnings(nfsu_race_events)
 
 # nfsu_race_route, the route of one race over a TRACKB bundle (issue #61),
 # is declared in cmake/race_libraries.cmake, which both configures read.
@@ -1479,4 +1467,13 @@ if(NFSU_BUILD_TESTS)
         COMMAND ${CMAKE_COMMAND} -DRACE=$<TARGET_FILE:nfsu_race>
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/race-guards
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/race_guards.cmake)
+endif()
+
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_run)
+if(NFSU_BUILD_TESTS)
+    add_executable(nfsu_race_run_tests tests/race_run_tests.cpp)
+    target_link_libraries(nfsu_race_run_tests PRIVATE nfsu_race_run nfsu_posix_file_system)
+    nfsu_enable_warnings(nfsu_race_run_tests)
+    add_test(NAME nfsu_race_run_tests COMMAND nfsu_race_run_tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt)
 endif()

@@ -95,12 +95,13 @@ struct DekoRenderer::Impl {
         return true;
     }
 
-    bool arena(MemoryArena& target, std::uint64_t bytes, std::string& error) {
+    bool arena(MemoryArena& target, std::uint64_t bytes, std::string& error,
+               std::uint32_t slots = kArenaAllocationsPlaceholder) {
         ArenaConfig config;
         config.category = MemoryCategory::gpu;
         config.capacity = align_up(bytes ? bytes : 1, DK_MEMBLOCK_ALIGNMENT);
         config.max_alignment = kMaxArenaAlignment;
-        config.max_allocations = kArenaAllocationsPlaceholder;
+        config.max_allocations = slots;
         return target.create(config, error);
     }
 
@@ -215,7 +216,8 @@ struct DekoRenderer::Impl {
                    kDataFlags, "texture staging", staging, error) ||
             !block(plan.uniform_bytes, kDataFlags, "draw uniforms", uniforms, error) ||
             !block(plan.descriptor_bytes, kDataFlags, "texture descriptors", descriptors, error)) return false;
-        if (!arena(buffer_arena, need.buffer_extent, error) ||
+        if (!arena(buffer_arena, need.buffer_extent, error,
+                   plan.buffer_allocations) ||
             !arena(image_arena, need.image_extent, error) ||
             !arena(staging_arena, plan.staging_bytes, error) ||
             !arena(uniform_arena, plan.uniform_bytes, error) ||
