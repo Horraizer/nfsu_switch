@@ -1,6 +1,7 @@
 #include "draw_command_checks.h"
 #include "nfsu/arg_path.h"
 #include "nfsu/stock_frame.h"
+#include "nfsu/draw_execution.h"
 #include <iostream>
 
 // Explicit opt-in only: never part of CTest, which must need no retail files.
@@ -30,6 +31,11 @@ int main(int argc, char** argv) {
             if (!nfsu::record_car_commands(stock.scene, options, {},
                     painted ? stock.skin_binding.source : nfsu::kNoHandle, commands, error)) {
                 std::cerr << "FAIL: record: " << error << '\n';
+                return 1;
+            }
+            nfsu::DrawExecutionPlan plan;
+            if (!nfsu::plan_draw_execution(commands, plan, error)) {
+                std::cerr << "FAIL: execution plan: " << error << '\n';
                 return 1;
             }
             std::vector<nfsu::ReferenceDraw> trace;
@@ -64,7 +70,7 @@ int main(int argc, char** argv) {
             const auto hash = nfsu::sha256_hex(image.sha256);
             if (mode == nfsu::MaterialStateMode::off &&
                 (hash != (painted ? nfsu::kStock240sxPaintedFrameSha256 : nfsu::kStock240sxFrameSha256) ||
-                 image.tga.size() != nfsu::kStock240sxFrameBytes)) {
+                 image.tga.size() != (painted ? nfsu::kStock240sxPaintedFrameBytes : nfsu::kStock240sxFrameBytes))) {
                 std::cerr << "FAIL: pinned stock frame changed: " << hash << '\n';
                 return 1;
             }

@@ -177,6 +177,8 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
     if (!commands.width || !commands.height || commands.width > 16384 || commands.height > 16384)
         return fail("draw commands", "invalid viewport");
     const auto& resources = commands.uploads.resources;
+    // Buffer shapes bound both factors before multiplication, avoiding
+    // division by zero and overflow even for malformed element sizes.
     for (const auto& r : resources) {
         if (!r.data || !r.bytes || r.bytes > kMaxUploadResourceBytes)
             return fail(r.name, "invalid upload payload");
@@ -187,7 +189,8 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
             if (r.texture.row_bytes != shape.row_bytes || r.texture.bytes != shape.bytes)
                 return fail(r.name, "invalid texture shape");
         } else if ((r.kind != UploadResourceKind::vertex_buffer && r.kind != UploadResourceKind::index_buffer) ||
-                   !r.element_bytes || r.elements > kMaxUploadResourceBytes / r.element_bytes ||
+                   !r.element_bytes || r.element_bytes > kMaxUploadResourceBytes ||
+                   r.elements > kMaxUploadResourceBytes ||
                    r.elements * r.element_bytes != r.bytes)
             return fail(r.name, "invalid buffer shape");
     }

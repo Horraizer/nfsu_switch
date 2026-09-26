@@ -1,5 +1,6 @@
 #include "deko_renderer.h"
 #include "nfsu/memory_budget.h"
+#include "nfsu/draw_execution.h"
 
 #include <deko3d.hpp>
 #include <switch.h>
@@ -18,6 +19,8 @@ constexpr std::uint32_t kImageFlags = DkMemBlockFlags_GpuCached | DkMemBlockFlag
 static_assert(DK_MEMBLOCK_ALIGNMENT == kDekoMemBlockAlignment);
 static_assert(DK_IMAGE_LINEAR_STRIDE_ALIGNMENT == kDekoImageLinearStrideAlignment);
 static_assert(DK_UNIFORM_BUF_ALIGNMENT == kDekoUniformBufferAlignment);
+static_assert(sizeof(DkImageDescriptor) == kDrawDescriptorBytes);
+static_assert(sizeof(DkSamplerDescriptor) == kDrawDescriptorBytes);
 
 std::uint64_t align_up(std::uint64_t n, std::uint64_t a) { return (n + a - 1) & ~(a - 1); }
 constexpr DkCompareOp kCompare[] = {DkCompareOp_Never, DkCompareOp_Less,
@@ -165,18 +168,8 @@ struct DekoRenderer::Impl {
 
     bool open(const RecordedCommands& source, std::string& error) {
         if (commands) { error = "deko3d renderer open is one-shot"; return false; }
-        if (!validate_recorded_commands(source, error)) return false;
-        // CPU draws force alpha to 255, while GPU RGB-only writes preserve
-        // clear alpha. The stock frame uses 255; refuse the diagnostic case
-        // rather than claiming equivalence for a background alpha below it.
-        if (source.clear_color[3] != 255) {
-            error = "deko3d executor requires opaque background alpha (255)"; return false;
-        }
-        if (source.width != 1280 || source.height != 720 || source.draws.size() > 4096 ||
-            source.uploads.resources.size() > 4096) {
-            error = "deko3d stock executor: requires 1280x720 and at most 4096 draws/resources";
-            return false;
-        }
+        DrawExecutionPlan plan;
+        if (!plan_draw_execution(source, plan, error)) return false;
         commands = &source;
         device = dk::DeviceMaker{}.setUserData(this).setCbDebug(debug)
             .setFlags(DkDeviceFlags_DepthZeroToOne | DkDeviceFlags_OriginUpperLeft).create();
@@ -197,30 +190,19 @@ struct DekoRenderer::Impl {
         };
         SceneMemoryRequirement need;
         if (!upload_table_requirement(source.uploads, layout_query, need, error)) return false;
-        std::uint64_t extra_staging = 0;
-        for (const auto& r : source.uploads.resources) {
-            if (r.kind == UploadResourceKind::texture && r.texture.row_bytes % 32)
-                extra_staging += align_up(r.texture.row_bytes, 32) * r.texture.height + 31;
-        }
-        const auto uniform_bytes = (1 + 2 * source.draws.size()) * DK_UNIFORM_BUF_ALIGNMENT;
-        if (uniform_bytes > kTransientBudgetPlaceholder) {
-            error = "draw uniforms exceed the transient budget placeholder"; return false;
-        }
-        const auto descriptor_bytes = (source.uploads.resources.size() + 1) * sizeof(DkImageDescriptor);
         if (!block(need.buffer_extent, kDataFlags, "mesh buffers", buffers, error) ||
             !block(need.image_extent, kImageFlags, "texture images", images, error) ||
-            !block(need.staging_batch_bytes + extra_staging + source.uploads.resources.size()*32,
+            !block(plan.staging_bytes,
                    kDataFlags, "texture staging", staging, error) ||
-            !block(uniform_bytes, kDataFlags, "draw uniforms", uniforms, error) ||
-            !block(descriptor_bytes, kDataFlags, "texture descriptors", descriptors, error)) return false;
+            !block(plan.uniform_bytes, kDataFlags, "draw uniforms", uniforms, error) ||
+            !block(plan.descriptor_bytes, kDataFlags, "texture descriptors", descriptors, error)) return false;
         if (!arena(buffer_arena, need.buffer_extent, error) ||
             !arena(image_arena, need.image_extent, error) ||
-            !arena(staging_arena, need.staging_batch_bytes + extra_staging + source.uploads.resources.size()*32, error) ||
-            !arena(uniform_arena, uniform_bytes, error) ||
+            !arena(staging_arena, plan.staging_bytes, error) ||
+            !arena(uniform_arena, plan.uniform_bytes, error) ||
             !ledger.create({&buffer_arena, &image_arena, &staging_arena}, layout_query, 4096, error) ||
             !ledger.upload_table(source.uploads, 1, handles, error)) return false;
-        command_bytes = static_cast<std::uint32_t>(align_up(65536 +
-            (source.draws.size() + source.uploads.resources.size()) * 4096, DK_MEMBLOCK_ALIGNMENT));
+        command_bytes = plan.command_bytes;
         if (!block(command_bytes, kDataFlags, "command memory", command_memory, error)) return false;
         cmd = dk::CmdBufMaker{device}.create();
         if (!cmd || !healthy(error)) {
@@ -239,10 +221,12 @@ struct DekoRenderer::Impl {
                 continue;
             }
             auto offset = placement.staging.offset;
-            const auto pitch = align_up(r.texture.row_bytes, 32);
-            if (pitch != r.texture.row_bytes) {
+            TextureCopyPlan copy;
+            if (!plan_texture_copy(r, copy, error)) return false;
+            const auto pitch = copy.row_pitch_bytes;
+            if (copy.padded) {
                 ArenaAllocation padded;
-                const auto refusal = staging_arena.allocate(pitch * r.texture.height, 32, padded);
+                const auto refusal = staging_arena.allocate(copy.staging_bytes, 32, padded);
                 if (refusal != ArenaRefusal::none) {
                     error = r.name + ": padded staging: " + arena_refusal_name(refusal); return false;
                 }
@@ -254,8 +238,8 @@ struct DekoRenderer::Impl {
                             static_cast<std::size_t>(r.texture.row_bytes));
             textures[i].initialize(texture_layout(r), images, static_cast<std::uint32_t>(placement.placement.offset));
             dk::ImageView view{textures[i]};
-            cmd.copyBufferToImage({staging.getGpuAddr() + offset, static_cast<std::uint32_t>(pitch/4),
-                                   r.texture.height}, view, {0, 0, 0, r.texture.width, r.texture.height, 1});
+            cmd.copyBufferToImage({staging.getGpuAddr() + offset, copy.row_pitch_bytes,
+                                   copy.layer_stride_bytes}, view, {0, 0, 0, r.texture.width, r.texture.height, 1});
             dk::ImageDescriptor descriptor;
             descriptor.initialize(view);
             std::memcpy(static_cast<unsigned char*>(descriptors.getCpuAddr()) + i*sizeof descriptor,
@@ -267,7 +251,7 @@ struct DekoRenderer::Impl {
             .setWrapMode(DkWrapMode_Repeat, DkWrapMode_Repeat, DkWrapMode_Repeat);
         dk::SamplerDescriptor sampler_descriptor;
         sampler_descriptor.initialize(sampler);
-        sampler_offset = static_cast<std::uint32_t>(handles.size() * sizeof(DkImageDescriptor));
+        sampler_offset = plan.sampler_offset;
         std::memcpy(static_cast<unsigned char*>(descriptors.getCpuAddr()) + sampler_offset,
                     &sampler_descriptor, sizeof sampler_descriptor);
         cmd.barrier(DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_Descriptors);
@@ -368,7 +352,7 @@ struct DekoRenderer::Impl {
                 const auto& input = draw.program->attributes[a];
                 const bool byte = input.format == sm::VertexFormat::unorm8x4;
                 attributes[input.location] = {input.buffer, 0, input.offset,
-                    byte ? DkVtxAttribSize_4x8 : input.components == 3 ? DkVtxAttribSize_3x32 : DkVtxAttribSize_2x32,
+                    byte ? DkVtxAttribSize_4x8 : input.format == sm::VertexFormat::float32x3 ? DkVtxAttribSize_3x32 : DkVtxAttribSize_2x32,
                     byte ? DkVtxAttribType_Unorm : DkVtxAttribType_Float, 0};
             }
             cmd.bindVtxAttribState(attributes);

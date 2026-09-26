@@ -10,11 +10,12 @@ rasterizer. The painted frame is the default; `--unpainted` selects issue
 Build with the commands in that document. The coordinator deploys the NRO:
 
 ```text
-nxlink -s build-switch/switch/nfsu_switch_deko3d.nro
+nxlink -a <ip> build-switch/switch/nfsu_switch_deko3d.nro
 ```
 
-The owner reports the screen. This change has not run on a console or
-emulator. The AArch64 build and NRO/RomFS checks are file evidence, not
+Use the console IP for `<ip>` and read its screen; the `-s` return channel
+has not connected on this machine. The owner reports the screen. This
+change has not run on a console or emulator. The AArch64 build and NRO/RomFS checks are file evidence, not
 evidence of a displayed GPU frame.
 
 The viewport is 1280x720. + exits; `appletMainLoop` handles a system close
@@ -41,7 +42,8 @@ build. No new library is introduced. The one-shot owner borrows the commands
 and scene until close. Resource positions stay identical to the original
 upload table and the handles returned by `UploadLedger::upload_table`.
 
-Before any GPU call, `validate_recorded_commands` checks manifest identity,
+Before any GPU call, `plan_draw_execution` checks the executor limits and
+calls `validate_recorded_commands`, which checks manifest identity,
 supported interfaces, payload shapes, u16 index ranges and values, texture
 bindings, and pipeline enum bounds. Refusals name the upload or draw. The
 payloads remain borrowed; validation cannot make a freed scene safe.
@@ -59,8 +61,12 @@ enforced by the existing allocator.
 Mesh bytes go directly into their ledger placements. RGBA8 texture rows
 go through staging to block-linear images. Rows whose byte length is not
 a multiple of 32 use separately tracked padded staging; the copy's row
-length includes padding. Ledger staging and padded copies stay live through
-the upload fence. A full barrier invalidates the image cache, and the
+pitch is in bytes and includes padding; the layer stride is zero for
+this depth-1 copy. `plan_texture_copy` and `plan_draw_execution` in the
+neutral library calculate the copy fields and allocation sizes. Desktop
+tests pin 512x512, 128x64 and narrow padded rows, opaque clear, viewport,
+resource/draw limits and transient-budget boundaries. Ledger staging and
+padded copies stay live through the upload fence. A full barrier invalidates the image cache, and the
 upload fence is waited before drawing. No CPU-cached block is used.
 
 Uniforms use the recorder's 256-byte slots and 112/64/80-byte Frame/Instance/
@@ -88,10 +94,13 @@ checked before the swapchain, blocks, queue and device are destroyed.
 The existing synthetic car/track comparisons now run the validator too.
 `nfsu_draw_execution_tests` checks named refusals for malformed payloads,
 programs, references, vertex/index ranges, texture bindings and pipeline
-values, including an out-of-range index in the actual borrowed bytes.
+values, including the first and last index in the actual borrowed bytes.
+Malformed buffer sizes are checked with bounded products, without division.
+It also exercises the executor plans before any SDK call; these checks do
+not execute a GPU copy or prove GPU pixels.
 The optional retail check now covers painted and unpainted stock frames,
-both material modes, the full CPU draw trace and placements, and both current
-off-state pins. Run it with full before/after retail manifests:
+both material modes, the SDK-free execution plan, the full CPU draw trace
+and placements, and both current off-state pins. Run it with full before/after retail manifests:
 
 ```text
 build/nfsu_draw_commands_retail.exe <retail-root>

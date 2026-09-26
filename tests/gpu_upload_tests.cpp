@@ -2221,7 +2221,7 @@ void test_draw_commands_match_cpu() {
                         check_eq(commands.height, 32, "viewport height");
                         check_eq(commands.clear_color[3], 19, "clear alpha preserves background alpha");
                         const auto rgba = frame.rgba();
-                        check(!rgba.empty() && rgba[3] == commands.clear_color[3], "CPU and GPU clear alpha agree");
+                        check(!rgba.empty() && rgba[3] == commands.clear_color[3], "CPU and recorded clear alpha agree");
                         for (const auto& d : commands.draws) {
                             const auto& source = fixture.scene.draws[d.group];
                             const bool resolved = source.binding == nfsu::BindingKind::resolved;
