@@ -60,3 +60,33 @@ if(NINTENDO_SWITCH)
     set_target_properties(nfsu_track_zones nfsu_race_route
         PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
 endif()
+
+# The race state machine of issue #62: the stages from staging through the
+# countdown to racing, the race clock of speed.exe's world timer, the split,
+# lap and total times, the finish, the results, a restart and a quit, driven
+# by fixed steps and by nfsu_race_route's progress events rather than by a
+# car. It reads no file and no clock: real time reaches it only as the
+# microseconds a caller reads from the platform's TimingService and hands to
+# its step clock. Its float arithmetic is the executable's own - the
+# hundredths rounding at 0x00586690, the countdown's comparisons at
+# 0x00434D10 and the crossing backdate at 0x00433650 - so contraction is
+# disabled for the reason it is for nfsu_race_route: a fused multiply-add
+# would move a rounded time by a tick. switch/CMakeLists.txt checks its
+# console object for fused instructions. See docs/RACE_TIMING.md.
+add_library(nfsu_race_timing
+    src/race_timing.cpp
+)
+
+target_link_libraries(nfsu_race_timing PUBLIC nfsu_race_route)
+nfsu_enable_warnings(nfsu_race_timing)
+if(MSVC)
+    target_compile_options(nfsu_race_timing PRIVATE /fp:precise)
+else()
+    target_compile_options(nfsu_race_timing PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+
+# gnu++17 on the console, as for the two libraries above.
+if(NINTENDO_SWITCH)
+    set_target_properties(nfsu_race_timing
+        PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
+endif()

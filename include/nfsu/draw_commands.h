@@ -93,4 +93,8 @@ bool record_track_commands(const PreparedTrackScene& scene,
 bool reserve_draw_uniforms(const RecordedCommands& commands, MemoryArena& arena,
                            ArenaAllocation& allocation, std::string& error);
 
+// Check borrowed payloads, manifest identity, ranges and state before a
+// hardware backend dereferences a command. No SDK dependency or GPU work.
+bool validate_recorded_commands(const RecordedCommands& commands, std::string& error);
+
 } // namespace nfsu

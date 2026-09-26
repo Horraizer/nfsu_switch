@@ -238,6 +238,46 @@ nx_generate_nacp(
 nx_create_nro(nfsu_switch_assets
     NACP nfsu_switch_assets.nacp)
 
+# Switch-only hardware code is an application, not a neutral library. The
+# recorder/ledger remain in the classified neutral nfsu_draw_commands and
+# nfsu_gpu_upload targets. Only checked offline blobs enter this RomFS.
+add_executable(nfsu_switch_deko3d deko_main.cpp deko_renderer.cpp)
+target_link_libraries(nfsu_switch_deko3d PRIVATE
+    nfsu_draw_commands nfsu_stock_frame nfsu_screen_text deko3d)
+set_target_properties(nfsu_switch_deko3d PROPERTIES
+    CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
+nfsu_enable_warnings(nfsu_switch_deko3d)
+
+set(NFSU_DEKO_ROMFS ${CMAKE_CURRENT_BINARY_DIR}/deko_romfs)
+set(NFSU_DEKO_BLOBS "")
+foreach(stage IN ITEMS placed.vert textured.frag fallback.frag)
+    set(blob ${NFSU_DEKO_ROMFS}/shaders/${stage}.dksh)
+    add_custom_command(OUTPUT ${blob}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${NFSU_DEKO_ROMFS}/shaders
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${NFSU_SHADER_OUTPUT}/${stage}.dksh ${blob}
+        DEPENDS ${NFSU_SHADER_OUTPUT}/${stage}.dksh ${NFSU_SHADER_STAMPS}
+        VERBATIM)
+    list(APPEND NFSU_DEKO_BLOBS ${blob})
+endforeach()
+add_custom_target(nfsu_switch_deko_romfs DEPENDS ${NFSU_DEKO_BLOBS})
+set_target_properties(nfsu_switch_deko_romfs PROPERTIES
+    DKP_ASSET_FOLDER ${NFSU_DEKO_ROMFS} DKP_ASSET_FILES "${NFSU_DEKO_BLOBS}")
+nx_generate_nacp(OUTPUT nfsu_switch_deko3d.nacp NAME "nfsu_switch_deko3d"
+    AUTHOR "nfsu_switch contributors" VERSION "0.1.0")
+nx_create_nro(nfsu_switch_deko3d NACP nfsu_switch_deko3d.nacp
+    ROMFS nfsu_switch_deko_romfs)
+
+if(NFSU_BUILD_TESTS)
+    add_test(NAME nfsu_switch_deko3d_nro
+        COMMAND ${CMAKE_COMMAND}
+            -DNRO=${CMAKE_CURRENT_BINARY_DIR}/nfsu_switch_deko3d.nro
+            -DELF=$<TARGET_FILE:nfsu_switch_deko3d>
+            -DTITLE=nfsu_switch_deko3d -DSHADERS=${NFSU_SHADER_OUTPUT}
+            -P ${PROJECT_SOURCE_DIR}/tests/switch_deko_romfs_check.cmake)
+    set_tests_properties(nfsu_switch_deko3d_nro PROPERTIES TIMEOUT 60)
+endif()
+
 if(NFSU_BUILD_TESTS)
     # What elf2nro wrote, as for the other two applications.
     add_test(NAME nfsu_switch_assets_nro
@@ -285,6 +325,21 @@ if(NFSU_BUILD_TESTS)
                 -P ${PROJECT_SOURCE_DIR}/tests/switch_nro_check.cmake)
 
     set_tests_properties(nfsu_switch_vehicle_nro PROPERTIES TIMEOUT 60)
+endif()
+
+# The race state machine of issue #62, which cmake/race_libraries.cmake
+# declares for both configures: its console object holds no fused
+# multiply-add, so that it rounds every time exactly as the desktop does.
+# The census is issue #91's own script, over this library's objects.
+# Appended as one block, so that nothing above is reordered.
+if(NFSU_BUILD_TESTS)
+    add_test(NAME nfsu_switch_race_timing_fma_census
+        COMMAND ${CMAKE_COMMAND}
+                -DOBJDUMP=${CMAKE_OBJDUMP}
+                "-DOBJECTS=$<TARGET_OBJECTS:nfsu_race_timing>"
+                -DLABEL=nfsu_race_timing
+                -P ${PROJECT_SOURCE_DIR}/tests/switch_fma_census.cmake)
+    set_tests_properties(nfsu_switch_race_timing_fma_census PROPERTIES TIMEOUT 60)
 endif()
 
 # The driving controls and the chase camera of issue #59, which
