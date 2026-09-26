@@ -1026,15 +1026,21 @@ that are not degenerate among the polygons the selected cells name:
   the corners moved to the segment's start, five 3x3 determinants decide
   it: `u`, `v` and `w`, which side of each edge the segment's line passes,
   and the side of the triangle's plane each endpoint lies on. Each is taken
-  with a bound on its own rounding - 16 units in the last place of double
-  times the sum of its six terms' magnitudes, twice what the eight roundings
-  on the way to any term can reach - and a sign that rounding could hide
-  counts as zero, which rejects nothing. So every closed triangle the exact
-  segment meets is met: on a seam, on a polygon's outer edge, at a corner,
-  at either end of the segment. The one exception is a segment within that
-  rounding of parallel to the triangle's plane, which is edge-on and never a
-  contact, as a segment lying in the plane is not. Nothing depends on which
-  triangle a corner belongs to, so a shared edge is met from both sides.
+  with a bound on its own rounding - 16u, the unit roundoff (u = 2^-53, so
+  16u is 8 ulp of 1.0), times the sum of its six terms' magnitudes, twice
+  what the eight roundings on the way to any term can reach - and a sign
+  that rounding could hide counts as zero, which rejects nothing. So every
+  closed triangle the exact segment meets is met: on a seam, on a polygon's
+  outer edge, at a corner, at either end of the segment. The one exception
+  is a segment within that rounding of parallel to the triangle's plane,
+  which is edge-on and never a contact, as a segment lying in the plane is
+  not - the angle that counts as parallel is not a fixed tolerance: it
+  scales with the square of the corners' distance from the segment's start,
+  about 2.2e-11 * D^2 rad on retail geometry (D the distance in world
+  units, since nonzero normals are at least 1/2048 apart on the format's
+  grid), so it is about 2e-9 rad for a 10-unit sweep and about 4e-4 rad at
+  the 4096-unit `max_length` cap (#60). Nothing depends on which triangle a
+  corner belongs to, so a shared edge is met from both sides.
 
 Issue #39's answer stands unless the conservative test meets a triangle
 whose crossing is nearer, for certain and by more than 2^-23 of the

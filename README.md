@@ -298,8 +298,8 @@ polygon, the distance in world units, the point and a normal that faces the
 query. A column exactly on the seam between two polygons meets them, and
 a sweep reports the nearest surface it meets even where issue #39's ray
 rounds that surface's edge away. It exits 3 for a collision that fails its
-checks, 4 if the Switch plan cannot hold it and 5 for a refused query. See `docs/TRACK_COLLISION.md`,
-"The whole circuit".
+checks, 4 if the Switch plan cannot hold it and 5 for a refused query. See
+`docs/TRACK_COLLISION.md`, "The whole circuit".
 `stock-parts` applies the game's stock-part rules to one car type and
 prints the chosen record per slot with each LOD mesh hash resolved against
 the `GEOMETRY.BIN` files given after the car type, including the mesh the

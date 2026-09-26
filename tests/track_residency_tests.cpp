@@ -1202,6 +1202,7 @@ void test_path_parse() {
         {"0 0 0\n1 1 1e\n", "line 2 field 3"},
         {"0 0 0\n1 1 .\n", "line 2 field 3"},
         {"0 0 0\n1 1 1000001\n", "line 2 field 3"},
+        {"0 0 0\n1 1 -1000001\n", "line 2 field 3"},
         {"0 0 0\n", "at least two vertices, and this one has 1"},
         {"# only a comment\n", "and this one has 0"},
         {"5 5 0\n5 5 9\n", "no horizontal length"},
@@ -1268,6 +1269,10 @@ void test_path_sampling() {
     check(!nfsu::sample_track_residency_path(vertices, std::nan(""), 60, samples, points,
                                              error),
           "a NaN speed");
+    check(!nfsu::sample_track_residency_path(
+              vertices, std::numeric_limits<double>::infinity(), 60, samples, points,
+              error),
+          "an infinite speed");
     check(!nfsu::sample_track_residency_path(vertices, 60.0, 0, samples, points, error),
           "zero ticks");
     nfsu::TrackResidencyPathLimits limits;
