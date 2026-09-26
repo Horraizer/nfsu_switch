@@ -330,17 +330,4 @@ TrackContactStatus query_track_contact_point(
 void track_slot_to_render(const float slot[3], float render[3]) noexcept;
 void track_render_to_slot(const float render[3], float slot[3]) noexcept;
 
-// ---------------------------------------------------------------------
-// Arithmetic
-// ---------------------------------------------------------------------
-
-// The correctly rounded square root, in integer arithmetic only, so that it
-// is the same bits in every build whatever the library's sqrt does: +0,
-// -0 and +infinity are returned as they are, anything negative and NaN
-// give NaN. The queries above take every square root through it (issue
-// #60, which puts them on the vehicle's step), and it is public so that a
-// layer above can compute the same roots. Issue #165 is to make one such
-// function the whole project's.
-double track_contact_sqrt(double x) noexcept;
-
 } // namespace nfsu

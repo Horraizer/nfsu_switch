@@ -1,5 +1,7 @@
 #include "nfsu/vehicle_track.h"
 
+#include "nfsu/det_sqrt.h"
+
 #include <cstring>
 #include <map>
 #include <utility>
@@ -636,7 +638,7 @@ bool build_vehicle_track_course(const VehicleTrackLayout& layout,
         const std::array<float, 2>& b = layout.loop[(i + 1) % count];
         const float dx = b[0] - a[0];
         const float dy = b[1] - a[1];
-        chords = chords + static_cast<float>(track_contact_sqrt(
+        chords = chords + static_cast<float>(det_sqrt(
                               static_cast<double>(dy * dy + dx * dx)));
     }
     TrackPathSpline spline;

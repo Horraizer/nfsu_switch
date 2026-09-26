@@ -24,6 +24,11 @@ deko3d and packages the checked offline shaders in its NRO RomFS.
 [DEKO3D_RENDERER.md](DEKO3D_RENDERER.md) covers running it, ownership,
 synchronization and the hardware evidence still needed.
 
+Issue #147 adds `nfsu_switch_compare`, which uses the same deko3d draw
+path offscreen and reports readback versus the CPU reference on screen.
+[FRAME_COMPARISON.md](FRAME_COMPARISON.md) gives the fixed thresholds,
+buttons, timing convention and `nxlink -a <ip>` deployment command.
+
 ## What it builds
 
 | Target | Output, under `build-switch/switch/` | What it is |
@@ -37,6 +42,8 @@ synchronization and the hardware evidence still needed.
 | `nfsu_switch_shaders` | `shaders/*.dksh`, `shaders/*.tgsi` | Every GLSL stage a manifest in `shaders/` names, compiled by `uam`, and each manifest checked against the result. |
 | `nfsu_switch_deko3d` | `nfsu_switch_deko3d.elf` | The stock scene recorded by #145 and executed on a deko3d graphics queue; 1280x720, + exits, read-only SD inputs. |
 | `nfsu_switch_deko3d_nro` | `nfsu_switch_deko3d.nro`, `nfsu_switch_deko3d.nacp` | The GPU application packaged with a NACP and RomFS containing the three checked offline shader stages. |
+| `nfsu_switch_compare` | `nfsu_switch_compare.elf` | Same-scene CPU/deko3d readback comparison, metrics and frame times on screen; A/B/X choose GPU/CPU/amplified difference, Y toggles the report, + exits. |
+| `nfsu_switch_compare_nro` | `nfsu_switch_compare.nro`, `nfsu_switch_compare.nacp` | The comparison application packaged with checked offline shader blobs in RomFS; no game assets. |
 | `nfsu_switch_vehicle` | `nfsu_switch_vehicle.elf` | The vehicle model of issue #58: runs the eight built-in scripted input sequences through `nfsu_vehicle` and prints each telemetry hash, and whether `mixed` is the one pinned on the desktop ([`VEHICLE.md`](VEHICLE.md), "On the console"); + exits. Not yet run on a console. |
 | `nfsu_switch_vehicle_nro` | `nfsu_switch_vehicle.nro`, `nfsu_switch_vehicle.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_vehicle`. |
 | `nfsu_switch_vehicle_track` | `nfsu_switch_vehicle_track.elf` | The car on the track of issue #60: runs the thirteen proving-ground scenarios through `nfsu_vehicle_track` and, when `sdmc:/nfsu/Tracks/TRACKB1003.lzc` is on the card, the six circuit scenarios, and prints each telemetry hash and whether it is the one pinned on the desktop ([`VEHICLE_TRACK.md`](VEHICLE_TRACK.md), "On the console"); + exits. Not yet run on a console. |
@@ -45,7 +52,9 @@ synchronization and the hardware evidence still needed.
 Under `build-switch/` itself, the configure also builds the car-path
 libraries `nfsu_switch_car` links: `nfsu_image`, `nfsu_core`,
 `nfsu_texture_export`, `nfsu_scene`, `nfsu_stock_scene`,
-`nfsu_texture_decode`, `nfsu_render`, `nfsu_sha256`, `nfsu_stock_frame`,
+`nfsu_texture_decode`, `nfsu_det_sqrt` (issue #165, the correctly rounded
+square root the renderer, the controller dead zone and track contact
+share), `nfsu_render`, `nfsu_sha256`, `nfsu_stock_frame`,
 `nfsu_screen_text`, the skin layers `nfsu_body_skin`, `nfsu_skin_inputs`
 and `nfsu_runtime_skin`, the camera and controller layers `nfsu_inspect`,
 `nfsu_input` and `nfsu_input_camera`, and `nfsu_stock_view`; the vehicle
@@ -71,6 +80,7 @@ runs on the build machine, not on a console:
 | `nfsu_switch_car_nro` | The same checks for `nfsu_switch_car.nro`, whose NACP is titled `nfsu_switch_car`. |
 | `nfsu_switch_assets_nro` | The same checks for `nfsu_switch_assets.nro`, whose NACP is titled `nfsu_switch_assets`. |
 | `nfsu_switch_deko3d_nro` | The GPU application's AArch64 ELF, NRO and NACP title, then its bounded RomFS section containing the exact bytes of every checked shader stage. |
+| `nfsu_switch_compare_nro` | The comparison application's AArch64 ELF, NRO and NACP title, and its bounded RomFS with the exact checked offline shader stage bytes. |
 | `nfsu_switch_vehicle_nro` | The same checks for `nfsu_switch_vehicle.nro`, whose NACP is titled `nfsu_switch_vehicle`. |
 | `nfsu_switch_vehicle_fma_census` | `nfsu_vehicle`'s console objects, disassembled with the toolchain's `objdump`, hold no `fmadd`, `fmsub`, `fnmadd`, `fnmsub`, `fmla` or `fmls`, and do hold `fmul`. This tree cannot run AArch64 code, so it asserts that precondition of the pinned telemetry hash rather than the hash. |
 | `nfsu_switch_vehicle_track_nro` | The same checks for `nfsu_switch_vehicle_track.nro`, whose NACP is titled `nfsu_switch_vehicle_track`. |

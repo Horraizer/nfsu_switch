@@ -5,6 +5,8 @@
 
 #include "nfsu/vehicle_track.h"
 
+#include "nfsu/det_sqrt.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -179,9 +181,11 @@ void test_hull_source() {
 }
 
 // ---------------------------------------------------------------------------
-// The contact layer's square root
+// The square root the step takes
 // ---------------------------------------------------------------------------
 
+// det_sqrt (issue #165) is the root of every length on the step outside the
+// model: the contact queries' and this layer's.
 void test_contact_sqrt() {
     // The correctly rounded roots, as IEEE-754 bits; the ones marked up are
     // rounded up, so a root that truncated would give one bit less.
@@ -206,18 +210,17 @@ void test_contact_sqrt() {
         {1267650600228229401496703205376.0, 0x4310000000000000ULL},  // 2^100
     };
     for (const Case& c : cases) {
-        const double r = nfsu::track_contact_sqrt(c.x);
+        const double r = nfsu::det_sqrt(c.x);
         std::uint64_t bits = 0;
         std::memcpy(&bits, &r, sizeof(bits));
-        check(bits == c.bits, "track_contact_sqrt(" + text(c.x) + ") is correctly rounded");
+        check(bits == c.bits, "det_sqrt(" + text(c.x) + ") is correctly rounded");
     }
-    check(nfsu::track_contact_sqrt(0.0) == 0.0 && !std::signbit(nfsu::track_contact_sqrt(0.0)) &&
-              std::signbit(nfsu::track_contact_sqrt(-0.0)),
+    check(nfsu::det_sqrt(0.0) == 0.0 && !std::signbit(nfsu::det_sqrt(0.0)) &&
+              std::signbit(nfsu::det_sqrt(-0.0)),
           "+0 and -0 are their own roots");
-    check(std::isinf(nfsu::track_contact_sqrt(HUGE_VAL)), "+infinity is its own root");
-    check(std::isnan(nfsu::track_contact_sqrt(-1.0)) &&
-              std::isnan(nfsu::track_contact_sqrt(-HUGE_VAL)) &&
-              std::isnan(nfsu::track_contact_sqrt(std::nan(""))),
+    check(std::isinf(nfsu::det_sqrt(HUGE_VAL)), "+infinity is its own root");
+    check(std::isnan(nfsu::det_sqrt(-1.0)) && std::isnan(nfsu::det_sqrt(-HUGE_VAL)) &&
+              std::isnan(nfsu::det_sqrt(std::nan(""))),
           "a negative number and NaN give NaN");
 }
 

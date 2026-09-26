@@ -1,5 +1,7 @@
 #include "nfsu/vehicle_track.h"
 
+#include "nfsu/det_sqrt.h"
+
 #include <algorithm>
 #include <cfloat>
 #include <cstring>
@@ -741,7 +743,7 @@ void VehicleTrackSession::resolve_body(VehicleState& s, VehicleTrackTelemetry& t
         if (absolute(hit.normal_f[2]) < kVehicleTrackSideHitWall) {
             float arm_f[3];
             narrow(arm, arm_f);
-            const float arm_length = static_cast<float>(track_contact_sqrt(static_cast<double>(
+            const float arm_length = static_cast<float>(det_sqrt(static_cast<double>(
                 arm_f[0] * arm_f[0] + arm_f[1] * arm_f[1] + arm_f[2] * arm_f[2])));
             if (arm_length > 0.0F) {
                 const double along =
@@ -847,7 +849,7 @@ bool VehicleTrackSession::reset_to_node(VehicleState& s, VehicleTrackReset reaso
         const float dx = cx - nodes[n].x;
         const float dy = cy - nodes[n].y;
         const float squared = dy * dy + dx * dx;
-        const float distance = static_cast<float>(track_contact_sqrt(static_cast<double>(squared)));
+        const float distance = static_cast<float>(det_sqrt(static_cast<double>(squared)));
         if (best >= 0 && !(distance < best_distance)) {
             continue;
         }

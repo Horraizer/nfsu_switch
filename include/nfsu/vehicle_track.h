@@ -35,7 +35,7 @@ namespace nfsu {
 //
 // DETERMINISM. Everything here is IEEE-754 arithmetic compiled without
 // contraction (cmake/vehicle_track_libraries.cmake) and square roots from
-// vehicle_sqrt or track_contact_sqrt; no library mathematics, no clock, no
+// vehicle_sqrt or det_sqrt; no library mathematics, no clock, no
 // unordered container. With the model's own rules, one input sequence gives
 // the same telemetry bits in the desktop Debug and Release builds and on the
 // console; docs/VEHICLE_TRACK.md pins them.

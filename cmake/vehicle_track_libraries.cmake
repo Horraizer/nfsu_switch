@@ -2,7 +2,8 @@
 # the top-level CMakeLists.txt includes this file before the desktop and
 # Switch configures part, after cmake/draw_libraries.cmake (nfsu_track,
 # nfsu_memory), cmake/race_libraries.cmake (nfsu_race_route) and
-# cmake/vehicle_libraries.cmake (nfsu_vehicle), so the console compiles the
+# cmake/vehicle_libraries.cmake (nfsu_vehicle), and after
+# cmake/car_libraries.cmake (nfsu_det_sqrt), so the console compiles the
 # step with collision from the same sources and options as the desktop.
 #
 # nfsu_track_contact is the whole track's collision and its bounded contact
@@ -19,6 +20,14 @@ add_library(nfsu_track_contact
 )
 
 target_link_libraries(nfsu_track_contact PUBLIC nfsu_track nfsu_memory)
+# PRIVATE: track_contact.h exposes nothing of det_sqrt. sweep_of's one
+# double-precision square root was std::sqrt, not correctly rounded at -O0
+# (issue #165, the same MinGW libm defect issue #125 found in the renderer
+# and issue #165 also fixed in the controller dead zone); it now calls
+# det_sqrt through nfsu/det_sqrt.h, a project header, which keeps this
+# library's own source neutral under the include rule in CMakeLists.txt.
+# Its two float roots take det_sqrt too since issue #60.
+target_link_libraries(nfsu_track_contact PRIVATE nfsu_det_sqrt)
 nfsu_enable_warnings(nfsu_track_contact)
 if(MSVC)
     target_compile_options(nfsu_track_contact PRIVATE /fp:precise)
@@ -44,6 +53,10 @@ add_library(nfsu_vehicle_track
 
 target_link_libraries(nfsu_vehicle_track
     PUBLIC nfsu_vehicle nfsu_track_contact nfsu_race_route nfsu_sha256)
+# PRIVATE, as for nfsu_track_contact: its float roots - a hull point's arm,
+# a node's distance, a loop's chords - take det_sqrt's correctly rounded
+# root, and vehicle_track.h exposes nothing of it.
+target_link_libraries(nfsu_vehicle_track PRIVATE nfsu_det_sqrt)
 nfsu_enable_warnings(nfsu_vehicle_track)
 if(MSVC)
     target_compile_options(nfsu_vehicle_track PRIVATE /fp:precise)
