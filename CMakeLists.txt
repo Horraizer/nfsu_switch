@@ -812,7 +812,7 @@ set(NFSU_NEUTRAL_LIBRARIES
     nfsu_texture_decode nfsu_body_skin nfsu_skin_inputs nfsu_runtime_skin
     nfsu_inspect nfsu_inspect_window nfsu_input nfsu_platform
     nfsu_platform_fakes nfsu_input_camera nfsu_memory nfsu_gpu_upload nfsu_draw_commands
-    nfsu_sha256 nfsu_stock_frame nfsu_screen_text nfsu_stock_view)
+    nfsu_sha256 nfsu_stock_frame nfsu_screen_text nfsu_stock_view nfsu_frame_compare)
 # nfsu_race_route (issue #61) decodes a TRACKB bundle with nothing but the
 # standard library, nfsu_core's JDLZ decoder and nfsu_track_zones' polygon
 # test, reads with std::ifstream as nfsu_core's loaders do, and reads no
@@ -1321,4 +1321,12 @@ if(NFSU_BUILD_TESTS)
 
     set_tests_properties(nfsu_vehicle_tests nfsu_probe_vehicle_sim_guards
         PROPERTIES TIMEOUT 120)
+endif()
+
+# Whole-frame comparison metrics for the console proof of issue #147.
+if(NFSU_BUILD_TESTS)
+    add_executable(nfsu_frame_compare_tests tests/frame_compare_tests.cpp)
+    target_link_libraries(nfsu_frame_compare_tests PRIVATE nfsu_frame_compare)
+    nfsu_enable_warnings(nfsu_frame_compare_tests)
+    add_test(NAME nfsu_frame_compare_tests COMMAND nfsu_frame_compare_tests)
 endif()
