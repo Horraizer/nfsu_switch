@@ -8,6 +8,8 @@ inline std::string compare_draws(const nfsu::RecordedCommands& commands,
                                  const std::vector<nfsu::ReferenceDraw>& trace,
                                  bool track) {
     namespace sm = nfsu::shader_manifest;
+    std::string error;
+    if (!nfsu::validate_recorded_commands(commands, error)) return error;
     if (commands.draws.size() != trace.size()) return "draw count";
     for (std::size_t i = 0; i < trace.size(); ++i) {
         const auto& d = commands.draws[i];

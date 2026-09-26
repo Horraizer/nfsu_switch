@@ -2175,6 +2175,7 @@ void test_draw_commands_match_cpu() {
     options.flip_v = true;
     options.vertex_color = true;
     options.alpha_cutoff = 17;
+    options.background[3] = 19;
     options.coefficients.alpha_min = 0.3;
     options.coefficients.alpha_range = 0.6;
     options.coefficients.environment_min[0] = 0.25;
@@ -2218,6 +2219,9 @@ void test_draw_commands_match_cpu() {
                         check_eq(commands.frame.options[3], 17, "alpha cutoff uniform");
                         check_eq(commands.width, 48, "viewport width");
                         check_eq(commands.height, 32, "viewport height");
+                        check_eq(commands.clear_color[3], 19, "clear alpha preserves background alpha");
+                        const auto rgba = frame.rgba();
+                        check(!rgba.empty() && rgba[3] == commands.clear_color[3], "CPU and recorded clear alpha agree");
                         for (const auto& d : commands.draws) {
                             const auto& source = fixture.scene.draws[d.group];
                             const bool resolved = source.binding == nfsu::BindingKind::resolved;
@@ -2478,6 +2482,22 @@ void test_command_material_gates_and_empty_ranges() {
     const auto mismatch = compare_draws(commands, trace, false);
     check(mismatch.empty(), "empty range sequence: " + mismatch);
     check_eq(commands.draws.size(), 2, "zero range emits no command");
+    // This group still has a valid nonempty range, but is explicitly not
+    // drawable. Both submission loops skip it independently of zero ranges.
+    auto& invalid = fixture.geometry.meshes[0].materials[1];
+    invalid.texture_slot = 99;
+    store_u32(invalid.raw + 28, 99);
+    check(nfsu::prepare_car_scene(fixture.geometry, fixture.textures, {}, {}, fixture.scene, error),
+          "prepare invalid-slot fixture: " + error);
+    check(!fixture.scene.draws[1].drawable && fixture.scene.draws[1].index_count != 0,
+          "invalid-slot fixture holds a non-drawable nonempty group");
+    trace.clear();
+    check(nfsu::record_car_commands(fixture.scene, options, {}, kSkinSource, commands, error),
+          "non-drawable group record: " + error);
+    check(nfsu::render_scene(fixture.scene, options, {}, frame, stats, error,
+        [&](const auto& d) { trace.push_back(d); }), "CPU non-drawable group");
+    check(compare_draws(commands, trace, false).empty(), "non-drawable group sequence");
+    check_eq(commands.draws.size(), 2, "non-drawable nonempty group emits no command");
     options.coefficients.alpha_min = -1;
     check(!nfsu::record_car_commands(fixture.scene, options, {}, kSkinSource, commands, error),
           "invalid retail coefficients refused");

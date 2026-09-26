@@ -107,8 +107,8 @@ build/nfsu_draw_commands_retail.exe <retail-root>
 ```
 
 Take file manifests before and after running it. It records and compares the
-stock 240SX in both material modes and checks every instance matrix. Its off
-mode must produce the unpainted stock frame `include/nfsu/stock_frame.h`
+painted and unpainted stock 240SX in both material modes and checks every
+instance matrix. Its off mode must produce both stock frames `include/nfsu/stock_frame.h`
 pins, `kStock240sxFrameBytes` and `kStock240sxFrameSha256`: since issue #161
 the 3686418-byte TGA with SHA-256
 `E7A042A560E807EE74595449275FFBDC1AE0A0BF321CE06EEF434BC5B1C8274A`
@@ -117,11 +117,16 @@ it, when the program spelled the hash out itself).
 It is deliberately outside CTest, so the normal gates require no retail data.
 No retail or derived asset is tracked.
 
+The painted off-state check also requires the 3686418-byte TGA with hash
+`52B9303A822F82242717B3A2F363BE6584E4A24B533B69B6AA78EED6DFBED994`.
+
 The library is classified neutral. The neutrality gate follows generated
 project headers from the build's generated include directory and scans their
 contents recursively, just as it does tracked headers. It does not exempt
 them. The shared shader header is generated even with `NFSU_BUILD_TESTS=OFF`.
 
 These checks establish command correspondence, not GPU pixel equivalence.
+Issue #146 adds the Switch-only executor and its packaged offline shaders;
+[DEKO3D_RENDERER.md](DEKO3D_RENDERER.md) describes it and its limits.
 No commands have run on hardware. The known shader/raster differences in
 `SHADER_PIPELINE.md` remain; the Switch CTest suite runs on the build host.

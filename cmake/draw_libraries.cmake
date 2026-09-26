@@ -104,7 +104,7 @@ add_custom_command(
     VERBATIM)
 
 add_custom_target(nfsu_shader_manifest DEPENDS ${NFSU_SHADER_MANIFEST_HEADER})
-add_library(nfsu_draw_commands src/draw_commands.cpp ${NFSU_SHADER_MANIFEST_HEADER})
+add_library(nfsu_draw_commands src/draw_commands.cpp src/draw_execution.cpp ${NFSU_SHADER_MANIFEST_HEADER})
 target_link_libraries(nfsu_draw_commands PUBLIC nfsu_gpu_upload nfsu_render)
 target_include_directories(nfsu_draw_commands PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/generated)
 add_dependencies(nfsu_draw_commands nfsu_shader_manifest)
