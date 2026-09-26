@@ -960,12 +960,27 @@ work is the cells visited times the polygons each names, both bounded by the
 parsed arrays. A world whose report is not valid, and a world assembled by
 hand whose triangle table does not match its polygons, answer nothing.
 
+**Cost.** Each triangle a selected cell names meets the #39 test and a box
+test; each whose bounding box the segment reaches meets the conservative
+test below, five 3x3 determinants in double with their rounding bounds; and
+the triangle #39 names meets it once more. Timed on this machine, the best
+of five interleaved runs of each set against the code before issue #167, on
+`TRACKB1003`: the 1432644 columns of the whole-unit lattice below 367 to
+421 ns a query (+15%); the 300000 random segments below 936 to 1363 ns
+(+46%); the 611352 edge-aimed 8-unit sweeps 1362 to 1942 ns (+43%); and the
+93024 wall sweeps, each 65 units long past a hundred or more triangles,
+2261 to 4450 ns (+97%; `TRACKB1107`'s 282912, 2171 to 4191 ns, +93%). An
+earlier run of the same sets on a less loaded machine gave ratios within
+0.06 of these. Almost all of the added time is the box test over the named
+triangles; the determinants for the few whose box the segment reaches add
+a tenth to a sixth of it.
+
 **Invalid geometry.** A triangle whose cross product is zero or not finite
 is degenerate: it gets no normal, is counted, and is never met. On the
 retail corpus that is exactly the 85710 records that repeat an adjacent
 corner in all three slots, one triangle each. A segment that lies in a
-triangle's plane never meets it, which is why a sweep along a barrier line
-is clear.
+triangle's plane, or within the conservative test's rounding of parallel to
+it, never meets it, which is why a sweep along a barrier line is clear.
 
 ### Which cells, and which triangle
 
@@ -998,58 +1013,164 @@ non-degenerate triangle in double with closed bounds through no game index:
 | `TRACKB1003` | 40647 | 59395 | 199958 | 0 (the first version: 1318) | 0 | 0, 0, 0 |
 | `TRACKB1210` | 68298 | 102681 | 129021 | 0 (the first version: 1620) | 0 | 0, 0, 0 |
 
-**Triangles.** Issue #39's Moller-Trumbore arithmetic decides first: the
-nearest triangle it accepts among the triangles that are not degenerate, a
-tie going to the lower polygon and then the lower triangle. So wherever the
-first triangle `query_track_collision_ray` meets along the same line is not
-degenerate, the contact is that hit, bit for bit in polygon, triangle,
-distance and point. A degenerate triangle is the exception. The contact
-never meets one; the #39 ray does not skip one, and on an oblique line its
-float determinant for a triangle with two equal corners - a quad slot that
-repeats a corner - can come out nonzero, so it accepts the triangle at a
-distance that is only rounding. There the contact answers the nearest other
-contact instead. The review of this issue found `track-contact
-<TRACKB1003.lzc> 1478.58521 -8.32364178 61.1099014 1485.66479 -7.80135822
-57.4213486` answering `probe segment: clear` while the #39 ray reports
-polygon 536's degenerate triangle 1 at 3.692308; in exact arithmetic the
-segment meets the closed outer edge of the same polygon's triangle 0,
-3.99996 along, which the contact misses by rounding, a case measured under
-"Tests, and the breaks they catch" below. On the edge-aimed oblique sweeps
-described there, the first triangle the #39 ray meets is degenerate on 5076
-of the 611352 on `TRACKB1003` and 729 of the 529632 on `TRACKB1210`, and
-the contact answers farther along on 4978 and 715, nearer - through the
-watertight test - on 85 and 13, at the same distance on another triangle on
-0 and 1, and clear on 13 and 0; on every other sweep where the ray meets
-something the contact is that hit. It never happens on a column: for a
-vertical line the determinant of a triangle with two equal corners is
-exactly 0, and every retail degenerate triangle has two. Nor did it happen
-on any of 300000 random segments on each of the two tracks.
+**Triangles.** A query reports the nearest surface its segment meets,
+whichever of two tests finds it (issue #167). Both run over the triangles
+that are not degenerate among the polygons the selected cells name:
 
-That arithmetic is not watertight either. It rounds each barycentric on its
-own, and a point exactly on an edge can round outside every triangle that
-has it: the review found road seams on retail data that it misses from both
-sides, such as the column `track-contact <TRACKB1003.lzc> 961.1171875
--244.921875`, on the edge polygons 1980 and 1986 share, which answered
-`clear`. So when it accepts nothing anywhere along the segment, the
-watertight test of Woop, Benthin and Wald (2013) decides instead. Each
-corner is sheared into the segment's frame in float by the same operations
-whichever triangle it belongs to, and an edge function over two corners is
-a difference of the same two products in both triangles that share the
-edge, so it has the same value with the opposite sign in each; taken in
-double, it has the exact sign for the sheared corners. A point on a shared
-edge is met by both triangles, a point beside it by the one it lies in, and
-a polygon's own outer edge is met too. On a column the shear only moves
-each corner to the column's start - exact wherever that difference is
-itself a float - so that sign is the triangle's own; on an oblique segment
-the corners are rounded in float as they are sheared, so a point within
-about a float rounding of an outer edge can go either way, as measured
-under "Tests, and the breaks they catch" below. That column now answers
-`hit road polygon 1980 triangle 0 distance 940.824`, and the sweep through
-the same point from py 59.5 down to 58.5 `hit road polygon 1980 triangle 0
-distance 0.324219`.
+- Issue #39's Moller-Trumbore arithmetic, in float along the rounded
+  direction `(to - from) / length`, exactly as `query_track_collision_ray`
+  computes it. It rounds each barycentric on its own, so it is not
+  watertight: a point exactly on an edge can round outside every triangle
+  that has it.
+- A conservative test in double on the segment's own two endpoints. With
+  the corners moved to the segment's start, five 3x3 determinants decide
+  it: `u`, `v` and `w`, which side of each edge the segment's line passes,
+  and the side of the triangle's plane each endpoint lies on. Each is taken
+  with a bound on its own rounding - 16 units in the last place of double
+  times the sum of its six terms' magnitudes, twice what the eight roundings
+  on the way to any term can reach - and a sign that rounding could hide
+  counts as zero, which rejects nothing. So every closed triangle the exact
+  segment meets is met: on a seam, on a polygon's outer edge, at a corner,
+  at either end of the segment. The one exception is a segment within that
+  rounding of parallel to the triangle's plane, which is edge-on and never a
+  contact, as a segment lying in the plane is not. Nothing depends on which
+  triangle a corner belongs to, so a shared edge is met from both sides.
+
+Issue #39's answer stands unless the conservative test meets a triangle
+whose crossing is nearer, for certain and by more than 2^-23 of the
+segment's length, than where the segment crosses the plane of the triangle
+#39 names. 2^-23 of the length is one rounding of a float distance that
+long, so a difference below it is one the answer's own distance cannot
+express. Where there is such a triangle it is the answer, at its own
+distance rounded to float, as the conservative test's nearest triangle is
+wherever #39 meets nothing. A tie at one float distance goes to the lower
+polygon and then the lower triangle, in both tests. So wherever the #39 arithmetic names a nearest
+surface the contact is its polygon, triangle, distance and point, bit for
+bit - every column of the retail lattices below but three is - and where it
+rounded a nearer surface away the conservative test answers.
+
+Issue #158's rule kept every #39 hit on a triangle that is not degenerate
+and ran its own watertight test - the test of Woop, Benthin and Wald
+(2013), with the corners sheared into the segment's frame in float - only
+where #39 met nothing anywhere along the segment. Its review measured four
+kinds of wrong answer that rule left, and this closes each:
+
+- **A wall quad's own (0,2) diagonal.** The #39 arithmetic misses both of
+  the quad's triangles at the diagonal they share and meets something
+  farther along, so the sweep passed through the wall. `nfsu_probe
+  track-contact <TRACKB1107.lzc> 2103.3125 181.898041 51.9924316 2104.125
+  116.903122 51.9924316`, a level sweep straight at wall polygon 9892,
+  answered wall polygon 21454 at 6.46146; it now answers polygon 9892 at
+  4.99999, where the exact crossing is 4.999994. On `TRACKB1210` the sweep
+  from `695.514832 2.80625963 -9.59934139` to `757.478149 -14.3782396
+  -19.0989151` passed wall 42 and answered wall 41 at 33.0375; it now
+  answers wall 42 at 5.00001.
+- **A raised polygon's outer edge above a lower surface.** A column exactly
+  on the edge answered the surface beneath: on `TRACKB1003` `(1690, 486)`
+  answered polygon 4247 where polygon 3972's edge is 0.1 units higher, and
+  `(979.5, 281.5)` polygon 2315 where polygon 2259's is 0.93 higher. They
+  now answer 3972 and 2259, at those edges' own heights.
+- **A triangle with two equal corners.** On an oblique line the #39
+  arithmetic can accept one - its determinant is zero only in exact
+  arithmetic - and no contact meets one, so the contact answered the next
+  thing along or clear. `track-contact <TRACKB1003.lzc> 1478.58521
+  -8.32364178 61.1099014 1485.66479 -7.80135822 57.4213486` answered
+  `clear` while the #39 ray meets polygon 536's degenerate triangle 1 at
+  3.692308; it now answers polygon 536 triangle 0 at 3.99996, the closed
+  outer edge the segment meets exactly 3.999962 along.
+- **The watertight test's near-edge band.** Its float shear rounded each
+  corner, so on an oblique segment a point within a few float roundings of
+  an outer edge could fall outside: sweeps that meet a triangle exactly
+  answered clear, within 4.5e-8 world units of the edge on the edge-aimed
+  sweeps below and up to 3.81e-6 on the review's. The conservative test has
+  no such band.
+
+**Checked against an exact brute force.** Four sets of sweeps on
+`TRACKB1003`, `TRACKB1210` and `TRACKB1107`, every answer before and after
+this issue compared with the nearest point where the closed segment meets a
+closed triangle of nonzero area, found in integer arithmetic (GMP, every
+float scaled by 2^149) over every triangle of the image through no game
+index. The sets:
+
+- *wall*: the review's sweeps at wall diagonals - every wall quad, 15
+  points along its (0,2) diagonal, from both sides, straight at the wall
+  and twice yawed and tilted at random (seed 1644), from 5 units before the
+  wall to 60 beyond;
+- *edge*: points a quarter, a half and three quarters along every edge of
+  every triangle that is not degenerate, 8 units long with the point at the
+  middle, along `-n`, `-n + 0.5 e`, `-n - 0.5 (n x e)` and
+  `-n + 0.7 e + 0.3 (n x e)`, with `n` the triangle's normal and `e` the
+  edge's direction;
+- *edge2*: the same points in four random directions each, the review's
+  (azimuth uniform, elevation within 1.3 radians, seed 20260926);
+- *random*: the review's 300000 segments over the stored bounds, 0.5 to 60
+  units long, a quarter of them level (seed 164158).
+
+"Past a nearer surface" is an answer on a triangle whose exact crossing
+lies beyond the exact nearest by more than one rounding of the segment's
+length; "clear although met" is a query that answers clear where the
+segment meets a triangle exactly.
+
+| Set | Image | Sweeps | Meeting something | Past a nearer surface, before / after | Clear although met, before / after | #39 meets a degenerate triangle first, and the answer is past or clear, before / after |
+| --- | --- | ---: | ---: | --- | --- | --- |
+| wall | `TRACKB1003` | 93024 | 93024 | 100, by up to 56.7 units / 0 | 0 / 0 | 0 / 0 |
+| wall | `TRACKB1210` | 117432 | 117432 | 372, by up to 59.6 / 0 | 0 / 0 | 0 / 0 |
+| wall | `TRACKB1107` | 282912 | 282912 | 465, by up to 59.5 / 0 | 0 / 0 | 0 / 0 |
+| edge | `TRACKB1003` | 611352 | 610543 | 8944, by up to 4.0 / 0 | 6304, within 4.49e-8 of an edge / 0 | 34 of 5076 / 0 |
+| edge | `TRACKB1210` | 529632 | 523708 | 8381, by up to 4.0 / 0 | 1661, within 1.16e-7 / 0 | 1 of 729 / 0 |
+| edge | `TRACKB1107` | 1456560 | 1450998 | 19753, by up to 5.2 / 0 | 13546, within 7.06e-8 / 0 | 146 of 15031 / 0 |
+| edge2 | `TRACKB1003` | 611352 | 606120 | 10609, by up to 4.0 / 0 | 7410, within 3.81e-6 / 0 | 37 of 5566 / 0 |
+| edge2 | `TRACKB1210` | 529632 | 520270 | 7674, by up to 4.0 / 0 | 3609, within 3.81e-6 / 0 | 8 of 997 / 0 |
+| edge2 | `TRACKB1107` | 1456560 | 1438850 | 23658, by up to 4.0 / 0 | 17292, within 3.81e-6 / 0 | 147 of 16148 / 0 |
+| random | `TRACKB1003` | 300000 | 40829 | 0 / 0 | 0 / 0 | 0 / 0 |
+| random | `TRACKB1210` | 300000 | 68034 | 0 / 0 | 0 / 0 | 0 / 0 |
+| random | `TRACKB1107` | 300000 | 26673 | 0 / 0 | 0 / 0 | 0 / 0 |
+
+The before counts reproduce the review's own figures where it gave them:
+100, 372 and 465 wall sweeps past the wall; on *edge2*, 7410 and 3609 clear
+although met within 3.81e-6, 5566 and 997 sweeps whose first #39 triangle
+is degenerate, and 10 and 1 of those clear. The "past" counts on *edge*
+and *edge2* are the wall diagonals' defect wherever else an edge the #39
+arithmetic rounds away lies before a surface it meets. Every hit's
+normal, before and after, is unit length and faces the sweep, and no
+distance lies past the segment's end.
+
+After the change every answer the #39 ray gives and the contact does not
+repeat bit for bit is one of two kinds: the #39 ray's first triangle is
+degenerate, or its triangle is not the exact nearest. There is none where
+the #39 triangle is the exact nearest and the contact differs.
+
+**What that leaves.**
+
+- The conservative test can meet a triangle the segment misses by less than
+  its own rounding. On all 6588456 sweeps above that happened 6 times, on
+  `TRACKB1210`'s *edge* set, each missing its triangle by at most 1.4e-14
+  world units.
+- The answer can lie beyond the exact nearest by less than one rounding of
+  the segment's length - a tie at the answer's float distance, or a surface
+  the margin leaves in place. After the change 40, 570 and 36 *edge* and
+  34, 372 and 42 *edge2* sweeps on the three images do, by at most 9.3e-7
+  world units on these 8-unit sweeps.
+- An answer of the #39 arithmetic keeps that arithmetic's rounding. Where
+  it accepts a triangle the segment misses by a float rounding of its edge,
+  the contact is that triangle: 122004 of the 6588456 sweeps answer so, the
+  segment passing each such triangle within 1.9e-5 world units, and mostly
+  it is the neighbour across an edge the segment meets exactly, at the same
+  point - as on 859, 1865 and 2867 of the *wall* sweeps, within 1.3e-5 of
+  the exact crossing. Its distance along a sweep that nearly lies in a
+  surface's plane can be off by up to 1.36 units, measured on *edge* sweeps
+  within 2e-6 radians of a 254-unit wall's plane, and 40 such answers lie
+  up to 0.0315 along the sweep past the exact nearest. Across every set the
+  point of an answer lies within 2.1e-4 world units of its triangle's plane.
+- A surface nearer than #39's by less than the margin does not replace it.
+  With no margin, 546 *edge* and 674 *edge2* sweeps on `TRACKB1003`, 3824
+  *edge2* sweeps on `TRACKB1210` and 4 columns of the lattices below would
+  name another triangle, nearer by less than one rounding of the segment's
+  length.
 
 Columns at 17 points along every edge two road polygons share, and at 15
-points inside every road quad's (0,2) diagonal, from py 1000 down 2000:
+points inside every road quad's (0,2) diagonal, from py 1000 down 2000 - the
+review's table, measured again on this code:
 
 | Image | Shared road edges | Columns on them | The #39 ray misses | The contact misses | Diagonal columns | The contact misses |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -1057,21 +1178,14 @@ points inside every road quad's (0,2) diagonal, from py 1000 down 2000:
 | `TRACKB1210` | 8844 | 150348 | 4 | 0 | 80565 | 0 |
 | `TRACKB1107` | 25448 | 432616 | 20 | 0 | 191085 | 0 |
 
-**What that leaves.** The watertight test only adds contacts where the #39
-arithmetic meets nothing that is not degenerate, and on the lattices under
-"Region against whole" below every one it adds lies exactly on a triangle's
-edge: of the 17 columns where the ray meets nothing and the contact meets
-something, 16 are on a polygon's outer edge with nothing beyond it, such as
-(754, 209) on polygon 3101 of `TRACKB1003`, and 1 is on a seam, (694, -4)
-on polygon 1159 of `TRACKB1207`. The price of keeping every #39 hit on a
-triangle that is not degenerate bit for bit is the converse: where the #39
-arithmetic meets something farther along, a nearer surface met only on its
-own edge does not replace it. Two columns of those lattices are that case,
-both on `TRACKB1003` and both a polygon's outer edge above a lower road:
-(1690, 486) answers polygon 4247 where polygon 3972's edge is 0.1 units
-higher, and (979.5, 281.5) answers polygon 2315 where polygon 2259's edge
-is 0.93 units higher. Both are single points; issue #39's ray answers them
-the same way.
+Every one of those columns answers bit for bit as before on `TRACKB1003`
+and `TRACKB1210`. On `TRACKB1107` four change, at two points each sampled
+from two edges, (-430, -680.25) and (-378.375, 25.875): two polygons have a
+corner on the column there 1/256 apart in height, the #39 arithmetic
+named the lower - polygons 5927 and 4716 - and its own rounding put the
+reported point above both corners, at 48.5875 and 44.8307; the contact is
+now the higher corner exactly, polygon 1701 at 48.5859375 and polygon 4717
+at 44.828125. That is the raised-edge case above, at a shared corner.
 
 ### Units, frame and normals, for issue #60
 
@@ -1208,27 +1322,41 @@ ray misses and the contact meets: a flat seam, met by a column, by sweeps
 through it from both sides and by sweeps that start and that end exactly on
 it; a flat quad's outer edge; and a seam between two sloped quads, where the
 contact is pinned to the road's exact height there, 7.30010986328125, to
-1e-4.
+1e-4. Issue #167 adds the images where the ray meets something and the
+contact is nearer: two walls with a barrier behind each, swept through the
+walls' own diagonals; a raised quad's outer edge a quarter unit above a
+road, under a column; a sloped quad's outer edge and a sliver's, swept
+obliquely, the sliver's degenerate triangle met by the ray; and the cases
+its mutation sweep needed, listed under "Tests, and the breaks they catch".
 
 **Retail.** Columns from py 1000 down 2000 over each track's stored
 bounds, on three lattices: the one-unit lattice at half-unit offsets this
 note has used from the start, and the two the review of this issue used, a
 one-unit lattice on whole units and a 0.75-unit lattice offset by (0.37,
-0.61). Wherever the ray of issue #39 meets something, on every column of
-every lattice, the contact column is the same polygon, triangle, distance
-and point:
+0.61). Wherever the ray of issue #39 meets something the contact column is
+the same polygon, triangle, distance and point, on every column of every
+lattice but three. Those three stand exactly on a raised polygon's outer
+edge, which the #39 arithmetic rounds away and the rule of issue #167 does
+not: `(979.5, 281.5)` and `(1690, 486)` of `TRACKB1003`, and the second's
+own geometry on `TRACKB1107`, which holds the same section. Before issue
+#167 the column there answered the #39 ray's lower road. Every other column,
+32127910 of the 32127913, answers bit for bit as before issue #167,
+including every column the contact alone meets:
 
 | Image | Lattice | Columns | Ray hits | Contact hits | Clear | Outside | Ray hit, contact differs | Contact only, on an edge |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `TRACKB1210`, issue #39's own region | half-unit | 586677 | 125578 | 125578 | 153834 | 307265 | 0 | 0 |
-| `TRACKB1003`, the circuit | half-unit | 1432644 | 178769 | 178771 | 206861 | 1047012 | 0 | 2 |
+| `TRACKB1003`, the circuit | half-unit | 1432644 | 178769 | 178771 | 206861 | 1047012 | 1 | 2 |
 | `TRACKB1207`, issue #39's box pin | half-unit | 1058216 | 119675 | 119677 | 185571 | 752968 | 0 | 2 |
 | `TRACKB1210` | whole-unit | 589100 | 126044 | 126044 | 157830 | 305226 | 0 | 0 |
-| `TRACKB1003` | whole-unit | 1432644 | 178896 | 178903 | 212998 | 1040743 | 0 | 7 |
+| `TRACKB1003` | whole-unit | 1432644 | 178896 | 178903 | 212998 | 1040743 | 1 | 7 |
 | `TRACKB1207` | whole-unit | 1060827 | 120124 | 120130 | 189961 | 750736 | 0 | 6 |
 | `TRACKB1210` | 0.75, offset | 1039995 | 222949 | 222949 | 271682 | 545364 | 0 | 0 |
 | `TRACKB1003` | 0.75, offset | 2543148 | 316319 | 316319 | 368714 | 1858115 | 0 | 0 |
 | `TRACKB1207` | 0.75, offset | 1879890 | 212519 | 212519 | 329032 | 1338339 | 0 | 0 |
+| `TRACKB1107` | half-unit | 5426850 | 468073 | 468073 | 567287 | 4391490 | 0 | 0 |
+| `TRACKB1107` | whole-unit | 5431722 | 468117 | 468125 | 583071 | 4380526 | 1 | 8 |
+| `TRACKB1107` | 0.75, offset | 9646200 | 830542 | 830542 | 1009964 | 7805694 | 0 | 0 |
 
 The seven whole-unit columns of `TRACKB1003` the contact alone meets are
 the seven the review found answering clear over road, all on outer edges.
@@ -1239,12 +1367,12 @@ and issue #39's column pin reads the same through the new command:
 
 ### Tests, and the breaks they catch
 
-`nfsu_track_contact_tests` runs 28184 checks over the synthetic sections:
+`nfsu_track_contact_tests` runs 28217 checks over the synthetic sections:
 the triangle table and its counts, every point and segment case above, the
 region-against-whole lattice with every column held to the #39 ray, the
 refusals and both caps at their exact boundaries, the memory plan including
 a refusal one byte short and a world built in memory, the coordinate map,
-and a load from a raw and a JDLZ-packed file. For the reviews of this issue
+and a load from a raw and a JDLZ-packed file. For the reviews of issue #158
 it adds a sweep whose bounding box reaches a cell the segment does not, a
 sweep through a cell's corner, the cell cap inside one node of the tree and
 across the root's quadrants, road wound both ways, a slope of exactly 60
@@ -1253,59 +1381,67 @@ column on a deck's own outer edge above a road, and the edges the #39
 arithmetic misses: a flat seam, also met by sweeps that start and end
 exactly on it, a flat outer edge, a seam between two sloped quads with its
 height pinned, and two walls' own (0,2) diagonals met by oblique sweeps
-with the distance pinned. Each test says in a comment which break it would
-catch, and a failure message reports the failing query's own answer.
+with the distance pinned.
+
+For issue #167, `test_nearest_surface_wins` holds the four kinds of wrong
+answer above, each on the format's grid: the same two walls with a barrier
+across the second half of each sweep, which the #39 ray meets; a column on
+a raised quad's outer edge a quarter unit above a road; a sloped quad's
+outer edge swept obliquely; and a sliver whose degenerate triangle the #39
+ray meets while the sweep meets its triangle 0 exactly on the outer edge.
+`test_conservative_bounds` holds what the mutation sweep below found the
+rest did not: two level sweeps inside a ramp's bounding box, one with the
+ramp's plane behind its start and one stopping short of it; the flat seam
+with the cell naming the higher polygon first; a raised quad's edge
+1/16384 above a road under a 2000-unit column, where the #39 answer has to
+stand; a sweep with 24-bit ends near the origin exactly through an outer
+edge, where only the rounding bound keeps the contact; a sweep between two
+rounded ends whose difference is not a float; and an oblique sweep through
+a (b,c) edge the #39 ray meets, held to that hit bit for bit. The geometry
+of the last four came from searches over the format's grid that compared
+each break with the code. Every case checks its premise against the #39
+ray first, and a failure message reports the failing query's own answer.
 `nfsu_probe_track_contact_guards` drives the command over the same image
 written to disk, pinning exit status and output for 23 cases, and the
 fixture writer's refusal to replace a file.
 
-The first version of `src/track_contact.cpp`, run whole under these tests,
-fails 14 checks - two sweeps off a cell's corner, the cell cap twice, the
-flat seam as a column, as sweeps through it from above and from below and
-as sweeps that start and end on it, the flat outer edge, the sloped seam
-as a column and as a sweep, and the two walls' diagonals - and the guard
-case of the sweep off the corner.
+The source this issue starts from, run whole under these tests, fails 6
+checks: the two walls behind barriers, the raised edge above the road, the
+sloped quad's outer edge, the sliver, and the sweep between two rounded
+ends. The first version of issue #158's source fails 22, and the guard case
+of the sweep off the corner.
 
-The sweep of deliberate breaks this note printed before the second review
-counted 33 of 34 caught, and that overstated the watertight fallback: it
-held no break of the fallback's distance or of its two closed ends, and
-the second review found three there - `t < 0` made `t <= 0`, `along >
-max_distance` made `>=`, and the distance weighting the wrong corner's
-height - that change retail answers while every test passed. The fallback's
-own cases were all flat, where every corner's height is the same and no
-weighting can move the answer, and none put a fallback contact at either
-end of a segment. The rows marked G1 below are those three, each caught by
-a test added for it; the row after them, a full swap of the two weights,
-is caught by the same sloped seam.
-
-The 45-break sweep printed after that still overstated it. Every fallback
-contact those tests made lay on a triangle's (b,c) edge, where the edge
-function `u` is exactly 0, so the fallback's weight on corner a - the `u`
-term of its distance and `u`'s share of its determinant - never counted,
-and the third review found two breaks there that change retail answers
-while every test passed: on `TRACKB1003` the sweep `track-contact
-<TRACKB1003.lzc> 1473.10193 37.9745102 53.7840652 1467.63245 32.2598648
-54.9791183` meets wall polygon 0 4.00002 along, and under the two breaks
-2.41417 and 5.81821 along, and the sweep from `1468.14014 31.3876724
-54.1409225` to `1470.76611 34.7685776 60.8991165` meets the same wall
-3.99998 along and under either break passes through it. The rows marked G2
-are those two, caught by two
-oblique sweeps through walls' own (0,2) diagonals - an (a,b) and a (c,a)
-edge, where `u` is not 0 - that the #39 ray misses, found by a search over
-walls on the format's grid.
-
-The sweep was rerun whole on the current tests with the third review's
-other fallback breaks added: 50 breaks, each applied alone, the test
-program and the probe rebuilt and both run, and the file restored byte for
-byte and touched. A run counts as caught only with a non-zero exit, at
-least one `FAIL:` line and the `check(s) failed` summary, as `CLAUDE.md`
-requires.
+The sweep of deliberate breaks this note printed for issue #158 held
+eighteen breaks of that issue's watertight fallback - its distance, its
+closed ends, its shear, its edge functions - and the fallback is gone:
+issue #167 replaced it with the conservative test. The cases that caught
+those breaks stay, and now hold the conservative test instead: the seams'
+and the walls' distances, and the contacts at either end of a segment. The
+sweep was run again whole on this code, with the earlier table's other
+breaks and 22 of the new code's: each applied alone, the test program and
+the probe rebuilt and both run, and the file restored byte for byte and
+touched. A run counts as caught only with a non-zero exit, at least one
+`FAIL:` line and the `check(s) failed` summary, as `CLAUDE.md` requires.
 
 | Break | Result | First failure |
 | --- | --- | --- |
-| the slope's magnitude dropped, `up = normal[2]` | caught, 3 | `both windings are road: got road 4 wall 2` |
-| the first contact made to beat the untouched starting best | caught, 4 | `a contact exactly at the segment's end is met: got polygon 12 at 10` |
-| the #39 test's `u + v > 1` made `>= 1` | caught, 1 | `a column on the deck's own edge meets the deck, not the road beneath: got polygon 2 at 7` |
+| the rule of issue #158, the conservative test only where #39 meets nothing | caught, 3 | `a sweep rising through a wall: the wall is met 2.43990254 along, not the barrier behind it: got hit polygon 1 at distance 3.62157345 height 18.7879734` |
+| the conservative answer always replacing #39's | caught, 114 | `hill: the ray query of issue #39 agrees at (1635, 707, 150)` |
+| no margin | caught, 1 | `a surface nearer by less than a rounding of the column's length leaves the #39 answer: got hit polygon 0 at distance 987.812439 height 12.187561` |
+| a margin of 2^-10 of the length | caught, 1 | `a column exactly on a raised polygon's outer edge meets it, not the road a quarter unit beneath: got hit polygon 1 at distance 995.160156 height 4.83984375` |
+| compared with the conservative winner's own plane, not the #39 triangle's | caught, 3 | `a sweep rising through a wall: the wall is met 2.43990254 along, not the barrier behind it: got hit polygon 1 at distance 3.62157345 height 18.7879734` |
+| a conservative answer's normal never turned | caught, 3 | `a sweep up through the seam meets it facing down` |
+| no rounding bound, `kDeterminantBound = 0` | caught, 1 | `a sweep with many bits exactly through an outer edge meets it at its midpoint: got clear` |
+| a sign the rounding could hide taken as certain | caught, 1 | `a sweep with many bits exactly through an outer edge meets it at its midpoint: got clear` |
+| the edge test dropping `w` | caught, 3 | `just beyond that edge the column is clear` |
+| a plane behind the start not rejected | caught, 1 | `a sweep moving away from a ramp behind its start is clear: got hit polygon 5 at distance 0 height 70` |
+| a plane beyond the end not rejected | caught, 1 | `a sweep that stops short of a ramp is clear: got hit polygon 5 at distance 4 height 70` |
+| the crossing measured from the far end | caught, 15 | `a column exactly on the seam meets the road` |
+| a conservative tie broken by visiting order | caught, 1 | `a tie on the seam goes to the lower polygon, whichever the cell names first: got hit polygon 1 at distance 994.910156 height 5.08984375` |
+| a box the segment only touches rejected | caught, 2 | `a sweep that starts exactly on the seam meets it at distance 0: got clear` |
+| the segment's difference taken in float | caught, 1 | `a sweep between two rounded ends meets the edge it crosses exactly: got clear` |
+| the #39 test's `u + v > 1` made `>= 1` | caught, 1 | `on a (b, c) edge the #39 ray meets, the contact is that hit bit for bit: got hit polygon 0 at distance 3.29846668 height 11.3967285, the ray 3.29846692` |
+| the slope's magnitude dropped, `up = normal[2]` | caught, 6 | `both windings are road: got road 4 wall 2` |
 | the road threshold made exclusive | caught, 1 | `a slope exactly at the threshold is road: got road 0 wall 2` |
 | the #39 test's `u < 0` made `<= 0` | caught, 68 | `origin: the ray query of issue #39 agrees at (-29, -29, 150)` |
 | the #39 test's `t > max` made `>= max` | caught, 9 | `a tie goes to the lower polygon index at px 3` |
@@ -1315,91 +1451,70 @@ requires.
 | the triangle-table size check removed | caught, 1 | `a triangle table that does not match the polygons refuses` |
 | the column's rise ignored | caught, 2 | `a wheel sunk 1 unit finds the road above it` |
 | no cell answered as clear, not outside | caught, 8 | `a column no cell covers is outside` |
-| normal never turned to face the query | caught, 3 | `from outside, the normal faces -pz` |
+| normal never turned to face the query | caught, 5 | `from outside, the normal faces -pz` |
 | the query's cell cap not passed on | caught, 3 | `three cells met over a cap of two refuse` |
-| slope read from `pz` instead of `py` | caught, 28 | `road triangles: got 6, want 15` |
-| a tie broken by visiting order | caught, 9 | `a tie goes to the lower polygon index at px 3` |
-| distance reported as a fraction of the segment | caught, 5127 | `two units down: got 0.200000003` |
+| slope read from `pz` instead of `py` | caught, 36 | `road triangles: got 6, want 15` |
+| a tie broken by visiting order | caught, 10 | `a tie goes to the lower polygon index at px 3` |
+| distance reported as a fraction of the segment | caught, 5136 | `two units down: got 0.200000003` |
 | load peak forgets the image | caught, 1 | `the peak is the buffers and the parsed arrays together` |
 | the renderer map written as a reflection | caught, 3 | `slot (px, pz, py) is render (px, py, -pz)` |
 | a negative rise accepted | caught, 2 | `a negative rise or drop refuses` |
 | the length cap refusing its own length | caught, 1 | `a sweep exactly at the length cap runs` |
 | cells chosen from the segment's start only | caught, 6 | `of two barriers, the nearer: got polygon 2 at 4` |
-| the road threshold inverted | caught, 26 | `road triangles: got 10, want 15` |
+| the road threshold inverted | caught, 34 | `road triangles: got 10, want 15` |
 | a refused placement keeping what it placed | caught, 1 | `a refused world leaves nothing placed` |
 | resident bytes forgetting the triangle table | caught, 5 | `resident bytes are the five arrays` |
 | a cell's index-list slot taken as the polygon | caught, 9122 | `the higher surface first: got polygon 0 triangle 0` |
 | cells chosen by the bounding box | caught, 4 | `a sweep past the corner of every cell is outside, not clear` |
-| a corner touch not counted as meeting | caught, 5163 | `a wheel over the street finds the road` |
-| a square separated when three corners lie on one side | caught, 7 | `a sweep through a cell's corner meets the cell and is clear` |
+| a corner touch not counted as meeting | caught, 5167 | `a wheel over the street finds the road` |
+| a square separated when three corners lie on one side | caught, 12 | `a sweep through a cell's corner meets the cell and is clear` |
 | the cell cap refusing one cell late, `>` for `>=` | caught, 3 | `three cells met over a cap of two refuse` |
 | the cap counting the cells of the bounding box | caught, 1 | `inside one node, three cells met under a cap of three run` |
-| the watertight fallback removed | caught, 10 | `a column exactly on the seam meets the road` |
-| the watertight bounds made open | caught, 8 | `a column exactly on the seam meets the road` |
-| the watertight sign test dropping one edge function | caught, 835 | `the gap in the road surface is clear` |
-| the watertight determinant's sign ignored | caught, 1 | `a sweep up through the seam meets it facing down` |
-| the watertight determinant's sign inverted | caught, 8 | `a column exactly on the seam meets the road` |
-| the shear's handedness swap removed | caught, 6 | `a column exactly on the seam meets the road` |
-| the watertight test deciding first | caught, 112 | `hill: the ray query of issue #39 agrees at (1635, 707, 150)` |
-| G1: the fallback's `t < 0` made `t <= 0` | caught, 1 | `a sweep that starts exactly on the seam meets it at distance 0: got clear` |
-| G1: the fallback's `along > max_distance` made `>=` | caught, 2 | `a sweep that ends exactly on the seam meets it at its end: got clear` |
-| G1: the fallback's distance weighting `z[2]` for `z[1]` | caught, 2 | `a column exactly on a sloped seam meets the road at its own height: got hit polygon 0 at distance 31.2421875 height 8.7578125, want height 7.30010986` |
-| the fallback's distance with `z[1]` and `z[2]` swapped | caught, 2 | `a column exactly on a sloped seam meets the road at its own height: got hit polygon 0 at distance 31.4212036 height 8.57879639, want height 7.30010986` |
-| the fallback's distance weighting `z[0]` for `z[2]` | caught, 3 | `a column exactly on a sloped seam meets the road at its own height: got hit polygon 1 at distance 29.6627197 height 10.3372803, want height 7.30010986` |
-| G2: the fallback's distance weighting `z[1]` for `z[0]` | caught, 2 | `a sweep rising through a wall: a sweep through the wall's diagonal meets it 2.43990254 along, facing it: got hit polygon 0 at distance 2.72446704 height 18.1445312` |
-| G2: the fallback's determinant without `u`, `v + w` | caught, 2 | `a sweep rising through a wall: a sweep through the wall's diagonal meets it 2.43990254 along, facing it: got hit polygon 0 at distance 2.60256267 height 18.0570965` |
-| the fallback's `u` term dropped from its distance | caught, 3 | `a column that ends above the road is clear` |
-| the watertight edge function `u` taken in float | survived | |
-| all three watertight edge functions taken in float | survived | |
-| the dominant axis chosen by `>=`, a tie to the last axis | survived | |
+| the comparison without either crossing's error bound | survived | |
+| edge-on only when exactly parallel | survived | |
+| the crossing not clamped to the segment | survived | |
+| the determinant's bound without its sum's rounding | survived | |
+| the clip removed, the box test alone | survived | |
+| the clip's margin 0 | survived | |
+| degenerate triangles given to the conservative test | survived | |
+| the first #39 contact made to beat the untouched starting best | survived | |
 | the side test's rounding bound set to 0 | survived | |
 
-46 caught, 4 survived, none unknown. Each survivor was run over oblique
-sweeps as well as the tests: through points a quarter, a half and three
-quarters along every edge of every triangle of `TRACKB1003` and
-`TRACKB1210` that is not degenerate, 8 units long with the edge point at
-the middle, in four directions - 611352 and 529632 sweeps - each answer
-compared with the current code's in polygon, triangle and distance:
+45 caught, 9 survived, none unknown. Each survivor was also run over retail
+answers - the *edge*, *edge2*, *wall* and *random* sets of `TRACKB1003`,
+the *edge2* set of `TRACKB1210` and the *wall* set of `TRACKB1107`, 2428272
+sweeps, and the 1432644 columns of `TRACKB1003`'s whole-unit lattice - and
+changes not one answer there, in polygon, triangle, distance, point or
+normal. The first sweep of this issue found eight more survivors that did
+change retail answers - no margin, no rounding bound, a sign the rounding
+could hide taken as certain, a plane behind the start or beyond the end
+accepted, a conservative tie by visiting order, the difference in float,
+and the #39 test's `u + v >= 1`, which the conservative test then answered
+in its own bits - and `test_conservative_bounds` was written for them; each
+is caught above. Why the nine change nothing:
 
-- The dominant axis on a tie and a rounding bound of 0 change no answer
-  there. Any axis the direction is longest along gives a valid watertight
-  frame. The side test's inputs are floats, and the difference of two
-  floats is exact in double while their exponents are within 28 of each
-  other; then each product is its exact value rounded once, and rounding
-  never reverses an order, so the side comes out with its exact sign or as
-  0, which keeps the square. The bound matters only for coordinates that
-  differ in scale by more than that, which no test or sweep here has.
-- The edge functions in float do change answers, and only within a float
-  rounding of an edge: `u` alone in float differs on 1899 and 709 of those
-  sweeps, all three in float on 3941 and 2071. Decided in exact rational
-  arithmetic on `TRACKB1003`, of the 1899: at 214 the current code answers
-  clear where the segment really meets the triangle the variant names, at
-  3 the variant names a triangle the segment misses, 1271 name the same
-  triangle and differ only in the distance - by at most 2.4e-6 in the 1258
-  where the segment meets it exactly - and 411 name a different triangle.
-  So neither version is exact in that band - on an oblique
-  sweep the shear rounds each corner in float before the edge functions are
-  taken, and the exact sign the current code takes is the sign for those
-  rounded corners - and no test here pins an answer inside it. Within it
-  the float version shares an edge between two triangles as watertightly
-  as the double one: in float too the two products of that edge are the
-  same two roundings in both.
-
-What that band leaves on its own, measured with the same sweeps: 6304 of
-the 611352 on `TRACKB1003` answer clear although the segment, in exact
-arithmetic, meets the closed triangle it was aimed at. Every one lies on
-an edge no neighbouring surface continues - a polygon's outer edge (5815),
-the (0,2) diagonal of a triangle stored in a quad slot, which is that
-triangle's outer edge (454), or the vertical edge where two walls meet at a
-convex corner (35) - within a few float roundings of the sheared corners:
-at most 4.5e-8 world units on these sweeps, and up to 3.81e-6 on the
-review's, which swept in other directions. Those are measurements, not a
-bound, and not a tolerance a caller can rely on. The #39 ray meets nothing
-along 6291 of them; along the other 13 it meets the degenerate triangle of
-the same quad, at 0 to 3.53 units, where the segment really meets that
-quad's other triangle about 4 units along - the exception under
-"Triangles" above. On a column the shear is the identity and the lattices
-above have no such case.
+- The clip only filters: every triangle it lets through the conservative
+  test decides, so removing it cannot change an answer, and its margin
+  decides only a box the segment meets within 2^-30 of its length.
+- A retail degenerate triangle repeats a corner, so of its three cross
+  products one is exactly zero and the other two are exact negatives of
+  each other: its determinant comes out exactly 0 and the test rejects it.
+- With the conservative test always running, a #39 contact exactly at the
+  segment's end that the #39 pass loses is found by the conservative test
+  at the same distance - the segment's length - with the same point and
+  normal.
+- The side test's rounding bound: its inputs are floats, and the difference
+  of two floats is exact in double while their exponents are within 28 of
+  each other; then each product is its exact value rounded once, and
+  rounding never reverses an order, so the side comes out with its exact
+  sign or as 0, which keeps the square.
+- The other four refine a rounding bound or a clamp: without the crossings'
+  error bounds the 2^-23 margin alone separates them, the edge-on test
+  without its bound meets a segment only within that bound of parallel,
+  an unclamped crossing lies outside the segment only by its own rounding,
+  and the sum's rounding is a few units in the last place of `u + v + w`.
+  Each can change an answer only where a value lies within its own bound
+  of a threshold, and none did on the sweeps above.
 
 ### What this does not do
 
@@ -1410,12 +1525,16 @@ above have no such case.
 - It is desktop only for now. `cmake/draw_libraries.cmake` is unchanged, so
   the Switch tree does not compile `nfsu_track_contact`; `nfsu_track`, which
   it does compile, is unchanged by this issue.
-- A sweep that meets a wall only within a float rounding of the wall quad's
-  own (0,2) diagonal, while the #39 arithmetic meets something farther
-  along, passes through the wall; and on an oblique line the #39 ray can
-  meet a degenerate triangle the contact never meets, which leaves the
-  contact answering a farther surface or clear (under "Triangles" above).
-  Issue #167 follows both up.
+- It is not exact arithmetic end to end. Issue #167 closed the wall
+  diagonals a sweep passed through, the raised edges a column went past,
+  the degenerate triangles the #39 arithmetic accepts and the watertight
+  test's near-edge band; what remains is rounding, listed under "What that
+  leaves" above: a triangle the conservative test meets while the segment
+  misses it by about 1e-14, an answer beyond the nearest by less than one
+  rounding of the segment's length, a segment within rounding of parallel
+  to a plane taken as edge-on, and the #39 arithmetic's own float rounding
+  in the answers it names - up to 1.36 units along a sweep that nearly lies
+  in a surface's plane, with the point within 2.1e-4 of that plane.
 
 ## Read-only retail acceptance
 
@@ -1454,6 +1573,16 @@ build-release/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc 961.1
 build-release/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc 961.1171875 -244.921875 59.17578125 961.1171875 -244.921875 58.17578125
 
 build-release/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc 754 209
+
+build-release/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1107.lzc 2103.3125 181.898041 51.9924316 2104.125 116.903122 51.9924316
+
+build-release/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1210.lzc 695.514832 2.80625963 -9.59934139 757.478149 -14.3782396 -19.0989151
+
+build-release/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc 1478.58521 -8.32364178 61.1099014 1485.66479 -7.80135822 57.4213486
+
+build-release/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc 1690 486
+
+build-release/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc 979.5 281.5
 ```
 
 Expected:
@@ -1513,8 +1642,33 @@ Expected:
     exactly 91831/1792 = 51.2449777. The contact's own point is
     51.2449951 in float, 1.7e-5 above, the rounding of 1000 - 948.755005;
     both print as 51.245.
-13. Running any of them twice gives byte-identical output.
-14. The SHA-256 and size of every file named above are unchanged
+13. The thirteenth exits 0 and ends with `probe segment: hit wall polygon
+    9892 triangle 0 distance 4.99999 point (2103.38, 176.898, 51.9924)
+    normal (-0.012499, 0.999922, 0) up 0`: the wall whose own diagonal the
+    #39 arithmetic misses. Before issue #167 it answered wall polygon 21454
+    at 6.46146, through the wall.
+14. The fourteenth exits 0 and ends with `probe segment: hit wall polygon
+    42 triangle 1 distance 5.00001 point (700.281, 1.48437, -10.3301) normal
+    (-0.986245, -0.165292, 0) up 0`. Before issue #167 it passed wall 42 and
+    answered wall 41 at 33.0375.
+15. The fifteenth exits 0 and ends with `probe segment: hit road polygon
+    536 triangle 0 distance 3.99996 point (1482.12, -8.0625, 59.2656) normal
+    (-0.000405144, -0.0587147, 0.998275) up 0.998275`: the outer edge of the
+    triangle beside the degenerate one the #39 ray meets at 3.692308. Before
+    issue #167 it answered `probe segment: clear`.
+16. The sixteenth exits 0 and ends with `probe column: hit road polygon 3972
+    triangle 1 distance 946.144 point (1690, 486, 53.8555) normal (0,
+    0.0564356, 0.998406) up 0.998406`: the raised polygon's outer edge.
+    Before issue #167 it answered the road 0.1 below, `hit road polygon 4247
+    triangle 0 distance 946.245 point (1690, 486, 53.7551)`.
+17. The seventeenth exits 0 and ends with `probe column: hit road polygon
+    2259 triangle 0 distance 947.277 point (979.5, 281.5, 52.7227) normal
+    (0, 0, 1) up 1`. Before issue #167 it answered the road 0.93 below, `hit
+    road polygon 2315 triangle 0 distance 948.207 point (979.5, 281.5,
+    51.793)`.
+18. Running any of them twice gives byte-identical output. Issue #167
+    changes the output of none of the first twelve.
+19. The SHA-256 and size of every file named above are unchanged
     afterwards.
 
 ## Observed
@@ -1589,18 +1743,28 @@ Expected:
 - Over the 496280 non-degenerate retail triangles, 394766 have
   `abs(normal py)` of 0.95 or more, 96808 less than 0.05, and 909 lie
   between 0.3 and 0.7.
-- Wherever the ray of issue #39 meets something on the nine lattices
-  under "Region against whole", 11623141 columns in all, the contact column
-  is the same polygon, triangle, distance and point. The contact meets
-  something where the ray meets nothing at 17 of them, every one exactly on
-  a triangle's edge.
+- Wherever the ray of issue #39 meets something on the twelve lattices
+  under "Region against whole", 32127913 columns in all, the contact column
+  is the same polygon, triangle, distance and point but at three, each
+  exactly on a raised polygon's outer edge the #39 arithmetic misses, where
+  the contact is that nearer edge. The contact meets something where the
+  ray meets nothing at 25 of them, every one exactly on a triangle's edge.
 - On every edge two road polygons share, sampled at 17 points, the #39
   arithmetic misses 4 columns of `TRACKB1003`, 4 of `TRACKB1210` and 20 of
   `TRACKB1107`, and the contact misses none.
-- On oblique sweeps aimed at points of every edge of every triangle, 611352
-  on `TRACKB1003` and 529632 on `TRACKB1210`, the first triangle the #39 ray
-  meets is degenerate on 5076 and 729, and on those alone the contact is not
-  the ray's hit; on 300000 random segments per track it never is.
+- Checked against an exact brute force over every triangle of the image,
+  on the four sweep sets under "Which cells, and which triangle" - 6588456
+  sweeps over `TRACKB1003`, `TRACKB1210` and `TRACKB1107` - no answer on a
+  triangle the segment meets lies past a nearer surface by more than one
+  rounding of the segment's length, and no sweep that meets a triangle
+  answers clear; the #39 arithmetic's own rounding in the answers it names
+  is counted under "What that leaves". Before issue #167, 100,
+  372 and 465 of the review's wall-diagonal sweeps passed through the wall,
+  and 129778 sweeps in all lay past a nearer surface or answered clear
+  although met.
+- After issue #167, where the #39 ray meets something along a sweep and the
+  contact is not that hit bit for bit, the ray's first triangle is
+  degenerate or is not the exact nearest, on every sweep checked.
 
 ## Inferred
 

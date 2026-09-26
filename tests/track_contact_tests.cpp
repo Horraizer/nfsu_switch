@@ -1344,6 +1344,407 @@ void test_edges_the_ray_misses() {
 }
 
 // ---------------------------------------------------------------------
+// The nearest surface, whichever test finds it (issue #167)
+// ---------------------------------------------------------------------
+
+// Would catch (issue #167) the first contact layer's rule, which kept every
+// hit of the #39 arithmetic and tested the watertight way only when that
+// arithmetic met nothing: a sweep through a wall quad's own (0,2) diagonal,
+// which the #39 arithmetic misses, passed through the wall to a barrier
+// behind it; a column exactly on a raised polygon's outer edge answered the
+// road beneath; an oblique sweep exactly through an outer edge answered
+// clear, because the float shear rounded the edge away; and where the #39
+// arithmetic accepted a triangle with two equal corners - which no contact
+// ever meets - the sweep answered clear although it meets the same
+// polygon's other triangle exactly on its outer edge. Each case first checks
+// its premise against the ray of issue #39, so that a compiler change that
+// moves the premise says so rather than the rest passing for the wrong
+// reason. The geometry is on the format's own grid, found by a search, and
+// every segment below has both ends exact in float with its midpoint exactly
+// on the edge it is aimed at, so the contact is exactly half its length
+// along.
+void test_nearest_surface_wins() {
+    const float fall[3] = {0.0F, 0.0F, -1.0F};
+    nfsu::TrackCollisionHit ray;
+    nfsu::TrackContact c;
+
+    // The line the contact query computes, for the premise checks.
+    const auto line_of = [](const float from[3], const float to[3], float line[3]) {
+        const float delta[3] = {to[0] - from[0], to[1] - from[1], to[2] - from[2]};
+        const float length =
+            std::sqrt(delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]);
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            line[axis] = delta[axis] / length;
+        }
+        return length;
+    };
+    const auto half_length = [](const float half[3]) {
+        return static_cast<float>(std::sqrt(static_cast<double>(half[0]) * half[0] +
+                                            static_cast<double>(half[1]) * half[1] +
+                                            static_cast<double>(half[2]) * half[2]));
+    };
+
+    // A wall quad's own (0,2) diagonal in front of a barrier: the two walls
+    // and sweeps of test_edges_the_ray_misses, each with a barrier across
+    // the second half of the sweep. The #39 arithmetic misses the wall and
+    // meets the barrier, which the first contact layer reported: the sweep
+    // passed through the wall, as on retail TRACKB1107, 1210 and 1003.
+    struct WallAndBarrier {
+        const char* name;
+        float x0, z0, x1, z1, py0, py1;
+        float point[3];
+        float half[3];
+        float barrier[4];
+    };
+    const WallAndBarrier walls[] = {
+        {"a sweep rising through a wall", 60.5F, 23.375F, 37.375F, 19.75F, 14.87890625F, 18.14453125F,
+         {38.8203125F, 19.9765625F, 17.9404296875F}, {-1.0F, 1.375F, 1.75F},
+         {35.625F, 18.625F, 41.0F, 22.625F}},
+        {"a sweep nearly level through a wall", 35.125F, 15.375F, 55.375F, 23.375F, 13.9453125F,
+         21.6484375F, {41.453125F, 17.875F, 16.3525390625F}, {1.25F, -3.375F, 0.25F},
+         {38.75F, 14.875F, 45.5F, 17.375F}},
+    };
+    for (const WallAndBarrier& wall : walls) {
+        Image image;
+        image.polygons.push_back(pier(wall.x0, wall.z0, wall.x1, wall.z1, wall.py0, wall.py1)); // 0
+        image.polygons.push_back(
+            barrier(wall.barrier[0], wall.barrier[1], wall.barrier[2], wall.barrier[3])); // 1
+        image.cells.push_back(cell(48.0F, 16.0F, {0, 1}));
+        const nfsu::TrackContactWorld world = world_of(build(image));
+        check(world.valid && world.counts.wall_triangles == 4,
+              std::string(wall.name) + ": the wall and barrier image is valid");
+        if (!world.valid) {
+            continue;
+        }
+        const float from[3] = {wall.point[0] - wall.half[0], wall.point[1] - wall.half[1],
+                               wall.point[2] - wall.half[2]};
+        const float to[3] = {wall.point[0] + wall.half[0], wall.point[1] + wall.half[1],
+                             wall.point[2] + wall.half[2]};
+        float line[3];
+        const float length = line_of(from, to, line);
+        const float half = half_length(wall.half);
+        check(nfsu::query_track_collision_ray(world.collision, from, line, length, ray) &&
+                  ray.polygon == 1 && ray.distance > half + 0.25F,
+              std::string(wall.name) +
+                  ": the ray of issue #39 misses the wall and meets the barrier behind it");
+        const nfsu::TrackContactStatus through = segment(world, from, to, c);
+        check(through == nfsu::TrackContactStatus::hit && c.polygon == 0 &&
+                  c.kind == nfsu::TrackContactKind::wall && near(c.distance, half, 1e-4F) &&
+                  near(c.point[0], wall.point[0], 1e-4F) &&
+                  near(c.point[1], wall.point[1], 1e-4F) &&
+                  near(c.point[2], wall.point[2], 1e-4F) &&
+                  c.normal[0] * line[0] + c.normal[1] * line[1] + c.normal[2] * line[2] < 0.0F,
+              std::string(wall.name) + ": the wall is met " + text(half) +
+                  " along, not the barrier behind it: got " + answer(through, c));
+    }
+
+    // A column exactly on a raised polygon's outer edge, a quarter unit
+    // above a road: the outer-edge quad of test_edges_the_ray_misses and the
+    // same point 3/64 along its (c1, c2) edge, where the #39 arithmetic
+    // misses the quad and meets the road beneath. The first contact layer
+    // answered the road, as retail columns at (1690, 486) and (979.5, 281.5)
+    // of TRACKB1003 did.
+    const float py = 5.08984375F;
+    const float outer[4][2] = {{52.625F, 21.25F}, {44.375F, 19.25F},
+                               {35.25F, 16.125F}, {61.25F, 4.375F}};
+    Image step;
+    step.polygons.push_back(flat_quad(outer, py));                             // 0
+    step.polygons.push_back(flat(34.0F, 2.0F, 62.0F, 30.0F, py - 0.25F));      // 1
+    step.cells.push_back(cell(48.0F, 16.0F, {0, 1}));
+    const nfsu::TrackContactWorld stepped = world_of(build(step));
+    check(stepped.valid && stepped.counts.road_triangles == 4, "the step image is valid");
+    if (stepped.valid) {
+        const float on_edge[3] = {43.947265625F, 19.103515625F, 1000.0F};
+        check(nfsu::query_track_collision_ray(stepped.collision, on_edge, fall, 2000.0F, ray) &&
+                  ray.polygon == 1,
+              "the ray of issue #39 misses the raised edge and meets the road beneath");
+        const nfsu::TrackContactStatus onto =
+            column(stepped, on_edge[0], on_edge[1], 1000.0F, 0.0F, 2000.0F, c);
+        check(onto == nfsu::TrackContactStatus::hit && c.polygon == 0 &&
+                  near(c.point[2], py, 1e-4F) && near(c.distance, 1000.0F - py, 1e-3F) &&
+                  c.normal[2] == 1.0F,
+              "a column exactly on a raised polygon's outer edge meets it, not the road a "
+              "quarter unit beneath: got " +
+                  answer(onto, c));
+        check(column(stepped, 43.9F, 19.3F, 1000.0F, 0.0F, 2000.0F, c) ==
+                      nfsu::TrackContactStatus::hit &&
+                  c.polygon == 1,
+              "just beyond that edge the column meets the road: got polygon " +
+                  std::to_string(c.polygon));
+    }
+
+    // An oblique sweep exactly through a sloped quad's outer edge: 3/4 of
+    // the way along its (c0, c1) edge, from (46.625, 20.875, 12.45703125) to
+    // (51.125, 20.875, 10.53515625), which is (50, 20.875, 11.015625). The
+    // #39 arithmetic misses it, and the first contact layer's watertight
+    // test, which sheared the corners in float, rounded the edge away.
+    const Corner sloped[4] = {{46.625F, 20.875F, 12.45703125F},
+                              {51.125F, 20.875F, 10.53515625F},
+                              {53.375F, 5.75F, 7.0390625F},
+                              {49.5F, 9.625F, 9.74609375F}};
+    Image tilted;
+    tilted.polygons.push_back(polygon(sloped, 7)); // 0
+    tilted.cells.push_back(cell(48.0F, 16.0F, {0}));
+    const nfsu::TrackContactWorld edge = world_of(build(tilted));
+    check(edge.valid && edge.counts.road_triangles == 2, "the sloped outer-edge image is valid");
+    if (edge.valid) {
+        const float point[3] = {50.0F, 20.875F, 11.015625F};
+        const float half_vector[3] = {-2.0F, -1.25F, -0.828125F};
+        const float from[3] = {point[0] - half_vector[0], point[1] - half_vector[1],
+                               point[2] - half_vector[2]};
+        const float to[3] = {point[0] + half_vector[0], point[1] + half_vector[1],
+                             point[2] + half_vector[2]};
+        float line[3];
+        const float length = line_of(from, to, line);
+        const float half = half_length(half_vector);
+        check(!nfsu::query_track_collision_ray(edge.collision, from, line, length, ray),
+              "the ray of issue #39 misses the sloped quad's outer edge");
+        const nfsu::TrackContactStatus through = segment(edge, from, to, c);
+        check(through == nfsu::TrackContactStatus::hit && c.polygon == 0 && c.triangle == 0 &&
+                  near(c.distance, half, 1e-4F) && near(c.point[0], point[0], 1e-4F) &&
+                  near(c.point[1], point[1], 1e-4F) && near(c.point[2], point[2], 1e-4F) &&
+                  c.normal[0] * line[0] + c.normal[1] * line[1] + c.normal[2] * line[2] < 0.0F,
+              "an oblique sweep exactly through a sloped quad's outer edge meets it " +
+                  text(half) + " along: got " + answer(through, c));
+    }
+
+    // A triangle stored in a quad slot, (c0, c1, c2, c2), so that triangle 1
+    // is degenerate and lies along triangle 0's outer edge (c2, c0). The sweep
+    // passes exactly through that edge 25/64 of the way from c2, at
+    // (42.5, 20.40625, 6.5). The #39 arithmetic accepts the degenerate
+    // triangle, whose determinant is zero only in exact arithmetic, and
+    // misses triangle 0; the first contact layer answered clear, as retail
+    // TRACKB1003 polygon 536 did.
+    const Corner corners[4] = {{53.75F, 29.625F, 5.54296875F},
+                               {51.0F, 23.0F, 6.83203125F},
+                               {35.75F, 14.875F, 7.07421875F},
+                               {35.75F, 14.875F, 7.07421875F}};
+    Image slivered;
+    slivered.polygons.push_back(polygon(corners, 5)); // 0
+    slivered.cells.push_back(cell(48.0F, 16.0F, {0}));
+    const nfsu::TrackContactWorld one = world_of(build(slivered));
+    check(one.valid && one.counts.road_triangles == 1 && one.counts.degenerate_triangles == 1,
+          "the sliver image is valid");
+    if (one.valid) {
+        const float point[3] = {42.5F, 20.40625F, 6.5F};
+        const float half_vector[3] = {1.59375F, -0.796875F, -2.25F};
+        const float from[3] = {point[0] - half_vector[0], point[1] - half_vector[1],
+                               point[2] - half_vector[2]};
+        const float to[3] = {point[0] + half_vector[0], point[1] + half_vector[1],
+                             point[2] + half_vector[2]};
+        float line[3];
+        const float length = line_of(from, to, line);
+        const float half = half_length(half_vector);
+        check(nfsu::query_track_collision_ray(one.collision, from, line, length, ray) &&
+                  ray.polygon == 0 && ray.triangle == 1,
+              "the ray of issue #39 meets the sliver's degenerate triangle");
+        const nfsu::TrackContactStatus through = segment(one, from, to, c);
+        check(through == nfsu::TrackContactStatus::hit && c.polygon == 0 && c.triangle == 0 &&
+                  c.kind == nfsu::TrackContactKind::road && near(c.distance, half, 1e-4F) &&
+                  near(c.point[0], point[0], 1e-4F) && near(c.point[1], point[1], 1e-4F) &&
+                  near(c.point[2], point[2], 1e-4F) &&
+                  c.normal[0] * line[0] + c.normal[1] * line[1] + c.normal[2] * line[2] < 0.0F,
+              "a sweep exactly through a sliver's outer edge meets its triangle 0 " + text(half) +
+                  " along, where the #39 ray met the degenerate one: got " + answer(through, c));
+    }
+}
+
+// Would catch the breaks of the conservative test and of the rule that
+// sweeps over the retail tracks show and the cases above do not (issue
+// #167's mutation sweep, in docs/TRACK_COLLISION.md): the plane of a
+// triangle met behind the segment's start, or beyond its end, taken as a
+// contact at the start or the end; a tie between two triangles the
+// conservative test meets at one point broken by the order the cell names
+// them in; a surface nearer by less than the margin replacing the #39
+// answer; a sign the rounding could hide taken as certain, which loses an
+// exact contact on an edge; the segment taken as from plus its float
+// difference; and the #39 arithmetic's closed bound on a triangle's (b,c)
+// edge made open, which the conservative test would then answer in its own
+// bits. The geometry of the last four was found by a search over the
+// format's grid that compared each break with the code, and each checks
+// its premise against the ray of issue #39 first.
+void test_conservative_bounds() {
+    const float fall[3] = {0.0F, 0.0F, -1.0F};
+    nfsu::TrackCollisionHit ray;
+    nfsu::TrackContact c;
+    const auto line_of = [](const float from[3], const float to[3], float line[3]) {
+        const float delta[3] = {to[0] - from[0], to[1] - from[1], to[2] - from[2]};
+        const float length =
+            std::sqrt(delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]);
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            line[axis] = delta[axis] / length;
+        }
+        return length;
+    };
+
+    // Level sweeps at py 70 inside the bounding box of the hill's 45-degree
+    // ramp, which rises from py 60 at px 1634 to 76 at px 1650: one starts
+    // under the ramp and moves away from it, so the ramp's plane lies 2
+    // units behind its start; the other stays above the ramp and stops 4
+    // units short of where its line would cross it. Neither meets anything.
+    std::vector<std::size_t> base;
+    const nfsu::TrackContactWorld world = world_of(build(whole_image(sections(), base)));
+    const float behind0[3] = {1646.0F, 720.0F, 70.0F};
+    const float behind1[3] = {1649.0F, 720.0F, 70.0F};
+    const nfsu::TrackContactStatus behind = segment(world, behind0, behind1, c);
+    check(behind == nfsu::TrackContactStatus::clear,
+          "a sweep moving away from a ramp behind its start is clear: got " + answer(behind, c));
+    const float short0[3] = {1636.0F, 720.0F, 70.0F};
+    const float short1[3] = {1640.0F, 720.0F, 70.0F};
+    const nfsu::TrackContactStatus stops = segment(world, short0, short1, c);
+    check(stops == nfsu::TrackContactStatus::clear,
+          "a sweep that stops short of a ramp is clear: got " + answer(stops, c));
+
+    // The flat seam of test_edges_the_ray_misses, with the cell naming the
+    // second quad first: the #39 arithmetic misses both, the conservative
+    // test meets both at the same distance, and the lower polygon wins.
+    const float py = 5.08984375F;
+    const float first[4][2] = {{39.875F, 16.25F}, {60.75F, 9.125F},
+                               {55.75F, 14.875F}, {43.375F, 23.0F}};
+    const float second[4][2] = {{59.125F, 17.0F}, {56.625F, 22.25F},
+                                {55.75F, 14.875F}, {60.75F, 9.125F}};
+    Image reversed;
+    reversed.polygons.push_back(flat_quad(first, py));  // 0
+    reversed.polygons.push_back(flat_quad(second, py)); // 1
+    reversed.cells.push_back(cell(48.0F, 16.0F, {1, 0}));
+    const nfsu::TrackContactWorld seam = world_of(build(reversed));
+    const float on_seam[3] = {60.203125F, 9.75390625F, 1000.0F};
+    check(seam.valid, "the reversed seam image is valid");
+    if (seam.valid) {
+        check(!nfsu::query_track_collision_ray(seam.collision, on_seam, fall, 2000.0F, ray),
+              "the ray of issue #39 misses the seam, the cell naming the second quad first");
+        const nfsu::TrackContactStatus tie =
+            column(seam, on_seam[0], on_seam[1], 1000.0F, 0.0F, 2000.0F, c);
+        check(tie == nfsu::TrackContactStatus::hit && c.polygon == 0,
+              "a tie on the seam goes to the lower polygon, whichever the cell names first: "
+              "got " + answer(tie, c));
+    }
+
+    // A column down 2000 units exactly through the outer edge of a sloped
+    // quad, 39/64 of the way from (45.75, 9.625, 12.4375) to (52, 9.875,
+    // 12.02734375), where the edge is at 12.18756103515625: 1/16384 above a
+    // road at 12.1875. That is less than 2^-23 of the column's length, a
+    // difference its float distance cannot express, so the #39 answer, the
+    // road, stands bit for bit.
+    const Corner raised[4] = {{45.75F, 9.625F, 12.4375F},
+                              {52.0F, 9.875F, 12.02734375F},
+                              {52.0F, 25.375F, 5.73046875F},
+                              {45.75F, 25.375F, 9.2265625F}};
+    Image tie_image;
+    tie_image.polygons.push_back(polygon(raised, 5));                        // 0
+    tie_image.polygons.push_back(flat(36.0F, 2.0F, 62.0F, 30.0F, 12.1875F)); // 1
+    tie_image.cells.push_back(cell(48.0F, 16.0F, {0, 1}));
+    const nfsu::TrackContactWorld near_tie = world_of(build(tie_image));
+    check(near_tie.valid, "the near-tie image is valid");
+    if (near_tie.valid) {
+        const float top[3] = {49.55859375F, 9.77734375F, 1000.0F};
+        const bool ray_met =
+            nfsu::query_track_collision_ray(near_tie.collision, top, fall, 2000.0F, ray);
+        check(ray_met && ray.polygon == 1,
+              "the ray of issue #39 misses the raised edge and meets the road 1/16384 below");
+        const nfsu::TrackContactStatus kept =
+            column(near_tie, top[0], top[1], 1000.0F, 0.0F, 2000.0F, c);
+        check(ray_met && kept == nfsu::TrackContactStatus::hit && c.polygon == ray.polygon &&
+                  c.triangle == ray.triangle && c.distance == ray.distance &&
+                  c.point[2] == ray.point[2],
+              "a surface nearer by less than a rounding of the column's length leaves the "
+              "#39 answer: got " + answer(kept, c));
+    }
+
+    // A sweep near the origin, where a float carries bits down to 2^-22,
+    // exactly through a sloped quad's outer edge 3/64 of the way from
+    // (1.625, 1.625, 1.609375) to (3.375, 1.875, 2.73046875): both ends are
+    // exact floats, written in hex, and the midpoint (437/256, 419/256,
+    // 27229/16384) is on the edge. In double the edge's own determinant
+    // comes out a rounding away from 0, and only its rounding bound keeps
+    // the contact.
+    const Corner origin_corners[4] = {{1.625F, 1.625F, 1.609375F},
+                                      {3.375F, 1.875F, 2.73046875F},
+                                      {3.25F, 4.375F, 1.921875F},
+                                      {1.75F, 4.375F, 1.32421875F}};
+    Image origin_image;
+    origin_image.polygons.push_back(polygon(origin_corners, 5));
+    origin_image.cells.push_back(cell(16.0F, 16.0F, {0}));
+    const nfsu::TrackContactWorld dense = world_of(build(origin_image));
+    check(dense.valid, "the origin image is valid");
+    if (dense.valid) {
+        const float from[3] = {0x1.4b282ep+1F, 0x1.3849dep+1F, 0x1.58364p-1F};
+        const float to[3] = {0x1.a75f48p-1F, 0x1.aad888p-1F, 0x1.53667p+1F};
+        const float mid[3] = {1.70703125F, 1.63671875F, 1.66192626953125F};
+        float line[3];
+        const float length = line_of(from, to, line);
+        check(!nfsu::query_track_collision_ray(dense.collision, from, line, length, ray),
+              "the ray of issue #39 misses the edge near the origin");
+        const nfsu::TrackContactStatus met = segment(dense, from, to, c);
+        check(met == nfsu::TrackContactStatus::hit && c.polygon == 0 && c.triangle == 0 &&
+                  near(c.distance, 0.5F * length, 1e-5F) && near(c.point[0], mid[0], 1e-5F) &&
+                  near(c.point[1], mid[1], 1e-5F) && near(c.point[2], mid[2], 1e-5F),
+              "a sweep with many bits exactly through an outer edge meets it at its midpoint: "
+              "got " + answer(met, c));
+    }
+
+    // A sweep between two rounded floats, from 4 units before a point 51/64
+    // of the way along a sloped quad's outer edge to 4 units beyond it:
+    // to - from is not a float, and the segment between the two ends meets
+    // the edge, in exact arithmetic, 3.99999934 along, which the #39
+    // arithmetic misses. Taking the difference in float moves the segment
+    // off it.
+    const Corner rounded_corners[4] = {{56.0F, 4.0F, 7.1015625F},
+                                       {63.5F, 4.0F, 9.0390625F},
+                                       {63.625F, 11.75F, 11.42578125F},
+                                       {56.125F, 11.75F, 6.5546875F}};
+    Image rounded_image;
+    rounded_image.polygons.push_back(polygon(rounded_corners, 5));
+    rounded_image.cells.push_back(cell(48.0F, 16.0F, {0}));
+    const nfsu::TrackContactWorld rounded = world_of(build(rounded_image));
+    check(rounded.valid, "the rounded-ends image is valid");
+    if (rounded.valid) {
+        const float from[3] = {0x1.fc42fcp+5F, 0x1.dbf0ccp+0F, 0x1.695d46p+2F};
+        const float to[3] = {0x1.e35d04p+5F, 0x1.8903ccp+2F, 0x1.74a15cp+3F};
+        float line[3];
+        const float length = line_of(from, to, line);
+        check(!nfsu::query_track_collision_ray(rounded.collision, from, line, length, ray),
+              "the ray of issue #39 misses the edge the rounded sweep meets");
+        const nfsu::TrackContactStatus met = segment(rounded, from, to, c);
+        check(met == nfsu::TrackContactStatus::hit && c.polygon == 0 && c.triangle == 0 &&
+                  near(c.distance, 3.99999934F, 1e-5F) && near(c.point[0], 61.9765625F, 1e-4F) &&
+                  near(c.point[1], 4.0F, 1e-4F),
+              "a sweep between two rounded ends meets the edge it crosses exactly: got " +
+                  answer(met, c));
+    }
+
+    // An oblique sweep through a sloped quad's (c1, c2) edge - triangle 0's
+    // (b, c) edge, which the #39 arithmetic bounds by u + v <= 1 - at
+    // (42.875, 3227/512, 46681/4096), which the #39 ray meets 3.29846692
+    // along where the exact distance is 3.29846668. The contact is that hit
+    // bit for bit.
+    const Corner bc_corners[4] = {{32.625F, 2.625F, 8.64453125F},
+                                  {42.875F, 2.75F, 12.8203125F},
+                                  {42.875F, 16.125F, 7.4609375F},
+                                  {32.875F, 16.125F, 9.3046875F}};
+    Image bc_image;
+    bc_image.polygons.push_back(polygon(bc_corners, 5));
+    bc_image.cells.push_back(cell(48.0F, 16.0F, {0}));
+    const nfsu::TrackContactWorld bc = world_of(build(bc_image));
+    check(bc.valid, "the (b, c) edge image is valid");
+    if (bc.valid) {
+        const float from[3] = {43.75F, 9.240234375F, 12.615478515625F};
+        const float to[3] = {42.0F, 3.365234375F, 10.177978515625F};
+        float line[3];
+        const float length = line_of(from, to, line);
+        const bool ray_met = nfsu::query_track_collision_ray(bc.collision, from, line, length, ray);
+        check(ray_met && ray.polygon == 0 && ray.triangle == 0,
+              "the ray of issue #39 meets the quad on its (c1, c2) edge");
+        const nfsu::TrackContactStatus met = segment(bc, from, to, c);
+        check(ray_met && met == nfsu::TrackContactStatus::hit && c.polygon == 0 &&
+                  c.triangle == 0 && c.distance == ray.distance && c.point[0] == ray.point[0] &&
+                  c.point[1] == ray.point[1] && c.point[2] == ray.point[2],
+              "on a (b, c) edge the #39 ray meets, the contact is that hit bit for bit: got " +
+                  answer(met, c) + ", the ray " + text(ray.distance));
+    }
+}
+
+// ---------------------------------------------------------------------
 // Refusals and bounds
 // ---------------------------------------------------------------------
 
@@ -1758,6 +2159,8 @@ int main(int argc, char** argv) {
     test_footprints();
     test_windings_and_edges();
     test_edges_the_ray_misses();
+    test_nearest_surface_wins();
+    test_conservative_bounds();
     test_refusals();
     test_memory_plan();
     test_conversions();
