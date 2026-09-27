@@ -5,6 +5,7 @@
 #include "nfsu/stock_frame.h"
 #include "nfsu/screen_text.h"
 #include "nfsu/race_window.h"
+#include "nfsu/race_audio.h"
 
 #include <algorithm>
 #include <array>
@@ -196,7 +197,8 @@ int run(int argc, char** argv) {
         const std::string a=argv[i];
         if (a=="--help") {
             std::cout << "nfsu_race --root RETAIL (--input RECORDING | --generate RECORDING | --live)\n"
-                         "  [--out NEW_DIRECTORY --frames 180,600,6000,22000,40000]\n";
+                         "  [--out NEW_DIRECTORY --frames 180,600,6000,22000,40000]\n"
+                         "  live mode plays retail race audio when the device and banks are available\n";
             return 0;
         }
         if (a=="--live") { live=true; continue; }
@@ -257,6 +259,12 @@ int run(int argc, char** argv) {
         sequence.update(line.data(),line.size());
     }
     RaceSession session(course); require(session.start(error),error);
+    audio::RaceAudioService sound;
+    if (live && !smoke) {
+        std::string diagnostic;
+        sound.start(root, diagnostic);
+        std::cout << "audio: " << diagnostic << '\n';
+    }
     RaceRouteDriver driver(RaceDrivingLine::event1_forward); std::vector<RaceInputRun> recording;
     std::ofstream states, trajectory;
     if (!output.empty()) {
@@ -271,6 +279,7 @@ int run(int argc, char** argv) {
     std::size_t run_index=0,run_tick=0; std::uint64_t resets=0;
     auto tick=[&](const GamepadFrame& pad) {
         auto begin=Clock::now(); require(session.advance(pad,error),error); simulation.add(begin);
+        if (live && !smoke) sound.on_tick(audio::race_audio_snapshot(session));
         resets=session.telemetry().resets;
         if (trajectory.is_open()) for (const auto& t : session.physics_telemetry()) {
             if (!t.step) continue; // Countdown holds the pose without physics.
@@ -328,6 +337,7 @@ int run(int argc, char** argv) {
     }
     if (states.is_open()) { states.flush(); require(bool(states),"state hash write failed"); }
     if (trajectory.is_open()) { trajectory.flush(); require(bool(trajectory),"trajectory write failed"); }
+    sound.stop();
     const auto& result=session.timing().racers[0];
     std::cout << "event 1 track 1003 laps " << result.highest_lap << " outcome " << race_outcome_name(session.timing().outcome)
               << " steps " << session.timing().step << " resets " << resets << '\n';
