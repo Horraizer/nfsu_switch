@@ -1,10 +1,11 @@
 # Switch frame profiling (#55), first measured change
 
-This work starts #203's performance step from PR #199 round-2 head
-`164e67319d61`, which contains main `17e91ad`. It is the CPU recording pass,
-not evidence that the console now reaches 60 FPS. No simulation, culling
-policy, material order, distance limit, triangle or texture is reduced.
-The loader peak reduction belongs to #204 after #55.
+This document began with #203's performance step from PR #199 round-2 head
+`164e67319d61`, which contained main `17e91ad`. It records the CPU command
+cache pass and the later direct-present work; neither establishes 60 FPS on
+the console. No simulation, culling policy, material order, distance limit,
+triangle or texture is reduced.
+The later loader peak reduction merged in #204 / PR #207 as `3158b37`.
 
 ## Baseline retained before optimization
 
@@ -42,8 +43,9 @@ comparison (milliseconds, 120-frame means per run):
 | 2 | 2.441370 | 0.341494 | 3.684880 | 1.766957 |
 | 3 | 2.535730 | 0.275634 | 3.825929 | 1.492895 |
 
-The fixed-pose live C++ byte counter was stable at 43402887 on the
-reference path and 43455111 on the cached path after warmup. Both hold the
+At profiling head `547fd89`, the fixed-pose live C++ byte counter was
+stable at 43402887 on the reference path and 43455111 on the cached path
+after warmup. Both hold the
 new cache; the 52224-byte difference is per-frame vector capacity. This is
 not an allocator-arena measurement. Timings vary with host load, which is
 why correctness and resource limits, rather than these milliseconds, gate
@@ -57,7 +59,9 @@ A frame uses the original culler and checked draw list, selects templates
 in the same order, and copies each selected instance's exact transform and
 identity. Camera constants still come from the same frame options. Combined
 command validation and backend update validation still run. Car recording,
-resource uploads, shader state and GPU synchronization are unchanged.
+resource uploads and shader state are unchanged. The cache pass did not
+change GPU synchronization; the later direct-present mode does, as described
+below.
 
 The cache borrows immutable scene payloads. RaceGpuScene now privately owns
 that scene, exposes only a const view, forbids copying and refuses reload
@@ -67,8 +71,8 @@ recorder for differential tests, not as a different quality setting.
 
 The metadata/capacity estimate is 2220547 bytes on the desktop ABI, bounded
 by 8 MiB. No vertex, index or texture payload is duplicated by the cache.
-The console panel includes this estimate in persistent payload accounting
-and reports it separately. The combined car/course/cache estimate is
+The `--panel` screen and direct-mode nxlink samples include this estimate
+in persistent payload accounting and report it separately. The combined car/course/cache estimate is
 5435093 bytes against 64 MiB. C++ allocator overhead remains distinct from
 these estimates and from the allocator readings.
 
@@ -120,16 +124,19 @@ MALLOC IN-USE NOW. The after-load sample is before renderer creation.
 Photo 4401's increase is 96640944 bytes, of which 86659072 is GPU blocks;
 9981872 remains for readback, commands and race state. The two console
 samples in comments 4401/4470 do not establish a growing per-frame leak.
-See SWITCH_RACE.md for exact sample definitions and the known loader
-peak overrun. This change does not claim to fix that separate #204 peak.
+See SWITCH_RACE.md for exact sample definitions. The historical desktop
+loader peak overrun was reduced by #204 / PR #207: the allocation-counted
+peak is now 47528256 bytes, under the 48 MiB ceiling. The combined race
+load observation still needs a console measurement.
 
-Run the new tagged NRO through the same driving/replay views, photograph
-CULL/RECORD, full frame, draw counts and heap values, and compare the replay
-EQUAL result. The diagnostic renderer deliberately stays intact for this
-first comparison. Once the CPU change is measured on hardware, the next
-#55 passes are direct GPU presentation without full-frame readback or CPU
-text, safe overlap with per-frame fenced storage inside the budgets, and
-state/batch reductions that preserve transparency and equal-depth order.
-A compact GPU HUD must preserve countdown/lap/result visibility when the
-large diagnostic panel is disabled. None of those presentation changes is
-represented as implemented here; 60 FPS remains the measured target.
+PR #211 implements direct GPU presentation as the default, without per-frame
+readback or CPU text, and uses two fenced command/uniform slots. `--panel`
+keeps the synchronous diagnostic renderer and its full framebuffer panel.
+Panel-mode frame times include readback and CPU panel copy; compare them
+only with other panel-mode measurements. The default mode shows no in-race
+HUD yet. Its framebuffer result screen appears after the race or Plus, with
+the replay verdict, hashes and lap times. Live-driving evidence uses
+`--panel` until #64 adds a compact GPU HUD with countdown, lap, speed, gear
+and start lights. The coordinator will run both modes on the console; 60 FPS
+remains the measured target. Further #55 work can reduce state and batch
+costs while preserving transparency and equal-depth order.

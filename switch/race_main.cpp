@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdarg>
+#include <cstring>
 #include <fstream>
 #include <stdexcept>
 
@@ -39,12 +40,15 @@ public:
     void close() {
         if (opened_) { framebufferClose(&fb_); opened_ = false; }
     }
-    void show(const std::vector<std::string>& lines) {
+    void show(const std::vector<std::string>& lines, const std::vector<unsigned char>* rgba = nullptr) {
         if (!opened_ && !open()) throw std::runtime_error("framebuffer unavailable");
         u32 stride = 0; auto* pixels = static_cast<unsigned char*>(framebufferBegin(&fb_, &stride));
         if (!pixels) throw std::runtime_error("framebuffer unavailable");
         ScreenImage image{pixels, width, height, stride};
-        fill_screen_rect(image, 0, 0, width, height, {12,16,22,255});
+        if (rgba && rgba->size() == width*height*4) {
+            for (unsigned y = 0; y < height; ++y)
+                std::memcpy(pixels+y*stride, rgba->data()+y*width*4, width*4);
+        } else fill_screen_rect(image, 0, 0, width, height, {12,16,22,255});
         const auto count = std::min<std::size_t>(lines.size(), 38);
         fill_screen_rect(image, 0, 0, width, 8+count*18, {12,16,22,255});
         // One bounded line per row. Long diagnostics cannot wrap into and
@@ -103,7 +107,48 @@ GamepadFrame sample(const PadState& pad, std::uint64_t tick) {
     state.axes[0] = left.x; state.axes[1] = left.y; state.axes[2] = right.x; state.axes[3] = right.y;
     return frame;
 }
-void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pad) {
+void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceReplay& replay,
+                 bool replay_mode, bool panel_mode, bool paused,
+                 const std::vector<std::string>& last_perf, const std::string& failure) {
+    const bool finished = race.session().timing().outcome == RaceOutcome::finished;
+    std::vector<std::string> lines = {format("NFSU EVENT 1 RESULT | BUILD %.12s | %s %s",
+        NFSU_RACE_BUILD_TAG, replay_mode ? "REPLAY" : "LIVE", panel_mode ? "PANEL" : "DIRECT")};
+    lines.push_back(format("OUTCOME %s%s | step %llu", race_outcome_name(race.session().timing().outcome),
+        paused && !finished ? " (PAUSED)" : "",
+        (unsigned long long)race.session().timing().step));
+    if (!failure.empty()) {
+        auto wrapped = wrap_screen_text(failure, 105);
+        lines.push_back("ERROR - NO SUCCESS RESULT");
+        lines.insert(lines.end(), wrapped.begin(), wrapped.end());
+    }
+    if (replay_mode) {
+        const char* verdict = !failure.empty() || (finished && !(replay.exhausted() && race.matches_event1_replay()))
+            ? "DIFFERENT" : finished ? "EQUAL" : "RUNNING";
+        lines.push_back(std::string("REPLAY ") + verdict + " desktop per-step stream and result");
+    }
+    const auto result = race.result_lines();
+    for (const auto& row : result) {
+        if (!finished && row.rfind("total ticks ",0) == 0) {
+            const int completed = race.session().timing().racers[0].highest_lap;
+            for (int lap = completed+1; lap <= 2; ++lap)
+                lines.push_back(format("lap %d time --:--.-- (unfinished)", lap));
+            lines.push_back("total ticks -- time --:--.-- (unfinished)");
+        } else lines.push_back(row);
+    }
+    if (replay_mode) {
+        auto last = race.step_line();
+        if (!last.empty() && last.back() == '\n') last.pop_back();
+        lines.push_back("last step " + (last.empty() ? std::string("none") : last));
+    }
+    lines.insert(lines.end(), last_perf.begin(), last_perf.end());
+    lines.push_back("+ exits to hbmenu");
+    while (appletMainLoop()) {
+        screen.show(lines);
+        padUpdate(&pad);
+        if (padGetButtonsDown(&pad) & HidNpadButton_Plus) break;
+    }
+}
+void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& screen, PadState& pad) {
     require(R_SUCCEEDED(romfsInit()), "cannot mount race shader/replay RomFS");
     struct Guard { ~Guard() { romfsExit(); } } guard;
     std::string error;
@@ -129,14 +174,19 @@ void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pa
     const auto after = mallinfo(); heap.finish_load(after.uordblks,after.arena);
     screen.show({"ASSETS PASS. Uploading track and car to deko3d..."});
     const auto upload_start = armGetSystemTick();
-    screen.close();
+    if (!panel_mode) screen.close();
     DekoRenderer renderer;
-    require(renderer.open(frame.commands,error,true,kTrackSliceDrawLimit),error);
+    require(renderer.open(frame.commands,error,!panel_mode,kTrackSliceDrawLimit),error);
     const double initial_upload = ms(armGetSystemTick()-upload_start);
+    std::vector<unsigned char> rgba;
     RaceTickDebt clock;
     auto previous = armGetSystemTick();
     bool paused = false, printed_result = false, printed_final_perf = false;
     std::uint64_t presented = 0;
+    double previous_frame = 0, previous_hud = 0;
+    std::vector<std::string> last_perf;
+    std::string failure;
+    try {
     while (appletMainLoop()) {
         const auto begin = armGetSystemTick();
         const auto elapsed = armTicksToNs(begin-previous)/1000; previous = begin;
@@ -176,6 +226,68 @@ void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pa
                 replay.exhausted() && race.matches_event1_replay() ? "EQUAL" : "DIFFERENT");
             std::fflush(stdout); printed_result = true;
         }
+        if (panel_mode) {
+            double draw = 0, readback = 0;
+            const auto capture_start = armGetSystemTick();
+            require(renderer.capture(rgba,draw,readback,error),error);
+            const double transfer = std::max(0.0,ms(armGetSystemTick()-capture_start)-draw);
+            const auto hud_start = armGetSystemTick();
+            const auto info = mallinfo(); heap.observe(info.uordblks,info.arena);
+            const auto& car = race.session().car();
+            const double speed = vehicle_sqrt(car.velocity.x*car.velocity.x+car.velocity.y*car.velocity.y)*3.6;
+            auto hud = race_session_hud(race.session()); hud.resize(3);
+            std::vector<std::string> lines = {format("NFSU #196 | PANEL | %s | %s | BUILD %.12s",
+                replay_mode?"REPLAY":"LIVE",paused?"PAUSED":finished?"FINISHED":"RUNNING",NFSU_RACE_BUILD_TAG)};
+            lines.push_back("DIAGNOSTIC PANEL: frame time includes GPU readback and CPU text copy");
+            lines.push_back(hud[0]+" | "+hud[1]+" | "+hud[2]);
+            lines.push_back(format("%.1f KM/H | gear %d | pad %s | step %llu | physics 120 Hz / pad 60 Hz | catch-up %u",
+                speed,int(car.gear),connected?"CONNECTED":"DISCONNECTED - NEUTRAL",(unsigned long long)race.session().timing().step,ticks));
+            lines.push_back(format("SIM %.2f ms | RES/HASH/LOG %.2f ms | CULL/RECORD %.2f ms | UPLOAD/CONSTANTS %.2f ms",
+                simulation,residency,record,upload));
+            lines.push_back(format("DRAW %.2f ms | TRANSFER/COPY %.2f ms (GPU %.2f) | previous HUD/present %.2f ms",
+                draw,transfer,readback,previous_hud));
+            lines.push_back(format("Previous PANEL FRAME %.2f / 16.67 ms %s | debt %llu ticks | load %.0f ms | initial upload %.0f ms",
+                previous_frame,previous_frame>16.6667?"OVER":"WITHIN",(unsigned long long)clock.debt_ticks(),load_ms,initial_upload));
+            lines.push_back(format("DRAWS %zu track + %zu car | TRIANGLES %llu | far %.2f | visible %zu | unplaced %llu",
+                frame.track_draws,frame.car_draws,(unsigned long long)frame.triangles,frame.far_plane,frame.visible,(unsigned long long)frame.unplaced));
+            lines.push_back(format("RESIDENCY %zu sections | CPU stream %llu / 50331648 | persistent payload %llu / 67108864",
+                race.resident_count(),(unsigned long long)scene.track().streaming_bytes,(unsigned long long)persistent));
+            lines.push_back(format("Command cache metadata EST %llu / 8388608 bytes (immutable track templates)",
+                (unsigned long long)scene.cache_bytes()));
+            lines.push_back(format("GPU blocks %llu / 268435456 | uniforms 1048320 / 1048576 | resources %zu",
+                (unsigned long long)renderer.gpu_bytes(),frame.commands.uploads.resources.size()));
+            lines.push_back(format("MALLOC IN-USE before %llu | after load %llu | NOW %llu (includes GPU BLOCKS)",
+                (unsigned long long)heap.before_load,(unsigned long long)heap.after_load,(unsigned long long)heap.current));
+            lines.push_back(format("HEAP LOAD OBS HWM %llu | delta %llu / 50331648 | LOAD HEAP OVER %llu",
+                (unsigned long long)heap.load_peak,(unsigned long long)heap.load_delta(),(unsigned long long)heap.load_overrun(50331648)));
+            lines.push_back(format("HEAP RUN OBS HWM %llu | ARENA NOW %llu | ARENA OBS HWM %llu (sampled)",
+                (unsigned long long)heap.peak,(unsigned long long)heap.extent,(unsigned long long)heap.extent_peak));
+            if (replay_mode) {
+                const char* verdict = finished ? (replay.exhausted() && race.matches_event1_replay()?"EQUAL":"DIFFERENT") : "RUNNING";
+                lines.push_back(std::string("REPLAY ")+verdict+" | state-sha256 "+race.sequence_hash());
+                lines.push_back("steps-sha256 "+race.steps_hash());
+                auto last = race.step_line(); if (!last.empty()) last.pop_back();
+                lines.push_back("last step "+last);
+            }
+            lines.push_back("ZR gas | ZL brake/reverse | stick/D-pad steer | B handbrake | R/L shift | X camera | - reset");
+            lines.push_back("Y pause/photo | + result | panel includes readback and CPU text cost");
+            screen.show(lines,&rgba);
+            previous_hud = ms(armGetSystemTick()-hud_start);
+            previous_frame = ms(armGetSystemTick()-begin);
+            ++presented;
+            if (presented == 1 || presented % 120 == 0 || (finished && !printed_final_perf)) {
+                std::printf("PERF PANEL BUILD %.12s | %s %s | frame %llu step %llu\n",
+                    NFSU_RACE_BUILD_TAG,replay_mode?"REPLAY":"LIVE",
+                    paused?"PAUSED":finished?"FINISHED":"RUNNING",
+                    (unsigned long long)presented,(unsigned long long)race.session().timing().step);
+                std::printf("PERF PANEL FRAME %.2f / 16.67 ms includes readback and panel | SIM %.2f | RES/HASH/LOG %.2f | CULL/RECORD %.2f | UPDATE %.2f | DRAW %.2f | TRANSFER/COPY %.2f (GPU %.2f) | HUD/PRESENT %.2f\n",
+                    previous_frame,simulation,residency,record,upload,draw,transfer,readback,previous_hud);
+                std::fflush(stdout);
+                last_perf = {format("Last PANEL FRAME %.2f ms includes readback and panel | CULL/RECORD %.2f ms",previous_frame,record),
+                    format("DRAW %.2f ms | TRANSFER/COPY %.2f ms (GPU %.2f) | HUD/PRESENT %.2f ms",draw,transfer,readback,previous_hud)};
+                if (finished) printed_final_perf = true;
+            }
+        } else {
         DekoPresentTiming present;
         const auto present_start = armGetSystemTick();
         require(renderer.present(error,&present),error);
@@ -205,11 +317,28 @@ void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pa
                 (unsigned long long)scene.cache_bytes(),
                 (unsigned long long)heap.before_load,(unsigned long long)heap.after_load,
                 (unsigned long long)heap.current,(unsigned long long)heap.load_peak,(unsigned long long)heap.peak);
+            std::printf("PERF HEAP LOAD OBS HWM %llu | delta %llu / 50331648 | LOAD HEAP OVER %llu | HEAP RUN OBS HWM %llu | ARENA NOW %llu | ARENA OBS HWM %llu\n",
+                (unsigned long long)heap.load_peak,(unsigned long long)heap.load_delta(),
+                (unsigned long long)heap.load_overrun(50331648),(unsigned long long)heap.peak,
+                (unsigned long long)heap.extent,(unsigned long long)heap.extent_peak);
             std::fflush(stdout);
+            last_perf = {format("Last DIRECT FRAME %.2f ms | SIM %.2f | CULL/RECORD %.2f | UPDATE %.2f",
+                frame_ms,simulation,record,upload),
+                format("PRESENT CPU %.2f ms | ACQUIRE %.2f | FENCE %.2f | CMD %.2f | SUBMIT %.2f",
+                present_cpu,present.acquire_ms,present.fence_wait_ms,present.record_ms,present.submit_ms)};
             if (finished) printed_final_perf = true;
         }
+        }
+        if (finished) break;
     }
-    require(renderer.close(error),error);
+    } catch (const std::exception& e) { failure = e.what(); }
+    std::string close_error;
+    if (!renderer.close(close_error)) {
+        if (!failure.empty()) failure += " | ";
+        failure += "renderer close: " + close_error;
+    }
+    if (!failure.empty()) { std::printf("ERROR: %s\n",failure.c_str()); std::fflush(stdout); }
+    if (appletMainLoop()) show_result(screen,pad,race,replay,replay_mode,panel_mode,paused,last_perf,failure);
 }
 } // namespace
 int main(int argc, char** argv) {
@@ -219,27 +348,31 @@ int main(int argc, char** argv) {
     {
         Screen screen; if (!screen.open()) return 1;
         try {
-            std::string root = "sdmc:/nfsu"; bool replay = false, selected = false, root_seen = false;
+            std::string root = "sdmc:/nfsu"; bool replay = false, panel = false, selected = false, root_seen = false;
             for (int i = 1; i < argc; ++i) {
                 const std::string arg = argv[i];
                 if (arg == "--replay") { replay = true; selected = true; }
                 else if (arg == "--live") { replay = false; selected = true; }
+                else if (arg == "--panel") panel = true;
                 else if (!root_seen && arg.rfind("--",0) != 0) { root = arg; root_seen = true; }
-                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay]");
+                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel]");
             }
             while (!selected && appletMainLoop()) {
                 padUpdate(&pad); const auto down = padGetButtonsDown(&pad);
                 if (down & HidNpadButton_Plus) throw Cancel{};
                 if (down & HidNpadButton_A) selected = true;
                 if (down & HidNpadButton_X) { selected = true; replay = true; }
-                screen.show({"NFSU #196 - EVENT 1 / STOCK 240SX / TWO LAPS",std::string("BUILD ")+NFSU_RACE_BUILD_TAG,
+                if (down & HidNpadButton_Y) panel = !panel;
+                screen.show({"NFSU #196 - EVENT 1 / STOCK 240SX / TWO LAPS",format("BUILD %.12s",NFSU_RACE_BUILD_TAG),
                     "A: drive with Joy-Con / Pro Controller", "X: replay the pinned desktop event1.txt", "+: exit",
+                    std::string("Y: diagnostic panel ")+(panel?"ON":"OFF")+" (readback and CPU text cost)",
                     "The #47 first-lap check runs before loading. Assets: "+root,
                     "Release all controls during countdown to clear the #59 hot-plug latch.",
-                    "During the race: Y pauses, + exits; performance and replay results print to nxlink.",
+                    "Direct mode has no in-race HUD yet; choose PANEL for live driving evidence.",
+                    "During the race: Y pauses, + opens results; performance prints to nxlink.",
                     "No game data is bundled or written. Replay input is bundled in RomFS."});
             }
-            if (selected) run(root,replay,screen,pad);
+            if (selected) run(root,replay,panel,screen,pad);
         } catch (const Cancel&) {
         } catch (const std::exception& e) {
             std::printf("ERROR: %s\n",e.what()); std::fflush(stdout);

@@ -3,9 +3,8 @@
 `nfsu_switch_race.nro` runs the stock 240SX through event 1's forward
 track-1003 circuit for two laps. It uses `RaceSession` from #192, the #59
 controls and chase camera, #157 residency, and #198's deko3d track path with
-#171 native DXT. This branch started at PR #198 head `1429830fd566`, while
-that PR was in review. It now includes main at `17e91ad`, including #198
-round 2 loader polling and the shared `HeapUsage` observation helper.
+#171 native DXT. The race also uses the command cache merged in #206 and
+the bounded track loader merged in #207.
 
 ## Install and use
 
@@ -23,8 +22,9 @@ HEAD (12 characters) is used. Reconfigure after changing HEAD. Source
 exports without Git need an explicit label. The menu and nxlink performance
 lines clip labels to 12 characters; CTest checks the configured tag in the ELF.
 
-The menu offers A for live driving and X for replay. With nxlink, optional
-arguments are `[sdmc:/nfsu] [--live|--replay]`. RomFS holds the three checked
+The menu offers A for live driving, X for replay and Y to toggle the
+diagnostic panel. Direct presentation is the default. With nxlink, optional
+arguments are `[sdmc:/nfsu] [--live|--replay] [--panel]`. RomFS holds the three checked
 offline shaders and the repository's authored `tests/recordings/event1.txt`.
 It contains no retail or derived game asset. The application writes no SD
 file; every retail input is opened read-only.
@@ -42,7 +42,7 @@ Live controls pass the libnx state through `gamepad_buttons_from_npad` into
 | X | Next shared chase-camera POV |
 | Minus | #60 vehicle reset |
 | Y | Pause or resume, also in replay |
-| Plus | Exit |
+| Plus | Show the result screen; press again there to exit |
 
 Release controls during the countdown to clear the shared hot-plug latch.
 Disconnected pads contribute neutral input. A pause or OS suspension longer
@@ -53,11 +53,14 @@ two 120 Hz vehicle/contact steps as desktop. Rendering never changes dt.
 A long sustained overload can therefore lag wall time; the nxlink performance
 line shows the debt instead of claiming 60 Hz from the display rate.
 
-The menu, loading progress and errors use the libnx framebuffer. The race
-closes it before creating the deko3d swapchain and presents directly. The
-lap number, current/last lap and finish time come from `race_session_hud`
-in nxlink performance samples. Loading and error text remains clipped to
-105 columns per row.
+The menu and loading progress use the libnx framebuffer. Direct mode closes
+it before creating the deko3d swapchain. It shows no HUD during the race;
+the countdown, lap, speed, gear and pause state go only to nxlink until the
+GPU HUD in #64 lands. Use `--panel` or menu Y for live-driving evidence now:
+that mode keeps the framebuffer and the original readback panel with the
+race HUD and heap rows. After the race finishes or Plus is pressed, the
+renderer closes and a framebuffer result screen remains until Plus is
+pressed again. Loading, result and error text is clipped to 105 columns.
 
 ## Replay parity
 
@@ -69,9 +72,11 @@ and the resident record indices in ascending little-endian order. Startup
 residency lines precede the binary step digests in the sequence hash.
 
 Stdout/nxlink prints the result, the sequence hash and a SHA-256 over all
-48336 textual step rows. `REPLAY EQUAL` prints only after all input has been
-consumed, both hashes match, and the exact finish, lap times and zero-reset
-result match. A mismatch prints `REPLAY DIFFERENT`.
+48336 textual step rows. The result screen shows the mode, outcome, both lap
+times, total, both hashes, last step and `REPLAY EQUAL`, `RUNNING` or
+`DIFFERENT`. `REPLAY EQUAL` appears only after all input has been consumed,
+both hashes match, and the exact finish, lap times and zero-reset result
+match. A mismatch prints `REPLAY DIFFERENT`.
 
 ```text
 event 1 track 1003 laps 2 outcome finished steps 48336 resets 0
@@ -106,9 +111,8 @@ trace is described as console execution evidence.
 The loader and native textures are #198's `TrackSlice`. The track and car
 commands are joined with rebased upload indices and drawn in one deko3d
 pass with one camera. Two depth targets are paired with the two swapchain
-images so adjacent GPU frames do not share a writable depth surface. Car
-placement follows the shared
-vehicle transform; the chase camera includes the existing track collision
+images to keep their writable surfaces separate. Car placement follows the
+shared vehicle transform; the chase camera includes the existing track collision
 hook. The car uses the same painted stock scene as the desktop race.
 Track culling uses the same camera basis as GPU projection.
 
@@ -156,7 +160,8 @@ and initial commands. The after-load sample is taken before the renderer
 is created, not just before its first frame.
 
 deko3d allocates its GPU blocks from the same newlib heap. Therefore
-MALLOC IN-USE NOW includes GPU BLOCKS. Do not add the two readings.
+MALLOC IN-USE NOW includes GPU BLOCKS. Do not add the two readings. The
+`--panel` screen and nxlink `PERF` samples report these heap observations.
 The renderer and GPU blocks are created after the after-load
 sample. In live photo 4401, 155528752 - 58887808 = 96640944 bytes of growth;
 86659072 of that is GPU blocks, leaving 9981872 bytes for other allocations
@@ -165,43 +170,41 @@ such as readback, command tables and race state. The finish photo 4470 has
 samples in different modes do not prove absence of a leak.
 
 HEAP LOAD/RUN OBS HWM are the largest sampled in-use values, lower bounds
-on the true live peak. Arena now/OBS HWM measure allocator extent, not live
+on the true live peak. ARENA NOW/OBS HWM measure allocator extent, not live
 bytes. LOAD HEAP OVER compares the sampled load delta with 48 MiB. The
-race load delta also includes car/course preparation. The track loader's
-exact desktop allocation peak is already known to exceed 48 MiB: 63602625
-bytes (review 4467), 13270977 over. #204 follows #55 and will reduce that
-peak; this change does not enlarge the budget or claim the loader fits.
+race load delta also includes car/course preparation. Before #204, the
+track loader's exact desktop allocation peak was 63602625 bytes (review
+4467), 13270977 over. #204 merged as PR #207 at `3158b37`; its new exact
+desktop peak is 47528256 bytes, 2803392 below 48 MiB. The race's broader
+load observation still needs its own console measurement.
 
 ## Performance and owner evidence
 
 The first frame, every 120th frame and the first finished frame print `PERF`
-samples to stdout/nxlink. They report full CPU frame time against 16.67 ms,
-simulation, residency/hash/logging, cull/record, update validation and CPU
-present time. Present is split into swapchain acquire, slot fence wait,
-uniform/command recording and submit. These are CPU timings; none claims
-to measure GPU execution time. The GPU may work on the previous frame while
-the CPU simulates and prepares the next. A slot's fence is waited before
-its uniform or command memory is overwritten; each swapchain image has its
-own depth target. The race path performs no GPU readback or CPU pixel copy.
-The added frame slot memory is checked against the same 256 MiB GPU budget.
-Nxlink samples include the command-cache metadata estimate.
+samples to stdout/nxlink. Direct-mode samples report CPU frame time against
+16.67 ms, simulation, residency/hash/logging, cull/record, update validation
+and CPU present time. Present is split into swapchain acquire, slot fence
+wait, uniform/command recording and submit. The GPU may work on the previous
+frame while the CPU prepares the next. A slot's fence is waited before its
+uniform or command memory is overwritten. Direct mode performs no GPU
+readback or CPU pixel copy. The added frame slot memory is checked against
+the same 256 MiB GPU budget. `PERF HEAP` reports load/run high-water and
+arena extent observations, including LOAD HEAP OVER.
 
-On 2026-09-27 the owner ran the `direct-dev` NRO built from the source later
-committed as `568a1fe`. Its SHA-256 is
-`3329ceabd4b6525ead7af0b757a32056bb99c8a02b57004cd93e63e5294de2d7`.
-Nxlink frames 120-1680 reported 61.98-67.21 ms CPU frame time, 48.43-51.43
-ms cull/record, 1.22-1.72 ms CPU present and 0.00 ms slot fence wait in the
-sampled frames. GPU blocks were 100331520 bytes. The owner reported that the
-race was visible. This build predates the #206 cache merge. A detailed visual
-check and a combined timing run belong to the owner and coordinator.
+`--panel` uses the original synchronous readback and CPU framebuffer panel.
+Its `PERF PANEL FRAME` and on-screen `Previous PANEL FRAME` include readback
+and panel costs. They must not be compared as direct-present frame timings.
+All stage measurements are CPU timings, not GPU execution times. The samples
+are single frames, not averages; their own nxlink printing follows the frame
+measurement. Both modes report the bounded command-cache estimate. The
+result screen shows the last sampled frame summary after rendering stops.
 
 [PR #206 comment 4593](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/206#issuecomment-4593)
 measured its cached race NRO at 65.57-70.20 ms per frame, 21.76-23.65 ms
 for cull/record, about 20 ms for readback plus the CPU panel, and about
-11.6 ms for synchronous draw submission and wait. This branch now includes
-that cache through main. Its SHA-tagged NRO needs a console run to establish
-the combined frame time; the `direct-dev` measurements above do not include
-the cache and cannot establish that result.
+11.6 ms for synchronous draw submission and wait. This branch includes that
+cache through main. The fixed SHA-tagged NRO needs a coordinator console run
+in both modes to establish its frame time and visual correctness.
 
 On 2026-09-27 the owner ran the coordinator's NRO built from `e65960b`.
 Its SHA-256 is `45d21ebf744acd2a7dc52926f55ee0658822f6ce1668a7a67035bb56d33f51b3`.
