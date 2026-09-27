@@ -367,9 +367,10 @@ vertically, and the
 aftermarket rims in `Cars/WHEELS` quantize to exact inch diameters (0.29210,
 0.30480, 0.31750, 0.33020) that neither stored value matches.
 
-`+0x14`, `+0x1C` and `+0x20` do have readers, listed above, but the
-expression the wheel draw builds from them was not reproduced here, so this
-project gives none of the three a name beyond its offset.
+`+0x14`, `+0x1C` and `+0x20` feed the lateral matrices described below.
+The stock branch uses `+0x1C`; the RideInfo `+0x464` selector chooses
+`+0x20` when nonzero (`0x0056F980`). The selector's stock value is inferred
+from the absence of a wide-body part, not read from a live RideInfo.
 
 ### The suspension upgrade confirms the axle pairing
 
@@ -570,11 +571,40 @@ and `0x0056FD87`, and brakes 0 and 3 by the diagonal
 `(1, -1, 1, 1)` at `0x005703A3..0x00570439`, which is a reflection rather
 than a rotation. The next section traces both, and the multiply order.
 
-**This project does not reproduce that lateral expression.** The operand
-selection and the sign rule were traced, but the exact floating-point
-stack order was not verified, so `nfsu::part_placement` exposes the wheel
-records and the culling placements and stops there. Anything that needs the
-drawn wheel matrix must trace `0x0056F945..0x0056FBCF` first.
+**The stock lateral branch (issue #201).** Disassembly of
+`0x0056F945..0x0056FBCF` gives the following row-vector matrices when the
+wheel mesh has no `MARKER_BRAKE` and RideInfo `+0x464` selects `+0x1C`.
+Let `W` be wheel record `+0x14`, `L` its `+0x1C`, and `h = W * 0.5`:
+
+```text
+X[5] = W / 0.184       X[13] = -h
+Q[13] = L - sign(L)*h
+P[13] = Q[13]
+```
+
+All other entries of `X`, `Q` and `P` are identity entries. `0x0056F975`
+loads the 1.0 divisor, `0x0056F97E` divides, and `0x0056F9BA..0x0056F9C2` stores `h`,
+`0x0056F9D9` and `0x0056FA4B` form the scale, `0x0056FA52..0x0056FA66`
+store `-h`, and `0x0056FB4E..0x0056FBAC` select the sign and store the two
+translations. The two selected values are negated when copied to
+CarRenderInfo `+0x510/+0x514` at `0x0056C267/0x0056C275`, which is why the
+expression above uses the original wheel-record sign.
+
+For the stock 240SX, `W` is 0.195 front and 0.205 rear. Its wheel mesh has
+no `MARKER_BRAKE`, so `0x0056B8B0..0x0056B90D` leaves `+0x540` zero and
+the `0x0056FB7E` fallback chooses `h`. The culling placements have lateral
+`+/-0.73`; the drawn wheel matrices place the model origin at
+`+/-0.82094` front and `+/-0.80067` rear. Brake model origins take `Q`:
+`+/-0.72344` front and `+/-0.69817` rear. This moves the wheel's visible
+rim outward inside its arch, while the brake stays close to the culling
+placement.
+
+The code follows this stock branch but still marks all eight instances as
+`placement_exact = false`: the final x87 rounding has not been checked bit
+for bit, the RideInfo selector is inferred, and a wheel mesh with a
+`MARKER_BRAKE` takes another branch. The static stock scene carries no
+spin, steering or suspension travel. The race adds those from its vehicle
+state, with visual phase integrated separately from the simulation.
 
 ### Which way the wheel and brake models face (observed, issue #161)
 
@@ -701,13 +731,12 @@ hands a model whose `+0x10` is set to `0x0053F540`, which walks that many
 16-byte entries and looks textures up through `0x005461C0`: a per-side
 texture substitution for the brake, whose tables were not decoded.
 
-**What the stand-in carries.** With `place_wheels_from_culling_table`, wheel
-copy `k` is `car_wheel_half_turn() * translation(p_k)` and brake copy `k` is
-`car_brake_reflection() * translation(p_k)` when `car_wheel_turned_by_draw(k)`
-holds, that is for `k` = 0 and 3, and `translation(p_k)` alone for 1 and 2,
-with `p_k` the culling placement. That is the draw's order with `X_k`,
-`Q_k`, `P_k`, the spin and steering in `W_k`, and the texture substitution
-left out, so every such copy is still `placement_exact` false. Before issue
+**What the stock branch carries.** With `place_wheels_from_culling_table`,
+the wheel and brake copies now include `X_k`, `Q_k` and `P_k` above, as well
+as the half turn or reflection for `k` = 0 and 3. The alternative lateral
+branches, spin, steering and suspension are absent from a static stock
+frame, and the brake texture substitution is still absent, so every such
+copy remains `placement_exact` false. Before issue
 #161 no copy carried `H` or `R`: all eight were pure translations,
 determinant +1, and the two left wheels showed the inboard side of the
 right-hand model outboard. A camera on the car's left then saw each left
@@ -884,30 +913,26 @@ optional role argument filters the listing.
 part set and this placement into the `stock car` profile of
 `PreparedCarScene` (`include/nfsu/stock_scene.h`,
 [`RENDERER.md`](RENDERER.md)). The exhaust and the licence plate are
-placed there from their markers, exactly as above. The wheel and the brake
-are not: the profile reports them as `placement unreproduced` and draws
-nothing for them, because of the lateral expression below, and the opt-in
-that places them at the culling placements marks every instance it
-produces as not exact. Since issue #161 the opt-in does carry which way
-each model faces: the half turn on wheels 0 and 3 and the reflection on
-brakes 0 and 3, in the draw's order ("Which way the wheel and brake models
-face" above).
+placed there from their markers, exactly as above. Wheels and brakes stay
+opt-in. Since issue #201, the option composes the stock lateral scale and
+offset above rather than using the culling placement as the drawn origin.
+It retains the half turn on wheels 0 and 3 and the reflection on brakes 0
+and 3 from issue #161. Every wheel and brake instance remains marked
+inexact because other draw branches and x87 rounding are unverified.
 
 `nfsu_viewer --stock-car NAME` renders that profile, applying each instance
 transform ([`RENDERER.md`](RENDERER.md), "Instances"). The distinction
 survives into the picture: without `--place-wheels` the frame holds no
-wheel at all, and with it the stand-in copies are drawn but counted apart
-from the exact ones and named as a stand-in in the report, so nothing in
-the output presents a culling placement as the drawn matrix.
+wheel at all, and with it the stock lateral copies are drawn but counted
+apart from exact ones. The report names the unresolved branches.
 
 ## Unknown
 
-- The lateral expression the wheel draw builds at
-  `0x0056F945..0x0056FBCF`, and therefore the lateral offsets and scale of
-  the drawn wheel and brake matrices (`X_k`, `Q_k` and `P_k` above). The
-  inputs are identified; the arithmetic is not reproduced. Which way the
-  models face is decoded and reproduced (issue #161); the spin and the
-  steering are traced to `0x004B1A31..0x004B1A7E` and not reproduced.
+- The alternative wheel-offset selector and wheel-marker branch in
+  `0x0056F945..0x0056FBCF`, plus exact x87 rounding of the stock branch.
+  The static stock profile reproduces its traced scale and offset, but
+  leaves spin, steering and suspension travel for the moving race scene
+  (`CAR_ANIMATION.md`).
 - The brake's per-side texture substitution tables at `CarRenderInfo +
   0xE2C` and `+0xE4C`, and what fills them.
 - Wheel fields `+0x14`, `+0x1C` and `+0x20` beyond the addresses that read

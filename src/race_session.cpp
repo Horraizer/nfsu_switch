@@ -62,6 +62,10 @@ bool RaceSession::advance(const GamepadFrame& pad, std::string& error) {
         error = "race session is not running"; return false;
     }
     controls_.update(pad);
+    const DriveFrameState& frame = controls_.frame_state();
+    animation_.braking =
+        (frame.brake_from_button ? frame.brake_digital : frame.brake_analog) > 0.0 ||
+        frame.handbrake;
     RaceTimingInput timing_input;
     if (!race_car_held(timing_)) {
         if (controls_.frame_state().reset) vehicle_.request_reset();
@@ -69,6 +73,15 @@ bool RaceSession::advance(const GamepadFrame& pad, std::string& error) {
             inputs_[k] = controls_.step(forward_speed(car()), car().gear, car().gearbox);
             if (!vehicle_.step(inputs_[k], track_telemetry_[k])) {
                 started_ = false; error = vehicle_.error(); return false;
+            }
+            for (std::size_t w = 0; w < kVehicleWheelCount; ++w) {
+                double phase = animation_.wheel_phase[w] +
+                    car().wheels[w].spin * kVehicleStepSeconds;
+                while (phase > 3.14159265358979323846)
+                    phase -= 6.28318530717958647692;
+                while (phase < -3.14159265358979323846)
+                    phase += 6.28318530717958647692;
+                animation_.wheel_phase[w] = phase;
             }
         }
         timing_input.events = vehicle_.events().data();

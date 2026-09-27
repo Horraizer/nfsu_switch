@@ -2476,6 +2476,7 @@ void test_car_instances_and_uniform_layout() {
     for (std::size_t mesh : {1U, 0U, 1U, 0U}) {
         nfsu::PreparedInstance instance;
         instance.mesh = mesh;
+        instance.lamp_mode = static_cast<std::uint8_t>(scene.instances.size());
         instance.transform[0] = -1;
         instance.transform[12] = static_cast<float>(scene.instances.size());
         instance.transform[13] = 2;
@@ -2506,6 +2507,8 @@ void test_car_instances_and_uniform_layout() {
     for (const auto& d : commands.draws) {
         for (std::size_t i = 0; i < 16; ++i)
             check(d.placement.rows[i] == scene.instances[d.instance].transform[i], d.name + ": car placement");
+        check(d.material.alpha[3] == static_cast<float>(scene.instances[d.instance].lamp_mode),
+              d.name + ": lamp mode uniform");
     }
     nfsu::CameraFrame camera;
     check(nfsu::make_camera_frame(options.camera, options.width, options.height, camera, error), "camera frame");

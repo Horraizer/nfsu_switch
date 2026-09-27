@@ -1037,6 +1037,20 @@ void test_unsupported_formats() {
                               rgba, error) &&
               error == "P8 level requires a 256-entry palette" && rgba.empty(),
           "P8 decode requires a palette");
+    nfsu::P8Palette palette{};
+    palette[0] = 12; palette[1] = 34; palette[2] = 56; palette[3] = 78;
+    palette[4] = 90; palette[5] = 87; palette[6] = 65; palette[7] = 43;
+    palette[255 * 4] = 1; palette[255 * 4 + 1] = 2;
+    palette[255 * 4 + 2] = 3; palette[255 * 4 + 3] = 4;
+    Bytes colored_indices(16, 0);
+    colored_indices[1] = 1; colored_indices[15] = 255;
+    check(nfsu::decode_level(nfsu::PixelFormat::p8, 4, 4, colored_indices.data(),
+                             colored_indices.size(), rgba, error, &palette) &&
+              rgba.size() == 64 &&
+              std::equal(rgba.begin(), rgba.begin() + 4, palette.begin()) &&
+              std::equal(rgba.begin() + 4, rgba.begin() + 8, palette.begin() + 4) &&
+              std::equal(rgba.end() - 4, rgba.end(), palette.end() - 4),
+          "P8 indices use red-green-blue-alpha palette entries, including index 255");
     std::ostringstream output;
     check(!nfsu::write_dds(output, nfsu::PixelFormat::unsupported, 4, 4, 1, data.data(),
                            data.size(), error) &&

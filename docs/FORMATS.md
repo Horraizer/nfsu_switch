@@ -689,9 +689,10 @@ The byte sequence of the 0x33310003 id occurs nowhere in the file.
   same in both kinds of file, so there might be another flag.
 - The 128-byte alignment could be absolute or relative to the root. Both
   roots are 128-aligned, so the data cannot tell them apart.
-- The 16 P8 palettes are 1024-byte blocks of 256 four-byte entries. The
-  parser can return those raw bytes separately from the index chain. Their
-  channel interpretation is still inferred rather than used by rendering.
+- The P8 palettes are 1024-byte blocks of 256 four-byte entries. The parser
+  returns those raw bytes separately from the index chain. Each entry is a
+  Direct3D `PALETTEENTRY` in red, green, blue, alpha order; the track decoder
+  uses it for RGBA conversion (see `docs/TRACK_MATERIALS.md`).
 
 ### Unknown
 

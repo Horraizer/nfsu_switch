@@ -25,6 +25,7 @@ public:
     bool start(std::string& error);
     bool advance(const GamepadFrame& pad, std::string& error);
     const VehicleState& car() const { return vehicle_.state(); }
+    const CarAnimationState& animation() const { return animation_; }
     const RaceProgress& progress() const { return vehicle_.progress(); }
     const RaceTimingState& timing() const { return timing_; }
     const RaceTimingConfig& timing_config() const { return timing_config_; }
@@ -50,6 +51,7 @@ private:
     VehicleInput inputs_[2]{};
     std::array<VehicleTrackTelemetry,2> track_telemetry_{};
     std::vector<std::uint8_t> record_;
+    CarAnimationState animation_;
     bool started_ = false;
 };
 

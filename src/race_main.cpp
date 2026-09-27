@@ -7,6 +7,7 @@
 #include "nfsu/race_window.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -67,8 +68,8 @@ public:
     std::map<std::size_t,std::unique_ptr<TrackStreamLoad>> sections;
     TrackStreamLoad texture_spillover;
     bool texture_spillover_ready = false;
-    std::vector<unsigned char> texture_bytes;
-    TexturePackSet texture_packs;
+    std::array<std::vector<unsigned char>,3> texture_bytes;
+    std::array<TexturePackSet,3> texture_packs;
     RenderTextureSet textures;
     PreparedTrackScene track;
     TrackDrawList list;
@@ -84,8 +85,12 @@ public:
         require(read_stock_frame_inputs(root,car_inputs),"cannot read stock car inputs");
         require(prepare_stock_frame(car_inputs,stock_240sx_request(),stock_240sx_skin(),car,error),error);
         base = car.scene.instances;
-        texture_packs = load_texture_pack_set(texture,texture_bytes);
-        require(texture_packs.complete,"track texture file is incomplete");
+        const std::array<fs::path,3> paths = {
+            texture, root/"Global/INGAMEB.BUN", root/"Global/GLOBALB.BUN"};
+        for (std::size_t i=0;i<paths.size();++i) {
+            texture_packs[i] = load_texture_pack_set(paths[i],texture_bytes[i]);
+            require(texture_packs[i].complete,"track texture source is incomplete: "+paths[i].generic_string());
+        }
     }
     void apply(const TrackResidencyStep& step) {
         if (step.loads.empty() && step.releases.empty()) return;
@@ -144,10 +149,12 @@ public:
         for (std::size_t i=0;i<extra_sources.size();++i)
             if (sections.count(texture_spillover.sections[extra_owners[i]].record)==0)
                 sources.push_back(extra_sources[i]);
-        RenderTextureSource source; source.bytes = &texture_bytes;
-        for (const auto& pack : texture_packs.packs) source.packs.push_back(&pack);
-        source.complete = texture_packs.complete; source.wanted = &wanted;
-        sources.push_back(source);
+        for (std::size_t i=0;i<texture_packs.size();++i) {
+            RenderTextureSource source; source.bytes = &texture_bytes[i];
+            for (const auto& pack : texture_packs[i].packs) source.packs.push_back(&pack);
+            source.complete = texture_packs[i].complete; source.wanted = &wanted;
+            sources.push_back(std::move(source));
+        }
         RenderTextureLimits limits; limits.max_total_bytes = 512ULL*1024*1024;
         require(decode_render_texture_sources(sources,limits,textures,error),error);
         TrackSceneOptions options; options.region.max_texture_bytes = limits.max_total_bytes;
@@ -169,7 +176,8 @@ public:
         RenderOptions track_options = options;
         track_options.material_state = MaterialStateMode::retail;
         require(render_track_draw_list(track,list,track_options,{},background,stats,track_stats,error),error);
-        require(drive_place_instances(base,session.car(),session.spec(),car.scene.instances),"car placement failed");
+        require(drive_place_instances(base,session.car(),session.spec(),car.scene.instances,
+                                      &session.animation()),"car placement failed");
         require(render_stock_frame(car,options,error),error);
         std::vector<unsigned char> rgba;
         require(compose_race_frame(background,car.frame,rgba),"frame sizes differ");
@@ -224,7 +232,7 @@ int run(int argc, char** argv) {
     }
     std::vector<unsigned char> image;
     const auto events=load_race_event_table(root/"Frontend/FRONTB.LZC",image);
-    const auto tracks=load_track_info_table(root/"Global/GLOBALB.LZC",image);
+    const auto tracks=load_track_info_table(root/"Global/GLOBALB.BUN",image);
     const auto* event=find_race_event(events,1);
     require(event && event->races.size()==1,"event 1 missing or not one race");
     const auto& slot=event->races[0]; const auto* info=find_track_info(tracks,slot.track);

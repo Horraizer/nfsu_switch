@@ -111,16 +111,15 @@ build/nfsu_draw_commands_retail.exe <retail-root>
 Take file manifests before and after running it. It records and compares the
 painted and unpainted stock 240SX in both material modes and checks every
 instance matrix. Its off mode must produce both stock frames `include/nfsu/stock_frame.h`
-pins, `kStock240sxFrameBytes` and `kStock240sxFrameSha256`: since issue #161
+pins, `kStock240sxFrameBytes` and `kStock240sxFrameSha256`: since issue #201
 the 3686418-byte TGA with SHA-256
-`E7A042A560E807EE74595449275FFBDC1AE0A0BF321CE06EEF434BC5B1C8274A`
-(`FD6727333A94803A97FD26282CD89DF6F3D3295E0231F4A871A1B14089D28CE9` before
-it, when the program spelled the hash out itself).
+`3DEB2147CDA1B1D66DC47FC599B8A1FD88FCB273F0B38BFBE656666808199D25`
+(the issue #161 pin was `E7A042A560E807EE74595449275FFBDC1AE0A0BF321CE06EEF434BC5B1C8274A`).
 It is deliberately outside CTest, so the normal gates require no retail data.
 No retail or derived asset is tracked.
 
 The painted off-state check also requires the 3686418-byte TGA with hash
-`52B9303A822F82242717B3A2F363BE6584E4A24B533B69B6AA78EED6DFBED994`.
+`8A5932A302A22AA3C4C01776009B5348629D8D37B3B61E6E0AA303235B1CF48F`.
 
 The library is classified neutral. The neutrality gate follows generated
 project headers from the build's generated include directory and scans their

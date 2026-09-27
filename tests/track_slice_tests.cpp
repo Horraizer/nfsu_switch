@@ -2,6 +2,7 @@
 #include "nfsu/posix_file_system.h"
 #include "nfsu/platform_fakes.h"
 #include "nfsu/heap_usage.h"
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -73,6 +74,18 @@ int main(int argc, char** argv) {
         slice.texture_spillover_bytes != 3512968 ||
         slice.scene.region.unresolved_hashes.size() != 2)
         return fail(15, "event-1 spillover resolves 46 of 48 texture hashes");
+    for (const std::uint32_t hash : {0x3394FE62U, 0x008A6835U}) {
+        const auto found = std::find_if(slice.scene.region.textures.begin(),
+                                        slice.scene.region.textures.end(),
+            [hash](const RenderTexture& texture) {
+                return texture.usable() && texture.claims_hash(hash);
+            });
+        if (found == slice.scene.region.textures.end())
+            return fail(16, "GLOBALB P8 track texture did not decode");
+        for (const auto& draw : slice.scene.region.draws)
+            if (draw.texture_hash == hash && draw.binding != BindingKind::resolved)
+                return fail(17, "GLOBALB P8 track draw still uses fallback");
+    }
     const bool full = argc == 3 && std::string(argv[2]) == "--full";
     if (argc > 2 && !full) return fail(10, "unknown track slice test argument");
     std::size_t hits = 0, max_draws = 0, frames = 0;

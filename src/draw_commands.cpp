@@ -291,6 +291,8 @@ bool record_car_commands(const PreparedCarScene& scene, const RenderOptions& opt
                 const auto* texture = source.binding == BindingKind::resolved ? &scene.textures[source.texture] : nullptr;
                 if (!buffers(scene.meshes[source.mesh], source, resources, draw, error) ||
                     !pipeline(draw, false, texture, source.flags, source.texture_hash, options, error)) return false;
+                if (draw.instance != kNoHandle)
+                    draw.material.alpha[3] = static_cast<float>(scene.instances[draw.instance].lamp_mode);
                 out.draws.push_back(std::move(draw));
             }
         }

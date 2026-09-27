@@ -63,23 +63,22 @@ smoke check, not a claim that a human drove the race.
    `Streamer` implementation and table-byte budget back the batch and live
    APIs. Loads read and parse that section; releases discard its cached
    load. A changed set invalidates the prepared scene. Rendering prepares
-   just the current set, resolving textures across its section packs and
-   TEX1003TRACK.BIN. Collision and the route remain resident, as before.
+   just the current set, resolving textures across its section packs,
+   supplemental texture-only sections, TEX1003TRACK.BIN and the two global
+   race packs. Collision and the route remain resident, as before.
 
-The retail streaming policy loads 78 sections, 36471524 bytes read, before
-this race, and needs no release or additional load along this recording.
+The retail `nfsu_race_run_tests` command pins the startup residency loads,
+releases and selected input bytes for this recording.
 This is the table's track-flag policy, not a whole-track preload substituted
 for streaming. The car still drives its zone look-ahead, debouncing and
 request rebuilds each tick. Synthetic corridor tests compare every batch
 and incremental transition, including constrained budgets and releases.
 
-The scene uses the existing track LOD selection and the texture-row bucket
-order documented in [`TRACK_MATERIALS.md`](TRACK_MATERIALS.md). It loads
-nonresident Y texture sections from the same stream file when preparing the
-scene. Track materials use the decoded alpha test and blend state; the car
-keeps its existing reference mode. Both use the same chase camera, and
-composition compares their depth buffers (car wins a tie). A regression
-test covers both occlusion directions, a depth tie and empty pixels.
+The scene uses the existing track LOD selection and recovered material-bucket
+order. Track and car render with the same chase camera, then the nearest
+depth wins (car wins a tie). A regression
+test covers both occlusion directions, a depth tie and empty pixels. The
+track path now applies the traced alpha test, blend and depth-write states.
 No opponents, traffic, sound or new retail lighting are claimed.
 
 The HUD shows the current lap, lap count and last completed lap separately.
@@ -146,12 +145,9 @@ above the recovery rule's 2 m/s threshold. The new recording replaces it;
 physics, collision and reset rules are unchanged. The progress spline is
 only a progress reference and is not itself a guaranteed driving line.
 
-`tests/recordings/event1.txt` has 4895 run-length records, 54142 bytes, LF
-line endings pinned by `.gitattributes`, and SHA-256:
-
-```text
-CED29AB7D90F0861AFE2C0B604D0EDDFB4F769BEB067944F8E9C7DB0B892E0AC
-```
+`tests/recordings/event1.txt` uses LF line endings pinned by
+`.gitattributes`; its content hash is pinned by
+`tools/race_replay_check.py`.
 
 Its ASCII header is `NFSU_RACE_INPUT 1`; each following row is
 `ticks buttons raw_steer`. Pad 0 is connected, axis 0 is the recorded signed
@@ -161,16 +157,8 @@ rejects malformed fields, unknown button bits, non-ASCII and extra fields.
 
 ## Deterministic result and state pins
 
-Fresh Debug and Release runs on Windows x64, MinGW GCC 13.2.0, match:
-
-```text
-event 1 track 1003 laps 2 outcome finished steps 48336 resets 0
-lap 1 ticks 1616400 time 6:44.10
-lap 2 ticks 1611200 time 6:42.80
-total ticks 3227600 time 13:26.90
-state-sha256 79776F6DD3FC2727C99D3F6AD69A16E623BDEEB5CFFD2261458A15FC7F5B3BF9
-stream loads 78 releases 0 bytes-read 36471524
-```
+`tools/race_replay_check.py` pins the result lines, state sequence,
+generated recording and frame files in each tested desktop build.
 
 The sequence starts with `NFSU_RACE_STATE 1\n` and the startup residency
 transition lines, each with LF. Each subsequent tick contributes its raw
@@ -186,12 +174,8 @@ transition lines, each with LF. Each subsequent tick contributes its raw
 - That tick's `track_residency_step_line` plus LF, followed by ascending
   resident table indices as little-endian uint32 values.
 
-The 48336 individual hashes are identical line for line between builds.
-Their `states.txt` is 3420750 bytes and hashes to:
-
-```text
-E4D4D6E955D59F7FF11C3318BC455D08B7903CA46BBDE8E1FC3F2AC32AEA54E5
-```
+The replay checker compares every individual state hash line between builds
+and against its file pin.
 
 The session compiles with floating-point contraction and fast-math disabled.
 The Switch build compiles the same neutral session and checks its objects
@@ -200,37 +184,32 @@ it does not claim to have driven this race on a Switch.
 
 ## Frame pins and inspection
 
-Hashes cover complete TGA files, 921618 bytes each, including the lap HUD.
-The step is the completed 1-based controller tick.
+`tools/race_replay_check.py` pins the hashes of complete TGA files, including
+the lap HUD. The step is the completed 1-based controller tick.
 
-| Step | TGA SHA-256 | Changed RGB pixels | Reason |
-| --- | --- | ---: | --- |
-| 180 | `BB6F004E776C7EF6D38056BDBCA828C6650090FC5EF77B37A888E16DECCAC1CE` | 36719 | track alpha test and blend |
-| 600 | `0E3F17052A83429C2672495761D09C108809282A71F038E209ED54FE34E4763E` | 39207 | track alpha test and blend |
-| 6000 | `BF4FA0E33C5DA962A48FC531E323F15678FE99C0D6F6B744836E17CA76B038C4` | 15022 | track alpha test and blend |
-| 11344 | `CB93C540C37DEA70BDD0487350BF10E18F85EC79A981C8C2DA2FE5138619E224` | 12117 | track alpha test and blend |
-| 12459 | `FA86B7DADB8BB3DF966F799D5EF84FD2E14A418557E335B368A9854C27D9716F` | 23155 | track alpha test and blend |
-| 13128 | `5A62C32877B43E3A18D5A8CEA4901C92D17AD8DC3071ADA6BDCE754259B0E5D1` | 29275 | track alpha test and blend |
-| 24300 | `1E435F120A614BD2EDB514D50798C2BFBB1B9D921F4699CDDD5EEA73E5B152AD` | 30292 | track alpha test and blend |
-| 35396 | `3EEA282A1E92C158F72C8BA869CD5B2615720C46AD481F5338CF554E40AC58D2` | 12249 | track alpha test and blend |
-| 36510 | `728A441AB4DBC3E7193D8C71623DC54C6FB113D1A2511A9E77CA5CE60883903A` | 22834 | track alpha test and blend |
-| 37177 | `4A1DD31DBE93AED7A296872C3EA1F9D2988E3C2389DCEE7879B2865733A4D406` | 29211 | track alpha test and blend |
-| 48336 | `FE68B0CA6BB8E79503563781F22D6FEA6CE5177CFB387EFC63577D22DFCDF2BC` | 29783 | track alpha test and blend |
+Issue #201 changed the stock wheel lateral matrices, wheel phase, steer,
+suspension and lamps. Issue #200 changes track alpha testing and blending,
+adds the global race texture packs, and decodes their P8 palettes. The
+current hashes are pinned only in `tools/race_replay_check.py`.
 
-For each row, the changed-pixel count compares RGB values against a fresh
-`origin/main` Release render of the same recording. A control build with the
-new texture sources and draw order but track material state set to `off`
-reproduced all 11 old TGA files byte for byte. Thus the alpha-test/blend
-activation accounts for every changed pixel in these pins; it left every
-TGA alpha byte and every replay state row unchanged. Debug and Release
-produce identical new TGA bytes at all 11 steps.
+| Step | Car reason (#201) | Track reason (#200) |
+| --- | --- | --- |
+| 180 | Launch wheel phase and stock lateral position; running lamps | Foliage alpha/blend; global barrier texture and P8 palette availability |
+| 600 | Rolling phase, steer and suspension; running lamps | Foliage alpha/blend; global barrier texture and P8 palette availability |
+| 6000 | Rolling phase, steer and suspension; running lamps | Foliage alpha/blend; global sign texture and P8 palette availability |
+| 11344 | Corner wheel angle and travel; running lamps | Foliage alpha/blend and global P8 palette availability |
+| 12459 | Median wheel angle and travel; running lamps | Foliage alpha/blend; global barrier texture and P8 palette availability |
+| 13128 | Wheel motion and brake lamp intensity | Foliage alpha/blend and global P8 palette availability |
+| 24300 | Second-lap wheel motion and brake lamp intensity | Foliage alpha/blend and global P8 palette availability |
+| 35396 | Corner wheel angle and travel; running lamps | Foliage alpha/blend and global P8 palette availability |
+| 36510 | Median wheel angle and travel; running lamps | Foliage alpha/blend; global barrier texture and P8 palette availability |
+| 37177 | Wheel motion near the former barrier; running lamps | Foliage alpha/blend and global P8 palette availability |
+| 48336 | Final wheel pose and running lamps | Foliage alpha/blend and global P8 palette availability |
 
-Inspected the corner (11344, 35396), tree median (12459, 36510) and former
-rollover barrier (13128, 37177) on both laps: the car follows the paved lane,
-upright and clear of the trees and barrier. Frame 24300 shows the second lap
-starting at CURRENT 0:00.19, LAST 6:44.10. Frame 48336 shows CURRENT and LAST
-6:42.80, FINISHED 13:26.90. Opaque foliage and unresolved checkered surfaces
-remain; these pins preserve the current CPU reference rendering.
+The fixed frames include both laps at the corner, tree median and former
+rollover barrier, as well as the second-lap start and finish. The replay
+checker verifies the complete TGA files after the foliage and global texture
+binding changes.
 
 ## Continuous trajectory audit
 
@@ -241,18 +220,11 @@ step. Countdown does not step physics and emits no sample. Position,
 horizontal speed, orientation and body-contact counts come from the existing
 post-collision telemetry; `up = 1 - 2*(qx*qx + qy*qy)`. Road-wheel counts use
 that physics step's wheel probes. No samples are filtered out after GO.
-The CSV has 96346 samples, 11120490 bytes and SHA-256:
+The replay checker pins the CSV hash, size and ordered sample coverage.
 
-```text
-8203932E99CDA190CEE81C6171705224AC7CC4EE910246805350605304F1D439
-```
-
-The regenerated run has zero body-contact samples, zero resets, no inversion
-or tilt past 45 degrees, and no sample with all four wheels unsupported.
-Minimum up is 0.9806514207882611 (11.29 degrees from vertical). After tick
-600, minimum horizontal speed is 5.211024131499977 m/s: neither median stall
-remains. Four road-wheel probes hit in 95854 samples, three in 232, two in
-146 and one in 114; this is not a claim that every wheel remains grounded.
+Body-contact samples, resets, orientation and road-wheel support are
+checked by `tools/race_replay_check.py`; this is not a claim that every wheel
+remains grounded.
 The checker verifies the CSV pin and also requires complete ordered pairs,
 zero contacts/resets, up >= 0.98, at least one road wheel, and speed >= 5 m/s
 after the launch allowance through tick 600. Thus merely finishing with zero
@@ -265,7 +237,8 @@ continuous trajectory checks, and
 optionally regenerates the recording independently in each build:
 
 ```text
-python tools/race_replay_check.py --exe build-debug/nfsu_race.exe --exe build-release/nfsu_race.exe --root X:/Games/NFSU --out build-race-check --check-driver
+python tools/race_replay_check.py --exe build/nfsu_race.exe --root X:/Games/NFSU --out build-debug-check --check-driver
+python tools/race_replay_check.py --exe build-release/nfsu_race.exe --root X:/Games/NFSU --out build-release-check --check-driver
 ```
 
 Python uses only the standard library. It resolves its recording relative
@@ -274,26 +247,13 @@ also run from the actual non-ASCII-named owner workspace.
 
 ## Desktop cost and gates
 
-Intel Core i7-12700K, Windows x64, Release, eleven requested renders over the
-full replay; warm local files. Timings are observations, never hash inputs.
-The program reports count, total, mean and maximum for every stage.
+`nfsu_race` prints count, total, mean and maximum time for each stage on the
+tested machine. Timings are observations, never hash inputs. Stream I/O and
+scene preparation are startup costs; TGA/trajectory writing, initial
+collision/car loading and window blitting are outside the stage measurements.
+No 60 Hz rendering claim follows from this CPU reference run.
 
-| Stage | Calls | Mean ms/call | Maximum ms |
-| --- | ---: | ---: | ---: |
-| Controls, two physics steps, route, timing, camera, record encoding | 48336 | 0.1276 | 1.079 |
-| Residency decision | 48336 | 0.0019 | 0.095 |
-| Hashing and per-step text output | 48336 | 0.0118 | 0.192 |
-| Stream section read/parse | 39 | 0.930 | 11.34 |
-| Scene merge, texture decode, draw list | 1 | 107.64 | 107.64 |
-| CPU track/car render, depth composition, HUD | 11 | 111.44 | 132.77 |
-
-Stream I/O and scene preparation above are startup costs for this run.
-TGA/trajectory writing, initial collision/car loading and window blitting are outside
-these stage measurements. The renderer dominates: this is a working desktop
-integration, with no claim of 60 Hz rendering on this CPU. The four-frame
-hidden live smoke also completed; its timing depends on concurrent load.
-
-Validation: full desktop Debug and Release CTest, 70/70 each; full Switch
+At `fe30765`, validation was full desktop Debug and Release CTest, 70/70 each; full Switch
 Release build and CTest, 15/15; no build warnings. This uses `origin/main`
 `fe30765`, including #193's whole-tree floating-point policy and census,
 which includes `nfsu_race_session`. New tests cover the pad

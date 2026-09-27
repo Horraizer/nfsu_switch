@@ -77,13 +77,13 @@ const char* stock_frame_file_path(std::size_t index) noexcept;
 // fender. They were FD672733... unpainted and FE51E57A... painted.
 constexpr std::uint64_t kStock240sxFrameBytes = 3686418;
 constexpr const char* kStock240sxFrameSha256 =
-    "E7A042A560E807EE74595449275FFBDC1AE0A0BF321CE06EEF434BC5B1C8274A";
+    "3DEB2147CDA1B1D66DC47FC599B8A1FD88FCB273F0B38BFBE656666808199D25";
 
 // The painted desktop frame, the command above with stock_240sx_skin(), as
 // docs/SWITCH_BUILD.md pins it.
 constexpr std::uint64_t kStock240sxPaintedFrameBytes = 3686418;
 constexpr const char* kStock240sxPaintedFrameSha256 =
-    "52B9303A822F82242717B3A2F363BE6584E4A24B533B69B6AA78EED6DFBED994";
+    "8A5932A302A22AA3C4C01776009B5348629D8D37B3B61E6E0AA303235B1CF48F";
 
 // The largest file read: 256 MiB, the limit every parser these files go
 // through applies to its input.

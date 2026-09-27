@@ -1691,7 +1691,8 @@ bool decode_level(
     const unsigned char* data,
     std::size_t size,
     std::vector<unsigned char>& rgba,
-    std::string& error) {
+    std::string& error,
+    const P8Palette* p8_palette) {
     rgba.clear();
     std::uint64_t expected = 0;
     std::uint64_t pixel_bytes = 0;
@@ -1710,8 +1711,16 @@ bool decode_level(
         return false;
     }
     if (format == PixelFormat::p8) {
-        error = "P8 level requires a 256-entry palette";
-        return false;
+        if (p8_palette == nullptr) {
+            error = "P8 level requires a 256-entry palette";
+            return false;
+        }
+        rgba.resize(static_cast<std::size_t>(pixel_bytes));
+        for (std::size_t i = 0; i < size; ++i) {
+            const std::size_t entry = static_cast<std::size_t>(data[i]) * 4U;
+            std::copy_n(p8_palette->data() + entry, 4U, rgba.data() + i * 4U);
+        }
+        return true;
     }
 
     rgba.assign(static_cast<std::size_t>(pixel_bytes), 0);

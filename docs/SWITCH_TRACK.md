@@ -52,8 +52,9 @@ a list. The chosen distance, visible and unplaced instances, draws,
 fallback draws and triangle count are on screen. A degraded culling policy
 or a list that still does not fit is an error.
 
-The resident set has 5036 upload resources, so the shared executor accepts
-up to 8192 resources. It reserves 2047 uniform slots once (1048320 bytes)
+The resident set's current upload-resource count is printed by the retail
+`nfsu_track_slice_tests` command. The shared executor accepts up to 8192
+resources. It reserves 2047 uniform slots once
 for this app. Each update must keep the original resource count, pointers,
 formats and sizes; only frame/draw uniforms and draw selection change.
 Pointer identity is checked before validation can read changed index data.
@@ -63,24 +64,27 @@ budget before allocating. Staging and GPU image retirement keep the existing
 upload/last-use fence rules.
 
 The loader limits raw selected section input to 64 MiB and native texture
-payload to 16 MiB. The retained streaming payload is 27770710 bytes,
-including 14096320 texture bytes. The computed texture-preparation payload
-subtotal is 41867030 bytes; it excludes loading scratch and allocator
-overhead and does **not** establish compliance with the 48 MiB plan.
+payload to 16 MiB. The retail `nfsu_track_slice_tests` command prints the
+retained streaming and texture payloads. The computed texture-preparation
+subtotal excludes loading scratch and allocator overhead and does **not**
+establish compliance with the 48 MiB plan. The retail
+`nfsu_track_loader_peak_tests` command checks the complete allocation peak.
 Non-texture section bytes are released immediately after parsing each
 section. Merged geometry/scenery containers reserve from parsed counts.
 After the geometry pass, the loader releases the raw texture ranges and
-re-reads one selected range at a time, then the three external texture
+re-reads one selected range at a time, including the supplemental texture
+sections, then the three external texture
 files one at a time. Only required records decode, in the original source
 priority order; claims survive release of their source. This trades extra
 SD reads/parsing for bounded overlap, without copying the whole STREAM
-file or changing the selected sections. The selected-input byte count
-remains 36471524; it is not total physical I/O including the second pass.
+file or changing the selected sections. The selected-input byte count is
+printed by `nfsu_race_run_tests`; it is not total physical I/O including the
+second pass.
 Scene preparation transfers mesh arrays and texture payloads, resolving
 all materials before moving shared textures. Unused parser state is
 destroyed before collision loading and GPU creation.
 Scenery records remain for culling. Collision covers the whole TRACKB1003
-file and retains 1433448 bytes; a bounded vertical query runs at every
+file; a bounded vertical query runs at every
 sample, with rise 2 and drop 20. `clear` and `outside` are displayed as such,
 not as a fabricated ground height. A refused query stops with an error.
 
@@ -121,8 +125,8 @@ figures and controls remain visible.
 
 ### Historical loader overrun
 
-Before #204, the loader did not fit the 48 MiB streaming arena. Review
-4382 measured 66265088-66334720 desktop private bytes above baseline,
+At `f205140`, before #204, the loader did not fit the 48 MiB streaming arena.
+Review 4382 measured 66265088-66334720 desktop private bytes above baseline,
 about 132% of 50331648. A separate worker measurement of this round's
 loader (MinGW GCC 13.2, `GetProcessMemoryInfo().PrivateUsage`, a 1 ms
 sampler plus the parsing checkpoints, three fresh processes) reproduces
@@ -164,7 +168,8 @@ allocations cannot bypass the executable's replacement operators.
 normal retail invocation fails above 50331648. It is not used by CTest,
 which must not require proprietary assets.
 
-Desktop GCC 13.2 default and Release, same retail root and counter:
+At `1844834`, desktop GCC 13.2 default and Release, same retail root and
+allocation counter:
 
 | Version | Peak above before-load | Retained above before-load | Ceiling |
 | --- | ---: | ---: | ---: |
@@ -210,15 +215,15 @@ nfsu_track_slice_tests X:/Games/NFSU
 nfsu_track_slice_tests X:/Games/NFSU --full
 ```
 
-The sampled run covers 57 nonempty frames, 543-1769 draws, 55 collision hits
-and two clear columns (samples 1080 and 2640). Clear is a valid query answer
-along this hand-given path. The default CTest invocation uses synthetic
+The retail sampled run checks nonempty frames, bounded draws, collision hits
+and clear columns. Clear is a valid query answer along this hand-given path.
+The default CTest invocation uses synthetic
 camera/mapping/refusal checks, allocator high-water accounting, and a
 missing/partial installation rejected before parsing; it requires no game
 files. The stream tests also check polling throughout parsing/merging and
-cancellation propagation. An exhaustive run also covers all 6824 samples:
-1849 maximum draws, 6512 hits and 312 clear columns, with no outside/refused
-query and no empty frame. Draw-update guards
+cancellation propagation. The `--full` run covers every path sample and
+checks that queries are neither outside nor refused and no frame is empty.
+Draw-update guards
 also test a changed index pointer that must be refused before dereference.
 
 The owner ran head `1429830` on the Switch on 2026-09-26; the coordinator's

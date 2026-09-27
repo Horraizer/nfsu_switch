@@ -347,8 +347,8 @@ Two frames are pinned, both from the viewer on the retail files, read-only:
 
 | Frame | Viewer options added to the stock command of [`RENDERER.md`](RENDERER.md) | TGA bytes | SHA-256 |
 | --- | --- | ---: | --- |
-| painted, the default (issue #148) | `--skin-car 240SX --skin-doorline plain --skin-base 30 60 160 128` | 3686418 | `52B9303A822F82242717B3A2F363BE6584E4A24B533B69B6AA78EED6DFBED994` |
-| unpainted, `--unpainted` (issue #141) | none | 3686418 | `E7A042A560E807EE74595449275FFBDC1AE0A0BF321CE06EEF434BC5B1C8274A` |
+| painted, the default (issue #148) | `--skin-car 240SX --skin-doorline plain --skin-base 30 60 160 128` | 3686418 | `8A5932A302A22AA3C4C01776009B5348629D8D37B3B61E6E0AA303235B1CF48F` |
+| unpainted, `--unpainted` (issue #141) | none | 3686418 | `3DEB2147CDA1B1D66DC47FC599B8A1FD88FCB273F0B38BFBE656666808199D25` |
 
 Issue #161 re-pinned both, because both showed the defect it fixed: two
 pixels of the front-left wheel's backing quad above the far fender. They

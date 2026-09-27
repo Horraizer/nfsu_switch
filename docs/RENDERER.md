@@ -362,17 +362,14 @@ with it.
   markers are collected exactly as `0x0056BDB0` collects them, over the
   LOD A models of the enabled slots 0..29 in slot then record order. A
   part with no marker of its role is not drawn.
-- The wheel and the brake are **not placed by default**. The drawn wheel
-  and brake matrices are not reproduced by this project
-  (`docs/PART_PLACEMENT.md`, "The drawn wheel and brake matrices"), so both
-  slots report `placement unreproduced` and contribute nothing.
-  `place_wheels_from_culling_table` opts in to four copies each at the
-  culling placements of `derive_cullable_part_placements`, with
-  `placement_exact` false on every instance it produces. Copies 0 and 3,
-  the left pair, are first turned the way the retail draw turns them:
-  `car_wheel_half_turn() * translation` for the wheel and
-  `car_brake_reflection() * translation` for the brake (issue #161,
-  `docs/PART_PLACEMENT.md`, "Which way the wheel and brake models face").
+- The wheel and the brake are **not placed by default**. The
+  `place_wheels_from_culling_table` option opts in to four copies each.
+  Since issue #201, their stock lateral scale and offset use the traced
+  wheel-record values rather than the culling placements; copies 0 and 3
+  retain the half turn and reflection from issue #161. Each instance still
+  has `placement_exact` false because x87 rounding, the alternative wheel
+  selector and the marker branch remain unverified. The static profile
+  does not apply wheel spin, steering or suspension travel.
 - Several slots may name one mesh. It is prepared once and drawn once per
   slot, which is also how the wheel's four copies share one mesh.
 
@@ -395,8 +392,9 @@ record, LOD and pass; one `stock slot` line per installed slot with its
 outcome, and for a drawn slot its LOD, geometry source, mesh, placement
 mechanism and copy count; `stock slots:` with the installed, with-model,
 drawn, fallback and marker totals; `stock wheels:` saying whether the
-wheel and brake slots were drawn and, when they were, that the culling
-placements they used are a stand-in; `stock wheel plane: degenerate` when
+wheel and brake slots were drawn and, when they were, that the stock
+lateral branch is used while dynamic angles and alternate branches remain
+approximate; `stock wheel plane: degenerate` when
 the four wheel centres do not span a plane; and `stock absent hash:` /
 `stock ambiguous hash:` lines for the hashes no source holds and the
 hashes more than one source holds.
@@ -519,19 +517,12 @@ in its own authored space is not a placement claim at all. The viewer
 prints the line for the stock car only, so every other report is byte for
 byte what it was.
 
-**What the frame does not claim.** With `--place-wheels` the wheel and
-brake copies are stand-ins, and the render says so three times: the slot
-lines report the placement as `wheel table`, `stock wheels:` names the
-culling placements as a stand-in and not the matrix the game draws them
-with, and `instances:` counts them apart. The picture shows what those
-matrices give and nothing more: the lateral component is a term
-`docs/PART_PLACEMENT.md` traces but does not reproduce, and the spin and
-steering angles are not there at all. The half turn wheels 0 and 3 take
-and the `(1, -1, 1, 1)` reflection brakes 0 and 3 take are there since
-issue #161; before it one side's copies faced the wrong way, and a camera
-on the car's left saw each left wheel's backing quad in front of its rim.
-Without the option neither slot contributes a copy, and the frame holds no
-wheel at all rather than a wheel in a place this project cannot defend.
+**What the frame does not claim.** With `--place-wheels`, `stock wheels:`
+reports the stock lateral wheel-table placement from issue #201, and
+`instances:` counts the eight inexact wheel and brake copies apart. The
+static viewer frame has no spin, steering or suspension animation. The
+half turn of wheels 0 and 3 and the `(1, -1, 1, 1)` reflection of brakes
+0 and 3 remain from issue #161. Without the option, neither slot draws.
 
 ## Frames and camera
 
@@ -1133,19 +1124,18 @@ Observed:
   leaves 33795 fallback pixels of 110866.
 
 With `--place-wheels` added, the wheel and brake slots draw four copies
-each from the culling placements:
+each. Issue #201 adds the stock lateral scale and offset to those copies:
 
 - 24 slots draw, from 24 meshes, in 30 instances: `instances: 30 exact 22
   stand_in 8`. 79 material groups (20 resolved), 6137 triangles submitted,
-  116746 pixels drawn, drawn bounds x 390..973, y 232..552. SHA-256
-  `E7A042A560E807EE74595449275FFBDC1AE0A0BF321CE06EEF434BC5B1C8274A`.
-- The four copies of each land under the four arches, which is the
-  confirmation recorded under "Instances" above. They are a stand-in: the
-  lateral term, the spin and the steering of the retail matrix are not
-  reproduced. The report says so on its `stock wheels:` and `instances:`
-  lines, and the 8 stand-in copies are exactly the two slots' four copies
-  each. The left pair of each is half-turned or reflected as the retail
-  draw does it (issue #161).
+  118506 pixels drawn, drawn bounds x 390..973, y 232..555. SHA-256
+  `3DEB2147CDA1B1D66DC47FC599B8A1FD88FCB273F0B38BFBE656666808199D25`.
+- The four copies of each land under the four arches. The stock lateral
+  term is now included, while the static frame has no spin, steering or
+  suspension. The 8 stand-in copies remain marked because the alternate
+  lateral branches and final x87 rounding are not reproduced. The left
+  pair of each is half-turned or reflected as the retail draw does it
+  (issue #161).
 - Issue #161 re-pinned this frame. It was
   `FD6727333A94803A97FD26282CD89DF6F3D3295E0231F4A871A1B14089D28CE9`, with
   116748 pixels drawn, while the left wheels were pure translations: the
