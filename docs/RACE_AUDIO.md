@@ -1,4 +1,4 @@
-# Race audio service (issue #65)
+# Race audio service (issues #65 and #202)
 
 The race reads its retail files under the supplied root. It never writes to
 that tree and contains no bundled game audio. The desktop `nfsu_race --live`
@@ -10,16 +10,17 @@ silent so automated runs need no sound device.
 ## Signal flow and limits
 
 After each 60 Hz race tick, `race_audio_snapshot()` copies engine RPM,
-throttle, horizontal speed, maximum wheel slip, and track contact impulse
-telemetry from `RaceSession`. The audio service has no mutable reference to
+throttle, horizontal speed, maximum wheel slip, track contact impulse,
+countdown, completed laps, and race finish state from `RaceSession`.
+The audio service has no mutable reference to
 the session. The simulator never reads from the audio service. The output
 thread mixes eight fixed clip slots and one streamed stereo signal into
 48 kHz signed 16-bit PCM. Clip phase and gain use Q32 and Q15 integers;
 voices are summed in slot order with 64-bit accumulators and clipped once.
 Both clip and AST source-rate conversion use linear interpolation. Gain
 changes ramp over five milliseconds, and output fades in after a pause.
-The AST decoder produces
-one block at a time on a producer thread, converts to 48 kHz stereo, and
+The AST decoder produces one block at a time on a producer thread,
+converts to 48 kHz stereo, and
 waits for room in an 8192-frame ring. An empty ring emits silence and an
 overfull nonblocking push drops excess frames; both have counters.
 
@@ -30,11 +31,13 @@ native audio output thread use a different core, with output priority 0x28.
 Both request 48 kHz stereo int16. The Switch HUD reports ring underruns and
 fill, queued output frames, late output cycles, thread work time and mix clips
 on its `AUDIO` line. `AUDIO STATUS` reports startup and runtime errors.
-Music startup scans only a bounded prefix of the AST, reads it sequentially
-in chunks, and polls HOME/+ while loading and waiting for the stream ring.
+Music startup uses stream bank offsets to read only each segment's header and
+end marker. It does not scan or decode the entire AST. Loading checkpoints
+poll HOME/+ while indexing and waiting for the stream ring.
 Its persistent payload check includes decoded clip storage, the ring,
-and output buffers. Pausing or finishing the Switch race silences output and
-holds the stream in the bounded ring. No third-party audio library is used.
+and output buffers. Pausing silences output and holds the stream in the bounded
+ring. Finishing mutes music and engine and leaves the finish cue audible.
+No third-party audio library is used.
 
 ## Retail lookup evidence and current cue choices
 
@@ -74,11 +77,15 @@ The service therefore uses the following explicit approximations:
 | Engine | `Sound/CAR_0/ENG_UG_0/C0U0_M0_ENG_MB.abk` samples 1..4 loop on slots 0..3. Adjacent layer centers are 800, 2500, 4500 and 7000 RPM with linear crossfade. Pitch is RPM divided by layer center, clamped to 0.5..2.0. Gain is `weight * (0.22 + 0.33 * throttle)`. | 240SX sound group, sample order, bands, curves and gain. |
 | Tyres | `Sound/SKIDS/SKID_PAV_MB.abk` sample 1 loops when speed exceeds 2 m/s and slip exceeds 0.25; gain is clamped to 0..0.45. | Pavement event selection and slip/gain curve. |
 | Impacts | `Sound/IG_GLOBAL/IMPACT_MB.abk` sample 1 plays once when a hull contact impulse exceeds 2, with a 10-tick cooldown and gain 0.1..0.7. | Collision event to sample index and threshold. |
-| Music | `SNDSTREAMS/STRM_Music_UG0_MB.ast` segment 1 streams once at gain 0.5. | Playlist order, track title and replay or next-track policy; issue #202 owns race music and interface cues. |
+| Music | `Sound/STRMBANK/STRM_Music_UG0_MB.abk` links to `SNDSTREAMS/STRM_Music_UG0_MB.ast`. Linked segments after segment 0 stream in bank table order and repeat at gain 0.5, ducked to 0.25 during interface cues. | Segment 0's role, playlist order and track titles. Skipping segment 0 and table order are approximations. |
+| Countdown | `Sound/FE/FE_MB.abk` sample 25 plays on each 3, 2, 1 transition. | Exact retail event to sample mapping. |
+| Go | `Sound/FE/FE_MB.abk` sample 26 plays at the go transition. | Exact retail event to sample mapping. |
+| Lap | `Sound/FE/FE_MB.abk` sample 29 plays when completed laps increase. | Exact retail event to sample mapping. |
+| Finish | `Sound/FE/FE_MB.abk` sample 30 plays once at finish. It takes precedence over the final lap cue. | Exact retail event to sample mapping. |
 
 The named WAV candidates in `AUDIO_FORMATS.md` were heard by the owner and
-accepted as free of audible corruption. That listening result does not
-establish their exact in-game event assignments.
+accepted as free of audible corruption. The four interface sample choices
+remain provisional until the owner hears the FE montage and the Switch run.
 
 ## Verification
 
@@ -86,8 +93,10 @@ establish their exact in-game event assignments.
 gain, positive and negative clipping, loop boundaries, pitch, source-rate
 conversion, stereo order, a derived sine-image threshold, bounded AST prefix
 scanning, ring ordering and underrun/overrun accounting, producer
-backpressure, and two-block streaming. `nfsu_race_audio_tests` checks the
-crossfade and missing-file fallback. `nfsu_race_run_tests` checks the
+backpressure, two-block streaming, playlist order and repeat.
+`nfsu_race_audio_tests` checks the crossfade, bank-boundary indexing,
+playlist construction and missing-file fallback. `nfsu_race_audio_cue_tests`
+checks countdown, go, lap and finish edges. `nfsu_race_run_tests` checks the
 replay pins. `nfsu_audio_retail` checks the full ABK/AST decoded manifest
 and hashes retail files before and after reading them. A Switch build proves
-the `audout` code links; audible output still requires a console run.
+the `audren` code links; audible output still requires a console run.

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "nfsu/audio.h"
 #include "nfsu/race_session.h"
 
 #include <cstdint>
@@ -9,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace nfsu::audio {
 
@@ -20,10 +22,30 @@ struct RaceAudioSnapshot {
     double wheel_slip = 0;
     double impact = 0;
     std::uint32_t contact_events = 0;
+    int countdown = 0;
+    int completed_laps = 0;
+    bool finished = false;
 };
 
 RaceAudioSnapshot race_audio_snapshot(const RaceSession& session) noexcept;
 std::array<double, 4> engine_layer_weights(double rpm) noexcept;
+std::vector<Segment> race_music_playlist(const Bank& bank,
+                                         const std::vector<Segment>& indexed);
+
+enum class RaceInterfaceCue : std::uint8_t {
+    none, countdown, go, lap, finish
+};
+
+// Consumes only copied race state. Finish takes precedence over a final-lap
+// crossing on the same tick.
+class RaceCueScheduler {
+public:
+    RaceInterfaceCue update(const RaceAudioSnapshot& snapshot) noexcept;
+private:
+    int countdown_ = 0;
+    int completed_laps_ = 0;
+    bool finished_ = false;
+};
 
 // Reads retail audio and drives the platform output. Missing banks or a
 // missing device leave the race running with an explicit diagnostic.

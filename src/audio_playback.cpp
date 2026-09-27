@@ -220,65 +220,86 @@ AstStreamer::~AstStreamer() { stop(); }
 bool AstStreamer::start(std::unique_ptr<std::istream> input,
                         const Segment& segment, std::string& error,
                         const std::function<bool()>& thread_setup) {
-    if (worker_.joinable() || !input || !*input || !segment.frames ||
-        segment.rate < 8000 || segment.rate > 192000 ||
-        (segment.channels != 1 && segment.channels != 2)) {
+    return start_playlist(std::move(input), {segment}, false, error,
+                          thread_setup);
+}
+
+bool AstStreamer::start_playlist(std::unique_ptr<std::istream> input,
+                                 std::vector<Segment> segments, bool loop,
+                                 std::string& error,
+                                 const std::function<bool()>& thread_setup) {
+    const auto valid = [](const Segment& segment) {
+        return segment.frames && segment.end > segment.offset &&
+            segment.rate >= 8000 && segment.rate <= 192000 &&
+            (segment.channels == 1 || segment.channels == 2);
+    };
+    if (worker_.joinable() || !input || !*input || segments.empty() ||
+        segments.size() > 128 ||
+        !std::all_of(segments.begin(), segments.end(), valid)) {
         error = "invalid AST stream source";
         return false;
     }
     stopping_ = false;
     finished_ = false;
-    worker_ = std::thread([this, input = std::move(input), segment,
+    worker_ = std::thread([this, input = std::move(input),
+                           segments = std::move(segments), loop,
                            thread_setup]() mutable {
         try {
             if (thread_setup && !thread_setup())
                 throw std::runtime_error("audio decoder core setup failed");
-            std::array<std::int16_t, 512 * 2> converted{};
-            std::size_t used = 0;
-            std::uint64_t source_index = 0, output_index = 0;
-            std::array<std::int16_t, 2> previous{};
-            const auto flush = [&] {
-                if (used && !ring_.push_wait(converted.data(), used)) throw StreamStopped{};
-                used = 0;
-            };
-            const auto emit = [&](std::int16_t left, std::int16_t right) {
-                converted[used * 2] = left;
-                converted[used * 2 + 1] = right;
-                if (++used == 512) flush();
-            };
-            decode_ast_segment(*input, segment,
-                [&](const std::uint8_t* bytes, std::size_t size) {
-                    const std::size_t stride = segment.channels * 2;
-                    if (size % stride) throw std::runtime_error("unaligned AST PCM block");
-                    for (std::size_t frame = 0; frame < size / stride; ++frame) {
-                        if (stopping_) throw StreamStopped{};
-                        const auto left = le16(bytes + frame * stride);
-                        const auto right = segment.channels == 1 ? left :
-                            le16(bytes + frame * stride + 2);
-                        if (!source_index) {
-                            emit(left, right);
-                            ++output_index;
-                        } else {
-                            const auto end = source_index * kOutputRate;
-                            const auto begin = (source_index - 1) * kOutputRate;
-                            while (output_index * segment.rate <= end) {
-                                const auto fraction = output_index * segment.rate - begin;
-                                emit(static_cast<std::int16_t>(interpolate(
-                                         previous[0], left, fraction, kOutputRate)),
-                                     static_cast<std::int16_t>(interpolate(
-                                         previous[1], right, fraction, kOutputRate)));
-                                ++output_index;
+            do {
+                for (const auto& segment : segments) {
+                    if (stopping_) throw StreamStopped{};
+                    std::array<std::int16_t, 512 * 2> converted{};
+                    std::size_t used = 0;
+                    std::uint64_t source_index = 0, output_index = 0;
+                    std::array<std::int16_t, 2> previous{};
+                    const auto flush = [&] {
+                        if (used && !ring_.push_wait(converted.data(), used))
+                            throw StreamStopped{};
+                        used = 0;
+                    };
+                    const auto emit = [&](std::int16_t left, std::int16_t right) {
+                        converted[used * 2] = left;
+                        converted[used * 2 + 1] = right;
+                        if (++used == 512) flush();
+                    };
+                    decode_ast_segment(*input, segment,
+                        [&](const std::uint8_t* bytes, std::size_t size) {
+                            const std::size_t stride = segment.channels * 2;
+                            if (size % stride)
+                                throw std::runtime_error("unaligned AST PCM block");
+                            for (std::size_t frame = 0; frame < size / stride; ++frame) {
+                                if (stopping_) throw StreamStopped{};
+                                const auto left = le16(bytes + frame * stride);
+                                const auto right = segment.channels == 1 ? left :
+                                    le16(bytes + frame * stride + 2);
+                                if (!source_index) {
+                                    emit(left, right);
+                                    ++output_index;
+                                } else {
+                                    const auto end = source_index * kOutputRate;
+                                    const auto begin = (source_index - 1) * kOutputRate;
+                                    while (output_index * segment.rate <= end) {
+                                        const auto fraction = output_index * segment.rate - begin;
+                                        emit(static_cast<std::int16_t>(interpolate(
+                                                 previous[0], left, fraction, kOutputRate)),
+                                             static_cast<std::int16_t>(interpolate(
+                                                 previous[1], right, fraction, kOutputRate)));
+                                        ++output_index;
+                                    }
+                                }
+                                previous = {left, right};
+                                ++source_index;
                             }
-                        }
-                        previous = {left, right};
-                        ++source_index;
+                        });
+                    while (output_index * segment.rate < source_index * kOutputRate) {
+                        emit(previous[0], previous[1]);
+                        ++output_index;
                     }
-                });
-            while (output_index * segment.rate < source_index * kOutputRate) {
-                emit(previous[0], previous[1]);
-                ++output_index;
-            }
-            flush();
+                    flush();
+                }
+            } while (loop && !stopping_);
         } catch (const StreamStopped&) {
         } catch (const std::exception& e) {
             std::lock_guard<std::mutex> lock(error_mutex_);

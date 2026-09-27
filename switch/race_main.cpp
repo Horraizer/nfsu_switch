@@ -163,7 +163,7 @@ void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pa
         if (elapsed > 1000000) { paused = true; clock.reset(); }
         const bool connected = padIsConnected(&pad);
         const bool running = race.session().timing().outcome == RaceOutcome::running;
-        sound.set_suspended(paused || !running);
+        sound.set_suspended(paused);
         if (!paused && running) clock.add(elapsed); else clock.reset();
         double simulation = 0, residency = 0, record = 0, upload = 0;
         unsigned ticks = 0;
@@ -187,7 +187,6 @@ void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pa
             upload = ms(armGetSystemTick()-stage);
         }
         const bool finished = race.session().timing().outcome == RaceOutcome::finished;
-        if (finished) sound.set_suspended(true);
         if (finished && !printed_result) {
             for (const auto& line : race.result_lines()) std::printf("%s\n",line.c_str());
             if (replay_mode) std::printf("REPLAY %s desktop per-step stream and result\n",
