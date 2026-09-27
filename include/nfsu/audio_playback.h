@@ -18,7 +18,7 @@
 namespace nfsu::audio {
 
 constexpr std::uint32_t kOutputRate = 48000;
-constexpr std::size_t kMixVoices = 8;
+constexpr std::size_t kMixVoices = 9;
 
 // PCM is interleaved signed 16-bit at its original rate. Loop end is exclusive.
 struct PcmClip {
@@ -36,7 +36,8 @@ struct PcmClip {
 class Mixer {
 public:
     bool play(std::size_t slot, const PcmClip* clip, bool loop,
-              std::uint32_t gain_q15 = 32768, std::uint32_t pitch_q16 = 65536) noexcept;
+              std::uint32_t gain_q15 = 32768, std::uint32_t pitch_q16 = 65536,
+              bool fade_in = false) noexcept;
     void control(std::size_t slot, std::uint32_t gain_q15,
                  std::uint32_t pitch_q16) noexcept;
     void stop(std::size_t slot) noexcept;
@@ -59,6 +60,15 @@ private:
     };
     std::array<Voice, kMixVoices> voices_{};
     std::uint64_t clipped_samples_ = 0;
+};
+
+// Fades the completed stereo mix over five milliseconds on mute and unmute.
+class OutputFade {
+public:
+    bool silent() const noexcept { return level_ == 0; }
+    void apply(std::int16_t* stereo, std::size_t frames, bool muted) noexcept;
+private:
+    std::uint32_t level_ = 0;
 };
 
 // A fixed-capacity stereo frame queue. push/pop are nonblocking; short pop
