@@ -20,8 +20,8 @@ Configure `-DNFSU_RACE_BUILD_TAG=<head-or-build-id>` for a supplied label.
 Without that option, a non-local `NFSU_TRACK_BUILD_TAG` is inherited so the
 track build command also labels the race NRO; otherwise the current Git
 HEAD (12 characters) is used. Reconfigure after changing HEAD. Source
-exports without Git need an explicit label. The panel clips labels to 12
-characters; CTest checks the configured tag is present in the ELF.
+exports without Git need an explicit label. The menu and nxlink performance
+lines clip labels to 12 characters; CTest checks the configured tag in the ELF.
 
 The menu offers A for live driving and X for replay. With nxlink, optional
 arguments are `[sdmc:/nfsu] [--live|--replay]`. RomFS holds the three checked
@@ -41,7 +41,7 @@ Live controls pass the libnx state through `gamepad_buttons_from_npad` into
 | R / L | Shift up / down |
 | X | Next shared chase-camera POV |
 | Minus | #60 vehicle reset |
-| Y | Pause or resume, also in replay; useful for photographs |
+| Y | Pause or resume, also in replay |
 | Plus | Exit |
 
 Release controls during the countdown to clear the shared hot-plug latch.
@@ -50,13 +50,14 @@ than one second resets wall-clock debt, not simulation state. Ordinary slow
 frames consume at most eight 60 Hz ticks per display and retain the debt;
 no replay input or simulation step is skipped. Each tick contains the same
 two 120 Hz vehicle/contact steps as desktop. Rendering never changes dt.
-A long sustained overload can therefore lag wall time; the panel shows the
-debt instead of claiming 60 Hz from the display rate.
+A long sustained overload can therefore lag wall time; the nxlink performance
+line shows the debt instead of claiming 60 Hz from the display rate.
 
-The countdown, lap number, current/last lap, finish time and result come
-from `race_session_hud`. The fourth desktop keyboard-help line is replaced
-with Switch controls. Text lines are individually clipped to 105 columns,
-so a long measurement cannot spill into the following row.
+The menu, loading progress and errors use the libnx framebuffer. The race
+closes it before creating the deko3d swapchain and presents directly. The
+lap number, current/last lap and finish time come from `race_session_hud`
+in nxlink performance samples. Loading and error text remains clipped to
+105 columns per row.
 
 ## Replay parity
 
@@ -67,10 +68,10 @@ It prints each `tick SHA256` row to stdout/nxlink. The digest input matches
 and the resident record indices in ascending little-endian order. Startup
 residency lines precede the binary step digests in the sequence hash.
 
-The screen shows the last step, the sequence hash, and a SHA-256 over all
-48336 textual step rows. `EQUAL` is displayed only after all input has been
+Stdout/nxlink prints the result, the sequence hash and a SHA-256 over all
+48336 textual step rows. `REPLAY EQUAL` prints only after all input has been
 consumed, both hashes match, and the exact finish, lap times and zero-reset
-result match. A partial run says `RUNNING`; a mismatch says `DIFFERENT`.
+result match. A mismatch prints `REPLAY DIFFERENT`.
 
 ```text
 event 1 track 1003 laps 2 outcome finished steps 48336 resets 0
@@ -104,14 +105,16 @@ trace is described as console execution evidence.
 
 The loader and native textures are #198's `TrackSlice`. The track and car
 commands are joined with rebased upload indices and drawn in one deko3d
-pass with one camera and depth buffer. Car placement follows the shared
+pass with one camera. Two depth targets are paired with the two swapchain
+images so adjacent GPU frames do not share a writable depth surface. Car
+placement follows the shared
 vehicle transform; the chase camera includes the existing track collision
 hook. The car uses the same painted stock scene as the desktop race.
 Track culling uses the same camera basis as GPU projection.
 
 The complete list must fit 2047 draws. Far distance starts at 250 and can
-fall back to 125, 62.5 or 31.25; no list is silently truncated. The panel
-shows the selected far distance. The combined table has 5098 resources,
+fall back to 125, 62.5 or 31.25; no list is silently truncated. Nxlink samples
+show the selected far distance. The combined table has 5098 resources,
 including 4126 vertex/index allocations. `DrawExecutionPlan` counts those
 buffer slots and the backend uses that count, instead of the former 4096
 placeholder. Bytes remain bounded by the aggregate 256 MiB GPU budget.
@@ -130,11 +133,11 @@ it never renders stale geometry while pretending a new section was loaded.
 | Prepared car, including two instance arrays | 1781098 | persistent below |
 | Collision course | 1433448 | persistent below |
 | Car + collision | 3214546 | 67108864 |
-| Reserved draw uniforms | 1048320 | 1048576 |
+| Two frame draw uniform slots | 2096640 | 2097152 |
 | Conservative combined GPU bound | 138622566 | 268435456 |
 
 The GPU bound includes bounded image tiling, tight and padded staging, and
-64 MiB for the executor, targets, descriptors, uniforms and readback. The
+64 MiB for the executor, targets, descriptors and two frame slots. The
 backend checks actual SDK image layouts and every GPU block allocation.
 Staging lives through the upload fence; resources live through their last
 use. The ledger test uploads all 5098 resources and retires them without a
@@ -154,7 +157,7 @@ is created, not just before its first frame.
 
 deko3d allocates its GPU blocks from the same newlib heap. Therefore
 MALLOC IN-USE NOW includes GPU BLOCKS. Do not add the two readings.
-The renderer, GPU blocks and readback are created after the after-load
+The renderer and GPU blocks are created after the after-load
 sample. In live photo 4401, 155528752 - 58887808 = 96640944 bytes of growth;
 86659072 of that is GPU blocks, leaving 9981872 bytes for other allocations
 such as readback, command tables and race state. The finish photo 4470 has
@@ -171,14 +174,26 @@ peak; this change does not enlarge the budget or claim the loader fits.
 
 ## Performance and owner evidence
 
-Every frame shows simulation, residency/hash/logging, cull/record, uniform
-update, GPU record/submit/wait, transfer/copy, previous HUD/present and the
-previous total frame against 16.67 ms. Initial upload and load time are
-reported separately. Transfer/copy includes CPU copy/guard work around the
-GPU readback; the nested GPU figure is just the timed GPU copy/wait. The
-track and car are drawn by deko3d; readback lets the libnx framebuffer show
-the measurement panel. It adds diagnostic overhead and is not a claim that
-the future direct-present race renderer meets 60 FPS.
+The first frame, every 120th frame and the first finished frame print `PERF`
+samples to stdout/nxlink. They report full CPU frame time against 16.67 ms,
+simulation, residency/hash/logging, cull/record, update validation and CPU
+present time. Present is split into swapchain acquire, slot fence wait,
+uniform/command recording and submit. These are CPU timings; none claims
+to measure GPU execution time. The GPU may work on the previous frame while
+the CPU simulates and prepares the next. A slot's fence is waited before
+its uniform or command memory is overwritten; each swapchain image has its
+own depth target. The race path performs no GPU readback or CPU pixel copy.
+The added frame slot memory is checked against the same 256 MiB GPU budget.
+Console performance and visual correctness still need measurement on this
+NRO; desktop and Switch CTest cannot establish them.
+
+[PR #206 comment 4593](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/206#issuecomment-4593)
+measured its cached race NRO at 65.57-70.20 ms per frame, 21.76-23.65 ms
+for cull/record, about 20 ms for readback plus the CPU panel, and about
+11.6 ms for synchronous draw submission and wait. This branch starts at
+main before that cache is merged. A fair timing comparison needs both
+changes in one console build; the numbers above are targets, not results
+from this branch.
 
 On 2026-09-27 the owner ran the coordinator's NRO built from `e65960b`.
 Its SHA-256 is `45d21ebf744acd2a7dc52926f55ee0658822f6ce1668a7a67035bb56d33f51b3`.
@@ -201,17 +216,17 @@ The label propagation above fixes that for subsequent builds.
   it is not a driving performance measurement. GPU blocks remain 86659072.
 
 These establish live control and cross-architecture replay parity at
-`e65960b`; they are not measurements of the merged round-2 NRO. A completed
-live lap has not been photographed. Preserve that distinction when adding
-new evidence to #159. The new loader/heap panel still needs its own console
-photo. The next performance work is #55, then the loader peak reduction
-#204; no pull request is merged by the worker.
+`e65960b`; they are not measurements of this direct-present NRO. Preserve
+that distinction when adding evidence to #159. A completed live lap has not
+been photographed. The new loader/heap panel still needs its own console
+photo. No pull request is merged by the worker.
 
 ## Performance follow-up (#55)
 
 The race recorder now caches immutable track command templates. The
 original path remains available to differential tests; visibility and draw
-order are unchanged. The panel reports bounded command-cache metadata in
-persistent accounting. See [SWITCH_PERFORMANCE.md](SWITCH_PERFORMANCE.md)
-for the retained baseline, regression thresholds and remaining console
-measurements. Prior console photos above still describe e65960b.
+order are unchanged. Bounded command-cache metadata remains in persistent
+accounting. See [SWITCH_PERFORMANCE.md](SWITCH_PERFORMANCE.md) for the
+retained baseline and regression thresholds. Prior console photos above
+still describe e65960b; the new direct-present build needs a combined
+console timing and detailed visual check by the owner and coordinator.

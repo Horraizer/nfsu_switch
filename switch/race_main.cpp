@@ -12,7 +12,6 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdarg>
-#include <cstring>
 #include <fstream>
 #include <stdexcept>
 
@@ -30,20 +29,22 @@ class Screen {
     Framebuffer fb_{};
     bool opened_ = false;
 public:
-    ~Screen() { if (opened_) framebufferClose(&fb_); }
+    ~Screen() { close(); }
     bool open() {
+        if (opened_) return true;
         if (R_FAILED(framebufferCreate(&fb_, nwindowGetDefault(), width, height, PIXEL_FORMAT_RGBA_8888, 2))) return false;
         if (R_FAILED(framebufferMakeLinear(&fb_))) { framebufferClose(&fb_); return false; }
         opened_ = true; return true;
     }
-    void show(const std::vector<std::string>& lines, const std::vector<unsigned char>* rgba = nullptr) {
+    void close() {
+        if (opened_) { framebufferClose(&fb_); opened_ = false; }
+    }
+    void show(const std::vector<std::string>& lines) {
+        if (!opened_ && !open()) throw std::runtime_error("framebuffer unavailable");
         u32 stride = 0; auto* pixels = static_cast<unsigned char*>(framebufferBegin(&fb_, &stride));
         if (!pixels) throw std::runtime_error("framebuffer unavailable");
         ScreenImage image{pixels, width, height, stride};
-        if (rgba && rgba->size() == width*height*4) {
-            for (unsigned y = 0; y < height; ++y)
-                std::memcpy(pixels+y*stride, rgba->data()+y*width*4, width*4);
-        } else fill_screen_rect(image, 0, 0, width, height, {12,16,22,255});
+        fill_screen_rect(image, 0, 0, width, height, {12,16,22,255});
         const auto count = std::min<std::size_t>(lines.size(), 38);
         fill_screen_rect(image, 0, 0, width, 8+count*18, {12,16,22,255});
         // One bounded line per row. Long diagnostics cannot wrap into and
@@ -128,14 +129,14 @@ void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pa
     const auto after = mallinfo(); heap.finish_load(after.uordblks,after.arena);
     screen.show({"ASSETS PASS. Uploading track and car to deko3d..."});
     const auto upload_start = armGetSystemTick();
+    screen.close();
     DekoRenderer renderer;
-    require(renderer.open(frame.commands,error,false,kTrackSliceDrawLimit),error);
+    require(renderer.open(frame.commands,error,true,kTrackSliceDrawLimit),error);
     const double initial_upload = ms(armGetSystemTick()-upload_start);
-    std::vector<unsigned char> rgba;
     RaceTickDebt clock;
     auto previous = armGetSystemTick();
-    bool paused = false, printed_result = false;
-    double previous_frame = 0, previous_hud = 0;
+    bool paused = false, printed_result = false, printed_final_perf = false;
+    std::uint64_t presented = 0;
     while (appletMainLoop()) {
         const auto begin = armGetSystemTick();
         const auto elapsed = armTicksToNs(begin-previous)/1000; previous = begin;
@@ -175,51 +176,38 @@ void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pa
                 replay.exhausted() && race.matches_event1_replay() ? "EQUAL" : "DIFFERENT");
             std::fflush(stdout); printed_result = true;
         }
-        double draw = 0, readback = 0;
-        const auto capture_start = armGetSystemTick();
-        require(renderer.capture(rgba,draw,readback,error),error);
-        const double transfer = std::max(0.0,ms(armGetSystemTick()-capture_start)-draw);
-        const auto hud_start = armGetSystemTick();
+        DekoPresentTiming present;
+        const auto present_start = armGetSystemTick();
+        require(renderer.present(error,&present),error);
+        const double present_cpu = ms(armGetSystemTick()-present_start);
         const auto info = mallinfo(); heap.observe(info.uordblks,info.arena);
-        const auto& car = race.session().car();
-        const double speed = vehicle_sqrt(car.velocity.x*car.velocity.x+car.velocity.y*car.velocity.y)*3.6;
-        auto hud = race_session_hud(race.session()); hud.resize(3);
-        std::vector<std::string> lines = {format("NFSU #196 | EVENT 1 | %s | %s | BUILD %.12s",replay_mode?"REPLAY":"LIVE",
-            paused?"PAUSED":finished?"FINISHED":"RUNNING",NFSU_RACE_BUILD_TAG)};
-        lines.push_back(hud[0]+" | "+hud[1]+" | "+hud[2]);
-        lines.push_back(format("%.1f KM/H | gear %d | pad %s | step %llu | physics 120 Hz / pad 60 Hz | catch-up %u",
-            speed,int(car.gear),connected?"CONNECTED":"DISCONNECTED - NEUTRAL",(unsigned long long)race.session().timing().step,ticks));
-        lines.push_back(format("SIM %.2f ms | RES/HASH/LOG %.2f ms | CULL/RECORD %.2f ms | UPLOAD/CONSTANTS %.2f ms",
-            simulation,residency,record,upload));
-        lines.push_back(format("DRAW %.2f ms | TRANSFER/COPY %.2f ms (GPU %.2f) | previous HUD/present %.2f ms",draw,transfer,readback,previous_hud));
-        lines.push_back(format("Previous FRAME %.2f / 16.67 ms %s | debt %llu ticks | load %.0f ms | initial upload %.0f ms",
-            previous_frame,previous_frame>16.6667?"OVER":"WITHIN",(unsigned long long)clock.debt_ticks(),load_ms,initial_upload));
-        lines.push_back(format("DRAWS %zu track + %zu car | TRIANGLES %llu | far %.2f | visible %zu | unplaced %llu",
-            frame.track_draws,frame.car_draws,(unsigned long long)frame.triangles,frame.far_plane,frame.visible,(unsigned long long)frame.unplaced));
-        lines.push_back(format("RESIDENCY %zu sections | CPU stream %llu / 50331648 | persistent payload %llu / 67108864",
-            race.resident_count(),(unsigned long long)scene.track().streaming_bytes,(unsigned long long)persistent));
-        lines.push_back(format("Command cache metadata EST %llu / 8388608 bytes (immutable track templates)",
-            (unsigned long long)scene.cache_bytes()));
-        lines.push_back(format("GPU blocks %llu / 268435456 | uniforms 1048320 / 1048576 | resources %zu",
-            (unsigned long long)renderer.gpu_bytes(),frame.commands.uploads.resources.size()));
-        lines.push_back(format("MALLOC IN-USE before %llu | after load %llu | NOW %llu (includes GPU BLOCKS)",
-            (unsigned long long)heap.before_load,(unsigned long long)heap.after_load,(unsigned long long)heap.current));
-        lines.push_back(format("HEAP LOAD OBS HWM %llu | delta %llu / 50331648 | LOAD HEAP OVER %llu",
-            (unsigned long long)heap.load_peak,(unsigned long long)heap.load_delta(),(unsigned long long)heap.load_overrun(50331648)));
-        lines.push_back(format("HEAP RUN OBS HWM %llu | arena now %llu | arena OBS HWM %llu (sampled, not true peak)",
-            (unsigned long long)heap.peak,(unsigned long long)heap.extent,(unsigned long long)heap.extent_peak));
-        if (replay_mode) {
-            const char* verdict = finished ? (replay.exhausted() && race.matches_event1_replay()?"EQUAL":"DIFFERENT") : "RUNNING";
-            lines.push_back(std::string("REPLAY ")+verdict+" | state-sha256 "+race.sequence_hash());
-            lines.push_back("steps-sha256 "+race.steps_hash());
-            auto last = race.step_line(); if (!last.empty()) last.pop_back();
-            lines.push_back("last step "+last);
+        const double frame_ms = ms(armGetSystemTick()-begin);
+        ++presented;
+        if (presented == 1 || presented % 120 == 0 || (finished && !printed_final_perf)) {
+            const auto& car = race.session().car();
+            const double speed = vehicle_sqrt(car.velocity.x*car.velocity.x+car.velocity.y*car.velocity.y)*3.6;
+            auto hud = race_session_hud(race.session()); hud.resize(3);
+            std::printf("PERF BUILD %.12s | %s %s | frame %llu step %llu | %s | %s | %s\n",
+                NFSU_RACE_BUILD_TAG,replay_mode?"REPLAY":"LIVE",paused?"PAUSED":finished?"FINISHED":"RUNNING",
+                (unsigned long long)presented,(unsigned long long)race.session().timing().step,
+                hud[0].c_str(),hud[1].c_str(),hud[2].c_str());
+            std::printf("PERF FRAME %.2f / 16.67 ms %s | SIM %.2f | RES/HASH/LOG %.2f | CULL/RECORD %.2f | UPDATE %.2f | PRESENT CPU %.2f (ACQUIRE %.2f FENCE %.2f CMD %.2f SUBMIT %.2f) | CATCH-UP %u DEBT %llu\n",
+                frame_ms,frame_ms>16.6667?"OVER":"WITHIN",simulation,residency,record,upload,present_cpu,
+                present.acquire_ms,present.fence_wait_ms,present.record_ms,present.submit_ms,
+                ticks,(unsigned long long)clock.debt_ticks());
+            std::printf("PERF %.1f KM/H gear %d pad %s | DRAWS %zu track + %zu car | TRIANGLES %llu | far %.2f | visible %zu | unplaced %llu | RESIDENCY %zu | GPU %llu / 268435456 | resources %zu\n",
+                speed,int(car.gear),connected?"CONNECTED":"DISCONNECTED - NEUTRAL",frame.track_draws,frame.car_draws,
+                (unsigned long long)frame.triangles,frame.far_plane,frame.visible,
+                (unsigned long long)frame.unplaced,race.resident_count(),
+                (unsigned long long)renderer.gpu_bytes(),frame.commands.uploads.resources.size());
+            std::printf("PERF LOAD %.0f ms initial upload %.0f ms | CPU stream %llu / 50331648 | persistent %llu / 67108864 | CACHE EST %llu / 8388608 | HEAP before %llu after load %llu now %llu load HWM %llu run HWM %llu\n",
+                load_ms,initial_upload,(unsigned long long)scene.track().streaming_bytes,(unsigned long long)persistent,
+                (unsigned long long)scene.cache_bytes(),
+                (unsigned long long)heap.before_load,(unsigned long long)heap.after_load,
+                (unsigned long long)heap.current,(unsigned long long)heap.load_peak,(unsigned long long)heap.peak);
+            std::fflush(stdout);
+            if (finished) printed_final_perf = true;
         }
-        lines.push_back("ZR gas | ZL brake/reverse | stick/D-pad steer | B handbrake | R/L shift | X camera | - reset");
-        lines.push_back("Y pause/photo | + exit | replay hashes also print to nxlink; photograph final EQUAL and lap times");
-        screen.show(lines,&rgba);
-        previous_hud = ms(armGetSystemTick()-hud_start);
-        previous_frame = ms(armGetSystemTick()-begin);
     }
     require(renderer.close(error),error);
 }
@@ -248,6 +236,7 @@ int main(int argc, char** argv) {
                     "A: drive with Joy-Con / Pro Controller", "X: replay the pinned desktop event1.txt", "+: exit",
                     "The #47 first-lap check runs before loading. Assets: "+root,
                     "Release all controls during countdown to clear the #59 hot-plug latch.",
+                    "During the race: Y pauses, + exits; performance and replay results print to nxlink.",
                     "No game data is bundled or written. Replay input is bundled in RomFS."});
             }
             if (selected) run(root,replay,screen,pad);
