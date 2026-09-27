@@ -43,6 +43,16 @@ the retail display travel is an approximation because that writer remains
 untraced. The visual phase, lamp choice and prepared instance transforms
 are never serialized into the race state or returned to physics.
 
+APPROXIMATION - wheel spin source: retail `0x004B18F7..0x004B192A`
+advances one car-level 16-bit angle at `car+0x108` from road distance and
+one radius, truncating the scaled turn at `0x00674898`. The wheel loop
+reloads that same angle for all four wheels at `0x004B1950..0x004B1953`.
+This implementation instead integrates the four existing simulated wheel
+spin values because the current vehicle state exposes those rates but no
+shared retail road-distance angle. During a burnout or a locked rear wheel,
+the displayed rear phase therefore differs from retail. The matrix order
+above follows the traced draw path; the phase source does not.
+
 The headlight slot is always bright. The rear slot has a dim red tail
 treatment and becomes brighter when the mapped brake or handbrake control
 is held, including during countdown and reverse assist. The lamp colours

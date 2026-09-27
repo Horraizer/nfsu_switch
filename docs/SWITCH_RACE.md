@@ -127,9 +127,9 @@ it never renders stale geometry while pretending a new section was loaded.
 | --- | ---: | ---: |
 | CPU track retained, including native texture blocks | 27770710 | 50331648 |
 | Track texture-preparation overlap (#171/#198) | 41867030 | 50331648 |
-| Prepared car, including two instance arrays | 1781098 | persistent below |
+| Prepared car, including two instance arrays | 1782058 | persistent below |
 | Collision course | 1433448 | persistent below |
-| Car + collision | 3214546 | 67108864 |
+| Car + collision | 3215506 | 67108864 |
 | Reserved draw uniforms | 1048320 | 1048576 |
 | Conservative combined GPU bound | 138622566 | 268435456 |
 

@@ -35,8 +35,9 @@ traces the multiplier to `STATE_FB_WPOS_Y_TRANSFORM` in
 the parameter values without initializing that Mesa state. `source/dksh.h`
 defines the compiler constbuf offset/size used by the correction.
 
-A desktop reproduction renders the painted stock scene with flat shading
-and again with shading disabled, changing nothing else. The CPU TGA pin is
+A desktop reproduction at the earlier wheel-placement baseline renders the
+painted stock scene with flat shading and again with shading disabled,
+changing nothing else. The CPU TGA pin for that historical comparison was
 `52B9303A822F82242717B3A2F363BE6584E4A24B533B69B6AA78EED6DFBED994`.
 The comparison is 817808 exact pixels, 819954 within +/-2, maximum 158,
 PSNR 27.99147884 dB. This closely reproduces the console's failure; it is
