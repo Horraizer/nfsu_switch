@@ -310,6 +310,8 @@ struct TrackStreamFiles {
 };
 
 struct TrackStreamLoadLimits {
+    // Optional service/measurement checkpoint; exceptions propagate to cancel.
+    std::function<void()> poll;
     // Over every section read.
     std::uint64_t max_total_bytes = 1ULL << 30;
     TrackLimits geometry;
