@@ -21,6 +21,8 @@ bool plan_texture_copy(const UploadResource& resource, TextureCopyPlan& plan,
 // sum of device allocations still require the backend's real SDK query.
 constexpr std::uint32_t kDrawDescriptorBytes = 32;
 struct DrawExecutionPlan {
+    // At least one slot; derived from the validated table, not a fixed 4096.
+    std::uint32_t buffer_allocations = 0;
     std::uint64_t staging_bytes = 0;
     std::uint32_t uniform_bytes = 0;
     std::uint32_t descriptor_bytes = 0;

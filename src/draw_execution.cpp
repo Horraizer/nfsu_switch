@@ -54,7 +54,7 @@ bool plan_draw_execution(const RecordedCommands& c, DrawExecutionPlan& plan, std
     // allowance of 32 bytes per resource, including non-textures.
     out.staging_bytes = c.uploads.resources.size() * 32;
     for (const auto& r : c.uploads.resources) {
-        if (r.kind != UploadResourceKind::texture) continue;
+        if (r.kind != UploadResourceKind::texture) { ++out.buffer_allocations; continue; }
         TextureCopyPlan copy;
         if (!plan_texture_copy(r, copy, error)) return false;
         out.staging_bytes += r.bytes;
@@ -63,6 +63,7 @@ bool plan_draw_execution(const RecordedCommands& c, DrawExecutionPlan& plan, std
     if (out.staging_bytes > kMaxUploadResourceBytes) {
         error = "texture staging exceeds block limit"; return false;
     }
+    if (!out.buffer_allocations) out.buffer_allocations = 1;
     plan = out;
     return true;
 }
