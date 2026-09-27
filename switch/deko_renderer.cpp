@@ -23,6 +23,9 @@ static_assert(sizeof(DkImageDescriptor) == kDrawDescriptorBytes);
 static_assert(sizeof(DkSamplerDescriptor) == kDrawDescriptorBytes);
 
 std::uint64_t align_up(std::uint64_t n, std::uint64_t a) { return (n + a - 1) & ~(a - 1); }
+double elapsed_ms(std::uint64_t start) {
+    return armTicksToNs(armGetSystemTick() - start) / 1000000.0;
+}
 constexpr DkCompareOp kCompare[] = {DkCompareOp_Never, DkCompareOp_Less,
     DkCompareOp_Equal, DkCompareOp_Lequal, DkCompareOp_Greater, DkCompareOp_NotEqual,
     DkCompareOp_Gequal, DkCompareOp_Always};
@@ -42,7 +45,8 @@ struct DekoRenderer::Impl {
     std::vector<dk::UniqueMemBlock> blocks;
     dk::UniqueSwapchain swapchain;
     dk::UniqueCmdBuf cmd;
-    dk::MemBlock buffers, images, staging, uniforms, descriptors, command_memory, readback;
+    dk::MemBlock buffers, images, staging, uniforms, descriptors, readback;
+    std::array<dk::MemBlock, 2> command_memory;
     MemoryArena buffer_arena, image_arena, staging_arena, uniform_arena;
     UploadLedger ledger;
     std::vector<UploadHandle> handles;
@@ -51,15 +55,18 @@ struct DekoRenderer::Impl {
     std::vector<ArenaAllocation> padded_staging;
     ArenaAllocation uniform_allocation;
     bool uniform_live = false;
+    std::array<dk::Fence, 2> frame_fences{};
+    std::array<bool, 2> frame_in_flight{};
     std::array<dk::Image, 2> colors;
-    dk::Image depth;
+    std::array<dk::Image, 2> depths;
     dk::Shader vertex, textured, fallback;
     const RecordedCommands* commands = nullptr;
     UploadTable uploaded;
     std::size_t draw_capacity = 0;
     std::uint64_t fence_number = 0;
     std::uint64_t gpu_bytes = 0;
-    std::uint32_t command_bytes = 0;
+    std::array<std::uint32_t, 2> command_bytes{};
+    std::uint32_t uniform_stride = 0;
     std::uint32_t sampler_offset = 0;
     char diagnostic[768]{};
 
@@ -115,10 +122,10 @@ struct DekoRenderer::Impl {
         return layout;
     }
 
-    void begin() {
-        // Every prior list has completed before its storage is reused.
+    void begin(std::size_t slot = 0) {
+        // Presentation waits for this slot's fence before overwriting it.
         cmd.clear();
-        cmd.addMemory(command_memory, 0, command_bytes);
+        cmd.addMemory(command_memory[slot], 0, command_bytes[slot]);
     }
 
     bool submit(std::string& error) {
@@ -183,6 +190,8 @@ struct DekoRenderer::Impl {
         plan.uniform_bytes = static_cast<std::uint32_t>((1 + 2 * draw_capacity) * 256);
         plan.command_bytes = static_cast<std::uint32_t>(65536 +
             (draw_capacity + source.uploads.resources.size()) * 4096);
+        uniform_stride = plan.uniform_bytes;
+        const auto uniform_bytes = std::uint64_t{uniform_stride} * (presentation ? 2 : 1);
         uploaded = source.uploads;
         commands = &source;
         device = dk::DeviceMaker{}.setUserData(this).setCbDebug(debug)
@@ -214,17 +223,20 @@ struct DekoRenderer::Impl {
             !block(need.image_extent, kImageFlags, "texture images", images, error) ||
             !block(plan.staging_bytes,
                    kDataFlags, "texture staging", staging, error) ||
-            !block(plan.uniform_bytes, kDataFlags, "draw uniforms", uniforms, error) ||
+            !block(uniform_bytes, kDataFlags, "draw uniforms", uniforms, error) ||
             !block(plan.descriptor_bytes, kDataFlags, "texture descriptors", descriptors, error)) return false;
         if (!arena(buffer_arena, need.buffer_extent, error,
                    plan.buffer_allocations) ||
             !arena(image_arena, need.image_extent, error) ||
             !arena(staging_arena, plan.staging_bytes, error) ||
-            !arena(uniform_arena, plan.uniform_bytes, error) ||
+            !arena(uniform_arena, uniform_bytes, error) ||
             !ledger.create({&buffer_arena, &image_arena, &staging_arena}, layout_query, 8192, error) ||
             !ledger.upload_table(source.uploads, 1, handles, error)) return false;
-        command_bytes = plan.command_bytes;
-        if (!block(command_bytes, kDataFlags, "command memory", command_memory, error)) return false;
+        command_bytes[0] = plan.command_bytes;
+        command_bytes[1] = static_cast<std::uint32_t>(65536 + draw_capacity * 4096);
+        if (!block(command_bytes[0], kDataFlags, "command memory", command_memory[0], error) ||
+            (presentation && !block(command_bytes[1], kDataFlags, "second frame command memory",
+                                    command_memory[1], error))) return false;
         cmd = dk::CmdBufMaker{device}.create();
         if (!cmd || !healthy(error)) {
             if (error.empty()) error = "deko3d command buffer creation failed";
@@ -283,16 +295,11 @@ struct DekoRenderer::Impl {
             }
         }
         padded_staging.clear();
-        if (uniform_arena.allocate(plan.uniform_bytes, 256, uniform_allocation) != ArenaRefusal::none) {
+        if (uniform_arena.allocate(uniform_bytes, 256, uniform_allocation) != ArenaRefusal::none) {
             error = "draw uniform reservation failed"; return false;
         }
         uniform_live = true;
-        auto* data = static_cast<unsigned char*>(uniforms.getCpuAddr()) + uniform_allocation.offset;
-        std::memcpy(data, &source.frame, sizeof source.frame);
-        for (std::size_t i = 0; i < source.draws.size(); ++i) {
-            std::memcpy(data + (1+2*i)*256, &source.draws[i].placement, sizeof(DrawInstanceUniform));
-            std::memcpy(data + (2+2*i)*256, &source.draws[i].material, sizeof(DrawMaterialUniform));
-        }
+        write_uniforms(source, 0);
         if (!shader("placed.vert", DkStage_Vertex, vertex, error) ||
             !shader("textured.frag", DkStage_Fragment, textured, error) ||
             !shader("fallback.frag", DkStage_Fragment, fallback, error)) return false;
@@ -307,9 +314,11 @@ struct DekoRenderer::Impl {
             if (!block(color_layout.getSize(), kImageFlags, "present image", memory, error)) return false;
             color.initialize(color_layout, memory, 0);
         }
-        dk::MemBlock depth_memory;
-        if (!block(depth_layout.getSize(), kImageFlags, "depth image", depth_memory, error)) return false;
-        depth.initialize(depth_layout, depth_memory, 0);
+        for (std::size_t i = 0; i < (presentation ? 2U : 1U); ++i) {
+            dk::MemBlock depth_memory;
+            if (!block(depth_layout.getSize(), kImageFlags, "depth image", depth_memory, error)) return false;
+            depths[i].initialize(depth_layout, depth_memory, 0);
+        }
         if (presentation) {
             const std::array<const DkImage*, 2> targets{&colors[0], &colors[1]};
             swapchain = dk::SwapchainMaker{device, nwindowGetDefault(), targets}.create();
@@ -328,21 +337,26 @@ struct DekoRenderer::Impl {
             if (error.empty()) error = "renderer is not ready for a frame update";
             return false;
         }
-        // capture/present wait for their fence before returning. No old frame
-        // can read these constants while the CPU replaces them.
-        auto* data = static_cast<unsigned char*>(uniforms.getCpuAddr()) + uniform_allocation.offset;
-        std::memcpy(data, &next.frame, sizeof next.frame);
-        for (std::size_t i = 0; i < next.draws.size(); ++i) {
-            std::memcpy(data + (1+2*i)*256, &next.draws[i].placement, sizeof(DrawInstanceUniform));
-            std::memcpy(data + (2+2*i)*256, &next.draws[i].material, sizeof(DrawMaterialUniform));
-        }
+        // The presentation path writes constants only after waiting for the
+        // selected slot. The offscreen path is synchronous and keeps slot 0.
+        if (!swapchain) write_uniforms(next, 0);
         commands = &next;
         return true;
     }
 
-    void record_frame(const dk::Image& target) {
-        begin();
-        dk::ImageView color_view{target}, depth_view{depth};
+    void write_uniforms(const RecordedCommands& source, std::size_t slot) {
+        auto* data = static_cast<unsigned char*>(uniforms.getCpuAddr()) +
+            uniform_allocation.offset + slot * uniform_stride;
+        std::memcpy(data, &source.frame, sizeof source.frame);
+        for (std::size_t i = 0; i < source.draws.size(); ++i) {
+            std::memcpy(data + (1+2*i)*256, &source.draws[i].placement, sizeof(DrawInstanceUniform));
+            std::memcpy(data + (2+2*i)*256, &source.draws[i].material, sizeof(DrawMaterialUniform));
+        }
+    }
+
+    void record_frame(const dk::Image& target, std::size_t slot) {
+        begin(slot);
+        dk::ImageView color_view{target}, depth_view{depths[slot]};
         cmd.bindRenderTargets(&color_view, &depth_view);
         cmd.setViewports(0, {{0, 0, static_cast<float>(commands->width), static_cast<float>(commands->height), 0, 1}});
         cmd.setScissors(0, {{0, 0, commands->width, commands->height}});
@@ -352,7 +366,7 @@ struct DekoRenderer::Impl {
         cmd.bindImageDescriptorSet(descriptors.getGpuAddr(), static_cast<std::uint32_t>(handles.size()));
         cmd.bindSamplerDescriptorSet(descriptors.getGpuAddr()+sampler_offset, 1);
         cmd.barrier(DkBarrier_None, DkInvalidateFlags_Shader | DkInvalidateFlags_Descriptors);
-        const auto base = uniforms.getGpuAddr() + uniform_allocation.offset;
+        const auto base = uniforms.getGpuAddr() + uniform_allocation.offset + slot * uniform_stride;
         cmd.bindUniformBuffer(DkStage_Vertex, 0, base, sizeof(DrawFrameUniform));
         cmd.bindUniformBuffer(DkStage_Fragment, 0, base, sizeof(DrawFrameUniform));
         for (std::size_t i = 0; i < commands->draws.size(); ++i) {
@@ -400,20 +414,43 @@ struct DekoRenderer::Impl {
         cmd.barrier(DkBarrier_Fragments, 0);
     }
 
-    bool present(std::string& error) {
+    bool present(std::string& error, DekoPresentTiming* timing) {
+        if (timing) *timing = {};
         if (!swapchain || !healthy(error)) {
             if (error.empty()) error = "deko3d renderer is not open";
             return false;
         }
+        auto stage = armGetSystemTick();
         const int slot = queue.acquireImage(swapchain);
         if (!healthy(error) || slot < 0 || slot >= 2) {
             if (error.empty()) error = "deko3d swapchain image acquisition failed";
             return false;
         }
-        record_frame(colors[slot]);
-        if (!submit(error)) return false;
+        if (timing) timing->acquire_ms = elapsed_ms(stage);
+        stage = armGetSystemTick();
+        if (frame_in_flight[slot]) {
+            const auto result = frame_fences[slot].wait();
+            if (result != DkResult_Success) {
+                error = "deko3d frame fence wait failed: " + std::to_string(static_cast<unsigned>(result));
+                return false;
+            }
+            frame_in_flight[slot] = false;
+        }
+        if (timing) timing->fence_wait_ms = elapsed_ms(stage);
+        stage = armGetSystemTick();
+        write_uniforms(*commands, slot);
+        record_frame(colors[slot], slot);
+        if (timing) timing->record_ms = elapsed_ms(stage);
+        stage = armGetSystemTick();
+        const auto list = cmd.finishList();
+        if (!healthy(error)) return false;
+        queue.submitCommands(list);
+        queue.signalFence(frame_fences[slot]);
         queue.presentImage(swapchain, slot);
         queue.flush();
+        frame_in_flight[slot] = true;
+        ++fence_number;
+        if (timing) timing->submit_ms = elapsed_ms(stage);
         return healthy(error);
     }
 
@@ -433,7 +470,7 @@ struct DekoRenderer::Impl {
         auto* data = static_cast<unsigned char*>(readback.getCpuAddr());
         std::memset(data, 0xCD, bytes + 2*guard);
         const auto render_start = armGetSystemTick();
-        record_frame(colors[0]);
+        record_frame(colors[0], 0);
         if (!submit(error)) return false;
         render_ms = armTicksToNs(armGetSystemTick() - render_start) / 1000000.0;
         const auto copy_start = armGetSystemTick();
@@ -503,7 +540,10 @@ bool DekoRenderer::capture(std::vector<unsigned char>& rgba, double& render_ms,
     try { return impl_->capture(rgba, render_ms, readback_ms, error); }
     catch (const std::bad_alloc&) { rgba.clear(); error = "not enough memory for GPU readback"; return false; }
 }
-bool DekoRenderer::present(std::string& error) { error.clear(); return impl_->present(error); }
+bool DekoRenderer::present(std::string& error, DekoPresentTiming* timing) {
+    error.clear();
+    return impl_->present(error, timing);
+}
 bool DekoRenderer::close(std::string& error) {
     error.clear();
     const bool ok = impl_->shutdown(error);
