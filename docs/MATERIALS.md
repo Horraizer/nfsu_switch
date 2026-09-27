@@ -19,6 +19,11 @@ Reference files:
 - `GLOBAL/GLOBALB.BUN`: SHA-256
   `39DF38FAC2BE7CA0F0D0A92E0113CAAEDA5B1C60E14436C612B3D0874AFC8DB9`.
 
+The follow-up [car shading trace](CAR_SHADING.md) decodes the numeric
+`0x00135200` material records, the runtime cube-map creation and the
+device-dependent technique choice. This document keeps the earlier
+alpha-state and flag-gate trace.
+
 All virtual addresses below use image base 0x00400000. In `.text`, the raw
 file offset is `VA - 0x00400000`.
 
@@ -392,10 +397,10 @@ Both are in the shader's 0..1 space. `diffuse_scale.w` is
 `envmap_scale` and never reads it; only `EnvmapMin`, `EnvmapRange` and
 `envvdotn` reach the environment term.
 
-These two identities are what `nfsu_render` reproduces. The values of
-`DiffuseMin/Range`, `EnvmapMin/Range`, `EnvmapPower`, `HarmonicCoeff` and
-the `EnvMapTex` cube map are all still undecoded, so the reference takes
-them as explicit inputs and never supplies a retail value.
+These two identities are what `nfsu_render` reproduces. The retail
+`0x00135200` coefficient values are decoded in [CAR_SHADING.md](CAR_SHADING.md),
+but `HarmonicCoeff` and the cube contents are not. The reference still
+takes coefficients as explicit inputs and never supplies a retail value.
 
 ## Observed: material/effect-key objects and geometry flags
 
@@ -438,8 +443,8 @@ six `SetVector` uploads read from (`lea edi` at 0x40FFBC, 0x40FFD7,
 `EnvmapMin.w` at 0x40FCFC and `EnvmapRange.w` at 0x40FD1C. Each vector is
 uploaded whole, so a zeroed W lane reaches the effect as such.
 
-That makes the whole consequence of the 0x80 branch exact even though the
-coefficient values are undecoded. The vertex shader computes
+That makes the whole consequence of the 0x80 branch exact without needing
+the coefficient values. The vertex shader computes
 `OUT.diffuse_color = harmonic(normal) * diffuse_scale` and
 `OUT.specular_color.xyz = specular * specular_lum * specular_scale * 0.5`,
 and the pixel shader computes
@@ -496,9 +501,10 @@ dead, but it is rare enough that no car is visibly characterised by it. In
 the 1242-record 240SX sample it does not occur at all: every value there
 that carries 0x100 also carries 0x80.
 
-These are counts of a branch condition and they name no bit. What the
-retained coefficients then do is undecoded, because their values are. What
-the zeroed ones do is not: a closed diffuse gate forces `diffuse_scale.w`
+These are counts of a branch condition and they name no bit. The retained
+coefficients are decoded in [CAR_SHADING.md](CAR_SHADING.md), but their
+effect on a complete frame still depends on the cube and lighting inputs.
+The zeroed case is exact: a closed diffuse gate forces `diffuse_scale.w`
 to zero, so those six records draw with source alpha 0 whatever their
 coefficient object holds.
 
@@ -541,21 +547,23 @@ Observed, and not applied, each with its reason:
   and viewport convention proven first. `--cull` stays the diagnostic it
   was;
 - the `DEFAULTALPHA` skip, which no car material reaches;
-- the effect's harmonic diffuse lighting and its specular term. Their
-  inputs, `HarmonicCoeff` and the `Specular*` coefficients, are undecoded,
-  so the renderer keeps its own diagnostic flat shade and says so.
+- the effect's harmonic diffuse lighting and its specular term.
+  `HarmonicCoeff` is undecoded; the on-disk `Specular*` coefficients are
+  decoded in [CAR_SHADING.md](CAR_SHADING.md), but are not wired into the
+  renderer. It keeps its own diagnostic flat shade and says so.
 
 Still unknown:
 
-- which of the three `car.efx` techniques a draw uses. The branch that
-  splits the programmable path from the `D3DRS_TEXTUREFACTOR` fixed-function
-  path is at `0x40FD2A` and `0x40FD36`, but the technique selection itself
-  is not traced;
-- the values in the material/effect-key objects: `DiffuseMin/Range`,
-  `SpecularMin/Range`, `SpecularPower`, `EnvmapMin/Range` and `EnvmapPower`.
-  The renderer takes each one as an explicit input whose default makes its
-  term vanish, and never supplies a retail value;
-- the contents of `EnvMapTex`. The renderer takes a constant colour in
+- which technique a particular retail PC device selects. The technique
+  selection loop and its capability guards are traced in
+  [CAR_SHADING.md](CAR_SHADING.md), but no specific device run is recorded;
+- runtime mutations of the material/effect-key objects. Their on-disk
+  values are decoded in [CAR_SHADING.md](CAR_SHADING.md); the renderer still
+  takes each coefficient as an explicit input whose default makes its term
+  vanish;
+- the contents and full update policy of `EnvMapTex`. Its runtime cube-map
+  creation and six-face render path are traced in
+  [CAR_SHADING.md](CAR_SHADING.md); the renderer takes a constant colour in
   place of a cube sample;
 - stable semantic names for geometry bits 0x1, 0x80, 0x100, 0x4000,
   0x8000, and 0x10000 beyond their direct branches. `PreparedDraw::flags`
