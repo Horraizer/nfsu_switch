@@ -314,7 +314,9 @@ bool texture_payload(
 // (2a + b) / 3 and (a + b) / 2 on the expanded values; DXT1 uses 3-color
 // mode with transparent black when color0 <= color1. A8R8G8B8 is stored as
 // little-endian u32 ARGB, i.e. bytes B, G, R, A, and is reordered only. P8
-// is refused because the level does not carry its required 256-entry palette.
+// uses an explicit 256-entry palette; without one it is refused. Palette
+// entries are stored A8R8G8B8 pixels (B, G, R, A); retail copies each dword
+// into an A8R8G8B8 texture at 0x00407E70..0x00407EA8.
 bool decode_level(
     PixelFormat format,
     std::uint32_t width,
@@ -322,7 +324,8 @@ bool decode_level(
     const unsigned char* data,
     std::size_t size,
     std::vector<unsigned char>& rgba,
-    std::string& error);
+    std::string& error,
+    const P8Palette* p8_palette = nullptr);
 
 // Writes a DDS header followed by the payload bytes unchanged. payload must
 // be exactly mip_chain_size bytes.

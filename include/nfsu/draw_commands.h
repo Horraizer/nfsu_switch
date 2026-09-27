@@ -121,7 +121,8 @@ bool record_frame_state(const RenderOptions& options, const RenderLimits& limits
 // list validation precede recording; no visibility selection happens here.
 // Nonempty drawable ranges only, one command per placed copy. The car uses
 // prepared_draw_order and prepared_mesh_instances, including retail order.
-// Track retail state is refused, exactly as the CPU track renderer does.
+// Track retail state selects texture-info alpha/blend state and preserves
+// the order of the supplied draw list.
 // Bad car vertex indices are refused (the CPU can skip them, a GPU cannot).
 // Limits bound dimensions, source/submitted triangles; raster/pixel limits
 // belong to rasterization and do not constrain a command recording.

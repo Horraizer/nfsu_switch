@@ -53,8 +53,10 @@ bool write_one(
     std::string& error) {
     std::vector<unsigned char> payload;
     std::size_t unused = 0;
+    P8Palette palette{};
+    P8Palette* selected_palette = texture.format == PixelFormat::p8 ? &palette : nullptr;
     if (!texture_payload(bytes.data(), bytes.size(), texture, payload, unused,
-                         error)) {
+                         error, selected_palette)) {
         return false;
     }
 
@@ -82,7 +84,7 @@ bool write_one(
                   top <= payload.size() &&
                   decode_level(texture.format, texture.width, texture.height,
                                payload.data(), static_cast<std::size_t>(top),
-                               rgba, error) &&
+                               rgba, error, selected_palette) &&
                   write_tga(output, texture.width, texture.height, rgba, error);
     }
     output.close();

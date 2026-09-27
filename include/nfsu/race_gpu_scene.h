@@ -51,7 +51,11 @@ private:
     RecordedCommands car_templates_;
     std::vector<std::size_t> mesh_first_, section_first_;
     std::vector<std::uint32_t> mesh_groups_;
-    std::vector<TrackDrawListEntry> selection_;
+    struct SelectedTrackDraw { std::uint32_t instance, draw; std::size_t ordinal; };
+    struct RetailGroup { std::size_t bucket = 0; unsigned char layer = 0; };
+    std::vector<SelectedTrackDraw> selection_;
+    std::vector<RetailGroup> retail_groups_;
+    std::vector<std::size_t> bucket_first_;
     std::vector<DrawInstanceUniform> track_placements_;
     std::uint64_t generation_ = 0;
     PreparedCarScene car_;

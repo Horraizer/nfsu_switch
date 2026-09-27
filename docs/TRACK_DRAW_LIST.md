@@ -216,21 +216,24 @@ is counted in `instances_without_entries`. A visible entry naming a section
 or an instance the scene does not hold is an error rather than a count,
 because a silently shorter draw list would hide the two reports disagreeing.
 
-### The two orders
+### The three orders
 
-Both are total and deterministic, and the two always hold the same entries.
+All are total and deterministic, and they hold the same entries.
 
 | Order | Rule | What it is for |
 | --- | --- | --- |
 | `visible_instance` | the visible set's own order, and inside one instance its mesh's drawable groups in prepared order | under `TrackCullPolicy::retail_tree` this is the retail traversal order, so a backend walks scenery the way the game's tree reaches it |
 | `material_group` | every copy of one group contiguous, groups in prepared order, copies in visible order inside a group | at most one texture bind per group rather than one per copy, and a run of copies a backend may submit as one instanced call |
+| `retail_bucket` | decoded texture row, then first-use texture group, preserving FIFO within each group | approximate the world draw queue's row and texture batching; effect columns remain undecoded |
 
 "At most", not "exactly": two consecutive groups that resolved the same
 texture share a bind, so `cost.texture_binds` can fall below `cost.groups`,
 and on both retail regions below it does - 41 binds over 42 groups, and 25
 over 26. Read the count rather than assuming it.
 
-Neither is the retail draw queue; see the car-scene differences above.
+The first two are diagnostic orders. The third follows the recovered row
+selection and texture batching in `speed.exe` while using first-use order for
+the undecoded effect column; see [`TRACK_MATERIALS.md`](TRACK_MATERIALS.md).
 
 Measured on the two retail regions below, over the whole region:
 
