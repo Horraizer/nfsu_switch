@@ -320,6 +320,9 @@ struct TrackStreamFiles {
 };
 
 struct TrackStreamLoadLimits {
+    // Release parsed raw ranges without textures before reading the next section.
+    // Diagnostics default to retaining every original byte.
+    bool release_non_texture_bytes = false;
     // Optional service/measurement checkpoint; exceptions propagate to cancel.
     std::function<void()> poll;
     // Over every section read.

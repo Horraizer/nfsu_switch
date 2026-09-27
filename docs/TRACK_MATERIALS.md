@@ -60,3 +60,12 @@ the neutral alpha coefficient. A separate stream-table test keeps the
 supplemental selector confined to nonresident numeric `Y` records in the
 stream file. The full desktop and Switch gates and the replay comparison
 are recorded in the issue's pull request.
+
+After merging the bounded loader and draw-template cache, preparation drops
+both resident and spillover section bytes before re-reading one texture range
+at a time. The retail allocation harness measured a 47544600-byte peak,
+below its 50331648-byte limit. The retail race test matched the cached draw
+stream against direct recording on all 48336 frames, including upload
+resources, pipeline state, order and placement. Its command-cache metadata
+estimate is 2228739 bytes; the added material state accounts for 8192 bytes
+over the prior pin. Before/after manifests matched all 476 retail files.

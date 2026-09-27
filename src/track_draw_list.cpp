@@ -152,7 +152,9 @@ bool place(
     const RenderTextureSet& textures,
     const TrackSceneOptions& options,
     PreparedTrackScene& out,
-    std::string& error) {
+    std::string& error,
+    TrackRegionReport* owned_geometry = nullptr,
+    RenderTextureSet* owned_textures = nullptr) {
     if (options.lod_slot >= kSceneryObjectMeshSlots) {
         error = "mesh slot " + std::to_string(options.lod_slot) +
                 " is outside the " + std::to_string(kSceneryObjectMeshSlots) +
@@ -161,8 +163,11 @@ bool place(
     }
 
     PreparedTrackScene scene;
-    if (!prepare_track_region(geometry, textures, options.region, scene.region,
-                              error)) {
+    const bool prepared = owned_geometry && owned_textures ?
+        prepare_track_region(std::move(*owned_geometry), std::move(*owned_textures),
+                             options.region, scene.region, error) :
+        prepare_track_region(geometry, textures, options.region, scene.region, error);
+    if (!prepared) {
         return false;
     }
     scene.object_region = objects.region;
@@ -537,6 +542,31 @@ bool build_track_scene(
     bool ok = false;
     try {
         ok = place(geometry, objects, textures, options, scene, error);
+    } catch (const std::bad_alloc&) {
+        error = "out of memory while placing the track scene";
+        ok = false;
+    }
+    if (!ok) {
+        scene = PreparedTrackScene{};
+        if (error.empty()) {
+            error = "the track scene could not be built";
+        }
+    }
+    return ok;
+}
+
+bool build_track_scene(
+    TrackRegionReport&& geometry,
+    const TrackObjectReport& objects,
+    RenderTextureSet&& textures,
+    const TrackSceneOptions& options,
+    PreparedTrackScene& scene,
+    std::string& error) {
+    scene = PreparedTrackScene{};
+    error.clear();
+    bool ok = false;
+    try {
+        ok = place(geometry, objects, textures, options, scene, error, &geometry, &textures);
     } catch (const std::bad_alloc&) {
         error = "out of memory while placing the track scene";
         ok = false;

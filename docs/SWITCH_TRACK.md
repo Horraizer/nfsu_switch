@@ -38,8 +38,9 @@ the first 12 tag characters to keep the header within one row.
 
 The recovered permanent set has 78 sections and covers every section the
 1003 route-zone lists request. #157's retail residency trace keeps that set
-for the whole hand-given lap, so the app reads those table-selected byte
-ranges once, not the entire STREAM file, and retains their GPU uploads.
+for the whole hand-given lap. The app reads only table-selected STREAM
+ranges and retains their GPU uploads; #204 re-reads the texture-bearing
+ranges one at a time to reduce the loading peak.
 It does not invent zone-only eviction or simulate a race. The diagnostic
 path is #157's hand polyline, 6824 samples at 30 world units/s and 60 samples/s;
 it is not #61's recovered race route.
@@ -66,10 +67,18 @@ payload to 16 MiB. The retained streaming payload is 27770710 bytes,
 including 14096320 texture bytes. The computed texture-preparation payload
 subtotal is 41867030 bytes; it excludes loading scratch and allocator
 overhead and does **not** establish compliance with the 48 MiB plan.
-Per-section parser copies and non-texture byte ranges are released before
-texture decoding. Texture pack bytes are released after decoding, before
-scene preparation. The remaining raw buffers, temporary texture sets and
-merged mesh copies are destroyed before collision loading and GPU creation.
+Non-texture section bytes are released immediately after parsing each
+section. Merged geometry/scenery containers reserve from parsed counts.
+After the geometry pass, the loader releases the raw texture ranges and
+re-reads one selected range at a time, then the three external texture
+files one at a time. Only required records decode, in the original source
+priority order; claims survive release of their source. This trades extra
+SD reads/parsing for bounded overlap, without copying the whole STREAM
+file or changing the selected sections. The selected-input byte count
+remains 36471524; it is not total physical I/O including the second pass.
+Scene preparation transfers mesh arrays and texture payloads, resolving
+all materials before moving shared textures. Unused parser state is
+destroyed before collision loading and GPU creation.
 Scenery records remain for culling. Collision covers the whole TRACKB1003
 file and retains 1433448 bytes; a bounded vertical query runs at every
 sample, with rise 2 and drop 20. `clear` and `outside` are displayed as such,
@@ -110,9 +119,9 @@ or parser call finishes before the next checkpoint; no hard latency bound
 is claimed. The panel has 12 rows and a 232-pixel filled band so the heap
 figures and controls remain visible.
 
-### Measured loader overrun and plan
+### Historical loader overrun
 
-The loader is **not established to fit the 48 MiB streaming arena**. Review
+Before #204, the loader did not fit the 48 MiB streaming arena. Review
 4382 measured 66265088-66334720 desktop private bytes above baseline,
 about 132% of 50331648. A separate worker measurement of this round's
 loader (MinGW GCC 13.2, `GetProcessMemoryInfo().PrivateUsage`, a 1 ms
@@ -132,15 +141,55 @@ not a passed budget. Every run used a full 476-file before/after manifest
 peak occupancy on either platform. A zero observed excess cannot prove
 that a missed transient stayed within budget.
 
-The reduction plan is to merge and release each non-texture section's raw
-bytes immediately instead of keeping all selected ranges to the end,
-read only required texture ranges and retain native blocks once rather
-than overlap raw packs and a duplicate preparation set, then reserve the
-retained containers from the selected counts. Re-measure the allocator
-through the same load phases before claiming a 48 MiB cap. This diagnostic
-reports the overrun; it does not implement that peak reduction or enlarge
-the budget to hide it. GPU block budgeting remains a separate 256 MiB
-check, and process/heap/GPU measurements must not be added as if disjoint.
+### Allocation-counted reduction (#204)
+
+The loader now has an every-C++-allocation gate:
+
+```text
+nfsu_track_loader_peak_tests
+nfsu_track_loader_peak_tests X:/Games/NFSU
+nfsu_track_loader_peak_tests X:/Games/NFSU --baseline
+```
+
+Without a root it tests the counter, including an allocation that is freed
+before the next observation. With a root it runs the same #47 asset check,
+section parsing/merge, texture decode, scene preparation, collision load and
+path sampling as the NRO. Scalar, array, aligned, sized-delete and nothrow
+forms are intercepted; live requested bytes are updated on every new/delete.
+The peak includes vector capacity, strings, metadata and transient C++
+allocations between checkpoints. Phase logging does not determine the peak.
+MinGW links the harness with static libstdc++/libgcc so DLL-internal C++
+allocations cannot bypass the executable's replacement operators.
+`--baseline` reports an over-budget result without asserting the limit; the
+normal retail invocation fails above 50331648. It is not used by CTest,
+which must not require proprietary assets.
+
+Desktop GCC 13.2 default and Release, same retail root and counter:
+
+| Version | Peak above before-load | Retained above before-load | Ceiling |
+| --- | ---: | ---: | ---: |
+| Main f205140, before reduction (Release) | 63601351 | 32492843 | 50331648 |
+| #204, default and Release | 47528256 | 32477643 | 50331648 |
+
+The new peak is 45.3265 MiB, leaving 2803392 bytes under the unchanged
+48 MiB ceiling. There are 109815 counted allocations and 1573 service
+checkpoints. The sampled track stdout is byte-identical to the baseline:
+SHA-256 `d3b40430e2df724f81667db2db5dbe619aeba90ec5fa091da7a67e5b6a94077a`
+(raw Windows stdout). The full run remains 6824 / 1849 / 6512. Race replay
+matches the desktop state and per-step hashes and finishes in 13:26.90.
+Every retail invocation has matching full 476-file manifests (path, size,
+mtime and SHA-256), compared with `cmp` before accepting the result.
+
+Requested C++ bytes do not include malloc metadata, C-library allocations,
+allocator fragmentation, executable mappings or GPU blocks. This exact
+C++ allocation result is therefore not a substitute for Switch heap
+measurement. **The #204 owner photograph is still pending:** use the
+`204-S5-R1` track NRO to record HEAP LOAD OBS HWM delta at most 50331648
+and LOAD HEAP OVER 0. Until that photograph exists, console acceptance
+remains open. The after-load sample is taken before renderer creation;
+deko3d allocates its GPU blocks from the same newlib heap, so current
+malloc in-use includes those blocks. Do not add heap and GPU values as
+if they were disjoint. The 256 MiB GPU block budget is unchanged.
 
 ## Timing and evidence
 

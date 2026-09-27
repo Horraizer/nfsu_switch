@@ -1380,6 +1380,19 @@ void test_load_poll_and_cancel() {
           images, limits, out, error), "polled parsing succeeds");
     check(polls >= 4 * loaded.selection.records.size(),
           "parsing and merging service the observer repeatedly between sections");
+    limits.release_non_texture_bytes = true;
+    bool released_before_next = false;
+    limits.poll = [&] {
+        if (out.sections.size() > 2 && out.sections[1].loaded &&
+            out.sections[1].bytes.empty()) released_before_next = true;
+    };
+    check(nfsu::load_track_stream_sections_from_memory(loaded.table, loaded.selection,
+          images, limits, out, error) && out.ok(), "low-memory sections parse and merge");
+    check(released_before_next && !out.sections[0].bytes.empty() &&
+          out.geometry.cost.vertices == loaded.load.geometry.cost.vertices &&
+          out.objects.cost.instances == loaded.load.objects.cost.instances &&
+          out.bytes_read == loaded.load.bytes_read,
+          "raw geometry released before next section; texture bytes and merge retained");
     struct Cancel {};
     polls = 0;
     limits.poll = [&] { if (++polls == 3) throw Cancel{}; };
@@ -1570,6 +1583,41 @@ void test_whole_scene_places_across_sections() {
     } else {
         check(false, "six section costs");
     }
+
+    // A consuming preparation must preserve shared-texture resolution and
+    // first-use handles while transferring the original payload allocations.
+    auto geometry_owned = load.geometry;
+    auto textures_owned = textures;
+    const auto* vertices_before = geometry_owned.meshes[0].vertices.data();
+    const auto* texture_before = textures_owned.textures[0].payload().data();
+    nfsu::PreparedTrackScene moved;
+    check(nfsu::build_track_scene(std::move(geometry_owned), load.objects,
+          std::move(textures_owned), nfsu::TrackSceneOptions{}, moved, error),
+          "consuming scene builds: " + error);
+    check(moved.region.meshes.size() == scene.region.meshes.size() &&
+          moved.region.draws.size() == scene.region.draws.size() &&
+          moved.region.cost.resolved_draws == scene.region.cost.resolved_draws &&
+          moved.cost.placed_instances == scene.cost.placed_instances,
+          "consumed scene preserves draws and placement");
+    check(!moved.region.meshes.empty() &&
+          moved.region.meshes[0].vertices.data() == vertices_before,
+          "geometry allocation transferred without a copy");
+    bool texture_transferred = false;
+    for (const auto& texture : moved.region.textures)
+        texture_transferred |= texture.payload().data() == texture_before;
+    check(texture_transferred, "texture allocation transferred without a copy");
+    for (std::size_t i = 0; i < moved.region.draws.size() && i < scene.region.draws.size(); ++i) {
+        const auto& a = moved.region.draws[i]; const auto& b = scene.region.draws[i];
+        check(a.binding == b.binding && a.texture == b.texture &&
+              a.texture_source == b.texture_source && a.texture_pack == b.texture_pack &&
+              a.texture_record == b.texture_record && a.raw == b.raw,
+              "consumed draw preserves binding, provenance and raw material");
+    }
+    geometry_owned = load.geometry; textures_owned = textures;
+    nfsu::TrackSceneOptions tiny; tiny.region.max_texture_bytes = 1;
+    check(!nfsu::build_track_scene(std::move(geometry_owned), load.objects,
+          std::move(textures_owned), tiny, moved, error) && moved.region.meshes.empty() &&
+          moved.instances.empty(), "consuming budget failure clears the output");
 
     // J3 alone places only its own BENCH: the whole-track scene is what
     // resolves ROAD and LAMP.
