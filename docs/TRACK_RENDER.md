@@ -406,14 +406,11 @@ Nothing here is tuned until it looks acceptable. These are the holes.
   choice rather than the retail rule.
 - **No texture is unresolved.** `unresolved hashes 0`, `pixels fallback 0`.
   On this region the single `--texture` source covers every material group.
-- **No retail material state.** `render_track_draw_list` refuses
-  `MaterialStateMode::retail`. [`MATERIALS.md`](MATERIALS.md) proved that
-  state for the car draw path, and whether the track path shares it is
-  listed as unknown in [`TRACK_DRAW_LIST.md`](TRACK_DRAW_LIST.md). The
-  consequence is visible: a texture with an alpha channel - a fence, a
-  chain-link, a foliage card - is drawn as an opaque quad here. The
-  `--alpha-cutoff` diagnostic is available and is a diagnostic, not the
-  retail rule.
+- **Retail material state is opt-in.** `MaterialStateMode::retail` now applies
+  the track texture-info alpha test and blend modes. The measurements in
+  this section were taken with the default off state. The `--alpha-cutoff`
+  option remains a separate diagnostic. See
+  [`TRACK_MATERIALS.md`](TRACK_MATERIALS.md) for the trace and limits.
 - **Everything is drawn two-sided.** The default `--cull none` draws both
   faces, and the retail per-draw cull mode is recorded but not applied
   ([`MATERIALS.md`](MATERIALS.md)). Of the region's 2739 rasterized
@@ -542,11 +539,12 @@ meshes and groups; the region's meshes, rendered, skipped and unresolved
 hashes; then the triangle, coverage and pixel blocks of
 [`RENDERER.md`](RENDERER.md), unchanged.
 
-Four groups of `RenderStats` fields are deliberately left at zero and the
-header says so: `material_groups` and the `groups_*` counters, because a
-draw-list entry is one COPY of one group and the same names would count
-copies; and `groups_alpha_tested`, `groups_blended`, `draw_rows` and the
-blend fragment counters, because the retail material state is refused.
+The `material_groups`, `groups_resolved`, `groups_unresolved`,
+`groups_unusable` and `groups_invalid` counters stay zero because a draw-list
+entry is one COPY of a group and the same names would count copies.
+`draw_rows` remains zero: ordering belongs to the draw list. Retail mode
+fills the alpha-test and blend counters per submitted entry, along with the
+blend fragment counters.
 `entries_drawn` is equal to `entries` for every scene a parser can produce,
 because a material record with no indices is refused by `src/track.cpp` and
 a group with an empty range is not drawable.

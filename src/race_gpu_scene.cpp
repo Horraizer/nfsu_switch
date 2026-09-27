@@ -101,8 +101,11 @@ bool RaceGpuScene::prepare_templates(std::string& error) {
         witnesses.push_back(item);
     }
     TrackDrawList list;
-    const RenderOptions options = race_render_options();
-    if (!build_track_draw_list(track_.scene,witnesses,{},list,error) ||
+    RenderOptions options = race_render_options();
+    options.material_state = MaterialStateMode::retail;
+    TrackDrawListOptions list_options;
+    list_options.order = TrackDrawOrder::retail_bucket;
+    if (!build_track_draw_list(track_.scene,witnesses,list_options,list,error) ||
         !record_track_commands(track_.scene,list,options,{},track_templates_,error) ||
         !validate_recorded_commands(track_templates_,error)) return false;
     template_of_group_.assign(track_.scene.region.draws.size(),kNoHandle);
@@ -177,13 +180,16 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         if (!visible.ok() || !visible.policy_held) { error = "race visibility policy degraded"; return false; }
         stage(&RaceFrameProfile::cull_ms);
         TrackDrawList list;
-        if (!build_track_draw_list(track_.scene, visible, {}, list, error)) return false;
+        TrackDrawListOptions list_options;
+        list_options.order = TrackDrawOrder::retail_bucket;
+        if (!build_track_draw_list(track_.scene, visible, list_options, list, error)) return false;
         stage(&RaceFrameProfile::list_ms);
         RecordedCommands car_commands;
         if (!record_car_commands(car_, options, {}, skin_source_, car_commands, error)) return false;
         stage(&RaceFrameProfile::car_ms);
         if (list.entries.size() + car_commands.draws.size() > kTrackSliceDrawLimit) continue;
         RecordedCommands track_commands;
+        options.material_state = MaterialStateMode::retail;
         if (reference) {
             if (!record_track_commands(track_.scene, list, options, {}, track_commands, error)) return false;
         } else if (!record_cached_track(list, car_commands, track_commands, error)) return false;

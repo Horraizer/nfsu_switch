@@ -446,12 +446,10 @@ void test_car_textured_variants_are_the_reference_pairs(const Programs& programs
                 std::to_string(manifest.size()));
 }
 
-// A car group with no resolved texture has no texture-info record and stays
-// opaque in both material states (render_scene), and the track path takes no
-// retail state at all (below): each of those programs is drawn in exactly
-// one variant, opaque, with no alpha test and no blend.
+// A group with no resolved texture has no texture-info record and stays
+// opaque in both material states. Only the fallback programs are opaque-only.
 void test_opaque_only_programs(const Programs& programs, Reporter& r) {
-    for (const char* name : {"car_fallback", "track_textured", "track_fallback"}) {
+    for (const char* name : {"car_fallback", "track_fallback"}) {
         const sm::Program* program = find_program(programs, name);
         r.check(program != nullptr, std::string(name) + " has a manifest");
         if (program == nullptr) {
@@ -468,10 +466,41 @@ void test_opaque_only_programs(const Programs& programs, Reporter& r) {
     }
 }
 
+void test_track_textured_variants_are_the_reference_pairs(const Programs& programs,
+                                                           Reporter& r) {
+    const sm::Program* program = find_program(programs, "track_textured");
+    r.check(program != nullptr, "track_textured has a manifest");
+    if (program == nullptr) return;
+    std::set<std::pair<bool, int>> pairs;
+    for (std::size_t i = 0; i < program->variant_count; ++i) {
+        const sm::Variant& variant = program->variants[i];
+        const bool alpha_test = variant.alpha_test == sm::CompareOp::greater;
+        const std::string what = std::string("track_textured variant ") + variant.name;
+        r.check(variant.alpha_test == sm::CompareOp::always || alpha_test,
+                what + ": alpha test is off or GREATER");
+        if (alpha_test) {
+            r.check(variant.alpha_ref == nfsu::kRenderAlphaRef,
+                    what + ": alpha reference matches the CPU renderer");
+        }
+        nfsu::RenderBlendMode mode = nfsu::RenderBlendMode::disabled;
+        const bool known = reference_blend(variant, mode);
+        r.check(known, what + ": blend mode is supported");
+        if (known) {
+            r.check(std::string(variant.name) == variant_name(alpha_test, mode),
+                    what + ": name matches state");
+        }
+        r.check(pairs.insert({alpha_test, static_cast<int>(mode)}).second,
+                what + ": state is unique");
+        r.check(variant.depth_write == (mode == nfsu::RenderBlendMode::disabled),
+                what + ": world blend disables depth writes");
+    }
+    r.check(pairs.size() == 6, "track_textured has all six alpha and blend pairs");
+}
+
 // The state every draw of the reference shares. A fragment is kept when its
 // depth is below the stored one, or equal to it with a later triangle id,
-// which in submission order is LESS_EQUAL; every drawn fragment writes depth,
-// blended ones included; the frame's alpha is always 255, so no draw writes
+// which in submission order is LESS_EQUAL; world blends disable depth writes;
+// the frame's alpha is always 255, so no draw writes
 // it; and RenderOptions culls nothing unless asked to.
 //
 // Unlike test_car_textured_variants_are_the_reference_pairs above, these
@@ -493,7 +522,9 @@ void test_shared_fixed_function_state(const Programs& programs, Reporter& r) {
                 std::string(program.name) + " variant " + variant.name;
             r.check(variant.depth_test == sm::CompareOp::less_equal,
                     what + ": the depth test is LESS_EQUAL");
-            r.check(variant.depth_write, what + ": writes depth");
+            const bool world_blend = std::string(program.name) == "track_textured" && variant.blend;
+            r.check(variant.depth_write == !world_blend,
+                    what + (world_blend ? ": leaves depth alone" : ": writes depth"));
             r.check(variant.color_write == sm::ColorWrite::rgb,
                     what + ": leaves the frame's alpha alone");
             r.check(variant.cull == sm::Cull::none, what + ": culls nothing");
@@ -508,15 +539,12 @@ void check_tables(const Programs& programs, Reporter& r) {
     test_attributes_read_their_members(programs, r);
     test_textures_follow_the_draw_kind(programs, r);
     test_car_textured_variants_are_the_reference_pairs(programs, r);
+    test_track_textured_variants_are_the_reference_pairs(programs, r);
     test_opaque_only_programs(programs, r);
     test_shared_fixed_function_state(programs, r);
 }
 
-// Why the track programs carry no retail variant: render_track_draw_list
-// refuses MaterialStateMode::retail before it reads its scene. If that ever
-// changes, this fails, and the track manifests need the retail variants.
-// It reads the reference, not the tables, so no self-check changes it.
-void test_track_path_refuses_the_retail_state(Reporter& r) {
+void test_track_path_accepts_the_retail_state(Reporter& r) {
     const nfsu::PreparedTrackScene scene;
     const nfsu::TrackDrawList list;
     nfsu::RenderOptions options;
@@ -528,9 +556,7 @@ void test_track_path_refuses_the_retail_state(Reporter& r) {
     std::string error;
     const bool drawn = nfsu::render_track_draw_list(
         scene, list, options, limits, frame, stats, track_stats, error);
-    r.check(!drawn, "render_track_draw_list refuses the retail material state");
-    r.check(error.find("retail material state") != std::string::npos,
-            "and says so: " + error);
+    r.check(drawn, "render_track_draw_list accepts the retail material state: " + error);
 }
 
 // One change to a copy of the tables, which the checks must fail with a
@@ -749,7 +775,7 @@ int main() {
     Reporter reporter;
     const Tables committed;
     check_tables(committed.programs, reporter);
-    test_track_path_refuses_the_retail_state(reporter);
+    test_track_path_accepts_the_retail_state(reporter);
     const std::size_t caught = self_checks(reporter);
 
     if (reporter.failures() != 0) {
