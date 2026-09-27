@@ -89,7 +89,16 @@ int main(int argc, char** argv) {
         if (argc == 2) return 0;
         const std::filesystem::path root(argv[2]);
         RaceGpuScene scene;
-        require(scene.load(posix_file_system(), root, error), error);
+        struct PollCount : TrackSliceLoadObserver {
+            std::size_t sections = 0; bool car_prepared = false;
+            void checkpoint(const char* phase) override {
+                if (std::string(phase) == "stream sections") ++sections;
+                if (std::string(phase) == "car prepared") car_prepared = true;
+            }
+        } polled;
+        require(scene.load(posix_file_system(), root, error, nullptr, &polled), error);
+        require(polled.sections >= 4*scene.track.sections && polled.car_prepared,
+                "race scene disconnected the shared loader checkpoints");
         RaceRun race; require(race.start(root, scene.track, error), error);
         require(!race.commit(error), "commit without step accepted");
         require(replay.load(text, error), error);

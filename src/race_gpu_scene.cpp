@@ -40,16 +40,20 @@ bool combine_race_commands(RecordedCommands track, const RecordedCommands& car,
     out = std::move(track); return true;
 }
 bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& root,
-                        std::string& error, AssetCheckObserver* observer) {
-    if (!load_track_slice(files, root, track, error, observer)) return false;
+                        std::string& error, AssetCheckObserver* observer,
+                        TrackSliceLoadObserver* loading) {
+    if (!load_track_slice(files, root, track, error, observer, loading)) return false;
+    if (loading) loading->checkpoint("car input");
     StockFrameInputs inputs;
     if (!read_stock_frame_inputs(root, inputs)) {
         error = "stock 240SX inputs could not be read";
         for (const auto& file : inputs.files) if (!file.read) error += "\n" + file.path + ": " + file.error;
         return false;
     }
+    if (loading) loading->checkpoint("car preparation");
     StockFrame stock;
     if (!prepare_stock_frame(inputs, stock_240sx_request(), stock_240sx_skin(), stock, error)) return false;
+    if (loading) loading->checkpoint("car prepared");
     skin_source_ = stock.skin_binding.source;
     car_ = std::move(stock.scene); base_ = car_.instances;
     UploadTable table;

@@ -4,7 +4,8 @@
 track-1003 circuit for two laps. It uses `RaceSession` from #192, the #59
 controls and chase camera, #157 residency, and #198's deko3d track path with
 #171 native DXT. This branch started at PR #198 head `1429830fd566`, while
-that PR was in review. It must follow acceptance of #198.
+that PR was in review. It now includes main at `17e91ad`, including #198
+round 2 loader polling and the shared `HeapUsage` observation helper.
 
 ## Install and use
 
@@ -14,6 +15,13 @@ full-memory Homebrew Menu mode. Keep the existing 12 first-lap files under
 read from the checked `Global/GLOBALB.BUN`, not the modified desktop
 `GLOBALB.LZC`. The #47 manifest check runs before any game parser and names
 missing, incomplete, wrong-version or unreadable files on screen.
+
+Configure `-DNFSU_RACE_BUILD_TAG=<head-or-build-id>` for a supplied label.
+Without that option, a non-local `NFSU_TRACK_BUILD_TAG` is inherited so the
+track build command also labels the race NRO; otherwise the current Git
+HEAD (12 characters) is used. Reconfigure after changing HEAD. Source
+exports without Git need an explicit label. The panel clips labels to 12
+characters; CTest checks the configured tag is present in the ELF.
 
 The menu offers A for live driving and X for replay. With nxlink, optional
 arguments are `[sdmc:/nfsu] [--live|--replay]`. RomFS holds the three checked
@@ -137,18 +145,29 @@ rule and remain until the scene closes.
 
 These are payload plans, not a claim that all C++ allocations use offset
 arenas. Scenery metadata, strings, capacity slack, command metadata and
-loading scratch use the ordinary allocator. The panel separately reports
-`mallinfo().uordblks` (allocated malloc space) and `.arena` (allocator
-extent) before loading, after preparing the track/car/course and initial
-commands, and on every displayed frame. The after-load sample precedes GPU
-upload; the current sample includes renderer/readback allocations. Compare
-these samples to the baseline to measure retained scene cost. Arena extent
-is not peak live memory: transient loader live-allocation peaks remain
-unmeasured. Actual deko3d GPU block bytes are reported too. They may overlap;
-do not add them. In particular, #198 photo 4378's `svcGetInfo` process-used
-number reported kernel process memory usage, not allocator live blocks.
-Those values alone do not establish scene occupancy or free heap. Current malloc
-figures are not a measured loader high-water mark.
+loading scratch use the ordinary allocator. The merged loader services
+HOME/exit and samples `mallinfo` at its parsing checkpoints; the race app
+uses shared `HeapUsage` to keep load and run observations separate. The
+load observation includes the asset check, track/car/course preparation
+and initial commands. The after-load sample is taken before the renderer
+is created, not just before its first frame.
+
+deko3d allocates its GPU blocks from the same newlib heap. Therefore
+MALLOC IN-USE NOW includes GPU BLOCKS. Do not add the two readings.
+The renderer, GPU blocks and readback are created after the after-load
+sample. In live photo 4401, 155528752 - 58887808 = 96640944 bytes of growth;
+86659072 of that is GPU blocks, leaving 9981872 bytes for other allocations
+such as readback, command tables and race state. The finish photo 4470 has
+155614608 in-use, only 85856 bytes more than that live sample, but two
+samples in different modes do not prove absence of a leak.
+
+HEAP LOAD/RUN OBS HWM are the largest sampled in-use values, lower bounds
+on the true live peak. Arena now/OBS HWM measure allocator extent, not live
+bytes. LOAD HEAP OVER compares the sampled load delta with 48 MiB. The
+race load delta also includes car/course preparation. The track loader's
+exact desktop allocation peak is already known to exceed 48 MiB: 63602625
+bytes (review 4467), 13270977 over. #204 follows #55 and will reduce that
+peak; this change does not enlarge the budget or claim the loader fits.
 
 ## Performance and owner evidence
 
@@ -161,19 +180,29 @@ track and car are drawn by deko3d; readback lets the libnx framebuffer show
 the measurement panel. It adds diagnostic overhead and is not a claim that
 the future direct-present race renderer meets 60 FPS.
 
-PR #198 comment 4378 established 26.66 ms total and 9.74 ms GPU for one
-track-only view on the owner's console. It is not a #196 performance result.
-The #196 live-pad and replay hardware runs remain to be done by the owner:
+On 2026-09-27 the owner ran the coordinator's NRO built from `e65960b`.
+Its SHA-256 is `45d21ebf744acd2a7dc52926f55ee0658822f6ce1668a7a67035bb56d33f51b3`.
+It showed BUILD LOCAL; the staging record ties those photos to the head.
+The label propagation above fixes that for subsequent builds.
 
-1. Photograph the build tag and countdown, then drive a lap with the pad.
-   Capture movement, visible car/track and current/last lap time. Record the
-   video or photos on #159, as #196 requests.
-2. Restart into X replay. Let it reach the two-lap finish (13:26.90 simulated
-   race time), then photograph `EQUAL`, both hashes and lap/result times.
-   The entire step stream also prints to nxlink when connected.
-3. Photograph per-stage timing, OVER/WITHIN, debt, draw counts, GPU blocks
-   and malloc figures while moving. Report any error or `DIFFERENT` result.
+- [PR #199 comment 4401](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/199#issuecomment-4401)
+  records live pad driving with the painted car and track visible and the
+  lap timer running. At step 4002: full frame 97.20 ms, SIM 8.46 ms for six
+  catch-up ticks, RES/HASH 0.82, CULL/RECORD 52.14, UPLOAD 4.48, DRAW 11.19,
+  TRANSFER/COPY 8.04 (GPU 1.11), previous HUD/PRESENT 11.73. Debt was zero;
+  draws were 1364 track + 94 car; GPU blocks 86659072 bytes. This is about
+  10 FPS, well over the 16.67 ms budget. #55 addresses this measured cost.
+- [PR #199 comment 4470](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/199#issuecomment-4470)
+  records the owner's completed two-lap replay: EQUAL, step 48336, total
+  13:26.90 and both hashes exactly matching the desktop pins above. The
+  panel directly shows the final lap 6:42.80; lap 1 6:44.10 is implied by
+  the total and the app's EQUAL check, not separately read from the photo.
+  Its 31.93 ms frame is after finish, when simulation and culling stopped;
+  it is not a driving performance measurement. GPU blocks remain 86659072.
 
-No Switch race frame time or cross-architecture replay pass is claimed until
-that evidence exists. Delivery here is the SD-card NRO package requested by
-the owner; no pull request is merged by the worker.
+These establish live control and cross-architecture replay parity at
+`e65960b`; they are not measurements of the merged round-2 NRO. A completed
+live lap has not been photographed. Preserve that distinction when adding
+new evidence to #159. The new loader/heap panel still needs its own console
+photo. The next performance work is #55, then the loader peak reduction
+#204; no pull request is merged by the worker.

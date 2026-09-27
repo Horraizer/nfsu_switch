@@ -1,6 +1,7 @@
 // Event 1 on the pad, with the desktop fixed-step simulation and GPU scene.
 #include "deko_renderer.h"
 #include "nfsu/race_gpu_scene.h"
+#include "nfsu/heap_usage.h"
 #include "nfsu/posix_file_system.h"
 #include "nfsu/screen_text.h"
 #include "nfsu/stock_view.h"
@@ -53,15 +54,28 @@ public:
         framebufferEnd(&fb_);
     }
 };
-class Progress final : public AssetCheckObserver {
-    Screen& screen_; PadState& pad_;
-    std::string file_; std::uint64_t previous_ = 0;
+class Progress final : public AssetCheckObserver, public TrackSliceLoadObserver {
+    Screen& screen_; PadState& pad_; HeapUsage& heap_;
+    std::string file_; std::uint64_t previous_ = 0, last_screen_ = 0;
     void poll() {
+        const auto info = mallinfo();
+        heap_.observe(info.uordblks, info.arena);
         padUpdate(&pad_);
         if (!appletMainLoop() || (padGetButtonsDown(&pad_) & HidNpadButton_Plus)) throw Cancel{};
     }
 public:
-    Progress(Screen& screen, PadState& pad) : screen_(screen), pad_(pad) {}
+    Progress(Screen& screen, PadState& pad, HeapUsage& heap) : screen_(screen), pad_(pad), heap_(heap) {}
+    void checkpoint(const char* phase) override {
+        poll();
+        const auto now = armGetSystemTick();
+        if (ms(now-last_screen_) >= 100) {
+            last_screen_ = now;
+            screen_.show({std::string("Loading: ")+phase,
+                format("HEAP LOAD OBS HWM delta %llu / 50331648 | over %llu",
+                    (unsigned long long)heap_.load_delta(), (unsigned long long)heap_.load_overrun(50331648)),
+                "HOME serviced; + cancels."});
+        }
+    }
     void file_started(std::size_t index, std::size_t total, const AssetFile& file) override {
         poll(); previous_ = 0; file_ = file.path;
         screen_.show({format("NFSU #196 / #47 first-lap check %zu/%zu",index+1,total),file_,"All game files read-only. + cancels."});
@@ -98,17 +112,20 @@ void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pa
         const std::string text((std::istreambuf_iterator<char>(in)), {});
         require(bool(in) && replay.load(text,error), "bundled replay: "+error);
     }
-    RaceGpuScene scene; Progress progress(screen,pad);
-    const auto heap_before_load = mallinfo();
+    RaceGpuScene scene; HeapUsage heap;
+    const auto before = mallinfo(); heap.begin(before.uordblks,before.arena);
+    Progress progress(screen,pad,heap);
     const auto load_start = armGetSystemTick();
-    require(scene.load(posix_file_system(), root, error, &progress), error);
+    require(scene.load(posix_file_system(), root, error, &progress, &progress), error);
     screen.show({"ASSETS PASS. Preparing event 1, stock 240SX and race course..."});
+    progress.checkpoint("race course");
     RaceRun race; require(race.start(root,scene.track,error),error);
+    progress.checkpoint("race course prepared");
     const auto persistent = scene.car_bytes()+race.persistent_bytes()+scene.track.contacts.memory.resident_bytes;
     require(persistent <= kPersistentBudgetPlaceholder, "race persistent payload exceeds 64 MiB");
     RaceGpuFrame frame; require(scene.frame(race.session(),frame,error),error);
     const double load_ms = ms(armGetSystemTick()-load_start);
-    const auto heap_after_load = mallinfo();
+    const auto after = mallinfo(); heap.finish_load(after.uordblks,after.arena);
     screen.show({"ASSETS PASS. Uploading track and car to deko3d..."});
     const auto upload_start = armGetSystemTick();
     DekoRenderer renderer;
@@ -163,11 +180,11 @@ void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pa
         require(renderer.capture(rgba,draw,readback,error),error);
         const double transfer = std::max(0.0,ms(armGetSystemTick()-capture_start)-draw);
         const auto hud_start = armGetSystemTick();
-        const auto heap = mallinfo();
+        const auto info = mallinfo(); heap.observe(info.uordblks,info.arena);
         const auto& car = race.session().car();
         const double speed = vehicle_sqrt(car.velocity.x*car.velocity.x+car.velocity.y*car.velocity.y)*3.6;
         auto hud = race_session_hud(race.session()); hud.resize(3);
-        std::vector<std::string> lines = {format("NFSU #196 | EVENT 1 | %s | %s | BUILD %s",replay_mode?"REPLAY":"LIVE",
+        std::vector<std::string> lines = {format("NFSU #196 | EVENT 1 | %s | %s | BUILD %.12s",replay_mode?"REPLAY":"LIVE",
             paused?"PAUSED":finished?"FINISHED":"RUNNING",NFSU_RACE_BUILD_TAG)};
         lines.push_back(hud[0]+" | "+hud[1]+" | "+hud[2]);
         lines.push_back(format("%.1f KM/H | gear %d | pad %s | step %llu | physics 120 Hz / pad 60 Hz | catch-up %u",
@@ -183,10 +200,12 @@ void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pa
             race.resident_count(),(unsigned long long)scene.track.streaming_bytes,(unsigned long long)persistent));
         lines.push_back(format("GPU blocks %llu / 268435456 | uniforms 1048320 / 1048576 | resources %zu",
             (unsigned long long)renderer.gpu_bytes(),frame.commands.uploads.resources.size()));
-        lines.push_back(format("MALLOC in-use: before load %zu | after load %zu | now %zu bytes",
-            heap_before_load.uordblks,heap_after_load.uordblks,heap.uordblks));
-        lines.push_back(format("MALLOC arena: before load %zu | after load %zu | now %zu bytes (extent, not live peak)",
-            heap_before_load.arena,heap_after_load.arena,heap.arena));
+        lines.push_back(format("MALLOC IN-USE before %llu | after load %llu | NOW %llu (includes GPU BLOCKS)",
+            (unsigned long long)heap.before_load,(unsigned long long)heap.after_load,(unsigned long long)heap.current));
+        lines.push_back(format("HEAP LOAD OBS HWM %llu | delta %llu / 50331648 | LOAD HEAP OVER %llu",
+            (unsigned long long)heap.load_peak,(unsigned long long)heap.load_delta(),(unsigned long long)heap.load_overrun(50331648)));
+        lines.push_back(format("HEAP RUN OBS HWM %llu | arena now %llu | arena OBS HWM %llu (sampled, not true peak)",
+            (unsigned long long)heap.peak,(unsigned long long)heap.extent,(unsigned long long)heap.extent_peak));
         if (replay_mode) {
             const char* verdict = finished ? (replay.exhausted() && race.matches_event1_replay()?"EQUAL":"DIFFERENT") : "RUNNING";
             lines.push_back(std::string("REPLAY ")+verdict+" | state-sha256 "+race.sequence_hash());

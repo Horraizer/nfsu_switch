@@ -427,7 +427,24 @@ if(NFSU_BUILD_TESTS)
 endif()
 
 # Event 1: checked shaders plus authored controller input, never game assets.
-set(NFSU_RACE_BUILD_TAG "local" CACHE STRING "Race build identifier for hardware photographs")
+set(NFSU_RACE_BUILD_TAG "" CACHE STRING "Race photo label; empty uses track tag or Git HEAD")
+# Accept the existing track build command, and repair legacy cached 'local'.
+# Reconfigure after changing HEAD when using the automatic Git label.
+if(NFSU_RACE_BUILD_TAG STREQUAL "" OR NFSU_RACE_BUILD_TAG STREQUAL "local")
+    if(NOT NFSU_TRACK_BUILD_TAG STREQUAL "local")
+        set(NFSU_RACE_BUILD_TAG "${NFSU_TRACK_BUILD_TAG}")
+    else()
+        find_package(Git REQUIRED)
+        execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse --short=12 HEAD
+            WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+            OUTPUT_VARIABLE NFSU_RACE_BUILD_TAG OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE NFSU_RACE_TAG_RESULT)
+        if(NOT NFSU_RACE_TAG_RESULT EQUAL 0)
+            message(FATAL_ERROR "Source exports require -DNFSU_RACE_BUILD_TAG=<build-id>")
+        endif()
+    endif()
+endif()
+message(STATUS "Race photo build tag: ${NFSU_RACE_BUILD_TAG}")
 if(NOT NFSU_RACE_BUILD_TAG MATCHES "^[A-Za-z0-9._-]+$")
     message(FATAL_ERROR "NFSU_RACE_BUILD_TAG must be an ASCII identifier")
 endif()
@@ -463,6 +480,7 @@ if(NFSU_BUILD_TESTS)
         -DNRO=${CMAKE_CURRENT_BINARY_DIR}/nfsu_switch_race.nro
         -DELF=$<TARGET_FILE:nfsu_switch_race> -DTITLE=nfsu_switch_race
         -DSHADERS=${NFSU_SHADER_OUTPUT} -DREPLAY=${NFSU_RACE_INPUT}
+        -DBUILD_TAG=${NFSU_RACE_BUILD_TAG}
         -P ${PROJECT_SOURCE_DIR}/tests/switch_race_romfs_check.cmake)
     set_tests_properties(nfsu_switch_race_nro PROPERTIES TIMEOUT 60)
 endif()

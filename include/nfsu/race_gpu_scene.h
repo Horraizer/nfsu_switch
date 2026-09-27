@@ -17,7 +17,8 @@ class RaceGpuScene {
 public:
     TrackSlice track;
     bool load(FileSystemService& files, const std::filesystem::path& root,
-              std::string& error, AssetCheckObserver* observer = nullptr);
+              std::string& error, AssetCheckObserver* observer = nullptr,
+              TrackSliceLoadObserver* loading = nullptr);
     bool frame(const RaceSession& session, RaceGpuFrame& out, std::string& error);
     std::uint64_t car_bytes() const { return car_bytes_; }
 private:
