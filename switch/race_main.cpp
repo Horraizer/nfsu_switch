@@ -5,6 +5,7 @@
 #include "nfsu/posix_file_system.h"
 #include "nfsu/screen_text.h"
 #include "nfsu/stock_view.h"
+#include "nfsu/race_audio.h"
 #include <switch.h>
 #include <arpa/inet.h>
 #include <unistd.h>
@@ -121,7 +122,11 @@ void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pa
     progress.checkpoint("race course");
     RaceRun race; require(race.start(root,scene.track(),error),error);
     progress.checkpoint("race course prepared");
-    const auto persistent = scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes();
+    audio::RaceAudioService sound;
+    std::string audio_note;
+    sound.start(std::filesystem::path(root), audio_note);
+    std::printf("AUDIO: %s\n", audio_note.c_str());
+    const auto persistent = scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes()+sound.resident_bytes();
     require(persistent <= kPersistentBudgetPlaceholder, "race persistent payload exceeds 64 MiB");
     RaceGpuFrame frame; require(scene.frame(race.session(),frame,error),error);
     const double load_ms = ms(armGetSystemTick()-load_start);
@@ -147,6 +152,7 @@ void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pa
         if (elapsed > 1000000) { paused = true; clock.reset(); }
         const bool connected = padIsConnected(&pad);
         const bool running = race.session().timing().outcome == RaceOutcome::running;
+        sound.set_suspended(paused || !running);
         if (!paused && running) clock.add(elapsed); else clock.reset();
         double simulation = 0, residency = 0, record = 0, upload = 0;
         unsigned ticks = 0;
@@ -157,6 +163,7 @@ void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pa
             auto stage = armGetSystemTick();
             require(race.simulate(input,error),error); simulation += ms(armGetSystemTick()-stage);
             stage = armGetSystemTick(); require(race.commit(error),error);
+            sound.on_tick(audio::race_audio_snapshot(race.session()));
             if (replay_mode) std::fputs(race.step_line().c_str(),stdout);
             residency += ms(armGetSystemTick()-stage);
             ++ticks;
@@ -169,6 +176,7 @@ void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pa
             upload = ms(armGetSystemTick()-stage);
         }
         const bool finished = race.session().timing().outcome == RaceOutcome::finished;
+        if (finished) sound.set_suspended(true);
         if (finished && !printed_result) {
             for (const auto& line : race.result_lines()) std::printf("%s\n",line.c_str());
             if (replay_mode) std::printf("REPLAY %s desktop per-step stream and result\n",
@@ -215,6 +223,7 @@ void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pa
             auto last = race.step_line(); if (!last.empty()) last.pop_back();
             lines.push_back("last step "+last);
         }
+        lines.push_back("AUDIO "+sound.diagnostic());
         lines.push_back("ZR gas | ZL brake/reverse | stick/D-pad steer | B handbrake | R/L shift | X camera | - reset");
         lines.push_back("Y pause/photo | + exit | replay hashes also print to nxlink; photograph final EQUAL and lap times");
         screen.show(lines,&rgba);
