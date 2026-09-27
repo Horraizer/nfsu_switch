@@ -318,6 +318,31 @@ directory where they are rewritten and deleted between rounds - the two named
 in issue #122's dispatch were already gone when this was written. So this
 paragraph binds the next author of one, and nothing checks it.
 
+## Pinned values live in tests
+
+A value that a test pins - a frame or state hash, a replay result, a draw,
+triangle or byte count, a measured peak - lives in the test that checks it
+and nowhere else in the repository. Documentation names the test and the
+command that prints the value; it does not copy the number. A copied pin
+goes stale the first time a change moves it, and the stale copy then costs
+a documentation edit, a review finding and another review round while
+proving nothing the test does not already prove. On 2026-09-27 three pull
+requests drew that kind of review comment: #206 (note R2-N1), #209
+(finding F1) and #211 (finding F2).
+
+- A document may record a measurement as history, labelled with the commit
+  it was taken at, for example "at 547fd89: 65.6-70.2 ms per frame". A
+  history line is never updated; a newer measurement is a new line with its
+  own commit.
+- Console results live on the board, in the comment that transcribes the
+  owner's photo. Documentation links to that comment instead of restating
+  it.
+- A current value copied into documentation is removed, not updated, when a
+  change touches that document. Existing copies are cleared that way, not
+  in a sweep.
+- A reviewer reports such a copy as a note, not a finding, unless the copy
+  is what makes a claim false.
+
 ## Required handoff
 
 Complete the entire worker handoff yourself. Do not stop at committed, pushed,
