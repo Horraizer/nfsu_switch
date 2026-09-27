@@ -16,9 +16,9 @@ TRANSFER/COPY 8.04 and previous HUD/PRESENT 11.73. That is about 10 FPS,
 not 60. The 31.93 ms photo after replay finish has stopped simulation and
 culling and cannot replace this baseline.
 
-Before implementing the cache, stage timers were added to the unchanged
-RaceGpuScene::frame path. Release GCC 13.2 on this Windows host, after one
-warmup and over 120 identical starting-pose frames, measured these means:
+At `547fd89`, stage timers on the unchanged RaceGpuScene::frame path,
+Release GCC 13.2 on this Windows host, one warmup and 120 identical
+starting-pose frames measured these means:
 
 | Stage | Original milliseconds |
 | --- | ---: |
@@ -34,8 +34,8 @@ resident scene, rebuilds resource maps and repeats invariant group work.
 Its inputs do not change while this race scene remains loaded. That is the
 measured bottleneck addressed here. PC times are not Switch estimates.
 
-Three interleaved runs in the same allocation-counted binary retained this
-comparison (milliseconds, 120-frame means per run):
+At `547fd89`, three interleaved runs in the same allocation-counted binary
+retained this comparison (milliseconds, 120-frame means per run):
 
 | Run | Reference track | Cached track | Reference stage sum | Cached stage sum |
 | --- | ---: | ---: | ---: | ---: |
@@ -69,12 +69,12 @@ after success. A caller cannot replace its buffers while templates still
 point to them. The `reference` frame option retains the full original
 recorder for differential tests, not as a different quality setting.
 
-The metadata/capacity estimate is 2220547 bytes on the desktop ABI, bounded
-by 8 MiB. No vertex, index or texture payload is duplicated by the cache.
-The `--panel` screen and direct-mode nxlink samples include this estimate
-in persistent payload accounting and report it separately. The combined car/course/cache estimate is
-5435093 bytes against 64 MiB. C++ allocator overhead remains distinct from
-these estimates and from the allocator readings.
+`nfsu_race_run_tests` pins the command-cache metadata estimate and checks it
+against its budget. No vertex, index or texture payload is duplicated by the
+cache. The `--panel` screen and direct-mode nxlink samples include the estimate
+in persistent payload accounting and report it separately. The same retail
+test checks the combined car/course/cache payload budget. C++ allocator
+overhead remains distinct from these estimates and allocator readings.
 
 ## Reproducible checks and regression thresholds
 
@@ -107,10 +107,10 @@ Stable thresholds are enforced as failures, not timing assertions:
   upload resource fields and totals, resource references, ranges, program/state,
   placement, material, camera, viewport, clear color, visibility counts,
   triangle counts and far plane as the original recorder. No tolerance or
-  visual approximation. The event 1 cache estimate is pinned at 2220547 bytes.
-- All 48336 simulation/residency step hashes and the exact two-lap result
-  remain the desktop pins. Existing limits remain 2047 draws / 8192
-  resources. The stock course's sampled maximum remains 1824 draws.
+  visual approximation. `nfsu_race_run_tests` pins the cache estimate.
+- Every simulation/residency step hash and the exact two-lap result remain
+  the desktop pins in `nfsu_race_run_tests`. The test checks draw and resource
+  limits and prints the stock course's sampled maximum.
 
 The repeated fixed-pose sample tests retention, not a proof of no leak on
 all paths. Frame timing is reported rather than made a machine-dependent
@@ -121,12 +121,13 @@ retail inventories are retained in the delivery evidence archive.
 
 deko3d's GPU blocks come from the same newlib heap and are included in
 MALLOC IN-USE NOW. The after-load sample is before renderer creation.
-Photo 4401's increase is 96640944 bytes, of which 86659072 is GPU blocks;
-9981872 remains for readback, commands and race state. The two console
+At `e65960b`, [photo 4401](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/199#issuecomment-4401)
+showed 96640944 bytes of growth, of which 86659072 was GPU blocks; 9981872
+remained for readback, commands and race state. The two console
 samples in comments 4401/4470 do not establish a growing per-frame leak.
 See SWITCH_RACE.md for exact sample definitions. The historical desktop
-loader peak overrun was reduced by #204 / PR #207: the allocation-counted
-peak is now 47528256 bytes, under the 48 MiB ceiling. The combined race
+loader peak overrun was reduced by #204 / PR #207; `nfsu_track_loader_peak_tests`
+measures the allocation-counted peak and enforces the load ceiling. The combined race
 load observation still needs a console measurement.
 
 PR #211 implements direct GPU presentation as the default, without per-frame

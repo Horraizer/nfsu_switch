@@ -1,6 +1,8 @@
 #include "nfsu/drive_session.h"
+#include "nfsu/car_parts.h"
 
 #include <cfloat>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -327,7 +329,8 @@ bool drive_render_camera(const ChaseCameraView& view,
 bool drive_place_instances(const std::vector<PreparedInstance>& base,
                            const VehicleState& state,
                            const VehicleSpec& spec,
-                           std::vector<PreparedInstance>& placed) {
+                           std::vector<PreparedInstance>& placed,
+                           const CarAnimationState* animation) {
     if (placed.size() != base.size()) {
         return false;
     }
@@ -346,13 +349,57 @@ bool drive_place_instances(const std::vector<PreparedInstance>& base,
                         {origin.x, origin.y, origin.z, 1.0}};
     for (std::size_t n = 0; n < base.size(); ++n) {
         placed[n] = base[n];
+        double part[4][4];
+        for (int r = 0; r < 4; ++r) {
+            for (int c = 0; c < 4; ++c) {
+                part[r][c] = base[n].transform[4 * r + c];
+            }
+        }
+        if (animation && (base[n].part_slot == kSlotWheel ||
+                          base[n].part_slot == kSlotBrake)) {
+            const std::size_t wheel = base[n].copy;
+            if (wheel >= kVehicleWheelCount ||
+                !std::isfinite(state.wheels[wheel].compression) ||
+                !std::isfinite(state.steer_angle) ||
+                !std::isfinite(animation->wheel_phase[wheel])) return false;
+            const auto rotate_part = [&](const double turn[4][4]) {
+                double product[4][4]{};
+                for (int r = 0; r < 4; ++r) {
+                    for (int c = 0; c < 4; ++c) {
+                        for (int k = 0; k < 4; ++k) product[r][c] += part[r][k] * turn[k][c];
+                    }
+                }
+                for (int r = 0; r < 4; ++r)
+                    for (int c = 0; c < 4; ++c) part[r][c] = product[r][c];
+            };
+            for (int c = 0; c < 3; ++c) part[3][c] -= base[n].animation_pivot[c];
+            if (base[n].part_slot == kSlotWheel) {
+                const double angle = animation->wheel_phase[wheel];
+                const double co = vehicle_cos(angle), si = vehicle_sin(angle);
+                const double spin[4][4] = {{co, 0, -si, 0}, {0, 1, 0, 0},
+                                           {si, 0, co, 0}, {0, 0, 0, 1}};
+                rotate_part(spin);
+            }
+            if (wheel < 2) {
+                const double co = vehicle_cos(state.steer_angle);
+                const double si = vehicle_sin(state.steer_angle);
+                const double steer[4][4] = {{co, si, 0, 0}, {-si, co, 0, 0},
+                                            {0, 0, 1, 0}, {0, 0, 0, 1}};
+                rotate_part(steer);
+            }
+            for (int c = 0; c < 3; ++c) part[3][c] += base[n].animation_pivot[c];
+            part[3][2] += state.wheels[wheel].compression;
+        }
+        if (animation) {
+            if (base[n].part_slot == kSlotHeadlight) placed[n].lamp_mode = 1;
+            if (base[n].part_slot == kSlotBrakelight)
+                placed[n].lamp_mode = animation->braking ? 3 : 2;
+        }
         for (int r = 0; r < 4; ++r) {
             for (int c = 0; c < 4; ++c) {
                 const double value =
-                    static_cast<double>(base[n].transform[4 * r + 0]) * car[0][c] +
-                    static_cast<double>(base[n].transform[4 * r + 1]) * car[1][c] +
-                    static_cast<double>(base[n].transform[4 * r + 2]) * car[2][c] +
-                    static_cast<double>(base[n].transform[4 * r + 3]) * car[3][c];
+                    part[r][0] * car[0][c] + part[r][1] * car[1][c] +
+                    part[r][2] * car[2][c] + part[r][3] * car[3][c];
                 placed[n].transform[4 * r + c] = static_cast<float>(value);
             }
         }

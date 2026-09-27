@@ -96,6 +96,7 @@ struct MeshHome {
 struct InstanceDraft {
     SceneMeshRef mesh;
     float transform[16] = {};
+    float animation_pivot[3] = {};
     bool placement_exact = true;
     int slot = 0;
     std::size_t lod = 0;
@@ -435,13 +436,13 @@ bool build_stock_scene(
         } else if (entry.placement == StockPlacement::wheel_table) {
             const std::array<std::size_t, kCarWheelCount>& table =
                 kind == SlotClass::wheel ? kWheelPlacements : kBrakePlacements;
-            // The one part of the drawn matrix this stand-in does carry:
-            // the draw turns the wheel model of positions 0 and 3 by half a
-            // turn and reflects their brake model, before the model is
-            // positioned (docs/PART_PLACEMENT.md). The models are authored
-            // for the right-hand side, so without it the two left wheels
-            // show the inboard side of the model, the rim's backing quad,
-            // to a camera on the left (issue #161).
+            // 0x0056F9B2..0x0056FBAC builds a lateral scale and offset
+            // from wheel +0x14 and the stock (RideInfo +0x464 == 0) choice
+            // of +0x1C. The alternative +0x20 and the wheel mesh's
+            // MARKER_BRAKE branch are not selected by this stock profile.
+            // X * H * W * Q and R * B * P are the draw chains (see
+            // docs/PART_PLACEMENT.md). Spin and steering in W/B are added
+            // by drive_place_instances for a moving race car.
             float turn[16];
             if (kind == SlotClass::wheel) {
                 car_wheel_half_turn(turn);
@@ -451,14 +452,28 @@ bool build_stock_scene(
             draft.placement_exact = false;
             for (std::size_t w = 0; w < table.size(); ++w) {
                 draft.copy = w;
+                const CarWheelPlacement& wheel = car_types.records[car_type].wheels[w];
+                const float half_width = wheel.value_14 * 0.5F;
+                const float side = wheel.value_1c > 0.0F ? 1.0F : -1.0F;
+                float centre[3] = {placements[table[w]].position[0],
+                                   wheel.value_1c - side * half_width,
+                                   placements[table[w]].position[2]};
+                std::copy(std::begin(centre), std::end(centre),
+                          std::begin(draft.animation_pivot));
                 float position[16];
-                translation_matrix(placements[table[w]].position, position);
-                if (car_wheel_turned_by_draw(w)) {
-                    multiply_placement_matrix(turn, position, draft.transform);
-                } else {
-                    std::copy(std::begin(position), std::end(position),
-                              std::begin(draft.transform));
+                translation_matrix(centre, position);
+                float model[16];
+                identity_matrix(model);
+                if (kind == SlotClass::wheel) {
+                    model[5] = wheel.value_14 / 0.184F;
+                    model[13] = -half_width;
                 }
+                if (car_wheel_turned_by_draw(w)) {
+                    float reflected[16];
+                    multiply_placement_matrix(model, turn, reflected);
+                    std::copy(std::begin(reflected), std::end(reflected), model);
+                }
+                multiply_placement_matrix(model, position, draft.transform);
                 drafts.push_back(draft);
                 ++entry.instance_count;
             }
@@ -507,6 +522,8 @@ bool build_stock_scene(
             handles.find(std::make_pair(draft.mesh.source, draft.mesh.index))->second;
         std::copy(std::begin(draft.transform), std::end(draft.transform),
                   std::begin(instance.transform));
+        std::copy(std::begin(draft.animation_pivot), std::end(draft.animation_pivot),
+                  std::begin(instance.animation_pivot));
         instance.placement_exact = draft.placement_exact;
         instance.part_slot = static_cast<std::uint32_t>(draft.slot);
         instance.part_lod = static_cast<std::uint32_t>(draft.lod);

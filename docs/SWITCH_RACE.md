@@ -73,21 +73,13 @@ and the resident record indices in ascending little-endian order. Startup
 residency lines precede the binary step digests in the sequence hash.
 
 Stdout/nxlink prints the result, the sequence hash and a SHA-256 over all
-48336 textual step rows. The result screen shows the mode, outcome, both lap
+textual step rows. The result screen shows the mode, outcome, both lap
 times, total, both hashes, last step and `REPLAY EQUAL`, `RUNNING` or
 `DIFFERENT`. `REPLAY EQUAL` appears only after all input has been consumed,
 both hashes match, and the exact finish, lap times and zero-reset result
-match. A mismatch prints `REPLAY DIFFERENT`.
-
-```text
-event 1 track 1003 laps 2 outcome finished steps 48336 resets 0
-lap 1 ticks 1616400 time 6:44.10
-lap 2 ticks 1611200 time 6:42.80
-total ticks 3227600 time 13:26.90
-state-sha256 79776F6DD3FC2727C99D3F6AD69A16E623BDEEB5CFFD2261458A15FC7F5B3BF9
-steps-sha256 E4D4D6E955D59F7FF11C3318BC455D08B7903CA46BBDE8E1FC3F2AC32AEA54E5
-stream loads 78 releases 0 bytes-read 36471524
-```
+match. A mismatch prints `REPLAY DIFFERENT`. `nfsu_race_run_tests` pins the
+recording extent, results and hashes; its retail invocation prints the
+current values.
 
 The SDK-free executable tests the very same console orchestration:
 
@@ -101,11 +93,10 @@ The first command is in CTest and needs no game data. It checks clock debt,
 recording identity and extent, invalid call order, resource/texture rebasing,
 capacity refusal and mismatched cameras. The retail run checks every step
 hash and the result, uploads/retires the combined table through the neutral
-ledger, and validates thirteen selected race views. `--sample-draws` also
-checks one view per second; `--full-draws` checks every tick's draw commands.
-The Release retail check sampled 814 views across both laps, with at most
-1824 combined draws; all contained the car and visible track. No desktop
-trace is described as console execution evidence.
+ledger, and validates selected race views. `--sample-draws` also checks one
+view per second; `--full-draws` checks every tick's draw commands. The retail
+test prints the sampled view and maximum draw counts. No desktop trace is
+described as console execution evidence.
 
 ## Drawing, residency and memory
 
@@ -117,36 +108,31 @@ shared vehicle transform; the chase camera includes the existing track collision
 hook. The car uses the same painted stock scene as the desktop race.
 Track culling uses the same camera basis as GPU projection.
 
-The complete list must fit 2047 draws. Far distance starts at 250 and can
+The complete list must fit the checked draw limit. Far distance starts at 250 and can
 fall back to 125, 62.5 or 31.25; no list is silently truncated. Nxlink samples
-show the selected far distance. The combined table has 5098 resources,
-including 4126 vertex/index allocations. `DrawExecutionPlan` counts those
-buffer slots and the backend uses that count, instead of the former 4096
-placeholder. Bytes remain bounded by the aggregate 256 MiB GPU budget.
+show the selected far distance. `DrawExecutionPlan` counts the combined
+table's buffer allocations and the backend uses that count. The retail
+`nfsu_race_run_tests` invocation validates the current resource and allocation
+counts against the aggregate GPU budget.
 
 Residency advances from the actual car position and velocity each tick.
-The recovered permanent set of this event stays loaded for both laps: 78
-loads at startup, zero releases, 36471524 bytes read in selected ranges.
+The recovered permanent set of this event stays loaded for both laps; the
+retail `nfsu_race_run_tests` invocation prints its loads, releases and bytes read.
 The app verifies that each residency step still names exactly its uploaded
 set. An unsupported request outside that set stops with a diagnostic;
 it never renders stale geometry while pretending a new section was loaded.
 
-| Planned payload | Bytes | Limit |
-| --- | ---: | ---: |
-| CPU track retained, including native texture blocks | 27770710 | 50331648 |
-| Track texture-preparation overlap (#171/#198) | 41867030 | 50331648 |
-| Prepared car, including two instance arrays | 1781098 | persistent below |
-| Collision course | 1433448 | persistent below |
-| Car + collision | 3214546 | 67108864 |
-| Two frame draw uniform slots | 2096640 | 2097152 |
-| Conservative combined GPU bound | 138622566 | 268435456 |
-
-The GPU bound includes bounded image tiling, tight and padded staging, and
-64 MiB for the executor, targets, descriptors and two frame slots. The
-backend checks actual SDK image layouts and every GPU block allocation.
-Staging lives through the upload fence; resources live through their last
-use. The ledger test uploads all 5098 resources and retires them without a
-leaked allocation. Track diagnostic collision/path copies are discarded
+The memory plan includes retained native track texture blocks, texture
+preparation overlap, the prepared car, collision course and two frame uniform
+slots. The retail `nfsu_race_run_tests` invocation prints the current payload
+sizes and GPU bound, and enforces their budgets. The Switch race NRO enforces
+its load and renderer budgets. The GPU budget
+includes bounded image tiling, tight and padded staging, plus room for the
+executor, targets, descriptors and frame slots. The backend checks actual SDK
+image layouts and every GPU block allocation. Staging lives through the upload
+fence; resources live through their last use. The retail ledger test uploads
+and retires the combined table without a leaked allocation. Track diagnostic
+collision/path copies are discarded
 before loading the race course; parser and raw car inputs die after scene
 preparation. The CPU native block copies follow #171's allowed retention
 rule and remain until the scene closes.
@@ -163,21 +149,21 @@ is created, not just before its first frame.
 deko3d allocates its GPU blocks from the same newlib heap. Therefore
 MALLOC IN-USE NOW includes GPU BLOCKS. Do not add the two readings. The
 `--panel` screen and nxlink `PERF` samples report these heap observations.
-The renderer and GPU blocks are created after the after-load
-sample. In live photo 4401, 155528752 - 58887808 = 96640944 bytes of growth;
-86659072 of that is GPU blocks, leaving 9981872 bytes for other allocations
-such as readback, command tables and race state. The finish photo 4470 has
-155614608 in-use, only 85856 bytes more than that live sample, but two
-samples in different modes do not prove absence of a leak.
+The renderer and GPU blocks are created after the after-load sample. At
+`e65960b`, the owner's [live photo 4401](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/199#issuecomment-4401)
+showed 155528752 - 58887808 = 96640944 bytes of growth; 86659072 was GPU
+blocks, leaving 9981872 for other allocations such as readback, command
+tables and race state. At the same head, [finish photo 4470](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/199#issuecomment-4470)
+showed 155614608 in-use, 85856 more than the live sample. Two samples in
+different modes do not prove absence of a leak.
 
 HEAP LOAD/RUN OBS HWM are the largest sampled in-use values, lower bounds
 on the true live peak. ARENA NOW/OBS HWM measure allocator extent, not live
 bytes. LOAD HEAP OVER compares the sampled load delta with 48 MiB. The
-race load delta also includes car/course preparation. Before #204, the
-track loader's exact desktop allocation peak was 63602625 bytes (review
-4467), 13270977 over. #204 merged as PR #207 at `3158b37`; its new exact
-desktop peak is 47528256 bytes, 2803392 below 48 MiB. The race's broader
-load observation still needs its own console measurement.
+race load delta also includes car/course preparation. #204 merged as PR #207
+at `3158b37`; `nfsu_track_loader_peak_tests` measures the exact desktop
+allocation peak and enforces the load ceiling. The race's broader load observation
+still needs its own console measurement.
 
 ## Performance and owner evidence
 
@@ -210,32 +196,30 @@ and panel costs. They must not be compared as direct-present frame timings.
 All stage measurements are CPU timings, not GPU execution times. The samples
 are single frames, not averages; their own nxlink printing follows the frame
 measurement. A blocked nxlink stdout connection leaves those lines unavailable
-to the coordinator; the result screen is the driving-segment timing evidence. Both
-modes report the bounded command-cache estimate. The result screen also shows
+to the coordinator; the result screen is driving-segment timing evidence.
+Both modes report the bounded command-cache estimate. The result screen also shows
 the last sampled frame summary after rendering stops.
 
 [PR #206 comment 4593](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/206#issuecomment-4593)
-measured its cached race NRO at 65.57-70.20 ms per frame, 21.76-23.65 ms
-for cull/record, about 20 ms for readback plus the CPU panel, and about
-11.6 ms for synchronous draw submission and wait. This branch includes that
-cache through main. The fixed SHA-tagged NRO needs a coordinator console run
-in both modes to establish its frame time and visual correctness.
+records the pre-direct cache run. This branch includes that cache through main;
+its NRO still needs a coordinator console run in both modes to establish frame
+time and visual correctness.
 
 On 2026-09-27 the owner ran the coordinator's NRO built from `e65960b`.
 Its SHA-256 is `45d21ebf744acd2a7dc52926f55ee0658822f6ce1668a7a67035bb56d33f51b3`.
 It showed BUILD LOCAL; the staging record ties those photos to the head.
 The label propagation above fixes that for subsequent builds.
 
-- [PR #199 comment 4401](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/199#issuecomment-4401)
-  records live pad driving with the painted car and track visible and the
+- At `e65960b`, [PR #199 comment 4401](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/199#issuecomment-4401)
+  records the owner's live pad drive with the painted car and track visible and the
   lap timer running. At step 4002: full frame 97.20 ms, SIM 8.46 ms for six
   catch-up ticks, RES/HASH 0.82, CULL/RECORD 52.14, UPLOAD 4.48, DRAW 11.19,
   TRANSFER/COPY 8.04 (GPU 1.11), previous HUD/PRESENT 11.73. Debt was zero;
   draws were 1364 track + 94 car; GPU blocks 86659072 bytes. This is about
   10 FPS, well over the 16.67 ms budget. #55 addresses this measured cost.
-- [PR #199 comment 4470](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/199#issuecomment-4470)
+- At `e65960b`, [PR #199 comment 4470](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/199#issuecomment-4470)
   records the owner's completed two-lap replay: EQUAL, step 48336, total
-  13:26.90 and both hashes exactly matching the desktop pins above. The
+  13:26.90 and both hashes matching `nfsu_race_run_tests`. The
   panel directly shows the final lap 6:42.80; lap 1 6:44.10 is implied by
   the total and the app's EQUAL check, not separately read from the photo.
   Its 31.93 ms frame is after finish, when simulation and culling stopped;

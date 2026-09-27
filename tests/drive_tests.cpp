@@ -1380,6 +1380,55 @@ int write_new(const fs::path& path, const std::string& text) {
     return 0;
 }
 
+void test_car_animation() {
+    const nfsu::VehicleSpec spec = nfsu::stock_240sx_vehicle_spec();
+    nfsu::VehicleState state;
+    state.position = {spec.handling.centre_of_mass[0],
+                      spec.handling.centre_of_mass[1],
+                      spec.handling.centre_of_mass[2]};
+    state.steer_angle = 0.25;
+    std::vector<nfsu::PreparedInstance> base(10), placed(10);
+    for (std::size_t w = 0; w < 4; ++w) {
+        const double lateral = w == 0 || w == 3 ? 0.8 : -0.8;
+        for (std::size_t i : {w, w + 4}) {
+            base[i].part_slot = i < 4 ? 17 : 16;
+            base[i].copy = static_cast<std::uint32_t>(w);
+            base[i].transform[12] = 1.0F;
+            base[i].transform[13] = static_cast<float>(lateral);
+            base[i].transform[14] = 0.1F;
+            base[i].animation_pivot[0] = 1.0F;
+            base[i].animation_pivot[1] = static_cast<float>(lateral);
+            base[i].animation_pivot[2] = 0.1F;
+        }
+        state.wheels[w].compression = 0.05 * (w + 1);
+    }
+    base[8].part_slot = 13;
+    base[9].part_slot = 14;
+    nfsu::CarAnimationState visual;
+    visual.wheel_phase[0] = kTestPi * 0.5;
+    visual.braking = true;
+    check(nfsu::drive_place_instances(base, state, spec, placed, &visual),
+          "animated car placement");
+    check(near(placed[0].transform[2], -1.0, 1e-6) &&
+              near(placed[0].transform[14], 0.15, 1e-6),
+          "front wheel spins about its axle and rises with suspension");
+    check(near(placed[1].transform[1], nfsu::vehicle_sin(0.25), 1e-6) &&
+              near(placed[4].transform[1], nfsu::vehicle_sin(0.25), 1e-6) &&
+              near(placed[6].transform[1], 0.0, 1e-6),
+          "front wheel and brake steer; rear brake does not");
+    check(near(placed[4].transform[14], 0.15, 1e-6) &&
+              placed[8].lamp_mode == 1 && placed[9].lamp_mode == 3,
+          "brake follows suspension and braking lights the rear lamp");
+    visual.braking = false;
+    check(nfsu::drive_place_instances(base, state, spec, placed, &visual) &&
+              placed[8].lamp_mode == 1 && placed[9].lamp_mode == 2,
+          "headlights stay on and tail lamps dim without braking");
+    check(base[8].lamp_mode == 0 && base[9].lamp_mode == 0 &&
+              visual.wheel_phase[0] == kTestPi * 0.5 &&
+              state.wheels[0].compression == 0.05,
+          "animation leaves prepared source and vehicle state untouched");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1412,6 +1461,7 @@ int main(int argc, char** argv) {
     test_camera_follow();
     test_camera_collision();
     test_render_camera();
+    test_car_animation();
     test_session();
     if (g_failures != 0) {
         std::cerr << g_failures << " test failure(s)\n";

@@ -202,19 +202,24 @@ it does not claim to have driven this race on a Switch.
 Hashes cover complete TGA files, 921618 bytes each, including the lap HUD.
 The step is the completed 1-based controller tick.
 
-| Step | TGA SHA-256 |
-| --- | --- |
-| 180 | `5D73DFD7BCC18B8083D3AB665598536FF2E0EB03D1E88113FD1B6279464B7778` |
-| 600 | `AC75E21E5D22A1178A44D97371B724174D876023D4F8FA545122C2E227FB91AE` |
-| 6000 | `54DA8171ECBF48CAE088915353DD2B252085AD84A028CDA7959747D57F82A90F` |
-| 11344 | `74F748B23DC2E5043F7D425EE7E34C2D7BF6EDA91DBA28D881A706DF6FCF817E` |
-| 12459 | `40D98F3157FA3DC204A2D58C0E5B6127FE0DA568392790DDF872215B82C7B5D0` |
-| 13128 | `C164D894FCFFF34C491D6DC2B9FA8E9AB136682BA5C16DA7D0FC79EBAB0AC492` |
-| 24300 | `778CD48EE6A442D63DA98225B5F380B3C96515952E8940B0EB517F3818927F35` |
-| 35396 | `6AED610D9CD2DC552A617D860D914BE3D135932D7FD1EE45918A0B4B12CEF903` |
-| 36510 | `E1E822E4A1543E6B04F037D8116DE28E861EE80BE3095E32D4ED8E5CEFFD8672` |
-| 37177 | `DB8931A3B26F9C0B580AF8D0B47F37411D4CEBB0D14D8D00CF5D9147307FF852` |
-| 48336 | `41CB803526F6300E6566F746A9513AA8C7C9E2B9B7154EDBD9F0953694CE3C01` |
+Issue #201 re-pinned every frame after correcting the stock wheel lateral
+matrices and adding visual wheel phase, steer, suspension and lamp treatment.
+The reason for each changed frame is given below. Steps 13128 and 24300
+also hold the brake control, so their rear lamps use the brighter mode.
+
+| Step | TGA SHA-256 | Reason for changed car pixels |
+| --- | --- | --- |
+| 180 | `AB0F7B34E95886A55156394831726C32F3CC8C40C2FCA966EF1DC3FEA40F2278` | Launch wheel phase and stock lateral position; running lamps |
+| 600 | `82F0983C5500670E71F36230CD7208D27E5A7FE9E1809FDDB963E216D853A9C7` | Rolling phase, steer and suspension; running lamps |
+| 6000 | `A06F69BBA564E6B90A44931E0BDC652A6993E42396C78679425B129BB88EB8FE` | Rolling phase, steer and suspension; running lamps |
+| 11344 | `DFE1ABA17EF51CFB8FD1BE9B58EE54ACFD1BB02F2861108E088398580128C9AA` | Corner wheel angle and travel; running lamps |
+| 12459 | `1A04C04F92F9F610A1A03C29430AF206110CFFFAD238F4AE652A2A57AED3778D` | Median wheel angle and travel; running lamps |
+| 13128 | `0490D2E0655294146B74F2373FABF0F1E7FA4B1D540685BBAC2766A79D705264` | Wheel motion and brake lamp intensity |
+| 24300 | `4DEED8178E5A93671354AEA63912E394EAFBA654AF3A9D8C3E5902A03AED02AD` | Second-lap wheel motion and brake lamp intensity |
+| 35396 | `79E26EF45DA23DEE0ECF1DDD0EAE644FAB676CF5BDC99CFFA1896A8B9ACBCE56` | Corner wheel angle and travel; running lamps |
+| 36510 | `977E2DB7DA338525F9D29633F070341B6D22290DCB8E14D182C11239A4B2A4CA` | Median wheel angle and travel; running lamps |
+| 37177 | `618AAB0569A96B96A50EA287706CF116846C0E2705D62FC8C54013F2D05342E7` | Wheel motion near the former barrier; running lamps |
+| 48336 | `488721DC9D0D70239AA8A058709F1A4CECDA62067868939D0E5106E51E8D327C` | Final wheel pose and running lamps |
 
 Inspected the corner (11344, 35396), tree median (12459, 36510) and former
 rollover barrier (13128, 37177) on both laps: the car follows the paved lane,
@@ -256,7 +261,8 @@ continuous trajectory checks, and
 optionally regenerates the recording independently in each build:
 
 ```text
-python tools/race_replay_check.py --exe build-debug/nfsu_race.exe --exe build-release/nfsu_race.exe --root X:/Games/NFSU --out build-race-check --check-driver
+python tools/race_replay_check.py --exe build/nfsu_race.exe --root X:/Games/NFSU --out build-debug-check --check-driver
+python tools/race_replay_check.py --exe build-release/nfsu_race.exe --root X:/Games/NFSU --out build-release-check --check-driver
 ```
 
 Python uses only the standard library. It resolves its recording relative

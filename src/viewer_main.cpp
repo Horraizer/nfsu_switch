@@ -1747,13 +1747,12 @@ int main(int argc, char** argv) {
                   << " with_model " << stock_report.with_model << " drawn "
                   << stock_report.drawn << " by_fallback " << stock_report.fell_back
                   << " markers " << stock_report.markers.size() << '\n';
-        // The one place the opt-in stand-in is named as such. Without it
-        // the wheel and brake slots report placement unreproduced above and
-        // put nothing in the frame at all.
+        // The stock lateral branch is approximate and a static frame has
+        // no spin, steering or suspension travel.
         std::cout << "stock wheels: "
                   << (stock.place_wheels
-                          ? "drawn at the culling placements, which are a stand-in "
-                            "and not the matrix the game draws them with"
+                          ? "drawn with stock lateral scale and offset; "
+                            "dynamic angles absent, alternate branches approximate"
                           : "not drawn; the drawn wheel and brake matrices are not "
                             "reproduced")
                   << '\n';
