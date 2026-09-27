@@ -119,9 +119,9 @@ void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pa
     require(scene.load(posix_file_system(), root, error, &progress, &progress), error);
     screen.show({"ASSETS PASS. Preparing event 1, stock 240SX and race course..."});
     progress.checkpoint("race course");
-    RaceRun race; require(race.start(root,scene.track,error),error);
+    RaceRun race; require(race.start(root,scene.track(),error),error);
     progress.checkpoint("race course prepared");
-    const auto persistent = scene.car_bytes()+race.persistent_bytes()+scene.track.contacts.memory.resident_bytes;
+    const auto persistent = scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes();
     require(persistent <= kPersistentBudgetPlaceholder, "race persistent payload exceeds 64 MiB");
     RaceGpuFrame frame; require(scene.frame(race.session(),frame,error),error);
     const double load_ms = ms(armGetSystemTick()-load_start);
@@ -197,7 +197,9 @@ void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pa
         lines.push_back(format("DRAWS %zu track + %zu car | TRIANGLES %llu | far %.2f | visible %zu | unplaced %llu",
             frame.track_draws,frame.car_draws,(unsigned long long)frame.triangles,frame.far_plane,frame.visible,(unsigned long long)frame.unplaced));
         lines.push_back(format("RESIDENCY %zu sections | CPU stream %llu / 50331648 | persistent payload %llu / 67108864",
-            race.resident_count(),(unsigned long long)scene.track.streaming_bytes,(unsigned long long)persistent));
+            race.resident_count(),(unsigned long long)scene.track().streaming_bytes,(unsigned long long)persistent));
+        lines.push_back(format("Command cache metadata EST %llu / 8388608 bytes (immutable track templates)",
+            (unsigned long long)scene.cache_bytes()));
         lines.push_back(format("GPU blocks %llu / 268435456 | uniforms 1048320 / 1048576 | resources %zu",
             (unsigned long long)renderer.gpu_bytes(),frame.commands.uploads.resources.size()));
         lines.push_back(format("MALLOC IN-USE before %llu | after load %llu | NOW %llu (includes GPU BLOCKS)",

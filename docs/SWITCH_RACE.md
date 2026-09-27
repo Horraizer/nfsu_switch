@@ -206,3 +206,12 @@ live lap has not been photographed. Preserve that distinction when adding
 new evidence to #159. The new loader/heap panel still needs its own console
 photo. The next performance work is #55, then the loader peak reduction
 #204; no pull request is merged by the worker.
+
+## Performance follow-up (#55)
+
+The race recorder now caches immutable track command templates. The
+original path remains available to differential tests; visibility and draw
+order are unchanged. The panel reports bounded command-cache metadata in
+persistent accounting. See [SWITCH_PERFORMANCE.md](SWITCH_PERFORMANCE.md)
+for the retained baseline, regression thresholds and remaining console
+measurements. Prior console photos above still describe e65960b.
