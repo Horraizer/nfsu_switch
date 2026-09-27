@@ -3,9 +3,8 @@
 `nfsu_switch_race.nro` runs the stock 240SX through event 1's forward
 track-1003 circuit for two laps. It uses `RaceSession` from #192, the #59
 controls and chase camera, #157 residency, and #198's deko3d track path with
-#171 native DXT. This branch started at PR #198 head `1429830fd566`, while
-that PR was in review. It now includes main at `17e91ad`, including #198
-round 2 loader polling and the shared `HeapUsage` observation helper.
+#171 native DXT. The merged loader includes #198's parsing checkpoints and
+the shared `HeapUsage` observation helper.
 
 ## Install and use
 
