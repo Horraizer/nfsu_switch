@@ -249,6 +249,24 @@ void test_ast_22050() {
     check(streamer.error().empty(), "22.05 kHz decoder error");
 }
 
+void test_decoder_thread_setup_failure() {
+    const auto bytes = pcm_ast();
+    auto scan = input_of(bytes);
+    const auto segments = audio::scan_ast(*scan);
+    audio::AstStreamer streamer(16);
+    std::string error;
+    check(streamer.start(input_of(bytes), segments[0], error,
+          [] { return false; }), "start decoder with rejected thread setup");
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(2);
+    while (!streamer.finished() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    check(streamer.finished(), "decoder thread setup returns promptly");
+    streamer.stop();
+    check(streamer.error() == "audio decoder core setup failed",
+          "decoder thread setup failure is reported");
+}
+
 } // namespace
 
 int main() {
@@ -258,6 +276,7 @@ int main() {
         test_ring();
         test_ast_streamer();
         test_ast_22050();
+        test_decoder_thread_setup_failure();
         std::cout << "audio playback synthetic tests passed\n";
         return 0;
     } catch (const std::exception& e) {

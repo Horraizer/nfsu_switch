@@ -43,7 +43,8 @@ public:
     RaceAudioService(const RaceAudioService&) = delete;
     RaceAudioService& operator=(const RaceAudioService&) = delete;
     bool start(const std::filesystem::path& retail_root, std::string& diagnostic,
-               const std::function<void(const char*)>& progress = {});
+               const std::function<void(const char*)>& progress = {},
+               const std::function<bool()>& decoder_thread_setup = {});
     void on_tick(const RaceAudioSnapshot& snapshot);
     void set_suspended(bool suspended) noexcept;
     void stop();

@@ -161,7 +161,8 @@ RaceAudioService::~RaceAudioService() { stop(); }
 
 bool RaceAudioService::start(const std::filesystem::path& root,
                              std::string& diagnostic,
-                             const std::function<void(const char*)>& progress) {
+                             const std::function<void(const char*)>& progress,
+                             const std::function<bool()>& decoder_thread_setup) {
     auto& p = *impl_;
     if (p.active) { diagnostic = "audio already running"; return false; }
     std::ostringstream notes;
@@ -197,7 +198,8 @@ bool RaceAudioService::start(const std::filesystem::path& root,
         });
         if (segments.size() < 2) throw std::runtime_error("music segment 1 absent");
         std::string error;
-        p.has_music = p.stream.start(std::move(input), segments[1], error);
+        p.has_music = p.stream.start(std::move(input), segments[1], error,
+                                      decoder_thread_setup);
         if (!p.has_music) throw std::runtime_error(error);
     } catch (const std::exception& e) { notes << "music: " << e.what() << "; "; }
     for (unsigned attempt = 0; p.has_music && attempt < 100 &&

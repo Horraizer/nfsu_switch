@@ -3,9 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <stdexcept>
-#ifdef __SWITCH__
-#include <switch.h>
-#endif
 
 namespace nfsu::audio {
 namespace {
@@ -221,7 +218,8 @@ AstStreamer::AstStreamer(std::size_t capacity_frames) : ring_(capacity_frames) {
 AstStreamer::~AstStreamer() { stop(); }
 
 bool AstStreamer::start(std::unique_ptr<std::istream> input,
-                        const Segment& segment, std::string& error) {
+                        const Segment& segment, std::string& error,
+                        const std::function<bool()>& thread_setup) {
     if (worker_.joinable() || !input || !*input || !segment.frames ||
         segment.rate < 8000 || segment.rate > 192000 ||
         (segment.channels != 1 && segment.channels != 2)) {
@@ -230,21 +228,11 @@ bool AstStreamer::start(std::unique_ptr<std::istream> input,
     }
     stopping_ = false;
     finished_ = false;
-    int audio_core = -1;
-#ifdef __SWITCH__
-    audio_core = svcGetCurrentProcessorNumber() == 2 ? 1 : 2;
-#endif
     worker_ = std::thread([this, input = std::move(input), segment,
-                           audio_core]() mutable {
+                           thread_setup]() mutable {
         try {
-#ifdef __SWITCH__
-            if (R_FAILED(svcSetThreadCoreMask(threadGetCurHandle(), audio_core,
-                                              1U << audio_core)) ||
-                R_FAILED(svcSetThreadPriority(threadGetCurHandle(), 0x30)))
+            if (thread_setup && !thread_setup())
                 throw std::runtime_error("audio decoder core setup failed");
-#else
-            (void)audio_core;
-#endif
             std::array<std::int16_t, 512 * 2> converted{};
             std::size_t used = 0;
             std::uint64_t source_index = 0, output_index = 0;

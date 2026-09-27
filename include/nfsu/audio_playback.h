@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <istream>
 #include <memory>
 #include <mutex>
@@ -93,7 +94,8 @@ public:
     AstStreamer(const AstStreamer&) = delete;
     AstStreamer& operator=(const AstStreamer&) = delete;
     bool start(std::unique_ptr<std::istream> input, const Segment& segment,
-               std::string& error);
+               std::string& error,
+               const std::function<bool()>& thread_setup = {});
     void stop();
     std::size_t pop(std::int16_t* stereo, std::size_t frames) {
         return ring_.pop(stereo, frames);

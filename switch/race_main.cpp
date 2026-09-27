@@ -125,10 +125,16 @@ void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pa
     audio::RaceAudioService sound;
     std::string audio_note;
     const auto render_core = svcGetCurrentProcessorNumber();
+    const auto audio_core = render_core == 2 ? 1 : 2;
     if (R_SUCCEEDED(svcSetThreadCoreMask(threadGetCurHandle(),
             static_cast<s32>(render_core), 1U << render_core)))
         sound.start(std::filesystem::path(root), audio_note,
-            [&](const char* phase) { progress.checkpoint(phase); });
+            [&](const char* phase) { progress.checkpoint(phase); },
+            [audio_core] {
+                return R_SUCCEEDED(svcSetThreadCoreMask(threadGetCurHandle(),
+                           audio_core, 1U << audio_core)) &&
+                       R_SUCCEEDED(svcSetThreadPriority(threadGetCurHandle(), 0x30));
+            });
     else audio_note = "audio disabled: render core pin failed";
     std::printf("AUDIO: %s\n", audio_note.c_str());
     const auto persistent = scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes()+sound.resident_bytes();
