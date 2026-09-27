@@ -312,6 +312,16 @@ bool build_track_scene(
     PreparedTrackScene& scene,
     std::string& error);
 
+// Consumes geometry/texture payloads, including on failure. Object reports
+// stay available for culling and collision. The output is cleared on failure.
+bool build_track_scene(
+    TrackRegionReport&& geometry,
+    const TrackObjectReport& objects,
+    RenderTextureSet&& textures,
+    const TrackSceneOptions& options,
+    PreparedTrackScene& scene,
+    std::string& error);
+
 // Checks every structural invariant a backend relies on: the prepared
 // region itself, ascending unique sections and instances, mesh handles
 // inside the region, finite transforms, the handle table against the

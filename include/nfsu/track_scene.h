@@ -145,6 +145,15 @@ bool prepare_track_region(
     PreparedTrackRegion& region,
     std::string& error);
 
+// Consuming form: transfers mesh and texture payloads without a second copy.
+// Inputs may be partially consumed on failure; the output is still cleared.
+bool prepare_track_region(
+    TrackRegionReport&& report,
+    RenderTextureSet&& textures,
+    const TrackSceneLimits& limits,
+    PreparedTrackRegion& region,
+    std::string& error);
+
 // Checks every structural invariant a backend relies on: ascending unique
 // meshes, one ordered draw per material record, index ranges inside the
 // mesh index stream, every triangle index inside the mesh vertex count,

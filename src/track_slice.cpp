@@ -5,6 +5,8 @@
 #include <cmath>
 #include <utility>
 
+#include <fstream>
+
 namespace nfsu {
 
 bool load_track_slice(FileSystemService& files, const std::filesystem::path& root,
@@ -51,6 +53,7 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         streams.pack = path("Tracks/STREAML1RA_1003.BUN");
         TrackStreamLoadLimits limits;
         limits.max_total_bytes = kPersistentBudgetPlaceholder;
+        limits.release_non_texture_bytes = true;
         limits.poll = [&] { checkpoint("stream sections"); };
         TrackStreamLoad load;
         if (!load_track_stream_sections(table, selected, streams, limits, load, error) || !load.ok()) {
@@ -72,22 +75,55 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         std::vector<RenderTextureSource> sources;
         std::vector<std::size_t> owners;
         track_stream_texture_sources(load, &wanted, sources, owners);
-        std::vector<std::vector<unsigned char>> external_bytes(3);
-        std::vector<TexturePackSet> external_packs(3);
-        const char* names[] = {"Tracks/TEX1003TRACK.BIN", "Global/INGAMEB.BUN", "Global/GLOBALB.BUN"};
-        for (std::size_t i = 0; i < 3; ++i) {
-            checkpoint(names[i]);
-            external_packs[i] = load_texture_pack_set(path(names[i]), external_bytes[i]);
-            if (!external_packs[i].complete) { error = std::string("incomplete texture source: ") + names[i]; return false; }
-            RenderTextureSource source;
-            source.bytes = &external_bytes[i]; source.wanted = &wanted;
-            for (const auto& pack : external_packs[i].packs) source.packs.push_back(&pack);
-            sources.push_back(std::move(source));
+        // The first pass parsed geometry, scenery and source validity. Drop
+        // its raw texture ranges; re-read just one selected source at a time.
+        // Source order and hash claims remain the decoder's responsibility.
+        for (auto& source : sources) { source.packs.clear(); source.bytes = nullptr; }
+        for (auto& section : load.sections) {
+            section.packs = {};
+            std::vector<unsigned char>().swap(section.bytes);
         }
+        const char* names[] = {"Tracks/TEX1003TRACK.BIN", "Global/INGAMEB.BUN", "Global/GLOBALB.BUN"};
+        sources.resize(sources.size() + 3);
+        std::vector<unsigned char> source_bytes;
+        TexturePackSet source_packs;
         RenderTextureLimits texture_limits;
         texture_limits.gpu_blocks = true;
         texture_limits.max_total_bytes = kStreamingRegionBudgetPlaceholder;
         texture_limits.before_allocate = [&](std::uint64_t) { checkpoint("texture decoding"); };
+        texture_limits.load_source = [&](std::size_t source, RenderTextureSource& descriptor,
+                                         std::string& problem) {
+            checkpoint("texture source read");
+            if (source < owners.size()) {
+                const auto& section = load.sections[owners[source]];
+                std::ifstream input(section.file_index == kTrackStreamFileStream ?
+                                    streams.stream : streams.pack, std::ios::binary);
+                source_bytes.resize(static_cast<std::size_t>(section.size));
+                input.seekg(static_cast<std::streamoff>(section.offset));
+                if (!input.read(reinterpret_cast<char*>(source_bytes.data()),
+                                static_cast<std::streamsize>(source_bytes.size()))) {
+                    problem = "cannot re-read selected track texture range"; return false;
+                }
+                checkpoint("texture source parse");
+                source_packs = parse_texture_pack_set(source_bytes.data(), source_bytes.size());
+            } else {
+                const char* name = names[source - owners.size()];
+                checkpoint(name);
+                source_packs = load_texture_pack_set(path(name), source_bytes);
+            }
+            if (!source_packs.complete) { problem = "incomplete track texture source"; return false; }
+            descriptor.bytes = &source_bytes; descriptor.wanted = &wanted;
+            descriptor.complete = source_packs.complete;
+            descriptor.packs.clear();
+            for (const auto& pack : source_packs.packs) descriptor.packs.push_back(&pack);
+            checkpoint("texture source ready");
+            return true;
+        };
+        texture_limits.after_source = [&](std::size_t) {
+            source_packs = {};
+            std::vector<unsigned char>().swap(source_bytes);
+            checkpoint("texture source released");
+        };
         RenderTextureSet textures;
         if (!decode_render_texture_sources(sources, texture_limits, textures, error)) return false;
         checkpoint("textures decoded");
@@ -95,12 +131,10 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         // consults the pack parser or its borrowed source bytes again.
         sources.clear();
         std::vector<TrackStreamSection>().swap(load.sections);
-        std::vector<TexturePackSet>().swap(external_packs);
-        std::vector<std::vector<unsigned char>>().swap(external_bytes);
         TrackSceneOptions options;
         options.region.max_texture_bytes = kStreamingRegionBudgetPlaceholder;
         checkpoint("scene preparation");
-        if (!build_track_scene(load.geometry, load.objects, textures, options, result.scene, error)) return false;
+        if (!build_track_scene(std::move(load.geometry), load.objects, std::move(textures), options, result.scene, error)) return false;
         checkpoint("scene prepared");
         result.texture_bytes = result.scene.region.cost.texture_bytes;
         result.streaming_bytes = result.scene.region.cost.vertex_buffer_bytes +
