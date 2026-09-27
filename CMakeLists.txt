@@ -1472,7 +1472,7 @@ endif()
 list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_run)
 if(NFSU_BUILD_TESTS)
     add_executable(nfsu_race_run_tests tests/race_run_tests.cpp)
-    target_link_libraries(nfsu_race_run_tests PRIVATE nfsu_race_run nfsu_posix_file_system)
+    target_link_libraries(nfsu_race_run_tests PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_platform_desktop)
     nfsu_enable_warnings(nfsu_race_run_tests)
     if(MINGW)
         # The test counts operator new/delete pairs. Windows DLL calls do

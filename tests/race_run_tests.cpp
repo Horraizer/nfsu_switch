@@ -1,6 +1,7 @@
 #include "nfsu/race_gpu_scene.h"
 #include "nfsu/posix_file_system.h"
 #include "nfsu/draw_execution.h"
+#include "nfsu/platform_desktop.h"
 #include <fstream>
 #include <iostream>
 #include <algorithm>
@@ -177,11 +178,11 @@ int main(int argc, char** argv) {
         require(!buffers.stats().used_bytes && !images.stats().used_bytes && !staging.stats().used_bytes,
                 "combined upload ledger leaked allocations");
         if (argc > 3 && (std::string(argv[3]) == "--profile" || std::string(argv[3]) == "--profile-reference")) {
-            RaceFrameProfile total;
+            RaceFrameProfile total; DesktopTiming timer;
             std::size_t retained = 0;
             for (unsigned i = 0; i < 121; ++i) {
                 RaceFrameProfile sample;
-                require(scene.frame(race.session(),frame,error,&sample,std::string(argv[3]) == "--profile-reference"),error);
+                require(scene.frame(race.session(),frame,error,&sample,std::string(argv[3]) == "--profile-reference",&timer),error);
                 const auto observed = live_bytes;
                 if (!i) retained = observed;
                 else require(observed == retained,"fixed-pose frames retain growing C++ allocations");

@@ -1,6 +1,7 @@
 #pragma once
 #include "nfsu/race_run.h"
 #include "nfsu/stock_frame.h"
+#include "nfsu/platform.h"
 
 namespace nfsu {
 // One combined command stream: track then car, one camera and one depth
@@ -26,7 +27,8 @@ public:
               std::string& error, AssetCheckObserver* observer = nullptr,
               TrackSliceLoadObserver* loading = nullptr);
     bool frame(const RaceSession& session, RaceGpuFrame& out, std::string& error,
-               RaceFrameProfile* profile = nullptr, bool reference = false);
+               RaceFrameProfile* profile = nullptr, bool reference = false,
+               TimingService* timer = nullptr);
     std::uint64_t car_bytes() const { return car_bytes_; }
     // Conservative metadata/capacity estimate; payloads are borrowed once.
     std::uint64_t cache_bytes() const;

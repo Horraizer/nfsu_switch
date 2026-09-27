@@ -86,6 +86,8 @@ build-release/nfsu_race_run_tests tests/recordings/event1.txt X:/Games/NFSU --sa
 Bracket every retail invocation with the full 476-file SHA-256, size and
 mtime manifest. Inputs remain read-only; no derived game asset enters Git.
 The optional profile modes perform one warmup and 120 measured frames.
+Their clock is supplied through TimingService by the desktop test; the
+neutral race library reads no machine clock itself.
 The test counts live requested C++ allocation bytes, including aligned
 new/delete; it does not measure C malloc, newlib overhead or GPU blocks.
 MinGW links this test's libstdc++ statically so Windows DLL allocation calls

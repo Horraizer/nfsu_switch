@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cstring>
 #include <cmath>
-#include <chrono>
 
 namespace nfsu {
 bool combine_race_commands(RecordedCommands track, const RecordedCommands& car,
@@ -134,15 +133,16 @@ bool RaceGpuScene::record_cached_track(const TrackDrawList& list, const Recorded
     }
     return true;
 }
-bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::string& error, RaceFrameProfile* profile, bool reference) {
+bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::string& error, RaceFrameProfile* profile, bool reference, TimingService* timer) {
     out = {}; error.clear();
     if (!ready_) { error = "race scene is not loaded"; return false; }
     if (profile) *profile = {};
-    auto start = profile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    if (profile && !timer) { error = "race profiling requires a timing service"; return false; }
+    auto start = profile ? timer->now_us() : 0;
     auto stage = [&](double RaceFrameProfile::* field) {
         if (!profile) return;
-        const auto end = std::chrono::steady_clock::now();
-        profile->*field += std::chrono::duration<double, std::milli>(end-start).count();
+        const auto end = timer->now_us();
+        profile->*field += (end-start)/1000.0;
         start = end;
     };
     if (!drive_place_instances(base_, session.car(), session.spec(), car_.instances)) {
