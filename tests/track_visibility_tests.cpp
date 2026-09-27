@@ -1813,6 +1813,49 @@ void test_determinism() {
           "box class names are stable");
 }
 
+void test_prepared_culler() {
+    auto objects = parse_row_region();
+    nfsu::PreparedTrackCull prepared;
+    std::string error;
+    const auto frustum = frustum_or_fail(axis_camera(450.0F), "prepared");
+    check(!prepared.cull(frustum,error), "unprepared culler refuses");
+    check(prepared.prepare(objects,error), "sound tree prepares: " + error);
+    check(!prepared.prepare(objects,error), "prepared owner cannot be rebound");
+    for (float distance : {1000.0F,450.0F,200.0F,80.0F,450.0F}) {
+        const auto f = frustum_or_fail(axis_camera(distance), "prepared sequence");
+        const auto reference = cull_track_region(objects,f);
+        check(prepared.cull(f,error), "prepared sequence culls");
+        const auto& actual = prepared.result();
+        check(visible_indices(actual) == visible_indices(reference), "prepared traversal preserves order");
+        check(actual.stats.node_tests == reference.stats.node_tests &&
+              actual.stats.instance_tests == reference.stats.instance_tests &&
+              actual.stats.instances_pruned == reference.stats.instances_pruned,
+              "prepared traversal preserves tests/pruning");
+        for (std::size_t i = 0; i < actual.visible.size() && i < reference.visible.size(); ++i) {
+            const auto& a = actual.visible[i]; const auto& b = reference.visible[i];
+            check(a.section_index == b.section_index && a.node_index == b.node_index &&
+                  a.node_class == b.node_class && a.instance_class == b.instance_class &&
+                  a.screen_level == b.screen_level, "prepared visible classification matches");
+        }
+    }
+    auto broken = parse_row_region();
+    broken.sections[0].nodes[0].bounds_min[0] = broken.sections[0].nodes[0].bounds_max[0];
+    nfsu::PreparedTrackCull bad_containment;
+    check(!bad_containment.prepare(broken,error), "containment failure becomes load error");
+    check(!bad_containment.cull(frustum,error), "failed preparation publishes no cache");
+    broken = parse_row_region();
+    broken.sections[0].nodes[0].entries[0] = -32767;
+    nfsu::PreparedTrackCull bad_topology;
+    check(!bad_topology.prepare(broken,error), "invalid tree link becomes load error");
+    broken = parse_row_region();
+    broken.sections[0].nodes[1].entries[1] = broken.sections[0].nodes[1].entries[0];
+    nfsu::PreparedTrackCull duplicate;
+    check(!duplicate.prepare(broken,error), "duplicate tree instance becomes load error");
+    nfsu::PreparedTrackCull bounded;
+    nfsu::TrackCullLimits limits; limits.max_pending_nodes = 1;
+    check(!bounded.prepare(objects,error,limits), "insufficient traversal capacity refused at load");
+}
+
 } // namespace
 
 int main() {
@@ -1846,6 +1889,7 @@ int main() {
     test_degenerate_cameras();
     test_invalid_sections_are_skipped();
     test_determinism();
+    test_prepared_culler();
 
     std::cout << "track visibility tests: " << g_checks << " checks, "
               << g_failures << " failures\n";

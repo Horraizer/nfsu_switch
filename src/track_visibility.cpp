@@ -665,15 +665,15 @@ void cull_section_tree(
     const TrackFrustum& frustum,
     const TrackCullOptions& options,
     TrackCullReport& report,
-    TrackSectionCull& summary) {
+    TrackSectionCull& summary,
+    std::vector<Pending>& stack) {
     // 0x00446155 to 0x00446168: node 0 goes on the stack with the code 1,
     // so the root is always tested.
     //
     // The stack never grows past prepare_tree's, which was bounded by
     // max_pending_nodes: this loop pushes and pops in exactly the same
     // pattern and a pruned subtree only removes pushes.
-    std::vector<Pending> stack;
-    stack.reserve(options.limits.max_pending_nodes + 1);
+    stack.clear();
     stack.push_back(Pending{0, TrackBoxClass::intersecting});
 
     while (!stack.empty()) {
@@ -832,8 +832,10 @@ TrackCullReport cull_track_region(
             cull_section_flat(section, i, frustum, options, true, true, report,
                               summary);
         } else {
+            std::vector<Pending> stack;
+            stack.reserve(options.limits.max_pending_nodes + 1);
             cull_section_tree(section, i, prep, frustum, options, report,
-                              summary);
+                              summary, stack);
         }
         report.sections.push_back(summary);
     }
@@ -852,6 +854,83 @@ TrackCullReport cull_track_region(
                    " with nfsu::track_zone_residency"});
     }
     return report;
+}
+
+struct PreparedTrackCull::Impl {
+    const TrackObjectReport* objects = nullptr;
+    const TrackSection* section_data = nullptr;
+    std::vector<TreePrep> trees;
+    std::vector<Pending> stack;
+    TrackCullOptions options;
+    TrackCullReport report;
+};
+PreparedTrackCull::PreparedTrackCull() = default;
+PreparedTrackCull::~PreparedTrackCull() = default;
+
+bool PreparedTrackCull::prepare(const TrackObjectReport& objects, std::string& error,
+                                const TrackCullLimits& limits) {
+    error.clear();
+    if (impl_) { error = "prepared culler is one-shot"; return false; }
+    if (!limits.max_pending_nodes || limits.max_pending_nodes > (1U << 20)) {
+        error = "invalid prepared traversal capacity"; return false;
+    }
+    auto next = std::make_unique<Impl>();
+    next->options.limits = limits;
+    next->trees.resize(objects.sections.size());
+    std::size_t visible_capacity = 0;
+    for (std::size_t i = 0; i < objects.sections.size(); ++i) {
+        const auto& section = objects.sections[i];
+        if (!section.valid) continue;
+        if (section.instances.size() > (1U << 20) - visible_capacity) {
+            error = "prepared visibility exceeds bounded instance capacity"; return false;
+        }
+        auto& prep = next->trees[i];
+        prep = prepare_tree(section, limits, &next->report.issues);
+        if (!prep.usable || track_check_tree_containment(section, &next->report.issues)) {
+            error = next->report.issues.empty() ? "invalid prepared visibility tree" : next->report.issues.front().message;
+            return false;
+        }
+        visible_capacity += section.instances.size();
+    }
+    next->report.visible.reserve(visible_capacity);
+    next->report.sections.reserve(objects.sections.size());
+    next->stack.reserve(limits.max_pending_nodes + 1);
+    next->objects = &objects;
+    next->section_data = objects.sections.data();
+    impl_ = std::move(next);
+    return true;
+}
+bool PreparedTrackCull::cull(const TrackFrustum& frustum, std::string& error) {
+    error.clear();
+    if (!impl_) { error = "culler is not prepared"; return false; }
+    auto& c = *impl_;
+    c.report.visible.clear(); c.report.sections.clear(); c.report.stats = {};
+    if (c.objects->sections.data() != c.section_data || c.objects->sections.size() != c.trees.size()) {
+        error = "prepared culler source changed"; return false;
+    }
+    for (std::size_t i = 0; i < c.trees.size(); ++i) {
+        if (!c.trees[i].usable) continue;
+        const auto& section = c.objects->sections[i];
+        TrackSectionCull summary;
+        summary.section_index = i; summary.number = section.number;
+        summary.letter = section.letter; summary.has_letter = section.has_letter;
+        summary.instances = section.instances.size();
+        summary.resident = summary.containment_checked = true;
+        ++c.report.stats.sections_considered; ++c.report.stats.sections_resident;
+        cull_section_tree(section, i, c.trees[i], frustum, c.options, c.report, summary, c.stack);
+        c.report.sections.push_back(summary);
+    }
+    return true;
+}
+const TrackCullReport& PreparedTrackCull::result() const { return impl_->report; }
+std::uint64_t PreparedTrackCull::memory_bytes() const {
+    if (!impl_) return 0;
+    const auto& c = *impl_;
+    std::uint64_t bytes = sizeof(Impl) + c.trees.capacity()*sizeof(TreePrep) +
+        c.stack.capacity()*sizeof(Pending) + c.report.visible.capacity()*sizeof(TrackVisibleInstance) +
+        c.report.sections.capacity()*sizeof(TrackSectionCull);
+    for (const auto& tree : c.trees) bytes += tree.subtree_instances.capacity()*sizeof(std::uint64_t);
+    return bytes;
 }
 
 } // namespace nfsu

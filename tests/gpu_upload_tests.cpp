@@ -2270,7 +2270,7 @@ void test_draw_commands_match_cpu() {
                         }
                         const auto mismatch = compare_draws(commands, trace, false);
                         check(mismatch.empty(), "car sequence: " + mismatch);
-                        check_eq(commands.draws.size(), 3, "car nonempty groups");
+                        check_eq(commands.owning_draws().size(), 3, "car nonempty groups");
                         check_eq(commands.frame.options[0], 1, "flip v uniform");
                         check_eq(commands.frame.options[1], 1, "vertex colour uniform");
                         check_eq(commands.frame.options[3], 17, "alpha cutoff uniform");
@@ -2279,7 +2279,7 @@ void test_draw_commands_match_cpu() {
                         check_eq(commands.clear_color[3], 19, "clear alpha preserves background alpha");
                         const auto rgba = frame.rgba();
                         check(!rgba.empty() && rgba[3] == commands.clear_color[3], "CPU and recorded clear alpha agree");
-                        for (const auto& d : commands.draws) {
+                        for (const auto& d : commands.owning_draws()) {
                             const auto& source = fixture.scene.draws[d.group];
                             const bool resolved = source.binding == nfsu::BindingKind::resolved;
                             const auto gates = nfsu::material_coefficient_gates(source.flags, true);
@@ -2290,13 +2290,13 @@ void test_draw_commands_match_cpu() {
                                   d.name + ": authored identity placement");
                         }
                         // Prove the comparator reports the specific draw and field.
-                        if (!commands.draws.empty() && alpha == 0 && blend == 0) {
-                            const auto name = commands.draws[0].name;
-                            commands.draws[0].pipeline.depth_write = false;
+                        if (!commands.owning_draws().empty() && alpha == 0 && blend == 0) {
+                            const auto name = commands.owning_draws()[0].name;
+                            commands.owning_draws()[0].pipeline.depth_write = false;
                             check(compare_draws(commands, trace, false) == name + ": depth write",
                                   "differential comparator catches a named depth-write mutation");
-                            commands.draws[0].pipeline.depth_write = true;
-                            commands.draws[0].pipeline.alpha_test = sm::CompareOp::never;
+                            commands.owning_draws()[0].pipeline.depth_write = true;
+                            commands.owning_draws()[0].pipeline.alpha_test = sm::CompareOp::never;
                             check(compare_draws(commands, trace, false) == name + ": alpha test",
                                   "differential comparator catches a named alpha mutation");
                         }
@@ -2313,15 +2313,15 @@ void test_draw_commands_resources_and_refusals() {
     std::string error;
     check(nfsu::record_car_commands(fixture.scene, {}, {}, kSkinSource, commands, error), "record ledger car");
     const auto expected = table_of(fixture.scene);
-    check_eq(commands.uploads.resources.size(), expected.resources.size(), "same upload table");
-    for (std::size_t i = 0; i < commands.uploads.resources.size(); ++i) {
-        check(commands.uploads.resources[i].data == expected.resources[i].data, "borrowed scene bytes");
+    check_eq(commands.owning_uploads().resources.size(), expected.resources.size(), "same upload table");
+    for (std::size_t i = 0; i < commands.owning_uploads().resources.size(); ++i) {
+        check(commands.owning_uploads().resources[i].data == expected.resources[i].data, "borrowed scene bytes");
     }
     Rig rig;
     make_rig(rig);
     std::vector<nfsu::UploadHandle> handles;
-    check(rig.ledger.upload_table(commands.uploads, 4, handles, error), "recorded uploads enter existing ledger");
-    placements(rig.ledger, handles, commands.uploads, "recorded resources");
+    check(rig.ledger.upload_table(commands.owning_uploads(), 4, handles, error), "recorded uploads enter existing ledger");
+    placements(rig.ledger, handles, commands.owning_uploads(), "recorded resources");
     check(rig.ledger.release_all(handles, 8, error), "release recorded resources");
     rig.ledger.retire(8);
     check_eq(rig.buffers.stats().used_bytes, 0, "recorded buffers retired");
@@ -2339,7 +2339,7 @@ void test_draw_commands_resources_and_refusals() {
     auto limits = nfsu::RenderLimits{};
     limits.max_submitted_triangles = 0;
     check(!nfsu::record_car_commands(fixture.scene, {}, limits, kSkinSource, commands, error), "triangle budget refusal");
-    check(commands.draws.empty() && commands.uploads.resources.empty(), "refusal clears prior commands and resources");
+    check(commands.owning_draws().empty() && commands.owning_uploads().resources.empty(), "refusal clears prior commands and resources");
     auto options = nfsu::RenderOptions{};
     options.width = 0;
     check(!nfsu::record_car_commands(fixture.scene, options, {}, kSkinSource, commands, error), "zero viewport refused");
@@ -2385,8 +2385,8 @@ void test_track_commands_match_cpu() {
             }
             const auto mismatch = compare_draws(commands, trace, true);
             check(mismatch.empty(), "track sequence: " + mismatch);
-            check_eq(commands.draws.size(), 6, "six track instance groups");
-            for (const auto& d : commands.draws) {
+            check_eq(commands.owning_draws().size(), 6, "six track instance groups");
+            for (const auto& d : commands.owning_draws()) {
                 const auto& t = fixture.scene.instances[d.instance].transform;
                 for (std::size_t i = 0; i < 3; ++i) {
                     for (std::size_t j = 0; j < 3; ++j)
@@ -2399,7 +2399,7 @@ void test_track_commands_match_cpu() {
             options.material_state = nfsu::MaterialStateMode::off;
             list.entries[0].instance = 0xFFFFFFFFU;
             check(!nfsu::record_track_commands(fixture.scene, list, options, {}, commands, error), "invalid track list refused");
-            check(commands.draws.empty() && commands.uploads.resources.empty(), "track refusal is atomic");
+            check(commands.owning_draws().empty() && commands.owning_uploads().resources.empty(), "track refusal is atomic");
         }
     }
 }
@@ -2438,9 +2438,9 @@ void test_car_instances_and_uniform_layout() {
         [&](const auto& d) { trace.push_back(d); }), "instanced CPU render");
     const auto mismatch = compare_draws(commands, trace, false);
     check(mismatch.empty(), "instanced sequence: " + mismatch);
-    check_eq(commands.draws.size(), 6, "three groups each have two copies");
-    check(commands.draws.front().group != 0, "retail fixture actually changes order");
-    for (const auto& d : commands.draws) {
+    check_eq(commands.owning_draws().size(), 6, "three groups each have two copies");
+    check(commands.owning_draws().front().group != 0, "retail fixture actually changes order");
+    for (const auto& d : commands.owning_draws()) {
         for (std::size_t i = 0; i < 16; ++i)
             check(d.placement.rows[i] == scene.instances[d.instance].transform[i], d.name + ": car placement");
         check(d.material.alpha[3] == static_cast<float>(scene.instances[d.instance].lamp_mode),
@@ -2511,7 +2511,7 @@ void test_command_material_gates_and_empty_ranges() {
             }
             const bool zero = enabled && flags == 0x100U;
             const bool environment = enabled && flags == 0x180U;
-            for (const auto& d : commands.draws) {
+            for (const auto& d : commands.owning_draws()) {
                 check(d.material.alpha[0] == (zero ? 0.0F : 0.25F), d.name + ": diffuse alpha min gate");
                 check(d.material.alpha[1] == (zero ? 0.0F : 0.5F), d.name + ": diffuse alpha range gate");
                 check(d.material.alpha[2] == (zero ? 1.0F : 0.0F), d.name + ": diffuse colour gate");
@@ -2541,7 +2541,7 @@ void test_command_material_gates_and_empty_ranges() {
         [&](const auto& d) { trace.push_back(d); }), "CPU empty range");
     const auto mismatch = compare_draws(commands, trace, false);
     check(mismatch.empty(), "empty range sequence: " + mismatch);
-    check_eq(commands.draws.size(), 2, "zero range emits no command");
+    check_eq(commands.owning_draws().size(), 2, "zero range emits no command");
     // This group still has a valid nonempty range, but is explicitly not
     // drawable. Both submission loops skip it independently of zero ranges.
     auto& invalid = fixture.geometry.meshes[0].materials[1];
@@ -2557,7 +2557,7 @@ void test_command_material_gates_and_empty_ranges() {
     check(nfsu::render_scene(fixture.scene, options, {}, frame, stats, error,
         [&](const auto& d) { trace.push_back(d); }), "CPU non-drawable group");
     check(compare_draws(commands, trace, false).empty(), "non-drawable group sequence");
-    check_eq(commands.draws.size(), 2, "non-drawable nonempty group emits no command");
+    check_eq(commands.owning_draws().size(), 2, "non-drawable nonempty group emits no command");
     options.coefficients.alpha_min = -1;
     check(!nfsu::record_car_commands(fixture.scene, options, {}, kSkinSource, commands, error),
           "invalid retail coefficients refused");
