@@ -76,6 +76,13 @@ public:
     virtual std::size_t selected_draw_count() const = 0;
     virtual RecordedDrawView selected_draw(std::size_t i) const = 0;
     virtual std::uint64_t command_generation() const = 0;
+    // Immutable package enumerated once at renderer open. Track selections
+    // refer to these definitions and placements by stable IDs.
+    virtual std::size_t static_track_draw_count() const = 0;
+    virtual std::size_t static_track_instance_count() const = 0;
+    virtual const DrawInstanceUniform& static_track_instance(std::size_t i) const = 0;
+    virtual std::size_t static_track_definition_count() const = 0;
+    virtual const RecordedDraw& static_track_definition(std::size_t i) const = 0;
 };
 
 struct RecordedCommands {
@@ -107,6 +114,12 @@ public:
     RecordedDrawView draw_view(std::size_t i) const;
     bool generation_valid() const;
     bool borrowed() const noexcept { return source_ != nullptr; }
+    const PreparedCommandSource* package_identity() const noexcept { return source_; }
+    std::size_t static_track_draw_count() const;
+    std::size_t static_track_instance_count() const;
+    const DrawInstanceUniform& static_track_instance(std::size_t i) const;
+    std::size_t static_track_definition_count() const;
+    const RecordedDraw& static_track_definition(std::size_t i) const;
 private:
     friend class RaceGpuScene;
     const PreparedCommandSource* source_ = nullptr;

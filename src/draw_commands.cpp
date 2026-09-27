@@ -208,6 +208,26 @@ RecordedDrawView RecordedCommands::draw_view(std::size_t i) const {
     const auto& draw = draws.at(i);
     return {draw, draw.instance, draw.placement, draw.material, false};
 }
+std::size_t RecordedCommands::static_track_draw_count() const {
+    if (!generation_valid() || !source_) throw std::logic_error("static package unavailable");
+    return source_->static_track_draw_count();
+}
+std::size_t RecordedCommands::static_track_instance_count() const {
+    if (!generation_valid() || !source_) throw std::logic_error("static package unavailable");
+    return source_->static_track_instance_count();
+}
+const DrawInstanceUniform& RecordedCommands::static_track_instance(std::size_t i) const {
+    if (!generation_valid() || !source_) throw std::logic_error("static package unavailable");
+    return source_->static_track_instance(i);
+}
+std::size_t RecordedCommands::static_track_definition_count() const {
+    if (!generation_valid() || !source_) throw std::logic_error("static package unavailable");
+    return source_->static_track_definition_count();
+}
+const RecordedDraw& RecordedCommands::static_track_definition(std::size_t i) const {
+    if (!generation_valid() || !source_) throw std::logic_error("static package unavailable");
+    return source_->static_track_definition(i);
+}
 bool record_frame_state(const RenderOptions& options, const RenderLimits& limits,
                         RecordedCommands& out, std::string& error) {
     return frame_state(options, limits, out, error);

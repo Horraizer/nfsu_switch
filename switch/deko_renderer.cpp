@@ -45,8 +45,10 @@ struct DekoRenderer::Impl {
     std::vector<dk::UniqueMemBlock> blocks;
     dk::UniqueSwapchain swapchain;
     dk::UniqueCmdBuf cmd;
-    dk::MemBlock buffers, images, staging, uniforms, descriptors, readback;
+    dk::UniqueCmdBuf static_cmd;
+    dk::MemBlock buffers, images, staging, uniforms, static_uniforms, descriptors, readback;
     dk::MemBlock query_memory;
+    dk::MemBlock static_command_memory;
     std::array<dk::MemBlock, 2> command_memory;
     MemoryArena buffer_arena, image_arena, staging_arena, uniform_arena;
     UploadLedger ledger;
@@ -68,6 +70,15 @@ struct DekoRenderer::Impl {
     std::array<dk::Image, 2> depths;
     dk::Shader vertex, textured, fallback;
     const RecordedCommands* commands = nullptr;
+    const PreparedCommandSource* package = nullptr;
+    std::vector<const RecordedDraw*> static_definitions;
+    std::vector<const RecordedDraw*> dynamic_definitions;
+    std::vector<std::size_t> static_group_slots;
+    std::vector<DkCmdList> static_lists;
+    std::size_t static_instances = 0;
+    std::size_t dynamic_capacity = 0;
+    std::uint32_t package_width = 0, package_height = 0;
+    std::array<unsigned char, 4> package_clear{};
     UploadTable uploaded;
     std::size_t draw_capacity = 0;
     std::uint64_t fence_number = 0;
@@ -195,7 +206,37 @@ struct DekoRenderer::Impl {
         if (draw_capacity < source.draw_count() || draw_capacity > 2047) {
             error = "invalid reserved draw capacity"; return false;
         }
-        plan.uniform_bytes = static_cast<std::uint32_t>((1 + 2 * draw_capacity) * 256);
+        package = source.package_identity();
+        if (package) {
+            package_width = source.width; package_height = source.height;
+            std::memcpy(package_clear.data(), source.clear_color, 4);
+            static_instances = source.static_track_instance_count();
+            if (source.static_track_draw_count() > source.draw_count()) {
+                error = "prepared track count exceeds selected commands"; return false;
+            }
+            dynamic_capacity = source.draw_count() - source.static_track_draw_count();
+            if (static_instances > 65536 || source.static_track_definition_count() > 4096 ||
+                dynamic_capacity > draw_capacity) {
+                error = "prepared static package exceeds capacity"; return false;
+            }
+            const auto count = source.static_track_definition_count();
+            static_definitions.reserve(count);
+            for (std::size_t i = 0; i < count; ++i) {
+                const auto& draw = source.static_track_definition(i);
+                // Sparse source group IDs are bounded to a 512 KiB slot table.
+                if (draw.group >= 65536) { error = "prepared group ID exceeds capacity"; return false; }
+                if (draw.group >= static_group_slots.size())
+                    static_group_slots.resize(draw.group + 1, kNoHandle);
+                if (static_group_slots[draw.group] != kNoHandle) {
+                    error = "duplicate prepared group ID"; return false;
+                }
+                static_group_slots[draw.group] = i;
+                static_definitions.push_back(&draw);
+            }
+            for (std::size_t i = source.static_track_draw_count(); i < source.draw_count(); ++i)
+                dynamic_definitions.push_back(&source.draw_view(i).definition);
+        } else dynamic_capacity = draw_capacity;
+        plan.uniform_bytes = static_cast<std::uint32_t>((1 + 2 * dynamic_capacity) * 256);
         plan.command_bytes = static_cast<std::uint32_t>(65536 +
             (draw_capacity + source.resource_table().resources.size()) * 4096);
         uniform_stride = plan.uniform_bytes;
@@ -234,6 +275,8 @@ struct DekoRenderer::Impl {
                    kDataFlags, "texture staging", staging, error) ||
             !block(uniform_bytes, kDataFlags, "draw uniforms", uniforms, error) ||
             !block(plan.descriptor_bytes, kDataFlags, "texture descriptors", descriptors, error)) return false;
+        if (package && !block((static_instances + static_definitions.size()) * 256ULL,
+                kDataFlags, "prepared track uniforms", static_uniforms, error)) return false;
         if (!arena(buffer_arena, need.buffer_extent, error,
                    plan.buffer_allocations) ||
             !arena(image_arena, need.image_extent, error) ||
@@ -316,6 +359,7 @@ struct DekoRenderer::Impl {
         if (!shader("placed.vert", DkStage_Vertex, vertex, error) ||
             !shader("textured.frag", DkStage_Fragment, textured, error) ||
             !shader("fallback.frag", DkStage_Fragment, fallback, error)) return false;
+        if (package && !prepare_static_commands(source, error)) return false;
         dk::ImageLayout color_layout, depth_layout;
         dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender | (presentation ? DkImageFlags_UsagePresent : 0))
             .setFormat(DkImageFormat_RGBA8_Unorm).setDimensions(source.width, source.height).initialize(color_layout);
@@ -352,7 +396,34 @@ struct DekoRenderer::Impl {
             return false;
         }
         const auto validate_start = armGetSystemTick();
-        if (!validate_draw_update(uploaded, next, draw_capacity, error)) return false;
+        if (package) {
+            if (!next.generation_valid() || next.package_identity() != package ||
+                next.width != package_width || next.height != package_height ||
+                std::memcmp(next.clear_color, package_clear.data(), 4) != 0 ||
+                next.draw_count() > draw_capacity ||
+                next.static_track_draw_count() > next.draw_count() ||
+                next.draw_count() - next.static_track_draw_count() != dynamic_capacity) {
+                error = "prepared command package changed or exceeded capacity"; return false;
+            }
+            const auto track_count = next.static_track_draw_count();
+            for (std::size_t i = 0; i < next.draw_count(); ++i) {
+                const auto view = next.draw_view(i);
+                if (i < track_count) {
+                    const auto group = view.definition.group;
+                    if (!view.track_instance || view.instance >= static_instances ||
+                        group >= static_group_slots.size() ||
+                        static_group_slots[group] == kNoHandle ||
+                        &view.definition != static_definitions[static_group_slots[group]] ||
+                        &view.placement != &next.static_track_instance(view.instance) ||
+                        &view.material != &view.definition.material) {
+                        error = "prepared track selection left its static package"; return false;
+                    }
+                } else if (view.track_instance ||
+                           &view.definition != dynamic_definitions[i-track_count]) {
+                    error = "prepared dynamic definition changed"; return false;
+                }
+            }
+        } else if (!validate_draw_update(uploaded, next, draw_capacity, error)) return false;
         if (timing) timing->validation_ms = elapsed_ms(validate_start);
         // The presentation path writes constants only after waiting for the
         // selected slot. The offscreen path is synchronous and keeps slot 0.
@@ -387,11 +458,95 @@ struct DekoRenderer::Impl {
         auto* data = static_cast<unsigned char*>(uniforms.getCpuAddr()) +
             uniform_allocation.offset + slot * uniform_stride;
         std::memcpy(data, &source.frame, sizeof source.frame);
-        for (std::size_t i = 0; i < source.draw_count(); ++i) {
+        const auto first_dynamic = package ? source.static_track_draw_count() : 0;
+        for (std::size_t i = first_dynamic; i < source.draw_count(); ++i) {
             const auto view = source.draw_view(i);
-            std::memcpy(data + (1+2*i)*256, &view.placement, sizeof(DrawInstanceUniform));
-            std::memcpy(data + (2+2*i)*256, &view.material, sizeof(DrawMaterialUniform));
+            const auto index = i - first_dynamic;
+            std::memcpy(data + (1+2*index)*256, &view.placement, sizeof(DrawInstanceUniform));
+            std::memcpy(data + (2+2*index)*256, &view.material, sizeof(DrawMaterialUniform));
         }
+    }
+
+    template<class Recorder>
+    void emit_draw(Recorder& out, const RecordedDraw& draw,
+                   std::uint64_t instance_addr, std::uint64_t material_addr,
+                   bool bind_fixed_state = true) {
+        const auto& state = draw.pipeline;
+        const bool has_texture = draw.texture_resource != kNoHandle;
+        if (bind_fixed_state)
+            out.bindShaders(DkStageFlag_GraphicsMask, {&vertex, has_texture ? &textured : &fallback});
+        if (instance_addr)
+            out.bindUniformBuffer(DkStage_Vertex, 1, instance_addr, sizeof(DrawInstanceUniform));
+        out.bindUniformBuffer(DkStage_Fragment, 2, material_addr, sizeof(DrawMaterialUniform));
+        if (bind_fixed_state && has_texture) out.bindTextures(DkStage_Fragment, 0,
+            dkMakeTextureHandle(static_cast<std::uint32_t>(draw.texture_resource), 0));
+        if (bind_fixed_state) {
+            dk::RasterizerState raster;
+            raster.setCullMode(state.cull == sm::Cull::back ? DkFace_Back :
+                state.cull == sm::Cull::front ? DkFace_Front : DkFace_None).setFrontFace(DkFrontFace_CCW);
+            dk::ColorState color;
+            color.setBlendEnable(0, state.blend).setAlphaCompareOp(kCompare[static_cast<unsigned>(state.alpha_test)]);
+            dk::ColorWriteState write;
+            write.setMask(0, state.color_write == sm::ColorWrite::rgb ? DkColorMask_RGB : DkColorMask_RGBA);
+            dk::BlendState blend;
+            blend.setOps(kBlend[static_cast<unsigned>(state.blend_op)], DkBlendOp_Add)
+                .setFactors(kFactor[static_cast<unsigned>(state.blend_src)],
+                            kFactor[static_cast<unsigned>(state.blend_dst)], DkBlendFactor_One, DkBlendFactor_Zero);
+            dk::DepthStencilState z;
+            z.setDepthTestEnable(true).setDepthWriteEnable(state.depth_write)
+                .setDepthCompareOp(kCompare[static_cast<unsigned>(state.depth_test)]);
+            out.bindRasterizerState(raster); out.bindColorState(color);
+            out.bindColorWriteState(write); out.bindBlendStates(0, blend); out.bindDepthStencilState(z);
+            out.setAlphaRef(state.alpha_ref/255.0F);
+            std::array<DkVtxAttribState, 3> attributes{};
+            for (std::size_t a = 0; a < draw.program->attribute_count; ++a) {
+                const auto& input = draw.program->attributes[a];
+                const bool byte = input.format == sm::VertexFormat::unorm8x4;
+                attributes[input.location] = {input.buffer, 0, input.offset,
+                    byte ? DkVtxAttribSize_4x8 : input.format == sm::VertexFormat::float32x3 ? DkVtxAttribSize_3x32 : DkVtxAttribSize_2x32,
+                    byte ? DkVtxAttribType_Unorm : DkVtxAttribType_Float, 0};
+            }
+            out.bindVtxAttribState(attributes);
+            out.bindVtxBufferState(DkVtxBufferState{draw.program->buffers[0].stride, 0});
+        }
+        const auto& v = records[draw.vertex_resource].placement;
+        out.bindVtxBuffer(0, buffers.getGpuAddr()+v.offset, static_cast<std::uint32_t>(v.size));
+        out.bindIdxBuffer(DkIdxFormat_Uint16, buffers.getGpuAddr()+records[draw.index_resource].placement.offset);
+        out.drawIndexed(DkPrimitive_Triangles, draw.index_count, 1, draw.first_index,
+                        static_cast<std::int32_t>(draw.first_vertex), 0);
+    }
+
+    static bool same_fixed_state(const RecordedDraw& a, const RecordedDraw& b) {
+        // Byte equality is conservative with padding: it may rebind an equal
+        // state but cannot skip a bind when a state field differs.
+        return a.program == b.program && a.texture_resource == b.texture_resource &&
+            std::memcmp(&a.pipeline, &b.pipeline, sizeof a.pipeline) == 0;
+    }
+
+    bool prepare_static_commands(const RecordedCommands& source, std::string& error) {
+        auto* data = static_cast<unsigned char*>(static_uniforms.getCpuAddr());
+        for (std::size_t i = 0; i < static_instances; ++i)
+            std::memcpy(data + i*256, &source.static_track_instance(i), sizeof(DrawInstanceUniform));
+        for (std::size_t i = 0; i < static_definitions.size(); ++i)
+            std::memcpy(data + (static_instances+i)*256, &static_definitions[i]->material,
+                        sizeof(DrawMaterialUniform));
+        if (static_definitions.empty()) return true;
+        const auto bytes = 65536ULL + static_definitions.size()*4096ULL;
+        if (!block(bytes, kDataFlags, "prepared track commands", static_command_memory, error)) return false;
+        static_cmd = dk::CmdBufMaker{device}.create();
+        if (!static_cmd || !healthy(error)) {
+            if (error.empty()) error = "prepared command buffer creation failed";
+            return false;
+        }
+        static_cmd.addMemory(static_command_memory, 0, static_cast<std::uint32_t>(bytes));
+        static_lists.reserve(static_definitions.size());
+        for (std::size_t i = 0; i < static_definitions.size(); ++i) {
+            emit_draw(static_cmd, *static_definitions[i], 0,
+                      static_uniforms.getGpuAddr() + (static_instances+i)*256);
+            static_lists.push_back(static_cmd.finishList());
+            if (!healthy(error)) return false;
+        }
+        return true;
     }
 
     void record_frame(const dk::Image& target, std::size_t slot) {
@@ -411,48 +566,25 @@ struct DekoRenderer::Impl {
         const auto base = uniforms.getGpuAddr() + uniform_allocation.offset + slot * uniform_stride;
         cmd.bindUniformBuffer(DkStage_Vertex, 0, base, sizeof(DrawFrameUniform));
         cmd.bindUniformBuffer(DkStage_Fragment, 0, base, sizeof(DrawFrameUniform));
+        const auto first_dynamic = package ? commands->static_track_draw_count() : 0;
+        const RecordedDraw* previous_dynamic = nullptr;
         for (std::size_t i = 0; i < commands->draw_count(); ++i) {
             const auto view = commands->draw_view(i);
-            const auto& draw = view.definition;
-            const auto& state = draw.pipeline;
-            const bool has_texture = draw.texture_resource != kNoHandle;
-            cmd.bindShaders(DkStageFlag_GraphicsMask, {&vertex, has_texture ? &textured : &fallback});
-            cmd.bindUniformBuffer(DkStage_Vertex, 1, base+(1+2*i)*256, sizeof(DrawInstanceUniform));
-            cmd.bindUniformBuffer(DkStage_Fragment, 2, base+(2+2*i)*256, sizeof(DrawMaterialUniform));
-            if (has_texture) cmd.bindTextures(DkStage_Fragment, 0,
-                dkMakeTextureHandle(static_cast<std::uint32_t>(draw.texture_resource), 0));
-            dk::RasterizerState raster;
-            raster.setCullMode(state.cull == sm::Cull::back ? DkFace_Back :
-                state.cull == sm::Cull::front ? DkFace_Front : DkFace_None).setFrontFace(DkFrontFace_CCW);
-            dk::ColorState color;
-            color.setBlendEnable(0, state.blend).setAlphaCompareOp(kCompare[static_cast<unsigned>(state.alpha_test)]);
-            dk::ColorWriteState write;
-            write.setMask(0, state.color_write == sm::ColorWrite::rgb ? DkColorMask_RGB : DkColorMask_RGBA);
-            dk::BlendState blend;
-            blend.setOps(kBlend[static_cast<unsigned>(state.blend_op)], DkBlendOp_Add)
-                .setFactors(kFactor[static_cast<unsigned>(state.blend_src)],
-                            kFactor[static_cast<unsigned>(state.blend_dst)], DkBlendFactor_One, DkBlendFactor_Zero);
-            dk::DepthStencilState z;
-            z.setDepthTestEnable(true).setDepthWriteEnable(state.depth_write)
-                .setDepthCompareOp(kCompare[static_cast<unsigned>(state.depth_test)]);
-            cmd.bindRasterizerState(raster); cmd.bindColorState(color);
-            cmd.bindColorWriteState(write); cmd.bindBlendStates(0, blend); cmd.bindDepthStencilState(z);
-            cmd.setAlphaRef(state.alpha_ref/255.0F);
-            std::array<DkVtxAttribState, 3> attributes{};
-            for (std::size_t a = 0; a < draw.program->attribute_count; ++a) {
-                const auto& input = draw.program->attributes[a];
-                const bool byte = input.format == sm::VertexFormat::unorm8x4;
-                attributes[input.location] = {input.buffer, 0, input.offset,
-                    byte ? DkVtxAttribSize_4x8 : input.format == sm::VertexFormat::float32x3 ? DkVtxAttribSize_3x32 : DkVtxAttribSize_2x32,
-                    byte ? DkVtxAttribType_Unorm : DkVtxAttribType_Float, 0};
+            if (i < first_dynamic) {
+                const auto group = view.definition.group;
+                const auto index = static_group_slots.at(group);
+                cmd.bindUniformBuffer(DkStage_Vertex, 1,
+                    static_uniforms.getGpuAddr() + view.instance*256,
+                    sizeof(DrawInstanceUniform));
+                cmd.callList(static_lists.at(index));
+                previous_dynamic = nullptr;
+            } else {
+                const auto index = i - first_dynamic;
+                emit_draw(cmd, view.definition, base+(1+2*index)*256,
+                          base+(2+2*index)*256,
+                          !previous_dynamic || !same_fixed_state(*previous_dynamic, view.definition));
+                previous_dynamic = &view.definition;
             }
-            cmd.bindVtxAttribState(attributes);
-            cmd.bindVtxBufferState(DkVtxBufferState{draw.program->buffers[0].stride, 0});
-            const auto& v = records[draw.vertex_resource].placement;
-            cmd.bindVtxBuffer(0, buffers.getGpuAddr()+v.offset, static_cast<std::uint32_t>(v.size));
-            cmd.bindIdxBuffer(DkIdxFormat_Uint16, buffers.getGpuAddr()+records[draw.index_resource].placement.offset);
-            cmd.drawIndexed(DkPrimitive_Triangles, draw.index_count, 1, draw.first_index,
-                            static_cast<std::int32_t>(draw.first_vertex), 0);
         }
         cmd.barrier(DkBarrier_Fragments, 0);
         if (profile_enabled)

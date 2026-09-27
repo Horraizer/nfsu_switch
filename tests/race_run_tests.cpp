@@ -180,6 +180,21 @@ int main(int argc, char** argv) {
                 kPersistentBudgetPlaceholder, "persistent payload over budget");
         RaceGpuFrame frame;
         require(scene.frame(race.session(), frame, error), error);
+        require(frame.commands.package_identity() != nullptr &&
+                frame.commands.static_track_draw_count() == frame.track_draws &&
+                frame.commands.static_track_instance_count() == scene.track().scene.instances.size() &&
+                frame.commands.static_track_instance_count() <= 65536 &&
+                frame.commands.static_track_definition_count() <= 4096,
+                "prepared static package identity or instance count changed");
+        std::vector<const RecordedDraw*> static_by_group;
+        for (std::size_t i = 0; i < frame.commands.static_track_definition_count(); ++i) {
+            const auto& definition = frame.commands.static_track_definition(i);
+            require(definition.group < 65536, "static track group exceeds Switch slot table");
+            if (definition.group >= static_by_group.size())
+                static_by_group.resize(definition.group + 1, nullptr);
+            require(!static_by_group[definition.group], "duplicate static track group");
+            static_by_group[definition.group] = &definition;
+        }
         const auto& const_commands = frame.commands;
         unsigned owning_refusals = 0;
         try { (void)frame.commands.owning_draws(); }
@@ -292,6 +307,14 @@ int main(int argc, char** argv) {
                 for (std::size_t i = 0; i < frame.commands.draw_count(); ++i) {
                     const auto selected = frame.commands.draw_view(i);
                     const auto& a = selected.definition; const auto& b = reference.commands.owning_draws()[i];
+                    if (i < frame.commands.static_track_draw_count()) {
+                        require(a.group < static_by_group.size() &&
+                                static_by_group[a.group] == &a && selected.track_instance &&
+                                selected.instance < frame.commands.static_track_instance_count() &&
+                                &selected.placement == &frame.commands.static_track_instance(selected.instance) &&
+                                &selected.material == &a.material,
+                                "selected track draw escaped its static package");
+                    } else require(!selected.track_instance, "car draw entered static track range");
                     require(selected.diagnostic_name() == b.name && a.group == b.group && a.mesh == b.mesh && selected.instance == b.instance &&
                         a.vertex_resource == b.vertex_resource && a.index_resource == b.index_resource &&
                         a.texture_resource == b.texture_resource && a.first_vertex == b.first_vertex &&
