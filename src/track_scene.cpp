@@ -91,7 +91,9 @@ bool prepare(
     const RenderTextureSet& textures,
     const TrackSceneLimits& limits,
     PreparedTrackRegion& out,
-    std::string& error) {
+    std::string& error,
+    TrackRegionReport* owned_report = nullptr,
+    RenderTextureSet* owned_textures = nullptr) {
     PreparedTrackRegion region;
     region.region = report.region;
     region.source_mesh_count = report.meshes.size();
@@ -140,8 +142,10 @@ bool prepare(
         prepared.hash_record_offset = mesh.hash_record_offset;
         prepared.has_hash_record = mesh.has_hash_record;
         prepared.material_count = mesh.materials.size();
-        prepared.vertices = mesh.vertices;
-        prepared.triangles = mesh.triangles;
+        if (!owned_report) {
+            prepared.vertices = mesh.vertices;
+            prepared.triangles = mesh.triangles;
+        }
 
         for (std::size_t m = 0; m < mesh.materials.size(); ++m) {
             const MeshMaterial& material = mesh.materials[m];
@@ -198,19 +202,39 @@ bool prepare(
                         return false;
                     }
                     handle = region.textures.size();
-                    region.textures.push_back(source);
+                    if (owned_textures) region.textures.emplace_back();
+                    else region.textures.push_back(source);
                     handle_of[binding.texture_index] = handle;
                     region.cost.texture_bytes = total;
                 }
                 draw.texture = handle;
-                draw.texture_source = region.textures[handle].source;
-                draw.texture_pack = region.textures[handle].pack;
-                draw.texture_record = region.textures[handle].record;
+                const auto& source = textures.textures[binding.texture_index];
+                draw.texture_source = source.source;
+                draw.texture_pack = source.pack;
+                draw.texture_record = source.record;
             }
             region.draws.push_back(std::move(draw));
         }
     }
 
+    // Resolve every material before moving texture payloads: usable() must
+    // still see the original bytes when a later mesh uses the same texture.
+    if (owned_report) {
+        std::size_t handle = 0;
+        for (auto& mesh : owned_report->meshes) {
+            if (!mesh.valid) continue;
+            region.meshes[handle].vertices = std::move(mesh.vertices);
+            region.meshes[handle].triangles = std::move(mesh.triangles);
+            ++handle;
+        }
+    }
+    if (owned_textures) {
+        for (std::size_t i = 0; i < handle_of.size(); ++i) {
+            if (handle_of[i] != kNoHandle) {
+                region.textures[handle_of[i]] = std::move(owned_textures->textures[i]);
+            }
+        }
+    }
     region.unresolved_hashes.assign(unresolved.begin(), unresolved.end());
 
     TrackDrawCost& cost = region.cost;
@@ -272,6 +296,30 @@ bool prepare_track_region(
     bool ok = false;
     try {
         ok = prepare(report, textures, limits, region, error);
+    } catch (const std::bad_alloc&) {
+        error = "out of memory while preparing the track region";
+        ok = false;
+    }
+    if (!ok) {
+        region = PreparedTrackRegion{};
+        if (error.empty()) {
+            error = "the track region could not be prepared";
+        }
+    }
+    return ok;
+}
+
+bool prepare_track_region(
+    TrackRegionReport&& report,
+    RenderTextureSet&& textures,
+    const TrackSceneLimits& limits,
+    PreparedTrackRegion& region,
+    std::string& error) {
+    region = PreparedTrackRegion{};
+    error.clear();
+    bool ok = false;
+    try {
+        ok = prepare(report, textures, limits, region, error, &report, &textures);
     } catch (const std::bad_alloc&) {
         error = "out of memory while preparing the track region";
         ok = false;

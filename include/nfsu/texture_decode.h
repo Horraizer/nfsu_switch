@@ -12,6 +12,8 @@ namespace nfsu {
 
 // Backend-neutral preparation of decoded textures for PreparedCarScene.
 // This layer understands parsed texture packs; render backends do not.
+struct RenderTextureSource;
+
 struct RenderTextureLimits {
     // Keep DXT1/DXT3 top levels in their native GPU format. CPU rendering
     // requires the default RGBA8 path. Other supported formats still decode.
@@ -20,6 +22,14 @@ struct RenderTextureLimits {
     std::uint64_t max_total_bytes = 128ULL * 1024ULL * 1024ULL;
     // Test hook called before each retained top-level allocation.
     std::function<void(std::uint64_t)> before_allocate;
+    // Called once after an unblocked source is consumed. Its bytes and packs
+    // may then be released, provided no later source borrows them. Claims and
+    // decoded payloads are owned by the result. Exceptions propagate.
+    std::function<void(std::size_t)> after_source;
+    // Populate a source just before it is checked/decoded. The descriptor is
+    // a local copy; backing bytes/packs must live until after_source. Called
+    // only for unblocked sources. False aborts with an empty result.
+    std::function<bool(std::size_t, RenderTextureSource&, std::string&)> load_source;
 };
 
 // One parsed texture source. Every pack must have been parsed from exactly
