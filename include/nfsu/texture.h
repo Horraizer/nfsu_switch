@@ -315,7 +315,8 @@ bool texture_payload(
 // mode with transparent black when color0 <= color1. A8R8G8B8 is stored as
 // little-endian u32 ARGB, i.e. bytes B, G, R, A, and is reordered only. P8
 // uses an explicit 256-entry palette; without one it is refused. Palette
-// entries are PALETTEENTRY bytes (red, green, blue, alpha).
+// entries are stored A8R8G8B8 pixels (B, G, R, A); retail copies each dword
+// into an A8R8G8B8 texture at 0x00407E70..0x00407EA8.
 bool decode_level(
     PixelFormat format,
     std::uint32_t width,

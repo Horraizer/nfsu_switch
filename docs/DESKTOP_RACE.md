@@ -189,22 +189,25 @@ the lap HUD. The step is the completed 1-based controller tick.
 
 Issue #201 changed the stock wheel lateral matrices, wheel phase, steer,
 suspension and lamps. Issue #200 changes track alpha testing and blending,
-adds the global race texture packs, and decodes their P8 palettes. The
-current hashes are pinned only in `tools/race_replay_check.py`.
+adds the global race texture packs, and decodes their P8 palettes. The retail
+upload copies palette dwords into A8R8G8B8 pixels; interpreting the stored
+B, G, R, A entries correctly changed all eleven pinned frames, including
+the warm `HEADLIGHTGLOW` instead of blue. The current hashes are pinned only in
+`tools/race_replay_check.py`.
 
 | Step | Car reason (#201) | Track reason (#200) |
 | --- | --- | --- |
-| 180 | Launch wheel phase and stock lateral position; running lamps | Foliage alpha/blend; global barrier texture and P8 palette availability |
-| 600 | Rolling phase, steer and suspension; running lamps | Foliage alpha/blend; global barrier texture and P8 palette availability |
-| 6000 | Rolling phase, steer and suspension; running lamps | Foliage alpha/blend; global sign texture and P8 palette availability |
-| 11344 | Corner wheel angle and travel; running lamps | Foliage alpha/blend and global P8 palette availability |
-| 12459 | Median wheel angle and travel; running lamps | Foliage alpha/blend; global barrier texture and P8 palette availability |
-| 13128 | Wheel motion and brake lamp intensity | Foliage alpha/blend and global P8 palette availability |
-| 24300 | Second-lap wheel motion and brake lamp intensity | Foliage alpha/blend and global P8 palette availability |
-| 35396 | Corner wheel angle and travel; running lamps | Foliage alpha/blend and global P8 palette availability |
-| 36510 | Median wheel angle and travel; running lamps | Foliage alpha/blend; global barrier texture and P8 palette availability |
-| 37177 | Wheel motion near the former barrier; running lamps | Foliage alpha/blend and global P8 palette availability |
-| 48336 | Final wheel pose and running lamps | Foliage alpha/blend and global P8 palette availability |
+| 180 | Launch wheel phase and stock lateral position; running lamps | Foliage alpha/blend; global barrier texture and P8 palette B/R correction |
+| 600 | Rolling phase, steer and suspension; running lamps | Foliage alpha/blend; global barrier texture and P8 palette B/R correction |
+| 6000 | Rolling phase, steer and suspension; running lamps | Foliage alpha/blend; global sign texture and P8 palette B/R correction |
+| 11344 | Corner wheel angle and travel; running lamps | Foliage alpha/blend and P8 palette B/R correction |
+| 12459 | Median wheel angle and travel; running lamps | Foliage alpha/blend; global barrier texture and P8 palette B/R correction |
+| 13128 | Wheel motion and brake lamp intensity | Foliage alpha/blend and P8 palette B/R correction |
+| 24300 | Second-lap wheel motion and brake lamp intensity | Foliage alpha/blend and P8 palette B/R correction |
+| 35396 | Corner wheel angle and travel; running lamps | Foliage alpha/blend and P8 palette B/R correction |
+| 36510 | Median wheel angle and travel; running lamps | Foliage alpha/blend; global barrier texture and P8 palette B/R correction |
+| 37177 | Wheel motion near the former barrier; running lamps | Foliage alpha/blend and P8 palette B/R correction |
+| 48336 | Final wheel pose and running lamps | Foliage alpha/blend and P8 palette B/R correction |
 
 The fixed frames include both laps at the corner, tree median and former
 rollover barrier, as well as the second-lap start and finish. The replay

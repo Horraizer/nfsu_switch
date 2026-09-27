@@ -682,6 +682,11 @@ The byte sequence of the 0x33310003 id occurs nowhere in the file.
   equal unshifted.
 - The earlier reading of pack 0 as a "16384-byte virtual base" before the
   chain is wrong: offsets are not rebased, the region is the P8 palettes.
+- The P8 palettes are 1024-byte blocks of 256 four-byte entries. The loader
+  points each texture record at its pack palette at 0x00545A59..0x00545A61.
+  At 0x00407E70..0x00407E82 the game copies each palette dword into a pixel;
+  0x00407EA8 selects A8R8G8B8 for the created texture. The stored bytes are
+  B, G, R, A, and the track decoder reorders them to RGBA.
 
 ### Inferred
 
@@ -689,10 +694,7 @@ The byte sequence of the 0x33310003 id occurs nowhere in the file.
   same in both kinds of file, so there might be another flag.
 - The 128-byte alignment could be absolute or relative to the root. Both
   roots are 128-aligned, so the data cannot tell them apart.
-- The P8 palettes are 1024-byte blocks of 256 four-byte entries. The parser
-  returns those raw bytes separately from the index chain. Each entry is a
-  Direct3D `PALETTEENTRY` in red, green, blue, alpha order; the track decoder
-  uses it for RGBA conversion (see `docs/TRACK_MATERIALS.md`).
+- The parser returns P8 palette bytes separately from the index chain.
 
 ### Unknown
 

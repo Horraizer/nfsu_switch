@@ -1718,7 +1718,10 @@ bool decode_level(
         rgba.resize(static_cast<std::size_t>(pixel_bytes));
         for (std::size_t i = 0; i < size; ++i) {
             const std::size_t entry = static_cast<std::size_t>(data[i]) * 4U;
-            std::copy_n(p8_palette->data() + entry, 4U, rgba.data() + i * 4U);
+            rgba[i * 4U + 0U] = (*p8_palette)[entry + 2U];
+            rgba[i * 4U + 1U] = (*p8_palette)[entry + 1U];
+            rgba[i * 4U + 2U] = (*p8_palette)[entry + 0U];
+            rgba[i * 4U + 3U] = (*p8_palette)[entry + 3U];
         }
         return true;
     }

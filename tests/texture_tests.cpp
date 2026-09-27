@@ -1044,13 +1044,16 @@ void test_unsupported_formats() {
     palette[255 * 4 + 2] = 3; palette[255 * 4 + 3] = 4;
     Bytes colored_indices(16, 0);
     colored_indices[1] = 1; colored_indices[15] = 255;
+    const Bytes pixel0 = {56, 34, 12, 78};
+    const Bytes pixel1 = {65, 87, 90, 43};
+    const Bytes pixel255 = {3, 2, 1, 4};
     check(nfsu::decode_level(nfsu::PixelFormat::p8, 4, 4, colored_indices.data(),
                              colored_indices.size(), rgba, error, &palette) &&
               rgba.size() == 64 &&
-              std::equal(rgba.begin(), rgba.begin() + 4, palette.begin()) &&
-              std::equal(rgba.begin() + 4, rgba.begin() + 8, palette.begin() + 4) &&
-              std::equal(rgba.end() - 4, rgba.end(), palette.end() - 4),
-          "P8 indices use red-green-blue-alpha palette entries, including index 255");
+              std::equal(rgba.begin(), rgba.begin() + 4, pixel0.begin()) &&
+              std::equal(rgba.begin() + 4, rgba.begin() + 8, pixel1.begin()) &&
+              std::equal(rgba.end() - 4, rgba.end(), pixel255.begin()),
+          "P8 indices convert stored A8R8G8B8 entries to RGBA, including index 255");
     std::ostringstream output;
     check(!nfsu::write_dds(output, nfsu::PixelFormat::unsupported, 4, 4, 1, data.data(),
                            data.size(), error) &&

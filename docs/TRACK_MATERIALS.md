@@ -50,11 +50,12 @@ geometry. The two remaining hashes without a matching texture-info record
 are `0x2D1A7A07` and `0x74CFB820`.
 
 `Global/GLOBALB.BUN` also contains raw P8 textures. Its `info +52` points to
-a separate palette in the pack's data range; each palette entry stores red,
-green, blue and alpha bytes, following Direct3D's
-[PALETTEENTRY layout](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-paletteentry).
-The decoder now supplies that palette with the
-index chain. The retail slice test requires `HEADLIGHTGLOW` (`0x3394FE62`)
+a separate palette in the pack's data range. The retail loader points the
+texture record at those bytes (0x00545A59..0x00545A61), copies each entry's
+dword into a pixel (0x00407E70..0x00407E82), and selects A8R8G8B8 at
+0x00407EA8. Each stored entry is therefore B, G, R, A; the decoder supplies
+its index chain and converts that palette to RGBA. The retail slice test
+requires `HEADLIGHTGLOW` (`0x3394FE62`)
 and `WINDOW_TRAFFIC` (`0x008A6835`) to decode and bind as textures instead of
 fallback draws. The pack layout and payload validation are documented in
 [`FORMATS.md`](FORMATS.md); `nfsu_texture_tests` checks palette indexing.
