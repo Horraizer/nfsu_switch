@@ -62,6 +62,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/race_session_libraries.cmake)
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/track_slice_libraries.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/race_run_libraries.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/audio_libraries.cmake)
 
 # The Switch build configures the shared car and draw libraries and switch/,
 # and nothing below this point: the desktop programs, the other libraries and every test of
@@ -784,7 +785,8 @@ set(NFSU_NEUTRAL_LIBRARIES
     nfsu_texture_decode nfsu_body_skin nfsu_skin_inputs nfsu_runtime_skin
     nfsu_inspect nfsu_inspect_window nfsu_input nfsu_platform
     nfsu_platform_fakes nfsu_input_camera nfsu_memory nfsu_gpu_upload nfsu_draw_commands
-    nfsu_sha256 nfsu_stock_frame nfsu_screen_text nfsu_stock_view nfsu_frame_compare)
+    nfsu_sha256 nfsu_stock_frame nfsu_screen_text nfsu_stock_view nfsu_frame_compare
+    nfsu_audio)
 # nfsu_race_route (issue #61) decodes a TRACKB bundle with nothing but the
 # standard library, nfsu_core's JDLZ decoder and nfsu_track_zones' polygon
 # test, reads with std::ifstream as nfsu_core's loaders do, and reads no
@@ -1478,7 +1480,22 @@ if(NFSU_BUILD_TESTS)
 endif()
 
 list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_run)
+add_executable(nfsu_audio_dump src/audio_dump_main.cpp)
+target_link_libraries(nfsu_audio_dump PRIVATE nfsu_audio nfsu_sha256 nfsu_arg_path)
+nfsu_enable_warnings(nfsu_audio_dump)
 if(NFSU_BUILD_TESTS)
+    add_executable(nfsu_audio_tests tests/audio_tests.cpp)
+    target_link_libraries(nfsu_audio_tests PRIVATE nfsu_audio)
+    nfsu_enable_warnings(nfsu_audio_tests)
+    add_test(NAME nfsu_audio_tests COMMAND nfsu_audio_tests)
+    set_tests_properties(nfsu_audio_tests PROPERTIES TIMEOUT 10)
+    add_test(NAME nfsu_audio_retail
+        COMMAND ${CMAKE_COMMAND}
+            -DAUDIO_DUMP=$<TARGET_FILE:nfsu_audio_dump>
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_retail_expected.txt
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_retail.cmake)
+    set_tests_properties(nfsu_audio_retail PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED")
     add_executable(nfsu_race_run_tests tests/race_run_tests.cpp)
     target_link_libraries(nfsu_race_run_tests PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_platform_desktop)
     nfsu_enable_warnings(nfsu_race_run_tests)
