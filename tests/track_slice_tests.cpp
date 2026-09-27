@@ -73,12 +73,12 @@ int main(int argc, char** argv) {
         if (!make_track_slice_frame(slice, sample, 0, frame, error)) {
             std::cerr << "sample " << sample << ": " << error << '\n'; return 6;
         }
-        if (frame.commands.draws.empty()) { std::cerr << "empty track frame\n"; return 7; }
-        max_draws = std::max(max_draws, frame.commands.draws.size());
+        if (frame.commands.draw_count() == 0) { std::cerr << "empty track frame\n"; return 7; }
+        max_draws = std::max(max_draws, frame.commands.draw_count());
         hits += frame.contact_status == TrackContactStatus::hit;
         ++frames;
-        std::cout << "sample " << sample << " draws " << frame.commands.draws.size()
-                  << " resources " << frame.commands.uploads.resources.size()
+        std::cout << "sample " << sample << " draws " << frame.commands.draw_count()
+                  << " resources " << frame.commands.resource_table().resources.size()
                   << " visible " << frame.visible << " triangles " << frame.triangles
                   << " far " << frame.far_plane << " contact " << track_contact_status_name(frame.contact_status) << '\n';
     }

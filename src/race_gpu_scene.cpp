@@ -13,24 +13,30 @@ RenderOptions race_render_options() {
     options.width = 1280; options.height = 720;
     return options;
 }
-void append_car_commands(RecordedCommands& track, const RecordedCommands& car) {
-    const auto offset = track.uploads.resources.size();
-    for (auto resource : car.uploads.resources) {
+void append_car_resources(UploadTable& track, const UploadTable& car) {
+    for (auto resource : car.resources) {
         resource.name = "race-car/" + resource.name;
-        track.uploads.resources.push_back(std::move(resource));
+        track.resources.push_back(std::move(resource));
     }
-    auto& a = track.uploads.totals; const auto& b = car.uploads.totals;
+    auto& a = track.totals; const auto& b = car.totals;
     a.resources += b.resources; a.vertex_buffers += b.vertex_buffers;
     a.index_buffers += b.index_buffers; a.textures += b.textures;
     a.generated_textures += b.generated_textures; a.vertex_bytes += b.vertex_bytes;
     a.index_bytes += b.index_bytes; a.texture_bytes += b.texture_bytes;
     a.generated_texture_bytes += b.generated_texture_bytes; a.empty_buffers += b.empty_buffers;
     a.largest_texture_bytes = std::max(a.largest_texture_bytes, b.largest_texture_bytes);
-    for (auto draw : car.draws) {
-        draw.name = "race-car/" + draw.name;
-        draw.vertex_resource += offset; draw.index_resource += offset;
-        if (draw.texture_resource != kNoHandle) draw.texture_resource += offset;
-        track.draws.push_back(std::move(draw));
+}
+void rebase_car_draw(RecordedDraw& draw, std::size_t offset) {
+    draw.name = "race-car/" + draw.name;
+    draw.vertex_resource += offset; draw.index_resource += offset;
+    if (draw.texture_resource != kNoHandle) draw.texture_resource += offset;
+}
+void append_car_commands(RecordedCommands& track, const RecordedCommands& car) {
+    const auto offset = track.owning_uploads().resources.size();
+    append_car_resources(track.owning_uploads(), car.owning_uploads());
+    for (auto draw : car.owning_draws()) {
+        rebase_car_draw(draw, offset);
+        track.owning_draws().push_back(std::move(draw));
     }
 }
 
@@ -46,8 +52,8 @@ bool combine_race_commands(RecordedCommands track, const RecordedCommands& car,
         std::memcmp(&track.frame, &car.frame, sizeof track.frame) != 0) {
         error = "track/car frame camera differs"; return false;
     }
-    if (track.draws.size() + car.draws.size() > kTrackSliceDrawLimit ||
-        track.uploads.resources.size() + car.uploads.resources.size() > kTrackSliceResourceLimit) {
+    if (track.owning_draws().size() + car.owning_draws().size() > kTrackSliceDrawLimit ||
+        track.owning_uploads().resources.size() + car.owning_uploads().resources.size() > kTrackSliceResourceLimit) {
         error = "combined race exceeds draw/resource capacity"; return false;
     }
     append_car_commands(track,car);
@@ -96,18 +102,18 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
 }
 std::uint64_t RaceGpuScene::cache_bytes() const {
     std::uint64_t bytes = sizeof(track_templates_) + template_of_group_.capacity()*sizeof(std::size_t) +
-        track_templates_.draws.capacity()*sizeof(RecordedDraw) +
-        track_templates_.uploads.resources.capacity()*sizeof(UploadResource);
-    for (const auto& draw : track_templates_.draws) bytes += draw.name.capacity()+1;
-    for (const auto& resource : track_templates_.uploads.resources) bytes += resource.name.capacity()+1;
+        track_templates_.owning_draws().capacity()*sizeof(RecordedDraw) +
+        track_templates_.owning_uploads().resources.capacity()*sizeof(UploadResource);
+    for (const auto& draw : track_templates_.owning_draws()) bytes += draw.name.capacity()+1;
+    for (const auto& resource : track_templates_.owning_uploads().resources) bytes += resource.name.capacity()+1;
     bytes += culler_.memory_bytes() + sizeof(combined_uploads_) + sizeof(car_templates_) +
         combined_uploads_.resources.capacity()*sizeof(UploadResource) +
-        car_templates_.draws.capacity()*sizeof(RecordedDraw) +
+        car_templates_.owning_draws().capacity()*sizeof(RecordedDraw) +
         (mesh_first_.capacity()+section_first_.capacity())*sizeof(std::size_t) +
         mesh_groups_.capacity()*sizeof(std::uint32_t) + selection_.capacity()*sizeof(TrackDrawListEntry) +
         track_placements_.capacity()*sizeof(DrawInstanceUniform);
     for (const auto& r : combined_uploads_.resources) bytes += r.name.capacity()+1;
-    for (const auto& d : car_templates_.draws) bytes += d.name.capacity()+1;
+    for (const auto& d : car_templates_.owning_draws()) bytes += d.name.capacity()+1;
     return bytes;
 }
 bool RaceGpuScene::prepare_templates(std::string& error) {
@@ -125,8 +131,8 @@ bool RaceGpuScene::prepare_templates(std::string& error) {
         !record_track_commands(track_.scene,list,options,{},track_templates_,error) ||
         !validate_recorded_commands(track_templates_,error)) return false;
     template_of_group_.assign(track_.scene.region.draws.size(),kNoHandle);
-    for (std::size_t i = 0; i < track_templates_.draws.size(); ++i)
-        template_of_group_[track_templates_.draws[i].group] = i;
+    for (std::size_t i = 0; i < track_templates_.owning_draws().size(); ++i)
+        template_of_group_[track_templates_.owning_draws()[i].group] = i;
     return true;
 }
 bool RaceGpuScene::prepare_frame_cache(std::string& error) {
@@ -153,18 +159,17 @@ bool RaceGpuScene::prepare_frame_cache(std::string& error) {
         }
     }
     if (!record_car_commands(car_, race_render_options(), {}, skin_source_, car_templates_, error)) return false;
-    RecordedCommands combined = track_templates_;
-    const auto track_count = track_templates_.draws.size();
     if (!validate_recorded_commands(car_templates_,error)) return false;
-    append_car_commands(combined,car_templates_);
-    if (combined.uploads.resources.size() > kTrackSliceResourceLimit) {
+    const auto offset = track_templates_.owning_uploads().resources.size();
+    if (offset + car_templates_.owning_uploads().resources.size() > kTrackSliceResourceLimit) {
         error = "prepared resource namespace exceeds capacity"; return false;
     }
-    for (std::size_t i = 0; i < car_templates_.draws.size(); ++i)
-        car_templates_.draws[i] = std::move(combined.draws[track_count+i]);
-    combined_uploads_ = std::move(combined.uploads);
-    // Only the final namespace owns metadata. Geometry remains in track_/car_.
-    track_templates_.uploads = {}; car_templates_.uploads = {};
+    // Move the track table and rebase the car definitions in place. Copying
+    // the entire track recording here needlessly duplicates every template.
+    combined_uploads_ = std::move(track_templates_.owning_uploads());
+    append_car_resources(combined_uploads_, car_templates_.owning_uploads());
+    for (auto& draw : car_templates_.owning_draws()) rebase_car_draw(draw, offset);
+    track_templates_.owning_uploads() = {}; car_templates_.owning_uploads() = {};
     selection_.reserve(kTrackSliceDrawLimit);
     return true;
 }
@@ -172,10 +177,10 @@ bool RaceGpuScene::prepare_frame_cache(std::string& error) {
 RecordedDrawView RaceGpuScene::selected_draw(std::size_t i) const {
     if (i < selection_.size()) {
         const auto& selected = selection_[i];
-        const auto& draw = track_templates_.draws.at(template_of_group_.at(selected.draw));
+        const auto& draw = track_templates_.owning_draws().at(template_of_group_.at(selected.draw));
         return {draw, selected.instance, track_placements_.at(selected.instance), draw.material, true};
     }
-    const auto& draw = car_templates_.draws.at(i-selection_.size());
+    const auto& draw = car_templates_.owning_draws().at(i-selection_.size());
     return {draw, draw.instance, draw.placement, draw.material, false};
 }
 
@@ -200,7 +205,7 @@ bool RaceGpuScene::select_track(const TrackCullReport& visible, RaceGpuFrame& ou
         entries += last-first;
         // Keep the reference path's far-plane retry, including empty groups
         // in the list capacity test even though they emit no hardware draw.
-        if (entries + car_templates_.draws.size() > kTrackSliceDrawLimit) return true;
+        if (entries + car_templates_.owning_draws().size() > kTrackSliceDrawLimit) return true;
         for (auto k = first; k < last; ++k) {
             const auto group = mesh_groups_[k];
             if (group >= template_of_group_.size()) { error = "prepared group is out of range"; return false; }
@@ -209,11 +214,11 @@ bool RaceGpuScene::select_track(const TrackCullReport& visible, RaceGpuFrame& ou
                 if (!scene.region.draws[group].index_count) continue;
                 error = "prepared group has no validated template"; return false;
             }
-            if (index >= track_templates_.draws.size() || selection_.size() >= kTrackSliceDrawLimit) {
+            if (index >= track_templates_.owning_draws().size() || selection_.size() >= kTrackSliceDrawLimit) {
                 error = "prepared draw capacity exceeded"; return false;
             }
             selection_.push_back({static_cast<std::uint32_t>(handle), group});
-            out.triangles += track_templates_.draws[index].index_count/3;
+            out.triangles += track_templates_.owning_draws()[index].index_count/3;
         }
     }
     return true;
@@ -261,8 +266,8 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
             std::size_t entries = 0;
             if (!select_track(culler_.result(),out,entries,error)) return false;
             stage(&RaceFrameProfile::list_ms);
-            if (entries + car_templates_.draws.size() > kTrackSliceDrawLimit) continue;
-            for (auto& draw : car_templates_.draws) {
+            if (entries + car_templates_.owning_draws().size() > kTrackSliceDrawLimit) continue;
+            for (auto& draw : car_templates_.owning_draws()) {
                 if (draw.instance != kNoHandle) {
                     if (draw.instance >= car_.instances.size()) { error = "prepared car instance is out of range"; return false; }
                     const auto& instance = car_.instances[draw.instance];
@@ -272,13 +277,13 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
             }
             if (!record_frame_state(options,{},out.commands,error)) return false;
             stage(&RaceFrameProfile::car_ms);
-            out.track_draws = selection_.size(); out.car_draws = car_templates_.draws.size();
+            out.track_draws = selection_.size(); out.car_draws = car_templates_.owning_draws().size();
             out.visible = culler_.result().visible.size(); out.far_plane = far;
             stage(&RaceFrameProfile::track_ms);
             if (out.triangles > RenderLimits{}.max_submitted_triangles) {
                 error = "prepared submitted triangle capacity exceeded"; return false;
             }
-            for (const auto& draw : car_templates_.draws) out.triangles += draw.index_count/3;
+            for (const auto& draw : car_templates_.owning_draws()) out.triangles += draw.index_count/3;
             out.commands.source_ = this; out.commands.generation_ = generation_;
             stage(&RaceFrameProfile::combine_ms);
             return true;
@@ -292,15 +297,15 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         RecordedCommands car_commands;
         if (!record_car_commands(car_, options, {}, skin_source_, car_commands, error)) return false;
         stage(&RaceFrameProfile::car_ms);
-        if (list.entries.size() + car_commands.draws.size() > kTrackSliceDrawLimit) continue;
+        if (list.entries.size() + car_commands.owning_draws().size() > kTrackSliceDrawLimit) continue;
         RecordedCommands track_commands;
         if (!record_track_commands(track_.scene, list, options, {}, track_commands, error)) return false;
         stage(&RaceFrameProfile::track_ms);
         RaceGpuFrame result;
-        result.car_draws = car_commands.draws.size(); result.track_draws = track_commands.draws.size();
+        result.car_draws = car_commands.owning_draws().size(); result.track_draws = track_commands.owning_draws().size();
         result.visible = visible.visible.size(); result.unplaced = list.cost.visible_unplaced;
         result.far_plane = far; result.triangles = list.cost.triangles;
-        for (const auto& draw : car_commands.draws) result.triangles += draw.index_count/3;
+        for (const auto& draw : car_commands.owning_draws()) result.triangles += draw.index_count/3;
         if (!combine_race_commands(std::move(track_commands), car_commands, result.commands, error)) return false;
         stage(&RaceFrameProfile::combine_ms);
         out = std::move(result); return true;

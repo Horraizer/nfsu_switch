@@ -178,6 +178,22 @@ std::string RecordedDrawView::diagnostic_name() const {
 bool RecordedCommands::generation_valid() const {
     return !source_ || generation_ == source_->command_generation();
 }
+UploadTable& RecordedCommands::owning_uploads() {
+    if (borrowed()) throw std::logic_error("borrowed frame has no owning upload table");
+    return uploads;
+}
+const UploadTable& RecordedCommands::owning_uploads() const {
+    if (borrowed()) throw std::logic_error("borrowed frame has no owning upload table");
+    return uploads;
+}
+std::vector<RecordedDraw>& RecordedCommands::owning_draws() {
+    if (borrowed()) throw std::logic_error("borrowed frame has no owning draws");
+    return draws;
+}
+const std::vector<RecordedDraw>& RecordedCommands::owning_draws() const {
+    if (borrowed()) throw std::logic_error("borrowed frame has no owning draws");
+    return draws;
+}
 const UploadTable& RecordedCommands::resource_table() const {
     if (!generation_valid()) throw std::logic_error("expired command generation");
     return source_ ? source_->resource_table() : uploads;
@@ -294,11 +310,11 @@ bool record_car_commands(const PreparedCarScene& scene, const RenderOptions& opt
     try {
         RecordedCommands out;
         if (!frame_state(options, limits, out, error) ||
-            !build_car_upload_table(scene, generated_texture_source, out.uploads, error)) return false;
+            !build_car_upload_table(scene, generated_texture_source, out.owning_uploads(), error)) return false;
         std::uint64_t triangles = 0;
         for (const auto& mesh : scene.meshes) triangles += mesh.triangles.size();
         if (!triangle_limits(triangles, prepared_draw_triangles(scene), limits, error)) return false;
-        const ResourceMap resources(out.uploads, scene.meshes.size(), scene.textures.size());
+        const ResourceMap resources(out.owning_uploads(), scene.meshes.size(), scene.textures.size());
         PreparedMeshInstances copies;
         std::vector<std::uint32_t> order;
         if (!prepared_mesh_instances(scene, copies, error) ||
@@ -323,7 +339,7 @@ bool record_car_commands(const PreparedCarScene& scene, const RenderOptions& opt
                     !pipeline(draw, false, texture, source.flags, source.texture_hash, options, error)) return false;
                 if (draw.instance != kNoHandle)
                     draw.material.alpha[3] = static_cast<float>(scene.instances[draw.instance].lamp_mode);
-                out.draws.push_back(std::move(draw));
+                out.owning_draws().push_back(std::move(draw));
             }
         }
         commands = std::move(out);
@@ -346,12 +362,12 @@ bool record_track_commands(const PreparedTrackScene& scene, const TrackDrawList&
     try {
         RecordedCommands out;
         if (!frame_state(options, limits, out, error) ||
-            !build_track_upload_table(scene, out.uploads, error) ||
+            !build_track_upload_table(scene, out.owning_uploads(), error) ||
             !validate_track_draw_list(scene, list, error)) return false;
         std::uint64_t triangles = 0;
         for (const auto& mesh : scene.region.meshes) triangles += mesh.triangles.size();
         if (!triangle_limits(triangles, list.cost.triangles, limits, error)) return false;
-        const ResourceMap resources(out.uploads, scene.region.meshes.size(), scene.region.textures.size());
+        const ResourceMap resources(out.owning_uploads(), scene.region.meshes.size(), scene.region.textures.size());
         for (const auto& entry : list.entries) {
             const auto& source = scene.region.draws[entry.draw];
             if (source.index_count == 0) continue;
@@ -368,7 +384,7 @@ bool record_track_commands(const PreparedTrackScene& scene, const TrackDrawList&
             const auto* texture = source.binding == BindingKind::resolved ? &scene.region.textures[source.texture] : nullptr;
             if (!buffers(scene.region.meshes[source.mesh], source, resources, draw, error) ||
                 !pipeline(draw, true, texture, 0, source.texture_hash, options, error)) return false;
-            out.draws.push_back(std::move(draw));
+            out.owning_draws().push_back(std::move(draw));
         }
         commands = std::move(out);
         return true;

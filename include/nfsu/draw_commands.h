@@ -38,7 +38,7 @@ struct RecordedDraw {
     std::size_t group = 0;
     std::size_t mesh = 0;
     std::size_t instance = kNoHandle;
-    // Indices in RecordedCommands::uploads.resources, not separate uploads.
+    // Indices in RecordedCommands::resource_table().resources.
     std::size_t vertex_resource = kNoHandle;
     std::size_t index_resource = kNoHandle;
     std::size_t texture_resource = kNoHandle;
@@ -79,15 +79,25 @@ public:
 };
 
 struct RecordedCommands {
+private:
     // Borrowed source bytes: the scene must remain alive and unchanged.
     // Pass this table directly to UploadLedger::upload_table. Returned
     // handles have the same positions as the resource references above.
     UploadTable uploads;
+public:
     DrawFrameUniform frame;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     unsigned char clear_color[4]{};
+private:
     std::vector<RecordedDraw> draws;
+public:
+    // Construction and owning-reference inspection only. These throw on a
+    // borrowed frame, so an empty backing container can never look valid.
+    UploadTable& owning_uploads();
+    const UploadTable& owning_uploads() const;
+    std::vector<RecordedDraw>& owning_draws();
+    const std::vector<RecordedDraw>& owning_draws() const;
 
     // Consumers use these accessors for both owning reference commands and
     // borrowed race frames. The owner must outlive the frame; a race frame

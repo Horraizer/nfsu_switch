@@ -1,4 +1,5 @@
 #include "nfsu/race_gpu_scene.h"
+#include "nfsu/car_parts.h"
 #include "nfsu/posix_file_system.h"
 #include "nfsu/draw_execution.h"
 #include "nfsu/platform_desktop.h"
@@ -101,31 +102,31 @@ int main(int argc, char** argv) {
         v.bytes = sizeof vertices; v.elements = 3; v.element_bytes = sizeof(MeshVertex);
         UploadResource ix; ix.name = "indices"; ix.kind = UploadResourceKind::index_buffer;
         ix.data = reinterpret_cast<const unsigned char*>(indices); ix.bytes = sizeof indices; ix.elements = 3; ix.element_bytes = 2;
-        fixture.uploads.resources = {v, ix}; fixture.uploads.totals.resources = 2;
-        fixture.uploads.totals.vertex_buffers = fixture.uploads.totals.index_buffers = 1;
-        fixture.uploads.totals.vertex_bytes = sizeof vertices; fixture.uploads.totals.index_bytes = sizeof indices;
+        fixture.owning_uploads().resources = {v, ix}; fixture.owning_uploads().totals.resources = 2;
+        fixture.owning_uploads().totals.vertex_buffers = fixture.owning_uploads().totals.index_buffers = 1;
+        fixture.owning_uploads().totals.vertex_bytes = sizeof vertices; fixture.owning_uploads().totals.index_bytes = sizeof indices;
         RecordedDraw draw; draw.vertex_resource = 0; draw.index_resource = 1; draw.vertex_count = draw.index_count = 3;
         for (const auto& p : shader_manifest::kPrograms) if (std::string(p.name) == "car_fallback") {
             draw.program = &p; draw.pipeline = p.variants[0];
         }
-        fixture.draws.push_back(draw);
+        fixture.owning_draws().push_back(draw);
         RecordedCommands joined;
         require(combine_race_commands(fixture, fixture, joined, error), error);
-        require(joined.draws.size() == 2 && joined.uploads.resources.size() == 4 &&
-                joined.draws[1].vertex_resource == 2 && joined.draws[1].index_resource == 3 &&
-                joined.draws[1].texture_resource == kNoHandle, "car upload references not rebased");
+        require(joined.owning_draws().size() == 2 && joined.owning_uploads().resources.size() == 4 &&
+                joined.owning_draws()[1].vertex_resource == 2 && joined.owning_draws()[1].index_resource == 3 &&
+                joined.owning_draws()[1].texture_resource == kNoHandle, "car upload references not rebased");
         DrawValidationAudit checked_audit;
         auto* previous_checked_audit = set_draw_validation_audit(&checked_audit);
         const bool checked_ok = validate_recorded_commands(joined,error);
         set_draw_validation_audit(previous_checked_audit);
         require(checked_ok && checked_audit.index_visits == 6, "index audit missed reference validation");
         auto many = fixture;
-        many.uploads.resources.resize(4126, v);
-        many.uploads.resources[1] = ix;
+        many.owning_uploads().resources.resize(4126, v);
+        many.owning_uploads().resources[1] = ix;
         DrawExecutionPlan slot_plan;
         require(plan_draw_execution(many, slot_plan, error) && slot_plan.buffer_allocations == 4126,
                 "combined scene buffer slots truncated at 4096");
-        auto empty = fixture; empty.uploads.resources.clear(); empty.draws.clear();
+        auto empty = fixture; empty.owning_uploads().resources.clear(); empty.owning_draws().clear();
         require(plan_draw_execution(empty, slot_plan, error) && slot_plan.buffer_allocations == 1,
                 "empty scene lost its valid arena configuration");
         unsigned char rgba[4] = {10,20,30,255};
@@ -134,19 +135,19 @@ int main(int argc, char** argv) {
         texture.memory = UploadMemory::image; texture.data = rgba; texture.bytes = 4;
         require(check_texture_upload_format(TextureUploadFormat::rgba8,1,1,4,texture.texture,error),error);
         texture.elements = 1; texture.element_bytes = 4;
-        textured.uploads.resources.push_back(texture); textured.uploads.totals.resources = 3;
-        textured.uploads.totals.textures = 1; textured.uploads.totals.texture_bytes = 4;
-        textured.uploads.totals.largest_texture_bytes = 4;
-        textured.draws[0].texture_resource = 2;
+        textured.owning_uploads().resources.push_back(texture); textured.owning_uploads().totals.resources = 3;
+        textured.owning_uploads().totals.textures = 1; textured.owning_uploads().totals.texture_bytes = 4;
+        textured.owning_uploads().totals.largest_texture_bytes = 4;
+        textured.owning_draws()[0].texture_resource = 2;
         for (const auto& p : shader_manifest::kPrograms) if (std::string(p.name) == "car_textured") {
-            textured.draws[0].program = &p; textured.draws[0].pipeline = p.variants[0];
+            textured.owning_draws()[0].program = &p; textured.owning_draws()[0].pipeline = p.variants[0];
         }
         require(combine_race_commands(textured,textured,joined,error),error);
-        require(joined.draws[1].texture_resource == 5 && joined.uploads.resources[5].data == rgba,
+        require(joined.owning_draws()[1].texture_resource == 5 && joined.owning_uploads().resources[5].data == rgba,
                 "car texture reference not rebased");
         auto other = fixture; other.frame.eye[0] = 1;
-        require(!combine_race_commands(fixture, other, joined, error) && joined.draws.empty(), "mixed cameras accepted");
-        other = fixture; other.draws.resize(2047, draw);
+        require(!combine_race_commands(fixture, other, joined, error) && joined.owning_draws().empty(), "mixed cameras accepted");
+        other = fixture; other.owning_draws().resize(2047, draw);
         require(!combine_race_commands(fixture, other, joined, error), "combined draw overflow accepted");
         std::cout << "PASS: fixed clock, exact replay cursor, refusal and combined draw guards\n";
         if (argc == 2) return 0;
@@ -179,8 +180,19 @@ int main(int argc, char** argv) {
                 kPersistentBudgetPlaceholder, "persistent payload over budget");
         RaceGpuFrame frame;
         require(scene.frame(race.session(), frame, error), error);
+        const auto& const_commands = frame.commands;
+        unsigned owning_refusals = 0;
+        try { (void)frame.commands.owning_draws(); }
+        catch (const std::logic_error&) { ++owning_refusals; }
+        try { (void)frame.commands.owning_uploads(); }
+        catch (const std::logic_error&) { ++owning_refusals; }
+        try { (void)const_commands.owning_draws(); }
+        catch (const std::logic_error&) { ++owning_refusals; }
+        try { (void)const_commands.owning_uploads(); }
+        catch (const std::logic_error&) { ++owning_refusals; }
+        require(owning_refusals == 4, "borrowed frame exposed owning storage");
         RecordedCommands refused_append;
-        require(!combine_race_commands(frame.commands,fixture,refused_append,error) && refused_append.draws.empty(),
+        require(!combine_race_commands(frame.commands,fixture,refused_append,error) && refused_append.owning_draws().empty(),
                 "borrowed combined frame was appended as an owning recording");
         auto expired = frame.commands;
         require(scene.frame(race.session(), frame, error), error);
@@ -261,10 +273,10 @@ int main(int argc, char** argv) {
                 require(frame_ok, error);
                 require(audit.index_visits == 0, "prepared frame rescanned indices");
                 require(frame_allocations == 0, "prepared frame allocated after load");
-                require(frame.commands.draws.empty() && frame.commands.uploads.resources.empty(),
-                        "prepared frame reconstructed owning commands or upload table");
+                require(frame.commands.borrowed(), "prepared frame reconstructed owning commands");
                 RaceGpuFrame reference;
                 require(scene.frame(race.session(),reference,error,nullptr,true),error);
+                require(!reference.commands.borrowed(), "reference path returned a borrowed recording");
                 require(reference.commands.width == frame.commands.width && reference.commands.height == frame.commands.height &&
                     std::memcmp(reference.commands.clear_color,frame.commands.clear_color,4) == 0 &&
                     reference.commands.draw_count() == frame.commands.draw_count() &&
@@ -279,7 +291,7 @@ int main(int argc, char** argv) {
                             "cached upload resource differs from reference at index " + std::to_string(i));
                 for (std::size_t i = 0; i < frame.commands.draw_count(); ++i) {
                     const auto selected = frame.commands.draw_view(i);
-                    const auto& a = selected.definition; const auto& b = reference.commands.draws[i];
+                    const auto& a = selected.definition; const auto& b = reference.commands.owning_draws()[i];
                     require(selected.diagnostic_name() == b.name && a.group == b.group && a.mesh == b.mesh && selected.instance == b.instance &&
                         a.vertex_resource == b.vertex_resource && a.index_resource == b.index_resource &&
                         a.texture_resource == b.texture_resource && a.first_vertex == b.first_vertex &&
@@ -295,6 +307,45 @@ int main(int argc, char** argv) {
                         "cached ordered draw differs from reference");
                 }
                 require(frame.track_draws > 0 && frame.car_draws == 94, "missing track/car commands");
+                if (tick == 13128) {
+                    require(race.session().animation().braking, "animation guard tick is not braking");
+                    StockFrameInputs inputs;
+                    require(read_stock_frame_inputs(root, inputs), "animation guard retail car inputs unavailable");
+                    StockFrame stock;
+                    require(prepare_stock_frame(inputs, stock_240sx_request(), stock_240sx_skin(), stock, error), error);
+                    std::vector<PreparedInstance> animated = stock.scene.instances;
+                    std::vector<PreparedInstance> static_placed = stock.scene.instances;
+                    require(drive_place_instances(stock.scene.instances, race.session().car(),
+                                race.session().spec(), animated, &race.session().animation()),
+                            "animation guard placement failed");
+                    require(drive_place_instances(stock.scene.instances, race.session().car(),
+                                race.session().spec(), static_placed),
+                            "animation guard static placement failed");
+                    std::size_t wheels = 0, moving_wheels = 0, headlights = 0, brakelights = 0;
+                    for (std::size_t i = 0; i < frame.commands.draw_count(); ++i) {
+                        const auto draw = frame.commands.draw_view(i);
+                        if (draw.definition.name.compare(0, 9, "race-car/") != 0) continue;
+                        require(draw.instance < stock.scene.instances.size(), "animation guard instance out of range");
+                        const auto slot = stock.scene.instances[draw.instance].part_slot;
+                        if (slot == kSlotWheel) {
+                            ++wheels;
+                            require(std::memcmp(draw.placement.rows, animated[draw.instance].transform,
+                                        sizeof animated[draw.instance].transform) == 0,
+                                    "animated race wheel placement differs from car state");
+                            if (std::memcmp(animated[draw.instance].transform,
+                                            static_placed[draw.instance].transform,
+                                            sizeof animated[draw.instance].transform) != 0) ++moving_wheels;
+                        } else if (slot == kSlotHeadlight) {
+                            ++headlights;
+                            require(draw.material.alpha[3] == 1.0F, "race headlight mode is not on");
+                        } else if (slot == kSlotBrakelight) {
+                            ++brakelights;
+                            require(draw.material.alpha[3] == 3.0F, "braking race lamp mode is not bright");
+                        }
+                    }
+                    require(wheels > 0 && moving_wheels > 0 && headlights > 0 && brakelights > 0,
+                            "animation guard did not inspect moving wheels and both lamp slots");
+                }
                 require(validate_draw_update(uploaded, frame.commands, kTrackSliceDrawLimit, error), error);
                 max_draws = std::max(max_draws, frame.commands.draw_count()); ++frames;
                 if (inspect.count(tick)) std::cout << "frame " << tick << " draws " << frame.commands.draw_count()
