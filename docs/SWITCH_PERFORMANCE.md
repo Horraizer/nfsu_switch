@@ -33,6 +33,22 @@ resident scene, rebuilds resource maps and repeats invariant group work.
 Its inputs do not change while this race scene remains loaded. That is the
 measured bottleneck addressed here. PC times are not Switch estimates.
 
+Three interleaved runs in the same allocation-counted binary retained this
+comparison (milliseconds, 120-frame means per run):
+
+| Run | Reference track | Cached track | Reference stage sum | Cached stage sum |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 2.302540 | 0.246333 | 3.457721 | 1.428656 |
+| 2 | 2.441370 | 0.341494 | 3.684880 | 1.766957 |
+| 3 | 2.535730 | 0.275634 | 3.825929 | 1.492895 |
+
+The fixed-pose live C++ byte counter was stable at 43402887 on the
+reference path and 43455111 on the cached path after warmup. Both hold the
+new cache; the 52224-byte difference is per-frame vector capacity. This is
+not an allocator-arena measurement. Timings vary with host load, which is
+why correctness and resource limits, rather than these milliseconds, gate
+regressions.
+
 ## Change and ownership
 
 The race scene prepares one validated command template per placed track
