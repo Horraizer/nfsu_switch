@@ -1474,6 +1474,11 @@ if(NFSU_BUILD_TESTS)
     add_executable(nfsu_race_run_tests tests/race_run_tests.cpp)
     target_link_libraries(nfsu_race_run_tests PRIVATE nfsu_race_run nfsu_posix_file_system)
     nfsu_enable_warnings(nfsu_race_run_tests)
+    if(MINGW)
+        # The test counts operator new/delete pairs. Windows DLL calls do
+        # not interpose the executable's operators; keep libstdc++ local.
+        target_link_options(nfsu_race_run_tests PRIVATE -static-libstdc++ -static-libgcc)
+    endif()
     add_test(NAME nfsu_race_run_tests COMMAND nfsu_race_run_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt)
 endif()

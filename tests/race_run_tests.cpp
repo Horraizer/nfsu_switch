@@ -6,6 +6,45 @@
 #include <algorithm>
 #include <set>
 #include <stdexcept>
+#include <cstring>
+#include <cstdlib>
+#include <new>
+#include <limits>
+
+// Count live C++ allocation bytes without allocating inside the counter.
+// This is a per-frame retention check, not a claim about the newlib heap.
+namespace {
+std::size_t live_bytes = 0;
+struct Allocation { void* raw; std::size_t bytes; };
+void* allocate_counted(std::size_t bytes, std::size_t alignment) {
+    if (!bytes) bytes = 1;
+    alignment = std::max(alignment,alignof(std::max_align_t));
+    if (bytes > std::numeric_limits<std::size_t>::max()-alignment-sizeof(Allocation)) throw std::bad_alloc();
+    void* raw = std::malloc(bytes+alignment+sizeof(Allocation));
+    if (!raw) throw std::bad_alloc();
+    auto address = (reinterpret_cast<std::uintptr_t>(raw)+sizeof(Allocation)+alignment-1)&~(alignment-1);
+    auto* header = reinterpret_cast<Allocation*>(address)-1;
+    header->raw = raw; header->bytes = bytes; live_bytes += bytes;
+    return reinterpret_cast<void*>(address);
+}
+void free_counted(void* memory) noexcept {
+    if (!memory) return;
+    auto* header = static_cast<Allocation*>(memory)-1;
+    live_bytes -= header->bytes; std::free(header->raw);
+}
+}
+void* operator new(std::size_t n) { return allocate_counted(n,alignof(std::max_align_t)); }
+void* operator new[](std::size_t n) { return ::operator new(n); }
+void operator delete(void* p) noexcept { free_counted(p); }
+void operator delete[](void* p) noexcept { free_counted(p); }
+void operator delete(void* p,std::size_t) noexcept { free_counted(p); }
+void operator delete[](void* p,std::size_t) noexcept { free_counted(p); }
+void* operator new(std::size_t n,std::align_val_t a) { return allocate_counted(n,static_cast<std::size_t>(a)); }
+void* operator new[](std::size_t n,std::align_val_t a) { return ::operator new(n,a); }
+void operator delete(void* p,std::align_val_t) noexcept { free_counted(p); }
+void operator delete[](void* p,std::align_val_t) noexcept { free_counted(p); }
+void operator delete(void* p,std::size_t,std::align_val_t) noexcept { free_counted(p); }
+void operator delete[](void* p,std::size_t,std::align_val_t) noexcept { free_counted(p); }
 
 void require(bool okay, const std::string& error) { if (!okay) throw std::runtime_error(error); }
 int main(int argc, char** argv) {
@@ -97,14 +136,17 @@ int main(int argc, char** argv) {
             }
         } polled;
         require(scene.load(posix_file_system(), root, error, nullptr, &polled), error);
-        require(polled.sections >= 4*scene.track.sections && polled.car_prepared,
+        require(polled.sections >= 4*scene.track().sections && polled.car_prepared,
                 "race scene disconnected the shared loader checkpoints");
-        RaceRun race; require(race.start(root, scene.track, error), error);
+        require(!scene.load(posix_file_system(),root,error),"loaded race scene allowed cache-invalidating reload");
+        RaceRun race; require(race.start(root, scene.track(), error), error);
         require(!race.commit(error), "commit without step accepted");
         require(replay.load(text, error), error);
-        std::cout << "payload stream " << scene.track.streaming_bytes << " car " << scene.car_bytes()
+        require(scene.cache_bytes() <= 8*kMiB,"command cache exceeded metadata limit");
+        std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 8*kMiB << '\n';
+        std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';
-        require(scene.car_bytes()+race.persistent_bytes()+scene.track.contacts.memory.resident_bytes <=
+        require(scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes() <=
                 kPersistentBudgetPlaceholder, "persistent payload over budget");
         RaceGpuFrame frame;
         require(scene.frame(race.session(), frame, error), error);
@@ -134,6 +176,27 @@ int main(int argc, char** argv) {
         require(ledger.release_all(handles,2,error),error); ledger.retire(2);
         require(!buffers.stats().used_bytes && !images.stats().used_bytes && !staging.stats().used_bytes,
                 "combined upload ledger leaked allocations");
+        if (argc > 3 && (std::string(argv[3]) == "--profile" || std::string(argv[3]) == "--profile-reference")) {
+            RaceFrameProfile total;
+            std::size_t retained = 0;
+            for (unsigned i = 0; i < 121; ++i) {
+                RaceFrameProfile sample;
+                require(scene.frame(race.session(),frame,error,&sample,std::string(argv[3]) == "--profile-reference"),error);
+                const auto observed = live_bytes;
+                if (!i) retained = observed;
+                else require(observed == retained,"fixed-pose frames retain growing C++ allocations");
+                if (i) {
+                    total.cull_ms += sample.cull_ms; total.list_ms += sample.list_ms;
+                    total.car_ms += sample.car_ms; total.track_ms += sample.track_ms;
+                    total.combine_ms += sample.combine_ms;
+                }
+            }
+            std::cout << "PASS: fixed-pose live C++ bytes stable at " << retained << " after warmup\n";
+            std::cout << "PROFILE 120 fixed-pose frames mean ms: cull " << total.cull_ms/120
+                << " list " << total.list_ms/120 << " car " << total.car_ms/120
+                << " track " << total.track_ms/120 << " combine " << total.combine_ms/120 << '\n';
+            return 0;
+        }
         std::size_t frames = 0, max_draws = 0;
         const std::set<std::uint64_t> inspect = {1,163,180,600,6000,11344,12459,13128,24300,35396,36510,37177,48336};
         const bool full = argc > 3 && std::string(argv[3]) == "--full-draws";
@@ -147,6 +210,32 @@ int main(int argc, char** argv) {
             const auto tick = race.session().timing().step;
             if (full || (sampled && tick%60 == 0) || inspect.count(tick)) {
                 require(scene.frame(race.session(), frame, error), error);
+                RaceGpuFrame reference;
+                require(scene.frame(race.session(),reference,error,nullptr,true),error);
+                require(reference.commands.width == frame.commands.width && reference.commands.height == frame.commands.height &&
+                    std::memcmp(reference.commands.clear_color,frame.commands.clear_color,4) == 0 &&
+                    reference.commands.draws.size() == frame.commands.draws.size() &&
+                    reference.commands.uploads.resources.size() == frame.commands.uploads.resources.size() &&
+                    std::memcmp(&reference.commands.frame,&frame.commands.frame,sizeof(DrawFrameUniform)) == 0 &&
+                    reference.triangles == frame.triangles && reference.far_plane == frame.far_plane &&
+                    reference.visible == frame.visible && reference.unplaced == frame.unplaced,
+                    "cached frame metadata differs from reference");
+                for (std::size_t i = 0; i < frame.commands.draws.size(); ++i) {
+                    const auto& a = frame.commands.draws[i]; const auto& b = reference.commands.draws[i];
+                    require(a.name == b.name && a.group == b.group && a.mesh == b.mesh && a.instance == b.instance &&
+                        a.vertex_resource == b.vertex_resource && a.index_resource == b.index_resource &&
+                        a.texture_resource == b.texture_resource && a.first_vertex == b.first_vertex &&
+                        a.vertex_count == b.vertex_count && a.first_index == b.first_index && a.index_count == b.index_count &&
+                        a.program == b.program && a.pipeline.name == b.pipeline.name &&
+                        a.pipeline.cull == b.pipeline.cull && a.pipeline.alpha_test == b.pipeline.alpha_test &&
+                        a.pipeline.alpha_ref == b.pipeline.alpha_ref && a.pipeline.blend == b.pipeline.blend &&
+                        a.pipeline.blend_src == b.pipeline.blend_src && a.pipeline.blend_dst == b.pipeline.blend_dst &&
+                        a.pipeline.blend_op == b.pipeline.blend_op && a.pipeline.depth_test == b.pipeline.depth_test &&
+                        a.pipeline.depth_write == b.pipeline.depth_write && a.pipeline.color_write == b.pipeline.color_write &&
+                        std::memcmp(&a.placement,&b.placement,sizeof a.placement) == 0 &&
+                        std::memcmp(&a.material,&b.material,sizeof a.material) == 0,
+                        "cached ordered draw differs from reference");
+                }
                 require(frame.track_draws > 0 && frame.car_draws == 94, "missing track/car commands");
                 require(validate_draw_update(uploaded, frame.commands, kTrackSliceDrawLimit, error), error);
                 max_draws = std::max(max_draws, frame.commands.draws.size()); ++frames;
