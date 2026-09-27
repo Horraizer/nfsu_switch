@@ -16,6 +16,10 @@ constexpr std::size_t kFrames = 1024;
 constexpr std::size_t kBuffers = 3;
 constexpr std::size_t kBufferBytes = kFrames * 2 * sizeof(std::int16_t);
 constexpr std::size_t kPoolBytes = kBuffers * kBufferBytes;
+constexpr int kVoiceChannels = 2;
+constexpr int kChannelPool = 2;
+static_assert(kChannelPool >= kVoiceChannels,
+              "audren channel pool must cover the stereo voice");
 } // namespace
 
 struct Output::Impl {
@@ -94,7 +98,7 @@ bool Output::start(Render render, std::string& error) {
         return false;
     }
     const AudioRendererConfig config{
-        AudioRendererOutputRate_48kHz, 1, 0, 1, 1, 2};
+        AudioRendererOutputRate_48kHz, kChannelPool, 0, 1, 1, 2};
     if (R_FAILED(audrenInitialize(&config))) {
         error = "audrenInitialize failed";
         return false;
@@ -133,7 +137,7 @@ bool Output::start(Render render, std::string& error) {
         return false;
     }
     p.renderer_started = true;
-    if (!audrvVoiceInit(&p.driver, 0, 2, PcmFormat_Int16, 48000)) {
+    if (!audrvVoiceInit(&p.driver, 0, kVoiceChannels, PcmFormat_Int16, 48000)) {
         error = "audren stereo voice init failed";
         stop();
         return false;

@@ -130,6 +130,50 @@ void test_mixer() {
     check(out == std::array<std::int16_t,10>{1000,-2000,2000,-3000,
                                              3000,-4000,3000,-4000,0,0},
           "stereo channels and linear midpoint");
+    audio::PcmClip boundary{{1000,2000,4000}, 24000, 1, 1, 3};
+    check(mixer.play(0, &boundary, true), "start loop boundary voice");
+    std::array<std::int16_t, 14> boundary_out{};
+    mixer.render(boundary_out.data(), 7);
+    check(boundary_out == std::array<std::int16_t, 14>{
+        1000,1000,1500,1500,2000,2000,3000,3000,
+        4000,4000,3000,3000,2000,2000},
+        "loop-end interpolation uses loop-start neighbour");
+    mixer.stop(0);
+
+    audio::PcmClip impact;
+    impact.rate = 48000;
+    impact.channels = 1;
+    impact.pcm.assign(1000, 10000);
+    check(mixer.play(5, &impact, false, 32768, 65536, true),
+          "start impact with attack fade");
+    std::array<std::int16_t, 240 * 2> impact_out{};
+    mixer.render(impact_out.data(), 120);
+    check(impact_out[0] < 100 && impact_out[238] == 5000,
+          "impact attack reaches half level smoothly");
+    mixer.control(5, 0, 65536);
+    check(mixer.play(8, &impact, false, 32768, 65536, true),
+          "start second impact on alternating slot");
+    mixer.render(impact_out.data(), 240);
+    check(impact_out[0] > 4900 && impact_out[0] < 5100 &&
+          impact_out[478] == 10000,
+          "restarted impacts crossfade without a step");
+}
+
+void test_output_fade() {
+    audio::OutputFade fade;
+    std::array<std::int16_t, 240 * 2> output{};
+    output.fill(24000);
+    fade.apply(output.data(), 240, false);
+    check(output[0] == 100 && output[478] == 24000 && !fade.silent(),
+          "output fades in over five milliseconds");
+    output.fill(24000);
+    fade.apply(output.data(), 240, true);
+    check(output[0] == 23900 && output[478] == 0 && fade.silent(),
+          "pause and finish fade to silence");
+    output.fill(24000);
+    fade.apply(output.data(), 1, false);
+    check(output[0] == 100 && !fade.silent(),
+          "output resumes without an abrupt step");
 }
 
 void test_alias_rejection() {
@@ -272,6 +316,7 @@ void test_decoder_thread_setup_failure() {
 int main() {
     try {
         test_mixer();
+        test_output_fade();
         test_alias_rejection();
         test_ring();
         test_ast_streamer();

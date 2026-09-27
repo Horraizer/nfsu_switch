@@ -46,11 +46,13 @@ bool PcmClip::valid() const noexcept {
 }
 
 bool Mixer::play(std::size_t slot, const PcmClip* clip, bool loop,
-                 std::uint32_t gain_q15, std::uint32_t pitch_q16) noexcept {
+                 std::uint32_t gain_q15, std::uint32_t pitch_q16,
+                 bool fade_in) noexcept {
     if (slot >= voices_.size() || !clip || !clip->valid() || !pitch_q16)
         return false;
     const auto gain = std::min(gain_q15, 32768U);
-    voices_[slot] = {clip, 0, gain, gain, gain, 0,
+    voices_[slot] = {clip, 0, fade_in ? 0U : gain, gain,
+                     fade_in ? 0U : gain, fade_in ? kGainRampFrames : 0U,
                      std::min(pitch_q16, 262144U), loop};
     return true;
 }
@@ -134,6 +136,23 @@ void Mixer::render(std::int16_t* stereo, std::size_t frames,
         clipped_samples_ += right < -32768 || right > 32767;
         stereo[frame * 2] = clamp16(left);
         stereo[frame * 2 + 1] = clamp16(right);
+    }
+}
+
+void OutputFade::apply(std::int16_t* stereo, std::size_t frames,
+                       bool muted) noexcept {
+    if (!stereo) return;
+    for (std::size_t i = 0; i < frames; ++i) {
+        if (muted) {
+            if (level_) --level_;
+        } else if (level_ < kGainRampFrames) ++level_;
+        const auto level = static_cast<std::int32_t>(level_);
+        stereo[i * 2] = static_cast<std::int16_t>(
+            static_cast<std::int32_t>(stereo[i * 2]) * level /
+            static_cast<std::int32_t>(kGainRampFrames));
+        stereo[i * 2 + 1] = static_cast<std::int16_t>(
+            static_cast<std::int32_t>(stereo[i * 2 + 1]) * level /
+            static_cast<std::int32_t>(kGainRampFrames));
     }
 }
 

@@ -116,17 +116,18 @@ struct RaceAudioService::Impl {
     std::array<bool, 4> has_engine{};
     bool has_skid = false, has_impact = false, has_music = false, active = false;
     unsigned impact_cooldown = 0;
+    std::size_t impact_slot = 8;
     Mixer mixer;
     AstStreamer stream;
     Output output;
     std::atomic<bool> suspended{false};
     mutable std::mutex mixer_mutex;
     std::string note;
-    std::size_t fade_frames = 0;
+    OutputFade fade;
 
     void render(std::int16_t* stereo, std::size_t frames) {
-        if (suspended) {
-            fade_frames = 0;
+        const bool muted = suspended.load();
+        if (muted && fade.silent()) {
             std::fill_n(stereo, frames * 2, std::int16_t{0});
             return;
         }
@@ -142,15 +143,7 @@ struct RaceAudioService::Impl {
                 mixer.render(stereo + offset * 2, count,
                              stream_ready ? music.data() : nullptr, 16384);
             }
-            for (std::size_t i = 0; i < count && fade_frames < 240; ++i) {
-                ++fade_frames;
-                stereo[(offset + i) * 2] = static_cast<std::int16_t>(
-                    static_cast<std::int32_t>(stereo[(offset + i) * 2]) *
-                    static_cast<std::int32_t>(fade_frames) / 240);
-                stereo[(offset + i) * 2 + 1] = static_cast<std::int16_t>(
-                    static_cast<std::int32_t>(stereo[(offset + i) * 2 + 1]) *
-                    static_cast<std::int32_t>(fade_frames) / 240);
-            }
+            fade.apply(stereo + offset * 2, count, muted);
             offset += count;
         }
     }
@@ -252,7 +245,10 @@ void RaceAudioService::on_tick(const RaceAudioSnapshot& snapshot) {
     if (p.has_impact && !p.impact_cooldown && snapshot.contact_events &&
         snapshot.impact > 2) {
         const double gain = finite_clamp(snapshot.impact / 30, 0.1, 0.7);
-        p.mixer.play(5, &p.impact, false, q15(gain));
+        p.mixer.control(p.impact_slot, 0, 65536);
+        p.impact_slot = p.impact_slot == 5 ? 8 : 5;
+        p.mixer.play(p.impact_slot, &p.impact, false,
+                     q15(gain), 65536, true);
         p.impact_cooldown = 10;
     }
 }

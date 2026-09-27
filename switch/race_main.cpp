@@ -153,8 +153,9 @@ void append_audio_status(std::vector<std::string>& lines,
         (unsigned long long)stats.output_late,
         stats.queued_frames, stats.thread_us,
         (unsigned long long)stats.mix_clips));
-    lines.push_back("AUDIO STATUS " + (startup_note == "audio disabled: render core pin failed" ?
-        startup_note : sound.diagnostic()));
+    const auto diagnostic = sound.diagnostic();
+    lines.push_back("AUDIO STATUS " +
+                    (diagnostic.empty() ? startup_note : diagnostic));
 }
 void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceReplay& replay,
                  bool replay_mode, bool panel_mode, bool paused,
@@ -223,15 +224,17 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
     const auto render_core = svcGetCurrentProcessorNumber();
     const auto audio_core = render_core == 2 ? 1 : 2;
     if (R_SUCCEEDED(svcSetThreadCoreMask(threadGetCurHandle(),
-            static_cast<s32>(render_core), 1U << render_core)))
-        sound.start(std::filesystem::path(root), audio_note,
+            static_cast<s32>(render_core), 1U << render_core))) {
+        const bool audio_started = sound.start(std::filesystem::path(root), audio_note,
             [&](const char* phase) { progress.checkpoint(phase); },
             [audio_core] {
                 return R_SUCCEEDED(svcSetThreadCoreMask(threadGetCurHandle(),
                            audio_core, 1U << audio_core)) &&
                        R_SUCCEEDED(svcSetThreadPriority(threadGetCurHandle(), 0x30));
             });
-    else audio_note = "audio disabled: render core pin failed";
+        if (!audio_started && audio_note.empty())
+            audio_note = "audio disabled: startup failed without diagnostic";
+    } else audio_note = "audio disabled: render core pin failed";
     std::printf("AUDIO: %s\n", audio_note.c_str());
     const auto persistent = scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes()+sound.resident_bytes();
     require(persistent <= kPersistentBudgetPlaceholder, "race persistent payload exceeds 64 MiB");
