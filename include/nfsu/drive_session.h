@@ -8,6 +8,7 @@
 #include "nfsu/sha256.h"
 #include "nfsu/vehicle.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -164,10 +165,18 @@ double drive_vertical_fov_degrees(std::uint16_t units,
 // vector one PreparedInstance::transform already uses, in its raw slot
 // frame, which is this model's body and world frame: the car's matrix is
 // applied after the part's. Computed in double and stored as float.
+struct CarAnimationState {
+    // Integrated visual phase in radians, one value per wheel. It is never
+    // encoded into the simulation or replay state.
+    std::array<double, kVehicleWheelCount> wheel_phase{};
+    bool braking = false;
+};
+
 bool drive_place_instances(const std::vector<PreparedInstance>& base,
                            const VehicleState& state,
                            const VehicleSpec& spec,
-                           std::vector<PreparedInstance>& placed);
+                           std::vector<PreparedInstance>& placed,
+                           const CarAnimationState* animation = nullptr);
 
 // Draws a flat checkered ground at height 0 into a frame render_scene has
 // just drawn, with the same options, so that depth hides it behind the

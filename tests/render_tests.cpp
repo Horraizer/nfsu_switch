@@ -837,6 +837,21 @@ void test_vertex_color_and_fallback() {
     check(shaded.pixel(0, 0)[0] == 100 && shaded.pixel(0, 0)[1] == 50 &&
               shaded.pixel(0, 0)[2] == 25,
           "shade 128 halves color");
+
+    const auto lamp_pixel = [](std::uint8_t mode) {
+        Canvas lamp(2, 2);
+        lamp.material.lamp_mode = mode;
+        const nfsu::ClipVertex tri[3] = {at(lamp, -2, -2), at(lamp, -2, 9),
+                                         at(lamp, 9, -2)};
+        lamp.draw(tri, 1);
+        const unsigned char* p = lamp.pixel(0, 0);
+        return std::array<int, 3>{p[0], p[1], p[2]};
+    };
+    check(lamp_pixel(0) == std::array<int, 3>{200, 100, 50} &&
+              lamp_pixel(1) == std::array<int, 3>{226, 173, 138} &&
+              lamp_pixel(2) == std::array<int, 3>{211, 102, 52} &&
+              lamp_pixel(3) == std::array<int, 3>{241, 117, 64},
+          "head, tail and braking lamp modes affect the reference pixel");
 }
 
 nfsu::MeshVertex vertex(float px, float py, float pz, float u = 0.0F, float v = 0.0F) {

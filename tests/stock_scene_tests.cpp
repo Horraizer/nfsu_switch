@@ -226,6 +226,8 @@ nfsu::CarWheelPlacement wheel(std::size_t index, float longitudinal, float later
     out.lateral = lateral;
     out.vertical = 0.3F;
     out.rolling_radius = 0.3F;
+    out.value_14 = 0.184F;
+    out.value_1c = lateral + (lateral > 0.0F ? 0.09F : -0.09F);
     return out;
 }
 
@@ -539,9 +541,9 @@ bool has_orientation(const nfsu::PreparedInstance& instance,
     return true;
 }
 
-// With the culling table opted in, the wheel and the brake draw four
-// copies each, at the four wheel positions, and none of them claims to be
-// the drawn matrix.
+// The stock offset and lateral scale from the wheel records reach the four
+// wheel and brake copies. The unselected wide-body and marker branches
+// leave them marked as approximations.
 void test_wheel_placement() {
     const nfsu::GeometryReport car = car_source();
     const nfsu::GeometryReport brakes = brake_source();
@@ -569,11 +571,12 @@ void test_wheel_placement() {
         const float* position = report.placements[w].position;
         check(!instance.placement_exact,
               "wheel copy " + std::to_string(w) + " is not an exact placement");
+        const auto& wheel = build_car_types().records[0].wheels[w];
         check(instance.transform[12] == position[0] &&
-                  instance.transform[13] == position[1] &&
+                  std::abs(instance.transform[13] - wheel.value_1c) < 1e-6F &&
                   instance.transform[14] == position[2] &&
                   instance.transform[15] == 1.0F,
-              "wheel copy " + std::to_string(w) + " sits at its wheel position");
+              "wheel copy " + std::to_string(w) + " carries the drawn lateral offset");
         // The wheel model is authored for the right-hand side. The draw
         // half-turns it at positions 0 and 3, the two left wheels, so that
         // the rim faces out there too; without that a camera on the left
@@ -590,11 +593,14 @@ void test_wheel_placement() {
         const float* position = report.placements[6 + w].position;
         check(!instance.placement_exact,
               "brake copy " + std::to_string(w) + " is not an exact placement");
+        const auto& wheel = build_car_types().records[0].wheels[w];
+        const float half = wheel.value_14 * 0.5F;
+        const float pivot = wheel.value_1c - (wheel.value_1c > 0.0F ? half : -half);
         check(instance.transform[12] == position[0] &&
-                  instance.transform[13] == position[1] &&
+                  std::abs(instance.transform[13] - pivot) < 1e-6F &&
                   instance.transform[14] == position[2] &&
                   instance.transform[15] == 1.0F,
-              "brake copy " + std::to_string(w) + " sits at its wheel position");
+              "brake copy " + std::to_string(w) + " carries the drawn lateral offset");
         check(has_orientation(instance, expected_orientation(true, w)),
               "brake copy " + std::to_string(w) +
                   (w == 0 || w == 3 ? " is reflected" : " is not reflected"));

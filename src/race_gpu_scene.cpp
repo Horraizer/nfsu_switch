@@ -72,7 +72,8 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
 }
 bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::string& error) {
     out = {}; error.clear();
-    if (!drive_place_instances(base_, session.car(), session.spec(), car_.instances)) {
+    if (!drive_place_instances(base_, session.car(), session.spec(), car_.instances,
+                               &session.animation())) {
         error = "race car placement failed"; return false;
     }
     for (double far = 250; far >= 31.25; far *= 0.5) {

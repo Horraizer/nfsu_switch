@@ -1133,19 +1133,18 @@ Observed:
   leaves 33795 fallback pixels of 110866.
 
 With `--place-wheels` added, the wheel and brake slots draw four copies
-each from the culling placements:
+each. Issue #201 adds the stock lateral scale and offset to those copies:
 
 - 24 slots draw, from 24 meshes, in 30 instances: `instances: 30 exact 22
   stand_in 8`. 79 material groups (20 resolved), 6137 triangles submitted,
-  116746 pixels drawn, drawn bounds x 390..973, y 232..552. SHA-256
-  `E7A042A560E807EE74595449275FFBDC1AE0A0BF321CE06EEF434BC5B1C8274A`.
-- The four copies of each land under the four arches, which is the
-  confirmation recorded under "Instances" above. They are a stand-in: the
-  lateral term, the spin and the steering of the retail matrix are not
-  reproduced. The report says so on its `stock wheels:` and `instances:`
-  lines, and the 8 stand-in copies are exactly the two slots' four copies
-  each. The left pair of each is half-turned or reflected as the retail
-  draw does it (issue #161).
+  118506 pixels drawn, drawn bounds x 390..973, y 232..555. SHA-256
+  `3DEB2147CDA1B1D66DC47FC599B8A1FD88FCB273F0B38BFBE656666808199D25`.
+- The four copies of each land under the four arches. The stock lateral
+  term is now included, while the static frame has no spin, steering or
+  suspension. The 8 stand-in copies remain marked because the alternate
+  lateral branches and final x87 rounding are not reproduced. The left
+  pair of each is half-turned or reflected as the retail draw does it
+  (issue #161).
 - Issue #161 re-pinned this frame. It was
   `FD6727333A94803A97FD26282CD89DF6F3D3295E0231F4A871A1B14089D28CE9`, with
   116748 pixels drawn, while the left wheels were pure translations: the

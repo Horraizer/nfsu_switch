@@ -1070,6 +1070,18 @@ bool validate_scene(const PreparedCarScene& scene, std::string& error) {
                 return false;
             }
         }
+        for (const float element : instance.animation_pivot) {
+            if (!std::isfinite(element)) {
+                error = "prepared instance " + std::to_string(i) +
+                        " has an animation pivot that is not finite";
+                return false;
+            }
+        }
+        if (instance.lamp_mode > 3) {
+            error = "prepared instance " + std::to_string(i) +
+                    " has an invalid lamp mode";
+            return false;
+        }
         if (instance.mesh_hash != 0 &&
             scene.meshes[instance.mesh].has_directory_entry &&
             instance.mesh_hash != scene.meshes[instance.mesh].directory_hash) {

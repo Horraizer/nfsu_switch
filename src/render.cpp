@@ -1121,6 +1121,15 @@ bool Rasterizer::fill(
                                 value = sum >= 255.0 ? 255U
                                                      : static_cast<std::uint32_t>(sum);
                             }
+                            // Visual-only lamp glow. The same integer rule
+                            // is in both offline fragment shaders.
+                            const std::uint32_t lamp = material.lamp_mode == 1
+                                ? (k == 2 ? 110U : 120U)
+                                : material.lamp_mode == 2
+                                ? (k == 0 ? 52U : k == 1 ? 4U : 2U)
+                                : material.lamp_mode == 3
+                                ? (k == 0 ? 192U : k == 1 ? 28U : 18U) : 0U;
+                            value += ((255U - value) * lamp + 127U) / 255U;
                             if (blending) {
                                 const std::uint32_t dst = out[k];
                                 if (material.blend == RenderBlendMode::source_over) {
@@ -1354,6 +1363,7 @@ bool render_scene(
                           : draw.mesh;
             const float* const transform =
                 instanced ? scene.instances[copy].transform : nullptr;
+            raster.lamp_mode = instanced ? scene.instances[copy].lamp_mode : 0;
             if ((first + count) / 3 > first / 3) {
                 copy_drawn[copy] = 1;
             }
