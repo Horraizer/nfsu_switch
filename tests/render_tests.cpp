@@ -2309,6 +2309,45 @@ void test_texture_sources() {
               "no sources is an empty set");
     }
     {
+        // The source lifecycle can destroy a consumed pack. Its priority
+        // claims and retained pixels must survive before the next load.
+        std::vector<nfsu::RenderTextureSource> deferred(3);
+        HandSource current;
+        std::vector<std::size_t> loaded, released;
+        nfsu::RenderTextureLimits limits;
+        limits.load_source = [&](std::size_t i, nfsu::RenderTextureSource& source,
+                                  std::string&) {
+            check(loaded.size() == released.size(), "previous source released before next read");
+            current = HandSource{};
+            current.add(0, kA, 1, i != 0);
+            if (i == 1) current.add(0, kB, 2);
+            current.complete = i != 1;
+            source = current.view(); loaded.push_back(i); return true;
+        };
+        limits.after_source = [&](std::size_t i) { current = HandSource{}; released.push_back(i); };
+        nfsu::RenderTextureSet set;
+        check(nfsu::decode_render_texture_sources(deferred, limits, set, error) &&
+              loaded == std::vector<std::size_t>{0,1} && released == loaded &&
+              set.blocked_sources == std::vector<std::size_t>{2} &&
+              bind(set,kA).kind == nfsu::BindingKind::unusable &&
+              bind(set,kB).kind == nfsu::BindingKind::resolved && set.shadowed.size() == 1,
+              "lazy release preserves invalid claims, pixels and incomplete blocking");
+        limits.load_source = [](std::size_t, nfsu::RenderTextureSource&, std::string& problem) {
+            problem = "synthetic source read refusal"; return false;
+        };
+        check(!nfsu::decode_render_texture_sources(deferred, limits, set, error) &&
+              set.textures.empty() && error == "synthetic source read refusal",
+              "lazy read failure clears result");
+        struct Cancel {};
+        limits.load_source = [](std::size_t, nfsu::RenderTextureSource&, std::string&) -> bool {
+            throw Cancel{};
+        };
+        bool cancelled = false;
+        try { nfsu::decode_render_texture_sources(deferred, limits, set, error); }
+        catch (const Cancel&) { cancelled = true; }
+        check(cancelled && set.textures.empty(), "lazy loader cancellation propagates");
+    }
+    {
         // One source with one pack equals decode_render_textures.
         std::vector<unsigned char> bytes;
         nfsu::TexturePack pack = decode_pack(bytes);

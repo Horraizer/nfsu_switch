@@ -700,6 +700,16 @@ void merge_sections(TrackStreamLoad& load, const TrackStreamLoadLimits& limits) 
     objects = TrackObjectReport{};
     geometry.file_size = load.stream_file_size;
     objects.file_size = load.stream_file_size;
+    // Counts come from already allocated parser arrays, not file claims.
+    // Reserve once so moving the selected set never grows a second header array.
+    std::size_t meshes = 0, scenery = 0;
+    for (const auto& section : load.sections) {
+        if (!section.loaded) continue;
+        meshes += section.geometry.meshes.size();
+        scenery += section.objects.sections.size();
+    }
+    geometry.meshes.reserve(meshes);
+    objects.sections.reserve(scenery);
     bool all_tables = true;
     bool any_geometry = false;
     for (TrackStreamSection& section : load.sections) {
@@ -899,6 +909,9 @@ bool load_with_reader(const TrackStreamTable& table,
             load.bytes_read += section.size;
             if (limits.poll) limits.poll();
             parse_section(section, limits);
+            if (limits.release_non_texture_bytes && section.packs.packs.empty()) {
+                std::vector<unsigned char>().swap(section.bytes);
+            }
             if (limits.poll) limits.poll();
         }
         merge_sections(load, limits);

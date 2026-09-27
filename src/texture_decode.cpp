@@ -41,18 +41,18 @@ bool decode_sources(
     std::string& error) {
     set = RenderTextureSet{};
     RenderTextureSet result;
-    const bool label = sources.size() > 1 ||
-                       (sources.size() == 1 && sources[0].packs.size() > 1);
     // Hash -> earliest source that claims it.
     std::map<std::uint32_t, std::size_t> claims;
     try {
         bool blocked = false;
         for (std::size_t s = 0; s < sources.size(); ++s) {
-            const RenderTextureSource& source = sources[s];
             if (blocked) {
                 result.blocked_sources.push_back(s);
                 continue;
             }
+            RenderTextureSource source = sources[s];
+            if (limits.load_source && !limits.load_source(s, source, error)) return false;
+            const bool label = sources.size() > 1 || source.packs.size() > 1;
             if (source.bytes == nullptr) {
                 error = "texture source " + std::to_string(s) + " has no bytes";
                 return false;
@@ -187,6 +187,7 @@ bool decode_sources(
                 claims.emplace(hash, s);
             }
             blocked = !complete;
+            if (limits.after_source) limits.after_source(s);
         }
     } catch (const std::bad_alloc&) {
         error = "out of memory while decoding textures (" +
