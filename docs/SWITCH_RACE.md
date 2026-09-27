@@ -184,16 +184,24 @@ the CPU simulates and prepares the next. A slot's fence is waited before
 its uniform or command memory is overwritten; each swapchain image has its
 own depth target. The race path performs no GPU readback or CPU pixel copy.
 The added frame slot memory is checked against the same 256 MiB GPU budget.
-Console performance and visual correctness still need measurement on this
-NRO; desktop and Switch CTest cannot establish them.
+Nxlink samples include the command-cache metadata estimate.
+
+On 2026-09-27 the owner ran the `direct-dev` NRO built from the source later
+committed as `568a1fe`. Its SHA-256 is
+`3329ceabd4b6525ead7af0b757a32056bb99c8a02b57004cd93e63e5294de2d7`.
+Nxlink frames 120-1680 reported 61.98-67.21 ms CPU frame time, 48.43-51.43
+ms cull/record, 1.22-1.72 ms CPU present and 0.00 ms slot fence wait in the
+sampled frames. GPU blocks were 100331520 bytes. The owner reported that the
+race was visible. This build predates the #206 cache merge. A detailed visual
+check and a combined timing run belong to the owner and coordinator.
 
 [PR #206 comment 4593](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/206#issuecomment-4593)
 measured its cached race NRO at 65.57-70.20 ms per frame, 21.76-23.65 ms
 for cull/record, about 20 ms for readback plus the CPU panel, and about
-11.6 ms for synchronous draw submission and wait. This branch starts at
-main before that cache is merged. A fair timing comparison needs both
-changes in one console build; the numbers above are targets, not results
-from this branch.
+11.6 ms for synchronous draw submission and wait. This branch now includes
+that cache through main. Its SHA-tagged NRO needs a console run to establish
+the combined frame time; the `direct-dev` measurements above do not include
+the cache and cannot establish that result.
 
 On 2026-09-27 the owner ran the coordinator's NRO built from `e65960b`.
 Its SHA-256 is `45d21ebf744acd2a7dc52926f55ee0658822f6ce1668a7a67035bb56d33f51b3`.
