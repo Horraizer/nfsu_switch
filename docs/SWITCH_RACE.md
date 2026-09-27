@@ -24,7 +24,8 @@ lines clip labels to 12 characters; CTest checks the configured tag in the ELF.
 
 The menu offers A for live driving, X for replay and Y to toggle the
 diagnostic panel. Direct presentation is the default. With nxlink, optional
-arguments are `[sdmc:/nfsu] [--live|--replay] [--panel]`. RomFS holds the three checked
+arguments are `[sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame]`.
+`--profile-frame` requires direct presentation. RomFS holds the three checked
 offline shaders and the repository's authored `tests/recordings/event1.txt`.
 It contains no retail or derived game asset. The application writes no SD
 file; every retail input is opened read-only.
@@ -166,6 +167,36 @@ allocation peak and enforces the load ceiling. The race's broader load observati
 still needs its own console measurement.
 
 ## Performance and owner evidence
+
+`--profile-frame` collects the Phase A timing evidence requested in
+[FRAME_BUDGET_RESEARCH.md](FRAME_BUDGET_RESEARCH.md). Use the bundled replay
+in direct mode. After FINISHED, the result remains frozen until Plus; D-pad
+left/right selects numbered identity, replay, active-frame, CPU-stage, GPU
+scene and load/memory pages. Each page repeats its build and mode label and
+uses at most eight data rows of 80 ASCII columns. The replay page splits both
+hashes into labeled halves. The application cannot know the SHA-256 of its
+own NRO, so the coordinator records that hash with the full commit and
+toolchain/deko3d version of its build. If the build tag is a full commit SHA,
+the identity page prints it. CPU core and service clock readings that cannot
+be queried are explicitly marked unavailable.
+
+CPU rows give count, mean, p95 bin upper edge and exact maximum. CULL/RECORD
+uses the five `RaceFrameProfile` subregions. UPDATE separates validation
+from uniform writes. PRESENT separates acquire, fence wait, uniform write,
+command recording, finishList and submit/flush; PARENT SUM and OTHER account
+for the measured frame without adding nested child rows twice. `mallinfo()`
+after present has its own row. A GPU timestamp pair brackets each profiled
+scene in a per-slot report. The report is read after that slot's completion
+fence, with remaining reports drained after the run. The pair measures a
+pipeline span, not GPU utilization. Counter reports flush tiled cache and
+the profiling build includes their overhead. The result shows completed,
+invalid and dropped queries rather than treating missing data as zero.
+
+Only active driving frames enter the aggregates. Countdown, pause, the first
+resumed frame and FINISHED remain excluded; unpause resets the CPU and GPU
+segments. The normal direct and panel results remain available without
+`--profile-frame`. No acceptance claim follows from a desktop build or from
+these counters until the coordinator photographs the Switch result pages.
 
 The first frame, every 120th frame and the first finished frame print `PERF`
 samples to stdout/nxlink. Direct-mode samples report CPU frame time against

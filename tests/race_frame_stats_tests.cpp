@@ -1,4 +1,5 @@
 #include "nfsu/race_frame_stats.h"
+#include "nfsu/frame_profile_stats.h"
 
 #include <array>
 #include <cmath>
@@ -48,6 +49,29 @@ int main() {
     stats.add(first_after_pause);
     if (stats.count() != 1 || stats.percentile_bin(50) != 4 || stats.over_budget() != 0) {
         std::cerr << "race frame statistics resume mismatch\n";
+        return 1;
+    }
+    nfsu::FrameProfileStats profile;
+    nfsu::FrameProfileStats::Values values{};
+    values[static_cast<std::size_t>(nfsu::FrameProfileStage::cull)] = 1.25;
+    profile.add_simulation_tick(2.0);
+    profile.add_frame(values,10.0,{42,1,500,120,20},2);
+    values[static_cast<std::size_t>(nfsu::FrameProfileStage::cull)] = 101.0;
+    profile.add_frame(values,20.0,{43,3,600,130,21},4);
+    const auto& cull = profile.stage(nfsu::FrameProfileStage::cull);
+    const auto& sim_tick = profile.stage(nfsu::FrameProfileStage::simulation_tick);
+    if (profile.count() != 2 || cull.count() != 2 || cull.mean() != 51.125 ||
+        cull.max() != 101.0 || cull.percentile_bin(95) != nfsu::ProfileDistribution::kOverflowBin ||
+        sim_tick.count() != 1 || sim_tick.mean() != 2.0 || profile.worst().tick != 43 ||
+        profile.worst().track_draws != 130 || profile.catch_up_max() != 4 ||
+        profile.debt_max() != 3) {
+        std::cerr << "frame profile statistics mismatch\n";
+        return 1;
+    }
+    profile.reset();
+    if (profile.count() || profile.stage(nfsu::FrameProfileStage::cull).count() ||
+        profile.stage(nfsu::FrameProfileStage::simulation_tick).count() || profile.worst().tick) {
+        std::cerr << "frame profile reset mismatch\n";
         return 1;
     }
     return 0;

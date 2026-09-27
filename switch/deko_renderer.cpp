@@ -46,6 +46,7 @@ struct DekoRenderer::Impl {
     dk::UniqueSwapchain swapchain;
     dk::UniqueCmdBuf cmd;
     dk::MemBlock buffers, images, staging, uniforms, descriptors, readback;
+    dk::MemBlock query_memory;
     std::array<dk::MemBlock, 2> command_memory;
     MemoryArena buffer_arena, image_arena, staging_arena, uniform_arena;
     UploadLedger ledger;
@@ -57,6 +58,12 @@ struct DekoRenderer::Impl {
     bool uniform_live = false;
     std::array<dk::Fence, 2> frame_fences{};
     std::array<bool, 2> frame_in_flight{};
+    std::array<bool, 2> query_pending{};
+    std::array<DekoSceneFrame, 2> query_frames{};
+    std::array<std::uint64_t, 2> query_generations{};
+    DekoGpuProfile gpu_profile;
+    std::uint64_t profile_generation = 1;
+    bool profile_enabled = false;
     std::array<dk::Image, 2> colors;
     std::array<dk::Image, 2> depths;
     dk::Shader vertex, textured, fallback;
@@ -179,7 +186,8 @@ struct DekoRenderer::Impl {
         return true;
     }
 
-    bool open(const RecordedCommands& source, std::string& error, bool presentation, std::size_t capacity) {
+    bool open(const RecordedCommands& source, std::string& error, bool presentation,
+              std::size_t capacity, bool profile_frame) {
         if (commands) { error = "deko3d renderer open is one-shot"; return false; }
         DrawExecutionPlan plan;
         if (!plan_draw_execution(source, plan, error)) return false;
@@ -191,6 +199,7 @@ struct DekoRenderer::Impl {
         plan.command_bytes = static_cast<std::uint32_t>(65536 +
             (draw_capacity + source.uploads.resources.size()) * 4096);
         uniform_stride = plan.uniform_bytes;
+        profile_enabled = profile_frame && presentation;
         const auto uniform_bytes = std::uint64_t{uniform_stride} * (presentation ? 2 : 1);
         uploaded = source.uploads;
         commands = &source;
@@ -237,6 +246,10 @@ struct DekoRenderer::Impl {
         if (!block(command_bytes[0], kDataFlags, "command memory", command_memory[0], error) ||
             (presentation && !block(command_bytes[1], kDataFlags, "second frame command memory",
                                     command_memory[1], error))) return false;
+        if (profile_enabled && !block(64,
+            DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuUncached,
+            "GPU timestamp reports", query_memory, error))
+            return false;
         cmd = dk::CmdBufMaker{device}.create();
         if (!cmd || !healthy(error)) {
             if (error.empty()) error = "deko3d command buffer creation failed";
@@ -332,16 +345,42 @@ struct DekoRenderer::Impl {
         return true;
     }
 
-    bool update(const RecordedCommands& next, std::string& error) {
-        if (!commands || !uniform_live || !validate_draw_update(uploaded, next, draw_capacity, error)) {
+    bool update(const RecordedCommands& next, std::string& error, DekoUpdateTiming* timing) {
+        if (timing) *timing = {};
+        if (!commands || !uniform_live) {
             if (error.empty()) error = "renderer is not ready for a frame update";
             return false;
         }
+        const auto validate_start = armGetSystemTick();
+        if (!validate_draw_update(uploaded, next, draw_capacity, error)) return false;
+        if (timing) timing->validation_ms = elapsed_ms(validate_start);
         // The presentation path writes constants only after waiting for the
         // selected slot. The offscreen path is synchronous and keeps slot 0.
-        if (!swapchain) write_uniforms(next, 0);
+        if (!swapchain) {
+            const auto write_start = armGetSystemTick();
+            write_uniforms(next, 0);
+            if (timing) timing->uniform_write_ms = elapsed_ms(write_start);
+        }
         commands = &next;
         return true;
+    }
+
+    void consume_query(std::size_t slot) {
+        if (!query_pending[slot]) return;
+        query_pending[slot] = false;
+        if (!query_frames[slot].active || query_generations[slot] != profile_generation) return;
+        const auto* words = static_cast<const std::uint64_t*>(query_memory.getCpuAddr()) + slot*4;
+        const auto begin_timestamp = words[1], end_timestamp = words[3];
+        if (!begin_timestamp || end_timestamp <= begin_timestamp) {
+            ++gpu_profile.invalid; return;
+        }
+        const double value = dkTimestampToNs(end_timestamp-begin_timestamp)/1000000.0;
+        if (value > gpu_profile.scene.max()) {
+            gpu_profile.worst_tick = query_frames[slot].tick;
+            gpu_profile.worst_track_draws = query_frames[slot].track_draws;
+            gpu_profile.worst_car_draws = query_frames[slot].car_draws;
+        }
+        gpu_profile.scene.add(value);
     }
 
     void write_uniforms(const RecordedCommands& source, std::size_t slot) {
@@ -356,6 +395,8 @@ struct DekoRenderer::Impl {
 
     void record_frame(const dk::Image& target, std::size_t slot) {
         begin(slot);
+        if (profile_enabled)
+            cmd.reportCounter(DkCounter_TimestampPipelineTop, query_memory.getGpuAddr()+slot*32);
         dk::ImageView color_view{target}, depth_view{depths[slot]};
         cmd.bindRenderTargets(&color_view, &depth_view);
         cmd.setViewports(0, {{0, 0, static_cast<float>(commands->width), static_cast<float>(commands->height), 0, 1}});
@@ -412,9 +453,11 @@ struct DekoRenderer::Impl {
                             static_cast<std::int32_t>(draw.first_vertex), 0);
         }
         cmd.barrier(DkBarrier_Fragments, 0);
+        if (profile_enabled)
+            cmd.reportCounter(DkCounter_Timestamp, query_memory.getGpuAddr()+slot*32+16);
     }
 
-    bool present(std::string& error, DekoPresentTiming* timing) {
+    bool present(std::string& error, DekoPresentTiming* timing, const DekoSceneFrame* scene_frame) {
         if (timing) *timing = {};
         if (!swapchain || !healthy(error)) {
             if (error.empty()) error = "deko3d renderer is not open";
@@ -435,20 +478,32 @@ struct DekoRenderer::Impl {
                 return false;
             }
             frame_in_flight[slot] = false;
+            if (profile_enabled) consume_query(slot);
         }
         if (timing) timing->fence_wait_ms = elapsed_ms(stage);
+        if (profile_enabled) {
+            auto* report = static_cast<unsigned char*>(query_memory.getCpuAddr()) + slot*32;
+            std::memset(report, 0, 32);
+            query_frames[slot] = scene_frame ? *scene_frame : DekoSceneFrame{};
+            query_generations[slot] = profile_generation;
+        }
         stage = armGetSystemTick();
         write_uniforms(*commands, slot);
+        if (timing) timing->uniform_write_ms = elapsed_ms(stage);
+        stage = armGetSystemTick();
         record_frame(colors[slot], slot);
         if (timing) timing->record_ms = elapsed_ms(stage);
         stage = armGetSystemTick();
         const auto list = cmd.finishList();
         if (!healthy(error)) return false;
+        if (timing) timing->finish_ms = elapsed_ms(stage);
+        stage = armGetSystemTick();
         queue.submitCommands(list);
         queue.signalFence(frame_fences[slot]);
         queue.presentImage(swapchain, slot);
         queue.flush();
         frame_in_flight[slot] = true;
+        query_pending[slot] = profile_enabled;
         ++fence_number;
         if (timing) timing->submit_ms = elapsed_ms(stage);
         return healthy(error);
@@ -495,6 +550,14 @@ struct DekoRenderer::Impl {
 
     bool shutdown(std::string& error) {
         if (queue) queue.waitIdle();
+        if (profile_enabled) for (std::size_t slot = 0; slot < query_pending.size(); ++slot) {
+            if (!query_pending[slot]) continue;
+            const auto result = frame_fences[slot].wait();
+            if (result != DkResult_Success) {
+                ++gpu_profile.dropped;
+                query_pending[slot] = false;
+            } else consume_query(slot);
+        }
         // waitIdle completes every submitted use, including presentation.
         bool ok = ledger.release_all(handles, fence_number, error);
         ledger.retire(fence_number < 1 ? 1 : fence_number);
@@ -523,14 +586,16 @@ DekoRenderer::~DekoRenderer() {
     try { std::string ignored; impl_->shutdown(ignored); }
     catch (...) { if (impl_->queue) impl_->queue.waitIdle(); }
 }
-bool DekoRenderer::open(const RecordedCommands& commands, std::string& error, bool presentation, std::size_t draw_capacity) {
+bool DekoRenderer::open(const RecordedCommands& commands, std::string& error, bool presentation,
+                        std::size_t draw_capacity, bool profile_frame) {
     error.clear();
-    try { return impl_->open(commands, error, presentation, draw_capacity); }
+    try { return impl_->open(commands, error, presentation, draw_capacity, profile_frame); }
     catch (const std::bad_alloc&) { error = "not enough memory for deko3d renderer"; return false; }
 }
-bool DekoRenderer::update(const RecordedCommands& commands, std::string& error) {
+bool DekoRenderer::update(const RecordedCommands& commands, std::string& error,
+                          DekoUpdateTiming* timing) {
     error.clear();
-    try { return impl_->update(commands, error); }
+    try { return impl_->update(commands, error, timing); }
     catch (const std::bad_alloc&) { error = "not enough memory for draw update validation"; return false; }
 }
 std::uint64_t DekoRenderer::gpu_bytes() const noexcept { return impl_->gpu_bytes; }
@@ -540,9 +605,20 @@ bool DekoRenderer::capture(std::vector<unsigned char>& rgba, double& render_ms,
     try { return impl_->capture(rgba, render_ms, readback_ms, error); }
     catch (const std::bad_alloc&) { rgba.clear(); error = "not enough memory for GPU readback"; return false; }
 }
-bool DekoRenderer::present(std::string& error, DekoPresentTiming* timing) {
+bool DekoRenderer::present(std::string& error, DekoPresentTiming* timing,
+                           const DekoSceneFrame* scene_frame) {
     error.clear();
-    return impl_->present(error, timing);
+    return impl_->present(error, timing, scene_frame);
+}
+void DekoRenderer::reset_gpu_profile() {
+    ++impl_->profile_generation;
+    impl_->gpu_profile = {};
+}
+const DekoGpuProfile& DekoRenderer::gpu_profile() const noexcept { return impl_->gpu_profile; }
+std::uint64_t DekoRenderer::profile_storage_bytes() const noexcept {
+    return impl_->profile_enabled ?
+        impl_->query_memory.getSize() + sizeof(impl_->gpu_profile) +
+        sizeof(impl_->query_frames) + sizeof(impl_->query_generations) : 0;
 }
 bool DekoRenderer::close(std::string& error) {
     error.clear();

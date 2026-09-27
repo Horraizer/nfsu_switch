@@ -1,14 +1,35 @@
 #pragma once
 
 #include "nfsu/draw_commands.h"
+#include "nfsu/frame_profile_stats.h"
 #include <memory>
 
 namespace nfsu {
 struct DekoPresentTiming {
     double acquire_ms = 0;
     double fence_wait_ms = 0;
+    double uniform_write_ms = 0;
     double record_ms = 0;
+    double finish_ms = 0;
     double submit_ms = 0;
+};
+struct DekoUpdateTiming {
+    double validation_ms = 0;
+    double uniform_write_ms = 0;
+};
+struct DekoSceneFrame {
+    std::uint64_t tick = 0;
+    std::uint32_t track_draws = 0;
+    std::uint32_t car_draws = 0;
+    bool active = false;
+};
+struct DekoGpuProfile {
+    ProfileDistribution scene;
+    std::uint64_t dropped = 0;
+    std::uint64_t invalid = 0;
+    std::uint64_t worst_tick = 0;
+    std::uint32_t worst_track_draws = 0;
+    std::uint32_t worst_car_draws = 0;
 };
 
 // Switch-only owner of the device, queue, resident uploads and swapchain.
@@ -25,16 +46,21 @@ public:
     // Offscreen mode owns no native window, so a diagnostic framebuffer may
     // stay open. Both modes record exactly the same draw path.
     bool open(const RecordedCommands& commands, std::string& error, bool presentation = true,
-              std::size_t draw_capacity = 0);
+              std::size_t draw_capacity = 0, bool profile_frame = false);
     // Reuses resident GPU resources. Presentation may have a frame in flight.
-    bool update(const RecordedCommands& commands, std::string& error);
+    bool update(const RecordedCommands& commands, std::string& error,
+                DekoUpdateTiming* timing = nullptr);
     std::uint64_t gpu_bytes() const noexcept;
     // Offscreen only. Tight top-first RGBA8 after a completed GPU copy and
     // fence. Times include command recording/submission/wait; upload and
     // allocation are excluded. No CPU rasterizer is invoked here.
     bool capture(std::vector<unsigned char>& rgba, double& render_ms,
                  double& readback_ms, std::string& error);
-    bool present(std::string& error, DekoPresentTiming* timing = nullptr);
+    bool present(std::string& error, DekoPresentTiming* timing = nullptr,
+                 const DekoSceneFrame* scene_frame = nullptr);
+    void reset_gpu_profile();
+    const DekoGpuProfile& gpu_profile() const noexcept;
+    std::uint64_t profile_storage_bytes() const noexcept;
     bool close(std::string& error);
 private:
     struct Impl;

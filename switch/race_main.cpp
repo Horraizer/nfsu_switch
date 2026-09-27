@@ -2,6 +2,7 @@
 #include "deko_renderer.h"
 #include "nfsu/race_gpu_scene.h"
 #include "nfsu/heap_usage.h"
+#include "nfsu/frame_profile_stats.h"
 #include "nfsu/posix_file_system.h"
 #include "nfsu/race_frame_stats.h"
 #include "nfsu/screen_text.h"
@@ -11,16 +12,35 @@
 #include <unistd.h>
 #include <malloc.h>
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdarg>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <stdexcept>
 
 namespace {
 using namespace nfsu;
 constexpr unsigned width = 1280, height = 720;
 double ms(std::uint64_t ticks) { return armTicksToNs(ticks)/1000000.0; }
+class SwitchTiming final : public TimingService {
+public:
+    std::uint64_t now_us() override { return armTicksToNs(armGetSystemTick())/1000; }
+};
+struct ClockReadings {
+    std::uint32_t cpu_bus_hz = 0, gpu_hz = 0, emc_hz = 0;
+    bool cpu_bus_ok = false, gpu_ok = false, emc_ok = false;
+};
+ClockReadings read_clocks() {
+    ClockReadings out;
+    if (R_FAILED(pcvInitialize())) return out;
+    out.cpu_bus_ok = R_SUCCEEDED(pcvGetClockRate(PcvModule_CpuBus,&out.cpu_bus_hz));
+    out.gpu_ok = R_SUCCEEDED(pcvGetClockRate(PcvModule_GPU,&out.gpu_hz));
+    out.emc_ok = R_SUCCEEDED(pcvGetClockRate(PcvModule_EMC,&out.emc_hz));
+    pcvExit();
+    return out;
+}
 std::string format(const char* pattern, ...) {
     char text[512]; va_list args; va_start(args, pattern);
     std::vsnprintf(text, sizeof text, pattern, args); va_end(args); return text;
@@ -142,10 +162,182 @@ void append_frame_stats(std::vector<std::string>& lines, const RaceFrameStats& s
         lines.push_back(format("MEAN ms CMD %.2f | SUBMIT %.2f",mean.command_ms,mean.submit_ms));
     }
 }
+std::string profile_percentile(const ProfileDistribution& stats) {
+    const auto bin = stats.percentile_bin(95);
+    return bin == ProfileDistribution::kOverflowBin ? ">=100" :
+        format("%.2f",(bin+1)*ProfileDistribution::kBinWidthMs);
+}
+std::string profile_row(const char* label, const ProfileDistribution& stats) {
+    if (!stats.count()) return format("%-16s n0 unavailable",label);
+    const auto p95 = profile_percentile(stats);
+    return format("%-16s n%llu mean %.2f p95 %s max %.2f ms",label,
+        (unsigned long long)stats.count(),stats.mean(),p95.c_str(),stats.max());
+}
+struct ProfileResultContext {
+    const FrameProfileStats& cpu;
+    const DekoGpuProfile& gpu;
+    const HeapUsage& heap;
+    ClockReadings clocks;
+    double load_ms = 0, upload_ms = 0;
+    std::uint64_t stream_bytes = 0, persistent_bytes = 0, gpu_bytes = 0;
+    std::uint64_t storage_bytes = 0;
+};
+using ProfilePages = std::vector<std::vector<std::string>>;
+ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
+                           bool replay_mode, const RaceFrameStats& frames,
+                           unsigned unpause_resets, const ProfileResultContext& context,
+                           const std::string& failure) {
+    ProfilePages pages;
+    std::vector<std::string> titles;
+    auto add_page = [&](const char* title, std::vector<std::string> rows) {
+        if (rows.size() > 8) throw std::runtime_error("profile page exceeds eight data rows");
+        for (const auto& row : rows) if (row.size() > 80)
+            throw std::runtime_error("profile page exceeds 80 columns");
+        titles.emplace_back(title);
+        pages.push_back(std::move(rows));
+    };
+    const auto mode = appletGetOperationMode() == AppletOperationMode_Console ? "DOCKED" : "HANDHELD";
+    const auto& clocks = context.clocks;
+    add_page("IDENTITY", {
+        format("BUILD TAG %.40s",NFSU_RACE_BUILD_TAG),
+        std::strlen(NFSU_RACE_BUILD_TAG) >= 40 ? "FULL COMMIT: build tag above" :
+            "FULL COMMIT: coordinator build record",
+        "NRO SHA-256: coordinator build record (not derivable in NRO)",
+        format("%s | %s DIRECT | PROFILE ONE SCENE PAIR",mode,replay_mode?"REPLAY":"LIVE"),
+        format("TOOLCHAIN GCC %s | deko3d version unavailable",__VERSION__),
+        clocks.cpu_bus_ok ? format("CPU core unavailable | CPU bus %.1f MHz",clocks.cpu_bus_hz/1e6) :
+            "CPU core/bus clock unavailable",
+        clocks.gpu_ok ? format("GPU clock %.1f MHz",clocks.gpu_hz/1e6) : "GPU clock unavailable",
+        clocks.emc_ok ? format("MEM/EMC clock %.1f MHz",clocks.emc_hz/1e6) : "MEM/EMC clock unavailable"
+    });
+    const bool finished = race.session().timing().outcome == RaceOutcome::finished;
+    const char* verdict = !failure.empty() || (finished && !(replay.exhausted() && race.matches_event1_replay()))
+        ? "DIFFERENT" : finished ? "EQUAL" : "RUNNING";
+    std::vector<std::string> replay_rows = {
+        format("%s | REPLAY %s | LAST STEP %llu",race_outcome_name(race.session().timing().outcome),
+            replay_mode?verdict:"n/a",(unsigned long long)race.session().timing().step)
+    };
+    for (const auto& row : race.result_lines())
+        if (row.rfind("lap ",0) == 0 || row.rfind("total ticks ",0) == 0)
+            replay_rows.push_back(row);
+    if (replay_mode) {
+        const auto state = race.sequence_hash(), steps = race.steps_hash();
+        replay_rows.push_back("STATE SHA A " + state.substr(0,32));
+        replay_rows.push_back("STATE SHA B " + state.substr(32));
+        replay_rows.push_back("STEPS SHA A " + steps.substr(0,32));
+        replay_rows.push_back("STEPS SHA B " + steps.substr(32));
+    }
+    add_page("REPLAY",std::move(replay_rows));
+    if (frames.count()) {
+        const auto mean = frames.mean();
+        const auto worst = context.cpu.worst();
+        add_page("ACTIVE FRAMES",{
+            format("FRAMES %llu | excludes countdown/pause/resume/finish | resets %u",
+                (unsigned long long)frames.count(),unpause_resets),
+            format("MEAN %.2f | P50 %s | P95 %s | P99 %s ms",mean.frame_ms,
+                percentile_text(frames,50).c_str(),percentile_text(frames,95).c_str(),
+                percentile_text(frames,99).c_str()),
+            format("MAX %.2f ms | OVER 16.67 %llu/%llu (%.2f%%)",frames.max_ms(),
+                (unsigned long long)frames.over_budget(),(unsigned long long)frames.count(),
+                100.0*frames.over_budget()/frames.count()),
+            format("WORST TICK %llu | TRACK/CAR DRAWS %u/%u",
+                (unsigned long long)worst.tick,worst.track_draws,worst.car_draws),
+            format("WORST TRIANGLES %llu | DEBT %llu ticks",
+                (unsigned long long)worst.triangles,(unsigned long long)worst.debt),
+            format("CATCH-UP MAX %u | DEBT MAX %llu ticks",context.cpu.catch_up_max(),
+                (unsigned long long)context.cpu.debt_max()),
+            "Percentile upper-edge bins: 0.25 ms; exact maximum retained"
+        });
+    } else add_page("ACTIVE FRAMES",{"No active driving frames measured"});
+    const auto& cpu = context.cpu;
+    auto stage = [&](const char* label, FrameProfileStage id) { return profile_row(label,cpu.stage(id)); };
+    add_page("CPU A",{
+        stage("SIM/frame",FrameProfileStage::simulation),
+        stage("SIM/tick",FrameProfileStage::simulation_tick),
+        stage("RES/HASH/LOG",FrameProfileStage::residency),
+        stage("CULL/REC parent",FrameProfileStage::record_total),
+        stage("CULL+CAMERA",FrameProfileStage::cull),
+        stage("LIST",FrameProfileStage::list),
+        stage("CAR",FrameProfileStage::car)
+    });
+    add_page("CPU B",{
+        stage("TRACK META",FrameProfileStage::track),
+        stage("COMBINE/CHECK",FrameProfileStage::combine),
+        stage("UPDATE parent",FrameProfileStage::update_total),
+        stage("UPDATE VALID",FrameProfileStage::update_validation),
+        stage("UNIFORM WRITE",FrameProfileStage::uniform_write),
+        stage("PRESENT parent",FrameProfileStage::present_total),
+        stage("ACQUIRE",FrameProfileStage::acquire),
+        stage("FENCE WAIT",FrameProfileStage::fence)
+    });
+    add_page("CPU C",{
+        stage("CMD RECORD",FrameProfileStage::command_record),
+        stage("FINISH LIST",FrameProfileStage::finish_list),
+        stage("SUBMIT/FLUSH",FrameProfileStage::submit),
+        stage("PRESENT other",FrameProfileStage::present_other),
+        stage("MALLINFO",FrameProfileStage::mallinfo),
+        stage("PARENT SUM",FrameProfileStage::parent_sum),
+        stage("OTHER",FrameProfileStage::other)
+    });
+    const auto& gpu = context.gpu;
+    add_page("GPU SCENE",{
+        format("ONE SCENE PAIR | completed %llu | invalid %llu | dropped %llu",
+            (unsigned long long)gpu.scene.count(),(unsigned long long)gpu.invalid,
+            (unsigned long long)gpu.dropped),
+        profile_row("SCENE",gpu.scene),
+        format("WORST GPU TICK %llu | TRACK/CAR DRAWS %u/%u",
+            (unsigned long long)gpu.worst_tick,gpu.worst_track_draws,gpu.worst_car_draws),
+        "Pipeline-top begin / timestamp end; elapsed span, not utilization",
+        "Timestamp reports flush tiled cache; profile cost is included",
+        "Reports read only after each slot completion fence; final pair drained"
+    });
+    const auto& heap = context.heap;
+    add_page("LOAD/MEMORY",{
+        format("LOAD %.0f ms | initial upload %.0f ms",context.load_ms,context.upload_ms),
+        format("CPU STREAM %llu / 50331648 bytes",(unsigned long long)context.stream_bytes),
+        format("PERSISTENT %llu / 67108864 bytes",(unsigned long long)context.persistent_bytes),
+        format("GPU BLOCKS %llu / 268435456 bytes",(unsigned long long)context.gpu_bytes),
+        "TRANSIENT peak unavailable | uniform reservation 1048320 / 1048576",
+        format("LOAD HEAP OBS HWM %llu | over %llu bytes",(unsigned long long)heap.load_peak,
+            (unsigned long long)heap.load_overrun(50331648)),
+        format("QUERY/STAT STORAGE %llu bytes",(unsigned long long)context.storage_bytes)
+    });
+    if (!failure.empty()) {
+        const auto wrapped = wrap_screen_text(failure,80);
+        for (std::size_t i = 0; i < wrapped.size(); i += 8) {
+            std::vector<std::string> rows;
+            rows.push_back("ERROR - NO SUCCESS RESULT");
+            const auto end = std::min<std::size_t>(i+7,wrapped.size());
+            rows.insert(rows.end(),wrapped.begin()+i,wrapped.begin()+end);
+            add_page("ERROR",std::move(rows));
+        }
+    }
+    for (std::size_t i = 0; i < pages.size(); ++i) {
+        auto& rows = pages[i];
+        rows.insert(rows.begin(),format("BUILD %.12s | %s | %s | PAGE %zu/%zu",
+            NFSU_RACE_BUILD_TAG,mode,titles[i].c_str(),i+1,pages.size()));
+        rows.push_back("D-pad LEFT/RIGHT changes page | + exits");
+    }
+    return pages;
+}
 void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceReplay& replay,
                  bool replay_mode, bool panel_mode, bool paused,
                  const RaceFrameStats& stats, unsigned unpause_resets,
-                 const std::vector<std::string>& last_perf, const std::string& failure) {
+                 const std::vector<std::string>& last_perf, const std::string& failure,
+                 const ProfileResultContext* profile = nullptr) {
+    if (profile) {
+        const auto pages = profile_pages(race,replay,replay_mode,stats,unpause_resets,*profile,failure);
+        std::size_t page = 0;
+        while (appletMainLoop()) {
+            screen.show(pages[page]);
+            padUpdate(&pad);
+            const auto down = padGetButtonsDown(&pad);
+            if (down & HidNpadButton_Plus) break;
+            if (down & HidNpadButton_Right) page = (page+1)%pages.size();
+            if (down & HidNpadButton_Left) page = (page+pages.size()-1)%pages.size();
+        }
+        return;
+    }
     const bool finished = race.session().timing().outcome == RaceOutcome::finished;
     std::vector<std::string> lines = {format("NFSU EVENT 1 RESULT | BUILD %.12s | %s %s",
         NFSU_RACE_BUILD_TAG, replay_mode ? "REPLAY" : "LIVE", panel_mode ? "PANEL" : "DIRECT")};
@@ -185,7 +377,8 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
         if (padGetButtonsDown(&pad) & HidNpadButton_Plus) break;
     }
 }
-void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& screen, PadState& pad) {
+void run(const std::string& root, bool replay_mode, bool panel_mode, bool profile_frame,
+         Screen& screen, PadState& pad) {
     require(R_SUCCEEDED(romfsInit()), "cannot mount race shader/replay RomFS");
     struct Guard { ~Guard() { romfsExit(); } } guard;
     std::string error;
@@ -213,8 +406,12 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
     const auto upload_start = armGetSystemTick();
     if (!panel_mode) screen.close();
     DekoRenderer renderer;
-    require(renderer.open(frame.commands,error,!panel_mode,kTrackSliceDrawLimit),error);
+    require(renderer.open(frame.commands,error,!panel_mode,kTrackSliceDrawLimit,profile_frame),error);
     const double initial_upload = ms(armGetSystemTick()-upload_start);
+    const auto clocks = profile_frame ? read_clocks() : ClockReadings{};
+    std::unique_ptr<FrameProfileStats> profile_stats;
+    if (profile_frame) profile_stats = std::make_unique<FrameProfileStats>();
+    SwitchTiming profile_clock;
     std::vector<unsigned char> rgba;
     RaceTickDebt clock;
     auto previous = armGetSystemTick();
@@ -236,7 +433,10 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
             just_unpaused = paused;
             paused = !paused;
             clock.reset();
-            if (just_unpaused) { stats.reset(); last_perf.clear(); ++unpause_resets; }
+            if (just_unpaused) {
+                stats.reset(); last_perf.clear(); ++unpause_resets;
+                if (profile_stats) { profile_stats->reset(); renderer.reset_gpu_profile(); }
+            }
         }
         // A long OS suspend is an explicit pause, not thousands of live
         // control ticks using a newly sampled pad. Ordinary slow frames keep debt.
@@ -247,13 +447,18 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
             race.session().timing().stage == RaceStage::racing;
         if (!paused && running) clock.add(elapsed); else clock.reset();
         double simulation = 0, residency = 0, record = 0, upload = 0;
+        std::array<double,8> simulation_ticks{};
+        RaceFrameProfile record_profile;
+        DekoUpdateTiming update_timing;
         unsigned ticks = 0;
         while (!paused && race.session().timing().outcome == RaceOutcome::running && ticks < 8 && clock.take()) {
             GamepadFrame input;
             if (replay_mode) require(replay.next(race.session().timing().step,input,error),error);
             else input = sample(pad,race.session().timing().step);
             auto stage = armGetSystemTick();
-            require(race.simulate(input,error),error); simulation += ms(armGetSystemTick()-stage);
+            require(race.simulate(input,error),error);
+            const double tick_ms = ms(armGetSystemTick()-stage);
+            simulation += tick_ms; simulation_ticks[ticks] = tick_ms;
             stage = armGetSystemTick(); require(race.commit(error),error);
             if (replay_mode) std::fputs(race.step_line().c_str(),stdout);
             residency += ms(armGetSystemTick()-stage);
@@ -261,9 +466,13 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
         }
         if (ticks) {
             auto stage = armGetSystemTick();
-            RaceGpuFrame next; require(scene.frame(race.session(),next,error),error);
+            RaceGpuFrame next;
+            require(scene.frame(race.session(),next,error,
+                profile_frame ? &record_profile : nullptr,false,
+                profile_frame ? &profile_clock : nullptr),error);
             frame = std::move(next); record = ms(armGetSystemTick()-stage);
-            stage = armGetSystemTick(); require(renderer.update(frame.commands,error),error);
+            stage = armGetSystemTick();
+            require(renderer.update(frame.commands,error,profile_frame ? &update_timing : nullptr),error);
             upload = ms(armGetSystemTick()-stage);
         }
         const bool finished = race.session().timing().outcome == RaceOutcome::finished;
@@ -280,6 +489,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
                 replay.exhausted() && race.matches_event1_replay() ? "EQUAL" : "DIFFERENT");
             std::fflush(stdout); printed_result = true;
         }
+        DekoPresentTiming present;
+        double present_cpu = 0, mallinfo_ms = 0, frame_ms = 0;
         if (panel_mode) {
             double draw = 0, readback = 0;
             const auto capture_start = armGetSystemTick();
@@ -346,20 +557,26 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
                 if (finished) printed_final_perf = true;
             }
         } else {
-        DekoPresentTiming present;
+        const DekoSceneFrame scene_frame{race.session().timing().step,
+            static_cast<std::uint32_t>(frame.track_draws),
+            static_cast<std::uint32_t>(frame.car_draws),driving_before && !finished};
         const auto present_start = armGetSystemTick();
-        require(renderer.present(error,&present),error);
-        const double present_cpu = ms(armGetSystemTick()-present_start);
-        const auto info = mallinfo(); heap.observe(info.uordblks,info.arena);
-        const double frame_ms = ms(armGetSystemTick()-begin);
+        require(renderer.present(error,&present,profile_frame ? &scene_frame : nullptr),error);
+        present_cpu = ms(armGetSystemTick()-present_start);
+        const auto mall_start = armGetSystemTick();
+        const auto info = mallinfo();
+        mallinfo_ms = ms(armGetSystemTick()-mall_start);
+        heap.observe(info.uordblks,info.arena);
+        frame_ms = ms(armGetSystemTick()-begin);
         measured_frame_ms = frame_ms;
         measured.present_cpu_ms = present_cpu;
         measured.acquire_ms = present.acquire_ms;
         measured.fence_ms = present.fence_wait_ms;
-        measured.command_ms = present.record_ms;
+        measured.command_ms = present.uniform_write_ms + present.record_ms + present.finish_ms;
         measured.submit_ms = present.submit_ms;
         ++presented;
-        if (presented == 1 || presented % 120 == 0 || (finished && !printed_final_perf)) {
+        if (!profile_frame && (presented == 1 || presented % 120 == 0 ||
+                               (finished && !printed_final_perf))) {
             const auto& car = race.session().car();
             const double speed = vehicle_sqrt(car.velocity.x*car.velocity.x+car.velocity.y*car.velocity.y)*3.6;
             auto hud = race_session_hud(race.session()); hud.resize(3);
@@ -369,7 +586,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
                 hud[0].c_str(),hud[1].c_str(),hud[2].c_str());
             std::printf("PERF FRAME %.2f / 16.67 ms %s | SIM %.2f | RES/HASH/LOG %.2f | CULL/RECORD %.2f | UPDATE %.2f | PRESENT CPU %.2f (ACQUIRE %.2f FENCE %.2f CMD %.2f SUBMIT %.2f) | CATCH-UP %u DEBT %llu\n",
                 frame_ms,frame_ms>16.6667?"OVER":"WITHIN",simulation,residency,record,upload,present_cpu,
-                present.acquire_ms,present.fence_wait_ms,present.record_ms,present.submit_ms,
+                present.acquire_ms,present.fence_wait_ms,measured.command_ms,present.submit_ms,
                 ticks,(unsigned long long)clock.debt_ticks());
             std::printf("PERF %.1f KM/H gear %d pad %s | DRAWS %zu track + %zu car | TRIANGLES %llu | far %.2f | visible %zu | unplaced %llu | RESIDENCY %zu | GPU %llu / 268435456 | resources %zu\n",
                 speed,int(car.gear),connected?"CONNECTED":"DISCONNECTED - NEUTRAL",frame.track_draws,frame.car_draws,
@@ -389,13 +606,49 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
             last_perf = {format("Last DIRECT FRAME %.2f ms | SIM %.2f | CULL/RECORD %.2f | UPDATE %.2f",
                 frame_ms,simulation,record,upload),
                 format("PRESENT CPU %.2f ms | ACQUIRE %.2f | FENCE %.2f | CMD %.2f | SUBMIT %.2f",
-                present_cpu,present.acquire_ms,present.fence_wait_ms,present.record_ms,present.submit_ms)};
+                present_cpu,present.acquire_ms,present.fence_wait_ms,measured.command_ms,present.submit_ms)};
             if (finished) printed_final_perf = true;
         }
         }
         if (driving_before && !finished) {
             measured.frame_ms = measured_frame_ms;
             stats.add(measured);
+            if (profile_stats) {
+                for (unsigned i = 0; i < ticks; ++i)
+                    profile_stats->add_simulation_tick(simulation_ticks[i]);
+                FrameProfileStats::Values values{};
+                const auto set = [&](FrameProfileStage stage, double value) {
+                    values[static_cast<std::size_t>(stage)] = value;
+                };
+                set(FrameProfileStage::simulation,simulation);
+                set(FrameProfileStage::residency,residency);
+                set(FrameProfileStage::record_total,record);
+                set(FrameProfileStage::cull,record_profile.cull_ms);
+                set(FrameProfileStage::list,record_profile.list_ms);
+                set(FrameProfileStage::car,record_profile.car_ms);
+                set(FrameProfileStage::track,record_profile.track_ms);
+                set(FrameProfileStage::combine,record_profile.combine_ms);
+                set(FrameProfileStage::update_total,upload);
+                set(FrameProfileStage::update_validation,update_timing.validation_ms);
+                set(FrameProfileStage::uniform_write,present.uniform_write_ms);
+                set(FrameProfileStage::present_total,measured.present_cpu_ms);
+                set(FrameProfileStage::acquire,present.acquire_ms);
+                set(FrameProfileStage::fence,present.fence_wait_ms);
+                set(FrameProfileStage::command_record,present.record_ms);
+                set(FrameProfileStage::finish_list,present.finish_ms);
+                set(FrameProfileStage::submit,present.submit_ms);
+                const double present_parts = present.acquire_ms+present.fence_wait_ms+
+                    present.uniform_write_ms+present.record_ms+present.finish_ms+present.submit_ms;
+                set(FrameProfileStage::present_other,std::max(0.0,present_cpu-present_parts));
+                set(FrameProfileStage::mallinfo,mallinfo_ms);
+                const double parent_sum = simulation+residency+record+upload+present_cpu+mallinfo_ms;
+                set(FrameProfileStage::parent_sum,parent_sum);
+                set(FrameProfileStage::other,std::max(0.0,frame_ms-parent_sum));
+                const FrameProfileIdentity identity{race.session().timing().step,clock.debt_ticks(),
+                    frame.triangles,static_cast<std::uint32_t>(frame.track_draws),
+                    static_cast<std::uint32_t>(frame.car_draws)};
+                profile_stats->add_frame(values,frame_ms,identity,ticks);
+            }
         }
         if (finished) break;
     }
@@ -406,8 +659,16 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
         failure += "renderer close: " + close_error;
     }
     if (!failure.empty()) { std::printf("ERROR: %s\n",failure.c_str()); std::fflush(stdout); }
-    if (appletMainLoop()) show_result(screen,pad,race,replay,replay_mode,panel_mode,paused,
-                                      stats,unpause_resets,last_perf,failure);
+    if (appletMainLoop()) {
+        if (profile_stats) {
+            const ProfileResultContext context{*profile_stats,renderer.gpu_profile(),heap,clocks,
+                load_ms,initial_upload,scene.track().streaming_bytes,persistent,renderer.gpu_bytes(),
+                sizeof(FrameProfileStats)+renderer.profile_storage_bytes()};
+            show_result(screen,pad,race,replay,replay_mode,panel_mode,paused,
+                        stats,unpause_resets,last_perf,failure,&context);
+        } else show_result(screen,pad,race,replay,replay_mode,panel_mode,paused,
+                           stats,unpause_resets,last_perf,failure);
+    }
 }
 } // namespace
 int main(int argc, char** argv) {
@@ -417,31 +678,35 @@ int main(int argc, char** argv) {
     {
         Screen screen; if (!screen.open()) return 1;
         try {
-            std::string root = "sdmc:/nfsu"; bool replay = false, panel = false, selected = false, root_seen = false;
+            std::string root = "sdmc:/nfsu";
+            bool replay = false, panel = false, profile_frame = false, selected = false, root_seen = false;
             for (int i = 1; i < argc; ++i) {
                 const std::string arg = argv[i];
                 if (arg == "--replay") { replay = true; selected = true; }
                 else if (arg == "--live") { replay = false; selected = true; }
                 else if (arg == "--panel") panel = true;
+                else if (arg == "--profile-frame") profile_frame = true;
                 else if (!root_seen && arg.rfind("--",0) != 0) { root = arg; root_seen = true; }
-                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel]");
+                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame]");
             }
+            require(!(panel && profile_frame),"--profile-frame requires direct presentation");
             while (!selected && appletMainLoop()) {
                 padUpdate(&pad); const auto down = padGetButtonsDown(&pad);
                 if (down & HidNpadButton_Plus) throw Cancel{};
                 if (down & HidNpadButton_A) selected = true;
                 if (down & HidNpadButton_X) { selected = true; replay = true; }
-                if (down & HidNpadButton_Y) panel = !panel;
+                if ((down & HidNpadButton_Y) && !profile_frame) panel = !panel;
                 screen.show({"NFSU #196 - EVENT 1 / STOCK 240SX / TWO LAPS",format("BUILD %.12s",NFSU_RACE_BUILD_TAG),
                     "A: drive with Joy-Con / Pro Controller", "X: replay the pinned desktop event1.txt", "+: exit",
-                    std::string("Y: diagnostic panel ")+(panel?"ON":"OFF")+" (readback and CPU text cost)",
+                    profile_frame ? "PROFILE FRAME: direct only; Y panel toggle disabled" :
+                        std::string("Y: diagnostic panel ")+(panel?"ON":"OFF")+" (readback and CPU text cost)",
                     "The #47 first-lap check runs before loading. Assets: "+root,
                     "Release all controls during countdown to clear the #59 hot-plug latch.",
                     "Direct mode has no in-race HUD yet; choose PANEL for live driving evidence.",
                     "During the race: Y pauses, + opens results with driving-frame statistics.",
                     "No game data is bundled or written. Replay input is bundled in RomFS."});
             }
-            if (selected) run(root,replay,panel,screen,pad);
+            if (selected) run(root,replay,panel,profile_frame,screen,pad);
         } catch (const Cancel&) {
         } catch (const std::exception& e) {
             std::printf("ERROR: %s\n",e.what()); std::fflush(stdout);
