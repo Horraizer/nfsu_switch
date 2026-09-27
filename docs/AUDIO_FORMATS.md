@@ -115,6 +115,8 @@ AST into memory. These rules were checked against the retail data and the
 [vgmstream EA-XA decoder](https://github.com/vgmstream/vgmstream/blob/master/src/coding/ea_xa_decoder.c),
 [EA SCHl layout](https://github.com/vgmstream/vgmstream/blob/master/src/layout/blocked_ea_schl.c),
 and [ABK metadata reader](https://github.com/vgmstream/vgmstream/blob/master/src/meta/ea_schl_abk.c).
+The version 1 `+128` rounding comes from the vgmstream decoder; the retail
+stream alone does not independently establish that one-bit rounding choice.
 
 ## Stream bank links and event companions
 
@@ -145,9 +147,22 @@ the stream name; they do not identify a particular ABK sample index.
 
 ## First-race evidence map
 
-The game data available here does not contain a verified `240SX -> CAR_0`
-lookup or an event-to-sample selection table. The following is an asset
-inventory for the stock 240SX first-lap target; guesses are explicit.
+The search so far has not established a `240SX -> CAR_0` lookup or an
+event-to-sample selection table. In `speed.exe` (SHA-256
+`C0FAD450912952F53809A54690D235AA8B4E25B9F46650693C7CBEE1B4C074B7`),
+`C0U0_M0_ENG_MB` is at file offset `0x2BEAD0`, and
+`Car_0\Eng_UG_0\` is at `0x2BEE18`. Their pointer tables are at virtual
+addresses `0x006F8000` and `0x006F7EB0`. The code at
+`0x00521DA3..0x00521DC1` indexes those tables with four times the
+car sound group plus the engine upgrade level. This proves the bank lookup
+after those two numbers have been chosen; it does not identify which group
+the stock 240SX chooses. `Global/GLOBALB.BUN` was also inspected through
+the decoded CarTypeInfo layout: the 240SX is record 18 of chunk
+`0x00034600` at file offset `1736752` (see `docs/VEHICLE.md`). The known
+handling fields in that record do not establish an audio group. The search
+has not traced the code that sets the two lookup inputs, nor decoded the
+CSI/A1C event selection graph. The following inventory keeps those links
+explicitly unresolved.
 
 | Sound role | Retail evidence | Status |
 | --- | --- | --- |
@@ -159,12 +174,27 @@ inventory for the stock 240SX first-lap target; guesses are explicit.
 | Race music | `STRM_Music_UG0_MB.abk` links 27 entries, in bank table order, to the 27 segments of `STRM_Music_UG0_MB.ast`. Segment 0 is 660,717 stereo frames at 22,050 Hz (about 30 s); segment 1 is 4,260,282 frames (about 193 s); segment 16 is the 44,100 Hz version 1 exception. | Storage order is proven. Race playlist order, track titles, and whether segment 0 is an intro are unresolved. |
 
 The tool prints every sample and segment with index, rate, channels, frame
-count, loop and codec. It can make listening candidates outside the repo:
+count, loop and codec. These commands write the six listening candidates
+under one output directory outside both the repository and retail tree:
 
 ```text
 nfsu_audio_dump <retail-root> <outside-repo-output> --write --bank C0U0_M0_ENG_MB.abk --sample 1
+nfsu_audio_dump <retail-root> <outside-repo-output> --write --bank C0U0_M0_ENG_MB.abk --sample 4
 nfsu_audio_dump <retail-root> <outside-repo-output> --write --bank SKID_PAV_MB.abk --sample 1
+nfsu_audio_dump <retail-root> <outside-repo-output> --write --bank IMPACT_MB.abk --sample 1
+nfsu_audio_dump <retail-root> <outside-repo-output> --write --bank FE_MB.abk --sample 1
 nfsu_audio_dump <retail-root> <outside-repo-output> --write --stream STRM_Music_UG0_MB.ast --segment 1
+```
+
+The resulting relative WAV paths are:
+
+```text
+Sound/CAR_0/ENG_UG_0/C0U0_M0_ENG_MB.abk.sample001.wav
+Sound/CAR_0/ENG_UG_0/C0U0_M0_ENG_MB.abk.sample004.wav
+Sound/SKIDS/SKID_PAV_MB.abk.sample001.wav
+Sound/IG_GLOBAL/IMPACT_MB.abk.sample001.wav
+Sound/FE/FE_MB.abk.sample001.wav
+SNDSTREAMS/STRM_Music_UG0_MB.ast.segment001.wav
 ```
 
 `--manifest <path>` computes the full PCM hash manifest, and

@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <istream>
+#include <iterator>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -202,7 +204,7 @@ Bank parse_abk(const std::vector<Byte>& b) {
     if (!bank.modules || bank.modules > 1024) fail(0x0A, "bad module count");
     std::uint64_t module = u32(b, 0x1C);
     const std::uint64_t bnk = u32(b, 0x20);
-    std::vector<std::uint32_t> seen_tables;
+    std::map<std::uint64_t, std::uint64_t> table_ranges;
     for (std::uint32_t i = 0; i < bank.modules; ++i) {
         require_range(b.size(), module, 0x3C);
         const std::uint32_t players = b[static_cast<std::size_t>(module + 0x24)];
@@ -213,12 +215,18 @@ Bank parse_abk(const std::vector<Byte>& b) {
         for (std::uint32_t j = 0; j < players; ++j) {
             const std::uint64_t player = data + u32(b, module + 0x3C + j * 4U);
             const std::uint32_t table = u32(b, player + 4);
-            if (std::find(seen_tables.begin(), seen_tables.end(), table) != seen_tables.end())
-                continue;
-            seen_tables.push_back(table);
+            const auto next = table_ranges.lower_bound(table);
+            if (next != table_ranges.end() && next->first == table) continue;
             const std::uint32_t count = u32(b, table);
-            if (count > 100000 || count > (b.size() - table - 4) / 12)
+            if (count > 100000 || count > (b.size() - table - 4) / 12 ||
+                count > b.size() / 12 - bank.entries.size())
                 fail(table, "bad entry count");
+            const std::uint64_t end = static_cast<std::uint64_t>(table) + 4 +
+                static_cast<std::uint64_t>(count) * 12;
+            if ((next != table_ranges.end() && next->first < end) ||
+                (next != table_ranges.begin() && std::prev(next)->second > table))
+                fail(table, "overlapping entry tables");
+            table_ranges.emplace_hint(next, table, end);
             for (std::uint32_t k = 0; k < count; ++k) {
                 const std::uint64_t off = static_cast<std::uint64_t>(table) + 4 + k * 12ULL;
                 const Byte type = b[static_cast<std::size_t>(off)];
@@ -287,7 +295,7 @@ std::vector<Segment> scan_ast(std::istream& input) {
         if (first == 0) {
             if (active) fail(pos, "padding inside stream segment");
             const std::uint64_t aligned = std::min<std::uint64_t>(
-                size, (pos + 127U) & ~127ULL);
+                size, (pos + 128U) & ~127ULL);
             const auto padding = read_at(input, pos, static_cast<std::size_t>(aligned - pos), size);
             if (std::any_of(padding.begin(), padding.end(), [](Byte b) { return b != 0; }))
                 fail(pos, "nonzero AST padding");

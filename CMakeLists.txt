@@ -1488,6 +1488,7 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_audio_tests PRIVATE nfsu_audio)
     nfsu_enable_warnings(nfsu_audio_tests)
     add_test(NAME nfsu_audio_tests COMMAND nfsu_audio_tests)
+    set_tests_properties(nfsu_audio_tests PROPERTIES TIMEOUT 10)
     add_test(NAME nfsu_audio_retail
         COMMAND ${CMAKE_COMMAND}
             -DAUDIO_DUMP=$<TARGET_FILE:nfsu_audio_dump>
