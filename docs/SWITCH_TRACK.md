@@ -42,7 +42,7 @@ for the whole hand-given lap. The app reads only table-selected STREAM
 ranges and retains their GPU uploads; #204 re-reads the texture-bearing
 ranges one at a time to reduce the loading peak.
 It does not invent zone-only eviction or simulate a race. The diagnostic
-path is #157's hand polyline, 6824 samples at 30 world units/s and 60 samples/s;
+path is #157's hand polyline at 30 world units/s and 60 samples/s;
 it is not #61's recovered race route.
 
 Each view uses the same camera basis for GPU matrices and the retail tree

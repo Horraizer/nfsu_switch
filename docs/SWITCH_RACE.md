@@ -87,7 +87,7 @@ The first command is in CTest and needs no game data. It checks clock debt,
 recording identity and extent, invalid call order, resource/texture rebasing,
 capacity refusal and mismatched cameras. The retail run checks every step
 hash and the result, uploads/retires the combined table through the neutral
-ledger, and validates thirteen selected race views. `--sample-draws` also
+ledger, and validates selected race views. `--sample-draws` also
 checks one view per second; `--full-draws` checks every tick's draw commands.
 The retail command prints the sampled view and draw totals. No desktop trace
 is described as console execution evidence.
