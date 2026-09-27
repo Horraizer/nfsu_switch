@@ -739,6 +739,10 @@ nfsu_enable_warnings(nfsu_platform_desktop)
 add_executable(nfsu_frame_budget_probe tools/frame_budget_probe.cpp)
 target_link_libraries(nfsu_frame_budget_probe PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_platform_desktop)
 nfsu_enable_warnings(nfsu_frame_budget_probe)
+if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    # The probe replaces new/delete; DLL allocator calls cannot interpose them.
+    target_link_options(nfsu_frame_budget_probe PRIVATE -static-libstdc++ -static-libgcc)
+endif()
 
 # The argument conversion is the desktop filesystem service: its three free
 # functions now go through the FileSystemService it implements, and the

@@ -183,16 +183,16 @@ struct DekoRenderer::Impl {
         if (commands) { error = "deko3d renderer open is one-shot"; return false; }
         DrawExecutionPlan plan;
         if (!plan_draw_execution(source, plan, error)) return false;
-        draw_capacity = capacity ? capacity : source.draws.size();
-        if (draw_capacity < source.draws.size() || draw_capacity > 2047) {
+        draw_capacity = capacity ? capacity : source.draw_count();
+        if (draw_capacity < source.draw_count() || draw_capacity > 2047) {
             error = "invalid reserved draw capacity"; return false;
         }
         plan.uniform_bytes = static_cast<std::uint32_t>((1 + 2 * draw_capacity) * 256);
         plan.command_bytes = static_cast<std::uint32_t>(65536 +
-            (draw_capacity + source.uploads.resources.size()) * 4096);
+            (draw_capacity + source.resource_table().resources.size()) * 4096);
         uniform_stride = plan.uniform_bytes;
         const auto uniform_bytes = std::uint64_t{uniform_stride} * (presentation ? 2 : 1);
-        uploaded = source.uploads;
+        uploaded = source.resource_table();
         commands = &source;
         device = dk::DeviceMaker{}.setUserData(this).setCbDebug(debug)
             .setFlags(DkDeviceFlags_DepthZeroToOne | DkDeviceFlags_OriginUpperLeft).create();
@@ -218,7 +218,7 @@ struct DekoRenderer::Impl {
             return healthy(e) && bytes && alignment;
         };
         SceneMemoryRequirement need;
-        if (!upload_table_requirement(source.uploads, layout_query, need, error)) return false;
+        if (!upload_table_requirement(source.resource_table(), layout_query, need, error)) return false;
         if (!block(need.buffer_extent, kDataFlags, "mesh buffers", buffers, error) ||
             !block(need.image_extent, kImageFlags, "texture images", images, error) ||
             !block(plan.staging_bytes,
@@ -231,7 +231,7 @@ struct DekoRenderer::Impl {
             !arena(staging_arena, plan.staging_bytes, error) ||
             !arena(uniform_arena, uniform_bytes, error) ||
             !ledger.create({&buffer_arena, &image_arena, &staging_arena}, layout_query, 8192, error) ||
-            !ledger.upload_table(source.uploads, 1, handles, error)) return false;
+            !ledger.upload_table(source.resource_table(), 1, handles, error)) return false;
         command_bytes[0] = plan.command_bytes;
         command_bytes[1] = static_cast<std::uint32_t>(65536 + draw_capacity * 4096);
         if (!block(command_bytes[0], kDataFlags, "command memory", command_memory[0], error) ||
@@ -245,7 +245,7 @@ struct DekoRenderer::Impl {
         textures.resize(handles.size()); records.resize(handles.size());
         begin();
         for (std::size_t i = 0; i < handles.size(); ++i) {
-            const auto& r = source.uploads.resources[i];
+            const auto& r = source.resource_table().resources[i];
             if (!ledger.find(handles[i], records[i])) { error = r.name + ": lost upload handle"; return false; }
             const auto& placement = records[i];
             if (r.kind != UploadResourceKind::texture) {
@@ -328,7 +328,7 @@ struct DekoRenderer::Impl {
             }
         }
         std::printf("deko3d: %zu draws, %zu uploads, %llu bytes of GPU blocks (placeholder budget)\n",
-            source.draws.size(), handles.size(), static_cast<unsigned long long>(gpu_bytes));
+            source.draw_count(), handles.size(), static_cast<unsigned long long>(gpu_bytes));
         return true;
     }
 
@@ -348,9 +348,10 @@ struct DekoRenderer::Impl {
         auto* data = static_cast<unsigned char*>(uniforms.getCpuAddr()) +
             uniform_allocation.offset + slot * uniform_stride;
         std::memcpy(data, &source.frame, sizeof source.frame);
-        for (std::size_t i = 0; i < source.draws.size(); ++i) {
-            std::memcpy(data + (1+2*i)*256, &source.draws[i].placement, sizeof(DrawInstanceUniform));
-            std::memcpy(data + (2+2*i)*256, &source.draws[i].material, sizeof(DrawMaterialUniform));
+        for (std::size_t i = 0; i < source.draw_count(); ++i) {
+            const auto view = source.draw_view(i);
+            std::memcpy(data + (1+2*i)*256, &view.placement, sizeof(DrawInstanceUniform));
+            std::memcpy(data + (2+2*i)*256, &view.material, sizeof(DrawMaterialUniform));
         }
     }
 
@@ -369,8 +370,9 @@ struct DekoRenderer::Impl {
         const auto base = uniforms.getGpuAddr() + uniform_allocation.offset + slot * uniform_stride;
         cmd.bindUniformBuffer(DkStage_Vertex, 0, base, sizeof(DrawFrameUniform));
         cmd.bindUniformBuffer(DkStage_Fragment, 0, base, sizeof(DrawFrameUniform));
-        for (std::size_t i = 0; i < commands->draws.size(); ++i) {
-            const auto& draw = commands->draws[i];
+        for (std::size_t i = 0; i < commands->draw_count(); ++i) {
+            const auto view = commands->draw_view(i);
+            const auto& draw = view.definition;
             const auto& state = draw.pipeline;
             const bool has_texture = draw.texture_resource != kNoHandle;
             cmd.bindShaders(DkStageFlag_GraphicsMask, {&vertex, has_texture ? &textured : &fallback});

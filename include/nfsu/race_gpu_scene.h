@@ -5,7 +5,8 @@
 
 namespace nfsu {
 // One combined command stream: track then car, one camera and one depth
-// buffer. Scene payloads stay stable until the renderer closes.
+// buffer. Requires owning reference recordings; a borrowed race frame is
+// already combined. Scene payloads stay stable until the renderer closes.
 bool combine_race_commands(RecordedCommands track, const RecordedCommands& car,
                            RecordedCommands& out, std::string& error);
 struct RaceGpuFrame {
@@ -17,7 +18,7 @@ struct RaceGpuFrame {
 struct RaceFrameProfile {
     double cull_ms = 0, list_ms = 0, car_ms = 0, track_ms = 0, combine_ms = 0;
 };
-class RaceGpuScene {
+class RaceGpuScene : private PreparedCommandSource {
 public:
     RaceGpuScene() = default;
     RaceGpuScene(const RaceGpuScene&) = delete;
@@ -38,8 +39,25 @@ private:
     std::vector<std::size_t> template_of_group_;
     bool ready_ = false;
     bool prepare_templates(std::string& error);
-    bool record_cached_track(const TrackDrawList& list, const RecordedCommands& car,
-                             RecordedCommands& out, std::string& error) const;
+    bool prepare_frame_cache(std::string& error);
+    bool select_track(const TrackCullReport& visible, RaceGpuFrame& out,
+                      std::size_t& entries, std::string& error);
+    const UploadTable& resource_table() const override { return combined_uploads_; }
+    std::size_t selected_draw_count() const override { return selection_.size() + car_templates_.owning_draws().size(); }
+    RecordedDrawView selected_draw(std::size_t i) const override;
+    std::uint64_t command_generation() const override { return generation_; }
+    PreparedTrackCull culler_;
+    UploadTable combined_uploads_;
+    RecordedCommands car_templates_;
+    std::vector<std::size_t> mesh_first_, section_first_;
+    std::vector<std::uint32_t> mesh_groups_;
+    struct SelectedTrackDraw { std::uint32_t instance, draw; std::size_t ordinal; };
+    struct RetailGroup { std::size_t bucket = 0; unsigned char layer = 0; };
+    std::vector<SelectedTrackDraw> selection_;
+    std::vector<RetailGroup> retail_groups_;
+    std::vector<std::size_t> bucket_first_;
+    std::vector<DrawInstanceUniform> track_placements_;
+    std::uint64_t generation_ = 0;
     PreparedCarScene car_;
     std::vector<PreparedInstance> base_;
     std::size_t skin_source_ = kNoHandle;

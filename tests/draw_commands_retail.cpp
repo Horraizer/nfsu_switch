@@ -49,7 +49,7 @@ int main(int argc, char** argv) {
                 std::cerr << "FAIL: " << (trace.empty() ? "empty CPU trace" : mismatch) << '\n';
                 return 1;
             }
-            for (const auto& draw : commands.draws) {
+            for (const auto& draw : commands.owning_draws()) {
                 if (draw.instance == nfsu::kNoHandle) {
                     std::cerr << "FAIL: " << draw.name << ": stock placement absent\n";
                     return 1;
@@ -75,7 +75,7 @@ int main(int argc, char** argv) {
                 return 1;
             }
             std::cout << "PASS: stock 240SX " << (painted ? "painted " : "unpainted ") << nfsu::material_state_mode_name(mode)
-                      << ": " << trace.size() << " draws, " << commands.uploads.resources.size()
+                      << ": " << trace.size() << " draws, " << commands.owning_uploads().resources.size()
                       << " resources, " << stock.stats.triangles_submitted << " triangles, sha256 " << hash << '\n';
         }
     }

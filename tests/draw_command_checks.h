@@ -10,19 +10,19 @@ inline std::string compare_draws(const nfsu::RecordedCommands& commands,
     namespace sm = nfsu::shader_manifest;
     std::string error;
     if (!nfsu::validate_recorded_commands(commands, error)) return error;
-    if (commands.draws.size() != trace.size()) return "draw count";
+    if (commands.owning_draws().size() != trace.size()) return "draw count";
     for (std::size_t i = 0; i < trace.size(); ++i) {
-        const auto& d = commands.draws[i];
+        const auto& d = commands.owning_draws()[i];
         const auto& r = trace[i];
         const auto& p = d.pipeline;
         const auto fail = [&](const char* field) { return d.name + ": " + field; };
         if (d.group != r.group || d.mesh != r.mesh || d.instance != r.instance) return fail("draw order/identity");
         if (d.first_index != r.first_index || d.index_count != r.index_count) return fail("index range");
         if (d.first_vertex != 0) return fail("first vertex");
-        if (d.vertex_resource >= commands.uploads.resources.size() ||
-            d.index_resource >= commands.uploads.resources.size()) return fail("buffer handles");
-        const auto& v = commands.uploads.resources[d.vertex_resource];
-        const auto& idx = commands.uploads.resources[d.index_resource];
+        if (d.vertex_resource >= commands.owning_uploads().resources.size() ||
+            d.index_resource >= commands.owning_uploads().resources.size()) return fail("buffer handles");
+        const auto& v = commands.owning_uploads().resources[d.vertex_resource];
+        const auto& idx = commands.owning_uploads().resources[d.index_resource];
         if (v.kind != nfsu::UploadResourceKind::vertex_buffer || v.source != r.mesh ||
             v.elements != d.vertex_count) return fail("vertex binding");
         if (idx.kind != nfsu::UploadResourceKind::index_buffer || idx.source != r.mesh ||
@@ -30,8 +30,8 @@ inline std::string compare_draws(const nfsu::RecordedCommands& commands,
         if (r.texture == nfsu::kNoHandle) {
             if (d.texture_resource != nfsu::kNoHandle) return fail("fallback texture binding");
         } else {
-            if (d.texture_resource >= commands.uploads.resources.size()) return fail("texture handle");
-            const auto& t = commands.uploads.resources[d.texture_resource];
+            if (d.texture_resource >= commands.owning_uploads().resources.size()) return fail("texture handle");
+            const auto& t = commands.owning_uploads().resources[d.texture_resource];
             if (t.kind != nfsu::UploadResourceKind::texture || t.source != r.texture) return fail("texture binding");
         }
         const bool textured = r.texture != nfsu::kNoHandle;
