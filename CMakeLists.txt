@@ -735,6 +735,11 @@ add_library(nfsu_platform_desktop
 target_link_libraries(nfsu_platform_desktop PUBLIC nfsu_platform)
 nfsu_enable_warnings(nfsu_platform_desktop)
 
+# Read-only desktop research executable; not part of the race application.
+add_executable(nfsu_frame_budget_probe tools/frame_budget_probe.cpp)
+target_link_libraries(nfsu_frame_budget_probe PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_platform_desktop)
+nfsu_enable_warnings(nfsu_frame_budget_probe)
+
 # The argument conversion is the desktop filesystem service: its three free
 # functions now go through the FileSystemService it implements, and the
 # argument loop they share moved into nfsu_platform unchanged.
