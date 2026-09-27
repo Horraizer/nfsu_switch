@@ -5,6 +5,13 @@
 #include <cmath>
 
 namespace nfsu {
+namespace {
+RenderOptions race_render_options() {
+    RenderOptions options;
+    options.width = 1280; options.height = 720;
+    return options;
+}
+}
 bool combine_race_commands(RecordedCommands track, const RecordedCommands& car,
                            RecordedCommands& out, std::string& error) {
     out = {}; error.clear();
@@ -94,7 +101,7 @@ bool RaceGpuScene::prepare_templates(std::string& error) {
         witnesses.push_back(item);
     }
     TrackDrawList list;
-    RenderOptions options; options.width = 1280; options.height = 720;
+    const RenderOptions options = race_render_options();
     if (!build_track_draw_list(track_.scene,witnesses,{},list,error) ||
         !record_track_commands(track_.scene,list,options,{},track_templates_,error) ||
         !validate_recorded_commands(track_templates_,error)) return false;
@@ -109,7 +116,7 @@ bool RaceGpuScene::record_cached_track(const TrackDrawList& list, const Recorded
     out.frame = car.frame; out.width = car.width; out.height = car.height;
     std::copy(std::begin(car.clear_color),std::end(car.clear_color),out.clear_color);
     out.uploads = track_templates_.uploads;
-    out.draws.reserve(list.entries.size());
+    out.draws.reserve(list.entries.size() + car.draws.size());
     // build_track_draw_list already checked every (instance,group) pair and
     // the list order/cost. Templates contain only fully validated geometry.
     for (const auto& entry : list.entries) {
@@ -149,7 +156,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         error = "race car placement failed"; return false;
     }
     for (double far = 250; far >= 31.25; far *= 0.5) {
-        RenderOptions options; options.width = 1280; options.height = 720;
+        RenderOptions options = race_render_options();
         if (!drive_render_camera(session.camera(), ChaseFovMode::vertical_4_3,
                                  options.width, options.height, options.camera, error)) return false;
         options.camera.far_plane = far;

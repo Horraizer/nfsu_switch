@@ -100,9 +100,10 @@ Stable thresholds are enforced as failures, not timing assertions:
 - Cache metadata estimate at most 8 MiB and combined persistent payload at
   most 64 MiB; the existing stream/GPU/uniform limits remain unchanged.
 - Every sampled frame has exactly the same ordered commands, draw identity,
-  resource references, ranges, program/state, placement, material, camera,
-  viewport, clear color, visibility counts, triangle counts and far plane
-  as the original recorder. No tolerance or visual approximation.
+  upload resource fields and totals, resource references, ranges, program/state,
+  placement, material, camera, viewport, clear color, visibility counts,
+  triangle counts and far plane as the original recorder. No tolerance or
+  visual approximation. The event 1 cache estimate is pinned at 2220547 bytes.
 - All 48336 simulation/residency step hashes and the exact two-lap result
   remain the desktop pins. Existing limits remain 2047 draws / 8192
   resources. The stock course's sampled maximum remains 1824 draws.

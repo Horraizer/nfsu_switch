@@ -48,6 +48,24 @@ void operator delete(void* p,std::size_t,std::align_val_t) noexcept { free_count
 void operator delete[](void* p,std::size_t,std::align_val_t) noexcept { free_counted(p); }
 
 void require(bool okay, const std::string& error) { if (!okay) throw std::runtime_error(error); }
+bool same_upload_resource(const nfsu::UploadResource& a, const nfsu::UploadResource& b) {
+    return a.kind == b.kind && a.lifetime == b.lifetime && a.memory == b.memory &&
+        a.name == b.name && a.source == b.source && a.data == b.data &&
+        a.bytes == b.bytes && a.alignment == b.alignment &&
+        a.element_bytes == b.element_bytes && a.elements == b.elements &&
+        a.texture_hash == b.texture_hash &&
+        a.texture.format == b.texture.format && a.texture.width == b.texture.width &&
+        a.texture.height == b.texture.height && a.texture.texel_bytes == b.texture.texel_bytes &&
+        a.texture.row_bytes == b.texture.row_bytes && a.texture.bytes == b.texture.bytes;
+}
+bool same_upload_totals(const nfsu::UploadTotals& a, const nfsu::UploadTotals& b) {
+    return a.resources == b.resources && a.vertex_buffers == b.vertex_buffers &&
+        a.index_buffers == b.index_buffers && a.textures == b.textures &&
+        a.generated_textures == b.generated_textures && a.vertex_bytes == b.vertex_bytes &&
+        a.index_bytes == b.index_bytes && a.texture_bytes == b.texture_bytes &&
+        a.generated_texture_bytes == b.generated_texture_bytes &&
+        a.largest_texture_bytes == b.largest_texture_bytes && a.empty_buffers == b.empty_buffers;
+}
 int main(int argc, char** argv) {
     using namespace nfsu;
     try {
@@ -141,9 +159,14 @@ int main(int argc, char** argv) {
                 "race scene disconnected the shared loader checkpoints");
         require(!scene.load(posix_file_system(),root,error),"loaded race scene allowed cache-invalidating reload");
         RaceRun race; require(race.start(root, scene.track(), error), error);
+        RaceGpuScene unloaded_scene;
+        RaceGpuFrame unloaded_frame;
+        require(!unloaded_scene.frame(race.session(), unloaded_frame, error) &&
+                error == "race scene is not loaded", "unloaded race scene did not refuse a frame");
         require(!race.commit(error), "commit without step accepted");
         require(replay.load(text, error), error);
         require(scene.cache_bytes() <= 8*kMiB,"command cache exceeded metadata limit");
+        require(scene.cache_bytes() == 2220547,"event 1 command cache metadata estimate differs from pin");
         std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 8*kMiB << '\n';
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';
@@ -217,10 +240,14 @@ int main(int argc, char** argv) {
                     std::memcmp(reference.commands.clear_color,frame.commands.clear_color,4) == 0 &&
                     reference.commands.draws.size() == frame.commands.draws.size() &&
                     reference.commands.uploads.resources.size() == frame.commands.uploads.resources.size() &&
+                    same_upload_totals(reference.commands.uploads.totals,frame.commands.uploads.totals) &&
                     std::memcmp(&reference.commands.frame,&frame.commands.frame,sizeof(DrawFrameUniform)) == 0 &&
                     reference.triangles == frame.triangles && reference.far_plane == frame.far_plane &&
                     reference.visible == frame.visible && reference.unplaced == frame.unplaced,
                     "cached frame metadata differs from reference");
+                for (std::size_t i = 0; i < frame.commands.uploads.resources.size(); ++i)
+                    require(same_upload_resource(reference.commands.uploads.resources[i],frame.commands.uploads.resources[i]),
+                            "cached upload resource differs from reference at index " + std::to_string(i));
                 for (std::size_t i = 0; i < frame.commands.draws.size(); ++i) {
                     const auto& a = frame.commands.draws[i]; const auto& b = reference.commands.draws[i];
                     require(a.name == b.name && a.group == b.group && a.mesh == b.mesh && a.instance == b.instance &&
