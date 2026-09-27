@@ -14,18 +14,26 @@ throttle, horizontal speed, maximum wheel slip, and track contact impulse
 telemetry from `RaceSession`. The audio service has no mutable reference to
 the session. The simulator never reads from the audio service. The output
 thread mixes eight fixed clip slots and one streamed stereo signal into
-48 kHz signed 16-bit PCM. Clip phase and gain use Q16 and Q15 integers;
+48 kHz signed 16-bit PCM. Clip phase and gain use Q32 and Q15 integers;
 voices are summed in slot order with 64-bit accumulators and clipped once.
-The source-rate conversion is zero-order hold. The AST decoder produces
+Both clip and AST source-rate conversion use linear interpolation. Gain
+changes ramp over five milliseconds, and output fades in after a pause.
+The AST decoder produces
 one block at a time on a producer thread, converts to 48 kHz stereo, and
 waits for room in an 8192-frame ring. An empty ring emits silence and an
 overfull nonblocking push drops excess frames; both have counters.
 
 Windows output uses `waveOut` with three 1024-frame buffers. Switch output
-uses `audoutPlayBuffer` with one aligned 1024-frame buffer on its own thread.
-Both request 48 kHz stereo int16. The Switch HUD reports audio diagnostics,
-and its persistent payload check includes decoded clip storage, the ring,
-and output buffer. Pausing or finishing the Switch race silences output and
+uses `audren` through libnx `audrv` with three queued aligned 1024-frame
+buffers. The render thread is pinned to its current core; the decoder and
+native audio output thread use a different core, with output priority 0x28.
+Both request 48 kHz stereo int16. The Switch HUD reports ring underruns and
+fill, queued output frames, late output cycles, thread work time and mix clips
+on its `AUDIO` line. `AUDIO STATUS` reports startup and runtime errors.
+Music startup scans only a bounded prefix of the AST, reads it sequentially
+in chunks, and polls HOME/+ while loading and waiting for the stream ring.
+Its persistent payload check includes decoded clip storage, the ring,
+and output buffers. Pausing or finishing the Switch race silences output and
 holds the stream in the bounded ring. No third-party audio library is used.
 
 ## Retail lookup evidence and current cue choices
@@ -66,7 +74,7 @@ The service therefore uses the following explicit approximations:
 | Engine | `Sound/CAR_0/ENG_UG_0/C0U0_M0_ENG_MB.abk` samples 1..4 loop on slots 0..3. Adjacent layer centers are 800, 2500, 4500 and 7000 RPM with linear crossfade. Pitch is RPM divided by layer center, clamped to 0.5..2.0. Gain is `weight * (0.22 + 0.33 * throttle)`. | 240SX sound group, sample order, bands, curves and gain. |
 | Tyres | `Sound/SKIDS/SKID_PAV_MB.abk` sample 1 loops when speed exceeds 2 m/s and slip exceeds 0.25; gain is clamped to 0..0.45. | Pavement event selection and slip/gain curve. |
 | Impacts | `Sound/IG_GLOBAL/IMPACT_MB.abk` sample 1 plays once when a hull contact impulse exceeds 2, with a 10-tick cooldown and gain 0.1..0.7. | Collision event to sample index and threshold. |
-| Music | `SNDSTREAMS/STRM_Music_UG0_MB.ast` segment 1 streams once at gain 0.25. | Playlist order, track title and replay or next-track policy; issue #202 owns race music and interface cues. |
+| Music | `SNDSTREAMS/STRM_Music_UG0_MB.ast` segment 1 streams once at gain 0.5. | Playlist order, track title and replay or next-track policy; issue #202 owns race music and interface cues. |
 
 The named WAV candidates in `AUDIO_FORMATS.md` were heard by the owner and
 accepted as free of audible corruption. That listening result does not
@@ -76,8 +84,10 @@ establish their exact in-game event assignments.
 
 `nfsu_audio_playback_tests` uses synthetic PCM and AST bytes. It checks
 gain, positive and negative clipping, loop boundaries, pitch, source-rate
-conversion, ring ordering and underrun/overrun accounting, producer
-backpressure, and two-block streaming. `nfsu_race_run_tests` checks the
+conversion, stereo order, a derived sine-image threshold, bounded AST prefix
+scanning, ring ordering and underrun/overrun accounting, producer
+backpressure, and two-block streaming. `nfsu_race_audio_tests` checks the
+crossfade and missing-file fallback. `nfsu_race_run_tests` checks the
 replay pins. `nfsu_audio_retail` checks the full ABK/AST decoded manifest
 and hashes retail files before and after reading them. A Switch build proves
 the `audout` code links; audible output still requires a console run.

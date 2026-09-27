@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <stdexcept>
+#ifdef __SWITCH__
+#include <switch.h>
+#endif
 
 namespace nfsu::audio {
 namespace {
@@ -12,6 +15,17 @@ std::int16_t sample_at(const PcmClip& clip, std::size_t frame,
     return clip.pcm[frame * clip.channels +
                     (clip.channels == 1 ? 0 : channel)];
 }
+
+std::int32_t interpolate(std::int32_t first, std::int32_t second,
+                         std::uint64_t numerator,
+                         std::uint64_t denominator) noexcept {
+    return first + static_cast<std::int32_t>(
+        (static_cast<std::int64_t>(second - first) *
+         static_cast<std::int64_t>(numerator)) /
+        static_cast<std::int64_t>(denominator));
+}
+
+constexpr std::uint32_t kGainRampFrames = 240;
 
 std::int16_t clamp16(std::int64_t value) noexcept {
     return static_cast<std::int16_t>(std::max<std::int64_t>(-32768,
@@ -38,7 +52,8 @@ bool Mixer::play(std::size_t slot, const PcmClip* clip, bool loop,
                  std::uint32_t gain_q15, std::uint32_t pitch_q16) noexcept {
     if (slot >= voices_.size() || !clip || !clip->valid() || !pitch_q16)
         return false;
-    voices_[slot] = {clip, 0, std::min(gain_q15, 32768U),
+    const auto gain = std::min(gain_q15, 32768U);
+    voices_[slot] = {clip, 0, gain, gain, gain, 0,
                      std::min(pitch_q16, 262144U), loop};
     return true;
 }
@@ -46,8 +61,14 @@ bool Mixer::play(std::size_t slot, const PcmClip* clip, bool loop,
 void Mixer::control(std::size_t slot, std::uint32_t gain_q15,
                     std::uint32_t pitch_q16) noexcept {
     if (slot >= voices_.size()) return;
-    voices_[slot].gain_q15 = std::min(gain_q15, 32768U);
-    voices_[slot].pitch_q16 = std::max(1U, std::min(pitch_q16, 262144U));
+    auto& voice = voices_[slot];
+    const auto gain = std::min(gain_q15, 32768U);
+    if (gain != voice.target_gain_q15) {
+        voice.ramp_origin_q15 = voice.gain_q15;
+        voice.target_gain_q15 = gain;
+        voice.ramp_left = kGainRampFrames;
+    }
+    voice.pitch_q16 = std::max(1U, std::min(pitch_q16, 262144U));
 }
 
 void Mixer::stop(std::size_t slot) noexcept {
@@ -67,7 +88,7 @@ void Mixer::render(std::int16_t* stereo, std::size_t frames,
         if (voices_[i].clip)
             steps[i] = std::max<std::uint64_t>(1,
                 (static_cast<std::uint64_t>(voices_[i].clip->rate) *
-                 voices_[i].pitch_q16) / kOutputRate);
+                 voices_[i].pitch_q16 * 65536ULL) / kOutputRate);
     for (std::size_t frame = 0; frame < frames; ++frame) {
         std::int64_t left = 0, right = 0;
         if (stream) {
@@ -80,20 +101,40 @@ void Mixer::render(std::int16_t* stereo, std::size_t frames,
             if (!voice.clip) continue;
             const auto& clip = *voice.clip;
             const std::uint64_t loop_begin =
-                static_cast<std::uint64_t>(clip.loop_end ? clip.loop_start : 0) << 16;
+                static_cast<std::uint64_t>(clip.loop_end ? clip.loop_start : 0) << 32;
             const std::uint64_t loop_end =
-                static_cast<std::uint64_t>(clip.loop_end ? clip.loop_end : clip.frames()) << 16;
-            if (voice.loop && voice.phase_q16 >= loop_end)
-                voice.phase_q16 = loop_begin +
-                    (voice.phase_q16 - loop_end) % (loop_end - loop_begin);
-            const auto index = static_cast<std::size_t>(voice.phase_q16 >> 16);
+                static_cast<std::uint64_t>(clip.loop_end ? clip.loop_end : clip.frames()) << 32;
+            if (voice.loop && voice.phase_q32 >= loop_end)
+                voice.phase_q32 = loop_begin +
+                    (voice.phase_q32 - loop_end) % (loop_end - loop_begin);
+            const auto index = static_cast<std::size_t>(voice.phase_q32 >> 32);
             if (index >= clip.frames()) { voice = {}; continue; }
-            left += static_cast<std::int64_t>(sample_at(clip, index, 0)) *
-                    voice.gain_q15 / 32768;
-            right += static_cast<std::int64_t>(sample_at(clip, index, 1)) *
-                     voice.gain_q15 / 32768;
-            voice.phase_q16 += steps[i];
+            if (voice.ramp_left) {
+                const auto elapsed = kGainRampFrames - voice.ramp_left + 1;
+                const auto delta = static_cast<std::int32_t>(voice.target_gain_q15) -
+                                   static_cast<std::int32_t>(voice.ramp_origin_q15);
+                voice.gain_q15 = static_cast<std::uint32_t>(
+                    static_cast<std::int32_t>(voice.ramp_origin_q15) +
+                    delta * static_cast<std::int32_t>(elapsed) /
+                    static_cast<std::int32_t>(kGainRampFrames));
+                --voice.ramp_left;
+            }
+            std::size_t next = index + 1;
+            if (voice.loop && next >= static_cast<std::size_t>(clip.loop_end ?
+                    clip.loop_end : clip.frames()))
+                next = clip.loop_end ? clip.loop_start : 0;
+            else if (next >= clip.frames()) next = index;
+            const auto fraction = voice.phase_q32 & 0xFFFFFFFFULL;
+            const auto sample_left = interpolate(sample_at(clip, index, 0),
+                sample_at(clip, next, 0), fraction, 1ULL << 32);
+            const auto sample_right = interpolate(sample_at(clip, index, 1),
+                sample_at(clip, next, 1), fraction, 1ULL << 32);
+            left += static_cast<std::int64_t>(sample_left) * voice.gain_q15 / 32768;
+            right += static_cast<std::int64_t>(sample_right) * voice.gain_q15 / 32768;
+            voice.phase_q32 += steps[i];
         }
+        clipped_samples_ += left < -32768 || left > 32767;
+        clipped_samples_ += right < -32768 || right > 32767;
         stereo[frame * 2] = clamp16(left);
         stereo[frame * 2 + 1] = clamp16(right);
     }
@@ -189,14 +230,33 @@ bool AstStreamer::start(std::unique_ptr<std::istream> input,
     }
     stopping_ = false;
     finished_ = false;
-    worker_ = std::thread([this, input = std::move(input), segment]() mutable {
+    int audio_core = -1;
+#ifdef __SWITCH__
+    audio_core = svcGetCurrentProcessorNumber() == 2 ? 1 : 2;
+#endif
+    worker_ = std::thread([this, input = std::move(input), segment,
+                           audio_core]() mutable {
         try {
+#ifdef __SWITCH__
+            if (R_FAILED(svcSetThreadCoreMask(threadGetCurHandle(), audio_core,
+                                              1U << audio_core)) ||
+                R_FAILED(svcSetThreadPriority(threadGetCurHandle(), 0x30)))
+                throw std::runtime_error("audio decoder core setup failed");
+#else
+            (void)audio_core;
+#endif
             std::array<std::int16_t, 512 * 2> converted{};
             std::size_t used = 0;
-            std::uint64_t phase = 0;
+            std::uint64_t source_index = 0, output_index = 0;
+            std::array<std::int16_t, 2> previous{};
             const auto flush = [&] {
                 if (used && !ring_.push_wait(converted.data(), used)) throw StreamStopped{};
                 used = 0;
+            };
+            const auto emit = [&](std::int16_t left, std::int16_t right) {
+                converted[used * 2] = left;
+                converted[used * 2 + 1] = right;
+                if (++used == 512) flush();
             };
             decode_ast_segment(*input, segment,
                 [&](const std::uint8_t* bytes, std::size_t size) {
@@ -207,15 +267,29 @@ bool AstStreamer::start(std::unique_ptr<std::istream> input,
                         const auto left = le16(bytes + frame * stride);
                         const auto right = segment.channels == 1 ? left :
                             le16(bytes + frame * stride + 2);
-                        phase += kOutputRate;
-                        while (phase >= segment.rate) {
-                            converted[used * 2] = left;
-                            converted[used * 2 + 1] = right;
-                            if (++used == 512) flush();
-                            phase -= segment.rate;
+                        if (!source_index) {
+                            emit(left, right);
+                            ++output_index;
+                        } else {
+                            const auto end = source_index * kOutputRate;
+                            const auto begin = (source_index - 1) * kOutputRate;
+                            while (output_index * segment.rate <= end) {
+                                const auto fraction = output_index * segment.rate - begin;
+                                emit(static_cast<std::int16_t>(interpolate(
+                                         previous[0], left, fraction, kOutputRate)),
+                                     static_cast<std::int16_t>(interpolate(
+                                         previous[1], right, fraction, kOutputRate)));
+                                ++output_index;
+                            }
                         }
+                        previous = {left, right};
+                        ++source_index;
                     }
                 });
+            while (output_index * segment.rate < source_index * kOutputRate) {
+                emit(previous[0], previous[1]);
+                ++output_index;
+            }
             flush();
         } catch (const StreamStopped&) {
         } catch (const std::exception& e) {

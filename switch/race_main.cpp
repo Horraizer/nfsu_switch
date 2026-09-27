@@ -124,7 +124,12 @@ void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pa
     progress.checkpoint("race course prepared");
     audio::RaceAudioService sound;
     std::string audio_note;
-    sound.start(std::filesystem::path(root), audio_note);
+    const auto render_core = svcGetCurrentProcessorNumber();
+    if (R_SUCCEEDED(svcSetThreadCoreMask(threadGetCurHandle(),
+            static_cast<s32>(render_core), 1U << render_core)))
+        sound.start(std::filesystem::path(root), audio_note,
+            [&](const char* phase) { progress.checkpoint(phase); });
+    else audio_note = "audio disabled: render core pin failed";
     std::printf("AUDIO: %s\n", audio_note.c_str());
     const auto persistent = scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes()+sound.resident_bytes();
     require(persistent <= kPersistentBudgetPlaceholder, "race persistent payload exceeds 64 MiB");
@@ -223,7 +228,15 @@ void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pa
             auto last = race.step_line(); if (!last.empty()) last.pop_back();
             lines.push_back("last step "+last);
         }
-        lines.push_back("AUDIO "+sound.diagnostic());
+        const auto audio_stats = sound.stats();
+        lines.push_back(format("AUDIO U %llu | RING %zu/%zu | LATE %llu | QUEUE %u | THREAD %u us | CLIP %llu",
+            (unsigned long long)audio_stats.ring_underruns,
+            audio_stats.ring_fill, audio_stats.ring_capacity,
+            (unsigned long long)audio_stats.output_late,
+            audio_stats.queued_frames, audio_stats.thread_us,
+            (unsigned long long)audio_stats.mix_clips));
+        lines.push_back("AUDIO STATUS "+(audio_note == "audio disabled: render core pin failed" ?
+            audio_note : sound.diagnostic()));
         lines.push_back("ZR gas | ZL brake/reverse | stick/D-pad steer | B handbrake | R/L shift | X camera | - reset");
         lines.push_back("Y pause/photo | + exit | replay hashes also print to nxlink; photograph final EQUAL and lap times");
         screen.show(lines,&rgba);

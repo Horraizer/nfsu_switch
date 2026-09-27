@@ -112,5 +112,6 @@ std::string Output::error() const {
     std::lock_guard<std::mutex> lock(impl_->error_mutex);
     return impl_->failure;
 }
+Output::Stats Output::stats() const noexcept { return {}; }
 
 } // namespace nfsu::audio

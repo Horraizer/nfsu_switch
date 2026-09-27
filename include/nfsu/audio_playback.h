@@ -40,6 +40,7 @@ public:
                  std::uint32_t pitch_q16) noexcept;
     void stop(std::size_t slot) noexcept;
     bool active(std::size_t slot) const noexcept;
+    std::uint64_t clipped_samples() const noexcept { return clipped_samples_; }
     // Optional streamed voice is summed before the final clamp.
     void render(std::int16_t* stereo, std::size_t frames,
                 const std::int16_t* stream = nullptr,
@@ -47,12 +48,16 @@ public:
 private:
     struct Voice {
         const PcmClip* clip = nullptr;
-        std::uint64_t phase_q16 = 0;
+        std::uint64_t phase_q32 = 0;
         std::uint32_t gain_q15 = 0;
+        std::uint32_t target_gain_q15 = 0;
+        std::uint32_t ramp_origin_q15 = 0;
+        std::uint32_t ramp_left = 0;
         std::uint32_t pitch_q16 = 65536;
         bool loop = false;
     };
     std::array<Voice, kMixVoices> voices_{};
+    std::uint64_t clipped_samples_ = 0;
 };
 
 // A fixed-capacity stereo frame queue. push/pop are nonblocking; short pop

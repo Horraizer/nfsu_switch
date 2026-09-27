@@ -11,5 +11,6 @@ bool Output::start(Render, std::string& error) {
 }
 void Output::stop() {}
 std::string Output::error() const { return {}; }
+Output::Stats Output::stats() const noexcept { return {}; }
 
 } // namespace nfsu::audio
