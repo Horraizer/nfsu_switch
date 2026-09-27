@@ -2066,17 +2066,17 @@ void test_render_refusals() {
         make_list(fixture.scene, nfsu::TrackDrawOrder::visible_instance);
     std::string error;
 
-    // The retail material state is not claimed for this path.
+    // Retail material state is accepted by the track renderer.
     nfsu::RenderOptions retail = small_options();
     retail.material_state = nfsu::MaterialStateMode::retail;
     nfsu::Frame frame;
     nfsu::RenderStats stats;
     nfsu::TrackRenderStats track;
-    check(!nfsu::render_track_draw_list(fixture.scene, list, retail,
-                                        nfsu::RenderLimits{}, frame, stats,
-                                        track, error),
-          "the retail material state is refused");
-    check_eq_u64(frame.width(), 0, "a refused render leaves the frame alone");
+    check_ok(nfsu::render_track_draw_list(fixture.scene, list, retail,
+                                          nfsu::RenderLimits{}, frame, stats,
+                                          track, error),
+             "the retail material state renders", error);
+    check_eq_u64(frame.width(), retail.width, "retail render allocates the frame");
 
     // An invalid camera, refused before the frame is allocated.
     nfsu::RenderOptions bad_camera = small_options();
@@ -2838,14 +2838,13 @@ void test_render_resets_its_out_parameters() {
     check_eq_u64(track.bounds.drawn.points, fresh_track.bounds.drawn.points,
                  "nor the points its bounds visited");
 
-    // And on a refused call. The retail material state is refused before
-    // anything else, so this is the earliest return there is.
-    nfsu::RenderOptions retail = options;
-    retail.material_state = nfsu::MaterialStateMode::retail;
-    check(!nfsu::render_track_draw_list(fixture.scene, list, retail,
+    // An invalid camera is refused before any draw and clears reused stats.
+    nfsu::RenderOptions refused = options;
+    refused.camera.distance = -1.0;
+    check(!nfsu::render_track_draw_list(fixture.scene, list, refused,
                                         nfsu::RenderLimits{}, frame, stats,
                                         track, error),
-          "the retail material state is refused");
+          "the invalid camera is refused");
     check_eq_u64(stats.triangles_submitted, 0,
                  "a refused call leaves no triangle count behind");
     check_eq_u64(stats.pixels_drawn, 0,

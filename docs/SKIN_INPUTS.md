@@ -298,12 +298,11 @@ in the cross-check above, and the absence of cross-pack hash collisions.
 
 ### Unknown
 
-- What each lane of a P8 palette carries. `FORMATS.md` records the channel
-  meaning of the four palette bytes as outside its structural claim. For a
-  type-32 target it does not matter, because the expansion copies entries
-  whole. For a type-8 target, which takes the palette itself, nothing
-  proves the order the path expects, so `skin_palette_from_p8` loads the
-  stored dwords and assumes nothing further.
+- Which palette lane order the type-8 target path expects. The type-32
+  upload path copies entries whole into A8R8G8B8 pixels, whose stored
+  B, G, R, A lanes are traced at 0x00407E70..0x00407EA8. For a type-8
+  target, which takes the palette itself, nothing proves that path's lane
+  expectation; `skin_palette_from_p8` loads the stored dwords unchanged.
 - Which pack wins for a hash held by both the car `TEXTURES.BIN` and
   `VINYLS.BIN`. Neither the executable nor the retail data decides it.
 - What the type-8 path is for. Nothing on this build reaches it.
