@@ -89,6 +89,11 @@ void sample(RaceGpuScene& scene, RaceRun& race) {
         observed += selected.size();
     };
     const auto select_ms = measure(select);
+    const auto full_list_ms = measure([&] {
+        TrackDrawList measured;
+        require(build_track_draw_list(source, visible, {}, measured, error), error);
+        observed += measured.entries.size();
+    });
     require(selected.size() == list.entries.size(), "prototype selection size mismatch");
     for (std::size_t i = 0; i < selected.size(); ++i)
         require(selected[i].instance == list.entries[i].instance && selected[i].draw == list.entries[i].draw,
@@ -102,6 +107,7 @@ void sample(RaceGpuScene& scene, RaceRun& race) {
         require(unchecked.visible[i].section_index == visible.visible[i].section_index &&
                 unchecked.visible[i].instance_index == visible.visible[i].instance_index,
                 "containment selection order mismatch");
+    const auto checked_cull_ms = measure([&] { observed += cull_track_region(scene.track().objects, frustum).visible.size(); });
     const auto cull_ms = measure([&] { observed += cull_track_region(scene.track().objects, frustum, trusted).visible.size(); });
     const auto list_validation_ms = measure([&] { require(validate_track_draw_list(source,list,error),error); });
     const auto command_validation_ms = measure([&] { require(validate_recorded_commands(frame.commands,error),error); });
@@ -143,7 +149,8 @@ void sample(RaceGpuScene& scene, RaceRun& race) {
         << " ib_runs=" << ib_runs << " index_visits_per_validation=" << frame.triangles*3 << '\n';
     std::cout << "FRAME_MS cull=" << sums.cull_ms/120 << " list=" << sums.list_ms/120 << " car=" << sums.car_ms/120
         << " cached_track=" << sums.track_ms/120 << " combine=" << sums.combine_ms/120 << '\n';
-    std::cout << "ISOLATED_MS trusted_cull=" << cull_ms << " adjacency_select=" << select_ms
+    std::cout << "ISOLATED_MS checked_cull=" << checked_cull_ms << " trusted_cull=" << cull_ms
+        << " full_list=" << full_list_ms << " adjacency_select=" << select_ms
         << " list_validation=" << list_validation_ms << " command_validation=" << command_validation_ms
         << " execution_plan=" << execution_plan_ms << " update_validation=" << update_ms
         << " uniform_memcpy=" << uniform_ms << " resource_table_copy=" << table_copy_ms << '\n';
