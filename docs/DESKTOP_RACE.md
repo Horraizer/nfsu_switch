@@ -73,12 +73,13 @@ for streaming. The car still drives its zone look-ahead, debouncing and
 request rebuilds each tick. Synthetic corridor tests compare every batch
 and incremental transition, including constrained budgets and releases.
 
-The scene uses the existing track LOD selection and material-group draw
-order. Track and car render with the same chase camera and opaque reference
-material mode, then the nearest depth wins (car wins a tie). A regression
-test covers both occlusion directions, a depth tie and empty pixels. The
-track's transparent foliage is consequently visibly opaque/checkered in
-some frames; this integration does not recover new track material states.
+The scene uses the existing track LOD selection and the texture-row bucket
+order documented in [`TRACK_MATERIALS.md`](TRACK_MATERIALS.md). It loads
+nonresident Y texture sections from the same stream file when preparing the
+scene. Track materials use the decoded alpha test and blend state; the car
+keeps its existing reference mode. Both use the same chase camera, and
+composition compares their depth buffers (car wins a tie). A regression
+test covers both occlusion directions, a depth tie and empty pixels.
 No opponents, traffic, sound or new retail lighting are claimed.
 
 The HUD shows the current lap, lap count and last completed lap separately.
@@ -202,19 +203,27 @@ it does not claim to have driven this race on a Switch.
 Hashes cover complete TGA files, 921618 bytes each, including the lap HUD.
 The step is the completed 1-based controller tick.
 
-| Step | TGA SHA-256 |
-| --- | --- |
-| 180 | `5D73DFD7BCC18B8083D3AB665598536FF2E0EB03D1E88113FD1B6279464B7778` |
-| 600 | `AC75E21E5D22A1178A44D97371B724174D876023D4F8FA545122C2E227FB91AE` |
-| 6000 | `54DA8171ECBF48CAE088915353DD2B252085AD84A028CDA7959747D57F82A90F` |
-| 11344 | `74F748B23DC2E5043F7D425EE7E34C2D7BF6EDA91DBA28D881A706DF6FCF817E` |
-| 12459 | `40D98F3157FA3DC204A2D58C0E5B6127FE0DA568392790DDF872215B82C7B5D0` |
-| 13128 | `C164D894FCFFF34C491D6DC2B9FA8E9AB136682BA5C16DA7D0FC79EBAB0AC492` |
-| 24300 | `778CD48EE6A442D63DA98225B5F380B3C96515952E8940B0EB517F3818927F35` |
-| 35396 | `6AED610D9CD2DC552A617D860D914BE3D135932D7FD1EE45918A0B4B12CEF903` |
-| 36510 | `E1E822E4A1543E6B04F037D8116DE28E861EE80BE3095E32D4ED8E5CEFFD8672` |
-| 37177 | `DB8931A3B26F9C0B580AF8D0B47F37411D4CEBB0D14D8D00CF5D9147307FF852` |
-| 48336 | `41CB803526F6300E6566F746A9513AA8C7C9E2B9B7154EDBD9F0953694CE3C01` |
+| Step | TGA SHA-256 | Changed RGB pixels | Reason |
+| --- | --- | ---: | --- |
+| 180 | `BB6F004E776C7EF6D38056BDBCA828C6650090FC5EF77B37A888E16DECCAC1CE` | 36719 | track alpha test and blend |
+| 600 | `0E3F17052A83429C2672495761D09C108809282A71F038E209ED54FE34E4763E` | 39207 | track alpha test and blend |
+| 6000 | `BF4FA0E33C5DA962A48FC531E323F15678FE99C0D6F6B744836E17CA76B038C4` | 15022 | track alpha test and blend |
+| 11344 | `CB93C540C37DEA70BDD0487350BF10E18F85EC79A981C8C2DA2FE5138619E224` | 12117 | track alpha test and blend |
+| 12459 | `FA86B7DADB8BB3DF966F799D5EF84FD2E14A418557E335B368A9854C27D9716F` | 23155 | track alpha test and blend |
+| 13128 | `5A62C32877B43E3A18D5A8CEA4901C92D17AD8DC3071ADA6BDCE754259B0E5D1` | 29275 | track alpha test and blend |
+| 24300 | `1E435F120A614BD2EDB514D50798C2BFBB1B9D921F4699CDDD5EEA73E5B152AD` | 30292 | track alpha test and blend |
+| 35396 | `3EEA282A1E92C158F72C8BA869CD5B2615720C46AD481F5338CF554E40AC58D2` | 12249 | track alpha test and blend |
+| 36510 | `728A441AB4DBC3E7193D8C71623DC54C6FB113D1A2511A9E77CA5CE60883903A` | 22834 | track alpha test and blend |
+| 37177 | `4A1DD31DBE93AED7A296872C3EA1F9D2988E3C2389DCEE7879B2865733A4D406` | 29211 | track alpha test and blend |
+| 48336 | `FE68B0CA6BB8E79503563781F22D6FEA6CE5177CFB387EFC63577D22DFCDF2BC` | 29783 | track alpha test and blend |
+
+For each row, the changed-pixel count compares RGB values against a fresh
+`origin/main` Release render of the same recording. A control build with the
+new texture sources and draw order but track material state set to `off`
+reproduced all 11 old TGA files byte for byte. Thus the alpha-test/blend
+activation accounts for every changed pixel in these pins; it left every
+TGA alpha byte and every replay state row unchanged. Debug and Release
+produce identical new TGA bytes at all 11 steps.
 
 Inspected the corner (11344, 35396), tree median (12459, 36510) and former
 rollover barrier (13128, 37177) on both laps: the car follows the paved lane,

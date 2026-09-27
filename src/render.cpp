@@ -1134,7 +1134,7 @@ bool Rasterizer::fill(
                             out[k] = static_cast<unsigned char>(value);
                         }
                         out[3] = 255;
-                        frame_.depth_[index] = z;
+                        if (material.depth_write) frame_.depth_[index] = z;
                         frame_.ids_[index] = id;
                         if (blending) {
                             ++stats_.fragments_blended;

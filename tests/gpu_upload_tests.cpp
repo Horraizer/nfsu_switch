@@ -2395,11 +2395,75 @@ void test_track_commands_match_cpu() {
                 }
             }
             options.material_state = nfsu::MaterialStateMode::retail;
-            check(!nfsu::record_track_commands(fixture.scene, list, options, {}, commands, error), "track retail refused");
+            check(nfsu::record_track_commands(fixture.scene, list, options, {}, commands, error), "track retail recorded: " + error);
+            check_eq(commands.draws.size(), 6, "retail records six track instance groups");
             options.material_state = nfsu::MaterialStateMode::off;
             list.entries[0].instance = 0xFFFFFFFFU;
             check(!nfsu::record_track_commands(fixture.scene, list, options, {}, commands, error), "invalid track list refused");
             check(commands.draws.empty() && commands.uploads.resources.empty(), "track refusal is atomic");
+        }
+    }
+}
+
+void test_track_material_states_match_cpu() {
+    const std::pair<std::uint8_t, std::uint8_t> states[] = {
+        {0, 0}, {1, 0}, {0, 1}, {0, 2}, {1, 1}, {1, 2}};
+    for (const auto& [alpha, blend] : states) {
+        auto fixture = track_fixture();
+        for (auto& texture : fixture.scene.region.textures) {
+            texture.alpha_test_mode = alpha;
+            texture.alpha_blend_mode = blend;
+        }
+        fixture.scene.region.textures[0].layer_order = 5;
+        fixture.scene.region.textures[1].layer_order = 0;
+        std::vector<nfsu::TrackVisibleInstance> visible;
+        for (std::size_t i : {4U, 0U, 3U, 1U, 2U}) {
+            nfsu::TrackVisibleInstance v;
+            v.section_index = 0;
+            v.instance_index = i;
+            visible.push_back(v);
+        }
+        nfsu::TrackDrawListOptions selection;
+        selection.order = nfsu::TrackDrawOrder::retail_bucket;
+        nfsu::TrackDrawList list;
+        std::string error;
+        if (!nfsu::build_track_draw_list(fixture.scene, visible, selection, list, error)) {
+            check(false, "build retail bucket: " + error);
+            return;
+        }
+        check(!list.entries.empty() &&
+              fixture.scene.region.draws[list.entries.front().draw].texture == 1,
+              "retail bucket submits row zero before row five");
+        nfsu::RenderOptions options;
+        options.width = 48;
+        options.height = 32;
+        options.material_state = nfsu::MaterialStateMode::retail;
+        nfsu::RecordedCommands commands;
+        if (!nfsu::record_track_commands(fixture.scene, list, options, {}, commands, error)) {
+            check(false, "record track material state: " + error);
+            return;
+        }
+        nfsu::Frame frame;
+        nfsu::RenderStats stats;
+        nfsu::TrackRenderStats track;
+        std::vector<nfsu::ReferenceDraw> trace;
+        if (!nfsu::render_track_draw_list(fixture.scene, list, options, {},
+                                          frame, stats, track, error,
+                                          [&](const auto& draw) { trace.push_back(draw); })) {
+            check(false, "render track material state: " + error);
+            return;
+        }
+        const auto mismatch = compare_draws(commands, trace, true);
+        check(mismatch.empty(), "track retail material CPU/GPU: " + mismatch);
+        check_eq(stats.groups_alpha_tested, alpha ? 6 : 0,
+                 "track retail alpha-test draw count");
+        check_eq(stats.groups_blended, blend ? 6 : 0,
+                 "track retail blend draw count");
+        for (const auto& draw : commands.draws) {
+            check(draw.pipeline.depth_write == (blend == 0),
+                  "track world blend depth-write state");
+            check(draw.material.alpha[0] == 1.0F,
+                  "track world neutral diffuse alpha coefficient");
         }
     }
 }
@@ -2572,6 +2636,7 @@ const TestCase kTests[] = {
     {"draw_commands_match_cpu", test_draw_commands_match_cpu},
     {"draw_commands_resources_and_refusals", test_draw_commands_resources_and_refusals},
     {"track_commands_match_cpu", test_track_commands_match_cpu},
+    {"track_material_states_match_cpu", test_track_material_states_match_cpu},
     {"gate_accepts_rgba8", test_gate_accepts_rgba8},
     {"gate_refuses_invalid_native_payloads", test_gate_refuses_invalid_native_payloads},
     {"gate_refuses_malformed_rgba8", test_gate_refuses_malformed_rgba8},

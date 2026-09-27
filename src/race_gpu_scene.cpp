@@ -95,11 +95,14 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         const auto visible = cull_track_region(track.objects, frustum);
         if (!visible.ok() || !visible.policy_held) { error = "race visibility policy degraded"; return false; }
         TrackDrawList list;
-        if (!build_track_draw_list(track.scene, visible, {}, list, error)) return false;
+        TrackDrawListOptions list_options;
+        list_options.order = TrackDrawOrder::retail_bucket;
+        if (!build_track_draw_list(track.scene, visible, list_options, list, error)) return false;
         RecordedCommands car_commands;
         if (!record_car_commands(car_, options, {}, skin_source_, car_commands, error)) return false;
         if (list.entries.size() + car_commands.draws.size() > kTrackSliceDrawLimit) continue;
         RecordedCommands track_commands;
+        options.material_state = MaterialStateMode::retail;
         if (!record_track_commands(track.scene, list, options, {}, track_commands, error)) return false;
         RaceGpuFrame result;
         result.car_draws = car_commands.draws.size(); result.track_draws = track_commands.draws.size();

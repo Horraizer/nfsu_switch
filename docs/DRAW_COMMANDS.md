@@ -17,9 +17,10 @@ Without instances, each group draws once in its authored space. Invalid
 
 `record_track_commands` takes a `PreparedTrackScene` and its `TrackDrawList`.
 It preserves the list's exact order. It never selects visibility or sorts the
-entries. Both existing list orders work. It refuses retail material state,
-just as `render_track_draw_list` does: no track evidence establishes the car
-material-state rule for scenery.
+entries. All three list orders work. In retail mode, resolved track textures
+select alpha test and blend variants from texture-info +85/+86. The caller
+selects `retail_bucket` for the recovered texture-row ordering approximation;
+see [`TRACK_MATERIALS.md`](TRACK_MATERIALS.md).
 
 Every `RecordedDraw` contains:
 
@@ -36,8 +37,9 @@ Every `RecordedDraw` contains:
 
 The recording also carries viewport dimensions, clear colour and the Frame
 uniform payload. The depth attachment must be cleared to its far value before
-submission; every draw tests less-equal and writes depth, including blended
-draws. The alpha channel stays at its clear value under RGB-only writes.
+submission; every draw tests less-equal. Blended track draws leave depth
+unchanged, while car draws and opaque track draws write depth. The alpha
+channel stays at its clear value under RGB-only writes.
 The options payload preserves flip-V, vertex colour, flat shading and the
 separate diagnostic alpha cutoff. Material coefficients apply only to
 resolved car materials in retail mode, including the diffuse/environment

@@ -65,7 +65,14 @@ int main(int argc, char** argv) {
         return fail(14, "slice loader connects parsing checkpoints to its observer");
     std::cout << "sections " << slice.sections << " path " << slice.path.size()
               << " CPU " << slice.streaming_bytes << " textures " << slice.texture_bytes
-              << " collision " << slice.contacts.memory.resident_bytes << '\n';
+              << " collision " << slice.contacts.memory.resident_bytes
+              << " spillover " << slice.texture_spillover_sections
+              << " spillover-bytes " << slice.texture_spillover_bytes
+              << " unresolved " << slice.scene.region.unresolved_hashes.size() << '\n';
+    if (slice.texture_spillover_sections != 19 ||
+        slice.texture_spillover_bytes != 3512968 ||
+        slice.scene.region.unresolved_hashes.size() != 2)
+        return fail(15, "event-1 spillover resolves 46 of 48 texture hashes");
     const bool full = argc == 3 && std::string(argv[2]) == "--full";
     if (argc > 2 && !full) return fail(10, "unknown track slice test argument");
     std::size_t hits = 0, max_draws = 0, frames = 0;

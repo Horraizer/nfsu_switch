@@ -65,6 +65,8 @@ public:
     TrackStreamFiles files;
     const TrackStreamTable& table;
     std::map<std::size_t,std::unique_ptr<TrackStreamLoad>> sections;
+    TrackStreamLoad texture_spillover;
+    bool texture_spillover_ready = false;
     std::vector<unsigned char> texture_bytes;
     TexturePackSet texture_packs;
     RenderTextureSet textures;
@@ -120,6 +122,28 @@ public:
             track_stream_texture_sources(*entry.second,&wanted,part,owners);
             sources.insert(sources.end(),part.begin(),part.end());
         }
+        if (!texture_spillover_ready) {
+            std::vector<std::size_t> resident;
+            for (const auto& entry : sections) resident.push_back(entry.first);
+            TrackStreamSelection selected;
+            require(select_track_texture_spillover_1003(table,resident,selected,error),error);
+            TrackStreamLoadLimits limits;
+            limits.max_total_bytes = kStreamingRegionBudgetPlaceholder;
+            require(load_track_stream_sections(table,selected,files,limits,
+                                               texture_spillover,error),error);
+            require(texture_spillover.ok(),"event-1 texture spillover parse failed");
+            for (const auto& section : texture_spillover.sections)
+                require(section.loaded && section.geometry_roots==0 &&
+                        section.scenery_sections==0 && section.texture_packs!=0,
+                        "event-1 texture spillover section is not texture-only");
+            texture_spillover_ready = true;
+        }
+        std::vector<RenderTextureSource> extra_sources;
+        std::vector<std::size_t> extra_owners;
+        track_stream_texture_sources(texture_spillover,&wanted,extra_sources,extra_owners);
+        for (std::size_t i=0;i<extra_sources.size();++i)
+            if (sections.count(texture_spillover.sections[extra_owners[i]].record)==0)
+                sources.push_back(extra_sources[i]);
         RenderTextureSource source; source.bytes = &texture_bytes;
         for (const auto& pack : texture_packs.packs) source.packs.push_back(&pack);
         source.complete = texture_packs.complete; source.wanted = &wanted;
@@ -133,7 +157,7 @@ public:
             TrackVisibleInstance item; item.section_index=section.section_index; item.instance_index=k;
             visible.push_back(item);
         }
-        TrackDrawListOptions order; order.order=TrackDrawOrder::material_group;
+        TrackDrawListOptions order; order.order=TrackDrawOrder::retail_bucket;
         require(build_track_draw_list(track,visible,order,list,error),error);
         dirty=false; prepare_cost.add(begin);
     }
@@ -142,7 +166,9 @@ public:
         RenderOptions options; options.width=640; options.height=360;
         require(drive_render_camera(session.camera(),ChaseFovMode::vertical_4_3,640,360,options.camera,error),error);
         Frame background; RenderStats stats; TrackRenderStats track_stats;
-        require(render_track_draw_list(track,list,options,{},background,stats,track_stats,error),error);
+        RenderOptions track_options = options;
+        track_options.material_state = MaterialStateMode::retail;
+        require(render_track_draw_list(track,list,track_options,{},background,stats,track_stats,error),error);
         require(drive_place_instances(base,session.car(),session.spec(),car.scene.instances),"car placement failed");
         require(render_stock_frame(car,options,error),error);
         std::vector<unsigned char> rgba;

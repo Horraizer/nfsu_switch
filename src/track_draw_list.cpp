@@ -437,6 +437,35 @@ bool build_list(
                             const TrackDrawListEntry& b) {
                              return a.draw < b.draw;
                          });
+    } else if (options.order == TrackDrawOrder::retail_bucket) {
+        std::vector<unsigned char> layers(list.entries.size(), 0);
+        std::vector<std::size_t> groups(list.entries.size(), 0);
+        std::map<std::pair<std::size_t, std::uint32_t>, std::size_t> first_use;
+        std::size_t next_group = 0;
+        for (std::size_t i = 0; i < list.entries.size(); ++i) {
+            const TrackDraw& draw = scene.region.draws[list.entries[i].draw];
+            std::pair<std::size_t, std::uint32_t> key{kNoHandle, draw.texture_hash};
+            if (draw.binding == BindingKind::resolved) {
+                const RenderTexture& texture = scene.region.textures[draw.texture];
+                layers[i] = static_cast<unsigned char>(
+                    render_draw_layer(texture.layer_group, texture.layer_order));
+                key = {draw.texture, 0};
+            }
+            const auto inserted = first_use.emplace(key, next_group);
+            if (inserted.second) ++next_group;
+            groups[i] = inserted.first->second;
+        }
+        std::vector<std::size_t> order(list.entries.size());
+        for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
+        std::stable_sort(order.begin(), order.end(),
+                         [&layers, &groups](std::size_t a, std::size_t b) {
+                             if (layers[a] != layers[b]) return layers[a] < layers[b];
+                             return groups[a] < groups[b];
+                         });
+        std::vector<TrackDrawListEntry> sorted;
+        sorted.reserve(list.entries.size());
+        for (const std::size_t index : order) sorted.push_back(list.entries[index]);
+        list.entries.swap(sorted);
     }
 
     std::set<std::uint32_t> groups;
@@ -479,6 +508,7 @@ const char* track_draw_order_name(TrackDrawOrder order) noexcept {
     switch (order) {
     case TrackDrawOrder::visible_instance: return "visible instance";
     case TrackDrawOrder::material_group: return "material group";
+    case TrackDrawOrder::retail_bucket: return "retail bucket";
     }
     return "unknown";
 }
@@ -921,6 +951,12 @@ bool validate_track_draw_list(
     const TrackDrawList& list,
     std::string& error) {
     error.clear();
+    if (list.order != TrackDrawOrder::visible_instance &&
+        list.order != TrackDrawOrder::material_group &&
+        list.order != TrackDrawOrder::retail_bucket) {
+        error = "the draw list has an unknown order";
+        return false;
+    }
 
     std::set<std::uint32_t> groups;
     std::set<std::size_t> used_meshes;
@@ -935,6 +971,9 @@ bool validate_track_draw_list(
     // visible_instance keeps one run per visible instance, so an instance
     // that starts a second run is out of order however its draws ascend.
     std::set<std::uint32_t> closed;
+    std::set<std::pair<std::size_t, std::uint32_t>> closed_textures;
+    std::pair<std::size_t, std::uint32_t> previous_texture{kNoHandle, 0};
+    int previous_layer = -1;
     std::uint64_t triangles = 0;
     std::uint64_t binds = 0;
     std::size_t bound = kNoHandle - 1;
@@ -977,6 +1016,29 @@ bool validate_track_draw_list(
                         " breaks the material group order";
                 return false;
             }
+        } else if (list.order == TrackDrawOrder::retail_bucket) {
+            std::pair<std::size_t, std::uint32_t> key{kNoHandle, draw.texture_hash};
+            int layer = 0;
+            if (draw.binding == BindingKind::resolved) {
+                const RenderTexture& texture = scene.region.textures[draw.texture];
+                key = {draw.texture, 0};
+                layer = render_draw_layer(texture.layer_group, texture.layer_order);
+            }
+            if (layer < previous_layer) {
+                error = "draw list entry " + std::to_string(i) +
+                        " breaks the retail texture row order";
+                return false;
+            }
+            if (i != 0 && key != previous_texture) {
+                closed_textures.insert(previous_texture);
+                if (closed_textures.count(key) != 0) {
+                    error = "draw list entry " + std::to_string(i) +
+                            " reopens a retail texture bucket";
+                    return false;
+                }
+            }
+            previous_texture = key;
+            previous_layer = layer;
         } else {
             // The visible set arrives in the culler's traversal order, which
             // is not ascending in anything, so what holds is the run shape:

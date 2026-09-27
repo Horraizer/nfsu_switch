@@ -23,15 +23,16 @@ not drawn with; see "What the checks cannot catch" for what that leaves open.
 The variants are the ones the CPU reference renderer draws, read out of
 `src/render.cpp` (`render_scene`) and `src/track_render.cpp`
 (`render_track_draw_list`). Both paths decide per material group between the
-group's resolved texture and the fallback checker, and the car path alone can
-take the retail material state of [`MATERIALS.md`](MATERIALS.md). That gives
+group's resolved texture and the fallback checker. Both paths can
+take the retail material state, with the track path's limits recorded in
+[`TRACK_MATERIALS.md`](TRACK_MATERIALS.md). That gives
 four programs:
 
 | Program | The reference's draw | Vertex buffer | Stages | Variants |
 | --- | --- | --- | --- | --- |
 | `car_textured` | a car group whose binding is `resolved` | `nfsu::MeshVertex`, 36 bytes | `placed.vert.glsl`, `textured.frag.glsl` | six, below |
 | `car_fallback` | a car group whose binding is `unresolved`, `unusable` or `invalid_slot` | `nfsu::MeshVertex` | `placed.vert.glsl`, `fallback.frag.glsl` | `opaque` |
-| `track_textured` | a track draw-list entry whose group is `resolved` | `nfsu::TrackVertex`, 24 bytes | `placed.vert.glsl`, `textured.frag.glsl` | `opaque` |
+| `track_textured` | a track draw-list entry whose group is `resolved` | `nfsu::TrackVertex`, 24 bytes | `placed.vert.glsl`, `textured.frag.glsl` | six, below |
 | `track_fallback` | a track draw-list entry whose group is not | `nfsu::TrackVertex` | `placed.vert.glsl`, `fallback.frag.glsl` | `opaque` |
 
 One vertex stage serves all four: `placed_vertex` and `track_placed_vertex`
@@ -69,8 +70,8 @@ factors fail it even though the set of states is unchanged.
 Every variant of every program shares the rest of its state, because the
 reference does: the depth test keeps a fragment whose depth is below the
 stored one, or equal to it with a later triangle id, which in submission
-order is `LESS_EQUAL`; every fragment written writes depth, blended ones
-included; the frame's alpha is 255 in every pixel, so no draw writes the alpha
+order is `LESS_EQUAL`; blended track draws disable depth writes, while the
+other draws write depth; the frame's alpha is 255 in every pixel, so no draw writes the alpha
 channel (`color_write=rgb`); and `RenderOptions` culls nothing by default.
 
 ### What each variant computes
@@ -120,11 +121,9 @@ still not match the reference frame. A backend must draw retail state in
 
 ### Left out, deliberately
 
-- The retail material state on the track path. `render_track_draw_list`
-  refuses it: [`MATERIALS.md`](MATERIALS.md) proved that state for the car
-  draw path, and [`TRACK_RENDER.md`](TRACK_RENDER.md) records that the track
-  path is not known to share it. `tests/shader_manifest_tests.cpp` calls the
-  function and fails if that ever changes.
+- The world-effect diffuse alpha coefficient and effect column. The track
+  path uses a neutral alpha coefficient and groups textures by first use
+  within each decoded row. See [`TRACK_MATERIALS.md`](TRACK_MATERIALS.md).
 - The retail per-draw cull mode (`D3DCULL_NONE` with +86 == 0, `D3DCULL_CW`
   otherwise). [`MATERIALS.md`](MATERIALS.md) records it as observed and not
   applied, and so does the reference. `RenderOptions::cull` is a diagnostic
@@ -296,10 +295,10 @@ made of the elements it reads - 4-byte floats for `float32`, unsigned bytes
 for `unorm8` and `uint8`, signed bytes for `snorm8`, 2-byte integers of the
 format's sign for the 16-bit formats; exactly the four programs above; the
 textured programs to sample one nearest, wrapped `sampler2D` and the fallback
-programs none; `car_textured`'s variants to be exactly the alpha test and
-blend pairs the two decoders produce, each named for its state; the other
-three programs to have only `opaque`; `render_track_draw_list` to refuse the
-retail state; and every variant to share the state above.
+programs none; both textured programs' variants to be exactly the alpha test
+and blend pairs the two decoders produce, each named for its state; both
+fallback programs to have only `opaque`; `render_track_draw_list` to accept
+the retail state; and every variant to share the state above.
 
 "The state above" - depth test, depth write, colour write and cull - is
 derived from the reference for `car_textured`'s alpha test and blend only.

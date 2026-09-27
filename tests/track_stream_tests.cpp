@@ -1273,6 +1273,36 @@ void test_bound_sets() {
           "an invalid zone report is refused");
 }
 
+void test_texture_spillover_selection() {
+    nfsu::TrackStreamTable table;
+    table.valid = true;
+    const char* names[] = {"Y0", "X1", "Y8", "YBAD", "Y5", "Y4"};
+    for (std::size_t i = 0; i < 6; ++i) {
+        nfsu::TrackStreamRecord record;
+        record.name = names[i];
+        record.file_index = i == 4 ? nfsu::kTrackStreamFilePack
+                                   : nfsu::kTrackStreamFileStream;
+        table.records.push_back(record);
+    }
+    nfsu::TrackStreamSelection selected;
+    std::string error;
+    check(nfsu::select_track_texture_spillover_1003(table, {0}, selected, error),
+          "select nonresident Y texture sections: " + error);
+    check(selected.records == std::vector<std::size_t>({2, 5}),
+          "only Y8 and Y4 in the stream file are selected");
+    check(selected.reasons.size() == 2 &&
+          selected.reasons[0] == nfsu::TrackStreamReason::stream_bound &&
+          selected.reasons[1] == nfsu::TrackStreamReason::stream_bound,
+          "spillover sections carry bounded selection reasons");
+    check(!nfsu::select_track_texture_spillover_1003(table, {6}, selected, error) &&
+          error.find("outside the table") != std::string::npos,
+          "resident index outside the table is refused");
+    table.valid = false;
+    check(!nfsu::select_track_texture_spillover_1003(table, {}, selected, error) &&
+          error.find("not valid") != std::string::npos,
+          "invalid spillover table is refused");
+}
+
 void test_request_limit() {
     // 300 flagged records: the permanent set stops at the 256th, as
     // 0x00444D5B does; the bounds do not.
@@ -1986,6 +2016,7 @@ int main(int argc, char** argv) {
     test_pool_bytes();
     test_permanent_selection();
     test_bound_sets();
+    test_texture_spillover_selection();
     test_request_limit();
     test_load_poll_and_cancel();
     test_load_and_merge();
