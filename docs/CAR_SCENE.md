@@ -486,12 +486,12 @@ each slot takes, and which of the three placement mechanisms it uses, are
 listed in [`RENDERER.md`](RENDERER.md), "The stock car profile". Nothing
 new about the retail game is claimed here.
 
-Two of the traced rules are deliberately not turned into geometry. The
-wheel and the brake report `placement unreproduced` and draw nothing
-unless the caller opts in with `place_wheels_from_culling_table`, because
-the drawn wheel and brake matrices are not reproduced by this project; the
-opt-in places them at the culling placements and marks every instance it
-produces as not exact. It does turn the left pair the way the draw does:
+The wheel and brake still draw only when the caller opts in with
+`place_wheels_from_culling_table`. Since issue #201, that option uses the
+traced stock lateral scale and offset from the wheel records instead of
+the culling placements. It marks every instance inexact because other
+branches and x87 rounding remain unverified. It turns the left pair the
+way the draw does:
 the wheel models of positions 0 and 3 are half-turned about the vertical
 axis and their brake models reflected laterally, because both models are
 authored for the right-hand side. Before issue #161 they were not, and a
@@ -593,11 +593,9 @@ drawing several copies means for the retail draw order, and the statistics
 that keep drawn copies apart from meshes.
 
 That is the decoded selection and placement assembled and drawn, and it is
-still not the whole stock car. The drawn wheel and brake matrices are not
-reproduced, so those two slots are opt-in, the instances the opt-in
-produces are marked inexact, and every line of the render that mentions
-them says that the culling placement is a stand-in; decal textures are
-still missing; and the paint, skin and vinyls the viewer can
-compose are still the caller's explicit selection rather than a car's own
+still not the whole stock car. Wheel and brake copies are opt-in and
+marked inexact; the static scene has no wheel spin, steer or suspension
+travel. Decal textures are still missing. The paint, skin and vinyls the
+viewer can compose are still the caller's explicit selection rather than a car's own
 customization state, so a render of this profile is the stock assembly
 this project has decoded and not the car the game draws.

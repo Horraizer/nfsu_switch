@@ -152,7 +152,8 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         profile->*field += (end-start)/1000.0;
         start = end;
     };
-    if (!drive_place_instances(base_, session.car(), session.spec(), car_.instances)) {
+    if (!drive_place_instances(base_, session.car(), session.spec(), car_.instances,
+                               &session.animation())) {
         error = "race car placement failed"; return false;
     }
     for (double far = 250; far >= 31.25; far *= 0.5) {

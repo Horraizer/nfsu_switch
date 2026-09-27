@@ -34,7 +34,7 @@ layout (std140, binding = 0) uniform Frame {
 layout (std140, binding = 2) uniform Material {
     // rgb: the fallback_color bytes (0..255); a: 1 when the checker is on.
     vec4 fallback;
-    // x: alpha_min, y: alpha_range, z: 1 when the diffuse gate is closed.
+    // x: alpha_min, y: alpha_range, z: diffuse gate, w: lamp mode 0..3.
     vec4 alpha;
     // rgb: EnvmapMin and EnvmapRange.
     vec4 environment_min;
@@ -107,6 +107,11 @@ void main()
              material.environment_range.rgb);
     vec3 sum = vec3(value) + floor(environment * float(texel.a) / 255.0 + 0.5);
     value = uvec3(min(sum, vec3(255.0)));
+    uint lamp_mode = uint(material.alpha.w + 0.5);
+    uvec3 lamp = lamp_mode == 1u ? uvec3(120u, 120u, 110u) :
+                 lamp_mode == 2u ? uvec3(52u, 4u, 2u) :
+                 lamp_mode == 3u ? uvec3(192u, 28u, 18u) : uvec3(0u);
+    value += ((uvec3(255u) - value) * lamp + 127u) / 255u;
 
     outColor = vec4(vec3(value) / 255.0, float(source_alpha) / 255.0);
 }

@@ -366,6 +366,11 @@ struct PreparedInstance {
     std::uint32_t part_lod = 0;
     std::uint32_t copy = 0;
     std::uint32_t mesh_hash = 0;
+    // Wheel/brake rotation pivot in car space. Zero for other parts.
+    float animation_pivot[3] = {};
+    // Race-only visual lamp treatment: 0 off, 1 head, 2 tail, 3 brake.
+    // Stock scenes leave it zero; it is not vehicle or replay state.
+    std::uint8_t lamp_mode = 0;
 };
 
 // A self-contained, validated draw list. It owns every byte a backend
