@@ -440,6 +440,10 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
         if (finished) break;
     }
     } catch (const std::exception& e) { failure = e.what(); }
+    // Every way out of the race loop (+, an error or the finish) mutes the
+    // audio with the service's fade before the result screen; before this
+    // only the finish did, so + left the engine and music playing.
+    sound.set_suspended(true);
     std::string close_error;
     if (!renderer.close(close_error)) {
         if (!failure.empty()) failure += " | ";
