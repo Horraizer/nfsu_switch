@@ -1,4 +1,5 @@
 #include "nfsu/race_gpu_scene.h"
+#include "nfsu/car_parts.h"
 #include "nfsu/posix_file_system.h"
 #include "nfsu/draw_execution.h"
 #include "nfsu/platform_desktop.h"
@@ -265,6 +266,44 @@ int main(int argc, char** argv) {
                         "cached ordered draw differs from reference");
                 }
                 require(frame.track_draws > 0 && frame.car_draws == 94, "missing track/car commands");
+                if (tick == 13128) {
+                    require(race.session().animation().braking, "animation guard tick is not braking");
+                    StockFrameInputs inputs;
+                    require(read_stock_frame_inputs(root, inputs), "animation guard retail car inputs unavailable");
+                    StockFrame stock;
+                    require(prepare_stock_frame(inputs, stock_240sx_request(), stock_240sx_skin(), stock, error), error);
+                    std::vector<PreparedInstance> animated = stock.scene.instances;
+                    std::vector<PreparedInstance> static_placed = stock.scene.instances;
+                    require(drive_place_instances(stock.scene.instances, race.session().car(),
+                                race.session().spec(), animated, &race.session().animation()),
+                            "animation guard placement failed");
+                    require(drive_place_instances(stock.scene.instances, race.session().car(),
+                                race.session().spec(), static_placed),
+                            "animation guard static placement failed");
+                    std::size_t wheels = 0, moving_wheels = 0, headlights = 0, brakelights = 0;
+                    for (const auto& draw : frame.commands.draws) {
+                        if (draw.name.compare(0, 9, "race-car/") != 0) continue;
+                        require(draw.instance < stock.scene.instances.size(), "animation guard instance out of range");
+                        const auto slot = stock.scene.instances[draw.instance].part_slot;
+                        if (slot == kSlotWheel) {
+                            ++wheels;
+                            require(std::memcmp(draw.placement.rows, animated[draw.instance].transform,
+                                        sizeof animated[draw.instance].transform) == 0,
+                                    "animated race wheel placement differs from car state");
+                            if (std::memcmp(animated[draw.instance].transform,
+                                            static_placed[draw.instance].transform,
+                                            sizeof animated[draw.instance].transform) != 0) ++moving_wheels;
+                        } else if (slot == kSlotHeadlight) {
+                            ++headlights;
+                            require(draw.material.alpha[3] == 1.0F, "race headlight mode is not on");
+                        } else if (slot == kSlotBrakelight) {
+                            ++brakelights;
+                            require(draw.material.alpha[3] == 3.0F, "braking race lamp mode is not bright");
+                        }
+                    }
+                    require(wheels > 0 && moving_wheels > 0 && headlights > 0 && brakelights > 0,
+                            "animation guard did not inspect moving wheels and both lamp slots");
+                }
                 require(validate_draw_update(uploaded, frame.commands, kTrackSliceDrawLimit, error), error);
                 max_draws = std::max(max_draws, frame.commands.draws.size()); ++frames;
                 if (inspect.count(tick)) std::cout << "frame " << tick << " draws " << frame.commands.draws.size()
