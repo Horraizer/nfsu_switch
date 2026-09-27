@@ -320,28 +320,48 @@ paragraph binds the next author of one, and nothing checks it.
 
 ## Pinned values live in tests
 
-A value that a test pins - a frame or state hash, a replay result, a draw,
-triangle or byte count, a measured peak - lives in the test that checks it
-and nowhere else in the repository. Documentation names the test and the
-command that prints the value; it does not copy the number. A copied pin
-goes stale the first time a change moves it, and the stale copy then costs
-a documentation edit, a review finding and another review round while
-proving nothing the test does not already prove. On 2026-09-27 three pull
-requests drew that kind of review comment: #206 (note R2-N1), #209
-(finding F1) and #211 (finding F2).
+A value a test checks - a frame or state hash, a replay result, a draw,
+triangle or byte count, a measured peak - is kept current in that test and
+in no document. Documentation names the test that pins it, or the command
+that prints it, instead of copying the number. A copied value goes stale
+the first time a change moves it, and the stale copy then costs a
+documentation edit, a review comment and another round while proving
+nothing the test does not already prove. On 2026-09-27 three review
+comments came from numbers copied into documents: #206 note R2-N1 (a
+desktop measurement quoted without its commit), #209 finding F1 (six
+document-only pins left stale, plus a copy of the test pin for frame 690)
+and #211 finding F3 (console numbers with no record on the board).
 
-- A document may record a measurement as history, labelled with the commit
-  it was taken at, for example "at 547fd89: 65.6-70.2 ms per frame". A
-  history line is never updated; a newer measurement is a new line with its
-  own commit.
-- Console results live on the board, in the comment that transcribes the
-  owner's photo. Documentation links to that comment instead of restating
-  it.
-- A current value copied into documentation is removed, not updated, when a
-  change touches that document. Existing copies are cleared that way, not
-  in a sweep.
+Scope:
+
+- The rule governs documents. Code keeps the constants it runs on, such as
+  a retail file's SHA-256 checked before parsing or the replay hash an app
+  compares against, and a test may share such a constant instead of
+  repeating it.
+- The identity of a retail input - the size and SHA-256 of a retail file a
+  document describes - is provenance, not a pin, and stays in the document.
+- A value that only a document pins, because no test can reach the data it
+  comes from, is the pin of record. The retail drive-replay frames that
+  tests/drive_replay_guards.cmake leaves to docs/CONTROLS_CAMERA.md are one
+  such case. A change that moves it updates it in place and gives the
+  reason. Moving it into a test, once one can reach it, is better.
+
+Everything else:
+
+- History. A document may record a measurement as history in the form "at
+  <short SHA>, <where and how measured>: <value>". A history line is not
+  refreshed when later commits change the number; a newer measurement is a
+  new line. A history line found to be wrong is corrected, and the
+  correction says so.
+- Console results. The record is the board comment that transcribes the
+  owner's photo. A document gives a console number only as a history line
+  that links that comment.
+- A current value copied into a document is removed, not updated, when a
+  change touches that document, and the document names the test or the
+  command instead. A test that prints nothing on a pass is named by its
+  CTest name.
 - A reviewer reports such a copy as a note, not a finding, unless the copy
-  is what makes a claim false.
+  makes a claim false.
 
 ## Required handoff
 
