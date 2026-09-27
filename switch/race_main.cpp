@@ -201,7 +201,7 @@ void run(const std::string& root, bool replay_mode, Screen& screen, PadState& pa
         lines.push_back(format("Command cache metadata EST %llu / 8388608 bytes (immutable track templates)",
             (unsigned long long)scene.cache_bytes()));
         lines.push_back(format("GPU blocks %llu / 268435456 | uniforms 1048320 / 1048576 | resources %zu",
-            (unsigned long long)renderer.gpu_bytes(),frame.commands.uploads.resources.size()));
+            (unsigned long long)renderer.gpu_bytes(),frame.commands.resource_table().resources.size()));
         lines.push_back(format("MALLOC IN-USE before %llu | after load %llu | NOW %llu (includes GPU BLOCKS)",
             (unsigned long long)heap.before_load,(unsigned long long)heap.after_load,(unsigned long long)heap.current));
         lines.push_back(format("HEAP LOAD OBS HWM %llu | delta %llu / 50331648 | LOAD HEAP OVER %llu",

@@ -30,30 +30,31 @@ bool plan_texture_copy(const UploadResource& r, TextureCopyPlan& plan, std::stri
 
 bool plan_draw_execution(const RecordedCommands& c, DrawExecutionPlan& plan, std::string& error) {
     plan = {}; error.clear();
+    if (!c.generation_valid()) { error = "expired command generation"; return false; }
     if (c.clear_color[3] != 255) {
         error = "deko3d executor requires opaque background alpha (255)"; return false;
     }
-    if (c.width != 1280 || c.height != 720 || c.draws.size() > 4096 ||
-        c.uploads.resources.size() > 8192) {
+    if (c.width != 1280 || c.height != 720 || c.draw_count() > 4096 ||
+        c.resource_table().resources.size() > 8192) {
         error = "deko3d stock executor: requires 1280x720 and at most 4096 draws and 8192 resources";
         return false;
     }
-    const std::uint64_t uniform_bytes = (1 + 2 * c.draws.size()) * kDekoUniformBufferAlignment;
+    const std::uint64_t uniform_bytes = (1 + 2 * c.draw_count()) * kDekoUniformBufferAlignment;
     if (uniform_bytes > kTransientBudgetPlaceholder) {
         error = "draw uniforms exceed the transient budget placeholder"; return false;
     }
     if (!validate_recorded_commands(c, error)) return false;
     DrawExecutionPlan out;
     out.uniform_bytes = static_cast<std::uint32_t>(uniform_bytes);
-    out.descriptor_bytes = static_cast<std::uint32_t>((c.uploads.resources.size() + 1) * kDrawDescriptorBytes);
-    out.sampler_offset = static_cast<std::uint32_t>(c.uploads.resources.size() * kDrawDescriptorBytes);
+    out.descriptor_bytes = static_cast<std::uint32_t>((c.resource_table().resources.size() + 1) * kDrawDescriptorBytes);
+    out.sampler_offset = static_cast<std::uint32_t>(c.resource_table().resources.size() * kDrawDescriptorBytes);
     out.command_bytes = static_cast<std::uint32_t>(65536 +
-        (c.draws.size() + c.uploads.resources.size()) * kDekoMemBlockAlignment);
+        (c.draw_count() + c.resource_table().resources.size()) * kDekoMemBlockAlignment);
     // Ledger's tight copies, optional padded copies, and at most 31 bytes
     // of alignment slack per allocation. Keep the original conservative
     // allowance of 32 bytes per resource, including non-textures.
-    out.staging_bytes = c.uploads.resources.size() * 32;
-    for (const auto& r : c.uploads.resources) {
+    out.staging_bytes = c.resource_table().resources.size() * 32;
+    for (const auto& r : c.resource_table().resources) {
         if (r.kind != UploadResourceKind::texture) { ++out.buffer_allocations; continue; }
         TextureCopyPlan copy;
         if (!plan_texture_copy(r, copy, error)) return false;
@@ -71,12 +72,13 @@ bool plan_draw_execution(const RecordedCommands& c, DrawExecutionPlan& plan, std
 bool validate_draw_update(const UploadTable& uploaded, const RecordedCommands& next,
                           std::size_t draw_capacity, std::string& error) {
     error.clear();
-    if (next.draws.size() > draw_capacity) { error = "updated draws exceed reserved capacity"; return false; }
-    if (uploaded.resources.size() != next.uploads.resources.size()) {
+    if (!next.generation_valid()) { error = "expired command generation"; return false; }
+    if (next.draw_count() > draw_capacity) { error = "updated draws exceed reserved capacity"; return false; }
+    if (uploaded.resources.size() != next.resource_table().resources.size()) {
         error = "updated upload table changed size"; return false;
     }
     for (std::size_t i = 0; i < uploaded.resources.size(); ++i) {
-        const auto& a = uploaded.resources[i]; const auto& b = next.uploads.resources[i];
+        const auto& a = uploaded.resources[i]; const auto& b = next.resource_table().resources[i];
         if (a.kind != b.kind || a.data != b.data || a.bytes != b.bytes ||
             a.element_bytes != b.element_bytes || a.elements != b.elements ||
             a.texture.format != b.texture.format || a.texture.width != b.texture.width ||

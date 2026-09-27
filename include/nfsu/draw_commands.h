@@ -56,6 +56,28 @@ struct RecordedDraw {
     DrawMaterialUniform material;
 };
 
+// A selected prevalidated definition plus placement/material references.
+// Diagnostic names are formed only on demand, outside the render hot path.
+struct RecordedDrawView {
+    const RecordedDraw& definition;
+    std::size_t instance;
+    const DrawInstanceUniform& placement;
+    const DrawMaterialUniform& material;
+    bool track_instance = false;
+    std::string diagnostic_name() const;
+};
+
+// Immutable resource/definition owner; selection and animated constants may
+// change only between frames. A generation invalidates earlier frame views.
+class PreparedCommandSource {
+public:
+    virtual ~PreparedCommandSource() = default;
+    virtual const UploadTable& resource_table() const = 0;
+    virtual std::size_t selected_draw_count() const = 0;
+    virtual RecordedDrawView selected_draw(std::size_t i) const = 0;
+    virtual std::uint64_t command_generation() const = 0;
+};
+
 struct RecordedCommands {
     // Borrowed source bytes: the scene must remain alive and unchanged.
     // Pass this table directly to UploadLedger::upload_table. Returned
@@ -66,7 +88,24 @@ struct RecordedCommands {
     std::uint32_t height = 0;
     unsigned char clear_color[4]{};
     std::vector<RecordedDraw> draws;
+
+    // Consumers use these accessors for both owning reference commands and
+    // borrowed race frames. The owner must outlive the frame; a race frame
+    // expires on the next optimized frame, before any GPU submission.
+    const UploadTable& resource_table() const;
+    std::size_t draw_count() const;
+    RecordedDrawView draw_view(std::size_t i) const;
+    bool generation_valid() const;
+    bool borrowed() const noexcept { return source_ != nullptr; }
+private:
+    friend class RaceGpuScene;
+    const PreparedCommandSource* source_ = nullptr;
+    std::uint64_t generation_ = 0;
 };
+
+// Camera/viewport only; no resources, draw lists or index validation.
+bool record_frame_state(const RenderOptions& options, const RenderLimits& limits,
+                        RecordedCommands& out, std::string& error);
 
 // No deko3d or platform calls. Output is empty on any refusal. Scene and
 // list validation precede recording; no visibility selection happens here.
@@ -93,6 +132,12 @@ bool record_track_commands(const PreparedTrackScene& scene,
 // padding is not read. Failure leaves allocation and arena unchanged.
 bool reserve_draw_uniforms(const RecordedCommands& commands, MemoryArena& arena,
                            ArenaAllocation& allocation, std::string& error);
+
+// Optional per-thread research/test audit. The caller owns the counter and
+// restores the previous pointer before it dies. No counter is enabled by
+// the race application; validation still performs all original checks.
+struct DrawValidationAudit { std::uint64_t index_visits = 0; };
+DrawValidationAudit* set_draw_validation_audit(DrawValidationAudit* audit) noexcept;
 
 // Check borrowed payloads, manifest identity, ranges and state before a
 // hardware backend dereferences a command. No SDK dependency or GPU work.
