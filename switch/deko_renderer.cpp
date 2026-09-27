@@ -55,6 +55,8 @@ struct DekoRenderer::Impl {
     dk::Image depth;
     dk::Shader vertex, textured, fallback;
     const RecordedCommands* commands = nullptr;
+    UploadTable uploaded;
+    std::size_t draw_capacity = 0;
     std::uint64_t fence_number = 0;
     std::uint64_t gpu_bytes = 0;
     std::uint32_t command_bytes = 0;
@@ -169,10 +171,18 @@ struct DekoRenderer::Impl {
         return true;
     }
 
-    bool open(const RecordedCommands& source, std::string& error, bool presentation) {
+    bool open(const RecordedCommands& source, std::string& error, bool presentation, std::size_t capacity) {
         if (commands) { error = "deko3d renderer open is one-shot"; return false; }
         DrawExecutionPlan plan;
         if (!plan_draw_execution(source, plan, error)) return false;
+        draw_capacity = capacity ? capacity : source.draws.size();
+        if (draw_capacity < source.draws.size() || draw_capacity > 2047) {
+            error = "invalid reserved draw capacity"; return false;
+        }
+        plan.uniform_bytes = static_cast<std::uint32_t>((1 + 2 * draw_capacity) * 256);
+        plan.command_bytes = static_cast<std::uint32_t>(65536 +
+            (draw_capacity + source.uploads.resources.size()) * 4096);
+        uploaded = source.uploads;
         commands = &source;
         device = dk::DeviceMaker{}.setUserData(this).setCbDebug(debug)
             .setFlags(DkDeviceFlags_DepthZeroToOne | DkDeviceFlags_OriginUpperLeft).create();
@@ -209,7 +219,7 @@ struct DekoRenderer::Impl {
             !arena(image_arena, need.image_extent, error) ||
             !arena(staging_arena, plan.staging_bytes, error) ||
             !arena(uniform_arena, plan.uniform_bytes, error) ||
-            !ledger.create({&buffer_arena, &image_arena, &staging_arena}, layout_query, 4096, error) ||
+            !ledger.create({&buffer_arena, &image_arena, &staging_arena}, layout_query, 8192, error) ||
             !ledger.upload_table(source.uploads, 1, handles, error)) return false;
         command_bytes = plan.command_bytes;
         if (!block(command_bytes, kDataFlags, "command memory", command_memory, error)) return false;
@@ -271,7 +281,9 @@ struct DekoRenderer::Impl {
             }
         }
         padded_staging.clear();
-        if (!reserve_draw_uniforms(source, uniform_arena, uniform_allocation, error)) return false;
+        if (uniform_arena.allocate(plan.uniform_bytes, 256, uniform_allocation) != ArenaRefusal::none) {
+            error = "draw uniform reservation failed"; return false;
+        }
         uniform_live = true;
         auto* data = static_cast<unsigned char*>(uniforms.getCpuAddr()) + uniform_allocation.offset;
         std::memcpy(data, &source.frame, sizeof source.frame);
@@ -306,6 +318,23 @@ struct DekoRenderer::Impl {
         }
         std::printf("deko3d: %zu draws, %zu uploads, %llu bytes of GPU blocks (placeholder budget)\n",
             source.draws.size(), handles.size(), static_cast<unsigned long long>(gpu_bytes));
+        return true;
+    }
+
+    bool update(const RecordedCommands& next, std::string& error) {
+        if (!commands || !uniform_live || !validate_draw_update(uploaded, next, draw_capacity, error)) {
+            if (error.empty()) error = "renderer is not ready for a frame update";
+            return false;
+        }
+        // capture/present wait for their fence before returning. No old frame
+        // can read these constants while the CPU replaces them.
+        auto* data = static_cast<unsigned char*>(uniforms.getCpuAddr()) + uniform_allocation.offset;
+        std::memcpy(data, &next.frame, sizeof next.frame);
+        for (std::size_t i = 0; i < next.draws.size(); ++i) {
+            std::memcpy(data + (1+2*i)*256, &next.draws[i].placement, sizeof(DrawInstanceUniform));
+            std::memcpy(data + (2+2*i)*256, &next.draws[i].material, sizeof(DrawMaterialUniform));
+        }
+        commands = &next;
         return true;
     }
 
@@ -455,11 +484,17 @@ DekoRenderer::~DekoRenderer() {
     try { std::string ignored; impl_->shutdown(ignored); }
     catch (...) { if (impl_->queue) impl_->queue.waitIdle(); }
 }
-bool DekoRenderer::open(const RecordedCommands& commands, std::string& error, bool presentation) {
+bool DekoRenderer::open(const RecordedCommands& commands, std::string& error, bool presentation, std::size_t draw_capacity) {
     error.clear();
-    try { return impl_->open(commands, error, presentation); }
+    try { return impl_->open(commands, error, presentation, draw_capacity); }
     catch (const std::bad_alloc&) { error = "not enough memory for deko3d renderer"; return false; }
 }
+bool DekoRenderer::update(const RecordedCommands& commands, std::string& error) {
+    error.clear();
+    try { return impl_->update(commands, error); }
+    catch (const std::bad_alloc&) { error = "not enough memory for draw update validation"; return false; }
+}
+std::uint64_t DekoRenderer::gpu_bytes() const noexcept { return impl_->gpu_bytes; }
 bool DekoRenderer::capture(std::vector<unsigned char>& rgba, double& render_ms,
                            double& readback_ms, std::string& error) {
     error.clear();

@@ -1824,6 +1824,12 @@ void test_texture_decode() {
         record.format = format;
         const std::uint64_t top = format == nfsu::PixelFormat::dxt1 ? 8 : 16;
         record.top_level_size = top;
+        nfsu::RenderTextureSet desktop;
+        check(nfsu::decode_render_textures(bytes, native_pack, {}, desktop, error) &&
+              desktop.textures.size() == 1 && desktop.textures[0].usable() &&
+              desktop.textures[0].storage == nfsu::RenderTextureStorage::rgba8 &&
+              desktop.textures[0].rgba.size() == 64 && desktop.textures[0].blocks.empty() &&
+              desktop.decoded_bytes == 64, "DXT defaults to desktop RGBA without opt-in: " + error);
         nfsu::RenderTextureLimits native_limits;
         native_limits.gpu_blocks = true;
         native_limits.max_total_bytes = top;

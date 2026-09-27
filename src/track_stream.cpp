@@ -680,18 +680,20 @@ void parse_section(TrackStreamSection& section,
             section.bytes.data(), section.bytes.size(), section.offset,
             limits.geometry);
     }
+    if (limits.poll) limits.poll();
     if (section.scenery_sections > 0) {
         section.objects = parse_track_objects(
             section.bytes.data(), section.bytes.size(), section.offset,
             limits.objects);
     }
+    if (limits.poll) limits.poll();
     if (section.texture_packs > 0) {
         section.packs = parse_texture_pack_set(
             section.bytes.data(), section.bytes.size(), limits.textures);
     }
 }
 
-void merge_sections(TrackStreamLoad& load) {
+void merge_sections(TrackStreamLoad& load, const TrackStreamLoadLimits& limits) {
     TrackRegionReport& geometry = load.geometry;
     TrackObjectReport& objects = load.objects;
     geometry = TrackRegionReport{};
@@ -701,6 +703,7 @@ void merge_sections(TrackStreamLoad& load) {
     bool all_tables = true;
     bool any_geometry = false;
     for (TrackStreamSection& section : load.sections) {
+        if (limits.poll) limits.poll();
         section.first_mesh = geometry.meshes.size();
         section.first_scenery = objects.sections.size();
         section.mesh_count = 0;
@@ -822,6 +825,7 @@ bool load_with_reader(const TrackStreamTable& table,
     try {
         load.sections.reserve(selection.records.size());
         for (std::size_t k = 0; k < selection.records.size(); ++k) {
+            if (limits.poll) limits.poll();
             const std::size_t index = selection.records[k];
             if (index >= table.records.size()) {
                 error = (Message() << "the selection names record " << index
@@ -893,9 +897,12 @@ bool load_with_reader(const TrackStreamTable& table,
                 continue;
             }
             load.bytes_read += section.size;
+            if (limits.poll) limits.poll();
             parse_section(section, limits);
+            if (limits.poll) limits.poll();
         }
-        merge_sections(load);
+        merge_sections(load, limits);
+        if (limits.poll) limits.poll();
     } catch (const std::bad_alloc&) {
         load.sections.clear();
         error = "out of memory while loading sections";

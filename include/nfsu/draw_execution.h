@@ -32,4 +32,9 @@ struct DrawExecutionPlan {
 bool plan_draw_execution(const RecordedCommands& commands, DrawExecutionPlan& plan,
                          std::string& error);
 
+// An update may change frame/draw uniforms and selection, but cannot replace
+// uploaded payloads. Caller keeps both payload owners and next commands alive.
+bool validate_draw_update(const UploadTable& uploaded, const RecordedCommands& next,
+                          std::size_t draw_capacity, std::string& error);
+
 } // namespace nfsu

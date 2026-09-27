@@ -1138,46 +1138,58 @@ nfsu::UploadTable table_of(const nfsu::PreparedTrackScene& scene) {
 }
 
 void test_native_track_section_lifetime() {
-    TrackFixture fixture = track_fixture();
-    auto& scene = fixture.scene;
-    scene.region.cost.texture_bytes = 0;
-    for (auto& texture : scene.region.textures) {
-        texture.storage = nfsu::RenderTextureStorage::dxt1;
-        texture.rgba.clear();
-        texture.blocks.assign(((texture.width + 3) / 4) * ((texture.height + 3) / 4) * 8, 0x5A);
-        scene.region.cost.texture_bytes += texture.blocks.size();
+    for (const auto storage : {nfsu::RenderTextureStorage::dxt1, nfsu::RenderTextureStorage::dxt3}) {
+        const bool dxt3 = storage == nfsu::RenderTextureStorage::dxt3;
+        TrackFixture fixture = track_fixture();
+        auto& scene = fixture.scene;
+        scene.region.cost.texture_bytes = 0;
+        for (auto& texture : scene.region.textures) {
+            texture.storage = storage;
+            texture.rgba.clear();
+            texture.blocks.assign(((texture.width + 3) / 4) * ((texture.height + 3) / 4) * (dxt3 ? 16 : 8), 0x5A);
+            scene.region.cost.texture_bytes += texture.blocks.size();
+        }
+        auto table = table_of(scene);
+        check(table.totals.textures > 0, "native section has testable image resources");
+        for (const auto& resource : table.resources) {
+            if (resource.kind != nfsu::UploadResourceKind::texture) continue;
+            check(resource.texture.format == (dxt3 ? nfsu::TextureUploadFormat::dxt3 :
+                                                    nfsu::TextureUploadFormat::dxt1),
+                  "native upload preserves BC1 versus BC2 format");
+            check_eq(resource.texture.texel_bytes, dxt3 ? 16 : 8,
+                     "native upload preserves block byte width");
+        }
+        nfsu::SceneMemoryRequirement need;
+        std::string error;
+        check(nfsu::upload_table_requirement(table, nfsu::bounded_image_layout, need, error),
+              "native section bound: " + error);
+        Rig rig;
+        make_rig(rig, 4096, need.image_extent, 4096);
+        check(rig.ledger.create({&rig.buffers, &rig.images, &rig.staging},
+                                nfsu::bounded_image_layout, 256, error), "bounded native ledger");
+        std::vector<nfsu::UploadHandle> handles;
+        check(rig.ledger.upload_table(table, 10, handles, error), "native section upload: " + error);
+        check(rig.staging.stats().used_bytes > 0, "native blocks staged before fence");
+        rig.ledger.retire(9);
+        check(rig.staging.stats().used_bytes > 0, "native staging survives incomplete upload");
+        rig.ledger.retire(10);
+        check_eq(rig.staging.stats().used_bytes, 0, "native staging released at upload fence");
+        check(rig.ledger.release_all(handles, 20, error), "evict native section");
+        rig.ledger.retire(19);
+        check(rig.images.stats().used_bytes > 0, "native images survive last draw fence");
+        rig.ledger.retire(20);
+        check_eq(rig.images.stats().used_bytes, 0, "native section images released");
+        check_eq(rig.buffers.stats().used_bytes, 0, "native section geometry released");
+        Rig small;
+        make_rig(small, 4096, need.image_extent - 1, 4096);
+        check(small.ledger.create({&small.buffers, &small.images, &small.staging},
+                                  nfsu::bounded_image_layout, 256, error), "small native ledger");
+        check(!small.ledger.upload_table(table, 1, handles, error) && !error.empty(),
+              "oversized native section returns a diagnostic");
+        check_eq(small.images.stats().used_bytes, 0, "refused native section rolls back images");
+        check_eq(small.buffers.stats().used_bytes, 0, "refused native section rolls back geometry");
+        check_eq(small.staging.stats().used_bytes, 0, "refused native section rolls back staging");
     }
-    auto table = table_of(scene);
-    nfsu::SceneMemoryRequirement need;
-    std::string error;
-    check(nfsu::upload_table_requirement(table, nfsu::bounded_image_layout, need, error),
-          "native section bound: " + error);
-    Rig rig;
-    make_rig(rig, 4096, need.image_extent, 4096);
-    check(rig.ledger.create({&rig.buffers, &rig.images, &rig.staging},
-                            nfsu::bounded_image_layout, 256, error), "bounded native ledger");
-    std::vector<nfsu::UploadHandle> handles;
-    check(rig.ledger.upload_table(table, 10, handles, error), "native section upload: " + error);
-    check(rig.staging.stats().used_bytes > 0, "native blocks staged before fence");
-    rig.ledger.retire(9);
-    check(rig.staging.stats().used_bytes > 0, "native staging survives incomplete upload");
-    rig.ledger.retire(10);
-    check_eq(rig.staging.stats().used_bytes, 0, "native staging released at upload fence");
-    check(rig.ledger.release_all(handles, 20, error), "evict native section");
-    rig.ledger.retire(19);
-    check(rig.images.stats().used_bytes > 0, "native images survive last draw fence");
-    rig.ledger.retire(20);
-    check_eq(rig.images.stats().used_bytes, 0, "native section images released");
-    check_eq(rig.buffers.stats().used_bytes, 0, "native section geometry released");
-    Rig small;
-    make_rig(small, 4096, need.image_extent - 1, 4096);
-    check(small.ledger.create({&small.buffers, &small.images, &small.staging},
-                              nfsu::bounded_image_layout, 256, error), "small native ledger");
-    check(!small.ledger.upload_table(table, 1, handles, error) && !error.empty(),
-          "oversized native section returns a diagnostic");
-    check_eq(small.images.stats().used_bytes, 0, "refused native section rolls back images");
-    check_eq(small.buffers.stats().used_bytes, 0, "refused native section rolls back geometry");
-    check_eq(small.staging.stats().used_bytes, 0, "refused native section rolls back staging");
 }
 
 struct Placed {
@@ -2561,7 +2573,7 @@ const TestCase kTests[] = {
     {"draw_commands_resources_and_refusals", test_draw_commands_resources_and_refusals},
     {"track_commands_match_cpu", test_track_commands_match_cpu},
     {"gate_accepts_rgba8", test_gate_accepts_rgba8},
-    {"gate_refuses_every_pack_format", test_gate_refuses_invalid_native_payloads},
+    {"gate_refuses_invalid_native_payloads", test_gate_refuses_invalid_native_payloads},
     {"gate_refuses_malformed_rgba8", test_gate_refuses_malformed_rgba8},
     {"gate_names_are_the_parser_names", test_gate_names_are_the_parser_names},
     {"gate_follows_decode_level", test_gate_follows_decode_level},
