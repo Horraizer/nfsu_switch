@@ -60,7 +60,8 @@ GPU HUD in #64 lands. Use `--panel` or menu Y for live-driving evidence now:
 that mode keeps the framebuffer and the original readback panel with the
 race HUD and heap rows. After the race finishes or Plus is pressed, the
 renderer closes and a framebuffer result screen remains until Plus is
-pressed again. Loading, result and error text is clipped to 105 columns.
+pressed again. It contains run statistics that can be photographed without
+nxlink stdout. Loading, result and error text is clipped to 105 columns.
 
 ## Replay parity
 
@@ -191,13 +192,27 @@ readback or CPU pixel copy. The added frame slot memory is checked against
 the same 256 MiB GPU budget. `PERF HEAP` reports load/run high-water and
 arena extent observations, including LOAD HEAP OVER.
 
+The result screen reports the number of measured driving frames, frame-time
+mean, p50/p95/p99 and exact maximum, the count and share over 16.67 ms, the
+mean of SIM, RES/HASH/LOG, CULL/RECORD, UPDATE, PRESENT CPU and its ACQUIRE,
+FENCE, CMD and SUBMIT components, and maximum CATCH-UP ticks. It excludes
+countdown, paused, first resumed and finish frames. Statistics reset on
+unpause; the screen states the reset count, so a paused run is identified as
+the current uninterrupted segment. Percentiles use the upper edge of 0.25 ms
+fixed bins through 100 ms and display `>=100` when the selected bin overflows.
+The accumulator allocates nothing per frame. Plus during a run shows the same
+partial statistics. Panel mode reports its draw, transfer/copy and panel means
+in place of direct-present timings.
+
 `--panel` uses the original synchronous readback and CPU framebuffer panel.
 Its `PERF PANEL FRAME` and on-screen `Previous PANEL FRAME` include readback
 and panel costs. They must not be compared as direct-present frame timings.
 All stage measurements are CPU timings, not GPU execution times. The samples
 are single frames, not averages; their own nxlink printing follows the frame
-measurement. Both modes report the bounded command-cache estimate. The
-result screen shows the last sampled frame summary after rendering stops.
+measurement. A blocked nxlink stdout connection leaves those lines unavailable
+to the coordinator; the result screen is the driving-segment timing evidence. Both
+modes report the bounded command-cache estimate. The result screen also shows
+the last sampled frame summary after rendering stops.
 
 [PR #206 comment 4593](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/206#issuecomment-4593)
 measured its cached race NRO at 65.57-70.20 ms per frame, 21.76-23.65 ms

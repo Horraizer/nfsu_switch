@@ -1479,6 +1479,11 @@ endif()
 
 list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_run)
 if(NFSU_BUILD_TESTS)
+    add_executable(nfsu_race_frame_stats_tests tests/race_frame_stats_tests.cpp)
+    target_include_directories(nfsu_race_frame_stats_tests PRIVATE include)
+    nfsu_enable_warnings(nfsu_race_frame_stats_tests)
+    add_test(NAME nfsu_race_frame_stats_tests COMMAND nfsu_race_frame_stats_tests)
+
     add_executable(nfsu_race_run_tests tests/race_run_tests.cpp)
     target_link_libraries(nfsu_race_run_tests PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_platform_desktop)
     nfsu_enable_warnings(nfsu_race_run_tests)

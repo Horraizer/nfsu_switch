@@ -135,7 +135,10 @@ keeps the synchronous diagnostic renderer and its full framebuffer panel.
 Panel-mode frame times include readback and CPU panel copy; compare them
 only with other panel-mode measurements. The default mode shows no in-race
 HUD yet. Its framebuffer result screen appears after the race or Plus, with
-the replay verdict, hashes and lap times. Live-driving evidence uses
+the replay verdict, hashes, lap times and driving-frame statistics. The
+statistics exclude countdown, paused and finish frames, and reset on unpause;
+they remain visible for a photo when nxlink stdout cannot be collected.
+Live-driving visual evidence uses
 `--panel` until #64 adds a compact GPU HUD with countdown, lap, speed, gear
 and start lights. The coordinator will run both modes on the console; 60 FPS
 remains the measured target. Further #55 work can reduce state and batch

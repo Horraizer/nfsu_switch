@@ -3,6 +3,7 @@
 #include "nfsu/race_gpu_scene.h"
 #include "nfsu/heap_usage.h"
 #include "nfsu/posix_file_system.h"
+#include "nfsu/race_frame_stats.h"
 #include "nfsu/screen_text.h"
 #include "nfsu/stock_view.h"
 #include <switch.h>
@@ -107,8 +108,43 @@ GamepadFrame sample(const PadState& pad, std::uint64_t tick) {
     state.axes[0] = left.x; state.axes[1] = left.y; state.axes[2] = right.x; state.axes[3] = right.y;
     return frame;
 }
+std::string percentile_text(const RaceFrameStats& stats, unsigned percent) {
+    const unsigned bin = stats.percentile_bin(percent);
+    return bin == RaceFrameStats::kOverflowBin ? ">=100" :
+        format("%.2f", (bin+1)*RaceFrameStats::kBinWidthMs);
+}
+void append_frame_stats(std::vector<std::string>& lines, const RaceFrameStats& stats,
+                        bool panel_mode, unsigned unpause_resets) {
+    lines.push_back(format("DRIVING FRAMES ONLY: no countdown, pause or finish; reset on unpause (%u)",
+        unpause_resets));
+    if (!stats.count()) {
+        lines.push_back("FRAMES 0 | MEAN/P50/P95/P99/MAX -- | OVER 16.67 ms -- | CATCH-UP MAX --");
+        lines.push_back("MEAN STAGES -- (no measured driving frame yet)");
+        return;
+    }
+    const auto mean = stats.mean();
+    const auto p50 = percentile_text(stats,50), p95 = percentile_text(stats,95),
+        p99 = percentile_text(stats,99);
+    lines.push_back(format("FRAMES %llu | MEAN %.2f | P50 %s | P95 %s | P99 %s | MAX %.2f ms",
+        (unsigned long long)stats.count(),mean.frame_ms,p50.c_str(),p95.c_str(),p99.c_str(),stats.max_ms()));
+    lines.push_back(format("OVER 16.67 ms %llu/%llu (%.2f%%) | CATCH-UP MAX %u | percentile bins 0.25 ms",
+        (unsigned long long)stats.over_budget(),(unsigned long long)stats.count(),
+        100.0*stats.over_budget()/stats.count(),stats.catch_up_max()));
+    lines.push_back(format("MEAN ms SIM %.2f | RES/HASH/LOG %.2f | CULL/RECORD %.2f | UPDATE %.2f",
+        mean.simulation_ms,mean.residency_ms,mean.record_ms,mean.update_ms));
+    if (panel_mode) {
+        lines.push_back(format("MEAN ms DRAW %.2f | TRANSFER/COPY %.2f | HUD/PANEL %.2f",
+            mean.draw_ms,mean.transfer_ms,mean.panel_ms));
+        lines.push_back("PRESENT CPU/ACQUIRE/FENCE/CMD/SUBMIT n/a (panel readback path)");
+    } else {
+        lines.push_back(format("MEAN ms PRESENT CPU %.2f | ACQUIRE %.2f | FENCE %.2f",
+            mean.present_cpu_ms,mean.acquire_ms,mean.fence_ms));
+        lines.push_back(format("MEAN ms CMD %.2f | SUBMIT %.2f",mean.command_ms,mean.submit_ms));
+    }
+}
 void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceReplay& replay,
                  bool replay_mode, bool panel_mode, bool paused,
+                 const RaceFrameStats& stats, unsigned unpause_resets,
                  const std::vector<std::string>& last_perf, const std::string& failure) {
     const bool finished = race.session().timing().outcome == RaceOutcome::finished;
     std::vector<std::string> lines = {format("NFSU EVENT 1 RESULT | BUILD %.12s | %s %s",
@@ -140,6 +176,7 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
         if (!last.empty() && last.back() == '\n') last.pop_back();
         lines.push_back("last step " + (last.empty() ? std::string("none") : last));
     }
+    append_frame_stats(lines,stats,panel_mode,unpause_resets);
     lines.insert(lines.end(), last_perf.begin(), last_perf.end());
     lines.push_back("+ exits to hbmenu");
     while (appletMainLoop()) {
@@ -185,6 +222,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
     std::uint64_t presented = 0;
     double previous_frame = 0, previous_hud = 0;
     std::vector<std::string> last_perf;
+    RaceFrameStats stats;
+    unsigned unpause_resets = 0;
     std::string failure;
     try {
     while (appletMainLoop()) {
@@ -192,12 +231,20 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
         const auto elapsed = armTicksToNs(begin-previous)/1000; previous = begin;
         padUpdate(&pad); const auto down = padGetButtonsDown(&pad);
         if (down & HidNpadButton_Plus) break;
-        if (down & HidNpadButton_Y) { paused = !paused; clock.reset(); }
+        bool just_unpaused = false;
+        if (down & HidNpadButton_Y) {
+            just_unpaused = paused;
+            paused = !paused;
+            clock.reset();
+            if (just_unpaused) { stats.reset(); last_perf.clear(); ++unpause_resets; }
+        }
         // A long OS suspend is an explicit pause, not thousands of live
         // control ticks using a newly sampled pad. Ordinary slow frames keep debt.
         if (elapsed > 1000000) { paused = true; clock.reset(); }
         const bool connected = padIsConnected(&pad);
         const bool running = race.session().timing().outcome == RaceOutcome::running;
+        const bool driving_before = !paused && !just_unpaused && running &&
+            race.session().timing().stage == RaceStage::racing;
         if (!paused && running) clock.add(elapsed); else clock.reset();
         double simulation = 0, residency = 0, record = 0, upload = 0;
         unsigned ticks = 0;
@@ -220,6 +267,13 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
             upload = ms(armGetSystemTick()-stage);
         }
         const bool finished = race.session().timing().outcome == RaceOutcome::finished;
+        RaceFrameSample measured;
+        measured.simulation_ms = simulation;
+        measured.residency_ms = residency;
+        measured.record_ms = record;
+        measured.update_ms = upload;
+        measured.catch_up = ticks;
+        double measured_frame_ms = 0;
         if (finished && !printed_result) {
             for (const auto& line : race.result_lines()) std::printf("%s\n",line.c_str());
             if (replay_mode) std::printf("REPLAY %s desktop per-step stream and result\n",
@@ -274,6 +328,10 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
             screen.show(lines,&rgba);
             previous_hud = ms(armGetSystemTick()-hud_start);
             previous_frame = ms(armGetSystemTick()-begin);
+            measured_frame_ms = previous_frame;
+            measured.draw_ms = draw;
+            measured.transfer_ms = transfer;
+            measured.panel_ms = previous_hud;
             ++presented;
             if (presented == 1 || presented % 120 == 0 || (finished && !printed_final_perf)) {
                 std::printf("PERF PANEL BUILD %.12s | %s %s | frame %llu step %llu\n",
@@ -294,6 +352,12 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
         const double present_cpu = ms(armGetSystemTick()-present_start);
         const auto info = mallinfo(); heap.observe(info.uordblks,info.arena);
         const double frame_ms = ms(armGetSystemTick()-begin);
+        measured_frame_ms = frame_ms;
+        measured.present_cpu_ms = present_cpu;
+        measured.acquire_ms = present.acquire_ms;
+        measured.fence_ms = present.fence_wait_ms;
+        measured.command_ms = present.record_ms;
+        measured.submit_ms = present.submit_ms;
         ++presented;
         if (presented == 1 || presented % 120 == 0 || (finished && !printed_final_perf)) {
             const auto& car = race.session().car();
@@ -329,6 +393,10 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
             if (finished) printed_final_perf = true;
         }
         }
+        if (driving_before && !finished) {
+            measured.frame_ms = measured_frame_ms;
+            stats.add(measured);
+        }
         if (finished) break;
     }
     } catch (const std::exception& e) { failure = e.what(); }
@@ -338,7 +406,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
         failure += "renderer close: " + close_error;
     }
     if (!failure.empty()) { std::printf("ERROR: %s\n",failure.c_str()); std::fflush(stdout); }
-    if (appletMainLoop()) show_result(screen,pad,race,replay,replay_mode,panel_mode,paused,last_perf,failure);
+    if (appletMainLoop()) show_result(screen,pad,race,replay,replay_mode,panel_mode,paused,
+                                      stats,unpause_resets,last_perf,failure);
 }
 } // namespace
 int main(int argc, char** argv) {
@@ -369,7 +438,7 @@ int main(int argc, char** argv) {
                     "The #47 first-lap check runs before loading. Assets: "+root,
                     "Release all controls during countdown to clear the #59 hot-plug latch.",
                     "Direct mode has no in-race HUD yet; choose PANEL for live driving evidence.",
-                    "During the race: Y pauses, + opens results; performance prints to nxlink.",
+                    "During the race: Y pauses, + opens results with driving-frame statistics.",
                     "No game data is bundled or written. Replay input is bundled in RomFS."});
             }
             if (selected) run(root,replay,panel,screen,pad);
