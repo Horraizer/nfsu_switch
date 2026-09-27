@@ -144,7 +144,8 @@ public:
         require(drive_render_camera(session.camera(),ChaseFovMode::vertical_4_3,640,360,options.camera,error),error);
         Frame background; RenderStats stats; TrackRenderStats track_stats;
         require(render_track_draw_list(track,list,options,{},background,stats,track_stats,error),error);
-        require(drive_place_instances(base,session.car(),session.spec(),car.scene.instances),"car placement failed");
+        require(drive_place_instances(base,session.car(),session.spec(),car.scene.instances,
+                                      &session.animation()),"car placement failed");
         require(render_stock_frame(car,options,error),error);
         std::vector<unsigned char> rgba;
         require(compose_race_frame(background,car.frame,rgba),"frame sizes differ");

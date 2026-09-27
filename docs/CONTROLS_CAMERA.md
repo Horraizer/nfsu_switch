@@ -436,17 +436,24 @@ and `-DCMAKE_BUILD_TYPE=Release`, and these eleven are the pins:
 
 | Frame | POV | SHA-256 |
 | ---: | ---: | --- |
-| 120 | 0 | `FBDA103A7452A600D22F1DC80EFE3C1E609A0C369E48C9E41FF08000C8BB0D16` |
-| 240 | 0 | `08EAF9CE1B98CBC2E62107641DC0D4E099F978B450146D5C5C5A5519C591061D` |
-| 360 | 0 | `F1484BA7DFC6E1A1F890B6A901F10686BAFCB9A9B10E360344BD0C9D84FA8D16` |
-| 480 | 0 | `4F72D023B25D142B651C62E7202AB46D94FC80AD77F5B50A23B68FC8B16BC6B1` |
-| 600 | 0 | `E3AA6EBCA2560EAB92516DE6BCDFD88D6B7E2059C01B6AD5E6049CCEFBB2C0DB` |
-| 720 | 0 | `140B36D51C07230887BC5999D24613264ECF9E9EC5EA58C8EC07A6A457C0C069` |
+| 120 | 0 | `2C6DE4E1104857BBF3977F20CB1F707750B1923B8F0003F734FB8519B00CD5AD` |
+| 240 | 0 | `34D7FDDE984A52C58A7536B2285482D90628A50A86405057489F22AC60F595B0` |
+| 360 | 0 | `1601A0F2293CF2387A7D829C10CEED371421AFCCA2E9B75CE1A77B7ED5751454` |
+| 480 | 0 | `AE8287EB02A9B6FD9D29A54EDC9E03C3E31C597478214F6B39057C031B852775` |
+| 600 | 0 | `02C7329D923E4F1004D28B879515AFAE20654CF86CBF86AA3087069F41ACE835` |
+| 720 | 0 | `58D7BB2895577F6CD721FE97C00D64ADC7113D0A808AE4201EA2BDFD17D36F65` |
 | 840 | 1 | `496CA5992765BEB3AD990EE65DCAEADF414423FA55D4B7EE8C2F88CC38B7D422` |
 | 960 | 1 | `29A6A1DF461C7842249E8EB51098399CBBCA10865D2F1C5036D035C6C12A898A` |
 | 1080 | 1 | `B4FE674BBE251E6D89E509723232D799F70CA8893576972D1FCF39CA2D8F5F33` |
 | 1200 | 1 | `9E18FB9C275A52D50BD08C663A0B1188BE0C393D4EC9FB2250EB5FF808DBBAC2` |
 | 1320 | 1 | `5B96764C86E0103BF5FD2FA3881BAB9A9E0765780D5DC74EB7D25DE849096189` |
+
+Issue #201 re-pins frames 120 through 720 because the stock 240SX wheel
+lateral matrix now uses the retail wheel width, scale and offset instead
+of the culling-table placement. `drive-replay` does not pass an animation
+state to `drive_place_instances`, so these changes do not include wheel
+spin, steering, suspension travel or lamp brightening. The POV 1 frames
+840 through 1320 are unchanged.
 
 Frames 720 and 840 needed PR #162 (issue #125). Before it, the default and
 Debug builds gave `1D03ECAE...04F5` and `634293EC...39EF` for them, 12 and 51
@@ -454,8 +461,7 @@ pixels off the Release frames: `normalize` in `src/render.cpp` took
 `std::sqrt`, which MinGW's libm computes in x87 extended precision at `-O0`
 and rounds twice. The stream those builds drove was already equal to the bit,
 so the difference was the renderer's alone; `det_sqrt` gives the one-rounding
-root in every build, and the Release values, the correctly rounded ones, are
-the pins above.
+root in every build. That rounding fix remains part of the current pins.
 
 The stream through the same run hashes to the pin above, and every frame
 equals the SHA-256 of the file `--out` writes. Frame 870 at 1280x720,
@@ -465,9 +471,11 @@ camera, its left side in view.
 In CTest, `nfsu_probe_drive_replay_guards` renders frames 690 and 1380 at
 160x90 from the synthetic stock-frame inputs `nfsu_stock_frame_tests`
 writes, and pins them in every desktop build:
-`6AC1AC77783A5E4B693ABDC521F68BFB0D5DF5BEDF589E328FE285D41DCA4D24` and
+`ED60C57AF156E5A8E2850A85DAF8998F883DBE1EF34A15465BB1C8E23B1D3FB3` and
 `F9CAA668F9ADAA7F495B037261586EF4DB3A16BDA695D0CB46C55B3856C1F313`, each
-equal to CMake's own `file(SHA256)` of the TGA written.
+equal to CMake's own `file(SHA256)` of the TGA written. Issue #201 also
+re-pins frame 690 for the same stock lateral matrix correction; frame
+1380 is unchanged.
 
 ## Determinism
 

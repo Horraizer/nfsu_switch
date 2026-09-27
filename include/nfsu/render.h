@@ -393,6 +393,8 @@ struct RasterMaterial {
     unsigned char fallback[4] = {255, 255, 255, 255};
     // Flat shade factor 0..256 applied to RGB.
     std::uint32_t shade = 256;
+    // PreparedInstance::lamp_mode; the race-only visual lamp treatment.
+    std::uint8_t lamp_mode = 0;
     bool fallback_pattern = true;
     // Discard a textured fragment unless its source alpha is strictly
     // above alpha_ref (D3DCMP_GREATER).

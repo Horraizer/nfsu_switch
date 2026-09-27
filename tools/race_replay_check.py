@@ -8,17 +8,17 @@ import subprocess
 
 STEPS = (180, 600, 6000, 11344, 12459, 13128, 24300, 35396, 36510, 37177, 48336)
 FRAMES = (
-    "5D73DFD7BCC18B8083D3AB665598536FF2E0EB03D1E88113FD1B6279464B7778",
-    "AC75E21E5D22A1178A44D97371B724174D876023D4F8FA545122C2E227FB91AE",
-    "54DA8171ECBF48CAE088915353DD2B252085AD84A028CDA7959747D57F82A90F",
-    "74F748B23DC2E5043F7D425EE7E34C2D7BF6EDA91DBA28D881A706DF6FCF817E",
-    "40D98F3157FA3DC204A2D58C0E5B6127FE0DA568392790DDF872215B82C7B5D0",
-    "C164D894FCFFF34C491D6DC2B9FA8E9AB136682BA5C16DA7D0FC79EBAB0AC492",
-    "778CD48EE6A442D63DA98225B5F380B3C96515952E8940B0EB517F3818927F35",
-    "6AED610D9CD2DC552A617D860D914BE3D135932D7FD1EE45918A0B4B12CEF903",
-    "E1E822E4A1543E6B04F037D8116DE28E861EE80BE3095E32D4ED8E5CEFFD8672",
-    "DB8931A3B26F9C0B580AF8D0B47F37411D4CEBB0D14D8D00CF5D9147307FF852",
-    "41CB803526F6300E6566F746A9513AA8C7C9E2B9B7154EDBD9F0953694CE3C01",
+    "AB0F7B34E95886A55156394831726C32F3CC8C40C2FCA966EF1DC3FEA40F2278",
+    "82F0983C5500670E71F36230CD7208D27E5A7FE9E1809FDDB963E216D853A9C7",
+    "A06F69BBA564E6B90A44931E0BDC652A6993E42396C78679425B129BB88EB8FE",
+    "DFE1ABA17EF51CFB8FD1BE9B58EE54ACFD1BB02F2861108E088398580128C9AA",
+    "1A04C04F92F9F610A1A03C29430AF206110CFFFAD238F4AE652A2A57AED3778D",
+    "0490D2E0655294146B74F2373FABF0F1E7FA4B1D540685BBAC2766A79D705264",
+    "4DEED8178E5A93671354AEA63912E394EAFBA654AF3A9D8C3E5902A03AED02AD",
+    "79E26EF45DA23DEE0ECF1DDD0EAE644FAB676CF5BDC99CFFA1896A8B9ACBCE56",
+    "977E2DB7DA338525F9D29633F070341B6D22290DCB8E14D182C11239A4B2A4CA",
+    "618AAB0569A96B96A50EA287706CF116846C0E2705D62FC8C54013F2D05342E7",
+    "488721DC9D0D70239AA8A058709F1A4CECDA62067868939D0E5106E51E8D327C",
 )
 RESULT = (
     "event 1 track 1003 laps 2 outcome finished steps 48336 resets 0",
@@ -42,6 +42,29 @@ def require(okay, reason):
         raise RuntimeError(reason)
 
 
+def retail_manifest(root):
+    manifest = {}
+    for path in root.rglob("*"):
+        if path.is_file():
+            stat = path.stat()
+            checksum = hashlib.sha256()
+            with path.open("rb") as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    checksum.update(chunk)
+            manifest[path.relative_to(root).as_posix()] = (
+                stat.st_size, stat.st_mtime_ns, checksum.hexdigest())
+    return manifest
+
+
+def retail_run(command, root):
+    before = retail_manifest(root)
+    result = subprocess.run(command, capture_output=True, text=True)
+    after = retail_manifest(root)
+    require(after == before, "retail manifest changed during " + command[0])
+    print("retail-manifest:", len(before), "files unchanged")
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--exe", type=Path, action="append", required=True)
@@ -61,12 +84,12 @@ def main():
         command = [str(exe.resolve()), "--root", str(root)]
         if args.check_driver:
             generated = output / (str(index) + "-generated.txt")
-            result = subprocess.run(command + ["--generate", str(generated)], capture_output=True, text=True)
+            result = retail_run(command + ["--generate", str(generated)], root)
             (output / (str(index) + "-driver.log")).write_text(result.stdout + result.stderr, encoding="ascii")
             require(result.returncode == 0 and not result.stderr, "driver failed; see log")
             require(generated.read_bytes() == recording.read_bytes(), "scripted driver no longer generates the recording")
-        result = subprocess.run(command + ["--input", str(recording), "--out", str(prefix),
-                                "--frames", ",".join(map(str, STEPS))], capture_output=True, text=True)
+        result = retail_run(command + ["--input", str(recording), "--out", str(prefix),
+                             "--frames", ",".join(map(str, STEPS))], root)
         (output / (str(index) + ".log")).write_text(result.stdout + result.stderr, encoding="ascii")
         require(result.returncode == 0 and not result.stderr, "replay failed; see log")
         lines = result.stdout.splitlines()

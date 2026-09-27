@@ -51,26 +51,19 @@ struct StockSceneRequest {
     // slots override it, see StockSlotReport::lod.
     std::size_t lod = 0;
     CarDrawPass pass = CarDrawPass::world;
-    // The drawn wheel and brake matrices are not reproduced by this
-    // project: docs/PART_PLACEMENT.md traces the lateral component of row 3
-    // to an expression whose floating-point order was not verified, and
-    // Render discards the component it was given and rebuilds it
-    // (0x0056FBA5 for the wheel, 0x0056FBB3 for the brake).
+    // Render discards the lateral component of the node matrices and
+    // rebuilds it (0x0056FBA5, 0x0056FBB3). The stock branch of the
+    // replacement is traced in docs/PART_PLACEMENT.md; its final x87
+    // rounding and the alternative wheel-width/marker branches are not.
     //
     // False, the default, reports both slots as
     // StockSlotOutcome::placement_unreproduced and draws neither. True
-    // places them at the culling placements of
-    // derive_cullable_part_placements, whose three floats are copied
-    // verbatim out of the wheel record, and marks every instance it
-    // produces with PreparedInstance::placement_exact false: the
-    // longitudinal and vertical components are the record's, the lateral
-    // one is a stand-in for a term the executable computes differently,
-    // and the spin, the steering and the lateral scale the draw applies are
-    // not there at all. What it does carry is which way each model faces
-    // (issue #161): at positions 0 and 3, where car_wheel_turned_by_draw
-    // holds, the wheel copy is car_wheel_half_turn() * translation and the
-    // brake copy car_brake_reflection() * translation, the order the draw
-    // multiplies them in; positions 1 and 2 are the translation alone.
+    // uses the wheel table's longitudinal and vertical values, and the
+    // stock lateral scale and offset from +0x14 and +0x1C. Wheels 0 and 3
+    // receive car_wheel_half_turn(); brakes 0 and 3 receive
+    // car_brake_reflection(). Every copy retains placement_exact false.
+    // The race's drive_place_instances adds spin, steering and suspension
+    // after this preparation; a static stock frame has none of them.
     bool place_wheels_from_culling_table = false;
 };
 

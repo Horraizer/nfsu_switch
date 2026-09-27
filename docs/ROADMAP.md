@@ -44,13 +44,14 @@
   every other installed part is drawn at the car's own matrix
   (`include/nfsu/part_placement.h`, `nfsu_probe car-placement`,
   `nfsu_probe part-markers`, [`PART_PLACEMENT.md`](PART_PLACEMENT.md)). The
-  drawn wheel matrix's lateral term is traced but not reproduced.
+  drawn wheel matrix's stock lateral term is traced and reproduced;
+  alternate branches and x87 rounding remain inexact.
 - Selection and placement are assembled into a render profile:
   `nfsu::prepare_stock_car_scene` (`include/nfsu/stock_scene.h`,
   `nfsu_probe stock-scene`) builds the `stock car` profile of
   `PreparedCarScene` from the stock part set, the per-LOD meshes and the
   placement, with one instance per drawn copy. The wheel and the brake are
-  opt-in and marked inexact because their drawn matrices are not
+  opt-in and marked inexact because alternate matrix branches are not
   reproduced.
 - The CPU reference renderer draws that profile:
   `nfsu_viewer --stock-car NAME` places every copy with its instance

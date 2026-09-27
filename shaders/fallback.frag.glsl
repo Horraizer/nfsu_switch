@@ -72,6 +72,11 @@ void main()
         color = (color * vertex + 127u) / 255u;
     }
     uvec3 value = min(uvec3(255u), (color * shade + 128u) >> 8u);
+    uint lamp_mode = uint(material.alpha.w + 0.5);
+    uvec3 lamp = lamp_mode == 1u ? uvec3(120u, 120u, 110u) :
+                 lamp_mode == 2u ? uvec3(52u, 4u, 2u) :
+                 lamp_mode == 3u ? uvec3(192u, 28u, 18u) : uvec3(0u);
+    value += ((uvec3(255u) - value) * lamp + 127u) / 255u;
 
     outColor = vec4(vec3(value) / 255.0, 1.0);
 }
