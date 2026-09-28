@@ -1502,6 +1502,11 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_race_frame_stats_tests)
     add_test(NAME nfsu_race_frame_stats_tests COMMAND nfsu_race_frame_stats_tests)
 
+    add_executable(nfsu_deko_draw_order_tests tests/deko_draw_order_tests.cpp)
+    target_include_directories(nfsu_deko_draw_order_tests PRIVATE include)
+    nfsu_enable_warnings(nfsu_deko_draw_order_tests)
+    add_test(NAME nfsu_deko_draw_order_tests COMMAND nfsu_deko_draw_order_tests)
+
     add_executable(nfsu_audio_tests tests/audio_tests.cpp)
     target_link_libraries(nfsu_audio_tests PRIVATE nfsu_audio)
     nfsu_enable_warnings(nfsu_audio_tests)

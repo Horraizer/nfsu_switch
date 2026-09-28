@@ -56,7 +56,8 @@ public:
     // Offscreen mode owns no native window, so a diagnostic framebuffer may
     // stay open. Both modes record exactly the same draw path.
     bool open(const RecordedCommands& commands, std::string& error, bool presentation = true,
-              std::size_t draw_capacity = 0, bool profile_frame = false);
+              std::size_t draw_capacity = 0, bool profile_frame = false,
+              bool opaque_first = false);
     // Reuses resident GPU resources. Presentation may have a frame in flight.
     bool update(const RecordedCommands& commands, std::string& error,
                 DekoUpdateTiming* timing = nullptr);

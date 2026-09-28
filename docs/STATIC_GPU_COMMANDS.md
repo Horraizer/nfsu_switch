@@ -8,8 +8,12 @@ order remains the cached reference order: track draws followed by car draws.
 
 At renderer open, deko3d uploads one aligned placement per track instance and
 one aligned material per track definition. Each fence protected frame slot
-caches command lists for chunks of the exact ordered visible track selection.
-A changed selection re-records the chunks with static instance, material,
+caches the exact ordered visible track selection for invalidation. In the
+race renderer, command emission visits depth-writing opaque track draws first,
+then the remaining draws, preserving their order within each partition. The
+other Switch renderers retain the selected order. GPU ordering in the race
+therefore needs its own image and timing check on hardware. A changed
+selection re-records the chunks with static instance, material,
 shader, texture, pipeline and mesh bindings; an unchanged selection reuses
 its lists. The root frame calls one list per chunk, then records the car
 directly. The shared GPFIFO budget bounds calls from the draw count and

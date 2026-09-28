@@ -3,6 +3,7 @@
 #include "nfsu/draw_execution.h"
 #include "nfsu/deko_gpfifo_budget.h"
 #include "nfsu/deko_memory_usage.h"
+#include "nfsu/deko_draw_order.h"
 
 #include <deko3d.hpp>
 #include <switch.h>
@@ -70,6 +71,7 @@ struct DekoRenderer::Impl {
     DekoGpuProfile gpu_profile;
     std::uint64_t profile_generation = 1;
     bool profile_enabled = false;
+    bool opaque_first = false;
     std::array<dk::Image, 2> colors;
     std::array<dk::Image, 2> depths;
     dk::Shader vertex, textured, fallback;
@@ -204,7 +206,7 @@ struct DekoRenderer::Impl {
     }
 
     bool open(const RecordedCommands& source, std::string& error, bool presentation,
-              std::size_t capacity, bool profile_frame) {
+              std::size_t capacity, bool profile_frame, bool reorder_opaque) {
         if (commands) { error = "deko3d renderer open is one-shot"; return false; }
         DrawExecutionPlan plan;
         if (!plan_draw_execution(source, plan, error)) return false;
@@ -213,6 +215,7 @@ struct DekoRenderer::Impl {
             error = "invalid reserved draw capacity"; return false;
         }
         package = source.package_identity();
+        opaque_first = reorder_opaque;
         if (package) {
             package_width = source.width; package_height = source.height;
             std::memcpy(package_clear.data(), source.clear_color, 4);
@@ -569,10 +572,17 @@ struct DekoRenderer::Impl {
         auto& lists = static_lists[slot];
         lists.clear();
         selection.clear();
-        for (std::size_t first = 0; first < count; first += kDekoTrackChunkDraws) {
-            const RecordedDraw* previous = nullptr;
-            const auto end = std::min<std::size_t>(count, first + kDekoTrackChunkDraws);
-            for (std::size_t i = first; i < end; ++i) {
+        for (std::size_t i = 0; i < count; ++i) {
+            const auto view = commands->draw_view(i);
+            selection.emplace_back(view.definition.group, view.instance);
+        }
+        const RecordedDraw* previous = nullptr;
+        std::size_t emitted = 0;
+        bool ok = true;
+        auto visit =
+            [&](std::size_t i) {
+                if (!ok) return;
+                if (emitted % kDekoTrackChunkDraws == 0) previous = nullptr;
                 const auto view = commands->draw_view(i);
                 const auto index = static_group_slots.at(view.definition.group);
                 const auto* definition = static_definitions.at(index);
@@ -581,11 +591,20 @@ struct DekoRenderer::Impl {
                           static_uniforms.getGpuAddr() + (static_instances+index)*256,
                           !previous || !same_fixed_state(*previous, *definition));
                 previous = definition;
-                selection.emplace_back(definition->group, view.instance);
-            }
-            lists.push_back(recorder.finishList());
-            if (!healthy(error)) return false;
-        }
+                ++emitted;
+                if (emitted % kDekoTrackChunkDraws == 0 || emitted == count) {
+                    lists.push_back(recorder.finishList());
+                    ok = healthy(error);
+                }
+            };
+        if (opaque_first) deko_visit_opaque_first(count,
+            [&](std::size_t i) {
+                const auto& state = commands->draw_view(i).definition.pipeline;
+                return !state.blend && state.alpha_test == sm::CompareOp::always &&
+                    state.depth_write;
+            }, visit);
+        else for (std::size_t i = 0; i < count; ++i) visit(i);
+        if (!ok || emitted != count) return false;
         return true;
     }
 
@@ -765,9 +784,9 @@ DekoRenderer::~DekoRenderer() {
     catch (...) { if (impl_->queue) impl_->queue.waitIdle(); }
 }
 bool DekoRenderer::open(const RecordedCommands& commands, std::string& error, bool presentation,
-                        std::size_t draw_capacity, bool profile_frame) {
+                        std::size_t draw_capacity, bool profile_frame, bool opaque_first) {
     error.clear();
-    try { return impl_->open(commands, error, presentation, draw_capacity, profile_frame); }
+    try { return impl_->open(commands, error, presentation, draw_capacity, profile_frame, opaque_first); }
     catch (const std::bad_alloc&) { error = "not enough memory for deko3d renderer"; return false; }
 }
 bool DekoRenderer::update(const RecordedCommands& commands, std::string& error,

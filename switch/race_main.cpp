@@ -459,7 +459,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     const auto upload_start = armGetSystemTick();
     if (!panel_mode) screen.close();
     DekoRenderer renderer;
-    require(renderer.open(frame.commands,error,!panel_mode,kTrackSliceDrawLimit,profile_frame),error);
+    require(renderer.open(frame.commands,error,!panel_mode,kTrackSliceDrawLimit,profile_frame,true),error);
     const double initial_upload = ms(armGetSystemTick()-upload_start);
     const auto clocks = profile_frame ? read_clocks() : ClockReadings{};
     std::unique_ptr<FrameProfileStats> profile_stats;
