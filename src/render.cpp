@@ -1357,19 +1357,26 @@ bool render_scene(
         // prepared_triangle_ranges reports from ever disagreeing.
         const std::size_t copy_first = copies.first[draw.mesh];
         const std::uint64_t copy_count = copies.copies(draw.mesh);
+        const RenderTexture* const base_texture = raster.texture;
         for (std::uint64_t c = 0; c < copy_count; ++c) {
             const std::size_t copy =
                 instanced ? copies.order[copy_first + static_cast<std::size_t>(c)]
                           : draw.mesh;
             const float* const transform =
                 instanced ? scene.instances[copy].transform : nullptr;
+            const std::size_t override_texture =
+                instanced && draw.texture_hash == 0x17F9F794U
+                    ? scene.instances[copy].brake_left_texture : kNoHandle;
+            raster.texture = override_texture != kNoHandle
+                ? &scene.textures[override_texture] : base_texture;
             raster.lamp_mode = instanced ? scene.instances[copy].lamp_mode : 0;
             if ((first + count) / 3 > first / 3) {
                 copy_drawn[copy] = 1;
             }
             if (observe && count != 0) {
                 observe(ReferenceDraw{d, draw.mesh, instanced ? copy : kNoHandle,
-                    raster.texture ? draw.texture : kNoHandle,
+                    raster.texture ? (override_texture != kNoHandle
+                        ? override_texture : draw.texture) : kNoHandle,
                     draw.first_index, draw.index_count, true, true, true,
                     options.cull, raster.blend, raster.alpha_test, raster.alpha_ref});
             }

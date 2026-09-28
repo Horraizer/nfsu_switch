@@ -1130,6 +1130,9 @@ each. Issue #201 adds the stock lateral scale and offset to those copies:
   stand_in 8`. 79 material groups (20 resolved), 6137 triangles submitted,
   118506 pixels drawn, drawn bounds x 390..973, y 232..555. SHA-256
   `3DEB2147CDA1B1D66DC47FC599B8A1FD88FCB273F0B38BFBE656666808199D25`.
+  This is the historical issue #201 frame; the current stock texture pin is
+  in `include/nfsu/stock_frame.h` and its trace is in
+  [`CAR_TEXTURES.md`](CAR_TEXTURES.md).
 - The four copies of each land under the four arches. The stock lateral
   term is now included, while the static frame has no spin, steering or
   suspension. The 8 stand-in copies remain marked because the alternate

@@ -894,6 +894,26 @@ void test_validation_rejects_tampering() {
 } // namespace
 
 int main() {
+    nfsu::GeometryReport windows;
+    windows.meshes.emplace_back();
+    windows.meshes.back().texture_hashes = {
+        0x7B220DDFU, 0x1B0763A0U, 0xE7E4EF49U,
+        0x4CDEBFCAU, 0x60F8B13CU, 0x0AB88F5DU,
+        0x910E6654U, 0x77A20245U
+    };
+    nfsu::alias_stock_window_textures(windows);
+    for (std::size_t i = 0; i < 6; ++i) {
+        check(windows.meshes.back().texture_hashes[i] == 0x834B8017U,
+              "unbroken stock window aliases to WINDOW");
+    }
+    check(windows.meshes.back().texture_hashes[6] == 0x910E6654U &&
+          windows.meshes.back().texture_hashes[7] == 0x77A20245U,
+          "unrelated hashes remain unchanged");
+    check(nfsu::is_stock_dummy_decal_hash(0x910E6654U) &&
+          nfsu::is_stock_dummy_decal_hash(0x910E665BU) &&
+          !nfsu::is_stock_dummy_decal_hash(0x910E6653U) &&
+          !nfsu::is_stock_dummy_decal_hash(0x910E665CU),
+          "only eight stock dummy decal slots are empty");
     test_slot_ids();
     test_lod_a();
     test_duplicate_part();

@@ -48,8 +48,8 @@ PASS also requires the CPU TGA to match its selected desktop pin:
 
 | CPU frame | TGA bytes | SHA-256 |
 | --- | ---: | --- |
-| unpainted | 3686418 | `3DEB2147CDA1B1D66DC47FC599B8A1FD88FCB273F0B38BFBE656666808199D25` |
-| painted | 3686418 | `8A5932A302A22AA3C4C01776009B5348629D8D37B3B61E6E0AA303235B1CF48F` |
+| unpainted | 3686418 | `8FBA20E893590A6B48EA1CE40B9A711C74690127811BB5CC0CA208337C63BE84` |
+| painted | 3686418 | `05203E9CCDEB15B8ECF478B8501777577620DAB94C3FBA6A34F428BA772AF6E0` |
 
 A CPU pin mismatch displays overall FAIL even if the numerical GPU/CPU
 comparison passes. No threshold is adjusted to fit a result. Percentages

@@ -46,9 +46,7 @@ namespace nfsu {
 // It exists for the Switch application (switch/car_main.cpp), which cannot
 // run the viewer and writes no file, and for the desktop check that the two
 // agree (tests/stock_frame_tests.cpp and tests/stock_frame_viewer_match.cmake).
-// The viewer does not call it: src/viewer_main.cpp is unchanged, and
-// src/stock_frame.cpp names, step by step, the lines of the viewer each
-// call mirrors. docs/SWITCH_BUILD.md.
+// The viewer and stock frame take the same window texture alias path.
 
 // The six files, in the order the command above names them. GLOBALB.BUN is
 // named twice there - the first shared texture source and the part
@@ -70,20 +68,18 @@ constexpr std::size_t kStockFrameFileCount = 6;
 // Null for an index outside 0..kStockFrameFileCount-1.
 const char* stock_frame_file_path(std::size_t index) noexcept;
 
-// The desktop frame of the command above, as docs/RENDERER.md pins it.
-// Issue #161 re-pinned both frames: the left wheels are now half-turned as
-// the retail draw turns them, and at this camera that removes two pixels
-// of the front-left wheel's backing quad, which showed above the far
-// fender. They were FD672733... unpainted and FE51E57A... painted.
+// Issue #223 re-pinned both frames after retail window aliases and empty
+// sponsor decal suppression. The previous hashes were 3DEB2147... and
+// 8A5932A3... respectively.
 constexpr std::uint64_t kStock240sxFrameBytes = 3686418;
 constexpr const char* kStock240sxFrameSha256 =
-    "3DEB2147CDA1B1D66DC47FC599B8A1FD88FCB273F0B38BFBE656666808199D25";
+    "8FBA20E893590A6B48EA1CE40B9A711C74690127811BB5CC0CA208337C63BE84";
 
 // The painted desktop frame, the command above with stock_240sx_skin(), as
 // docs/SWITCH_BUILD.md pins it.
 constexpr std::uint64_t kStock240sxPaintedFrameBytes = 3686418;
 constexpr const char* kStock240sxPaintedFrameSha256 =
-    "8A5932A302A22AA3C4C01776009B5348629D8D37B3B61E6E0AA303235B1CF48F";
+    "05203E9CCDEB15B8ECF478B8501777577620DAB94C3FBA6A34F428BA772AF6E0";
 
 // The largest file read: 256 MiB, the limit every parser these files go
 // through applies to its input.
