@@ -21,6 +21,15 @@ apply it, and **APPROXIMATION** for anything this project invents. Nothing in
 this document is an approximation; where no reader was traced the field is
 called unknown and what was observed is said instead.
 
+Which numbers this document carries, under CLAUDE.md's rule that a pinned
+value lives in its test: the 240SX's own field values are held by
+`stock_240sx_tuning()` and pinned by `nfsu_vehicle_tuning_tests`, so they are
+named there and not copied here - round 2 of the review reported them as a
+note (N4) and this round removed them. What stays is the observation over all
+35 records: a count, a range, or which cars an equality holds for. No test
+reads a retail file, so those are the pin of record, and
+`nfsu_probe vehicle-tuning` prints every one of them for every car.
+
 ## Evidence base
 
 | File | SHA-256 | What it gives |
@@ -137,19 +146,20 @@ record where one is not.
 
 Read at `0x00576250` with the level from levels `+0x00`.
 
-| Entry offset | Field | 240SX levels 1, 2, 3 | Evidence |
-| --- | --- | --- | --- |
-| `+0x00` | mass scale | 0.949, 0.8995, 0.85 | RECOVERED: `0x0057626B` loads it in place of the 1.0 at `0x006CC7BC`, `0x00576285` subtracts the mass item when levels `+0x2C` is set, `0x0057628B` multiplies `+0x220` by the result and stores it back |
-| `+0x04` | centre of mass, longitudinal, m | 0.0204, 0.0402, 0.06 | RECOVERED: `0x00576270`..`0x00576275` adds it to `+0x110` |
-| `+0x08` | yaw inertia scale | 1.9388, 1.8794, 1.82 | RECOVERED: `0x00576277`..`0x0057627A` stores it over `+0x270`, the factor `0x00584B42` builds the rigid body's second inverse inertia with |
+| Entry offset | Field | Evidence |
+| --- | --- | --- |
+| `+0x00` | mass scale | RECOVERED: `0x0057626B` loads it in place of the 1.0 at `0x006CC7BC`, `0x00576285` subtracts the mass item when levels `+0x2C` is set, `0x0057628B` multiplies `+0x220` by the result and stores it back |
+| `+0x04` | centre of mass, longitudinal, m | RECOVERED: `0x00576270`..`0x00576275` adds it to `+0x110` |
+| `+0x08` | yaw inertia scale | RECOVERED: `0x00576277`..`0x0057627A` stores it over `+0x270`, the factor `0x00584B42` builds the rigid body's second inverse inertia with |
 
-Level 3 takes 15% off the mass on the 240SX and 20% on the Supra and the
-Skyline; every traffic vehicle's three scales are 1.0. The scales fall with
-the level in all 35 records, and the six level 3 values in the file are 0.8,
-0.85, 0.9, 0.91, 0.95 and 1.0. The yaw inertia scale falls with the level too,
-and its level 3 value is 1.8 for 16 of the 20 racers, 1.77 for the Skyline,
-1.82 for the 240SX, 1.85 for the Peugeot and 1.9 for the Civic and the
-Celica; every traffic vehicle's is 1.8.
+The mass scales fall with the level in all 35 records. The six level 3 values
+in the file are 0.8, 0.85, 0.9, 0.91 and 0.95 over the racers and 1.0 for
+every traffic vehicle, so a traffic vehicle's weight table takes nothing off;
+the Supra and the Skyline are the two racers at 0.8. The yaw inertia scale
+falls with the level too, and its level 3 value is 1.8 for 15 of the 20
+racers, 1.77 for the Skyline, 1.82 for the 240SX, 1.85 for the Peugeot and
+1.9 for the Civic and the Celica - five exceptions and fifteen at 1.8; every
+traffic vehicle's is 1.8.
 
 ### The gearbox table, `+0x3F0`
 
@@ -159,17 +169,32 @@ layout of the stock block at `+0x2C0` and replaces it word for word
 
 Entry `+0x18` is the stored forward-gear count, and the game does not copy it.
 `0x005763E1` writes zero over it in the loaded record, and
-`0x005763F0`..`0x0057640D` counts, from gear slot 2 upward and stopping at the
-first that is not above the 0.0 at `0x006CC7A4`, how many forward ratios the
-entry has; that count goes to `+0x2D8`. RECOVERED. In every one of the 105
-retail entries the stored value equals the count the ratios give, so the two
-agree and the derivation is what decides. The parser refuses an entry where
-they differ, and `nfsu_vehicle_tuning_tests` (`test_gear_count_rule`) drives
-synthetic one- to six-speed entries through the rule.
+`0x005763F0`..`0x0057640D` walks the gear slots from slot 2 upward, counting,
+and stops at the first ratio that is **equal** to the 0.0 at `0x006CC7A4`;
+that count goes to `+0x2D8`. RECOVERED, and the stop condition is equality
+rather than "not above zero", which round 2 of the review corrected (F2):
+`0x005763F2` compares the ratio with 0.0, `0x005763F8` reads the status word
+and `0x005763FA` masks it with `test ah, 0x44`, which keeps C3 and C2 and
+drops C0, then `0x005763FD` leaves the loop on `jnp`. A ratio above zero
+clears all three flags, so the masked byte is 0x00, parity is even and the
+jump is not taken; a ratio equal to zero sets C3 alone, so the byte is 0x40,
+parity is odd and the jump leaves; a ratio below zero sets C0 alone, which the
+mask drops, so the byte is 0x00 again and the slot is counted and the walk
+continues. A NaN sets C3 and C2 together, an even byte, so it is counted too.
+The difference matters only for a record the parser refuses anyway - a
+negative forward ratio is refused before any caller reaches the rule - so it
+never changes an answer this library returns, and it is still the rule in the
+binary. In every one of the 105 retail entries the stored value equals the
+count the ratios give under either reading. `vehicle_derived_forward_gears` is
+the rule, and `nfsu_vehicle_tuning_tests` pins it twice: directly, over nine
+cases including a negative ratio, a NaN and a zero before a positive ratio
+(`test_derived_gear_rule`, which also fails if the two readings stop
+disagreeing), and end to end over synthetic one- to six-speed entries
+(`test_gear_count_rule`).
 
-Level 3 gives every one of the 20 racers six forward gears - the 240SX's five
-become six, with a shorter final drive, 3.9 against the stock 4.083 - and
-leaves all 15 traffic vehicles at five. The rear drive fraction in all 60 of
+Level 3 gives every one of the 20 racers six forward gears and leaves all 15
+traffic vehicles at five. It also shortens the final drive of 17 of the 20
+racers, leaves the Supra's and the Skyline's alone and lengthens the Neon's. The rear drive fraction in all 60 of
 the racers' entries is the one that racer's stock record already has; every
 traffic entry holds 1.0 where the stock fraction is 0.5, or 0.4 for the bus,
 which is one of several signs that the 15 traffic records share one default
@@ -200,16 +225,19 @@ record `+0x300`..`+0x330` and `+0x358`..`+0x360`.
 The two tables carry the same nine torque deltas as each other in every one
 of the 35 records, and differ in the rpm limits: table A's idle, redline and
 maximum deltas are zero in every entry in the file, and table B raises the
-redline and the maximum - by 1000 each at level 3 for the 240SX and by 1500
-and 2000 for the Golf. Both tables are all-zero for every traffic vehicle.
+redline and the maximum, by 1500 and 2000 respectively at level 3 for the
+Golf and by 0 to 2000 rpm over the file. Both tables are all-zero for every
+traffic vehicle.
 
-On the 240SX the three levels are exactly 8.5%, 17% and 25% of its stock
-torque curve at all nine points, and that ratio is the 240SX's rather than the
-table's: the Golf's level 3 delta at the second point is 60% of its stock
-value there. The engine braking deltas do not follow the torque ratio even on
-the 240SX (0.25, 0.2778 and 0.1923 of stock at level 3), and six of them, all
-the Skyline's third point, are negative - an upgrade that brakes the engine
-less. The parser therefore bounds no delta's sign.
+Each car's three levels are a fixed fraction of its own stock torque curve,
+and the fraction is that car's: on the 240SX the three levels are the same
+fraction at all nine points, which `nfsu_vehicle_tuning_tests`
+(`test_engine_table_ratios`) pins, while the Golf's level 3 delta at the
+second point is 60% of its stock value there. The engine braking deltas do not
+follow the torque fraction, even on a car whose torque deltas do - the same
+test pins that - and six of them, all the Skyline's third point, are negative:
+an upgrade that brakes the engine less. The parser therefore bounds no delta's
+sign.
 
 ### The induction curve, `+0x630`
 
@@ -239,11 +267,15 @@ blocks with the layout [`VEHICLE.md`](VEHICLE.md) gives for `+0x1E0` and
 1 in every entry of all 35 records, exactly as in every stock block, so only
 the two friction coefficients move.
 
-The 240SX's peak friction goes 1.8 front and 1.7 rear in stock to 2.2 and 2.3
-at level 3; the sliding coefficients go 1.5 and 1.47 to 1.75 and 2.3. Every
-one of the 210 entries in the file has both coefficients above zero, and both
-rise with the level in all 35 records. Over the whole file the peaks run 1.668
-to 2.6 and the sliding coefficients 1.453 to 2.45.
+Every one of the 210 blocks in the file has both coefficients above zero, and
+neither ever falls with the level. Where they rise is narrower than round 1 of
+this document claimed (review note N1): the 15 traffic records share one
+default set of tables, whose peak is 2.0 and sliding coefficient 1.5 at all
+three levels, and among the 20 racers the Supra's front peak is 2.0 at all
+three levels too. So both coefficients are non-decreasing with the level in
+all 35 records and strictly rising in 19 of the 20 racers, with those two
+exceptions. Over the whole file the peaks run 1.668 to 2.6 and the sliding
+coefficients 1.453 to 2.45.
 
 `0x00575ADA`..`0x00575B1C` then adds the four item scalars at `+0x940`,
 `+0x944`, `+0x948` and `+0x94C` to the front peak, the rear peak, the front
@@ -278,9 +310,11 @@ whose argument was not traced.
 The two tables hold the same second and third component as each other in every
 one of the 35 records and differ only in the first, which is zero in every
 entry of the `+0x7B0` table and non-zero in every entry of the `+0x7E0` one
-for all 20 racers. Both tables are all-zero for every traffic vehicle. All
-three components rise with the level in all 35 records, and the deltas run 0
-to 0.115 over the file.
+for all 20 racers. Both tables are all-zero for every traffic vehicle, so the
+only records where a component rises at all are the 20 racers': all three are
+non-decreasing with the level in every one of the 35, and rise in the racers
+except where the `+0x7B0` table's first component holds it at zero (review
+note N1). The deltas run 0 to 0.115 over the file.
 
 ### The grip block table, `+0x810`
 
@@ -290,17 +324,45 @@ which is the only place in this function where the words are not written in
 offset order - that is record `+0x384`, `+0x38C` and `+0x388`. Then
 `0x005759CF` adds `+0x93C` to `+0x384` when levels `+0x4C` is set.
 
-No instruction that **reads** `+0x384`, `+0x388` or `+0x38C` was found: a scan
-of the whole `.text` for a memory operand with displacement `0x274`, `0x278`
-or `0x27C` finds this writer, an unrelated object's flag at `0x0047D205`, a
-pair at `0x00581E4F` on a different structure, and the checksum at
-`0x00576648` that hashes the whole sub-object. The three fields are therefore
-**unknown**. What was observed: they are 0.4, 0.5 and 0.5 for the 240SX in
-stock and 0.64, 0.57 and 0.55 at level 3; the first value rises with the level
-in all 35 records and the second and third do not always - the Golf's second
-goes 0.568, 0.634, 0.55; the item bonus runs from 0.04 to 0.08 over the 20
-racers and is 0.2 for every traffic vehicle; and every value in the table lies
-between 0.3 and 0.85. The block sits between the
+These three fields are labelled **unknown**, and round 2 of the review (F3)
+was right that round 1's evidence sentence for that did not reproduce. The
+scan, restated so that it does: over `.text` (VA `0x00401000`, `0x295EA7`
+bytes), find every occurrence of the four little-endian bytes of `0x274`,
+`0x278` or `0x27C`, decode backwards into each one, and keep every
+instruction with a memory operand whose displacement is one of the three and
+whose addressing is a plain base register plus that displacement, with no
+index. That gives 167 distinct instruction addresses, of which 16, in 8
+places, are x87 instructions - the shape a float field read has:
+
+| Addresses | Base | What it is |
+| --- | --- | --- |
+| `0x005759D5`, `0x005759DB` | `ebx` | the writer above |
+| `0x00576648`, `0x0057665D`, `0x00576672` | `esi` | the checksum that hashes the whole sub-object |
+| `0x0047D205`, `0x0047D224` | `ebx` | another object, whose `+0x270` is a byte flag `0x0047D1DB` tests |
+| `0x00581E4F`, `0x00581E5B`, `0x00581E8A`, `0x00581E96` | `ecx` | a different structure |
+| `0x0046FA21`, `0x0048AB8E`, `0x0048ABA5` | `esp` | stack locals, not an object at all |
+| `0x00538538` | `esi` | another object; `0x0053850A` subtracts its `+0x27C` as an integer |
+| `0x00477936` | `edx` | not ruled out, below |
+
+`0x00477936` is `fld dword ptr [edx + 0x27c]`, inside the vehicle physics
+range, and `0x00477933` reaches it with `mov edx, dword ptr [ecx + 0x54]`. It
+is used as the value or as one minus it (`0x0047793E` subtracts it from the
+1.0 at `0x006CC7BC`), doubled, scaled by `[edx + 0x1E4]` of another object and
+stored to a `+0x170` of the entry the loop is on; the loop runs `edi` in steps
+of 4 to `0x48` (`0x00477B9F`..`0x00477BA9`), so it walks 18 entries of a
+pointer array and the branch at `0x0047792A` separates the last two from the
+first sixteen, which rules out the four wheels. What fills `[ecx + 0x54]` was
+not settled - the same function also dereferences `[ecx + 4]` and
+`[ecx + 0x58]` - so **the ruling-out is incomplete**: this document does not
+claim the grip block has no reader, only that no reader of it was identified,
+and `0x00477936` is the one site that could be one.
+
+What was observed of the three fields: the first value is non-decreasing with
+the level in all 35 records and the second and third are not always - the
+Golf's second goes 0.568, 0.634, 0.55 - and every traffic record holds 0.35,
+0.3 and 0.6 at all three levels (review note N1); the item bonus runs from
+0.04 to 0.08 over the 20 racers and is 0.2 for every traffic vehicle; and
+every value in the table lies between 0.3 and 0.85. The block sits between the
 downforce words and the nitrous words, and `+0x394`, two words further on, is
 the 2.5 [`VEHICLE.md`](VEHICLE.md) quotes from the untraced brake term of
 `0x0047576B` - which is suggestive and is not evidence.
@@ -320,23 +382,31 @@ Read at `0x00575A1C` with the level from levels `+0x04`. Entries at `+0x840`,
 
 All RECOVERED. The two strut blocks have the layout
 [`VEHICLE.md`](VEHICLE.md) gives, including the eighth float at block `+0x1C`
-that it leaves unnamed: it equals the bump limit at `+0x14` in every stock
-block and in all 105 entries of this table, and no reader of it was traced.
+that it leaves unnamed. That float is **unknown**: no reader of it was traced,
+and round 1 of this document was wrong to call it a copy of the bump limit at
+`+0x14` (review finding F1). The two are equal in 139 of this table's 210
+blocks and in 21 of the 35 records' stock blocks, and differ in the rest - the
+Golf's stock rear block at `+0x2A0` holds 0.15 at `+0x14` and 0.05 at `+0x1C`,
+and its level 3 rear block holds 0.11 and 0.05. The 240SX is one of the
+records where the two agree, which is why a fixture built from that car alone
+could not tell them apart; `nfsu_probe vehicle-tuning` now prints how many of
+each record's six blocks agree, and its total over the file, so a claim of
+that shape is checkable across every car with one command.
 
-The 240SX's front spring rate goes from 35 kN/m in stock to 60.5, 85.25 and
-110; the rear from 30 to 48.7, 66.85 and 85. Both rise with the level in all
-35 records, and the bump and droop limits shrink - 0.125 and -0.13 in stock to
-0.11 and -0.11 at level 3 - so an upgraded car has less travel on stiffer
-springs. Every entry in the file has a positive spring rate, a positive bump
-limit and a negative droop limit; over the file the rates run 43.6 to 120
-kN/m, the bump limits 0.055 to 0.15 m and the droop limits -0.15 to -0.09 m.
+The spring rates never fall with the level, and rise strictly in all 20
+racers; every traffic entry is 100 kN/m at all three levels, so the round 1
+form of this claim was too wide (review note N1). Every block in the file has
+a positive spring rate, a positive bump limit and a negative droop limit; over
+the file the rates run 43.6 to 120 kN/m, the bump limits 0.055 to 0.15 m and
+the droop limits -0.15 to -0.09 m. The travel does not shrink monotonically
+for every car: 17 of the 20 racers' bump limits fall with the level and the
+RX-7's, the Impreza's and the Tiburon's do not.
 [`PART_PLACEMENT.md`](PART_PLACEMENT.md)
 already recorded the three ride-height deltas for the 240SX, the Golf, the
 350Z and the traffic vehicles, which are zero for all 15 of the latter; what
-is new here is that `+0x40` also lowers the centre of mass, by 0.11 m at level
-3 on the 240SX against the 0.035 m the wheels rise, and the strut blocks
-themselves. Over the file the wheel deltas run 0 to 0.05 m and the centre of
-mass drop 0 to 0.15 m.
+is new here is that `+0x40` also lowers the centre of mass, and by more than
+the wheels rise, and the strut blocks themselves. Over the file the wheel
+deltas run 0 to 0.05 m and the centre-of-mass drop 0 to 0.15 m.
 
 ### The item scalars, `+0x930`, and the item curves, `+0x950`
 
@@ -494,9 +564,11 @@ field:
   outside [0, 1].
 
 `check_vehicle_tuning` applies the same checks to a table built in memory,
-`encode_vehicle_tuning` writes one back into a record image and touches
-nothing else, and `compare_vehicle_tuning` returns the offset of the first
-field two tables differ in.
+except the 45 reserved words: those are not fields of `VehicleTuning`, so only
+`decode_vehicle_tuning` sees them (review note N3). `encode_vehicle_tuning`
+writes a table back into a record image and touches nothing else, and
+`compare_vehicle_tuning` returns the offset of the first field two tables
+differ in.
 
 `apply_vehicle_tuning(record, size, levels, out_record, out_size, issues)`
 reproduces `0x00575960`: it copies the whole record and rewrites
@@ -522,9 +594,11 @@ nfsu_probe vehicle-tuning <GLOBALB.BUN>
 
 Reads the file read-only, decodes all 35 records and prints one line each -
 the three mass scales, the three gear counts, the three tyre peak pairs, the
-three spring-rate pairs, the drive-split override and the SHA-256 of the bytes
+three spring-rate pairs, the drive-split override, how many of the record's
+six strut blocks have `+0x1C` equal to `+0x14`, and the SHA-256 of the bytes
 the encoder writes back - then the record count, how many decoded, how many
-were refused, the byte count and the SHA-256 over all of them. For the 240SX
+were refused, the byte count, that equality count over the whole file, and the
+SHA-256 over all of them. For the 240SX
 it compares the decoded tables with the built-in ones field by field and
 prints `equal to the built-in 240SX tables`. It exits 0, 1 on an argument it
 refuses, and 3 on a file it cannot read, a record it refuses, or a 240SX that
@@ -545,7 +619,9 @@ document copies no digest it prints.
 | applying everything | every table at level 3 with four items: the mass, the inertia that follows it, the gear count and ratios, the zeroed stored count in the table, the tyre coefficients with their item bonuses, the spring rates, the centre of mass and the four wheel heights, the redline, all nine torque points through both engine tables and the induction curve, the yaw inertia scale, the grip block, the nitrous block and the three downforce words in the game's application order |
 | applying the items alone | the mass scale starting from 1.0, the drive-split override, and the three item curves in their order with curve C also landing in `+0x334` |
 | the level gate | 0 to 3 accepted, -1, 4 and 7 refused with the output untouched, a short or null record refused, and a malformed table refused by `apply` with the decoder's own issue |
-| the derived gear count | synthetic one- to six-speed entries |
+| the derived gear count | `test_derived_gear_rule` pins the recovered rule over nine cases, including a negative ratio and a NaN, which the equality stop counts, and a zero before a positive ratio, which ends the walk, and fails if a "greater than zero" reading would give the same answers; `test_gear_count_rule` drives synthetic one- to six-speed entries end to end |
+| strut `+0x1C` | `test_strut_unknown_1c` gives every block a `+0x1C` different from its bump limit and requires the decoder, the round trip, the encoder's byte runs and the apply path to carry it on its own, at every level |
+| the engine tables' ratios | `test_engine_table_ratios` holds the 240SX figures this document used to quote: the three levels as fractions of its stock torque curve, the two tables' equal torque deltas, the engine braking deltas not following that fraction, and table B alone raising the rev limits |
 
 ## What wiring it into the model would change
 

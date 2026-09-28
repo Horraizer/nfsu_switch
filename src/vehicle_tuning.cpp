@@ -11,7 +11,7 @@ namespace {
 constexpr float kTwelfth = 0.083333335F;
 
 // 0x006CC7A4, the 0.0f the gear-slot count compares against (0x005763F2).
-constexpr float kZero = 0.0F;
+constexpr float kGearRatioStop = 0.0F;
 
 float read_f32(const unsigned char* p) noexcept {
     std::uint32_t bits = static_cast<std::uint32_t>(p[0]) |
@@ -161,21 +161,32 @@ void encode_strut(const VehicleAxleStrut& strut, unsigned char* base) noexcept {
     write_f32(base + 0x18, strut.droop_limit);
 }
 
-std::uint32_t derived_forward_gears(const std::array<float, kVehicleGearSlots>& ratios) noexcept {
-    // 0x005763E8..0x0057640D: from slot 2 up to slot 7, count the ratios
-    // above 0.0. The loop stops at slot 8 and breaks on the first ratio that
-    // is not above zero.
+} // namespace
+
+std::uint32_t vehicle_derived_forward_gears(
+    const std::array<float, kVehicleGearSlots>& ratios) noexcept {
+    // 0x005763E8..0x0057640D: ecx starts at slot 2, the loop bound is slot
+    // 8, and each turn compares the slot's ratio with the 0.0 at
+    // 0x006CC7A4 and leaves on equality. fcomp reports the result in C3, C2
+    // and C0; 0x005763FA masks C3 and C2 with `test ah, 0x44` and
+    // 0x005763FD takes `jnp` out of the loop. A ratio above zero clears all
+    // three, so the masked byte is 0x00, parity is even and the jump is not
+    // taken; a ratio equal to zero sets C3 alone, so the byte is 0x40,
+    // parity is odd and the jump leaves; a ratio below zero sets C0 alone,
+    // which the mask drops, so the byte is 0x00 again and the slot is
+    // counted. So the stop condition is equality to 0.0, not "not above
+    // 0.0", and a negative ratio - or a NaN, which sets C3 and C2 together
+    // for an even byte - is counted.
     std::uint32_t count = 0;
-    for (std::size_t slot = 2; slot < kVehicleGearSlots; ++slot) {
-        if (!(ratios[slot] > kZero)) {
+    for (std::size_t slot = static_cast<std::size_t>(kVehicleGearFirst);
+         slot < kVehicleGearSlots; ++slot) {
+        if (ratios[slot] == kGearRatioStop) {
             break;
         }
         ++count;
     }
     return count;
 }
-
-} // namespace
 
 bool decode_vehicle_tuning(const unsigned char* record,
                            std::size_t size,
@@ -278,7 +289,7 @@ bool decode_vehicle_tuning(const unsigned char* record,
         VehicleTuningSuspension& susp = out.suspension[level];
         for (std::size_t axle = 0; axle < kVehicleTuningAxles; ++axle) {
             decode_strut(s + kVehicleAxleStride * axle, susp.axles[axle]);
-            susp.bump_limit_copy[axle] =
+            susp.unknown_1c[axle] =
                 read_f32(s + kVehicleAxleStride * axle + 0x1C);
         }
         susp.centre_of_mass_vertical_drop = read_f32(s + 0x40);
@@ -376,7 +387,8 @@ bool check_vehicle_tuning(const VehicleTuning& tuning,
                      "the forward ratios do not fall from first gear up");
             }
         }
-        const std::uint32_t derived = derived_forward_gears(gearbox.gear_ratios);
+        const std::uint32_t derived =
+            vehicle_derived_forward_gears(gearbox.gear_ratios);
         if (derived == 0 || derived > 6) {
             fail(issues, g + 0x20 + 4 * kVehicleGearFirst,
                  "the ratios give no gear, or more than six");
@@ -486,7 +498,7 @@ bool check_vehicle_tuning(const VehicleTuning& tuning,
             check_finite(strut.anti_roll, o + 0x10, "strut anti-roll is not finite");
             check_finite(strut.bump_limit, o + 0x14, "strut bump limit is not finite");
             check_finite(strut.droop_limit, o + 0x18, "strut droop limit is not finite");
-            check_finite(susp.bump_limit_copy[axle], o + 0x1C,
+            check_finite(susp.unknown_1c[axle], o + 0x1C,
                          "strut +0x1C is not finite");
             if (!(strut.spring > 0.0F)) {
                 fail(issues, o + 0x04, "strut spring rate is not above zero");
@@ -630,7 +642,7 @@ void encode_vehicle_tuning(const VehicleTuning& tuning,
         const VehicleTuningSuspension& susp = tuning.suspension[level];
         for (std::size_t axle = 0; axle < kVehicleTuningAxles; ++axle) {
             encode_strut(susp.axles[axle], s + kVehicleAxleStride * axle);
-            write_f32(s + kVehicleAxleStride * axle + 0x1C, susp.bump_limit_copy[axle]);
+            write_f32(s + kVehicleAxleStride * axle + 0x1C, susp.unknown_1c[axle]);
         }
         write_f32(s + 0x40, susp.centre_of_mass_vertical_drop);
         write_f32(s + 0x44, susp.front_wheel_vertical_rise);
@@ -744,7 +756,7 @@ bool apply_vehicle_tuning(const unsigned char* record,
         for (std::size_t axle = 0; axle < kVehicleTuningAxles; ++axle) {
             unsigned char* block = sub(out_record, 0x170 + kVehicleAxleStride * axle);
             encode_strut(susp.axles[axle], block);
-            write_f32(block + 0x1C, susp.bump_limit_copy[axle]);
+            write_f32(block + 0x1C, susp.unknown_1c[axle]);
         }
         // 0x00575A4A..0x00575A70: wheels 0 and 1 take the front rise, 2 and
         // 3 the rear one, each on the wheel record's +0x08.
@@ -888,7 +900,8 @@ bool apply_vehicle_tuning(const unsigned char* record,
         write_u32(out_record + level_entry(kVehicleTuningGearboxOffset,
                                            kVehicleTuningGearboxStride,
                                            levels.gearbox) + 0x18, 0);
-        write_u32(sub(out_record, 0x1C8), derived_forward_gears(gearbox.gear_ratios));
+        write_u32(sub(out_record, 0x1C8),
+                  vehicle_derived_forward_gears(gearbox.gear_ratios));
     }
     if (levels.drive_split_item) {
         write_f32(sub(out_record, 0x1C0), tuning.item.rear_drive_fraction_override);

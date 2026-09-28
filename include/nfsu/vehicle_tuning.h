@@ -128,9 +128,9 @@ struct VehicleTuningGearbox {
     float rear_drive_fraction = 0.0F; // +0x10 -> +0x2D0
     float unknown_2d4 = 0.0F;      // +0x14 -> +0x2D4
     // +0x18. The game does not copy it: 0x005763E1 writes zero over it in
-    // the loaded record and 0x005763F0..0x0057640D counts the gear slots 2
-    // to 7 whose ratio is above 0.0 (0x006CC7A4) into +0x2D8 instead. In
-    // every retail entry the stored value equals that count.
+    // the loaded record and 0x005763F0..0x0057640D derives the count into
+    // +0x2D8 instead, by vehicle_derived_forward_gears below. In every
+    // retail entry the stored value equals that count.
     std::uint32_t stored_forward_gears = 0;
     float unknown_2dc = 0.0F;      // +0x1C -> +0x2DC
     // +0x20 + 4 * slot -> +0x2E0: reverse, neutral, 1st .. 6th.
@@ -198,11 +198,18 @@ struct VehicleTuningGrip {
 // the three deltas after them lower the car. +0x4C of each entry is zero in
 // all 35 retail records.
 struct VehicleTuningSuspension {
-    // Each block's eighth float, +0x1C, is not a field of
-    // VehicleAxleStrut; it equals bump_limit in every stock block and in
-    // every entry of this table, and no reader of it was traced.
+    // Each block's eighth float, +0x1C, is not a field of VehicleAxleStrut
+    // and is unknown: no reader of it was traced, and it is not a copy of
+    // any neighbour. It equals the block's bump_limit at +0x14 in 21 of the
+    // 35 records' stock blocks and in 139 of this table's 210 blocks, and
+    // differs in the rest - the Golf's stock rear block holds 0.15 at +0x14
+    // and 0.05 at +0x1C. The 240SX is one of the records where the two
+    // agree, so a fixture built from it alone cannot tell them apart;
+    // nfsu_vehicle_tuning_tests (test_strut_unknown_1c) gives them different
+    // values, and `nfsu_probe vehicle-tuning` prints how many of each
+    // record's six blocks agree.
     std::array<VehicleAxleStrut, kVehicleTuningAxles> axles{};
-    std::array<float, kVehicleTuningAxles> bump_limit_copy{};
+    std::array<float, kVehicleTuningAxles> unknown_1c{};
     // +0x40: subtracted from the centre of mass's vertical component,
     // +0x118 (0x00575A76..0x00575A7C).
     float centre_of_mass_vertical_drop = 0.0F;
@@ -310,9 +317,24 @@ bool decode_vehicle_tuning(const unsigned char* record,
                            VehicleTuning& out,
                            std::vector<VehicleTuningIssue>& issues);
 
-// The same checks on a table built in memory.
+// The same checks on a table built in memory, except the 45 reserved words:
+// they are not fields of VehicleTuning, so only decode_vehicle_tuning sees
+// them.
 bool check_vehicle_tuning(const VehicleTuning& tuning,
                           std::vector<VehicleTuningIssue>& issues);
+
+// The forward gear count of one gearbox entry, as 0x005763E8..0x0057640D
+// derives it: walk the gear slots from kVehicleGearFirst upward, counting,
+// and stop at the first ratio that is *equal* to the 0.0 at 0x006CC7A4.
+// 0x005763FA masks C3 and C2 out of the compare's flags and 0x005763FD takes
+// the jump on no parity, which is the equality idiom, so a negative ratio is
+// counted and the walk continues past it, and so is a NaN. The decoder
+// refuses a negative forward ratio before any caller reaches this, so the
+// divergence from a "greater than zero" reading is unreachable through
+// decode_vehicle_tuning or apply_vehicle_tuning; this function is the rule
+// itself, and nfsu_vehicle_tuning_tests pins it directly.
+std::uint32_t vehicle_derived_forward_gears(
+    const std::array<float, kVehicleGearSlots>& ratios) noexcept;
 
 // Writes the tables above into a record image at their offsets and leaves
 // every other byte untouched: the inverse of decode_vehicle_tuning, for

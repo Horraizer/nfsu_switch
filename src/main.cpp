@@ -4467,6 +4467,12 @@ int run_vehicle_tuning(const fs::path& path) {
     std::size_t decoded = 0;
     std::size_t refused = 0;
     bool compared = false;
+    // Round 2 of the review, finding F1: the strut block's eighth float at
+    // +0x1C is not a copy of the bump limit at +0x14. Counting the blocks
+    // where the two do agree, per record and over the file, is what makes a
+    // claim of that shape checkable across every car with one command.
+    std::size_t strut_1c_equal = 0;
+    std::size_t strut_1c_total = 0;
     nfsu::Sha256 all;
     for (const nfsu::CarTypeRecord& record : table.records) {
         std::vector<unsigned char> bytes(nfsu::kVehicleRecordSize);
@@ -4520,9 +4526,23 @@ int run_vehicle_tuning(const fs::path& path) {
                       << '/'
                       << vehicle_fixed(static_cast<double>(suspension.axles[1].spring), 2);
         }
+        std::size_t equal_here = 0;
+        std::size_t total_here = 0;
+        for (const nfsu::VehicleTuningSuspension& suspension : tuning.suspension) {
+            for (std::size_t axle = 0; axle < nfsu::kVehicleTuningAxles; ++axle) {
+                ++total_here;
+                if (suspension.unknown_1c[axle] ==
+                    suspension.axles[axle].bump_limit) {
+                    ++equal_here;
+                }
+            }
+        }
+        strut_1c_equal += equal_here;
+        strut_1c_total += total_here;
         std::cout << " rear-override "
                   << vehicle_fixed(
                          static_cast<double>(tuning.item.rear_drive_fraction_override), 3)
+                  << " strut1c-equal " << equal_here << '/' << total_here
                   << " sha256 "
                   << nfsu::sha256_hex(nfsu::sha256(written.data(), written.size())) << '\n';
         if (record.name == "240SX") {
@@ -4544,6 +4564,7 @@ int run_vehicle_tuning(const fs::path& path) {
               << " refused " << refused << " bytes "
               << table.records.size() *
                      (nfsu::kVehicleTuningEnd - nfsu::kVehicleTuningWeightOffset)
+              << " strut1c-equal " << strut_1c_equal << '/' << strut_1c_total
               << " sha256 " << nfsu::sha256_hex(all.finish()) << '\n';
     if (refused != 0) {
         return 3;

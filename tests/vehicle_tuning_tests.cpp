@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -559,6 +560,200 @@ void test_apply_items_only() {
     }
 }
 
+// Round 2 of the review, finding F1. The strut block's eighth float at
+// +0x1C is not a copy of the bump limit at +0x14: over the retail file the
+// two differ in 71 of the 210 table blocks and in 14 of the 35 records'
+// stock blocks, and the 240SX - the only car this suite's fixture carries -
+// is one of the records where they agree, which is why nothing here caught
+// the claim that they are always equal. This gives the two different values
+// in every block of every level and requires the whole path to carry +0x1C
+// on its own: the decoder, the round trip, the encoder's byte runs and the
+// strut block apply writes at sub +0x18C and +0x1AC.
+void test_strut_unknown_1c() {
+    nfsu::VehicleTuning tuning = nfsu::stock_240sx_tuning();
+    for (std::size_t level = 0; level < nfsu::kVehicleTuningLevels; ++level) {
+        for (std::size_t axle = 0; axle < nfsu::kVehicleTuningAxles; ++axle) {
+            // Distinct from the bump limit, from the droop limit and from
+            // every other block's value, and positive so no bound refuses it.
+            tuning.suspension[level].unknown_1c[axle] =
+                0.0625F + 0.0078125F * static_cast<float>(2 * level + axle);
+            check(tuning.suspension[level].unknown_1c[axle] !=
+                      tuning.suspension[level].axles[axle].bump_limit,
+                  "the fixture's +0x1C equals the bump limit, so it tests nothing");
+        }
+    }
+
+    Record record = stock_record();
+    nfsu::encode_vehicle_tuning(tuning, record.data(), record.size());
+    nfsu::VehicleTuning decoded;
+    std::vector<nfsu::VehicleTuningIssue> issues;
+    check(nfsu::decode_vehicle_tuning(record.data(), record.size(), decoded, issues),
+          "a record whose strut +0x1C differs from its bump limit was refused");
+    check(nfsu::compare_vehicle_tuning(decoded, tuning) == nfsu::kVehicleRecordSize,
+          "the round trip does not carry strut +0x1C independently");
+    for (std::size_t level = 0; level < nfsu::kVehicleTuningLevels; ++level) {
+        const std::size_t entry =
+            nfsu::kVehicleTuningSuspensionBase +
+            nfsu::kVehicleTuningSuspensionStride * (level + 1);
+        for (std::size_t axle = 0; axle < nfsu::kVehicleTuningAxles; ++axle) {
+            const std::size_t block = entry + nfsu::kVehicleAxleStride * axle;
+            check(read_f32(record.data() + block + 0x1C) ==
+                      tuning.suspension[level].unknown_1c[axle],
+                  "the encoder did not write strut +0x1C at level " +
+                      std::to_string(level + 1));
+            check(read_f32(record.data() + block + 0x1C) !=
+                      read_f32(record.data() + block + 0x14),
+                  "the encoded +0x1C and +0x14 are equal at level " +
+                      std::to_string(level + 1));
+        }
+    }
+
+    // And the apply path copies the whole 0x20-byte block, +0x1C included,
+    // over the stock strut blocks at sub +0x170 and +0x190.
+    for (int level = 1; level <= 3; ++level) {
+        nfsu::VehicleUpgradeLevels levels;
+        levels.suspension = level;
+        Record out{};
+        check(nfsu::apply_vehicle_tuning(record.data(), record.size(), levels,
+                                         out.data(), out.size(), issues),
+              "a suspension level of " + std::to_string(level) + " was refused");
+        const unsigned char* sub = out.data() + nfsu::kVehicleSubObjectOffset;
+        for (std::size_t axle = 0; axle < nfsu::kVehicleTuningAxles; ++axle) {
+            const unsigned char* block = sub + 0x170 + nfsu::kVehicleAxleStride * axle;
+            check(read_f32(block + 0x1C) ==
+                      tuning.suspension[static_cast<std::size_t>(level) - 1]
+                          .unknown_1c[axle],
+                  "apply did not carry strut +0x1C at level " +
+                      std::to_string(level));
+            check(read_f32(block + 0x1C) != read_f32(block + 0x14),
+                  "apply made +0x1C equal to the bump limit at level " +
+                      std::to_string(level));
+        }
+    }
+}
+
+// Round 2 of the review, finding F2. The recovered stop condition of
+// 0x005763E8..0x0057640D is equality to the 0.0 at 0x006CC7A4, not "not
+// above 0.0": 0x005763FA masks C3 and C2 out of the compare and 0x005763FD
+// jumps on no parity, so a negative ratio is counted and the walk continues
+// past it. This pins vehicle_derived_forward_gears directly, including that
+// case. The case is unreachable through decode_vehicle_tuning and
+// apply_vehicle_tuning, because check_vehicle_tuning refuses a negative
+// forward ratio first - which test_refusals pins at 0x41C - so what is
+// pinned here is the rule, not any answer the library will return.
+void test_derived_gear_rule() {
+    using Ratios = std::array<float, nfsu::kVehicleGearSlots>;
+    const auto ratios = [](std::initializer_list<float> forward) {
+        Ratios r{};
+        r[nfsu::kVehicleGearReverse] = -3.5F;
+        r[nfsu::kVehicleGearNeutral] = 0.0F;
+        std::size_t slot = static_cast<std::size_t>(nfsu::kVehicleGearFirst);
+        for (float value : forward) {
+            r[slot++] = value;
+        }
+        return r;
+    };
+
+    struct Case {
+        const char* what;
+        Ratios r;
+        std::uint32_t gears;
+    };
+    const Case cases[] = {
+        {"one gear", ratios({3.0F}), 1},
+        {"five gears", ratios({3.3F, 1.9F, 1.3F, 1.0F, 0.9F}), 5},
+        {"six gears", ratios({3.3F, 1.9F, 1.3F, 1.1F, 0.9F, 0.8F}), 6},
+        // The equality stop: the zero ends the walk and the ratios after it
+        // are not counted, even a positive one.
+        {"a zero before a positive ratio", ratios({3.0F, 2.0F, 0.0F, 1.0F}), 2},
+        // The masked C0: a negative ratio is counted and the walk goes on,
+        // which a "greater than zero" reading would get wrong.
+        {"a negative ratio in the middle", ratios({3.0F, -1.0F, 2.0F}), 3},
+        {"a negative ratio first", ratios({-1.0F, 2.0F}), 2},
+        // Unordered sets C3 and C2 together, an even byte, so a NaN is
+        // counted too.
+        {"a NaN ratio", ratios({3.0F, std::nanf(""), 2.0F}), 3},
+        // No forward ratio at all: the first slot is the stop.
+        {"no forward ratio", ratios({}), 0},
+        // Every slot filled: the walk ends at the loop bound, slot 8.
+        {"all six slots filled", ratios({6.0F, 5.0F, 4.0F, 3.0F, 2.0F, 1.0F}), 6},
+    };
+    for (const Case& c : cases) {
+        const std::uint32_t got = nfsu::vehicle_derived_forward_gears(c.r);
+        check(got == c.gears,
+              std::string("the derived gear count for ") + c.what + " is " +
+                  std::to_string(got) + ", not " + std::to_string(c.gears));
+    }
+
+    // A "greater than zero" reading gives a different answer on the two
+    // negative cases, so this test would fail if the rule were restated that
+    // way; that is what it exists to stop.
+    const Ratios negative = ratios({3.0F, -1.0F, 2.0F});
+    std::uint32_t above_zero = 0;
+    for (std::size_t slot = static_cast<std::size_t>(nfsu::kVehicleGearFirst);
+         slot < nfsu::kVehicleGearSlots; ++slot) {
+        if (!(negative[slot] > 0.0F)) {
+            break;
+        }
+        ++above_zero;
+    }
+    check(above_zero == 1 && nfsu::vehicle_derived_forward_gears(negative) == 3,
+          "the two readings of the stop condition no longer disagree, so this "
+          "test pins nothing");
+}
+
+// Round 2 of the review, note N4. The 240SX figures docs/VEHICLE_TUNING.md
+// used to quote for the engine tables belong in a test rather than in the
+// document, because stock_240sx_tuning() and stock_240sx_handling() hold the
+// values they are computed from. What the document keeps is the shape: the
+// ratio is this car's, not the table's.
+void test_engine_table_ratios() {
+    const nfsu::VehicleTuning tuning = nfsu::stock_240sx_tuning();
+    const nfsu::VehicleHandling stock = nfsu::stock_240sx_handling();
+    const double fractions[nfsu::kVehicleTuningLevels] = {0.085, 0.17, 0.25};
+    for (std::size_t level = 0; level < nfsu::kVehicleTuningLevels; ++level) {
+        for (std::size_t point = 0; point < nfsu::kVehicleTorquePoints; ++point) {
+            const double ratio =
+                static_cast<double>(tuning.engine_a[level].torque_delta[point]) /
+                static_cast<double>(stock.torque[point]);
+            check(std::fabs(ratio - fractions[level]) <= 1e-7,
+                  "the 240SX engine table level " + std::to_string(level + 1) +
+                      " torque delta at point " + std::to_string(point) +
+                      " is " + num(ratio) + " of stock, not " +
+                      num(fractions[level]));
+            check(tuning.engine_b[level].torque_delta[point] ==
+                      tuning.engine_a[level].torque_delta[point],
+                  "the two engine tables' torque deltas differ at level " +
+                      std::to_string(level + 1));
+        }
+    }
+    // The engine braking deltas do not follow that ratio even on this car,
+    // which is why the document does not claim they do.
+    const double brake[nfsu::kVehicleEngineBrakePoints] = {0.25, 2.5 / 9.0, 0.25 / 1.3};
+    bool all_quarter = true;
+    for (std::size_t point = 0; point < nfsu::kVehicleEngineBrakePoints; ++point) {
+        const double ratio =
+            static_cast<double>(tuning.engine_a[2].engine_brake_delta[point]) /
+            static_cast<double>(stock.engine_brake[point]);
+        check(std::fabs(ratio - brake[point]) <= 1e-6,
+              "the 240SX level 3 engine braking delta at point " +
+                  std::to_string(point) + " is " + num(ratio) + " of stock");
+        if (std::fabs(ratio - 0.25) > 1e-6) {
+            all_quarter = false;
+        }
+    }
+    check(!all_quarter,
+          "the engine braking deltas are all a quarter of stock after all, so "
+          "the document's distinction between them and the torque deltas is empty");
+    // Table B raises the rev limits and table A does not, on this car.
+    check(tuning.engine_a[2].redline_rpm_delta == 0.0F &&
+              tuning.engine_a[2].max_rpm_delta == 0.0F,
+          "engine table A raises the rev limits");
+    check(tuning.engine_b[2].redline_rpm_delta > 0.0F &&
+              tuning.engine_b[2].max_rpm_delta > 0.0F,
+          "engine table B does not raise the rev limits");
+}
+
 void test_level_gate() {
     const Record record = stock_record();
     Record out{};
@@ -652,6 +847,9 @@ int main() {
     test_apply_nothing();
     test_apply_levels();
     test_apply_items_only();
+    test_strut_unknown_1c();
+    test_derived_gear_rule();
+    test_engine_table_ratios();
     test_level_gate();
     test_gear_count_rule();
     if (g_failures != 0) {
