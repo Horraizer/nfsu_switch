@@ -2,6 +2,7 @@
 #include "nfsu/posix_file_system.h"
 #include "nfsu/platform_fakes.h"
 #include "nfsu/heap_usage.h"
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -65,7 +66,26 @@ int main(int argc, char** argv) {
         return fail(14, "slice loader connects parsing checkpoints to its observer");
     std::cout << "sections " << slice.sections << " path " << slice.path.size()
               << " CPU " << slice.streaming_bytes << " textures " << slice.texture_bytes
-              << " collision " << slice.contacts.memory.resident_bytes << '\n';
+              << " collision " << slice.contacts.memory.resident_bytes
+              << " spillover " << slice.texture_spillover_sections
+              << " spillover-bytes " << slice.texture_spillover_bytes
+              << " unresolved " << slice.scene.region.unresolved_hashes.size() << '\n';
+    if (slice.texture_spillover_sections != 19 ||
+        slice.texture_spillover_bytes != 3512968 ||
+        slice.scene.region.unresolved_hashes.size() != 2)
+        return fail(15, "event-1 spillover resolves 46 of 48 texture hashes");
+    for (const std::uint32_t hash : {0x3394FE62U, 0x008A6835U}) {
+        const auto found = std::find_if(slice.scene.region.textures.begin(),
+                                        slice.scene.region.textures.end(),
+            [hash](const RenderTexture& texture) {
+                return texture.usable() && texture.claims_hash(hash);
+            });
+        if (found == slice.scene.region.textures.end())
+            return fail(16, "GLOBALB P8 track texture did not decode");
+        for (const auto& draw : slice.scene.region.draws)
+            if (draw.texture_hash == hash && draw.binding != BindingKind::resolved)
+                return fail(17, "GLOBALB P8 track draw still uses fallback");
+    }
     const bool full = argc == 3 && std::string(argv[2]) == "--full";
     if (argc > 2 && !full) return fail(10, "unknown track slice test argument");
     std::size_t hits = 0, max_draws = 0, frames = 0;

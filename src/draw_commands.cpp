@@ -84,21 +84,27 @@ bool pipeline(RecordedDraw& draw, bool track, const RenderTexture* texture,
     }
     bool alpha = false;
     RenderBlendMode blend = RenderBlendMode::disabled;
-    if (!track && texture && options.material_state == MaterialStateMode::retail) {
+    if (texture && options.material_state == MaterialStateMode::retail) {
         alpha = render_alpha_test_enabled(texture->alpha_test_mode);
         blend = render_blend_mode_of(texture->alpha_blend_mode);
-        const auto gates = material_coefficient_gates(flags, options.coefficients.environment_enabled);
-        const auto& c = options.coefficients;
-        draw.material.alpha[0] = gates.diffuse ? static_cast<float>(c.alpha_min) : 0;
-        draw.material.alpha[1] = gates.diffuse ? static_cast<float>(c.alpha_range) : 0;
-        draw.material.alpha[2] = gates.diffuse ? 0.0F : 1.0F;
-        if (gates.diffuse && gates.environment) {
-            for (std::size_t i = 0; i < 3; ++i) {
-                draw.material.environment_min[i] = static_cast<float>(c.environment_min[i]);
-                draw.material.environment_range[i] = static_cast<float>(c.environment_range[i]);
-                draw.material.environment_color[i] = c.environment_color[i];
+        if (track) {
+            // The world-effect diffuse alpha coefficient is not decoded.
+            // Match the CPU reference's explicitly neutral approximation.
+            draw.material.alpha[0] = 1.0F;
+        } else {
+            const auto gates = material_coefficient_gates(flags, options.coefficients.environment_enabled);
+            const auto& c = options.coefficients;
+            draw.material.alpha[0] = gates.diffuse ? static_cast<float>(c.alpha_min) : 0;
+            draw.material.alpha[1] = gates.diffuse ? static_cast<float>(c.alpha_range) : 0;
+            draw.material.alpha[2] = gates.diffuse ? 0.0F : 1.0F;
+            if (gates.diffuse && gates.environment) {
+                for (std::size_t i = 0; i < 3; ++i) {
+                    draw.material.environment_min[i] = static_cast<float>(c.environment_min[i]);
+                    draw.material.environment_range[i] = static_cast<float>(c.environment_range[i]);
+                    draw.material.environment_color[i] = c.environment_color[i];
+                }
+                draw.material.environment_color[3] = static_cast<float>(c.environment_power);
             }
-            draw.material.environment_color[3] = static_cast<float>(c.environment_power);
         }
     }
     const char* variant = blend == RenderBlendMode::source_over
@@ -375,10 +381,6 @@ bool record_track_commands(const PreparedTrackScene& scene, const TrackDrawList&
                            RecordedCommands& commands, std::string& error) {
     commands = RecordedCommands{};
     error.clear();
-    if (options.material_state != MaterialStateMode::off) {
-        error = "the retail material state is proven for the car draw path only";
-        return false;
-    }
     try {
         RecordedCommands out;
         if (!frame_state(options, limits, out, error) ||

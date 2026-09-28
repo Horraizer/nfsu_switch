@@ -158,13 +158,15 @@ bool decode_sources(
                     std::size_t unused = 0;
                     std::uint64_t top = 0;
                     std::string problem;
+                    P8Palette palette{};
+                    P8Palette* selected_palette = record.format == PixelFormat::p8 ? &palette : nullptr;
                     if (!texture_payload(bytes.data(), bytes.size(), record, payload,
-                                         unused, problem) ||
+                                         unused, problem, selected_palette) ||
                         !level_size(record.format, record.width, record.height, top) ||
                         top > payload.size() ||
                         (!compressed && (!decode_level(record.format, record.width, record.height,
                                       payload.data(), static_cast<std::size_t>(top),
-                                      texture.rgba, problem) ||
+                                      texture.rgba, problem, selected_palette) ||
                         texture.rgba.size() != retained))) {
                         texture.rgba.clear();
                         texture.rgba.shrink_to_fit();

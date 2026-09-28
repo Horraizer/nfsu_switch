@@ -4,6 +4,7 @@
 #include <cstring>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <stdexcept>
 
 namespace nfsu {
@@ -110,7 +111,8 @@ std::uint64_t RaceGpuScene::cache_bytes() const {
         combined_uploads_.resources.capacity()*sizeof(UploadResource) +
         car_templates_.owning_draws().capacity()*sizeof(RecordedDraw) +
         (mesh_first_.capacity()+section_first_.capacity())*sizeof(std::size_t) +
-        mesh_groups_.capacity()*sizeof(std::uint32_t) + selection_.capacity()*sizeof(TrackDrawListEntry) +
+        mesh_groups_.capacity()*sizeof(std::uint32_t) + selection_.capacity()*sizeof(SelectedTrackDraw) +
+        retail_groups_.capacity()*sizeof(RetailGroup) + bucket_first_.capacity()*sizeof(std::size_t) +
         track_placements_.capacity()*sizeof(DrawInstanceUniform);
     for (const auto& r : combined_uploads_.resources) bytes += r.name.capacity()+1;
     for (const auto& d : car_templates_.owning_draws()) bytes += d.name.capacity()+1;
@@ -126,8 +128,11 @@ bool RaceGpuScene::prepare_templates(std::string& error) {
         witnesses.push_back(item);
     }
     TrackDrawList list;
-    const RenderOptions options = race_render_options();
-    if (!build_track_draw_list(track_.scene,witnesses,{},list,error) ||
+    RenderOptions options = race_render_options();
+    options.material_state = MaterialStateMode::retail;
+    TrackDrawListOptions list_options;
+    list_options.order = TrackDrawOrder::retail_bucket;
+    if (!build_track_draw_list(track_.scene,witnesses,list_options,list,error) ||
         !record_track_commands(track_.scene,list,options,{},track_templates_,error) ||
         !validate_recorded_commands(track_templates_,error)) return false;
     template_of_group_.assign(track_.scene.region.draws.size(),kNoHandle);
@@ -147,6 +152,22 @@ bool RaceGpuScene::prepare_frame_cache(std::string& error) {
         const auto& draw = scene.region.draws[i];
         if (draw.drawable) mesh_groups_.at(cursor.at(draw.mesh)++) = static_cast<std::uint32_t>(i);
     }
+    // Match build_track_draw_list's retail layer / first-visible-texture
+    // buckets. Resolve keys once; only their first-use rank changes per view.
+    std::map<std::pair<std::size_t, std::uint32_t>, std::size_t> buckets;
+    retail_groups_.resize(scene.region.draws.size());
+    for (std::size_t i = 0; i < scene.region.draws.size(); ++i) {
+        const auto& draw = scene.region.draws[i];
+        auto& group = retail_groups_[i];
+        std::pair<std::size_t, std::uint32_t> key{kNoHandle, draw.texture_hash};
+        if (draw.binding == BindingKind::resolved) {
+            const auto& texture = scene.region.textures.at(draw.texture);
+            group.layer = static_cast<unsigned char>(render_draw_layer(texture.layer_group, texture.layer_order));
+            key = {draw.texture, 0};
+        }
+        group.bucket = buckets.emplace(key, buckets.size()).first->second;
+    }
+    bucket_first_.resize(buckets.size(), kNoHandle);
     section_first_.assign(track_.objects.sections.size(), kNoHandle);
     for (const auto& section : scene.sections) section_first_.at(section.section_index) = section.first_handle;
     track_placements_.resize(scene.instances.size());
@@ -187,6 +208,8 @@ RecordedDrawView RaceGpuScene::selected_draw(std::size_t i) const {
 bool RaceGpuScene::select_track(const TrackCullReport& visible, RaceGpuFrame& out,
                                std::size_t& entries, std::string& error) {
     selection_.clear(); entries = 0; out.unplaced = 0; out.triangles = 0;
+    std::fill(bucket_first_.begin(), bucket_first_.end(), kNoHandle);
+    std::size_t next_bucket = 0;
     const auto& scene = track_.scene;
     for (const auto& item : visible.visible) {
         if (item.section_index >= section_first_.size() ||
@@ -209,6 +232,10 @@ bool RaceGpuScene::select_track(const TrackCullReport& visible, RaceGpuFrame& ou
         for (auto k = first; k < last; ++k) {
             const auto group = mesh_groups_[k];
             if (group >= template_of_group_.size()) { error = "prepared group is out of range"; return false; }
+            auto& first_use = bucket_first_.at(retail_groups_.at(group).bucket);
+            // Empty groups influence first use in the reference draw list,
+            // even though record_track_commands emits no draw for them.
+            if (first_use == kNoHandle) first_use = next_bucket++;
             const auto index = template_of_group_[group];
             if (index == kNoHandle) {
                 if (!scene.region.draws[group].index_count) continue;
@@ -217,10 +244,20 @@ bool RaceGpuScene::select_track(const TrackCullReport& visible, RaceGpuFrame& ou
             if (index >= track_templates_.owning_draws().size() || selection_.size() >= kTrackSliceDrawLimit) {
                 error = "prepared draw capacity exceeded"; return false;
             }
-            selection_.push_back({static_cast<std::uint32_t>(handle), group});
+            selection_.push_back({static_cast<std::uint32_t>(handle), group, selection_.size()});
             out.triangles += track_templates_.owning_draws()[index].index_count/3;
         }
     }
+    // The ordinal makes equal bucket keys stable without stable_sort's
+    // temporary allocation. Selection capacity is reserved once at load.
+    std::sort(selection_.begin(), selection_.end(), [this](const SelectedTrackDraw& a, const SelectedTrackDraw& b) {
+        const auto& ga = retail_groups_.at(a.draw);
+        const auto& gb = retail_groups_.at(b.draw);
+        if (ga.layer != gb.layer) return ga.layer < gb.layer;
+        const auto fa = bucket_first_.at(ga.bucket), fb = bucket_first_.at(gb.bucket);
+        if (fa != fb) return fa < fb;
+        return a.ordinal < b.ordinal;
+    });
     return true;
 }
 bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::string& error, RaceFrameProfile* profile, bool reference, TimingService* timer) {
@@ -292,13 +329,16 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         if (!visible.ok() || !visible.policy_held) { error = "race visibility policy degraded"; return false; }
         stage(&RaceFrameProfile::cull_ms);
         TrackDrawList list;
-        if (!build_track_draw_list(track_.scene, visible, {}, list, error)) return false;
+        TrackDrawListOptions list_options;
+        list_options.order = TrackDrawOrder::retail_bucket;
+        if (!build_track_draw_list(track_.scene, visible, list_options, list, error)) return false;
         stage(&RaceFrameProfile::list_ms);
         RecordedCommands car_commands;
         if (!record_car_commands(car_, options, {}, skin_source_, car_commands, error)) return false;
         stage(&RaceFrameProfile::car_ms);
         if (list.entries.size() + car_commands.owning_draws().size() > kTrackSliceDrawLimit) continue;
         RecordedCommands track_commands;
+        options.material_state = MaterialStateMode::retail;
         if (!record_track_commands(track_.scene, list, options, {}, track_commands, error)) return false;
         stage(&RaceFrameProfile::track_ms);
         RaceGpuFrame result;

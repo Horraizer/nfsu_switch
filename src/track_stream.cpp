@@ -599,6 +599,47 @@ bool select_track_stream_sections(
     return true;
 }
 
+bool select_track_texture_spillover_1003(
+    const TrackStreamTable& table,
+    const std::vector<std::size_t>& resident,
+    TrackStreamSelection& selection,
+    std::string& error) {
+    selection = TrackStreamSelection{};
+    selection.track = 1003;
+    selection.set = TrackStreamSet::stream;
+    if (!table.valid) {
+        error = "the streaming table is not valid";
+        return false;
+    }
+    try {
+        std::vector<bool> present(table.records.size(), false);
+        for (const std::size_t index : resident) {
+            if (index >= present.size()) {
+                error = "resident texture section index is outside the table";
+                return false;
+            }
+            present[index] = true;
+        }
+        for (std::size_t i = 0; i < table.records.size(); ++i) {
+            const TrackStreamRecord& record = table.records[i];
+            if (present[i] || record.file_index != kTrackStreamFileStream ||
+                record.name.size() < 2 || record.name[0] != 'Y' ||
+                !std::all_of(record.name.begin() + 1, record.name.end(),
+                             [](char ch) { return ch >= '0' && ch <= '9'; })) {
+                continue;
+            }
+            selection.records.push_back(i);
+            selection.reasons.push_back(TrackStreamReason::stream_bound);
+        }
+    } catch (const std::bad_alloc&) {
+        selection = TrackStreamSelection{};
+        error = "out of memory while selecting texture spillover sections";
+        return false;
+    }
+    error.clear();
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // Loading
 // ---------------------------------------------------------------------------

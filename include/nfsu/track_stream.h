@@ -262,6 +262,16 @@ bool select_track_stream_sections(
     TrackStreamSelection& selection,
     std::string& error);
 
+// Approximation for event 1: read the nonresident Y-numbered texture
+// sections of STREAML1RA to resolve geometry hashes absent from the
+// recovered permanent set. These are display sources only, never residency
+// requests. The caller keeps them separate from simulation telemetry.
+bool select_track_texture_spillover_1003(
+    const TrackStreamTable& table,
+    const std::vector<std::size_t>& resident,
+    TrackStreamSelection& selection,
+    std::string& error);
+
 // ---------------------------------------------------------------------------
 // Loading the selected sections
 // ---------------------------------------------------------------------------

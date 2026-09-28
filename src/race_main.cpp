@@ -5,8 +5,10 @@
 #include "nfsu/stock_frame.h"
 #include "nfsu/screen_text.h"
 #include "nfsu/race_window.h"
+#include "nfsu/race_audio.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -65,8 +67,10 @@ public:
     TrackStreamFiles files;
     const TrackStreamTable& table;
     std::map<std::size_t,std::unique_ptr<TrackStreamLoad>> sections;
-    std::vector<unsigned char> texture_bytes;
-    TexturePackSet texture_packs;
+    TrackStreamLoad texture_spillover;
+    bool texture_spillover_ready = false;
+    std::array<std::vector<unsigned char>,3> texture_bytes;
+    std::array<TexturePackSet,3> texture_packs;
     RenderTextureSet textures;
     PreparedTrackScene track;
     TrackDrawList list;
@@ -82,8 +86,12 @@ public:
         require(read_stock_frame_inputs(root,car_inputs),"cannot read stock car inputs");
         require(prepare_stock_frame(car_inputs,stock_240sx_request(),stock_240sx_skin(),car,error),error);
         base = car.scene.instances;
-        texture_packs = load_texture_pack_set(texture,texture_bytes);
-        require(texture_packs.complete,"track texture file is incomplete");
+        const std::array<fs::path,3> paths = {
+            texture, root/"Global/INGAMEB.BUN", root/"Global/GLOBALB.BUN"};
+        for (std::size_t i=0;i<paths.size();++i) {
+            texture_packs[i] = load_texture_pack_set(paths[i],texture_bytes[i]);
+            require(texture_packs[i].complete,"track texture source is incomplete: "+paths[i].generic_string());
+        }
     }
     void apply(const TrackResidencyStep& step) {
         if (step.loads.empty() && step.releases.empty()) return;
@@ -120,10 +128,34 @@ public:
             track_stream_texture_sources(*entry.second,&wanted,part,owners);
             sources.insert(sources.end(),part.begin(),part.end());
         }
-        RenderTextureSource source; source.bytes = &texture_bytes;
-        for (const auto& pack : texture_packs.packs) source.packs.push_back(&pack);
-        source.complete = texture_packs.complete; source.wanted = &wanted;
-        sources.push_back(source);
+        if (!texture_spillover_ready) {
+            std::vector<std::size_t> resident;
+            for (const auto& entry : sections) resident.push_back(entry.first);
+            TrackStreamSelection selected;
+            require(select_track_texture_spillover_1003(table,resident,selected,error),error);
+            TrackStreamLoadLimits limits;
+            limits.max_total_bytes = kStreamingRegionBudgetPlaceholder;
+            require(load_track_stream_sections(table,selected,files,limits,
+                                               texture_spillover,error),error);
+            require(texture_spillover.ok(),"event-1 texture spillover parse failed");
+            for (const auto& section : texture_spillover.sections)
+                require(section.loaded && section.geometry_roots==0 &&
+                        section.scenery_sections==0 && section.texture_packs!=0,
+                        "event-1 texture spillover section is not texture-only");
+            texture_spillover_ready = true;
+        }
+        std::vector<RenderTextureSource> extra_sources;
+        std::vector<std::size_t> extra_owners;
+        track_stream_texture_sources(texture_spillover,&wanted,extra_sources,extra_owners);
+        for (std::size_t i=0;i<extra_sources.size();++i)
+            if (sections.count(texture_spillover.sections[extra_owners[i]].record)==0)
+                sources.push_back(extra_sources[i]);
+        for (std::size_t i=0;i<texture_packs.size();++i) {
+            RenderTextureSource source; source.bytes = &texture_bytes[i];
+            for (const auto& pack : texture_packs[i].packs) source.packs.push_back(&pack);
+            source.complete = texture_packs[i].complete; source.wanted = &wanted;
+            sources.push_back(std::move(source));
+        }
         RenderTextureLimits limits; limits.max_total_bytes = 512ULL*1024*1024;
         require(decode_render_texture_sources(sources,limits,textures,error),error);
         TrackSceneOptions options; options.region.max_texture_bytes = limits.max_total_bytes;
@@ -133,7 +165,7 @@ public:
             TrackVisibleInstance item; item.section_index=section.section_index; item.instance_index=k;
             visible.push_back(item);
         }
-        TrackDrawListOptions order; order.order=TrackDrawOrder::material_group;
+        TrackDrawListOptions order; order.order=TrackDrawOrder::retail_bucket;
         require(build_track_draw_list(track,visible,order,list,error),error);
         dirty=false; prepare_cost.add(begin);
     }
@@ -142,7 +174,9 @@ public:
         RenderOptions options; options.width=640; options.height=360;
         require(drive_render_camera(session.camera(),ChaseFovMode::vertical_4_3,640,360,options.camera,error),error);
         Frame background; RenderStats stats; TrackRenderStats track_stats;
-        require(render_track_draw_list(track,list,options,{},background,stats,track_stats,error),error);
+        RenderOptions track_options = options;
+        track_options.material_state = MaterialStateMode::retail;
+        require(render_track_draw_list(track,list,track_options,{},background,stats,track_stats,error),error);
         require(drive_place_instances(base,session.car(),session.spec(),car.scene.instances,
                                       &session.animation()),"car placement failed");
         require(render_stock_frame(car,options,error),error);
@@ -163,7 +197,8 @@ int run(int argc, char** argv) {
         const std::string a=argv[i];
         if (a=="--help") {
             std::cout << "nfsu_race --root RETAIL (--input RECORDING | --generate RECORDING | --live)\n"
-                         "  [--out NEW_DIRECTORY --frames 180,600,6000,22000,40000]\n";
+                         "  [--out NEW_DIRECTORY --frames 180,600,6000,22000,40000]\n"
+                         "  live mode plays retail race audio when the device and banks are available\n";
             return 0;
         }
         if (a=="--live") { live=true; continue; }
@@ -199,7 +234,7 @@ int run(int argc, char** argv) {
     }
     std::vector<unsigned char> image;
     const auto events=load_race_event_table(root/"Frontend/FRONTB.LZC",image);
-    const auto tracks=load_track_info_table(root/"Global/GLOBALB.LZC",image);
+    const auto tracks=load_track_info_table(root/"Global/GLOBALB.BUN",image);
     const auto* event=find_race_event(events,1);
     require(event && event->races.size()==1,"event 1 missing or not one race");
     const auto& slot=event->races[0]; const auto* info=find_track_info(tracks,slot.track);
@@ -224,6 +259,12 @@ int run(int argc, char** argv) {
         sequence.update(line.data(),line.size());
     }
     RaceSession session(course); require(session.start(error),error);
+    audio::RaceAudioService sound;
+    if (live && !smoke) {
+        std::string diagnostic;
+        sound.start(root, diagnostic);
+        std::cout << "audio: " << diagnostic << '\n';
+    }
     RaceRouteDriver driver(RaceDrivingLine::event1_forward); std::vector<RaceInputRun> recording;
     std::ofstream states, trajectory;
     if (!output.empty()) {
@@ -238,6 +279,7 @@ int run(int argc, char** argv) {
     std::size_t run_index=0,run_tick=0; std::uint64_t resets=0;
     auto tick=[&](const GamepadFrame& pad) {
         auto begin=Clock::now(); require(session.advance(pad,error),error); simulation.add(begin);
+        if (live && !smoke) sound.on_tick(audio::race_audio_snapshot(session));
         resets=session.telemetry().resets;
         if (trajectory.is_open()) for (const auto& t : session.physics_telemetry()) {
             if (!t.step) continue; // Countdown holds the pose without physics.
@@ -295,6 +337,7 @@ int run(int argc, char** argv) {
     }
     if (states.is_open()) { states.flush(); require(bool(states),"state hash write failed"); }
     if (trajectory.is_open()) { trajectory.flush(); require(bool(trajectory),"trajectory write failed"); }
+    sound.stop();
     const auto& result=session.timing().racers[0];
     std::cout << "event 1 track 1003 laps " << result.highest_lap << " outcome " << race_outcome_name(session.timing().outcome)
               << " steps " << session.timing().step << " resets " << resets << '\n';
