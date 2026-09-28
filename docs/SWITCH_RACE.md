@@ -177,7 +177,7 @@ uses at most eight data rows of 80 ASCII columns. The replay page splits both
 hashes into labeled halves. The application cannot know the SHA-256 of its
 own NRO, so the coordinator records that hash with the full commit and
 toolchain/deko3d version of its build. If the build tag is a full commit SHA,
-the identity page prints it. CPU core and service clock readings that cannot
+the identity page prints it. CPU, GPU and memory/EMC clock readings that cannot
 be queried are explicitly marked unavailable.
 
 CPU rows give count, mean, p95 bin upper edge and exact maximum. CULL/RECORD
@@ -210,7 +210,8 @@ the same 256 MiB GPU budget. `PERF HEAP` reports load/run high-water and
 arena extent observations, including LOAD HEAP OVER.
 
 The result screen reports the number of measured driving frames, frame-time
-mean, p50/p95/p99 and exact maximum, the count and share over 16.67 ms, the
+mean, p50/p95/p99 and exact maximum, the count and share above the stated
+slow-frame threshold from `RaceFrameStats`, the
 mean of SIM, RES/HASH/LOG, CULL/RECORD, UPDATE, PRESENT CPU and its ACQUIRE,
 FENCE, CMD and SUBMIT components, and maximum CATCH-UP ticks. It excludes
 countdown, paused, first resumed and finish frames. Statistics reset on

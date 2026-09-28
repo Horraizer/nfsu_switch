@@ -153,7 +153,7 @@ void append_frame_stats(std::vector<std::string>& lines, const RaceFrameStats& s
     lines.push_back(format("DRIVING FRAMES ONLY: no countdown, pause or finish; reset on unpause (%u)",
         unpause_resets));
     if (!stats.count()) {
-        lines.push_back("FRAMES 0 | MEAN/P50/P95/P99/MAX -- | OVER 16.67 ms -- | CATCH-UP MAX --");
+        lines.push_back("FRAMES 0 | MEAN/P50/P95/P99/MAX -- | OVER 25.00 ms -- | CATCH-UP MAX --");
         lines.push_back("MEAN STAGES -- (no measured driving frame yet)");
         return;
     }
@@ -162,7 +162,7 @@ void append_frame_stats(std::vector<std::string>& lines, const RaceFrameStats& s
         p99 = percentile_text(stats,99);
     lines.push_back(format("FRAMES %llu | MEAN %.2f | P50 %s | P95 %s | P99 %s | MAX %.2f ms",
         (unsigned long long)stats.count(),mean.frame_ms,p50.c_str(),p95.c_str(),p99.c_str(),stats.max_ms()));
-    lines.push_back(format("OVER 16.67 ms %llu/%llu (%.2f%%) | CATCH-UP MAX %u | percentile bins 0.25 ms",
+    lines.push_back(format("OVER 25.00 ms %llu/%llu (%.2f%%) | CATCH-UP MAX %u | percentile bins 0.25 ms",
         (unsigned long long)stats.over_budget(),(unsigned long long)stats.count(),
         100.0*stats.over_budget()/stats.count(),stats.catch_up_max()));
     lines.push_back(format("MEAN ms SIM %.2f | RES/HASH/LOG %.2f | CULL/RECORD %.2f | UPDATE %.2f",
@@ -254,7 +254,7 @@ ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
             format("MEAN %.2f | P50 %s | P95 %s | P99 %s ms",mean.frame_ms,
                 percentile_text(frames,50).c_str(),percentile_text(frames,95).c_str(),
                 percentile_text(frames,99).c_str()),
-            format("MAX %.2f ms | OVER 16.67 %llu/%llu (%.2f%%)",frames.max_ms(),
+            format("MAX %.2f ms | OVER 25.00 %llu/%llu (%.2f%%)",frames.max_ms(),
                 (unsigned long long)frames.over_budget(),(unsigned long long)frames.count(),
                 100.0*frames.over_budget()/frames.count()),
             format("WORST TICK %llu | TRACK/CAR DRAWS %u/%u",
@@ -263,7 +263,7 @@ ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
                 (unsigned long long)worst.triangles,(unsigned long long)worst.debt),
             format("CATCH-UP MAX %u | DEBT MAX %llu ticks",context.cpu.catch_up_max(),
                 (unsigned long long)context.cpu.debt_max()),
-            "Percentile upper-edge bins: 0.25 ms; exact maximum retained"
+            "OVER means >25.00 ms (1.5 display periods); percentile bins 0.25 ms"
         });
     } else add_page("ACTIVE FRAMES",{"No active driving frames measured"});
     const auto& cpu = context.cpu;
@@ -567,8 +567,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                 simulation,residency,record,upload));
             lines.push_back(format("DRAW %.2f ms | TRANSFER/COPY %.2f ms (GPU %.2f) | previous HUD/present %.2f ms",
                 draw,transfer,readback,previous_hud));
-            lines.push_back(format("Previous PANEL FRAME %.2f / 16.67 ms %s | debt %llu ticks | load %.0f ms | initial upload %.0f ms",
-                previous_frame,previous_frame>16.6667?"OVER":"WITHIN",(unsigned long long)clock.debt_ticks(),load_ms,initial_upload));
+            lines.push_back(format("Previous PANEL FRAME %.2f ms (>25 ms %s) | debt %llu ticks | load %.0f ms | initial upload %.0f ms",
+                previous_frame,previous_frame>RaceFrameStats::kOverThresholdMs?"OVER":"WITHIN",(unsigned long long)clock.debt_ticks(),load_ms,initial_upload));
             lines.push_back(format("DRAWS %zu track + %zu car | TRIANGLES %llu | far %.2f | visible %zu | unplaced %llu",
                 frame.track_draws,frame.car_draws,(unsigned long long)frame.triangles,frame.far_plane,frame.visible,(unsigned long long)frame.unplaced));
             lines.push_back(format("RESIDENCY %zu sections | CPU stream %llu / 50331648 | persistent payload %llu / 67108864",
@@ -646,8 +646,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                 NFSU_RACE_BUILD_TAG,replay_mode?"REPLAY":"LIVE",paused?"PAUSED":finished?"FINISHED":"RUNNING",
                 (unsigned long long)presented,(unsigned long long)race.session().timing().step,
                 hud[0].c_str(),hud[1].c_str(),hud[2].c_str());
-            std::printf("PERF FRAME %.2f / 16.67 ms %s | SIM %.2f | RES/HASH/LOG %.2f | CULL/RECORD %.2f | UPDATE %.2f | PRESENT CPU %.2f (ACQUIRE %.2f FENCE %.2f CMD %.2f SUBMIT %.2f) | CATCH-UP %u DEBT %llu\n",
-                frame_ms,frame_ms>16.6667?"OVER":"WITHIN",simulation,residency,record,upload,present_cpu,
+            std::printf("PERF FRAME %.2f ms (>25 ms %s) | SIM %.2f | RES/HASH/LOG %.2f | CULL/RECORD %.2f | UPDATE %.2f | PRESENT CPU %.2f (ACQUIRE %.2f FENCE %.2f CMD %.2f SUBMIT %.2f) | CATCH-UP %u DEBT %llu\n",
+                frame_ms,frame_ms>RaceFrameStats::kOverThresholdMs?"OVER":"WITHIN",simulation,residency,record,upload,present_cpu,
                 present.acquire_ms,present.fence_wait_ms,measured.command_ms,present.submit_ms,
                 ticks,(unsigned long long)clock.debt_ticks());
             std::printf("PERF %.1f KM/H gear %d pad %s | DRAWS %zu track + %zu car | TRIANGLES %llu | far %.2f | visible %zu | unplaced %llu | RESIDENCY %zu | GPU %llu / 268435456 | resources %zu\n",

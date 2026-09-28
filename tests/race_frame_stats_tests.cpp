@@ -1,11 +1,28 @@
 #include "nfsu/race_frame_stats.h"
 #include "nfsu/frame_profile_stats.h"
+#include "nfsu/deko_memory_usage.h"
 
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <iostream>
 
 int main() {
+    struct Block {
+        std::uint64_t bytes = 0;
+        explicit operator bool() const { return bytes != 0; }
+        std::uint64_t getSize() {
+            if (!bytes) std::abort();
+            return bytes;
+        }
+    };
+    Block empty;
+    Block allocated{4096};
+    if (nfsu::deko_allocated_block_size(empty) != 0 ||
+        nfsu::deko_allocated_block_size(allocated) != 4096) {
+        std::cerr << "empty deko memory block was queried\n";
+        return 1;
+    }
     nfsu::RaceFrameStats stats;
     if (stats.count() != 0 || stats.mean().frame_ms != 0) return 1;
     for (const double frame : std::array<double,4>{10.0, 16.67, 16.68, 101.0}) {
@@ -27,7 +44,7 @@ int main() {
         stats.add(sample);
     }
     const auto mean = stats.mean();
-    if (stats.count() != 4 || stats.over_budget() != 2 || stats.max_ms() != 101.0 ||
+    if (stats.count() != 4 || stats.over_budget() != 1 || stats.max_ms() != 101.0 ||
         stats.catch_up_max() != 101 || std::abs(mean.frame_ms-36.0875) > 0.00001 ||
         mean.simulation_ms != 2.0 || mean.residency_ms != 3.0 ||
         mean.record_ms != 4.0 || mean.update_ms != 5.0 ||
@@ -42,6 +59,16 @@ int main() {
     if (stats.count() != 0 || stats.over_budget() != 0 || stats.max_ms() != 0 ||
         stats.catch_up_max() != 0 || stats.percentile_bin(50) != nfsu::RaceFrameStats::kOverflowBin) {
         std::cerr << "race frame statistics reset mismatch\n";
+        return 1;
+    }
+    nfsu::RaceFrameStats threshold;
+    for (double ms : {16.68, 17.31, 25.0, 25.01}) {
+        nfsu::RaceFrameSample sample;
+        sample.frame_ms = ms;
+        threshold.add(sample);
+    }
+    if (threshold.count() != 4 || threshold.over_budget() != 1) {
+        std::cerr << "normal refresh jitter counted as a slow frame\n";
         return 1;
     }
     nfsu::RaceFrameSample first_after_pause;

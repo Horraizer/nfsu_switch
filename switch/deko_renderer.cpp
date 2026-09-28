@@ -2,6 +2,7 @@
 #include "nfsu/memory_budget.h"
 #include "nfsu/draw_execution.h"
 #include "nfsu/deko_gpfifo_budget.h"
+#include "nfsu/deko_memory_usage.h"
 
 #include <deko3d.hpp>
 #include <switch.h>
@@ -777,8 +778,10 @@ bool DekoRenderer::update(const RecordedCommands& commands, std::string& error,
 }
 std::uint64_t DekoRenderer::gpu_bytes() const noexcept { return impl_->gpu_bytes; }
 DekoMemoryUsage DekoRenderer::memory_usage() const noexcept {
-    return {impl_->uniforms.getSize(), impl_->static_uniforms.getSize(),
-        impl_->static_command_memory[0].getSize() + impl_->static_command_memory[1].getSize()};
+    return {deko_allocated_block_size(impl_->uniforms),
+        deko_allocated_block_size(impl_->static_uniforms),
+        deko_allocated_block_size(impl_->static_command_memory[0]) +
+            deko_allocated_block_size(impl_->static_command_memory[1])};
 }
 DekoGpfifoUsage DekoRenderer::gpfifo_usage() const noexcept { return impl_->gpfifo_usage; }
 bool DekoRenderer::capture(std::vector<unsigned char>& rgba, double& render_ms,
