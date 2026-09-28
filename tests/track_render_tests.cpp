@@ -1,5 +1,6 @@
 #include "nfsu/geometry.h"
 #include "nfsu/track_render.h"
+#include "nfsu/draw_commands.h"
 
 #include <algorithm>
 #include <array>
@@ -2960,7 +2961,84 @@ void test_framing_refuses_a_non_finite_option() {
 
 } // namespace
 
+void test_sky_background_and_transparency() {
+    using namespace nfsu;
+    auto meshes = fixture_meshes();
+    auto sky = meshes[0];
+    sky.hash = kSkydomeMeshHash; sky.name = "SKYDOME";
+    sky.texture_hashes = {kTexB};
+    for (auto& v : sky.vertices) { v.px *= 2000; v.py *= 2000; v.pz = 1000; }
+    meshes.push_back(sky);
+    auto sections = fixture_sections();
+    sections[0].objects[2].mesh_hash[0] = kSkydomeMeshHash;
+    auto fixture = make_fixture(meshes, sections);
+    auto& scene = fixture.scene;
+    check(scene.sky_mesh == 2 && scene.sky_transform.translation[0] == 6,
+          "sky uses its own first world placement");
+    auto options = small_options();
+    options.sky = true;
+    Frame frame; RenderStats stats; TrackRenderStats track; std::string error;
+    auto empty = list_over(scene, {});
+    check_ok(render_track_draw_list(scene,empty,options,{},frame,stats,track,error),"sky-only frame",error);
+    check(pixel_at(frame,80,60) == std::array<unsigned char,4>{255,120,90,255},
+          "sky ignores world far clip with world.efx modulation");
+    check(frame.ids()[60*160+80] == kNoTriangle && frame.depth()[60*160+80] == 1.0,
+          "sky preserves clear depth and owner");
+    options.sky = false;
+    check_ok(render_track_draw_list(scene,empty,options,{},frame,stats,track,error),"sky opt-out",error);
+    check(pixel_at(frame,80,60) == std::array<unsigned char,4>{10,20,30,255},"disabled sky preserves clear colour");
+    options.sky = true; options.material_state = MaterialStateMode::retail;
+    auto list = list_over(scene,{0});
+    auto& tex = scene.region.textures[scene.region.draws[0].texture];
+    for (std::size_t i=0;i<tex.rgba.size();i+=4) {
+        tex.rgba[i]=0; tex.rgba[i+1]=200; tex.rgba[i+2]=0; tex.rgba[i+3]=0;
+    }
+    tex.alpha_test_mode = 1;
+    check_ok(render_track_draw_list(scene,list,options,{},frame,stats,track,error),"foliage hole",error);
+    check(pixel_at(frame,80,60) == std::array<unsigned char,4>{255,120,90,255},"alpha-test holes expose sky");
+    for (std::size_t i=3;i<tex.rgba.size();i+=4) tex.rgba[i]=255;
+    check_ok(render_track_draw_list(scene,list,options,{},frame,stats,track,error),"opaque foliage",error);
+    check(pixel_at(frame,80,60) == std::array<unsigned char,4>{0,200,0,255},"opaque depth occludes sky");
+    check(frame.depth()[60*160+80] < 1.0,"foliage writes depth");
+    tex.alpha_test_mode = 0; tex.alpha_blend_mode = 1;
+    for (std::size_t i=3;i<tex.rgba.size();i+=4) tex.rgba[i]=128;
+    std::vector<ReferenceDraw> trace;
+    check_ok(render_track_draw_list(scene,list,options,{},frame,stats,track,error,
+        [&](const ReferenceDraw& d){trace.push_back(d);}),"sky behind glass",error);
+    check(pixel_at(frame,80,60) == std::array<unsigned char,4>{127,160,45,255},"glass blends over sky");
+    RecordedCommands commands;
+    check_ok(record_track_commands(scene,list,options,{},commands,error),"record sky and glass",error);
+    check_ok(validate_recorded_commands(commands,error),"validate sky interface",error);
+    check(commands.draw_count()==2 && trace.size()==2,"complete sky and glass trace");
+    if (commands.draw_count()==2 && trace.size()==2) {
+        check(std::string(commands.owning_draws()[0].program->name)=="sky_textured" &&
+              !commands.owning_draws()[0].pipeline.depth_write &&
+              commands.owning_draws()[0].placement.rows[12]==6,
+              "GPU sky state and world translation");
+        check(trace[0].mesh==commands.owning_draws()[0].mesh && trace[1].mesh==commands.owning_draws()[1].mesh,
+              "CPU/GPU sky before first blend");
+    }
+    // A cap with half vertex alpha and half texel alpha is still half
+    // opaque after the recovered factor of two. The unscaled alpha, or
+    // ignoring vertex alpha, produces a different source-over colour.
+    auto& sky_texture = scene.region.textures[scene.region.draws.back().texture];
+    sky_texture.alpha_blend_mode = 1;
+    for (std::size_t i=3;i<sky_texture.rgba.size();i+=4) sky_texture.rgba[i]=128;
+    for (auto& vertex : scene.region.meshes[scene.sky_mesh].vertices) vertex.color[3]=128;
+    check_ok(render_track_draw_list(scene,empty,options,{},frame,stats,track,error),"blended sky cap",error);
+    check(pixel_at(frame,80,60) == std::array<unsigned char,4>{134,71,60,255},"cap uses texture and vertex alpha times two");
+    check_ok(record_track_commands(scene,empty,options,{},commands,error),"record blended cap",error);
+    check(commands.draw_count()==1 && commands.owning_draws()[0].pipeline.blend &&
+          !commands.owning_draws()[0].pipeline.depth_write,"GPU cap blends without depth write");
+    RenderLimits limit; limit.max_submitted_triangles=1;
+    check(!record_track_commands(scene,empty,options,limit,commands,error),"sky counts toward submitted limit");
+    check(!render_track_draw_list(scene,empty,options,limit,frame,stats,track,error),"CPU sky submitted limit");
+    scene.sky_mesh=scene.region.meshes.size();
+    check(!validate_prepared_track_scene(scene,error),"invalid sky handle refused");
+}
+
 int main() {
+    test_sky_background_and_transparency();
     test_fixture_parses();
 
     test_placed_vertex_identity();

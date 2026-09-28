@@ -362,7 +362,7 @@ if(NFSU_BUILD_TESTS)
         tests/track_render_tests.cpp
     )
 
-    target_link_libraries(nfsu_track_render_tests PRIVATE nfsu_track_render)
+    target_link_libraries(nfsu_track_render_tests PRIVATE nfsu_track_render nfsu_draw_commands)
     nfsu_enable_warnings(nfsu_track_render_tests)
     add_test(NAME nfsu_track_render_tests COMMAND nfsu_track_render_tests)
 
@@ -1520,6 +1520,10 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_track_slice_tests PRIVATE nfsu_track_slice nfsu_posix_file_system nfsu_platform_fakes)
     nfsu_enable_warnings(nfsu_track_slice_tests)
     add_test(NAME nfsu_track_slice_tests COMMAND nfsu_track_slice_tests)
+    add_executable(nfsu_sky_fog_retail tests/sky_fog_retail.cpp)
+    target_link_libraries(nfsu_sky_fog_retail PRIVATE nfsu_track_slice nfsu_posix_file_system
+        nfsu_track_render nfsu_stock_frame)
+    nfsu_enable_warnings(nfsu_sky_fog_retail)
 endif()
 
 # Race integration is clock-free; only the desktop executable owns I/O and UI.

@@ -38,6 +38,22 @@ foreach(variable IN ITEMS CHECKER SHADERS)
     endif()
 endforeach()
 
+# TGSI omits the mask for a full vec4. Optional unmatched regex captures
+# must not turn that default into an empty component mask (#184).
+include(${CHECKER})
+string(RANDOM LENGTH 12 ALPHABET "abcdefghijklmnopqrstuvwxyz0123456789" tgsi_token)
+set(tgsi_test "${CMAKE_CURRENT_BINARY_DIR}/nfsu_tgsi_${tgsi_token}.txt")
+file(WRITE "${tgsi_test}" "VERT\nDCL IN[0], GENERIC[1]\nDCL OUT[0], GENERIC[1]\nDCL OUT[1].xy, GENERIC[2]\n")
+_nfsu_sm_read_tgsi("${tgsi_test}" tgsi)
+file(REMOVE "${tgsi_test}")
+list(GET tgsi_ins 0 full_in)
+list(GET tgsi_outs 0 full_out)
+list(GET tgsi_outs 1 partial_out)
+if(NOT tgsi_error STREQUAL "" OR NOT full_in MATCHES "mask=xyzw" OR
+   NOT full_out MATCHES "mask=xyzw" OR NOT partial_out MATCHES "mask=xy[|]")
+    message(FATAL_ERROR "TGSI omitted/explicit component mask regression")
+endif()
+
 # A directory no other run shares: several sessions run ctest at once here.
 string(RANDOM LENGTH 12 ALPHABET "abcdefghijklmnopqrstuvwxyz0123456789" token)
 set(work "${CMAKE_CURRENT_BINARY_DIR}/nfsu_shader_source_guards_${token}")

@@ -59,7 +59,7 @@ struct DekoRenderer::Impl {
     std::array<bool, 2> frame_in_flight{};
     std::array<dk::Image, 2> colors;
     std::array<dk::Image, 2> depths;
-    dk::Shader vertex, textured, fallback;
+    dk::Shader vertex, textured, fallback, sky_vertex, sky_fragment;
     const RecordedCommands* commands = nullptr;
     UploadTable uploaded;
     std::size_t draw_capacity = 0;
@@ -300,7 +300,9 @@ struct DekoRenderer::Impl {
         }
         uniform_live = true;
         write_uniforms(source, 0);
-        if (!shader("placed.vert", DkStage_Vertex, vertex, error) ||
+        if (!shader("sky.vert", DkStage_Vertex, sky_vertex, error) ||
+            !shader("sky.frag", DkStage_Fragment, sky_fragment, error) ||
+            !shader("placed.vert", DkStage_Vertex, vertex, error) ||
             !shader("textured.frag", DkStage_Fragment, textured, error) ||
             !shader("fallback.frag", DkStage_Fragment, fallback, error)) return false;
         dk::ImageLayout color_layout, depth_layout;
@@ -375,7 +377,9 @@ struct DekoRenderer::Impl {
             const auto& draw = view.definition;
             const auto& state = draw.pipeline;
             const bool has_texture = draw.texture_resource != kNoHandle;
-            cmd.bindShaders(DkStageFlag_GraphicsMask, {&vertex, has_texture ? &textured : &fallback});
+            const bool sky = std::strcmp(draw.program->name, "sky_textured") == 0;
+            cmd.bindShaders(DkStageFlag_GraphicsMask,
+                {sky ? &sky_vertex : &vertex, sky ? &sky_fragment : has_texture ? &textured : &fallback});
             cmd.bindUniformBuffer(DkStage_Vertex, 1, base+(1+2*i)*256, sizeof(DrawInstanceUniform));
             cmd.bindUniformBuffer(DkStage_Fragment, 2, base+(2+2*i)*256, sizeof(DrawMaterialUniform));
             if (has_texture) cmd.bindTextures(DkStage_Fragment, 0,

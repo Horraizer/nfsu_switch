@@ -35,7 +35,8 @@ inline std::string compare_draws(const nfsu::RecordedCommands& commands,
             if (t.kind != nfsu::UploadResourceKind::texture || t.source != r.texture) return fail("texture binding");
         }
         const bool textured = r.texture != nfsu::kNoHandle;
-        const char* program = track ? (textured ? "track_textured" : "track_fallback")
+        const bool sky = track && r.instance == nfsu::kNoHandle;
+        const char* program = sky ? "sky_textured" : track ? (textured ? "track_textured" : "track_fallback")
                                     : (textured ? "car_textured" : "car_fallback");
         if (!d.program || std::strcmp(d.program->name, program)) return fail("shader program");
         if (d.program->buffer_count != 1 || d.program->buffers[0].stride != v.element_bytes ||

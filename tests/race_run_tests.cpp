@@ -173,8 +173,8 @@ int main(int argc, char** argv) {
         require(replay.load(text, error), error);
         require(scene.cache_bytes() <= 8*kMiB,"command cache exceeded metadata limit");
         std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 8*kMiB << '\n';
-        // Supplemental textures and prepared retail-order keys add cache metadata.
-        require(scene.cache_bytes() == 3825779,"event 1 command cache metadata estimate differs from pin");
+        // #184: two sky definitions add diagnostic strings inside existing capacity.
+        require(scene.cache_bytes() == 3825811,"event 1 command cache metadata estimate differs from pin");
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';
         require(scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes() <=

@@ -36,6 +36,8 @@ public:
 private:
     TrackSlice track_;
     RecordedCommands track_templates_;
+    std::size_t sky_draws_ = 0;
+    std::size_t sky_position_ = 0;
     std::vector<std::size_t> template_of_group_;
     bool ready_ = false;
     bool prepare_templates(std::string& error);
@@ -43,7 +45,7 @@ private:
     bool select_track(const TrackCullReport& visible, RaceGpuFrame& out,
                       std::size_t& entries, std::string& error);
     const UploadTable& resource_table() const override { return combined_uploads_; }
-    std::size_t selected_draw_count() const override { return selection_.size() + car_templates_.owning_draws().size(); }
+    std::size_t selected_draw_count() const override { return sky_draws_ + selection_.size() + car_templates_.owning_draws().size(); }
     RecordedDrawView selected_draw(std::size_t i) const override;
     std::uint64_t command_generation() const override { return generation_; }
     PreparedTrackCull culler_;

@@ -203,6 +203,7 @@ bool track_slice_view(const TrackResidencyPathPoint& point, double yaw_offset,
                       double far_plane, RenderOptions& options,
                       TrackFrustum& frustum, std::string& error) {
     options = {};
+    options.sky = true;
     options.width = 1280; options.height = 720;
     auto& camera = options.camera;
     camera.target = {point.slot[0] + 20 * point.direction[0], point.slot[2] + 3,
@@ -250,9 +251,11 @@ bool make_track_slice_frame(const TrackSlice& slice, std::size_t sample,
         if (list.entries.size() > kTrackSliceDrawLimit) continue;
         options.material_state = MaterialStateMode::retail;
         if (!record_track_commands(slice.scene, list, options, {}, result.commands, error)) return false;
+        if (result.commands.draw_count() > kTrackSliceDrawLimit) continue;
         DrawExecutionPlan plan;
         if (!plan_draw_execution(result.commands, plan, error)) return false;
-        result.visible = culled.visible.size(); result.triangles = list.cost.triangles;
+        result.visible = culled.visible.size(); result.triangles = 0;
+        for (const auto& draw : result.commands.owning_draws()) result.triangles += draw.index_count/3;
         result.unplaced = list.cost.visible_unplaced; result.far_plane = far_plane;
         frame = std::move(result);
         return true;

@@ -266,6 +266,11 @@ struct PreparedTrackScene {
     // The geometry, draws and textures, owned. prepare_track_region built
     // it and validate_prepared_track_region passed on it.
     PreparedTrackRegion region;
+    // Separate world-space sky object, recovered at speed.exe 0x5715D0.
+    // It remains excluded from ordinary scenery placement and culling.
+    std::size_t sky_mesh = kNoHandle;
+    TrackTransform sky_transform;
+
     // The region the instances were decoded from, copied from the object
     // report. It is a different region of the same container as
     // region.region in every retail case, and the two are never required to
