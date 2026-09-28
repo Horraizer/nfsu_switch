@@ -1586,3 +1586,68 @@ if(NFSU_BUILD_TESTS)
     add_test(NAME nfsu_race_run_tests COMMAND nfsu_race_run_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt)
 endif()
+
+# ---------------------------------------------------------------------------
+# The shipped racing line and a path-following controller (issue #63)
+# ---------------------------------------------------------------------------
+#
+# docs/RACING_LINE.md. Two libraries of their own, appended so that no list
+# above is reordered, and not in cmake/*.cmake because nothing on the console
+# reads either yet: this issue recovers the route data and delivers a
+# controller that can be tested on its own, and wires no opponent into the
+# race. The Switch configure returns above this point and builds neither.
+add_library(nfsu_racing_line
+    src/racing_line.cpp
+)
+
+target_include_directories(nfsu_racing_line
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_compile_features(nfsu_racing_line PUBLIC cxx_std_17)
+nfsu_enable_warnings(nfsu_racing_line)
+
+add_library(nfsu_path_follow
+    src/path_follow.cpp
+)
+
+target_include_directories(nfsu_path_follow
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_compile_features(nfsu_path_follow PUBLIC cxx_std_17)
+nfsu_enable_warnings(nfsu_path_follow)
+
+# Both read no file, no clock and no random device; the caller hands them
+# bytes and states.
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_racing_line nfsu_path_follow)
+
+if(NFSU_BUILD_TESTS)
+    # The route chunk over synthetic payloads: every decoded field at its
+    # offset, the lane table and its enable bytes, and each refusal
+    # (truncated, oversized, malformed). With NFSU_RETAIL_ROOT set it also
+    # decodes Tracks/TRACKB1003.lzc read-only and pins the file hash, the
+    # route and point counts and a hash over the decoded values.
+    add_executable(nfsu_racing_line_tests
+        tests/racing_line_tests.cpp
+    )
+
+    target_link_libraries(nfsu_racing_line_tests
+        PRIVATE nfsu_racing_line nfsu_core nfsu_sha256)
+    nfsu_enable_warnings(nfsu_racing_line_tests)
+    add_test(NAME nfsu_racing_line_tests COMMAND nfsu_racing_line_tests)
+    set_tests_properties(nfsu_racing_line_tests PROPERTIES TIMEOUT 120)
+
+    # The controller: the projection and its sign, the lookahead, the speed
+    # window, the refusals, determinism and the seed, and the three recovery
+    # cases issue #63 names - a stalled car, one that missed a checkpoint and
+    # one a collision displaced.
+    add_executable(nfsu_path_follow_tests
+        tests/path_follow_tests.cpp
+    )
+
+    target_link_libraries(nfsu_path_follow_tests PRIVATE nfsu_path_follow)
+    nfsu_enable_warnings(nfsu_path_follow_tests)
+    add_test(NAME nfsu_path_follow_tests COMMAND nfsu_path_follow_tests)
+    set_tests_properties(nfsu_path_follow_tests PROPERTIES TIMEOUT 60)
+endif()
