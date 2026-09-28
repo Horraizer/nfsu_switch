@@ -175,7 +175,7 @@ bool run(const std::string& root, Screen& screen, PadState& pad, std::string& er
                           current.contact.polygon, current.contact.point[2]);
         else std::snprintf(contact, sizeof contact, "Contact %s: no surface in the query column (rise 2, drop 20)",
                            nfsu::track_contact_status_name(current.contact_status));
-        const auto fallback = std::count_if(current.commands.draws.begin(), current.commands.draws.end(),
+        const auto fallback = std::count_if(current.commands.owning_draws().begin(), current.commands.owning_draws().end(),
             [](const auto& draw) { return draw.texture_resource == nfsu::kNoHandle; });
         char text[2048];
         std::snprintf(text, sizeof text,
@@ -193,8 +193,8 @@ bool run(const std::string& root, Screen& screen, PadState& pad, std::string& er
             "A play/pause | left/right +/-10s | left stick look | B reset | + exit | photograph this panel",
             playing ? "PLAY" : "PAUSED", NFSU_TRACK_BUILD_TAG, current.sample, slice.path.size()-1, slice.sections,
             current.far_plane, current.visible, static_cast<unsigned long long>(current.unplaced),
-            current.commands.draws.size(), static_cast<std::size_t>(fallback), static_cast<unsigned long long>(current.triangles),
-            current.commands.uploads.resources.size(), load_ms, render_ms, readback_ms, prepare_ms, frame_ms,
+            current.commands.owning_draws().size(), static_cast<std::size_t>(fallback), static_cast<unsigned long long>(current.triangles),
+            current.commands.resource_table().resources.size(), load_ms, render_ms, readback_ms, prepare_ms, frame_ms,
             static_cast<unsigned long long>(slice.streaming_bytes), static_cast<unsigned long long>(slice.texture_bytes),
             static_cast<unsigned long long>(slice.contacts.memory.resident_bytes),
             static_cast<unsigned long long>(renderer.gpu_bytes()),

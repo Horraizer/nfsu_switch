@@ -16,7 +16,7 @@
 // Count live C++ allocation bytes without allocating inside the counter.
 // This is a per-frame retention check, not a claim about the newlib heap.
 namespace {
-std::size_t live_bytes = 0;
+std::size_t live_bytes = 0, allocation_calls = 0;
 struct Allocation { void* raw; std::size_t bytes; };
 void* allocate_counted(std::size_t bytes, std::size_t alignment) {
     if (!bytes) bytes = 1;
@@ -26,7 +26,7 @@ void* allocate_counted(std::size_t bytes, std::size_t alignment) {
     if (!raw) throw std::bad_alloc();
     auto address = (reinterpret_cast<std::uintptr_t>(raw)+sizeof(Allocation)+alignment-1)&~(alignment-1);
     auto* header = reinterpret_cast<Allocation*>(address)-1;
-    header->raw = raw; header->bytes = bytes; live_bytes += bytes;
+    ++allocation_calls; header->raw = raw; header->bytes = bytes; live_bytes += bytes;
     return reinterpret_cast<void*>(address);
 }
 void free_counted(void* memory) noexcept {
@@ -102,26 +102,31 @@ int main(int argc, char** argv) {
         v.bytes = sizeof vertices; v.elements = 3; v.element_bytes = sizeof(MeshVertex);
         UploadResource ix; ix.name = "indices"; ix.kind = UploadResourceKind::index_buffer;
         ix.data = reinterpret_cast<const unsigned char*>(indices); ix.bytes = sizeof indices; ix.elements = 3; ix.element_bytes = 2;
-        fixture.uploads.resources = {v, ix}; fixture.uploads.totals.resources = 2;
-        fixture.uploads.totals.vertex_buffers = fixture.uploads.totals.index_buffers = 1;
-        fixture.uploads.totals.vertex_bytes = sizeof vertices; fixture.uploads.totals.index_bytes = sizeof indices;
+        fixture.owning_uploads().resources = {v, ix}; fixture.owning_uploads().totals.resources = 2;
+        fixture.owning_uploads().totals.vertex_buffers = fixture.owning_uploads().totals.index_buffers = 1;
+        fixture.owning_uploads().totals.vertex_bytes = sizeof vertices; fixture.owning_uploads().totals.index_bytes = sizeof indices;
         RecordedDraw draw; draw.vertex_resource = 0; draw.index_resource = 1; draw.vertex_count = draw.index_count = 3;
         for (const auto& p : shader_manifest::kPrograms) if (std::string(p.name) == "car_fallback") {
             draw.program = &p; draw.pipeline = p.variants[0];
         }
-        fixture.draws.push_back(draw);
+        fixture.owning_draws().push_back(draw);
         RecordedCommands joined;
         require(combine_race_commands(fixture, fixture, joined, error), error);
-        require(joined.draws.size() == 2 && joined.uploads.resources.size() == 4 &&
-                joined.draws[1].vertex_resource == 2 && joined.draws[1].index_resource == 3 &&
-                joined.draws[1].texture_resource == kNoHandle, "car upload references not rebased");
+        require(joined.owning_draws().size() == 2 && joined.owning_uploads().resources.size() == 4 &&
+                joined.owning_draws()[1].vertex_resource == 2 && joined.owning_draws()[1].index_resource == 3 &&
+                joined.owning_draws()[1].texture_resource == kNoHandle, "car upload references not rebased");
+        DrawValidationAudit checked_audit;
+        auto* previous_checked_audit = set_draw_validation_audit(&checked_audit);
+        const bool checked_ok = validate_recorded_commands(joined,error);
+        set_draw_validation_audit(previous_checked_audit);
+        require(checked_ok && checked_audit.index_visits == 6, "index audit missed reference validation");
         auto many = fixture;
-        many.uploads.resources.resize(4126, v);
-        many.uploads.resources[1] = ix;
+        many.owning_uploads().resources.resize(4126, v);
+        many.owning_uploads().resources[1] = ix;
         DrawExecutionPlan slot_plan;
         require(plan_draw_execution(many, slot_plan, error) && slot_plan.buffer_allocations == 4126,
                 "combined scene buffer slots truncated at 4096");
-        auto empty = fixture; empty.uploads.resources.clear(); empty.draws.clear();
+        auto empty = fixture; empty.owning_uploads().resources.clear(); empty.owning_draws().clear();
         require(plan_draw_execution(empty, slot_plan, error) && slot_plan.buffer_allocations == 1,
                 "empty scene lost its valid arena configuration");
         unsigned char rgba[4] = {10,20,30,255};
@@ -130,19 +135,19 @@ int main(int argc, char** argv) {
         texture.memory = UploadMemory::image; texture.data = rgba; texture.bytes = 4;
         require(check_texture_upload_format(TextureUploadFormat::rgba8,1,1,4,texture.texture,error),error);
         texture.elements = 1; texture.element_bytes = 4;
-        textured.uploads.resources.push_back(texture); textured.uploads.totals.resources = 3;
-        textured.uploads.totals.textures = 1; textured.uploads.totals.texture_bytes = 4;
-        textured.uploads.totals.largest_texture_bytes = 4;
-        textured.draws[0].texture_resource = 2;
+        textured.owning_uploads().resources.push_back(texture); textured.owning_uploads().totals.resources = 3;
+        textured.owning_uploads().totals.textures = 1; textured.owning_uploads().totals.texture_bytes = 4;
+        textured.owning_uploads().totals.largest_texture_bytes = 4;
+        textured.owning_draws()[0].texture_resource = 2;
         for (const auto& p : shader_manifest::kPrograms) if (std::string(p.name) == "car_textured") {
-            textured.draws[0].program = &p; textured.draws[0].pipeline = p.variants[0];
+            textured.owning_draws()[0].program = &p; textured.owning_draws()[0].pipeline = p.variants[0];
         }
         require(combine_race_commands(textured,textured,joined,error),error);
-        require(joined.draws[1].texture_resource == 5 && joined.uploads.resources[5].data == rgba,
+        require(joined.owning_draws()[1].texture_resource == 5 && joined.owning_uploads().resources[5].data == rgba,
                 "car texture reference not rebased");
         auto other = fixture; other.frame.eye[0] = 1;
-        require(!combine_race_commands(fixture, other, joined, error) && joined.draws.empty(), "mixed cameras accepted");
-        other = fixture; other.draws.resize(2047, draw);
+        require(!combine_race_commands(fixture, other, joined, error) && joined.owning_draws().empty(), "mixed cameras accepted");
+        other = fixture; other.owning_draws().resize(2047, draw);
         require(!combine_race_commands(fixture, other, joined, error), "combined draw overflow accepted");
         std::cout << "PASS: fixed clock, exact replay cursor, refusal and combined draw guards\n";
         if (argc == 2) return 0;
@@ -167,15 +172,41 @@ int main(int argc, char** argv) {
         require(!race.commit(error), "commit without step accepted");
         require(replay.load(text, error), error);
         require(scene.cache_bytes() <= 8*kMiB,"command cache exceeded metadata limit");
-        require(scene.cache_bytes() == 2220547,"event 1 command cache metadata estimate differs from pin");
         std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 8*kMiB << '\n';
+        // Supplemental textures and prepared retail-order keys add cache metadata.
+        require(scene.cache_bytes() == 3825779,"event 1 command cache metadata estimate differs from pin");
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';
         require(scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes() <=
                 kPersistentBudgetPlaceholder, "persistent payload over budget");
         RaceGpuFrame frame;
         require(scene.frame(race.session(), frame, error), error);
-        UploadTable uploaded = frame.commands.uploads;
+        const auto& const_commands = frame.commands;
+        unsigned owning_refusals = 0;
+        try { (void)frame.commands.owning_draws(); }
+        catch (const std::logic_error&) { ++owning_refusals; }
+        try { (void)frame.commands.owning_uploads(); }
+        catch (const std::logic_error&) { ++owning_refusals; }
+        try { (void)const_commands.owning_draws(); }
+        catch (const std::logic_error&) { ++owning_refusals; }
+        try { (void)const_commands.owning_uploads(); }
+        catch (const std::logic_error&) { ++owning_refusals; }
+        require(owning_refusals == 4, "borrowed frame exposed owning storage");
+        RecordedCommands refused_append;
+        require(!combine_race_commands(frame.commands,fixture,refused_append,error) && refused_append.owning_draws().empty(),
+                "borrowed combined frame was appended as an owning recording");
+        auto expired = frame.commands;
+        require(scene.frame(race.session(), frame, error), error);
+        require(!expired.generation_valid(), "old frame generation remained valid");
+        DrawExecutionPlan expired_plan;
+        require(!plan_draw_execution(expired,expired_plan,error), "planner accepted an expired frame");
+        require(!validate_draw_update(frame.commands.resource_table(),expired,kTrackSliceDrawLimit,error),
+                "update accepted an expired frame");
+        bool range_refused = false;
+        try { (void)frame.commands.draw_view(frame.commands.draw_count()); }
+        catch (const std::out_of_range&) { range_refused = true; }
+        require(range_refused, "prepared draw handle escaped capacity guard");
+        UploadTable uploaded = frame.commands.resource_table();
         SceneMemoryRequirement need;
         require(upload_table_requirement(uploaded, bounded_image_layout, need, error), error);
         std::cout << "resources " << uploaded.resources.size() << " buffer allocations " <<
@@ -234,24 +265,35 @@ int main(int argc, char** argv) {
             require(race.commit(error), error);
             const auto tick = race.session().timing().step;
             if (full || (sampled && tick%60 == 0) || inspect.count(tick)) {
-                require(scene.frame(race.session(), frame, error), error);
+                DrawValidationAudit audit;
+                auto* previous_audit = set_draw_validation_audit(&audit);
+                const auto allocations_before = allocation_calls;
+                const bool frame_ok = scene.frame(race.session(), frame, error);
+                const auto frame_allocations = allocation_calls - allocations_before;
+                set_draw_validation_audit(previous_audit);
+                require(frame_ok, error);
+                require(audit.index_visits == 0, "prepared frame rescanned indices");
+                require(frame_allocations == 0, "prepared frame allocated after load");
+                require(frame.commands.borrowed(), "prepared frame reconstructed owning commands");
                 RaceGpuFrame reference;
                 require(scene.frame(race.session(),reference,error,nullptr,true),error);
+                require(!reference.commands.borrowed(), "reference path returned a borrowed recording");
                 require(reference.commands.width == frame.commands.width && reference.commands.height == frame.commands.height &&
                     std::memcmp(reference.commands.clear_color,frame.commands.clear_color,4) == 0 &&
-                    reference.commands.draws.size() == frame.commands.draws.size() &&
-                    reference.commands.uploads.resources.size() == frame.commands.uploads.resources.size() &&
-                    same_upload_totals(reference.commands.uploads.totals,frame.commands.uploads.totals) &&
+                    reference.commands.draw_count() == frame.commands.draw_count() &&
+                    reference.commands.resource_table().resources.size() == frame.commands.resource_table().resources.size() &&
+                    same_upload_totals(reference.commands.resource_table().totals,frame.commands.resource_table().totals) &&
                     std::memcmp(&reference.commands.frame,&frame.commands.frame,sizeof(DrawFrameUniform)) == 0 &&
                     reference.triangles == frame.triangles && reference.far_plane == frame.far_plane &&
                     reference.visible == frame.visible && reference.unplaced == frame.unplaced,
                     "cached frame metadata differs from reference");
-                for (std::size_t i = 0; i < frame.commands.uploads.resources.size(); ++i)
-                    require(same_upload_resource(reference.commands.uploads.resources[i],frame.commands.uploads.resources[i]),
+                for (std::size_t i = 0; i < frame.commands.resource_table().resources.size(); ++i)
+                    require(same_upload_resource(reference.commands.resource_table().resources[i],frame.commands.resource_table().resources[i]),
                             "cached upload resource differs from reference at index " + std::to_string(i));
-                for (std::size_t i = 0; i < frame.commands.draws.size(); ++i) {
-                    const auto& a = frame.commands.draws[i]; const auto& b = reference.commands.draws[i];
-                    require(a.name == b.name && a.group == b.group && a.mesh == b.mesh && a.instance == b.instance &&
+                for (std::size_t i = 0; i < frame.commands.draw_count(); ++i) {
+                    const auto selected = frame.commands.draw_view(i);
+                    const auto& a = selected.definition; const auto& b = reference.commands.owning_draws()[i];
+                    require(selected.diagnostic_name() == b.name && a.group == b.group && a.mesh == b.mesh && selected.instance == b.instance &&
                         a.vertex_resource == b.vertex_resource && a.index_resource == b.index_resource &&
                         a.texture_resource == b.texture_resource && a.first_vertex == b.first_vertex &&
                         a.vertex_count == b.vertex_count && a.first_index == b.first_index && a.index_count == b.index_count &&
@@ -261,8 +303,8 @@ int main(int argc, char** argv) {
                         a.pipeline.blend_src == b.pipeline.blend_src && a.pipeline.blend_dst == b.pipeline.blend_dst &&
                         a.pipeline.blend_op == b.pipeline.blend_op && a.pipeline.depth_test == b.pipeline.depth_test &&
                         a.pipeline.depth_write == b.pipeline.depth_write && a.pipeline.color_write == b.pipeline.color_write &&
-                        std::memcmp(&a.placement,&b.placement,sizeof a.placement) == 0 &&
-                        std::memcmp(&a.material,&b.material,sizeof a.material) == 0,
+                        std::memcmp(&selected.placement,&b.placement,sizeof b.placement) == 0 &&
+                        std::memcmp(&selected.material,&b.material,sizeof b.material) == 0,
                         "cached ordered draw differs from reference");
                 }
                 require(frame.track_draws > 0 && frame.car_draws == 94, "missing track/car commands");
@@ -281,8 +323,9 @@ int main(int argc, char** argv) {
                                 race.session().spec(), static_placed),
                             "animation guard static placement failed");
                     std::size_t wheels = 0, moving_wheels = 0, headlights = 0, brakelights = 0;
-                    for (const auto& draw : frame.commands.draws) {
-                        if (draw.name.compare(0, 9, "race-car/") != 0) continue;
+                    for (std::size_t i = 0; i < frame.commands.draw_count(); ++i) {
+                        const auto draw = frame.commands.draw_view(i);
+                        if (draw.definition.name.compare(0, 9, "race-car/") != 0) continue;
                         require(draw.instance < stock.scene.instances.size(), "animation guard instance out of range");
                         const auto slot = stock.scene.instances[draw.instance].part_slot;
                         if (slot == kSlotWheel) {
@@ -305,8 +348,8 @@ int main(int argc, char** argv) {
                             "animation guard did not inspect moving wheels and both lamp slots");
                 }
                 require(validate_draw_update(uploaded, frame.commands, kTrackSliceDrawLimit, error), error);
-                max_draws = std::max(max_draws, frame.commands.draws.size()); ++frames;
-                if (inspect.count(tick)) std::cout << "frame " << tick << " draws " << frame.commands.draws.size()
+                max_draws = std::max(max_draws, frame.commands.draw_count()); ++frames;
+                if (inspect.count(tick)) std::cout << "frame " << tick << " draws " << frame.commands.draw_count()
                     << " car " << frame.car_draws << " far " << frame.far_plane << '\n';
             }
         }

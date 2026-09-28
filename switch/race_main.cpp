@@ -6,6 +6,7 @@
 #include "nfsu/race_frame_stats.h"
 #include "nfsu/screen_text.h"
 #include "nfsu/stock_view.h"
+#include "nfsu/race_audio.h"
 #include <switch.h>
 #include <arpa/inet.h>
 #include <unistd.h>
@@ -142,6 +143,20 @@ void append_frame_stats(std::vector<std::string>& lines, const RaceFrameStats& s
         lines.push_back(format("MEAN ms CMD %.2f | SUBMIT %.2f",mean.command_ms,mean.submit_ms));
     }
 }
+void append_audio_status(std::vector<std::string>& lines,
+                         const audio::RaceAudioService& sound,
+                         const std::string& startup_note) {
+    const auto stats = sound.stats();
+    lines.push_back(format("AUDIO U %llu | RING %zu/%zu | LATE %llu | QUEUE %u | THREAD %u us | CLIP %llu",
+        (unsigned long long)stats.ring_underruns,
+        stats.ring_fill, stats.ring_capacity,
+        (unsigned long long)stats.output_late,
+        stats.queued_frames, stats.thread_us,
+        (unsigned long long)stats.mix_clips));
+    const auto diagnostic = sound.diagnostic();
+    lines.push_back("AUDIO STATUS " +
+                    (diagnostic.empty() ? startup_note : diagnostic));
+}
 void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceReplay& replay,
                  bool replay_mode, bool panel_mode, bool paused,
                  const RaceFrameStats& stats, unsigned unpause_resets,
@@ -204,7 +219,24 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
     progress.checkpoint("race course");
     RaceRun race; require(race.start(root,scene.track(),error),error);
     progress.checkpoint("race course prepared");
-    const auto persistent = scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes();
+    audio::RaceAudioService sound;
+    std::string audio_note;
+    const auto render_core = svcGetCurrentProcessorNumber();
+    const auto audio_core = render_core == 2 ? 1 : 2;
+    if (R_SUCCEEDED(svcSetThreadCoreMask(threadGetCurHandle(),
+            static_cast<s32>(render_core), 1U << render_core))) {
+        const bool audio_started = sound.start(std::filesystem::path(root), audio_note,
+            [&](const char* phase) { progress.checkpoint(phase); },
+            [audio_core] {
+                return R_SUCCEEDED(svcSetThreadCoreMask(threadGetCurHandle(),
+                           audio_core, 1U << audio_core)) &&
+                       R_SUCCEEDED(svcSetThreadPriority(threadGetCurHandle(), 0x30));
+            });
+        if (!audio_started && audio_note.empty())
+            audio_note = "audio disabled: startup failed without diagnostic";
+    } else audio_note = "audio disabled: render core pin failed";
+    std::printf("AUDIO: %s\n", audio_note.c_str());
+    const auto persistent = scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes()+sound.resident_bytes();
     require(persistent <= kPersistentBudgetPlaceholder, "race persistent payload exceeds 64 MiB");
     RaceGpuFrame frame; require(scene.frame(race.session(),frame,error),error);
     const double load_ms = ms(armGetSystemTick()-load_start);
@@ -243,6 +275,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
         if (elapsed > 1000000) { paused = true; clock.reset(); }
         const bool connected = padIsConnected(&pad);
         const bool running = race.session().timing().outcome == RaceOutcome::running;
+        sound.set_suspended(paused || !running);
         const bool driving_before = !paused && !just_unpaused && running &&
             race.session().timing().stage == RaceStage::racing;
         if (!paused && running) clock.add(elapsed); else clock.reset();
@@ -255,6 +288,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
             auto stage = armGetSystemTick();
             require(race.simulate(input,error),error); simulation += ms(armGetSystemTick()-stage);
             stage = armGetSystemTick(); require(race.commit(error),error);
+            sound.on_tick(audio::race_audio_snapshot(race.session()));
             if (replay_mode) std::fputs(race.step_line().c_str(),stdout);
             residency += ms(armGetSystemTick()-stage);
             ++ticks;
@@ -267,6 +301,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
             upload = ms(armGetSystemTick()-stage);
         }
         const bool finished = race.session().timing().outcome == RaceOutcome::finished;
+        if (finished) sound.set_suspended(true);
         RaceFrameSample measured;
         measured.simulation_ms = simulation;
         measured.residency_ms = residency;
@@ -309,7 +344,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
             lines.push_back(format("Command cache metadata EST %llu / 8388608 bytes (immutable track templates)",
                 (unsigned long long)scene.cache_bytes()));
             lines.push_back(format("GPU blocks %llu / 268435456 | uniforms 1048320 / 1048576 | resources %zu",
-                (unsigned long long)renderer.gpu_bytes(),frame.commands.uploads.resources.size()));
+                (unsigned long long)renderer.gpu_bytes(),frame.commands.resource_table().resources.size()));
             lines.push_back(format("MALLOC IN-USE before %llu | after load %llu | NOW %llu (includes GPU BLOCKS)",
                 (unsigned long long)heap.before_load,(unsigned long long)heap.after_load,(unsigned long long)heap.current));
             lines.push_back(format("HEAP LOAD OBS HWM %llu | delta %llu / 50331648 | LOAD HEAP OVER %llu",
@@ -323,6 +358,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
                 auto last = race.step_line(); if (!last.empty()) last.pop_back();
                 lines.push_back("last step "+last);
             }
+            append_audio_status(lines,sound,audio_note);
             lines.push_back("ZR gas | ZL brake/reverse | stick/D-pad steer | B handbrake | R/L shift | X camera | - reset");
             lines.push_back("Y pause/photo | + result | panel includes readback and CPU text cost");
             screen.show(lines,&rgba);
@@ -375,7 +411,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
                 speed,int(car.gear),connected?"CONNECTED":"DISCONNECTED - NEUTRAL",frame.track_draws,frame.car_draws,
                 (unsigned long long)frame.triangles,frame.far_plane,frame.visible,
                 (unsigned long long)frame.unplaced,race.resident_count(),
-                (unsigned long long)renderer.gpu_bytes(),frame.commands.uploads.resources.size());
+                (unsigned long long)renderer.gpu_bytes(),frame.commands.resource_table().resources.size());
             std::printf("PERF LOAD %.0f ms initial upload %.0f ms | CPU stream %llu / 50331648 | persistent %llu / 67108864 | CACHE EST %llu / 8388608 | HEAP before %llu after load %llu now %llu load HWM %llu run HWM %llu\n",
                 load_ms,initial_upload,(unsigned long long)scene.track().streaming_bytes,(unsigned long long)persistent,
                 (unsigned long long)scene.cache_bytes(),
@@ -385,11 +421,15 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
                 (unsigned long long)heap.load_peak,(unsigned long long)heap.load_delta(),
                 (unsigned long long)heap.load_overrun(50331648),(unsigned long long)heap.peak,
                 (unsigned long long)heap.extent,(unsigned long long)heap.extent_peak);
+            std::vector<std::string> audio_lines;
+            append_audio_status(audio_lines,sound,audio_note);
+            for (const auto& line : audio_lines) std::printf("%s\n",line.c_str());
             std::fflush(stdout);
             last_perf = {format("Last DIRECT FRAME %.2f ms | SIM %.2f | CULL/RECORD %.2f | UPDATE %.2f",
                 frame_ms,simulation,record,upload),
                 format("PRESENT CPU %.2f ms | ACQUIRE %.2f | FENCE %.2f | CMD %.2f | SUBMIT %.2f",
                 present_cpu,present.acquire_ms,present.fence_wait_ms,present.record_ms,present.submit_ms)};
+            last_perf.insert(last_perf.end(),audio_lines.begin(),audio_lines.end());
             if (finished) printed_final_perf = true;
         }
         }
@@ -400,6 +440,10 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
         if (finished) break;
     }
     } catch (const std::exception& e) { failure = e.what(); }
+    // Every way out of the race loop (+, an error or the finish) mutes the
+    // audio with the service's fade before the result screen; before this
+    // only the finish did, so + left the engine and music playing.
+    sound.set_suspended(true);
     std::string close_error;
     if (!renderer.close(close_error)) {
         if (!failure.empty()) failure += " | ";

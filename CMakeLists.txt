@@ -739,6 +739,10 @@ nfsu_enable_warnings(nfsu_platform_desktop)
 add_executable(nfsu_frame_budget_probe tools/frame_budget_probe.cpp)
 target_link_libraries(nfsu_frame_budget_probe PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_platform_desktop)
 nfsu_enable_warnings(nfsu_frame_budget_probe)
+if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    # The probe replaces new/delete; DLL allocator calls cannot interpose them.
+    target_link_options(nfsu_frame_budget_probe PRIVATE -static-libstdc++ -static-libgcc)
+endif()
 
 # The argument conversion is the desktop filesystem service: its three free
 # functions now go through the FileSystemService it implements, and the
@@ -791,7 +795,7 @@ set(NFSU_NEUTRAL_LIBRARIES
     nfsu_inspect nfsu_inspect_window nfsu_input nfsu_platform
     nfsu_platform_fakes nfsu_input_camera nfsu_memory nfsu_gpu_upload nfsu_draw_commands
     nfsu_sha256 nfsu_stock_frame nfsu_screen_text nfsu_stock_view nfsu_frame_compare
-    nfsu_audio)
+    nfsu_audio nfsu_audio_playback nfsu_race_audio)
 # nfsu_race_route (issue #61) decodes a TRACKB bundle with nothing but the
 # standard library, nfsu_core's JDLZ decoder and nfsu_track_zones' polygon
 # test, reads with std::ifstream as nfsu_core's loaders do, and reads no
@@ -813,7 +817,10 @@ list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_route)
 # its own comment below), so anything outside the allowed standard headers
 # and this project's own is platform code by that rule alone. docs/
 # PLATFORM_SERVICES.md says what would move each one behind a service.
-set(NFSU_PLATFORM_LIBRARIES nfsu_arg_path nfsu_render nfsu_texture_export nfsu_platform_desktop nfsu_det_sqrt)
+# nfsu_audio_output owns waveOut or audout and its callback thread. Audio
+# device lifetime and buffer submission are platform services separate from
+# the existing input/file/render facade in include/nfsu/platform.h.
+set(NFSU_PLATFORM_LIBRARIES nfsu_arg_path nfsu_render nfsu_texture_export nfsu_platform_desktop nfsu_det_sqrt nfsu_audio_output)
 
 # Sources of a neutral library that are platform code on purpose: the one
 # window backend. src/texture.cpp used to be exempted here too, whole, for
@@ -1468,7 +1475,8 @@ endif()
 list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_session)
 add_executable(nfsu_race src/race_main.cpp src/race_window.cpp)
 target_link_libraries(nfsu_race PRIVATE nfsu_race_session nfsu_race_events
-    nfsu_track_residency nfsu_track_render nfsu_stock_frame nfsu_screen_text)
+    nfsu_track_residency nfsu_track_render nfsu_stock_frame nfsu_screen_text
+    nfsu_race_audio)
 nfsu_enable_warnings(nfsu_race)
 if(WIN32)
     target_link_libraries(nfsu_race PRIVATE user32 gdi32)
@@ -1499,6 +1507,16 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_audio_tests)
     add_test(NAME nfsu_audio_tests COMMAND nfsu_audio_tests)
     set_tests_properties(nfsu_audio_tests PROPERTIES TIMEOUT 10)
+    add_executable(nfsu_audio_playback_tests tests/audio_playback_tests.cpp)
+    target_link_libraries(nfsu_audio_playback_tests PRIVATE nfsu_audio_playback)
+    nfsu_enable_warnings(nfsu_audio_playback_tests)
+    add_test(NAME nfsu_audio_playback_tests COMMAND nfsu_audio_playback_tests)
+    set_tests_properties(nfsu_audio_playback_tests PROPERTIES TIMEOUT 10)
+    add_executable(nfsu_race_audio_tests tests/race_audio_tests.cpp)
+    target_link_libraries(nfsu_race_audio_tests PRIVATE nfsu_race_audio)
+    nfsu_enable_warnings(nfsu_race_audio_tests)
+    add_test(NAME nfsu_race_audio_tests COMMAND nfsu_race_audio_tests)
+    set_tests_properties(nfsu_race_audio_tests PROPERTIES TIMEOUT 10)
     add_test(NAME nfsu_audio_retail
         COMMAND ${CMAKE_COMMAND}
             -DAUDIO_DUMP=$<TARGET_FILE:nfsu_audio_dump>

@@ -14,6 +14,53 @@
 #include <stdexcept>
 #include <tuple>
 
+#include <cstdlib>
+#include <new>
+#include <limits>
+// Count live C++ allocation bytes without allocating inside the counter.
+// This is a per-frame retention check, not a claim about the newlib heap.
+namespace {
+std::size_t live_bytes = 0, allocation_calls = 0;
+struct Allocation { void* raw; std::size_t bytes; };
+void* allocate_counted(std::size_t bytes, std::size_t alignment) {
+    if (!bytes) bytes = 1;
+    alignment = std::max(alignment,alignof(std::max_align_t));
+    if (bytes > std::numeric_limits<std::size_t>::max()-alignment-sizeof(Allocation)) throw std::bad_alloc();
+    void* raw = std::malloc(bytes+alignment+sizeof(Allocation));
+    if (!raw) throw std::bad_alloc();
+    auto address = (reinterpret_cast<std::uintptr_t>(raw)+sizeof(Allocation)+alignment-1)&~(alignment-1);
+    auto* header = reinterpret_cast<Allocation*>(address)-1;
+    ++allocation_calls; header->raw = raw; header->bytes = bytes; live_bytes += bytes;
+    return reinterpret_cast<void*>(address);
+}
+void free_counted(void* memory) noexcept {
+    if (!memory) return;
+    auto* header = static_cast<Allocation*>(memory)-1;
+    live_bytes -= header->bytes; std::free(header->raw);
+}
+}
+void* operator new(std::size_t n) { return allocate_counted(n,alignof(std::max_align_t)); }
+void* operator new[](std::size_t n) { return ::operator new(n); }
+void operator delete(void* p) noexcept { free_counted(p); }
+void operator delete[](void* p) noexcept { free_counted(p); }
+void operator delete(void* p,std::size_t) noexcept { free_counted(p); }
+void operator delete[](void* p,std::size_t) noexcept { free_counted(p); }
+void* operator new(std::size_t n,std::align_val_t a) { return allocate_counted(n,static_cast<std::size_t>(a)); }
+void* operator new[](std::size_t n,std::align_val_t a) { return ::operator new(n,a); }
+void operator delete(void* p,std::align_val_t) noexcept { free_counted(p); }
+void operator delete[](void* p,std::align_val_t) noexcept { free_counted(p); }
+void operator delete(void* p,std::size_t,std::align_val_t) noexcept { free_counted(p); }
+void operator delete[](void* p,std::size_t,std::align_val_t) noexcept { free_counted(p); }
+
+void* operator new(std::size_t n,const std::nothrow_t&) noexcept { try { return ::operator new(n); } catch (...) { return nullptr; } }
+void* operator new[](std::size_t n,const std::nothrow_t& t) noexcept { return ::operator new(n,t); }
+void operator delete(void* p,const std::nothrow_t&) noexcept { free_counted(p); }
+void operator delete[](void* p,const std::nothrow_t&) noexcept { free_counted(p); }
+void* operator new(std::size_t n,std::align_val_t a,const std::nothrow_t&) noexcept { try { return ::operator new(n,a); } catch (...) { return nullptr; } }
+void* operator new[](std::size_t n,std::align_val_t a,const std::nothrow_t& t) noexcept { return ::operator new(n,a,t); }
+void operator delete(void* p,std::align_val_t,const std::nothrow_t&) noexcept { free_counted(p); }
+void operator delete[](void* p,std::align_val_t,const std::nothrow_t&) noexcept { free_counted(p); }
+
 using namespace nfsu;
 namespace {
 volatile std::uint64_t observed = 0;
@@ -56,9 +103,21 @@ void sample(RaceGpuScene& scene, RaceRun& race) {
     RaceGpuFrame frame;
     DesktopTiming timer;
     RaceFrameProfile sums;
+    std::size_t allocations = 0, max_allocations = 0;
+    std::uint64_t index_visits = 0, max_index_visits = 0;
     for (unsigned i = 0; i < 121; ++i) {
         RaceFrameProfile p;
-        require(scene.frame(race.session(), frame, error, &p, false, &timer), error);
+        DrawValidationAudit audit;
+        auto* previous_audit = set_draw_validation_audit(&audit);
+        const auto before_allocations = allocation_calls;
+        const bool okay = scene.frame(race.session(), frame, error, &p, false, &timer);
+        const auto count = allocation_calls - before_allocations;
+        set_draw_validation_audit(previous_audit);
+        require(okay, error);
+        if (i) {
+            allocations += count; max_allocations = std::max(max_allocations, count);
+            index_visits += audit.index_visits; max_index_visits = std::max(max_index_visits,audit.index_visits);
+        }
         if (i) {
             sums.cull_ms += p.cull_ms; sums.list_ms += p.list_ms;
             sums.car_ms += p.car_ms; sums.track_ms += p.track_ms; sums.combine_ms += p.combine_ms;
@@ -113,40 +172,43 @@ void sample(RaceGpuScene& scene, RaceRun& race) {
     const auto command_validation_ms = measure([&] { require(validate_recorded_commands(frame.commands,error),error); });
     DrawExecutionPlan plan;
     const auto execution_plan_ms = measure([&] { require(plan_draw_execution(frame.commands,plan,error),error); });
-    const auto update_ms = measure([&] { require(validate_draw_update(frame.commands.uploads,frame.commands,kTrackSliceDrawLimit,error),error); });
+    const auto update_ms = measure([&] { require(validate_draw_update(frame.commands.resource_table(),frame.commands,kTrackSliceDrawLimit,error),error); });
     std::vector<unsigned char> uniforms((1+2*kTrackSliceDrawLimit)*256);
     const auto uniform_ms = measure([&] {
         std::memcpy(uniforms.data(),&frame.commands.frame,sizeof(DrawFrameUniform));
-        for (std::size_t i = 0; i < frame.commands.draws.size(); ++i) {
-            std::memcpy(uniforms.data()+(1+2*i)*256,&frame.commands.draws[i].placement,sizeof(DrawInstanceUniform));
-            std::memcpy(uniforms.data()+(2+2*i)*256,&frame.commands.draws[i].material,sizeof(DrawMaterialUniform));
+        for (std::size_t i = 0; i < frame.commands.draw_count(); ++i) {
+            std::memcpy(uniforms.data()+(1+2*i)*256,&frame.commands.draw_view(i).placement,sizeof(DrawInstanceUniform));
+            std::memcpy(uniforms.data()+(2+2*i)*256,&frame.commands.draw_view(i).material,sizeof(DrawMaterialUniform));
         }
         std::atomic_signal_fence(std::memory_order_seq_cst);
         observed += uniforms[256];
     });
-    const auto table_copy_ms = measure([&] { auto copy = frame.commands.uploads; observed += copy.resources.size(); });
+    const auto table_copy_ms = measure([&] { auto copy = frame.commands.resource_table(); observed += copy.resources.size(); });
     std::set<std::size_t> textures, meshes, sections, instances;
     std::set<decltype(state_key(RecordedDraw{}))> states;
     std::uint64_t track_triangles = 0, texture_runs = 0, state_runs = 0, vb_runs = 0, ib_runs = 0;
     std::size_t textured = 0;
     for (std::size_t i = 0; i < frame.track_draws; ++i) {
-        const auto& d = frame.commands.draws[i];
-        textures.insert(d.texture_resource); meshes.insert(d.mesh); instances.insert(d.instance);
-        sections.insert(source.instances.at(d.instance).section_index); states.insert(state_key(d));
+        const auto view = frame.commands.draw_view(i);
+        const auto& d = view.definition;
+        textures.insert(d.texture_resource); meshes.insert(d.mesh); instances.insert(view.instance);
+        sections.insert(source.instances.at(view.instance).section_index); states.insert(state_key(d));
         track_triangles += d.index_count/3; textured += d.texture_resource != kNoHandle;
-        if (!i || d.texture_resource != frame.commands.draws[i-1].texture_resource) ++texture_runs;
-        if (!i || state_key(d) != state_key(frame.commands.draws[i-1])) ++state_runs;
-        if (!i || d.vertex_resource != frame.commands.draws[i-1].vertex_resource) ++vb_runs;
-        if (!i || d.index_resource != frame.commands.draws[i-1].index_resource) ++ib_runs;
+        if (!i || d.texture_resource != frame.commands.draw_view(i-1).definition.texture_resource) ++texture_runs;
+        if (!i || state_key(d) != state_key(frame.commands.draw_view(i-1).definition)) ++state_runs;
+        if (!i || d.vertex_resource != frame.commands.draw_view(i-1).definition.vertex_resource) ++vb_runs;
+        if (!i || d.index_resource != frame.commands.draw_view(i-1).definition.index_resource) ++ib_runs;
     }
     std::cout << "POSE tick=" << race.session().timing().step << " track=" << frame.track_draws
         << " car=" << frame.car_draws << " track_triangles=" << track_triangles << " all_triangles=" << frame.triangles
         << " visible=" << frame.visible << " unplaced=" << frame.unplaced << " far=" << frame.far_plane
-        << " resources=" << frame.commands.uploads.resources.size() << '\n';
+        << " resources=" << frame.commands.resource_table().resources.size() << '\n';
     std::cout << "COUNTS textures=" << textures.size() << " states=" << states.size() << " meshes=" << meshes.size()
         << " sections=" << sections.size() << " instances=" << instances.size() << " textured=" << textured
         << " texture_runs=" << texture_runs << " state_runs=" << state_runs << " vb_runs=" << vb_runs
         << " ib_runs=" << ib_runs << " index_visits_per_validation=" << frame.triangles*3 << '\n';
+    std::cout << "ALLOCATIONS mean=" << double(allocations)/120 << " max=" << max_allocations << '\n';
+    std::cout << "FRAME_INDEX_VISITS mean=" << double(index_visits)/120 << " max=" << max_index_visits << '\n';
     std::cout << "FRAME_MS cull=" << sums.cull_ms/120 << " list=" << sums.list_ms/120 << " car=" << sums.car_ms/120
         << " cached_track=" << sums.track_ms/120 << " combine=" << sums.combine_ms/120 << '\n';
     std::cout << "ISOLATED_MS checked_cull=" << checked_cull_ms << " trusted_cull=" << cull_ms
@@ -161,7 +223,19 @@ int main(int argc, char** argv) {
         require(argc == 3, "usage: nfsu_frame_budget_probe RETAIL_ROOT RECORDING");
         std::string error;
         RaceGpuScene scene;
-        require(scene.load(posix_file_system(),std::filesystem::path(argv[1]),error),error);
+        struct Loading : TrackSliceLoadObserver {
+            std::chrono::steady_clock::time_point begin;
+            double preparation_ms = 0;
+            void checkpoint(const char* phase) override {
+                if (std::strcmp(phase,"render preparation") == 0) begin = std::chrono::steady_clock::now();
+                if (std::strcmp(phase,"render prepared") == 0)
+                    preparation_ms = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
+            }
+        } loading;
+        const auto load_start = std::chrono::steady_clock::now();
+        require(scene.load(posix_file_system(),std::filesystem::path(argv[1]),error,nullptr,&loading),error);
+        std::cout << "LOAD_MS " << std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-load_start).count() << '\n';
+        std::cout << "LOAD_PREPARATION_MS " << loading.preparation_ms << '\n';
         RaceRun race;
         require(race.start(std::filesystem::path(argv[1]),scene.track(),error),error);
         std::ifstream input(argv[2],std::ios::binary);
