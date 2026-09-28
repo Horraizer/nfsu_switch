@@ -35,11 +35,25 @@ struct ClockReadings {
 };
 ClockReadings read_clocks() {
     ClockReadings out;
-    if (R_FAILED(pcvInitialize())) return out;
-    out.cpu_bus_ok = R_SUCCEEDED(pcvGetClockRate(PcvModule_CpuBus,&out.cpu_bus_hz));
-    out.gpu_ok = R_SUCCEEDED(pcvGetClockRate(PcvModule_GPU,&out.gpu_hz));
-    out.emc_ok = R_SUCCEEDED(pcvGetClockRate(PcvModule_EMC,&out.emc_hz));
-    pcvExit();
+    if (hosversionAtLeast(8,0,0)) {
+        if (R_FAILED(clkrstInitialize())) return out;
+        const auto read = [](PcvModuleId module, std::uint32_t& hz) {
+            ClkrstSession session{};
+            if (R_FAILED(clkrstOpenSession(&session, module, 3))) return false;
+            const bool ok = R_SUCCEEDED(clkrstGetClockRate(&session, &hz));
+            clkrstCloseSession(&session);
+            return ok;
+        };
+        out.cpu_bus_ok = read(PcvModuleId_CpuBus, out.cpu_bus_hz);
+        out.gpu_ok = read(PcvModuleId_GPU, out.gpu_hz);
+        out.emc_ok = read(PcvModuleId_EMC, out.emc_hz);
+        clkrstExit();
+    } else if (R_SUCCEEDED(pcvInitialize())) {
+        out.cpu_bus_ok = R_SUCCEEDED(pcvGetClockRate(PcvModule_CpuBus,&out.cpu_bus_hz));
+        out.gpu_ok = R_SUCCEEDED(pcvGetClockRate(PcvModule_GPU,&out.gpu_hz));
+        out.emc_ok = R_SUCCEEDED(pcvGetClockRate(PcvModule_EMC,&out.emc_hz));
+        pcvExit();
+    }
     return out;
 }
 std::string format(const char* pattern, ...) {
@@ -182,6 +196,8 @@ struct ProfileResultContext {
     double load_ms = 0, upload_ms = 0;
     std::uint64_t stream_bytes = 0, persistent_bytes = 0, gpu_bytes = 0;
     std::uint64_t storage_bytes = 0;
+    DekoMemoryUsage memory;
+    DekoGpfifoUsage gpfifo;
 };
 using ProfilePages = std::vector<std::vector<std::string>>;
 ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
@@ -206,8 +222,8 @@ ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
         "NRO SHA-256: coordinator build record (not derivable in NRO)",
         format("%s | %s DIRECT | PROFILE ONE SCENE PAIR",mode,replay_mode?"REPLAY":"LIVE"),
         format("TOOLCHAIN GCC %s | deko3d version unavailable",__VERSION__),
-        clocks.cpu_bus_ok ? format("CPU core unavailable | CPU bus %.1f MHz",clocks.cpu_bus_hz/1e6) :
-            "CPU core/bus clock unavailable",
+        clocks.cpu_bus_ok ? format("CPU clock %.1f MHz",clocks.cpu_bus_hz/1e6) :
+            "CPU clock unavailable",
         clocks.gpu_ok ? format("GPU clock %.1f MHz",clocks.gpu_hz/1e6) : "GPU clock unavailable",
         clocks.emc_ok ? format("MEM/EMC clock %.1f MHz",clocks.emc_hz/1e6) : "MEM/EMC clock unavailable"
     });
@@ -290,18 +306,23 @@ ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
             (unsigned long long)gpu.worst_tick,gpu.worst_track_draws,gpu.worst_car_draws),
         "Pipeline-top begin / timestamp end; elapsed span, not utilization",
         "Timestamp reports flush tiled cache; profile cost is included",
-        "Reports read only after each slot completion fence; final pair drained"
+        "Reports read only after each slot completion fence; final pair drained",
+        format("GPFIFO bound last/max %u/%u of %u | track lists %u",
+            context.gpfifo.last_entries,context.gpfifo.max_entries,
+            kDekoGpfifoRingEntries,context.gpfifo.last_lists),
+        format("QUERY/STAT STORAGE %llu bytes",(unsigned long long)context.storage_bytes)
     });
     const auto& heap = context.heap;
     add_page("LOAD/MEMORY",{
         format("LOAD %.0f ms | initial upload %.0f ms",context.load_ms,context.upload_ms),
-        format("CPU STREAM %llu / 50331648 bytes",(unsigned long long)context.stream_bytes),
-        format("PERSISTENT %llu / 67108864 bytes",(unsigned long long)context.persistent_bytes),
+        format("CPU STREAM %llu / 50331648 | PERSISTENT %llu / 67108864",
+            (unsigned long long)context.stream_bytes,(unsigned long long)context.persistent_bytes),
         format("GPU BLOCKS %llu / 268435456 bytes",(unsigned long long)context.gpu_bytes),
-        "TRANSIENT peak unavailable | uniform reservation 1048320 / 1048576",
+        format("FRAME UNIFORMS %llu bytes",(unsigned long long)context.memory.frame_uniform_bytes),
+        format("STATIC UNIFORMS %llu bytes",(unsigned long long)context.memory.static_uniform_bytes),
+        format("PREPARED COMMANDS %llu bytes",(unsigned long long)context.memory.prepared_command_bytes),
         format("LOAD HEAP OBS HWM %llu | over %llu bytes",(unsigned long long)heap.load_peak,
-            (unsigned long long)heap.load_overrun(50331648)),
-        format("QUERY/STAT STORAGE %llu bytes",(unsigned long long)context.storage_bytes)
+            (unsigned long long)heap.load_overrun(50331648))
     });
     if (!failure.empty()) {
         const auto wrapped = wrap_screen_text(failure,80);
@@ -320,6 +341,7 @@ ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
         rows.push_back("D-pad LEFT/RIGHT changes page | + exits");
     }
     return pages;
+}
 void append_audio_status(std::vector<std::string>& lines,
                          const audio::RaceAudioService& sound,
                          const std::string& startup_note) {
@@ -553,8 +575,13 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                 race.resident_count(),(unsigned long long)scene.track().streaming_bytes,(unsigned long long)persistent));
             lines.push_back(format("Command cache metadata EST %llu / 8388608 bytes (immutable track templates)",
                 (unsigned long long)scene.cache_bytes()));
-            lines.push_back(format("GPU blocks %llu / 268435456 | uniforms 1048320 / 1048576 | resources %zu",
-                (unsigned long long)renderer.gpu_bytes(),frame.commands.resource_table().resources.size()));
+            const auto memory = renderer.memory_usage();
+            lines.push_back(format("GPU blocks %llu / 268435456 | frame uniforms %llu | resources %zu",
+                (unsigned long long)renderer.gpu_bytes(),
+                (unsigned long long)memory.frame_uniform_bytes,frame.commands.resource_table().resources.size()));
+            lines.push_back(format("Static uniforms %llu | prepared commands %llu bytes",
+                (unsigned long long)memory.static_uniform_bytes,
+                (unsigned long long)memory.prepared_command_bytes));
             lines.push_back(format("MALLOC IN-USE before %llu | after load %llu | NOW %llu (includes GPU BLOCKS)",
                 (unsigned long long)heap.before_load,(unsigned long long)heap.after_load,(unsigned long long)heap.current));
             lines.push_back(format("HEAP LOAD OBS HWM %llu | delta %llu / 50331648 | LOAD HEAP OVER %llu",
@@ -706,7 +733,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         if (profile_stats) {
             const ProfileResultContext context{*profile_stats,renderer.gpu_profile(),heap,clocks,
                 load_ms,initial_upload,scene.track().streaming_bytes,persistent,renderer.gpu_bytes(),
-                sizeof(FrameProfileStats)+renderer.profile_storage_bytes()};
+                sizeof(FrameProfileStats)+renderer.profile_storage_bytes(),
+                renderer.memory_usage(),renderer.gpfifo_usage()};
             show_result(screen,pad,race,replay,replay_mode,panel_mode,paused,
                         stats,unpause_resets,last_perf,failure,&context);
         } else show_result(screen,pad,race,replay,replay_mode,panel_mode,paused,

@@ -2,6 +2,7 @@
 
 #include "nfsu/draw_commands.h"
 #include "nfsu/frame_profile_stats.h"
+#include "nfsu/deko_gpfifo_budget.h"
 #include <memory>
 
 namespace nfsu {
@@ -22,6 +23,15 @@ struct DekoSceneFrame {
     std::uint32_t track_draws = 0;
     std::uint32_t car_draws = 0;
     bool active = false;
+};
+struct DekoMemoryUsage {
+    std::uint64_t frame_uniform_bytes = 0;
+    std::uint64_t static_uniform_bytes = 0;
+    std::uint64_t prepared_command_bytes = 0;
+};
+struct DekoGpfifoUsage {
+    std::uint32_t last_entries = 0, max_entries = 0;
+    std::uint32_t last_lists = 0;
 };
 struct DekoGpuProfile {
     ProfileDistribution scene;
@@ -51,6 +61,8 @@ public:
     bool update(const RecordedCommands& commands, std::string& error,
                 DekoUpdateTiming* timing = nullptr);
     std::uint64_t gpu_bytes() const noexcept;
+    DekoMemoryUsage memory_usage() const noexcept;
+    DekoGpfifoUsage gpfifo_usage() const noexcept;
     // Offscreen only. Tight top-first RGBA8 after a completed GPU copy and
     // fence. Times include command recording/submission/wait; upload and
     // allocation are excluded. No CPU rasterizer is invoked here.

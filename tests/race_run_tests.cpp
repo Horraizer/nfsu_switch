@@ -2,6 +2,7 @@
 #include "nfsu/car_parts.h"
 #include "nfsu/posix_file_system.h"
 #include "nfsu/draw_execution.h"
+#include "nfsu/deko_gpfifo_budget.h"
 #include "nfsu/platform_desktop.h"
 #include <fstream>
 #include <iostream>
@@ -77,6 +78,10 @@ int main(int argc, char** argv) {
         clock.add(1000000); for (int i = 0; i < 8; ++i) require(clock.take(), "catch-up tick missing");
         require(clock.debt_ticks() == 52, "clock discarded slow-frame debt");
         clock.reset(); require(!clock.take(), "clock reset failed");
+        require(deko_track_list_calls(65) == 2 &&
+                deko_frame_gpfifo_bound(deko_track_list_calls(2047)) < kDekoGpfifoRingEntries &&
+                deko_frame_gpfifo_bound(1828) > kDekoGpfifoRingEntries,
+                "per-draw prepared calls would overflow the Switch GPFIFO ring");
         RaceReplay replay; GamepadFrame pad;
         require(!replay.load("NFSU_RACE_INPUT 1\n1 0 0\n", error), "unverified replay accepted");
         require(!replay.next(0, pad, error), "empty replay accepted");
@@ -331,6 +336,9 @@ int main(int argc, char** argv) {
                         "cached ordered draw differs from reference");
                 }
                 require(frame.track_draws > 0 && frame.car_draws == 94, "missing track/car commands");
+                require(deko_frame_gpfifo_bound(deko_track_list_calls(
+                            static_cast<std::uint32_t>(frame.track_draws))) < kDekoGpfifoRingEntries,
+                        "selected track draws exceed GPFIFO call budget");
                 if (tick == 13128) {
                     require(race.session().animation().braking, "animation guard tick is not braking");
                     StockFrameInputs inputs;
