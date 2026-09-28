@@ -347,15 +347,32 @@ places, are x87 instructions - the shape a float field read has:
 `0x00477936` is `fld dword ptr [edx + 0x27c]`, inside the vehicle physics
 range, and `0x00477933` reaches it with `mov edx, dword ptr [ecx + 0x54]`. It
 is used as the value or as one minus it (`0x0047793E` subtracts it from the
-1.0 at `0x006CC7BC`), doubled, scaled by `[edx + 0x1E4]` of another object and
-stored to a `+0x170` of the entry the loop is on; the loop runs `edi` in steps
-of 4 to `0x48` (`0x00477B9F`..`0x00477BA9`), so it walks 18 entries of a
-pointer array and the branch at `0x0047792A` separates the last two from the
-first sixteen, which rules out the four wheels. What fills `[ecx + 0x54]` was
-not settled - the same function also dereferences `[ecx + 4]` and
-`[ecx + 0x58]` - so **the ruling-out is incomplete**: this document does not
-claim the grip block has no reader, only that no reader of it was identified,
-and `0x00477936` is the one site that could be one.
+1.0 at `0x006CC7BC`), doubled, scaled by `[edx + 0x1E4]` of the object the
+previous `edx` held (`0x0047792D` loads it before `0x00477933` reloads the
+register) and stored to the `+0x170` of the entry its loop is on.
+
+That loop walks **four** entries, not the eighteen round 2 of this document
+claimed - review finding R2-F1 corrected the count, and with it the conclusion
+drawn from it. `0x00477891` sets `edi` to 0x38 (`bf 38 00 00 00`),
+`0x00477B9F` adds 4 and `0x00477BA2`..`0x00477BA9` bounds it below 0x48; over
+the 216 instructions from `0x0047788D` to `0x00477BBC`, decoded in sync, those
+two are the only writes to `edi`. So `edi` takes 0x38, 0x3C, 0x40 and 0x44.
+Eighteen is what 0x48 / 4 gives if the initial 0x38 is missed. Two further
+signs of the same four: the preamble's `mov ebx, 0x6FFE28` / `sub ebx, edi` at
+`0x00477896` leaves a base biased by that initial value, and `0x00477953` then
+reads `[ebx + edi]`, which is four floats at `0x006FFE28`..`0x006FFE37`; and
+each entry is a pointer read as `mov eax, dword ptr [edi + ecx]`
+(`0x004778C7`, `0x00477944`) whose `+0x170` the result is stored to.
+
+The `cmp edi, 0x40` branches at `0x004778C2` and `0x0047792A` split those four
+into a first pair and a second pair. That is the shape the suspension rule of
+this document uses for the four wheels at `0x00575A4A`..`0x00575A70` - wheels
+0 and 1, then 2 and 3 - so the loop is **consistent with** the four wheels and
+does not rule them out. What fills `[ecx + 0x54]` was still not settled - the
+same function also dereferences `[ecx + 4]` and `[ecx + 0x58]` - so **the
+ruling-out is incomplete**: this document does not claim the grip block has no
+reader, only that no reader of it was identified, and `0x00477936` is the one
+site that could be one.
 
 What was observed of the three fields: the first value is non-decreasing with
 the level in all 35 records and the second and third are not always - the
@@ -398,9 +415,23 @@ racers; every traffic entry is 100 kN/m at all three levels, so the round 1
 form of this claim was too wide (review note N1). Every block in the file has
 a positive spring rate, a positive bump limit and a negative droop limit; over
 the file the rates run 43.6 to 120 kN/m, the bump limits 0.055 to 0.15 m and
-the droop limits -0.15 to -0.09 m. The travel does not shrink monotonically
-for every car: 17 of the 20 racers' bump limits fall with the level and the
-RX-7's, the Impreza's and the Tiburon's do not.
+the droop limits -0.15 to -0.09 m.
+
+The travel does not move one way for every car, and round 2 of this document
+said it did in the form note N1 was about - it counted "does not rise" as
+"falls" and gave 17 of 20, which review finding R2-F2 corrected. Measured over
+both axles of the three entries, at block `+0x14`: the bump limits fall
+strictly across the levels on both axles in 13 of the 20 racers; they are
+constant at all three levels on both axles in four more, the Focus, the Lancer
+and the Integra at 0.15 m and the Civic at 0.125 m, so those do not fall
+either; and they rise on at least one axle in three - the RX-7 on both, the
+Impreza on the rear with its front constant at 0.15 m, and the Tiburon on the
+rear while its front falls. 13 plus 4 plus 3 is 20. The droop limits, which
+round 1 covered in the same sentence and round 2 dropped rather than restating
+(review note R2-N1), shrink strictly toward zero on both axles in 15 of the 20
+racers; the Impreza, the Lancer and the Integra hold -0.15 m at all three
+levels on both axles, and the Focus and the Tiburon have a rear droop limit
+that grows away from zero instead.
 [`PART_PLACEMENT.md`](PART_PLACEMENT.md)
 already recorded the three ride-height deltas for the 240SX, the Golf, the
 350Z and the traffic vehicles, which are zero for all 15 of the latter; what
