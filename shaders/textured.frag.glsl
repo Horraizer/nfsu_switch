@@ -59,6 +59,15 @@ void main()
         discard;
     }
 
+    // Retail world.efx:61 modulates the ground shadow by 0x80 vertex RGB
+    // and two. Its runtime alpha comes from car height and alignment; the
+    // shadow draw disables depth writes and uses source-over blending.
+    if (material.alpha.w == 4.0) {
+        outColor = vec4(vec3(texel.rgb) / 255.0,
+                        clamp(float(texel.a) * material.alpha.x / 255.0, 0.0, 1.0));
+        return;
+    }
+
     // The eye-facing geometric normal of the triangle, shared by the flat
     // shade and by vdotn. The reference takes it from the three placed
     // vertices; a fragment stage takes it from the screen derivatives of the

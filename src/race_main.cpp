@@ -6,6 +6,7 @@
 #include "nfsu/screen_text.h"
 #include "nfsu/race_window.h"
 #include "nfsu/race_audio.h"
+#include "nfsu/car_shadow.h"
 
 #include <algorithm>
 #include <array>
@@ -76,6 +77,7 @@ public:
     TrackDrawList list;
     StockFrameInputs car_inputs;
     StockFrame car;
+    CarShadowAsset shadow;
     std::vector<PreparedInstance> base;
     bool dirty = true;
     std::uint64_t loads = 0, releases = 0, bytes_read = 0;
@@ -85,6 +87,7 @@ public:
         std::string error;
         require(read_stock_frame_inputs(root,car_inputs),"cannot read stock car inputs");
         require(prepare_stock_frame(car_inputs,stock_240sx_request(),stock_240sx_skin(),car,error),error);
+        require(prepare_car_shadow(car_inputs,car.car_pack,shadow,error),error);
         base = car.scene.instances;
         const std::array<fs::path,3> paths = {
             texture, root/"Global/INGAMEB.BUN", root/"Global/GLOBALB.BUN"};
@@ -177,6 +180,8 @@ public:
         RenderOptions track_options = options;
         track_options.material_state = MaterialStateMode::retail;
         require(render_track_draw_list(track,list,track_options,{},background,stats,track_stats,error),error);
+        const auto shadow_pose = place_car_shadow(session);
+        require(render_car_shadow(shadow,shadow_pose,track_options,background,stats,error),error);
         require(drive_place_instances(base,session.car(),session.spec(),car.scene.instances,
                                       &session.animation()),"car placement failed");
         require(render_stock_frame(car,options,error),error);

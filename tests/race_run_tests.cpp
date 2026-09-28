@@ -173,8 +173,9 @@ int main(int argc, char** argv) {
         require(replay.load(text, error), error);
         require(scene.cache_bytes() <= 8*kMiB,"command cache exceeded metadata limit");
         std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 8*kMiB << '\n';
-        // Supplemental textures and prepared retail-order keys add cache metadata.
-        require(scene.cache_bytes() == 3825779,"event 1 command cache metadata estimate differs from pin");
+        // The resident shadow grid, decoded texture and draw definition add
+        // 34015 bytes of scene/cache metadata to the prior estimate.
+        require(scene.cache_bytes() == 3859794,"event 1 command cache metadata estimate differs from pin");
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';
         require(scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes() <=
@@ -308,6 +309,23 @@ int main(int argc, char** argv) {
                         "cached ordered draw differs from reference");
                 }
                 require(frame.track_draws > 0 && frame.car_draws == 94, "missing track/car commands");
+                require(frame.commands.draw_count() == frame.track_draws + frame.car_draws + 1,
+                        "ground shadow is not one additional draw");
+                if (tick == 180 || tick == 11344) {
+                    std::size_t shadows = 0;
+                    for (std::size_t i = 0; i < frame.commands.draw_count(); ++i) {
+                        const auto shadow = frame.commands.draw_view(i);
+                        if (shadow.definition.name != "race-shadow/shadow ground") continue;
+                        ++shadows;
+                        const auto& draw = shadow.definition;
+                        const auto& texture = frame.commands.resource_table().resources.at(draw.texture_resource);
+                        require(draw.index_count == 54 && texture.texture_hash == 0xF36596F5U &&
+                                draw.pipeline.blend && !draw.pipeline.depth_write &&
+                                shadow.material.alpha[0] > 0.0F,
+                                "resting/turning car shadow lost its retail texture, blend or depth state");
+                    }
+                    require(shadows == 1, "resting/turning car shadow draw missing or duplicated");
+                }
                 if (tick == 13128) {
                     require(race.session().animation().braking, "animation guard tick is not braking");
                     StockFrameInputs inputs;

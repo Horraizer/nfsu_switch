@@ -1,7 +1,8 @@
 # Car shadow: retail trace (issue 188)
 
-This is the trace phase, before implementation. PR 210 must merge before
-renderer changes begin. No CPU/deko3d shadow or console timing is claimed.
+The retail trace preceded the renderer change. PR 210 is merged. The CPU
+reference and deko3d command stream now draw the first ground-darkening
+layer; console photo and timing remain to be recorded by the coordinator.
 The standing acceptance is [issue 181](https://git.accad.pro/murzintsevav/nfsu-switch/issues/181).
 
 ## Provenance and reproduction
@@ -164,29 +165,37 @@ also multiplied by the texture sample and two in `world.efx:61`. No
 speed-dependent fade was found in this ground-shadow calculation. This
 is a bounded negative finding, not proof about every caller or game mode.
 
-## Implementation plan and approximations
+## Implementation and approximations
 
-After PR 210 merges, rebuild this branch from freshly fetched origin/main.
-Use the existing vehicle transform, contact state and retail car texture;
-keep all shadow calculations on the rendering side. Simulation, collision
-inputs and replay state must not be modified. Current replay/result/frame
-pins live in `nfsu_race_run_tests`, `nfsu_race_session_tests` and
-`tools/race_replay_check.py`; do not copy their values here.
+`src/car_shadow.cpp` decodes only `240SX_SHADOWIG` from the stock car pack
+and builds the traced 4x4 UV grid as eighteen triangle-list triangles. The
+CPU reference draws it into the track depth buffer before car composition.
+The race command stream gives deko3d the same grid and texture, with one
+draw, source-over blend, depth test and disabled depth writes. Its GPU
+vertices and texture are resident; only one transform/material uniform pair
+changes per frame. The shadow is visual only. `nfsu_race_run_tests` checks
+the replay state and cached/reference commands; `tools/race_replay_check.py`
+pins the changed race frames. The standalone stock-car frame has no road
+and remains unchanged.
 
-Planned approximation: a bounded grid based on wheel/contact extents until
-the original footprint-field producers and complete invalid-sample policy
-are recovered. Planned approximation: combine its triangles into one draw
-instead of retail's three immediate strips, preserving row-2 visibility,
-source-over alpha, depth test and disabled depth write. Both approximations
-must be revisited against desktop resting/turning frames and the console
-photo before claiming acceptance.
+Approximation: road placement uses the current contact wheels' positions,
+suspension compression and authored radii. A plane through three wheel
+centres estimates the road normal, and each centre moves one rolling radius
+along it. This avoids per-frame allocations in the collision query. The
+retail path instead samples road height at each grid vertex and uses wheel
+fallbacks for invalid samples. The current grid is planar and skips the
+shadow when no wheel contacts the road. Its half extents use the car's
+authored length and width, since the producers of the retail footprint
+fields are not fully traced. A 0.04 normal lift, 0..3 height fade, 1.05
+footprint scale and 0.75 expansion follow the traced values. The CPU/GPU
+path batches the three retail strips into one draw. The track renderer
+currently draws the shadow after its track list; retail interleaves it in
+row 2 of an immediate queue, so overlap with later blended track layers
+can differ.
 
-Expected GPU work, an estimate rather than a measurement: one small dynamic
-vertex/index upload, one draw, eighteen triangles, one diffuse texture
-sample per covered fragment, and source-over blending. No shadow map,
-extra framebuffer or alpha-test discard is needed by the traced normal
-path. Cost is bounded primarily by the projected car footprint's fragment
-coverage; a millisecond cost or 60 fps claim requires Switch timestamps.
-Request that measurement through the coordinator with CONSOLE_REQUEST,
-including the build head and resting/turning views. Issue 55 owns the
-frame-budget acceptance; the trace alone cannot establish it.
+Expected GPU cost is one resident-texture draw, eighteen triangles and one
+sampled alpha blend per covered fragment. No shadow map, extra framebuffer
+or per-frame vertex upload is used. The cost estimate still needs a Switch
+GPU SCENE timestamp before and after this change, in docked and handheld
+modes. The coordinator's console photo should include resting and turning
+views; issue 55 owns frame-budget acceptance.
