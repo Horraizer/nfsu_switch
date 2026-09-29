@@ -114,7 +114,10 @@ still render. `nfsu_track_render_tests` covers that fallback case.
 APPROXIMATION: both renderers place sky immediately before the first blended
 world draw (or after the opaque world if there is no blend), project it to
 normalized depth 0.999999, use LEQUAL, disable depth writes and culling. This
-allows opaque depth to reject hidden background and puts sky behind glass.
+puts sky behind glass. In the retail bucket order the first blended draw
+comes early, so in list order only the few depth writers before it reject
+hidden sky; the Switch race renderer therefore submits the sky after its
+whole opaque pass (see GPU cost below).
 It deliberately differs from the recovered sky-first queue order. It is not
 proof of retail depth/cull behavior. The fixed world placement does not make
 the sky follow the camera; the approximation is intended for the race route.
@@ -139,6 +142,57 @@ Thus the sky implementation is ready for review, but the requested active-fog
 frames are NOT delivered. Coordinator acceptance or further runtime tracing
 is needed to resolve that part of #184. Console photo/performance is also
 pending; a desktop hash cannot discharge either requirement.
+
+## GPU cost (issue #227)
+
+History: at 2c1b9a7, handheld replay, the sky build fell from the 30 Hz
+step to the 20 Hz step on a large share of frames; coordinator comment 5487
+on pull request #227 records the console result.
+
+The camera is always inside the dome, so the sky rasterizes over the whole
+screen in both of its groups. `nfsu_sky_fragment_probe` replays event 1
+through the RaceGpuScene frames the Switch executes and counts, per frame,
+the sky fragments that pass the depth test in each submission order: `list`
+(the renderer before #227, and `--sky early` approximately), `on` (the race
+renderer's opaque-first order, sky after the opaque pass), and the uncovered
+floor. It also reports the texel footprint of the uncovered sky. It is
+fragment accounting, not a timing:
+
+```sh
+python tools/frame_budget_evidence.py "$RETAIL" out/sky-cost run -- build/nfsu_sky_fragment_probe "$RETAIL" tests/recordings/event1.txt 60
+cmp out/sky-cost/before.json out/sky-cost/after.json
+```
+
+History: at 52fe3ca, desktop Debug build, the command above over the whole
+replay (805 frames, 1280x720): per frame 1397184 sky fragments rasterized;
+798148 pass depth in `list` order, 823083 in `early`, 185724 in `on`;
+162794 are uncovered by any depth-writing draw. The uncovered sky has a
+mean log2 texel footprint of -2.06 (magnified); 3.7 percent of it is
+minified.
+
+The cause is order, not texture sampling or upload. In list order the sky
+is submitted before most opaque scenery, so most sky fragments are shaded,
+blended and then overdrawn. The texture is magnified almost everywhere, so
+mip levels would not change the cost; no per-frame upload or re-record is
+involved (the sky lives in the static track package with its placement).
+
+Implemented for the Switch race renderer:
+
+- The sky's two definitions and its placement are part of the static track
+  package; `deko_draw_in_opaque_pass` keeps the sky out of the opaque pass,
+  so every depth-writing opaque draw is submitted before it.
+- `shaders/sky.frag.glsl` declares `layout (early_fragment_tests) in`. The
+  sky writes no depth, so this changes no pixel; it keeps the diagnostic
+  alpha-cutoff discard from forcing late depth tests.
+  `nfsu_shader_source_guards` requires the declaration.
+- `--sky on|off|early` selects the mode for console A/B runs; see
+  [SWITCH_RACE.md](SWITCH_RACE.md).
+
+The look is unchanged: both sky textures, both layers and the modulation
+stay as above, and the CPU reference and its pinned frames do not change.
+The GPU order differs from the CPU reference only where an alpha-tested or
+opaque draw follows the first blended draw; opaque-first ordering already
+made that difference in PR #221. The console A/B is the acceptance evidence.
 
 ## Reproduction and frame pins
 
