@@ -174,6 +174,10 @@ enum class BindingKind {
     invalid_slot   // the texture slot is outside the mesh hash list
 };
 
+// Retail brake substitution: speed.exe 0x56A76B and 0x56A80A.
+inline constexpr std::uint32_t kBrakeGlobalHash = 0x17F9F794U;
+inline constexpr std::uint32_t kBrakeGlobalLeftHash = 0x85E9C79EU;
+
 // Empty stock sponsor slots resolve to DEFAULTALPHA in retail and are skipped.
 bool is_stock_dummy_decal_hash(std::uint32_t hash) noexcept;
 

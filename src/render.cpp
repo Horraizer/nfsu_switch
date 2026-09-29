@@ -1311,42 +1311,8 @@ bool render_scene(
             break;
         }
         fallback_color(draw.texture_hash, raster.fallback);
-        // The retail state comes from the bound texture-info record only.
-        // A group with no resolved texture has no proven state and keeps
-        // the opaque defaults.
-        bool environment = false;
-        // The coefficient upload zeros whole float4 vectors, W lane
-        // included, so a closed diffuse gate leaves diffuse_scale.w at
-        // zero: the source alpha and the environment term both vanish.
-        bool zero_alpha_lane = false;
-        if (retail_state && draw.binding == BindingKind::resolved) {
-            const RenderTexture& texture = scene.textures[draw.texture];
-            raster.alpha_test = render_alpha_test_enabled(texture.alpha_test_mode);
-            raster.blend = render_blend_mode_of(texture.alpha_blend_mode);
-            if (raster.alpha_test) {
-                ++stats.groups_alpha_tested;
-            }
-            if (raster.blend != RenderBlendMode::disabled) {
-                ++stats.groups_blended;
-            }
-            const MaterialCoefficientGates gates = material_coefficient_gates(
-                draw.flags, coefficients.environment_enabled);
-            zero_alpha_lane = !gates.diffuse;
-            environment = gates.environment && !zero_alpha_lane &&
-                          (coefficients.environment_min[0] != 0.0 ||
-                           coefficients.environment_min[1] != 0.0 ||
-                           coefficients.environment_min[2] != 0.0 ||
-                           coefficients.environment_range[0] != 0.0 ||
-                           coefficients.environment_range[1] != 0.0 ||
-                           coefficients.environment_range[2] != 0.0);
-        }
-        // vdotn is needed whenever a coefficient the caller supplied can
-        // change the fragment: the alpha lane or the environment term.
-        const bool needs_view =
-            retail_state && draw.binding == BindingKind::resolved &&
-            !zero_alpha_lane &&
-            (environment || coefficients.alpha_min != 1.0 ||
-             coefficients.alpha_range != 0.0);
+        // Count a material group once even when its copies use different states.
+        bool counted_alpha_test = false, counted_blend = false;
 
         // One drawn copy per instance that names this group's mesh, in
         // ascending instance order, so the group's triangles stay one
@@ -1365,10 +1331,52 @@ bool render_scene(
             const float* const transform =
                 instanced ? scene.instances[copy].transform : nullptr;
             const std::size_t override_texture =
-                instanced && draw.texture_hash == 0x17F9F794U
+                instanced && draw.texture_hash == kBrakeGlobalHash
                     ? scene.instances[copy].brake_left_texture : kNoHandle;
             raster.texture = override_texture != kNoHandle
                 ? &scene.textures[override_texture] : base_texture;
+            // Derive state after substitution, just as the command recorder does.
+            raster.alpha_test = false;
+            raster.blend = RenderBlendMode::disabled;
+            // The retail state comes from the bound texture-info record only.
+            // A group with no resolved texture has no proven state and keeps
+            // the opaque defaults.
+            bool environment = false;
+            // The coefficient upload zeros whole float4 vectors, W lane
+            // included, so a closed diffuse gate leaves diffuse_scale.w at
+            // zero: the source alpha and the environment term both vanish.
+            bool zero_alpha_lane = false;
+            if (retail_state && raster.texture != nullptr) {
+                const RenderTexture& texture = *raster.texture;
+                raster.alpha_test = render_alpha_test_enabled(texture.alpha_test_mode);
+                raster.blend = render_blend_mode_of(texture.alpha_blend_mode);
+                if (raster.alpha_test && !counted_alpha_test) {
+                    counted_alpha_test = true;
+                    ++stats.groups_alpha_tested;
+                }
+                if (raster.blend != RenderBlendMode::disabled && !counted_blend) {
+                    counted_blend = true;
+                    ++stats.groups_blended;
+                }
+                const MaterialCoefficientGates gates = material_coefficient_gates(
+                    draw.flags, coefficients.environment_enabled);
+                zero_alpha_lane = !gates.diffuse;
+                environment = gates.environment && !zero_alpha_lane &&
+                              (coefficients.environment_min[0] != 0.0 ||
+                               coefficients.environment_min[1] != 0.0 ||
+                               coefficients.environment_min[2] != 0.0 ||
+                               coefficients.environment_range[0] != 0.0 ||
+                               coefficients.environment_range[1] != 0.0 ||
+                               coefficients.environment_range[2] != 0.0);
+            }
+            // vdotn is needed whenever a coefficient the caller supplied can
+            // change the fragment: the alpha lane or the environment term.
+            const bool needs_view =
+                retail_state && raster.texture != nullptr &&
+                !zero_alpha_lane &&
+                (environment || coefficients.alpha_min != 1.0 ||
+                 coefficients.alpha_range != 0.0);
+
             raster.lamp_mode = instanced ? scene.instances[copy].lamp_mode : 0;
             if ((first + count) / 3 > first / 3) {
                 copy_drawn[copy] = 1;

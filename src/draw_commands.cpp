@@ -341,7 +341,7 @@ bool record_car_commands(const PreparedCarScene& scene, const RenderOptions& opt
                 draw.name = "car group " + std::to_string(group) + " copy " +
                     (draw.instance == kNoHandle ? "authored" : std::to_string(draw.instance));
                 const std::size_t override_texture =
-                    draw.instance != kNoHandle && source.texture_hash == 0x17F9F794U
+                    draw.instance != kNoHandle && source.texture_hash == kBrakeGlobalHash
                         ? scene.instances[draw.instance].brake_left_texture : kNoHandle;
                 const auto* texture = override_texture != kNoHandle
                     ? &scene.textures[override_texture]

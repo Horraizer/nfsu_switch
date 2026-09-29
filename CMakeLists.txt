@@ -300,7 +300,7 @@ if(NFSU_BUILD_TESTS)
         tests/stock_scene_tests.cpp
     )
 
-    target_link_libraries(nfsu_stock_scene_tests PRIVATE nfsu_stock_scene)
+    target_link_libraries(nfsu_stock_scene_tests PRIVATE nfsu_stock_scene nfsu_draw_commands nfsu_render)
     nfsu_enable_warnings(nfsu_stock_scene_tests)
     add_test(NAME nfsu_stock_scene_tests COMMAND nfsu_stock_scene_tests)
 

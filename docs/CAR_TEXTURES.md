@@ -15,7 +15,7 @@ with Capstone disassembly of local retail bytes; no retail bytes are tracked.
 | VA | Observed operation |
 | --- | --- |
 | `0x0056A780..0x0056A7B2` | Initializes the window source hashes in `CarRenderInfo`. |
-| `0x0056CA60..0x0056CAC3` | Reads four two-bit damage levels, indexes the window target tables at `0x006F1B48` and `0x006F1B58`, and writes the substitution targets. Level zero selects `WINDOW` (`0x834B8017`); the alternate table selects `WINDOW2` (`0xECBB8329`). |
+| `0x0056CA60..0x0056CAC3` | Reads six two-bit damage levels (ECX = 0x10..0x1A, stride 2; one per window), indexes the window target tables at `0x006F1B48` and `0x006F1B58`, and writes the substitution targets. Level zero selects `WINDOW` (`0x834B8017`); the alternate table selects `WINDOW2` (`0xECBB8329`). |
 | `0x0053F540..0x0053F5CD` | Compares the mesh texture hash with substitution entries and replaces the texture pointer. Lookup uses `0x005461C0`. |
 | `0x0056C3D0..0x0056C4B7` | Initializes the empty decal target from `DEFAULTALPHA` (`0x66994F4A`). |
 | `0x0056C4C3..0x0056C6E0` | Hashes `DUMMY_DECAL1..8` and initializes their substitution entries. |
@@ -70,20 +70,24 @@ in PR #210. No palette change is made in this issue.
 ## Reproduction and result
 
 Use the painted command in `docs/SWITCH_BUILD.md` with the default yaw 35,
-then `--yaw -45` and `--yaw 145`. All outputs below are 1280x720 TGA files,
-3686418 bytes each. Retail reads were bracketed by recursive filename,
-size, and SHA-256 manifests: 476 files, zero differences.
+then `--yaw -45` and `--yaw 145`. The table records measurements at base
+`97e3839` and texture fix `329e13b5`,
+using the painted viewer command at each yaw. Retail reads were bracketed by
+recursive filename, size and SHA-256 manifests, with zero differences.
+The current default pin and size are checked by `nfsu_draw_commands_retail`
+against `include/nfsu/stock_frame.h`. Orbit pins remain below.
 
 | Yaw | Before SHA-256 | After SHA-256 |
 | ---: | --- | --- |
-| 35 | `8A5932A302A22AA3C4C01776009B5348629D8D37B3B61E6E0AA303235B1CF48F` | `05203E9CCDEB15B8ECF478B8501777577620DAB94C3FBA6A34F428BA772AF6E0` |
+| 35 | `8A5932A302A22AA3C4C01776009B5348629D8D37B3B61E6E0AA303235B1CF48F` | `kStock240sxPaintedFrameSha256` in `include/nfsu/stock_frame.h` |
 | -45 | `52F496BA4BBB7F520973152A0ECA454B10BA9047C629AE74892B9429DE97B8D7` | `17D783062F318FE0AC1B8D42D41665CE810A7FE39ADC9733612C199C18030E03` |
 | 145 | `127C235F5E468E12F453AA9E85ABF809C95C62235D5BDFC1284DB86C6D9B9303` | `D3A4D72629888283C24D2788F81E865427248E01DFDCC3C0107C4073D5218D4B` |
 
-The default painted frame changed from 233 fallback triangles and 33795
-fallback pixels to zero of each. It records 74 owning draw commands, with
-59 resolved material groups and 20 invalid empty slots. The six remaining
-unresolved hashes are the disabled dummy decals. Window checker patterns,
+The default painted frame has no fallback triangles or pixels, checked by
+`nfsu_draw_commands_retail`. The viewer's `groups_invalid` statistic combines
+empty material slots and deliberately suppressed dummy-decal groups; it does
+not mean every non-drawable group has an empty index range. The command above
+prints the current counts. The six remaining unresolved hashes are the disabled dummy decals. Window checker patterns,
 magenta strips, and the blank sponsor patterns are gone in all three views.
 The dark wheel backing visible in the viewer's default material mode is
 unchanged. In `--material-state retail`, its alpha-test state removes the
@@ -95,3 +99,27 @@ The retail draw-command check compares CPU reference draws with the deko3d
 command recorder, verifies placements, zero painted fallback pixels, and
 both pinned default frames. It proves identical prepared material selection;
 pixel agreement on the console still needs a console capture.
+
+## GPU work and memory
+
+At `329e13b5`, compared with `97e3839` using `nfsu_draw_commands_retail`,
+the stock car submitted 20 fewer draws and 99 fewer triangles, with two more
+upload resources (painted and unpainted). The added GLOBALB records are
+WINDOW (128x128 A8R8G8B8, 87296 file payload bytes) and BRAKE_GLOBAL_LEFT
+(128x128 DXT3, 21824 file payload bytes). Those pack spans include mip levels;
+they are not allocated GPU byte counts. The current race car path calls the
+same RGBA stock preparation as the CPU reference, so both added top levels occupy 65536 bytes each: 131072 bytes
+before deko3d alignment, derived from their dimensions and decoded format.
+This is larger than the compressed file spans. Existing shaders do the same
+per-fragment work.
+Actual GPU milliseconds and aligned allocation cost need the paired console
+measurement, not a claim of improvement inferred from fewer draws.
+
+PR #225 review fixes derive CPU alpha/blend and coefficient state after
+per-instance texture substitution, matching the recorder. A synthetic test
+uses deliberately different alpha/blend modes for the base and left texture
+so equality does not rely on the retail pair's matching metadata. A brake
+mesh without a drawable BRAKE_GLOBAL group gets no left-texture override
+or unused upload. `nfsu_stock_scene_tests` covers both cases. Hash constants
+`kBrakeGlobalHash` and `kBrakeGlobalLeftHash` are shared by preparation,
+validation and both render paths.

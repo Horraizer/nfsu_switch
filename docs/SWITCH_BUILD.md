@@ -343,12 +343,12 @@ library code compiled for AArch64, and at the default camera reports whether
 the console made the same bytes as the desktop. Either answer is a result; a
 difference is reported, not hidden.
 
-Two frames are pinned, both from the viewer on the retail files, read-only:
-
-| Frame | Viewer options added to the stock command of [`RENDERER.md`](RENDERER.md) | TGA bytes | SHA-256 |
-| --- | --- | ---: | --- |
-| painted, the default (issue #148) | `--skin-car 240SX --skin-doorline plain --skin-base 30 60 160 128` | 3686418 | `05203E9CCDEB15B8ECF478B8501777577620DAB94C3FBA6A34F428BA772AF6E0` |
-| unpainted, `--unpainted` (issue #141) | none | 3686418 | `8FBA20E893590A6B48EA1CE40B9A711C74690127811BB5CC0CA208337C63BE84` |
+The current painted and unpainted default-frame hashes and sizes live in
+`include/nfsu/stock_frame.h`; `nfsu_draw_commands_retail` checks them in the
+viewer material mode and compares the CPU and GPU submissions in both modes.
+The painted options add `--skin-car 240SX --skin-doorline plain
+--skin-base 30 60 160 128` to the stock command of
+[`RENDERER.md`](RENDERER.md). The unpainted options omit the skin.
 
 Issue #161 re-pinned both, because both showed the defect it fixed: two
 pixels of the front-left wheel's backing quad above the far fender. They
@@ -371,12 +371,13 @@ layer - the plain doorline, `240SX_DOORLINE` and `240SX_DOORLINE_MASK` from
 the car's own `TEXTURES.BIN` - composed into `DUMMY_SKIN1` from
 `Cars/TEXTURES.BIN` and bound under `0x530B82B0` (`DUMMY_SKIN1`) and
 `0x77A20245` (`240SX_SKIN1`), displacing nothing. Against the unpainted frame
-the geometry is the same - 24 meshes, 30 instances, 6137 triangles, 116746
-pixels drawn - and the body's groups now resolve: 52 of 79 material groups
-instead of 20, 5904 textured triangles instead of 2610, and 33795 fallback
-pixels instead of 103808. The body is blue with its door lines; the windows
-and the decals still show the fallback checker, and 11 texture hashes stay
-unresolved, as 12 did without the skin.
+the geometry selection is the same, and the body uses the composed blue skin
+with its door lines. Stock window hashes alias to the retail WINDOW texture;
+unselected dummy decals are suppressed. The painted scene submits no fallback
+triangles or pixels, as checked by `nfsu_draw_commands_retail`. The viewer
+command above prints the current group, instance, triangle and pixel counts.
+The remaining unresolved source hashes belong to suppressed dummy decals;
+[`CAR_TEXTURES.md`](CAR_TEXTURES.md) lists them and the wheel-related limits.
 
 Where each part of that skin selection comes from, as `stock_240sx_skin()`
 in `include/nfsu/stock_frame.h` records it:

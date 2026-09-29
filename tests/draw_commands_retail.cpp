@@ -41,7 +41,7 @@ int main(int argc, char** argv) {
             if (left) {
                 ++left_brakes;
                 if (instance.brake_left_texture >= stock.scene.textures.size() ||
-                    !stock.scene.textures[instance.brake_left_texture].claims_hash(0x85E9C79EU)) {
+                    !stock.scene.textures[instance.brake_left_texture].claims_hash(nfsu::kBrakeGlobalLeftHash)) {
                     std::cerr << "FAIL: left brake has no BRAKE_GLOBAL_LEFT binding\n";
                     return 1;
                 }

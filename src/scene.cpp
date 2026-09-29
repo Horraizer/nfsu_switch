@@ -1097,11 +1097,11 @@ bool validate_scene(const PreparedCarScene& scene, std::string& error) {
             if (!stock || instance.part_slot != kSlotBrake ||
                 (instance.copy != 0 && instance.copy != 3) ||
                 instance.brake_left_texture >= scene.textures.size() ||
-                !scene.textures[instance.brake_left_texture].claims_hash(0x85E9C79EU) ||
+                !scene.textures[instance.brake_left_texture].claims_hash(kBrakeGlobalLeftHash) ||
                 !std::any_of(scene.draws.begin(), scene.draws.end(),
                     [&instance](const PreparedDraw& draw) {
                         return draw.mesh == instance.mesh && draw.drawable &&
-                               draw.texture_hash == 0x17F9F794U;
+                               draw.texture_hash == kBrakeGlobalHash;
                     })) {
                 error = "prepared instance " + std::to_string(i) +
                         " has an invalid left brake texture";

@@ -543,21 +543,29 @@ bool build_stock_scene(
             draw.drawable = false;
         }
     }
+    const auto uses_global_brake = [&](std::size_t mesh) {
+        return std::any_of(prepared.draws.begin(), prepared.draws.end(),
+            [mesh](const PreparedDraw& draw) {
+                return draw.mesh == mesh && draw.drawable &&
+                       draw.texture_hash == kBrakeGlobalHash;
+            });
+    };
     std::size_t brake_left_texture = kNoHandle;
     const bool has_left_brake = std::any_of(drafts.begin(), drafts.end(),
-        [](const InstanceDraft& draft) {
-            return draft.slot == kSlotBrake && (draft.copy == 0 || draft.copy == 3);
+        [&](const InstanceDraft& draft) {
+            return draft.slot == kSlotBrake && (draft.copy == 0 || draft.copy == 3) &&
+                uses_global_brake(handles.at({draft.mesh.source, draft.mesh.index}));
         });
     if (has_left_brake) {
         for (std::size_t i = 0; i < prepared.textures.size(); ++i) {
-            if (prepared.textures[i].claims_hash(0x85E9C79EU)) {
+            if (prepared.textures[i].claims_hash(kBrakeGlobalLeftHash)) {
                 brake_left_texture = i;
                 break;
             }
         }
         for (const RenderTexture& texture : textures.textures) {
             if (brake_left_texture == kNoHandle && texture.usable() &&
-                texture.claims_hash(0x85E9C79EU)) {
+                texture.claims_hash(kBrakeGlobalLeftHash)) {
                 std::uint64_t remaining = limits.max_texture_bytes;
                 if (texture.payload().size() > remaining) {
                     error = "prepared textures would exceed " +
@@ -593,7 +601,8 @@ bool build_stock_scene(
         instance.part_lod = static_cast<std::uint32_t>(draft.lod);
         instance.copy = static_cast<std::uint32_t>(draft.copy);
         instance.mesh_hash = draft.hash;
-        if (draft.slot == kSlotBrake && (draft.copy == 0 || draft.copy == 3)) {
+        if (draft.slot == kSlotBrake && (draft.copy == 0 || draft.copy == 3) &&
+            uses_global_brake(instance.mesh)) {
             instance.brake_left_texture = brake_left_texture;
         }
         prepared.instances.push_back(instance);

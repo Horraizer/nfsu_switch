@@ -364,7 +364,7 @@ bool prepare_stock_frame(
         }
         // The left brake substitution is per copy, not a mesh material.
         if (wants_left_brake) {
-            frame.wanted.push_back(0x85E9C79EU); // BRAKE_GLOBAL_LEFT
+            frame.wanted.push_back(kBrakeGlobalLeftHash); // BRAKE_GLOBAL_LEFT
         }
         std::sort(frame.wanted.begin(), frame.wanted.end());
         frame.wanted.erase(std::unique(frame.wanted.begin(), frame.wanted.end()),

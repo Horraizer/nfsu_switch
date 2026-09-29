@@ -1318,7 +1318,7 @@ int main(int argc, char** argv) {
                     want(stock_sources[ref.source]->meshes[ref.index]);
                 }
                 if (wants_left_brake) {
-                    wanted.push_back(0x85E9C79EU); // BRAKE_GLOBAL_LEFT
+                    wanted.push_back(nfsu::kBrakeGlobalLeftHash); // BRAKE_GLOBAL_LEFT
                 }
             } else {
                 for (const std::size_t index : selected) {

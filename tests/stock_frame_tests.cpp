@@ -1015,7 +1015,7 @@ void test_fixture_frame() {
     check(frame.textures.shadowed.size() == 2,
           "the car's pack and GLOBALB.BUN each shadow a copy in Cars/TEXTURES.BIN");
     check(frame.wanted.size() == 6 &&
-              std::binary_search(frame.wanted.begin(), frame.wanted.end(), 0x85E9C79EU),
+              std::binary_search(frame.wanted.begin(), frame.wanted.end(), nfsu::kBrakeGlobalLeftHash),
           "stock textures include the left brake target and 240SX_SKIN1");
     check(!frame.skinned && frame.skin_binding.hashes.empty() &&
               nfsu::stock_frame_skin_lines(frame).empty() &&
