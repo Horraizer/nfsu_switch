@@ -74,5 +74,10 @@ must be wrapped by `tools/frame_budget_evidence.py ROOT OUT run -- ...`.
 The deterministic race replay still finishes event 1 in 48336 steps,
 13:26.90, with state SHA-256
 `79776F6DD3FC2727C99D3F6AD69A16E623BDEEB5CFFD2261458A15FC7F5B3BF9`.
+Its `states.txt` SHA-256 remains
+`E4D4D6E955D59F7FF11C3318BC455D08B7903CA46BBDE8E1FC3F2AC32AEA54E5`.
 The frame output hashes changed as expected with the corrected sampler and
 desktop race material state. The retail manifest remained equal after it.
+After PR #231 merged, the tuned off-state frame and yaw 120/230 views were
+re-pinned in `include/nfsu/stock_frame.h` and
+`tests/tuned_frame_retail.cmake`; all three were checked with retail manifests.

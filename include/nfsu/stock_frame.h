@@ -90,7 +90,7 @@ constexpr const char* kStock240sxPaintedFrameSha256 =
 // tests/tuned_frame_retail.cmake pins three views.
 constexpr std::uint64_t kTuned240sxFrameBytes = 3686418;
 constexpr const char* kTuned240sxFrameSha256 =
-    "F1329A586C6CC352C6AF540981502E6C1E8EDA35C3806D0FED0881E65C3570DB";
+    "C60371D49654443E0F7CE264224FE5A6142BBD3CCA6B9342AB7477793909BFAF";
 
 // The largest file read: 256 MiB, the limit every parser these files go
 // through applies to its input.

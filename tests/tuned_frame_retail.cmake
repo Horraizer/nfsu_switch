@@ -32,19 +32,20 @@ set(common
     --stock-part WHEEL BBS_STYLE01_15_23
     --skin-car 240SX --skin-vinyls "${car}/VINYLS.BIN"
     --skin-doorline kit --skin-base 200 30 30 128
-    --skin-vinyl 0 TRIBAL5 16 no-remap)
+    --skin-vinyl 0 TRIBAL5 16 no-remap
+    --material-state off)
 
 # These are frame pins, not observations copied into documentation.
 set(pins
     # Default: WHEELS/TEXTURES.BIN resolves BBS tread; #225 resolves
     # window aliases, decals and per-copy brake materials.
-    "F1329A586C6CC352C6AF540981502E6C1E8EDA35C3806D0FED0881E65C3570DB"
+    "C60371D49654443E0F7CE264224FE5A6142BBD3CCA6B9342AB7477793909BFAF"
     # Yaw 120: WHEELS/TEXTURES.BIN side tread beside the KIT01 skirt;
     # #225 resolves its windows, decals and per-copy brake materials.
-    "382859BF591DBBFE9AA6D845B47ADBF49EFE5B6EBE02EB40B0D4A1DC79B1A2A3"
+    "D46E827BD18DEFBC5AF0BD8D9C728516D08F35FD6294F9A11E07591879231FCC"
     # Yaw 230: WHEELS/TEXTURES.BIN opposite tread and #225 rear glass,
     # decal and per-copy brake materials.
-    "516A226DBA41C4529A4DE3B81C95E99BEC99DFB7C1B09827F7D90066835C1DAA")
+    "49EDEB280EC45B9C70A0CE5BFAA594EEB39FC16108F82B2A159F266FE4BD79C7")
 set(angles default 120 230)
 foreach(i RANGE 0 2)
     list(GET angles ${i} angle)
@@ -80,9 +81,12 @@ foreach(i RANGE 0 2)
     file(SHA256 "${out}" actual)
     string(TOUPPER "${actual}" actual)
     if(NOT actual STREQUAL expected)
-        message(FATAL_ERROR "tuned ${angle}: hash ${actual}, expected ${expected}")
+        list(APPEND pin_errors "tuned ${angle}: hash ${actual}, expected ${expected}")
     endif()
 endforeach()
+if(pin_errors)
+    message(FATAL_ERROR "${pin_errors}")
+endif()
 
 execute_process(COMMAND "${TESTS}" --tuned-frame "${ROOT}"
                 RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE stderr)
