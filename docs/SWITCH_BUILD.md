@@ -556,7 +556,10 @@ the number of frames rendered.
 
   print `tga_bytes 3686418` and the painted and the unpainted pin
   respectively, in a Debug and in a Release build, with every render, slot
-  and skin line the viewer prints for the same frame.
+  and skin line the viewer prints for the same frame. CTest compares both
+  with the constants of `include/nfsu/stock_frame.h` as
+  `nfsu_stock_frame_retail` and `nfsu_stock_frame_painted_retail` (label
+  `retail`) when the build is configured with `-DNFSU_RETAIL_ROOT=<installation>`.
 - The session on the desktop. `nfsu_stock_frame_tests` replays a recorded
   controller session over the synthetic car through `nfsu::StockView`: a +
   held since launch that does not exit, the left stick orbiting by the

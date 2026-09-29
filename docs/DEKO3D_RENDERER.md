@@ -109,6 +109,8 @@ build/nfsu_draw_commands_retail.exe <retail-root>
 The current painted and unpainted frame sizes and SHA-256 pins live in
 `include/nfsu/stock_frame.h`; `nfsu_draw_commands_retail <retail-root>`
 checks both off-state frames and compares both material-mode draw traces.
+CTest runs it as `nfsu_draw_commands_retail` (label `retail`) when the build
+is configured with `-DNFSU_RETAIL_ROOT=<installation>`.
 
 The #145 notes carried into #146 are addressed explicitly:
 

@@ -165,8 +165,9 @@ allocations between checkpoints. Phase logging does not determine the peak.
 MinGW links the harness with static libstdc++/libgcc so DLL-internal C++
 allocations cannot bypass the executable's replacement operators.
 `--baseline` reports an over-budget result without asserting the limit; the
-normal retail invocation fails above 50331648. It is not used by CTest,
-which must not require proprietary assets.
+normal retail invocation fails above 50331648. CTest runs it as
+`nfsu_track_loader_peak_retail` (label `retail`) when the build is configured
+with `-DNFSU_RETAIL_ROOT=<installation>`; the `--baseline` measurement is not registered.
 
 At `1844834`, desktop GCC 13.2 default and Release, same retail root and
 allocation counter:
@@ -217,6 +218,9 @@ nfsu_track_slice_tests X:/Games/NFSU --full
 
 The retail sampled run checks nonempty frames, bounded draws, collision hits
 and clear columns. Clear is a valid query answer along this hand-given path.
+Configured with `-DNFSU_RETAIL_ROOT=<installation>`, CTest runs the first as
+`nfsu_track_slice_retail` (label `retail`) and, in a Release configure, the
+second as `nfsu_track_slice_retail_full` (labels `retail` and `retail-full`).
 The default CTest invocation uses synthetic
 camera/mapping/refusal checks, allocator high-water accounting, and a
 missing/partial installation rejected before parsing; it requires no game

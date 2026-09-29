@@ -4,8 +4,9 @@
 #include "nfsu/draw_execution.h"
 #include <iostream>
 
-// Explicit opt-in only: never part of CTest, which must need no retail files.
-// The operator takes before/after manifests; this program writes no files.
+// A retail check: CTest registers it as nfsu_draw_commands_retail only when
+// NFSU_RETAIL_ROOT is configured, inside the retail manifest fixture (issue
+// #233), so a build without retail files never runs it. It writes no files.
 int main(int argc, char** argv) {
     if (argc != 2) {
         std::cerr << "usage: nfsu_draw_commands_retail ROOT\n";

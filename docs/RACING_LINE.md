@@ -382,8 +382,10 @@ single `0x00034121` of a decompressed `TRACKB` image and refuses an image
 with none or with two.
 
 `nfsu_racing_line_tests` runs its synthetic cases without retail data. Its
-retail digest runs only when `NFSU_RETAIL_ROOT` names the game installation;
-without that variable the test prints a skip message and exits successfully.
+retail digest runs only when the installation is given on its command line,
+which CTest does as `nfsu_racing_line_retail` (label `retail`) when the build
+is configured with `-DNFSU_RETAIL_ROOT=<installation>`; the plain `nfsu_racing_line_tests`
+has no retail half and says so.
 
 `nfsu_path_follow` (`include/nfsu/path_follow.h`, `src/path_follow.cpp`) is
 the path follower, separated from vehicle actuation as issue #63 asks. It

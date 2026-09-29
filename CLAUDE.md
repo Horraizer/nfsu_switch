@@ -246,7 +246,7 @@ affect. Report each command and its result verbatim in the handoff.
 
 | Area touched | Command |
 | --- | --- |
-| C++ sources, headers, `CMakeLists.txt` | `cmake -S . -B build -G Ninja`, because the build directory is gitignored and a fresh clone has none, then `cmake --build build` then `ctest --test-dir build --output-on-failure` |
+| C++ sources, headers, `CMakeLists.txt` | `cmake -S . -B build -G Ninja -DNFSU_RETAIL_ROOT=<retail installation>`, because the build directory is gitignored and a fresh clone has none, then `cmake --build build` then `ctest --test-dir build --output-on-failure`, whose summary must show no skipped retail test; then once in Release, the same three commands in `build-release` with `-DCMAKE_BUILD_TYPE=Release` added, where the plain `ctest` also runs the `retail-full` label |
 | `tools/kanban/` | `node --test tools\kanban\test.mjs tools\kanban\server.test.mjs tools\kanban\launcher.test.mjs` |
 | `tools/kanban/start.ps1` | launcher smoke, with `GITEA_TOKEN` set, from the real workspace path: `powershell -NoProfile -Command '$env:KANBAN_SMOKE="1"; .\tools\kanban\start.ps1'` |
 | any tracked file | the ASCII scan above |
@@ -270,6 +270,18 @@ Three environment requirements are part of the gates, not excuses:
   `KANBAN_PORT` and say so rather than reporting the conflict as a pass. Run it
   in its own shell: `KANBAN_SMOKE` set in your interactive session stays set,
   and the next launch from that session silently becomes a smoke run.
+
+The retail checks are part of the C++ gate (issue #233). Configured with
+`NFSU_RETAIL_ROOT`, CTest registers every check that reads the game's files
+with the label `retail` - the replay and frame pins, the cached-versus-
+reference draw comparison, the stock frame pins, the 48 MiB loader ceilings,
+the track slice, the racing line and the audio pins - passes the root on each
+command line, and brackets them with a fixture that fails if any file or
+directory under the root changed. Configured without it, the one retail test
+is `nfsu_retail_skipped`, which reports SKIPPED: a summary that shows it is not
+a C++ gate run. `ctest -L retail` runs only the retail checks, fixture
+included. The replay check needs the Python 3.8 or newer interpreter the
+configure finds; it is a real interpreter, not one inside another tool.
 
 A differential comparison fails in a way the rows above do not: neither side
 produces a real answer and the comparison reports agreement. A binary that

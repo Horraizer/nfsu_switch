@@ -36,9 +36,16 @@ void test_missing_audio() {
           "missing music fallback and visible diagnostic");
 }
 
-void test_retail_music_prefix() {
-    const char* root = std::getenv("NFSU_RETAIL_ROOT");
-    if (!root || !*root) return;
+// The retail root comes only from the command line (issue #233): CTest
+// registers the retail run, nfsu_race_audio_retail, with the configured
+// NFSU_RETAIL_ROOT, and the plain run has no root and no retail half.
+void test_retail_music_prefix(const char* root) {
+    if (!root) {
+        std::cout << "race audio: retail check not run here, no root argument "
+                     "(see nfsu_race_audio_retail)\n";
+        return;
+    }
+    check(*root != '\0', "the retail root argument is not empty");
     std::ifstream input(std::filesystem::path(root) /
         "SNDSTREAMS/STRM_Music_UG0_MB.ast", std::ios::binary);
     check(bool(input), "retail music stream available");
@@ -48,15 +55,20 @@ void test_retail_music_prefix() {
     check(segments.size() == 2 && segments[1].end == 5343716 &&
           segments[1].rate == 22050 && segments[1].channels == 2 &&
           polls >= 20, "retail music bounded index and progress");
+    std::cout << "race audio: retail music prefix pinned\n";
 }
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc > 2) {
+        std::cerr << "usage: nfsu_race_audio_tests [RETAIL_ROOT]\n";
+        return 1;
+    }
     try {
         test_weights();
         test_missing_audio();
-        test_retail_music_prefix();
+        test_retail_music_prefix(argc == 2 ? argv[1] : nullptr);
         std::cout << "race audio tests passed\n";
         return 0;
     } catch (const std::exception& e) {

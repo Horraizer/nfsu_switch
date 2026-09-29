@@ -400,13 +400,16 @@ void test_image_walk() {
 
 // -------------------------------------------------------------------------
 
-void test_retail_1003() {
-    const char* root = std::getenv("NFSU_RETAIL_ROOT");
-    if (root == nullptr || *root == '\0') {
-        std::cout << "racing line: retail check skipped, NFSU_RETAIL_ROOT "
-                     "unset\n";
+// The retail root comes only from the command line (issue #233): CTest
+// registers the retail run, nfsu_racing_line_retail, with the configured
+// NFSU_RETAIL_ROOT, and the plain run has no root and no retail half.
+void test_retail_1003(const char* root) {
+    if (root == nullptr) {
+        std::cout << "racing line: retail check not run here, no root "
+                     "argument (see nfsu_racing_line_retail)\n";
         return;
     }
+    check(*root != '\0', "the retail root argument is not empty");
     const std::filesystem::path file =
         std::filesystem::path(root) / "Tracks" / "TRACKB1003.lzc";
     std::ifstream input(file, std::ios::binary);
@@ -487,7 +490,11 @@ void test_retail_1003() {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc > 2) {
+        std::cerr << "usage: nfsu_racing_line_tests [RETAIL_ROOT]\n";
+        return 1;
+    }
     try {
         test_fields();
         test_two_records_tile_the_payload();
@@ -495,7 +502,7 @@ int main() {
         test_oversized();
         test_malformed();
         test_image_walk();
-        test_retail_1003();
+        test_retail_1003(argc == 2 ? argv[1] : nullptr);
         std::cout << "racing line tests passed\n";
         return 0;
     } catch (const std::exception& e) {
