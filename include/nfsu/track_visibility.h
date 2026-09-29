@@ -1,4 +1,5 @@
 #pragma once
+#include <memory>
 
 #include "nfsu/track_objects.h"
 
@@ -399,6 +400,26 @@ TrackCullReport cull_track_region(
     const TrackObjectReport& objects,
     const TrackFrustum& frustum,
     const TrackCullOptions& options = TrackCullOptions{});
+
+// Load-time checked retail-tree traversal for a privately owned, immutable
+// region. All valid sections are resident; gates match default culling.
+// The region must outlive this nonmovable cache. No fallback is accepted:
+// containment/topology failure is a preparation error. Results are reused.
+class PreparedTrackCull {
+public:
+    PreparedTrackCull();
+    ~PreparedTrackCull();
+    PreparedTrackCull(const PreparedTrackCull&) = delete;
+    PreparedTrackCull& operator=(const PreparedTrackCull&) = delete;
+    bool prepare(const TrackObjectReport& objects, std::string& error,
+                 const TrackCullLimits& limits = {});
+    bool cull(const TrackFrustum& frustum, std::string& error);
+    const TrackCullReport& result() const;
+    std::uint64_t memory_bytes() const;
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
 
 // The name of a policy, for diagnostics. Stable: tests compare against it.
 const char* track_cull_policy_name(TrackCullPolicy policy) noexcept;

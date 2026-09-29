@@ -343,7 +343,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
             lines.push_back(format("Command cache metadata EST %llu / 8388608 bytes (immutable track templates)",
                 (unsigned long long)scene.cache_bytes()));
             lines.push_back(format("GPU blocks %llu / 268435456 | uniforms 1048320 / 1048576 | resources %zu",
-                (unsigned long long)renderer.gpu_bytes(),frame.commands.uploads.resources.size()));
+                (unsigned long long)renderer.gpu_bytes(),frame.commands.resource_table().resources.size()));
             lines.push_back(format("MALLOC IN-USE before %llu | after load %llu | NOW %llu (includes GPU BLOCKS)",
                 (unsigned long long)heap.before_load,(unsigned long long)heap.after_load,(unsigned long long)heap.current));
             lines.push_back(format("HEAP LOAD OBS HWM %llu | delta %llu / 50331648 | LOAD HEAP OVER %llu",
@@ -410,7 +410,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
                 speed,int(car.gear),connected?"CONNECTED":"DISCONNECTED - NEUTRAL",frame.track_draws,frame.car_draws,
                 (unsigned long long)frame.triangles,frame.far_plane,frame.visible,
                 (unsigned long long)frame.unplaced,race.resident_count(),
-                (unsigned long long)renderer.gpu_bytes(),frame.commands.uploads.resources.size());
+                (unsigned long long)renderer.gpu_bytes(),frame.commands.resource_table().resources.size());
             std::printf("PERF LOAD %.0f ms initial upload %.0f ms | CPU stream %llu / 50331648 | persistent %llu / 67108864 | CACHE EST %llu / 8388608 | HEAP before %llu after load %llu now %llu load HWM %llu run HWM %llu\n",
                 load_ms,initial_upload,(unsigned long long)scene.track().streaming_bytes,(unsigned long long)persistent,
                 (unsigned long long)scene.cache_bytes(),
@@ -439,6 +439,10 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
         if (finished) break;
     }
     } catch (const std::exception& e) { failure = e.what(); }
+    // Every way out of the race loop (+, an error or the finish) mutes the
+    // audio with the service's fade before the result screen; before this
+    // only the finish did, so + left the engine and music playing.
+    sound.set_suspended(true);
     std::string close_error;
     if (!renderer.close(close_error)) {
         if (!failure.empty()) failure += " | ";

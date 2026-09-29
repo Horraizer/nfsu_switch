@@ -739,6 +739,10 @@ nfsu_enable_warnings(nfsu_platform_desktop)
 add_executable(nfsu_frame_budget_probe tools/frame_budget_probe.cpp)
 target_link_libraries(nfsu_frame_budget_probe PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_platform_desktop)
 nfsu_enable_warnings(nfsu_frame_budget_probe)
+if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    # The probe replaces new/delete; DLL allocator calls cannot interpose them.
+    target_link_options(nfsu_frame_budget_probe PRIVATE -static-libstdc++ -static-libgcc)
+endif()
 
 # The argument conversion is the desktop filesystem service: its three free
 # functions now go through the FileSystemService it implements, and the
@@ -1285,6 +1289,57 @@ if(NFSU_BUILD_TESTS)
 
     set_tests_properties(nfsu_vehicle_tests nfsu_probe_vehicle_sim_guards
         PROPERTIES TIMEOUT 120)
+endif()
+
+# ---------------------------------------------------------------------------
+# The vehicle tuning tables (issue #57)
+# ---------------------------------------------------------------------------
+#
+# docs/VEHICLE_TUNING.md: the per-level upgrade tables of a CarTypeInfo
+# record, and the rule 0x00575960 folds them into a car instance's setup
+# sub-object with. A library of its own, declared here rather than in
+# cmake/vehicle_libraries.cmake, because nothing on the console reads it yet:
+# this issue recovers the data and does not wire it into the driving model,
+# so the Switch configure, which returns above this point, builds nothing
+# from it. When the model does read it, this moves into that file.
+#
+# It links nfsu_vehicle for the record offsets, the handling decoder it
+# validates a record with and the two axle blocks it reuses.
+add_library(nfsu_vehicle_tuning
+    src/vehicle_tuning.cpp
+)
+
+target_include_directories(nfsu_vehicle_tuning
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_compile_features(nfsu_vehicle_tuning PUBLIC cxx_std_17)
+target_link_libraries(nfsu_vehicle_tuning PUBLIC nfsu_vehicle)
+nfsu_enable_warnings(nfsu_vehicle_tuning)
+
+# `vehicle-tuning` decodes the tables of every car type of a GLOBALB.BUN.
+target_link_libraries(nfsu_probe PRIVATE nfsu_vehicle_tuning)
+
+# Neutral for the same reason nfsu_vehicle is: it reads no file and no clock
+# and calls nothing but the standard library and the libraries above it. The
+# caller hands it the record bytes.
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_vehicle_tuning)
+
+if(NFSU_BUILD_TESTS)
+    # The tables against their recovered writers: the built-in 240SX table's
+    # own bytes and their hash, the round trip, the refusals each by its
+    # record offset, the box inertia rule, the upgrade application with
+    # nothing installed, with every table at level 3 and with the boolean
+    # items alone, the level gate, and the derived gear count. It reads no
+    # retail file.
+    add_executable(nfsu_vehicle_tuning_tests
+        tests/vehicle_tuning_tests.cpp
+    )
+
+    target_link_libraries(nfsu_vehicle_tuning_tests PRIVATE nfsu_vehicle_tuning)
+    nfsu_enable_warnings(nfsu_vehicle_tuning_tests)
+    add_test(NAME nfsu_vehicle_tuning_tests COMMAND nfsu_vehicle_tuning_tests)
+    set_tests_properties(nfsu_vehicle_tuning_tests PROPERTIES TIMEOUT 120)
 endif()
 
 # ---------------------------------------------------------------------------
