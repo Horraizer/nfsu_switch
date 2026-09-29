@@ -6,6 +6,7 @@
 #include "nfsu/screen_text.h"
 #include "nfsu/race_window.h"
 #include "nfsu/race_audio.h"
+#include "nfsu/light_glows.h"
 
 #include <algorithm>
 #include <array>
@@ -44,19 +45,42 @@ void write_text(const fs::path& path, const std::string& text) {
     require(bool(out),"cannot write output");
 }
 bool within(const fs::path& path, const fs::path& root) {
-    // Make relative arguments absolute before normalizing their existing
-    // prefix. Refuse failures rather than silently guessing a writable path.
-    const auto absolute = [](const fs::path& value) {
-        return fs::u8path(fs::absolute(value).generic_u8string());
-    };
-    auto p = fs::weakly_canonical(absolute(path)), r = fs::canonical(absolute(root));
-    // Windows comparisons below ignore case, as this desktop's files do.
-    auto ps = p.generic_string(), rs = r.generic_string();
+    const auto contains = [](const fs::path& candidate, const fs::path& base) {
+        auto ps = candidate.generic_string(), rs = base.generic_string();
 #ifdef _WIN32
-    for (char& c : ps) if (c >= 'A' && c <= 'Z') c += 'a'-'A';
-    for (char& c : rs) if (c >= 'A' && c <= 'Z') c += 'a'-'A';
+        for (char& c : ps) if (c >= 'A' && c <= 'Z') c += 'a'-'A';
+        for (char& c : rs) if (c >= 'A' && c <= 'Z') c += 'a'-'A';
 #endif
-    return ps == rs || (ps.size() > rs.size() && ps.compare(0,rs.size(),rs)==0 && ps[rs.size()]=='/');
+        return ps == rs || (ps.size() > rs.size() && ps.compare(0,rs.size(),rs)==0 && ps[rs.size()]=='/');
+    };
+    // A lexical match is always unsafe. This also handles a local test
+    // fixture whose absolute path the runtime cannot canonicalize.
+    const auto absolute_path = fs::absolute(path).lexically_normal();
+    const auto absolute_root = fs::absolute(root).lexically_normal();
+    if (contains(absolute_path, absolute_root)) return true;
+    // Resolve existing prefixes as well, so a symlink outside the root
+    // cannot direct a seemingly separate output into the retail tree.
+    std::error_code path_error, root_error;
+    const auto resolved_path = fs::weakly_canonical(absolute_path, path_error);
+    const auto resolved_root = fs::weakly_canonical(absolute_root, root_error);
+    if (!path_error && !root_error) return contains(resolved_path, resolved_root);
+    // Some Windows worktree locations refuse canonicalization despite
+    // existing directories. Fall back only if every accessible component
+    // is a real directory, with no symlink whose target could enter root.
+    const auto no_links = [](const fs::path& value) {
+        fs::path prefix;
+        for (const auto& part : value) {
+            prefix /= part;
+            std::error_code error;
+            const auto status = fs::symlink_status(prefix, error);
+            if (error == std::errc::no_such_file_or_directory) break;
+            if (error || fs::is_symlink(status)) return false;
+        }
+        return true;
+    };
+    require(no_links(absolute_path) && no_links(absolute_root),
+            "cannot verify output path symlinks");
+    return false;
 }
 
 // Actual reads follow residency loads, and releases destroy their parsed
@@ -77,6 +101,8 @@ public:
     StockFrameInputs car_inputs;
     StockFrame car;
     std::vector<PreparedInstance> base;
+    CarGlowAnchors glow_anchors{};
+    bool glows = false;
     bool dirty = true;
     std::uint64_t loads = 0, releases = 0, bytes_read = 0;
     Cost io_cost, prepare_cost, render_cost;
@@ -86,6 +112,7 @@ public:
         require(read_stock_frame_inputs(root,car_inputs),"cannot read stock car inputs");
         require(prepare_stock_frame(car_inputs,stock_240sx_request(),stock_240sx_skin(),car,error),error);
         base = car.scene.instances;
+        glow_anchors = collect_car_glow_anchors(car);
         const std::array<fs::path,3> paths = {
             texture, root/"Global/INGAMEB.BUN", root/"Global/GLOBALB.BUN"};
         for (std::size_t i=0;i<paths.size();++i) {
@@ -179,6 +206,13 @@ public:
         require(render_track_draw_list(track,list,track_options,{},background,stats,track_stats,error),error);
         require(drive_place_instances(base,session.car(),session.spec(),car.scene.instances,
                                       &session.animation()),"car placement failed");
+        if (glows) {
+            CameraFrame camera;
+            require(make_camera_frame(options.camera,options.width,options.height,camera,error),error);
+            const auto sprites = place_car_glows(glow_anchors,car.scene,camera,
+                                                 session.animation().braking);
+            require(draw_car_glows(background,options,sprites,stats,error),error);
+        }
         require(render_stock_frame(car,options,error),error);
         std::vector<unsigned char> rgba;
         require(compose_race_frame(background,car.frame,rgba),"frame sizes differ");
@@ -192,17 +226,18 @@ public:
 
 int run(int argc, char** argv) {
     fs::path root,input,output,generate;
-    bool live=false, smoke=false; std::set<std::size_t> frames;
+    bool live=false, smoke=false, glows=false; std::set<std::size_t> frames;
     for (int i=1;i<argc;++i) {
         const std::string a=argv[i];
         if (a=="--help") {
             std::cout << "nfsu_race --root RETAIL (--input RECORDING | --generate RECORDING | --live)\n"
-                         "  [--out NEW_DIRECTORY --frames 180,600,6000,22000,40000]\n"
+                         "  [--out NEW_DIRECTORY --frames 180,600,6000,22000,40000] [--glows]\n"
                          "  live mode plays retail race audio when the device and banks are available\n";
             return 0;
         }
         if (a=="--live") { live=true; continue; }
         if (a=="--live-smoke") { live=true; smoke=true; continue; }
+        if (a=="--glows") { glows=true; continue; }
         require(i+1<argc,"missing option value"); const std::string value=argv[++i];
         if (a=="--root") root=fs::u8path(value);
         else if (a=="--input") input=fs::u8path(value);
@@ -249,6 +284,7 @@ int run(int argc, char** argv) {
     TrackResidencySession residency; std::vector<TrackResidencyStep> startup;
     require(residency.start(table,zones,slot.track,costs,options,startup,error),error);
     RaceScene scene(table); scene.files.stream=root/"Tracks"/track_stream_file_name(*info);
+    scene.glows = glows;
     scene.files.pack=root/"Tracks"/track_stream_pack_file_name(*info);
     scene.files.has_pack=fs::exists(scene.files.pack);
     scene.load_car(root,root/"Tracks"/track_texture_file_name(slot.track));

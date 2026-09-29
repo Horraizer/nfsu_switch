@@ -417,6 +417,7 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
     }
 }
 void run(const std::string& root, bool replay_mode, bool panel_mode, bool profile_frame,
+         bool glows,
          Screen& screen, PadState& pad) {
     require(R_SUCCEEDED(romfsInit()), "cannot mount race shader/replay RomFS");
     struct Guard { ~Guard() { romfsExit(); } } guard;
@@ -432,7 +433,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     Progress progress(screen,pad,heap);
     const auto load_start = armGetSystemTick();
     require(race.prepare_metadata(root,error,&progress),error);
-    require(scene.load(posix_file_system(), root, error, &progress, &progress), error);
+    require(scene.load(posix_file_system(), root, error, &progress, &progress, glows), error);
     screen.show({"ASSETS PASS. Preparing event 1, stock 240SX and race course..."});
     progress.checkpoint("race course");
     require(race.start(root,scene.track(),error,&progress),error);
@@ -573,8 +574,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                 draw,transfer,readback,previous_hud));
             lines.push_back(format("Previous PANEL FRAME %.2f ms (>25 ms %s) | debt %llu ticks | load %.0f ms | initial upload %.0f ms",
                 previous_frame,previous_frame>RaceFrameStats::kOverThresholdMs?"OVER":"WITHIN",(unsigned long long)clock.debt_ticks(),load_ms,initial_upload));
-            lines.push_back(format("DRAWS %zu track + %zu car | TRIANGLES %llu | far %.2f | visible %zu | unplaced %llu",
-                frame.track_draws,frame.car_draws,(unsigned long long)frame.triangles,frame.far_plane,frame.visible,(unsigned long long)frame.unplaced));
+            lines.push_back(format("DRAWS %zu track + %zu car + %zu glow | TRIANGLES %llu | far %.2f | visible %zu | unplaced %llu",
+                frame.track_draws,frame.car_draws,frame.glow_draws,(unsigned long long)frame.triangles,frame.far_plane,frame.visible,(unsigned long long)frame.unplaced));
             lines.push_back(format("RESIDENCY %zu sections | CPU stream %llu / 50331648 | persistent payload %llu / 67108864",
                 race.resident_count(),(unsigned long long)scene.track().streaming_bytes,(unsigned long long)persistent));
             lines.push_back(format("Command cache metadata EST %llu / 8388608 bytes (immutable track templates)",
@@ -654,8 +655,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                 frame_ms,frame_ms>RaceFrameStats::kOverThresholdMs?"OVER":"WITHIN",simulation,residency,record,upload,present_cpu,
                 present.acquire_ms,present.fence_wait_ms,measured.command_ms,present.submit_ms,
                 ticks,(unsigned long long)clock.debt_ticks());
-            std::printf("PERF %.1f KM/H gear %d pad %s | DRAWS %zu track + %zu car | TRIANGLES %llu | far %.2f | visible %zu | unplaced %llu | RESIDENCY %zu | GPU %llu / 268435456 | resources %zu\n",
-                speed,int(car.gear),connected?"CONNECTED":"DISCONNECTED - NEUTRAL",frame.track_draws,frame.car_draws,
+            std::printf("PERF %.1f KM/H gear %d pad %s | DRAWS %zu track + %zu car + %zu glow | TRIANGLES %llu | far %.2f | visible %zu | unplaced %llu | RESIDENCY %zu | GPU %llu / 268435456 | resources %zu\n",
+                speed,int(car.gear),connected?"CONNECTED":"DISCONNECTED - NEUTRAL",frame.track_draws,frame.car_draws,frame.glow_draws,
                 (unsigned long long)frame.triangles,frame.far_plane,frame.visible,
                 (unsigned long long)frame.unplaced,race.resident_count(),
                 (unsigned long long)renderer.gpu_bytes(),frame.commands.resource_table().resources.size());
@@ -755,14 +756,16 @@ int main(int argc, char** argv) {
         try {
             std::string root = "sdmc:/nfsu";
             bool replay = false, panel = false, profile_frame = false, selected = false, root_seen = false;
+            bool glows = false;
             for (int i = 1; i < argc; ++i) {
                 const std::string arg = argv[i];
                 if (arg == "--replay") { replay = true; selected = true; }
                 else if (arg == "--live") { replay = false; selected = true; }
                 else if (arg == "--panel") panel = true;
                 else if (arg == "--profile-frame") profile_frame = true;
+                else if (arg == "--glows") glows = true;
                 else if (!root_seen && arg.rfind("--",0) != 0) { root = arg; root_seen = true; }
-                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame]");
+                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--glows]");
             }
             require(!(panel && profile_frame),"--profile-frame requires direct presentation");
             while (!selected && appletMainLoop()) {
@@ -781,7 +784,7 @@ int main(int argc, char** argv) {
                     "During the race: Y pauses, + opens results with driving-frame statistics.",
                     "No game data is bundled or written. Replay input is bundled in RomFS."});
             }
-            if (selected) run(root,replay,panel,profile_frame,screen,pad);
+            if (selected) run(root,replay,panel,profile_frame,glows,screen,pad);
         } catch (const Cancel&) {
         } catch (const std::exception& e) {
             std::printf("ERROR: %s\n",e.what()); std::fflush(stdout);

@@ -82,6 +82,28 @@ int main(int argc, char** argv) {
                 deko_frame_gpfifo_bound(deko_track_list_calls(2047)) < kDekoGpfifoRingEntries &&
                 deko_frame_gpfifo_bound(1828) > kDekoGpfifoRingEntries,
                 "per-draw prepared calls would overflow the Switch GPFIFO ring");
+        PreparedCarScene lamp_car;
+        PreparedInstance head_part, tail_part;
+        head_part.part_slot = kSlotHeadlight;
+        tail_part.part_slot = kSlotBrakelight;
+        lamp_car.instances = {head_part, tail_part};
+        CarGlowAnchors lamp_anchors{};
+        lamp_anchors[0] = {{2, 0, 0}, true};
+        lamp_anchors[2] = {{-2, 0, 0}, true};
+        CameraFrame lamp_camera;
+        lamp_camera.eye = {8, 0, 0};
+        const auto from_front = place_car_glows(lamp_anchors, lamp_car, lamp_camera, false);
+        lamp_camera.eye = {-8, 0, 0};
+        const auto from_rear = place_car_glows(lamp_anchors, lamp_car, lamp_camera, true);
+        require(from_front[0].opacity > 0 && from_front[2].opacity == 0 &&
+                from_rear[0].opacity == 0 && from_rear[2].opacity > 0,
+                "car glows ignore marker side or camera-facing gate");
+        const auto head_glow = make_car_glow_texture(true);
+        const auto tail_glow = make_car_glow_texture(false);
+        require(head_glow.rgba.size() == 1024 && tail_glow.rgba.size() == 1024 &&
+                head_glow.rgba[4*(8*16+8)+3] > head_glow.rgba[3] &&
+                head_glow.rgba[4*(8*16+8)+1] > tail_glow.rgba[4*(8*16+8)+1],
+                "car glow textures are not bounded soft head/tail images");
         RaceReplay replay; GamepadFrame pad;
         require(!replay.load("NFSU_RACE_INPUT 1\n1 0 0\n", error), "unverified replay accepted");
         require(!replay.next(0, pad, error), "empty replay accepted");
@@ -169,7 +191,9 @@ int main(int argc, char** argv) {
                 if (std::string(phase) == "car prepared") car_prepared = true;
             }
         } polled;
-        require(scene.load(posix_file_system(), root, error, nullptr, &polled), error);
+        const bool glows = argc > 4 && std::string(argv[4]) == "--glows";
+        require(argc <= 4 || glows, "unknown glow option");
+        require(scene.load(posix_file_system(), root, error, nullptr, &polled, glows), error);
         require(polled.sections >= 4*scene.track().sections && polled.car_prepared,
                 "race scene disconnected the shared loader checkpoints");
         require(!scene.load(posix_file_system(),root,error),"loaded race scene allowed cache-invalidating reload");
@@ -183,7 +207,7 @@ int main(int argc, char** argv) {
         require(scene.cache_bytes() <= 8*kMiB,"command cache exceeded metadata limit");
         std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 8*kMiB << '\n';
         // #223: 20 suppressed car draws and one added cache upload record: -540 bytes.
-        require(scene.cache_bytes() == 3825239,"event 1 command cache metadata estimate differs from pin");
+        if (!glows) require(scene.cache_bytes() == 3825239,"event 1 command cache metadata estimate differs from pin");
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';
         require(scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes() <=
@@ -339,7 +363,9 @@ int main(int argc, char** argv) {
                         std::memcmp(&selected.material,&b.material,sizeof b.material) == 0,
                         "cached ordered draw differs from reference");
                 }
-                require(frame.track_draws > 0 && frame.car_draws == 74, "missing track/car commands");
+        require(frame.track_draws > 0 && frame.car_draws == 74, "missing track/car commands");
+        require(frame.glow_draws <= 4 && (!glows || frame.glow_draws > 0),
+                "glow marker draws absent or unbounded");
                 require(deko_frame_gpfifo_bound(deko_track_list_calls(
                             static_cast<std::uint32_t>(frame.track_draws))) < kDekoGpfifoRingEntries,
                         "selected track draws exceed GPFIFO call budget");
@@ -385,7 +411,8 @@ int main(int argc, char** argv) {
                 require(validate_draw_update(uploaded, frame.commands, kTrackSliceDrawLimit, error), error);
                 max_draws = std::max(max_draws, frame.commands.draw_count()); ++frames;
                 if (inspect.count(tick)) std::cout << "frame " << tick << " draws " << frame.commands.draw_count()
-                    << " car " << frame.car_draws << " far " << frame.far_plane << '\n';
+                    << " car " << frame.car_draws << " glow " << frame.glow_draws
+                    << " far " << frame.far_plane << '\n';
             }
         }
         for (const auto& line : race.result_lines()) std::cout << line << '\n';

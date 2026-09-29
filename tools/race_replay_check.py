@@ -25,6 +25,12 @@ FRAMES = (
     "CBA5548ADE397AD43940F3C5D6469CFFB15B4C44D823908C140A8F23A2C87EB0",
     "0383137D34B8DEA42919AE0ED3E261C80F3F0F73EE3C6B969BBC5B9A9848B0C9",
 )
+# The marker-driven tail flare reaches the chase camera on these two steps.
+# The other frames retain their existing texture and street-light pins.
+GLOW_FRAMES = FRAMES[:5] + (
+    "1E5C08BFA4BDFE0431A955A3036D76FDC0FD96E3098D7402441AF76BD5BA4412",
+    "A539BDFEE6A427A0CF952DEE18985D5FED5CA1C5A720F5198500E0BC8C1B0A9F",
+) + FRAMES[7:]
 RESULT = (
     "event 1 track 1003 laps 2 outcome finished steps 48336 resets 0",
     "lap 1 ticks 1616400 time 6:44.10",
@@ -76,6 +82,7 @@ def main():
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True, help="new directory outside retail")
     parser.add_argument("--check-driver", action="store_true", help="also regenerate the recording with each build")
+    parser.add_argument("--glows", action="store_true", help="check marker-driven night glows")
     args = parser.parse_args()
     root, output = args.root.resolve(), args.out.resolve()
     require(root.is_dir(), "retail root does not exist")
@@ -94,7 +101,8 @@ def main():
             require(result.returncode == 0 and not result.stderr, "driver failed; see log")
             require(generated.read_bytes() == recording.read_bytes(), "scripted driver no longer generates the recording")
         result = retail_run(command + ["--input", str(recording), "--out", str(prefix),
-                             "--frames", ",".join(map(str, STEPS))], root)
+                             "--frames", ",".join(map(str, STEPS))] +
+                            (["--glows"] if args.glows else []), root)
         (output / (str(index) + ".log")).write_text(result.stdout + result.stderr, encoding="ascii")
         require(result.returncode == 0 and not result.stderr, "replay failed; see log")
         lines = result.stdout.splitlines()
@@ -123,7 +131,7 @@ def main():
                     "tilted or airborne car in trajectory")
             if int(sample["tick"]) > 600:
                 require(float(sample["speed"]) >= 5, "slow/stalled car after launch")
-        for tick, expected in zip(STEPS, FRAMES):
+        for tick, expected in zip(STEPS, GLOW_FRAMES if args.glows else FRAMES):
             frame = prefix / ("frame-" + str(tick) + ".tga")
             require(digest(frame.read_bytes()) == expected, "frame pin differs at " + str(tick))
             require(lines.count("frame " + str(tick) + " tga-sha256 " + expected) == 1,

@@ -64,8 +64,9 @@ bool combine_race_commands(RecordedCommands track, const RecordedCommands& car,
 }
 bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& root,
                         std::string& error, AssetCheckObserver* observer,
-                        TrackSliceLoadObserver* loading) {
+                        TrackSliceLoadObserver* loading, bool glows) {
     if (ready_) { error = "race scene is already loaded"; return false; }
+    glows_enabled_ = glows;
     // Car source files and their decoded preparation are temporary. Complete
     // that work before streaming the track so neither source set overlaps the
     // other's allocation peak. Only the prepared car scene survives this scope.
@@ -80,6 +81,7 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
         if (loading) loading->checkpoint("car preparation");
         StockFrame stock;
         if (!prepare_stock_frame(inputs, stock_240sx_request(), stock_240sx_skin(), stock, error)) return false;
+        if (glows_enabled_) glow_anchors_ = collect_car_glow_anchors(stock);
         if (loading) loading->checkpoint("car prepared");
         skin_source_ = stock.skin_binding.source;
         car_ = std::move(stock.scene); base_ = car_.instances;
@@ -103,6 +105,7 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
     if (!prepare_templates(error)) return false;
     if (loading) loading->checkpoint("render templates prepared");
     if (!prepare_frame_cache(error)) return false;
+    if (glows_enabled_ && !prepare_glows(error)) return false;
     if (loading) loading->checkpoint("render prepared");
     if (cache_bytes() > 8*kMiB) { error = "race command cache exceeds 8 MiB"; return false; }
     ready_ = true;
@@ -124,6 +127,9 @@ std::uint64_t RaceGpuScene::cache_bytes() const {
         track_placements_.capacity()*sizeof(DrawInstanceUniform);
     for (const auto& r : combined_uploads_.resources) bytes += r.name.capacity()+1;
     for (const auto& d : car_templates_.owning_draws()) bytes += d.name.capacity()+1;
+    if (glows_enabled_) bytes += sizeof(glow_templates_) + sizeof(glow_selected_) +
+        sizeof(glow_vertices_) + sizeof(glow_indices_) +
+        glow_head_.rgba.capacity() + glow_tail_.rgba.capacity();
     return bytes;
 }
 bool RaceGpuScene::prepare_templates(std::string& error) {
@@ -203,13 +209,103 @@ bool RaceGpuScene::prepare_frame_cache(std::string& error) {
     return true;
 }
 
+bool RaceGpuScene::prepare_glows(std::string& error) {
+    namespace sm = shader_manifest;
+    glow_head_ = make_car_glow_texture(true);
+    glow_tail_ = make_car_glow_texture(false);
+    for (std::size_t i = 0; i < glow_vertices_.size(); ++i) {
+        auto& v = glow_vertices_[i];
+        v.px = (i == 0 || i == 3) ? -1.0F : 1.0F;
+        v.py = i < 2 ? -1.0F : 1.0F;
+        v.u = v.px < 0 ? 0.0F : 1.0F;
+        v.v = v.py < 0 ? 0.0F : 1.0F;
+        std::fill(std::begin(v.color), std::end(v.color), 255);
+    }
+    auto& table = combined_uploads_;
+    glow_first_resource_ = table.resources.size();
+    if (glow_first_resource_ + 4 > kTrackSliceResourceLimit) {
+        error = "glow resources exceed race resource capacity"; return false;
+    }
+    const auto buffer = [&](UploadResourceKind kind, const char* name,
+                            const unsigned char* data, std::size_t bytes,
+                            std::size_t element_bytes, std::size_t elements) {
+        UploadResource resource;
+        resource.kind = kind; resource.name = name; resource.data = data;
+        resource.bytes = bytes; resource.element_bytes = element_bytes;
+        resource.elements = elements; resource.alignment = kind == UploadResourceKind::vertex_buffer ?
+            kCarVertexAlignment : kIndexAlignment;
+        table.resources.push_back(std::move(resource));
+        ++table.totals.resources;
+        if (kind == UploadResourceKind::vertex_buffer) {
+            ++table.totals.vertex_buffers; table.totals.vertex_bytes += bytes;
+        } else {
+            ++table.totals.index_buffers; table.totals.index_bytes += bytes;
+        }
+    };
+    buffer(UploadResourceKind::vertex_buffer, "race-glow/quad",
+           reinterpret_cast<const unsigned char*>(glow_vertices_.data()),
+           sizeof(glow_vertices_), sizeof(MeshVertex), glow_vertices_.size());
+    buffer(UploadResourceKind::index_buffer, "race-glow/indices",
+           reinterpret_cast<const unsigned char*>(glow_indices_.data()),
+           sizeof(glow_indices_), sizeof(std::uint16_t), glow_indices_.size());
+    const auto texture = [&](const RenderTexture& source, const char* name) -> bool {
+        TextureUploadShape shape;
+        if (!check_texture_upload_format(TextureUploadFormat::rgba8, source.width,
+                                         source.height, source.rgba.size(), shape, error)) return false;
+        UploadResource resource;
+        resource.kind = UploadResourceKind::texture; resource.memory = UploadMemory::image;
+        resource.name = name; resource.data = source.rgba.data();
+        resource.bytes = shape.bytes; resource.alignment = kTextureStagingAlignment;
+        resource.element_bytes = shape.texel_bytes;
+        resource.elements = shape.bytes/shape.texel_bytes;
+        resource.texture_hash = source.hash; resource.texture = shape;
+        table.resources.push_back(std::move(resource));
+        ++table.totals.resources; ++table.totals.textures;
+        table.totals.texture_bytes += shape.bytes;
+        table.totals.largest_texture_bytes =
+            std::max(table.totals.largest_texture_bytes, shape.bytes);
+        return true;
+    };
+    if (!texture(glow_head_, "race-glow/head") ||
+        !texture(glow_tail_, "race-glow/tail")) return false;
+    const sm::Program* program = nullptr;
+    for (const auto& candidate : sm::kPrograms)
+        if (std::strcmp(candidate.name, "car_textured") == 0) program = &candidate;
+    if (!program) { error = "glow shader program is absent"; return false; }
+    for (std::size_t i = 0; i < glow_templates_.size(); ++i) {
+        auto& draw = glow_templates_[i];
+        draw.name = i == 0 ? "race-glow/head" : "race-glow/tail";
+        draw.group = track_.scene.region.draws.size() + i;
+        draw.vertex_resource = glow_first_resource_;
+        draw.index_resource = glow_first_resource_ + 1;
+        draw.texture_resource = glow_first_resource_ + 2 + i;
+        draw.vertex_count = 4; draw.index_count = 6;
+        draw.program = program;
+        bool found = false;
+        for (std::size_t v = 0; v < program->variant_count; ++v)
+            if (std::strcmp(program->variants[v].name, "additive") == 0) {
+                draw.pipeline = program->variants[v]; found = true; break;
+            }
+        if (!found) { error = "glow additive variant is absent"; return false; }
+        draw.pipeline.depth_write = false;
+    }
+    return true;
+}
+
 RecordedDrawView RaceGpuScene::selected_draw(std::size_t i) const {
     if (i < selection_.size()) {
         const auto& selected = selection_[i];
         const auto& draw = track_templates_.owning_draws().at(template_of_group_.at(selected.draw));
         return {draw, selected.instance, track_placements_.at(selected.instance), draw.material, true};
     }
-    const auto& draw = car_templates_.owning_draws().at(i-selection_.size());
+    i -= selection_.size();
+    if (i >= car_templates_.owning_draws().size()) {
+        i -= car_templates_.owning_draws().size();
+        if (i >= glow_count_) throw std::out_of_range("selected glow draw is out of range");
+        const auto& draw = glow_selected_[i];
+        return {draw, kNoHandle, draw.placement, draw.material, false};
+    }
+    const auto& draw = car_templates_.owning_draws().at(i);
     return {draw, draw.instance, draw.placement, draw.material, false};
 }
 
@@ -295,6 +391,18 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         options.camera.far_plane = far;
         CameraFrame basis;
         if (!make_camera_frame(options.camera, options.width, options.height, basis, error)) return false;
+        glow_count_ = 0;
+        if (glows_enabled_) {
+            const auto sprites = place_car_glows(glow_anchors_, car_, basis,
+                                                 session.animation().braking);
+            for (const auto& sprite : sprites) {
+                if (sprite.opacity <= 0.0) continue;
+                auto& draw = glow_selected_[glow_count_++];
+                draw = glow_templates_[sprite.head ? 0 : 1];
+                draw.material.alpha[0] = static_cast<float>(sprite.opacity);
+                car_glow_transform(sprite, basis, draw.placement.rows);
+            }
+        }
         TrackCamera camera;
         camera.eye[0] = float(basis.eye.x); camera.eye[1] = float(basis.eye.y); camera.eye[2] = float(basis.eye.z);
         camera.target[0] = float(options.camera.target.x); camera.target[1] = float(options.camera.target.y);
@@ -311,7 +419,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
             std::size_t entries = 0;
             if (!select_track(culler_.result(),out,entries,error)) return false;
             stage(&RaceFrameProfile::list_ms);
-            if (entries + car_templates_.owning_draws().size() > kTrackSliceDrawLimit) continue;
+            if (entries + car_templates_.owning_draws().size() + glow_count_ > kTrackSliceDrawLimit) continue;
             for (auto& draw : car_templates_.owning_draws()) {
                 if (draw.instance != kNoHandle) {
                     if (draw.instance >= car_.instances.size()) { error = "prepared car instance is out of range"; return false; }
@@ -323,12 +431,14 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
             if (!record_frame_state(options,{},out.commands,error)) return false;
             stage(&RaceFrameProfile::car_ms);
             out.track_draws = selection_.size(); out.car_draws = car_templates_.owning_draws().size();
+            out.glow_draws = glow_count_;
             out.visible = culler_.result().visible.size(); out.far_plane = far;
             stage(&RaceFrameProfile::track_ms);
             if (out.triangles > RenderLimits{}.max_submitted_triangles) {
                 error = "prepared submitted triangle capacity exceeded"; return false;
             }
             for (const auto& draw : car_templates_.owning_draws()) out.triangles += draw.index_count/3;
+            out.triangles += 2*glow_count_;
             out.commands.source_ = this; out.commands.generation_ = generation_;
             stage(&RaceFrameProfile::combine_ms);
             return true;
@@ -344,17 +454,33 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         RecordedCommands car_commands;
         if (!record_car_commands(car_, options, {}, skin_source_, car_commands, error)) return false;
         stage(&RaceFrameProfile::car_ms);
-        if (list.entries.size() + car_commands.owning_draws().size() > kTrackSliceDrawLimit) continue;
+        if (list.entries.size() + car_commands.owning_draws().size() + glow_count_ > kTrackSliceDrawLimit) continue;
         RecordedCommands track_commands;
         options.material_state = MaterialStateMode::retail;
         if (!record_track_commands(track_.scene, list, options, {}, track_commands, error)) return false;
         stage(&RaceFrameProfile::track_ms);
         RaceGpuFrame result;
         result.car_draws = car_commands.owning_draws().size(); result.track_draws = track_commands.owning_draws().size();
+        result.glow_draws = glow_count_;
         result.visible = visible.visible.size(); result.unplaced = list.cost.visible_unplaced;
         result.far_plane = far; result.triangles = list.cost.triangles;
         for (const auto& draw : car_commands.owning_draws()) result.triangles += draw.index_count/3;
         if (!combine_race_commands(std::move(track_commands), car_commands, result.commands, error)) return false;
+        if (glows_enabled_) {
+            auto& uploads = result.commands.owning_uploads();
+            if (uploads.resources.size() != glow_first_resource_) {
+                error = "reference glow resource offset differs"; return false;
+            }
+            for (std::size_t i = glow_first_resource_; i < combined_uploads_.resources.size(); ++i)
+                uploads.resources.push_back(combined_uploads_.resources[i]);
+            uploads.totals = combined_uploads_.totals;
+            for (std::size_t i = 0; i < glow_count_; ++i)
+                result.commands.owning_draws().push_back(glow_selected_[i]);
+            result.triangles += 2*glow_count_;
+            DrawExecutionPlan plan;
+            if (!validate_recorded_commands(result.commands,error) ||
+                !plan_draw_execution(result.commands,plan,error)) return false;
+        }
         stage(&RaceFrameProfile::combine_ms);
         out = std::move(result); return true;
     }

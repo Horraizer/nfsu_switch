@@ -2,6 +2,7 @@
 #include "nfsu/race_run.h"
 #include "nfsu/stock_frame.h"
 #include "nfsu/platform.h"
+#include "nfsu/light_glows.h"
 
 namespace nfsu {
 // One combined command stream: track then car, one camera and one depth
@@ -11,7 +12,7 @@ bool combine_race_commands(RecordedCommands track, const RecordedCommands& car,
                            RecordedCommands& out, std::string& error);
 struct RaceGpuFrame {
     RecordedCommands commands;
-    std::size_t track_draws = 0, car_draws = 0, visible = 0;
+    std::size_t track_draws = 0, car_draws = 0, glow_draws = 0, visible = 0;
     std::uint64_t triangles = 0, unplaced = 0;
     double far_plane = 0;
 };
@@ -26,7 +27,7 @@ public:
     const TrackSlice& track() const { return track_; }
     bool load(FileSystemService& files, const std::filesystem::path& root,
               std::string& error, AssetCheckObserver* observer = nullptr,
-              TrackSliceLoadObserver* loading = nullptr);
+              TrackSliceLoadObserver* loading = nullptr, bool glows = false);
     bool frame(const RaceSession& session, RaceGpuFrame& out, std::string& error,
                RaceFrameProfile* profile = nullptr, bool reference = false,
                TimingService* timer = nullptr);
@@ -40,10 +41,11 @@ private:
     bool ready_ = false;
     bool prepare_templates(std::string& error);
     bool prepare_frame_cache(std::string& error);
+    bool prepare_glows(std::string& error);
     bool select_track(const TrackCullReport& visible, RaceGpuFrame& out,
                       std::size_t& entries, std::string& error);
     const UploadTable& resource_table() const override { return combined_uploads_; }
-    std::size_t selected_draw_count() const override { return selection_.size() + car_templates_.owning_draws().size(); }
+    std::size_t selected_draw_count() const override { return selection_.size() + car_templates_.owning_draws().size() + glow_count_; }
     RecordedDrawView selected_draw(std::size_t i) const override;
     std::uint64_t command_generation() const override { return generation_; }
     std::size_t static_track_draw_count() const override { return selection_.size(); }
@@ -67,5 +69,14 @@ private:
     std::vector<PreparedInstance> base_;
     std::size_t skin_source_ = kNoHandle;
     std::uint64_t car_bytes_ = 0;
+    bool glows_enabled_ = false;
+    CarGlowAnchors glow_anchors_{};
+    RenderTexture glow_head_, glow_tail_;
+    std::array<MeshVertex, 4> glow_vertices_{};
+    std::array<std::uint16_t, 6> glow_indices_{{0,1,2,0,2,3}};
+    std::array<RecordedDraw, 2> glow_templates_{};
+    std::array<RecordedDraw, 4> glow_selected_{};
+    std::size_t glow_count_ = 0;
+    std::size_t glow_first_resource_ = 0;
 };
 } // namespace nfsu
