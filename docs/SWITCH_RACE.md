@@ -286,8 +286,8 @@ console timing and detailed visual check by the owner and coordinator.
 
 Append `--tuned` to either race executable to use the viewer's red 240SX,
 KIT01 bumpers and skirts, BBS_STYLE01_15_23 wheels and TRIBAL5 vinyl.
-Desktop example: `nfsu_race X:/Games/NFSU --tuned` (see `--help` for replay
-and frame output). Switch paired replay commands:
+Desktop example: `nfsu_race --root X:/Games/NFSU --live --tuned` (see
+`--help` for replay and frame output). Switch paired replay commands:
 
 ```text
 nxlink -s nfsu_switch_race.nro -- sdmc:/nfsu --replay --profile-frame
