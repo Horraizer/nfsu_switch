@@ -7,8 +7,11 @@ from pathlib import Path
 import subprocess
 
 STEPS = (180, 600, 6000, 11344, 12459, 13128, 24300, 35396, 36510, 37177, 48336)
-# Issue #223: window aliases and blank decals change pixels, not the replay
-# steps, state hashes, input recording, or vehicle trajectory.
+# PR #225 re-pins the car window aliases and blank decals. These frames also
+# depend on the inherited rasterizer depth-write guard from 3b1f644 (already
+# in base 97e3839): blended track groups preserve depth. Removing that guard
+# changes pixels but is not a revert of a change introduced by PR #225.
+# Replay steps, state hashes, input recording, and trajectory are unchanged.
 FRAMES = (
     "91A886FD04A2750C44F7AC194165C2C0B497900E3D358ACB17FF0FB4C3375C6A",
     "F13C60DA6D4869F9E204A9F04B717643246532AD41A804EA596DDCED0F958CDF",

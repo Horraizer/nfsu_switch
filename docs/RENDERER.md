@@ -1094,61 +1094,30 @@ three geometry sources and two shared texture sources:
 nfsu_viewer <CARS/240SX/GEOMETRY.BIN> <CARS/240SX/TEXTURES.BIN> build/shots/stock.tga --shared-textures <GLOBAL/GLOBALB.BUN> --shared-textures <CARS/TEXTURES.BIN> --stock-car 240SX --stock-parts <GLOBAL/GLOBALB.BUN> --stock-geometry <CARS/BRAKES/GEOMETRY.BIN> --stock-geometry <CARS/PLATES/GEOMETRY.BIN>
 ```
 
-Observed:
+The viewer report is the source for current group, triangle, instance and
+pixel counts; the output TGA is the source for this command's frame hash.
+This command omits wheel placement and runtime body-skin composition. It
+selects the installed stock parts rather than the diagnostic all-mesh view.
+The body uses fallback colors until a runtime skin is supplied. Add
+`--skin-car 240SX --skin-vinyls <CARS/240SX/VINYLS.BIN> --skin-doorline
+plain --skin-base 30 60 160 128 --material-state retail` to inspect that
+composition and its material state, and read the resulting report rather
+than comparing it with a copied measurement here.
 
-- Two runs in separate processes gave byte-identical TGA files, reports
-  and empty standard error: 3686418 bytes, SHA-256
-  `D68419B0CBB63BE7A209E5CC82BD94F681304C36D187B01C8D8DB240B0DD4E0F`. The
-  reports differed only in the output file name. All five inputs were
-  unchanged after rendering.
-- 25 slots are installed, 24 of them have a model and 22 draw: every body
-  part at the car's own matrix, the exhaust and the licence plate at their
-  markers, and the wheel and brake slots reported `placement unreproduced`
-  and drawing nothing. 16 markers were collected, one exhaust and one
-  licence plate among them.
-- 22 meshes over the three sources, 74 material groups (15 resolved, 59
-  unresolved, 0 unusable, 0 invalid), 12 unresolved hashes, and
-  `instances: 22 exact 22 stand_in 0`.
-- 4025 triangles submitted (498 textured, 3527 fallback), 110866 pixels
-  drawn of which 107050 are fallback, drawn bounds x 390..973, y 232..545.
-- Against the all-meshes reference at the top of this section, which draws
-  400 meshes and 78742 triangles: one kit, one style and one of each light
-  and decal, so nothing overlaps. The image is one car.
-- 22 texture hashes were wanted. 4 came from GLOBALB.BUN; `Cars/TEXTURES.BIN`
-  holds 353 records and claims none of them. Most visible surfaces are
-  still fallback-colored, for the reason the all-meshes run gives: the body
-  skin is composed at runtime and needs `--skin-car`. Adding
-  `--skin-car 240SX --skin-vinyls <CARS/240SX/VINYLS.BIN> --skin-doorline
-  plain --skin-base 30 60 160 128 --material-state retail` takes the same
-  74 groups to 47 resolved and the 4025 triangles to 3792 textured, and
-  leaves 33795 fallback pixels of 110866.
+The wheel-placed painted and unpainted defaults are checked by
+`nfsu_draw_commands_retail <retail-root>` in both material modes. Their
+off-state frame pins live in `include/nfsu/stock_frame.h`. That command
+also checks the CPU draw trace against the recorded commands and reports
+the current draw and triangle counts. Bracket each retail invocation with
+before/after manifests as described in `FRAME_BUDGET_RESEARCH.md`.
 
-With `--place-wheels` added, the wheel and brake slots draw four copies
-each. Issue #201 adds the stock lateral scale and offset to those copies:
-
-- 24 slots draw, from 24 meshes, in 30 instances: `instances: 30 exact 22
-  stand_in 8`. 79 material groups (20 resolved), 6137 triangles submitted,
-  118506 pixels drawn, drawn bounds x 390..973, y 232..555. SHA-256
-  `3DEB2147CDA1B1D66DC47FC599B8A1FD88FCB273F0B38BFBE656666808199D25`.
-  This is the historical issue #201 frame; the current stock texture pin is
-  in `include/nfsu/stock_frame.h` and its trace is in
-  [`CAR_TEXTURES.md`](CAR_TEXTURES.md).
-- The four copies of each land under the four arches. The stock lateral
-  term is now included, while the static frame has no spin, steering or
-  suspension. The 8 stand-in copies remain marked because the alternate
-  lateral branches and final x87 rounding are not reproduced. The left
-  pair of each is half-turned or reflected as the retail draw does it
-  (issue #161).
-- Issue #161 re-pinned this frame. It was
-  `FD6727333A94803A97FD26282CD89DF6F3D3295E0231F4A871A1B14089D28CE9`, with
-  116748 pixels drawn, while the left wheels were pure translations: the
-  front-left wheel's backing quad then sat 0.2 outboard of its rim and
-  showed as two black pixels at x 931..932, y 385, above the far fender.
-  Those two pixels are background now and nothing else in the frame
-  changed. The report's `triangles front` and `back` counts move from 3553
-  and 2576 to 3061 and 3068, because the turned wheels now face the other
-  way and the reflected brakes are wound the other way; `pixel tests` and
-  `fragments` move with them.
+With `--place-wheels` added, the wheel and brake slots draw their copies
+under the arches. Issue #201 adds the stock lateral scale and offset;
+issue #161 turns or reflects the left pair as the retail draw does it.
+The static frame has no spin, steering or suspension. The copies remain
+marked as stand-ins because the alternate lateral branches and final x87
+rounding are not reproduced. See [`CAR_TEXTURES.md`](CAR_TEXTURES.md) for
+the texture trace and the remaining visual acceptance on hardware.
 
 ### Runtime body skin
 

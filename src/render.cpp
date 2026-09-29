@@ -1311,7 +1311,7 @@ bool render_scene(
             break;
         }
         fallback_color(draw.texture_hash, raster.fallback);
-        // Count a material group once even when its copies use different states.
+        // Count a group once if any submitted copy carries the state.
         bool counted_alpha_test = false, counted_blend = false;
 
         // One drawn copy per instance that names this group's mesh, in

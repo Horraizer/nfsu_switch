@@ -554,7 +554,7 @@ bool build_stock_scene(
     const bool has_left_brake = std::any_of(drafts.begin(), drafts.end(),
         [&](const InstanceDraft& draft) {
             return draft.slot == kSlotBrake && (draft.copy == 0 || draft.copy == 3) &&
-                uses_global_brake(handles.at({draft.mesh.source, draft.mesh.index}));
+                uses_global_brake(handles.find({draft.mesh.source, draft.mesh.index})->second);
         });
     if (has_left_brake) {
         for (std::size_t i = 0; i < prepared.textures.size(); ++i) {

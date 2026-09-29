@@ -953,6 +953,11 @@ void test_left_brake_substitution() {
                     "left alpha/blend follows effective texture and right state is reset");
             }
             check(checked_brakes == 4,"trace covers every brake copy");
+            const std::uint64_t active_groups =
+                global_group && mode == MaterialStateMode::retail ? 1U : 0U;
+            check(stats.groups_alpha_tested == active_groups &&
+                  stats.groups_blended == active_groups,
+                  "a group is counted once when any submitted copy carries the state");
         }
     }
 }

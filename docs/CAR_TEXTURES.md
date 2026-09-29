@@ -87,7 +87,10 @@ The default painted frame has no fallback triangles or pixels, checked by
 `nfsu_draw_commands_retail`. The viewer's `groups_invalid` statistic combines
 empty material slots and deliberately suppressed dummy-decal groups; it does
 not mean every non-drawable group has an empty index range. The command above
-prints the current counts. The six remaining unresolved hashes are the disabled dummy decals. Window checker patterns,
+prints the current counts.
+
+The remaining unresolved hashes belong to disabled dummy decals. Window
+checker patterns,
 magenta strips, and the blank sponsor patterns are gone in all three views.
 The dark wheel backing visible in the viewer's default material mode is
 unchanged. In `--material-state retail`, its alpha-test state removes the
@@ -112,6 +115,15 @@ same RGBA stock preparation as the CPU reference, so both added top levels occup
 before deko3d alignment, derived from their dimensions and decoded format.
 This is larger than the compressed file spans. Existing shaders do the same
 per-fragment work.
+At `bd8aff1`, the review's painted default-camera retail-mode viewer run
+reported 4 alpha-tested and 16 blended groups, with 25952 blended fragments;
+the pre-fix car at `97e3839` had 9 blended groups
+([PR #225, review comment 5290](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/225#issuecomment-5290)).
+Resolving window textures therefore adds blending work even though blank
+decal suppression removes draws. The net GPU-time change is unknown; more
+blend fragments can increase color-buffer traffic and overdraw. A 60 fps
+result still requires the scene to fit the 16.67 ms frame budget in both
+handheld and docked modes.
 Actual GPU milliseconds and aligned allocation cost need the paired console
 measurement, not a claim of improvement inferred from fewer draws.
 
