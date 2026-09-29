@@ -171,6 +171,20 @@ if(unplaced_hash STREQUAL frame_hash)
         "comparison above could not have told two assemblies apart")
 endif()
 
+# An unknown explicit part must fail with its slot named and write no frame.
+set(UNKNOWN "${WORK}/unknown-part.tga")
+file(REMOVE "${UNKNOWN}")
+execute_process(
+    COMMAND "${VIEWER}" ${viewer_inputs} "${UNKNOWN}" ${viewer_options}
+            --stock-part BODY NO_SUCH_PART
+    RESULT_VARIABLE unknown_result
+    OUTPUT_VARIABLE unknown_output
+    ERROR_VARIABLE unknown_error)
+if(unknown_result EQUAL 0 OR EXISTS "${UNKNOWN}" OR
+   NOT unknown_error MATCHES "slot 5 BODY.*NO_SUCH_PART")
+    message(FATAL_ERROR "unknown part did not fail with slot 5 BODY: ${unknown_error}")
+endif()
+
 # The painted frame (issue #148).
 set(PAINTED "${WORK}/viewer_painted.tga")
 execute_process(

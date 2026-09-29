@@ -1081,6 +1081,17 @@ if(NFSU_BUILD_TESTS)
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/stock_frame_viewer_match.cmake
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
+    # Run the three retail tuned frame pins when NFSU_RETAIL_ROOT is set.
+    # CTest records a skip on machines without the owner's retail files.
+    add_test(NAME nfsu_tuned_frame_retail
+        COMMAND ${CMAKE_COMMAND} -DVIEWER=$<TARGET_FILE:nfsu_viewer>
+                -DTESTS=$<TARGET_FILE:nfsu_stock_frame_tests>
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/nfsu_tuned_frame_retail
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/tuned_frame_retail.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(nfsu_tuned_frame_retail PROPERTIES
+        SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT 180)
+
     set_tests_properties(
         nfsu_sha256_tests nfsu_screen_text_tests nfsu_stock_frame_tests
         nfsu_stock_frame_viewer_match

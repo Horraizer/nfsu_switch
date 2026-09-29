@@ -71,30 +71,47 @@ bool run(int argc, char** argv, PadState& pad, Report& report, std::string& erro
     struct RomfsGuard { ~RomfsGuard() { romfsExit(); } } romfs_guard;
     std::string root = "sdmc:/nfsu";
     bool painted = true;
+    bool tuned = false;
     bool retail = false;
     bool have_root = false;
     for (int i = 1; i < argc; ++i) {
         if (!argv[i] || !argv[i][0]) continue;
         const std::string argument = argv[i];
         if (argument == "--unpainted") painted = false;
+        else if (argument == "--tuned") tuned = true;
         else if (argument == "--material-state=retail") retail = true;
         else if (!have_root && argument[0] != '-') { root = argument; have_root = true; }
         else { error = "unknown argument: " + argument; return false; }
     }
-    report.line(("inputs: " + root + (painted ? " (painted)" : " (unpainted)")).c_str());
+    if (tuned) painted = true;
+    report.line(("inputs: " + root + (tuned ? " (tuned)" :
+                 painted ? " (painted)" : " (unpainted)")).c_str());
     nfsu::StockFrame frame;
     {
         nfsu::StockFrameInputs inputs;
-        const bool read = nfsu::read_stock_frame_inputs(root, inputs);
+        const bool read = nfsu::read_stock_frame_inputs(root, inputs, tuned);
         for (const auto& input : inputs.files) {
             const auto line = root + "/" + input.path + ": " +
                 (input.read ? "read " + std::to_string(input.bytes.size()) + " bytes" : input.error);
             report.line(line.c_str());
             if (!input.read) error += line + "\n";
         }
+        if (tuned) {
+            for (const auto* input : {&inputs.wheel_geometry, &inputs.wheel_textures,
+                                      &inputs.vinyls}) {
+                const auto line = root + "/" + input->path + ": " +
+                    (input->read ? "read " + std::to_string(input->bytes.size()) +
+                                       " bytes" : input->error);
+                report.line(line.c_str());
+                if (!input->read) error += line + "\n";
+            }
+        }
         if (!read) return false;
-        const auto skin = painted ? nfsu::stock_240sx_skin() : nfsu::StockFrameSkin{};
-        if (!nfsu::prepare_stock_frame(inputs, nfsu::stock_240sx_request(), skin, frame, error)) return false;
+        const auto skin = tuned ? nfsu::tuned_240sx_skin() :
+            painted ? nfsu::stock_240sx_skin() : nfsu::StockFrameSkin{};
+        const auto request = tuned ? nfsu::tuned_240sx_request() :
+            nfsu::stock_240sx_request();
+        if (!nfsu::prepare_stock_frame(inputs, request, skin, frame, error)) return false;
         if (!frame.inputs_ok) {
             error = "stock input issues:\n";
             for (const auto& issue : frame.issues) error += issue + "\n";
