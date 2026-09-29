@@ -1575,6 +1575,15 @@ if(NFSU_BUILD_TESTS)
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_retail.cmake)
     set_tests_properties(nfsu_audio_retail PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED")
+    add_executable(nfsu_race_loader_peak_tests tests/race_loader_peak_tests.cpp)
+    target_link_libraries(nfsu_race_loader_peak_tests PRIVATE
+        nfsu_race_run nfsu_race_audio nfsu_posix_file_system)
+    nfsu_enable_warnings(nfsu_race_loader_peak_tests)
+    if(MINGW)
+        # Count allocations in the executable and its C++ dependencies.
+        target_link_options(nfsu_race_loader_peak_tests PRIVATE -static-libstdc++ -static-libgcc)
+    endif()
+    add_test(NAME nfsu_race_loader_peak_tests COMMAND nfsu_race_loader_peak_tests)
     add_executable(nfsu_race_run_tests tests/race_run_tests.cpp)
     target_link_libraries(nfsu_race_run_tests PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_platform_desktop)
     nfsu_enable_warnings(nfsu_race_run_tests)
