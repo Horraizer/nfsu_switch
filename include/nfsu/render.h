@@ -391,6 +391,9 @@ private:
 // state, so a caller that does not set them gets the historical behaviour.
 struct RasterMaterial {
     const RenderTexture* texture = nullptr;  // null draws the fallback
+    // The retail car sampler uses linear filtering with repeat addressing.
+    // Track and synthetic raster draws keep their independently selected state.
+    bool linear_filter = false;
     unsigned char fallback[4] = {255, 255, 255, 255};
     // Flat shade factor 0..256 applied to RGB.
     std::uint32_t shade = 256;

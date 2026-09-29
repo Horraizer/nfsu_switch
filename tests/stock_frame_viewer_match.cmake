@@ -80,6 +80,7 @@ set(viewer_options
     --stock-geometry "${ROOT}/Cars/PLATES/GEOMETRY.BIN")
 execute_process(
     COMMAND "${VIEWER}" ${viewer_inputs} "${SHOT}" ${viewer_options} --place-wheels
+            --material-state off
     RESULT_VARIABLE viewer_result
     OUTPUT_VARIABLE viewer_output
     ERROR_VARIABLE viewer_error)
@@ -94,6 +95,27 @@ endif()
 file(SIZE "${SHOT}" viewer_size)
 file(SHA256 "${SHOT}" viewer_hash)
 string(TOUPPER "${viewer_hash}" viewer_hash)
+
+# Stock viewing defaults to retail alpha state, including the tire cutout.
+set(DEFAULT_RETAIL "${WORK}/viewer_default_retail.tga")
+set(EXPLICIT_RETAIL "${WORK}/viewer_explicit_retail.tga")
+execute_process(
+    COMMAND "${VIEWER}" ${viewer_inputs} "${DEFAULT_RETAIL}" ${viewer_options}
+            --place-wheels
+    RESULT_VARIABLE default_retail_result)
+execute_process(
+    COMMAND "${VIEWER}" ${viewer_inputs} "${EXPLICIT_RETAIL}" ${viewer_options}
+            --place-wheels --material-state retail
+    RESULT_VARIABLE explicit_retail_result)
+if(NOT default_retail_result EQUAL 0 OR NOT explicit_retail_result EQUAL 0)
+    message(FATAL_ERROR "the stock retail default could not render")
+endif()
+file(SHA256 "${DEFAULT_RETAIL}" default_retail_hash)
+file(SHA256 "${EXPLICIT_RETAIL}" explicit_retail_hash)
+if(NOT default_retail_hash STREQUAL explicit_retail_hash OR
+   default_retail_hash STREQUAL viewer_hash)
+    message(FATAL_ERROR "stock default must equal retail and differ from off")
+endif()
 
 execute_process(
     COMMAND "${TESTS}" --frame "${ROOT}"
@@ -175,6 +197,7 @@ endif()
 set(PAINTED "${WORK}/viewer_painted.tga")
 execute_process(
     COMMAND "${VIEWER}" ${viewer_inputs} "${PAINTED}" ${viewer_options} --place-wheels
+            --material-state off
             --skin-car 240SX --skin-doorline plain --skin-base 30 60 160 128
     RESULT_VARIABLE painted_result
     OUTPUT_VARIABLE painted_output

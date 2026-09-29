@@ -73,13 +73,13 @@ const char* stock_frame_file_path(std::size_t index) noexcept;
 // 8A5932A3... respectively.
 constexpr std::uint64_t kStock240sxFrameBytes = 3686418;
 constexpr const char* kStock240sxFrameSha256 =
-    "8FBA20E893590A6B48EA1CE40B9A711C74690127811BB5CC0CA208337C63BE84";
+    "79AB4AD5F539310A95C404DA490ECA932F5D4CC270CC3C768E1E1BA21B074BAD";
 
 // The painted desktop frame, the command above with stock_240sx_skin(), as
 // docs/SWITCH_BUILD.md pins it.
 constexpr std::uint64_t kStock240sxPaintedFrameBytes = 3686418;
 constexpr const char* kStock240sxPaintedFrameSha256 =
-    "05203E9CCDEB15B8ECF478B8501777577620DAB94C3FBA6A34F428BA772AF6E0";
+    "89E4AB88006B460C7B4800E5C782C12EB55E0B9A5368730D7D116056EAC8AA21";
 
 // The largest file read: 256 MiB, the limit every parser these files go
 // through applies to its input.

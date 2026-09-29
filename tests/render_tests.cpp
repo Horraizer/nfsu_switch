@@ -4,6 +4,7 @@
 #include "nfsu/texture.h"
 #include "nfsu/texture_decode.h"
 
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -1092,6 +1093,33 @@ void test_material_alpha_test() {
           "an alpha lane below 1 drops both");
 }
 
+void test_car_linear_repeat_sample() {
+    nfsu::RenderTexture texture = make_texture(2, 1);
+    texture.rgba = {255, 0, 0, 255, 0, 0, 255, 255};
+    const auto sample = [&](double u) {
+        Canvas canvas(1, 1);
+        nfsu::RasterMaterial material;
+        material.texture = &texture;
+        material.linear_filter = true;
+        nfsu::ClipVertex tri[3] = {at(canvas, -2, -2), at(canvas, -2, 4),
+                                    at(canvas, 4, -2)};
+        for (auto& vertex : tri) {
+            vertex.u = u;
+            vertex.v = 0.5;
+        }
+        canvas.draw(tri, 1, &material);
+        return std::array<unsigned, 3>{canvas.pixel(0, 0)[0],
+                                       canvas.pixel(0, 0)[1],
+                                       canvas.pixel(0, 0)[2]};
+    };
+    check(sample(0.0) == std::array<unsigned, 3>{128, 0, 128} &&
+          sample(1.0) == sample(0.0),
+          "car linear filter blends across the repeat seam");
+    check(sample(0.25) == std::array<unsigned, 3>{255, 0, 0} &&
+          sample(0.75) == std::array<unsigned, 3>{0, 0, 255},
+          "car linear filter uses texel centres");
+}
+
 // Draws an opaque destination, then one or two blended triangles over it.
 struct BlendCase {
     std::vector<int> pixel;
@@ -1689,7 +1717,7 @@ void test_golden_and_rerender() {
     const std::uint64_t hash = fnv1a64(a);
     // Locks the synthetic scene; the pixel rules themselves are checked
     // exactly by the tests above.
-    constexpr std::uint64_t kGolden = 0x4CAD673A74594A3FULL;
+    constexpr std::uint64_t kGolden = 0xB62BB1032418E8F3ULL;
     if (hash != kGolden) {
         std::cerr << "golden FNV-1a 64: 0x" << std::hex << hash << std::dec << '\n';
     }
@@ -2870,6 +2898,7 @@ int main() {
     test_material_state_decoders();
     test_material_gates();
     test_material_alpha_test();
+    test_car_linear_repeat_sample();
     test_blend_modes();
     test_environment_term();
     test_material_coefficient_validation();

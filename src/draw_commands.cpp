@@ -272,8 +272,11 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
         const bool textured = d.program->texture_count != 0;
         if (std::strcmp(d.program->vertex_source, "placed.vert.glsl") != 0 ||
             std::strcmp(d.program->fragment_source, textured ? "textured.frag.glsl" : "fallback.frag.glsl") != 0 ||
-            (textured && (d.program->textures[0].filter != sm::Filter::nearest ||
-                          d.program->textures[0].wrap != sm::Wrap::repeat)))
+            (textured &&
+             (d.program->textures[0].filter !=
+                  (std::strcmp(d.program->name, "car_textured") == 0
+                       ? sm::Filter::linear : sm::Filter::nearest) ||
+              d.program->textures[0].wrap != sm::Wrap::repeat)))
             return fail(d.name, "unsupported shader or sampler");
         if (d.vertex_resource >= resources.size() || d.index_resource >= resources.size())
             return fail(d.name, "buffer resource out of range");

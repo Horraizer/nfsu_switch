@@ -70,7 +70,8 @@ padded copies stay live through the upload fence. A full barrier invalidates the
 upload fence is waited before drawing. No CPU-cached block is used.
 
 Uniforms use the recorder's 256-byte slots and 112/64/80-byte Frame/Instance/
-Material payloads. Descriptors bind RGBA8 images and a nearest/repeat sampler.
+Material payloads. Descriptors bind RGBA8 images and nearest/repeat and
+linear/repeat samplers; the car uses linear filtering, the track uses nearest.
 `placed.vert.dksh`, `textured.frag.dksh` and `fallback.frag.dksh` load from
 mounted NRO RomFS. The build copies them only after manifest/blob checks.
 Runtime checks the DKSH header, size and stage, copies code into Code

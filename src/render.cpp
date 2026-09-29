@@ -230,6 +230,35 @@ std::uint32_t wrap_texel(double t, std::uint32_t size) noexcept {
     return static_cast<std::uint32_t>(scaled);
 }
 
+void sample_linear_repeat(const RenderTexture& texture, double u, double v,
+                          std::uint32_t (&color)[4]) noexcept {
+    if (!std::isfinite(u)) u = 0.0;
+    if (!std::isfinite(v)) v = 0.0;
+    // D3D's linear sample is centred on texels: normalized coordinate 0
+    // lies halfway between the last and first texels when addressing wraps.
+    const double x = (u - std::floor(u)) * texture.width - 0.5;
+    const double y = (v - std::floor(v)) * texture.height - 0.5;
+    const double left = std::floor(x), top = std::floor(y);
+    const double fx = x - left, fy = y - top;
+    const auto wrap = [](double i, std::uint32_t n) {
+        const auto signed_i = static_cast<std::int64_t>(i);
+        const auto signed_n = static_cast<std::int64_t>(n);
+        return static_cast<std::size_t>((signed_i % signed_n + signed_n) % signed_n);
+    };
+    const std::size_t x0 = wrap(left, texture.width), x1 = wrap(left + 1, texture.width);
+    const std::size_t y0 = wrap(top, texture.height), y1 = wrap(top + 1, texture.height);
+    const auto* p00 = &texture.rgba[(y0 * texture.width + x0) * 4];
+    const auto* p10 = &texture.rgba[(y0 * texture.width + x1) * 4];
+    const auto* p01 = &texture.rgba[(y1 * texture.width + x0) * 4];
+    const auto* p11 = &texture.rgba[(y1 * texture.width + x1) * 4];
+    for (int c = 0; c < 4; ++c) {
+        const double upper = p00[c] * (1.0 - fx) + p10[c] * fx;
+        const double lower = p01[c] * (1.0 - fx) + p11[c] * fx;
+        color[c] = static_cast<std::uint32_t>(std::floor(
+            upper * (1.0 - fy) + lower * fy + 0.5));
+    }
+}
+
 // Parity of floor(t * 8): the fallback checker.
 bool checker_odd(double t) noexcept {
     if (!std::isfinite(t)) {
@@ -1060,12 +1089,14 @@ bool Rasterizer::fill(
                         }
                         color[3] = 255;
                     } else {
-                        const std::uint32_t tx = wrap_texel(u, texture->width);
-                        const std::uint32_t ty = wrap_texel(tv, texture->height);
-                        const unsigned char* texel =
-                            &texture->rgba[(std::size_t{ty} * texture->width + tx) * 4U];
-                        for (int k = 0; k < 4; ++k) {
-                            color[k] = texel[k];
+                        if (material.linear_filter) {
+                            sample_linear_repeat(*texture, u, tv, color);
+                        } else {
+                            const std::uint32_t tx = wrap_texel(u, texture->width);
+                            const std::uint32_t ty = wrap_texel(tv, texture->height);
+                            const unsigned char* texel =
+                                &texture->rgba[(std::size_t{ty} * texture->width + tx) * 4U];
+                            for (int k = 0; k < 4; ++k) color[k] = texel[k];
                         }
                         keep = color[3] >= options_.alpha_cutoff;
                         if (scaled_alpha) {
@@ -1298,6 +1329,7 @@ bool render_scene(
         const std::uint64_t first = draw.first_index;
         const std::uint64_t count = draw.index_count;
         RasterMaterial raster;
+        raster.linear_filter = true;
         switch (draw.binding) {
         case BindingKind::resolved:
             ++stats.groups_resolved;
