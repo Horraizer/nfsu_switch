@@ -83,6 +83,17 @@ order is `LESS_EQUAL`; blended track draws disable depth writes, while the
 other draws write depth; the frame's alpha is 255 in every pixel, so no draw writes the alpha
 channel (`color_write=rgb`); and `RenderOptions` culls nothing by default.
 
+The CPU rasterizer honors `RasterMaterial::depth_write` at the depth store.
+Commit `3b1f644` introduced that track-rendering correction before PR #225:
+blended track groups already requested no depth write, but the reference
+ignored it. The corrected store agrees with the deko3d track state. Car
+draws keep depth writes enabled, including blended car draws. Race-frame
+pins depend on this inherited track behavior as well as the car textures;
+removing the guard changes pixels without changing simulation state.
+PR #225 adds the missing required `nfsu_track_render_tests` regression for
+blended depth preservation, a later overlapping draw, and an opaque
+depth-writing control in both blend modes.
+
 ### What each variant computes
 
 `placed.vert.glsl` places the vertex with the drawn copy's transform and

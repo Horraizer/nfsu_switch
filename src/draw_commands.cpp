@@ -363,9 +363,18 @@ bool record_car_commands(const PreparedCarScene& scene, const RenderOptions& opt
                 }
                 draw.name = "car group " + std::to_string(group) + " copy " +
                     (draw.instance == kNoHandle ? "authored" : std::to_string(draw.instance));
-                const auto* texture = source.binding == BindingKind::resolved ? &scene.textures[source.texture] : nullptr;
+                const std::size_t override_texture =
+                    draw.instance != kNoHandle && source.texture_hash == kBrakeGlobalHash
+                        ? scene.instances[draw.instance].brake_left_texture : kNoHandle;
+                const auto* texture = override_texture != kNoHandle
+                    ? &scene.textures[override_texture]
+                    : source.binding == BindingKind::resolved
+                        ? &scene.textures[source.texture] : nullptr;
                 if (!buffers(scene.meshes[source.mesh], source, resources, draw, error) ||
                     !pipeline(draw, false, texture, source.flags, source.texture_hash, options, error)) return false;
+                if (override_texture != kNoHandle) {
+                    draw.texture_resource = resources.textures[override_texture];
+                }
                 if (draw.instance != kNoHandle)
                     draw.material.alpha[3] = static_cast<float>(scene.instances[draw.instance].lamp_mode);
                 out.owning_draws().push_back(std::move(draw));

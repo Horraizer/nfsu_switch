@@ -174,6 +174,13 @@ enum class BindingKind {
     invalid_slot   // the texture slot is outside the mesh hash list
 };
 
+// Retail brake substitution: speed.exe 0x56A76B and 0x56A80A.
+inline constexpr std::uint32_t kBrakeGlobalHash = 0x17F9F794U;
+inline constexpr std::uint32_t kBrakeGlobalLeftHash = 0x85E9C79EU;
+
+// Empty stock sponsor slots resolve to DEFAULTALPHA in retail and are skipped.
+bool is_stock_dummy_decal_hash(std::uint32_t hash) noexcept;
+
 const char* binding_kind_name(BindingKind kind) noexcept;
 
 struct MaterialBinding {
@@ -366,6 +373,9 @@ struct PreparedInstance {
     std::uint32_t part_lod = 0;
     std::uint32_t copy = 0;
     std::uint32_t mesh_hash = 0;
+    // Retail left brake substitutes BRAKE_GLOBAL with BRAKE_GLOBAL_LEFT.
+    // Handle of that prepared texture for stock brake copies 0 and 3.
+    std::size_t brake_left_texture = kNoHandle;
     // Wheel/brake rotation pivot in car space. Zero for other parts.
     float animation_pivot[3] = {};
     // Race-only visual lamp treatment: 0 off, 1 head, 2 tail, 3 brake.
