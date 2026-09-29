@@ -77,8 +77,10 @@
   resolves the body material groups to it. Without the `--skin-*` options
   a render is byte-identical to before on its TGA, stdout, stderr and exit
   code; the usage text is the one thing that changed for every invocation.
-  Which customization a car actually has is still the caller's to state: no
-  part database is read here.
+  The caller can now also state installed parts per slot with
+  `--stock-part`, resolved from the GLOBALB part database before the scene
+  is built ([`INSTALLED_PARTS.md`](INSTALLED_PARTS.md)). Neither that choice
+  nor the skin selection is read from a career save.
 - The prepared scene can now be inspected by hand
   (`nfsu_viewer --interactive`, [`INSPECTOR.md`](INSPECTOR.md)). A click
   names the material group that drew a pixel, with its mesh, record fields,

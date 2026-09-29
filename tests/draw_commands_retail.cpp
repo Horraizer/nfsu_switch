@@ -115,5 +115,51 @@ int main(int argc, char** argv) {
                       << " resources, " << stock.stats.triangles_submitted << " triangles, sha256 " << hash << '\n';
         }
     }
+    nfsu::StockFrameInputs tuned_inputs;
+    if (!nfsu::read_stock_frame_inputs(nfsu::argument_path(argv[1]), tuned_inputs, true)) {
+        std::cerr << "FAIL: could not read the tuned inputs\n";
+        return 1;
+    }
+    nfsu::StockFrame tuned;
+    if (!nfsu::prepare_stock_frame(tuned_inputs, nfsu::tuned_240sx_request(),
+                                   nfsu::tuned_240sx_skin(), tuned, error)) {
+        std::cerr << "FAIL: tuned prepare: " << error << '\n';
+        return 1;
+    }
+    nfsu::RenderOptions options;
+    nfsu::RecordedCommands commands;
+    if (!nfsu::record_car_commands(tuned.scene, options, {},
+                                   tuned.skin_binding.source, commands, error)) {
+        std::cerr << "FAIL: tuned record: " << error << '\n';
+        return 1;
+    }
+    nfsu::DrawExecutionPlan plan;
+    if (!nfsu::plan_draw_execution(commands, plan, error)) {
+        std::cerr << "FAIL: tuned execution plan: " << error << '\n';
+        return 1;
+    }
+    std::vector<nfsu::ReferenceDraw> trace;
+    if (!nfsu::render_scene(tuned.scene, options, {}, tuned.frame, tuned.stats, error,
+                            [&](const auto& draw) { trace.push_back(draw); })) {
+        std::cerr << "FAIL: tuned reference render: " << error << '\n';
+        return 1;
+    }
+    const auto mismatch = compare_draws(commands, trace, false);
+    if (!mismatch.empty() || trace.empty()) {
+        std::cerr << "FAIL: tuned draw comparison: " <<
+            (trace.empty() ? "empty CPU trace" : mismatch) << '\n';
+        return 1;
+    }
+    nfsu::StockFrameImage image;
+    if (!nfsu::encode_stock_frame(tuned.frame, image, error) ||
+        nfsu::sha256_hex(image.sha256) != nfsu::kTuned240sxFrameSha256 ||
+        image.tga.size() != nfsu::kTuned240sxFrameBytes) {
+        std::cerr << "FAIL: pinned tuned frame changed: " << error << '\n';
+        return 1;
+    }
+    std::cout << "PASS: tuned 240SX off: " << trace.size() << " draws, "
+              << commands.owning_uploads().resources.size() << " resources, "
+              << tuned.stats.triangles_submitted << " triangles, sha256 "
+              << nfsu::sha256_hex(image.sha256) << '\n';
     return 0;
 }

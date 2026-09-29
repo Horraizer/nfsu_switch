@@ -55,6 +55,9 @@ std::vector<Segment> scan_ast_prefix(std::istream& input,
                                      std::size_t byte_limit,
                                      std::size_t max_segments,
                                      const std::function<void()>& progress = {});
+Segment index_ast_segment_by_boundary(std::istream& input,
+                                      std::uint64_t offset,
+                                      std::uint64_t next_offset);
 void decode_bank_sample(const std::vector<std::uint8_t>& bytes,
                         const Sample& sample, const PcmSink& sink);
 void decode_ast_segment(std::istream& input, const Segment& segment,

@@ -272,12 +272,18 @@ Three environment requirements are part of the gates, not excuses:
   and the next launch from that session silently becomes a smoke run.
 
 The retail checks are part of the C++ gate (issue #233). Configured with
-`NFSU_RETAIL_ROOT`, CTest registers every check that reads the game's files
-with the label `retail` - the replay and frame pins, the cached-versus-
-reference draw comparison, the stock frame pins, the 48 MiB loader ceilings,
-the track slice, the racing line and the audio pins - passes the root on each
-command line, and brackets them with a fixture that fails if any file or
-directory under the root changed. Configured without it, the one retail test
+`NFSU_RETAIL_ROOT`, CTest registers every retail check that asserts something
+with the label `retail` - the replay and race frame pins, the
+cached-versus-reference draw comparison, the stock and tuned frame pins, the
+48 MiB loader ceilings, the track slice, the racing line, the audio pins and
+the asset check's pinned SHA-256s - passes the root on each command line, and
+brackets them with a fixture that fails if any file or directory under the
+root changed. Measurement-only modes and the documented probe reproductions
+that no test asserts are not registered. The gate runs from a build directory
+whose path is not ASCII, as this checkout's own path is not. The root itself
+must be ASCII: six of the checks read it through nfsu_posix_file_system, the
+console's file system service, which takes narrow paths
+(src/posix_file_system.cpp), and they fail, not skip, on any other root. Configured without it, the one retail test
 is `nfsu_retail_skipped`, which reports SKIPPED: a summary that shows it is not
 a C++ gate run. `ctest -L retail` runs only the retail checks, fixture
 included. The replay check needs the Python 3.8 or newer interpreter the

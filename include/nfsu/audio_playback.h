@@ -106,6 +106,10 @@ public:
     bool start(std::unique_ptr<std::istream> input, const Segment& segment,
                std::string& error,
                const std::function<bool()>& thread_setup = {});
+    bool start_playlist(std::unique_ptr<std::istream> input,
+                        std::vector<Segment> segments, bool loop,
+                        std::string& error,
+                        const std::function<bool()>& thread_setup = {});
     void stop();
     std::size_t pop(std::int16_t* stereo, std::size_t frames) {
         return ring_.pop(stereo, frames);

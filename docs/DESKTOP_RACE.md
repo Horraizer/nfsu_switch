@@ -246,8 +246,8 @@ python tools/race_replay_check.py --exe build-release/nfsu_race.exe --root X:/Ga
 
 CTest runs the same check, with `--check-driver`, over its own build's
 `nfsu_race` as `nfsu_race_replay_check` (label `retail`) when the build is
-configured with `-DNFSU_RETAIL_ROOT=<installation>`; a reviewer runs the gate rather than these
-lines.
+configured with `-DNFSU_RETAIL_ROOT=<installation>`; a reviewer runs the gate
+rather than these lines.
 
 Python uses only the standard library. It resolves its recording relative
 to the script; no workspace path is embedded. The script's help smoke was

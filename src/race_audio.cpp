@@ -44,9 +44,8 @@ std::vector<std::uint8_t> bank_bytes(const std::filesystem::path& path) {
     return bytes;
 }
 
-PcmClip load_clip(const std::filesystem::path& path, std::uint32_t index) {
-    const auto bytes = bank_bytes(path);
-    const auto bank = parse_abk(bytes);
+PcmClip decode_clip(const std::vector<std::uint8_t>& bytes,
+                    const Bank& bank, std::uint32_t index) {
     const auto found = std::find_if(bank.samples.begin(), bank.samples.end(),
         [&](const Sample& sample) { return sample.index == index; });
     if (found == bank.samples.end()) throw std::runtime_error("sample index absent");
@@ -66,6 +65,11 @@ PcmClip load_clip(const std::filesystem::path& path, std::uint32_t index) {
     if (!clip.valid() || clip.frames() != found->frames)
         throw std::runtime_error("invalid decoded clip");
     return clip;
+}
+
+PcmClip load_clip(const std::filesystem::path& path, std::uint32_t index) {
+    const auto bytes = bank_bytes(path);
+    return decode_clip(bytes, parse_abk(bytes), index);
 }
 
 } // namespace
@@ -91,7 +95,47 @@ RaceAudioSnapshot race_audio_snapshot(const RaceSession& session) noexcept {
                                      impulse.y * impulse.y + impulse.z * impulse.z);
     }
     snapshot.impact = finite_clamp(snapshot.impact, 0, 10000);
+    const auto& timing = session.timing();
+    snapshot.countdown = timing.countdown_shown;
+    if (!timing.racers.empty())
+        snapshot.completed_laps = timing.racers[0].highest_lap;
+    snapshot.finished = timing.outcome == RaceOutcome::finished;
     return snapshot;
+}
+
+RaceInterfaceCue RaceCueScheduler::update(const RaceAudioSnapshot& snapshot) noexcept {
+    RaceInterfaceCue cue = RaceInterfaceCue::none;
+    if (snapshot.finished && !finished_)
+        cue = RaceInterfaceCue::finish;
+    else if (snapshot.completed_laps > completed_laps_)
+        cue = RaceInterfaceCue::lap;
+    else if (snapshot.countdown != countdown_) {
+        if (snapshot.countdown >= 1 && snapshot.countdown <= 3)
+            cue = RaceInterfaceCue::countdown;
+        else if (snapshot.countdown == 4)
+            cue = RaceInterfaceCue::go;
+    }
+    countdown_ = snapshot.countdown;
+    completed_laps_ = snapshot.completed_laps;
+    finished_ = snapshot.finished;
+    return cue;
+}
+
+std::vector<Segment> race_music_playlist(const Bank& bank,
+                                         const std::vector<Segment>& indexed) {
+    if (indexed.size() < 2 || indexed.front().offset != 0)
+        throw std::runtime_error("music segment 0 absent");
+    std::vector<Segment> playlist;
+    for (const auto& entry : bank.entries) {
+        if (entry.type != 1 || entry.value == indexed.front().offset) continue;
+        const auto found = std::find_if(indexed.begin(), indexed.end(),
+            [&](const Segment& segment) { return segment.offset == entry.value; });
+        if (found == indexed.end())
+            throw std::runtime_error("music entry misses AST segment");
+        playlist.push_back(*found);
+    }
+    if (playlist.empty()) throw std::runtime_error("music playlist empty");
+    return playlist;
 }
 
 std::array<double, 4> engine_layer_weights(double rpm) noexcept {
@@ -113,17 +157,23 @@ std::array<double, 4> engine_layer_weights(double rpm) noexcept {
 struct RaceAudioService::Impl {
     std::array<PcmClip, 4> engine;
     PcmClip skid, impact;
+    std::array<PcmClip, 4> cue_clips;
     std::array<bool, 4> has_engine{};
+    std::array<bool, 4> has_cue{};
     bool has_skid = false, has_impact = false, has_music = false, active = false;
+    std::size_t music_tracks = 0;
     unsigned impact_cooldown = 0;
     std::size_t impact_slot = 8;
     Mixer mixer;
+    RaceCueScheduler cues;
     AstStreamer stream;
     Output output;
     std::atomic<bool> suspended{false};
+    std::atomic<bool> finished{false};
     mutable std::mutex mixer_mutex;
     std::string note;
     OutputFade fade;
+    OutputFade music_fade;
 
     void render(std::int16_t* stereo, std::size_t frames) {
         const bool muted = suspended.load();
@@ -135,13 +185,20 @@ struct RaceAudioService::Impl {
         std::size_t offset = 0;
         while (offset < frames) {
             const auto count = std::min<std::size_t>(1024, frames - offset);
+            const bool ending = finished.load();
             const bool stream_ready = has_music &&
+                (!ending || !music_fade.silent()) &&
                 (!stream.finished() || stream.ring().size());
-            if (stream_ready) stream.pop(music.data(), count);
+            if (stream_ready) {
+                stream.pop(music.data(), count);
+                music_fade.apply(music.data(), count, ending);
+            }
             {
                 std::lock_guard<std::mutex> lock(mixer_mutex);
+                const auto music_gain = mixer.active(6) || mixer.active(7) ?
+                    8192U : 16384U;
                 mixer.render(stereo + offset * 2, count,
-                             stream_ready ? music.data() : nullptr, 16384);
+                             stream_ready ? music.data() : nullptr, music_gain);
             }
             fade.apply(stereo + offset * 2, count, muted);
             offset += count;
@@ -179,21 +236,55 @@ bool RaceAudioService::start(const std::filesystem::path& root,
         p.impact = load_clip(root / "Sound/IG_GLOBAL/IMPACT_MB.abk", 1);
         p.has_impact = true;
     } catch (const std::exception& e) { notes << "impact: " << e.what() << "; "; }
+    if (progress) progress("audio interface cues");
+    try {
+        const auto bytes = bank_bytes(root / "Sound/FE/FE_MB.abk");
+        const auto bank = parse_abk(bytes);
+        // Provisional candidates pending the owner's listening check.
+        constexpr std::array<std::uint32_t, 4> samples{25, 26, 29, 30};
+        for (std::size_t i = 0; i < samples.size(); ++i) {
+            if (progress) progress("audio interface cues");
+            try {
+                p.cue_clips[i] = decode_clip(bytes, bank, samples[i]);
+                p.has_cue[i] = true;
+            } catch (const std::exception& e) {
+                notes << "cue sample " << samples[i] << ": " << e.what() << "; ";
+            }
+        }
+    } catch (const std::exception& e) { notes << "cues: " << e.what() << "; "; }
     if (progress) progress("audio music index");
     try {
         auto input = std::make_unique<std::ifstream>(
             root / "SNDSTREAMS/STRM_Music_UG0_MB.ast", std::ios::binary);
         if (!*input) throw std::runtime_error("missing AST");
-        // The supported retail segment 1 ends at 5,343,716. A 6 MiB
-        // prefix covers it without scanning the rest of the 149 MB file.
-        const auto segments = scan_ast_prefix(*input, 6 * 1024 * 1024, 2, [&] {
-            if (progress) progress("audio music read");
-        });
-        if (segments.size() < 2) throw std::runtime_error("music segment 1 absent");
+        const auto bank = parse_abk(bank_bytes(
+            root / "Sound/STRMBANK/STRM_Music_UG0_MB.abk"));
+        std::vector<std::uint64_t> offsets;
+        for (const auto& entry : bank.entries)
+            if (entry.type == 1) offsets.push_back(entry.value);
+        std::sort(offsets.begin(), offsets.end());
+        if (offsets.size() < 2 || offsets.size() > 128 ||
+            offsets.front() != 0 ||
+            std::adjacent_find(offsets.begin(), offsets.end()) != offsets.end())
+            throw std::runtime_error("invalid music bank offsets");
+        input->seekg(0, std::ios::end);
+        const auto end = input->tellg();
+        if (end < 0) throw std::runtime_error("music AST size unavailable");
+        const auto file_size = static_cast<std::uint64_t>(end);
+        std::vector<Segment> indexed;
+        indexed.reserve(offsets.size());
+        for (std::size_t i = 0; i < offsets.size(); ++i) {
+            if (progress) progress("audio playlist index");
+            indexed.push_back(index_ast_segment_by_boundary(*input,
+                offsets[i], i + 1 < offsets.size() ? offsets[i + 1] : file_size));
+        }
+        auto playlist = race_music_playlist(bank, indexed);
         std::string error;
-        p.has_music = p.stream.start(std::move(input), segments[1], error,
-                                      decoder_thread_setup);
+        const auto track_count = playlist.size();
+        p.has_music = p.stream.start_playlist(std::move(input),
+            std::move(playlist), true, error, decoder_thread_setup);
         if (!p.has_music) throw std::runtime_error(error);
+        p.music_tracks = track_count;
     } catch (const std::exception& e) { notes << "music: " << e.what() << "; "; }
     for (unsigned attempt = 0; p.has_music && attempt < 100 &&
             p.stream.ring().size() < 3 * 1024 && !p.stream.finished(); ++attempt) {
@@ -201,7 +292,8 @@ bool RaceAudioService::start(const std::filesystem::path& root,
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     if (!p.has_skid && !p.has_impact && !p.has_music &&
-        std::none_of(p.has_engine.begin(), p.has_engine.end(), [](bool x) { return x; })) {
+        std::none_of(p.has_engine.begin(), p.has_engine.end(), [](bool x) { return x; }) &&
+        std::none_of(p.has_cue.begin(), p.has_cue.end(), [](bool x) { return x; })) {
         diagnostic = "no supported retail audio: " + notes.str();
         p.note = diagnostic;
         return false;
@@ -217,7 +309,8 @@ bool RaceAudioService::start(const std::filesystem::path& root,
         return false;
     }
     p.active = true;
-    p.note = notes.str().empty() ? "audio ready" : "audio ready; " + notes.str();
+    p.note = "audio ready; tracks=" + std::to_string(p.music_tracks);
+    if (!notes.str().empty()) p.note += "; " + notes.str();
     diagnostic = p.note;
     return true;
 }
@@ -226,6 +319,22 @@ void RaceAudioService::on_tick(const RaceAudioSnapshot& snapshot) {
     auto& p = *impl_;
     if (!p.active) return;
     std::lock_guard<std::mutex> lock(p.mixer_mutex);
+    const auto cue = p.cues.update(snapshot);
+    if (cue != RaceInterfaceCue::none) {
+        const std::size_t index = cue == RaceInterfaceCue::countdown ? 0 :
+            cue == RaceInterfaceCue::go ? 1 :
+            cue == RaceInterfaceCue::lap ? 2 : 3;
+        if (p.has_cue[index])
+            p.mixer.play(index < 2 ? 6 : 7, &p.cue_clips[index], false,
+                         q15(index < 2 ? 0.55 : 0.65));
+    }
+    if (snapshot.finished) {
+        p.finished = true;
+        for (std::size_t i = 0; i < p.engine.size(); ++i)
+            if (p.has_engine[i]) p.mixer.control(i, 0, 65536);
+        if (p.has_skid) p.mixer.control(4, 0, 65536);
+        return;
+    }
     // Approximation: four equally ordered sample layers with linear RPM
     // crossfades. speed.exe proves the bank lookup, not these breakpoints.
     constexpr std::array<double, 4> centers{800, 2500, 4500, 7000};
@@ -288,6 +397,8 @@ std::size_t RaceAudioService::resident_bytes() const noexcept {
     for (const auto& clip : p.engine) bytes += clip.pcm.capacity() * sizeof(std::int16_t);
     bytes += p.skid.pcm.capacity() * sizeof(std::int16_t);
     bytes += p.impact.pcm.capacity() * sizeof(std::int16_t);
+    for (const auto& clip : p.cue_clips)
+        bytes += clip.pcm.capacity() * sizeof(std::int16_t);
     return bytes;
 }
 

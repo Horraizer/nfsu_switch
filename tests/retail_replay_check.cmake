@@ -6,25 +6,29 @@
 #
 #   -DPYTHON=<interpreter> -DSCRIPT=<tools/race_replay_check.py>
 #   -DRACE=<nfsu_race executable> -DROOT=<retail root>
-#   -DOUT=<output directory inside this build directory>
+#   -DOUT_PARENT=<this build directory's nfsu_retail directory>
 #
 # The script refuses an output directory that already exists, so that an
-# earlier run cannot pass for this one. OUT is this test's own directory in
-# its own build directory; it is removed by its exact name first, and the
-# removal is confirmed before the script runs.
+# earlier run cannot pass for this one. OUT is a new directory of this
+# process's own under OUT_PARENT, named with a random suffix, so neither a
+# second build directory nor a second ctest run in this one shares it (issue
+# #122). It is removed by its exact name after a pass and kept after a
+# failure, for its logs.
 
 cmake_minimum_required(VERSION 3.20)
 
-foreach(required PYTHON SCRIPT RACE ROOT OUT)
+foreach(required PYTHON SCRIPT RACE ROOT OUT_PARENT)
     if(NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
         message(FATAL_ERROR "FAIL: retail_replay_check.cmake needs -D${required}")
     endif()
 endforeach()
 
-file(REMOVE_RECURSE "${OUT}")
+string(RANDOM LENGTH 16 ALPHABET 0123456789abcdef run_id)
+set(OUT "${OUT_PARENT}/race-replay-check-${run_id}")
 if(EXISTS "${OUT}")
-    message(FATAL_ERROR "FAIL: could not remove the earlier output ${OUT}")
+    message(FATAL_ERROR "FAIL: the output ${OUT} already exists")
 endif()
+file(MAKE_DIRECTORY "${OUT_PARENT}")
 
 execute_process(
     COMMAND "${PYTHON}" "${SCRIPT}" --exe "${RACE}" --root "${ROOT}"
@@ -44,3 +48,4 @@ endif()
 if(NOT output MATCHES "(^|\n)PASS [^\n]*48336 step hashes, result, 11 frames, clean 120 Hz trajectory, generated recording")
     message(FATAL_ERROR "FAIL: race_replay_check.py exited 0 without its PASS line")
 endif()
+file(REMOVE_RECURSE "${OUT}")

@@ -1081,6 +1081,10 @@ if(NFSU_BUILD_TESTS)
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/stock_frame_viewer_match.cmake
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
+    # The three retail tuned frame pins, nfsu_tuned_frame_retail, are
+    # registered with the other retail checks at the end of this file
+    # (issue #233).
+
     set_tests_properties(
         nfsu_sha256_tests nfsu_screen_text_tests nfsu_stock_frame_tests
         nfsu_stock_frame_viewer_match
@@ -1568,6 +1572,11 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_race_audio_tests)
     add_test(NAME nfsu_race_audio_tests COMMAND nfsu_race_audio_tests)
     set_tests_properties(nfsu_race_audio_tests PROPERTIES TIMEOUT 10)
+    add_executable(nfsu_race_audio_cue_tests tests/race_audio_cue_tests.cpp)
+    target_link_libraries(nfsu_race_audio_cue_tests PRIVATE nfsu_race_audio)
+    nfsu_enable_warnings(nfsu_race_audio_cue_tests)
+    add_test(NAME nfsu_race_audio_cue_tests COMMAND nfsu_race_audio_cue_tests)
+    set_tests_properties(nfsu_race_audio_cue_tests PROPERTIES TIMEOUT 10)
     # nfsu_audio_retail is registered with the other retail checks at the
     # end of this file (issue #233).
     add_executable(nfsu_race_loader_peak_tests tests/race_loader_peak_tests.cpp)
@@ -1629,7 +1638,8 @@ list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_racing_line nfsu_path_follow)
 if(NFSU_BUILD_TESTS)
     # The route chunk over synthetic payloads: every decoded field at its
     # offset, the lane table and its enable bytes, and each refusal
-    # (truncated, oversized, malformed). With NFSU_RETAIL_ROOT set it also
+    # (truncated, oversized, malformed). Given the retail root as its one
+    # argument - nfsu_racing_line_retail at the end of this file - it also
     # decodes Tracks/TRACKB1003.lzc read-only and pins the file hash, the
     # route and point counts and a hash over the decoded values.
     add_executable(nfsu_racing_line_tests
@@ -1678,12 +1688,30 @@ endif()
 # the first retail test, and nfsu_retail_manifest_after lists it again after
 # the last and fails on any difference. Every retail test requires the
 # fixture, so CTest runs the pair around exactly these tests, including when
-# they are picked by label. Every file the checks write - the manifest, the
-# replay check's output, the audio check's directory - is under
+# they are picked by label. Every file the checks write is under
 # ${CMAKE_CURRENT_BINARY_DIR}/nfsu_retail, so two build directories never
-# share a name (issue #122); nothing is written under the root.
+# share a name (issue #122); nothing is written under the root. The replay
+# check, the tuned frames and the audio check also write into a directory of
+# their own process, named with a random suffix. The manifest cannot be: its
+# setup and its cleanup are two processes CTest starts separately and passes
+# nothing between, so the one name both can find is fixed in the build tree.
+# tests/retail_manifest.cmake says what that means for two ctest runs in one
+# build directory.
 set(NFSU_RETAIL_ROOT "" CACHE PATH
     "The retail game installation the retail CTest checks read (read-only)")
+
+# The executables the retail checks drive take their path arguments through
+# nfsu_arg_path, so a build tree or a root outside ASCII - this repository's
+# own checkout path is not ASCII - opens as any other (docs/PATH_ARGUMENTS.md).
+target_link_libraries(nfsu_race PRIVATE nfsu_arg_path)
+if(NFSU_BUILD_TESTS)
+    foreach(nfsu_retail_driver
+            nfsu_race_run_tests nfsu_race_loader_peak_tests
+            nfsu_track_loader_peak_tests nfsu_track_slice_tests
+            nfsu_racing_line_tests nfsu_race_audio_tests)
+        target_link_libraries(${nfsu_retail_driver} PRIVATE nfsu_arg_path)
+    endforeach()
+endif()
 
 if(NFSU_BUILD_TESTS)
     if(NFSU_RETAIL_ROOT STREQUAL "")
@@ -1743,7 +1771,7 @@ if(NFSU_BUILD_TESTS)
                     -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/race_replay_check.py
                     -DRACE=$<TARGET_FILE:nfsu_race>
                     "-DROOT=${NFSU_RETAIL_ROOT}"
-                    -DOUT=${nfsu_retail_work}/race-replay-check
+                    -DOUT_PARENT=${nfsu_retail_work}
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/retail_replay_check.cmake)
         # The stock car's recorded draws against the CPU reference trace in
         # both material modes, and the stock frame pins of
@@ -1781,6 +1809,22 @@ if(NFSU_BUILD_TESTS)
         # The bounded index of the race music: docs/RACE_AUDIO.md.
         add_test(NAME nfsu_race_audio_retail
             COMMAND nfsu_race_audio_tests "${NFSU_RETAIL_ROOT}")
+        # The three tuned 240SX frame pins through nfsu_viewer and the
+        # Switch CPU path (issue #229): docs/INSTALLED_PARTS.md.
+        add_test(NAME nfsu_tuned_frame_retail
+            COMMAND ${CMAKE_COMMAND} -DVIEWER=$<TARGET_FILE:nfsu_viewer>
+                    -DTESTS=$<TARGET_FILE:nfsu_stock_frame_tests>
+                    -DWORK=${nfsu_retail_work}/tuned-frame
+                    "-DROOT=${NFSU_RETAIL_ROOT}"
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/tuned_frame_retail.cmake)
+        # The retail files each set of the asset check names, against their
+        # pinned sizes and SHA-256s; it exits 0 only when every file matches:
+        # docs/SWITCH_ASSETS.md.
+        foreach(nfsu_asset_set first-lap stock-car event-1)
+            add_test(NAME nfsu_probe_asset_check_retail_${nfsu_asset_set}
+                COMMAND nfsu_probe asset-check "${NFSU_RETAIL_ROOT}"
+                        --set ${nfsu_asset_set})
+        endforeach()
         # The retail PCM pin of tests/audio_retail_expected.txt:
         # docs/AUDIO_FORMATS.md.
         add_test(NAME nfsu_audio_retail
@@ -1797,6 +1841,9 @@ if(NFSU_BUILD_TESTS)
             nfsu_stock_frame_painted_retail nfsu_race_loader_peak_retail
             nfsu_track_loader_peak_retail nfsu_track_slice_retail
             nfsu_racing_line_retail nfsu_race_audio_retail nfsu_audio_retail
+            nfsu_tuned_frame_retail nfsu_probe_asset_check_retail_first-lap
+            nfsu_probe_asset_check_retail_stock-car
+            nfsu_probe_asset_check_retail_event-1
             PROPERTIES LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only
             TIMEOUT 1800)
 
