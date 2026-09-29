@@ -158,6 +158,7 @@ int main(int argc, char** argv) {
         if (argc == 2) return 0;
         const std::filesystem::path root(argv[2]);
         RaceGpuScene scene;
+        scene.set_particles_enabled(true);
         RaceRun race;
         require(race.prepare_metadata(root, error), error);
         require(!race.prepare_metadata(root, error) && error == "race metadata already prepared",
@@ -182,8 +183,8 @@ int main(int argc, char** argv) {
         require(replay.load(text, error), error);
         require(scene.cache_bytes() <= 8*kMiB,"command cache exceeded metadata limit");
         std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 8*kMiB << '\n';
-        // #223: 20 suppressed car draws and one added cache upload record: -540 bytes.
-        require(scene.cache_bytes() == 3825239,"event 1 command cache metadata estimate differs from pin");
+        // #186 adds 24 bounded particle definitions and four upload records.
+        require(scene.cache_bytes() == 3826108,"event 1 command cache metadata estimate differs from pin");
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';
         require(scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes() <=
@@ -278,7 +279,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         std::size_t frames = 0, max_draws = 0;
-        const std::set<std::uint64_t> inspect = {1,163,180,600,6000,11344,12459,13128,24300,35396,36510,37177,48336};
+        const std::set<std::uint64_t> inspect = {1,163,180,600,1164,6000,11344,12459,13128,24300,35396,36510,37177,48336};
         const bool full = argc > 3 && std::string(argv[3]) == "--full-draws";
         const bool sampled = argc > 3 && std::string(argv[3]) == "--sample-draws";
         require(argc <= 3 || full || sampled, "unknown retail draw sampling option");
@@ -287,6 +288,7 @@ int main(int argc, char** argv) {
             require(race.simulate(pad, error), error);
             require(!race.simulate(pad, error), "second simulation before commit accepted");
             require(race.commit(error), error);
+            scene.advance_particles(race.session());
             const auto tick = race.session().timing().step;
             if (full || (sampled && tick%60 == 0) || inspect.count(tick)) {
                 DrawValidationAudit audit;
@@ -339,7 +341,22 @@ int main(int argc, char** argv) {
                         std::memcmp(&selected.material,&b.material,sizeof b.material) == 0,
                         "cached ordered draw differs from reference");
                 }
-                require(frame.track_draws > 0 && frame.car_draws == 74, "missing track/car commands");
+                require(frame.track_draws > 0 && frame.car_draws == 74 &&
+                        frame.particle_draws == kRaceParticleLimit,
+                        "missing track/car/particle commands");
+                if (tick == 1164) {
+                    unsigned visible_smoke=0, visible_sparks=0;
+                    for (std::size_t i=frame.commands.static_track_draw_count()+frame.car_draws;
+                         i<frame.commands.draw_count(); ++i) {
+                        const auto view=frame.commands.draw_view(i);
+                        if (view.material.alpha[0] > 0)
+                            (i-frame.commands.static_track_draw_count()-frame.car_draws < kRaceSmokeLimit
+                                 ? visible_smoke : visible_sparks)++;
+                    }
+                    require(visible_smoke >= 4 && visible_smoke <= kRaceSmokeLimit &&
+                            visible_sparks == 0,
+                            "slide frame does not contain bounded smoke and no sparks");
+                }
                 require(deko_frame_gpfifo_bound(deko_track_list_calls(
                             static_cast<std::uint32_t>(frame.track_draws))) < kDekoGpfifoRingEntries,
                         "selected track draws exceed GPFIFO call budget");
@@ -360,7 +377,7 @@ int main(int argc, char** argv) {
                     std::size_t wheels = 0, moving_wheels = 0, headlights = 0, brakelights = 0;
                     for (std::size_t i = 0; i < frame.commands.draw_count(); ++i) {
                         const auto draw = frame.commands.draw_view(i);
-                        if (draw.definition.name.compare(0, 9, "race-car/") != 0) continue;
+                        if (draw.definition.name.rfind("race-car/car group ",0) != 0) continue;
                         require(draw.instance < stock.scene.instances.size(), "animation guard instance out of range");
                         const auto slot = stock.scene.instances[draw.instance].part_slot;
                         if (slot == kSlotWheel) {

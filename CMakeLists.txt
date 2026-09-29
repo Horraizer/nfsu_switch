@@ -1537,6 +1537,10 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_race_session_tests PRIVATE nfsu_race_session)
     nfsu_enable_warnings(nfsu_race_session_tests)
     add_test(NAME nfsu_race_session_tests COMMAND nfsu_race_session_tests)
+    add_executable(nfsu_race_particles_tests tests/race_particles_tests.cpp)
+    target_link_libraries(nfsu_race_particles_tests PRIVATE nfsu_race_session)
+    nfsu_enable_warnings(nfsu_race_particles_tests)
+    add_test(NAME nfsu_race_particles_tests COMMAND nfsu_race_particles_tests)
     add_test(NAME nfsu_race_guards
         COMMAND ${CMAKE_COMMAND} -DRACE=$<TARGET_FILE:nfsu_race>
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/race-guards
@@ -1599,6 +1603,14 @@ if(NFSU_BUILD_TESTS)
     endif()
     add_test(NAME nfsu_race_run_tests COMMAND nfsu_race_run_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt)
+    add_test(NAME nfsu_race_particle_frame_guards
+        COMMAND ${CMAKE_COMMAND}
+            -DRACE_EXE=$<TARGET_FILE:nfsu_race>
+            -DREPLAY=${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
+            -DWORK_ROOT=${CMAKE_CURRENT_BINARY_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/race_particle_frame_guards.cmake)
+    set_tests_properties(nfsu_race_particle_frame_guards PROPERTIES
+        SKIP_REGULAR_EXPRESSION "SKIPPED:")
 endif()
 
 # ---------------------------------------------------------------------------
