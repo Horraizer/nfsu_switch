@@ -114,6 +114,10 @@ void print_usage() {
         << "                       the retail 240SX needs Cars/BRAKES/GEOMETRY.BIN\n"
         << "                       and Cars/PLATES/GEOMETRY.BIN. At most 8.\n"
         << "  --stock-lod L        A (default), B, C or D\n"
+        << "  --stock-part SLOT NAME  override one installed part (repeatable);\n"
+        << "                       SLOT is a number or one of the names below.\n"
+        << "                       NAME is the internal part name, such as\n"
+        << "                       240SX_KIT01_FRONT_BUMPER.\n"
         << "  --stock-pass P       world (default) or front-end; the brake model is\n"
         << "                       the only part whose LOD this changes\n"
         << "  --place-wheels       also draw the wheels and brakes, at the culling\n"
@@ -157,7 +161,15 @@ void print_usage() {
         << "  --skin-base R G B GLOSS        the BASE_PAINT color\n"
         << "  --skin-special SLOT R G B GLOSS\n"
         << "                       slot 0 engine, 1 spoiler, 2 brake, 3 exhaust;\n"
-        << "                       an unset slot falls back to the base color\n";
+        << "                       an unset slot falls back to the base color\n"
+        << "Part slots (id:name):\n";
+    for (int slot = 0; slot < static_cast<int>(nfsu::kCarSlotCount); ++slot) {
+        std::cout << "  " << slot << ':' << nfsu::car_slot_name(slot)
+                  << (slot % 3 == 2 ? '\n' : ' ');
+    }
+    if (nfsu::kCarSlotCount % 3 != 0) {
+        std::cout << '\n';
+    }
 }
 
 // Printable ASCII; quote, backslash and other bytes as \xHH.
@@ -321,6 +333,7 @@ struct StockOptions {
     std::size_t lod = 0;
     nfsu::CarDrawPass pass = nfsu::CarDrawPass::world;
     bool place_wheels = false;
+    nfsu::InstalledPartSelection installed_parts;
 };
 
 nfsu::StockSceneRequest stock_request(const StockOptions& stock) {
@@ -329,6 +342,7 @@ nfsu::StockSceneRequest stock_request(const StockOptions& stock) {
     request.lod = stock.lod;
     request.pass = stock.pass;
     request.place_wheels_from_culling_table = stock.place_wheels;
+    request.installed_parts = stock.installed_parts;
     return request;
 }
 
@@ -714,6 +728,39 @@ int parse_options(
                 return 1;
             }
             stock.geometry.push_back(nfsu::argument_path(argv[++i]));
+            continue;
+        }
+        if (name == "--stock-part") {
+            stock.any_option = true;
+            if (i + 2 >= argc) {
+                std::cerr << "error: --stock-part needs SLOT NAME\n";
+                return 1;
+            }
+            const std::string label = argv[++i];
+            std::size_t slot = nfsu::kCarSlotCount;
+            std::uint64_t number = 0;
+            if (parse_uint(label, nfsu::kCarSlotCount - 1, number)) {
+                slot = static_cast<std::size_t>(number);
+            } else {
+                for (std::size_t candidate = 0; candidate < nfsu::kCarSlotCount; ++candidate) {
+                    if (label == nfsu::car_slot_name(static_cast<int>(candidate))) {
+                        slot = candidate;
+                        break;
+                    }
+                }
+            }
+            const std::string part = argv[++i];
+            if (slot == nfsu::kCarSlotCount || part.empty()) {
+                std::cerr << "error: invalid SLOT or NAME for --stock-part\n";
+                return 1;
+            }
+            if (stock.installed_parts.names[slot]) {
+                std::cerr << "error: --stock-part names slot " << slot << ' '
+                          << nfsu::car_slot_name(static_cast<int>(slot))
+                          << " a second time\n";
+                return 1;
+            }
+            stock.installed_parts.names[slot] = part;
             continue;
         }
         if (!seen.insert(name).second) {
@@ -1142,7 +1189,10 @@ int main(int argc, char** argv) {
         }
     }
 
-    const nfsu::GeometryReport geometry = nfsu::load_geometry_file(geometry_path);
+    nfsu::GeometryReport geometry = nfsu::load_geometry_file(geometry_path);
+    if (stock.enabled) {
+        nfsu::alias_stock_window_textures(geometry);
+    }
     for (const nfsu::GeometryIssue& issue : geometry.issues) {
         std::cerr << "geometry issue at " << issue.offset << ": "
                   << issue.message << '\n';
@@ -1158,6 +1208,7 @@ int main(int argc, char** argv) {
         stock_geometry.reserve(stock.geometry.size());
         for (std::size_t i = 0; i < stock.geometry.size(); ++i) {
             stock_geometry.push_back(nfsu::load_geometry_file(stock.geometry[i]));
+            nfsu::alias_stock_window_textures(stock_geometry.back());
             for (const nfsu::GeometryIssue& issue : stock_geometry.back().issues) {
                 std::cerr << "stock geometry " << (i + 1) << " issue at "
                           << issue.offset << ": " << issue.message << '\n';
@@ -1267,6 +1318,7 @@ int main(int argc, char** argv) {
     // slot installs and which mesh hash it names are decided before any
     // material is bound; only the bindings of the second one are used.
     std::vector<nfsu::SceneMeshRef> stock_mesh_refs;
+    bool wants_left_brake = false;
     if (stock.enabled) {
         nfsu::PreparedCarScene unbound;
         nfsu::StockSceneReport unbound_report;
@@ -1281,6 +1333,11 @@ int main(int argc, char** argv) {
         for (const nfsu::PreparedMesh& mesh : unbound.meshes) {
             stock_mesh_refs.push_back(nfsu::SceneMeshRef{mesh.source, mesh.source_index});
         }
+        wants_left_brake = std::any_of(unbound.instances.begin(), unbound.instances.end(),
+            [](const nfsu::PreparedInstance& instance) {
+                return instance.part_slot == nfsu::kSlotBrake &&
+                       (instance.copy == 0 || instance.copy == 3);
+            });
     }
     nfsu::RenderTextureSet textures;
     std::vector<std::uint32_t> wanted;
@@ -1306,6 +1363,9 @@ int main(int argc, char** argv) {
             if (stock.enabled) {
                 for (const nfsu::SceneMeshRef& ref : stock_mesh_refs) {
                     want(stock_sources[ref.source]->meshes[ref.index]);
+                }
+                if (wants_left_brake) {
+                    wanted.push_back(nfsu::kBrakeGlobalLeftHash); // BRAKE_GLOBAL_LEFT
                 }
             } else {
                 for (const std::size_t index : selected) {
@@ -1723,13 +1783,17 @@ int main(int argc, char** argv) {
                   << static_cast<char>('A' + stock_report.lod) << " pass "
                   << nfsu::car_draw_pass_name(stock_report.pass) << '\n';
         for (const nfsu::StockSlotReport& slot : stock_report.slots) {
-            if (slot.record == nfsu::kNoCarPart) {
+            if (!slot.overridden && slot.record == nfsu::kNoCarPart) {
                 continue;
             }
             std::cout << "stock slot " << slot.slot << ' '
-                      << nfsu::car_slot_name(slot.slot) << ' '
-                      << (slot.enabled ? "enabled" : "disabled") << " record "
-                      << slot.record << ' '
+                      << nfsu::car_slot_name(slot.slot) << ' ';
+            if (slot.overridden) {
+                std::cout << "overridden ";
+            }
+            std::cout << (slot.enabled ? "enabled" : "disabled") << " record "
+                      << (slot.record == nfsu::kNoCarPart ? "none" :
+                          std::to_string(slot.record)) << ' '
                       << nfsu::stock_slot_outcome_name(slot.outcome);
             if (slot.outcome == nfsu::StockSlotOutcome::drawn) {
                 std::cout << " lod " << static_cast<char>('A' + slot.lod)
@@ -1746,7 +1810,11 @@ int main(int argc, char** argv) {
         std::cout << "stock slots: installed " << stock_report.installed
                   << " with_model " << stock_report.with_model << " drawn "
                   << stock_report.drawn << " by_fallback " << stock_report.fell_back
-                  << " markers " << stock_report.markers.size() << '\n';
+                  << " markers " << stock_report.markers.size();
+        if (stock_report.overridden != 0) {
+            std::cout << " overridden " << stock_report.overridden;
+        }
+        std::cout << '\n';
         // The stock lateral branch is approximate and a static frame has
         // no spin, steering or suspension travel.
         std::cout << "stock wheels: "

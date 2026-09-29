@@ -7,6 +7,11 @@ from pathlib import Path
 import subprocess
 
 STEPS = (180, 600, 6000, 11344, 12459, 13128, 24300, 35396, 36510, 37177, 48336)
+# PR #225 re-pins the car window aliases and blank decals. These frames also
+# depend on the inherited rasterizer depth-write guard from 3b1f644 (already
+# in base 97e3839): blended track groups preserve depth. Removing that guard
+# changes pixels but is not a revert of a change introduced by PR #225.
+# Replay steps, state hashes, input recording, and trajectory are unchanged.
 FRAMES = (
     "E526B1F35FF453CE5F6C6FEA6EBC796F51D30DE9234CBA0A38292C5D8E842E06",  # 180: #184 world-placed sky replaces clear background.
     "4DA892277AD8FC1AEFF316EC0B0FFDB03C8EA8CBC03411EFC7697BBD6B59E25E",  # 600: #184 world-placed sky replaces clear background.

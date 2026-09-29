@@ -24,6 +24,36 @@ int main(int argc, char** argv) {
             std::cerr << "FAIL: prepare: " << error << '\n';
             return 1;
         }
+        for (const auto& draw : stock.scene.draws) {
+            if (draw.binding != nfsu::BindingKind::unresolved) continue;
+            const bool empty_decal = nfsu::is_stock_dummy_decal_hash(draw.texture_hash);
+            const bool unpainted_body = !painted && draw.texture_hash == 0x77A20245U;
+            if ((!empty_decal && !unpainted_body) || (empty_decal && draw.drawable)) {
+                std::cerr << "FAIL: unexpected stock fallback: " << std::hex
+                          << draw.texture_hash << std::dec << '\n';
+                return 1;
+            }
+        }
+        std::size_t left_brakes = 0;
+        for (const auto& instance : stock.scene.instances) {
+            if (instance.part_slot != nfsu::kSlotBrake) continue;
+            const bool left = instance.copy == 0 || instance.copy == 3;
+            if (left) {
+                ++left_brakes;
+                if (instance.brake_left_texture >= stock.scene.textures.size() ||
+                    !stock.scene.textures[instance.brake_left_texture].claims_hash(nfsu::kBrakeGlobalLeftHash)) {
+                    std::cerr << "FAIL: left brake has no BRAKE_GLOBAL_LEFT binding\n";
+                    return 1;
+                }
+            } else if (instance.brake_left_texture != nfsu::kNoHandle) {
+                std::cerr << "FAIL: right brake has a left texture binding\n";
+                return 1;
+            }
+        }
+        if (left_brakes != 2) {
+            std::cerr << "FAIL: expected two left brakes\n";
+            return 1;
+        }
         for (auto mode : {nfsu::MaterialStateMode::off, nfsu::MaterialStateMode::retail}) {
             nfsu::RenderOptions options;
             options.material_state = mode;
@@ -42,6 +72,11 @@ int main(int argc, char** argv) {
             if (!nfsu::render_scene(stock.scene, options, {}, stock.frame, stock.stats, error,
                 [&](const auto& d) { trace.push_back(d); })) {
                 std::cerr << "FAIL: render: " << error << '\n';
+                return 1;
+            }
+            if (painted && (stock.stats.triangles_fallback != 0 ||
+                            stock.stats.pixels_fallback != 0)) {
+                std::cerr << "FAIL: painted stock car still has fallback pixels\n";
                 return 1;
             }
             const auto mismatch = compare_draws(commands, trace, false);
@@ -79,5 +114,51 @@ int main(int argc, char** argv) {
                       << " resources, " << stock.stats.triangles_submitted << " triangles, sha256 " << hash << '\n';
         }
     }
+    nfsu::StockFrameInputs tuned_inputs;
+    if (!nfsu::read_stock_frame_inputs(nfsu::argument_path(argv[1]), tuned_inputs, true)) {
+        std::cerr << "FAIL: could not read the tuned inputs\n";
+        return 1;
+    }
+    nfsu::StockFrame tuned;
+    if (!nfsu::prepare_stock_frame(tuned_inputs, nfsu::tuned_240sx_request(),
+                                   nfsu::tuned_240sx_skin(), tuned, error)) {
+        std::cerr << "FAIL: tuned prepare: " << error << '\n';
+        return 1;
+    }
+    nfsu::RenderOptions options;
+    nfsu::RecordedCommands commands;
+    if (!nfsu::record_car_commands(tuned.scene, options, {},
+                                   tuned.skin_binding.source, commands, error)) {
+        std::cerr << "FAIL: tuned record: " << error << '\n';
+        return 1;
+    }
+    nfsu::DrawExecutionPlan plan;
+    if (!nfsu::plan_draw_execution(commands, plan, error)) {
+        std::cerr << "FAIL: tuned execution plan: " << error << '\n';
+        return 1;
+    }
+    std::vector<nfsu::ReferenceDraw> trace;
+    if (!nfsu::render_scene(tuned.scene, options, {}, tuned.frame, tuned.stats, error,
+                            [&](const auto& draw) { trace.push_back(draw); })) {
+        std::cerr << "FAIL: tuned reference render: " << error << '\n';
+        return 1;
+    }
+    const auto mismatch = compare_draws(commands, trace, false);
+    if (!mismatch.empty() || trace.empty()) {
+        std::cerr << "FAIL: tuned draw comparison: " <<
+            (trace.empty() ? "empty CPU trace" : mismatch) << '\n';
+        return 1;
+    }
+    nfsu::StockFrameImage image;
+    if (!nfsu::encode_stock_frame(tuned.frame, image, error) ||
+        nfsu::sha256_hex(image.sha256) != nfsu::kTuned240sxFrameSha256 ||
+        image.tga.size() != nfsu::kTuned240sxFrameBytes) {
+        std::cerr << "FAIL: pinned tuned frame changed: " << error << '\n';
+        return 1;
+    }
+    std::cout << "PASS: tuned 240SX off: " << trace.size() << " draws, "
+              << commands.owning_uploads().resources.size() << " resources, "
+              << tuned.stats.triangles_submitted << " triangles, sha256 "
+              << nfsu::sha256_hex(image.sha256) << '\n';
     return 0;
 }

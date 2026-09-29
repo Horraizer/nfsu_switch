@@ -1,5 +1,6 @@
 #include "nfsu/stock_scene.h"
 #include "nfsu/texture.h"
+#include "draw_command_checks.h"
 
 #include <algorithm>
 #include <array>
@@ -891,9 +892,151 @@ void test_validation_rejects_tampering() {
             "the stock car profile skips no meshes");
 }
 
+void test_installed_part_overrides() {
+    std::vector<RecordSpec> records = stock_records();
+    records.push_back({kCar.c_str(), 5, 1, "TESTCAR_KIT01_BODY",
+                       {kRearBumperA, 0, 0, 0}, 0, 0});
+    records.push_back({kCar.c_str(), 17, 1, "TESTCAR_KIT01_WHEEL",
+                       {kBaseA, 0, 0, 0}, 0, 0});
+    records.push_back({"WHEELS", 17, 1, "BBS_TEST_WHEEL",
+                       {kBaseA, 0, 0, 0}, 0, 0});
+    records.push_back({"SKYLINE", 5, 1, "SKYLINE_KIT01_BODY",
+                       {kRearBumperA, 0, 0, 0}, 0, 0});
+    const nfsu::GeometryReport car = car_source();
+    const nfsu::GeometryReport brakes = brake_source();
+    const nfsu::GeometryReport plates = plate_source();
+    const std::vector<const nfsu::GeometryReport*> sources{&car, &brakes, &plates};
+    nfsu::StockSceneRequest request = request_at(0);
+    request.place_wheels_from_culling_table = true;
+    request.installed_parts.names[5] = "TESTCAR_KIT01_BODY";
+    request.installed_parts.names[17] = "TESTCAR_KIT01_WHEEL";
+    nfsu::PreparedCarScene scene;
+    nfsu::StockSceneReport report;
+    std::string error;
+    check(prepare_records(records, sources, request, scene, report, error),
+          "explicit body and wheels prepare: " + error);
+    if (report.overridden == 2) {
+        check(report.slots[5].overridden && report.slots[17].overridden &&
+                  !report.slots[2].overridden && report.slots[5].hash == kRearBumperA &&
+                  report.slots[17].hash == kBaseA &&
+                  report.slots[17].instance_count == 4,
+              "overrides use the selected meshes and stock placement rules");
+    } else {
+        check(false, "two overridden slots are counted");
+    }
+    request.installed_parts.names[17] = "BBS_TEST_WHEEL";
+    check(prepare_records(records, sources, request, scene, report, error) &&
+              report.slots[17].overridden && report.slots[17].instance_count == 4,
+          "shared WHEELS type is valid for the wheel slot: " + error);
+    request.installed_parts.names[17] = "TESTCAR_KIT01_WHEEL";
+    request.installed_parts.names[5] = "SKYLINE_KIT01_BODY";
+    check(!prepare_records(records, sources, request, scene, report, error) &&
+              error.find("slot 5 BODY") != std::string::npos &&
+              error.find("another car type") != std::string::npos &&
+              empty_outputs(scene, report),
+          "foreign car type is refused by slot: " + error);
+    request.installed_parts.names[5] = "NO_SUCH_BODY";
+    check(!prepare_records(records, sources, request, scene, report, error) &&
+              error.find("slot 5 BODY") != std::string::npos &&
+              error.find("NO_SUCH_BODY") != std::string::npos &&
+              empty_outputs(scene, report),
+          "unknown override names its slot and clears outputs: " + error);
+}
+
+// PR #225 N1/N2: substitutions use effective state and need a matching group.
+void test_left_brake_substitution() {
+    using namespace nfsu;
+    check(bin_hash("BRAKE_GLOBAL") == kBrakeGlobalHash &&
+          bin_hash("BRAKE_GLOBAL_LEFT") == kBrakeGlobalLeftHash,
+          "named brake hashes match retail texture names");
+    for (bool global_group : {false, true}) {
+        auto car = car_source(), brakes = brake_source(), plates = plate_source();
+        if (global_group) brakes.meshes[0].texture_hashes[0] = kBrakeGlobalHash;
+        RenderTextureSet textures;
+        for (auto hash : {0x11111111U, kBrakeGlobalHash, kBrakeGlobalLeftHash}) {
+            RenderTexture texture;
+            texture.hash = hash; texture.width = texture.height = 1;
+            texture.valid = true; texture.record = textures.textures.size();
+            texture.rgba = {80,100,120,128};
+            // Unlike the retail pair, these intentionally disagree.
+            texture.alpha_test_mode = hash == kBrakeGlobalLeftHash ? 1 : 0;
+            texture.alpha_blend_mode = hash == kBrakeGlobalLeftHash ? 2 : 0;
+            textures.textures.push_back(texture);
+        }
+        auto request = request_at(0); request.place_wheels_from_culling_table = true;
+        PreparedCarScene scene; StockSceneReport report; std::string error;
+        if (!prepare_stock_car_scene({&car,&brakes,&plates}, textures,
+                build_database(stock_records()), build_car_types(), request, {}, scene, report, error)) {
+            check(false,"brake fixture preparation: " + error); continue;
+        }
+        std::size_t substitutions = 0, brake_copies = 0;
+        for (const auto& instance : scene.instances) {
+            if (instance.part_slot != kSlotBrake) continue;
+            ++brake_copies;
+            const bool left = instance.copy == 0 || instance.copy == 3;
+            const bool substituted = instance.brake_left_texture != kNoHandle;
+            substitutions += substituted;
+            check(substituted == (global_group && left),"only a matching left brake is substituted");
+        }
+        check(brake_copies == 4 && substitutions == (global_group ? 2U : 0U),
+              "all brake copies covered by fixture");
+        check(scene.textures.size() == (global_group ? 3U : 1U),
+              "no unused left texture uploaded for a brake with another material");
+        for (auto mode : {MaterialStateMode::off, MaterialStateMode::retail}) {
+            RenderOptions options; options.width = options.height = 64;
+            options.material_state = mode;
+            Frame frame; RenderStats stats; std::vector<ReferenceDraw> trace;
+            check(render_scene(scene,options,{},frame,stats,error,
+                [&](const ReferenceDraw& d){ trace.push_back(d); }),"render substituted brake: " + error);
+            RecordedCommands commands;
+            check(record_car_commands(scene,options,{},kNoHandle,commands,error),"record substituted brake: " + error);
+            const auto mismatch = compare_draws(commands,trace,false);
+            check(!trace.empty() && mismatch.empty(),"effective state CPU/GPU comparison: " + mismatch);
+            std::size_t checked_brakes = 0;
+            for (const auto& draw : trace) {
+                const auto& instance = scene.instances[draw.instance];
+                if (instance.part_slot != kSlotBrake) continue;
+                ++checked_brakes;
+                const bool active = global_group && (instance.copy == 0 || instance.copy == 3) &&
+                                    mode == MaterialStateMode::retail;
+                check(draw.alpha_test == active && draw.blend ==
+                    (active ? RenderBlendMode::additive : RenderBlendMode::disabled),
+                    "left alpha/blend follows effective texture and right state is reset");
+            }
+            check(checked_brakes == 4,"trace covers every brake copy");
+            const std::uint64_t active_groups =
+                global_group && mode == MaterialStateMode::retail ? 1U : 0U;
+            check(stats.groups_alpha_tested == active_groups &&
+                  stats.groups_blended == active_groups,
+                  "a group is counted once when any submitted copy carries the state");
+        }
+    }
+}
+
 } // namespace
 
 int main() {
+    nfsu::GeometryReport windows;
+    windows.meshes.emplace_back();
+    windows.meshes.back().texture_hashes = {
+        0x7B220DDFU, 0x1B0763A0U, 0xE7E4EF49U,
+        0x4CDEBFCAU, 0x60F8B13CU, 0x0AB88F5DU,
+        0x910E6654U, 0x77A20245U
+    };
+    nfsu::alias_stock_window_textures(windows);
+    for (std::size_t i = 0; i < 6; ++i) {
+        check(windows.meshes.back().texture_hashes[i] == 0x834B8017U,
+              "unbroken stock window aliases to WINDOW");
+    }
+    check(windows.meshes.back().texture_hashes[6] == 0x910E6654U &&
+          windows.meshes.back().texture_hashes[7] == 0x77A20245U,
+          "unrelated hashes remain unchanged");
+    check(nfsu::is_stock_dummy_decal_hash(0x910E6654U) &&
+          nfsu::is_stock_dummy_decal_hash(0x910E665BU) &&
+          !nfsu::is_stock_dummy_decal_hash(0x910E6653U) &&
+          !nfsu::is_stock_dummy_decal_hash(0x910E665CU),
+          "only eight stock dummy decal slots are empty");
+    test_left_brake_substitution();
     test_slot_ids();
     test_lod_a();
     test_duplicate_part();
@@ -907,6 +1050,7 @@ int main() {
     test_invalid_placement();
     test_request_and_source_errors();
     test_validation_rejects_tampering();
+    test_installed_part_overrides();
     if (g_failures != 0) {
         std::cerr << g_failures << " test failure(s)\n";
         return 1;

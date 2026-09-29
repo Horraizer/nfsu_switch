@@ -159,11 +159,17 @@ different modes do not prove absence of a leak.
 
 HEAP LOAD/RUN OBS HWM are the largest sampled in-use values, lower bounds
 on the true live peak. ARENA NOW/OBS HWM measure allocator extent, not live
-bytes. LOAD HEAP OVER compares the sampled load delta with 48 MiB. The
-race load delta also includes car/course preparation. #204 merged as PR #207
-at `3158b37`; `nfsu_track_loader_peak_tests` measures the exact desktop
-allocation peak and enforces the load ceiling. The race's broader load observation
-still needs its own console measurement.
+bytes. The load HWM is an absolute in-use reading. Its delta is
+`load_peak - before_load` (clamped at zero), and LOAD HEAP OVER is
+`max(0, delta - 50331648)`. The absolute HWM threshold is therefore the
+before-load reading plus 50331648 bytes; it is not a larger budget. The
+race load delta includes car, track, course, audio, and first-frame preparation.
+The renderer opens after the load sample, so its GPU allocations affect the
+run HWM but not the load HWM. `nfsu_race_loader_peak_tests` measures the
+complete desktop C++ allocation peak through the first frame against the
+same 48 MiB ceiling. `nfsu_track_loader_peak_tests` separately measures the
+track slice. Console acceptance requires a photographed LOAD/MEMORY page
+showing LOAD HEAP OVER 0 at the tested head.
 
 ## Performance and owner evidence
 

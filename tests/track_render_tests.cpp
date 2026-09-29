@@ -1860,6 +1860,67 @@ void test_render_depth_tie_goes_to_the_later_entry() {
           "and loses when PANEL is last: got " + describe_pixel(a));
 }
 
+// PR #225: the track path requests no depth writes for blended groups.
+// Exercise the actual pixels/depth, not the observer's declared state.
+void test_blended_track_preserves_depth_for_later_draw() {
+    auto meshes = fixture_meshes();
+    meshes[1] = meshes[0];
+    meshes[1].name = "FRONT";
+    meshes[1].hash = kPost;
+    meshes[1].texture_hashes = {kTexB};
+    auto sections = fixture_sections();
+    sections[0].instances[2] = placed(1, 0.0F, -1.0F, 0.0F);
+    Fixture fixture = make_fixture(meshes, sections);
+    for (unsigned char blend : {1, 2}) {
+        fixture.textures.textures[1].alpha_blend_mode = blend;
+        nfsu::PreparedTrackScene scene;
+        std::string error;
+        if (!nfsu::build_track_scene(fixture.geometry, fixture.objects,
+                fixture.textures, {}, scene, error)) {
+            check(false, "blended track fixture preparation: " + error);
+            continue;
+        }
+        const auto back = instance_of_mesh(scene, 0);
+        const auto front = instance_of_mesh(scene, 1);
+        auto options = small_options();
+        options.material_state = nfsu::MaterialStateMode::retail;
+        std::uint32_t px = 0, py = 0;
+        check(screen_pixel_of(options.camera, options.width, options.height,
+                              {0.25, 0.25, 0.0}, px, py),
+              "blended track probe lies within both quads");
+        const auto render = [&](const std::vector<std::size_t>& order) {
+            nfsu::Frame frame;
+            nfsu::RenderStats stats;
+            nfsu::TrackRenderStats track;
+            check_ok(nfsu::render_track_draw_list(scene, list_over(scene, order),
+                         options, {}, frame, stats, track, error),
+                     "blended track overlap renders", error);
+            return frame;
+        };
+        const auto empty = render({});
+        const auto back_only = render({back});
+        const auto front_only = render({front});
+        const auto overlap = render({front, back});
+        const std::size_t index = std::size_t{py} * options.width + px;
+        check(pixel_at(front_only, px, py) != pixel_at(empty, px, py),
+              "blended front changes the probe color");
+        check(front_only.depth()[index] == empty.depth()[index],
+              "blended track preserves the stored depth");
+        check(pixel_at(overlap, px, py) == pixel_at(back_only, px, py),
+              "later opaque track draw behind blended front reaches the pixel");
+        check(overlap.depth()[index] == back_only.depth()[index],
+              "later opaque track draw stores its depth");
+        options.material_state = nfsu::MaterialStateMode::off;
+        const auto opaque_front = render({front});
+        const auto opaque_overlap = render({front, back});
+        check(opaque_front.depth()[index] < back_only.depth()[index],
+              "opaque front control is nearer and writes depth");
+        check(pixel_at(opaque_overlap, px, py) == pixel_at(opaque_front, px, py) &&
+              opaque_overlap.depth()[index] == opaque_front.depth()[index],
+              "opaque front control occludes the later back draw");
+    }
+}
+
 void test_render_is_deterministic() {
     const Fixture fixture = town();
     const nfsu::TrackDrawList list =
@@ -3113,6 +3174,7 @@ int main() {
     test_render_texture_binds_match_the_draw_list_cost();
     test_render_order_changes_the_binds_not_the_pixels();
     test_render_depth_tie_goes_to_the_later_entry();
+    test_blended_track_preserves_depth_for_later_draw();
     test_render_is_deterministic();
     test_render_samples_the_texture();
     test_render_honours_the_options();

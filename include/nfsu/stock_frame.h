@@ -46,9 +46,10 @@ namespace nfsu {
 // It exists for the Switch application (switch/car_main.cpp), which cannot
 // run the viewer and writes no file, and for the desktop check that the two
 // agree (tests/stock_frame_tests.cpp and tests/stock_frame_viewer_match.cmake).
-// The viewer does not call it: src/viewer_main.cpp is unchanged, and
-// src/stock_frame.cpp names, step by step, the lines of the viewer each
-// call mirrors. docs/SWITCH_BUILD.md.
+// The viewer does not call it: src/stock_frame.cpp names, step by step,
+// the lines of the viewer each call mirrors. The tuned preset also reads
+// wheel geometry, wheel textures and the car's vinyl pack. docs/SWITCH_BUILD.md.
+// The viewer and stock frame take the same window texture alias path.
 
 // The six files, in the order the command above names them. GLOBALB.BUN is
 // named twice there - the first shared texture source and the part
@@ -70,20 +71,26 @@ constexpr std::size_t kStockFrameFileCount = 6;
 // Null for an index outside 0..kStockFrameFileCount-1.
 const char* stock_frame_file_path(std::size_t index) noexcept;
 
-// The desktop frame of the command above, as docs/RENDERER.md pins it.
-// Issue #161 re-pinned both frames: the left wheels are now half-turned as
-// the retail draw turns them, and at this camera that removes two pixels
-// of the front-left wheel's backing quad, which showed above the far
-// fender. They were FD672733... unpainted and FE51E57A... painted.
+// Issue #223 re-pinned both frames after retail window aliases and empty
+// sponsor decal suppression. The previous hashes were 3DEB2147... and
+// 8A5932A3... respectively.
 constexpr std::uint64_t kStock240sxFrameBytes = 3686418;
 constexpr const char* kStock240sxFrameSha256 =
-    "3DEB2147CDA1B1D66DC47FC599B8A1FD88FCB273F0B38BFBE656666808199D25";
+    "8FBA20E893590A6B48EA1CE40B9A711C74690127811BB5CC0CA208337C63BE84";
 
 // The painted desktop frame, the command above with stock_240sx_skin(), as
 // docs/SWITCH_BUILD.md pins it.
 constexpr std::uint64_t kStock240sxPaintedFrameBytes = 3686418;
 constexpr const char* kStock240sxPaintedFrameSha256 =
-    "8A5932A302A22AA3C4C01776009B5348629D8D37B3B61E6E0AA303235B1CF48F";
+    "05203E9CCDEB15B8ECF478B8501777577620DAB94C3FBA6A34F428BA772AF6E0";
+
+// The explicit kit, wheels, paint and vinyl of tuned_240sx_request/skin.
+// Re-pinned after Cars/WHEELS/TEXTURES.BIN resolved BBS tread and #225
+// resolved stock window aliases, decals and per-copy brake materials.
+// tests/tuned_frame_retail.cmake pins three views.
+constexpr std::uint64_t kTuned240sxFrameBytes = 3686418;
+constexpr const char* kTuned240sxFrameSha256 =
+    "F1329A586C6CC352C6AF540981502E6C1E8EDA35C3806D0FED0881E65C3570DB";
 
 // The largest file read: 256 MiB, the limit every parser these files go
 // through applies to its input.
@@ -107,6 +114,10 @@ struct StockFrameInput {
 
 struct StockFrameInputs {
     std::array<StockFrameInput, kStockFrameFileCount> files;
+    bool tuned = false;
+    StockFrameInput wheel_geometry;
+    StockFrameInput wheel_textures;
+    StockFrameInput vinyls;
 
     const StockFrameInput& file(StockFrameFile which) const noexcept {
         return files[static_cast<std::size_t>(which)];
@@ -114,23 +125,24 @@ struct StockFrameInputs {
     bool all_read() const noexcept;
 };
 
-// Reads the six files under root, each whole, with std::ifstream opened for
-// reading only: nothing is created, written, renamed or removed. Every file
+// Reads six stock files, plus wheel geometry, wheel textures and vinyls when
+// tuned, with std::ifstream opened for reading only: nothing is created,
+// written, renamed or removed. Every file
 // is attempted whatever became of the others, so one call names every
 // missing input. Returns all_read().
-bool read_stock_frame_inputs(const std::filesystem::path& root, StockFrameInputs& inputs);
+bool read_stock_frame_inputs(const std::filesystem::path& root, StockFrameInputs& inputs,
+                             bool tuned = false);
 
 // The pinned command's stock request: car type 240SX, LOD A, the world
 // pass, and the wheels and brakes at the culling placements.
 StockSceneRequest stock_240sx_request();
+StockSceneRequest tuned_240sx_request();
 
 // The viewer's runtime body skin options (src/viewer_main.cpp SkinOptions)
 // that a stock frame can take: --skin-car, --skin-target, whether
 // <car>_SKIN1 is bound, and the customization selection. There is no
-// --skin-vinyls here: the car's VINYLS.BIN is not one of the six files, so
-// a selection that names a vinyl layer finds no record for it and the
-// frame reports the skipped input. There is no --skin-dump either: nothing
-// is written.
+// --skin-vinyls for the stock preset: VINYLS.BIN is read only for tuned
+// inputs. There is no --skin-dump: nothing is written.
 struct StockFrameSkin {
     // False: no skin, and the frame is the unpainted one of #141.
     bool enabled = false;
@@ -165,6 +177,7 @@ struct StockFrameSkin {
 // - The target is DUMMY_SKIN1, in the shared Cars/TEXTURES.BIN, and
 //   240SX_SKIN1 is bound as well, as the viewer does by default.
 StockFrameSkin stock_240sx_skin();
+StockFrameSkin tuned_240sx_skin();
 
 // What the frame is made of, kept so that a caller can report on it. It is
 // not copyable: it holds several megabytes, and nothing needs a second one.
@@ -179,7 +192,8 @@ struct StockFrame {
     CarPartDatabase parts;
     CarTypeTable car_types;
     TexturePack car_pack;
-    // GLOBALB.BUN, then Cars/TEXTURES.BIN.
+    TexturePack vinyl_pack;
+    // GLOBALB.BUN, then Cars/TEXTURES.BIN, then wheel textures if tuned.
     std::vector<TexturePackSet> shared_sets;
     // The texture hashes the stock meshes use, ascending, which is all a
     // shared source decodes.
@@ -192,7 +206,8 @@ struct StockFrame {
     // The runtime body skin, set only when prepare_stock_frame was given an
     // enabled StockFrameSkin and composed and bound it. skin_sources are the
     // labels of the skin input sources actually searched, in order, as the
-    // viewer prints them ("car-textures", "shared-1", "shared-2");
+    // viewer prints them ("car-textures", "shared-1", "shared-2", and
+    // "shared-3" for tuned wheel textures);
     // skin_bound_names the name each bound hash was made from, in binding
     // order.
     bool skinned = false;

@@ -153,6 +153,10 @@ int main(int argc, char** argv) {
         if (argc == 2) return 0;
         const std::filesystem::path root(argv[2]);
         RaceGpuScene scene;
+        RaceRun race;
+        require(race.prepare_metadata(root, error), error);
+        require(!race.prepare_metadata(root, error) && error == "race metadata already prepared",
+                "prepared race metadata accepted a second load");
         struct PollCount : TrackSliceLoadObserver {
             std::size_t sections = 0; bool car_prepared = false;
             void checkpoint(const char* phase) override {
@@ -164,7 +168,7 @@ int main(int argc, char** argv) {
         require(polled.sections >= 4*scene.track().sections && polled.car_prepared,
                 "race scene disconnected the shared loader checkpoints");
         require(!scene.load(posix_file_system(),root,error),"loaded race scene allowed cache-invalidating reload");
-        RaceRun race; require(race.start(root, scene.track(), error), error);
+        require(race.start(root, scene.track(), error), error);
         RaceGpuScene unloaded_scene;
         RaceGpuFrame unloaded_frame;
         require(!unloaded_scene.frame(race.session(), unloaded_frame, error) &&
@@ -173,8 +177,9 @@ int main(int argc, char** argv) {
         require(replay.load(text, error), error);
         require(scene.cache_bytes() <= 8*kMiB,"command cache exceeded metadata limit");
         std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 8*kMiB << '\n';
-        // #184: two sky definitions add diagnostic strings inside existing capacity.
-        require(scene.cache_bytes() == 3825811,"event 1 command cache metadata estimate differs from pin");
+        // #223: 20 suppressed car draws and one added cache upload record: -540 bytes.
+        // #184: two sky definitions add diagnostic strings: +32 bytes.
+        require(scene.cache_bytes() == 3825271,"event 1 command cache metadata estimate differs from pin");
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';
         require(scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes() <=
@@ -307,7 +312,7 @@ int main(int argc, char** argv) {
                         std::memcmp(&selected.material,&b.material,sizeof b.material) == 0,
                         "cached ordered draw differs from reference");
                 }
-                require(frame.track_draws > 0 && frame.car_draws == 94, "missing track/car commands");
+                require(frame.track_draws > 0 && frame.car_draws == 74, "missing track/car commands");
                 if (tick == 13128) {
                     require(race.session().animation().braking, "animation guard tick is not braking");
                     StockFrameInputs inputs;

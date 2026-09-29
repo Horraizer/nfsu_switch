@@ -300,7 +300,7 @@ if(NFSU_BUILD_TESTS)
         tests/stock_scene_tests.cpp
     )
 
-    target_link_libraries(nfsu_stock_scene_tests PRIVATE nfsu_stock_scene)
+    target_link_libraries(nfsu_stock_scene_tests PRIVATE nfsu_stock_scene nfsu_draw_commands nfsu_render)
     nfsu_enable_warnings(nfsu_stock_scene_tests)
     add_test(NAME nfsu_stock_scene_tests COMMAND nfsu_stock_scene_tests)
 
@@ -1081,6 +1081,17 @@ if(NFSU_BUILD_TESTS)
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/stock_frame_viewer_match.cmake
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
+    # Run the three retail tuned frame pins when NFSU_RETAIL_ROOT is set.
+    # CTest records a skip on machines without the owner's retail files.
+    add_test(NAME nfsu_tuned_frame_retail
+        COMMAND ${CMAKE_COMMAND} -DVIEWER=$<TARGET_FILE:nfsu_viewer>
+                -DTESTS=$<TARGET_FILE:nfsu_stock_frame_tests>
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/nfsu_tuned_frame_retail
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/tuned_frame_retail.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(nfsu_tuned_frame_retail PROPERTIES
+        SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT 180)
+
     set_tests_properties(
         nfsu_sha256_tests nfsu_screen_text_tests nfsu_stock_frame_tests
         nfsu_stock_frame_viewer_match
@@ -1579,6 +1590,15 @@ if(NFSU_BUILD_TESTS)
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_retail.cmake)
     set_tests_properties(nfsu_audio_retail PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED")
+    add_executable(nfsu_race_loader_peak_tests tests/race_loader_peak_tests.cpp)
+    target_link_libraries(nfsu_race_loader_peak_tests PRIVATE
+        nfsu_race_run nfsu_race_audio nfsu_posix_file_system)
+    nfsu_enable_warnings(nfsu_race_loader_peak_tests)
+    if(MINGW)
+        # Count allocations in the executable and its C++ dependencies.
+        target_link_options(nfsu_race_loader_peak_tests PRIVATE -static-libstdc++ -static-libgcc)
+    endif()
+    add_test(NAME nfsu_race_loader_peak_tests COMMAND nfsu_race_loader_peak_tests)
     add_executable(nfsu_race_run_tests tests/race_run_tests.cpp)
     target_link_libraries(nfsu_race_run_tests PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_platform_desktop)
     nfsu_enable_warnings(nfsu_race_run_tests)
@@ -1589,4 +1609,69 @@ if(NFSU_BUILD_TESTS)
     endif()
     add_test(NAME nfsu_race_run_tests COMMAND nfsu_race_run_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt)
+endif()
+
+# ---------------------------------------------------------------------------
+# The shipped racing line and a path-following controller (issue #63)
+# ---------------------------------------------------------------------------
+#
+# docs/RACING_LINE.md. Two libraries of their own, appended so that no list
+# above is reordered, and not in cmake/*.cmake because nothing on the console
+# reads either yet: this issue recovers the route data and delivers a
+# controller that can be tested on its own, and wires no opponent into the
+# race. The Switch configure returns above this point and builds neither.
+add_library(nfsu_racing_line
+    src/racing_line.cpp
+)
+
+target_include_directories(nfsu_racing_line
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_compile_features(nfsu_racing_line PUBLIC cxx_std_17)
+nfsu_enable_warnings(nfsu_racing_line)
+
+add_library(nfsu_path_follow
+    src/path_follow.cpp
+)
+
+target_include_directories(nfsu_path_follow
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_compile_features(nfsu_path_follow PUBLIC cxx_std_17)
+nfsu_enable_warnings(nfsu_path_follow)
+
+# Both read no file, no clock and no random device; the caller hands them
+# bytes and states.
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_racing_line nfsu_path_follow)
+
+if(NFSU_BUILD_TESTS)
+    # The route chunk over synthetic payloads: every decoded field at its
+    # offset, the lane table and its enable bytes, and each refusal
+    # (truncated, oversized, malformed). With NFSU_RETAIL_ROOT set it also
+    # decodes Tracks/TRACKB1003.lzc read-only and pins the file hash, the
+    # route and point counts and a hash over the decoded values.
+    add_executable(nfsu_racing_line_tests
+        tests/racing_line_tests.cpp
+    )
+
+    target_link_libraries(nfsu_racing_line_tests
+        PRIVATE nfsu_racing_line nfsu_core nfsu_sha256)
+    nfsu_enable_warnings(nfsu_racing_line_tests)
+    add_test(NAME nfsu_racing_line_tests COMMAND nfsu_racing_line_tests)
+    set_tests_properties(nfsu_racing_line_tests PROPERTIES TIMEOUT 120)
+
+    # The controller: the projection and its sign, the lookahead, the speed
+    # window, the refusals, determinism and the seed, and the three recovery
+    # cases issue #63 names - a stalled car, one that missed a checkpoint and
+    # one a collision displaced.
+    add_executable(nfsu_path_follow_tests
+        tests/path_follow_tests.cpp
+    )
+
+    target_link_libraries(nfsu_path_follow_tests PRIVATE nfsu_path_follow)
+    nfsu_enable_warnings(nfsu_path_follow_tests)
+    add_test(NAME nfsu_path_follow_tests COMMAND nfsu_path_follow_tests)
+    set_tests_properties(nfsu_path_follow_tests PROPERTIES TIMEOUT 60)
 endif()

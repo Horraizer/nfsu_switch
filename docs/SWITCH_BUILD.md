@@ -35,14 +35,14 @@ buttons, timing convention and `nxlink -a <ip>` deployment command.
 | --- | --- | --- |
 | `nfsu_switch_app` | `nfsu_switch_app.elf` | The minimal application: it initialises the console and the first controller, runs a frame loop until + is pressed or the system asks it to close, and shuts down. |
 | `nfsu_switch_app_nro` | `nfsu_switch_app.nro`, `nfsu_switch_app.nacp` | That ELF packaged by `elf2nro` with the libnx default icon and a NACP titled `nfsu_switch`. |
-| `nfsu_switch_car` | `nfsu_switch_car.elf` | The stock 240SX: it reads six game files from the SD card, builds the stock scene, composes and binds the body skin, renders it at 1280x720 with the CPU reference renderer, shows it through a libnx framebuffer and reports the render time and the frame's SHA-256 against the pinned desktop frame; then the left stick orbits the camera, - returns it to the default and + exits. |
+| `nfsu_switch_car` | `nfsu_switch_car.elf` | The 240SX CPU reference viewer: stock reads six game files; `--tuned` also reads wheel geometry, wheel textures and vinyls, then draws the explicit installed set of [`INSTALLED_PARTS.md`](INSTALLED_PARTS.md). The left stick orbits, - resets and + exits. |
 | `nfsu_switch_car_nro` | `nfsu_switch_car.nro`, `nfsu_switch_car.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_car`. |
 | `nfsu_switch_assets` | `nfsu_switch_assets.elf` | The asset check of issue #47: it reads the config file `sdmc:/config/nfsu_switch/assets.cfg` if there is one, checks that the SD card holds the 12 retail files the first lap needs - by name, size and SHA-256 - and shows the report and the files still to copy on screen; + exits. [`SWITCH_ASSETS.md`](SWITCH_ASSETS.md). |
 | `nfsu_switch_assets_nro` | `nfsu_switch_assets.nro`, `nfsu_switch_assets.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_assets`. |
 | `nfsu_switch_shaders` | `shaders/*.dksh`, `shaders/*.tgsi` | Every GLSL stage a manifest in `shaders/` names, compiled by `uam`, and each manifest checked against the result. |
-| `nfsu_switch_deko3d` | `nfsu_switch_deko3d.elf` | The stock scene recorded by #145 and executed on a deko3d graphics queue; 1280x720, + exits, read-only SD inputs. |
+| `nfsu_switch_deko3d` | `nfsu_switch_deko3d.elf` | The same car scene recorded by #145 and executed on a deko3d graphics queue; `--tuned` selects the explicit installed set. 1280x720, + exits, read-only SD inputs. |
 | `nfsu_switch_deko3d_nro` | `nfsu_switch_deko3d.nro`, `nfsu_switch_deko3d.nacp` | The GPU application packaged with a NACP and RomFS containing the three checked offline shader stages. |
-| `nfsu_switch_compare` | `nfsu_switch_compare.elf` | Same-scene CPU/deko3d readback comparison, metrics and frame times on screen; A/B/X choose GPU/CPU/amplified difference, Y toggles the report, + exits. |
+| `nfsu_switch_compare` | `nfsu_switch_compare.elf` | Same-scene CPU/deko3d readback comparison, including `--tuned`; metrics and frame times on screen; A/B/X choose GPU/CPU/amplified difference, Y toggles the report, + exits. |
 | `nfsu_switch_compare_nro` | `nfsu_switch_compare.nro`, `nfsu_switch_compare.nacp` | The comparison application packaged with checked offline shader blobs in RomFS; no game assets. |
 | `nfsu_switch_vehicle` | `nfsu_switch_vehicle.elf` | The vehicle model of issue #58: runs the eight built-in scripted input sequences through `nfsu_vehicle` and prints each telemetry hash, and whether `mixed` is the one pinned on the desktop ([`VEHICLE.md`](VEHICLE.md), "On the console"); + exits. Not yet run on a console. |
 | `nfsu_switch_vehicle_nro` | `nfsu_switch_vehicle.nro`, `nfsu_switch_vehicle.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_vehicle`. |
@@ -343,12 +343,12 @@ library code compiled for AArch64, and at the default camera reports whether
 the console made the same bytes as the desktop. Either answer is a result; a
 difference is reported, not hidden.
 
-Two frames are pinned, both from the viewer on the retail files, read-only:
-
-| Frame | Viewer options added to the stock command of [`RENDERER.md`](RENDERER.md) | TGA bytes | SHA-256 |
-| --- | --- | ---: | --- |
-| painted, the default (issue #148) | `--skin-car 240SX --skin-doorline plain --skin-base 30 60 160 128` | 3686418 | `8A5932A302A22AA3C4C01776009B5348629D8D37B3B61E6E0AA303235B1CF48F` |
-| unpainted, `--unpainted` (issue #141) | none | 3686418 | `3DEB2147CDA1B1D66DC47FC599B8A1FD88FCB273F0B38BFBE656666808199D25` |
+The current painted and unpainted default-frame hashes and sizes live in
+`include/nfsu/stock_frame.h`; `nfsu_draw_commands_retail` checks them in the
+viewer material mode and compares the CPU and GPU submissions in both modes.
+The painted options add `--skin-car 240SX --skin-doorline plain
+--skin-base 30 60 160 128` to the stock command of
+[`RENDERER.md`](RENDERER.md). The unpainted options omit the skin.
 
 Issue #161 re-pinned both, because both showed the defect it fixed: two
 pixels of the front-left wheel's backing quad above the far fender. They
@@ -371,12 +371,13 @@ layer - the plain doorline, `240SX_DOORLINE` and `240SX_DOORLINE_MASK` from
 the car's own `TEXTURES.BIN` - composed into `DUMMY_SKIN1` from
 `Cars/TEXTURES.BIN` and bound under `0x530B82B0` (`DUMMY_SKIN1`) and
 `0x77A20245` (`240SX_SKIN1`), displacing nothing. Against the unpainted frame
-the geometry is the same - 24 meshes, 30 instances, 6137 triangles, 116746
-pixels drawn - and the body's groups now resolve: 52 of 79 material groups
-instead of 20, 5904 textured triangles instead of 2610, and 33795 fallback
-pixels instead of 103808. The body is blue with its door lines; the windows
-and the decals still show the fallback checker, and 11 texture hashes stay
-unresolved, as 12 did without the skin.
+the geometry selection is the same, and the body uses the composed blue skin
+with its door lines. Stock window hashes alias to the retail WINDOW texture;
+unselected dummy decals are suppressed. The painted scene submits no fallback
+triangles or pixels, as checked by `nfsu_draw_commands_retail`. The viewer
+command above prints the current group, instance, triangle and pixel counts.
+The remaining unresolved source hashes belong to suppressed dummy decals;
+[`CAR_TEXTURES.md`](CAR_TEXTURES.md) lists them and the wheel-related limits.
 
 Where each part of that skin selection comes from, as `stock_240sx_skin()`
 in `include/nfsu/stock_frame.h` records it:
@@ -429,13 +430,21 @@ With the homebrew menu's netloader waiting on the console:
 nxlink -s build-switch/switch/nfsu_switch_car.nro
 ```
 
+To photograph the explicit tuned selection of issue #229, use
+`nxlink -s --args=--tuned build-switch/switch/nfsu_switch_car.nro`.
+The GPU view uses `nfsu_switch_deko3d.nro` with the same argument; the
+CPU/deko3d comparison uses `nfsu_switch_compare.nro` with it. The SD root
+also needs `Cars/WHEELS/GEOMETRY.BIN`, `Cars/WHEELS/TEXTURES.BIN` and
+`Cars/240SX/VINYLS.BIN`. `nfsu_switch_assets` checks the first-lap set
+only, so the tuned viewers report a missing tuned file themselves.
+
 `-s` keeps nxlink running as a server after the upload, so the application's
 stdout arrives on the PC; `-a <address>` names the console when nxlink cannot
 find it. `--args` passes the application an argument: `--unpainted` draws
-and checks the unpainted frame of issue #141 instead, and any other
-argument is a root other than `sdmc:/nfsu`. One argument per run is what
-this was written for; how nxlink passes an argument that starts with `-`,
-or several in one `--args`, was not tried. When the application was not
+and checks the unpainted frame of issue #141, `--tuned` draws issue #229's
+selection, and a root argument replaces `sdmc:/nfsu`. The `--args=--tuned`
+form follows nxlink's option syntax; it has not yet been tried on hardware.
+When the application was not
 started by nxlink it opens no socket and reports on the screen alone.
 
 ### Controls

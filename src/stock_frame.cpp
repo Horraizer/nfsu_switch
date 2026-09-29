@@ -22,8 +22,7 @@ constexpr const char* kFilePaths[kStockFrameFileCount] = {
     "Cars/240SX/GEOMETRY.BIN", "Cars/240SX/TEXTURES.BIN", "Global/GLOBALB.BUN",
     "Cars/TEXTURES.BIN",       "Cars/BRAKES/GEOMETRY.BIN", "Cars/PLATES/GEOMETRY.BIN"};
 
-// The two --shared-textures files and the two --stock-geometry files, in
-// the order the command names them.
+// The stock --shared-textures files; tuned adds wheel textures after these.
 constexpr StockFrameFile kSharedTextureFiles[] = {StockFrameFile::global_bun,
                                                   StockFrameFile::shared_car_textures};
 constexpr StockFrameFile kStockGeometryFiles[] = {StockFrameFile::brake_geometry,
@@ -132,10 +131,11 @@ bool StockFrameInputs::all_read() const noexcept {
             return false;
         }
     }
-    return true;
+    return !tuned || (wheel_geometry.read && wheel_textures.read && vinyls.read);
 }
 
-bool read_stock_frame_inputs(const fs::path& root, StockFrameInputs& inputs) {
+bool read_stock_frame_inputs(const fs::path& root, StockFrameInputs& inputs, bool tuned) {
+    inputs.tuned = tuned;
     for (std::size_t i = 0; i < kStockFrameFileCount; ++i) {
         StockFrameInput& input = inputs.files[i];
         input.path = kFilePaths[i];
@@ -150,6 +150,22 @@ bool read_stock_frame_inputs(const fs::path& root, StockFrameInputs& inputs) {
             input.error = "failed to read file";
         }
     }
+    const auto read_extra = [&](StockFrameInput& input, const char* path) {
+        input.path = path;
+        input.read = false;
+        input.error.clear();
+        input.bytes.clear();
+        if (tuned) {
+            try {
+                input.read = read_whole_file(root / fs::path(path), input.bytes, input.error);
+            } catch (const std::exception&) {
+                input.error = "failed to read file";
+            }
+        }
+    };
+    read_extra(inputs.wheel_geometry, "Cars/WHEELS/GEOMETRY.BIN");
+    read_extra(inputs.wheel_textures, "Cars/WHEELS/TEXTURES.BIN");
+    read_extra(inputs.vinyls, "Cars/240SX/VINYLS.BIN");
     return inputs.all_read();
 }
 
@@ -162,6 +178,15 @@ StockSceneRequest stock_240sx_request() {
     return request;
 }
 
+StockSceneRequest tuned_240sx_request() {
+    StockSceneRequest request = stock_240sx_request();
+    request.installed_parts.names[kSlotFrontBumper] = "240SX_KIT01_FRONT_BUMPER";
+    request.installed_parts.names[kSlotRearBumper] = "240SX_KIT01_REAR_BUMPER";
+    request.installed_parts.names[kSlotSkirt] = "240SX_KIT01_SKIRT";
+    request.installed_parts.names[kSlotWheel] = "BBS_STYLE01_15_23";
+    return request;
+}
+
 StockFrameSkin stock_240sx_skin() {
     StockFrameSkin skin;
     skin.enabled = true;
@@ -169,6 +194,18 @@ StockFrameSkin stock_240sx_skin() {
     skin.selection.car_name = skin.car;
     skin.selection.doorline = SkinDoorlineSelection{SkinDoorlineVariant::plain};
     skin.selection.base_color = skin_pack_paint(30, 60, 160, 128);
+    return skin;
+}
+
+StockFrameSkin tuned_240sx_skin() {
+    StockFrameSkin skin = stock_240sx_skin();
+    skin.selection.doorline = SkinDoorlineSelection{SkinDoorlineVariant::body_kit};
+    skin.selection.base_color = skin_pack_paint(200, 30, 30, 128);
+    SkinVinylLayerSelection vinyl;
+    vinyl.texture = "TRIBAL5";
+    vinyl.palette_size = 16;
+    vinyl.remap = false;
+    skin.selection.vinyl_layers[0] = vinyl;
     return skin;
 }
 
@@ -196,6 +233,7 @@ bool prepare_stock_frame(
     frame.parts = CarPartDatabase{};
     frame.car_types = CarTypeTable{};
     frame.car_pack = TexturePack{};
+    frame.vinyl_pack = TexturePack{};
     frame.shared_sets.clear();
     frame.wanted.clear();
     frame.textures = RenderTextureSet{};
@@ -219,7 +257,13 @@ bool prepare_stock_frame(
         for (const StockFrameInput& input : inputs.files) {
             missing += input.read ? 0 : 1;
         }
-        error = std::to_string(missing) + " of " + std::to_string(kStockFrameFileCount) +
+        if (inputs.tuned) {
+            missing += inputs.wheel_geometry.read ? 0 : 1;
+            missing += inputs.wheel_textures.read ? 0 : 1;
+            missing += inputs.vinyls.read ? 0 : 1;
+        }
+        error = std::to_string(missing) + " of " +
+                std::to_string(kStockFrameFileCount + (inputs.tuned ? 3 : 0)) +
                 " input files could not be read";
         return false;
     }
@@ -232,15 +276,25 @@ bool prepare_stock_frame(
         // load_geometry_file(<GEOMETRY.BIN>) and its "geometry issue" lines.
         frame.car_geometry =
             parse_geometry(car_geometry.bytes.data(), car_geometry.bytes.size());
+        alias_stock_window_textures(frame.car_geometry);
         for (const GeometryIssue& issue : frame.car_geometry.issues) {
             frame.issues.push_back(at(car_geometry.path, issue.offset, issue.message));
         }
         // Each --stock-geometry in order, then the source list with the
         // car's own file first; the vector is sized once, so the pointers
         // stay valid.
-        frame.stock_geometry.reserve(std::size(kStockGeometryFiles));
+        frame.stock_geometry.reserve(std::size(kStockGeometryFiles) + (inputs.tuned ? 1U : 0U));
         for (const StockFrameFile which : kStockGeometryFiles) {
             const StockFrameInput& input = inputs.file(which);
+            frame.stock_geometry.push_back(
+                parse_geometry(input.bytes.data(), input.bytes.size()));
+            alias_stock_window_textures(frame.stock_geometry.back());
+            for (const GeometryIssue& issue : frame.stock_geometry.back().issues) {
+                frame.issues.push_back(at(input.path, issue.offset, issue.message));
+            }
+        }
+        if (inputs.tuned) {
+            const StockFrameInput& input = inputs.wheel_geometry;
             frame.stock_geometry.push_back(
                 parse_geometry(input.bytes.data(), input.bytes.size()));
             for (const GeometryIssue& issue : frame.stock_geometry.back().issues) {
@@ -279,9 +333,16 @@ bool prepare_stock_frame(
         // does.
         static const std::vector<unsigned char> kNoBytes;
         std::vector<const std::vector<unsigned char>*> shared_bytes;
-        frame.shared_sets.reserve(std::size(kSharedTextureFiles));
+        std::vector<const StockFrameInput*> shared_inputs;
         for (const StockFrameFile which : kSharedTextureFiles) {
-            const StockFrameInput& input = inputs.file(which);
+            shared_inputs.push_back(&inputs.file(which));
+        }
+        if (inputs.tuned) {
+            shared_inputs.push_back(&inputs.wheel_textures);
+        }
+        frame.shared_sets.reserve(shared_inputs.size());
+        for (const StockFrameInput* shared_input : shared_inputs) {
+            const StockFrameInput& input = *shared_input;
             TextureLimits limits;
             const std::uint64_t remaining = kStockFrameMaxTextureInputBytes - read_bytes;
             limits.max_file_size = std::min(limits.max_file_size, remaining);
@@ -329,6 +390,7 @@ bool prepare_stock_frame(
         // The stock assembly resolved once against no textures, for the
         // meshes whose texture hashes a shared source is asked to decode.
         std::vector<SceneMeshRef> mesh_refs;
+        bool wants_left_brake = false;
         {
             PreparedCarScene unbound;
             StockSceneReport unbound_report;
@@ -342,6 +404,11 @@ bool prepare_stock_frame(
             for (const PreparedMesh& mesh : unbound.meshes) {
                 mesh_refs.push_back(SceneMeshRef{mesh.source, mesh.source_index});
             }
+            wants_left_brake = std::any_of(unbound.instances.begin(), unbound.instances.end(),
+                [](const PreparedInstance& instance) {
+                    return instance.part_slot == kSlotBrake &&
+                           (instance.copy == 0 || instance.copy == 3);
+                });
         }
 
         // The decode, shared sources present: the car's pack is source 0 and
@@ -353,6 +420,10 @@ bool prepare_stock_frame(
                     frame.wanted.push_back(mesh.texture_hashes[material.texture_slot]);
                 }
             }
+        }
+        // The left brake substitution is per copy, not a mesh material.
+        if (wants_left_brake) {
+            frame.wanted.push_back(kBrakeGlobalLeftHash); // BRAKE_GLOBAL_LEFT
         }
         std::sort(frame.wanted.begin(), frame.wanted.end());
         frame.wanted.erase(std::unique(frame.wanted.begin(), frame.wanted.end()),
@@ -386,8 +457,8 @@ bool prepare_stock_frame(
                 std::string text;
                 if (texture.source != 0) {
                     const std::size_t shared = texture.source - 1;
-                    text = (shared < std::size(kSharedTextureFiles)
-                                ? inputs.file(kSharedTextureFiles[shared]).path
+                    text = (shared < shared_inputs.size()
+                                ? shared_inputs[shared]->path
                                 : std::string("texture source ") +
                                       std::to_string(texture.source)) +
                            ": pack " + std::to_string(texture.pack) + " texture " +
@@ -442,6 +513,15 @@ bool prepare_stock_frame(
             };
             add_source(car_textures.bytes, SkinSourceKind::car_textures, "car-textures",
                        car_textures.path, {&frame.car_pack});
+            if (inputs.tuned) {
+                const StockFrameInput& input = inputs.vinyls;
+                frame.vinyl_pack = parse_texture_pack(input.bytes.data(), input.bytes.size());
+                for (const TextureIssue& issue : frame.vinyl_pack.issues) {
+                    frame.issues.push_back(at(input.path, issue.offset, issue.message));
+                }
+                add_source(input.bytes, SkinSourceKind::car_vinyls, "car-vinyls",
+                           input.path, {&frame.vinyl_pack});
+            }
             for (std::size_t i = 0; i < frame.shared_sets.size(); ++i) {
                 std::vector<const TexturePack*> packs;
                 for (const TexturePack& shared_pack : frame.shared_sets[i].packs) {
@@ -449,7 +529,7 @@ bool prepare_stock_frame(
                 }
                 add_source(*shared_bytes[i], SkinSourceKind::other,
                            "shared-" + std::to_string(i + 1),
-                           inputs.file(kSharedTextureFiles[i]).path, packs);
+                           shared_inputs[i]->path, packs);
             }
 
             BodySkinSelection selected = skin.selection;
@@ -679,6 +759,9 @@ std::string stock_frame_slots_line(const StockSceneReport& report) {
     text << "stock slots: installed " << report.installed << " with_model "
          << report.with_model << " drawn " << report.drawn << " by_fallback "
          << report.fell_back << " markers " << report.markers.size();
+    if (report.overridden != 0) {
+        text << " overridden " << report.overridden;
+    }
     return text.str();
 }
 
