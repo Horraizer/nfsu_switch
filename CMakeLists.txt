@@ -1676,3 +1676,22 @@ if(NFSU_BUILD_TESTS)
     add_test(NAME nfsu_path_follow_tests COMMAND nfsu_path_follow_tests)
     set_tests_properties(nfsu_path_follow_tests PROPERTIES TIMEOUT 60)
 endif()
+
+# The tuned race remains a visual selection; these retail gates exercise the
+# full simulation, all cached/reference draws and the existing load budget.
+if(NFSU_BUILD_TESTS)
+    foreach(mode IN ITEMS replay draws loader)
+        add_test(NAME nfsu_tuned_race_${mode}_retail
+            COMMAND ${CMAKE_COMMAND}
+                -DPYTHON=${Python3_EXECUTABLE}
+                -DSOURCE=${PROJECT_SOURCE_DIR}
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/nfsu_tuned_race_retail
+                -DRACE=$<TARGET_FILE:nfsu_race>
+                -DRUN_TESTS=$<TARGET_FILE:nfsu_race_run_tests>
+                -DLOADER_TESTS=$<TARGET_FILE:nfsu_race_loader_peak_tests>
+                -DMODE=${mode}
+                -P ${PROJECT_SOURCE_DIR}/tests/tuned_race_retail.cmake)
+        set_tests_properties(nfsu_tuned_race_${mode}_retail PROPERTIES
+            SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT 3600 LABELS "retail;tuned-race")
+    endforeach()
+endif()

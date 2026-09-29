@@ -1,6 +1,6 @@
 # Event 1 on Switch (#196)
 
-`nfsu_switch_race.nro` runs the stock 240SX through event 1's forward
+`nfsu_switch_race.nro` runs the selected 240SX through event 1's forward
 track-1003 circuit for two laps. It uses `RaceSession` from #192, the #59
 controls and chase camera, #157 residency, and #198's deko3d track path with
 #171 native DXT. The race also uses the command cache merged in #206 and
@@ -10,7 +10,7 @@ the bounded track loader merged in #207.
 
 Copy the supplied NRO to `sdmc:/switch/nfsu_switch_race.nro` and launch in
 full-memory Homebrew Menu mode. Keep the existing 12 first-lap files under
-`sdmc:/nfsu`. No additional retail file is required: the track-info table is
+`sdmc:/nfsu`. The default stock selection needs no additional retail file: the track-info table is
 read from the checked `Global/GLOBALB.BUN`, not the modified desktop
 `GLOBALB.LZC`. The #47 manifest check runs before any game parser and names
 missing, incomplete, wrong-version or unreadable files on screen.
@@ -24,7 +24,7 @@ lines clip labels to 12 characters; CTest checks the configured tag in the ELF.
 
 The menu offers A for live driving, X for replay and Y to toggle the
 diagnostic panel. Direct presentation is the default. With nxlink, optional
-arguments are `[sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame]`.
+arguments are `[sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--tuned]`.
 `--profile-frame` requires direct presentation. RomFS holds the three checked
 offline shaders and the repository's authored `tests/recordings/event1.txt`.
 It contains no retail or derived game asset. The application writes no SD
@@ -106,7 +106,7 @@ commands are joined with rebased upload indices and drawn in one deko3d
 pass with one camera. Two depth targets are paired with the two swapchain
 images to keep their writable surfaces separate. Car placement follows the
 shared vehicle transform; the chase camera includes the existing track collision
-hook. The car uses the same painted stock scene as the desktop race.
+hook. The car uses the same selected, painted scene as the desktop race.
 Track culling uses the same camera basis as GPU projection.
 
 The complete list must fit the checked draw limit. Far distance starts at 250 and can
@@ -281,3 +281,62 @@ accounting. See [SWITCH_PERFORMANCE.md](SWITCH_PERFORMANCE.md) for the
 retained baseline and regression thresholds. Prior console photos above
 still describe e65960b; the new direct-present build needs a combined
 console timing and detailed visual check by the owner and coordinator.
+
+## Tuned race selection (#237)
+
+Append `--tuned` to either race executable to use the viewer's red 240SX,
+KIT01 bumpers and skirts, BBS_STYLE01_15_23 wheels and TRIBAL5 vinyl.
+Desktop example: `nfsu_race X:/Games/NFSU --tuned` (see `--help` for replay
+and frame output). Switch paired replay commands:
+
+```text
+nxlink -s nfsu_switch_race.nro -- sdmc:/nfsu --replay --profile-frame
+nxlink -s nfsu_switch_race.nro -- sdmc:/nfsu --replay --profile-frame --tuned
+```
+
+Keep the first-lap files above and add these files from the game's own
+installation at the same relative paths beneath `sdmc:/nfsu`:
+
+```text
+Cars/WHEELS/GEOMETRY.BIN
+Cars/WHEELS/TEXTURES.BIN
+Cars/240SX/VINYLS.BIN
+```
+
+Both race loaders name every unread car input and explain where to copy it.
+The selection is visual only: the vehicle, input mapping, contact solver,
+fixed time step, residency and replay hashes do not receive the flag.
+The normal invocation continues to select the stock car. Profile pages
+identify STOCK or TUNED so paired photographs cannot silently swap cars.
+
+The race calls `tuned_240sx_request` and `tuned_240sx_skin` through the same
+part resolution and skin preparation as the viewer. Per-car wheel/brake
+placement and the shared animated transform handle either selection. The
+race refuses tuned car commands with an unbound texture; the CPU frame path
+also requires zero fallback triangles. The existing draw and memory limits
+remain in force.
+
+Tuned race loading releases parsed raw geometry before reading the vinyl
+layer for composition. The common geometry parser validates every wheel
+mesh but retains decoded payload only for the already-selected wheel hashes;
+all directory identities and offsets remain available to its validation.
+This is a retention policy, not a second decoder or part resolver. Stock
+loading and viewer preparation retain their existing ownership behavior.
+
+With `NFSU_RETAIL_ROOT` set, CTest runs `nfsu_tuned_race_replay_retail`,
+`nfsu_tuned_race_draws_retail` and `nfsu_tuned_race_loader_retail`. Each uses a
+fresh output directory and compares complete before/after retail manifests.
+`tools/race_replay_check.py --tuned --check-driver` pins the frame set with a
+reason for each view and checks every replay step, result, regenerated input
+and clean trajectory. `nfsu_race_run_tests ... --full-draws --tuned` compares
+every cached draw against the reference on every tick, checks animated parts
+and reports stock/tuned draw costs. `nfsu_race_loader_peak_tests ... --tuned`
+checks all live allocations through audio and the first frame against the
+same load ceiling. The corresponding commands without `--tuned` retain the
+stock replay and frame pins.
+
+Desktop tests do not establish Switch frame time. Console acceptance needs
+a photograph of the tuned car racing and paired GPU SCENE replay pages for
+stock and tuned at the same build, mode and uninterrupted game-tick window.
+The target remains 60 fps; there is no alternate simulation rate or 30 fps
+acceptance mode.
