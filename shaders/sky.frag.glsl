@@ -40,6 +40,8 @@ void main()
     vec2 uv = inTexcoord;
     if (frame.options.x != 0u) uv.y = 1.0 - uv.y;
     uvec4 texel = uvec4(texture(baseTexture, uv) * 255.0 + 0.5);
+    // The diagnostic cutoff checks raw texel alpha in the CPU path too;
+    // the material alpha test uses the doubled source alpha below.
     if (texel.a < frame.options.w) discard;
     uvec4 vertex = uvec4(clamp(floor(inColor * 255.0 + 0.5), 0.0, 255.0));
     uvec4 value = min(uvec4(255u), (texel * vertex * 2u + 127u) / 255u);

@@ -359,10 +359,8 @@ bool render_track_draw_list(
     std::uint64_t submitted = list.cost.triangles;
     if (options.sky && scene.sky_mesh != kNoHandle) {
         for (const auto& draw : scene.region.draws) {
-            if (draw.mesh != scene.sky_mesh || !draw.drawable) continue;
-            if (draw.binding != BindingKind::resolved) {
-                error = "sky texture is unresolved"; return false;
-            }
+            if (draw.mesh != scene.sky_mesh || !draw.drawable ||
+                draw.binding != BindingKind::resolved) continue;
             submitted += draw.index_count / 3;
         }
     }
@@ -424,10 +422,10 @@ bool render_track_draw_list(
         const auto& mesh = scene.region.meshes[scene.sky_mesh];
         for (std::size_t group = 0; group < scene.region.draws.size(); ++group) {
             const auto& draw = scene.region.draws[group];
-            if (draw.mesh != scene.sky_mesh || !draw.drawable) continue;
-            if (draw.binding != BindingKind::resolved) {
-                error = "sky texture is unresolved"; return false;
-            }
+            // The sky is a separate pass; unresolved groups cannot sample a
+            // texture and are skipped without suppressing the world frame.
+            if (draw.mesh != scene.sky_mesh || !draw.drawable ||
+                draw.binding != BindingKind::resolved) continue;
             RasterMaterial material;
             material.texture = &scene.region.textures[draw.texture];
             material.depth_write = false; material.sky = true;
@@ -513,6 +511,8 @@ bool render_track_draw_list(
 
         // Opaque depth rejects hidden sky pixels. Translucency must see
         // the sky as its destination colour, so stop before the first blend.
+        // The parser excludes zero-index groups, matching the GPU path's
+        // skip before it selects the first blended draw.
         if (!sky_drawn && raster.blend != RenderBlendMode::disabled) {
             if (!render_sky()) return false;
             sky_drawn = true;

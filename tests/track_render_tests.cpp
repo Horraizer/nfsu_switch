@@ -3037,8 +3037,53 @@ void test_sky_background_and_transparency() {
     check(!validate_prepared_track_scene(scene,error),"invalid sky handle refused");
 }
 
+void test_unresolved_sky_keeps_world() {
+    using namespace nfsu;
+    auto meshes = fixture_meshes();
+    auto sky = meshes[0];
+    sky.hash = kSkydomeMeshHash; sky.name = "SKYDOME";
+    sky.texture_hashes = {0xDEAD0001U};
+    meshes.push_back(sky);
+    auto sections = fixture_sections();
+    sections[0].objects[2].mesh_hash[0] = kSkydomeMeshHash;
+    auto fixture = make_fixture(meshes,sections);
+    auto& scene = fixture.scene;
+    check(scene.sky_mesh == 2,"unresolved sky fixture selected its dome");
+    std::size_t unresolved = 0;
+    for (const auto& draw : scene.region.draws)
+        if (draw.mesh == scene.sky_mesh && draw.binding == BindingKind::unresolved)
+            ++unresolved;
+    check(unresolved == 1,"unresolved sky fixture reached the binding path");
+    auto list = list_over(scene,{0});
+    auto options = small_options();
+    options.sky = true; options.material_state = MaterialStateMode::retail;
+    Frame frame,baseline;
+    RenderStats stats; TrackRenderStats track;
+    std::string error;
+    std::vector<ReferenceDraw> trace;
+    check_ok(render_track_draw_list(scene,list,options,{},frame,stats,track,error,
+        [&](const ReferenceDraw& draw){trace.push_back(draw);}),
+        "unresolved sky preserves CPU world frame",error);
+    RecordedCommands commands;
+    check_ok(record_track_commands(scene,list,options,{},commands,error),
+             "unresolved sky preserves GPU world commands",error);
+    options.sky = false;
+    check_ok(render_track_draw_list(scene,list,options,{},baseline,stats,track,error),
+             "sky-disabled world baseline",error);
+    check(frame.rgba() == baseline.rgba() && frame.depth() == baseline.depth() &&
+          frame.ids() == baseline.ids(),
+          "unresolved sky leaves resolved world pixels and depth intact");
+    check(commands.draw_count() == 1 && trace.size() == 1,
+          "unresolved sky omits only its draw from CPU and GPU traces");
+    if (commands.draw_count() == 1 && trace.size() == 1)
+        check(commands.owning_draws()[0].mesh == trace[0].mesh &&
+              commands.owning_draws()[0].mesh != scene.sky_mesh,
+              "unresolved sky retained the resolved world group");
+}
+
 int main() {
     test_sky_background_and_transparency();
+    test_unresolved_sky_keeps_world();
     test_fixture_parses();
 
     test_placed_vertex_identity();

@@ -28,10 +28,8 @@ layout (std140, binding = 0) uniform Frame {
 } frame;
 
 // The drawn copy's placement: row-major rows of the row-vector transform in
-// the raw slot frame, row 3 being the translation. PreparedInstance::transform
-// fills all four rows; TrackTransform fills rows 0..2 from `linear` and row 3
-// from `translation`. A car profile with no instances draws with the
-// identity, which lands every finite vertex where the null placement does.
+// the raw slot frame, row 3 being the translation. The sky TrackTransform
+// fills rows 0..2 from `linear` and row 3 from `translation`.
 layout (std140, binding = 1) uniform Instance {
     vec4 rows[4];
 } instance;

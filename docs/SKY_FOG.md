@@ -108,6 +108,8 @@ The first matching slot-0 instance supplies `sky_transform`. The original
 ordinary-scenery skip stays in place. `RenderOptions::sky` enables the separate
 pass in the race and track slice; old isolated diagnostic renders opt in
 explicitly. The sky borrows the existing vertex/index/texture uploads.
+An unresolved sky texture skips only its sky group; resolved world groups
+still render. `nfsu_track_render_tests` covers that fallback case.
 
 APPROXIMATION: both renderers place sky immediately before the first blended
 world draw (or after the opaque world if there is no blend), project it to
@@ -118,8 +120,9 @@ proof of retail depth/cull behavior. The fixed world placement does not make
 the sky follow the camera; the approximation is intended for the race route.
 
 RECOVERED DATA, bounded to event 1 / track 1003: the selected groups bind
-SKY_OVERCASTA (0x8922567D) and SKY_OVERCASTA_CAP (0x67688AB0) from
-TEX1003TRACK.BIN. `nfsu_probe pack-set` reports info offsets 716 and 592,
+SKY_OVERCASTA and SKY_OVERCASTA_CAP from TEX1003TRACK.BIN. Their texture
+hashes are pinned by `tests/sky_fog_retail.cpp`. `nfsu_probe pack-set`
+reports info offsets 716 and 592,
 respectively; the data spans are 470784+349184 and 121344+349440. Both are
 A8R8G8B8. The main texture has alpha-test/blend bytes 0/0; the cap has 2/1
 (alpha test disabled, source-over). These are the material texture choices,

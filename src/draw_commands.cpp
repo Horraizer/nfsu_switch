@@ -373,16 +373,15 @@ bool record_track_commands(const PreparedTrackScene& scene, const TrackDrawList&
         std::uint64_t submitted = list.cost.triangles;
         if (options.sky && scene.sky_mesh != kNoHandle)
             for (const auto& draw : scene.region.draws)
-                if (draw.mesh == scene.sky_mesh && draw.drawable) submitted += draw.index_count/3;
+                if (draw.mesh == scene.sky_mesh && draw.drawable &&
+                    draw.binding == BindingKind::resolved) submitted += draw.index_count/3;
         if (!triangle_limits(triangles, submitted, limits, error)) return false;
         const ResourceMap resources(out.owning_uploads(), scene.region.meshes.size(), scene.region.textures.size());
         if (options.sky && scene.sky_mesh != kNoHandle) {
             for (std::size_t group = 0; group < scene.region.draws.size(); ++group) {
                 const auto& source = scene.region.draws[group];
-                if (source.mesh != scene.sky_mesh || !source.drawable) continue;
-                if (source.binding != BindingKind::resolved) {
-                    error = "sky texture is unresolved"; return false;
-                }
+                if (source.mesh != scene.sky_mesh || !source.drawable ||
+                    source.binding != BindingKind::resolved) continue;
                 RecordedDraw draw;
                 draw.group = group; draw.mesh = source.mesh;
                 draw.name = "sky group " + std::to_string(group);
@@ -401,8 +400,17 @@ bool record_track_commands(const PreparedTrackScene& scene, const TrackDrawList&
                     if (std::strcmp(program.name, "sky_textured") == 0) draw.program = &program;
                 if (!draw.program) { error = "sky shader is missing"; return false; }
                 if (!buffers(scene.region.meshes[source.mesh], source, resources, draw, error)) return false;
+                bool found_variant = false;
                 for (std::size_t i = 0; i < draw.program->variant_count; ++i)
-                    if (std::strcmp(draw.program->variants[i].name,variant)==0) draw.pipeline=draw.program->variants[i];
+                    if (std::strcmp(draw.program->variants[i].name,variant)==0) {
+                        draw.pipeline=draw.program->variants[i];
+                        found_variant = true;
+                        break;
+                    }
+                if (!found_variant) {
+                    error = std::string("sky shader variant missing: ") + variant;
+                    return false;
+                }
                 out.owning_draws().push_back(std::move(draw));
             }
         }
