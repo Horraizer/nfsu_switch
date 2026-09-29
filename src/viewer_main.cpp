@@ -1783,13 +1783,15 @@ int main(int argc, char** argv) {
                   << static_cast<char>('A' + stock_report.lod) << " pass "
                   << nfsu::car_draw_pass_name(stock_report.pass) << '\n';
         for (const nfsu::StockSlotReport& slot : stock_report.slots) {
-            if (!slot.overridden) {
+            if (!slot.overridden && slot.record == nfsu::kNoCarPart) {
                 continue;
             }
             std::cout << "stock slot " << slot.slot << ' '
-                      << nfsu::car_slot_name(slot.slot) << ' '
-                      << "overridden "
-                      << (slot.enabled ? "enabled" : "disabled") << " record "
+                      << nfsu::car_slot_name(slot.slot) << ' ';
+            if (slot.overridden) {
+                std::cout << "overridden ";
+            }
+            std::cout << (slot.enabled ? "enabled" : "disabled") << " record "
                       << (slot.record == nfsu::kNoCarPart ? "none" :
                           std::to_string(slot.record)) << ' '
                       << nfsu::stock_slot_outcome_name(slot.outcome);
