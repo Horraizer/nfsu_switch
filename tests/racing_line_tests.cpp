@@ -121,6 +121,13 @@ void test_fields() {
             static_cast<std::uint16_t>(static_cast<std::int16_t>(-1280)));
     put_u16(route, point1 + lane_offset_at(6),
             static_cast<std::uint16_t>(static_cast<std::int16_t>(896)));
+    put_f32(route, point1 + 0x2C, 1.25F);
+    put_f32(route, point1 + 0x30, -2.5F);
+    put_f32(route, point1 + 0x34, 2.5F);
+    route[point1 + 0x84] = 0x12;
+    route[point1 + 0x85] = 0x34;
+    route[point1 + 0x86] = 0x56;
+    route[point1 + 0x87] = 0x78;
     route[point1 + 0x81] = 4;
     route[point1 + 0x82] = 9;
 
@@ -156,6 +163,11 @@ void test_fields() {
               r.points[2].distance_to_next == 4.0F,
           "the 4.0 a route end carries");
     check(p.path_distance == 10.0F, "path distance at +0x38");
+    check(p.unknown_2c == 1.25F, "unknown float at +0x2C");
+    check(p.unknown_30 == -2.5F, "unknown float at +0x30");
+    check(p.unknown_34 == 2.5F, "unknown float at +0x34");
+    check(p.unknown_84 == std::array<std::uint8_t, 4>{0x12, 0x34, 0x56, 0x78},
+          "unknown bytes at +0x84..+0x87");
     check(p.event_a == 4 && p.event_b == 9, "the two event indices");
     check(p.route_index == 21, "route index at +0x83");
     check(r.points[0].event_a == nfsu::kRouteNoEvent,
@@ -455,16 +467,20 @@ void test_retail_1003() {
                  sizeof(point.distance_to_previous));
             feed(&point.unknown_24, sizeof(point.unknown_24));
             feed(&point.unknown_28, sizeof(point.unknown_28));
+            feed(&point.unknown_2c, sizeof(point.unknown_2c));
+            feed(&point.unknown_30, sizeof(point.unknown_30));
+            feed(&point.unknown_34, sizeof(point.unknown_34));
             feed(&point.path_distance, sizeof(point.path_distance));
             feed(point.lane_offset.data(),
                  point.lane_offset.size() * sizeof(float));
             feed(&point.event_a, 1);
             feed(&point.event_b, 1);
             feed(&point.route_index, 1);
+            feed(point.unknown_84.data(), point.unknown_84.size());
         }
     }
     const std::string pin = nfsu::sha256_hex(digest.finish());
-    check(pin == "14904BD5A8134F8C19B40EB559D212F0EEFB09C7C55A110CA286F3C9A0443DC3",
+    check(pin == "E7D4980DC1F2FE40DF73784FAED1905A68CCB16539975F561B9D6ABBA3E2632E",
           "retail 1003 decoded route digest is " + pin);
     std::cout << "racing line: retail 1003 pinned\n";
 }

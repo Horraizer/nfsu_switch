@@ -54,12 +54,12 @@ chunk walk finds `0x00034121` at 274916 with a 160276-byte payload, and the
 chunk dispatcher that claims that id (0x00442DD0, `cmp eax, 0x34121` at
 0x00442DD6) is reached from the `TRACKB` load, not from a section stream.
 
-**A separate file under `Tracks/`** - **ruled out.** The directory holds
-exactly four kinds of file: `STREAM*.BUN` sections, `TEX*TRACK.BIN` texture
-packs, `TRACKB*.lzc` track images and, for the drag tracks, the
-`DragCameras.bin` the string at `0x006C806C` names. No file carries route
-geometry, and the only route loader in the executable takes a
-`0x00034121` chunk.
+**A separate file under `Tracks/`** - **ruled out.** The shipped directory
+contains `STREAM*.BUN` sections, `TEX*TRACK.BIN` texture packs and
+`TRACKB*.lzc` track images. It contains no `DragCameras.bin`; the string at
+`0x006C806C` names a build-tree source path, not a shipped file. No separate
+file carries route geometry, and the only route loader in the executable takes
+a `0x00034121` chunk.
 
 **Attribute records in `Global/GLOBALB.BUN`** - **ruled out.** The route
 loader 0x00442B70 is reached only from the `0x00034121` case of 0x00442DD0,
@@ -151,8 +151,8 @@ points.
 | --- | --- | --- | --- |
 | +0x00, +0x04 | f32 | position, the two horizontal slots | 0x00456EC8..0x00456ED0 subtracts them from a car position; -1334.08..2392.56 and -1920.01..870.855 |
 | +0x08 | f32 | height, -26.9629..93.3733; no traced instruction reads it | |
-| +0x0C, +0x10 | f32 | unit direction to the **next** point | 0x00456EDC..0x00456EF1; dot with the unit chord to the next point is 1.0 for all 31956 pairs |
-| +0x14, +0x18 | f32 | unit direction to the **previous** point | 0x00456EFB..0x00456F0C; dot with the unit chord to the previous point is 1.0 for all 31956 pairs |
+| +0x0C, +0x10 | f32 | unit direction to the **next** point | 0x00456EDC..0x00456EF1; dot with the unit chord to the next point is within 1e-7 of 1.0 over all 31956 pairs |
+| +0x14, +0x18 | f32 | unit direction to the **previous** point | 0x00456EFB..0x00456F0C; dot with the unit chord to the previous point is approximately 1.0 over all 31956 pairs |
 | +0x1C | f32 | chord length to the next point; 4.0 at a route's last point | matches the chord to within 1.4e-6 over all 31956 pairs |
 | +0x20 | f32 | chord length to the previous point; 4.0 at a route's first point | the same, to the same tolerance |
 | +0x24, +0x28 | f32 | unknown; 0..33.589 and 0..33.2152 | see below |
@@ -174,7 +174,7 @@ that has no neighbour on that side.
 
 Where the widths the editor edits live is **unknown**. `+0x24` and `+0x28`
 are the obvious candidates by range, and they do not hold: of the 86024
-enabled lane offsets, 2890 fall outside `[-(+0x24), +0x28]` and 2831 outside
+enabled lane offsets, 2890 fall outside `[-(+0x24), +0x28]` and 2832 outside
 `[-(+0x28), +0x24]`, so neither order bounds the lanes. `+0x24` is zero at 16
 points and `+0x28` at 19.
 
@@ -216,7 +216,7 @@ reader:
 So the twelve slots are two groups of six, one per traversal direction,
 paired with the two unit directions. The two groups are consistent with that
 reading in the data: their enable patterns mirror each other, and the
-commonest pattern by far, on 95 of the 410 racing routes and 69 of the 94
+commonest pattern, on 95 of the 410 racing routes and 69 of the 94
 traffic routes, is slots 0x0B, 0x0C, 0x11 and 0x12 - two lanes in each
 group. The most crowded route enables all twelve (4 racing routes do). 149
 of the 410 racing routes enable no slot at all.
@@ -305,8 +305,8 @@ generalised:
 
 - All 8 circuit tracks (1001-1008) and all 8 drift tracks (1301-1308) keep
   every point's `+0x38` inside `[0, path length]`. The circuits reach 99.90
-  to 100.00 percent of their length at the top end, the drift tracks 99.44 to
-  99.88.
+  to 100.00 percent of their length at the top end, the drift tracks 98.84 to
+  99.80.
 - Of the 6 drag tracks, 1201 and 1210 are the only two tracks anywhere whose
   smallest `+0x38` is negative. All 6 stop short at the top end, from 78.8
   percent of the path length on 1201 and 1210 to 96.6 on 1207. The 8 sprint
@@ -381,6 +381,10 @@ index, and too many routes or points. `parse_racing_line_image` finds the
 single `0x00034121` of a decompressed `TRACKB` image and refuses an image
 with none or with two.
 
+`nfsu_racing_line_tests` runs its synthetic cases without retail data. Its
+retail digest runs only when `NFSU_RETAIL_ROOT` names the game installation;
+without that variable the test prints a skip message and exits successfully.
+
 `nfsu_path_follow` (`include/nfsu/path_follow.h`, `src/path_follow.cpp`) is
 the path follower, separated from vehicle actuation as issue #63 asks. It
 takes a path and a vehicle state and returns steering, throttle, brake and a
@@ -417,21 +421,26 @@ rules, all of which `nfsu_path_follow_tests` derives rather than echoes:
     checkpoint, captures one within `capture_radius`, and when its
     projection passes an uncaptured one it reports `checkpoint_missed`,
     enters `rejoining` and aims back at that checkpoint at `rejoin_speed`.
+    Rejoining can clear if projection moves back before that checkpoint;
+    the checkpoint remains uncaptured. On a closed path, a checkpoint at
+    point 0 triggers rejoining immediately unless the vehicle starts near it.
   - **collision displacement**: cross-track error over
     `rejoin_cross_track` enters `rejoining`, which aims at the projection on
     the path itself rather than at a lookahead point, and holds until the
-    error falls under `rejoin_clear`.
+    error falls under `rejoin_clear`. Cross-track error measures distance to
+    the chosen segment's line, so beyond an open path's endpoint it can be
+    zero even while the vehicle is far from the endpoint.
 
 ## What is not decoded
 
 - Route header `+0x18`..`+0x264`. It holds a float block from `+0x20`, runs
-  of 0x20-filled bytes - ASCII spaces - and, on every one of the 392 route
-  records of the 8 circuit and 8 sprint tracks, the same 15-character blob
-  `GUHLER2KW207023` behind a byte or two that varies between records. None of
-  the 112 records of the 6 drag and 8 drift tracks carries it. A string that
-  is identical across tracks, absent on half of them and preceded by varying
-  bytes is the mark of a buffer that was never cleared, not of a field with a
-  meaning, and nothing traced here reads any of this range.
+  of 0x20-filled bytes - ASCII spaces - and, in some circuit and sprint route
+  records, the same 15-character blob `GUHLER2KW207023` behind a byte or two
+  that varies between records. Other circuit and sprint records lack it, as do
+  all drag and drift records. A string repeated across tracks but absent from
+  other records and preceded by varying bytes suggests a buffer that was never
+  cleared, rather than a field with a meaning; nothing traced here reads any
+  of this range.
 - Point `+0x24`, `+0x28`, `+0x2C`, `+0x30`, `+0x34`, `+0x84`..`+0x87`.
 - The `0x00034122` record beyond `+0x00` (a float the load sorts by), `+0x04`
   (a u16 point index), `+0x09` (a route index), `+0x0B` (a type, 5 being the
@@ -466,11 +475,13 @@ to do, and what evidence would settle each part:
    a named index and pins its length and point count, against the
    `+0x1C`/`+0x20` chords, which already agree with the polyline to 1.4e-6.
 3. **Actuate it.** Feed the follower's steering, throttle and brake into the
-   vehicle model of [`VEHICLE.md`](VEHICLE.md) and
-   [`VEHICLE_TUNING.md`](VEHICLE_TUNING.md), in its own instance. Evidence:
-   a deterministic replay of N steps whose state hash is pinned in a test,
-   the way the player's replay is pinned - and, critically, a rerun of the
-   player's own replay pins in the same build showing them unchanged.
+    vehicle model of [`VEHICLE.md`](VEHICLE.md) and
+    [`VEHICLE_TUNING.md`](VEHICLE_TUNING.md), in its own instance. Evidence:
+    a deterministic replay of N steps whose state hash is pinned in a test,
+    the way the player's replay is pinned - and, critically, a rerun of the
+    player's own replay pins in the same build showing them unchanged. Resolve
+    the cross-platform numeric behavior of the heading-error `atan2` before
+    pinning one hash across desktop and Switch.
 4. **Share the track.** Contact between two cars, and the order the two are
    stepped in, is where the player's pins are most at risk. Evidence: the
    player's four pins unchanged with an opponent present but not touching,

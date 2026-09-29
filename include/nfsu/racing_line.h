@@ -76,11 +76,11 @@ struct RoutePoint {
     // the car offset to get a signed lateral distance. Measured over all
     // 31956 consecutive pairs of the 504 retail route records (the shortest
     // chord is 4.0028), its dot product with the unit chord to the next
-    // point is 1.0 exactly, so it is the direction to the next point.
+    // point is within 1e-7 of 1.0, so it is the direction to the next point.
     float forward[2] = {0.0F, 0.0F};
     // +0x14, +0x18: the same, taken instead at 0x00456EFB..0x00456F0C in
     // the other mode. Over the same 31956 pairs its dot product with the
-    // unit chord to the previous point is 1.0 exactly.
+    // unit chord to the previous point is approximately 1.0.
     float backward[2] = {0.0F, 0.0F};
     // +0x1C, +0x20: the lengths of the two chords whose directions +0x0C and
     // +0x14 hold. Over all 31956 consecutive pairs of the 504 retail records
@@ -93,7 +93,7 @@ struct RoutePoint {
     // +0x24, +0x28: 0 to 33.589 and 0 to 33.2152, zero at 16 and 19 of the
     // 32460 retail points. Unknown. They are not chord lengths, and they do
     // not bound the lane offsets in either order: 2890 of the 86024 enabled
-    // lane offsets fall outside [-(+0x24), +0x28] and 2831 outside
+    // lane offsets fall outside [-(+0x24), +0x28] and 2832 outside
     // [-(+0x28), +0x24]. The debug events
     // JOY_EVENT_TRACKROUTE_EDITOR_EDIT_LEFT_WIDTH and _EDIT_RIGHT_WIDTH
     // (0x006BADA8, 0x006BADD4) say an editor edits a left and a right width

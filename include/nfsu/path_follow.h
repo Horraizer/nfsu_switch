@@ -36,8 +36,10 @@ struct PathFollowPoint {
     // window it looks at. Zero means "no limit from this point".
     float speed_limit = 0.0F;
     // A point the follower must pass within PathFollowTuning::capture_radius
-    // of before it treats any later checkpoint as next. Skipping one puts
-    // the follower into PathFollowMode::rejoining until it is captured.
+    // of before it treats any later checkpoint as next. Passing an uncaptured
+    // checkpoint triggers rejoining while projection remains past its path
+    // distance. On a closed path, point 0 as a checkpoint triggers rejoining
+    // immediately unless the vehicle starts within capture_radius of it.
     bool checkpoint = false;
 };
 
