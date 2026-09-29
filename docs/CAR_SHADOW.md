@@ -170,21 +170,25 @@ is a bounded negative finding, not proof about every caller or game mode.
 `src/car_shadow.cpp` decodes only `240SX_SHADOWIG` from the stock car pack
 and builds the traced 4x4 UV grid as eighteen triangle-list triangles. The
 CPU reference draws it into the track depth buffer before car composition.
-The race command stream gives deko3d the same grid and texture, with one
-draw, source-over blend, depth test and disabled depth writes. Its GPU
+The race command stream gives deko3d the same grid and texture, with
+source-over blend, depth test and disabled depth writes. Its GPU
 vertices and texture are resident; only one transform/material uniform pair
 changes per frame. The shadow is visual only. `nfsu_race_run_tests` checks
 the replay state and cached/reference commands; `tools/race_replay_check.py`
 pins the changed race frames. The standalone stock-car frame has no road
 and remains unchanged.
 
-Approximation: road placement uses the current contact wheels' positions,
-suspension compression and authored radii. A plane through three wheel
-centres estimates the road normal, and each centre moves one rolling radius
-along it. This avoids per-frame allocations in the collision query. The
-retail path instead samples road height at each grid vertex and uses wheel
-fallbacks for invalid samples. The current grid is planar and skips the
-shadow when no wheel contacts the road. Its half extents use the car's
+Approximation: the body origin is projected onto a road plane inferred from
+the current contact wheels' positions, suspension compression and authored
+radii. A plane through three wheel centres estimates the road normal, and
+each centre moves one rolling radius along it. The centre follows the car
+even when some wheels lose contact. With fewer than three contacts, the
+plane normal falls back to body up and alignment uses world up so tilt can
+still fade the shadow. This avoids per-frame allocations in the collision
+query. The retail path instead samples road height at each grid vertex and
+uses wheel fallbacks for invalid samples. The current grid is planar and skips the
+shadow when no wheel contacts the road; an invisible resident draw is still
+submitted at the body origin. Its half extents use the car's
 authored length and width, since the producers of the retail footprint
 fields are not fully traced. A 0.04 normal lift, 0..3 height fade, 1.05
 footprint scale and 0.75 expansion follow the traced values. The CPU/GPU
@@ -193,9 +197,10 @@ currently draws the shadow after its track list; retail interleaves it in
 row 2 of an immediate queue, so overlap with later blended track layers
 can differ.
 
-Expected GPU cost is one resident-texture draw, eighteen triangles and one
-sampled alpha blend per covered fragment. No shadow map, extra framebuffer
-or per-frame vertex upload is used. The cost estimate still needs a Switch
-GPU SCENE timestamp before and after this change, in docked and handheld
+The resident draw and triangle counts are pinned by `nfsu_race_run_tests`.
+Expected GPU work includes a sampled alpha blend per covered fragment. No
+shadow map, extra framebuffer or per-frame vertex upload is used. The cost
+estimate still needs a Switch GPU SCENE timestamp before and after this
+change, in docked and handheld
 modes. The coordinator's console photo should include resting and turning
 views; issue 55 owns frame-budget acceptance.

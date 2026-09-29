@@ -55,6 +55,8 @@ bool prepare_car_shadow(const StockFrameInputs& inputs, const TexturePack& pack,
         v.px = -1.0F + 2.0F*static_cast<float>(x)/3.0F;
         v.pz = -1.0F + 2.0F*static_cast<float>(y)/3.0F;
         v.py = 0.0F;
+        // Retail world.efx doubles 0x80 RGB, effectively unity. Both render
+        // paths apply that unity directly and ignore this diagnostic color.
         v.color[0] = v.color[1] = v.color[2] = 128;
         v.color[3] = 255;
         v.u = static_cast<float>(x)/3.0F;
@@ -70,9 +72,13 @@ bool prepare_car_shadow(const StockFrameInputs& inputs, const TexturePack& pack,
 }
 
 CarShadowPlacement place_car_shadow(const RaceSession& session) noexcept {
+    return place_car_shadow(session.car(),session.spec());
+}
+
+CarShadowPlacement place_car_shadow(const VehicleState& state,
+                                    const VehicleSpec& spec) noexcept {
     CarShadowPlacement out;
-    const auto& state = session.car();
-    const auto& handling = session.spec().handling;
+    const auto& handling = spec.handling;
     const VehicleVec3 com{handling.centre_of_mass[0],handling.centre_of_mass[1],handling.centre_of_mass[2]};
     const VehicleVec3 origin = sub(state.position,rotate(state.orientation,com));
     const VehicleVec3 body_up = unit(rotate(state.orientation,{0,0,1}),{0,0,1});
@@ -87,7 +93,11 @@ CarShadowPlacement place_car_shadow(const RaceSession& session) noexcept {
         active[i] = true;
         ++hits;
     }
-    if (!hits) return out;
+    if (!hits) {
+        // Keep the invisible resident draw at the car, never at world zero.
+        row(out.transform.rows,3,origin);
+        return out;
+    }
     // The current collision API allocates per query. Fit a plane through
     // three contact-wheel centres, falling back to body up on fewer hits.
     // Suspension heights are a road-normal approximation, not terrain taps.
@@ -109,20 +119,24 @@ CarShadowPlacement place_car_shadow(const RaceSession& session) noexcept {
     const VehicleVec3 body_forward = rotate(state.orientation,{1,0,0});
     const VehicleVec3 forward = unit(sub(body_forward,mul(normal,dot(body_forward,normal))),{1,0,0});
     const VehicleVec3 side = unit(cross(normal,forward),{0,1,0});
-    const double altitude = std::max(0.0,origin.z-road.z);
+    const double altitude = std::max(0.0,dot(sub(origin,road),normal));
     const double fade = std::min(1.0,altitude/3.0);
     const double expansion = 1.05*(1.0+0.75*fade);
     const double half_length = 0.5*handling.length*expansion;
     const double half_width = 0.5*handling.width*expansion;
-    // Wheel positions include each car's authored offset. Their road hits
-    // are the wheel-centre plane displaced by one rolling radius; the 0.04
-    // normal lift is the traced depth offset above accepted road samples.
-    const VehicleVec3 center = add(road,mul(normal,0.04));
+    // Contact wheels determine the road plane, but the body origin determines
+    // horizontal placement. Project it onto that plane, then apply the traced
+    // depth lift. A partial contact set must not drag the grid toward a wheel.
+    const VehicleVec3 center = add(sub(origin,mul(normal,dot(sub(origin,road),normal))),
+                                   mul(normal,0.04));
     row(out.transform.rows,0,mul(forward,half_length));
     row(out.transform.rows,1,mul(side,half_width));
     row(out.transform.rows,2,normal);
     row(out.transform.rows,3,center);
-    out.alpha = static_cast<float>((228.0/255.0)*std::abs(dot(body_up,normal))*(1.0-fade));
+    // With fewer than three contacts the plane normal falls back to body up.
+    // Use world up for alignment then, so a tilted airborne car still fades.
+    const VehicleVec3 alignment_normal = hits >= 3 ? normal : VehicleVec3{0,0,1};
+    out.alpha = static_cast<float>((228.0/255.0)*std::abs(dot(body_up,alignment_normal))*(1.0-fade));
     return out;
 }
 
@@ -176,12 +190,17 @@ bool record_car_shadow_commands(const CarShadowAsset& asset,
     draw.vertex_resource = 0; draw.index_resource = 1; draw.texture_resource = 2;
     draw.vertex_count = static_cast<std::uint32_t>(asset.vertices.size());
     draw.index_count = static_cast<std::uint32_t>(asset.triangles.size()*3);
+    bool blend_variant_found = false;
     for (const auto& p : shader_manifest::kPrograms) if (std::strcmp(p.name,"car_textured") == 0) {
         draw.program = &p;
         for (std::size_t i = 0; i < p.variant_count; ++i)
-            if (std::strcmp(p.variants[i].name,"source_over") == 0) draw.pipeline = p.variants[i];
+            if (std::strcmp(p.variants[i].name,"source_over") == 0) {
+                draw.pipeline = p.variants[i];
+                blend_variant_found = true;
+            }
     }
     if (!draw.program) { error = "shadow shader program missing"; return false; }
+    if (!blend_variant_found) { error = "shadow source-over variant missing"; return false; }
     draw.pipeline.depth_write = false;
     draw.pipeline.cull = shader_manifest::Cull::none;
     draw.placement = placement.transform;

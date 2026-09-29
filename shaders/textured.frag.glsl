@@ -34,7 +34,8 @@ layout (std140, binding = 0) uniform Frame {
 layout (std140, binding = 2) uniform Material {
     // rgb: the fallback_color bytes (0..255); a: 1 when the checker is on.
     vec4 fallback;
-    // x: alpha_min, y: alpha_range, z: diffuse gate, w: lamp mode 0..3.
+    // x: alpha_min, y: alpha_range, z: diffuse gate, w: lamp mode 0..3
+    // or 4 for the car ground shadow world-effect branch.
     vec4 alpha;
     // rgb: EnvmapMin and EnvmapRange.
     vec4 environment_min;

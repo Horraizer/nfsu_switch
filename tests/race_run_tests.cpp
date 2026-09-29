@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include <algorithm>
+#include <cmath>
 #include <set>
 #include <stdexcept>
 #include <cstring>
@@ -165,6 +166,36 @@ int main(int argc, char** argv) {
                 "race scene disconnected the shared loader checkpoints");
         require(!scene.load(posix_file_system(),root,error),"loaded race scene allowed cache-invalidating reload");
         RaceRun race; require(race.start(root, scene.track(), error), error);
+        // Partial wheel contact must change the fitted road plane, not drag
+        // the shadow across it toward the surviving contact points.
+        VehicleState shadow_state{};
+        shadow_state.position = {10.0,20.0,1.0};
+        const auto& com = race.session().spec().handling.centre_of_mass;
+        const VehicleVec3 body_origin{shadow_state.position.x-com[0],
+                                      shadow_state.position.y-com[1],
+                                      shadow_state.position.z-com[2]};
+        for (unsigned mask = 0; mask < (1U << kVehicleWheelCount); ++mask) {
+            unsigned contacts = 0;
+            for (std::size_t i = 0; i < kVehicleWheelCount; ++i) {
+                shadow_state.wheels[i].contact = (mask & (1U << i)) != 0;
+                contacts += shadow_state.wheels[i].contact ? 1U : 0U;
+            }
+            const auto shadow = place_car_shadow(shadow_state,race.session().spec());
+            const auto* rows = shadow.transform.rows;
+            const VehicleVec3 delta{rows[12]-body_origin.x,rows[13]-body_origin.y,
+                                    rows[14]-body_origin.z};
+            const VehicleVec3 normal{rows[8],rows[9],rows[10]};
+            const double tangent_squared =
+                std::pow(delta.y*normal.z-delta.z*normal.y,2) +
+                std::pow(delta.z*normal.x-delta.x*normal.z,2) +
+                std::pow(delta.x*normal.y-delta.y*normal.x,2);
+            require(tangent_squared < 1.0e-6,
+                    "car shadow centre drifted from body origin on partial contact");
+            if (!contacts)
+                require(shadow.alpha == 0.0F && std::abs(delta.x) < 1.0e-4 &&
+                        std::abs(delta.y) < 1.0e-4,
+                        "airborne shadow was visible or placed at world origin");
+        }
         RaceGpuScene unloaded_scene;
         RaceGpuFrame unloaded_frame;
         require(!unloaded_scene.frame(race.session(), unloaded_frame, error) &&

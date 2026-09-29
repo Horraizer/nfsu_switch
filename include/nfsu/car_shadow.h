@@ -24,6 +24,8 @@ struct CarShadowPlacement {
 bool prepare_car_shadow(const StockFrameInputs& inputs, const TexturePack& pack,
                         CarShadowAsset& out, std::string& error);
 CarShadowPlacement place_car_shadow(const RaceSession& session) noexcept;
+CarShadowPlacement place_car_shadow(const VehicleState& state,
+                                    const VehicleSpec& spec) noexcept;
 bool record_car_shadow_commands(const CarShadowAsset& asset,
                                 const CarShadowPlacement& placement,
                                 const RenderOptions& options,
