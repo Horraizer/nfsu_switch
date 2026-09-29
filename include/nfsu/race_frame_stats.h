@@ -34,7 +34,10 @@ class RaceFrameStats {
     double max_ms_ = 0;
     unsigned catch_up_max_ = 0;
 public:
-    static constexpr double kBudgetMs = 16.67;
+    static constexpr double kBudgetMs = 1000.0 / 60.0;
+    // Half a refresh interval separates normal timer jitter from a frame
+    // that plausibly occupied a second display interval.
+    static constexpr double kOverThresholdMs = 1.5 * kBudgetMs;
     static constexpr double kBinWidthMs = 0.25;
     static constexpr unsigned kOverflowBin = kBins;
 
@@ -45,7 +48,7 @@ public:
             ? kOverflowBin : static_cast<unsigned>(sample.frame_ms / kBinWidthMs);
         ++histogram_[bin];
         ++count_;
-        if (sample.frame_ms > kBudgetMs) ++over_budget_;
+        if (sample.frame_ms > kOverThresholdMs) ++over_budget_;
         if (sample.frame_ms > max_ms_) max_ms_ = sample.frame_ms;
         if (sample.catch_up > catch_up_max_) catch_up_max_ = sample.catch_up;
         sum_.frame_ms += sample.frame_ms;

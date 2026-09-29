@@ -217,8 +217,8 @@ nfsu_case("a texture binding moved"
     "layout (binding = 1) uniform sampler2D baseTexture")
 
 nfsu_case("a fragment uniform block binding moved"
-    textured.frag.glsl track_textured.manifest
-    "the compiled fragment shader reads a 80-byte uniform block at binding 3 (textured.frag.tgsi: CONST[4]), which the manifest does not give that stage"
+    textured_opaque.frag.glsl track_textured.manifest
+    "the compiled fragment shader reads a 80-byte uniform block at binding 3 (textured_opaque.frag.tgsi: CONST[4]), which the manifest does not give that stage"
     OWN
     "layout (std140, binding = 2) uniform Material"
     "layout (std140, binding = 3) uniform Material")
