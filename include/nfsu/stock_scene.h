@@ -13,6 +13,11 @@
 
 namespace nfsu {
 
+// The retail stock car's unbroken window aliases resolve to WINDOW in
+// GLOBALB.BUN. Apply this to parsed geometry before collecting wanted
+// texture hashes and preparing the scene.
+void alias_stock_window_textures(GeometryReport& geometry) noexcept;
+
 // The car-part profile of PreparedCarScene: the recovered stock part set
 // (include/nfsu/car_parts.h), the per-LOD mesh hash of every installed part
 // with the fallback the game applies for a missing mesh, and the recovered

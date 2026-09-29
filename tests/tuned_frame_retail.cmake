@@ -36,12 +36,15 @@ set(common
 
 # These are frame pins, not observations copied into documentation.
 set(pins
-    # Default: front wheel now has its BBS rim and black treaded tyre.
-    "3A190BBF3B224B6F096B2C4A8127A407AC47AEC00B8C15C41AAEFD464F54379F"
-    # Yaw 120: the side pair resolves beside the KIT01 skirt.
-    "9596E10366EB47E9460B770E22321D316DEBA557B2550A31A267CE236B16595D"
-    # Yaw 230: the opposite pair resolves beside the KIT01 rear bumper.
-    "FAA4DBFD23B5CC27E6C078A4DA5DE44A1D3FB4E4FEB8DB3C567BB80E9B38E88B")
+    # Default: WHEELS/TEXTURES.BIN resolves BBS tread; #225 resolves
+    # window aliases, decals and per-copy brake materials.
+    "F1329A586C6CC352C6AF540981502E6C1E8EDA35C3806D0FED0881E65C3570DB"
+    # Yaw 120: WHEELS/TEXTURES.BIN side tread beside the KIT01 skirt;
+    # #225 resolves its windows, decals and per-copy brake materials.
+    "382859BF591DBBFE9AA6D845B47ADBF49EFE5B6EBE02EB40B0D4A1DC79B1A2A3"
+    # Yaw 230: WHEELS/TEXTURES.BIN opposite tread and #225 rear glass,
+    # decal and per-copy brake materials.
+    "516A226DBA41C4529A4DE3B81C95E99BEC99DFB7C1B09827F7D90066835C1DAA")
 set(angles default 120 230)
 foreach(i RANGE 0 2)
     list(GET angles ${i} angle)
@@ -69,10 +72,10 @@ foreach(i RANGE 0 2)
         message(FATAL_ERROR "tuned ${angle}: fallback triangle report missing")
     endif()
     set(fallback_triangles "${CMAKE_MATCH_1}")
-    # The stock painted frame submits 233 fallback triangles. A tuned frame
-    # exceeding that bound likely omitted the wheel texture source.
-    if(fallback_triangles GREATER 233)
-        message(FATAL_ERROR "tuned ${angle}: ${fallback_triangles} fallback triangles exceed stock painted 233")
+    # After #225, the stock painted frame submits zero fallback triangles.
+    # A tuned frame above that bound likely omitted the wheel texture source.
+    if(fallback_triangles GREATER 0)
+        message(FATAL_ERROR "tuned ${angle}: ${fallback_triangles} fallback triangles exceed stock painted 0")
     endif()
     file(SHA256 "${out}" actual)
     string(TOUPPER "${actual}" actual)
@@ -83,8 +86,9 @@ endforeach()
 
 execute_process(COMMAND "${TESTS}" --tuned-frame "${ROOT}"
                 RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE stderr)
+list(GET pins 0 default_pin)
 if(NOT result EQUAL 0 OR NOT stderr STREQUAL "" OR
-   NOT output MATCHES "sha256 3A190BBF3B224B6F096B2C4A8127A407AC47AEC00B8C15C41AAEFD464F54379F")
+   NOT output MATCHES "sha256 ${default_pin}")
     message(FATAL_ERROR "Switch CPU path differs: exit ${result}: ${output} ${stderr}")
 endif()
 message(STATUS "tuned 240SX: default and two orbit pins match; Switch CPU path matches")

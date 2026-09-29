@@ -96,9 +96,11 @@ $tunedArgs = @(
 `NFSU_RETAIL_ROOT` is set and pins all three TGA hashes. It also bounds
 fallback triangles at the stock painted frame's count. The default
 camera's pin is also in `include/nfsu/stock_frame.h` for the Switch viewer.
-The current default pin changes because the BBS tyre texture now resolves;
-the two orbit pins verify the same selection from the side and rear. The
-stock frame pins in `include/nfsu/stock_frame.h` remain unchanged.
+The three tuned pins include the BBS tyre texture from
+`Cars/WHEELS/TEXTURES.BIN` and #225's window alias, decal and per-copy brake
+material changes. The two orbit pins verify the side and rear views. After
+#225 the painted stock fallback count is zero, so the tuned gate requires zero
+fallback triangles too. The stock frame pins are checked separately.
 
 `nfsu_draw_commands_retail` compares the tuned CPU reference draw sequence
 with the recorded GPU sequence. Its output gives the draw and triangle cost

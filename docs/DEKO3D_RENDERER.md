@@ -106,10 +106,9 @@ and placements, and both current off-state pins. Run it with full before/after r
 build/nfsu_draw_commands_retail.exe <retail-root>
 ```
 
-| Frame | TGA bytes | SHA-256 |
-| --- | ---: | --- |
-| unpainted | 3686418 | `3DEB2147CDA1B1D66DC47FC599B8A1FD88FCB273F0B38BFBE656666808199D25` |
-| painted | 3686418 | `8A5932A302A22AA3C4C01776009B5348629D8D37B3B61E6E0AA303235B1CF48F` |
+The current painted and unpainted frame sizes and SHA-256 pins live in
+`include/nfsu/stock_frame.h`; `nfsu_draw_commands_retail <retail-root>`
+checks both off-state frames and compares both material-mode draw traces.
 
 The #145 notes carried into #146 are addressed explicitly:
 

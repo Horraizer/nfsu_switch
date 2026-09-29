@@ -276,6 +276,7 @@ bool prepare_stock_frame(
         // load_geometry_file(<GEOMETRY.BIN>) and its "geometry issue" lines.
         frame.car_geometry =
             parse_geometry(car_geometry.bytes.data(), car_geometry.bytes.size());
+        alias_stock_window_textures(frame.car_geometry);
         for (const GeometryIssue& issue : frame.car_geometry.issues) {
             frame.issues.push_back(at(car_geometry.path, issue.offset, issue.message));
         }
@@ -287,6 +288,7 @@ bool prepare_stock_frame(
             const StockFrameInput& input = inputs.file(which);
             frame.stock_geometry.push_back(
                 parse_geometry(input.bytes.data(), input.bytes.size()));
+            alias_stock_window_textures(frame.stock_geometry.back());
             for (const GeometryIssue& issue : frame.stock_geometry.back().issues) {
                 frame.issues.push_back(at(input.path, issue.offset, issue.message));
             }
@@ -388,6 +390,7 @@ bool prepare_stock_frame(
         // The stock assembly resolved once against no textures, for the
         // meshes whose texture hashes a shared source is asked to decode.
         std::vector<SceneMeshRef> mesh_refs;
+        bool wants_left_brake = false;
         {
             PreparedCarScene unbound;
             StockSceneReport unbound_report;
@@ -401,6 +404,11 @@ bool prepare_stock_frame(
             for (const PreparedMesh& mesh : unbound.meshes) {
                 mesh_refs.push_back(SceneMeshRef{mesh.source, mesh.source_index});
             }
+            wants_left_brake = std::any_of(unbound.instances.begin(), unbound.instances.end(),
+                [](const PreparedInstance& instance) {
+                    return instance.part_slot == kSlotBrake &&
+                           (instance.copy == 0 || instance.copy == 3);
+                });
         }
 
         // The decode, shared sources present: the car's pack is source 0 and
@@ -412,6 +420,10 @@ bool prepare_stock_frame(
                     frame.wanted.push_back(mesh.texture_hashes[material.texture_slot]);
                 }
             }
+        }
+        // The left brake substitution is per copy, not a mesh material.
+        if (wants_left_brake) {
+            frame.wanted.push_back(kBrakeGlobalLeftHash); // BRAKE_GLOBAL_LEFT
         }
         std::sort(frame.wanted.begin(), frame.wanted.end());
         frame.wanted.erase(std::unique(frame.wanted.begin(), frame.wanted.end()),

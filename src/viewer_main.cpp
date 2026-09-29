@@ -1189,7 +1189,10 @@ int main(int argc, char** argv) {
         }
     }
 
-    const nfsu::GeometryReport geometry = nfsu::load_geometry_file(geometry_path);
+    nfsu::GeometryReport geometry = nfsu::load_geometry_file(geometry_path);
+    if (stock.enabled) {
+        nfsu::alias_stock_window_textures(geometry);
+    }
     for (const nfsu::GeometryIssue& issue : geometry.issues) {
         std::cerr << "geometry issue at " << issue.offset << ": "
                   << issue.message << '\n';
@@ -1205,6 +1208,7 @@ int main(int argc, char** argv) {
         stock_geometry.reserve(stock.geometry.size());
         for (std::size_t i = 0; i < stock.geometry.size(); ++i) {
             stock_geometry.push_back(nfsu::load_geometry_file(stock.geometry[i]));
+            nfsu::alias_stock_window_textures(stock_geometry.back());
             for (const nfsu::GeometryIssue& issue : stock_geometry.back().issues) {
                 std::cerr << "stock geometry " << (i + 1) << " issue at "
                           << issue.offset << ": " << issue.message << '\n';
@@ -1314,6 +1318,7 @@ int main(int argc, char** argv) {
     // slot installs and which mesh hash it names are decided before any
     // material is bound; only the bindings of the second one are used.
     std::vector<nfsu::SceneMeshRef> stock_mesh_refs;
+    bool wants_left_brake = false;
     if (stock.enabled) {
         nfsu::PreparedCarScene unbound;
         nfsu::StockSceneReport unbound_report;
@@ -1328,6 +1333,11 @@ int main(int argc, char** argv) {
         for (const nfsu::PreparedMesh& mesh : unbound.meshes) {
             stock_mesh_refs.push_back(nfsu::SceneMeshRef{mesh.source, mesh.source_index});
         }
+        wants_left_brake = std::any_of(unbound.instances.begin(), unbound.instances.end(),
+            [](const nfsu::PreparedInstance& instance) {
+                return instance.part_slot == nfsu::kSlotBrake &&
+                       (instance.copy == 0 || instance.copy == 3);
+            });
     }
     nfsu::RenderTextureSet textures;
     std::vector<std::uint32_t> wanted;
@@ -1353,6 +1363,9 @@ int main(int argc, char** argv) {
             if (stock.enabled) {
                 for (const nfsu::SceneMeshRef& ref : stock_mesh_refs) {
                     want(stock_sources[ref.source]->meshes[ref.index]);
+                }
+                if (wants_left_brake) {
+                    wanted.push_back(nfsu::kBrakeGlobalLeftHash); // BRAKE_GLOBAL_LEFT
                 }
             } else {
                 for (const std::size_t index : selected) {
