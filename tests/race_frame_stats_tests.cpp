@@ -1,6 +1,7 @@
 #include "nfsu/race_frame_stats.h"
 #include "nfsu/frame_profile_stats.h"
 #include "nfsu/deko_memory_usage.h"
+#include "nfsu/gpu_scene_profile.h"
 
 #include <array>
 #include <cmath>
@@ -99,6 +100,25 @@ int main() {
     if (profile.count() || profile.stage(nfsu::FrameProfileStage::cull).count() ||
         profile.stage(nfsu::FrameProfileStage::simulation_tick).count() || profile.worst().tick) {
         std::cerr << "frame profile reset mismatch\n";
+        return 1;
+    }
+    nfsu::DekoGpuProfile gpu;
+    for (std::uint64_t tick = 1; tick <= 18584; ++tick)
+        gpu.add_scene(20.0, {tick, 756, 94, true});
+    if (gpu.scene.count() != 18584 || gpu.first_tick != 1 ||
+        gpu.last_tick != 18584 || gpu.span_ticks() != 18584) {
+        std::cerr << "long GPU profile window mismatch\n";
+        return 1;
+    }
+    gpu = {};
+    for (std::uint64_t tick = 18540; tick <= 18584; ++tick)
+        gpu.add_scene(21.0, {tick, 756, 94, true});
+    gpu.add_scene(-1.0, {18585, 0, 0, true});
+    if (gpu.scene.count() != 45 || gpu.first_tick != 18540 ||
+        gpu.last_tick != 18584 || gpu.span_ticks() != 45 ||
+        gpu.worst_tick != 18540 || gpu.worst_track_draws != 756 ||
+        gpu.worst_car_draws != 94) {
+        std::cerr << "resumed GPU profile window mismatch\n";
         return 1;
     }
     return 0;

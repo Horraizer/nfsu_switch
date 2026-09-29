@@ -218,6 +218,9 @@ countdown, paused, first resumed and finish frames. Statistics reset on
 unpause; the screen states the reset count, so a paused run is identified as
 the current uninterrupted segment. Percentiles use the upper edge of 0.25 ms
 fixed bins through 100 ms and display `>=100` when the selected bin overflows.
+The GPU SCENE page shows its own completed-pair count, first and last game
+ticks, inclusive tick span and resume count. Its distribution covers that
+window, which may be much shorter than the total replay after an unpause.
 The accumulator allocates nothing per frame. Plus during a run shows the same
 partial statistics. Panel mode reports its draw, transfer/copy and panel means
 in place of direct-present timings.

@@ -455,12 +455,7 @@ struct DekoRenderer::Impl {
             ++gpu_profile.invalid; return;
         }
         const double value = dkTimestampToNs(end_timestamp-begin_timestamp)/1000000.0;
-        if (value > gpu_profile.scene.max()) {
-            gpu_profile.worst_tick = query_frames[slot].tick;
-            gpu_profile.worst_track_draws = query_frames[slot].track_draws;
-            gpu_profile.worst_car_draws = query_frames[slot].car_draws;
-        }
-        gpu_profile.scene.add(value);
+        gpu_profile.add_scene(value, query_frames[slot]);
     }
 
     void write_uniforms(const RecordedCommands& source, std::size_t slot) {

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "nfsu/draw_commands.h"
-#include "nfsu/frame_profile_stats.h"
+#include "nfsu/gpu_scene_profile.h"
 #include "nfsu/deko_gpfifo_budget.h"
 #include <memory>
 
@@ -18,12 +18,6 @@ struct DekoUpdateTiming {
     double validation_ms = 0;
     double uniform_write_ms = 0;
 };
-struct DekoSceneFrame {
-    std::uint64_t tick = 0;
-    std::uint32_t track_draws = 0;
-    std::uint32_t car_draws = 0;
-    bool active = false;
-};
 struct DekoMemoryUsage {
     std::uint64_t frame_uniform_bytes = 0;
     std::uint64_t static_uniform_bytes = 0;
@@ -32,14 +26,6 @@ struct DekoMemoryUsage {
 struct DekoGpfifoUsage {
     std::uint32_t last_entries = 0, max_entries = 0;
     std::uint32_t last_lists = 0;
-};
-struct DekoGpuProfile {
-    ProfileDistribution scene;
-    std::uint64_t dropped = 0;
-    std::uint64_t invalid = 0;
-    std::uint64_t worst_tick = 0;
-    std::uint32_t worst_track_draws = 0;
-    std::uint32_t worst_car_draws = 0;
 };
 
 // Switch-only owner of the device, queue, resident uploads and swapchain.
