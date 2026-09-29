@@ -1596,6 +1596,11 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_race_audio_tests)
     add_test(NAME nfsu_race_audio_tests COMMAND nfsu_race_audio_tests)
     set_tests_properties(nfsu_race_audio_tests PROPERTIES TIMEOUT 10)
+    add_executable(nfsu_race_audio_cue_tests tests/race_audio_cue_tests.cpp)
+    target_link_libraries(nfsu_race_audio_cue_tests PRIVATE nfsu_race_audio)
+    nfsu_enable_warnings(nfsu_race_audio_cue_tests)
+    add_test(NAME nfsu_race_audio_cue_tests COMMAND nfsu_race_audio_cue_tests)
+    set_tests_properties(nfsu_race_audio_cue_tests PROPERTIES TIMEOUT 10)
     add_test(NAME nfsu_audio_retail
         COMMAND ${CMAKE_COMMAND}
             -DAUDIO_DUMP=$<TARGET_FILE:nfsu_audio_dump>
