@@ -184,7 +184,8 @@ bool RaceGpuScene::prepare_frame_cache(std::string& error) {
     bucket_first_.resize(buckets.size(), kNoHandle);
     section_first_.assign(track_.objects.sections.size(), kNoHandle);
     for (const auto& section : scene.sections) section_first_.at(section.section_index) = section.first_handle;
-    track_placements_.resize(scene.instances.size());
+    // The sky's placement follows the scenery instances; see record_track_commands.
+    track_placements_.resize(scene.instances.size() + (sky_draws_ ? 1 : 0));
     for (std::size_t n = 0; n < scene.instances.size(); ++n) {
         const auto& transform = scene.instances[n].transform;
         auto& placement = track_placements_[n];
@@ -193,6 +194,7 @@ bool RaceGpuScene::prepare_frame_cache(std::string& error) {
             placement.rows[12+i] = transform.translation[i];
         }
     }
+    if (sky_draws_) track_placements_.back() = track_templates_.owning_draws().front().placement;
     if (!record_car_commands(car_, race_render_options(), {}, skin_source_, car_templates_, error)) return false;
     if (!validate_recorded_commands(car_templates_,error)) return false;
     const auto offset = track_templates_.owning_uploads().resources.size();
@@ -212,7 +214,7 @@ bool RaceGpuScene::prepare_frame_cache(std::string& error) {
 RecordedDrawView RaceGpuScene::selected_draw(std::size_t i) const {
     if (i >= sky_position_ && i < sky_position_ + sky_draws_) {
         const auto& d = track_templates_.owning_draws().at(i - sky_position_);
-        return {d, d.instance, d.placement, d.material, false};
+        return {d, d.instance, track_placements_.at(d.instance), d.material, true};
     }
     if (i >= sky_position_ + sky_draws_) i -= sky_draws_;
     if (i < selection_.size()) {

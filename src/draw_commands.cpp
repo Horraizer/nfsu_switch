@@ -214,6 +214,26 @@ RecordedDrawView RecordedCommands::draw_view(std::size_t i) const {
     const auto& draw = draws.at(i);
     return {draw, draw.instance, draw.placement, draw.material, false};
 }
+std::size_t RecordedCommands::static_track_draw_count() const {
+    if (!generation_valid() || !source_) throw std::logic_error("static package unavailable");
+    return source_->static_track_draw_count();
+}
+std::size_t RecordedCommands::static_track_instance_count() const {
+    if (!generation_valid() || !source_) throw std::logic_error("static package unavailable");
+    return source_->static_track_instance_count();
+}
+const DrawInstanceUniform& RecordedCommands::static_track_instance(std::size_t i) const {
+    if (!generation_valid() || !source_) throw std::logic_error("static package unavailable");
+    return source_->static_track_instance(i);
+}
+std::size_t RecordedCommands::static_track_definition_count() const {
+    if (!generation_valid() || !source_) throw std::logic_error("static package unavailable");
+    return source_->static_track_definition_count();
+}
+const RecordedDraw& RecordedCommands::static_track_definition(std::size_t i) const {
+    if (!generation_valid() || !source_) throw std::logic_error("static package unavailable");
+    return source_->static_track_definition(i);
+}
 bool record_frame_state(const RenderOptions& options, const RenderLimits& limits,
                         RecordedCommands& out, std::string& error) {
     return frame_state(options, limits, out, error);
@@ -271,9 +291,11 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
         // by the manifest tests; never accept an arbitrary interface pointer.
         const bool textured = d.program->texture_count != 0;
         const bool sky = std::strcmp(d.program->name, "sky_textured") == 0;
+        const char* fragment = sky ? "sky.frag.glsl" : !textured ? "fallback.frag.glsl" :
+            std::strcmp(d.program->name, "track_textured") == 0 ?
+                "textured_opaque.frag.glsl" : "textured.frag.glsl";
         if (std::strcmp(d.program->vertex_source, sky ? "sky.vert.glsl" : "placed.vert.glsl") != 0 ||
-            std::strcmp(d.program->fragment_source, sky ? "sky.frag.glsl" :
-                textured ? "textured.frag.glsl" : "fallback.frag.glsl") != 0 ||
+            std::strcmp(d.program->fragment_source, fragment) != 0 ||
             (textured && (d.program->textures[0].filter != sm::Filter::nearest ||
                           d.program->textures[0].wrap != sm::Wrap::repeat)))
             return fail(d.name, "unsupported shader or sampler");
@@ -392,8 +414,11 @@ bool record_track_commands(const PreparedTrackScene& scene, const TrackDrawList&
                 if (source.mesh != scene.sky_mesh || !source.drawable ||
                     source.binding != BindingKind::resolved) continue;
                 RecordedDraw draw;
+                // The sky is one placed copy, numbered one past the scenery
+                // instances so a prepared package can hold its placement.
                 draw.group = group; draw.mesh = source.mesh;
-                draw.name = "sky group " + std::to_string(group);
+                draw.instance = scene.instances.size();
+                draw.name = "track group " + std::to_string(group) + " copy " + std::to_string(draw.instance);
                 const auto& t = scene.sky_transform;
                 for (std::size_t i = 0; i < 3; ++i) {
                     for (std::size_t j = 0; j < 3; ++j) draw.placement.rows[i*4+j] = t.linear[i*3+j];
