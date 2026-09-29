@@ -210,14 +210,15 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
         const std::string text((std::istreambuf_iterator<char>(in)), {});
         require(bool(in) && replay.load(text,error), "bundled replay: "+error);
     }
-    RaceGpuScene scene; HeapUsage heap;
+    RaceGpuScene scene; RaceRun race; HeapUsage heap;
     const auto before = mallinfo(); heap.begin(before.uordblks,before.arena);
     Progress progress(screen,pad,heap);
     const auto load_start = armGetSystemTick();
+    require(race.prepare_metadata(root,error,&progress),error);
     require(scene.load(posix_file_system(), root, error, &progress, &progress), error);
     screen.show({"ASSETS PASS. Preparing event 1, stock 240SX and race course..."});
     progress.checkpoint("race course");
-    RaceRun race; require(race.start(root,scene.track(),error),error);
+    require(race.start(root,scene.track(),error,&progress),error);
     progress.checkpoint("race course prepared");
     audio::RaceAudioService sound;
     std::string audio_note;
@@ -347,7 +348,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
                 (unsigned long long)renderer.gpu_bytes(),frame.commands.resource_table().resources.size()));
             lines.push_back(format("MALLOC IN-USE before %llu | after load %llu | NOW %llu (includes GPU BLOCKS)",
                 (unsigned long long)heap.before_load,(unsigned long long)heap.after_load,(unsigned long long)heap.current));
-            lines.push_back(format("HEAP LOAD OBS HWM %llu | delta %llu / 50331648 | LOAD HEAP OVER %llu",
+            lines.push_back(format("HEAP LOAD OBS HWM ABS %llu | delta %llu / 50331648 | LOAD HEAP OVER %llu",
                 (unsigned long long)heap.load_peak,(unsigned long long)heap.load_delta(),(unsigned long long)heap.load_overrun(50331648)));
             lines.push_back(format("HEAP RUN OBS HWM %llu | ARENA NOW %llu | ARENA OBS HWM %llu (sampled)",
                 (unsigned long long)heap.peak,(unsigned long long)heap.extent,(unsigned long long)heap.extent_peak));
@@ -417,7 +418,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
                 (unsigned long long)scene.cache_bytes(),
                 (unsigned long long)heap.before_load,(unsigned long long)heap.after_load,
                 (unsigned long long)heap.current,(unsigned long long)heap.load_peak,(unsigned long long)heap.peak);
-            std::printf("PERF HEAP LOAD OBS HWM %llu | delta %llu / 50331648 | LOAD HEAP OVER %llu | HEAP RUN OBS HWM %llu | ARENA NOW %llu | ARENA OBS HWM %llu\n",
+            std::printf("PERF HEAP LOAD OBS HWM ABS %llu | delta %llu / 50331648 | LOAD HEAP OVER %llu | HEAP RUN OBS HWM %llu | ARENA NOW %llu | ARENA OBS HWM %llu\n",
                 (unsigned long long)heap.load_peak,(unsigned long long)heap.load_delta(),
                 (unsigned long long)heap.load_overrun(50331648),(unsigned long long)heap.peak,
                 (unsigned long long)heap.extent,(unsigned long long)heap.extent_peak);
@@ -479,7 +480,7 @@ int main(int argc, char** argv) {
                 screen.show({"NFSU #196 - EVENT 1 / STOCK 240SX / TWO LAPS",format("BUILD %.12s",NFSU_RACE_BUILD_TAG),
                     "A: drive with Joy-Con / Pro Controller", "X: replay the pinned desktop event1.txt", "+: exit",
                     std::string("Y: diagnostic panel ")+(panel?"ON":"OFF")+" (readback and CPU text cost)",
-                    "The #47 first-lap check runs before loading. Assets: "+root,
+                    "The #47 first-lap check runs before track streaming. Assets: "+root,
                     "Release all controls during countdown to clear the #59 hot-plug latch.",
                     "Direct mode has no in-race HUD yet; choose PANEL for live driving evidence.",
                     "During the race: Y pauses, + opens results with driving-frame statistics.",

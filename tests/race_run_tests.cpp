@@ -153,6 +153,10 @@ int main(int argc, char** argv) {
         if (argc == 2) return 0;
         const std::filesystem::path root(argv[2]);
         RaceGpuScene scene;
+        RaceRun race;
+        require(race.prepare_metadata(root, error), error);
+        require(!race.prepare_metadata(root, error) && error == "race metadata already prepared",
+                "prepared race metadata accepted a second load");
         struct PollCount : TrackSliceLoadObserver {
             std::size_t sections = 0; bool car_prepared = false;
             void checkpoint(const char* phase) override {
@@ -164,7 +168,7 @@ int main(int argc, char** argv) {
         require(polled.sections >= 4*scene.track().sections && polled.car_prepared,
                 "race scene disconnected the shared loader checkpoints");
         require(!scene.load(posix_file_system(),root,error),"loaded race scene allowed cache-invalidating reload");
-        RaceRun race; require(race.start(root, scene.track(), error), error);
+        require(race.start(root, scene.track(), error), error);
         RaceGpuScene unloaded_scene;
         RaceGpuFrame unloaded_frame;
         require(!unloaded_scene.frame(race.session(), unloaded_frame, error) &&

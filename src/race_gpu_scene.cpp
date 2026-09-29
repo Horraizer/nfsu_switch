@@ -66,24 +66,30 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
                         std::string& error, AssetCheckObserver* observer,
                         TrackSliceLoadObserver* loading) {
     if (ready_) { error = "race scene is already loaded"; return false; }
-    if (!load_track_slice(files, root, track_, error, observer, loading)) return false;
+    // Car source files and their decoded preparation are temporary. Complete
+    // that work before streaming the track so neither source set overlaps the
+    // other's allocation peak. Only the prepared car scene survives this scope.
     if (loading) loading->checkpoint("car input");
-    StockFrameInputs inputs;
-    if (!read_stock_frame_inputs(root, inputs)) {
-        error = "stock 240SX inputs could not be read";
-        for (const auto& file : inputs.files) if (!file.read) error += "\n" + file.path + ": " + file.error;
-        return false;
+    {
+        StockFrameInputs inputs;
+        if (!read_stock_frame_inputs(root, inputs)) {
+            error = "stock 240SX inputs could not be read";
+            for (const auto& file : inputs.files) if (!file.read) error += "\n" + file.path + ": " + file.error;
+            return false;
+        }
+        if (loading) loading->checkpoint("car preparation");
+        StockFrame stock;
+        if (!prepare_stock_frame(inputs, stock_240sx_request(), stock_240sx_skin(), stock, error)) return false;
+        if (loading) loading->checkpoint("car prepared");
+        skin_source_ = stock.skin_binding.source;
+        car_ = std::move(stock.scene); base_ = car_.instances;
+        UploadTable table;
+        if (!build_car_upload_table(car_, skin_source_, table, error)) return false;
+        car_bytes_ = table.totals.vertex_bytes + table.totals.index_bytes + table.totals.texture_bytes +
+            2 * base_.size() * sizeof(PreparedInstance);
     }
-    if (loading) loading->checkpoint("car preparation");
-    StockFrame stock;
-    if (!prepare_stock_frame(inputs, stock_240sx_request(), stock_240sx_skin(), stock, error)) return false;
-    if (loading) loading->checkpoint("car prepared");
-    skin_source_ = stock.skin_binding.source;
-    car_ = std::move(stock.scene); base_ = car_.instances;
-    UploadTable table;
-    if (!build_car_upload_table(car_, skin_source_, table, error)) return false;
-    car_bytes_ = table.totals.vertex_bytes + table.totals.index_bytes + table.totals.texture_bytes +
-        2 * base_.size() * sizeof(PreparedInstance);
+    if (loading) loading->checkpoint("car source released");
+    if (!load_track_slice(files, root, track_, error, observer, loading)) return false;
     if (car_bytes_ + track_.contacts.memory.resident_bytes > kPersistentBudgetPlaceholder) {
         error = "race car and collision exceed the persistent payload plan"; return false;
     }
@@ -94,11 +100,13 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
     // Validate command templates once while this privately owned scene is
     // immutable. GPU upload pointers stay valid for this owner's lifetime.
     if (loading) loading->checkpoint("render preparation");
-    if (!prepare_templates(error) || !prepare_frame_cache(error)) return false;
+    if (!prepare_templates(error)) return false;
+    if (loading) loading->checkpoint("render templates prepared");
+    if (!prepare_frame_cache(error)) return false;
     if (loading) loading->checkpoint("render prepared");
     if (cache_bytes() > 8*kMiB) { error = "race command cache exceeds 8 MiB"; return false; }
     ready_ = true;
-    // Inputs, parser geometry and duplicate decoded car textures die here.
+    // Track parsing temporaries die here; car source copies died before it.
     return true;
 }
 std::uint64_t RaceGpuScene::cache_bytes() const {

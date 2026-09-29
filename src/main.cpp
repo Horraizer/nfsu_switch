@@ -29,6 +29,7 @@
 #include "nfsu/track_visibility.h"
 #include "nfsu/track_zones.h"
 #include "nfsu/vehicle.h"
+#include "nfsu/vehicle_tuning.h"
 #include "nfsu/vehicle_track.h"
 
 #include <algorithm>
@@ -4441,6 +4442,137 @@ int run_vehicle_sim(const VehicleSimArgs& args) {
     const std::string digest = nfsu::sha256_hex(hash.finish());
     std::cout << "telemetry: records " << records << " bytes "
               << records * nfsu::kVehicleTelemetryRecordBytes << " sha256 " << digest << '\n';
+    return 0;
+}
+
+// vehicle-tuning: the per-level tuning tables of docs/VEHICLE_TUNING.md, over
+// every car type of a GLOBALB.BUN. For each record it prints the values a
+// reviewer can check against that document and the SHA-256 of the bytes the
+// tuning encoder writes, and for the 240SX it compares the decoded tables with
+// the built-in stock_240sx_tuning() field by field. Read-only; writes nothing.
+int run_vehicle_tuning(const fs::path& path) {
+    const nfsu::CarTypeTable table = nfsu::load_car_type_table(path);
+    std::cout << "tuning file: " << path.filename().string() << " bytes "
+              << table.file_size << '\n';
+    print_car_type_issues(table);
+    if (!table.ok()) {
+        std::cerr << "error: the car type table is not valid" << '\n';
+        return 3;
+    }
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) {
+        std::cerr << "error: failed to reopen the file" << '\n';
+        return 3;
+    }
+    std::size_t decoded = 0;
+    std::size_t refused = 0;
+    bool compared = false;
+    // Round 2 of the review, finding F1: the strut block's eighth float at
+    // +0x1C is not a copy of the bump limit at +0x14. Counting the blocks
+    // where the two do agree, per record and over the file, is what makes a
+    // claim of that shape checkable across every car with one command.
+    std::size_t strut_1c_equal = 0;
+    std::size_t strut_1c_total = 0;
+    nfsu::Sha256 all;
+    for (const nfsu::CarTypeRecord& record : table.records) {
+        std::vector<unsigned char> bytes(nfsu::kVehicleRecordSize);
+        stream.clear();
+        stream.seekg(static_cast<std::streamoff>(record.offset));
+        stream.read(reinterpret_cast<char*>(bytes.data()),
+                    static_cast<std::streamsize>(bytes.size()));
+        if (!stream || stream.gcount() != static_cast<std::streamsize>(bytes.size())) {
+            std::cerr << "error: failed to read the record of '" << record.name
+                      << "' at offset " << record.offset << '\n';
+            return 3;
+        }
+        nfsu::VehicleTuning tuning;
+        std::vector<nfsu::VehicleTuningIssue> issues;
+        if (!nfsu::decode_vehicle_tuning(bytes.data(), bytes.size(), tuning, issues)) {
+            ++refused;
+            std::cout << "car " << record.index << ' ' << record.name << " refused" << '\n';
+            for (const nfsu::VehicleTuningIssue& issue : issues) {
+                std::cout << "  +0x" << std::hex << issue.offset << std::dec << ": "
+                          << issue.message << '\n';
+            }
+            continue;
+        }
+        ++decoded;
+        std::vector<unsigned char> image(nfsu::kVehicleRecordSize, 0);
+        nfsu::encode_vehicle_tuning(tuning, image.data(), image.size());
+        const std::vector<unsigned char> written(
+            image.begin() + static_cast<std::ptrdiff_t>(nfsu::kVehicleTuningWeightOffset),
+            image.begin() + static_cast<std::ptrdiff_t>(nfsu::kVehicleTuningEnd));
+        all.update(written.data(), written.size());
+        std::cout << "car " << record.index << ' ' << record.name << " @"
+                  << record.offset << " mass-scale";
+        for (const nfsu::VehicleTuningWeight& weight : tuning.weight) {
+            std::cout << ' ' << vehicle_fixed(static_cast<double>(weight.mass_scale), 4);
+        }
+        std::cout << " gears";
+        for (const nfsu::VehicleTuningGearbox& gearbox : tuning.gearbox) {
+            std::cout << ' ' << gearbox.stored_forward_gears;
+        }
+        std::cout << " tyre-peak";
+        for (const nfsu::VehicleTuningTyres& tyres : tuning.tyres) {
+            std::cout << ' '
+                      << vehicle_fixed(static_cast<double>(tyres.axles[0].static_friction), 3)
+                      << '/'
+                      << vehicle_fixed(static_cast<double>(tyres.axles[1].static_friction), 3);
+        }
+        std::cout << " spring";
+        for (const nfsu::VehicleTuningSuspension& suspension : tuning.suspension) {
+            std::cout << ' '
+                      << vehicle_fixed(static_cast<double>(suspension.axles[0].spring), 2)
+                      << '/'
+                      << vehicle_fixed(static_cast<double>(suspension.axles[1].spring), 2);
+        }
+        std::size_t equal_here = 0;
+        std::size_t total_here = 0;
+        for (const nfsu::VehicleTuningSuspension& suspension : tuning.suspension) {
+            for (std::size_t axle = 0; axle < nfsu::kVehicleTuningAxles; ++axle) {
+                ++total_here;
+                if (suspension.unknown_1c[axle] ==
+                    suspension.axles[axle].bump_limit) {
+                    ++equal_here;
+                }
+            }
+        }
+        strut_1c_equal += equal_here;
+        strut_1c_total += total_here;
+        std::cout << " rear-override "
+                  << vehicle_fixed(
+                         static_cast<double>(tuning.item.rear_drive_fraction_override), 3)
+                  << " strut1c-equal " << equal_here << '/' << total_here
+                  << " sha256 "
+                  << nfsu::sha256_hex(nfsu::sha256(written.data(), written.size())) << '\n';
+        if (record.name == "240SX") {
+            compared = true;
+            const std::size_t differs =
+                nfsu::compare_vehicle_tuning(tuning, nfsu::stock_240sx_tuning());
+            if (differs != nfsu::kVehicleRecordSize) {
+                std::cout << "tuning: car type " << record.index << " 240SX record @"
+                          << record.offset
+                          << " differs from the built-in 240SX tables at +0x" << std::hex
+                          << differs << std::dec << '\n';
+                return 3;
+            }
+            std::cout << "tuning: car type " << record.index << " 240SX record @"
+                      << record.offset << " equal to the built-in 240SX tables" << '\n';
+        }
+    }
+    std::cout << "tuning: records " << table.records.size() << " decoded " << decoded
+              << " refused " << refused << " bytes "
+              << table.records.size() *
+                     (nfsu::kVehicleTuningEnd - nfsu::kVehicleTuningWeightOffset)
+              << " strut1c-equal " << strut_1c_equal << '/' << strut_1c_total
+              << " sha256 " << nfsu::sha256_hex(all.finish()) << '\n';
+    if (refused != 0) {
+        return 3;
+    }
+    if (!compared) {
+        std::cerr << "error: the file holds no car type named 240SX" << '\n';
+        return 3;
+    }
     return 0;
 }
 
@@ -8998,6 +9130,16 @@ const Command kCommands[] = {
              return parsed;
          }
          return run_vehicle_sim(args);
+     }},
+    {"vehicle-tuning", " <GLOBALB.BUN>",
+     "      (the per-level tuning tables of docs/VEHICLE_TUNING.md for every car\n"
+     "       type, and the 240SX's compared with the built-in tables)\n",
+     [](int argc, char** argv) {
+         if (argc != 3) {
+             print_usage();
+             return 1;
+         }
+         return run_vehicle_tuning(nfsu::argument_path(argv[2]));
      }},
     {"drive-replay", " --demo | --input <FILE>",
      "      [--controls <FILE>] [--pov <0|1|4>] [--frames N] [--every N]\n"
