@@ -29,6 +29,7 @@ struct DrawMaterialUniform {
     float environment_min[4]{};
     float environment_range[4]{};
     float environment_color[4] = {0, 0, 0, 1};
+    CarShadingMaterial surface;
 };
 
 struct RecordedDraw {
@@ -152,7 +153,7 @@ bool record_track_commands(const PreparedTrackScene& scene,
 
 // One arena allocation, released by the caller after its last-use fence.
 // Frame at allocation.offset; draw i's Instance at offset + (1+2*i)*256,
-// Material at offset + (2+2*i)*256. Payload sizes are 112, 64 and 80 bytes;
+// Material at offset + (2+2*i)*256. Payload sizes are 112, 64 and 192 bytes;
 // padding is not read. Failure leaves allocation and arena unchanged.
 bool reserve_draw_uniforms(const RecordedCommands& commands, MemoryArena& arena,
                            ArenaAllocation& allocation, std::string& error);

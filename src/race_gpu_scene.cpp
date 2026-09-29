@@ -64,8 +64,9 @@ bool combine_race_commands(RecordedCommands track, const RecordedCommands& car,
 }
 bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& root,
                         std::string& error, AssetCheckObserver* observer,
-                        TrackSliceLoadObserver* loading) {
+                        TrackSliceLoadObserver* loading, bool car_shading) {
     if (ready_) { error = "race scene is already loaded"; return false; }
+    car_shading_=car_shading;
     // Car source files and their decoded preparation are temporary. Complete
     // that work before streaming the track so neither source set overlaps the
     // other's allocation peak. Only the prepared car scene survives this scope.
@@ -187,7 +188,10 @@ bool RaceGpuScene::prepare_frame_cache(std::string& error) {
             placement.rows[12+i] = transform.translation[i];
         }
     }
-    if (!record_car_commands(car_, race_render_options(), {}, skin_source_, car_templates_, error)) return false;
+    auto car_options=race_render_options();
+    car_options.car_shading=car_shading_;
+    if (car_shading_) car_options.material_state=MaterialStateMode::retail;
+    if (!record_car_commands(car_, car_options, {}, skin_source_, car_templates_, error)) return false;
     if (!validate_recorded_commands(car_templates_,error)) return false;
     const auto offset = track_templates_.owning_uploads().resources.size();
     if (offset + car_templates_.owning_uploads().resources.size() > kTrackSliceResourceLimit) {
@@ -290,6 +294,8 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
     }
     for (double far = 250; far >= 31.25; far *= 0.5) {
         RenderOptions options = race_render_options();
+        options.car_shading=car_shading_;
+        if (car_shading_) options.material_state=MaterialStateMode::retail;
         if (!drive_render_camera(session.camera(), ChaseFovMode::vertical_4_3,
                                  options.width, options.height, options.camera, error)) return false;
         options.camera.far_plane = far;

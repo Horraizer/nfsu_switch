@@ -114,5 +114,42 @@ int main(int argc, char** argv) {
                       << " resources, " << stock.stats.triangles_submitted << " triangles, sha256 " << hash << '\n';
         }
     }
+    // #182: separate opt-in pins; the legacy off-state pins above stay fixed.
+    const double yaw[] = {35,-45,145};
+    // 35: blue paint gloss, chrome wheels and windshield alpha/reflection.
+    // -45: the opposite side changes the normal/view-dependent terms.
+    // 145: rear glass and lamp lenses exercise their own material records.
+    const char* pins[] = {
+        "60E11A293FFB95FB07D4A2735D3DA49A16FC7938052C2DE05BD35897157A6EB6",
+        "607B4F9C96E239363D8E375B2C1B8893586DDE1FFA53D5842F4C195C62D18FE8",
+        "33D0CE02B1604395B949A483CE62CD00E47B96E4DF2BFEDB5DE4DB30A0081E44"};
+    nfsu::StockFrame shaded;
+    if (!nfsu::prepare_stock_frame(inputs,nfsu::stock_240sx_request(),nfsu::stock_240sx_skin(),shaded,error)) {
+        std::cerr << "FAIL: shaded preparation: " << error << '\n'; return 1;
+    }
+    for (int i=0;i<3;++i) {
+        nfsu::RenderOptions options;
+        options.car_shading=true; options.material_state=nfsu::MaterialStateMode::retail;
+        options.camera.yaw_deg=yaw[i];
+        nfsu::RecordedCommands commands;
+        std::vector<nfsu::ReferenceDraw> trace;
+        if (!nfsu::render_scene(shaded.scene,options,{},shaded.frame,shaded.stats,error,
+                [&](const nfsu::ReferenceDraw& d){trace.push_back(d);}) ||
+            !nfsu::record_car_commands(shaded.scene,options,{},shaded.skin_binding.source,commands,error)) {
+            std::cerr << "FAIL: shaded render/record: " << error << '\n'; return 1;
+        }
+        const auto mismatch=compare_draws(commands,trace,false);
+        if (!mismatch.empty()) { std::cerr << "FAIL: " << mismatch << '\n'; return 1; }
+        std::size_t shaded_draws=0;
+        for (const auto& d:commands.owning_draws()) if (std::string(d.program->name)=="car_shaded_textured") ++shaded_draws;
+        if (!shaded_draws || shaded.stats.triangles_fallback || shaded.stats.pixels_fallback) {
+            std::cerr << "FAIL: shaded stock coverage or fallback\n"; return 1;
+        }
+        nfsu::StockFrameImage image;
+        if (!nfsu::encode_stock_frame(shaded.frame,image,error)) { std::cerr << "FAIL: " << error << '\n'; return 1; }
+        const auto hash=nfsu::sha256_hex(image.sha256);
+        if (hash!=pins[i]) { std::cerr << "FAIL: shaded stock pin changed: " << hash << '\n'; return 1; }
+        std::cout << "PASS: shaded stock yaw " << yaw[i] << " shaded draws " << shaded_draws << " sha256 " << hash << '\n';
+    }
     return 0;
 }

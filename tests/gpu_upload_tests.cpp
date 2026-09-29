@@ -2529,18 +2529,27 @@ void test_car_instances_and_uniform_layout() {
         {"Material.alpha", offsetof(nfsu::DrawMaterialUniform, alpha)},
         {"Material.environment_min", offsetof(nfsu::DrawMaterialUniform, environment_min)},
         {"Material.environment_range", offsetof(nfsu::DrawMaterialUniform, environment_range)},
-        {"Material.environment_color", offsetof(nfsu::DrawMaterialUniform, environment_color)}};
+        {"Material.environment_color", offsetof(nfsu::DrawMaterialUniform, environment_color)},
+        {"Material.surface_diffuse_min", offsetof(nfsu::DrawMaterialUniform, surface)+offsetof(nfsu::CarShadingMaterial, diffuse_min)},
+        {"Material.surface_diffuse_range", offsetof(nfsu::DrawMaterialUniform, surface)+offsetof(nfsu::CarShadingMaterial, diffuse_range)},
+        {"Material.surface_specular_min", offsetof(nfsu::DrawMaterialUniform, surface)+offsetof(nfsu::CarShadingMaterial, specular_min)},
+        {"Material.surface_specular_range", offsetof(nfsu::DrawMaterialUniform, surface)+offsetof(nfsu::CarShadingMaterial, specular_range)},
+        {"Material.surface_environment_min", offsetof(nfsu::DrawMaterialUniform, surface)+offsetof(nfsu::CarShadingMaterial, environment_min)},
+        {"Material.surface_environment_range", offsetof(nfsu::DrawMaterialUniform, surface)+offsetof(nfsu::CarShadingMaterial, environment_range)},
+        {"Material.surface_gates", offsetof(nfsu::DrawMaterialUniform, surface)+offsetof(nfsu::CarShadingMaterial, gates)}};
     for (const auto& program : nfsu::shader_manifest::kPrograms) {
+        const bool shaded=std::string(program.name)=="car_shaded_textured";
         check_eq(program.block_count, 3, "three uniform blocks");
         for (std::size_t i = 0; i < program.block_count; ++i) {
             const auto& b = program.blocks[i];
             const std::string name = b.name;
             const auto size = name == "Frame" ? sizeof(nfsu::DrawFrameUniform) :
-                name == "Instance" ? sizeof(nfsu::DrawInstanceUniform) : sizeof(nfsu::DrawMaterialUniform);
+                name == "Instance" ? sizeof(nfsu::DrawInstanceUniform) :
+                shaded ? sizeof(nfsu::DrawMaterialUniform) : offsetof(nfsu::DrawMaterialUniform,surface);
             check_eq(b.size, size, name + ": std140 size");
             check_eq(b.binding, name == "Frame" ? 0 : name == "Instance" ? 1 : 2, name + ": uniform binding");
         }
-        check_eq(program.member_count, offsets.size(), "all uniform members checked");
+        check_eq(program.member_count, shaded ? offsets.size() : offsets.size()-7, "all uniform members checked");
         for (std::size_t i = 0; i < program.member_count; ++i) {
             const auto& m = program.members[i];
             const auto key = std::string(m.block) + "." + m.name;
@@ -2627,12 +2636,74 @@ void test_command_material_gates_and_empty_ranges() {
           "invalid retail coefficients refused");
 }
 
+void test_car_shading_records_and_rendering() {
+    Bytes bytes(168,0);
+    put_u32(bytes,0,0x00135200U); put_u32(bytes,4,160); put_u32(bytes,20,0x12345678U);
+    auto f=[&](std::size_t off,float value){ store_float(bytes.data()+8+off,value); };
+    f(0x30,0.5F); f(0x40,0.75F); f(0x50,1); f(0x54,0.4F);
+    f(0x58,4); f(0x5c,0.5F); f(0x6c,0.25F); f(0x7c,2);
+    f(0x80,0.8F); f(0x90,0.2F);
+    for (std::size_t i=0;i<3;++i) {
+        f(0x34+4*i,1); f(0x44+4*i,1); f(0x60+4*i,1); f(0x70+4*i,1);
+        f(0x84+4*i,1); f(0x94+4*i,1);
+    }
+    std::vector<nfsu::CarMaterialRecord> records; std::string error;
+    check(nfsu::parse_car_materials(bytes.data(),bytes.size(),records,error),"decode material record: "+error);
+    if (records.size()!=1) { check(false,"one decoded material"); return; }
+    const auto& c=records[0].values;
+    check(c.diffuse_min[0]==0.5F && c.diffuse_range[0]==0.25F,
+          "diffuse target subtracts minimum");
+    check(c.specular_min[3]==4.4F, "specular power uses traced initial global");
+    check(c.environment_min[0]==0.4F && c.environment_range[0]==-0.3F,
+          "environment half scale and signed range");
+    for (std::size_t size: {std::size_t(7),std::size_t(167)})
+        check(!nfsu::parse_car_materials(bytes.data(),size,records,error) && records.empty(),
+              "truncated material refuses transactionally");
+    auto duplicate=bytes; duplicate.insert(duplicate.end(),bytes.begin(),bytes.end());
+    check(!nfsu::parse_car_materials(duplicate.data(),duplicate.size(),records,error),"duplicate material hash refused");
+    auto bad=bytes; store_float(bad.data()+8+0x58,std::numeric_limits<float>::quiet_NaN());
+    check(!nfsu::parse_car_materials(bad.data(),bad.size(),records,error),"nonfinite material refused");
+    auto fixture=car_fixture(true);
+    auto& scene=fixture.scene;
+    for (auto& d:scene.draws) {
+        d.material_key_hash=0x12345678U; d.flags=0x180U; store_u32(d.raw.data()+56,d.flags);
+    }
+    check(nfsu::apply_car_materials(scene,bytes.data(),bytes.size(),false,error),"join material keys: "+error);
+    for (auto& m:scene.meshes) for (auto& v:m.vertices) { v.nx=0; v.ny=1; v.nz=0; }
+    nfsu::RenderOptions options; options.width=160; options.height=120;
+    nfsu::Frame off,on,turned,off_again; nfsu::RenderStats stats;
+    check(nfsu::render_scene(scene,options,{},off,stats,error),"shade-off fixture renders: "+error);
+    options.car_shading=true;
+    std::vector<nfsu::ReferenceDraw> trace;
+    check(nfsu::render_scene(scene,options,{},on,stats,error,
+            [&](const nfsu::ReferenceDraw& d){ trace.push_back(d); }),"shaded fixture renders: "+error);
+    check(stats.pixels_drawn>0 && on.rgba()!=off.rgba(),"shading affects real covered pixels");
+    nfsu::RecordedCommands commands;
+    check(nfsu::record_car_commands(scene,options,{},kSkinSource,commands,error),"shaded command recording: "+error);
+    check(compare_draws(commands,trace,false).empty(),"shaded CPU/recorder draw interface agrees");
+    bool checked=false;
+    for (const auto& d:commands.owning_draws()) if (d.texture_resource!=nfsu::kNoHandle) {
+        check(std::memcmp(&d.material.surface,&scene.draws[d.group].shading,sizeof d.material.surface)==0,
+              "shaded shader gets decoded per-group coefficients"); checked=true;
+    }
+    check(checked,"fixture exercises a shaded texture");
+    for (auto& m:scene.meshes) for (auto& v:m.vertices) { v.nx=1; v.ny=0; }
+    check(nfsu::render_scene(scene,options,{},turned,stats,error),"turned normals render: "+error);
+    check(turned.rgba()!=on.rgba(),"stored smooth normals affect lighting/reflection");
+    options.car_shading=false;
+    check(nfsu::render_scene(scene,options,{},off_again,stats,error) && off.rgba()==off_again.rgba(),
+          "disabled effect ignores stored normals and preserves legacy pixels");
+    scene.draws[0].shading.environment_min[0]=std::numeric_limits<float>::infinity();
+    check(!nfsu::render_scene(scene,options,{},off_again,stats,error),"mutated nonfinite coefficient is rejected");
+}
+
 struct TestCase {
     const char* name;
     void (*run)();
 };
 
 const TestCase kTests[] = {
+    {"car_shading_records_and_rendering", test_car_shading_records_and_rendering},
     {"native_track_section_lifetime", test_native_track_section_lifetime},
     {"command_material_gates_and_empty_ranges", test_command_material_gates_and_empty_ranges},
     {"car_instances_and_uniform_layout", test_car_instances_and_uniform_layout},

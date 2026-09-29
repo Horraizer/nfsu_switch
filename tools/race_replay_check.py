@@ -25,6 +25,10 @@ FRAMES = (
     "CBA5548ADE397AD43940F3C5D6469CFFB15B4C44D823908C140A8F23A2C87EB0",
     "0383137D34B8DEA42919AE0ED3E261C80F3F0F73EE3C6B969BBC5B9A9848B0C9",
 )
+# #182 opt-in race frame: smooth car normals, decoded material coefficients,
+# static environment and retail car alpha/blend state. Track and simulation
+# pins stay unchanged; the off-state FRAMES above remain the legacy baseline.
+SHADED_FRAME = "FF1CB7F76FD9FC42E8E819FCB7AB294A7EF986710394D99614AE3D9FEFBF7A58"
 RESULT = (
     "event 1 track 1003 laps 2 outcome finished steps 48336 resets 0",
     "lap 1 ticks 1616400 time 6:44.10",
@@ -76,7 +80,10 @@ def main():
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True, help="new directory outside retail")
     parser.add_argument("--check-driver", action="store_true", help="also regenerate the recording with each build")
+    parser.add_argument("--car-shading", action="store_true", help="check the opt-in shaded frame and complete simulation")
     args = parser.parse_args()
+    frame_steps = (180,) if args.car_shading else STEPS
+    frames = (SHADED_FRAME,) if args.car_shading else FRAMES
     root, output = args.root.resolve(), args.out.resolve()
     require(root.is_dir(), "retail root does not exist")
     require(output != root and root not in output.parents, "output is inside retail")
@@ -87,6 +94,8 @@ def main():
     for index, exe in enumerate(args.exe):
         prefix = output / str(index)
         command = [str(exe.resolve()), "--root", str(root)]
+        if args.car_shading:
+            command += ["--car-shading", "on"]
         if args.check_driver:
             generated = output / (str(index) + "-generated.txt")
             result = retail_run(command + ["--generate", str(generated)], root)
@@ -94,7 +103,7 @@ def main():
             require(result.returncode == 0 and not result.stderr, "driver failed; see log")
             require(generated.read_bytes() == recording.read_bytes(), "scripted driver no longer generates the recording")
         result = retail_run(command + ["--input", str(recording), "--out", str(prefix),
-                             "--frames", ",".join(map(str, STEPS))], root)
+                             "--frames", ",".join(map(str, frame_steps))], root)
         (output / (str(index) + ".log")).write_text(result.stdout + result.stderr, encoding="ascii")
         require(result.returncode == 0 and not result.stderr, "replay failed; see log")
         lines = result.stdout.splitlines()
@@ -123,12 +132,12 @@ def main():
                     "tilted or airborne car in trajectory")
             if int(sample["tick"]) > 600:
                 require(float(sample["speed"]) >= 5, "slow/stalled car after launch")
-        for tick, expected in zip(STEPS, FRAMES):
+        for tick, expected in zip(frame_steps, frames):
             frame = prefix / ("frame-" + str(tick) + ".tga")
             require(digest(frame.read_bytes()) == expected, "frame pin differs at " + str(tick))
             require(lines.count("frame " + str(tick) + " tga-sha256 " + expected) == 1,
                     "printed frame pin differs")
-        print("PASS", exe.name, str(STEPS[-1]) + " step hashes, result, " + str(len(STEPS)) + " frames, clean 120 Hz trajectory" +
+        print("PASS", exe.name, str(STEPS[-1]) + " step hashes, result, " + str(len(frame_steps)) + " frames, clean 120 Hz trajectory" +
               (", generated recording" if args.check_driver else ""))
 
 

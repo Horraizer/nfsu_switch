@@ -157,6 +157,8 @@ int main(int argc, char** argv) {
         std::cout << "PASS: fixed clock, exact replay cursor, refusal and combined draw guards\n";
         if (argc == 2) return 0;
         const std::filesystem::path root(argv[2]);
+        const bool car_shading=argc==5 && std::string(argv[4])=="--car-shading";
+        require(argc<=5 && (argc<5 || car_shading),"unknown shading option");
         RaceGpuScene scene;
         RaceRun race;
         require(race.prepare_metadata(root, error), error);
@@ -169,7 +171,7 @@ int main(int argc, char** argv) {
                 if (std::string(phase) == "car prepared") car_prepared = true;
             }
         } polled;
-        require(scene.load(posix_file_system(), root, error, nullptr, &polled), error);
+        require(scene.load(posix_file_system(), root, error, nullptr, &polled, car_shading), error);
         require(polled.sections >= 4*scene.track().sections && polled.car_prepared,
                 "race scene disconnected the shared loader checkpoints");
         require(!scene.load(posix_file_system(),root,error),"loaded race scene allowed cache-invalidating reload");
@@ -182,8 +184,8 @@ int main(int argc, char** argv) {
         require(replay.load(text, error), error);
         require(scene.cache_bytes() <= 8*kMiB,"command cache exceeded metadata limit");
         std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 8*kMiB << '\n';
-        // #223: 20 suppressed car draws and one added cache upload record: -540 bytes.
-        require(scene.cache_bytes() == 3825239,"event 1 command cache metadata estimate differs from pin");
+        // #182: 4224 allocated RecordedDraw slots gain 112 bytes: +473088.
+        require(scene.cache_bytes() == 4298327,"event 1 command cache metadata estimate differs from pin");
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';
         require(scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes() <=

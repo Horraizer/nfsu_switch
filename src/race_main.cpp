@@ -78,6 +78,7 @@ public:
     StockFrame car;
     std::vector<PreparedInstance> base;
     bool dirty = true;
+    bool car_shading = false;
     std::uint64_t loads = 0, releases = 0, bytes_read = 0;
     Cost io_cost, prepare_cost, render_cost;
     explicit RaceScene(const TrackStreamTable& t) : table(t) {}
@@ -171,7 +172,9 @@ public:
     }
     std::vector<unsigned char> render(const RaceSession& session) {
         prepare(); const auto begin=Clock::now(); std::string error;
-        RenderOptions options; options.width=640; options.height=360;
+        RenderOptions options; options.car_shading=car_shading;
+        if (car_shading) options.material_state=MaterialStateMode::retail;
+        options.width=640; options.height=360;
         require(drive_render_camera(session.camera(),ChaseFovMode::vertical_4_3,640,360,options.camera,error),error);
         Frame background; RenderStats stats; TrackRenderStats track_stats;
         RenderOptions track_options = options;
@@ -192,12 +195,13 @@ public:
 
 int run(int argc, char** argv) {
     fs::path root,input,output,generate;
+    bool car_shading=false;
     bool live=false, smoke=false; std::set<std::size_t> frames;
     for (int i=1;i<argc;++i) {
         const std::string a=argv[i];
         if (a=="--help") {
             std::cout << "nfsu_race --root RETAIL (--input RECORDING | --generate RECORDING | --live)\n"
-                         "  [--out NEW_DIRECTORY --frames 180,600,6000,22000,40000]\n"
+                         "  [--out NEW_DIRECTORY --frames 180,600,6000,22000,40000] [--car-shading on|off]\n"
                          "  live mode plays retail race audio when the device and banks are available\n";
             return 0;
         }
@@ -208,6 +212,10 @@ int run(int argc, char** argv) {
         else if (a=="--input") input=fs::u8path(value);
         else if (a=="--generate") generate=fs::u8path(value);
         else if (a=="--out") output=fs::u8path(value);
+        else if (a=="--car-shading") {
+            require(value=="on" || value=="off","--car-shading needs on or off");
+            car_shading=value=="on";
+        }
         else if (a=="--frames") {
             std::istringstream in(value); std::string token;
             while (std::getline(in,token,',')) {
@@ -248,7 +256,7 @@ int run(int argc, char** argv) {
     TrackResidencyOptions options; options.budget_bytes=track_stream_pool_bytes(table);
     TrackResidencySession residency; std::vector<TrackResidencyStep> startup;
     require(residency.start(table,zones,slot.track,costs,options,startup,error),error);
-    RaceScene scene(table); scene.files.stream=root/"Tracks"/track_stream_file_name(*info);
+    RaceScene scene(table); scene.car_shading=car_shading; scene.files.stream=root/"Tracks"/track_stream_file_name(*info);
     scene.files.pack=root/"Tracks"/track_stream_pack_file_name(*info);
     scene.files.has_pack=fs::exists(scene.files.pack);
     scene.load_car(root,root/"Tracks"/track_texture_file_name(slot.track));

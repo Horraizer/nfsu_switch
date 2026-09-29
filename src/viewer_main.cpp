@@ -78,6 +78,7 @@ void print_usage() {
         << "                       is written first and is never affected.\n"
         << "Retail material state (docs/MATERIALS.md). Every option below\n"
         << "the first one needs --material-state retail:\n"
+        << "  --car-shading M      on/off static-environment approximation (default off)\n"
         << "  --material-state M   off (default) or retail. retail applies the\n"
         << "                       texture-info alpha test and blend selection,\n"
         << "                       the coefficient gates and the bounded\n"
@@ -748,7 +749,7 @@ int parse_options(
         static const std::set<std::string> valued = {
             "--width", "--height", "--alpha-cutoff", "--yaw", "--pitch",
             "--distance", "--fov", "--near", "--far", "--target", "--cull",
-            "--shading", "--material-state", "--material-alpha", "--environment",
+            "--shading", "--car-shading", "--material-state", "--material-alpha", "--environment",
             "--environment-color", "--environment-global", "--stock-car",
             "--stock-parts", "--stock-lod", "--stock-pass"};
         if (valued.count(name) == 0) {
@@ -803,6 +804,9 @@ int parse_options(
             } else {
                 ok = false;
             }
+        } else if (name == "--car-shading") {
+            if (value!="on" && value!="off") { std::cerr << "error: --car-shading needs on or off\n"; return 2; }
+            options.car_shading=value=="on";
         } else if (name == "--material-state") {
             if (value == "off") {
                 options.material_state = nfsu::MaterialStateMode::off;
@@ -1540,6 +1544,20 @@ int main(int argc, char** argv) {
                                         scene, error)) {
         std::cerr << "error: " << error << '\n';
         return 2;
+    }
+
+    if (options.car_shading) {
+        bool found=false;
+        for (const auto& bytes:shared_bytes) {
+            std::vector<nfsu::CarMaterialRecord> records;
+            if (nfsu::parse_car_materials(bytes.data(),bytes.size(),records,error) && !records.empty()) {
+                if (!nfsu::apply_car_materials(scene,bytes.data(),bytes.size(),skin.enabled,error)) {
+                    std::cerr << "error: " << error << '\n'; return 2;
+                }
+                found=true; break;
+            }
+        }
+        if (!found) { std::cerr << "error: car shading needs GLOBALB.BUN material records\n"; return 2; }
     }
 
     nfsu::Frame frame;

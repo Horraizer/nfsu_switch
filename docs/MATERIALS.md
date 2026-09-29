@@ -399,8 +399,10 @@ Both are in the shader's 0..1 space. `diffuse_scale.w` is
 
 These two identities are what `nfsu_render` reproduces. The retail
 `0x00135200` coefficient values are decoded in [CAR_SHADING.md](CAR_SHADING.md),
-but `HarmonicCoeff` and the cube contents are not. The reference still
-takes coefficients as explicit inputs and never supplies a retail value.
+but `HarmonicCoeff` and the cube contents are not. The legacy diagnostic
+path takes explicit inputs. The opt-in `--car-shading on` path now supplies
+decoded per-material coefficients with approximate lighting and environment;
+its boundary is documented in the car shading trace.
 
 ## Observed: material/effect-key objects and geometry flags
 
@@ -549,8 +551,8 @@ Observed, and not applied, each with its reason:
 - the `DEFAULTALPHA` skip, which no car material reaches;
 - the effect's harmonic diffuse lighting and its specular term.
   `HarmonicCoeff` is undecoded; the on-disk `Specular*` coefficients are
-  decoded in [CAR_SHADING.md](CAR_SHADING.md), but are not wired into the
-  renderer. It keeps its own diagnostic flat shade and says so.
+  decoded in [CAR_SHADING.md](CAR_SHADING.md). The opt-in car shader uses
+  those coefficients with an approximate broad light, not retail harmonics.
 
 Still unknown:
 
@@ -558,13 +560,13 @@ Still unknown:
   selection loop and its capability guards are traced in
   [CAR_SHADING.md](CAR_SHADING.md), but no specific device run is recorded;
 - runtime mutations of the material/effect-key objects. Their on-disk
-  values are decoded in [CAR_SHADING.md](CAR_SHADING.md); the renderer still
-  takes each coefficient as an explicit input whose default makes its term
-  vanish;
+  values are decoded in [CAR_SHADING.md](CAR_SHADING.md); the opt-in path
+  applies those values, with an explicitly approximate blue-paint key
+  substitution and the executable's initial specular multiplier;
 - the contents and full update policy of `EnvMapTex`. Its runtime cube-map
-  creation and six-face render path are traced in
-  [CAR_SHADING.md](CAR_SHADING.md); the renderer takes a constant colour in
-  place of a cube sample;
+  creation and quality-dependent face scheduling are traced in
+  [CAR_SHADING.md](CAR_SHADING.md). Capture contents remain unknown. The
+  opt-in path uses an analytical static environment in place of a cube;
 - stable semantic names for geometry bits 0x1, 0x80, 0x100, 0x4000,
   0x8000, and 0x10000 beyond their direct branches. `PreparedDraw::flags`
   and the untouched 60-byte record are carried raw, and the two branch

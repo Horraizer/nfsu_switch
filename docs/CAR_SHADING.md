@@ -50,14 +50,36 @@ the disabled branch clears those pointers at `0x40B3C5..0x40B3E9`.
 
 The face surfaces enter render-target descriptors at `0x40AB0A..0x40AB92`.
 At `0x40AF2B..0x40AF7D`, the renderer selects a six-face group and enters
-a six-iteration loop. Its per-face path constructs a view matrix and calls
-the scene draw at `0x40B250..0x40B2C0`. The effect binds the resulting
-cube pointer from `0x73646C` to its `EnvMapTex` handle at
-`0x40EB30..0x40EB51`. The retail reflection source is therefore a live
-render target, not a cube stored as a texture in `GLOBALB.BUN`. The trace
-does not yet identify every object category drawn into its faces, the
-capture position policy, or its update frequency. A static or simplified
-cube on Switch would be an approximation of this path.
+a six-iteration loop. The per-face path constructs a view matrix and calls
+`0x47D070` at `0x40B2BB`. Correction to the earlier trace: this call sets up
+a view; it is not sufficient evidence of a scene draw. At `0x47D09D` it
+copies prior view state, then sets matrices and derived vectors. The effect
+binds the resulting cube pointer from `0x73646C` to `EnvMapTex` at
+`0x40EB30..0x40EB51`. The reflection source is a live render target, not a
+cube stored as a texture in `GLOBALB.BUN`.
+
+Observed scheduling: `0x40AF31` reads counter `0x7364DC`, which increments
+at `0x40A77A..0x40A78D`. The divide at `0x40AF38` uses the quality-indexed
+period table at `0x702AAC`; enabled quality values 1, 2 and 3 have periods
+6, 4 and 1. The mask row at `0x702AC0` is selected by
+`6 * (quality - 1) + counter % period`. `0x40AF8C..0x40AF92` writes the
+selected mask bit into each face descriptor's byte `+8`:
+
+| Quality value | Face indices enabled per counter increment |
+| --- | --- |
+| 1 | One face, cycling through 0, 1, 2, 3, 4, 5 |
+| 2 | Faces 0 and 4, plus one cycling through 1, 2, 3, 5 |
+| 3 | All six faces |
+
+This is the observed descriptor schedule, not measured capture timing.
+The caller at `0x5707B0` selects position/orientation sources through
+runtime objects. Its normal path adds the vector at `0x704AD0` to the
+selected object's vector before calling `0x40AD60` at `0x5708E2`; another
+path uses globals `0x7365A0..0x7365A8` and calls at `0x57086E`. Which object
+is selected in every gameplay/camera mode and which scene categories the
+later capture includes remain unknown. Static disassembly does not prove
+that every scheduled face is actually rendered in a given frame. A static
+or simplified environment on Switch is therefore an approximation.
 
 The Direct3D method interpretation above follows the interface calls and
 the [Direct3D 9 cube render-target procedure](https://learn.microsoft.com/en-us/windows/win32/direct3d9/creating-cubic-environment-map-surfaces).
@@ -111,7 +133,7 @@ uploads the vectors at `0x40FFB4..0x410087`:
 | `DiffuseRange` | scale `+0x40`, RGB `+0x44..+0x4C`, alpha `+0x54` | RGB times scale minus minimum; alpha minus minimum |
 | `SpecularMin` | scale `+0x5C`, RGB `+0x60..+0x68` | RGB times scale |
 | `SpecularRange` | scale `+0x6C`, RGB `+0x70..+0x78` | RGB times scale minus minimum |
-| `SpecularPower` | `+0x58` | times runtime global `0x7070D4` |
+| `SpecularPower` | `+0x58` | times runtime global `0x7070D4`, initially 1.1 in this executable |
 | `EnvmapMin` | scale `+0x80`, RGB `+0x84..+0x8C` | RGB times scale times the 0.5 constant at `0x6CC7DC` |
 | `EnvmapRange` | scale `+0x90`, RGB `+0x94..+0x9C` | RGB times scale times 0.5, minus minimum |
 | `EnvmapPower` | `+0x7C` | copied unchanged |
@@ -137,23 +159,79 @@ on the six cube faces, the camera vector, the diffuse texture and alpha,
 the harmonic coefficients, the geometry flags and the selected technique
 (`car.efx`, `0x40FBFF..0x40FD24`).
 
-## Port boundary and validation
+## Port implementation and approximation boundary
 
-The CPU renderer and deko3d shader currently use a flat diagnostic light
-and a constant environment color (`src/render.cpp`,
-`shaders/textured.frag.glsl`). Replacing those with decoded material
-coefficients and a cube sample will change their images; this trace alone
-does not predict a retail-equivalent frame. The six-face capture's scene
-contents and harmonic inputs remain unknown, so any initial image-based
-lighting term must be named an approximation. `docs/MATERIALS.md` records
-the exact geometry-flag gates that the port already exposes.
+`--car-shading on|off` selects the new path in the desktop viewer, desktop
+race and Switch race. Default is `off`, pending the mandatory console
+performance and image gates. The off-state stock and replay image pins
+remain unchanged. This switch affects rendering only; no shading value
+feeds the fixed-step simulation.
 
-For issue #182, the stock painted 240SX should be pinned at the default
-camera and two orbit angles in tests, with values kept in those tests as
-required by `CLAUDE.md`. The race replay also needs to remain equal to its
-existing test pins. A fragment cube sample adds one dependent texture
-lookup per car pixel; a literal six-face capture adds up to six scene
-render passes and their draw/clear work when refreshed. Those are cost
-components, not a frame-time estimate. The Switch implementation must
-measure GPU frame time against the project's 60 fps budget before a
-retail-style live capture can be accepted. This trace adds no render work.
+Observed material coefficients are decoded from bounded top-level
+`0x00135200` records by `src/car_shading.cpp`, joined through the geometry
+material key, and uploaded to the CPU reference and deko3d. Signed ranges
+are retained, including chrome's decreasing environment range. The port
+uses the executable's initial specular multiplier 1.1; later mutation of
+that global is untraced. For the project's painted stock skin, `SKIN` maps
+to `REGPAINTBLUE`. That substitution is an explicit approximation of the
+untraced customization path, not a claim that retail selects this key.
+Other decoded keys distinguish chrome, windshield, plastic and lamp lenses.
+Lamp emission remains the separate existing lamp state.
+
+The port reads the existing smooth vertex normals and transforms them by
+the inverse transpose of each placed instance, including the raw-axis to
+world-axis conversion. A zero normal falls back to world up; normals face
+the viewer for this two-sided approximation. The view dot is clamped to
+0.01..1. The decoded diffuse, specular and environment ranges depend on
+that dot and their respective powers. The geometry flag gates remain those
+traced in [MATERIALS.md](MATERIALS.md).
+
+Approximations replace the untraced harmonic inputs and live cube: one broad
+light supplies diffuse and gloss, and a world-fixed analytical sky, ground,
+horizon and bright vertical band supply the environment. These lighting
+colors and widths are chosen port constants, not retail data. Lighting is
+evaluated per vertex and interpolated perspective-correctly; the fragment
+stage combines it with the base texel and its alpha. Retail instead samples
+a cube in the fragment stage. This is not an image-equivalence claim for
+the original game, nor a track-local reflection of passing objects.
+
+The viewer can set `--material-state retail` independently. In both race
+apps, `--car-shading on` also enables the existing retail car alpha/blend
+state so glass uses its decoded view-dependent alpha. `off` preserves the
+historical race baseline. Consequently, the paired on/off measurement
+includes that state change as well as the new shading; it must not be
+reported as the cost of vertex arithmetic alone. Both variants use the
+same retail track state.
+
+## Cost and validation
+
+The expected GPU cost, stated before implementation, was extra normal/view
+arithmetic per car vertex, three power evaluations, seven interpolated
+scalars and a short fragment combination. There is still one base-texture
+lookup, no added texture allocation, no added car draw and no capture pass.
+Normals already occupy the uploaded vertex stride. The material payload
+extends from 80 to 192 bytes inside the existing aligned 256-byte slot;
+CPU command metadata grows because each draw stores the appended vectors.
+`nfsu_race_run_tests` pins and prints the resulting memory estimate, and
+compares complete cached and reference command streams, including program,
+uniforms and state. None of these structural costs is a GPU-time estimate.
+
+`nfsu_draw_commands_retail` pins the shaded stock 240SX at yaw 35, -45 and
+145 degrees. Comments beside each hash state what that angle exercises;
+legacy off-state pins stay intact. `tools/race_replay_check.py --car-shading`
+pins race frame 180 while checking the complete existing result, per-step
+hashes and trajectory. Its default mode retains all legacy race frame pins.
+Desktop default and Release runs must both agree with these pins. The
+synthetic `nfsu_gpu_upload_tests` checks bounded record parsing, signed
+ranges, normal-dependent pixels, off-state invariance and command data.
+Shader manifests check the shared uniform layout and normal attribute in
+both source and compiled Switch stages.
+
+Console evidence remains required: the same build, each of `--car-shading
+on` and `--car-shading off`, launched with `-- sdmc:/nfsu --replay
+--profile-frame`, with GPU SCENE page 7 and REPLAY page 2 captured after
+60 seconds. The page footer identifies the mode. Collect handheld and
+docked measurements and a photograph of the shaded car. Compare the GPU
+scene mean and worst against the 16.67 ms budget. No 30 fps fallback is
+allowed. Until those measurements exist, the port cannot claim that this
+effect fits 60 fps or that the console image matches the CPU reference.

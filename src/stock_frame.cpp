@@ -556,6 +556,8 @@ bool prepare_stock_frame(
             ok = ok && source.ok();
         }
         frame.inputs_ok = ok;
+        if (!apply_car_materials(frame.scene, parts_file.bytes.data(),
+                                 parts_file.bytes.size(), skin.enabled, error)) return false;
         return true;
     } catch (const std::bad_alloc&) {
         error = "out of memory while preparing the stock frame";

@@ -22,6 +22,7 @@
 #include <stdexcept>
 
 namespace {
+const char* car_shading_label="OFF";
 using namespace nfsu;
 constexpr unsigned width = 1280, height = 720;
 double ms(std::uint64_t ticks) { return armTicksToNs(ticks)/1000000.0; }
@@ -341,7 +342,7 @@ ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
         auto& rows = pages[i];
         rows.insert(rows.begin(),format("BUILD %.12s | %s | %s | PAGE %zu/%zu",
             NFSU_RACE_BUILD_TAG,mode,titles[i].c_str(),i+1,pages.size()));
-        rows.push_back("D-pad LEFT/RIGHT changes page | + exits");
+        rows.push_back(std::string("CAR SHADING ")+car_shading_label+" | LEFT/RIGHT page | + exits");
     }
     return pages;
 }
@@ -416,8 +417,9 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
         if (padGetButtonsDown(&pad) & HidNpadButton_Plus) break;
     }
 }
-void run(const std::string& root, bool replay_mode, bool panel_mode, bool profile_frame,
+void run(const std::string& root, bool replay_mode, bool panel_mode, bool profile_frame, bool car_shading,
          Screen& screen, PadState& pad) {
+    car_shading_label=car_shading ? "ON static" : "OFF";
     require(R_SUCCEEDED(romfsInit()), "cannot mount race shader/replay RomFS");
     struct Guard { ~Guard() { romfsExit(); } } guard;
     std::string error;
@@ -432,8 +434,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     Progress progress(screen,pad,heap);
     const auto load_start = armGetSystemTick();
     require(race.prepare_metadata(root,error,&progress),error);
-    require(scene.load(posix_file_system(), root, error, &progress, &progress), error);
-    screen.show({"ASSETS PASS. Preparing event 1, stock 240SX and race course..."});
+    require(scene.load(posix_file_system(), root, error, &progress, &progress, car_shading), error);
+    screen.show({car_shading ? "CAR SHADING ON: static environment approximation" : "CAR SHADING OFF"});
     progress.checkpoint("race course");
     require(race.start(root,scene.track(),error,&progress),error);
     progress.checkpoint("race course prepared");
@@ -754,6 +756,7 @@ int main(int argc, char** argv) {
         Screen screen; if (!screen.open()) return 1;
         try {
             std::string root = "sdmc:/nfsu";
+            bool car_shading=false;
             bool replay = false, panel = false, profile_frame = false, selected = false, root_seen = false;
             for (int i = 1; i < argc; ++i) {
                 const std::string arg = argv[i];
@@ -761,8 +764,13 @@ int main(int argc, char** argv) {
                 else if (arg == "--live") { replay = false; selected = true; }
                 else if (arg == "--panel") panel = true;
                 else if (arg == "--profile-frame") profile_frame = true;
+                else if (arg=="--car-shading" && i+1<argc) {
+                    const std::string mode=argv[++i];
+                    require(mode=="on" || mode=="off","--car-shading needs on or off");
+                    car_shading=mode=="on";
+                }
                 else if (!root_seen && arg.rfind("--",0) != 0) { root = arg; root_seen = true; }
-                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame]");
+                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--car-shading on|off]");
             }
             require(!(panel && profile_frame),"--profile-frame requires direct presentation");
             while (!selected && appletMainLoop()) {
@@ -781,7 +789,7 @@ int main(int argc, char** argv) {
                     "During the race: Y pauses, + opens results with driving-frame statistics.",
                     "No game data is bundled or written. Replay input is bundled in RomFS."});
             }
-            if (selected) run(root,replay,panel,profile_frame,screen,pad);
+            if (selected) run(root,replay,panel,profile_frame,car_shading,screen,pad);
         } catch (const Cancel&) {
         } catch (const std::exception& e) {
             std::printf("ERROR: %s\n",e.what()); std::fflush(stdout);

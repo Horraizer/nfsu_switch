@@ -14,7 +14,7 @@ namespace sm = shader_manifest;
 thread_local DrawValidationAudit* validation_audit = nullptr;
 static_assert(sizeof(DrawFrameUniform) == 112);
 static_assert(sizeof(DrawInstanceUniform) == 64);
-static_assert(sizeof(DrawMaterialUniform) == 80);
+static_assert(sizeof(DrawMaterialUniform) == 192);
 
 bool frame_state(const RenderOptions& options, const RenderLimits& limits,
                  RecordedCommands& out, std::string& error) {
@@ -78,7 +78,7 @@ bool pipeline(RecordedDraw& draw, bool track, const RenderTexture* texture,
               std::uint32_t flags, std::uint32_t hash, const RenderOptions& options,
               std::string& error) {
     const char* name = track ? (texture ? "track_textured" : "track_fallback")
-                             : (texture ? "car_textured" : "car_fallback");
+                             : (texture ? (options.car_shading ? "car_shaded_textured" : "car_textured") : "car_fallback");
     for (const auto& p : sm::kPrograms) {
         if (std::strcmp(p.name, name) == 0) draw.program = &p;
     }
@@ -275,25 +275,26 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
         bool known = false;
         for (const auto& program : sm::kPrograms) if (d.program == &program) known = true;
         if (!known) return fail(d.name, "unknown shader program");
+        const bool shaded = std::strcmp(d.program->name,"car_shaded_textured")==0;
         if (d.program->buffer_count != 1 || d.program->buffers[0].index != 0 ||
-            d.program->attribute_count != 3 || d.program->texture_count > 1)
+            d.program->attribute_count != (shaded ? 4U : 3U) || d.program->texture_count > 1)
             return fail(d.name, "unsupported shader interface");
         unsigned locations = 0;
         for (std::size_t i = 0; i < d.program->attribute_count; ++i) {
             const auto& a = d.program->attributes[i];
-            if (a.location >= 3 || (locations & (1U << a.location)) || a.buffer != 0 ||
+            if (a.location >= (shaded ? 4U : 3U) || (locations & (1U << a.location)) || a.buffer != 0 ||
                 (a.format != sm::VertexFormat::float32x2 && a.format != sm::VertexFormat::float32x3 &&
                  a.format != sm::VertexFormat::unorm8x4))
                 return fail(d.name, "unsupported vertex attribute");
             locations |= 1U << a.location;
         }
-        // These are the layouts of the four compiled programs, held together
+        // These are the layouts of the five compiled programs, held together
         // by the manifest tests; never accept an arbitrary interface pointer.
         const bool textured = d.program->texture_count != 0;
-        const char* fragment = !textured ? "fallback.frag.glsl" :
+        const char* fragment = shaded ? "car_shaded.frag.glsl" : !textured ? "fallback.frag.glsl" :
             std::strcmp(d.program->name, "track_textured") == 0 ?
                 "textured_opaque.frag.glsl" : "textured.frag.glsl";
-        if (std::strcmp(d.program->vertex_source, "placed.vert.glsl") != 0 ||
+        if (std::strcmp(d.program->vertex_source, shaded ? "car_shaded.vert.glsl" : "placed.vert.glsl") != 0 ||
             std::strcmp(d.program->fragment_source, fragment) != 0 ||
             (textured && (d.program->textures[0].filter != sm::Filter::nearest ||
                           d.program->textures[0].wrap != sm::Wrap::repeat)))
@@ -370,8 +371,11 @@ bool record_car_commands(const PreparedCarScene& scene, const RenderOptions& opt
                     ? &scene.textures[override_texture]
                     : source.binding == BindingKind::resolved
                         ? &scene.textures[source.texture] : nullptr;
+                auto effective_options=options;
+                effective_options.car_shading = options.car_shading && source.shading.gates[0]!=0;
+                if (effective_options.car_shading) draw.material.surface=source.shading;
                 if (!buffers(scene.meshes[source.mesh], source, resources, draw, error) ||
-                    !pipeline(draw, false, texture, source.flags, source.texture_hash, options, error)) return false;
+                    !pipeline(draw, false, texture, source.flags, source.texture_hash, effective_options, error)) return false;
                 if (override_texture != kNoHandle) {
                     draw.texture_resource = resources.textures[override_texture];
                 }

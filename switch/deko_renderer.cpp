@@ -74,7 +74,7 @@ struct DekoRenderer::Impl {
     bool opaque_first = false;
     std::array<dk::Image, 2> colors;
     std::array<dk::Image, 2> depths;
-    dk::Shader vertex, textured, textured_opaque, fallback;
+    dk::Shader vertex, textured, textured_opaque, fallback, car_vertex, car_fragment;
     const RecordedCommands* commands = nullptr;
     const PreparedCommandSource* package = nullptr;
     std::vector<const RecordedDraw*> static_definitions;
@@ -366,7 +366,9 @@ struct DekoRenderer::Impl {
         }
         uniform_live = true;
         write_uniforms(source, 0);
-        if (!shader("placed.vert", DkStage_Vertex, vertex, error) ||
+        if (!shader("car_shaded.vert", DkStage_Vertex, car_vertex, error) ||
+            !shader("car_shaded.frag", DkStage_Fragment, car_fragment, error) ||
+            !shader("placed.vert", DkStage_Vertex, vertex, error) ||
             !shader("textured.frag", DkStage_Fragment, textured, error) ||
             !shader("textured_opaque.frag", DkStage_Fragment, textured_opaque, error) ||
             !shader("fallback.frag", DkStage_Fragment, fallback, error)) return false;
@@ -481,13 +483,15 @@ struct DekoRenderer::Impl {
         const bool has_texture = draw.texture_resource != kNoHandle;
         const bool cutout = deko_textured_uses_cutout_shader(
             state.alpha_test != sm::CompareOp::always, commands->frame.options[3]);
-        dk::Shader* fragment = !has_texture ? &fallback :
+        const bool shaded=std::strcmp(draw.program->name,"car_shaded_textured")==0;
+        dk::Shader* fragment = shaded ? &car_fragment : !has_texture ? &fallback :
             cutout ? &textured : &textured_opaque;
         if (bind_fixed_state)
-            out.bindShaders(DkStageFlag_GraphicsMask, {&vertex, fragment});
+            out.bindShaders(DkStageFlag_GraphicsMask, {shaded ? &car_vertex : &vertex, fragment});
         if (instance_addr)
             out.bindUniformBuffer(DkStage_Vertex, 1, instance_addr, sizeof(DrawInstanceUniform));
         out.bindUniformBuffer(DkStage_Fragment, 2, material_addr, sizeof(DrawMaterialUniform));
+        if (shaded) out.bindUniformBuffer(DkStage_Vertex, 2, material_addr, sizeof(DrawMaterialUniform));
         if (bind_fixed_state && has_texture) out.bindTextures(DkStage_Fragment, 0,
             dkMakeTextureHandle(static_cast<std::uint32_t>(draw.texture_resource), 0));
         if (bind_fixed_state) {
@@ -508,7 +512,7 @@ struct DekoRenderer::Impl {
             out.bindRasterizerState(raster); out.bindColorState(color);
             out.bindColorWriteState(write); out.bindBlendStates(0, blend); out.bindDepthStencilState(z);
             out.setAlphaRef(state.alpha_ref/255.0F);
-            std::array<DkVtxAttribState, 3> attributes{};
+            std::array<DkVtxAttribState, 4> attributes{};
             for (std::size_t a = 0; a < draw.program->attribute_count; ++a) {
                 const auto& input = draw.program->attributes[a];
                 const bool byte = input.format == sm::VertexFormat::unorm8x4;
