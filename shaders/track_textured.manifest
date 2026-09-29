@@ -1,9 +1,9 @@
 # Interface manifest: the track path's textured draw.
 #
 # One TrackDrawList entry whose group's binding is resolved, drawn by
-# render_track_draw_list (src/track_render.cpp). That function refuses
-# MaterialStateMode::retail, because the retail state is proven for the car
-# draw path only, so the one variant here is the opaque one. Record kinds:
+# render_track_draw_list (src/track_render.cpp). Retail texture-info bytes
+# +85/+86 select the alpha test and blend; the world-effect branch disables
+# depth writes for a blended draw. Record kinds:
 # docs/SHADER_PIPELINE.md.
 
 format 1
@@ -49,3 +49,8 @@ texture name=baseTexture binding=0 stage=fragment type=sampler2D filter=nearest 
 output location=0 name=color type=vec4 format=rgba8
 
 variant name=opaque alpha_test=always blend=off depth_test=less_equal depth_write=on color_write=rgb cull=none
+variant name=alpha_tested alpha_test=greater alpha_ref=170 blend=off depth_test=less_equal depth_write=on color_write=rgb cull=none
+variant name=source_over alpha_test=always blend=on blend_src=src_alpha blend_dst=one_minus_src_alpha blend_op=add depth_test=less_equal depth_write=off color_write=rgb cull=none
+variant name=additive alpha_test=always blend=on blend_src=src_alpha blend_dst=one blend_op=add depth_test=less_equal depth_write=off color_write=rgb cull=none
+variant name=alpha_tested_source_over alpha_test=greater alpha_ref=170 blend=on blend_src=src_alpha blend_dst=one_minus_src_alpha blend_op=add depth_test=less_equal depth_write=off color_write=rgb cull=none
+variant name=alpha_tested_additive alpha_test=greater alpha_ref=170 blend=on blend_src=src_alpha blend_dst=one blend_op=add depth_test=less_equal depth_write=off color_write=rgb cull=none

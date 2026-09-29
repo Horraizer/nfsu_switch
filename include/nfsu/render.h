@@ -193,11 +193,12 @@ enum class MaterialStateMode {
     // selecting the retail state is byte for byte the frame of any earlier
     // build.
     off,
-    // Apply the proven state: the texture-info alpha test and its GREATER
-    // 0xAA rule, the texture-info blend selection, the flag-controlled
-    // coefficient gates, and the bounded transparent draw order. State is
+    // Apply the traced texture-info alpha test (GREATER 0xAA) and blend
+    // selection. The car path also uses flag-controlled coefficient gates
+    // and its bounded transparent draw order. The track path takes an
+    // already ordered list and uses a neutral alpha coefficient. State is
     // taken only from a draw's own resolved texture; a draw with no
-    // resolved texture has no proven state and stays opaque.
+    // resolved texture stays opaque.
     retail
 };
 
@@ -333,9 +334,9 @@ struct RenderStats {
     // Fragments written by a blended draw, and those of them that landed on
     // a pixel a blended draw had already written. The second counter reports
     // how much transparency stacks in the frame. It is a diagnostic, not a
-    // proof of order independence: a blended draw writes depth, as the
-    // retail path does, so the draw order also decides which later blended
-    // fragments are rejected outright. See docs/RENDERER.md.
+    // proof of order independence: a blended car draw writes depth, while
+    // a blended track draw leaves it unchanged. Draw order still determines
+    // the colour under each later fragment. See docs/TRACK_MATERIALS.md.
     std::uint64_t fragments_blended = 0;
     std::uint64_t fragments_blend_overlap = 0;
     std::uint64_t pixels_drawn = 0;
@@ -401,6 +402,9 @@ struct RasterMaterial {
     bool alpha_test = false;
     std::uint8_t alpha_ref = kRenderAlphaRef;
     RenderBlendMode blend = RenderBlendMode::disabled;
+    // The world-effect branch at speed.exe 0x40F53E..0x40F543 disables
+    // depth writes for blended textures. Car draws keep the default true.
+    bool depth_write = true;
     // Source alpha is the texel alpha times this factor, rounded and
     // clamped to 0..255. 1 is the identity.
     double alpha_scale = 1.0;

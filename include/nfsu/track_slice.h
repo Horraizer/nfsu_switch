@@ -20,6 +20,8 @@ struct TrackSlice {
     AssetCheckReport assets;
     std::size_t sections = 0;
     std::uint64_t input_bytes = 0;
+    std::size_t texture_spillover_sections = 0;
+    std::uint64_t texture_spillover_bytes = 0;
     std::uint64_t streaming_bytes = 0;
     std::uint64_t texture_bytes = 0;
 };

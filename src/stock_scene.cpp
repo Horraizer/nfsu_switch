@@ -9,6 +9,26 @@
 
 namespace nfsu {
 
+void alias_stock_window_textures(GeometryReport& geometry) noexcept {
+    constexpr std::uint32_t kWindow = 0x834B8017U;
+    for (Mesh& mesh : geometry.meshes) {
+        for (std::uint32_t& hash : mesh.texture_hashes) {
+            switch (hash) {
+            case 0x7B220DDFU: // WINDOW_FRONT
+            case 0x1B0763A0U: // WINDOW_REAR
+            case 0xE7E4EF49U: // WINDOW_LEFT_FRONT
+            case 0x4CDEBFCAU: // WINDOW_LEFT_REAR
+            case 0x60F8B13CU: // WINDOW_RIGHT_FRONT
+            case 0x0AB88F5DU: // WINDOW_RIGHT_REAR
+                hash = kWindow;
+                break;
+            default:
+                break;
+            }
+        }
+    }
+}
+
 namespace {
 
 // Slot ids the draw code treats specially. car_slot_name is the authority
@@ -515,6 +535,58 @@ bool build_stock_scene(
         return false;
     }
     prepared.profile = SelectionProfile::stock_car;
+    for (PreparedDraw& draw : prepared.draws) {
+        // A stock car has no selected sponsor decal. Retail maps its
+        // DUMMY_DECAL1..8 slots to DEFAULTALPHA, which the car draw skips.
+        if (draw.binding == BindingKind::unresolved &&
+            is_stock_dummy_decal_hash(draw.texture_hash)) {
+            draw.drawable = false;
+        }
+    }
+    const auto uses_global_brake = [&](std::size_t mesh) {
+        return std::any_of(prepared.draws.begin(), prepared.draws.end(),
+            [mesh](const PreparedDraw& draw) {
+                return draw.mesh == mesh && draw.drawable &&
+                       draw.texture_hash == kBrakeGlobalHash;
+            });
+    };
+    std::size_t brake_left_texture = kNoHandle;
+    const bool has_left_brake = std::any_of(drafts.begin(), drafts.end(),
+        [&](const InstanceDraft& draft) {
+            return draft.slot == kSlotBrake && (draft.copy == 0 || draft.copy == 3) &&
+                uses_global_brake(handles.find({draft.mesh.source, draft.mesh.index})->second);
+        });
+    if (has_left_brake) {
+        for (std::size_t i = 0; i < prepared.textures.size(); ++i) {
+            if (prepared.textures[i].claims_hash(kBrakeGlobalLeftHash)) {
+                brake_left_texture = i;
+                break;
+            }
+        }
+        for (const RenderTexture& texture : textures.textures) {
+            if (brake_left_texture == kNoHandle && texture.usable() &&
+                texture.claims_hash(kBrakeGlobalLeftHash)) {
+                std::uint64_t remaining = limits.max_texture_bytes;
+                if (texture.payload().size() > remaining) {
+                    error = "prepared textures would exceed " +
+                            std::to_string(limits.max_texture_bytes) + " bytes";
+                    return false;
+                }
+                remaining -= texture.payload().size();
+                for (const RenderTexture& existing : prepared.textures) {
+                    if (existing.payload().size() > remaining) {
+                        error = "prepared textures would exceed " +
+                                std::to_string(limits.max_texture_bytes) + " bytes";
+                        return false;
+                    }
+                    remaining -= existing.payload().size();
+                }
+                brake_left_texture = prepared.textures.size();
+                prepared.textures.push_back(texture);
+                break;
+            }
+        }
+    }
     prepared.instances.reserve(drafts.size());
     for (const InstanceDraft& draft : drafts) {
         PreparedInstance instance;
@@ -529,6 +601,10 @@ bool build_stock_scene(
         instance.part_lod = static_cast<std::uint32_t>(draft.lod);
         instance.copy = static_cast<std::uint32_t>(draft.copy);
         instance.mesh_hash = draft.hash;
+        if (draft.slot == kSlotBrake && (draft.copy == 0 || draft.copy == 3) &&
+            uses_global_brake(instance.mesh)) {
+            instance.brake_left_texture = brake_left_texture;
+        }
         prepared.instances.push_back(instance);
     }
     for (StockSlotReport& entry : result.slots) {

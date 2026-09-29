@@ -11,24 +11,50 @@ std::filesystem::path asset(const std::filesystem::path& root, const TrackSlice&
     return {};
 }
 }
-bool RaceRun::start(const std::filesystem::path& root, const TrackSlice& track, std::string& error) {
+bool RaceRun::read_metadata(const std::filesystem::path& front, const std::filesystem::path& global,
+                            std::string& error, TrackSliceLoadObserver* observer) {
+    {
+        std::vector<unsigned char> bytes;
+        const auto events = load_race_event_table(front, bytes);
+        if (observer) observer->checkpoint("race event table");
+        const auto tracks = load_track_info_table(global, bytes);
+        if (observer) observer->checkpoint("race track info");
+        const auto* event = find_race_event(events, 1);
+        if (!event || event->races.size() != 1) { error = "event 1 missing or not one race"; return false; }
+        const auto& slot = event->races[0];
+        const auto* info = find_track_info(tracks, slot.track);
+        if (!info || slot.track != 1003 || slot.laps != 2 || slot.direction != 0) {
+            error = "event 1 must be forward track 1003, two laps"; return false;
+        }
+        laps_ = slot.laps;
+        direction_ = slot.direction;
+        lap_skip_ = info->lap_skip;
+    }
+    if (observer) observer->checkpoint("race metadata released");
+    metadata_ready_ = true;
+    return true;
+}
+bool RaceRun::prepare_metadata(const std::filesystem::path& root, std::string& error,
+                               TrackSliceLoadObserver* observer) {
+    if (metadata_ready_ || session_) { error = "race metadata already prepared"; return false; }
+    return read_metadata(root / "Frontend/FRONTB.LZC", root / "Global/GLOBALB.BUN", error, observer);
+}
+bool RaceRun::start(const std::filesystem::path& root, const TrackSlice& track, std::string& error,
+                    TrackSliceLoadObserver* observer) {
     if (session_ || track.assets.verdict != AssetVerdict::complete) {
         error = "race requires a fresh session and a complete first-lap asset check"; return false;
     }
-    std::vector<unsigned char> bytes;
-    const auto events = load_race_event_table(asset(root, track, "Frontend/FRONTB.LZC"), bytes);
-    const auto tracks = load_track_info_table(asset(root, track, "Global/GLOBALB.BUN"), bytes);
-    const auto* event = find_race_event(events, 1);
-    if (!event || event->races.size() != 1) { error = "event 1 missing or not one race"; return false; }
-    const auto& slot = event->races[0];
-    const auto* info = find_track_info(tracks, slot.track);
-    if (!info || slot.track != 1003 || slot.laps != 2 || slot.direction != 0) {
-        error = "event 1 must be forward track 1003, two laps"; return false;
-    }
+    if (!metadata_ready_ && !read_metadata(asset(root, track, "Frontend/FRONTB.LZC"),
+                                             asset(root, track, "Global/GLOBALB.BUN"), error, observer)) return false;
     const auto trackb = asset(root, track, "Tracks/TRACKB1003.lzc");
-    if (!load_vehicle_track_course(trackb, slot.laps, slot.direction, info->lap_skip, 0, course_, error)) return false;
-    zones_ = load_track_zones(trackb, bytes);
-    table_ = parse_track_stream_table(bytes.data(), bytes.size());
+    if (!load_vehicle_track_course(trackb, laps_, direction_, lap_skip_, 0, course_, error)) return false;
+    if (observer) observer->checkpoint("race course prepared");
+    {
+        std::vector<unsigned char> bytes;
+        zones_ = load_track_zones(trackb, bytes);
+        table_ = parse_track_stream_table(bytes.data(), bytes.size());
+    }
+    if (observer) observer->checkpoint("race zones prepared");
     TrackStreamSelection selected;
     if (!select_track_stream_sections(table_, zones_, 1003, TrackStreamSet::permanent, selected, error)) return false;
     prepared_.insert(selected.records.begin(), selected.records.end());
@@ -36,6 +62,7 @@ bool RaceRun::start(const std::filesystem::path& root, const TrackSlice& track, 
     TrackResidencyOptions options; options.budget_bytes = track_stream_pool_bytes(table_);
     std::vector<TrackResidencyStep> startup;
     if (!residency_.start(table_, zones_, 1003, track_residency_table_costs(table_), options, startup, error)) return false;
+    if (observer) observer->checkpoint("race residency prepared");
     const std::string version = "NFSU_RACE_STATE 1\n";
     sequence_.update(version.data(), version.size());
     for (const auto& step : startup) {
@@ -47,7 +74,10 @@ bool RaceRun::start(const std::filesystem::path& root, const TrackSlice& track, 
         error = "race startup differs from the uploaded permanent set"; return false;
     }
     session_ = std::make_unique<RaceSession>(course_);
-    return session_->start(error);
+    if (observer) observer->checkpoint("race session constructed");
+    const auto started = session_->start(error);
+    if (observer) observer->checkpoint("race session started");
+    return started;
 }
 bool RaceRun::apply(const TrackResidencyStep& step, std::string& error) {
     for (auto r : step.releases) { resident_.erase(r); ++releases_; }

@@ -345,10 +345,10 @@ std::size_t track_scene_instance_of(
 // The per-frame draw list
 // ---------------------------------------------------------------------
 
-// The order the entries are in. Both are total and deterministic; neither
-// is the retail draw queue, which is decoded for the car material path in
-// docs/MATERIALS.md and is not proven for the track path by anything this
-// project has read. A backend that needs a transparency order builds one.
+// The order the entries are in. The retail bucket option applies the
+// texture row and batching recovered at speed.exe 0x40F225..0x40F258 and
+// 0x40ED50..0x40F0CF. Effect-column selection for scenery is still an
+// approximation; see docs/TRACK_MATERIALS.md.
 enum class TrackDrawOrder {
     // The visible set's own order, and inside one instance the drawable
     // groups of its mesh in prepared order. When the set came out of
@@ -365,12 +365,15 @@ enum class TrackDrawOrder {
     // is measurable, so read cost.texture_binds rather than assuming it
     // equals cost.groups.
     //
-    // It is a stable reordering of the same entries, so the two orders
-    // always hold the same multiset.
+    // It is a stable reordering of the same entries, so all orders
+    // hold the same multiset.
     material_group,
+    // Ascending texture row, then first use of each texture in visible
+    // instance order; copies of that texture stay in their submitted order.
+    retail_bucket,
 };
 
-// "visible instance" or "material group". Stable: tests compare against it.
+// "visible instance", "material group" or "retail bucket".
 const char* track_draw_order_name(TrackDrawOrder order) noexcept;
 
 struct TrackDrawListLimits {

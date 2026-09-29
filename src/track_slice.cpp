@@ -75,14 +75,47 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         std::vector<RenderTextureSource> sources;
         std::vector<std::size_t> owners;
         track_stream_texture_sources(load, &wanted, sources, owners);
-        // The first pass parsed geometry, scenery and source validity. Drop
-        // its raw texture ranges; re-read just one selected source at a time.
-        // Source order and hash claims remain the decoder's responsibility.
+        // Only source order is needed now. Decode each source from a fresh
+        // range read below, so the two section sets never retain raw bytes
+        // alongside decoded GPU blocks.
         for (auto& source : sources) { source.packs.clear(); source.bytes = nullptr; }
         for (auto& section : load.sections) {
             section.packs = {};
             std::vector<unsigned char>().swap(section.bytes);
         }
+        const std::size_t regular_sources = owners.size();
+        TrackStreamSelection spillover_selection;
+        if (!select_track_texture_spillover_1003(table, selected.records,
+                                                 spillover_selection, error)) return false;
+        TrackStreamLoad spillover;
+        TrackStreamLoadLimits spillover_limits;
+        spillover_limits.max_total_bytes = kStreamingRegionBudgetPlaceholder;
+        spillover_limits.release_non_texture_bytes = true;
+        spillover_limits.poll = [&] { checkpoint("texture spillover sections"); };
+        if (!load_track_stream_sections(table, spillover_selection, streams,
+                                        spillover_limits, spillover, error) || !spillover.ok()) {
+            if (error.empty()) error = "event-1 texture spillover parse failed";
+            return false;
+        }
+        for (const TrackStreamSection& section : spillover.sections) {
+            if (!section.loaded || section.geometry_roots != 0 ||
+                section.scenery_sections != 0 || section.texture_packs == 0) {
+                error = "event-1 texture spillover section is not texture-only";
+                return false;
+            }
+        }
+        result.texture_spillover_sections = spillover.sections.size();
+        result.texture_spillover_bytes = spillover.bytes_read;
+        std::vector<RenderTextureSource> extra_sources;
+        std::vector<std::size_t> extra_owners;
+        track_stream_texture_sources(spillover, &wanted, extra_sources, extra_owners);
+        sources.insert(sources.end(), extra_sources.begin(), extra_sources.end());
+        for (auto& source : sources) { source.packs.clear(); source.bytes = nullptr; }
+        for (auto& section : spillover.sections) {
+            section.packs = {};
+            std::vector<unsigned char>().swap(section.bytes);
+        }
+        const std::size_t stream_sources = sources.size();
         const char* names[] = {"Tracks/TEX1003TRACK.BIN", "Global/INGAMEB.BUN", "Global/GLOBALB.BUN"};
         sources.resize(sources.size() + 3);
         std::vector<unsigned char> source_bytes;
@@ -94,8 +127,10 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         texture_limits.load_source = [&](std::size_t source, RenderTextureSource& descriptor,
                                          std::string& problem) {
             checkpoint("texture source read");
-            if (source < owners.size()) {
-                const auto& section = load.sections[owners[source]];
+            if (source < stream_sources) {
+                const auto& section = source < regular_sources ?
+                    load.sections[owners[source]] :
+                    spillover.sections[extra_owners[source - regular_sources]];
                 std::ifstream input(section.file_index == kTrackStreamFileStream ?
                                     streams.stream : streams.pack, std::ios::binary);
                 source_bytes.resize(static_cast<std::size_t>(section.size));
@@ -107,7 +142,7 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
                 checkpoint("texture source parse");
                 source_packs = parse_texture_pack_set(source_bytes.data(), source_bytes.size());
             } else {
-                const char* name = names[source - owners.size()];
+                const char* name = names[source - stream_sources];
                 checkpoint(name);
                 source_packs = load_texture_pack_set(path(name), source_bytes);
             }
@@ -131,6 +166,7 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         // consults the pack parser or its borrowed source bytes again.
         sources.clear();
         std::vector<TrackStreamSection>().swap(load.sections);
+        std::vector<TrackStreamSection>().swap(spillover.sections);
         TrackSceneOptions options;
         options.region.max_texture_bytes = kStreamingRegionBudgetPlaceholder;
         checkpoint("scene preparation");
@@ -209,8 +245,10 @@ bool make_track_slice_frame(const TrackSlice& slice, std::size_t sample,
         if (!culled.ok() || !culled.policy_held) { error = "track visibility policy degraded"; return false; }
         TrackDrawList list;
         TrackDrawListOptions list_options;
+        list_options.order = TrackDrawOrder::retail_bucket;
         if (!build_track_draw_list(slice.scene, culled, list_options, list, error)) return false;
         if (list.entries.size() > kTrackSliceDrawLimit) continue;
+        options.material_state = MaterialStateMode::retail;
         if (!record_track_commands(slice.scene, list, options, {}, result.commands, error)) return false;
         DrawExecutionPlan plan;
         if (!plan_draw_execution(result.commands, plan, error)) return false;

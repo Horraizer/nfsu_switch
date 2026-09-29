@@ -300,7 +300,7 @@ if(NFSU_BUILD_TESTS)
         tests/stock_scene_tests.cpp
     )
 
-    target_link_libraries(nfsu_stock_scene_tests PRIVATE nfsu_stock_scene)
+    target_link_libraries(nfsu_stock_scene_tests PRIVATE nfsu_stock_scene nfsu_draw_commands nfsu_render)
     nfsu_enable_warnings(nfsu_stock_scene_tests)
     add_test(NAME nfsu_stock_scene_tests COMMAND nfsu_stock_scene_tests)
 
@@ -739,6 +739,10 @@ nfsu_enable_warnings(nfsu_platform_desktop)
 add_executable(nfsu_frame_budget_probe tools/frame_budget_probe.cpp)
 target_link_libraries(nfsu_frame_budget_probe PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_platform_desktop)
 nfsu_enable_warnings(nfsu_frame_budget_probe)
+if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    # The probe replaces new/delete; DLL allocator calls cannot interpose them.
+    target_link_options(nfsu_frame_budget_probe PRIVATE -static-libstdc++ -static-libgcc)
+endif()
 
 # The argument conversion is the desktop filesystem service: its three free
 # functions now go through the FileSystemService it implements, and the
@@ -791,7 +795,7 @@ set(NFSU_NEUTRAL_LIBRARIES
     nfsu_inspect nfsu_inspect_window nfsu_input nfsu_platform
     nfsu_platform_fakes nfsu_input_camera nfsu_memory nfsu_gpu_upload nfsu_draw_commands
     nfsu_sha256 nfsu_stock_frame nfsu_screen_text nfsu_stock_view nfsu_frame_compare
-    nfsu_audio)
+    nfsu_audio nfsu_audio_playback nfsu_race_audio)
 # nfsu_race_route (issue #61) decodes a TRACKB bundle with nothing but the
 # standard library, nfsu_core's JDLZ decoder and nfsu_track_zones' polygon
 # test, reads with std::ifstream as nfsu_core's loaders do, and reads no
@@ -813,7 +817,10 @@ list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_route)
 # its own comment below), so anything outside the allowed standard headers
 # and this project's own is platform code by that rule alone. docs/
 # PLATFORM_SERVICES.md says what would move each one behind a service.
-set(NFSU_PLATFORM_LIBRARIES nfsu_arg_path nfsu_render nfsu_texture_export nfsu_platform_desktop nfsu_det_sqrt)
+# nfsu_audio_output owns waveOut or audout and its callback thread. Audio
+# device lifetime and buffer submission are platform services separate from
+# the existing input/file/render facade in include/nfsu/platform.h.
+set(NFSU_PLATFORM_LIBRARIES nfsu_arg_path nfsu_render nfsu_texture_export nfsu_platform_desktop nfsu_det_sqrt nfsu_audio_output)
 
 # Sources of a neutral library that are platform code on purpose: the one
 # window backend. src/texture.cpp used to be exempted here too, whole, for
@@ -1285,6 +1292,57 @@ if(NFSU_BUILD_TESTS)
 endif()
 
 # ---------------------------------------------------------------------------
+# The vehicle tuning tables (issue #57)
+# ---------------------------------------------------------------------------
+#
+# docs/VEHICLE_TUNING.md: the per-level upgrade tables of a CarTypeInfo
+# record, and the rule 0x00575960 folds them into a car instance's setup
+# sub-object with. A library of its own, declared here rather than in
+# cmake/vehicle_libraries.cmake, because nothing on the console reads it yet:
+# this issue recovers the data and does not wire it into the driving model,
+# so the Switch configure, which returns above this point, builds nothing
+# from it. When the model does read it, this moves into that file.
+#
+# It links nfsu_vehicle for the record offsets, the handling decoder it
+# validates a record with and the two axle blocks it reuses.
+add_library(nfsu_vehicle_tuning
+    src/vehicle_tuning.cpp
+)
+
+target_include_directories(nfsu_vehicle_tuning
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_compile_features(nfsu_vehicle_tuning PUBLIC cxx_std_17)
+target_link_libraries(nfsu_vehicle_tuning PUBLIC nfsu_vehicle)
+nfsu_enable_warnings(nfsu_vehicle_tuning)
+
+# `vehicle-tuning` decodes the tables of every car type of a GLOBALB.BUN.
+target_link_libraries(nfsu_probe PRIVATE nfsu_vehicle_tuning)
+
+# Neutral for the same reason nfsu_vehicle is: it reads no file and no clock
+# and calls nothing but the standard library and the libraries above it. The
+# caller hands it the record bytes.
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_vehicle_tuning)
+
+if(NFSU_BUILD_TESTS)
+    # The tables against their recovered writers: the built-in 240SX table's
+    # own bytes and their hash, the round trip, the refusals each by its
+    # record offset, the box inertia rule, the upgrade application with
+    # nothing installed, with every table at level 3 and with the boolean
+    # items alone, the level gate, and the derived gear count. It reads no
+    # retail file.
+    add_executable(nfsu_vehicle_tuning_tests
+        tests/vehicle_tuning_tests.cpp
+    )
+
+    target_link_libraries(nfsu_vehicle_tuning_tests PRIVATE nfsu_vehicle_tuning)
+    nfsu_enable_warnings(nfsu_vehicle_tuning_tests)
+    add_test(NAME nfsu_vehicle_tuning_tests COMMAND nfsu_vehicle_tuning_tests)
+    set_tests_properties(nfsu_vehicle_tuning_tests PROPERTIES TIMEOUT 120)
+endif()
+
+# ---------------------------------------------------------------------------
 # The race state machine (issue #62)
 # ---------------------------------------------------------------------------
 #
@@ -1468,7 +1526,8 @@ endif()
 list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_session)
 add_executable(nfsu_race src/race_main.cpp src/race_window.cpp)
 target_link_libraries(nfsu_race PRIVATE nfsu_race_session nfsu_race_events
-    nfsu_track_residency nfsu_track_render nfsu_stock_frame nfsu_screen_text)
+    nfsu_track_residency nfsu_track_render nfsu_stock_frame nfsu_screen_text
+    nfsu_race_audio)
 nfsu_enable_warnings(nfsu_race)
 if(WIN32)
     target_link_libraries(nfsu_race PRIVATE user32 gdi32)
@@ -1489,11 +1548,26 @@ add_executable(nfsu_audio_dump src/audio_dump_main.cpp)
 target_link_libraries(nfsu_audio_dump PRIVATE nfsu_audio nfsu_sha256 nfsu_arg_path)
 nfsu_enable_warnings(nfsu_audio_dump)
 if(NFSU_BUILD_TESTS)
+    add_executable(nfsu_race_frame_stats_tests tests/race_frame_stats_tests.cpp)
+    target_include_directories(nfsu_race_frame_stats_tests PRIVATE include)
+    nfsu_enable_warnings(nfsu_race_frame_stats_tests)
+    add_test(NAME nfsu_race_frame_stats_tests COMMAND nfsu_race_frame_stats_tests)
+
     add_executable(nfsu_audio_tests tests/audio_tests.cpp)
     target_link_libraries(nfsu_audio_tests PRIVATE nfsu_audio)
     nfsu_enable_warnings(nfsu_audio_tests)
     add_test(NAME nfsu_audio_tests COMMAND nfsu_audio_tests)
     set_tests_properties(nfsu_audio_tests PROPERTIES TIMEOUT 10)
+    add_executable(nfsu_audio_playback_tests tests/audio_playback_tests.cpp)
+    target_link_libraries(nfsu_audio_playback_tests PRIVATE nfsu_audio_playback)
+    nfsu_enable_warnings(nfsu_audio_playback_tests)
+    add_test(NAME nfsu_audio_playback_tests COMMAND nfsu_audio_playback_tests)
+    set_tests_properties(nfsu_audio_playback_tests PROPERTIES TIMEOUT 10)
+    add_executable(nfsu_race_audio_tests tests/race_audio_tests.cpp)
+    target_link_libraries(nfsu_race_audio_tests PRIVATE nfsu_race_audio)
+    nfsu_enable_warnings(nfsu_race_audio_tests)
+    add_test(NAME nfsu_race_audio_tests COMMAND nfsu_race_audio_tests)
+    set_tests_properties(nfsu_race_audio_tests PROPERTIES TIMEOUT 10)
     add_test(NAME nfsu_audio_retail
         COMMAND ${CMAKE_COMMAND}
             -DAUDIO_DUMP=$<TARGET_FILE:nfsu_audio_dump>
@@ -1501,6 +1575,15 @@ if(NFSU_BUILD_TESTS)
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_retail.cmake)
     set_tests_properties(nfsu_audio_retail PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED")
+    add_executable(nfsu_race_loader_peak_tests tests/race_loader_peak_tests.cpp)
+    target_link_libraries(nfsu_race_loader_peak_tests PRIVATE
+        nfsu_race_run nfsu_race_audio nfsu_posix_file_system)
+    nfsu_enable_warnings(nfsu_race_loader_peak_tests)
+    if(MINGW)
+        # Count allocations in the executable and its C++ dependencies.
+        target_link_options(nfsu_race_loader_peak_tests PRIVATE -static-libstdc++ -static-libgcc)
+    endif()
+    add_test(NAME nfsu_race_loader_peak_tests COMMAND nfsu_race_loader_peak_tests)
     add_executable(nfsu_race_run_tests tests/race_run_tests.cpp)
     target_link_libraries(nfsu_race_run_tests PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_platform_desktop)
     nfsu_enable_warnings(nfsu_race_run_tests)
@@ -1511,4 +1594,69 @@ if(NFSU_BUILD_TESTS)
     endif()
     add_test(NAME nfsu_race_run_tests COMMAND nfsu_race_run_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt)
+endif()
+
+# ---------------------------------------------------------------------------
+# The shipped racing line and a path-following controller (issue #63)
+# ---------------------------------------------------------------------------
+#
+# docs/RACING_LINE.md. Two libraries of their own, appended so that no list
+# above is reordered, and not in cmake/*.cmake because nothing on the console
+# reads either yet: this issue recovers the route data and delivers a
+# controller that can be tested on its own, and wires no opponent into the
+# race. The Switch configure returns above this point and builds neither.
+add_library(nfsu_racing_line
+    src/racing_line.cpp
+)
+
+target_include_directories(nfsu_racing_line
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_compile_features(nfsu_racing_line PUBLIC cxx_std_17)
+nfsu_enable_warnings(nfsu_racing_line)
+
+add_library(nfsu_path_follow
+    src/path_follow.cpp
+)
+
+target_include_directories(nfsu_path_follow
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_compile_features(nfsu_path_follow PUBLIC cxx_std_17)
+nfsu_enable_warnings(nfsu_path_follow)
+
+# Both read no file, no clock and no random device; the caller hands them
+# bytes and states.
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_racing_line nfsu_path_follow)
+
+if(NFSU_BUILD_TESTS)
+    # The route chunk over synthetic payloads: every decoded field at its
+    # offset, the lane table and its enable bytes, and each refusal
+    # (truncated, oversized, malformed). With NFSU_RETAIL_ROOT set it also
+    # decodes Tracks/TRACKB1003.lzc read-only and pins the file hash, the
+    # route and point counts and a hash over the decoded values.
+    add_executable(nfsu_racing_line_tests
+        tests/racing_line_tests.cpp
+    )
+
+    target_link_libraries(nfsu_racing_line_tests
+        PRIVATE nfsu_racing_line nfsu_core nfsu_sha256)
+    nfsu_enable_warnings(nfsu_racing_line_tests)
+    add_test(NAME nfsu_racing_line_tests COMMAND nfsu_racing_line_tests)
+    set_tests_properties(nfsu_racing_line_tests PROPERTIES TIMEOUT 120)
+
+    # The controller: the projection and its sign, the lookahead, the speed
+    # window, the refusals, determinism and the seed, and the three recovery
+    # cases issue #63 names - a stalled car, one that missed a checkpoint and
+    # one a collision displaced.
+    add_executable(nfsu_path_follow_tests
+        tests/path_follow_tests.cpp
+    )
+
+    target_link_libraries(nfsu_path_follow_tests PRIVATE nfsu_path_follow)
+    nfsu_enable_warnings(nfsu_path_follow_tests)
+    add_test(NAME nfsu_path_follow_tests COMMAND nfsu_path_follow_tests)
+    set_tests_properties(nfsu_path_follow_tests PROPERTIES TIMEOUT 60)
 endif()

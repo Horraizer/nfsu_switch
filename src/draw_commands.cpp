@@ -6,10 +6,12 @@
 #include <limits>
 #include <new>
 #include <utility>
+#include <stdexcept>
 
 namespace nfsu {
 namespace {
 namespace sm = shader_manifest;
+thread_local DrawValidationAudit* validation_audit = nullptr;
 static_assert(sizeof(DrawFrameUniform) == 112);
 static_assert(sizeof(DrawInstanceUniform) == 64);
 static_assert(sizeof(DrawMaterialUniform) == 80);
@@ -82,21 +84,27 @@ bool pipeline(RecordedDraw& draw, bool track, const RenderTexture* texture,
     }
     bool alpha = false;
     RenderBlendMode blend = RenderBlendMode::disabled;
-    if (!track && texture && options.material_state == MaterialStateMode::retail) {
+    if (texture && options.material_state == MaterialStateMode::retail) {
         alpha = render_alpha_test_enabled(texture->alpha_test_mode);
         blend = render_blend_mode_of(texture->alpha_blend_mode);
-        const auto gates = material_coefficient_gates(flags, options.coefficients.environment_enabled);
-        const auto& c = options.coefficients;
-        draw.material.alpha[0] = gates.diffuse ? static_cast<float>(c.alpha_min) : 0;
-        draw.material.alpha[1] = gates.diffuse ? static_cast<float>(c.alpha_range) : 0;
-        draw.material.alpha[2] = gates.diffuse ? 0.0F : 1.0F;
-        if (gates.diffuse && gates.environment) {
-            for (std::size_t i = 0; i < 3; ++i) {
-                draw.material.environment_min[i] = static_cast<float>(c.environment_min[i]);
-                draw.material.environment_range[i] = static_cast<float>(c.environment_range[i]);
-                draw.material.environment_color[i] = c.environment_color[i];
+        if (track) {
+            // The world-effect diffuse alpha coefficient is not decoded.
+            // Match the CPU reference's explicitly neutral approximation.
+            draw.material.alpha[0] = 1.0F;
+        } else {
+            const auto gates = material_coefficient_gates(flags, options.coefficients.environment_enabled);
+            const auto& c = options.coefficients;
+            draw.material.alpha[0] = gates.diffuse ? static_cast<float>(c.alpha_min) : 0;
+            draw.material.alpha[1] = gates.diffuse ? static_cast<float>(c.alpha_range) : 0;
+            draw.material.alpha[2] = gates.diffuse ? 0.0F : 1.0F;
+            if (gates.diffuse && gates.environment) {
+                for (std::size_t i = 0; i < 3; ++i) {
+                    draw.material.environment_min[i] = static_cast<float>(c.environment_min[i]);
+                    draw.material.environment_range[i] = static_cast<float>(c.environment_range[i]);
+                    draw.material.environment_color[i] = c.environment_color[i];
+                }
+                draw.material.environment_color[3] = static_cast<float>(c.environment_power);
             }
-            draw.material.environment_color[3] = static_cast<float>(c.environment_power);
         }
     }
     const char* variant = blend == RenderBlendMode::source_over
@@ -169,6 +177,52 @@ bool triangle_limits(std::uint64_t source, std::uint64_t submitted,
 }
 } // namespace
 
+std::string RecordedDrawView::diagnostic_name() const {
+    return track_instance ? "track group " + std::to_string(definition.group) + " copy " + std::to_string(instance)
+                          : definition.name;
+}
+bool RecordedCommands::generation_valid() const {
+    return !source_ || generation_ == source_->command_generation();
+}
+UploadTable& RecordedCommands::owning_uploads() {
+    if (borrowed()) throw std::logic_error("borrowed frame has no owning upload table");
+    return uploads;
+}
+const UploadTable& RecordedCommands::owning_uploads() const {
+    if (borrowed()) throw std::logic_error("borrowed frame has no owning upload table");
+    return uploads;
+}
+std::vector<RecordedDraw>& RecordedCommands::owning_draws() {
+    if (borrowed()) throw std::logic_error("borrowed frame has no owning draws");
+    return draws;
+}
+const std::vector<RecordedDraw>& RecordedCommands::owning_draws() const {
+    if (borrowed()) throw std::logic_error("borrowed frame has no owning draws");
+    return draws;
+}
+const UploadTable& RecordedCommands::resource_table() const {
+    if (!generation_valid()) throw std::logic_error("expired command generation");
+    return source_ ? source_->resource_table() : uploads;
+}
+std::size_t RecordedCommands::draw_count() const {
+    if (!generation_valid()) throw std::logic_error("expired command generation");
+    return source_ ? source_->selected_draw_count() : draws.size();
+}
+RecordedDrawView RecordedCommands::draw_view(std::size_t i) const {
+    if (!generation_valid()) throw std::logic_error("expired command generation");
+    if (source_) return source_->selected_draw(i);
+    const auto& draw = draws.at(i);
+    return {draw, draw.instance, draw.placement, draw.material, false};
+}
+bool record_frame_state(const RenderOptions& options, const RenderLimits& limits,
+                        RecordedCommands& out, std::string& error) {
+    return frame_state(options, limits, out, error);
+}
+
+DrawValidationAudit* set_draw_validation_audit(DrawValidationAudit* audit) noexcept {
+    auto* previous = validation_audit; validation_audit = audit; return previous;
+}
+
 bool validate_recorded_commands(const RecordedCommands& commands, std::string& error) {
     error.clear();
     const auto fail = [&](const std::string& name, const char* reason) {
@@ -176,7 +230,8 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
     };
     if (!commands.width || !commands.height || commands.width > 16384 || commands.height > 16384)
         return fail("draw commands", "invalid viewport");
-    const auto& resources = commands.uploads.resources;
+    if (!commands.generation_valid()) return fail("draw commands", "expired command generation");
+    const auto& resources = commands.resource_table().resources;
     // Buffer shapes bound both factors before multiplication, avoiding
     // division by zero and overflow even for malformed element sizes.
     for (const auto& r : resources) {
@@ -194,7 +249,9 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
                    r.elements * r.element_bytes != r.bytes)
             return fail(r.name, "invalid buffer shape");
     }
-    for (const auto& d : commands.draws) {
+    for (std::size_t draw_index = 0; draw_index < commands.draw_count(); ++draw_index) {
+        const auto view = commands.draw_view(draw_index);
+        const auto& d = view.definition;
         bool known = false;
         for (const auto& program : sm::kPrograms) if (d.program == &program) known = true;
         if (!known) return fail(d.name, "unknown shader program");
@@ -228,6 +285,7 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
             d.first_index % 3 || d.index_count % 3 ||
             std::uint64_t{d.first_index} + d.index_count > idx.elements)
             return fail(d.name, "invalid vertex or index range");
+        if (validation_audit) validation_audit->index_visits += d.index_count;
         for (std::uint64_t i = d.first_index; i < std::uint64_t{d.first_index} + d.index_count; ++i) {
             std::uint16_t index;
             std::memcpy(&index, idx.data + i*2, 2);
@@ -258,11 +316,11 @@ bool record_car_commands(const PreparedCarScene& scene, const RenderOptions& opt
     try {
         RecordedCommands out;
         if (!frame_state(options, limits, out, error) ||
-            !build_car_upload_table(scene, generated_texture_source, out.uploads, error)) return false;
+            !build_car_upload_table(scene, generated_texture_source, out.owning_uploads(), error)) return false;
         std::uint64_t triangles = 0;
         for (const auto& mesh : scene.meshes) triangles += mesh.triangles.size();
         if (!triangle_limits(triangles, prepared_draw_triangles(scene), limits, error)) return false;
-        const ResourceMap resources(out.uploads, scene.meshes.size(), scene.textures.size());
+        const ResourceMap resources(out.owning_uploads(), scene.meshes.size(), scene.textures.size());
         PreparedMeshInstances copies;
         std::vector<std::uint32_t> order;
         if (!prepared_mesh_instances(scene, copies, error) ||
@@ -282,12 +340,21 @@ bool record_car_commands(const PreparedCarScene& scene, const RenderOptions& opt
                 }
                 draw.name = "car group " + std::to_string(group) + " copy " +
                     (draw.instance == kNoHandle ? "authored" : std::to_string(draw.instance));
-                const auto* texture = source.binding == BindingKind::resolved ? &scene.textures[source.texture] : nullptr;
+                const std::size_t override_texture =
+                    draw.instance != kNoHandle && source.texture_hash == kBrakeGlobalHash
+                        ? scene.instances[draw.instance].brake_left_texture : kNoHandle;
+                const auto* texture = override_texture != kNoHandle
+                    ? &scene.textures[override_texture]
+                    : source.binding == BindingKind::resolved
+                        ? &scene.textures[source.texture] : nullptr;
                 if (!buffers(scene.meshes[source.mesh], source, resources, draw, error) ||
                     !pipeline(draw, false, texture, source.flags, source.texture_hash, options, error)) return false;
+                if (override_texture != kNoHandle) {
+                    draw.texture_resource = resources.textures[override_texture];
+                }
                 if (draw.instance != kNoHandle)
                     draw.material.alpha[3] = static_cast<float>(scene.instances[draw.instance].lamp_mode);
-                out.draws.push_back(std::move(draw));
+                out.owning_draws().push_back(std::move(draw));
             }
         }
         commands = std::move(out);
@@ -303,19 +370,15 @@ bool record_track_commands(const PreparedTrackScene& scene, const TrackDrawList&
                            RecordedCommands& commands, std::string& error) {
     commands = RecordedCommands{};
     error.clear();
-    if (options.material_state != MaterialStateMode::off) {
-        error = "the retail material state is proven for the car draw path only";
-        return false;
-    }
     try {
         RecordedCommands out;
         if (!frame_state(options, limits, out, error) ||
-            !build_track_upload_table(scene, out.uploads, error) ||
+            !build_track_upload_table(scene, out.owning_uploads(), error) ||
             !validate_track_draw_list(scene, list, error)) return false;
         std::uint64_t triangles = 0;
         for (const auto& mesh : scene.region.meshes) triangles += mesh.triangles.size();
         if (!triangle_limits(triangles, list.cost.triangles, limits, error)) return false;
-        const ResourceMap resources(out.uploads, scene.region.meshes.size(), scene.region.textures.size());
+        const ResourceMap resources(out.owning_uploads(), scene.region.meshes.size(), scene.region.textures.size());
         for (const auto& entry : list.entries) {
             const auto& source = scene.region.draws[entry.draw];
             if (source.index_count == 0) continue;
@@ -332,7 +395,7 @@ bool record_track_commands(const PreparedTrackScene& scene, const TrackDrawList&
             const auto* texture = source.binding == BindingKind::resolved ? &scene.region.textures[source.texture] : nullptr;
             if (!buffers(scene.region.meshes[source.mesh], source, resources, draw, error) ||
                 !pipeline(draw, true, texture, 0, source.texture_hash, options, error)) return false;
-            out.draws.push_back(std::move(draw));
+            out.owning_draws().push_back(std::move(draw));
         }
         commands = std::move(out);
         return true;
@@ -344,11 +407,12 @@ bool record_track_commands(const PreparedTrackScene& scene, const TrackDrawList&
 
 bool reserve_draw_uniforms(const RecordedCommands& commands, MemoryArena& arena,
                            ArenaAllocation& allocation, std::string& error) {
-    if (commands.draws.size() > (kMaxUploadResourceBytes / kDekoUniformBufferAlignment - 1) / 2) {
+    if (!commands.generation_valid()) { error = "expired command generation"; return false; }
+    if (commands.draw_count() > (kMaxUploadResourceBytes / kDekoUniformBufferAlignment - 1) / 2) {
         error = "draw uniforms exceed one GPU memory block";
         return false;
     }
-    const auto bytes = (1 + 2 * static_cast<std::uint64_t>(commands.draws.size())) * kDekoUniformBufferAlignment;
+    const auto bytes = (1 + 2 * static_cast<std::uint64_t>(commands.draw_count())) * kDekoUniformBufferAlignment;
     const auto refusal = arena.allocate(bytes, kDekoUniformBufferAlignment, allocation);
     if (refusal != ArenaRefusal::none) {
         error = std::string("draw uniforms: ") + arena_refusal_name(refusal);

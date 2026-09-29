@@ -17,9 +17,10 @@ Without instances, each group draws once in its authored space. Invalid
 
 `record_track_commands` takes a `PreparedTrackScene` and its `TrackDrawList`.
 It preserves the list's exact order. It never selects visibility or sorts the
-entries. Both existing list orders work. It refuses retail material state,
-just as `render_track_draw_list` does: no track evidence establishes the car
-material-state rule for scenery.
+entries. All three list orders work. In retail mode, resolved track textures
+select alpha test and blend variants from texture-info +85/+86. The caller
+selects `retail_bucket` for the recovered texture-row ordering approximation;
+see [`TRACK_MATERIALS.md`](TRACK_MATERIALS.md).
 
 Every `RecordedDraw` contains:
 
@@ -36,8 +37,9 @@ Every `RecordedDraw` contains:
 
 The recording also carries viewport dimensions, clear colour and the Frame
 uniform payload. The depth attachment must be cleared to its far value before
-submission; every draw tests less-equal and writes depth, including blended
-draws. The alpha channel stays at its clear value under RGB-only writes.
+submission; every draw tests less-equal. Blended track draws leave depth
+unchanged, while car draws and opaque track draws write depth. The alpha
+channel stays at its clear value under RGB-only writes.
 The options payload preserves flip-V, vertex colour, flat shading and the
 separate diagnostic alpha cutoff. Material coefficients apply only to
 resolved car materials in retail mode, including the diffuse/environment
@@ -108,16 +110,10 @@ build/nfsu_draw_commands_retail.exe <retail-root>
 
 Take file manifests before and after running it. It records and compares the
 painted and unpainted stock 240SX in both material modes and checks every
-instance matrix. Its off mode must produce both stock frames `include/nfsu/stock_frame.h`
-pins, `kStock240sxFrameBytes` and `kStock240sxFrameSha256`: since issue #201
-the 3686418-byte TGA with SHA-256
-`3DEB2147CDA1B1D66DC47FC599B8A1FD88FCB273F0B38BFBE656666808199D25`
-(the issue #161 pin was `E7A042A560E807EE74595449275FFBDC1AE0A0BF321CE06EEF434BC5B1C8274A`).
-It is deliberately outside CTest, so the normal gates require no retail data.
-No retail or derived asset is tracked.
-
-The painted off-state check also requires the 3686418-byte TGA with hash
-`8A5932A302A22AA3C4C01776009B5348629D8D37B3B61E6E0AA303235B1CF48F`.
+instance matrix. Its off mode checks the painted and unpainted frame sizes
+and SHA-256 pins in `include/nfsu/stock_frame.h`. It is deliberately outside
+CTest, so the normal gates require no retail data. No retail or derived
+asset is tracked.
 
 The library is classified neutral. The neutrality gate follows generated
 project headers from the build's generated include directory and scans their

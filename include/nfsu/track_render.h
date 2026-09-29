@@ -197,12 +197,10 @@ bool frame_track_bounds(
 //     copy of one group, so the same names would count copies. The entry
 //     counts below are that number, under names that say so, and `groups`
 //     is the distinct-group count.
-//   groups_alpha_tested, groups_blended, draw_rows, fragments_blended and
-//     fragments_blend_overlap. MaterialStateMode::retail is refused by
-//     render_track_draw_list: the retail material state of
-//     docs/MATERIALS.md was proven for the car draw path, and whether the
-//     track path shares it is listed as unknown in docs/TRACK_DRAW_LIST.md.
-//     Nothing here claims it does.
+//   draw_rows. The track renderer walks an already ordered draw list, so it
+//     does not own row traversal. In retail mode it fills the alpha-test,
+//     blend and fragment counters per submitted entry. See
+//     docs/TRACK_MATERIALS.md for the recovered state and approximations.
 //
 // RenderStats::meshes, meshes_rendered, meshes_skipped_invalid and
 // unresolved_hashes are filled, and describe the prepared REGION, not the

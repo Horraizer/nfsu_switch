@@ -48,7 +48,13 @@ using PcmSink = std::function<void(const std::uint8_t*, std::size_t)>;
 // Exceptions contain the offending offset and reason. No game assets are retained
 // by these results; the caller owns bank bytes and stream input.
 Bank parse_abk(const std::vector<std::uint8_t>& bytes);
-std::vector<Segment> scan_ast(std::istream& input);
+std::vector<Segment> scan_ast(std::istream& input,
+                              std::size_t max_segments = SIZE_MAX,
+                              const std::function<void()>& progress = {});
+std::vector<Segment> scan_ast_prefix(std::istream& input,
+                                     std::size_t byte_limit,
+                                     std::size_t max_segments,
+                                     const std::function<void()>& progress = {});
 void decode_bank_sample(const std::vector<std::uint8_t>& bytes,
                         const Sample& sample, const PcmSink& sink);
 void decode_ast_segment(std::istream& input, const Segment& segment,

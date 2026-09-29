@@ -320,16 +320,6 @@ bool render_track_draw_list(
     const ReferenceDrawObserver& observe) {
     stats = RenderStats{};
     track_stats = TrackRenderStats{};
-    if (options.material_state != MaterialStateMode::off) {
-        // docs/MATERIALS.md proved the retail render state for the car draw
-        // path. docs/TRACK_DRAW_LIST.md lists whether the track path shares
-        // it as unknown, so selecting it here would apply a rule to data no
-        // trace covers. Refusing is the honest answer; the alpha_cutoff
-        // diagnostic stays available and is documented as a diagnostic.
-        error = "the retail material state is proven for the car draw path "
-                "only; render_track_draw_list has no track evidence for it";
-        return false;
-    }
     CameraFrame camera;
     if (!make_camera_frame(options.camera, std::max<std::uint32_t>(options.width, 1),
                            std::max<std::uint32_t>(options.height, 1), camera,
@@ -440,6 +430,16 @@ bool render_track_draw_list(
             ++track_stats.entries_resolved;
             raster.texture = &scene.region.textures[draw.texture];
             key = draw.texture;
+            if (options.material_state == MaterialStateMode::retail) {
+                raster.alpha_test = render_alpha_test_enabled(
+                    raster.texture->alpha_test_mode);
+                raster.blend = render_blend_mode_of(
+                    raster.texture->alpha_blend_mode);
+                raster.depth_write = raster.blend == RenderBlendMode::disabled;
+                stats.groups_alpha_tested += raster.alpha_test ? 1U : 0U;
+                stats.groups_blended +=
+                    raster.blend != RenderBlendMode::disabled ? 1U : 0U;
+            }
             break;
         case BindingKind::unresolved:
             ++track_stats.entries_unresolved;
@@ -460,7 +460,7 @@ bool render_track_draw_list(
         if (observe && count != 0) {
             observe(ReferenceDraw{entry.draw, draw.mesh, entry.instance,
                 raster.texture ? draw.texture : kNoHandle,
-                draw.first_index, draw.index_count, true, true, true,
+                draw.first_index, draw.index_count, true, raster.depth_write, true,
                 options.cull, raster.blend, raster.alpha_test, raster.alpha_ref});
         }
         if ((first + count) / 3 > first / 3) {

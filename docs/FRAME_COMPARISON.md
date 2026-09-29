@@ -46,10 +46,9 @@ PASS requires at least 99.0 percent of pixels within +/-2 AND PSNR at least
 35 dB, exactly the coordinator's fixed issue thresholds. The application's
 PASS also requires the CPU TGA to match its selected desktop pin:
 
-| CPU frame | TGA bytes | SHA-256 |
-| --- | ---: | --- |
-| unpainted | 3686418 | `3DEB2147CDA1B1D66DC47FC599B8A1FD88FCB273F0B38BFBE656666808199D25` |
-| painted | 3686418 | `8A5932A302A22AA3C4C01776009B5348629D8D37B3B61E6E0AA303235B1CF48F` |
+The current painted and unpainted frame sizes and SHA-256 pins live in
+`include/nfsu/stock_frame.h`; `nfsu_draw_commands_retail <retail-root>`
+checks both off-state frames and compares both material-mode draw traces.
 
 A CPU pin mismatch displays overall FAIL even if the numerical GPU/CPU
 comparison passes. No threshold is adjusted to fit a result. Percentages

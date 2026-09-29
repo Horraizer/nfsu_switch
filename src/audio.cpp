@@ -7,6 +7,7 @@
 #include <limits>
 #include <map>
 #include <stdexcept>
+#include <streambuf>
 #include <string>
 #include <utility>
 
@@ -282,7 +283,9 @@ Bank parse_abk(const std::vector<Byte>& b) {
     return bank;
 }
 
-std::vector<Segment> scan_ast(std::istream& input) {
+std::vector<Segment> scan_ast(std::istream& input, std::size_t max_segments,
+                              const std::function<void()>& progress) {
+    if (!max_segments) throw std::invalid_argument("zero AST segment limit");
     const std::uint64_t size = input_size(input);
     std::vector<Segment> result;
     std::uint64_t pos = 0;
@@ -290,7 +293,12 @@ std::vector<Segment> scan_ast(std::istream& input) {
     bool active = false, counted = false;
     std::uint32_t expected_blocks = 0;
     std::uint64_t decoded_frames = 0;
+    std::uint64_t next_progress = 0;
     while (pos < size) {
+        if (progress && pos >= next_progress) {
+            progress();
+            next_progress = pos + 256 * 1024;
+        }
         const auto first = read_at(input, pos, 1, size)[0];
         if (first == 0) {
             if (active) fail(pos, "padding inside stream segment");
@@ -347,9 +355,59 @@ std::vector<Segment> scan_ast(std::istream& input) {
             fail(pos, "unknown AST chunk");
         }
         pos += n;
+        if (result.size() == max_segments) break;
     }
     if (active || result.empty()) fail(pos, "unfinished AST segment");
     return result;
+}
+
+std::vector<Segment> scan_ast_prefix(std::istream& input,
+                                     std::size_t byte_limit,
+                                     std::size_t max_segments,
+                                     const std::function<void()>& progress) {
+    if (!byte_limit || byte_limit > 32 * 1024 * 1024 || !max_segments)
+        throw std::invalid_argument("bad AST prefix limit");
+    class MemoryInputBuf final : public std::streambuf {
+    public:
+        MemoryInputBuf(char* data, std::size_t size) {
+            setg(data, data, data + size);
+        }
+    protected:
+        pos_type seekoff(off_type offset, std::ios_base::seekdir dir,
+                         std::ios_base::openmode mode) override {
+            if (!(mode & std::ios_base::in) ||
+                (dir != std::ios_base::beg && dir != std::ios_base::cur &&
+                 dir != std::ios_base::end))
+                return pos_type(off_type(-1));
+            const auto base = dir == std::ios_base::beg ? off_type(0) :
+                dir == std::ios_base::cur ? off_type(gptr() - eback()) :
+                off_type(egptr() - eback());
+            if ((offset < 0 && offset < -base) ||
+                (offset > 0 && offset > off_type(egptr() - eback()) - base))
+                return pos_type(off_type(-1));
+            const auto position = base + offset;
+            setg(eback(), eback() + position, egptr());
+            return pos_type(position);
+        }
+        pos_type seekpos(pos_type pos, std::ios_base::openmode mode) override {
+            return seekoff(off_type(pos), std::ios_base::beg, mode);
+        }
+    };
+    std::vector<char> bytes(byte_limit);
+    std::size_t filled = 0;
+    while (filled < bytes.size()) {
+        const auto take = std::min<std::size_t>(256 * 1024, bytes.size() - filled);
+        input.read(bytes.data() + filled, static_cast<std::streamsize>(take));
+        const auto got = static_cast<std::size_t>(input.gcount());
+        filled += got;
+        if (progress) progress();
+        if (got != take) break;
+    }
+    if (input.bad()) throw std::runtime_error("AST prefix read failed");
+    input.clear();
+    MemoryInputBuf buffer(bytes.data(), filled);
+    std::istream memory(&buffer);
+    return scan_ast(memory, max_segments);
 }
 
 void decode_bank_sample(const std::vector<Byte>& bytes, const Sample& sample,
