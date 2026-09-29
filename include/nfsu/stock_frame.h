@@ -48,7 +48,7 @@ namespace nfsu {
 // agree (tests/stock_frame_tests.cpp and tests/stock_frame_viewer_match.cmake).
 // The viewer does not call it: src/stock_frame.cpp names, step by step,
 // the lines of the viewer each call mirrors. The tuned preset also reads
-// wheel geometry and the car's vinyl pack. docs/SWITCH_BUILD.md.
+// wheel geometry, wheel textures and the car's vinyl pack. docs/SWITCH_BUILD.md.
 
 // The six files, in the order the command above names them. GLOBALB.BUN is
 // named twice there - the first shared texture source and the part
@@ -86,10 +86,11 @@ constexpr const char* kStock240sxPaintedFrameSha256 =
     "8A5932A302A22AA3C4C01776009B5348629D8D37B3B61E6E0AA303235B1CF48F";
 
 // The explicit kit, wheels, paint and vinyl of tuned_240sx_request/skin.
-// tests/tuned_frame_retail.cmake pins its three desktop camera views.
+// Re-pinned when Cars/WHEELS/TEXTURES.BIN replaced fallback BBS tyres with
+// textured black tread. tests/tuned_frame_retail.cmake pins three views.
 constexpr std::uint64_t kTuned240sxFrameBytes = 3686418;
 constexpr const char* kTuned240sxFrameSha256 =
-    "32568614B0CF67D752F0399C4849EED84BEB23F24C6D7B334DBB9AC0108AA216";
+    "3A190BBF3B224B6F096B2C4A8127A407AC47AEC00B8C15C41AAEFD464F54379F";
 
 // The largest file read: 256 MiB, the limit every parser these files go
 // through applies to its input.
@@ -115,6 +116,7 @@ struct StockFrameInputs {
     std::array<StockFrameInput, kStockFrameFileCount> files;
     bool tuned = false;
     StockFrameInput wheel_geometry;
+    StockFrameInput wheel_textures;
     StockFrameInput vinyls;
 
     const StockFrameInput& file(StockFrameFile which) const noexcept {
@@ -123,9 +125,9 @@ struct StockFrameInputs {
     bool all_read() const noexcept;
 };
 
-// Reads six stock files, plus wheel geometry and vinyls when tuned, with
-// std::ifstream opened for
-// reading only: nothing is created, written, renamed or removed. Every file
+// Reads six stock files, plus wheel geometry, wheel textures and vinyls when
+// tuned, with std::ifstream opened for reading only: nothing is created,
+// written, renamed or removed. Every file
 // is attempted whatever became of the others, so one call names every
 // missing input. Returns all_read().
 bool read_stock_frame_inputs(const std::filesystem::path& root, StockFrameInputs& inputs,
@@ -191,7 +193,7 @@ struct StockFrame {
     CarTypeTable car_types;
     TexturePack car_pack;
     TexturePack vinyl_pack;
-    // GLOBALB.BUN, then Cars/TEXTURES.BIN.
+    // GLOBALB.BUN, then Cars/TEXTURES.BIN, then wheel textures if tuned.
     std::vector<TexturePackSet> shared_sets;
     // The texture hashes the stock meshes use, ascending, which is all a
     // shared source decodes.
@@ -204,7 +206,8 @@ struct StockFrame {
     // The runtime body skin, set only when prepare_stock_frame was given an
     // enabled StockFrameSkin and composed and bound it. skin_sources are the
     // labels of the skin input sources actually searched, in order, as the
-    // viewer prints them ("car-textures", "shared-1", "shared-2");
+    // viewer prints them ("car-textures", "shared-1", "shared-2", and
+    // "shared-3" for tuned wheel textures);
     // skin_bound_names the name each bound hash was made from, in binding
     // order.
     bool skinned = false;

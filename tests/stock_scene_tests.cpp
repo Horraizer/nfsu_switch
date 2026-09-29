@@ -897,6 +897,10 @@ void test_installed_part_overrides() {
                        {kRearBumperA, 0, 0, 0}, 0, 0});
     records.push_back({kCar.c_str(), 17, 1, "TESTCAR_KIT01_WHEEL",
                        {kBaseA, 0, 0, 0}, 0, 0});
+    records.push_back({"WHEELS", 17, 1, "BBS_TEST_WHEEL",
+                       {kBaseA, 0, 0, 0}, 0, 0});
+    records.push_back({"SKYLINE", 5, 1, "SKYLINE_KIT01_BODY",
+                       {kRearBumperA, 0, 0, 0}, 0, 0});
     const nfsu::GeometryReport car = car_source();
     const nfsu::GeometryReport brakes = brake_source();
     const nfsu::GeometryReport plates = plate_source();
@@ -919,6 +923,17 @@ void test_installed_part_overrides() {
     } else {
         check(false, "two overridden slots are counted");
     }
+    request.installed_parts.names[17] = "BBS_TEST_WHEEL";
+    check(prepare_records(records, sources, request, scene, report, error) &&
+              report.slots[17].overridden && report.slots[17].instance_count == 4,
+          "shared WHEELS type is valid for the wheel slot: " + error);
+    request.installed_parts.names[17] = "TESTCAR_KIT01_WHEEL";
+    request.installed_parts.names[5] = "SKYLINE_KIT01_BODY";
+    check(!prepare_records(records, sources, request, scene, report, error) &&
+              error.find("slot 5 BODY") != std::string::npos &&
+              error.find("another car type") != std::string::npos &&
+              empty_outputs(scene, report),
+          "foreign car type is refused by slot: " + error);
     request.installed_parts.names[5] = "NO_SUCH_BODY";
     check(!prepare_records(records, sources, request, scene, report, error) &&
               error.find("slot 5 BODY") != std::string::npos &&

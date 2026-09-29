@@ -85,6 +85,8 @@ bool run(int argc, char** argv, PadState& pad, Report& report, std::string& erro
             for (const auto& f : inputs.files) if (!f.read) error += f.path + ": " + f.error + "\n";
             if (tuned && !inputs.wheel_geometry.read)
                 error += inputs.wheel_geometry.path + ": " + inputs.wheel_geometry.error + "\n";
+            if (tuned && !inputs.wheel_textures.read)
+                error += inputs.wheel_textures.path + ": " + inputs.wheel_textures.error + "\n";
             if (tuned && !inputs.vinyls.read)
                 error += inputs.vinyls.path + ": " + inputs.vinyls.error + "\n";
             return false;

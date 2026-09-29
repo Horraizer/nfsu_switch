@@ -741,12 +741,25 @@ bool select_installed_parts(
             return false;
         }
         const std::uint32_t hash = bin_hash(*name);
-        const std::size_t record = hash == kAnyPartName
-            ? kNoCarPart
-            : find_car_part(database, kAnyCarType, static_cast<int>(slot), hash,
-                            kNoCarPart, kAnyUpgradeLevel);
+        const auto find_for = [&](const char* type) {
+            return find_car_part(database, bin_hash(type), static_cast<int>(slot), hash,
+                                 kNoCarPart, kAnyUpgradeLevel);
+        };
+        std::size_t record = hash == kAnyPartName ? kNoCarPart
+            : find_for(car_type_name.c_str());
+        if (record == kNoCarPart && slot == kSlotWheel) {
+            record = find_for("WHEELS");
+        } else if (record == kNoCarPart && slot == kSlotBrake) {
+            record = find_for(kBrakesCarType);
+        } else if (record == kNoCarPart && slot == kSlotLicensePlate) {
+            record = find_for(kPlatesCarType);
+        }
         if (record == kNoCarPart) {
-            error = "part override for slot " + label + " names unknown part '" +
+            const bool other_type = hash != kAnyPartName &&
+                find_car_part(database, kAnyCarType, static_cast<int>(slot), hash,
+                              kNoCarPart, kAnyUpgradeLevel) != kNoCarPart;
+            error = "part override for slot " + label + " names " +
+                    (other_type ? "part for another car type '" : "unknown part '") +
                     *name + "'";
             parts = StockParts{};
             return false;

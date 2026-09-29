@@ -1770,9 +1770,12 @@ int main(int argc, char** argv) {
                   << static_cast<char>('A' + stock_report.lod) << " pass "
                   << nfsu::car_draw_pass_name(stock_report.pass) << '\n';
         for (const nfsu::StockSlotReport& slot : stock_report.slots) {
+            if (!slot.overridden) {
+                continue;
+            }
             std::cout << "stock slot " << slot.slot << ' '
                       << nfsu::car_slot_name(slot.slot) << ' '
-                      << (slot.overridden ? "overridden" : "stock") << ' '
+                      << "overridden "
                       << (slot.enabled ? "enabled" : "disabled") << " record "
                       << (slot.record == nfsu::kNoCarPart ? "none" :
                           std::to_string(slot.record)) << ' '
@@ -1792,8 +1795,11 @@ int main(int argc, char** argv) {
         std::cout << "stock slots: installed " << stock_report.installed
                   << " with_model " << stock_report.with_model << " drawn "
                   << stock_report.drawn << " by_fallback " << stock_report.fell_back
-                  << " markers " << stock_report.markers.size()
-                  << " overridden " << stock_report.overridden << '\n';
+                  << " markers " << stock_report.markers.size();
+        if (stock_report.overridden != 0) {
+            std::cout << " overridden " << stock_report.overridden;
+        }
+        std::cout << '\n';
         // The stock lateral branch is approximate and a static frame has
         // no spin, steering or suspension travel.
         std::cout << "stock wheels: "

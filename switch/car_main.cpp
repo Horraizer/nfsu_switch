@@ -342,7 +342,7 @@ bool prepare(const Choice& choice, nfsu::StockFrame& frame, nfsu::StockView& vie
     }
     if (choice.tuned) {
         for (const nfsu::StockFrameInput* input :
-             {&inputs->wheel_geometry, &inputs->vinyls}) {
+             {&inputs->wheel_geometry, &inputs->wheel_textures, &inputs->vinyls}) {
             if (input->read) {
                 report.line("read " + input->path + ": " +
                             std::to_string(input->bytes.size()) + " bytes");
@@ -356,7 +356,7 @@ bool prepare(const Choice& choice, nfsu::StockFrame& frame, nfsu::StockView& vie
     if (missing != 0) {
         report.line("nothing rendered: " + std::to_string(missing) + " of " +
                         std::to_string(nfsu::kStockFrameFileCount +
-                                       (choice.tuned ? 2U : 0U)) +
+                                       (choice.tuned ? 3U : 0U)) +
                         " inputs could not be read. Copy each from the game's own "
                         "installation to the same path under " + choice.root + ".",
                     kBad);

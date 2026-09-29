@@ -22,8 +22,7 @@ constexpr const char* kFilePaths[kStockFrameFileCount] = {
     "Cars/240SX/GEOMETRY.BIN", "Cars/240SX/TEXTURES.BIN", "Global/GLOBALB.BUN",
     "Cars/TEXTURES.BIN",       "Cars/BRAKES/GEOMETRY.BIN", "Cars/PLATES/GEOMETRY.BIN"};
 
-// The two --shared-textures files and the two --stock-geometry files, in
-// the order the command names them.
+// The stock --shared-textures files; tuned adds wheel textures after these.
 constexpr StockFrameFile kSharedTextureFiles[] = {StockFrameFile::global_bun,
                                                   StockFrameFile::shared_car_textures};
 constexpr StockFrameFile kStockGeometryFiles[] = {StockFrameFile::brake_geometry,
@@ -132,7 +131,7 @@ bool StockFrameInputs::all_read() const noexcept {
             return false;
         }
     }
-    return !tuned || (wheel_geometry.read && vinyls.read);
+    return !tuned || (wheel_geometry.read && wheel_textures.read && vinyls.read);
 }
 
 bool read_stock_frame_inputs(const fs::path& root, StockFrameInputs& inputs, bool tuned) {
@@ -165,6 +164,7 @@ bool read_stock_frame_inputs(const fs::path& root, StockFrameInputs& inputs, boo
         }
     };
     read_extra(inputs.wheel_geometry, "Cars/WHEELS/GEOMETRY.BIN");
+    read_extra(inputs.wheel_textures, "Cars/WHEELS/TEXTURES.BIN");
     read_extra(inputs.vinyls, "Cars/240SX/VINYLS.BIN");
     return inputs.all_read();
 }
@@ -259,10 +259,11 @@ bool prepare_stock_frame(
         }
         if (inputs.tuned) {
             missing += inputs.wheel_geometry.read ? 0 : 1;
+            missing += inputs.wheel_textures.read ? 0 : 1;
             missing += inputs.vinyls.read ? 0 : 1;
         }
         error = std::to_string(missing) + " of " +
-                std::to_string(kStockFrameFileCount + (inputs.tuned ? 2 : 0)) +
+                std::to_string(kStockFrameFileCount + (inputs.tuned ? 3 : 0)) +
                 " input files could not be read";
         return false;
     }
@@ -330,9 +331,16 @@ bool prepare_stock_frame(
         // does.
         static const std::vector<unsigned char> kNoBytes;
         std::vector<const std::vector<unsigned char>*> shared_bytes;
-        frame.shared_sets.reserve(std::size(kSharedTextureFiles));
+        std::vector<const StockFrameInput*> shared_inputs;
         for (const StockFrameFile which : kSharedTextureFiles) {
-            const StockFrameInput& input = inputs.file(which);
+            shared_inputs.push_back(&inputs.file(which));
+        }
+        if (inputs.tuned) {
+            shared_inputs.push_back(&inputs.wheel_textures);
+        }
+        frame.shared_sets.reserve(shared_inputs.size());
+        for (const StockFrameInput* shared_input : shared_inputs) {
+            const StockFrameInput& input = *shared_input;
             TextureLimits limits;
             const std::uint64_t remaining = kStockFrameMaxTextureInputBytes - read_bytes;
             limits.max_file_size = std::min(limits.max_file_size, remaining);
@@ -437,8 +445,8 @@ bool prepare_stock_frame(
                 std::string text;
                 if (texture.source != 0) {
                     const std::size_t shared = texture.source - 1;
-                    text = (shared < std::size(kSharedTextureFiles)
-                                ? inputs.file(kSharedTextureFiles[shared]).path
+                    text = (shared < shared_inputs.size()
+                                ? shared_inputs[shared]->path
                                 : std::string("texture source ") +
                                       std::to_string(texture.source)) +
                            ": pack " + std::to_string(texture.pack) + " texture " +
@@ -509,7 +517,7 @@ bool prepare_stock_frame(
                 }
                 add_source(*shared_bytes[i], SkinSourceKind::other,
                            "shared-" + std::to_string(i + 1),
-                           inputs.file(kSharedTextureFiles[i]).path, packs);
+                           shared_inputs[i]->path, packs);
             }
 
             BodySkinSelection selected = skin.selection;
@@ -738,8 +746,10 @@ std::string stock_frame_slots_line(const StockSceneReport& report) {
     std::ostringstream text;
     text << "stock slots: installed " << report.installed << " with_model "
          << report.with_model << " drawn " << report.drawn << " by_fallback "
-         << report.fell_back << " markers " << report.markers.size()
-         << " overridden " << report.overridden;
+         << report.fell_back << " markers " << report.markers.size();
+    if (report.overridden != 0) {
+        text << " overridden " << report.overridden;
+    }
     return text.str();
 }
 

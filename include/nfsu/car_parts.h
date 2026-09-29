@@ -277,8 +277,9 @@ bool select_stock_parts(
     StockParts& parts,
     std::string& error);
 
-// Resolves overrides by the retail part-name hash in the named slot, then
-// recomputes enable bytes over the selected set. Unknown names are errors.
+// Resolves overrides by the retail part-name hash in the named slot and car
+// type, with shared WHEELS, BRAKES and PLATES records in their matching slots,
+// then recomputes enable bytes. Unknown or incompatible names are errors.
 bool select_installed_parts(
     const CarPartDatabase& database,
     const std::string& car_type_name,

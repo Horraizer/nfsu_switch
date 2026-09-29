@@ -1208,7 +1208,7 @@ void test_stats_lines() {
     report.fell_back = 4;
     report.markers.resize(5);
     check(nfsu::stock_frame_slots_line(report) ==
-              "stock slots: installed 1 with_model 2 drawn 3 by_fallback 4 markers 5 overridden 0",
+              "stock slots: installed 1 with_model 2 drawn 3 by_fallback 4 markers 5",
           "the slots line");
 }
 

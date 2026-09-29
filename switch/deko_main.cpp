@@ -97,7 +97,8 @@ bool run(int argc, char** argv, PadState& pad, Report& report, std::string& erro
             if (!input.read) error += line + "\n";
         }
         if (tuned) {
-            for (const auto* input : {&inputs.wheel_geometry, &inputs.vinyls}) {
+            for (const auto* input : {&inputs.wheel_geometry, &inputs.wheel_textures,
+                                      &inputs.vinyls}) {
                 const auto line = root + "/" + input->path + ": " +
                     (input->read ? "read " + std::to_string(input->bytes.size()) +
                                        " bytes" : input->error);

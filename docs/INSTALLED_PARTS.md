@@ -37,7 +37,8 @@ retail run; `Global/GLOBALB.BUN` was used instead of the owner's modified
 - `GLOBALB.BUN` supplies the part records, not a per-car installed map.
   For this 240SX example its `0x00034604` table holds records for the
   chosen KIT01 bumpers and skirt. The BBS wheel record belongs to car type
-  `WHEELS`, and its mesh is in `Cars/WHEELS/GEOMETRY.BIN`. The record hashes
+  `WHEELS`; its mesh is in `Cars/WHEELS/GEOMETRY.BIN` and its textures are in
+  `Cars/WHEELS/TEXTURES.BIN`. The record hashes
   match `bin_hash` of the names passed below.
 
 ### Inferred
@@ -63,22 +64,39 @@ The scene report marks those instances as stand-ins.
 
 ## Reproduce the tuned 240SX
 
-Run from a build directory's repository root, with `NFSU_ROOT` set to the
+Run from the repository root after building, with `NFSU_ROOT` set to the
 read-only retail installation. The output goes under `build`, outside the
-installation. This single installed set replaces both bumpers, the skirt
+installation. This installed set replaces both bumpers, the skirt
 and all four wheel copies, and composites `TRIBAL5` over red base paint.
 
 ```powershell
 $r = $env:NFSU_ROOT
-$tunedArgs = @("$r/Cars/240SX/GEOMETRY.BIN", "$r/Cars/240SX/TEXTURES.BIN", "build/tuned.tga", '--shared-textures', "$r/Global/GLOBALB.BUN", '--shared-textures', "$r/Cars/TEXTURES.BIN", '--stock-car', '240SX', '--stock-parts', "$r/Global/GLOBALB.BUN", '--stock-geometry', "$r/Cars/BRAKES/GEOMETRY.BIN", '--stock-geometry', "$r/Cars/PLATES/GEOMETRY.BIN", '--stock-geometry', "$r/Cars/WHEELS/GEOMETRY.BIN", '--place-wheels', '--stock-part', 'FRONT_BUMPER', '240SX_KIT01_FRONT_BUMPER', '--stock-part', 'REAR_BUMPER', '240SX_KIT01_REAR_BUMPER', '--stock-part', 'SKIRT', '240SX_KIT01_SKIRT', '--stock-part', 'WHEEL', 'BBS_STYLE01_15_23', '--skin-car', '240SX', '--skin-vinyls', "$r/Cars/240SX/VINYLS.BIN", '--skin-doorline', 'kit', '--skin-base', '200', '30', '30', '128', '--skin-vinyl', '0', 'TRIBAL5', '16', 'no-remap')
+$tunedArgs = @(
+    "$r/Cars/240SX/GEOMETRY.BIN", "$r/Cars/240SX/TEXTURES.BIN", 'build/tuned.tga',
+    '--shared-textures', "$r/Global/GLOBALB.BUN",
+    '--shared-textures', "$r/Cars/TEXTURES.BIN",
+    '--shared-textures', "$r/Cars/WHEELS/TEXTURES.BIN",
+    '--stock-car', '240SX', '--stock-parts', "$r/Global/GLOBALB.BUN",
+    '--stock-geometry', "$r/Cars/BRAKES/GEOMETRY.BIN",
+    '--stock-geometry', "$r/Cars/PLATES/GEOMETRY.BIN",
+    '--stock-geometry', "$r/Cars/WHEELS/GEOMETRY.BIN", '--place-wheels',
+    '--stock-part', 'FRONT_BUMPER', '240SX_KIT01_FRONT_BUMPER',
+    '--stock-part', 'REAR_BUMPER', '240SX_KIT01_REAR_BUMPER',
+    '--stock-part', 'SKIRT', '240SX_KIT01_SKIRT',
+    '--stock-part', 'WHEEL', 'BBS_STYLE01_15_23',
+    '--skin-car', '240SX', '--skin-vinyls', "$r/Cars/240SX/VINYLS.BIN",
+    '--skin-doorline', 'kit', '--skin-base', '200', '30', '30', '128',
+    '--skin-vinyl', '0', 'TRIBAL5', '16', 'no-remap')
 & ./build/nfsu_viewer.exe @tunedArgs
 & ./build/nfsu_viewer.exe @($tunedArgs[0], $tunedArgs[1], 'build/tuned-120.tga') @($tunedArgs[3..($tunedArgs.Count - 1)]) --yaw 120
 & ./build/nfsu_viewer.exe @($tunedArgs[0], $tunedArgs[1], 'build/tuned-230.tga') @($tunedArgs[3..($tunedArgs.Count - 1)]) --yaw 230
 ```
 
-`tests/tuned_frame_retail.cmake` pins all three TGA hashes. The default
+`nfsu_tuned_frame_retail` runs `tests/tuned_frame_retail.cmake` when
+`NFSU_RETAIL_ROOT` is set and pins all three TGA hashes. It also bounds
+fallback triangles at the stock painted frame's count. The default
 camera's pin is also in `include/nfsu/stock_frame.h` for the Switch viewer.
-The default pin changes because four installed meshes and the skin change;
+The current default pin changes because the BBS tyre texture now resolves;
 the two orbit pins verify the same selection from the side and rear. The
 stock frame pins in `include/nfsu/stock_frame.h` remain unchanged.
 
@@ -91,5 +109,8 @@ and for the photograph.
 For the console, run `nfsu_switch_car.nro --tuned` for the orbiting CPU
 viewer, `nfsu_switch_deko3d.nro --tuned` for GPU presentation, or
 `nfsu_switch_compare.nro --tuned` for the same-scene comparison. Each reads
-the six stock files plus `Cars/WHEELS/GEOMETRY.BIN` and
-`Cars/240SX/VINYLS.BIN` from `sdmc:/nfsu` and writes nothing there.
+the six stock files plus `Cars/WHEELS/GEOMETRY.BIN`,
+`Cars/WHEELS/TEXTURES.BIN` and `Cars/240SX/VINYLS.BIN` from `sdmc:/nfsu`
+and writes nothing there. `StockSlotReport` describes records installed from
+`GLOBALB.BUN`; its `BASE_PAINT` and `VINYL_LAYER0` entries remain stock
+because the red paint and `TRIBAL5` are separate skin selections.

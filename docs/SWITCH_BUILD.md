@@ -35,7 +35,7 @@ buttons, timing convention and `nxlink -a <ip>` deployment command.
 | --- | --- | --- |
 | `nfsu_switch_app` | `nfsu_switch_app.elf` | The minimal application: it initialises the console and the first controller, runs a frame loop until + is pressed or the system asks it to close, and shuts down. |
 | `nfsu_switch_app_nro` | `nfsu_switch_app.nro`, `nfsu_switch_app.nacp` | That ELF packaged by `elf2nro` with the libnx default icon and a NACP titled `nfsu_switch`. |
-| `nfsu_switch_car` | `nfsu_switch_car.elf` | The 240SX CPU reference viewer: stock reads six game files; `--tuned` reads wheel geometry and vinyls too, then draws the explicit installed set of [`INSTALLED_PARTS.md`](INSTALLED_PARTS.md). The left stick orbits, - resets and + exits. |
+| `nfsu_switch_car` | `nfsu_switch_car.elf` | The 240SX CPU reference viewer: stock reads six game files; `--tuned` also reads wheel geometry, wheel textures and vinyls, then draws the explicit installed set of [`INSTALLED_PARTS.md`](INSTALLED_PARTS.md). The left stick orbits, - resets and + exits. |
 | `nfsu_switch_car_nro` | `nfsu_switch_car.nro`, `nfsu_switch_car.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_car`. |
 | `nfsu_switch_assets` | `nfsu_switch_assets.elf` | The asset check of issue #47: it reads the config file `sdmc:/config/nfsu_switch/assets.cfg` if there is one, checks that the SD card holds the 12 retail files the first lap needs - by name, size and SHA-256 - and shows the report and the files still to copy on screen; + exits. [`SWITCH_ASSETS.md`](SWITCH_ASSETS.md). |
 | `nfsu_switch_assets_nro` | `nfsu_switch_assets.nro`, `nfsu_switch_assets.nacp` | That ELF packaged the same way, with a NACP titled `nfsu_switch_assets`. |
@@ -433,7 +433,9 @@ To photograph the explicit tuned selection of issue #229, use
 `nxlink -s --args=--tuned build-switch/switch/nfsu_switch_car.nro`.
 The GPU view uses `nfsu_switch_deko3d.nro` with the same argument; the
 CPU/deko3d comparison uses `nfsu_switch_compare.nro` with it. The SD root
-also needs `Cars/WHEELS/GEOMETRY.BIN` and `Cars/240SX/VINYLS.BIN`.
+also needs `Cars/WHEELS/GEOMETRY.BIN`, `Cars/WHEELS/TEXTURES.BIN` and
+`Cars/240SX/VINYLS.BIN`. `nfsu_switch_assets` checks the first-lap set
+only, so the tuned viewers report a missing tuned file themselves.
 
 `-s` keeps nxlink running as a server after the upload, so the application's
 stdout arrives on the PC; `-a <address>` names the console when nxlink cannot
