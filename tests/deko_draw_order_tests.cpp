@@ -7,6 +7,13 @@
 #include <vector>
 
 int main() {
+    if (nfsu::deko_textured_uses_cutout_shader(false, 0) ||
+        !nfsu::deko_textured_uses_cutout_shader(true, 0) ||
+        !nfsu::deko_textured_uses_cutout_shader(false, 17) ||
+        !nfsu::deko_textured_uses_cutout_shader(true, 17)) {
+        std::cerr << "textured shader selection lost an alpha path\n";
+        return 1;
+    }
     constexpr std::array<bool, 8> opaque{{false, true, false, true, true, false, true, false}};
     std::vector<std::size_t> order;
     nfsu::deko_visit_opaque_first(opaque.size(),

@@ -290,8 +290,11 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
         // These are the layouts of the four compiled programs, held together
         // by the manifest tests; never accept an arbitrary interface pointer.
         const bool textured = d.program->texture_count != 0;
+        const char* fragment = !textured ? "fallback.frag.glsl" :
+            std::strcmp(d.program->name, "track_textured") == 0 ?
+                "textured_opaque.frag.glsl" : "textured.frag.glsl";
         if (std::strcmp(d.program->vertex_source, "placed.vert.glsl") != 0 ||
-            std::strcmp(d.program->fragment_source, textured ? "textured.frag.glsl" : "fallback.frag.glsl") != 0 ||
+            std::strcmp(d.program->fragment_source, fragment) != 0 ||
             (textured && (d.program->textures[0].filter != sm::Filter::nearest ||
                           d.program->textures[0].wrap != sm::Wrap::repeat)))
             return fail(d.name, "unsupported shader or sampler");

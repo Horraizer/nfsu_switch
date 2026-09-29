@@ -32,13 +32,22 @@ four programs:
 | --- | --- | --- | --- | --- |
 | `car_textured` | a car group whose binding is `resolved` | `nfsu::MeshVertex`, 36 bytes | `placed.vert.glsl`, `textured.frag.glsl` | six, below |
 | `car_fallback` | a car group whose binding is `unresolved`, `unusable` or `invalid_slot` | `nfsu::MeshVertex` | `placed.vert.glsl`, `fallback.frag.glsl` | `opaque` |
-| `track_textured` | a track draw-list entry whose group is `resolved` | `nfsu::TrackVertex`, 24 bytes | `placed.vert.glsl`, `textured.frag.glsl` | six, below |
+| `track_textured` | a track draw-list entry whose group is `resolved` | `nfsu::TrackVertex`, 24 bytes | `placed.vert.glsl`, `textured_opaque.frag.glsl` | six, below |
 | `track_fallback` | a track draw-list entry whose group is not | `nfsu::TrackVertex` | `placed.vert.glsl`, `fallback.frag.glsl` | `opaque` |
 
 One vertex stage serves all four: `placed_vertex` and `track_placed_vertex`
 compose the placement the same way, a row-vector transform over the raw slot
 order `(px, pz, py)` mapped back to `(x, y, -z)`, and only the buffer layout
 differs, which is pipeline state and lives in the manifest.
+
+The two textured fragment stages have the same checked interface. The Switch
+renderer selects `textured_opaque.frag.glsl`, which has no `discard`, when the
+material alpha test is off and the frame alpha cutoff is zero. It selects
+`textured.frag.glsl` for alpha-tested draws or a nonzero diagnostic cutoff.
+The fixed-function alpha comparison and blend state still come from each
+draw's manifest variant. This shader choice does not depend on the number of
+blended car or track groups. Each textured manifest checks one fragment
+stage; both stages are compiled and packaged for both Switch renderers.
 
 A textured car group's state comes from its texture-info record, and only
 under `MaterialStateMode::retail`: byte +85 turns the alpha test on
@@ -79,14 +88,15 @@ channel (`color_write=rgb`); and `RenderOptions` culls nothing by default.
 `placed.vert.glsl` places the vertex with the drawn copy's transform and
 projects it with the reference camera (`project_point`: a look-at basis and a
 D3D-style projection, depth 0 at the near plane and 1 at the far one, and
-`+y` at the top row of the frame). `textured.frag.glsl` and
-`fallback.frag.glsl` are `Rasterizer::fill`, keeping the reference's integer
+`+y` at the top row of the frame). Both textured fragment stages and
+`fallback.frag.glsl` follow `Rasterizer::fill`, keeping the reference's integer
 rounding where it has one: the nearest texel of the wrapped coordinate, the
-alpha cutoff diagnostic, the vertex colour multiply, the flat shade factor,
+vertex colour multiply, the flat shade factor,
 the closed diffuse gate, the `car.efx` environment term with its constant
 colour, and the source alpha the alpha test and the blend then use. The alpha
-test and the blend themselves are the variant's fixed-function state, not
-code in the stage.
+cutoff diagnostic is present only in `textured.frag.glsl`. The alpha test and
+the blend themselves are the variant's fixed-function state, not code in the
+stage.
 
 What a backend puts in the uniform blocks, per the reference:
 
@@ -365,8 +375,8 @@ as does a case whose change is no longer in the file, or whose changed stage
 - Fixed-function state. The blend, the alpha test, the depth state, the
   colour write mask, the cull mode and the sampler's filter and wrap are in
   no shader, so no reflection sees them. The C++ check holds the manifest's
-  state to the reference's decoders; nothing yet holds a backend to the
-  manifest, because there is no backend.
+  state to the reference's decoders; these checks do not inspect the deko3d
+  backend's fixed-state bindings.
 - Names and base types, in the compiled check. The shader program header
   records which components of a location a stage fetches or writes, not the
   variable's name or its scalar type. Two attributes of one type trading
@@ -393,8 +403,8 @@ as does a case whose change is no longer in the file, or whose changed stage
 - Anything a stage declares and does not use. The compiler drops it, so the
   compiled check reports it missing; a manifest describes what the compiled
   program uses, and every declared component must be read.
-- Whether the shaders draw the right pixels. They have not been compared with
-  a reference frame: there is no deko3d backend and no GPU here. Known
+- Whether the shaders draw the right pixels. These interface checks do not
+  compare the deko3d output with a reference frame. Known
   differences from the reference are the flat normal (screen derivatives
   instead of the three placed vertices), the view term (per fragment instead
   of per triangle from the first vertex), float instead of double
@@ -407,19 +417,11 @@ as does a case whose change is no longer in the file, or whose changed stage
 
 ## Reproducibility
 
-The shaders are compiled with `uam 1.1.0` (devkitPro package `uam 1.1.0-1`).
-Two compiles of the same source produce byte-identical files, and this
-branch's sources compile to:
-
-| File | SHA-256 |
-| --- | --- |
-| `placed.vert.dksh` | `0a130be59dd99b0db1a4db0a5cf390117347738b3ac2cfd3ec47df1134546ee3` |
-| `textured.frag.dksh` | `f0e8a6c2acec1cc0d36e59ebadc39fec81704db0e094bdbebfdc63b3338d699b` |
-| `fallback.frag.dksh` | `5d2908e4240171a3730b9602658ab0ac0d4829cf164ba1f66d10260cf3495a69` |
-
-The blobs are written to `build-switch/switch/shaders/`. They are not yet
-packaged into the application; the renderer will decide whether they travel
-in the NRO's RomFS or are linked in.
+The Switch build compiles each stage with `uam` and packages its DKSH blob in
+the NRO's RomFS. The `nfsu_switch_shader_*` and
+`nfsu_switch_shader_blob_guards` tests check compiled interfaces against the
+manifests; the derivative checks cover every packaged stage. Blob hashes can
+be computed from the build output when needed.
 
 ## Derivative compiler state
 

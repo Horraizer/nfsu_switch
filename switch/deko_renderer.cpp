@@ -74,7 +74,7 @@ struct DekoRenderer::Impl {
     bool opaque_first = false;
     std::array<dk::Image, 2> colors;
     std::array<dk::Image, 2> depths;
-    dk::Shader vertex, textured, fallback;
+    dk::Shader vertex, textured, textured_opaque, fallback;
     const RecordedCommands* commands = nullptr;
     const PreparedCommandSource* package = nullptr;
     std::vector<const RecordedDraw*> static_definitions;
@@ -82,6 +82,7 @@ struct DekoRenderer::Impl {
     std::vector<std::size_t> static_group_slots;
     std::array<std::vector<DkCmdList>, 2> static_lists;
     std::array<std::vector<std::pair<std::size_t, std::size_t>>, 2> static_selection;
+    std::array<std::uint32_t, 2> static_alpha_cutoff{};
     DekoGpfifoUsage gpfifo_usage;
     std::size_t static_instances = 0;
     std::size_t dynamic_capacity = 0;
@@ -367,6 +368,7 @@ struct DekoRenderer::Impl {
         write_uniforms(source, 0);
         if (!shader("placed.vert", DkStage_Vertex, vertex, error) ||
             !shader("textured.frag", DkStage_Fragment, textured, error) ||
+            !shader("textured_opaque.frag", DkStage_Fragment, textured_opaque, error) ||
             !shader("fallback.frag", DkStage_Fragment, fallback, error)) return false;
         if (package && !prepare_static_commands(source, presentation, error)) return false;
         dk::ImageLayout color_layout, depth_layout;
@@ -477,8 +479,12 @@ struct DekoRenderer::Impl {
                    bool bind_fixed_state = true) {
         const auto& state = draw.pipeline;
         const bool has_texture = draw.texture_resource != kNoHandle;
+        const bool cutout = deko_textured_uses_cutout_shader(
+            state.alpha_test != sm::CompareOp::always, commands->frame.options[3]);
+        dk::Shader* fragment = !has_texture ? &fallback :
+            cutout ? &textured : &textured_opaque;
         if (bind_fixed_state)
-            out.bindShaders(DkStageFlag_GraphicsMask, {&vertex, has_texture ? &textured : &fallback});
+            out.bindShaders(DkStageFlag_GraphicsMask, {&vertex, fragment});
         if (instance_addr)
             out.bindUniformBuffer(DkStage_Vertex, 1, instance_addr, sizeof(DrawInstanceUniform));
         out.bindUniformBuffer(DkStage_Fragment, 2, material_addr, sizeof(DrawMaterialUniform));
@@ -553,7 +559,8 @@ struct DekoRenderer::Impl {
     bool prepare_visible_commands(std::size_t slot, std::string& error) {
         const auto count = commands->static_track_draw_count();
         auto& selection = static_selection[slot];
-        bool unchanged = selection.size() == count;
+        bool unchanged = selection.size() == count &&
+            static_alpha_cutoff[slot] == commands->frame.options[3];
         if (unchanged) for (std::size_t i = 0; i < count; ++i) {
             const auto view = commands->draw_view(i);
             if (selection[i].first != view.definition.group ||
@@ -567,6 +574,7 @@ struct DekoRenderer::Impl {
         auto& lists = static_lists[slot];
         lists.clear();
         selection.clear();
+        static_alpha_cutoff[slot] = commands->frame.options[3];
         for (std::size_t i = 0; i < count; ++i) {
             const auto view = commands->draw_view(i);
             selection.emplace_back(view.definition.group, view.instance);
