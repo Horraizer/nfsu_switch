@@ -26,7 +26,7 @@ public:
     const TrackSlice& track() const { return track_; }
     bool load(FileSystemService& files, const std::filesystem::path& root,
               std::string& error, AssetCheckObserver* observer = nullptr,
-              TrackSliceLoadObserver* loading = nullptr);
+              TrackSliceLoadObserver* loading = nullptr, bool tuned = false);
     bool frame(const RaceSession& session, RaceGpuFrame& out, std::string& error,
                RaceFrameProfile* profile = nullptr, bool reference = false,
                TimingService* timer = nullptr);
@@ -38,6 +38,7 @@ private:
     RecordedCommands track_templates_;
     std::vector<std::size_t> template_of_group_;
     bool ready_ = false;
+    bool tuned_ = false; // Visual selection only; never passed to RaceSession.
     bool prepare_templates(std::string& error);
     bool prepare_frame_cache(std::string& error);
     bool select_track(const TrackCullReport& visible, RaceGpuFrame& out,

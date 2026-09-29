@@ -200,7 +200,7 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
         if (padGetButtonsDown(&pad) & HidNpadButton_Plus) break;
     }
 }
-void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& screen, PadState& pad) {
+void run(const std::string& root, bool replay_mode, bool panel_mode, bool tuned, Screen& screen, PadState& pad) {
     require(R_SUCCEEDED(romfsInit()), "cannot mount race shader/replay RomFS");
     struct Guard { ~Guard() { romfsExit(); } } guard;
     std::string error;
@@ -215,7 +215,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, Screen& scr
     Progress progress(screen,pad,heap);
     const auto load_start = armGetSystemTick();
     require(race.prepare_metadata(root,error,&progress),error);
-    require(scene.load(posix_file_system(), root, error, &progress, &progress), error);
+    require(scene.load(posix_file_system(), root, error, &progress, &progress, tuned), error);
     screen.show({"ASSETS PASS. Preparing event 1, stock 240SX and race course..."});
     progress.checkpoint("race course");
     require(race.start(root,scene.track(),error,&progress),error);
@@ -462,14 +462,15 @@ int main(int argc, char** argv) {
     {
         Screen screen; if (!screen.open()) return 1;
         try {
-            std::string root = "sdmc:/nfsu"; bool replay = false, panel = false, selected = false, root_seen = false;
+            std::string root = "sdmc:/nfsu"; bool tuned = false; bool replay = false, panel = false, selected = false, root_seen = false;
             for (int i = 1; i < argc; ++i) {
                 const std::string arg = argv[i];
                 if (arg == "--replay") { replay = true; selected = true; }
                 else if (arg == "--live") { replay = false; selected = true; }
+                else if (arg == "--tuned") tuned = true;
                 else if (arg == "--panel") panel = true;
                 else if (!root_seen && arg.rfind("--",0) != 0) { root = arg; root_seen = true; }
-                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel]");
+                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel] [--tuned]");
             }
             while (!selected && appletMainLoop()) {
                 padUpdate(&pad); const auto down = padGetButtonsDown(&pad);
@@ -477,7 +478,7 @@ int main(int argc, char** argv) {
                 if (down & HidNpadButton_A) selected = true;
                 if (down & HidNpadButton_X) { selected = true; replay = true; }
                 if (down & HidNpadButton_Y) panel = !panel;
-                screen.show({"NFSU #196 - EVENT 1 / STOCK 240SX / TWO LAPS",format("BUILD %.12s",NFSU_RACE_BUILD_TAG),
+                screen.show({tuned ? "EVENT 1 / TUNED 240SX / TWO LAPS" : "NFSU #196 - EVENT 1 / STOCK 240SX / TWO LAPS",format("BUILD %.12s",NFSU_RACE_BUILD_TAG),
                     "A: drive with Joy-Con / Pro Controller", "X: replay the pinned desktop event1.txt", "+: exit",
                     std::string("Y: diagnostic panel ")+(panel?"ON":"OFF")+" (readback and CPU text cost)",
                     "The #47 first-lap check runs before track streaming. Assets: "+root,
@@ -486,7 +487,7 @@ int main(int argc, char** argv) {
                     "During the race: Y pauses, + opens results with driving-frame statistics.",
                     "No game data is bundled or written. Replay input is bundled in RomFS."});
             }
-            if (selected) run(root,replay,panel,screen,pad);
+            if (selected) run(root,replay,panel,tuned,screen,pad);
         } catch (const Cancel&) {
         } catch (const std::exception& e) {
             std::printf("ERROR: %s\n",e.what()); std::fflush(stdout);

@@ -89,10 +89,11 @@ int main(int argc, char** argv) {
             std::puts("PASS: race loader allocation counter sees transient allocations");
             return 0;
         }
+        const bool tuned = argc == 3 && std::strcmp(argv[2], "--tuned") == 0;
         const bool baseline_only = argc == 3 && std::strcmp(argv[2], "--baseline") == 0;
         const bool no_audio = argc == 3 && std::strcmp(argv[2], "--no-audio") == 0;
-        if (argc > 3 || (argc == 3 && !baseline_only && !no_audio)) {
-            std::fprintf(stderr, "Usage: nfsu_race_loader_peak_tests [root [--baseline|--no-audio]]\n");
+        if (argc > 3 || (argc == 3 && !baseline_only && !no_audio && !tuned)) {
+            std::fprintf(stderr, "Usage: nfsu_race_loader_peak_tests [root [--baseline|--no-audio|--tuned]]\n");
             return 1;
         }
         const std::filesystem::path root(argv[1]);
@@ -125,7 +126,7 @@ int main(int argc, char** argv) {
         observer.last_peak = baseline;
         nfsu::RaceRun race;
         if (!check(race.prepare_metadata(root, error, &observer), error.c_str())) return 1;
-        if (!check(scene.load(nfsu::posix_file_system(), root, error, nullptr, &observer), error.c_str())) return 1;
+        if (!check(scene.load(nfsu::posix_file_system(), root, error, nullptr, &observer, tuned), error.c_str())) return 1;
         stage("scene loaded", baseline);
         std::printf("scene peak checkpoint %s, count %zu\n", observer.peak_phase, observer.checkpoints);
         if (!check(race.start(root, scene.track(), error, &observer), error.c_str())) return 1;

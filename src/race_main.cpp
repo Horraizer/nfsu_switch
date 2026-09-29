@@ -78,13 +78,16 @@ public:
     StockFrame car;
     std::vector<PreparedInstance> base;
     bool dirty = true;
+    bool tuned = false; // Render selection only.
     std::uint64_t loads = 0, releases = 0, bytes_read = 0;
     Cost io_cost, prepare_cost, render_cost;
     explicit RaceScene(const TrackStreamTable& t) : table(t) {}
     void load_car(const fs::path& root, const fs::path& texture) {
         std::string error;
-        require(read_stock_frame_inputs(root,car_inputs),"cannot read stock car inputs");
-        require(prepare_stock_frame(car_inputs,stock_240sx_request(),stock_240sx_skin(),car,error),error);
+        if (!read_stock_frame_inputs(root,car_inputs,tuned))
+            throw std::runtime_error(car_inputs.read_error(root));
+        require(prepare_race_car_frame(car_inputs,root,tuned ? tuned_240sx_request() : stock_240sx_request(),
+                tuned ? tuned_240sx_skin() : stock_240sx_skin(),car,error),error);
         base = car.scene.instances;
         const std::array<fs::path,3> paths = {
             texture, root/"Global/INGAMEB.BUN", root/"Global/GLOBALB.BUN"};
@@ -180,6 +183,8 @@ public:
         require(drive_place_instances(base,session.car(),session.spec(),car.scene.instances,
                                       &session.animation()),"car placement failed");
         require(render_stock_frame(car,options,error),error);
+        require(!tuned || car.stats.triangles_fallback == 0,
+                "tuned race car has fallback triangles");
         std::vector<unsigned char> rgba;
         require(compose_race_frame(background,car.frame,rgba),"frame sizes differ");
         ScreenImage image{rgba.data(),640,360,640*4};
@@ -192,15 +197,16 @@ public:
 
 int run(int argc, char** argv) {
     fs::path root,input,output,generate;
-    bool live=false, smoke=false; std::set<std::size_t> frames;
+    bool live=false, smoke=false, tuned=false; std::set<std::size_t> frames;
     for (int i=1;i<argc;++i) {
         const std::string a=argv[i];
         if (a=="--help") {
             std::cout << "nfsu_race --root RETAIL (--input RECORDING | --generate RECORDING | --live)\n"
-                         "  [--out NEW_DIRECTORY --frames 180,600,6000,22000,40000]\n"
+                         "  [--out NEW_DIRECTORY --frames 180,600,6000,22000,40000] [--tuned]\n"
                          "  live mode plays retail race audio when the device and banks are available\n";
             return 0;
         }
+        if (a=="--tuned") { tuned=true; continue; }
         if (a=="--live") { live=true; continue; }
         if (a=="--live-smoke") { live=true; smoke=true; continue; }
         require(i+1<argc,"missing option value"); const std::string value=argv[++i];
@@ -248,7 +254,7 @@ int run(int argc, char** argv) {
     TrackResidencyOptions options; options.budget_bytes=track_stream_pool_bytes(table);
     TrackResidencySession residency; std::vector<TrackResidencyStep> startup;
     require(residency.start(table,zones,slot.track,costs,options,startup,error),error);
-    RaceScene scene(table); scene.files.stream=root/"Tracks"/track_stream_file_name(*info);
+    RaceScene scene(table); scene.tuned=tuned; scene.files.stream=root/"Tracks"/track_stream_file_name(*info);
     scene.files.pack=root/"Tracks"/track_stream_pack_file_name(*info);
     scene.files.has_pack=fs::exists(scene.files.pack);
     scene.load_car(root,root/"Tracks"/track_texture_file_name(slot.track));

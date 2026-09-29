@@ -1629,7 +1629,35 @@ void test_file_loading() {
 
 } // namespace
 
+void test_mesh_retention() {
+    auto keep = triangle_spec();
+    auto drop = quad_spec();
+    const auto fixture = build({keep, drop});
+    nfsu::GeometryLimits limits;
+    limits.retain_mesh = [&](const nfsu::Mesh& mesh) { return mesh.name == keep.name; };
+    const auto full = parse(fixture.bytes);
+    const auto filtered = nfsu::parse_geometry(fixture.bytes.data(), fixture.bytes.size(), limits);
+    check(filtered.ok() && filtered.meshes.size() == full.meshes.size() &&
+          filtered.valid_mesh_count() == 1, "retention preserves identity list and selected mesh");
+    if (filtered.meshes.size() != 2 || full.meshes.size() != 2) return;
+    check(filtered.meshes[0].vertices.size() == full.meshes[0].vertices.size() &&
+          filtered.meshes[0].triangles.size() == full.meshes[0].triangles.size(),
+          "retained geometry remains complete");
+    const auto& removed = filtered.meshes[1];
+    check(!removed.valid && removed.name == full.meshes[1].name && removed.offset == full.meshes[1].offset &&
+          removed.vertices.capacity() == 0 && removed.triangles.capacity() == 0 &&
+          removed.materials.capacity() == 0 && removed.texture_hashes.capacity() == 0 &&
+          removed.material_key_hashes.capacity() == 0 && removed.markers.capacity() == 0,
+          "unretained mesh releases every decoded allocation");
+    drop.indices[0] = 9;
+    const auto broken = build({keep, drop});
+    const auto refused = nfsu::parse_geometry(broken.bytes.data(), broken.bytes.size(), limits);
+    check(!refused.ok() && has_issue(refused, "out of range"),
+          "retention cannot hide invalid unselected geometry");
+}
+
 int main() {
+    test_mesh_retention();
     test_valid_file();
     test_mesh_directory();
     test_alignment_sweep();

@@ -25,6 +25,20 @@ FRAMES = (
     "CBA5548ADE397AD43940F3C5D6469CFFB15B4C44D823908C140A8F23A2C87EB0",
     "0383137D34B8DEA42919AE0ED3E261C80F3F0F73EE3C6B969BBC5B9A9848B0C9",
 )
+# #237: visual-only preset. Same full replay, state/trajectory and input pins.
+TUNED_STEPS = (180, 600, 6000, 13128, 48336)
+TUNED_FRAMES = (
+    # Launch view: red paint, TRIBAL5 and KIT01 rear bumper.
+    "03B2EB455384BDE6167D1BA58713E5DEB35398F59D1863BCB65AA44050DE16B4",
+    # Acceleration: rotating BBS wheels and tread beside the kit.
+    "91834F1FDA67FA317F11C8DC9999E64DE0B1A1A4B591CF8BA5EC51EF60262AA5",
+    # First-lap driving: tuned assembly follows the moving chase camera.
+    "C2A4E02ABCFBB3315158F6729E22363445017B37B10A3F6DC002648BD2C74A80",
+    # Braking: the tuned assembly retains the existing lamp animation.
+    "2926B9A71AD146D54066659A4E1AC58B430DB8AE40BAC768C2AE5ECCEACC36A2",
+    # Finish: selection survives both laps and streaming transitions.
+    "37301DC551821EEAF28261FDB65F814D43B05175D5786B1F5A9477FD650F8049",
+)
 RESULT = (
     "event 1 track 1003 laps 2 outcome finished steps 48336 resets 0",
     "lap 1 ticks 1616400 time 6:44.10",
@@ -76,7 +90,10 @@ def main():
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True, help="new directory outside retail")
     parser.add_argument("--check-driver", action="store_true", help="also regenerate the recording with each build")
+    parser.add_argument("--tuned", action="store_true", help="check the shared tuned visual preset")
     args = parser.parse_args()
+    frame_steps = TUNED_STEPS if args.tuned else STEPS
+    frames = TUNED_FRAMES if args.tuned else FRAMES
     root, output = args.root.resolve(), args.out.resolve()
     require(root.is_dir(), "retail root does not exist")
     require(output != root and root not in output.parents, "output is inside retail")
@@ -87,6 +104,8 @@ def main():
     for index, exe in enumerate(args.exe):
         prefix = output / str(index)
         command = [str(exe.resolve()), "--root", str(root)]
+        if args.tuned:
+            command += ["--tuned"]
         if args.check_driver:
             generated = output / (str(index) + "-generated.txt")
             result = retail_run(command + ["--generate", str(generated)], root)
@@ -94,7 +113,7 @@ def main():
             require(result.returncode == 0 and not result.stderr, "driver failed; see log")
             require(generated.read_bytes() == recording.read_bytes(), "scripted driver no longer generates the recording")
         result = retail_run(command + ["--input", str(recording), "--out", str(prefix),
-                             "--frames", ",".join(map(str, STEPS))], root)
+                             "--frames", ",".join(map(str, frame_steps))], root)
         (output / (str(index) + ".log")).write_text(result.stdout + result.stderr, encoding="ascii")
         require(result.returncode == 0 and not result.stderr, "replay failed; see log")
         lines = result.stdout.splitlines()
@@ -123,12 +142,12 @@ def main():
                     "tilted or airborne car in trajectory")
             if int(sample["tick"]) > 600:
                 require(float(sample["speed"]) >= 5, "slow/stalled car after launch")
-        for tick, expected in zip(STEPS, FRAMES):
+        for tick, expected in zip(frame_steps, frames):
             frame = prefix / ("frame-" + str(tick) + ".tga")
             require(digest(frame.read_bytes()) == expected, "frame pin differs at " + str(tick))
             require(lines.count("frame " + str(tick) + " tga-sha256 " + expected) == 1,
                     "printed frame pin differs")
-        print("PASS", exe.name, str(STEPS[-1]) + " step hashes, result, " + str(len(STEPS)) + " frames, clean 120 Hz trajectory" +
+        print("PASS", exe.name, str(STEPS[-1]) + " step hashes, result, " + str(len(frame_steps)) + " frames, clean 120 Hz trajectory" +
               (", generated recording" if args.check_driver else ""))
 
 
