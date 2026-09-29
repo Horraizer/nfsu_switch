@@ -214,6 +214,26 @@ RecordedDrawView RecordedCommands::draw_view(std::size_t i) const {
     const auto& draw = draws.at(i);
     return {draw, draw.instance, draw.placement, draw.material, false};
 }
+std::size_t RecordedCommands::static_track_draw_count() const {
+    if (!generation_valid() || !source_) throw std::logic_error("static package unavailable");
+    return source_->static_track_draw_count();
+}
+std::size_t RecordedCommands::static_track_instance_count() const {
+    if (!generation_valid() || !source_) throw std::logic_error("static package unavailable");
+    return source_->static_track_instance_count();
+}
+const DrawInstanceUniform& RecordedCommands::static_track_instance(std::size_t i) const {
+    if (!generation_valid() || !source_) throw std::logic_error("static package unavailable");
+    return source_->static_track_instance(i);
+}
+std::size_t RecordedCommands::static_track_definition_count() const {
+    if (!generation_valid() || !source_) throw std::logic_error("static package unavailable");
+    return source_->static_track_definition_count();
+}
+const RecordedDraw& RecordedCommands::static_track_definition(std::size_t i) const {
+    if (!generation_valid() || !source_) throw std::logic_error("static package unavailable");
+    return source_->static_track_definition(i);
+}
 bool record_frame_state(const RenderOptions& options, const RenderLimits& limits,
                         RecordedCommands& out, std::string& error) {
     return frame_state(options, limits, out, error);
@@ -270,8 +290,11 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
         // These are the layouts of the four compiled programs, held together
         // by the manifest tests; never accept an arbitrary interface pointer.
         const bool textured = d.program->texture_count != 0;
+        const char* fragment = !textured ? "fallback.frag.glsl" :
+            std::strcmp(d.program->name, "track_textured") == 0 ?
+                "textured_opaque.frag.glsl" : "textured.frag.glsl";
         if (std::strcmp(d.program->vertex_source, "placed.vert.glsl") != 0 ||
-            std::strcmp(d.program->fragment_source, textured ? "textured.frag.glsl" : "fallback.frag.glsl") != 0 ||
+            std::strcmp(d.program->fragment_source, fragment) != 0 ||
             (textured && (d.program->textures[0].filter != sm::Filter::nearest ||
                           d.program->textures[0].wrap != sm::Wrap::repeat)))
             return fail(d.name, "unsupported shader or sampler");
