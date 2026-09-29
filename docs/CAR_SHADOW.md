@@ -190,8 +190,16 @@ uses wheel fallbacks for invalid samples. The current grid is planar and skips t
 shadow when no wheel contacts the road; an invisible resident draw is still
 submitted at the body origin. Its half extents use the car's
 authored length and width, since the producers of the retail footprint
-fields are not fully traced. A 0.04 normal lift, 0..3 height fade, 1.05
-footprint scale and 0.75 expansion follow the traced values. The CPU/GPU
+fields are not fully traced. The planar grid uses more clearance than
+retail's per-point road lift because it does not sample each vertex; retail
+also raises selected vertices another 0.08. At the event-1 start, the
+old planar grid put one edge below the collision road and hid the shadow
+through the countdown. The replay checker now pins a visibly darkened
+frame 1. All four wheels contact the road and shadow alpha is positive at
+tick 0. Retail's grid queries at
+0x0056EEB0..0x0056EF10 have no countdown or first-contact gate; wheel
+queries are fallback. First-frame retail pixels have not been captured
+directly. The CPU/GPU
 path batches the three retail strips into one draw. The track renderer
 currently draws the shadow after its track list; retail interleaves it in
 row 2 of an immediate queue, so overlap with later blended track layers

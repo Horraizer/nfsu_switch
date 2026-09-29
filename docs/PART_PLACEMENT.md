@@ -723,19 +723,21 @@ on one branch, compensates for a reflected matrix was not traced. The CPU
 reference applies no per-draw cull mode, so none of this shows in its
 frames.
 
-**Also in the brake block, not reproduced.** Before each brake draw the
+**Also in the brake block.** Before each brake draw the
 block points the brake model's `+0x10` at `CarRenderInfo + 0xE2C` for
 brakes 0 and 3 and at `+0xE4C` for brakes 1 and 2, with `+0x14` = 2
 (`0x0057049B`, `0x00570569`, `0x0057062B`, `0x00570702`). `0x0040C98A`
 hands a model whose `+0x10` is set to `0x0053F540`, which walks that many
 16-byte entries and looks textures up through `0x005461C0`: a per-side
-texture substitution for the brake, whose tables were not decoded.
+texture substitution for the brake. Issue #223 decoded the stock left
+entry as `BRAKE_GLOBAL` to `BRAKE_GLOBAL_LEFT`; the static stock scene now
+applies it per left copy. See [`CAR_TEXTURES.md`](CAR_TEXTURES.md).
 
 **What the stock branch carries.** With `place_wheels_from_culling_table`,
 the wheel and brake copies now include `X_k`, `Q_k` and `P_k` above, as well
 as the half turn or reflection for `k` = 0 and 3. The alternative lateral
 branches, spin, steering and suspension are absent from a static stock
-frame, and the brake texture substitution is still absent, so every such
+frame, so every such
 copy remains `placement_exact` false. Before issue
 #161 no copy carried `H` or `R`: all eight were pure translations,
 determinant +1, and the two left wheels showed the inboard side of the
@@ -933,8 +935,8 @@ apart from exact ones. The report names the unresolved branches.
   The static stock profile reproduces its traced scale and offset, but
   leaves spin, steering and suspension travel for the moving race scene
   (`CAR_ANIMATION.md`).
-- The brake's per-side texture substitution tables at `CarRenderInfo +
-  0xE2C` and `+0xE4C`, and what fills them.
+- The brake substitution entries beyond the stock left and right pair
+  documented in [`CAR_TEXTURES.md`](CAR_TEXTURES.md).
 - Wheel fields `+0x14`, `+0x1C` and `+0x20` beyond the addresses that read
   them. `+0x14` is equal within an axle and the other two mirror the sign of
   the lateral, but no name is claimed for any of them.

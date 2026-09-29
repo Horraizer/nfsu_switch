@@ -125,10 +125,14 @@ CarShadowPlacement place_car_shadow(const VehicleState& state,
     const double half_length = 0.5*handling.length*expansion;
     const double half_width = 0.5*handling.width*expansion;
     // Contact wheels determine the road plane, but the body origin determines
-    // horizontal placement. Project it onto that plane, then apply the traced
-    // depth lift. A partial contact set must not drag the grid toward a wheel.
+    // horizontal placement. Project it onto that plane, then apply clearance.
+    // A partial contact set must not drag the grid toward a wheel.
+    // Retail lifts its sampled road grid by 0.04 and selected vertices by
+    // another 0.08. This single-plane approximation needs the full 0.12
+    // clearance: at the event-1 grid pose its rear edge otherwise sinks
+    // below the road and the CPU frame hides the entire shadow until GO.
     const VehicleVec3 center = add(sub(origin,mul(normal,dot(sub(origin,road),normal))),
-                                   mul(normal,0.04));
+                                   mul(normal,0.12));
     row(out.transform.rows,0,mul(forward,half_length));
     row(out.transform.rows,1,mul(side,half_width));
     row(out.transform.rows,2,normal);

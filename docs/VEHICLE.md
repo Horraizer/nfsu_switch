@@ -46,10 +46,14 @@ and wheel records). The 0x2B0-byte setup sub-object at record +0x110, which
 struts, gearbox and engine; the physics code reaches every field below
 through a pointer to that sub-object (engine object +0x18, set at
 0x00475174), so a code address quoted with "sub +X" means record +0x110+X.
-The records after the sub-object, from +0x3C0, are the per-level upgrade
-tables (tyres at +0x6C0, suspension at +0x7F0 + 80 * level as
-[`PART_PLACEMENT.md`](PART_PLACEMENT.md) shows, engine and gearbox before
-them); a stock car does not read them and this model does not either.
+The record from +0x3C0 to +0x9BB is the per-level upgrade data, which
+[`VEHICLE_TUNING.md`](VEHICLE_TUNING.md) decodes (issue #57). This model does
+not read it, and a car with nothing installed reads all of it only through two
+rules of 0x00575960 that run whatever the levels are: the inertia rebuild
+below, and the addition of the second torque curve at +0x334 into +0x310. Both
+are no-ops on the stock 240SX, whose +0x334 is zero and whose stored inertia
+already is the rebuild's answer, which is why this model's pins hold without
+them; the Eclipse, the RX-7 and the Skyline have a non-zero +0x334 in stock.
 
 The 240SX is record 18, at absolute offset 1736752.
 `nfsu_probe vehicle-sim --handling <GLOBALB.BUN>` decodes the fields below
@@ -101,8 +105,8 @@ the whole 3216-byte record hashes to
 | tyre +0x10 | sliding friction coefficient | 1.5 / 1.47 | RECOVERED: 0x00587546..0x0058756A, the same product with the surface's sliding factor |
 | tyre +0x00, +0x04, +0x08 | slip scale, load scale, lateral scale | 12, 1, 1 | RECOVERED values; read by the lateral-force curve family at 0x00587740, where +0x00 divides an angle converted from radians to degrees (0x0058777C, 0x00587783), +0x04 divides the load term (0x005877AD) and +0x08 multiplies the result (0x005877C9). Decoded and checked, not used: that curve family is not reproduced |
 | +0x220 | mass, tonnes | 1.22 | RECOVERED value; the weight rule 0x00463C51..0x00463C58 multiplies it by g = 9.8 beside the averaged friction coefficients, and the drag rule 0x0045689B divides by it. Tonnes is an inference, below |
-| +0x224, +0x228, +0x22C | length, width, height, m | 4.52, 1.69, 1.29 | observed only: they equal the real car's dimensions; no reader was traced, and the model does not use them |
-| +0x230, +0x244, +0x258 | inertia about the body axes, tonnes m^2: the diagonal of a 4x4 matrix at +0x230 | 0.4595537, 2.2462742, 2.367461 | RECOVERED: the rigid body keeps a pointer to +0x220 (0x0047415D into 0x00584800, stored at 0x00584806), 0x00584B21 takes the mass from it and 0x00584B3D inverts the matrix at pointer +0x10 into the body's inverse inertia. In all 35 records the twelve other entries are zero and each diagonal entry is the box inertia of the record's own mass, length, width and height rounded to float, or one float step from it: at most 8.0e-8 relative (the S2000) and 3.2e-6 absolute (the bus, whose yaw entry is 54 t m^2) |
+| +0x224, +0x228, +0x22C | length, width, height, m | 4.52, 1.69, 1.29 | RECOVERED: they equal the real car's dimensions, and 0x005762FC reads all three into the inertia diagonal above. The model does not use them, because it reads that diagonal |
+| +0x230, +0x244, +0x258 | inertia about the body axes, tonnes m^2: the diagonal of a 4x4 matrix at +0x230 | 0.4595537, 2.2462742, 2.367461 | RECOVERED: the rigid body keeps a pointer to +0x220 (0x0047415D into 0x00584800, stored at 0x00584806), 0x00584B21 takes the mass from it and 0x00584B3D inverts the matrix at pointer +0x10 into the body's inverse inertia. In all 35 records the twelve other entries are zero and each diagonal entry is the box inertia of the record's own mass, length, width and height. 0x005762FC is why: it rebuilds the diagonal from +0x220..+0x22C on every car instance, with the float 1/12 at 0x006CCA6C, and all 105 entries are then bit for bit what that rule gives ([`VEHICLE_TUNING.md`](VEHICLE_TUNING.md), "The inertia rebuild"). |
 | +0x280 / +0x2A0 | strut block, front / rear (0x20 each) | below | RECOVERED: 0x00475A94 reaches it as sub +0x170 + (wheel / 2) * 0x20 |
 | strut +0x00 | progressive term, 1/m | 5.4 / 5.1 | RECOVERED, the force rule below |
 | strut +0x04 | spring rate, kN/m | 35 / 30 | RECOVERED; with the preload below the springs work about the rest position, so at rest x = 0 and the rate is 35 kN/m |
@@ -443,9 +447,11 @@ labelled.
   0x00456969 averages the first two, multiplies by a speed-like argument and
   adds 9.8 * mass, and the preload's total adds the argument times +0x37C;
   that reads like downforce, but the argument was not traced.
-- +0x2C4 (500), +0x2D4 (0.04), +0x2DC (2), +0x30C (0.00023), the
-  per-level tables from +0x3C0, and whatever the record holds past the
-  engine block.
+- +0x2C4 (500), +0x2D4 (0.04), +0x2DC (2), +0x30C (0.00023), and whatever
+  the record holds past +0x9BB. The per-level tables from +0x3C0 are
+  decoded in [`VEHICLE_TUNING.md`](VEHICLE_TUNING.md), which also lists
+  what of them is still unread: +0x384..+0x38C and +0x3B0..+0x3BF have
+  writers and no reader.
 - Whether the game integrates one 1/60 s step per tick or subdivides it.
 
 ## Determinism

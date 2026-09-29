@@ -216,10 +216,13 @@ call paths also include multiple contexts. Therefore multiplying the
 port's draws by one and calling that a **measured retail total** would be
 false (R addresses and FX census above).
 
-M at `7dad0c4` derives the following geometry counts from track 1003 at precisely
-specified **port replay** views. Every row has 94 car draws / 6137 car
-triangles, far=250, 5098 uploaded resources. Values matched in all three
-final runs (probe `32973d9`, `tools/frame_budget_probe.cpp:125..149`).
+Historical measurement at `7dad0c4`, from track 1003 with the M probe at
+`32973d9` (`tools/frame_budget_probe.cpp:125..149`), at the **port replay**
+views below: every sampled row had 94 car draws / 6137 car triangles,
+far=250 and 5098 uploaded resources. Those values matched in all three
+runs at that revision. They are not current car counts: #223 suppresses
+empty decal draws. `nfsu_draw_commands_retail` prints current car draw and
+triangle counts; `nfsu_race_run_tests` checks the current race draw count.
 
 | Replay tick | Track draws | Track triangles | Visible / unplaced instances | Drawn sections | Unique meshes | Texture identities including fallback | Texture runs | VB / IB runs |
 | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |

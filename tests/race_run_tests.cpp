@@ -154,6 +154,10 @@ int main(int argc, char** argv) {
         if (argc == 2) return 0;
         const std::filesystem::path root(argv[2]);
         RaceGpuScene scene;
+        RaceRun race;
+        require(race.prepare_metadata(root, error), error);
+        require(!race.prepare_metadata(root, error) && error == "race metadata already prepared",
+                "prepared race metadata accepted a second load");
         struct PollCount : TrackSliceLoadObserver {
             std::size_t sections = 0; bool car_prepared = false;
             void checkpoint(const char* phase) override {
@@ -165,7 +169,7 @@ int main(int argc, char** argv) {
         require(polled.sections >= 4*scene.track().sections && polled.car_prepared,
                 "race scene disconnected the shared loader checkpoints");
         require(!scene.load(posix_file_system(),root,error),"loaded race scene allowed cache-invalidating reload");
-        RaceRun race; require(race.start(root, scene.track(), error), error);
+        require(race.start(root, scene.track(), error), error);
         // Partial wheel contact must change the fitted road plane, not drag
         // the shadow across it toward the surviving contact points.
         VehicleState shadow_state{};
@@ -204,9 +208,8 @@ int main(int argc, char** argv) {
         require(replay.load(text, error), error);
         require(scene.cache_bytes() <= 8*kMiB,"command cache exceeded metadata limit");
         std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 8*kMiB << '\n';
-        // The resident shadow grid, decoded texture and draw definition add
-        // 34015 bytes of scene/cache metadata to the prior estimate.
-        require(scene.cache_bytes() == 3859794,"event 1 command cache metadata estimate differs from pin");
+        // #223 removes 20 car draws while #188 adds the resident ground shadow.
+        require(scene.cache_bytes() == 3859254,"event 1 command cache metadata estimate differs from pin");
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';
         require(scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes() <=
@@ -290,6 +293,10 @@ int main(int argc, char** argv) {
         const bool full = argc > 3 && std::string(argv[3]) == "--full-draws";
         const bool sampled = argc > 3 && std::string(argv[3]) == "--sample-draws";
         require(argc <= 3 || full || sampled, "unknown retail draw sampling option");
+        require(std::all_of(race.session().car().wheels.begin(), race.session().car().wheels.end(),
+                            [](const auto& wheel) { return wheel.contact; }) &&
+                place_car_shadow(race.session()).alpha > 0.0F,
+                "starting grid shadow has no wheel contact or alpha");
         while (race.session().timing().outcome == RaceOutcome::running) {
             require(replay.next(race.session().timing().step, pad, error), error);
             require(race.simulate(pad, error), error);
@@ -339,7 +346,7 @@ int main(int argc, char** argv) {
                         std::memcmp(&selected.material,&b.material,sizeof b.material) == 0,
                         "cached ordered draw differs from reference");
                 }
-                require(frame.track_draws > 0 && frame.car_draws == 94, "missing track/car commands");
+                require(frame.track_draws > 0 && frame.car_draws == 74, "missing track/car commands");
                 require(frame.commands.draw_count() == frame.track_draws + frame.car_draws + 1,
                         "ground shadow is not one additional draw");
                 if (tick == 180 || tick == 11344) {

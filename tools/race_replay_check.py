@@ -6,19 +6,25 @@ import hashlib
 from pathlib import Path
 import subprocess
 
-STEPS = (180, 600, 6000, 11344, 12459, 13128, 24300, 35396, 36510, 37177, 48336)
+STEPS = (1, 180, 600, 6000, 11344, 12459, 13128, 24300, 35396, 36510, 37177, 48336)
+# PR #225 fixes car window aliases and blank decals; PR #220 adds the ground
+# shadow. Each frame below is measured with both changes. These frames also
+# depend on the inherited rasterizer depth-write guard from 3b1f644 (already
+# in base 97e3839): blended track groups preserve depth.
+# Replay steps, state hashes, input recording, and trajectory are unchanged.
 FRAMES = (
-    "455CA10A332B9C325E6D6CFA8D0FB38F729E49F14E6B61C38E34A673CC0DA801",  # 180: launch lane shadow follows body origin
-    "4C62221D36931BE24ECA87DA9ADBCCF3BCB3724FB0D3F38FFE98A0ADAC5196FA",  # 600: yellow lane shadow follows body origin
-    "4B1347FAB91DC0BE9AAC54F60B5447854F253811863A7361394D5AC8D0D19DF6",  # 6000: junction shadow follows body origin
-    "B5264864905A434E58325905D8F40630A2811AABE7D8F295C90B6B630EE3DFF5",  # 11344: bend shadow follows body origin
-    "BF102776D9171FE64D5E62B94512329CD0B4DEA37BA7528262FEC11C4438A098",  # 12459: straight shadow follows body origin
-    "39E15F29E3B79CC376B407A619FB691A59F59FED6289E3F6FBCB2911067E1D74",  # 13128: right edge shadow follows body origin
-    "BBD2DF1F5D1CC5335B6C8BE2884B54261758EDCF2B3C7FDCBB311D7830CECC69",  # 24300: second-lap launch shadow follows body origin
-    "B85E620F11788ABEBB8A1C2A4C5AB63768C8CE705AC2362A2201D1D6FDE64789",  # 35396: second-lap bend shadow follows body origin
-    "27169F83958A17AC1B6ABAF5A6F53BAED8E546E61F1991711318ACF881FEA9AB",  # 36510: second-lap straight shadow follows body origin
-    "85C77929BDEE4E4BCEF636AC451718FA7EB7C89060B3D55594DE8E63D5315350",  # 37177: second-lap right edge shadow follows body origin
-    "83B26E30EA7F4C693CC9697498FCF390D69C1CF5ACCFA4171F785CFE1D3EE4D1",  # 48336: finish-lane shadow follows body origin
+    "33C7EA1B1C700EF50C89A7D468CAAB012972D4FCFFE36D564B5D056DEC30E1F4",  # 1: visible ground shadow during countdown; no-shadow main is C544B32A3157AB6646E626032685A157CCA456BDB8833B45DF944B2C87AAC2C9
+    "ECA21EEA0E33071D8F54FE391F36E08D569FF697F84B561461F419C2EA8912C2",  # 180: car texture fix + shadow at launch lane
+    "52CCA0306D140F1CF12819A6547034294FBA83F37073BDE1C4125EFBD96CFD6E",  # 600: car texture fix + shadow at yellow lane
+    "0B12D812B7E9E6511BEBF4503FC1E888F57F2E4A7F49AB1F7DCB93A78E444828",  # 6000: car texture fix + shadow at junction
+    "57E1194E5ED738A718B55A67580C6AFC8D4883E8F9C25607759AE7CB0EF61EF8",  # 11344: car texture fix + shadow at bend
+    "59F874A000ED305B4367A2B6FBAB55E5C0469F5EF17BD05F32B49FAC9750CF60",  # 12459: car texture fix + shadow at straight
+    "2AE4CEC5325DDF56113B129A87973B437372D4FF345D11E3E928BFF107729E48",  # 13128: car texture fix + shadow at right edge
+    "24939BAB5AECD2969D6B5244ECCD7A654ED79F6E50966CD4B8ACCAA9890D1456",  # 24300: car texture fix + shadow at lap-two launch
+    "540739148B7323B6233F0786E6B10C320DF05FC8CAF46BD707835FD2B5CDC15B",  # 35396: car texture fix + shadow at lap-two bend
+    "022A558E9483A5486F555834A4CAFDF6A6AC783AB4D1A96BC5683EFB7F0E56DA",  # 36510: car texture fix + shadow at lap-two straight
+    "5D387BF5F326021C7F4D4417E7459247539C0EDCB35EFCBFEC8A6750461FC26F",  # 37177: car texture fix + shadow at lap-two right edge
+    "08F1B38E8EEA0C75B88CA1AE4BA479ED46A25E22D1323B376D778534830FDAFA",  # 48336: car texture fix + shadow at finish lane
 )
 RESULT = (
     "event 1 track 1003 laps 2 outcome finished steps 48336 resets 0",

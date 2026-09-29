@@ -13,7 +13,10 @@ constexpr const char* kEvent1StepsHash = "E4D4D6E955D59F7FF11C3318BC455D08B7903C
 // No rendering, pad polling or wall clock affects the recorded state.
 class RaceRun {
 public:
-    bool start(const std::filesystem::path& root, const TrackSlice& track, std::string& error);
+    bool prepare_metadata(const std::filesystem::path& root, std::string& error,
+                          TrackSliceLoadObserver* observer = nullptr);
+    bool start(const std::filesystem::path& root, const TrackSlice& track, std::string& error,
+               TrackSliceLoadObserver* observer = nullptr);
     bool simulate(const GamepadFrame& pad, std::string& error);
     bool commit(std::string& error);
     const RaceSession& session() const { return *session_; }
@@ -34,7 +37,11 @@ private:
     Sha256 sequence_, steps_;
     std::string step_line_;
     std::uint64_t loads_ = 0, releases_ = 0, bytes_read_ = 0;
+    std::int8_t laps_ = 0, direction_ = 0, lap_skip_ = 0;
+    bool metadata_ready_ = false;
     bool pending_ = false;
+    bool read_metadata(const std::filesystem::path& front, const std::filesystem::path& global,
+                       std::string& error, TrackSliceLoadObserver* observer);
     bool apply(const TrackResidencyStep& step, std::string& error);
 };
 

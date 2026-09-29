@@ -1,5 +1,6 @@
 #include "nfsu/scene.h"
 
+#include "nfsu/car_parts.h"
 #include "nfsu/geometry.h"
 
 #include <algorithm>
@@ -11,6 +12,10 @@
 #include <utility>
 
 namespace nfsu {
+
+bool is_stock_dummy_decal_hash(std::uint32_t hash) noexcept {
+    return hash >= 0x910E6654U && hash <= 0x910E665BU;
+}
 
 namespace {
 
@@ -1020,6 +1025,9 @@ bool validate_scene(const PreparedCarScene& scene, std::string& error) {
             unresolved.insert(draw.texture_hash);
         }
         const bool expected_drawable = draw.binding != BindingKind::invalid_slot &&
+                                       !(scene.profile == SelectionProfile::stock_car &&
+                                         draw.binding == BindingKind::unresolved &&
+                                         is_stock_dummy_decal_hash(draw.texture_hash)) &&
                                        range_ok(draw.first_index, draw.index_count,
                                                 scene.meshes[draw.mesh].triangles.size());
         if (draw.drawable != expected_drawable) {
@@ -1041,10 +1049,6 @@ bool validate_scene(const PreparedCarScene& scene, std::string& error) {
                     " does not have one draw per material";
             return false;
         }
-    }
-    if (next_texture != scene.textures.size()) {
-        error = "a prepared texture is never referenced";
-        return false;
     }
     if (scene.unresolved_hashes.size() != unresolved.size() ||
         !std::equal(scene.unresolved_hashes.begin(), scene.unresolved_hashes.end(),
@@ -1089,7 +1093,34 @@ bool validate_scene(const PreparedCarScene& scene, std::string& error) {
                     " names a hash its prepared mesh does not have";
             return false;
         }
+        if (instance.brake_left_texture != kNoHandle) {
+            if (!stock || instance.part_slot != kSlotBrake ||
+                (instance.copy != 0 && instance.copy != 3) ||
+                instance.brake_left_texture >= scene.textures.size() ||
+                !scene.textures[instance.brake_left_texture].claims_hash(kBrakeGlobalLeftHash) ||
+                !std::any_of(scene.draws.begin(), scene.draws.end(),
+                    [&instance](const PreparedDraw& draw) {
+                        return draw.mesh == instance.mesh && draw.drawable &&
+                               draw.texture_hash == kBrakeGlobalHash;
+                    })) {
+                error = "prepared instance " + std::to_string(i) +
+                        " has an invalid left brake texture";
+                return false;
+            }
+            if (!texture_used[instance.brake_left_texture]) {
+                if (instance.brake_left_texture != next_texture) {
+                    error = "left brake texture violates texture first-use order";
+                    return false;
+                }
+                texture_used[instance.brake_left_texture] = true;
+                ++next_texture;
+            }
+        }
         mesh_drawn[instance.mesh] = true;
+    }
+    if (next_texture != scene.textures.size()) {
+        error = "a prepared texture is never referenced";
+        return false;
     }
     if (stock) {
         for (std::size_t i = 0; i < mesh_drawn.size(); ++i) {

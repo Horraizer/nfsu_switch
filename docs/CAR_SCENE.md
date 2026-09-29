@@ -576,7 +576,8 @@ model, and draw 3 in 9 instances.
   object. Texture alpha state and the proven environment coefficient gates
   are bounded in `docs/MATERIALS.md`. The former "secondary texture slot" is
   a separate 0x00134013 material-key slot; see `docs/FORMATS.md`.
-- The identities of six hashes absent from the surveyed packs.
+- Damage and sponsor substitution beyond the stock texture bindings in
+  [`CAR_TEXTURES.md`](CAR_TEXTURES.md).
 - The 24-byte track vertex field layout.
 
 A renderer may now ask for the whole stock assembly of a car at one LOD
@@ -595,7 +596,8 @@ that keep drawn copies apart from meshes.
 That is the decoded selection and placement assembled and drawn, and it is
 still not the whole stock car. Wheel and brake copies are opt-in and
 marked inexact; the static scene has no wheel spin, steer or suspension
-travel. Decal textures are still missing. The paint, skin and vinyls the
+travel. Blank stock decal slots are skipped as in retail; selected sponsor
+decals are not yet reproduced. The paint, skin and vinyls the
 viewer can compose are still the caller's explicit selection rather than a car's own
 customization state, so a render of this profile is the stock assembly
 this project has decoded and not the car the game draws.

@@ -72,6 +72,7 @@ build/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc 904.24 -94.76
 build/nfsu_probe track-contact X:/Games/NFSU/Tracks/TRACKB1003.lzc 904.24 -94.76 56.5 944 -74 56.5
 build/nfsu_probe car-placement X:/Games/NFSU/Global/GLOBALB.BUN 240SX
 build/nfsu_probe vehicle-sim mixed --handling X:/Games/NFSU/Global/GLOBALB.BUN
+build/nfsu_probe vehicle-tuning X:/Games/NFSU/Global/GLOBALB.BUN
 build/nfsu_probe drive-replay --demo --root X:/Games/NFSU --render-every 120 --out build/shots/drive
 build/nfsu_probe race-events X:/Games/NFSU/Global/GLOBALB.BUN X:/Games/NFSU/FrontEnd/FrontB.lzc
 build/nfsu_probe track-whole X:/Games/NFSU/Tracks/STREAML1RA.BUN X:/Games/NFSU/Tracks/TRACKB1003.lzc 1003 --texture X:/Games/NFSU/Tracks/TEX1003TRACK.BIN --texture X:/Games/NFSU/Global/INGAMEB.BUN --texture X:/Games/NFSU/Global/GLOBALB.BUN
@@ -156,6 +157,15 @@ equal the built-in recovered table. It exits 1 on an argument it refuses, 2
 on a script file it cannot read or parse, and 3 on a handling file that
 cannot drive the model. See `docs/VEHICLE.md` for the model, the recovered
 and approximated constants, the script format and the pinned telemetry.
+
+`vehicle-tuning` decodes the per-level tuning tables of every car type of
+`GLOBAL/GLOBALB.BUN` - the weight, gearbox, engine, induction, tyre, nitrous,
+downforce, grip and suspension upgrades - prints one line per record and the
+SHA-256 of the values it decoded, and compares the 240SX's tables with the
+built-in ones. It exits 1 on an argument it refuses and 3 on a file it cannot
+read or a record it refuses. See `docs/VEHICLE_TUNING.md` for the tables, the
+rule that applies them and what is still unread; nothing in it is wired into
+the driving model.
 `drive-replay` replays a recorded controller stream - the built-in
 demonstration with `--demo`, or a file in the recorded form of
 `docs/INPUT.md` with `--input` - through the driving controls (the default
