@@ -13,16 +13,16 @@
 
 namespace nfsu {
 
-// The stock-car profile of PreparedCarScene: the recovered stock part set
+// The car-part profile of PreparedCarScene: the recovered stock part set
 // (include/nfsu/car_parts.h), the per-LOD mesh hash of every installed part
 // with the fallback the game applies for a missing mesh, and the recovered
 // placement (include/nfsu/part_placement.h), turned into one validated draw
 // list with one instance per drawn copy.
 //
-// Every rule below is a rule this project traced in the retail speed.exe;
+// Placement and model rules below were traced in the retail speed.exe;
 // addresses are its virtual addresses and the evidence is in
-// docs/CAR_SCENE.md and docs/PART_PLACEMENT.md. Nothing here invents a
-// rule: where the executable does something this project did not
+// docs/CAR_SCENE.md and docs/PART_PLACEMENT.md. The explicit selection is
+// a caller construct. Where the executable does something this project did not
 // reproduce, the slot is reported rather than placed, and the one
 // stand-in this layer can produce is opt-in and marked.
 //
@@ -45,6 +45,7 @@ struct StockSceneRequest {
     // retail name fields are equal in all 35 records, so one name serves
     // both; see docs/CAR_SCENE.md.
     std::string car_type_name;
+    InstalledPartSelection installed_parts;
     // The car-wide LOD index, 0 for A to kCarPartLodCount - 1 for D.
     // CarRenderInfo::Render picks it once per car per frame from the car's
     // pixel size; a caller that has one uses car_lod_for_pixel_size. Four
@@ -70,8 +71,8 @@ struct StockSceneRequest {
 // What became of one car part slot. Only `drawn` puts geometry in the
 // scene.
 enum class StockSlotOutcome {
-    not_installed,  // the stock-part routine filled no record for the slot
-    skipped,        // the stock-part routine does not fill this slot
+    not_installed,  // no record was selected for the slot
+    skipped,        // the stock-part routine did not fill this slot
     no_model,       // the slot is outside 0..kCarModelSlotCount-1, so
                     // CarRenderInfo builds it no model (0x56ab87)
     disabled,       // the enable byte 0x57ea80 derived is 0
@@ -107,6 +108,7 @@ const char* stock_placement_name(StockPlacement placement) noexcept;
 struct StockSlotReport {
     int slot = 0;
     StockPartRule rule = StockPartRule::none;
+    bool overridden = false;
     // Index into CarPartDatabase::records, or kNoCarPart.
     std::size_t record = kNoCarPart;
     // The enable byte 0x57ea80 derived for the slot.
@@ -166,6 +168,7 @@ struct StockSceneReport {
     // Every marker the collector accepts, in its order.
     std::vector<StockMarker> markers;
     std::size_t installed = 0;       // slots with a record
+    std::size_t overridden = 0;      // installed by an explicit override
     std::size_t with_model = 0;      // of those, slots 0..29
     std::size_t drawn = 0;           // slots whose outcome is drawn
     std::size_t fell_back = 0;       // drawn slots on a fallback hash

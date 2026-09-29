@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -187,6 +188,7 @@ const char* stock_part_rule_name(StockPartRule rule) noexcept;
 struct StockPartSlot {
     std::size_t record = kNoCarPart;
     StockPartRule rule = StockPartRule::none;
+    bool overridden = false;
     // The per-slot enable byte after the stock parts are installed, as
     // computed by 0x57ea80 with no garage preview part.
     bool enabled = true;
@@ -196,6 +198,12 @@ struct StockParts {
     std::string car_type_name;
     std::uint32_t car_type_hash = 0;
     std::array<StockPartSlot, kCarSlotCount> slots{};
+};
+
+// Caller-provided installed parts. An absent entry keeps the stock part.
+// This input is a viewer construct, not a decoded garage or save record.
+struct InstalledPartSelection {
+    std::array<std::optional<std::string>, kCarSlotCount> names{};
 };
 
 // CarRenderInfo (0x56a130) builds models only for slots 0..29, so a part
@@ -266,6 +274,15 @@ bool resolve_part_models(
 bool select_stock_parts(
     const CarPartDatabase& database,
     const std::string& car_type_name,
+    StockParts& parts,
+    std::string& error);
+
+// Resolves overrides by the retail part-name hash in the named slot, then
+// recomputes enable bytes over the selected set. Unknown names are errors.
+bool select_installed_parts(
+    const CarPartDatabase& database,
+    const std::string& car_type_name,
+    const InstalledPartSelection& selection,
     StockParts& parts,
     std::string& error);
 

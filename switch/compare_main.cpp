@@ -66,24 +66,32 @@ bool run(int argc, char** argv, PadState& pad, Report& report, std::string& erro
     const auto mounted = romfsInit();
     if (R_FAILED(mounted)) { error = "offline shader RomFS mount failed: " + std::to_string(mounted); return false; }
     struct RomfsGuard { ~RomfsGuard() { romfsExit(); } } romfs_guard;
-    bool painted = true, have_root = false;
+    bool painted = true, tuned = false, have_root = false;
     std::string root = "sdmc:/nfsu";
     for (int i=1; i<argc; ++i) {
         if (!argv[i] || !argv[i][0]) continue;
         const std::string argument = argv[i];
         if (argument == "--unpainted") painted = false;
+        else if (argument == "--tuned") tuned = true;
         else if (!have_root && argument[0] != '-') { root = argument; have_root = true; }
         else { error = "unknown argument: " + argument; return false; }
     }
+    if (tuned) painted = true;
     nfsu::StockFrame stock;
     {
         report.line(("NFSU #147: reading six inputs under " + root).c_str());
         nfsu::StockFrameInputs inputs;
-        if (!nfsu::read_stock_frame_inputs(root, inputs)) {
+        if (!nfsu::read_stock_frame_inputs(root, inputs, tuned)) {
             for (const auto& f : inputs.files) if (!f.read) error += f.path + ": " + f.error + "\n";
+            if (tuned && !inputs.wheel_geometry.read)
+                error += inputs.wheel_geometry.path + ": " + inputs.wheel_geometry.error + "\n";
+            if (tuned && !inputs.vinyls.read)
+                error += inputs.vinyls.path + ": " + inputs.vinyls.error + "\n";
             return false;
         }
-        if (!nfsu::prepare_stock_frame(inputs, nfsu::stock_240sx_request(),
+        if (!nfsu::prepare_stock_frame(inputs,
+                tuned ? nfsu::tuned_240sx_request() : nfsu::stock_240sx_request(),
+                tuned ? nfsu::tuned_240sx_skin() :
                 painted ? nfsu::stock_240sx_skin() : nfsu::StockFrameSkin{}, stock, error)) return false;
         if (!stock.inputs_ok) {
             error = "stock input issues:\n";
@@ -102,7 +110,8 @@ bool run(int argc, char** argv, PadState& pad, Report& report, std::string& erro
         if (!nfsu::encode_stock_frame(stock.frame, encoded, error)) return false;
         cpu_hash = nfsu::sha256_hex(encoded.sha256);
     }
-    const bool pin_ok = cpu_hash == (painted ? nfsu::kStock240sxPaintedFrameSha256 : nfsu::kStock240sxFrameSha256);
+    const bool pin_ok = cpu_hash == (tuned ? nfsu::kTuned240sxFrameSha256 :
+        painted ? nfsu::kStock240sxPaintedFrameSha256 : nfsu::kStock240sxFrameSha256);
     nfsu::RecordedCommands commands;
     if (!nfsu::record_car_commands(stock.scene, options, {},
             painted ? stock.skin_binding.source : nfsu::kNoHandle, commands, error)) return false;
@@ -135,7 +144,8 @@ bool run(int argc, char** argv, PadState& pad, Report& report, std::string& erro
         "GPU raw RGBA SHA-256:\n%s\n"
         "A=GPU  B=CPU  X=DIFF x16  Y=toggle report  +=exit\n"
         "Photograph this report; coordinator records numbers on issue #147.",
-        painted ? "painted" : "unpainted", pin_ok && metrics.passed ? "PASS" : "FAIL",
+        tuned ? "tuned" : painted ? "painted" : "unpainted",
+        pin_ok && metrics.passed ? "PASS" : "FAIL",
         100.0*metrics.exact_pixels/metrics.pixels,
         static_cast<unsigned long long>(metrics.exact_pixels), static_cast<unsigned long long>(metrics.pixels),
         100.0*metrics.within_two_pixels/metrics.pixels,

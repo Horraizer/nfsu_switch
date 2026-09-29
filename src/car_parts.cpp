@@ -720,4 +720,43 @@ bool select_stock_parts(
     return true;
 }
 
+bool select_installed_parts(
+    const CarPartDatabase& database,
+    const std::string& car_type_name,
+    const InstalledPartSelection& selection,
+    StockParts& parts,
+    std::string& error) {
+    if (!select_stock_parts(database, car_type_name, parts, error)) {
+        return false;
+    }
+    for (std::size_t slot = 0; slot < kCarSlotCount; ++slot) {
+        const auto& name = selection.names[slot];
+        if (!name) {
+            continue;
+        }
+        const std::string label = std::to_string(slot) + " " + car_slot_name(static_cast<int>(slot));
+        if (name->empty() || !printable_ascii(*name)) {
+            error = "part override for slot " + label + " must be printable ASCII";
+            parts = StockParts{};
+            return false;
+        }
+        const std::uint32_t hash = bin_hash(*name);
+        const std::size_t record = hash == kAnyPartName
+            ? kNoCarPart
+            : find_car_part(database, kAnyCarType, static_cast<int>(slot), hash,
+                            kNoCarPart, kAnyUpgradeLevel);
+        if (record == kNoCarPart) {
+            error = "part override for slot " + label + " names unknown part '" +
+                    *name + "'";
+            parts = StockParts{};
+            return false;
+        }
+        StockPartSlot& entry = parts.slots[slot];
+        entry.record = record;
+        entry.overridden = true;
+    }
+    derive_enabled(database, parts.slots);
+    return true;
+}
+
 } // namespace nfsu

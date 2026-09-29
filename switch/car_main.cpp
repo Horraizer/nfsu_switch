@@ -250,15 +250,18 @@ std::string degrees(double value) {
 struct Choice {
     std::string root = kDefaultRoot;
     bool painted = true;
+    bool tuned = false;
     std::string ignored;
 
     const char* pinned_hash() const {
-        return painted ? nfsu::kStock240sxPaintedFrameSha256 : nfsu::kStock240sxFrameSha256;
+        return tuned ? nfsu::kTuned240sxFrameSha256 :
+               painted ? nfsu::kStock240sxPaintedFrameSha256 : nfsu::kStock240sxFrameSha256;
     }
     std::uint64_t pinned_bytes() const {
-        return painted ? nfsu::kStock240sxPaintedFrameBytes : nfsu::kStock240sxFrameBytes;
+        return tuned ? nfsu::kTuned240sxFrameBytes :
+               painted ? nfsu::kStock240sxPaintedFrameBytes : nfsu::kStock240sxFrameBytes;
     }
-    const char* name() const { return painted ? "painted" : "unpainted"; }
+    const char* name() const { return tuned ? "tuned" : painted ? "painted" : "unpainted"; }
 };
 
 Choice parse_arguments(int argc, char** argv) {
@@ -271,12 +274,17 @@ Choice parse_arguments(int argc, char** argv) {
         const std::string argument = argv[i];
         if (argument == kUnpaintedArgument) {
             choice.painted = false;
+        } else if (argument == "--tuned") {
+            choice.tuned = true;
         } else if (!have_root) {
             choice.root = argument;
             have_root = true;
         } else {
             choice.ignored += (choice.ignored.empty() ? "" : " ") + argument;
         }
+    }
+    if (choice.tuned) {
+        choice.painted = true;
     }
     return choice;
 }
@@ -319,7 +327,7 @@ bool prepare(const Choice& choice, nfsu::StockFrame& frame, nfsu::StockView& vie
              Report& report, Screen& screen, std::string& timings) {
     const std::uint64_t read_start = armGetSystemTick();
     auto inputs = std::make_unique<nfsu::StockFrameInputs>();
-    nfsu::read_stock_frame_inputs(choice.root, *inputs);
+    nfsu::read_stock_frame_inputs(choice.root, *inputs, choice.tuned);
     const std::uint64_t read_end = armGetSystemTick();
 
     std::size_t missing = 0;
@@ -332,23 +340,39 @@ bool prepare(const Choice& choice, nfsu::StockFrame& frame, nfsu::StockView& vie
             report.line("NOT READ " + choice.root + "/" + input.path + ": " + input.error, kBad);
         }
     }
+    if (choice.tuned) {
+        for (const nfsu::StockFrameInput* input :
+             {&inputs->wheel_geometry, &inputs->vinyls}) {
+            if (input->read) {
+                report.line("read " + input->path + ": " +
+                            std::to_string(input->bytes.size()) + " bytes");
+            } else {
+                ++missing;
+                report.line("NOT READ " + choice.root + "/" + input->path + ": " +
+                                input->error, kBad);
+            }
+        }
+    }
     if (missing != 0) {
         report.line("nothing rendered: " + std::to_string(missing) + " of " +
-                        std::to_string(nfsu::kStockFrameFileCount) +
+                        std::to_string(nfsu::kStockFrameFileCount +
+                                       (choice.tuned ? 2U : 0U)) +
                         " inputs could not be read. Copy each from the game's own "
                         "installation to the same path under " + choice.root + ".",
                     kBad);
         return false;
     }
-    report.line(std::string("preparing the ") + choice.name() + " stock scene...");
+    report.line(std::string("preparing the ") + choice.name() + " car scene...");
     screen.present();
 
     std::string error;
     const std::uint64_t prepare_start = armGetSystemTick();
-    const nfsu::StockFrameSkin skin =
+    const nfsu::StockFrameSkin skin = choice.tuned ? nfsu::tuned_240sx_skin() :
         choice.painted ? nfsu::stock_240sx_skin() : nfsu::StockFrameSkin{};
+    const nfsu::StockSceneRequest request = choice.tuned ? nfsu::tuned_240sx_request() :
+        nfsu::stock_240sx_request();
     const bool prepared =
-        nfsu::prepare_stock_frame(*inputs, nfsu::stock_240sx_request(), skin, frame, error);
+        nfsu::prepare_stock_frame(*inputs, request, skin, frame, error);
     const std::uint64_t prepare_end = armGetSystemTick();
     for (const std::string& issue : frame.issues) {
         report.line("issue: " + issue, kBad);
@@ -427,7 +451,7 @@ bool orbit(const Choice& choice, nfsu::StockFrame& frame, nfsu::StockView& view,
                     // line reported is its caption.
                     screen.show_frame(frame.frame.rgba());
                     report.line("nfsu_switch_car: the " + std::string(choice.name()) +
-                                " stock 240SX from " + choice.root +
+                                " 240SX from " + choice.root +
                                 ", CPU reference renderer, 1280x720");
                     report.detail(nfsu::stock_frame_slots_line(frame.report));
                     for (const std::string& line : nfsu::stock_frame_stats_lines(frame.stats)) {
@@ -493,7 +517,7 @@ int main(int argc, char** argv) {
     Screen screen;
     const bool have_screen = screen.open();
     Report report(screen);
-    report.line("nfsu_switch_car: the stock 240SX, drawn by the CPU reference renderer");
+    report.line("nfsu_switch_car: the 240SX, drawn by the CPU reference renderer");
     if (!have_screen) {
         report.detail("the framebuffer could not be created; reporting on stdout only");
     }

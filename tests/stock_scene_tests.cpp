@@ -891,6 +891,42 @@ void test_validation_rejects_tampering() {
             "the stock car profile skips no meshes");
 }
 
+void test_installed_part_overrides() {
+    std::vector<RecordSpec> records = stock_records();
+    records.push_back({kCar.c_str(), 5, 1, "TESTCAR_KIT01_BODY",
+                       {kRearBumperA, 0, 0, 0}, 0, 0});
+    records.push_back({kCar.c_str(), 17, 1, "TESTCAR_KIT01_WHEEL",
+                       {kBaseA, 0, 0, 0}, 0, 0});
+    const nfsu::GeometryReport car = car_source();
+    const nfsu::GeometryReport brakes = brake_source();
+    const nfsu::GeometryReport plates = plate_source();
+    const std::vector<const nfsu::GeometryReport*> sources{&car, &brakes, &plates};
+    nfsu::StockSceneRequest request = request_at(0);
+    request.place_wheels_from_culling_table = true;
+    request.installed_parts.names[5] = "TESTCAR_KIT01_BODY";
+    request.installed_parts.names[17] = "TESTCAR_KIT01_WHEEL";
+    nfsu::PreparedCarScene scene;
+    nfsu::StockSceneReport report;
+    std::string error;
+    check(prepare_records(records, sources, request, scene, report, error),
+          "explicit body and wheels prepare: " + error);
+    if (report.overridden == 2) {
+        check(report.slots[5].overridden && report.slots[17].overridden &&
+                  !report.slots[2].overridden && report.slots[5].hash == kRearBumperA &&
+                  report.slots[17].hash == kBaseA &&
+                  report.slots[17].instance_count == 4,
+              "overrides use the selected meshes and stock placement rules");
+    } else {
+        check(false, "two overridden slots are counted");
+    }
+    request.installed_parts.names[5] = "NO_SUCH_BODY";
+    check(!prepare_records(records, sources, request, scene, report, error) &&
+              error.find("slot 5 BODY") != std::string::npos &&
+              error.find("NO_SUCH_BODY") != std::string::npos &&
+              empty_outputs(scene, report),
+          "unknown override names its slot and clears outputs: " + error);
+}
+
 } // namespace
 
 int main() {
@@ -907,6 +943,7 @@ int main() {
     test_invalid_placement();
     test_request_and_source_errors();
     test_validation_rejects_tampering();
+    test_installed_part_overrides();
     if (g_failures != 0) {
         std::cerr << g_failures << " test failure(s)\n";
         return 1;

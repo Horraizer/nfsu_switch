@@ -46,9 +46,9 @@ namespace nfsu {
 // It exists for the Switch application (switch/car_main.cpp), which cannot
 // run the viewer and writes no file, and for the desktop check that the two
 // agree (tests/stock_frame_tests.cpp and tests/stock_frame_viewer_match.cmake).
-// The viewer does not call it: src/viewer_main.cpp is unchanged, and
-// src/stock_frame.cpp names, step by step, the lines of the viewer each
-// call mirrors. docs/SWITCH_BUILD.md.
+// The viewer does not call it: src/stock_frame.cpp names, step by step,
+// the lines of the viewer each call mirrors. The tuned preset also reads
+// wheel geometry and the car's vinyl pack. docs/SWITCH_BUILD.md.
 
 // The six files, in the order the command above names them. GLOBALB.BUN is
 // named twice there - the first shared texture source and the part
@@ -85,6 +85,12 @@ constexpr std::uint64_t kStock240sxPaintedFrameBytes = 3686418;
 constexpr const char* kStock240sxPaintedFrameSha256 =
     "8A5932A302A22AA3C4C01776009B5348629D8D37B3B61E6E0AA303235B1CF48F";
 
+// The explicit kit, wheels, paint and vinyl of tuned_240sx_request/skin.
+// tests/tuned_frame_retail.cmake pins its three desktop camera views.
+constexpr std::uint64_t kTuned240sxFrameBytes = 3686418;
+constexpr const char* kTuned240sxFrameSha256 =
+    "32568614B0CF67D752F0399C4849EED84BEB23F24C6D7B334DBB9AC0108AA216";
+
 // The largest file read: 256 MiB, the limit every parser these files go
 // through applies to its input.
 constexpr std::uint64_t kStockFrameMaxFileBytes = 256ULL * 1024ULL * 1024ULL;
@@ -107,6 +113,9 @@ struct StockFrameInput {
 
 struct StockFrameInputs {
     std::array<StockFrameInput, kStockFrameFileCount> files;
+    bool tuned = false;
+    StockFrameInput wheel_geometry;
+    StockFrameInput vinyls;
 
     const StockFrameInput& file(StockFrameFile which) const noexcept {
         return files[static_cast<std::size_t>(which)];
@@ -114,23 +123,24 @@ struct StockFrameInputs {
     bool all_read() const noexcept;
 };
 
-// Reads the six files under root, each whole, with std::ifstream opened for
+// Reads six stock files, plus wheel geometry and vinyls when tuned, with
+// std::ifstream opened for
 // reading only: nothing is created, written, renamed or removed. Every file
 // is attempted whatever became of the others, so one call names every
 // missing input. Returns all_read().
-bool read_stock_frame_inputs(const std::filesystem::path& root, StockFrameInputs& inputs);
+bool read_stock_frame_inputs(const std::filesystem::path& root, StockFrameInputs& inputs,
+                             bool tuned = false);
 
 // The pinned command's stock request: car type 240SX, LOD A, the world
 // pass, and the wheels and brakes at the culling placements.
 StockSceneRequest stock_240sx_request();
+StockSceneRequest tuned_240sx_request();
 
 // The viewer's runtime body skin options (src/viewer_main.cpp SkinOptions)
 // that a stock frame can take: --skin-car, --skin-target, whether
 // <car>_SKIN1 is bound, and the customization selection. There is no
-// --skin-vinyls here: the car's VINYLS.BIN is not one of the six files, so
-// a selection that names a vinyl layer finds no record for it and the
-// frame reports the skipped input. There is no --skin-dump either: nothing
-// is written.
+// --skin-vinyls for the stock preset: VINYLS.BIN is read only for tuned
+// inputs. There is no --skin-dump: nothing is written.
 struct StockFrameSkin {
     // False: no skin, and the frame is the unpainted one of #141.
     bool enabled = false;
@@ -165,6 +175,7 @@ struct StockFrameSkin {
 // - The target is DUMMY_SKIN1, in the shared Cars/TEXTURES.BIN, and
 //   240SX_SKIN1 is bound as well, as the viewer does by default.
 StockFrameSkin stock_240sx_skin();
+StockFrameSkin tuned_240sx_skin();
 
 // What the frame is made of, kept so that a caller can report on it. It is
 // not copyable: it holds several megabytes, and nothing needs a second one.
@@ -179,6 +190,7 @@ struct StockFrame {
     CarPartDatabase parts;
     CarTypeTable car_types;
     TexturePack car_pack;
+    TexturePack vinyl_pack;
     // GLOBALB.BUN, then Cars/TEXTURES.BIN.
     std::vector<TexturePackSet> shared_sets;
     // The texture hashes the stock meshes use, ascending, which is all a

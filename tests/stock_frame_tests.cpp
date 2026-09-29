@@ -813,14 +813,14 @@ void run_frame(const fs::path& root, Run& run, bool painted = false) {
     run.encoded = nfsu::encode_stock_frame(run.frame.frame, run.image, run.error);
 }
 
-int frame_mode(const fs::path& root, bool painted) {
+int frame_mode(const fs::path& root, bool painted, bool tuned = false) {
     using Clock = std::chrono::steady_clock;
     const auto ms = [](Clock::time_point a, Clock::time_point b) {
         return std::chrono::duration<double, std::milli>(b - a).count();
     };
     auto run = std::make_unique<Run>();
     const Clock::time_point t0 = Clock::now();
-    run->read = nfsu::read_stock_frame_inputs(root, run->inputs);
+    run->read = nfsu::read_stock_frame_inputs(root, run->inputs, tuned);
     const Clock::time_point t1 = Clock::now();
     for (const nfsu::StockFrameInput& input : run->inputs.files) {
         std::cout << "file " << input.path << ' '
@@ -832,8 +832,9 @@ int frame_mode(const fs::path& root, bool painted) {
         std::cout << "result: inputs missing\n";
         return 2;
     }
-    run->prepared = nfsu::prepare_stock_frame(run->inputs, nfsu::stock_240sx_request(),
-                                              app_skin(painted), run->frame, run->error);
+    run->prepared = nfsu::prepare_stock_frame(
+        run->inputs, tuned ? nfsu::tuned_240sx_request() : nfsu::stock_240sx_request(),
+        tuned ? nfsu::tuned_240sx_skin() : app_skin(painted), run->frame, run->error);
     const Clock::time_point t2 = Clock::now();
     for (const std::string& issue : run->frame.issues) {
         std::cout << "issue: " << issue << '\n';
@@ -955,6 +956,24 @@ void test_file_layout() {
     }
     check(nothing_else, "no vinyl, no hood or spoiler vinyl, no special colour");
     check(!nfsu::StockFrameSkin{}.enabled, "a default StockFrameSkin paints nothing");
+
+    const nfsu::StockSceneRequest tuned = nfsu::tuned_240sx_request();
+    check(tuned.installed_parts.names[nfsu::kSlotFrontBumper] ==
+              "240SX_KIT01_FRONT_BUMPER" &&
+              tuned.installed_parts.names[nfsu::kSlotRearBumper] ==
+                  "240SX_KIT01_REAR_BUMPER" &&
+              tuned.installed_parts.names[nfsu::kSlotSkirt] == "240SX_KIT01_SKIRT" &&
+              tuned.installed_parts.names[nfsu::kSlotWheel] == "BBS_STYLE01_15_23",
+          "tuned preset names four verified retail parts");
+    const nfsu::StockFrameSkin tuned_skin = nfsu::tuned_240sx_skin();
+    check(tuned_skin.enabled && tuned_skin.selection.base_color ==
+              nfsu::skin_pack_paint(200, 30, 30, 128) &&
+              tuned_skin.selection.vinyl_layers[0] &&
+              tuned_skin.selection.vinyl_layers[0]->texture == "TRIBAL5" &&
+              tuned_skin.selection.doorline &&
+              tuned_skin.selection.doorline->variant ==
+                  nfsu::SkinDoorlineVariant::body_kit,
+          "tuned preset has non-default paint, a vinyl and kit doorline");
 }
 
 // The synthetic stock car end to end: every input read and clean, every
@@ -1189,7 +1208,7 @@ void test_stats_lines() {
     report.fell_back = 4;
     report.markers.resize(5);
     check(nfsu::stock_frame_slots_line(report) ==
-              "stock slots: installed 1 with_model 2 drawn 3 by_fallback 4 markers 5",
+              "stock slots: installed 1 with_model 2 drawn 3 by_fallback 4 markers 5 overridden 0",
           "the slots line");
 }
 
@@ -1752,6 +1771,9 @@ int main(int argc, char** argv) {
     }
     if (argc == 3 && std::string(argv[1]) == "--painted-frame") {
         return frame_mode(nfsu::argument_path(argv[2]), true);
+    }
+    if (argc == 3 && std::string(argv[1]) == "--tuned-frame") {
+        return frame_mode(nfsu::argument_path(argv[2]), true, true);
     }
     if (argc == 3 && std::string(argv[1]) == "--write-fixture") {
         std::string error;

@@ -132,10 +132,11 @@ bool StockFrameInputs::all_read() const noexcept {
             return false;
         }
     }
-    return true;
+    return !tuned || (wheel_geometry.read && vinyls.read);
 }
 
-bool read_stock_frame_inputs(const fs::path& root, StockFrameInputs& inputs) {
+bool read_stock_frame_inputs(const fs::path& root, StockFrameInputs& inputs, bool tuned) {
+    inputs.tuned = tuned;
     for (std::size_t i = 0; i < kStockFrameFileCount; ++i) {
         StockFrameInput& input = inputs.files[i];
         input.path = kFilePaths[i];
@@ -150,6 +151,21 @@ bool read_stock_frame_inputs(const fs::path& root, StockFrameInputs& inputs) {
             input.error = "failed to read file";
         }
     }
+    const auto read_extra = [&](StockFrameInput& input, const char* path) {
+        input.path = path;
+        input.read = false;
+        input.error.clear();
+        input.bytes.clear();
+        if (tuned) {
+            try {
+                input.read = read_whole_file(root / fs::path(path), input.bytes, input.error);
+            } catch (const std::exception&) {
+                input.error = "failed to read file";
+            }
+        }
+    };
+    read_extra(inputs.wheel_geometry, "Cars/WHEELS/GEOMETRY.BIN");
+    read_extra(inputs.vinyls, "Cars/240SX/VINYLS.BIN");
     return inputs.all_read();
 }
 
@@ -162,6 +178,15 @@ StockSceneRequest stock_240sx_request() {
     return request;
 }
 
+StockSceneRequest tuned_240sx_request() {
+    StockSceneRequest request = stock_240sx_request();
+    request.installed_parts.names[kSlotFrontBumper] = "240SX_KIT01_FRONT_BUMPER";
+    request.installed_parts.names[kSlotRearBumper] = "240SX_KIT01_REAR_BUMPER";
+    request.installed_parts.names[kSlotSkirt] = "240SX_KIT01_SKIRT";
+    request.installed_parts.names[kSlotWheel] = "BBS_STYLE01_15_23";
+    return request;
+}
+
 StockFrameSkin stock_240sx_skin() {
     StockFrameSkin skin;
     skin.enabled = true;
@@ -169,6 +194,18 @@ StockFrameSkin stock_240sx_skin() {
     skin.selection.car_name = skin.car;
     skin.selection.doorline = SkinDoorlineSelection{SkinDoorlineVariant::plain};
     skin.selection.base_color = skin_pack_paint(30, 60, 160, 128);
+    return skin;
+}
+
+StockFrameSkin tuned_240sx_skin() {
+    StockFrameSkin skin = stock_240sx_skin();
+    skin.selection.doorline = SkinDoorlineSelection{SkinDoorlineVariant::body_kit};
+    skin.selection.base_color = skin_pack_paint(200, 30, 30, 128);
+    SkinVinylLayerSelection vinyl;
+    vinyl.texture = "TRIBAL5";
+    vinyl.palette_size = 16;
+    vinyl.remap = false;
+    skin.selection.vinyl_layers[0] = vinyl;
     return skin;
 }
 
@@ -196,6 +233,7 @@ bool prepare_stock_frame(
     frame.parts = CarPartDatabase{};
     frame.car_types = CarTypeTable{};
     frame.car_pack = TexturePack{};
+    frame.vinyl_pack = TexturePack{};
     frame.shared_sets.clear();
     frame.wanted.clear();
     frame.textures = RenderTextureSet{};
@@ -219,7 +257,12 @@ bool prepare_stock_frame(
         for (const StockFrameInput& input : inputs.files) {
             missing += input.read ? 0 : 1;
         }
-        error = std::to_string(missing) + " of " + std::to_string(kStockFrameFileCount) +
+        if (inputs.tuned) {
+            missing += inputs.wheel_geometry.read ? 0 : 1;
+            missing += inputs.vinyls.read ? 0 : 1;
+        }
+        error = std::to_string(missing) + " of " +
+                std::to_string(kStockFrameFileCount + (inputs.tuned ? 2 : 0)) +
                 " input files could not be read";
         return false;
     }
@@ -238,9 +281,17 @@ bool prepare_stock_frame(
         // Each --stock-geometry in order, then the source list with the
         // car's own file first; the vector is sized once, so the pointers
         // stay valid.
-        frame.stock_geometry.reserve(std::size(kStockGeometryFiles));
+        frame.stock_geometry.reserve(std::size(kStockGeometryFiles) + (inputs.tuned ? 1U : 0U));
         for (const StockFrameFile which : kStockGeometryFiles) {
             const StockFrameInput& input = inputs.file(which);
+            frame.stock_geometry.push_back(
+                parse_geometry(input.bytes.data(), input.bytes.size()));
+            for (const GeometryIssue& issue : frame.stock_geometry.back().issues) {
+                frame.issues.push_back(at(input.path, issue.offset, issue.message));
+            }
+        }
+        if (inputs.tuned) {
+            const StockFrameInput& input = inputs.wheel_geometry;
             frame.stock_geometry.push_back(
                 parse_geometry(input.bytes.data(), input.bytes.size()));
             for (const GeometryIssue& issue : frame.stock_geometry.back().issues) {
@@ -442,6 +493,15 @@ bool prepare_stock_frame(
             };
             add_source(car_textures.bytes, SkinSourceKind::car_textures, "car-textures",
                        car_textures.path, {&frame.car_pack});
+            if (inputs.tuned) {
+                const StockFrameInput& input = inputs.vinyls;
+                frame.vinyl_pack = parse_texture_pack(input.bytes.data(), input.bytes.size());
+                for (const TextureIssue& issue : frame.vinyl_pack.issues) {
+                    frame.issues.push_back(at(input.path, issue.offset, issue.message));
+                }
+                add_source(input.bytes, SkinSourceKind::car_vinyls, "car-vinyls",
+                           input.path, {&frame.vinyl_pack});
+            }
             for (std::size_t i = 0; i < frame.shared_sets.size(); ++i) {
                 std::vector<const TexturePack*> packs;
                 for (const TexturePack& shared_pack : frame.shared_sets[i].packs) {
@@ -678,7 +738,8 @@ std::string stock_frame_slots_line(const StockSceneReport& report) {
     std::ostringstream text;
     text << "stock slots: installed " << report.installed << " with_model "
          << report.with_model << " drawn " << report.drawn << " by_fallback "
-         << report.fell_back << " markers " << report.markers.size();
+         << report.fell_back << " markers " << report.markers.size()
+         << " overridden " << report.overridden;
     return text.str();
 }
 

@@ -195,7 +195,8 @@ bool build_stock_scene(
     }
 
     StockParts stock;
-    if (!select_stock_parts(parts, request.car_type_name, stock, error)) {
+    if (!select_installed_parts(parts, request.car_type_name, request.installed_parts,
+                                stock, error)) {
         return false;
     }
     const std::size_t car_type = find_car_type(car_types, request.car_type_name);
@@ -254,8 +255,12 @@ bool build_stock_scene(
         const StockPartSlot& installed = stock.slots[index];
         entry.slot = slot;
         entry.rule = installed.rule;
+        entry.overridden = installed.overridden;
         entry.record = installed.record;
         entry.enabled = installed.enabled;
+        if (entry.overridden) {
+            ++result.overridden;
+        }
         if (installed.record == kNoCarPart) {
             entry.outcome = installed.rule == StockPartRule::skipped
                                 ? StockSlotOutcome::skipped
