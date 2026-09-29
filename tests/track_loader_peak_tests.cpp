@@ -1,6 +1,7 @@
 // Every replaceable C++ allocation is counted, including transient ones
 // between loader polls. Header bookkeeping uses malloc, never operator new.
 #include "nfsu/track_slice.h"
+#include "nfsu/arg_path.h"
 #include "nfsu/posix_file_system.h"
 #include <algorithm>
 #include <atomic>
@@ -77,8 +78,10 @@ int main(int argc, char** argv) {
         if (argc > 3 || (argc == 3 && std::strcmp(argv[2],"--baseline") != 0)) {
             std::fprintf(stderr,"Usage: nfsu_track_loader_peak_tests [root [--baseline]]\n"); return 1;
         }
-        const std::filesystem::path root(argv[1]);
-        nfsu::TrackSlice slice; std::string error;
+        std::string error;
+        if (!check(nfsu::check_arguments(argc,argv,1,error),error.c_str())) return 1;
+        const std::filesystem::path root = nfsu::argument_path(argv[1]);
+        nfsu::TrackSlice slice;
         struct Observer : nfsu::TrackSliceLoadObserver {
             std::size_t baseline = 0, checkpoints = 0;
             char previous[128]{};

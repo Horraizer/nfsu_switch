@@ -89,14 +89,19 @@ nfsu_race_run_tests tests/recordings/event1.txt X:/Games/NFSU
 nfsu_race_run_tests tests/recordings/event1.txt X:/Games/NFSU --sample-draws
 ```
 
-The first command is in CTest and needs no game data. It checks clock debt,
-recording identity and extent, invalid call order, resource/texture rebasing,
-capacity refusal and mismatched cameras. The retail run checks every step
-hash and the result, uploads/retires the combined table through the neutral
-ledger, and validates selected race views. `--sample-draws` also checks one
-view per second; `--full-draws` checks every tick's draw commands. The retail
-test prints the sampled view and maximum draw counts. No desktop trace is
-described as console execution evidence.
+The first command is CTest's `nfsu_race_run_tests` and needs no game data. It
+checks clock debt, recording identity and extent, invalid call order,
+resource/texture rebasing, capacity refusal and mismatched cameras. The retail
+run checks every step hash and the result, uploads/retires the combined table
+through the neutral ledger, and validates selected race views.
+`--sample-draws` also checks one view per second; `--full-draws` checks every
+tick's draw commands. The retail test prints the sampled view and maximum draw
+counts. No desktop trace is described as console execution evidence.
+
+CTest runs the third command as `nfsu_race_run_retail` (label `retail`) when
+the build is configured with `-DNFSU_RETAIL_ROOT=<installation>`, and a
+Release configure also registers the `--full-draws` run as
+`nfsu_race_run_retail_full_draws` (labels `retail` and `retail-full`).
 
 ## Drawing, residency and memory
 
@@ -168,7 +173,9 @@ The renderer opens after the load sample, so its GPU allocations affect the
 run HWM but not the load HWM. `nfsu_race_loader_peak_tests` measures the
 complete desktop C++ allocation peak through the first frame against the
 same 48 MiB ceiling. `nfsu_track_loader_peak_tests` separately measures the
-track slice. Console acceptance requires a photographed LOAD/MEMORY page
+track slice. Configured with `-DNFSU_RETAIL_ROOT`, CTest runs both as
+`nfsu_race_loader_peak_retail` and `nfsu_track_loader_peak_retail` (label
+`retail`). Console acceptance requires a photographed LOAD/MEMORY page
 showing LOAD HEAP OVER 0 at the tested head.
 
 ## Performance and owner evidence

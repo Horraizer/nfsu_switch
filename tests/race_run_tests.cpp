@@ -3,6 +3,7 @@
 #include "nfsu/posix_file_system.h"
 #include "nfsu/draw_execution.h"
 #include "nfsu/platform_desktop.h"
+#include "nfsu/arg_path.h"
 #include <fstream>
 #include <iostream>
 #include <algorithm>
@@ -81,7 +82,8 @@ int main(int argc, char** argv) {
         require(!replay.load("NFSU_RACE_INPUT 1\n1 0 0\n", error), "unverified replay accepted");
         require(!replay.next(0, pad, error), "empty replay accepted");
         require(argc >= 2, "recording argument missing");
-        std::ifstream in(argv[1], std::ios::binary);
+        require(check_arguments(argc, argv, 1, error), error);
+        std::ifstream in(argument_path(argv[1]), std::ios::binary);
         const std::string text((std::istreambuf_iterator<char>(in)), {});
         require(bool(in) && replay.load(text, error), error);
         require(!replay.next(1, pad, error), "out of order replay tick accepted");
@@ -151,7 +153,7 @@ int main(int argc, char** argv) {
         require(!combine_race_commands(fixture, other, joined, error), "combined draw overflow accepted");
         std::cout << "PASS: fixed clock, exact replay cursor, refusal and combined draw guards\n";
         if (argc == 2) return 0;
-        const std::filesystem::path root(argv[2]);
+        const std::filesystem::path root = argument_path(argv[2]);
         RaceGpuScene scene;
         RaceRun race;
         require(race.prepare_metadata(root, error), error);

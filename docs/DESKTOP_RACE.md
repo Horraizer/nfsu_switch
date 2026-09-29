@@ -244,6 +244,11 @@ python tools/race_replay_check.py --exe build/nfsu_race.exe --root X:/Games/NFSU
 python tools/race_replay_check.py --exe build-release/nfsu_race.exe --root X:/Games/NFSU --out build-release-check --check-driver
 ```
 
+CTest runs the same check, with `--check-driver`, over its own build's
+`nfsu_race` as `nfsu_race_replay_check` (label `retail`) when the build is
+configured with `-DNFSU_RETAIL_ROOT=<installation>`; a reviewer runs the gate
+rather than these lines.
+
 Python uses only the standard library. It resolves its recording relative
 to the script; no workspace path is embedded. The script's help smoke was
 also run from the actual non-ASCII-named owner workspace.
