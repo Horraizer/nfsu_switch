@@ -24,8 +24,12 @@ lines clip labels to 12 characters; CTest checks the configured tag in the ELF.
 
 The menu offers A for live driving, X for replay and Y to toggle the
 diagnostic panel. Direct presentation is the default. With nxlink, optional
-arguments are `[sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame]`.
-`--profile-frame` requires direct presentation. RomFS holds the three checked
+arguments are `[sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame]
+[--sky on|off|early]`. `--profile-frame` requires direct presentation.
+`--sky` exists for console cost A/B runs (issue #227): `on`, the default,
+draws the sky after the opaque world; `off` records no sky draws; `early` is
+a diagnostic that submits the sky with the opaque pass at its list position,
+as the renderer did before #227. Every result page names the mode. RomFS holds the three checked
 offline shaders and the repository's authored `tests/recordings/event1.txt`.
 It contains no retail or derived game asset. The application writes no SD
 file; every retail input is opened read-only.

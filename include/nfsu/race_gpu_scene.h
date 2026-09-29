@@ -24,6 +24,9 @@ public:
     RaceGpuScene(const RaceGpuScene&) = delete;
     RaceGpuScene& operator=(const RaceGpuScene&) = delete;
     const TrackSlice& track() const { return track_; }
+    // The separate sky pass (issue 184), on by default. Off records no sky
+    // draws, for console A/B cost runs. Refused once the scene is loaded.
+    bool set_sky(bool enabled) { if (ready_) return false; sky_ = enabled; return true; }
     bool load(FileSystemService& files, const std::filesystem::path& root,
               std::string& error, AssetCheckObserver* observer = nullptr,
               TrackSliceLoadObserver* loading = nullptr);
@@ -36,6 +39,7 @@ public:
 private:
     TrackSlice track_;
     RecordedCommands track_templates_;
+    bool sky_ = true;
     std::size_t sky_draws_ = 0;
     std::size_t sky_position_ = 0;
     std::vector<std::size_t> template_of_group_;

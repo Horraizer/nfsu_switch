@@ -100,6 +100,12 @@ if(opaque_source MATCHES "discard[ \t]*;" OR
    NOT cutout_source MATCHES "discard[ \t]*;")
     message(FATAL_ERROR "textured shader discard split is missing")
 endif()
+# The sky keeps a diagnostic discard, so it must test depth before shading or
+# every covered sky fragment is shaded before the world rejects it (#227).
+file(READ "${SHADERS}/sky.frag.glsl" sky_source)
+if(NOT sky_source MATCHES "\n *layout ?[(]early_fragment_tests[)] in;")
+    message(FATAL_ERROR "sky shader early depth test is missing")
+endif()
 
 # nfsu_case(<label> <file> <manifest> <expected> [<from> <to>]...)
 #
@@ -391,6 +397,18 @@ nfsu_case("a # that does not begin a line"
     "placed.vert.glsl: has a # that does not begin a line"
     "layout (location = 2) in vec2 inTexcoord;\n"
     "layout (location = 2) in vec2 inTexcoord; #define X\n")
+
+nfsu_case("early_fragment_tests in a vertex stage"
+    placed.vert.glsl car_textured.manifest
+    "placed.vert.glsl: early_fragment_tests outside a fragment stage"
+    "layout (location = 2) in vec2 inTexcoord;\n"
+    "layout (early_fragment_tests) in;\nlayout (location = 2) in vec2 inTexcoord;\n")
+
+nfsu_case("early_fragment_tests beside another qualifier"
+    sky.frag.glsl sky_textured.manifest
+    "`early_fragment_tests` is a layout qualifier the interface check does not read"
+    "layout (early_fragment_tests) in;"
+    "layout (early_fragment_tests, location = 3) in;")
 
 nfsu_case("an @ in a comment"
     placed.vert.glsl car_textured.manifest PASS

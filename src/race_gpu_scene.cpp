@@ -9,9 +9,9 @@
 
 namespace nfsu {
 namespace {
-RenderOptions race_render_options() {
+RenderOptions race_render_options(bool sky) {
     RenderOptions options;
-    options.sky = true;
+    options.sky = sky;
     options.width = 1280; options.height = 720;
     return options;
 }
@@ -137,7 +137,7 @@ bool RaceGpuScene::prepare_templates(std::string& error) {
         witnesses.push_back(item);
     }
     TrackDrawList list;
-    RenderOptions options = race_render_options();
+    RenderOptions options = race_render_options(sky_);
     options.material_state = MaterialStateMode::retail;
     TrackDrawListOptions list_options;
     list_options.order = TrackDrawOrder::retail_bucket;
@@ -195,7 +195,7 @@ bool RaceGpuScene::prepare_frame_cache(std::string& error) {
         }
     }
     if (sky_draws_) track_placements_.back() = track_templates_.owning_draws().front().placement;
-    if (!record_car_commands(car_, race_render_options(), {}, skin_source_, car_templates_, error)) return false;
+    if (!record_car_commands(car_, race_render_options(sky_), {}, skin_source_, car_templates_, error)) return false;
     if (!validate_recorded_commands(car_templates_,error)) return false;
     const auto offset = track_templates_.owning_uploads().resources.size();
     if (offset + car_templates_.owning_uploads().resources.size() > kTrackSliceResourceLimit) {
@@ -302,7 +302,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         error = "race car placement failed"; return false;
     }
     for (double far = 250; far >= 31.25; far *= 0.5) {
-        RenderOptions options = race_render_options();
+        RenderOptions options = race_render_options(sky_);
         if (!drive_render_camera(session.camera(), ChaseFovMode::vertical_4_3,
                                  options.width, options.height, options.camera, error)) return false;
         options.camera.far_plane = far;

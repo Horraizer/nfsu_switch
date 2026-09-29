@@ -72,6 +72,7 @@ struct DekoRenderer::Impl {
     std::uint64_t profile_generation = 1;
     bool profile_enabled = false;
     bool opaque_first = false;
+    bool sky_with_opaque = false;
     std::array<dk::Image, 2> colors;
     std::array<dk::Image, 2> depths;
     dk::Shader vertex, textured, textured_opaque, fallback, sky_vertex, sky_fragment;
@@ -207,7 +208,7 @@ struct DekoRenderer::Impl {
     }
 
     bool open(const RecordedCommands& source, std::string& error, bool presentation,
-              std::size_t capacity, bool profile_frame, bool reorder_opaque) {
+              std::size_t capacity, bool profile_frame, bool reorder_opaque, bool early_sky) {
         if (commands) { error = "deko3d renderer open is one-shot"; return false; }
         DrawExecutionPlan plan;
         if (!plan_draw_execution(source, plan, error)) return false;
@@ -217,6 +218,7 @@ struct DekoRenderer::Impl {
         }
         package = source.package_identity();
         opaque_first = reorder_opaque;
+        sky_with_opaque = early_sky;
         if (package) {
             package_width = source.width; package_height = source.height;
             std::memcpy(package_clear.data(), source.clear_color, 4);
@@ -605,9 +607,11 @@ struct DekoRenderer::Impl {
             };
         if (opaque_first) deko_visit_opaque_first(count,
             [&](std::size_t i) {
-                const auto& state = commands->draw_view(i).definition.pipeline;
-                return !state.blend && state.alpha_test == sm::CompareOp::always &&
-                    state.depth_write;
+                const auto& definition = commands->draw_view(i).definition;
+                const auto& state = definition.pipeline;
+                return deko_draw_in_opaque_pass(
+                    std::strcmp(definition.program->name, "sky_textured") == 0, state.blend,
+                    state.alpha_test != sm::CompareOp::always, state.depth_write, sky_with_opaque);
             }, visit);
         else for (std::size_t i = 0; i < count; ++i) visit(i);
         if (!ok || emitted != count) return false;
@@ -790,9 +794,11 @@ DekoRenderer::~DekoRenderer() {
     catch (...) { if (impl_->queue) impl_->queue.waitIdle(); }
 }
 bool DekoRenderer::open(const RecordedCommands& commands, std::string& error, bool presentation,
-                        std::size_t draw_capacity, bool profile_frame, bool opaque_first) {
+                        std::size_t draw_capacity, bool profile_frame, bool opaque_first,
+                        bool sky_with_opaque) {
     error.clear();
-    try { return impl_->open(commands, error, presentation, draw_capacity, profile_frame, opaque_first); }
+    try { return impl_->open(commands, error, presentation, draw_capacity, profile_frame,
+                             opaque_first, sky_with_opaque); }
     catch (const std::bad_alloc&) { error = "not enough memory for deko3d renderer"; return false; }
 }
 bool DekoRenderer::update(const RecordedCommands& commands, std::string& error,

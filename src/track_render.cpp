@@ -431,9 +431,11 @@ bool render_track_draw_list(
             material.depth_write = false; material.sky = true;
             material.alpha_test = render_alpha_test_enabled(material.texture->alpha_test_mode);
             material.blend = render_blend_mode_of(material.texture->alpha_blend_mode);
-            if (observe) observe(ReferenceDraw{group, draw.mesh, kNoHandle,
+            // The sky copy is numbered one past the scenery instances, as
+            // record_track_commands numbers it.
+            if (observe) observe(ReferenceDraw{group, draw.mesh, scene.instances.size(),
                 draw.texture, draw.first_index, draw.index_count, true, false, true,
-                CullMode::none, material.blend, material.alpha_test, material.alpha_ref});
+                CullMode::none, material.blend, material.alpha_test, material.alpha_ref, true});
             for (std::size_t n = draw.first_index/3; n < (draw.first_index+draw.index_count)/3; ++n) {
                 const auto& t = mesh.triangles[n];
                 const std::uint16_t indices[] = {t.a,t.b,t.c};

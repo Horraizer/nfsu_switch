@@ -172,6 +172,9 @@ struct ReferenceDraw {
     RenderBlendMode blend = RenderBlendMode::disabled;
     bool alpha_test = false;
     std::uint8_t alpha_ref = kRenderAlphaRef;
+    // The separate track sky pass, whose copy is numbered one past the
+    // scenery instances.
+    bool sky = false;
 };
 using ReferenceDrawObserver = std::function<void(const ReferenceDraw&)>;
 

@@ -844,6 +844,15 @@ function(_nfsu_sm_parse_glsl file)
         endif()
         set(qualifiers "${CMAKE_MATCH_1}")
         string(STRIP "${CMAKE_MATCH_2}" body)
+        # `layout (early_fragment_tests) in;` declares no interface variable;
+        # it only moves a fragment stage's depth test before shading. Any
+        # other qualifier beside it falls through and is refused below.
+        if(qualifiers MATCHES "^ ?early_fragment_tests ?$" AND body STREQUAL "in")
+            if(NOT name_only MATCHES "[.]frag[.]glsl$")
+                list(APPEND errors "${name_only}: early_fragment_tests outside a fragment stage")
+            endif()
+            continue()
+        endif()
 
         set(location "")
         set(binding "")

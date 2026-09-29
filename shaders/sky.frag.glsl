@@ -4,6 +4,11 @@
 // Byte rounding and nearest sampling follow the CPU reference approximation.
 // The manifest selects each texture's alpha-test and blend state.
 
+// The sky writes no depth, so testing depth before shading changes no
+// pixel; it keeps the diagnostic discard below from forcing late depth
+// tests, so the opaque world rejects every covered sky fragment (issue 227).
+layout (early_fragment_tests) in;
+
 layout (location = 1) in vec4 inColor;
 layout (location = 2) in vec2 inTexcoord;
 

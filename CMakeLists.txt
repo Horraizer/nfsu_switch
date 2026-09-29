@@ -744,6 +744,14 @@ if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_link_options(nfsu_frame_budget_probe PRIVATE -static-libstdc++ -static-libgcc)
 endif()
 
+# Read-only issue #227 sky fragment accounting; not part of the race application.
+add_executable(nfsu_sky_fragment_probe tools/sky_fragment_probe.cpp)
+target_link_libraries(nfsu_sky_fragment_probe PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_platform_desktop)
+nfsu_enable_warnings(nfsu_sky_fragment_probe)
+if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_link_options(nfsu_sky_fragment_probe PRIVATE -static-libstdc++ -static-libgcc)
+endif()
+
 # The argument conversion is the desktop filesystem service: its three free
 # functions now go through the FileSystemService it implements, and the
 # argument loop they share moved into nfsu_platform unchanged.
