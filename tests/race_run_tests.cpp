@@ -177,8 +177,8 @@ int main(int argc, char** argv) {
         require(replay.load(text, error), error);
         require(scene.cache_bytes() <= 8*kMiB,"command cache exceeded metadata limit");
         std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 8*kMiB << '\n';
-        // Supplemental textures and prepared retail-order keys add cache metadata.
-        require(scene.cache_bytes() == 3825779,"event 1 command cache metadata estimate differs from pin");
+        // #223: 20 suppressed car draws and one added cache upload record: -540 bytes.
+        require(scene.cache_bytes() == 3825239,"event 1 command cache metadata estimate differs from pin");
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';
         require(scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes() <=
@@ -311,7 +311,7 @@ int main(int argc, char** argv) {
                         std::memcmp(&selected.material,&b.material,sizeof b.material) == 0,
                         "cached ordered draw differs from reference");
                 }
-                require(frame.track_draws > 0 && frame.car_draws == 94, "missing track/car commands");
+                require(frame.track_draws > 0 && frame.car_draws == 74, "missing track/car commands");
                 if (tick == 13128) {
                     require(race.session().animation().braking, "animation guard tick is not braking");
                     StockFrameInputs inputs;
