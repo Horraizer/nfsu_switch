@@ -253,16 +253,28 @@ void build_race_hud_frame_for_car(const VehicleState& car,
     const auto line=std::find(kLinesHashes.begin(),kLinesHashes.end(),dial.lines_hash);
     const auto red=std::find(kRedHashes.begin(),kRedHashes.end(),dial.red_hash);
     place(kDisc,1025,494,218,218,{{255,255,255}});
-    place(kLines[static_cast<std::size_t>(line-kLinesHashes.begin())],
-          1025,494,218,109,{{55,189,245}},220);
-    // Retail RED is a separate 64x32 overlay at the high-RPM end of LINES.
+    // The full 256x128 LINES sprite is centered at the same FEng position
+    // as 3rdPersonTach. Only its left 128x128 texels contain the face.
+    // Register the decoded face's (69,70) hub with the needle pivot.
+    constexpr float face_size=218.0F;
+    constexpr float face_texels=128.0F;
+    constexpr float texel=face_size/face_texels;
+    const float face_x=1134.0F-69.0F*texel;
+    const float face_y=603.0F-70.0F*texel;
+    const auto& slot=kLines[static_cast<std::size_t>(line-kLinesHashes.begin())];
+    place(slot,face_x,face_y,256.0F*texel,128.0F*texel,
+          {{55,189,245}},220);
+    // HUD_SingleRace.fng centers RED 17 texels left and 42 up from LINES.
+    // The different sprite sizes make their top-left origins (79,6) apart.
     if (red!=kRedHashes.end())
         place(kRed[static_cast<std::size_t>(red-kRedHashes.begin())],
-              1179,516,55,27,{{228,55,43}},220);
-    // 0x004A0EA0's rotation is in the sprite's frame. The 274-degree
-    // offset aligns its endpoints with this screen-space dial placement.
+              face_x+79.0F*texel,face_y+6.0F*texel,
+              64.0F*texel,32.0F*texel,
+              {{228,55,43}},220);
+    // A 265-degree sprite-frame offset places the retail endpoint rotations
+    // through the face's 0 and max labels about its registered hub.
     const double rotation=race_hud_needle_rotation(car.engine_rpm,max_rpm);
-    const double dial_angle=(274.0-rotation)*3.14159265358979323846/180.0;
+    const double dial_angle=(265.0-rotation)*3.14159265358979323846/180.0;
     const auto center=pos(1134,603);
     rotated(frame,kNeedle,center[0],center[1],24*scale,192*scale,
             12*scale,177*scale,1.5707963267948966-dial_angle,{{90,218,253}});

@@ -28,6 +28,29 @@ Observed in `speed.exe`, using Capstone 5.0.7:
   redline RPM. The stock 240SX (max 8000, redline 7500) gets `8500LINES`
   at `0x00432BA6` and `7000RED` at `0x00432BD2`. The LINES and RED hashes
   reach the HUD objects at `0x004A0E42..0x004A0E78`.
+- The HUD constructor resolves image object `rpm_fill` into `[ebx+0x68]`
+  at `0x004A0431..0x004A0442`, and `Redline` into `[ebx+0x94]` at
+  `0x004A04FF..0x004A0511`. The selector writes the LINES hash to the
+  former object's `+0x24` at `0x004A0E42..0x004A0E56`, and the RED hash
+  to the latter at `0x004A0E62..0x004A0E78`.
+- Their rectangles come from `HUD_SingleRace.fng`, the JDLZ FEng package
+  in `Global/INGAMEB.BUN` chunk `0x00030210` at file offset `0x16F400`.
+  In the decompressed package, `rpm_fill` begins at `0x4008` and its SAT
+  fields at `0x4054` put its centre at `(141.36,-34.57)` and size at
+  `256x128` (`SAT+0x20` and `SAT+0x3C`). `Redline` begins at `0x40D4`;
+  its SAT at `0x411C` gives centre `(124.3611,-76.56946)` and size
+  `64x32`. `3rdPersonTach` at `0x445C` has the same 256x128 centre and
+  size as `rpm_fill`; `3rdPersonNeedle` at `0x452C` centres at
+  `(82.36,-27.57)`. The images use their full UV rectangles: LINES
+  `(0,0)..(256,128)` and RED `(0,0)..(64,32)`. Their screen rectangles
+  are centred on those SAT positions with the listed native sizes, under
+  the HUD group's screen transform. The centre difference and sizes give
+  RED a top-left offset of `(79,6)` LINES texels. The decoded LINES hub
+  at `(69,70)` maps to `(82.36,-28.57)` in the same local coordinates,
+  one native pixel above the needle centre. Relative to that needle centre,
+  the native LINES screen rectangle is `(-69,-71)..(187,57)` and RED is
+  `(10,-65)..(74,-33)`, before the common HUD screen transform. This
+  establishes both sprite registrations independently of the screenshot fit.
 - `0x004A0EA0` clamps RPM divided by max RPM to 0..1. Its sprite rotation
   is 44..215 degrees for max below 9000, 50..210 for 9000..9999, and
   45..225 from 10000. The stock needle therefore rotates 44..215 degrees.
@@ -47,12 +70,17 @@ Observed in `speed.exe`, using Capstone 5.0.7:
 The selected stock face is labeled 0..8, with the red overlay between 7 and
 8. Engine B upgrades add 500 or 1000 max RPM to the 240SX; a tuned 8500 or
 9000 RPM car selects the 0..9 `9500LINES` face. The port uses the recovered
-retail needle rotation and a screen-space offset fitted to the face. Exact
-original transforms, sprite colors and font spacing remain unknown.
+retail needle rotation, the FEng relative placement of LINES and RED, and
+the decoded face hub for needle registration. The 265-degree sprite-frame
+offset aligns the endpoint rays with the face labels approximately; the
+absolute screen anchor, tint and font spacing are still screenshot fits.
+For the 8500LINES band below a 6500 RPM redline, retail leaves the RED
+output unwritten; the port deliberately omits RED. Drag mode selects a
+separate `3RDPERSONDRAG_` texture family and is outside this event-1 HUD.
 
 The port's car state has no recovered `+0x3D4` scalar. Its displayed MPH is
 an **approximation** from horizontal velocity magnitude times 2.237,
-truncated to an integer. Placement, tint, backdrop opacity and safe-area fit
+truncated to an integer. Absolute placement, tint, backdrop opacity and safe-area fit
 are **approximations** from the owner's screenshots. `SPEED_COUNTER` belongs
 to the lap panel and is not drawn behind the gauge. The dial and speed box
 use translucent vertex alpha over the road. The small MPH label is generated with the project
