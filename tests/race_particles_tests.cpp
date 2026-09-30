@@ -62,6 +62,11 @@ int main() {
         check(smoke_hash=="AF8DA763BC94DFAC4AE58BFFB6CAF1C3266F2F85D3DF6E37FB758952162C4E2A",
               "slide reference frame moved");
         check(smoke_hash==frame_hash(b),"identical steps produced different smoke frames");
+        auto gap=sample(50);
+        for (auto& wheel : gap.model.wheels) wheel.contact=false;
+        a.advance(gap,spec);
+        check(a.smoke_count()==0 && a.spark_count()==0,
+              "step gap retained stale particles");
         nfsu::RaceParticles below;
         for (std::uint64_t step=1; step<=48; ++step) {
             auto t=sample(step);
@@ -83,6 +88,11 @@ int main() {
         check(spark_hash=="81E40F7D52F5AAC18E3A395BC27EC0B5D26663A19E25F3AB90C0D8F1A52236A3",
               "wall-hit reference frame moved");
         check(spark_hash!=frame_hash(below),"spark frame equals an empty frame");
+        auto reset=sample(2);
+        reset.reset=nfsu::VehicleTrackReset::zone;
+        wall.advance(reset,spec);
+        check(wall.smoke_count()==0 && wall.spark_count()==0,
+              "reset retained stale particles");
         for (std::uint64_t step=49; step<=240; ++step) {
             auto t=sample(step);
             t.impulses=1; t.impulse={3,0,0};

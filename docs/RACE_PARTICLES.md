@@ -65,15 +65,19 @@ a retail impact burst.
   reaches emission. Rendering can occur any number of times between steps
   without changing the particle list.
 
-The fixed array and sprite bounds are checked by `nfsu_race_particles_tests`
-and `nfsu_race_run_tests`. A new particle at capacity replaces the oldest of
-its type. The submission bound is not a measured GPU time. Before
-implementation the GPU increment was estimated at 0.2..0.5 ms;
-the paired handheld result is still required. At `6af1964`, the owner's
-handheld scene measurement was 20.65 ms mean and 26.31 ms worst against the
-16.67 ms 60 fps budget. A positive effect cost cannot fit that baseline.
-The Switch default is on. The `--particles=off` argument allows a paired
-handheld cost measurement on the same build.
+The fixed-array cap is checked by `nfsu_race_particles_tests`; the CPU sprite
+bound is pinned by `nfsu_race_particle_frame_guards`. `nfsu_race_run_tests`
+checks the recorded GPU sprite extents at the sampled smoke frame. A new
+particle at capacity replaces the oldest of its type. The submission bound is
+24 fixed draws and at most 55,296 covered pixels per frame (24 x 48 x 48);
+dead slots have zero scale. This geometry bound is not a measured GPU time.
+The paired handheld result for particles is still required. History: at
+`3f53122`, the owner's handheld race replay GPU scene
+measurement recorded mean 22.01 ms with the sky on, in [coordinator comment
+5627](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/227#issuecomment-5627).
+Particles default to on for the Switch, so that is the current baseline against
+which their cost must be measured. The `--particles=off` argument allows a
+paired handheld cost measurement on the same build.
 
 `nfsu_race_particles_tests` pins the CPU smoke and synthetic wall-hit frames
 by hash, with a reason at each assertion. `nfsu_race_run_tests` compares the

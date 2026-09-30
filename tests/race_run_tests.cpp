@@ -353,6 +353,7 @@ int main(int argc, char** argv) {
         require(all_wheels_have_contact(race.session().car().wheels) && first_contact_tick == 0 &&
                 first_shadow_tick == 0,
                 "starting grid has incomplete wheel contact or no visible shadow alpha");
+        RaceParticles expected_particles;
         while (race.session().timing().outcome == RaceOutcome::running) {
             require(replay.next(race.session().timing().step, pad, error), error);
             require(race.simulate(pad, error), error);
@@ -364,6 +365,7 @@ int main(int argc, char** argv) {
             require(!race.simulate(pad, error), "second simulation before commit accepted");
             require(race.commit(error), error);
             scene.advance_particles(race.session());
+            expected_particles.advance(race.session());
             const auto tick = race.session().timing().step;
             if (full || (sampled && tick%60 == 0) || inspect.count(tick)) {
                 DrawValidationAudit audit;
@@ -424,11 +426,46 @@ int main(int argc, char** argv) {
                 if (tick == 1164) {
                     unsigned visible_smoke=0, visible_sparks=0;
                     bool smoke_color_checked=false, spark_color_checked=false;
+                    const auto& camera=frame.commands.frame;
                     for (std::size_t i=frame.commands.static_track_draw_count()+1+frame.car_draws;
                          i<frame.commands.draw_count(); ++i) {
                         const auto view=frame.commands.draw_view(i);
                         const auto slot=i-frame.commands.static_track_draw_count()-1-frame.car_draws;
                         const bool spark=slot>=kRaceSmokeLimit;
+                        const auto particle_index=spark?slot-kRaceSmokeLimit:slot;
+                        const auto count=spark?expected_particles.spark_count():expected_particles.smoke_count();
+                        if (particle_index<count) {
+                            const auto& particle=spark?expected_particles.spark(particle_index):
+                                                          expected_particles.smoke(particle_index);
+                            VehicleVec3 position;
+                            double diameter=0,opacity=0;
+                            require(race_particle_visual(particle,expected_particles.step(),position,diameter,opacity),
+                                    "live particle has no visual state");
+                            if (view.material.alpha[0] > 0.0F) {
+                                const double dx=view.placement.rows[12]-camera.eye[0];
+                                const double dy=view.placement.rows[14]-camera.eye[1];
+                                const double dz=-view.placement.rows[13]-camera.eye[2];
+                                const double depth=dx*camera.forward[0]+dy*camera.forward[1]+dz*camera.forward[2];
+                                const double max_diameter=48.0*2.0*depth/(camera.projection[1]*720.0);
+                                const double row0=std::sqrt(view.placement.rows[0]*view.placement.rows[0]+
+                                    view.placement.rows[1]*view.placement.rows[1]+view.placement.rows[2]*view.placement.rows[2]);
+                                const double row2=std::sqrt(view.placement.rows[8]*view.placement.rows[8]+
+                                    view.placement.rows[9]*view.placement.rows[9]+view.placement.rows[10]*view.placement.rows[10]);
+                                require(std::abs(view.placement.rows[12]-position.x)<1.0e-4 &&
+                                        std::abs(view.placement.rows[13]-position.y)<1.0e-4 &&
+                                        std::abs(view.placement.rows[14]-position.z)<1.0e-4,
+                                        "GPU particle placement differs from CPU visual position at slot " +
+                                        std::to_string(slot) + " expected " + std::to_string(position.x) + "," +
+                                        std::to_string(position.y) + "," + std::to_string(position.z) + " got " +
+                                        std::to_string(view.placement.rows[12]) + "," +
+                                        std::to_string(view.placement.rows[13]) + "," +
+                                        std::to_string(view.placement.rows[14]));
+                                require(std::abs(view.material.alpha[0]-opacity)<1.0e-5F,
+                                        "GPU particle opacity differs from CPU visual opacity");
+                                require(row0<=max_diameter+1.0e-5 && row2<=max_diameter+1.0e-5,
+                                        "GPU particle sprite exceeds the 48-pixel bound");
+                            }
+                        }
                         if (view.material.alpha[0] > 0)
                             (spark ? visible_sparks : visible_smoke)++;
                         if ((!spark && view.material.alpha[0] > 0 && !smoke_color_checked) ||
