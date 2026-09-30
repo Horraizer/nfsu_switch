@@ -172,6 +172,9 @@ struct ReferenceDraw {
     RenderBlendMode blend = RenderBlendMode::disabled;
     bool alpha_test = false;
     std::uint8_t alpha_ref = kRenderAlphaRef;
+    // The separate track sky pass, whose copy is numbered one past the
+    // scenery instances.
+    bool sky = false;
 };
 using ReferenceDrawObserver = std::function<void(const ReferenceDraw&)>;
 
@@ -262,6 +265,8 @@ struct RenderOptions {
     // fragment must pass both tests.
     MaterialStateMode material_state = MaterialStateMode::off;
     MaterialCoefficients coefficients;
+    // Separate track sky, when the prepared scene contains one.
+    bool sky = false;
     unsigned char background[4] = {40, 44, 52, 255};
 };
 
@@ -391,6 +396,8 @@ private:
 // state, so a caller that does not set them gets the historical behaviour.
 struct RasterMaterial {
     const RenderTexture* texture = nullptr;  // null draws the fallback
+    // Unlit world.efx modulation, texture * vertex RGB * 2, for the sky.
+    bool sky = false;
     unsigned char fallback[4] = {255, 255, 255, 255};
     // Flat shade factor 0..256 applied to RGB.
     std::uint32_t shade = 256;

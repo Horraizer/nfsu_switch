@@ -106,5 +106,6 @@ int main(int argc, char** argv) {
     }
     std::cout << "PASS: frames " << frames << " max draws " << max_draws << " road hits " << hits << '\n';
     if (full) return frames == slice.path.size() && hits > 0 && max_draws <= kTrackSliceDrawLimit ? 0 : fail(8, "full path frame/contact/draw count");
-    return frames == 57 && hits == 55 && max_draws == 1769 ? 0 : fail(8, "sampled path frame/contact/draw pin");
+    // #184: the two borrowed SKYDOME groups add two background submissions.
+    return frames == 57 && hits == 55 && max_draws == 1771 ? 0 : fail(8, "sampled path frame/contact/draw pin");
 }

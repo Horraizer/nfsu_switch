@@ -850,6 +850,7 @@ struct Rasterizer::ScreenVertex {
     double rq = 0.0;
     double gq = 0.0;
     double bq = 0.0;
+    double aq = 0.0;
 };
 
 Rasterizer::Rasterizer(Frame& frame, const RenderOptions& options,
@@ -907,6 +908,7 @@ bool Rasterizer::draw_triangle(
         screen[i].rq = v.r * q;
         screen[i].gq = v.g * q;
         screen[i].bq = v.b * q;
+        screen[i].aq = v.a * q;
     }
 
     bool any_drawn = false;
@@ -1080,6 +1082,10 @@ bool Rasterizer::fill(
                         } else {
                             source_alpha = color[3];
                         }
+                        if (material.sky) {
+                            const double va = (l[0]*a->aq + l[1]*b->aq + l[2]*c->aq) * iq;
+                            source_alpha = std::min(255U, (color[3] * channel(va) * 2U + 127U) / 255U);
+                        }
                         // D3DCMP_GREATER against D3DRS_ALPHAREF.
                         if (keep && material.alpha_test) {
                             keep = source_alpha > material.alpha_ref;
@@ -1093,13 +1099,14 @@ bool Rasterizer::fill(
                                    id > frame_.ids_[index])))) {
                         ++stats_.fragments_depth_failed;
                     } else {
-                        if (options_.vertex_color) {
+                        if (options_.vertex_color || material.sky) {
                             const double vc[3] = {
                                 (l[0] * a->rq + l[1] * b->rq + l[2] * c->rq) * iq,
                                 (l[0] * a->gq + l[1] * b->gq + l[2] * c->gq) * iq,
                                 (l[0] * a->bq + l[1] * b->bq + l[2] * c->bq) * iq};
                             for (int k = 0; k < 3; ++k) {
-                                color[k] = (color[k] * channel(vc[k]) + 127U) / 255U;
+                                color[k] = std::min(255U, (color[k] * channel(vc[k]) *
+                                    (material.sky ? 2U : 1U) + 127U) / 255U);
                             }
                         }
                         const std::uint32_t shade = std::min<std::uint32_t>(material.shade, 256U);

@@ -362,7 +362,7 @@ if(NFSU_BUILD_TESTS)
         tests/track_render_tests.cpp
     )
 
-    target_link_libraries(nfsu_track_render_tests PRIVATE nfsu_track_render)
+    target_link_libraries(nfsu_track_render_tests PRIVATE nfsu_track_render nfsu_draw_commands)
     nfsu_enable_warnings(nfsu_track_render_tests)
     add_test(NAME nfsu_track_render_tests COMMAND nfsu_track_render_tests)
 
@@ -742,6 +742,14 @@ nfsu_enable_warnings(nfsu_frame_budget_probe)
 if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     # The probe replaces new/delete; DLL allocator calls cannot interpose them.
     target_link_options(nfsu_frame_budget_probe PRIVATE -static-libstdc++ -static-libgcc)
+endif()
+
+# Read-only issue #227 sky fragment accounting; not part of the race application.
+add_executable(nfsu_sky_fragment_probe tools/sky_fragment_probe.cpp)
+target_link_libraries(nfsu_sky_fragment_probe PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_platform_desktop)
+nfsu_enable_warnings(nfsu_sky_fragment_probe)
+if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_link_options(nfsu_sky_fragment_probe PRIVATE -static-libstdc++ -static-libgcc)
 endif()
 
 # The argument conversion is the desktop filesystem service: its three free
@@ -1524,6 +1532,10 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_track_slice_tests PRIVATE nfsu_track_slice nfsu_posix_file_system nfsu_platform_fakes)
     nfsu_enable_warnings(nfsu_track_slice_tests)
     add_test(NAME nfsu_track_slice_tests COMMAND nfsu_track_slice_tests)
+    add_executable(nfsu_sky_fog_retail tests/sky_fog_retail.cpp)
+    target_link_libraries(nfsu_sky_fog_retail PRIVATE nfsu_track_slice nfsu_posix_file_system
+        nfsu_track_render nfsu_stock_frame)
+    nfsu_enable_warnings(nfsu_sky_fog_retail)
 endif()
 
 # Race integration is clock-free; only the desktop executable owns I/O and UI.
@@ -1767,7 +1779,7 @@ if(NFSU_BUILD_TESTS)
             COMMAND nfsu_race_run_tests
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
                 "${NFSU_RETAIL_ROOT}" --profile-reference)
-        # tools/race_replay_check.py over this build's nfsu_race: the 11 race
+        # tools/race_replay_check.py over this build's nfsu_race: the 12 race
         # frame pins, the result lines, the state file, the 120 Hz trajectory
         # and the regenerated recording: docs/DESKTOP_RACE.md.
         add_test(NAME nfsu_race_replay_check
@@ -1814,6 +1826,13 @@ if(NFSU_BUILD_TESTS)
         # The bounded index of the race music: docs/RACE_AUDIO.md.
         add_test(NAME nfsu_race_audio_retail
             COMMAND nfsu_race_audio_tests "${NFSU_RETAIL_ROOT}")
+        # The event 1 sky: its inventory, the overview and street frame pins
+        # and the complete CPU/GPU draw trace (issue #184): docs/SKY_FOG.md.
+        add_test(NAME nfsu_sky_fog_retail
+            COMMAND ${CMAKE_COMMAND} -DSKY_FOG=$<TARGET_FILE:nfsu_sky_fog_retail>
+                    "-DROOT=${NFSU_RETAIL_ROOT}"
+                    -DOUT_PARENT=${nfsu_retail_work}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/retail_sky_fog.cmake)
         # The three tuned 240SX frame pins through nfsu_viewer and the
         # Switch CPU path (issue #229): docs/INSTALLED_PARTS.md.
         add_test(NAME nfsu_tuned_frame_retail
@@ -1846,7 +1865,7 @@ if(NFSU_BUILD_TESTS)
             nfsu_stock_frame_painted_retail nfsu_race_loader_peak_retail
             nfsu_track_loader_peak_retail nfsu_track_slice_retail
             nfsu_racing_line_retail nfsu_race_audio_retail nfsu_audio_retail
-            nfsu_tuned_frame_retail nfsu_probe_asset_check_retail_first-lap
+            nfsu_sky_fog_retail nfsu_tuned_frame_retail nfsu_probe_asset_check_retail_first-lap
             nfsu_probe_asset_check_retail_stock-car
             nfsu_probe_asset_check_retail_event-1
             PROPERTIES LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only
