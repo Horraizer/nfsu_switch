@@ -36,7 +36,7 @@ void pcm16(Bytes& bytes, std::int16_t sample) {
     bytes.push_back(static_cast<std::uint8_t>(sample >> 8));
 }
 
-Bytes pcm_ast(std::uint16_t rate = 24000) {
+Bytes pcm_ast(std::uint16_t rate = 24000, std::int16_t offset = 0) {
     Bytes bytes;
     const Bytes header = {'P','T',0,0, 0x80,1,2, 0x82,1,2,
         0x84,2,static_cast<std::uint8_t>(rate >> 8),
@@ -45,10 +45,10 @@ Bytes pcm_ast(std::uint16_t rate = 24000) {
     Bytes count; u32(count, 2); chunk(bytes, "SCCl", count);
     for (const auto base : {1000, 3000}) {
         Bytes body; u32(body, 2); u32(body, 0); u32(body, 4);
-        pcm16(body, static_cast<std::int16_t>(base));
-        pcm16(body, static_cast<std::int16_t>(base + 1000));
-        pcm16(body, static_cast<std::int16_t>(-base));
-        pcm16(body, static_cast<std::int16_t>(-base - 1000));
+        pcm16(body, static_cast<std::int16_t>(base + offset));
+        pcm16(body, static_cast<std::int16_t>(base + 1000 + offset));
+        pcm16(body, static_cast<std::int16_t>(-base - offset));
+        pcm16(body, static_cast<std::int16_t>(-base - 1000 - offset));
         chunk(bytes, "SCDl", body);
     }
     chunk(bytes, "SCEl", {});
@@ -269,6 +269,32 @@ void test_ast_streamer() {
           "AST blocks resampled into ordered 48 kHz stereo");
     streamer.stop();
     check(streamer.error().empty(), "stream decoder error");
+
+    Bytes playlist = pcm_ast();
+    playlist.resize((playlist.size() + 127U) & ~std::size_t{127}, 0);
+    const auto next = pcm_ast(24000, 5000);
+    playlist.insert(playlist.end(), next.begin(), next.end());
+    auto playlist_scan = input_of(playlist);
+    const auto parts = audio::scan_ast(*playlist_scan);
+    check(parts.size() == 2, "two playlist segments");
+    auto indexed_input = input_of(playlist);
+    const auto indexed = audio::index_ast_segment_by_boundary(
+        *indexed_input, parts[0].offset, parts[1].offset);
+    check(indexed.end == parts[0].end && indexed.frames == parts[0].frames &&
+          indexed.blocks == parts[0].blocks && indexed.rate == parts[0].rate,
+          "boundary AST index matches full scan");
+    audio::AstStreamer repeated(4);
+    check(repeated.start_playlist(input_of(playlist), parts, true, error),
+          "start looping playlist");
+    for (const auto value : {1000, 3000, 6000, 8000, 1000}) {
+        await_size(repeated.ring(), 4);
+        std::array<std::int16_t, 8> chunk{};
+        check(repeated.pop(chunk.data(), 4) == 4 &&
+              chunk[0] == value && chunk[1] == -value,
+              "playlist segment order, stereo and loop");
+    }
+    repeated.stop();
+    check(repeated.error().empty(), "playlist decoder error");
 }
 
 void test_ast_22050() {

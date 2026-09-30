@@ -7,6 +7,7 @@
 #include "nfsu/race_window.h"
 #include "nfsu/race_audio.h"
 #include "nfsu/light_glows.h"
+#include "nfsu/arg_path.h"
 
 #include <algorithm>
 #include <array>
@@ -44,43 +45,26 @@ void write_text(const fs::path& path, const std::string& text) {
     std::ofstream out(path,std::ios::binary); out << text;
     require(bool(out),"cannot write output");
 }
+// A path as UTF-8 text. generic_string() would convert to the narrow
+// encoding, which throws for a character outside it (docs/PATH_ARGUMENTS.md).
+std::string utf8_text(const fs::path& path) {
+    const auto text = path.generic_u8string();
+    return std::string(text.begin(), text.end());
+}
 bool within(const fs::path& path, const fs::path& root) {
-    const auto contains = [](const fs::path& candidate, const fs::path& base) {
-        auto ps = candidate.generic_string(), rs = base.generic_string();
+    // Make relative arguments absolute before normalizing their existing
+    // prefix. Refuse failures rather than silently guessing a writable path.
+    const auto absolute = [](const fs::path& value) {
+        return fs::u8path(fs::absolute(value).generic_u8string());
+    };
+    auto p = fs::weakly_canonical(absolute(path)), r = fs::canonical(absolute(root));
+    // Windows comparisons below ignore case, as this desktop's files do.
+    auto ps = utf8_text(p), rs = utf8_text(r);
 #ifdef _WIN32
-        for (char& c : ps) if (c >= 'A' && c <= 'Z') c += 'a'-'A';
-        for (char& c : rs) if (c >= 'A' && c <= 'Z') c += 'a'-'A';
+    for (char& c : ps) if (c >= 'A' && c <= 'Z') c += 'a'-'A';
+    for (char& c : rs) if (c >= 'A' && c <= 'Z') c += 'a'-'A';
 #endif
-        return ps == rs || (ps.size() > rs.size() && ps.compare(0,rs.size(),rs)==0 && ps[rs.size()]=='/');
-    };
-    // A lexical match is always unsafe. This also handles a local test
-    // fixture whose absolute path the runtime cannot canonicalize.
-    const auto absolute_path = fs::absolute(path).lexically_normal();
-    const auto absolute_root = fs::absolute(root).lexically_normal();
-    if (contains(absolute_path, absolute_root)) return true;
-    // Resolve existing prefixes as well, so a symlink outside the root
-    // cannot direct a seemingly separate output into the retail tree.
-    std::error_code path_error, root_error;
-    const auto resolved_path = fs::weakly_canonical(absolute_path, path_error);
-    const auto resolved_root = fs::weakly_canonical(absolute_root, root_error);
-    if (!path_error && !root_error) return contains(resolved_path, resolved_root);
-    // Some Windows worktree locations refuse canonicalization despite
-    // existing directories. Fall back only if every accessible component
-    // is a real directory, with no symlink whose target could enter root.
-    const auto no_links = [](const fs::path& value) {
-        fs::path prefix;
-        for (const auto& part : value) {
-            prefix /= part;
-            std::error_code error;
-            const auto status = fs::symlink_status(prefix, error);
-            if (error == std::errc::no_such_file_or_directory) break;
-            if (error || fs::is_symlink(status)) return false;
-        }
-        return true;
-    };
-    require(no_links(absolute_path) && no_links(absolute_root),
-            "cannot verify output path symlinks");
-    return false;
+    return ps == rs || (ps.size() > rs.size() && ps.compare(0,rs.size(),rs)==0 && ps[rs.size()]=='/');
 }
 
 // Actual reads follow residency loads, and releases destroy their parsed
@@ -117,7 +101,7 @@ public:
             texture, root/"Global/INGAMEB.BUN", root/"Global/GLOBALB.BUN"};
         for (std::size_t i=0;i<paths.size();++i) {
             texture_packs[i] = load_texture_pack_set(paths[i],texture_bytes[i]);
-            require(texture_packs[i].complete,"track texture source is incomplete: "+paths[i].generic_string());
+            require(texture_packs[i].complete,"track texture source is incomplete: "+utf8_text(paths[i]));
         }
     }
     void apply(const TrackResidencyStep& step) {
@@ -206,16 +190,17 @@ public:
         require(render_track_draw_list(track,list,track_options,{},background,stats,track_stats,error),error);
         require(drive_place_instances(base,session.car(),session.spec(),car.scene.instances,
                                       &session.animation()),"car placement failed");
+        require(render_stock_frame(car,options,error),error);
+        Frame composed;
+        require(compose_race_frame(background,car.frame,composed),"frame sizes differ");
         if (glows) {
             CameraFrame camera;
             require(make_camera_frame(options.camera,options.width,options.height,camera,error),error);
             const auto sprites = place_car_glows(glow_anchors,car.scene,camera,
                                                  session.animation().braking);
-            require(draw_car_glows(background,options,sprites,stats,error),error);
+            require(draw_car_glows(composed,options,sprites,stats,error),error);
         }
-        require(render_stock_frame(car,options,error),error);
-        std::vector<unsigned char> rgba;
-        require(compose_race_frame(background,car.frame,rgba),"frame sizes differ");
+        std::vector<unsigned char> rgba = composed.rgba();
         ScreenImage image{rgba.data(),640,360,640*4};
         const auto lines=race_session_hud(session);
         for (std::size_t i=0;i<lines.size();++i)
@@ -227,6 +212,10 @@ public:
 int run(int argc, char** argv) {
     fs::path root,input,output,generate;
     bool live=false, smoke=false, glows=false; std::set<std::size_t> frames;
+    // The path arguments arrive in the ANSI code page on Windows; convert
+    // them as the other tools do, so a path outside ASCII opens.
+    std::string argument_error;
+    require(nfsu::check_arguments(argc,argv,1,argument_error),argument_error);
     for (int i=1;i<argc;++i) {
         const std::string a=argv[i];
         if (a=="--help") {
@@ -239,10 +228,10 @@ int run(int argc, char** argv) {
         if (a=="--live-smoke") { live=true; smoke=true; continue; }
         if (a=="--glows") { glows=true; continue; }
         require(i+1<argc,"missing option value"); const std::string value=argv[++i];
-        if (a=="--root") root=fs::u8path(value);
-        else if (a=="--input") input=fs::u8path(value);
-        else if (a=="--generate") generate=fs::u8path(value);
-        else if (a=="--out") output=fs::u8path(value);
+        if (a=="--root") root=nfsu::argument_path(argv[i]);
+        else if (a=="--input") input=nfsu::argument_path(argv[i]);
+        else if (a=="--generate") generate=nfsu::argument_path(argv[i]);
+        else if (a=="--out") output=nfsu::argument_path(argv[i]);
         else if (a=="--frames") {
             std::istringstream in(value); std::string token;
             while (std::getline(in,token,',')) {

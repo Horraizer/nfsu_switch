@@ -32,8 +32,8 @@ CarGlowSprites place_car_glows(const CarGlowAnchors& anchors,
 // 16x16 textures are generated at load time and are never stored in Git.
 RenderTexture make_car_glow_texture(bool head);
 
-// Two triangles per visible sprite, additive over the track depth buffer.
-// The car is composed over that buffer afterwards by compose_race_frame.
+// Two triangles per visible sprite, additive over the composed track/car
+// depth buffer, after the opaque car draw and without depth writes.
 bool draw_car_glows(Frame& track, const RenderOptions& options,
                     const CarGlowSprites& sprites, RenderStats& stats,
                     std::string& error);

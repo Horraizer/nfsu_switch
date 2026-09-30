@@ -324,7 +324,8 @@ ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
         format("FRAME UNIFORMS %llu bytes",(unsigned long long)context.memory.frame_uniform_bytes),
         format("STATIC UNIFORMS %llu bytes",(unsigned long long)context.memory.static_uniform_bytes),
         format("PREPARED COMMANDS %llu bytes",(unsigned long long)context.memory.prepared_command_bytes),
-        format("LOAD HEAP OBS HWM %llu | over %llu bytes",(unsigned long long)heap.load_peak,
+        format("LOAD HEAP ABS %llu | DELTA %llu / 50331648 | OVER %llu",
+            (unsigned long long)heap.load_peak,(unsigned long long)heap.load_delta(),
             (unsigned long long)heap.load_overrun(50331648))
     });
     if (!failure.empty()) {
@@ -501,7 +502,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         if (elapsed > 1000000) { paused = true; clock.reset(); }
         const bool connected = padIsConnected(&pad);
         const bool running = race.session().timing().outcome == RaceOutcome::running;
-        sound.set_suspended(paused || !running);
+        sound.set_suspended(paused);
         const bool driving_before = !paused && !just_unpaused && running &&
             race.session().timing().stage == RaceStage::racing;
         if (!paused && running) clock.add(elapsed); else clock.reset();
@@ -536,7 +537,6 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             upload = ms(armGetSystemTick()-stage);
         }
         const bool finished = race.session().timing().outcome == RaceOutcome::finished;
-        if (finished) sound.set_suspended(true);
         RaceFrameSample measured;
         measured.simulation_ms = simulation;
         measured.residency_ms = residency;
@@ -724,10 +724,10 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         if (finished) break;
     }
     } catch (const std::exception& e) { failure = e.what(); }
-    // Every way out of the race loop (+, an error or the finish) mutes the
-    // audio with the service's fade before the result screen; before this
-    // only the finish did, so + left the engine and music playing.
-    sound.set_suspended(true);
+    // Leave the finish cue audible on the result screen. Other exits mute
+    // the still-running engine and music before showing that screen.
+    if (!failure.empty() || race.session().timing().outcome != RaceOutcome::finished)
+        sound.set_suspended(true);
     std::string close_error;
     if (!renderer.close(close_error)) {
         if (!failure.empty()) failure += " | ";

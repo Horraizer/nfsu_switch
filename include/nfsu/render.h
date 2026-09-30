@@ -378,6 +378,7 @@ public:
 
 private:
     friend class Rasterizer;
+    friend bool compose_race_frame(const Frame&, const Frame&, Frame&);
     std::uint32_t width_ = 0;
     std::uint32_t height_ = 0;
     std::vector<unsigned char> rgba_;

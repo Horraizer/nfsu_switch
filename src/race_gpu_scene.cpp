@@ -40,7 +40,24 @@ void append_car_commands(RecordedCommands& track, const RecordedCommands& car) {
         track.owning_draws().push_back(std::move(draw));
     }
 }
-
+void append_glow_resources(UploadTable& into, const UploadTable& prepared,
+                           std::size_t first) {
+    auto& totals = into.totals;
+    for (std::size_t i = first; i < prepared.resources.size(); ++i) {
+        const auto& resource = prepared.resources[i];
+        into.resources.push_back(resource);
+        ++totals.resources;
+        if (resource.kind == UploadResourceKind::vertex_buffer) {
+            ++totals.vertex_buffers; totals.vertex_bytes += resource.bytes;
+        } else if (resource.kind == UploadResourceKind::index_buffer) {
+            ++totals.index_buffers; totals.index_bytes += resource.bytes;
+        } else if (resource.kind == UploadResourceKind::texture) {
+            ++totals.textures; totals.texture_bytes += resource.bytes;
+            totals.largest_texture_bytes = std::max(totals.largest_texture_bytes,
+                                                    resource.bytes);
+        }
+    }
+}
 }
 bool combine_race_commands(RecordedCommands track, const RecordedCommands& car,
                            RecordedCommands& out, std::string& error) {
@@ -395,12 +412,15 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         if (glows_enabled_) {
             const auto sprites = place_car_glows(glow_anchors_, car_, basis,
                                                  session.animation().braking);
-            for (const auto& sprite : sprites) {
-                if (sprite.opacity <= 0.0) continue;
-                auto& draw = glow_selected_[glow_count_++];
+            // Keep the package draw count invariant even when the view-facing
+            // gate fades a sprite out. Zero-radius slots rasterize no pixels.
+            for (std::size_t i = 0; i < sprites.size(); ++i) {
+                const auto& sprite = sprites[i];
+                auto& draw = glow_selected_[i];
                 draw = glow_templates_[sprite.head ? 0 : 1];
                 draw.material.alpha[0] = static_cast<float>(sprite.opacity);
                 car_glow_transform(sprite, basis, draw.placement.rows);
+                ++glow_count_;
             }
         }
         TrackCamera camera;
@@ -471,11 +491,15 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
             if (uploads.resources.size() != glow_first_resource_) {
                 error = "reference glow resource offset differs"; return false;
             }
-            for (std::size_t i = glow_first_resource_; i < combined_uploads_.resources.size(); ++i)
-                uploads.resources.push_back(combined_uploads_.resources[i]);
-            uploads.totals = combined_uploads_.totals;
-            for (std::size_t i = 0; i < glow_count_; ++i)
-                result.commands.owning_draws().push_back(glow_selected_[i]);
+            append_glow_resources(uploads, combined_uploads_, glow_first_resource_);
+            const auto reference_sprites = place_car_glows(glow_anchors_, car_, basis,
+                                                            session.animation().braking);
+            for (std::size_t i = 0; i < reference_sprites.size(); ++i) {
+                RecordedDraw draw = glow_templates_[reference_sprites[i].head ? 0 : 1];
+                draw.material.alpha[0] = static_cast<float>(reference_sprites[i].opacity);
+                car_glow_transform(reference_sprites[i], basis, draw.placement.rows);
+                result.commands.owning_draws().push_back(std::move(draw));
+            }
             result.triangles += 2*glow_count_;
             DrawExecutionPlan plan;
             if (!validate_recorded_commands(result.commands,error) ||

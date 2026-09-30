@@ -2,6 +2,7 @@
 #include "nfsu/posix_file_system.h"
 #include "nfsu/platform_fakes.h"
 #include "nfsu/heap_usage.h"
+#include "nfsu/arg_path.h"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -59,7 +60,8 @@ int main(int argc, char** argv) {
         }
     } polled;
     TrackSlice slice;
-    if (!load_track_slice(posix_file_system(), argv[1], slice, error, nullptr, &polled)) {
+    if (!check_arguments(argc, argv, 1, error)) return fail(18, error.c_str());
+    if (!load_track_slice(posix_file_system(), argument_path(argv[1]), slice, error, nullptr, &polled)) {
         std::cerr << error << '\n'; return 5;
     }
     if (polled.sections < 4 * slice.sections)

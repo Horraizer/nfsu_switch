@@ -87,6 +87,12 @@ build-release/nfsu_race_run_tests tests/recordings/event1.txt X:/Games/NFSU --pr
 build-release/nfsu_race_run_tests tests/recordings/event1.txt X:/Games/NFSU --sample-draws
 ```
 
+Configured with `-DNFSU_RETAIL_ROOT=<installation>`, the `ctest` line runs all
+three retail commands itself, as `nfsu_race_run_retail_profile_reference`,
+`nfsu_race_run_retail_profile` and `nfsu_race_run_retail` (label `retail`),
+inside the retail manifest fixture; the explicit lines remain for reading the
+printed numbers.
+
 Bracket every retail invocation with the full 476-file SHA-256, size and
 mtime manifest. Inputs remain read-only; no derived game asset enters Git.
 The optional profile modes perform one warmup and 120 measured frames.

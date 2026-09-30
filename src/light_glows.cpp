@@ -7,6 +7,7 @@
 
 namespace nfsu {
 namespace {
+constexpr unsigned kGlowTextureSize = 64;
 constexpr std::array<std::uint32_t, 4> kMarkerHashes = {
     0x9DB90133U, 0xD09091C6U, 0x31A66786U, 0xBF700A79U};
 
@@ -90,15 +91,17 @@ CarGlowSprites place_car_glows(const CarGlowAnchors& anchors,
 RenderTexture make_car_glow_texture(bool head) {
     RenderTexture texture;
     texture.hash = head ? 0x18500001U : 0x18500002U;
-    texture.width = 16; texture.height = 16;
+    texture.width = kGlowTextureSize; texture.height = kGlowTextureSize;
     texture.valid = true;
-    texture.rgba.resize(16U*16U*4U);
-    for (unsigned y = 0; y < 16; ++y) for (unsigned x = 0; x < 16; ++x) {
-        const double dx = (static_cast<double>(x)+0.5-8.0)/8.0;
-        const double dy = (static_cast<double>(y)+0.5-8.0)/8.0;
+    texture.rgba.resize(kGlowTextureSize*kGlowTextureSize*4U);
+    const double center = static_cast<double>(kGlowTextureSize)/2.0;
+    for (unsigned y = 0; y < kGlowTextureSize; ++y)
+        for (unsigned x = 0; x < kGlowTextureSize; ++x) {
+        const double dx = (static_cast<double>(x)+0.5-center)/center;
+        const double dy = (static_cast<double>(y)+0.5-center)/center;
         const double falloff = std::max(0.0, 1.0-dx*dx-dy*dy);
         const auto alpha = static_cast<unsigned char>(falloff*falloff*255.0+0.5);
-        const std::size_t p = 4U*(y*16U+x);
+        const std::size_t p = 4U*(y*kGlowTextureSize+x);
         texture.rgba[p+0] = 255;
         texture.rgba[p+1] = head ? 240 : 48;
         texture.rgba[p+2] = head ? 205 : 32;
