@@ -1,4 +1,5 @@
 #include "nfsu/race_session.h"
+#include "nfsu/race_hud.h"
 #include "nfsu/race_events.h"
 #include "nfsu/track_residency.h"
 #include "nfsu/track_render.h"
@@ -83,6 +84,7 @@ public:
     TrackDrawList list;
     StockFrameInputs car_inputs;
     StockFrame car;
+    RaceHudAtlas hud_atlas;
     std::vector<PreparedInstance> base;
     bool dirty = true;
     std::uint64_t loads = 0, releases = 0, bytes_read = 0;
@@ -90,6 +92,7 @@ public:
     explicit RaceScene(const TrackStreamTable& t) : table(t) {}
     void load_car(const fs::path& root, const fs::path& texture) {
         std::string error;
+        require(load_race_hud_atlas(root,hud_atlas,error),error);
         require(read_stock_frame_inputs(root,car_inputs),"cannot read stock car inputs");
         require(prepare_stock_frame(car_inputs,stock_240sx_request(),stock_240sx_skin(),car,error),error);
         base = car.scene.instances;
@@ -189,10 +192,9 @@ public:
         require(render_stock_frame(car,options,error),error);
         std::vector<unsigned char> rgba;
         require(compose_race_frame(background,car.frame,rgba),"frame sizes differ");
-        ScreenImage image{rgba.data(),640,360,640*4};
-        const auto lines=race_session_hud(session);
-        for (std::size_t i=0;i<lines.size();++i)
-            draw_screen_text(image,6,6+i*10,lines[i],1,{255,255,255,255},{0,0,0,255});
+        RaceHudFrame hud;
+        build_race_hud_frame(session,640,360,hud);
+        composite_race_hud(hud_atlas,hud,rgba.data(),640,360,640*4);
         render_cost.add(begin); return rgba;
     }
 };

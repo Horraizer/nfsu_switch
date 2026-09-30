@@ -81,13 +81,11 @@ test covers both occlusion directions, a depth tie and empty pixels. The
 track path now applies the traced alpha test, blend and depth-write states.
 No opponents, traffic, sound or new retail lighting are claimed.
 
-The HUD shows the current lap, lap count and last completed lap separately.
-Unlike the retail HUD helper's three-second hold, CURRENT continues to count
-the new lap immediately; LAST holds the completed one. On the finish it
-shows the final lap and total. All displayed times come from race timing,
-not a wall clock. At 60 Hz that library advances 67 units of 1/4000 s per
-tick, as [RACE_TIMING.md](RACE_TIMING.md) explains; its clock is slightly
-faster than exact wall time. Crossing times are backdated and quantized there.
+The default frame now composites the first in-race HUD group: the speed,
+tachometer, needle, red zone and gear. It loads the game's textures from
+the user's installation. See [RACE_HUD.md](RACE_HUD.md) for the trace,
+approximation list and the remaining groups. The race timing data and its
+text helper remain available for later lap, countdown and warning overlays.
 
 Live pacing uses `RaceStepClock` at 60 Hz with a four-step catch-up cap. Slow
 renders drop excess wall-clock steps, so on this CPU the live race advances

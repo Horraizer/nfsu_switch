@@ -11,6 +11,12 @@ No game data is in this repository and none is packaged into an application:
 the owner copies the files from their own installation. This note holds file
 names, sizes and SHA-256 hashes only.
 
+Issue #64's direct in-race HUD additionally reads `Global/HUDTEX.BIN`
+(1048196 bytes) and `Languages/LanguageTextures.bin` (517284 bytes) from
+the same SD root. Copy both from the installation with those relative
+paths for `nfsu_switch_race.nro`. The #47 first-lap asset-check set below
+still checks its original 12 files; it does not check these two HUD files.
+
 The answer first:
 
 - **The first lap needs 12 retail files, 108907646 bytes**, listed under

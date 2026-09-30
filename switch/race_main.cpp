@@ -418,6 +418,7 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
     }
 }
 void run(const std::string& root, bool replay_mode, bool panel_mode, bool profile_frame,
+         bool hud_mode,
          Screen& screen, PadState& pad) {
     require(R_SUCCEEDED(romfsInit()), "cannot mount race shader/replay RomFS");
     struct Guard { ~Guard() { romfsExit(); } } guard;
@@ -455,7 +456,12 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             audio_note = "audio disabled: startup failed without diagnostic";
     } else audio_note = "audio disabled: render core pin failed";
     std::printf("AUDIO: %s\n", audio_note.c_str());
-    const auto persistent = scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes()+sound.resident_bytes();
+    RaceHudAtlas hud_atlas;
+    if (hud_mode && !panel_mode)
+        require(load_race_hud_atlas(root,hud_atlas,error),error);
+    const auto persistent = scene.car_bytes()+race.persistent_bytes()+
+        scene.track().contacts.memory.resident_bytes+scene.cache_bytes()+
+        sound.resident_bytes()+hud_atlas.rgba.size();
     require(persistent <= kPersistentBudgetPlaceholder, "race persistent payload exceeds 64 MiB");
     RaceGpuFrame frame; require(scene.frame(race.session(),frame,error),error);
     const double load_ms = ms(armGetSystemTick()-load_start);
@@ -464,7 +470,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     const auto upload_start = armGetSystemTick();
     if (!panel_mode) screen.close();
     DekoRenderer renderer;
-    require(renderer.open(frame.commands,error,!panel_mode,kTrackSliceDrawLimit,profile_frame,true),error);
+    require(renderer.open(frame.commands,error,!panel_mode,kTrackSliceDrawLimit,
+                          profile_frame,true,hud_mode && !panel_mode ? &hud_atlas : nullptr),error);
     const double initial_upload = ms(armGetSystemTick()-upload_start);
     const auto clocks = profile_frame ? read_clocks() : ClockReadings{};
     std::unique_ptr<FrameProfileStats> profile_stats;
@@ -478,6 +485,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     double previous_frame = 0, previous_hud = 0;
     std::vector<std::string> last_perf;
     RaceFrameStats stats;
+    RaceHudFrame hud_frame;
     unsigned unpause_resets = 0;
     std::string failure;
     try {
@@ -627,7 +635,10 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             static_cast<std::uint32_t>(frame.track_draws),
             static_cast<std::uint32_t>(frame.car_draws),driving_before && !finished};
         const auto present_start = armGetSystemTick();
-        require(renderer.present(error,&present,profile_frame ? &scene_frame : nullptr),error);
+        if (hud_mode) build_race_hud_frame(race.session(),frame.commands.width,
+                                           frame.commands.height,hud_frame);
+        require(renderer.present(error,&present,profile_frame ? &scene_frame : nullptr,
+                                 hud_mode ? &hud_frame : nullptr),error);
         present_cpu = ms(armGetSystemTick()-present_start);
         const auto mall_start = armGetSystemTick();
         const auto info = mallinfo();
@@ -754,15 +765,17 @@ int main(int argc, char** argv) {
         Screen screen; if (!screen.open()) return 1;
         try {
             std::string root = "sdmc:/nfsu";
-            bool replay = false, panel = false, profile_frame = false, selected = false, root_seen = false;
+            bool replay = false, panel = false, profile_frame = false,
+                 hud = true, selected = false, root_seen = false;
             for (int i = 1; i < argc; ++i) {
                 const std::string arg = argv[i];
                 if (arg == "--replay") { replay = true; selected = true; }
                 else if (arg == "--live") { replay = false; selected = true; }
                 else if (arg == "--panel") panel = true;
                 else if (arg == "--profile-frame") profile_frame = true;
+                else if (arg == "--no-hud") hud = false;
                 else if (!root_seen && arg.rfind("--",0) != 0) { root = arg; root_seen = true; }
-                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame]");
+                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--no-hud]");
             }
             require(!(panel && profile_frame),"--profile-frame requires direct presentation");
             while (!selected && appletMainLoop()) {
@@ -777,11 +790,12 @@ int main(int argc, char** argv) {
                         std::string("Y: diagnostic panel ")+(panel?"ON":"OFF")+" (readback and CPU text cost)",
                     "The #47 first-lap check runs before track streaming. Assets: "+root,
                     "Release all controls during countdown to clear the #59 hot-plug latch.",
-                    "Direct mode has no in-race HUD yet; choose PANEL for live driving evidence.",
+                    hud ? "Direct mode shows the race HUD; PANEL keeps diagnostics." :
+                          "Race HUD disabled for paired GPU measurement.",
                     "During the race: Y pauses, + opens results with driving-frame statistics.",
                     "No game data is bundled or written. Replay input is bundled in RomFS."});
             }
-            if (selected) run(root,replay,panel,profile_frame,screen,pad);
+            if (selected) run(root,replay,panel,profile_frame,hud,screen,pad);
         } catch (const Cancel&) {
         } catch (const std::exception& e) {
             std::printf("ERROR: %s\n",e.what()); std::fflush(stdout);

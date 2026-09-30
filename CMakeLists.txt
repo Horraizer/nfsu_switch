@@ -1531,6 +1531,7 @@ list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_session)
 add_executable(nfsu_race src/race_main.cpp src/race_window.cpp)
 target_link_libraries(nfsu_race PRIVATE nfsu_race_session nfsu_race_events
     nfsu_track_residency nfsu_track_render nfsu_stock_frame nfsu_screen_text
+    nfsu_race_hud
     nfsu_race_audio)
 nfsu_enable_warnings(nfsu_race)
 if(WIN32)
@@ -1547,7 +1548,7 @@ if(NFSU_BUILD_TESTS)
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/race_guards.cmake)
 endif()
 
-list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_run)
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_run nfsu_race_hud)
 add_executable(nfsu_audio_dump src/audio_dump_main.cpp)
 target_link_libraries(nfsu_audio_dump PRIVATE nfsu_audio nfsu_sha256 nfsu_arg_path)
 nfsu_enable_warnings(nfsu_audio_dump)
@@ -1767,7 +1768,7 @@ if(NFSU_BUILD_TESTS)
             COMMAND nfsu_race_run_tests
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
                 "${NFSU_RETAIL_ROOT}" --profile-reference)
-        # tools/race_replay_check.py over this build's nfsu_race: the 11 race
+        # tools/race_replay_check.py over this build's nfsu_race: the 15 race
         # frame pins, the result lines, the state file, the 120 Hz trajectory
         # and the regenerated recording: docs/DESKTOP_RACE.md.
         add_test(NAME nfsu_race_replay_check

@@ -53,6 +53,10 @@ struct DekoRenderer::Impl {
     std::array<dk::UniqueCmdBuf, 2> static_cmd;
     dk::MemBlock buffers, images, staging, uniforms, static_uniforms, descriptors, readback;
     dk::MemBlock query_memory;
+    dk::MemBlock hud_image_memory, hud_staging, hud_vertices, hud_indices;
+    dk::MemBlock hud_uniforms, hud_descriptors;
+    dk::Image hud_image;
+    bool hud_enabled = false;
     std::array<dk::MemBlock, 2> static_command_memory;
     std::array<dk::MemBlock, 2> command_memory;
     MemoryArena buffer_arena, image_arena, staging_arena, uniform_arena;
@@ -206,8 +210,75 @@ struct DekoRenderer::Impl {
         return true;
     }
 
+    bool init_hud(const RaceHudAtlas& atlas, std::string& error) {
+        constexpr std::uint32_t side = kRaceHudAtlasSize;
+        constexpr std::uint32_t texel_bytes = side*side*4;
+        constexpr std::uint32_t vertex_slot_bytes =
+            sizeof(TrackVertex)*kRaceHudMaxQuads*4;
+        if (atlas.rgba.size() != texel_bytes) {
+            error = "HUD atlas has the wrong size"; return false;
+        }
+        dk::ImageLayout layout;
+        dk::ImageLayoutMaker{device}.setFormat(DkImageFormat_RGBA8_Unorm)
+            .setDimensions(side,side).initialize(layout);
+        if (!block(layout.getSize(),kImageFlags,"HUD image",hud_image_memory,error) ||
+            !block(texel_bytes,kDataFlags,"HUD staging",hud_staging,error) ||
+            !block(vertex_slot_bytes*2,kDataFlags,"HUD vertices",hud_vertices,error) ||
+            !block(kRaceHudMaxQuads*6*sizeof(std::uint16_t),kDataFlags,
+                   "HUD indices",hud_indices,error) ||
+            !block(3*256,kDataFlags,"HUD uniforms",hud_uniforms,error) ||
+            !block(2*kDrawDescriptorBytes,kDataFlags,"HUD descriptors",hud_descriptors,error))
+            return false;
+        hud_image.initialize(layout,hud_image_memory,0);
+        std::memcpy(hud_staging.getCpuAddr(),atlas.rgba.data(),texel_bytes);
+        auto* indices=static_cast<std::uint16_t*>(hud_indices.getCpuAddr());
+        for (std::uint16_t i=0;i<kRaceHudMaxQuads;++i) {
+            const std::uint16_t b=i*4;
+            const std::uint16_t six[6]={b,static_cast<std::uint16_t>(b+1),
+                static_cast<std::uint16_t>(b+2),b,
+                static_cast<std::uint16_t>(b+2),static_cast<std::uint16_t>(b+3)};
+            std::memcpy(indices+i*6,six,sizeof six);
+        }
+        DrawFrameUniform frame;
+        frame.right[0]=1; frame.up[1]=-1; frame.forward[2]=1;
+        frame.projection[0]=2.0F/source_width();
+        frame.projection[1]=2.0F/source_height();
+        frame.projection[2]=0.1F; frame.projection[3]=10;
+        frame.options[1]=1;
+        const DrawInstanceUniform instance;
+        const DrawMaterialUniform material;
+        auto* data=static_cast<unsigned char*>(hud_uniforms.getCpuAddr());
+        std::memcpy(data,&frame,sizeof frame);
+        std::memcpy(data+256,&instance,sizeof instance);
+        std::memcpy(data+512,&material,sizeof material);
+        dk::ImageView view{hud_image};
+        dk::ImageDescriptor image_descriptor;
+        image_descriptor.initialize(view);
+        std::memcpy(hud_descriptors.getCpuAddr(),&image_descriptor,
+                    sizeof image_descriptor);
+        dk::Sampler sampler;
+        sampler.setFilter(DkFilter_Nearest,DkFilter_Nearest)
+            .setWrapMode(DkWrapMode_Repeat,DkWrapMode_Repeat,DkWrapMode_Repeat);
+        dk::SamplerDescriptor sampler_descriptor;
+        sampler_descriptor.initialize(sampler);
+        std::memcpy(static_cast<unsigned char*>(hud_descriptors.getCpuAddr())+
+                    kDrawDescriptorBytes,&sampler_descriptor,sizeof sampler_descriptor);
+        begin();
+        cmd.copyBufferToImage({hud_staging.getGpuAddr(),side*4,texel_bytes},
+                              view,{0,0,0,side,side,1});
+        cmd.barrier(DkBarrier_Full,DkInvalidateFlags_Image|
+                    DkInvalidateFlags_Descriptors);
+        if (!submit(error)) return false;
+        hud_enabled=true;
+        return true;
+    }
+
+    float source_width() const { return static_cast<float>(commands->width); }
+    float source_height() const { return static_cast<float>(commands->height); }
+
     bool open(const RecordedCommands& source, std::string& error, bool presentation,
-              std::size_t capacity, bool profile_frame, bool reorder_opaque) {
+              std::size_t capacity, bool profile_frame, bool reorder_opaque,
+              const RaceHudAtlas* hud_atlas) {
         if (commands) { error = "deko3d renderer open is one-shot"; return false; }
         DrawExecutionPlan plan;
         if (!plan_draw_execution(source, plan, error)) return false;
@@ -395,6 +466,7 @@ struct DekoRenderer::Impl {
                 return false;
             }
         }
+        if (presentation && hud_atlas && !init_hud(*hud_atlas,error)) return false;
         std::printf("deko3d: %zu draws, %zu uploads, %llu bytes of GPU blocks (placeholder budget)\n",
             source.draw_count(), handles.size(), static_cast<unsigned long long>(gpu_bytes));
         return true;
@@ -611,7 +683,56 @@ struct DekoRenderer::Impl {
         return true;
     }
 
-    bool record_frame(const dk::Image& target, std::size_t slot, std::string& error) {
+    void emit_hud(std::size_t slot, const RaceHudFrame& frame) {
+        if (!hud_enabled || !frame.quads || frame.quads>kRaceHudMaxQuads) return;
+        constexpr std::uint32_t slot_bytes=sizeof(TrackVertex)*kRaceHudMaxQuads*4;
+        auto* vertices=reinterpret_cast<TrackVertex*>(
+            static_cast<unsigned char*>(hud_vertices.getCpuAddr())+slot*slot_bytes);
+        for (std::size_t i=0;i<frame.quads*4;++i) {
+            vertices[i]=frame.vertices[i];
+            vertices[i].px-=source_width()*0.5F;
+            vertices[i].py-=source_height()*0.5F;
+            vertices[i].pz=-1;
+        }
+        cmd.bindShaders(DkStageFlag_GraphicsMask,{&vertex,&textured_opaque});
+        const auto base=hud_uniforms.getGpuAddr();
+        cmd.bindUniformBuffer(DkStage_Vertex,0,base,sizeof(DrawFrameUniform));
+        cmd.bindUniformBuffer(DkStage_Fragment,0,base,sizeof(DrawFrameUniform));
+        cmd.bindUniformBuffer(DkStage_Vertex,1,base+256,sizeof(DrawInstanceUniform));
+        cmd.bindUniformBuffer(DkStage_Fragment,2,base+512,sizeof(DrawMaterialUniform));
+        cmd.bindImageDescriptorSet(hud_descriptors.getGpuAddr(),1);
+        cmd.bindSamplerDescriptorSet(hud_descriptors.getGpuAddr()+kDrawDescriptorBytes,1);
+        cmd.barrier(DkBarrier_None,DkInvalidateFlags_Shader|DkInvalidateFlags_Descriptors);
+        cmd.bindTextures(DkStage_Fragment,0,dkMakeTextureHandle(0,0));
+        dk::RasterizerState raster;
+        raster.setCullMode(DkFace_None).setFrontFace(DkFrontFace_CCW);
+        dk::ColorState color;
+        color.setBlendEnable(0,true).setAlphaCompareOp(DkCompareOp_Always);
+        dk::ColorWriteState write;
+        write.setMask(0,DkColorMask_RGB);
+        dk::BlendState blend;
+        blend.setOps(DkBlendOp_Add,DkBlendOp_Add)
+            .setFactors(DkBlendFactor_SrcAlpha,DkBlendFactor_InvSrcAlpha,
+                        DkBlendFactor_One,DkBlendFactor_Zero);
+        dk::DepthStencilState depth;
+        depth.setDepthTestEnable(false).setDepthWriteEnable(false);
+        cmd.bindRasterizerState(raster); cmd.bindColorState(color);
+        cmd.bindColorWriteState(write); cmd.bindBlendStates(0,blend);
+        cmd.bindDepthStencilState(depth); cmd.setAlphaRef(0);
+        std::array<DkVtxAttribState,3> attributes{};
+        attributes[0]={0,0,0,DkVtxAttribSize_3x32,DkVtxAttribType_Float,0};
+        attributes[1]={0,0,12,DkVtxAttribSize_4x8,DkVtxAttribType_Unorm,0};
+        attributes[2]={0,0,16,DkVtxAttribSize_2x32,DkVtxAttribType_Float,0};
+        cmd.bindVtxAttribState(attributes);
+        cmd.bindVtxBufferState(DkVtxBufferState{sizeof(TrackVertex),0});
+        cmd.bindVtxBuffer(0,hud_vertices.getGpuAddr()+slot*slot_bytes,
+                          frame.quads*4*sizeof(TrackVertex));
+        cmd.bindIdxBuffer(DkIdxFormat_Uint16,hud_indices.getGpuAddr());
+        cmd.drawIndexed(DkPrimitive_Triangles,frame.quads*6,1,0,0,0);
+    }
+
+    bool record_frame(const dk::Image& target, std::size_t slot,
+                      const RaceHudFrame* hud, std::string& error) {
         if (package && !prepare_visible_commands(slot, error)) return false;
         const auto track_draws = package ? commands->static_track_draw_count() : 0;
         const auto calls = static_cast<std::uint32_t>(static_lists[slot].size());
@@ -652,12 +773,15 @@ struct DekoRenderer::Impl {
             previous_dynamic = &view.definition;
         }
         cmd.barrier(DkBarrier_Fragments, 0);
+        if (hud) emit_hud(slot,*hud);
+        cmd.barrier(DkBarrier_Fragments, 0);
         if (profile_enabled)
             cmd.reportCounter(DkCounter_Timestamp, query_memory.getGpuAddr()+slot*32+16);
         return true;
     }
 
-    bool present(std::string& error, DekoPresentTiming* timing, const DekoSceneFrame* scene_frame) {
+    bool present(std::string& error, DekoPresentTiming* timing,
+                 const DekoSceneFrame* scene_frame, const RaceHudFrame* hud_frame) {
         if (timing) *timing = {};
         if (!swapchain || !healthy(error)) {
             if (error.empty()) error = "deko3d renderer is not open";
@@ -691,7 +815,7 @@ struct DekoRenderer::Impl {
         write_uniforms(*commands, slot);
         if (timing) timing->uniform_write_ms = elapsed_ms(stage);
         stage = armGetSystemTick();
-        if (!record_frame(colors[slot], slot, error)) return false;
+        if (!record_frame(colors[slot],slot,hud_frame,error)) return false;
         if (timing) timing->record_ms = elapsed_ms(stage);
         stage = armGetSystemTick();
         const auto list = cmd.finishList();
@@ -725,7 +849,7 @@ struct DekoRenderer::Impl {
         auto* data = static_cast<unsigned char*>(readback.getCpuAddr());
         std::memset(data, 0xCD, bytes + 2*guard);
         const auto render_start = armGetSystemTick();
-        if (!record_frame(colors[0], 0, error)) return false;
+        if (!record_frame(colors[0],0,nullptr,error)) return false;
         if (!submit(error)) return false;
         render_ms = armTicksToNs(armGetSystemTick() - render_start) / 1000000.0;
         const auto copy_start = armGetSystemTick();
@@ -787,9 +911,11 @@ DekoRenderer::~DekoRenderer() {
     catch (...) { if (impl_->queue) impl_->queue.waitIdle(); }
 }
 bool DekoRenderer::open(const RecordedCommands& commands, std::string& error, bool presentation,
-                        std::size_t draw_capacity, bool profile_frame, bool opaque_first) {
+                        std::size_t draw_capacity, bool profile_frame, bool opaque_first,
+                        const RaceHudAtlas* hud_atlas) {
     error.clear();
-    try { return impl_->open(commands, error, presentation, draw_capacity, profile_frame, opaque_first); }
+    try { return impl_->open(commands, error, presentation, draw_capacity,
+                             profile_frame, opaque_first, hud_atlas); }
     catch (const std::bad_alloc&) { error = "not enough memory for deko3d renderer"; return false; }
 }
 bool DekoRenderer::update(const RecordedCommands& commands, std::string& error,
@@ -813,9 +939,10 @@ bool DekoRenderer::capture(std::vector<unsigned char>& rgba, double& render_ms,
     catch (const std::bad_alloc&) { rgba.clear(); error = "not enough memory for GPU readback"; return false; }
 }
 bool DekoRenderer::present(std::string& error, DekoPresentTiming* timing,
-                           const DekoSceneFrame* scene_frame) {
+                           const DekoSceneFrame* scene_frame,
+                           const RaceHudFrame* hud_frame) {
     error.clear();
-    return impl_->present(error, timing, scene_frame);
+    return impl_->present(error, timing, scene_frame, hud_frame);
 }
 void DekoRenderer::reset_gpu_profile() {
     ++impl_->profile_generation;

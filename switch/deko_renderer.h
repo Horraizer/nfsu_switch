@@ -3,6 +3,7 @@
 #include "nfsu/draw_commands.h"
 #include "nfsu/gpu_scene_profile.h"
 #include "nfsu/deko_gpfifo_budget.h"
+#include "nfsu/race_hud.h"
 #include <memory>
 
 namespace nfsu {
@@ -43,7 +44,7 @@ public:
     // stay open. Both modes record exactly the same draw path.
     bool open(const RecordedCommands& commands, std::string& error, bool presentation = true,
               std::size_t draw_capacity = 0, bool profile_frame = false,
-              bool opaque_first = false);
+              bool opaque_first = false, const RaceHudAtlas* hud_atlas = nullptr);
     // Reuses resident GPU resources. Presentation may have a frame in flight.
     bool update(const RecordedCommands& commands, std::string& error,
                 DekoUpdateTiming* timing = nullptr);
@@ -56,7 +57,8 @@ public:
     bool capture(std::vector<unsigned char>& rgba, double& render_ms,
                  double& readback_ms, std::string& error);
     bool present(std::string& error, DekoPresentTiming* timing = nullptr,
-                 const DekoSceneFrame* scene_frame = nullptr);
+                 const DekoSceneFrame* scene_frame = nullptr,
+                 const RaceHudFrame* hud_frame = nullptr);
     void reset_gpu_profile();
     const DekoGpuProfile& gpu_profile() const noexcept;
     std::uint64_t profile_storage_bytes() const noexcept;
