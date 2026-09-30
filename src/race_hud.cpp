@@ -11,25 +11,52 @@ namespace nfsu {
 namespace {
 
 struct AtlasRect { int x, y, w, h; };
-constexpr AtlasRect kScale{256, 0, 128, 128};
-constexpr AtlasRect kNeedle{384, 0, 16, 128};
-constexpr AtlasRect kHub{400, 0, 16, 16};
-constexpr AtlasRect kSpeedBox{0, 128, 128, 32};
-constexpr AtlasRect kLcd{128, 128, 128, 128};
-constexpr AtlasRect kUnit{384, 256, 72, 18};
-constexpr AtlasRect kWhite{416, 0, 1, 1};
+constexpr std::array<AtlasRect, 4> kLines{{
+    {0, 0, 256, 128}, {256, 0, 256, 128},
+    {0, 128, 256, 128}, {256, 128, 256, 128}
+}};
+constexpr std::array<AtlasRect, 8> kRed{{
+    {0, 384, 64, 32}, {64, 384, 64, 32},
+    {128, 384, 64, 32}, {192, 384, 64, 32},
+    {0, 416, 64, 32}, {64, 416, 64, 32},
+    {128, 416, 64, 32}, {192, 416, 64, 32}
+}};
+constexpr std::array<std::uint32_t, 4> kLinesHashes{{
+    0x4F9F0245, 0xC41B7346, 0x3897E447, 0x40FE164F
+}};
+constexpr std::array<std::uint32_t, 8> kRedHashes{{
+    0x88DF62DF, 0x25AEEEB6, 0x94892E04, 0xD5D99FA0,
+    0xE1836AC5, 0x22D3DC61, 0x2E7DA786, 0x6FCE1922
+}};
+constexpr AtlasRect kNeedle{0, 256, 16, 128};
+constexpr AtlasRect kHub{16, 256, 16, 16};
+constexpr AtlasRect kSpeedBox{32, 256, 128, 32};
+constexpr AtlasRect kLcd{160, 256, 128, 128};
+constexpr AtlasRect kUnit{384, 384, 72, 18};
+constexpr AtlasRect kDisc{256, 384, 128, 128};
 
 struct SourceSpec {
     const char* path;
     std::uint32_t hash;
     AtlasRect rect;
 };
-constexpr std::array<SourceSpec, 5> kSources{{
+constexpr std::array<SourceSpec, 16> kSources{{
     {"Global/INGAMEB.BUN", 0x40FAB387, kNeedle},
     {"Global/INGAMEB.BUN", 0x56447D19, kHub},
     {"Global/INGAMEB.BUN", 0x6D079188, kSpeedBox},
-    {"Global/HUDTEX.BIN", 0xC2A1A026, kScale},
     {"Languages/LanguageTextures.bin", 0xBBBA71C2, kLcd},
+    {"Global/DYNTEX.BIN", kLinesHashes[0], kLines[0]},
+    {"Global/DYNTEX.BIN", kLinesHashes[1], kLines[1]},
+    {"Global/DYNTEX.BIN", kLinesHashes[2], kLines[2]},
+    {"Global/DYNTEX.BIN", kLinesHashes[3], kLines[3]},
+    {"Global/DYNTEX.BIN", kRedHashes[0], kRed[0]},
+    {"Global/DYNTEX.BIN", kRedHashes[1], kRed[1]},
+    {"Global/DYNTEX.BIN", kRedHashes[2], kRed[2]},
+    {"Global/DYNTEX.BIN", kRedHashes[3], kRed[3]},
+    {"Global/DYNTEX.BIN", kRedHashes[4], kRed[4]},
+    {"Global/DYNTEX.BIN", kRedHashes[5], kRed[5]},
+    {"Global/DYNTEX.BIN", kRedHashes[6], kRed[6]},
+    {"Global/DYNTEX.BIN", kRedHashes[7], kRed[7]},
 }};
 
 bool copy_texture(const std::vector<unsigned char>& bytes,
@@ -141,10 +168,31 @@ void digit(RaceHudFrame& frame, char ch, float x, float y,
 
 } // namespace
 
+RaceHudDial select_race_hud_dial(double max_rpm, double redline_rpm) noexcept {
+    // 0x00432A90..0x00432C43: max RPM chooses LINES, then redline RED.
+    if (max_rpm >= 9500.0)
+        return {kLinesHashes[3], redline_rpm >= 9000.0 ? kRedHashes[7] : kRedHashes[6]};
+    if (max_rpm >= 8500.0)
+        return {kLinesHashes[2], redline_rpm >= 8000.0 ? kRedHashes[5] : kRedHashes[4]};
+    if (max_rpm >= 7500.0)
+        return {kLinesHashes[1], redline_rpm >= 7000.0 ? kRedHashes[3] :
+                                  redline_rpm >= 6500.0 ? kRedHashes[2] : 0};
+    return {kLinesHashes[0], redline_rpm >= 6500.0 ? kRedHashes[1] : kRedHashes[0]};
+}
+
+double race_hud_needle_rotation(double rpm, double max_rpm) noexcept {
+    // 0x004A0EA0: clamp(rpm/max, 0, 1), then use the max-RPM angle band.
+    if (!(max_rpm > 0.0)) return 44.0;
+    const double t = std::max(0.0, std::min(1.0, rpm/max_rpm));
+    if (max_rpm >= 10000.0) return 45.0 + 180.0*t;
+    if (max_rpm >= 9000.0) return 50.0 + 160.0*t;
+    return 44.0 + 171.0*t;
+}
+
 bool load_race_hud_atlas(const std::filesystem::path& root,
                          RaceHudAtlas& atlas, std::string& error) {
     atlas.rgba.assign(kRaceHudAtlasSize*kRaceHudAtlasSize*4, 0);
-    for (const char* path : {"Global/INGAMEB.BUN", "Global/HUDTEX.BIN",
+    for (const char* path : {"Global/INGAMEB.BUN", "Global/DYNTEX.BIN",
                              "Languages/LanguageTextures.bin"}) {
         std::vector<unsigned char> bytes;
         const auto set = load_texture_pack_set(root / path, bytes);
@@ -161,8 +209,15 @@ bool load_race_hud_atlas(const std::filesystem::path& root,
     ScreenImage image{atlas.rgba.data(),kRaceHudAtlasSize,kRaceHudAtlasSize,
                       kRaceHudAtlasSize*4};
     draw_screen_text(image,kUnit.x,kUnit.y,"MPH",2,{255,255,255,255},{0,0,0,0});
-    auto* white = atlas.rgba.data() + (kWhite.y*kRaceHudAtlasSize+kWhite.x)*4;
-    std::fill(white,white+4,255);
+    // A soft, translucent disc shades the whole gauge as in retail. It is
+    // generated in memory; no game texture or derived image is packaged.
+    for (int y=0; y<kDisc.h; ++y) for (int x=0; x<kDisc.w; ++x) {
+        const double dx=x+0.5-kDisc.w/2.0, dy=y+0.5-kDisc.h/2.0;
+        const double radius=std::sqrt(dx*dx+dy*dy);
+        auto* pixel=atlas.rgba.data()+((kDisc.y+y)*kRaceHudAtlasSize+kDisc.x+x)*4;
+        pixel[0]=pixel[1]=pixel[2]=0;
+        pixel[3]=static_cast<unsigned char>(std::max(0.0,std::min(1.0,64.0-radius))*100.0);
+    }
     return true;
 }
 
@@ -194,27 +249,20 @@ void build_race_hud_frame_for_car(const VehicleState& car,
                            unsigned char opacity = 255) {
         const auto p=pos(x,y); rect(frame,uv,p[0],p[1],w*scale,h*scale,tint,opacity);
     };
-    // The 240SX's 8000 dial reads 0 at 231.4 and 8 at 50.4 degrees.
-    // The opaque black texels become a translucent gauge surround.
-    place(kScale,1020,492,218,218,{{33,172,238}},128);
-    constexpr double kZeroAngle = 231.4;
-    constexpr double kEightAngle = 50.4;
-    const double dial_max = max_rpm > 0.0 ? max_rpm : 8000.0;
-    const auto rpm_angle = [&](double rpm) {
-        return kZeroAngle + (kEightAngle-kZeroAngle)*
-            std::max(0.0,std::min(dial_max,rpm))/dial_max;
-    };
-    // Red ticks begin at the handling redline and end at the last label.
-    const double red_start = rpm_angle(redline_rpm);
-    for (int i=0;i<6;++i) {
-        const double angle = (red_start+(kEightAngle-red_start)*i/5.0)*
-            3.14159265358979323846/180.0;
-        const auto center=pos(1134+99*std::cos(angle),603-99*std::sin(angle));
-        rotated(frame,kWhite,center[0],center[1],3*scale,11*scale,
-                1.5F*scale,5.5F*scale,1.5707963267948966-angle,{{218,48,39}});
-    }
-    const double dial_angle = rpm_angle(car.engine_rpm)*
-        3.14159265358979323846/180.0;
+    const auto dial=select_race_hud_dial(max_rpm,redline_rpm);
+    const auto line=std::find(kLinesHashes.begin(),kLinesHashes.end(),dial.lines_hash);
+    const auto red=std::find(kRedHashes.begin(),kRedHashes.end(),dial.red_hash);
+    place(kDisc,1025,494,218,218,{{255,255,255}});
+    place(kLines[static_cast<std::size_t>(line-kLinesHashes.begin())],
+          1025,494,218,109,{{55,189,245}},220);
+    // Retail RED is a separate 64x32 overlay at the high-RPM end of LINES.
+    if (red!=kRedHashes.end())
+        place(kRed[static_cast<std::size_t>(red-kRedHashes.begin())],
+              1179,516,55,27,{{228,55,43}},220);
+    // 0x004A0EA0's rotation is in the sprite's frame. The 274-degree
+    // offset aligns its endpoints with this screen-space dial placement.
+    const double rotation=race_hud_needle_rotation(car.engine_rpm,max_rpm);
+    const double dial_angle=(274.0-rotation)*3.14159265358979323846/180.0;
     const auto center=pos(1134,603);
     rotated(frame,kNeedle,center[0],center[1],24*scale,192*scale,
             12*scale,177*scale,1.5707963267948966-dial_angle,{{90,218,253}});

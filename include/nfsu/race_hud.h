@@ -23,6 +23,15 @@ struct RaceHudFrame {
     std::uint16_t quads = 0;
 };
 
+struct RaceHudDial {
+    std::uint32_t lines_hash = 0;
+    std::uint32_t red_hash = 0;
+};
+
+// Retail speed.exe selector at 0x00432A30 and needle map at 0x004A0EA0.
+RaceHudDial select_race_hud_dial(double max_rpm, double redline_rpm) noexcept;
+double race_hud_needle_rotation(double rpm, double max_rpm) noexcept;
+
 bool load_race_hud_atlas(const std::filesystem::path& root,
                          RaceHudAtlas& atlas, std::string& error);
 // Writes fixed-capacity vertices, reading only the completed race state.

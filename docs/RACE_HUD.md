@@ -22,26 +22,33 @@ Observed in `speed.exe`, using Capstone 5.0.7:
   `0x004A1064..0x004A1115`. Gear at `0x004A1124..0x004A1178` reads car
   offset `+0x3D8` and selects a glyph through table `0x006FB7B0`.
 - `0x004A0E25` calls the gauge overlay selector at `0x00432A30`. It hashes
-  the `3RDPERSON_` prefix and chooses numbered `LINES` and `RED` suffixes
-  from RPM thresholds. For the 240SX's 8000 maximum, the branch at
-  `0x00432B96` selects `8500LINES`; with its 7500 redline, the branch at
-  `0x00432BD2` selects `7000RED`. This trace establishes the retail gauge's
-  per-car RPM selection, but does not identify the numbered base dial draw.
+  the `3RDPERSON_` prefix and chooses the numbered `LINES` face from max
+  RPM: below 7500 `7500LINES`, 7500..8499 `8500LINES`, 8500..9499
+  `9500LINES`, and from 9500 `10500LINES`. It separately chooses `RED` from
+  redline RPM. The stock 240SX (max 8000, redline 7500) gets `8500LINES`
+  at `0x00432BA6` and `7000RED` at `0x00432BD2`. The LINES and RED hashes
+  reach the HUD objects at `0x004A0E42..0x004A0E78`.
+- `0x004A0EA0` clamps RPM divided by max RPM to 0..1. Its sprite rotation
+  is 44..215 degrees for max below 9000, 50..210 for 9000..9999, and
+  45..225 from 10000. The stock needle therefore rotates 44..215 degrees.
 - `Global/INGAMEB.BUN` holds `3RDPERSON_RPMDIAL`
   (`0x40FAB387`, 16x128), `CENTER_DIAL`
   (`0x56447D19`, 16x16), and `SPEED_COUNTER_SPEEDBOX` (`0x6D079188`,
-  128x32). `Global/HUDTEX.BIN` holds the numbered `3RDPERSON_8000`
-  dial (`0xC2A1A026`, 128x128). `Languages/LanguageTextures.bin` holds
+  128x32). `Global/DYNTEX.BIN` holds the selected LINES and RED overlays:
+  `8500LINES` is `0xC41B7346` (256x128), `9500LINES` is `0x3897E447`,
+  and `7000RED` is `0xD5D99FA0` (64x32). LINES contains the tick marks,
+  numbers and hub ring visible in retail screenshots. The HUDTEX
+  `3RDPERSON_8000` face is not referenced by `speed.exe`.
+  `Languages/LanguageTextures.bin` holds
   `LCD_LET48` (`0xBBBA71C2`, 128x128), the digital glyph atlas. The
   `FrontEnd/FrontB.lzc` pack was inspected for the event definition; its
   font/layout data is not yet decoded for the HUD.
 
-Inferred from the retail screenshots and the 240SX handling: the 8000 dial
-matches this car's 8000 rpm limit and its red zone begins at the 7500 rpm
-redline. Its decoded labels measure 231.4 degrees at 0 and 50.4 degrees at
-8 around the pivot. The needle interpolates between those measured endpoints.
-The retail dial selection address was not recovered. Exact original transforms,
-sprite colors and font spacing remain unknown.
+The selected stock face is labeled 0..8, with the red overlay between 7 and
+8. Engine B upgrades add 500 or 1000 max RPM to the 240SX; a tuned 8500 or
+9000 RPM car selects the 0..9 `9500LINES` face. The port uses the recovered
+retail needle rotation and a screen-space offset fitted to the face. Exact
+original transforms, sprite colors and font spacing remain unknown.
 
 The port's car state has no recovered `+0x3D4` scalar. Its displayed MPH is
 an **approximation** from horizontal velocity magnitude times 2.237,
@@ -50,10 +57,10 @@ are **approximations** from the owner's screenshots. `SPEED_COUNTER` belongs
 to the lap panel and is not drawn behind the gauge. The dial and speed box
 use translucent vertex alpha over the road. The small MPH label is generated with the project
 font because the original label layout is still unknown. No retail or
-derived texture is committed; the five selected textures are decoded from
+derived texture is committed; the selected textures are decoded from
 the user's installation into a transient 512x512 atlas at startup.
 
-The #47 first-lap asset check includes `Global/HUDTEX.BIN` and
+The #47 first-lap asset check includes `Global/DYNTEX.BIN` and
 `Languages/LanguageTextures.bin` under `sdmc:/nfsu/`.
 The source installation's 476-file manifest was identical before and after
 each trace and replay run.
@@ -61,7 +68,7 @@ each trace and replay run.
 ## Rendering and validation
 
 `build_race_hud_frame` fills fixed-capacity vertices; the maximal current
-frame uses 15 quads and 90 indices. The final deko3d pass makes one indexed
+frame uses 11 quads and 66 indices. The final deko3d pass makes one indexed
 draw with source-alpha blending and depth disabled. The atlas uploads once.
 There is no per-frame allocation or CPU readback in direct mode. The optional
 `nfsu_switch_compare.nro --hud` mode sends a synthetic 7500 rpm, first-gear

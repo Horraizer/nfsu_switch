@@ -143,7 +143,7 @@ nfsu_case("a set that is not one" 1
 # The root is asked for once and every file is missing because of it; the
 # copy list is the whole set, under the root as it was given.
 nfsu_case("a root that is not there" 2
-          "asset-check: root ${work}/absent\n;set first-lap: one timed lap of event 1 in the stock 240SX (issue #159), 14 files, 110473126 bytes\n;root ${work}/absent cannot be listed: it does not exist\n;MISSING       Cars/240SX/GEOMETRY.BIN  the root does not exist\n;MISSING       Tracks/TRACKB1003.lzc  the root does not exist\n;install: MISSING FILES - 0 of 14 files ok: 14 missing, 0 wrong size, 0 wrong version, 0 unreadable\n;copy these 14 files from the game's installation folder, keeping the folders:\n;  Tracks/STREAML1RA.BUN -> ${work}/absent/Tracks/STREAML1RA.BUN\n;  FrontEnd/FrontB.lzc -> ${work}/absent/FrontEnd/FrontB.lzc\n;read 0 bytes in 0 reads and 1 directory listings\n"
+          "asset-check: root ${work}/absent\n;set first-lap: one timed lap of event 1 in the stock 240SX (issue #159), 14 files, 114102502 bytes\n;root ${work}/absent cannot be listed: it does not exist\n;MISSING       Cars/240SX/GEOMETRY.BIN  the root does not exist\n;MISSING       Tracks/TRACKB1003.lzc  the root does not exist\n;install: MISSING FILES - 0 of 14 files ok: 14 missing, 0 wrong size, 0 wrong version, 0 unreadable\n;copy these 14 files from the game's installation folder, keeping the folders:\n;  Tracks/STREAML1RA.BUN -> ${work}/absent/Tracks/STREAML1RA.BUN\n;  FrontEnd/FrontB.lzc -> ${work}/absent/FrontEnd/FrontB.lzc\n;read 0 bytes in 0 reads and 1 directory listings\n"
           "ok  ;WRONG"
           "${work}/absent")
 

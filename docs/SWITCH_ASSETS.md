@@ -11,17 +11,18 @@ No game data is in this repository and none is packaged into an application:
 the owner copies the files from their own installation. This note holds file
 names, sizes and SHA-256 hashes only.
 
-Issue #64's direct in-race HUD reads `Global/HUDTEX.BIN` and
+Issue #64's direct in-race HUD reads `Global/DYNTEX.BIN` and
 `Languages/LanguageTextures.bin` from the same SD root. The first-lap
 asset check includes both files.
 
 The answer first:
 
-- **The first lap needs 14 retail files, 110473126 bytes**, listed under
+- **The first lap needs 14 retail files, 114102502 bytes**, listed under
   "The manifest" below: the six the stock-car application already reads,
   six more for the track and race, and two for the HUD. The owner's SD card holds the
-  first six today; the other six are `FrontEnd/FrontB.lzc`,
-  `Global/INGAMEB.BUN`, `Tracks/STREAML1RA.BUN`,
+  first six today; the other eight are `FrontEnd/FrontB.lzc`,
+  `Global/DYNTEX.BIN`, `Global/INGAMEB.BUN`,
+  `Languages/LanguageTextures.bin`, `Tracks/STREAML1RA.BUN`,
   `Tracks/STREAML1RA_1003.BUN`, `Tracks/TEX1003TRACK.BIN` and
   `Tracks/TRACKB1003.lzc`.
 - **They go under `sdmc:/nfsu/`, in the folders the game uses**, exactly as
@@ -53,8 +54,8 @@ The answer first:
    | `Cars/PLATES/GEOMETRY.BIN` | `sdmc:/nfsu/Cars/PLATES/GEOMETRY.BIN` | 1184 |
    | `Cars/TEXTURES.BIN` | `sdmc:/nfsu/Cars/TEXTURES.BIN` | 1230808 |
    | `FrontEnd/FrontB.lzc` | `sdmc:/nfsu/FrontEnd/FrontB.lzc` | 4182578 |
+   | `Global/DYNTEX.BIN` | `sdmc:/nfsu/Global/DYNTEX.BIN` | 4677572 |
    | `Global/GLOBALB.BUN` | `sdmc:/nfsu/Global/GLOBALB.BUN` | 2361176 |
-   | `Global/HUDTEX.BIN` | `sdmc:/nfsu/Global/HUDTEX.BIN` | 1048196 |
    | `Global/INGAMEB.BUN` | `sdmc:/nfsu/Global/INGAMEB.BUN` | 1670080 |
    | `Languages/LanguageTextures.bin` | `sdmc:/nfsu/Languages/LanguageTextures.bin` | 517284 |
    | `Tracks/STREAML1RA.BUN` | `sdmc:/nfsu/Tracks/STREAML1RA.BUN` | 92394688 |
@@ -87,7 +88,7 @@ after the title:
 ```text
 nfsu_switch_assets: the retail files the first lap needs, on this SD card (issue #47)
 config: sdmc:/config/nfsu_switch/assets.cfg not found; root sdmc:/nfsu (the default)
-set first-lap: one timed lap of event 1 in the stock 240SX (issue #159), 14 files, 110473126 bytes
+set first-lap: one timed lap of event 1 in the stock 240SX (issue #159), 14 files, 114102502 bytes
 install: <VERDICT> - <n> of 14 files ok: <n> missing, <n> wrong size, <n> wrong version, <n> unreadable
 copy these <n> files from the game's installation folder to the same paths under sdmc:/nfsu:
   <path>  <bytes> bytes
@@ -136,7 +137,8 @@ card or anywhere else.
 `src/assets.cpp`) holds three sets. `first-lap` is the default and combines
 the other two with the HUD files; `stock-car` is exactly the six files
 `stock_frame_file_path` names for the stock-car application, and
-`event-1` is what the game loads for event 1.
+`event-1` covers the event table and track files the port reads for event 1;
+the game's wider load also includes the HUD texture packs.
 
 | Path | Bytes | SHA-256 | Sets | What reads it |
 | --- | ---: | --- | --- | --- |
@@ -146,8 +148,8 @@ the other two with the HUD files; `stock-car` is exactly the six files
 | `Cars/PLATES/GEOMETRY.BIN` | 1184 | `0EBCFD14DD303613F5DA3FF5D7A6DF57BE3CDE915F458BA243FE5D089B64BD8A` | first-lap, stock-car | the licence plate mesh |
 | `Cars/TEXTURES.BIN` | 1230808 | `999EC47CC816CADA2158317A46E00023832031B3A4A35DDCBA31F5FBD2F9EB58` | first-lap, stock-car | the shared car textures, with the skin target `DUMMY_SKIN1` |
 | `FrontEnd/FrontB.lzc` | 4182578 | `76F368D5E5E30F96A8182BF457DBA4491395E075C3F336D86A32012B56E16F90` | first-lap, event-1 | the career event table: event 1's track, laps and direction ([`RACE_EVENTS.md`](RACE_EVENTS.md)) |
+| `Global/DYNTEX.BIN` | 4677572 | `020E99EBEA6A4AEFC7F7C858BA8672A48FA040E00299E2372E914687BF90525C` | first-lap | the selected in-race tachometer LINES and RED overlays |
 | `Global/GLOBALB.BUN` | 2361176 | `39DF38FAC2BE7CA0F0D0A92E0113CAAEDA5B1C60E14436C612B3D0874AFC8DB9` | first-lap, stock-car, event-1 | the car part database, the car and track tables, shared textures |
-| `Global/HUDTEX.BIN` | 1048196 | `EAB3679CEB1C6DE4B24EDC992DFA4580EBC72C18DE2B7A30A1E3CB535434F2EC` | first-lap | the in-race tachometer dial |
 | `Global/INGAMEB.BUN` | 1670080 | `044724AB4C167831587E80F29961A1E7D8404C9DD5266533F3563C555A997299` | first-lap, event-1 | the in-race textures the track draws with ([`TRACK_WHOLE.md`](TRACK_WHOLE.md)) |
 | `Languages/LanguageTextures.bin` | 517284 | `6A92604D9766557115DEE8F8CE18F392557AF1A8B0369E69B474F36DF2691615` | first-lap | the in-race LCD glyphs |
 | `Tracks/STREAML1RA.BUN` | 92394688 | `2385556EC31142F7390434CA70152A9F3D629155AF991BB6595422FCB26A752E` | first-lap, event-1 | the `L1RA` stream: every section of track 1003 ([`TRACK_WHOLE.md`](TRACK_WHOLE.md), [`TRACK_STREAMING.md`](TRACK_STREAMING.md)) |
@@ -417,8 +419,8 @@ digits past `F`, and a config file that grew while it was read. Each failed
   that is not observed either.
 - **The set will grow.** It is what the port reads today for the first lap:
   the car, the track, its textures and collision, and the event table. The
-  vehicle model's handling data is in `GLOBALB.BUN` already; sound, the HUD
-  and opponents (#56) will add files.
+  vehicle model's handling data is in `GLOBALB.BUN` already; later race
+  features and opponents (#56) may add files.
 - **`STREAML1RA_1003.BUN`** is empty and required. The game formats its
   name as the track's pack file (0x0044972C) and its streaming table
   declares it 0 bytes; whether the port's loader will open it at all is

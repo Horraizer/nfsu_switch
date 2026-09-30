@@ -127,7 +127,9 @@ bool run(int argc, char** argv, PadState& pad, Report& report, std::string& erro
         car.gear = nfsu::kVehicleGearFirst;
         car.engine_rpm = 7500.0;
         car.velocity.x = 22.0;
-        nfsu::build_race_hud_frame_for_car(car,8000,7500,commands.width,
+        // This synthetic HUD uses engine B level 3's +1000 RPM for --tuned.
+        nfsu::build_race_hud_frame_for_car(car,tuned ? 9000 : 8000,
+                                            tuned ? 8500 : 7500,commands.width,
                                             commands.height,hud_frame);
     }
     double gpu_ms=0, readback_ms=0;
