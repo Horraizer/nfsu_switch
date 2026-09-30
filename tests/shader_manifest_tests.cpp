@@ -221,7 +221,8 @@ const char* element_name(sm::Element element) {
 // make, which is a variant this project would be inventing.
 void test_programs_are_the_reference_draw_kinds(const Programs& programs, Reporter& r) {
     const std::set<std::string> expected = {
-        "car_fallback", "car_textured", "car_shaded_textured", "track_fallback", "track_textured"};
+        "car_fallback", "car_textured", "car_shaded_textured", "sky_textured",
+        "track_fallback", "track_textured"};
     std::set<std::string> got;
     for (const sm::Program& program : programs) {
         r.check(got.insert(program.name).second,
@@ -522,7 +523,8 @@ void test_shared_fixed_function_state(const Programs& programs, Reporter& r) {
                 std::string(program.name) + " variant " + variant.name;
             r.check(variant.depth_test == sm::CompareOp::less_equal,
                     what + ": the depth test is LESS_EQUAL");
-            const bool world_blend = std::string(program.name) == "track_textured" && variant.blend;
+            const bool world_blend = (std::string(program.name) == "track_textured" && variant.blend) ||
+                                     std::string(program.name) == "sky_textured";
             r.check(variant.depth_write == !world_blend,
                     what + (world_blend ? ": leaves depth alone" : ": writes depth"));
             r.check(variant.color_write == sm::ColorWrite::rgb,

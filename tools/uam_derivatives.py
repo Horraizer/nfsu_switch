@@ -30,8 +30,8 @@ def derivative_offset(blob, tgsi):
         if references or size:
             raise ValueError("unexpected vertex compiler constants")
         return None
-    if not references and not size and not any(re.search(r"\bDD[XY]\b", line) for line in lines):
-        # The car surface shader interpolates vertex lighting and uses no derivatives.
+    if not references and size == 0 and not any(re.search(r"\bDD[XY]\b", line) for line in lines):
+        # The car surface and unlit sky shaders need no derivative constants.
         return None
     if len(references) != 2 or references[0] != "DCL CONST[0][0]":
         raise ValueError("expected only one dFdy compiler-state vector")

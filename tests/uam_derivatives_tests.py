@@ -78,6 +78,8 @@ class Derivatives(unittest.TestCase):
         self.assertEqual(fix.process(bytes(blob), "FRAG\n0: END\n"), bytes(blob))
         with self.assertRaises(ValueError):
             fix.process(bytes(blob), "FRAG\n0: DDY TEMP[0], IN[0]\n")
+        with self.assertRaises(ValueError):
+            fix.process(bytes(blob), "FRAG\nDCL CONST[0][0]\n")
 
     def test_cli(self):
         with tempfile.TemporaryDirectory(prefix="nfsu-uam-test-") as directory:

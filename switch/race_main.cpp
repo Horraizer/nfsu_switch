@@ -199,6 +199,7 @@ struct ProfileResultContext {
     std::uint64_t storage_bytes = 0;
     DekoMemoryUsage memory;
     DekoGpfifoUsage gpfifo;
+    const char* sky = "ON";
 };
 using ProfilePages = std::vector<std::vector<std::string>>;
 ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
@@ -221,7 +222,8 @@ ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
         std::strlen(NFSU_RACE_BUILD_TAG) >= 40 ? "FULL COMMIT: build tag above" :
             "FULL COMMIT: coordinator build record",
         "NRO SHA-256: coordinator build record (not derivable in NRO)",
-        format("%s | %s DIRECT | PROFILE ONE SCENE PAIR",mode,replay_mode?"REPLAY":"LIVE"),
+        format("%s | %s DIRECT | PROFILE ONE SCENE PAIR | SKY %s",mode,
+            replay_mode?"REPLAY":"LIVE",context.sky),
         format("TOOLCHAIN GCC %s | deko3d version unavailable",__VERSION__),
         clocks.cpu_bus_ok ? format("CPU clock %.1f MHz",clocks.cpu_bus_hz/1e6) :
             "CPU clock unavailable",
@@ -341,8 +343,8 @@ ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
     }
     for (std::size_t i = 0; i < pages.size(); ++i) {
         auto& rows = pages[i];
-        rows.insert(rows.begin(),format("BUILD %.12s | %s | %s | PAGE %zu/%zu",
-            NFSU_RACE_BUILD_TAG,mode,titles[i].c_str(),i+1,pages.size()));
+        rows.insert(rows.begin(),format("BUILD %.12s | %s | %s | SKY %s | PAGE %zu/%zu",
+            NFSU_RACE_BUILD_TAG,mode,titles[i].c_str(),context.sky,i+1,pages.size()));
         rows.push_back(std::string("CAR SHADING ")+car_shading_label+" | LEFT/RIGHT page | + exits");
     }
     return pages;
@@ -418,7 +420,9 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
         if (padGetButtonsDown(&pad) & HidNpadButton_Plus) break;
     }
 }
+// --sky on draws after the opaque world; off omits it; early is the #227 diagnostic.
 void run(const std::string& root, bool replay_mode, bool panel_mode, bool profile_frame, bool car_shading,
+         const std::string& sky,
          Screen& screen, PadState& pad) {
     car_shading_label=car_shading ? "ON static" : "OFF";
     require(R_SUCCEEDED(romfsInit()), "cannot mount race shader/replay RomFS");
@@ -431,6 +435,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         require(bool(in) && replay.load(text,error), "bundled replay: "+error);
     }
     RaceGpuScene scene; RaceRun race; HeapUsage heap;
+    require(scene.set_sky(sky != "off"), "sky mode set after scene load");
     const auto before = mallinfo(); heap.begin(before.uordblks,before.arena);
     Progress progress(screen,pad,heap);
     const auto load_start = armGetSystemTick();
@@ -466,7 +471,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     const auto upload_start = armGetSystemTick();
     if (!panel_mode) screen.close();
     DekoRenderer renderer;
-    require(renderer.open(frame.commands,error,!panel_mode,kTrackSliceDrawLimit,profile_frame,true),error);
+    require(renderer.open(frame.commands,error,!panel_mode,kTrackSliceDrawLimit,profile_frame,true,
+                          sky == "early"),error);
     const double initial_upload = ms(armGetSystemTick()-upload_start);
     const auto clocks = profile_frame ? read_clocks() : ClockReadings{};
     std::unique_ptr<FrameProfileStats> profile_stats;
@@ -740,7 +746,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             const ProfileResultContext context{*profile_stats,renderer.gpu_profile(),heap,clocks,
                 load_ms,initial_upload,scene.track().streaming_bytes,persistent,renderer.gpu_bytes(),
                 sizeof(FrameProfileStats)+renderer.profile_storage_bytes(),
-                renderer.memory_usage(),renderer.gpfifo_usage()};
+                renderer.memory_usage(),renderer.gpfifo_usage(),
+                sky == "off" ? "OFF" : sky == "early" ? "EARLY" : "ON"};
             show_result(screen,pad,race,replay,replay_mode,panel_mode,paused,
                         stats,unpause_resets,last_perf,failure,&context);
         } else show_result(screen,pad,race,replay,replay_mode,panel_mode,paused,
@@ -758,6 +765,7 @@ int main(int argc, char** argv) {
             std::string root = "sdmc:/nfsu";
             bool car_shading=false;
             bool replay = false, panel = false, profile_frame = false, selected = false, root_seen = false;
+            std::string sky = "on";
             for (int i = 1; i < argc; ++i) {
                 const std::string arg = argv[i];
                 if (arg == "--replay") { replay = true; selected = true; }
@@ -769,8 +777,11 @@ int main(int argc, char** argv) {
                     require(mode=="on" || mode=="off","--car-shading needs on or off");
                     car_shading=mode=="on";
                 }
+                else if (arg == "--sky" && i+1 < argc &&
+                         (std::strcmp(argv[i+1],"on") == 0 || std::strcmp(argv[i+1],"off") == 0 ||
+                          std::strcmp(argv[i+1],"early") == 0)) sky = argv[++i];
                 else if (!root_seen && arg.rfind("--",0) != 0) { root = arg; root_seen = true; }
-                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--car-shading on|off]");
+                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--car-shading on|off] [--sky on|off|early]");
             }
             require(!(panel && profile_frame),"--profile-frame requires direct presentation");
             while (!selected && appletMainLoop()) {
@@ -789,7 +800,7 @@ int main(int argc, char** argv) {
                     "During the race: Y pauses, + opens results with driving-frame statistics.",
                     "No game data is bundled or written. Replay input is bundled in RomFS."});
             }
-            if (selected) run(root,replay,panel,profile_frame,car_shading,screen,pad);
+            if (selected) run(root,replay,panel,profile_frame,car_shading,sky,screen,pad);
         } catch (const Cancel&) {
         } catch (const std::exception& e) {
             std::printf("ERROR: %s\n",e.what()); std::fflush(stdout);

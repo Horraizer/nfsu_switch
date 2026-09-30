@@ -288,13 +288,16 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
                 return fail(d.name, "unsupported vertex attribute");
             locations |= 1U << a.location;
         }
-        // These are the layouts of the five compiled programs, held together
+        // These are the layouts of the compiled programs, held together
         // by the manifest tests; never accept an arbitrary interface pointer.
         const bool textured = d.program->texture_count != 0;
-        const char* fragment = shaded ? "car_shaded.frag.glsl" : !textured ? "fallback.frag.glsl" :
+        const bool sky = std::strcmp(d.program->name, "sky_textured") == 0;
+        const char* fragment = shaded ? "car_shaded.frag.glsl" : sky ? "sky.frag.glsl" :
+            !textured ? "fallback.frag.glsl" :
             std::strcmp(d.program->name, "track_textured") == 0 ?
                 "textured_opaque.frag.glsl" : "textured.frag.glsl";
-        if (std::strcmp(d.program->vertex_source, shaded ? "car_shaded.vert.glsl" : "placed.vert.glsl") != 0 ||
+        if (std::strcmp(d.program->vertex_source, shaded ? "car_shaded.vert.glsl" :
+                        sky ? "sky.vert.glsl" : "placed.vert.glsl") != 0 ||
             std::strcmp(d.program->fragment_source, fragment) != 0 ||
             (textured && (d.program->textures[0].filter != sm::Filter::nearest ||
                           d.program->textures[0].wrap != sm::Wrap::repeat)))
@@ -404,8 +407,55 @@ bool record_track_commands(const PreparedTrackScene& scene, const TrackDrawList&
             !validate_track_draw_list(scene, list, error)) return false;
         std::uint64_t triangles = 0;
         for (const auto& mesh : scene.region.meshes) triangles += mesh.triangles.size();
-        if (!triangle_limits(triangles, list.cost.triangles, limits, error)) return false;
+        std::uint64_t submitted = list.cost.triangles;
+        if (options.sky && scene.sky_mesh != kNoHandle)
+            for (const auto& draw : scene.region.draws)
+                if (draw.mesh == scene.sky_mesh && draw.drawable &&
+                    draw.binding == BindingKind::resolved) submitted += draw.index_count/3;
+        if (!triangle_limits(triangles, submitted, limits, error)) return false;
         const ResourceMap resources(out.owning_uploads(), scene.region.meshes.size(), scene.region.textures.size());
+        if (options.sky && scene.sky_mesh != kNoHandle) {
+            for (std::size_t group = 0; group < scene.region.draws.size(); ++group) {
+                const auto& source = scene.region.draws[group];
+                if (source.mesh != scene.sky_mesh || !source.drawable ||
+                    source.binding != BindingKind::resolved) continue;
+                RecordedDraw draw;
+                // The sky is one placed copy, numbered one past the scenery
+                // instances so a prepared package can hold its placement.
+                draw.group = group; draw.mesh = source.mesh;
+                draw.instance = scene.instances.size();
+                draw.name = "track group " + std::to_string(group) + " copy " + std::to_string(draw.instance);
+                const auto& t = scene.sky_transform;
+                for (std::size_t i = 0; i < 3; ++i) {
+                    for (std::size_t j = 0; j < 3; ++j) draw.placement.rows[i*4+j] = t.linear[i*3+j];
+                    draw.placement.rows[12+i] = t.translation[i];
+                }
+                auto sky_options = options;
+                sky_options.material_state = MaterialStateMode::retail;
+                sky_options.cull = CullMode::none;
+                if (!pipeline(draw,true,&scene.region.textures[source.texture],0,source.texture_hash,sky_options,error)) return false;
+                const char* variant = draw.pipeline.name;
+                draw.program = nullptr;
+                for (const auto& program : sm::kPrograms)
+                    if (std::strcmp(program.name, "sky_textured") == 0) draw.program = &program;
+                if (!draw.program) { error = "sky shader is missing"; return false; }
+                if (!buffers(scene.region.meshes[source.mesh], source, resources, draw, error)) return false;
+                bool found_variant = false;
+                for (std::size_t i = 0; i < draw.program->variant_count; ++i)
+                    if (std::strcmp(draw.program->variants[i].name,variant)==0) {
+                        draw.pipeline=draw.program->variants[i];
+                        found_variant = true;
+                        break;
+                    }
+                if (!found_variant) {
+                    error = std::string("sky shader variant missing: ") + variant;
+                    return false;
+                }
+                out.owning_draws().push_back(std::move(draw));
+            }
+        }
+        const auto sky_count = out.owning_draws().size();
+        std::size_t sky_position = kNoHandle;
         for (const auto& entry : list.entries) {
             const auto& source = scene.region.draws[entry.draw];
             if (source.index_count == 0) continue;
@@ -422,8 +472,13 @@ bool record_track_commands(const PreparedTrackScene& scene, const TrackDrawList&
             const auto* texture = source.binding == BindingKind::resolved ? &scene.region.textures[source.texture] : nullptr;
             if (!buffers(scene.region.meshes[source.mesh], source, resources, draw, error) ||
                 !pipeline(draw, true, texture, 0, source.texture_hash, options, error)) return false;
+            if (sky_position == kNoHandle && draw.pipeline.blend)
+                sky_position = out.owning_draws().size();
             out.owning_draws().push_back(std::move(draw));
         }
+        if (sky_position == kNoHandle) sky_position = out.owning_draws().size();
+        std::rotate(out.owning_draws().begin(), out.owning_draws().begin()+sky_count,
+                    out.owning_draws().begin()+sky_position);
         commands = std::move(out);
         return true;
     } catch (const std::bad_alloc&) {

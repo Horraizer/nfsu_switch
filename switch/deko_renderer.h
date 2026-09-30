@@ -41,9 +41,13 @@ public:
     DekoRenderer& operator=(const DekoRenderer&) = delete;
     // Offscreen mode owns no native window, so a diagnostic framebuffer may
     // stay open. Both modes record exactly the same draw path.
+    // opaque_first submits depth-writing opaque track draws first, so the
+    // sky that follows them is depth-rejected wherever the world covers it.
+    // sky_with_opaque is a diagnostic only: it moves the sky into the opaque
+    // pass at its list position, as before issue 227, for console A/B runs.
     bool open(const RecordedCommands& commands, std::string& error, bool presentation = true,
               std::size_t draw_capacity = 0, bool profile_frame = false,
-              bool opaque_first = false);
+              bool opaque_first = false, bool sky_with_opaque = false);
     // Reuses resident GPU resources. Presentation may have a frame in flight.
     bool update(const RecordedCommands& commands, std::string& error,
                 DekoUpdateTiming* timing = nullptr);

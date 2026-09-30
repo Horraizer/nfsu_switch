@@ -186,8 +186,10 @@ int main(int argc, char** argv) {
         require(replay.load(text, error), error);
         require(scene.cache_bytes() <= 8*kMiB,"command cache exceeded metadata limit");
         std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 8*kMiB << '\n';
-        // #182: 4224 allocated RecordedDraw slots gain 112 bytes: +473088.
-        require(scene.cache_bytes() == 4298327,"event 1 command cache metadata estimate differs from pin");
+        // #182 allocates 112 extra bytes in each of 4224 RecordedDraw slots.
+        // #223 suppresses 20 car draws and adds one upload record: -540 bytes.
+        // #184/#227 add two sky definitions, names and one placement: +126.
+        require(scene.cache_bytes() == 4297913,"event 1 command cache metadata estimate differs from pin");
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';
         require(scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes() <=
@@ -196,7 +198,7 @@ int main(int argc, char** argv) {
         require(scene.frame(race.session(), frame, error), error);
         require(frame.commands.package_identity() != nullptr &&
                 frame.commands.static_track_draw_count() == frame.track_draws &&
-                frame.commands.static_track_instance_count() == scene.track().scene.instances.size() &&
+                frame.commands.static_track_instance_count() == scene.track().scene.instances.size() + 1 &&  // #184: the sky placement
                 frame.commands.static_track_instance_count() <= 65536 &&
                 frame.commands.static_track_definition_count() <= 4096,
                 "prepared static package identity or instance count changed");
@@ -208,6 +210,26 @@ int main(int argc, char** argv) {
                 static_by_group.resize(definition.group + 1, nullptr);
             require(!static_by_group[definition.group], "duplicate static track group");
             static_by_group[definition.group] = &definition;
+        }
+        require(!scene.set_sky(false), "sky mode changed after load");
+        {
+            // #227: --sky off records no sky draws; the package then holds
+            // only the scenery placements, at the same pose and far plane.
+            RaceGpuScene no_sky; RaceGpuFrame plain;
+            require(no_sky.set_sky(false), "sky mode refused before load");
+            require(no_sky.load(posix_file_system(), root, error), error);
+            require(no_sky.frame(race.session(), plain, error), error);
+            std::size_t sky_views = 0;
+            for (std::size_t i = 0; i < frame.commands.draw_count(); ++i)
+                if (std::strcmp(frame.commands.draw_view(i).definition.program->name, "sky_textured") == 0) ++sky_views;
+            for (std::size_t i = 0; i < plain.commands.draw_count(); ++i)
+                require(std::strcmp(plain.commands.draw_view(i).definition.program->name, "sky_textured") != 0,
+                        "sky drawn with the sky off");
+            require(sky_views == 2 && plain.track_draws + 2 == frame.track_draws &&
+                    plain.car_draws == frame.car_draws && plain.far_plane == frame.far_plane &&
+                    plain.commands.static_track_instance_count() == scene.track().scene.instances.size(),
+                    "sky switch changed more than the two sky draws");
+            std::cout << "PASS: sky off omits exactly the two sky draws and their placement\n";
         }
         const auto& const_commands = frame.commands;
         unsigned owning_refusals = 0;
