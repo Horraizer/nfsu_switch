@@ -47,8 +47,8 @@ member block=Material name=environment_range type=vec4 offset=48
 member block=Material name=environment_color type=vec4 offset=64
 
 # The resolved texture: RenderTexture's decoded top level, sampled at the
-# nearest texel with the coordinate wrapped (wrap_texel).
-texture name=baseTexture binding=0 stage=fragment type=sampler2D filter=nearest wrap=repeat
+# linearly filtered texels with repeat addressing, as in retail car.efx.
+texture name=baseTexture binding=0 stage=fragment type=sampler2D filter=linear wrap=repeat
 
 output location=0 name=color type=vec4 format=rgba8
 

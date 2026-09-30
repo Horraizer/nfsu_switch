@@ -52,8 +52,8 @@ void main()
     if (frame.options.x != 0u) {
         uv.y = 1.0 - uv.y;
     }
-    // The nearest texel, wrapped; the manifest's sampler state is what makes
-    // this wrap_texel. Held as bytes, as the reference holds it.
+    // The manifest selects linear/repeat for the car and nearest/repeat for
+    // the track. The reference holds the resulting sample as bytes.
     uvec4 texel = uvec4(texture(baseTexture, uv) * 255.0 + 0.5);
     // RenderOptions::alpha_cutoff, a diagnostic on the texel alpha.
     if (texel.a < frame.options.w) {

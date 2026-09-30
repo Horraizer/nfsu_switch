@@ -46,7 +46,7 @@ bool plan_draw_execution(const RecordedCommands& c, DrawExecutionPlan& plan, std
     if (!validate_recorded_commands(c, error)) return false;
     DrawExecutionPlan out;
     out.uniform_bytes = static_cast<std::uint32_t>(uniform_bytes);
-    out.descriptor_bytes = static_cast<std::uint32_t>((c.resource_table().resources.size() + 1) * kDrawDescriptorBytes);
+    out.descriptor_bytes = static_cast<std::uint32_t>((c.resource_table().resources.size() + 2) * kDrawDescriptorBytes);
     out.sampler_offset = static_cast<std::uint32_t>(c.resource_table().resources.size() * kDrawDescriptorBytes);
     out.command_bytes = static_cast<std::uint32_t>(65536 +
         (c.draw_count() + c.resource_table().resources.size()) * kDekoMemBlockAlignment);

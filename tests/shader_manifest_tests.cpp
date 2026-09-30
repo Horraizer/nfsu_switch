@@ -323,9 +323,8 @@ void test_attributes_read_their_members(const Programs& programs, Reporter& r) {
     }
 }
 
-// The reference samples a draw's resolved texture, at the nearest texel of
-// the wrapped coordinate (wrap_texel), and the fallback checker samples
-// nothing (Rasterizer::fill).
+// The car effect samples linearly and the track reference samples nearest;
+// both wrap their coordinates. The fallback checker samples nothing.
 void test_textures_follow_the_draw_kind(const Programs& programs, Reporter& r) {
     for (const sm::Program& program : programs) {
         const std::string name = program.name;
@@ -342,8 +341,9 @@ void test_textures_follow_the_draw_kind(const Programs& programs, Reporter& r) {
                 name + ": the texture is sampled by the fragment stage");
         r.check(std::string(texture.type) == "sampler2D",
                 name + ": the texture is a sampler2D");
-        r.check(texture.filter == sm::Filter::nearest,
-                name + ": the texture is sampled at the nearest texel");
+        r.check(texture.filter == (name == "car_textured"
+                   ? sm::Filter::linear : sm::Filter::nearest),
+                name + ": the texture filter matches its effect");
         r.check(texture.wrap == sm::Wrap::repeat,
                 name + ": the texture coordinate wraps");
     }
@@ -646,7 +646,7 @@ std::vector<SelfCheck> self_check_cases() {
              t.textures[i][0].filter = sm::Filter::linear;
              return true;
          },
-         "track_textured: the texture is sampled at the nearest texel"},
+         "track_textured: the texture filter matches its effect"},
         {"the blends of two variants swapped under their names",
          [](Tables& t) {
              sm::Variant* over = t.variant("car_textured", "source_over");

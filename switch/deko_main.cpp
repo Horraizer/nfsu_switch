@@ -72,7 +72,7 @@ bool run(int argc, char** argv, PadState& pad, Report& report, std::string& erro
     std::string root = "sdmc:/nfsu";
     bool painted = true;
     bool tuned = false;
-    bool retail = false;
+    bool retail = true;
     bool have_root = false;
     for (int i = 1; i < argc; ++i) {
         if (!argv[i] || !argv[i][0]) continue;
@@ -80,12 +80,14 @@ bool run(int argc, char** argv, PadState& pad, Report& report, std::string& erro
         if (argument == "--unpainted") painted = false;
         else if (argument == "--tuned") tuned = true;
         else if (argument == "--material-state=retail") retail = true;
+        else if (argument == "--material-state=off") retail = false;
         else if (!have_root && argument[0] != '-') { root = argument; have_root = true; }
         else { error = "unknown argument: " + argument; return false; }
     }
     if (tuned) painted = true;
     report.line(("inputs: " + root + (tuned ? " (tuned)" :
                  painted ? " (painted)" : " (unpainted)")).c_str());
+    report.line((std::string("material state: ") + (retail ? "retail" : "off")).c_str());
     nfsu::StockFrame frame;
     {
         nfsu::StockFrameInputs inputs;

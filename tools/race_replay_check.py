@@ -7,11 +7,8 @@ from pathlib import Path
 import subprocess
 
 STEPS = (1, 180, 600, 6000, 11344, 12459, 13128, 24300, 35396, 36510, 37177, 48336)
-# These frame pins were checked on the merged tree. PR #188 adds the ground
-# shadow and PR #227 adds sky pixels; both change every sampled CPU frame.
-# PR #225's car window/decal fixes remain in the base pixels. PR #221 changes
-# GPU draw order, not these CPU reference pixels. The rasterizer depth-write
-# guard from 3b1f644 is inherited from base 97e3839.
+# The merged sky, shadow, car material, glow, and tuned effects change the
+# sampled CPU frames. Recompute every frame pin after integration.
 # Replay steps, state hashes, input recording, and trajectory are unchanged.
 FRAMES = (
     "REPIN_AT_END",  # 1

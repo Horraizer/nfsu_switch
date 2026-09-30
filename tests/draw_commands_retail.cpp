@@ -104,7 +104,7 @@ int main(int argc, char** argv) {
                 return 1;
             }
             const auto hash = nfsu::sha256_hex(image.sha256);
-            if (mode == nfsu::MaterialStateMode::off &&
+            if (mode == nfsu::MaterialStateMode::retail &&
                 (hash != (painted ? nfsu::kStock240sxPaintedFrameSha256 : nfsu::kStock240sxFrameSha256) ||
                  image.tga.size() != (painted ? nfsu::kStock240sxPaintedFrameBytes : nfsu::kStock240sxFrameBytes))) {
                 std::cerr << "FAIL: pinned stock frame changed: " << hash << '\n';
@@ -113,6 +113,40 @@ int main(int argc, char** argv) {
             std::cout << "PASS: stock 240SX " << (painted ? "painted " : "unpainted ") << nfsu::material_state_mode_name(mode)
                       << ": " << trace.size() << " draws, " << commands.owning_uploads().resources.size()
                       << " resources, " << stock.stats.triangles_submitted << " triangles, sha256 " << hash << '\n';
+        }
+        if (painted) {
+            struct DetailView {
+                const char* name;
+                double yaw;
+                bool close;
+                const char* sha256;
+            };
+            constexpr DetailView views[] = {
+                {"front wheel", -45.0, false, "370A134DC58F2F3FD6FCC50F191AD800F32DA125CB472C5CAA894021D46B9403"},
+                {"rear wheel", 145.0, false, "F136A9150C99EE367DA801228D642F7FF4E3DC801C79EC6B2B3DA6A002A2907F"},
+                {"badge closeup", 0.0, true, "A98E6D51AE8B5E22B642ABE958B505CDC50B956759F21CE56E33B1B94DFB19EF"},
+            };
+            for (const auto& view : views) {
+                nfsu::RenderOptions options;
+                options.material_state = nfsu::MaterialStateMode::retail;
+                options.camera.yaw_deg = view.yaw;
+                if (view.close) {
+                    options.camera.pitch_deg = 0.0;
+                    options.camera.distance = 2.0;
+                    options.camera.target = {1.7, 0.6, 0.0};
+                }
+                if (!nfsu::render_scene(stock.scene, options, {}, stock.frame, stock.stats, error)) {
+                    std::cerr << "FAIL: detail render: " << error << '\n';
+                    return 1;
+                }
+                nfsu::StockFrameImage image;
+                if (!nfsu::encode_stock_frame(stock.frame, image, error) ||
+                    nfsu::sha256_hex(image.sha256) != view.sha256) {
+                    std::cerr << "FAIL: pinned detail view changed: " << view.name << '\n';
+                    return 1;
+                }
+                std::cout << "PASS: painted retail " << view.name << " sha256 " << view.sha256 << '\n';
+            }
         }
     }
     nfsu::StockFrameInputs tuned_inputs;
@@ -127,6 +161,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     nfsu::RenderOptions options;
+    options.material_state = nfsu::MaterialStateMode::retail;
     nfsu::RecordedCommands commands;
     if (!nfsu::record_car_commands(tuned.scene, options, {},
                                    tuned.skin_binding.source, commands, error)) {
@@ -157,7 +192,7 @@ int main(int argc, char** argv) {
         std::cerr << "FAIL: pinned tuned frame changed: " << error << '\n';
         return 1;
     }
-    std::cout << "PASS: tuned 240SX off: " << trace.size() << " draws, "
+    std::cout << "PASS: tuned 240SX retail: " << trace.size() << " draws, "
               << commands.owning_uploads().resources.size() << " resources, "
               << tuned.stats.triangles_submitted << " triangles, sha256 "
               << nfsu::sha256_hex(image.sha256) << '\n';

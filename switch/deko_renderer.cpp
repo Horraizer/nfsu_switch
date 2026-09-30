@@ -346,7 +346,7 @@ struct DekoRenderer::Impl {
             std::memcpy(static_cast<unsigned char*>(descriptors.getCpuAddr()) + i*sizeof descriptor,
                         &descriptor, sizeof descriptor);
         }
-        // One nearest/repeat sampler, just as all four manifests specify.
+        // Track samples nearest; the retail car effect samples linearly.
         dk::Sampler sampler;
         sampler.setFilter(DkFilter_Nearest, DkFilter_Nearest)
             .setWrapMode(DkWrapMode_Repeat, DkWrapMode_Repeat, DkWrapMode_Repeat);
@@ -354,6 +354,11 @@ struct DekoRenderer::Impl {
         sampler_descriptor.initialize(sampler);
         sampler_offset = plan.sampler_offset;
         std::memcpy(static_cast<unsigned char*>(descriptors.getCpuAddr()) + sampler_offset,
+                    &sampler_descriptor, sizeof sampler_descriptor);
+        sampler.setFilter(DkFilter_Linear, DkFilter_Linear);
+        sampler_descriptor.initialize(sampler);
+        std::memcpy(static_cast<unsigned char*>(descriptors.getCpuAddr()) +
+                        sampler_offset + kDrawDescriptorBytes,
                     &sampler_descriptor, sizeof sampler_descriptor);
         cmd.barrier(DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_Descriptors);
         if (!submit(error)) return false;
@@ -494,7 +499,8 @@ struct DekoRenderer::Impl {
             out.bindUniformBuffer(DkStage_Vertex, 1, instance_addr, sizeof(DrawInstanceUniform));
         out.bindUniformBuffer(DkStage_Fragment, 2, material_addr, sizeof(DrawMaterialUniform));
         if (bind_fixed_state && has_texture) out.bindTextures(DkStage_Fragment, 0,
-            dkMakeTextureHandle(static_cast<std::uint32_t>(draw.texture_resource), 0));
+            dkMakeTextureHandle(static_cast<std::uint32_t>(draw.texture_resource),
+                draw.program->textures[0].filter == sm::Filter::linear ? 1 : 0));
         if (bind_fixed_state) {
             dk::RasterizerState raster;
             raster.setCullMode(state.cull == sm::Cull::back ? DkFace_Back :
@@ -642,7 +648,7 @@ struct DekoRenderer::Impl {
         cmd.clearColor(0, DkColorMask_RGBA, clear[0]/255.0F, clear[1]/255.0F, clear[2]/255.0F, clear[3]/255.0F);
         cmd.clearDepthStencil(true, 1, 0, 0);
         cmd.bindImageDescriptorSet(descriptors.getGpuAddr(), static_cast<std::uint32_t>(handles.size()));
-        cmd.bindSamplerDescriptorSet(descriptors.getGpuAddr()+sampler_offset, 1);
+        cmd.bindSamplerDescriptorSet(descriptors.getGpuAddr()+sampler_offset, 2);
         cmd.barrier(DkBarrier_None, DkInvalidateFlags_Shader | DkInvalidateFlags_Descriptors);
         const auto base = uniforms.getGpuAddr() + uniform_allocation.offset + slot * uniform_stride;
         cmd.bindUniformBuffer(DkStage_Vertex, 0, base, sizeof(DrawFrameUniform));

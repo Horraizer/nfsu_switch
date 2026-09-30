@@ -213,6 +213,7 @@ public:
     std::vector<unsigned char> render(const RaceSession& session) {
         prepare(); const auto begin=Clock::now(); std::string error;
         RenderOptions options; options.width=640; options.height=360;
+        options.material_state = MaterialStateMode::retail;
         require(drive_render_camera(session.camera(),ChaseFovMode::vertical_4_3,640,360,options.camera,error),error);
         Frame background; RenderStats stats; TrackRenderStats track_stats;
         RenderOptions track_options = options;

@@ -70,18 +70,11 @@ in PR #210. No palette change is made in this issue.
 ## Reproduction and result
 
 Use the painted command in `docs/SWITCH_BUILD.md` with the default yaw 35,
-then `--yaw -45` and `--yaw 145`. The table records measurements at base
-`97e3839` and texture fix `329e13b5`,
-using the painted viewer command at each yaw. Retail reads were bracketed by
-recursive filename, size and SHA-256 manifests, with zero differences.
-The current default pin and size are checked by `nfsu_draw_commands_retail`
-against `include/nfsu/stock_frame.h`. Orbit pins remain below.
-
-| Yaw | Before SHA-256 | After SHA-256 |
-| ---: | --- | --- |
-| 35 | `8A5932A302A22AA3C4C01776009B5348629D8D37B3B61E6E0AA303235B1CF48F` | `kStock240sxPaintedFrameSha256` in `include/nfsu/stock_frame.h` |
-| -45 | `52F496BA4BBB7F520973152A0ECA454B10BA9047C629AE74892B9429DE97B8D7` | `17D783062F318FE0AC1B8D42D41665CE810A7FE39ADC9733612C199C18030E03` |
-| 145 | `127C235F5E468E12F453AA9E85ABF809C95C62235D5BDFC1284DB86C6D9B9303` | `D3A4D72629888283C24D2788F81E865427248E01DFDCC3C0107C4073D5218D4B` |
+then `--yaw -45` and `--yaw 145`. `nfsu_draw_commands_retail` holds the
+default and orbit frame hashes, while `include/nfsu/stock_frame.h` holds
+the default pin shared with the Switch CPU check. Issue #232 changed the
+default to retail material state. Retail reads were bracketed by recursive
+filename, size and SHA-256 manifests, with zero differences.
 
 The default painted frame has no fallback triangles or pixels, checked by
 `nfsu_draw_commands_retail`. The viewer's `groups_invalid` statistic combines
@@ -92,11 +85,12 @@ prints the current counts.
 The remaining unresolved hashes belong to disabled dummy decals. Window
 checker patterns,
 magenta strips, and the blank sponsor patterns are gone in all three views.
-The dark wheel backing visible in the viewer's default material mode is
-unchanged. In `--material-state retail`, its alpha-test state removes the
-square at yaw 145. Whether the Switch hardware output has the same result
-needs the requested console capture; the wheel rim selection limit above
-also remains for that review.
+The viewer now selects retail material state for `--stock-car` by default.
+Its alpha test removes the tire backing square at the default camera and
+yaw 145; explicit
+`--material-state off` retains the diagnostic old view. Whether the Switch
+hardware output has the same result needs the requested console capture;
+the wheel rim selection limit above also remains for that review.
 
 The retail draw-command check compares CPU reference draws with the deko3d
 command recorder, verifies placements, zero painted fallback pixels, and
@@ -115,10 +109,8 @@ same RGBA stock preparation as the CPU reference, so both added top levels occup
 before deko3d alignment, derived from their dimensions and decoded format.
 This is larger than the compressed file spans. Existing shaders do the same
 per-fragment work.
-At `bd8aff1`, the review's painted default-camera retail-mode viewer run
-reported 4 alpha-tested and 16 blended groups, with 25952 blended fragments;
-the pre-fix car at `97e3839` had 9 blended groups
-([PR #225, review comment 5290](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/225#issuecomment-5290)).
+`nfsu_viewer` reports the painted default-camera material groups and blended
+fragment count.
 Resolving window textures therefore adds blending work even though blank
 decal suppression removes draws. The net GPU-time change is unknown; more
 blend fragments can increase color-buffer traffic and overdraw. A 60 fps

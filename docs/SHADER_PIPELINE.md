@@ -101,8 +101,8 @@ projects it with the reference camera (`project_point`: a look-at basis and a
 D3D-style projection, depth 0 at the near plane and 1 at the far one, and
 `+y` at the top row of the frame). Both textured fragment stages and
 `fallback.frag.glsl` follow `Rasterizer::fill`, keeping the reference's integer
-rounding where it has one: the nearest texel of the wrapped coordinate, the
-vertex colour multiply, the flat shade factor,
+rounding where it has one: the linearly filtered car sample or nearest track
+sample of the wrapped coordinate, the vertex colour multiply, the flat shade factor,
 the closed diffuse gate, the `car.efx` environment term with its constant
 colour, and the source alpha the alpha test and the blend then use. The alpha
 cutoff diagnostic is present only in `textured.frag.glsl`. The alpha test and
@@ -160,8 +160,8 @@ still not match the reference frame. A backend must draw retail state in
 - The inspection window's diagnostic views ([`INSPECTOR.md`](INSPECTOR.md)).
   They recolour a CPU frame for a person at a desktop, and are not draws the
   renderer makes.
-- Texture filtering beyond the nearest texel of the top level, which is all
-  the reference decodes and samples.
+- Mip filtering beyond the decoded top level. The reference uses linear
+  filtering for car textures and nearest filtering for track textures.
 
 ## The manifest
 
@@ -315,7 +315,8 @@ offset, run without a gap, hold exactly the bytes its format fetches and be
 made of the elements it reads - 4-byte floats for `float32`, unsigned bytes
 for `unorm8` and `uint8`, signed bytes for `snorm8`, 2-byte integers of the
 format's sign for the 16-bit formats; exactly the four programs above; the
-textured programs to sample one nearest, wrapped `sampler2D` and the fallback
+car textured programs to sample one linear, wrapped `sampler2D`, track
+textured programs to sample one nearest, wrapped `sampler2D`, and fallback
 programs none; both textured programs' variants to be exactly the alpha test
 and blend pairs the two decoders produce, each named for its state; both
 fallback programs to have only `opaque`; `render_track_draw_list` to accept

@@ -167,7 +167,7 @@ int main() {
 
     DrawExecutionPlan plan;
     check(plan_draw_execution(good, plan, error) && plan.uniform_bytes == 768 &&
-          plan.staging_bytes == 64 && plan.descriptor_bytes == 96 && plan.sampler_offset == 64 &&
+          plan.staging_bytes == 64 && plan.descriptor_bytes == 128 && plan.sampler_offset == 64 &&
           plan.command_bytes == 77824, "executor size arithmetic");
     auto padded = textured; padded.owning_uploads().resources[2] = texture(3, 2);
     check(plan_draw_execution(padded, plan, error) && plan.staging_bytes == 215,
@@ -190,7 +190,7 @@ int main() {
     check(plan_draw_execution(many, plan, error) && plan.uniform_bytes == 1048320,
           "2047 draws fit transient budget");
     many = good; many.owning_uploads().resources.resize(4096, many.owning_uploads().resources[0]);
-    check(plan_draw_execution(many, plan, error) && plan.descriptor_bytes == 131104 &&
+    check(plan_draw_execution(many, plan, error) && plan.descriptor_bytes == 131136 &&
           plan.sampler_offset == 131072 && plan.command_bytes == 16846848,
           "4096 resources fit with separate sampler descriptor");
     check(validate_draw_update(good.owning_uploads(), good, 1, error), "same uploads can update draws");
@@ -203,7 +203,7 @@ int main() {
     updated = good; updated.owning_uploads().resources.push_back(updated.owning_uploads().resources[0]);
     check(!validate_draw_update(good.owning_uploads(), updated, 1, error), "changed resource count refused");
     many = good; many.owning_uploads().resources.resize(8192, many.owning_uploads().resources[0]);
-    check(plan_draw_execution(many, plan, error) && plan.descriptor_bytes == 262176,
+    check(plan_draw_execution(many, plan, error) && plan.descriptor_bytes == 262208,
           "8192 resources fit the track descriptor bound");
     // Two individually valid large textures must not overflow the staging
     // block together. The plan checks sizes without dereferencing payloads.

@@ -78,7 +78,7 @@ void print_usage() {
         << "                       is written first and is never affected.\n"
         << "Retail material state (docs/MATERIALS.md). Every option below\n"
         << "the first one needs --material-state retail:\n"
-        << "  --material-state M   off (default) or retail. retail applies the\n"
+        << "  --material-state M   off or retail (default for --stock-car). retail applies the\n"
         << "                       texture-info alpha test and blend selection,\n"
         << "                       the coefficient gates and the bounded\n"
         << "                       transparent draw order\n"
@@ -926,6 +926,10 @@ int parse_options(
             return 1;
         }
     }
+    // A stock assembly uses the same material state as the retail car draw.
+    // Explicit --material-state off remains available for diagnostics.
+    if (stock.enabled && seen.count("--material-state") == 0)
+        options.material_state = nfsu::MaterialStateMode::retail;
     // A coefficient without the mode would be a silent no-op.
     if (options.material_state == nfsu::MaterialStateMode::off) {
         static const std::set<std::string> retail_only = {

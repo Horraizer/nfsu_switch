@@ -71,26 +71,25 @@ constexpr std::size_t kStockFrameFileCount = 6;
 // Null for an index outside 0..kStockFrameFileCount-1.
 const char* stock_frame_file_path(std::size_t index) noexcept;
 
-// Issue #223 re-pinned both frames after retail window aliases and empty
-// sponsor decal suppression. The previous hashes were 3DEB2147... and
-// 8A5932A3... respectively.
+// Issue #232 re-pins the retail material-state default. The prior off-state
+// hashes were 79AB4AD5... and 89E4AB88... respectively.
 constexpr std::uint64_t kStock240sxFrameBytes = 3686418;
 constexpr const char* kStock240sxFrameSha256 =
-    "8FBA20E893590A6B48EA1CE40B9A711C74690127811BB5CC0CA208337C63BE84";
+    "0A0B7E23DB944328902F563FF536F8A8418E48B20CD9D589F57BAD8AC9E6CCE2";
 
 // The painted desktop frame, the command above with stock_240sx_skin(), as
 // docs/SWITCH_BUILD.md pins it.
 constexpr std::uint64_t kStock240sxPaintedFrameBytes = 3686418;
 constexpr const char* kStock240sxPaintedFrameSha256 =
-    "05203E9CCDEB15B8ECF478B8501777577620DAB94C3FBA6A34F428BA772AF6E0";
+    "FE7506F173A871A208F94451DFC71A3F3AEBF1EBE677C28AF2B73AD9CEA3AEE8";
 
 // The explicit kit, wheels, paint and vinyl of tuned_240sx_request/skin.
-// Re-pinned after Cars/WHEELS/TEXTURES.BIN resolved BBS tread and #225
-// resolved stock window aliases, decals and per-copy brake materials.
+// Re-pinned for issue #232's retail material-state default, after the tread,
+// window, decal and per-copy brake bindings were resolved.
 // tests/tuned_frame_retail.cmake pins three views.
 constexpr std::uint64_t kTuned240sxFrameBytes = 3686418;
 constexpr const char* kTuned240sxFrameSha256 =
-    "F1329A586C6CC352C6AF540981502E6C1E8EDA35C3806D0FED0881E65C3570DB";
+    "21F0757A7B345EF63BDEE28EB8963B5C83D491258C6CB93B420A444AD59DCD00";
 
 // The largest file read: 256 MiB, the limit every parser these files go
 // through applies to its input.

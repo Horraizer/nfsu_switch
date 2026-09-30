@@ -66,7 +66,8 @@ inline std::string compare_draws(const nfsu::RecordedCommands& commands,
         if (!p.name || std::strcmp(p.name, variant)) return fail("shader variant");
         if (d.program->texture_count != (textured ? 1U : 0U)) return fail("sampler count");
         if (textured && (d.program->textures[0].binding != 0 ||
-            d.program->textures[0].filter != sm::Filter::nearest ||
+            d.program->textures[0].filter != (std::strcmp(d.program->name,
+                "car_textured") == 0 ? sm::Filter::linear : sm::Filter::nearest) ||
             d.program->textures[0].wrap != sm::Wrap::repeat)) return fail("sampler state");
     }
     return {};
