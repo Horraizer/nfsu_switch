@@ -2,6 +2,7 @@
 #include "nfsu/race_events.h"
 #include "nfsu/track_residency.h"
 #include "nfsu/track_render.h"
+#include "nfsu/track_reflections.h"
 #include "nfsu/stock_frame.h"
 #include "nfsu/screen_text.h"
 #include "nfsu/race_window.h"
@@ -211,6 +212,8 @@ public:
         require(build_track_draw_list(track,visible,order,list,error),error);
         dirty=false; prepare_cost.add(begin);
     }
+    WetRoadLamps lamps;
+    bool wet_road_reflections = false;
     std::vector<unsigned char> render(const RaceSession& session) {
         prepare(); const auto begin=Clock::now(); std::string error;
         RenderOptions options; options.width=640; options.height=360;
@@ -220,6 +223,8 @@ public:
         Frame background; RenderStats stats; TrackRenderStats track_stats;
         RenderOptions track_options = options;
         track_options.sky = true;
+        track_options.wet_road_reflections = wet_road_reflections;
+        track_options.wet_lamps = wet_road_reflections ? &lamps : nullptr;
         track_options.material_state = MaterialStateMode::retail;
         require(render_track_draw_list(track,list,track_options,{},background,stats,track_stats,error),error);
         const auto shadow_pose = place_car_shadow(session);
@@ -256,6 +261,7 @@ int run(int argc, char** argv) {
     bool glows=false;
     bool car_shading=false;
     std::set<std::size_t> frames;
+    bool wet_road_reflections=false;
     // The path arguments arrive in the ANSI code page on Windows; convert
     // them as the other tools do, so a path outside ASCII opens.
     std::string argument_error;
@@ -267,6 +273,7 @@ int run(int argc, char** argv) {
                          "  [--out NEW_DIRECTORY --frames 180,600,6000,22000,40000]\n"
                          "  [--particles=on|--particles=off] [--particle-events] [--tuned] [--glows]\n"
                          "  [--car-shading on|off]\n"
+                         "  [--wet-road-reflections on|off]\n"
                          "  live mode plays retail race audio when the device and banks are available\n";
             return 0;
         }
@@ -285,6 +292,10 @@ int run(int argc, char** argv) {
         else if (a=="--car-shading") {
             require(value=="on" || value=="off","--car-shading needs on or off");
             car_shading=value=="on";
+        }
+        else if (a=="--wet-road-reflections") {
+            require(value=="on" || value=="off", "--wet-road-reflections must be on or off");
+            wet_road_reflections = value=="on";
         }
         else if (a=="--frames") {
             std::istringstream in(value); std::string token;
@@ -330,9 +341,11 @@ int run(int argc, char** argv) {
     scene.files.stream=root/"Tracks"/track_stream_file_name(*info);
     scene.glows = glows;
     scene.car_shading=car_shading;
+    scene.wet_road_reflections=wet_road_reflections;
     scene.files.pack=root/"Tracks"/track_stream_pack_file_name(*info);
     scene.files.has_pack=fs::exists(scene.files.pack);
     scene.load_car(root,root/"Tracks"/track_texture_file_name(slot.track));
+    if (wet_road_reflections) require(load_wet_road_lamps(root, course.world, scene.lamps, error),error);
     Sha256 sequence; const std::string version="NFSU_RACE_STATE 1\n";
     sequence.update(version.data(),version.size());
     for (const auto& step : startup) {

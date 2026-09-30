@@ -307,8 +307,7 @@ int main(int argc, char** argv) {
                      (glows ? REPIN_AT_END : REPIN_AT_END)) :
             (tuned ? (glows ? REPIN_AT_END : REPIN_AT_END) :
                      (glows ? REPIN_AT_END : REPIN_AT_END));
-        require(scene.cache_bytes() == cache_pin,
-                "event 1 command cache metadata estimate differs from pin");
+        const auto initial_cache_bytes = scene.cache_bytes();
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';
         require(scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes() <=
@@ -331,6 +330,33 @@ int main(int argc, char** argv) {
         std::cout << "car selection " << (tuned ? "tuned" : "stock") << " draws " << frame.car_draws
                   << " triangles " << car_triangles << " fallback " << fallback_triangles << '\n';
         require_retail_car_draws(frame, "cached", tuned);
+        const std::uint32_t dry_options = frame.commands.frame.options[2];
+        const std::size_t dry_draw_count = frame.commands.draw_count();
+        scene.set_wet_road_reflections(true);
+        RaceGpuFrame wet_frame;
+        require(scene.frame(race.session(), wet_frame, error), error);
+        require((wet_frame.commands.frame.options[2] & 2U) != 0U &&
+                (wet_frame.commands.frame.options[2] & 1U) == (dry_options & 1U) &&
+                wet_frame.commands.draw_count() == dry_draw_count,
+                "wet-road toggle did not reach the cached race frame independently of flat shading");
+        require(wet_frame.commands.reflection_draw_count() > 0, "wet reflection source is empty");
+        require(validate_recorded_commands(wet_frame.commands, error), error);
+        RaceGpuFrame wet_reference;
+        require(scene.frame(race.session(), wet_reference, error, nullptr, true), error);
+        require(wet_reference.commands.reflection_draw_count() == wet_frame.commands.reflection_draw_count(),
+                "cached/reference reflection draw counts differ");
+        for (std::size_t i = 0; i < wet_reference.commands.reflection_draw_count(); ++i) {
+            const auto& a = wet_frame.commands.reflection_draw(i);
+            const auto& b = wet_reference.commands.reflection_draw(i);
+            require(a.index_count == b.index_count && a.mesh == b.mesh && a.group == b.group &&
+                    std::memcmp(&a.placement, &b.placement, sizeof a.placement) == 0 &&
+                    std::memcmp(&a.material, &b.material, sizeof a.material) == 0,
+                    "cached/reference reflection definition differs");
+        }
+        scene.set_wet_road_reflections(false);
+        require(scene.frame(race.session(), frame, error), error);
+        require(frame.commands.frame.options[2] == dry_options,
+                "wet-road toggle did not return to the pinned dry state");
         require(frame.commands.package_identity() != nullptr &&
                 frame.commands.static_track_draw_count() == frame.track_draws &&
                 frame.commands.static_track_instance_count() == scene.track().scene.instances.size() + 1 &&  // #184: the sky placement
@@ -693,6 +719,8 @@ int main(int argc, char** argv) {
                   << ", invisible ticks " << first_shadow_tick-first_contact_tick << '\n';
         for (const auto& line : race.result_lines()) std::cout << line << '\n';
         require(replay.exhausted() && race.matches_event1_replay(), "Switch race runner differs from desktop pins");
+        require(initial_cache_bytes == cache_pin,
+                "event 1 command cache metadata estimate differs from pin");
         std::cout << "PASS: exact per-step stream and result; frames " << frames << " max draws " << max_draws << '\n';
         return 0;
     } catch (const std::exception& e) { std::cerr << "FAIL: " << e.what() << '\n'; return 1; }

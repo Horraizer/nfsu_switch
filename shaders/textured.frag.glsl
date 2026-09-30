@@ -14,7 +14,7 @@
 // Interface: shaders/car_textured.manifest and track_textured.manifest.
 
 layout (location = 0) in vec3 inWorld;
-layout (location = 1) in vec3 inColor;
+layout (location = 1) in vec4 inColor;
 layout (location = 2) in vec2 inTexcoord;
 
 layout (location = 0) out vec4 outColor;
@@ -45,6 +45,7 @@ layout (std140, binding = 2) uniform Material {
 } material;
 
 layout (binding = 0) uniform sampler2D baseTexture;
+layout (binding = 1) uniform sampler2D reflectionTexture;
 
 void main()
 {
@@ -84,7 +85,8 @@ void main()
     }
 
     uint shade = 256u;
-    if (frame.options.z != 0u && has_normal && material.fallback.w < 1.5) {
+    if ((frame.options.z & 1u) != 0u && has_normal &&
+        material.fallback.w < 1.5 && material.environment_range.w < 0.5) {
         float k = 0.35 + 0.65 * max(0.0, dot(normal, frame.light.xyz));
         shade = uint(floor(clamp(k, 0.0, 1.0) * 256.0 + 0.5));
     }
@@ -100,8 +102,8 @@ void main()
         uint(clamp(float(texel.a) * alpha_scale + 0.5, 0.0, 255.0));
 
     uvec3 color = texel.rgb;
-    if (frame.options.y != 0u) {
-        uvec3 vertex = uvec3(clamp(floor(inColor * 255.0 + 0.5), 0.0, 255.0));
+    if (frame.options.y != 0u || material.environment_range.w > 0.5) {
+        uvec3 vertex = uvec3(clamp(floor(inColor.rgb * 255.0 + 0.5), 0.0, 255.0));
         color = (color * vertex + 127u) / 255u;
     }
     uvec3 value = min(uvec3(255u), (color * shade + 128u) >> 8u);
@@ -123,5 +125,13 @@ void main()
                  lamp_mode == 3u ? uvec3(192u, 28u, 18u) : uvec3(0u);
     value += ((uvec3(255u) - value) * lamp + 127u) / 255u;
 
+    if ((frame.options.z & 2u) != 0u && material.environment_min.w > 0.5) {
+        vec3 eye_delta = inWorld - frame.eye.xyz;
+        vec2 screen_uv = vec2(0.5) + vec2(dot(frame.right.xyz, eye_delta) * frame.projection.x,
+            -dot(frame.up.xyz, eye_delta) * frame.projection.y) * (0.5 / dot(frame.forward.xyz, eye_delta));
+        vec3 reflected = texture(reflectionTexture, screen_uv).rgb * 255.0;
+        float wet = clamp(inColor.a, 0.0, 1.0) * float(texel.a) / 255.0;
+        value = min(uvec3(255u), value + uvec3(floor(reflected * wet + 0.5)));
+    }
     outColor = vec4(vec3(value) / 255.0, float(source_alpha) / 255.0);
 }

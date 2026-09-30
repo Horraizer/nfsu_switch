@@ -19,11 +19,11 @@ stage kind=fragment source=textured.frag.glsl
 # all RenderOptions::vertex_color multiplies by.
 buffer index=0 stride=36 struct=nfsu::MeshVertex header=nfsu/mesh.h
 attribute location=0 name=position type=vec3 format=float32x3 buffer=0 offset=0 members=px,py,pz
-attribute location=1 name=color type=vec3 format=unorm8x4 buffer=0 offset=24 members=color
+attribute location=1 name=color type=vec4 format=unorm8x4 buffer=0 offset=24 members=color
 attribute location=2 name=texcoord type=vec2 format=float32x2 buffer=0 offset=28 members=u,v
 
 varying location=0 name=world type=vec3 interpolation=smooth
-varying location=1 name=color type=vec3 interpolation=smooth
+varying location=1 name=color type=vec4 interpolation=smooth
 varying location=2 name=texcoord type=vec2 interpolation=smooth
 
 # std140. Frame is one buffer bound at slot 0 of both stages.
@@ -49,6 +49,8 @@ member block=Material name=environment_color type=vec4 offset=64
 # The resolved texture: RenderTexture's decoded top level, sampled at the
 # linearly filtered texels with repeat addressing, as in retail car.efx.
 texture name=baseTexture binding=0 stage=fragment type=sampler2D filter=linear wrap=repeat
+
+texture name=reflectionTexture binding=1 stage=fragment type=sampler2D filter=linear wrap=clamp_to_edge
 
 output location=0 name=color type=vec4 format=rgba8
 

@@ -123,6 +123,8 @@ bool stock_view_is_default(const RenderOptions& options) noexcept {
            options.vertex_color == pinned.vertex_color && options.cull == pinned.cull &&
            options.shading == pinned.shading &&
            options.material_state == pinned.material_state &&
+           options.wet_road_reflections == pinned.wet_road_reflections &&
+           options.reflection_pass == pinned.reflection_pass &&
            same_coefficients(options.coefficients, pinned.coefficients);
 }
 

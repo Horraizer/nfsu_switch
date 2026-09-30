@@ -14,11 +14,11 @@ stage kind=fragment source=fallback.frag.glsl
 
 buffer index=0 stride=36 struct=nfsu::MeshVertex header=nfsu/mesh.h
 attribute location=0 name=position type=vec3 format=float32x3 buffer=0 offset=0 members=px,py,pz
-attribute location=1 name=color type=vec3 format=unorm8x4 buffer=0 offset=24 members=color
+attribute location=1 name=color type=vec4 format=unorm8x4 buffer=0 offset=24 members=color
 attribute location=2 name=texcoord type=vec2 format=float32x2 buffer=0 offset=28 members=u,v
 
 varying location=0 name=world type=vec3 interpolation=smooth
-varying location=1 name=color type=vec3 interpolation=smooth
+varying location=1 name=color type=vec4 interpolation=smooth
 varying location=2 name=texcoord type=vec2 interpolation=smooth
 
 block name=Frame binding=0 stages=vertex,fragment size=112

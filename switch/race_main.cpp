@@ -204,9 +204,9 @@ struct ProfileResultContext {
 };
 using ProfilePages = std::vector<std::vector<std::string>>;
 ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
-                           bool replay_mode, const RaceFrameStats& frames,
-                           unsigned unpause_resets, const ProfileResultContext& context,
-                           const std::string& failure) {
+                           bool replay_mode, bool wet_road_reflections,
+                           const RaceFrameStats& frames, unsigned unpause_resets,
+                           const ProfileResultContext& context, const std::string& failure) {
     ProfilePages pages;
     std::vector<std::string> titles;
     auto add_page = [&](const char* title, std::vector<std::string> rows) {
@@ -344,11 +344,11 @@ ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
     }
     for (std::size_t i = 0; i < pages.size(); ++i) {
         auto& rows = pages[i];
-        rows.insert(rows.begin(),format("BUILD %.12s | %s | %s | SKY %s | PAGE %zu/%zu",
-            NFSU_RACE_BUILD_TAG,mode,titles[i].c_str(),context.sky,i+1,pages.size()));
+        rows.insert(rows.begin(),format("%.12s %s %s SKY %s WET %s %zu/%zu",
+            NFSU_RACE_BUILD_TAG,mode,titles[i].c_str(),context.sky,
+            wet_road_reflections ? "ON" : "OFF",i+1,pages.size()));
         rows.push_back(std::string("CAR ") + selected_car_label + " | LEFT/RIGHT page | + exits");
         rows.push_back(std::string("CAR SHADING ")+car_shading_label+" | LEFT/RIGHT page | + exits");
-        rows.push_back(std::string("CAR ") + selected_car_label + " | LEFT/RIGHT page | + exits");
     }
     return pages;
 }
@@ -370,9 +370,10 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
                  bool replay_mode, bool panel_mode, bool paused,
                  const RaceFrameStats& stats, unsigned unpause_resets,
                  const std::vector<std::string>& last_perf, const std::string& failure,
-                 const ProfileResultContext* profile = nullptr) {
+                 bool wet_road_reflections, const ProfileResultContext* profile = nullptr) {
     if (profile) {
-        const auto pages = profile_pages(race,replay,replay_mode,stats,unpause_resets,*profile,failure);
+        const auto pages = profile_pages(race,replay,replay_mode,wet_road_reflections,
+                                         stats,unpause_resets,*profile,failure);
         std::size_t page = 0;
         while (appletMainLoop()) {
             screen.show(pages[page]);
@@ -427,7 +428,7 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
 // issue 227 diagnostic that submits it with the opaque pass, as before.
 void run(const std::string& root, bool replay_mode, bool panel_mode, bool profile_frame,
           bool particles_enabled, const std::string& sky, bool tuned, bool glows,
-          bool car_shading,
+          bool car_shading, bool wet_road_reflections,
           Screen& screen, PadState& pad) {
     selected_car_label = tuned ? "TUNED" : "STOCK";
     car_shading_label=car_shading ? "ON static" : "OFF";
@@ -444,6 +445,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     RaceRun race; HeapUsage heap;
     std::printf("PARTICLES %s\n",particles_enabled?"ON":"OFF");
     require(scene.set_sky(sky != "off"), "sky mode set after scene load");
+    scene.set_wet_road_reflections(wet_road_reflections);
     const auto before = mallinfo(); heap.begin(before.uordblks,before.arena);
     Progress progress(screen,pad,heap);
     const auto load_start = armGetSystemTick();
@@ -761,9 +763,9 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                 renderer.memory_usage(),renderer.gpfifo_usage(),
                 sky == "off" ? "OFF" : sky == "early" ? "EARLY" : "ON"};
             show_result(screen,pad,race,replay,replay_mode,panel_mode,paused,
-                        stats,unpause_resets,last_perf,failure,&context);
+                        stats,unpause_resets,last_perf,failure,wet_road_reflections,&context);
         } else show_result(screen,pad,race,replay,replay_mode,panel_mode,paused,
-                           stats,unpause_resets,last_perf,failure);
+                           stats,unpause_resets,last_perf,failure,wet_road_reflections);
     }
 }
 } // namespace
@@ -781,6 +783,7 @@ int main(int argc, char** argv) {
             bool car_shading=false;
             std::string sky = "on";
             bool glows = false;
+            bool wet_road_reflections = false;
             for (int i = 1; i < argc; ++i) {
                 const std::string arg = argv[i];
                 if (arg == "--replay") { replay = true; selected = true; }
@@ -799,8 +802,15 @@ int main(int argc, char** argv) {
                          (std::strcmp(argv[i+1],"on") == 0 || std::strcmp(argv[i+1],"off") == 0 ||
                           std::strcmp(argv[i+1],"early") == 0)) sky = argv[++i];
                 else if (arg == "--glows") glows = true;
+                else if (arg == "--wet-road-reflections") {
+                    if (i + 1 >= argc) throw std::runtime_error("--wet-road-reflections needs on or off");
+                    const std::string value = argv[++i];
+                    if (value == "on") wet_road_reflections = true;
+                    else if (value == "off") wet_road_reflections = false;
+                    else throw std::runtime_error("--wet-road-reflections must be on or off");
+                }
                 else if (!root_seen && arg.rfind("--",0) != 0) { root = arg; root_seen = true; }
-                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--sky on|off|early] [--particles=on|--particles=off] [--tuned] [--glows] [--car-shading on|off]");
+                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--sky on|off|early] [--particles=on|--particles=off] [--tuned] [--glows] [--car-shading on|off] [--wet-road-reflections on|off]");
             }
             require(!(panel && profile_frame),"--profile-frame requires direct presentation");
             while (!selected && appletMainLoop()) {
@@ -821,7 +831,7 @@ int main(int argc, char** argv) {
                     "No game data is bundled or written. Replay input is bundled in RomFS."});
             }
             if (selected) run(root,replay,panel,profile_frame,particles_enabled,sky,
-                              tuned,glows,car_shading,screen,pad);
+                              tuned,glows,car_shading,wet_road_reflections,screen,pad);
         } catch (const Cancel&) {
         } catch (const std::exception& e) {
             std::printf("ERROR: %s\n",e.what()); std::fflush(stdout);

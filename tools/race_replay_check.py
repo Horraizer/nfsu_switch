@@ -79,6 +79,56 @@ STATE_FILE = "E4D4D6E955D59F7FF11C3318BC455D08B7903CA46BBDE8E1FC3F2AC32AEA54E5"
 INPUT = "CED29AB7D90F0861AFE2C0B604D0EDDFB4F769BEB067944F8E9C7DB0B892E0AC"
 TRAJECTORY = "8203932E99CDA190CEE81C6171705224AC7CC4EE910246805350605304F1D439"
 
+# Real mirrored-scene pass (#183). These are complete TGA file hashes.
+WET_FRAMES = {
+    180: "REPIN_AT_END",
+    6000: "REPIN_AT_END",
+    11344: "REPIN_AT_END",
+    11360: "REPIN_AT_END",
+    48336: "REPIN_AT_END",
+}
+# The wet target includes car and glow draws. Each visual option tuple needs
+# its own frame pins; the final integration pass measures these values.
+# Keys are (tuned, glows, car_shading), in WET_FRAMES step order.
+WET_EFFECT_FRAMES = {
+    (False, True, False): (
+        "REPIN_AT_END", "REPIN_AT_END", "REPIN_AT_END",
+        "REPIN_AT_END", "REPIN_AT_END"),
+    (False, False, True): (
+        "REPIN_AT_END", "REPIN_AT_END", "REPIN_AT_END",
+        "REPIN_AT_END", "REPIN_AT_END"),
+    (False, True, True): (
+        "REPIN_AT_END", "REPIN_AT_END", "REPIN_AT_END",
+        "REPIN_AT_END", "REPIN_AT_END"),
+    (True, False, False): (
+        "REPIN_AT_END", "REPIN_AT_END", "REPIN_AT_END",
+        "REPIN_AT_END", "REPIN_AT_END"),
+    (True, True, False): (
+        "REPIN_AT_END", "REPIN_AT_END", "REPIN_AT_END",
+        "REPIN_AT_END", "REPIN_AT_END"),
+    (True, False, True): (
+        "REPIN_AT_END", "REPIN_AT_END", "REPIN_AT_END",
+        "REPIN_AT_END", "REPIN_AT_END"),
+    (True, True, True): (
+        "REPIN_AT_END", "REPIN_AT_END", "REPIN_AT_END",
+        "REPIN_AT_END", "REPIN_AT_END"),
+}
+
+PATH_FRAMES = {
+    "off": (
+        "REPIN_AT_END",
+        "REPIN_AT_END",
+        "REPIN_AT_END"),
+    "on": (
+        "REPIN_AT_END",
+        "REPIN_AT_END",
+        "REPIN_AT_END"),
+}
+PATH_RESULT = (
+    "sequence: sha256 F64185A1E34258C03126E86EC80DC021716D3F0FE509933F6A8B0BD4D18CB643 steps 6903",
+    "costs: sha256 0AF10104BAB722F0E186CB0861B76BA6F01ED90144363F6D0D394091350C9D5C steps 6903",
+)
+
 
 def digest(data):
     return hashlib.sha256(data).hexdigest().upper()
@@ -121,6 +171,7 @@ def main():
     parser.add_argument("--tuned", action="store_true", help="check the shared tuned visual preset")
     parser.add_argument("--glows", action="store_true", help="check marker-driven night glows")
     parser.add_argument("--car-shading", action="store_true", help="check the opt-in shaded frame and complete simulation")
+    parser.add_argument("--probe", type=Path, help="also check the paired wet hand-path frames")
     args = parser.parse_args()
     frame_steps = (180,) if args.car_shading else (TUNED_STEPS if args.tuned else STEPS)
     if args.car_shading:
@@ -131,6 +182,10 @@ def main():
         frames = (TUNED_GLOW_FRAMES if args.glows else TUNED_FRAMES) if args.tuned else (
             GLOW_FRAMES if args.glows else FRAMES)
     require(len(frames) == len(frame_steps), "frame pin count differs from sampled steps")
+    effects = (args.tuned, args.glows, args.car_shading)
+    wet_pins = WET_FRAMES if effects == (False, False, False) else dict(
+        zip(WET_FRAMES, WET_EFFECT_FRAMES[effects]))
+    require(len(wet_pins) == len(WET_FRAMES), "wet frame pin count differs from sampled steps")
     root, output = args.root.resolve(), args.out.resolve()
     require(root.is_dir(), "retail root does not exist")
     require(output != root and root not in output.parents, "output is inside retail")
@@ -188,8 +243,39 @@ def main():
             require(digest(frame.read_bytes()) == expected, "frame pin differs at " + str(tick))
             require(lines.count("frame " + str(tick) + " tga-sha256 " + expected) == 1,
                     "printed frame pin differs")
+        wet_prefix = output / (str(index) + "-wet")
+        wet = retail_run(command + ["--input", str(recording), "--out", str(wet_prefix),
+            "--frames", ",".join(map(str, wet_pins)), "--wet-road-reflections", "on"], root)
+        (output / (str(index) + "-wet.log")).write_text(wet.stdout + wet.stderr, encoding="ascii")
+        require(wet.returncode == 0 and not wet.stderr, "wet replay failed; see log")
+        for line in RESULT:
+            require(wet.stdout.splitlines().count(line) == 1, "wet replay changed result: " + line)
+        require((wet_prefix / "states.txt").read_bytes() == state, "wet replay changed simulation states")
+        require((wet_prefix / "trajectory.csv").read_bytes() == trajectory, "wet replay changed physics trajectory")
+        for tick, expected in wet_pins.items():
+            require(digest((wet_prefix / ("frame-" + str(tick) + ".tga")).read_bytes()) == expected,
+                    "wet race frame pin differs at " + str(tick))
+        print("PASS wet replay: paired states/trajectory/result and", len(wet_pins), "frame pins")
         print("PASS", exe.name, str(STEPS[-1]) + " step hashes, result, " + str(len(frame_steps)) + " frames, clean 120 Hz trajectory" +
               (", generated recording" if args.check_driver else ""))
+
+    if args.probe:
+        command = [str(args.probe.resolve()), "track-stream-path", str(root / "Tracks/STREAML1RA.BUN"),
+            str(root / "Tracks/TRACKB1003.lzc"), "1003", "--hand-path", "1003", "--list", "none",
+            "--frame-every", "3000", "--width", "1280", "--height", "720"]
+        for name in ("Tracks/TEX1003TRACK.BIN", "Global/INGAMEB.BUN", "Global/GLOBALB.BUN"):
+            command += ["--texture", str(root / name)]
+        for mode, hashes in PATH_FRAMES.items():
+            prefix = output / ("path-" + mode)
+            result = retail_run(command + ["--out", str(prefix), "--wet-road-reflections", mode], root)
+            (output / ("path-" + mode + ".log")).write_text(result.stdout + result.stderr, encoding="ascii")
+            require(result.returncode == 0 and not result.stderr, "hand path failed; see log")
+            for line in PATH_RESULT:
+                require(result.stdout.splitlines().count(line) == 1, "hand path state/cost pin differs")
+            for sample, expected in zip((0, 3000, 6000), hashes):
+                require(digest(Path(str(prefix) + "-%06d.tga" % sample).read_bytes()) == expected,
+                        "hand path " + mode + " frame pin differs at " + str(sample))
+        print("PASS wet hand path: paired sequence/cost and six frame pins")
 
 
 if __name__ == "__main__":

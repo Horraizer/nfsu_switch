@@ -1,6 +1,7 @@
 #include "nfsu/geometry.h"
 #include "nfsu/track_render.h"
 #include "nfsu/draw_commands.h"
+#include "nfsu/track_reflections.h"
 
 #include <algorithm>
 #include <array>
@@ -666,6 +667,20 @@ std::vector<SectionSpec> tilted_sections() {
 
 Fixture tilted() {
     return make_fixture(tilted_meshes(), tilted_sections());
+}
+
+Fixture floor() {
+    auto meshes = fixture_meshes();
+    for (auto& vertex : meshes[0].vertices) {
+        vertex.px *= 8;
+        vertex.pz = -vertex.py * 8;
+        vertex.py = 0;
+    }
+    for (auto& vertex : meshes[1].vertices) vertex.py += 2;
+    auto fixture = make_fixture(meshes, fixture_sections());
+    fixture.scene.region.meshes[0].vertex_format_flags = 0x40;
+    fixture.scene.instances[2].instance_flags = 0x40;
+    return fixture;
 }
 
 // A third fixture: one mesh whose first triangle has a DIFFERENT unique
@@ -2034,6 +2049,151 @@ void test_render_honours_the_options() {
           "flat shading changes the frame");
     check_eq_u64(shaded_stats.pixels_drawn, plain_stats.pixels_drawn,
                  "flat shading covers the same pixels");
+
+    // Wet reflections use the solid selector and the vertex alpha mask.
+    const Fixture wet_fixture = floor();
+    const nfsu::TrackDrawList wet_list =
+        make_list(wet_fixture.scene, nfsu::TrackDrawOrder::visible_instance);
+    nfsu::RenderOptions wet = small_options();
+    wet.vertex_color = true;
+    wet.camera.pitch_deg = 25.0;
+    wet.camera.target.y = 2.0;
+    wet.wet_road_reflections = true;
+    nfsu::Frame wet_frame;
+    nfsu::RenderStats wet_stats;
+    nfsu::TrackRenderStats wet_track;
+    check_ok(nfsu::render_track_draw_list(wet_fixture.scene, wet_list, wet, limits,
+                                       wet_frame, wet_stats, wet_track, error),
+              "the wet-reflection render succeeds", error);
+    nfsu::Frame dry_tilt_frame;
+    nfsu::RenderStats dry_tilt_stats;
+    nfsu::TrackRenderStats dry_tilt_track;
+    nfsu::RenderOptions dry_tilt = small_options();
+    dry_tilt.vertex_color = true;
+    dry_tilt.camera.pitch_deg = wet.camera.pitch_deg;
+    dry_tilt.camera.target.y = wet.camera.target.y;
+    check_ok(nfsu::render_track_draw_list(wet_fixture.scene, wet_list, dry_tilt,
+                                       limits, dry_tilt_frame, dry_tilt_stats,
+                                       dry_tilt_track, error),
+              "the dry tilted render succeeds", error);
+    check(wet_frame.rgba() != dry_tilt_frame.rgba(),
+          "wet reflections sample the actual mirrored source geometry");
+    check(wet_stats.pixels_drawn == dry_tilt_stats.pixels_drawn,
+          "wet reflections preserve surface coverage");
+    check(wet_track.reflection_draws > 0 && wet_track.reflection_fragments > 0,
+          "the reflection producer draws a nonempty selected scene");
+    auto render_wet = [&](const Fixture& changed) {
+        nfsu::Frame result;
+        check_ok(nfsu::render_track_draw_list(changed.scene, wet_list, wet, limits,
+            result, wet_stats, wet_track, error), "changed reflection scene renders", error);
+        return result.rgba();
+    };
+    auto changed = wet_fixture;
+    changed.scene.region.meshes[0].vertex_format_flags = 0;
+    check(render_wet(changed) == dry_tilt_frame.rgba(),
+          "an unflagged horizontal surface never receives reflections");
+    changed = wet_fixture;
+    for (auto& v : changed.scene.region.meshes[0].vertices) v.color[3] = 0;
+    check(render_wet(changed) == dry_tilt_frame.rgba(),
+          "zero vertex alpha removes the reflection without changing diffuse");
+    changed = wet_fixture;
+    for (std::size_t p = 3; p < changed.scene.region.textures[0].rgba.size(); p += 4)
+        changed.scene.region.textures[0].rgba[p] = 0;
+    check(render_wet(changed) == dry_tilt_frame.rgba(),
+          "zero diffuse alpha removes the reflection without changing opaque diffuse");
+    changed = wet_fixture;
+    changed.scene.instances[2].instance_flags = 0;
+    check(render_wet(changed) == dry_tilt_frame.rgba(),
+          "removing the source selector removes its reflection");
+    changed = wet_fixture;
+    for (auto& v : changed.scene.region.meshes[1].vertices) v.color[0] = 0;
+    const auto recolored = render_wet(changed);
+    std::size_t changed_reflections = 0;
+    for (std::size_t p = 0; p < recolored.size(); p += 4)
+        if (wet_frame.rgba()[p] != dry_tilt_frame.rgba()[p] &&
+            recolored[p] != wet_frame.rgba()[p]) ++changed_reflections;
+    check(changed_reflections > 0, "source color changes its road reflection");
+
+
+    // The reflection visibility list is independent of the main visible list.
+    std::vector<nfsu::TrackDrawListEntry> reflected;
+    check_ok(nfsu::track_reflection_entries(wet_fixture.scene, wet, reflected, error),
+             "separate reflection cull succeeds", error);
+    check(!reflected.empty(), "a reflection query needs no main-view visible entries");
+    changed = wet_fixture;
+    changed.scene.instances[2].transform.translation[0] = 100000;
+    check_ok(nfsu::track_reflection_entries(changed.scene, wet, reflected, error),
+             "reflection cull rejects a remote source", error);
+    check(reflected.empty(), "offscreen reflected bounds are rejected");
+    // Keep the reflected source centered inside the side planes and move
+    // it along the view axis. Only the far plane can reject this fixture.
+    changed = wet_fixture;
+    nfsu::CameraFrame reflection_camera;
+    check_ok(nfsu::make_camera_frame(wet.camera, wet.width, wet.height,
+        reflection_camera, error), "far-cull camera is valid", error);
+    const auto move_source = [&](double distance) {
+        const auto& c = reflection_camera;
+        auto& translation = changed.scene.instances[2].transform.translation;
+        translation[0] = float(c.eye.x + c.forward.x*distance);
+        translation[1] = float(-(c.eye.z + c.forward.z*distance));
+        translation[2] = float(c.eye.y + c.forward.y*distance);
+    };
+    move_source(reflection_camera.far_plane - 10);
+    check_ok(nfsu::track_reflection_entries(changed.scene, wet, reflected, error),
+             "source inside the far plane queries", error);
+    check(!reflected.empty(), "centered source inside far plane is retained");
+    move_source(reflection_camera.far_plane + 10);
+    check_ok(nfsu::track_reflection_entries(changed.scene, wet, reflected, error),
+             "source beyond the far plane queries", error);
+    check(reflected.empty(), "centered source beyond far plane is rejected");
+    check_ok(nfsu::track_reflection_entries(changed.scene, wet, reflected, error, nullptr, false),
+             "unculled far source queries", error);
+    check(!reflected.empty(), "far source still exists when culling is disabled");
+    auto instance = wet_fixture.scene.instances[2];
+    instance.transform.linear[8] = 3;
+    instance.transform.translation[2] = 7;
+    auto mirrored = nfsu::track_reflection_transform(instance);
+    check(mirrored.linear[8] == -3 && mirrored.translation[2] == 7,
+          "ordinary reflection negates local vertical without moving the origin");
+    instance.instance_flags |= 0x200;
+    mirrored = nfsu::track_reflection_transform(instance);
+    check(mirrored.linear[8] == 3 && mirrored.translation[2] == 7,
+          "baked 0x200 placement skips the second mirror");
+
+    nfsu::WetRoadLamps lamps;
+    lamps.texture = wet_fixture.scene.region.textures[0];
+    lamps.texture.rgba.assign(lamps.texture.rgba.size(), 255);
+    nfsu::WetRoadLamp light;
+    check(!nfsu::wet_road_lamp_ground_height(light, 0) &&
+          !nfsu::wet_road_lamp_ground_height(light, 0.049F) &&
+          !nfsu::wet_road_lamp_ground_height(light, -0.049F),
+          "mode 2 rejects ground hits within 0.05 of the lamp");
+    check(nfsu::wet_road_lamp_ground_height(light, 0.051F) &&
+          light.reflected_height == 0.102F,
+          "mode 2 keeps ground hits outside the height tolerance");
+    check(nfsu::wet_road_lamp_ground_height(light, 0.05F) &&
+          nfsu::wet_road_lamp_ground_height(light, -0.05F),
+          "mode 2 keeps ground hits exactly at the height tolerance");
+    light.position[2] = 2; light.reflected_height = -2; light.direction[2] = -1;
+    lamps.lights.push_back(light);
+    for (std::size_t i = 0; i < 4; ++i) {
+        auto& v = lamps.vertices[i];
+        v.px = (i == 1 || i == 2) ? 1 : -1;
+        v.py = i < 2 ? 1 : -1;
+        v.color[0] = 110; v.color[1] = 100; v.color[2] = 75; v.color[3] = 255;
+    }
+    wet.wet_lamps = &lamps;
+    const auto lit = render_wet(wet_fixture);
+    check(lit != wet_frame.rgba(), "a reflected street lamp contributes a pool on wet geometry");
+    lamps.lights.clear();
+    check(render_wet(wet_fixture) == wet_frame.rgba(), "removing lamp records removes the pool");
+    lamps.lights.push_back(light);
+    changed = wet_fixture;
+    for (auto& v : changed.scene.region.meshes[0].vertices) v.color[3] = 0;
+    check(render_wet(changed) == dry_tilt_frame.rgba(), "lamp streak obeys receiver alpha");
+    wet.camera.target.x += 1;
+    check(render_wet(wet_fixture) != lit, "camera movement reprojects the lamp streak");
+    wet.wet_lamps = nullptr;
 
     // The v flip. The corner texture has four distinct texels, so sampling
     // (u, 1 - v) must move colour.

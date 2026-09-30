@@ -5,6 +5,7 @@
 #include "nfsu/race_particles.h"
 #include "nfsu/car_shadow.h"
 #include "nfsu/light_glows.h"
+#include "nfsu/track_reflections.h"
 
 namespace nfsu {
 // One combined command stream: track then car, one camera and one depth
@@ -36,6 +37,7 @@ public:
     // The separate sky pass (issue 184), on by default. Off records no sky
     // draws, for console A/B cost runs. Refused once the scene is loaded.
     bool set_sky(bool enabled) { if (ready_) return false; sky_ = enabled; return true; }
+    void set_wet_road_reflections(bool enabled) noexcept { wet_road_reflections_ = enabled; }
     bool load(FileSystemService& files, const std::filesystem::path& root,
               std::string& error, AssetCheckObserver* observer = nullptr,
               TrackSliceLoadObserver* loading = nullptr, bool tuned = false,
@@ -48,6 +50,9 @@ public:
     std::uint64_t cache_bytes() const;
 private:
     TrackSlice track_;
+    WetRoadLamps lamps_;
+    std::filesystem::path root_;
+    bool lamps_loaded_ = false;
     RecordedCommands track_templates_;
     bool sky_ = true;
     std::size_t sky_draws_ = 0;
@@ -56,12 +61,13 @@ private:
     bool ready_ = false;
     bool tuned_ = false; // Visual selection only; never passed to RaceSession.
     bool car_shading_ = false;
+    bool wet_road_reflections_ = false;
     bool prepare_templates(std::string& error);
     bool prepare_frame_cache(std::string& error);
     bool prepare_glows(std::string& error);
     bool select_track(const TrackCullReport& visible, RaceGpuFrame& out,
                       std::size_t& entries, std::string& error);
-    const UploadTable& resource_table() const override { return combined_uploads_; }
+    const UploadTable& resource_table() const override { return wet_road_reflections_ ? wet_uploads_ : combined_uploads_; }
     std::size_t selected_draw_count() const override {
         return sky_draws_ + selection_.size() + 1 +
                car_templates_.owning_draws().size() + glow_count_;
@@ -73,8 +79,15 @@ private:
     const DrawInstanceUniform& static_track_instance(std::size_t i) const override { return track_placements_.at(i); }
     std::size_t static_track_definition_count() const override { return track_templates_.owning_draws().size(); }
     const RecordedDraw& static_track_definition(std::size_t i) const override { return track_templates_.owning_draws().at(i); }
+    std::size_t reflection_draw_count() const override { return reflection_selection_.size() + lamp_draws_.size(); }
+    const RecordedDraw& reflection_draw(std::size_t i) const override { return i < reflection_selection_.size() ? reflection_templates_.at(reflection_selection_[i]) : lamp_draws_.at(i-reflection_selection_.size()); }
+    std::vector<RecordedDraw> reflection_templates_, lamp_draws_;
+    std::vector<std::size_t> reflection_first_, reflection_selection_;
+    std::vector<TrackDrawListEntry> reflection_entries_;
+    TrackReflectionCache reflection_cache_;
+    bool prepare_reflections(std::string& error);
     PreparedTrackCull culler_;
-    UploadTable combined_uploads_;
+    UploadTable combined_uploads_, wet_uploads_;
     RecordedCommands car_templates_;
     RecordedCommands shadow_templates_;
     CarShadowAsset shadow_asset_;

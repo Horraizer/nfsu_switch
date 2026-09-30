@@ -877,11 +877,11 @@ struct Rasterizer::ScreenVertex {
     double q = 0.0;      // 1 / w
     double uq = 0.0;
     double vq = 0.0;
+    double aq = 0.0;
     double rq = 0.0;
     double gq = 0.0;
     double bq = 0.0;
     double surface[7]{};
-    double aq = 0.0;
 };
 
 Rasterizer::Rasterizer(Frame& frame, const RenderOptions& options,
@@ -936,11 +936,11 @@ bool Rasterizer::draw_triangle(
         screen[i].q = q;
         screen[i].uq = v.u * q;
         screen[i].vq = v.v * q;
+        screen[i].aq = v.a * q;
         screen[i].rq = v.r * q;
         screen[i].gq = v.g * q;
         screen[i].bq = v.b * q;
         for (int k=0;k<7;++k) screen[i].surface[k]=v.surface[k]*q;
-        screen[i].aq = v.a * q;
     }
 
     bool any_drawn = false;
@@ -1178,6 +1178,23 @@ bool Rasterizer::fill(
                                 : material.lamp_mode == 3
                                 ? (k == 0 ? 192U : k == 1 ? 28U : 18U) : 0U;
                             value += ((255U - value) * lamp + 127U) / 255U;
+                            if (material.reflected_scene && !fallback) {
+                                const Frame& reflected = *material.reflected_scene;
+                                const double va = std::clamp((l[0]*a->aq + l[1]*b->aq + l[2]*c->aq)*iq, 0.0, 255.0);
+                                const double sx = (x + 0.5) * reflected.width() / frame_.width_ - 0.5;
+                                const double sy = (y + 0.5) * reflected.height() / frame_.height_ - 0.5;
+                                const int ix = static_cast<int>(std::floor(sx)), iy = static_cast<int>(std::floor(sy));
+                                const double fx = sx-ix, fy = sy-iy;
+                                double sample = 0;
+                                for (int dy=0; dy<2; ++dy) for (int dx=0; dx<2; ++dx) {
+                                    const auto rx = std::clamp(ix+dx, 0, int(reflected.width())-1);
+                                    const auto ry = std::clamp(iy+dy, 0, int(reflected.height())-1);
+                                    sample += reflected.rgba()[(std::size_t(ry)*reflected.width()+rx)*4+k] *
+                                        (dx ? fx : 1-fx) * (dy ? fy : 1-fy);
+                                }
+                                value = static_cast<std::uint32_t>(std::min(255.0,
+                                    value + std::floor(sample * va * color[3] / (255.0*255.0) + 0.5)));
+                            }
                             if (blending) {
                                 const std::uint32_t dst = out[k];
                                 if (material.blend == RenderBlendMode::source_over) {

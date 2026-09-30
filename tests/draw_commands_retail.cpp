@@ -155,9 +155,9 @@ int main(int argc, char** argv) {
     // -45: the opposite side changes the normal/view-dependent terms.
     // 145: rear glass and lamp lenses exercise their own material records.
     const char* pins[] = {
-        "43BA1E737858BF2E6000039B70B5922851ECA077FD38FD3EB20ECECB7D3B2957",
-        "601139994EF03408198334AB42FBB57CF536BE46CFAD21498EF9DBCC94469DED",
-        "33CD708C9C3081DA7EF46CEE03C9CEF5FAEAEA5306C3C6ECA7A18DF24F0A290D"};
+        "REPIN_AT_END", // yaw 35
+        "REPIN_AT_END", // yaw -45
+        "REPIN_AT_END"}; // yaw 145
     nfsu::StockFrame shaded;
     if (!nfsu::prepare_stock_frame(inputs,nfsu::stock_240sx_request(),
                                    nfsu::stock_240sx_skin(),shaded,error,true)) {

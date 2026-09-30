@@ -244,8 +244,10 @@ constexpr std::uint32_t kMaxEnvironmentPower = 64;
 bool validate_material_coefficients(
     const MaterialCoefficients& coefficients, std::string& error);
 
+struct WetRoadLamps;
 struct RenderOptions {
     bool car_shading = false; // static environment approximation; opt-in
+    const WetRoadLamps* wet_lamps = nullptr;
     std::uint32_t width = 1280;
     std::uint32_t height = 720;
     OrbitCamera camera;
@@ -263,6 +265,11 @@ struct RenderOptions {
     // separate diagnostic, and with the retail state selected a textured
     // fragment must pass both tests.
     MaterialStateMode material_state = MaterialStateMode::off;
+    // Screen-projected track reflection, masked by solid flags and vertex alpha.
+    bool wet_road_reflections = false;
+    // Internal producer pass; never combines with wet_road_reflections.
+    bool reflection_pass = false;
+    std::uint32_t reflection_width = 160;
     MaterialCoefficients coefficients;
     // Separate track sky, when the prepared scene contains one.
     bool sky = false;
@@ -430,6 +437,8 @@ struct RasterMaterial {
     // environment[k] * texel_alpha / 255. Zero unless the environment gate
     // keeps the term. It is added to textured fragments only.
     double environment[3] = {0.0, 0.0, 0.0};
+    // Borrowed reflection target; only effect-2 track solids receive it.
+    const Frame* reflected_scene = nullptr;
 };
 
 class Rasterizer {

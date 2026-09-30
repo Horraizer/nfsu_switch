@@ -324,8 +324,9 @@ void test_attributes_read_their_members(const Programs& programs, Reporter& r) {
     }
 }
 
-// The car effect samples linearly and the track reference samples nearest;
-// both wrap their coordinates. The fallback checker samples nothing.
+// The ordinary car effect samples linearly and other diffuse paths sample
+// nearest; all diffuse coordinates wrap. Track and ordinary car shaders
+// also sample the clamped reflection target.
 void test_textures_follow_the_draw_kind(const Programs& programs, Reporter& r) {
     for (const sm::Program& program : programs) {
         const std::string name = program.name;
@@ -333,8 +334,11 @@ void test_textures_follow_the_draw_kind(const Programs& programs, Reporter& r) {
             r.check(program.texture_count == 0, name + ": samples no texture");
             continue;
         }
-        r.check(program.texture_count == 1, name + ": samples one texture");
-        if (program.texture_count != 1) {
+        const bool reflection = name == "track_textured" || name == "car_textured";
+        const std::size_t expected_count = reflection ? 2U : 1U;
+        r.check(program.texture_count == expected_count,
+                name + ": samples the expected diffuse and reflection textures");
+        if (program.texture_count != expected_count) {
             continue;
         }
         const sm::Texture& texture = program.textures[0];
@@ -347,6 +351,14 @@ void test_textures_follow_the_draw_kind(const Programs& programs, Reporter& r) {
                 name + ": the texture filter matches its effect");
         r.check(texture.wrap == sm::Wrap::repeat,
                 name + ": the texture coordinate wraps");
+        if (reflection) {
+            const sm::Texture& reflected = program.textures[1];
+            r.check(reflected.stage == sm::Stage::fragment &&
+                        std::string(reflected.type) == "sampler2D" &&
+                        reflected.filter == sm::Filter::linear &&
+                        reflected.wrap == sm::Wrap::clamp_to_edge,
+                    name + ": reflection uses linear screen sampling with clamped edges");
+        }
     }
 }
 

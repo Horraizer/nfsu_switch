@@ -1,4 +1,5 @@
 #include "nfsu/draw_execution.h"
+#include "nfsu/track_reflections.h"
 #include <cstdio>
 #include <cstring>
 #include <functional>
@@ -211,6 +212,42 @@ int main() {
     many.owning_uploads().resources.push_back(many.owning_uploads().resources.back());
     check(!plan_draw_execution(many, plan, error) && error.find("staging exceeds") != std::string::npos,
           "aggregate staging block limit");
+    // Exercise the actual recorder consumed by the Switch renderer. A
+    // nonempty scenery reflection list cannot stand in for a lamp draw.
+    error.clear();
+    WetRoadLamps lamps;
+    lamps.texture.hash = 0x3394FE62U;
+    lamps.texture.width = lamps.texture.height = 1;
+    lamps.texture.rgba = {255, 255, 255, 255};
+    WetRoadLamp lamp;
+    lamp.position[2] = 2; lamp.reflected_height = -2; lamp.direction[2] = -1;
+    lamps.lights.push_back(lamp);
+    UploadTable lamp_uploads;
+    check(append_wet_lamp_uploads(lamps, lamp_uploads, error), "lamp uploads prepare");
+    RenderOptions lamp_options;
+    lamp_options.wet_road_reflections = true;
+    lamp_options.wet_lamps = &lamps;
+    std::vector<RecordedDraw> lamp_draws;
+    check(record_lamp_reflections(lamp_options, lamp_uploads, lamp_draws, error),
+          "Switch lamp commands record");
+    check(lamp_draws.size() == 1, "Switch recorder emits the visible lamp");
+    if (lamp_draws.size() == 1) {
+        const auto& draw = lamp_draws.front();
+        check(draw.vertex_resource == 0 && draw.index_resource == 1 && draw.texture_resource == 2 &&
+              draw.vertex_count == 4 && draw.index_count == 6,
+              "Switch lamp binds its shared quad and flare texture");
+        check(draw.material.environment_range[3] == 1 && draw.material.alpha[0] == 150.0F/255,
+              "Switch lamp is unlit with the effect alpha");
+        check(draw.pipeline.blend && draw.pipeline.blend_src == sm::BlendFactor::src_alpha &&
+              draw.pipeline.blend_dst == sm::BlendFactor::one &&
+              !draw.pipeline.depth_write && draw.pipeline.depth_test == sm::CompareOp::less_equal &&
+              draw.pipeline.cull == sm::Cull::none,
+              "Switch lamp uses additive blending, depth test and no depth writes");
+        check(draw.placement.rows[14] == -2, "Switch lamp uses the reflected height");
+    }
+    lamps.lights.clear(); lamp_draws.clear();
+    check(record_lamp_reflections(lamp_options, lamp_uploads, lamp_draws, error) && lamp_draws.empty(),
+          "removing lamps removes Switch lamp draws");
     std::printf("draw execution validation: %d failures\n", failures);
     return failures ? 1 : 0;
 }
