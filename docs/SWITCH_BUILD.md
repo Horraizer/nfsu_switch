@@ -85,7 +85,7 @@ runs on the build machine, not on a console:
 | `nfsu_switch_car_nro` | The same checks for `nfsu_switch_car.nro`, whose NACP is titled `nfsu_switch_car`. |
 | `nfsu_switch_assets_nro` | The same checks for `nfsu_switch_assets.nro`, whose NACP is titled `nfsu_switch_assets`. |
 | `nfsu_switch_deko3d_nro` | The GPU application's AArch64 ELF, NRO and NACP title, then its bounded RomFS section containing the exact bytes of every checked shader stage. |
-| `nfsu_switch_compare_reference_options` | The CPU reference and GPU command recording both use the stock viewers' shared default options. |
+| `nfsu_switch_compare_reference_options` | A source-text guard checks the default options declaration, later member assignments, and the CPU/GPU call arguments; it runs its mutation self-tests on every invocation. See [FRAME_COMPARISON.md](FRAME_COMPARISON.md) for its exact coverage and limits. |
 | `nfsu_switch_compare_nro` | The comparison application's AArch64 ELF, NRO and NACP title, and its bounded RomFS with the exact checked offline shader stage bytes. |
 | `nfsu_switch_vehicle_nro` | The same checks for `nfsu_switch_vehicle.nro`, whose NACP is titled `nfsu_switch_vehicle`. |
 | `nfsu_switch_fma_census_guards` | Real AArch64 fast/off objects, each forbidden mnemonic, and invalid census inputs. |

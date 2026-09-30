@@ -56,11 +56,28 @@ The current painted and unpainted frame sizes and SHA-256 pins live in
 checks the stock and painted frames and compares both material-mode draw
 traces. `nfsu_stock_frame_retail` and
 `nfsu_stock_frame_painted_retail` exercise the shared viewer default. The
-Switch CTest `nfsu_switch_compare_reference_options` checks that the
-compare path initializes one const options object exactly from
-`stock_view_default_options()`, does not write to it later, and passes it to
-both CPU rendering and GPU command recording. It is a source guard rather
-than an execution test of the compare path.
+Switch CTest `nfsu_switch_compare_reference_options` strips C++ `//`
+line comments, then checks the source text for a const `nfsu::RenderOptions`
+named `options` initialized exactly from `stock_view_default_options()`, no
+member assignment through an identifier ending in `options`, and calls to
+`render_stock_frame(stock, options, error)` and
+`record_car_commands(stock.scene, options, ...)`. Its self-tests run every time:
+m2 and m3 must print `KILLED` for a non-const declaration and a later write;
+m22 and m23 must print `KILLED` when the old calls are comments and the live
+calls use temporary defaults; and m21b must print `PASS` for a harmless
+comment above the declaration.
+
+This is a source-text guard, not a C++ parser or execution test. It removes
+`//` line comments, including decoys such as m12 and the commented old calls
+in m22 and m23. It does not remove `/* */` block comments (m08 and m11), count
+declarations, or prove that the matching declaration is the only one or in
+the relevant scope; a decoy declaration in a dead scope (m09) can fool it.
+A string-literal decoy (m20) can also fool it, and it does not detect a
+`const_cast` write (m13, undefined behavior). The guard does not prove the
+runtime compare path uses the intended object. The write check fails closed
+on any member assignment whose identifier ends in `options`, including an
+unrelated name such as `tuned_options`; this can reject harmless code. The
+self-tests show the cases they exercise, not broader C++ semantic coverage.
 
 A CPU pin mismatch displays overall FAIL even if the numerical GPU/CPU
 comparison passes. No threshold is adjusted to fit a result. Percentages

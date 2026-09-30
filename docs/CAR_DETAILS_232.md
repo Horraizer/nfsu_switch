@@ -67,7 +67,13 @@ frame pins are checked by `nfsu_race_replay_check`. The new material state
 changes frame pixels while preserving simulation and replay inputs.
 
 `nfsu_viewer` reports the painted stock reference's material groups and
-blended fragment count. At 3f53122, handheld race replay GPU scene mean:
+blended fragment count. Run it for the 240SX with:
+
+```text
+nfsu_viewer <root>/CARS/240SX/GEOMETRY.BIN <root>/CARS/240SX/TEXTURES.BIN <output.tga> --stock-car 240SX --stock-parts <root>/GLOBAL/GLOBALB.BUN --shared-textures <root>/GLOBAL/GLOBALB.BUN
+```
+
+At 3f53122, handheld race replay GPU scene mean:
 20.59 ms with the sky off and 22.01 ms with the sky on
 ([board comment 5627](https://git.accad.pro/murzintsevav/nfsu-switch/issues/227#issuecomment-5627));
 both exceed the 16.67 ms frame budget. The additional sampler descriptor and
