@@ -1,20 +1,18 @@
 # Issue #229: three CPU reference views of one explicit installed-part set.
-# Run with VIEWER, TESTS, WORK and NFSU_RETAIL_ROOT (or explicit ROOT).
+# Run with VIEWER, TESTS, WORK and ROOT. CMakeLists.txt registers it as
+# nfsu_tuned_frame_retail only when NFSU_RETAIL_ROOT is configured, and passes
+# the root as -DROOT (issue #233); without it the script fails, never passes.
 cmake_minimum_required(VERSION 3.20)
-foreach(name IN ITEMS VIEWER TESTS WORK)
-    if(NOT DEFINED ${name})
+foreach(name IN ITEMS VIEWER TESTS WORK ROOT)
+    if(NOT DEFINED ${name} OR "${${name}}" STREQUAL "")
         message(FATAL_ERROR "${name} is required")
     endif()
 endforeach()
-if(NOT DEFINED ROOT OR ROOT STREQUAL "")
-    if(DEFINED ENV{NFSU_RETAIL_ROOT} AND NOT "$ENV{NFSU_RETAIL_ROOT}" STREQUAL "")
-        set(ROOT "$ENV{NFSU_RETAIL_ROOT}")
-    else()
-        message("SKIPPED: set NFSU_RETAIL_ROOT to run the tuned retail frame pins")
-        return()
-    endif()
-endif()
 
+# A directory of this process's own, so a second ctest run cannot remove or
+# replace a frame this one is about to hash (issue #122).
+string(RANDOM LENGTH 16 ALPHABET 0123456789abcdef run_id)
+set(WORK "${WORK}/run-${run_id}")
 file(MAKE_DIRECTORY "${WORK}")
 set(car "${ROOT}/Cars/240SX")
 set(common
@@ -96,3 +94,5 @@ if(NOT result EQUAL 0 OR NOT stderr STREQUAL "" OR
     message(FATAL_ERROR "Switch CPU path differs: exit ${result}: ${output} ${stderr}")
 endif()
 message(STATUS "tuned 240SX: default and two orbit pins match; Switch CPU path matches")
+# This process's own directory, removed after a pass; kept after a failure.
+file(REMOVE_RECURSE "${WORK}")

@@ -24,7 +24,8 @@ lines clip labels to 12 characters; CTest checks the configured tag in the ELF.
 
 The menu offers A for live driving, X for replay and Y to toggle the
 diagnostic panel. Direct presentation is the default. With nxlink, optional
-arguments are `[sdmc:/nfsu] [--live|--replay] [--panel]`. RomFS holds the three checked
+arguments are `[sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame]`.
+`--profile-frame` requires direct presentation. RomFS holds the three checked
 offline shaders and the repository's authored `tests/recordings/event1.txt`.
 It contains no retail or derived game asset. The application writes no SD
 file; every retail input is opened read-only.
@@ -89,14 +90,19 @@ nfsu_race_run_tests tests/recordings/event1.txt X:/Games/NFSU
 nfsu_race_run_tests tests/recordings/event1.txt X:/Games/NFSU --sample-draws
 ```
 
-The first command is in CTest and needs no game data. It checks clock debt,
-recording identity and extent, invalid call order, resource/texture rebasing,
-capacity refusal and mismatched cameras. The retail run checks every step
-hash and the result, uploads/retires the combined table through the neutral
-ledger, and validates selected race views. `--sample-draws` also checks one
-view per second; `--full-draws` checks every tick's draw commands. The retail
-test prints the sampled view and maximum draw counts. No desktop trace is
-described as console execution evidence.
+The first command is CTest's `nfsu_race_run_tests` and needs no game data. It
+checks clock debt, recording identity and extent, invalid call order,
+resource/texture rebasing, capacity refusal and mismatched cameras. The retail
+run checks every step hash and the result, uploads/retires the combined table
+through the neutral ledger, and validates selected race views.
+`--sample-draws` also checks one view per second; `--full-draws` checks every
+tick's draw commands. The retail test prints the sampled view and maximum draw
+counts. No desktop trace is described as console execution evidence.
+
+CTest runs the third command as `nfsu_race_run_retail` (label `retail`) when
+the build is configured with `-DNFSU_RETAIL_ROOT=<installation>`, and a
+Release configure also registers the `--full-draws` run as
+`nfsu_race_run_retail_full_draws` (labels `retail` and `retail-full`).
 
 ## Drawing, residency and memory
 
@@ -168,10 +174,42 @@ The renderer opens after the load sample, so its GPU allocations affect the
 run HWM but not the load HWM. `nfsu_race_loader_peak_tests` measures the
 complete desktop C++ allocation peak through the first frame against the
 same 48 MiB ceiling. `nfsu_track_loader_peak_tests` separately measures the
-track slice. Console acceptance requires a photographed LOAD/MEMORY page
+track slice. Configured with `-DNFSU_RETAIL_ROOT`, CTest runs both as
+`nfsu_race_loader_peak_retail` and `nfsu_track_loader_peak_retail` (label
+`retail`). Console acceptance requires a photographed LOAD/MEMORY page
 showing LOAD HEAP OVER 0 at the tested head.
 
 ## Performance and owner evidence
+
+`--profile-frame` collects the Phase A timing evidence requested in
+[FRAME_BUDGET_RESEARCH.md](FRAME_BUDGET_RESEARCH.md). Use the bundled replay
+in direct mode. After FINISHED, the result remains frozen until Plus; D-pad
+left/right selects numbered identity, replay, active-frame, CPU-stage, GPU
+scene and load/memory pages. Each page repeats its build and mode label and
+uses at most eight data rows of 80 ASCII columns. The replay page splits both
+hashes into labeled halves. The application cannot know the SHA-256 of its
+own NRO, so the coordinator records that hash with the full commit and
+toolchain/deko3d version of its build. If the build tag is a full commit SHA,
+the identity page prints it. CPU, GPU and memory/EMC clock readings that cannot
+be queried are explicitly marked unavailable.
+
+CPU rows give count, mean, p95 bin upper edge and exact maximum. CULL/RECORD
+uses the five `RaceFrameProfile` subregions. UPDATE separates validation
+from uniform writes. PRESENT separates acquire, fence wait, uniform write,
+command recording, finishList and submit/flush; PARENT SUM and OTHER account
+for the measured frame without adding nested child rows twice. `mallinfo()`
+after present has its own row. A GPU timestamp pair brackets each profiled
+scene in a per-slot report. The report is read after that slot's completion
+fence, with remaining reports drained after the run. The pair measures a
+pipeline span, not GPU utilization. Counter reports flush tiled cache and
+the profiling build includes their overhead. The result shows completed,
+invalid and dropped queries rather than treating missing data as zero.
+
+Only active driving frames enter the aggregates. Countdown, pause, the first
+resumed frame and FINISHED remain excluded; unpause resets the CPU and GPU
+segments. The normal direct and panel results remain available without
+`--profile-frame`. No acceptance claim follows from a desktop build or from
+these counters until the coordinator photographs the Switch result pages.
 
 The first frame, every 120th frame and the first finished frame print `PERF`
 samples to stdout/nxlink. Direct-mode samples report CPU frame time against
@@ -185,13 +223,17 @@ the same 256 MiB GPU budget. `PERF HEAP` reports load/run high-water and
 arena extent observations, including LOAD HEAP OVER.
 
 The result screen reports the number of measured driving frames, frame-time
-mean, p50/p95/p99 and exact maximum, the count and share over 16.67 ms, the
+mean, p50/p95/p99 and exact maximum, the count and share above the stated
+slow-frame threshold from `RaceFrameStats`, the
 mean of SIM, RES/HASH/LOG, CULL/RECORD, UPDATE, PRESENT CPU and its ACQUIRE,
 FENCE, CMD and SUBMIT components, and maximum CATCH-UP ticks. It excludes
 countdown, paused, first resumed and finish frames. Statistics reset on
 unpause; the screen states the reset count, so a paused run is identified as
 the current uninterrupted segment. Percentiles use the upper edge of 0.25 ms
 fixed bins through 100 ms and display `>=100` when the selected bin overflows.
+The GPU SCENE page shows its own completed-pair count, first and last game
+ticks, inclusive tick span and resume count. Its distribution covers that
+window, which may be much shorter than the total replay after an unpause.
 The accumulator allocates nothing per frame. Plus during a run shows the same
 partial statistics. Panel mode reports its draw, transfer/copy and panel means
 in place of direct-present timings.

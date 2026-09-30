@@ -1081,16 +1081,9 @@ if(NFSU_BUILD_TESTS)
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/stock_frame_viewer_match.cmake
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
-    # Run the three retail tuned frame pins when NFSU_RETAIL_ROOT is set.
-    # CTest records a skip on machines without the owner's retail files.
-    add_test(NAME nfsu_tuned_frame_retail
-        COMMAND ${CMAKE_COMMAND} -DVIEWER=$<TARGET_FILE:nfsu_viewer>
-                -DTESTS=$<TARGET_FILE:nfsu_stock_frame_tests>
-                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/nfsu_tuned_frame_retail
-                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/tuned_frame_retail.cmake
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
-    set_tests_properties(nfsu_tuned_frame_retail PROPERTIES
-        SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT 180)
+    # The three retail tuned frame pins, nfsu_tuned_frame_retail, are
+    # registered with the other retail checks at the end of this file
+    # (issue #233).
 
     set_tests_properties(
         nfsu_sha256_tests nfsu_screen_text_tests nfsu_stock_frame_tests
@@ -1564,6 +1557,11 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_race_frame_stats_tests)
     add_test(NAME nfsu_race_frame_stats_tests COMMAND nfsu_race_frame_stats_tests)
 
+    add_executable(nfsu_deko_draw_order_tests tests/deko_draw_order_tests.cpp)
+    target_include_directories(nfsu_deko_draw_order_tests PRIVATE include)
+    nfsu_enable_warnings(nfsu_deko_draw_order_tests)
+    add_test(NAME nfsu_deko_draw_order_tests COMMAND nfsu_deko_draw_order_tests)
+
     add_executable(nfsu_audio_tests tests/audio_tests.cpp)
     target_link_libraries(nfsu_audio_tests PRIVATE nfsu_audio)
     nfsu_enable_warnings(nfsu_audio_tests)
@@ -1584,13 +1582,8 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_race_audio_cue_tests)
     add_test(NAME nfsu_race_audio_cue_tests COMMAND nfsu_race_audio_cue_tests)
     set_tests_properties(nfsu_race_audio_cue_tests PROPERTIES TIMEOUT 10)
-    add_test(NAME nfsu_audio_retail
-        COMMAND ${CMAKE_COMMAND}
-            -DAUDIO_DUMP=$<TARGET_FILE:nfsu_audio_dump>
-            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_retail_expected.txt
-            -DWORK=${CMAKE_CURRENT_BINARY_DIR}
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_retail.cmake)
-    set_tests_properties(nfsu_audio_retail PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED")
+    # nfsu_audio_retail is registered with the other retail checks at the
+    # end of this file (issue #233).
     add_executable(nfsu_race_loader_peak_tests tests/race_loader_peak_tests.cpp)
     target_link_libraries(nfsu_race_loader_peak_tests PRIVATE
         nfsu_race_run nfsu_race_audio nfsu_posix_file_system)
@@ -1650,7 +1643,8 @@ list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_racing_line nfsu_path_follow)
 if(NFSU_BUILD_TESTS)
     # The route chunk over synthetic payloads: every decoded field at its
     # offset, the lane table and its enable bytes, and each refusal
-    # (truncated, oversized, malformed). With NFSU_RETAIL_ROOT set it also
+    # (truncated, oversized, malformed). Given the retail root as its one
+    # argument - nfsu_racing_line_retail at the end of this file - it also
     # decodes Tracks/TRACKB1003.lzc read-only and pins the file hash, the
     # route and point counts and a hash over the decoded values.
     add_executable(nfsu_racing_line_tests
@@ -1675,4 +1669,202 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_path_follow_tests)
     add_test(NAME nfsu_path_follow_tests COMMAND nfsu_path_follow_tests)
     set_tests_properties(nfsu_path_follow_tests PROPERTIES TIMEOUT 60)
+endif()
+
+# ---------------------------------------------------------------------------
+# Retail checks in CTest (issue #233)
+# ---------------------------------------------------------------------------
+#
+# Appended as one block, after everything above, so that no list above is
+# reordered; everything issue #233 registers is here. The Switch configure
+# returns near the top of this file and never reaches it.
+#
+# NFSU_RETAIL_ROOT is the game's installation, taken once at configure time
+# and passed to every retail check on its command line - never through the
+# environment. Configured without it, CTest runs one test,
+# nfsu_retail_skipped, that reports SKIPPED and names the variable, so every
+# summary says that the retail half did not run. Configured with it, every
+# retail check below is registered with the label retail, and the two long
+# whole-path checks with retail-full as well; those two are registered only
+# in a Release configure, where a plain ctest runs them.
+#
+# The read-only rule is a fixture: nfsu_retail_manifest_before lists every
+# file and directory under the root (path, size, modification time) before
+# the first retail test, and nfsu_retail_manifest_after lists it again after
+# the last and fails on any difference. Every retail test requires the
+# fixture, so CTest runs the pair around exactly these tests, including when
+# they are picked by label. Every file the checks write is under
+# ${CMAKE_CURRENT_BINARY_DIR}/nfsu_retail, so two build directories never
+# share a name (issue #122); nothing is written under the root. The replay
+# check, the tuned frames and the audio check also write into a directory of
+# their own process, named with a random suffix. The manifest cannot be: its
+# setup and its cleanup are two processes CTest starts separately and passes
+# nothing between, so the one name both can find is fixed in the build tree.
+# tests/retail_manifest.cmake says what that means for two ctest runs in one
+# build directory.
+set(NFSU_RETAIL_ROOT "" CACHE PATH
+    "The retail game installation the retail CTest checks read (read-only)")
+
+# The executables the retail checks drive take their path arguments through
+# nfsu_arg_path, so a build tree or a root outside ASCII - this repository's
+# own checkout path is not ASCII - opens as any other (docs/PATH_ARGUMENTS.md).
+target_link_libraries(nfsu_race PRIVATE nfsu_arg_path)
+if(NFSU_BUILD_TESTS)
+    foreach(nfsu_retail_driver
+            nfsu_race_run_tests nfsu_race_loader_peak_tests
+            nfsu_track_loader_peak_tests nfsu_track_slice_tests
+            nfsu_racing_line_tests nfsu_race_audio_tests)
+        target_link_libraries(${nfsu_retail_driver} PRIVATE nfsu_arg_path)
+    endforeach()
+endif()
+
+if(NFSU_BUILD_TESTS)
+    if(NFSU_RETAIL_ROOT STREQUAL "")
+        add_test(NAME nfsu_retail_skipped
+            COMMAND ${CMAKE_COMMAND} -E echo
+                "SKIPPED: NFSU_RETAIL_ROOT is not set; configure with -DNFSU_RETAIL_ROOT=<game installation> to run the retail checks")
+        set_tests_properties(nfsu_retail_skipped PROPERTIES
+            SKIP_REGULAR_EXPRESSION "SKIPPED" LABELS retail)
+    else()
+        if(NOT IS_DIRECTORY "${NFSU_RETAIL_ROOT}")
+            message(FATAL_ERROR "NFSU_RETAIL_ROOT is not a directory: ${NFSU_RETAIL_ROOT}")
+        endif()
+        set(nfsu_retail_work ${CMAKE_CURRENT_BINARY_DIR}/nfsu_retail)
+
+        add_test(NAME nfsu_retail_manifest_before
+            COMMAND ${CMAKE_COMMAND} -DMODE=before
+                    "-DROOT=${NFSU_RETAIL_ROOT}"
+                    -DMANIFEST=${nfsu_retail_work}/manifest-before.txt
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/retail_manifest.cmake)
+        add_test(NAME nfsu_retail_manifest_after
+            COMMAND ${CMAKE_COMMAND} -DMODE=after
+                    "-DROOT=${NFSU_RETAIL_ROOT}"
+                    -DMANIFEST=${nfsu_retail_work}/manifest-before.txt
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/retail_manifest.cmake)
+        set_tests_properties(nfsu_retail_manifest_before PROPERTIES
+            FIXTURES_SETUP nfsu_retail_read_only LABELS retail
+            TIMEOUT 600)
+        set_tests_properties(nfsu_retail_manifest_after PROPERTIES
+            FIXTURES_CLEANUP nfsu_retail_read_only LABELS retail
+            TIMEOUT 600)
+
+        # The replay, the command cache against the reference path, every
+        # sampled frame's draws and uploads, the per-step stream and result
+        # pins (RaceRun::matches_event1_replay) and the persistent and GPU
+        # budgets: docs/SWITCH_RACE.md.
+        add_test(NAME nfsu_race_run_retail
+            COMMAND nfsu_race_run_tests
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
+                "${NFSU_RETAIL_ROOT}" --sample-draws)
+        # The fixed-pose frames' retained C++ allocations, over the cached and
+        # the reference path: docs/SWITCH_PERFORMANCE.md. Its timings are
+        # printed, never asserted.
+        add_test(NAME nfsu_race_run_retail_profile
+            COMMAND nfsu_race_run_tests
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
+                "${NFSU_RETAIL_ROOT}" --profile)
+        add_test(NAME nfsu_race_run_retail_profile_reference
+            COMMAND nfsu_race_run_tests
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
+                "${NFSU_RETAIL_ROOT}" --profile-reference)
+        # tools/race_replay_check.py over this build's nfsu_race: the 11 race
+        # frame pins, the result lines, the state file, the 120 Hz trajectory
+        # and the regenerated recording: docs/DESKTOP_RACE.md.
+        add_test(NAME nfsu_race_replay_check
+            COMMAND ${CMAKE_COMMAND}
+                    -DPYTHON=${Python3_EXECUTABLE}
+                    -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/race_replay_check.py
+                    -DRACE=$<TARGET_FILE:nfsu_race>
+                    "-DROOT=${NFSU_RETAIL_ROOT}"
+                    -DOUT_PARENT=${nfsu_retail_work}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/retail_replay_check.cmake)
+        # The stock car's recorded draws against the CPU reference trace in
+        # both material modes, and the stock frame pins of
+        # include/nfsu/stock_frame.h: docs/DRAW_COMMANDS.md.
+        add_test(NAME nfsu_draw_commands_retail
+            COMMAND nfsu_draw_commands_retail "${NFSU_RETAIL_ROOT}")
+        # The same two frames through the application's calls, compared with
+        # the same constants: docs/SWITCH_BUILD.md.
+        add_test(NAME nfsu_stock_frame_retail
+            COMMAND ${CMAKE_COMMAND} -DTESTS=$<TARGET_FILE:nfsu_stock_frame_tests>
+                    "-DROOT=${NFSU_RETAIL_ROOT}"
+                    -DHEADER=${CMAKE_CURRENT_SOURCE_DIR}/include/nfsu/stock_frame.h
+                    -DPAINTED=0
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/retail_stock_frame.cmake)
+        add_test(NAME nfsu_stock_frame_painted_retail
+            COMMAND ${CMAKE_COMMAND} -DTESTS=$<TARGET_FILE:nfsu_stock_frame_tests>
+                    "-DROOT=${NFSU_RETAIL_ROOT}"
+                    -DHEADER=${CMAKE_CURRENT_SOURCE_DIR}/include/nfsu/stock_frame.h
+                    -DPAINTED=1
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/retail_stock_frame.cmake)
+        # The 48 MiB loader ceilings: the whole race load and the track slice
+        # load, every allocation counted: docs/SWITCH_RACE.md and
+        # docs/SWITCH_TRACK.md.
+        add_test(NAME nfsu_race_loader_peak_retail
+            COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}")
+        add_test(NAME nfsu_track_loader_peak_retail
+            COMMAND nfsu_track_loader_peak_tests "${NFSU_RETAIL_ROOT}")
+        # The event 1 track slice: the spillover and texture pins and the
+        # sampled path's frame, contact and draw pins: docs/SWITCH_TRACK.md.
+        add_test(NAME nfsu_track_slice_retail
+            COMMAND nfsu_track_slice_tests "${NFSU_RETAIL_ROOT}")
+        # The shipped racing line of track 1003: docs/RACING_LINE.md.
+        add_test(NAME nfsu_racing_line_retail
+            COMMAND nfsu_racing_line_tests "${NFSU_RETAIL_ROOT}")
+        # The bounded index of the race music: docs/RACE_AUDIO.md.
+        add_test(NAME nfsu_race_audio_retail
+            COMMAND nfsu_race_audio_tests "${NFSU_RETAIL_ROOT}")
+        # The three tuned 240SX frame pins through nfsu_viewer and the
+        # Switch CPU path (issue #229): docs/INSTALLED_PARTS.md.
+        add_test(NAME nfsu_tuned_frame_retail
+            COMMAND ${CMAKE_COMMAND} -DVIEWER=$<TARGET_FILE:nfsu_viewer>
+                    -DTESTS=$<TARGET_FILE:nfsu_stock_frame_tests>
+                    -DWORK=${nfsu_retail_work}/tuned-frame
+                    "-DROOT=${NFSU_RETAIL_ROOT}"
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/tuned_frame_retail.cmake)
+        # The retail files each set of the asset check names, against their
+        # pinned sizes and SHA-256s; it exits 0 only when every file matches:
+        # docs/SWITCH_ASSETS.md.
+        foreach(nfsu_asset_set first-lap stock-car event-1)
+            add_test(NAME nfsu_probe_asset_check_retail_${nfsu_asset_set}
+                COMMAND nfsu_probe asset-check "${NFSU_RETAIL_ROOT}"
+                        --set ${nfsu_asset_set})
+        endforeach()
+        # The retail PCM pin of tests/audio_retail_expected.txt:
+        # docs/AUDIO_FORMATS.md.
+        add_test(NAME nfsu_audio_retail
+            COMMAND ${CMAKE_COMMAND}
+                -DAUDIO_DUMP=$<TARGET_FILE:nfsu_audio_dump>
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_retail_expected.txt
+                -DWORK=${nfsu_retail_work}
+                "-DRETAIL_ROOT=${NFSU_RETAIL_ROOT}"
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_retail.cmake)
+        set_tests_properties(
+            nfsu_race_run_retail nfsu_race_run_retail_profile
+            nfsu_race_run_retail_profile_reference nfsu_race_replay_check
+            nfsu_draw_commands_retail nfsu_stock_frame_retail
+            nfsu_stock_frame_painted_retail nfsu_race_loader_peak_retail
+            nfsu_track_loader_peak_retail nfsu_track_slice_retail
+            nfsu_racing_line_retail nfsu_race_audio_retail nfsu_audio_retail
+            nfsu_tuned_frame_retail nfsu_probe_asset_check_retail_first-lap
+            nfsu_probe_asset_check_retail_stock-car
+            nfsu_probe_asset_check_retail_event-1
+            PROPERTIES LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only
+            TIMEOUT 1800)
+
+        # The whole race with every frame's cached commands compared with the
+        # reference path, and every sample of the track slice's path.
+        if(CMAKE_BUILD_TYPE STREQUAL "Release")
+            add_test(NAME nfsu_race_run_retail_full_draws
+                COMMAND nfsu_race_run_tests
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
+                    "${NFSU_RETAIL_ROOT}" --full-draws)
+            add_test(NAME nfsu_track_slice_retail_full
+                COMMAND nfsu_track_slice_tests "${NFSU_RETAIL_ROOT}" --full)
+            set_tests_properties(
+                nfsu_race_run_retail_full_draws nfsu_track_slice_retail_full
+                PROPERTIES LABELS "retail;retail-full"
+                FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 3600)
+        endif()
+    endif()
 endif()

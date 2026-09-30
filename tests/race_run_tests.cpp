@@ -2,7 +2,9 @@
 #include "nfsu/car_parts.h"
 #include "nfsu/posix_file_system.h"
 #include "nfsu/draw_execution.h"
+#include "nfsu/deko_gpfifo_budget.h"
 #include "nfsu/platform_desktop.h"
+#include "nfsu/arg_path.h"
 #include <fstream>
 #include <iostream>
 #include <algorithm>
@@ -77,11 +79,16 @@ int main(int argc, char** argv) {
         clock.add(1000000); for (int i = 0; i < 8; ++i) require(clock.take(), "catch-up tick missing");
         require(clock.debt_ticks() == 52, "clock discarded slow-frame debt");
         clock.reset(); require(!clock.take(), "clock reset failed");
+        require(deko_track_list_calls(65) == 2 &&
+                deko_frame_gpfifo_bound(deko_track_list_calls(2047)) < kDekoGpfifoRingEntries &&
+                deko_frame_gpfifo_bound(1828) > kDekoGpfifoRingEntries,
+                "per-draw prepared calls would overflow the Switch GPFIFO ring");
         RaceReplay replay; GamepadFrame pad;
         require(!replay.load("NFSU_RACE_INPUT 1\n1 0 0\n", error), "unverified replay accepted");
         require(!replay.next(0, pad, error), "empty replay accepted");
         require(argc >= 2, "recording argument missing");
-        std::ifstream in(argv[1], std::ios::binary);
+        require(check_arguments(argc, argv, 1, error), error);
+        std::ifstream in(argument_path(argv[1]), std::ios::binary);
         const std::string text((std::istreambuf_iterator<char>(in)), {});
         require(bool(in) && replay.load(text, error), error);
         require(!replay.next(1, pad, error), "out of order replay tick accepted");
@@ -151,7 +158,7 @@ int main(int argc, char** argv) {
         require(!combine_race_commands(fixture, other, joined, error), "combined draw overflow accepted");
         std::cout << "PASS: fixed clock, exact replay cursor, refusal and combined draw guards\n";
         if (argc == 2) return 0;
-        const std::filesystem::path root(argv[2]);
+        const std::filesystem::path root = argument_path(argv[2]);
         RaceGpuScene scene;
         RaceRun race;
         require(race.prepare_metadata(root, error), error);
@@ -185,6 +192,21 @@ int main(int argc, char** argv) {
                 kPersistentBudgetPlaceholder, "persistent payload over budget");
         RaceGpuFrame frame;
         require(scene.frame(race.session(), frame, error), error);
+        require(frame.commands.package_identity() != nullptr &&
+                frame.commands.static_track_draw_count() == frame.track_draws &&
+                frame.commands.static_track_instance_count() == scene.track().scene.instances.size() &&
+                frame.commands.static_track_instance_count() <= 65536 &&
+                frame.commands.static_track_definition_count() <= 4096,
+                "prepared static package identity or instance count changed");
+        std::vector<const RecordedDraw*> static_by_group;
+        for (std::size_t i = 0; i < frame.commands.static_track_definition_count(); ++i) {
+            const auto& definition = frame.commands.static_track_definition(i);
+            require(definition.group < 65536, "static track group exceeds Switch slot table");
+            if (definition.group >= static_by_group.size())
+                static_by_group.resize(definition.group + 1, nullptr);
+            require(!static_by_group[definition.group], "duplicate static track group");
+            static_by_group[definition.group] = &definition;
+        }
         const auto& const_commands = frame.commands;
         unsigned owning_refusals = 0;
         try { (void)frame.commands.owning_draws(); }
@@ -297,6 +319,14 @@ int main(int argc, char** argv) {
                 for (std::size_t i = 0; i < frame.commands.draw_count(); ++i) {
                     const auto selected = frame.commands.draw_view(i);
                     const auto& a = selected.definition; const auto& b = reference.commands.owning_draws()[i];
+                    if (i < frame.commands.static_track_draw_count()) {
+                        require(a.group < static_by_group.size() &&
+                                static_by_group[a.group] == &a && selected.track_instance &&
+                                selected.instance < frame.commands.static_track_instance_count() &&
+                                &selected.placement == &frame.commands.static_track_instance(selected.instance) &&
+                                &selected.material == &a.material,
+                                "selected track draw escaped its static package");
+                    } else require(!selected.track_instance, "car draw entered static track range");
                     require(selected.diagnostic_name() == b.name && a.group == b.group && a.mesh == b.mesh && selected.instance == b.instance &&
                         a.vertex_resource == b.vertex_resource && a.index_resource == b.index_resource &&
                         a.texture_resource == b.texture_resource && a.first_vertex == b.first_vertex &&
@@ -312,6 +342,9 @@ int main(int argc, char** argv) {
                         "cached ordered draw differs from reference");
                 }
                 require(frame.track_draws > 0 && frame.car_draws == 74, "missing track/car commands");
+                require(deko_frame_gpfifo_bound(deko_track_list_calls(
+                            static_cast<std::uint32_t>(frame.track_draws))) < kDekoGpfifoRingEntries,
+                        "selected track draws exceed GPFIFO call budget");
                 if (tick == 13128) {
                     require(race.session().animation().braking, "animation guard tick is not braking");
                     StockFrameInputs inputs;
