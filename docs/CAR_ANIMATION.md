@@ -29,7 +29,7 @@ retail `speed.exe` identified by SHA-256 in `PART_PLACEMENT.md`.
   (`0x0056F593..0x0056F5D8`). Its relationship to the lamp control is
   untraced. The collector at `0x0056BDB0..0x0056C0DC` also records
   `LEFT_HEADLIGHT`, `RIGHT_HEADLIGHT` and brakelight markers, but the
-  consumer that draws lamp glows has not been identified.
+  consumer is traced further in [LIGHTS_GLOWS.md](LIGHTS_GLOWS.md).
 
 ## Reproduction and approximations
 
@@ -59,8 +59,10 @@ is held, including during countdown and reverse assist. The lamp colours
 and intensities are explicit approximations. The CPU renderer and deko3d
 fragment shaders use the same integer brightening rule on the existing
 lamp mesh texels; they do not claim the game's glow sprite, halo or beam.
-They add no asset or new texture to the repository. The shader's spare
-material `alpha.w` lane carries the per-instance lamp mode without changing
+They add no asset or new texture to the repository. The optional marker-driven
+sprites described in [LIGHTS_GLOWS.md](LIGHTS_GLOWS.md) are a separate
+approximation. The shader's spare material `alpha.w` lane carries the
+per-instance lamp mode without changing
 the uniform size or the upload budget.
 
 `PART_PLACEMENT.md` keeps the unverified x87 rounding, the alternative

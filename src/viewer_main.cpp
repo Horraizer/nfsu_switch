@@ -78,10 +78,12 @@ void print_usage() {
         << "                       is written first and is never affected.\n"
         << "Retail material state (docs/MATERIALS.md). Every option below\n"
         << "the first one needs --material-state retail:\n"
-        << "  --material-state M   off (default) or retail. retail applies the\n"
+        << "  --material-state M   off or retail (default for --stock-car). retail applies the\n"
+        << "  --car-shading M      on/off static-environment approximation (default off)\n"
         << "                       texture-info alpha test and blend selection,\n"
         << "                       the coefficient gates and the bounded\n"
         << "                       transparent draw order\n"
+        << "Retail material probes below require --material-state retail:\n"
         << "  --material-alpha M,R the undecoded diffuse alpha lane, each\n"
         << "                       0..16, default 1,0, which leaves the source\n"
         << "                       alpha equal to the texel alpha\n"
@@ -92,8 +94,6 @@ void print_usage() {
         << "                       each 0..255, default 0,0,0\n"
         << "  --environment-global S  on (default) or off, the runtime global\n"
         << "                       the coefficient upload also tests.\n"
-        << "                       No value here is a retail value: the retail\n"
-        << "                       coefficients are not decoded.\n"
         << "Mesh selection (repeatable, may be mixed; default: all meshes):\n"
         << "  --mesh-index N       the mesh at source position N\n"
         << "  --mesh-name NAME     the one mesh whose stored name is exactly NAME\n"
@@ -795,7 +795,7 @@ int parse_options(
         static const std::set<std::string> valued = {
             "--width", "--height", "--alpha-cutoff", "--yaw", "--pitch",
             "--distance", "--fov", "--near", "--far", "--target", "--cull",
-            "--shading", "--material-state", "--material-alpha", "--environment",
+            "--shading", "--car-shading", "--material-state", "--material-alpha", "--environment",
             "--environment-color", "--environment-global", "--stock-car",
             "--stock-parts", "--stock-lod", "--stock-pass"};
         if (valued.count(name) == 0) {
@@ -850,6 +850,9 @@ int parse_options(
             } else {
                 ok = false;
             }
+        } else if (name == "--car-shading") {
+            if (value!="on" && value!="off") { std::cerr << "error: --car-shading needs on or off\n"; return 2; }
+            options.car_shading=value=="on";
         } else if (name == "--material-state") {
             if (value == "off") {
                 options.material_state = nfsu::MaterialStateMode::off;
@@ -926,6 +929,10 @@ int parse_options(
             return 1;
         }
     }
+    // A stock assembly uses the same material state as the retail car draw.
+    // Explicit --material-state off remains available for diagnostics.
+    if (stock.enabled && seen.count("--material-state") == 0)
+        options.material_state = nfsu::MaterialStateMode::retail;
     // A coefficient without the mode would be a silent no-op.
     if (options.material_state == nfsu::MaterialStateMode::off) {
         static const std::set<std::string> retail_only = {
@@ -1587,6 +1594,42 @@ int main(int argc, char** argv) {
                                         scene, error)) {
         std::cerr << "error: " << error << '\n';
         return 2;
+    }
+
+    if (options.car_shading) {
+        auto installed=stock.enabled ? stock_report.slots[30].record : nfsu::kNoCarPart;
+        if (stock.enabled && installed==nfsu::kNoCarPart) {
+            const auto name=stock_types.records[stock_report.car_type].base_paint_part_hash;
+            installed=nfsu::find_car_part(stock_parts,nfsu::kAnyCarType,30,name,
+                                           nfsu::kNoCarPart,nfsu::kAnyUpgradeLevel);
+        }
+        bool found=false;
+        for (const auto& bytes:shared_bytes) {
+            std::vector<nfsu::CarMaterialRecord> records;
+            if (nfsu::parse_car_materials(bytes.data(),bytes.size(),records,error) && !records.empty()) {
+                const nfsu::CarPartDatabase* parts=&stock_parts;
+                nfsu::CarPartDatabase skin_parts;
+                if (!stock.enabled && skin.enabled) {
+                    // The color-only skin still needs the GLOBALB swatches.
+                    // Use the same shared source that supplied the materials.
+                    skin_parts=nfsu::parse_car_part_database(bytes.data(),bytes.size());
+                    if (!skin_parts.ok()) {
+                        std::cerr << "error: car shading needs GLOBALB.BUN part database\n";
+                        return 2;
+                    }
+                    parts=&skin_parts;
+                }
+                const auto paint=nfsu::select_car_paint_material_hash(*parts,
+                    installed,
+                    skin.enabled ? std::optional<std::uint32_t>(skin.selection.base_color)
+                                 : std::nullopt);
+                if (!nfsu::apply_car_materials(scene,bytes.data(),bytes.size(),paint,error)) {
+                    std::cerr << "error: " << error << '\n'; return 2;
+                }
+                found=true; break;
+            }
+        }
+        if (!found) { std::cerr << "error: car shading needs GLOBALB.BUN material records\n"; return 2; }
     }
 
     nfsu::Frame frame;

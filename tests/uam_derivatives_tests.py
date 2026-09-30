@@ -72,7 +72,7 @@ class Derivatives(unittest.TestCase):
         struct.pack_into("<2I", blob, 36, 0, 0)
         self.assertEqual(fix.process(bytes(blob), "VERT\n"), bytes(blob))
 
-    def test_unlit_fragment_is_unchanged(self):
+    def test_fragment_without_derivatives(self):
         blob = bytearray(fixture())
         struct.pack_into("<2I", blob, 36, 0, 0)
         self.assertEqual(fix.process(bytes(blob), "FRAG\n0: END\n"), bytes(blob))

@@ -22,6 +22,8 @@
 #include <stdexcept>
 
 namespace {
+const char* selected_car_label = "STOCK";
+const char* car_shading_label="OFF";
 using namespace nfsu;
 constexpr unsigned width = 1280, height = 720;
 double ms(std::uint64_t ticks) { return armTicksToNs(ticks)/1000000.0; }
@@ -202,9 +204,9 @@ struct ProfileResultContext {
 };
 using ProfilePages = std::vector<std::vector<std::string>>;
 ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
-                           bool replay_mode, const RaceFrameStats& frames,
-                           unsigned unpause_resets, const ProfileResultContext& context,
-                           const std::string& failure) {
+                           bool replay_mode, bool wet_road_reflections,
+                           const RaceFrameStats& frames, unsigned unpause_resets,
+                           const ProfileResultContext& context, const std::string& failure) {
     ProfilePages pages;
     std::vector<std::string> titles;
     auto add_page = [&](const char* title, std::vector<std::string> rows) {
@@ -342,9 +344,11 @@ ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
     }
     for (std::size_t i = 0; i < pages.size(); ++i) {
         auto& rows = pages[i];
-        rows.insert(rows.begin(),format("BUILD %.12s | %s | %s | SKY %s | PAGE %zu/%zu",
-            NFSU_RACE_BUILD_TAG,mode,titles[i].c_str(),context.sky,i+1,pages.size()));
-        rows.push_back("D-pad LEFT/RIGHT changes page | + exits");
+        rows.insert(rows.begin(),format("%.12s %s %s SKY %s WET %s %zu/%zu",
+            NFSU_RACE_BUILD_TAG,mode,titles[i].c_str(),context.sky,
+            wet_road_reflections ? "ON" : "OFF",i+1,pages.size()));
+        rows.push_back(std::string("CAR ") + selected_car_label + " | LEFT/RIGHT page | + exits");
+        rows.push_back(std::string("CAR SHADING ")+car_shading_label+" | LEFT/RIGHT page | + exits");
     }
     return pages;
 }
@@ -366,9 +370,10 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
                  bool replay_mode, bool panel_mode, bool paused,
                  const RaceFrameStats& stats, unsigned unpause_resets,
                  const std::vector<std::string>& last_perf, const std::string& failure,
-                 const ProfileResultContext* profile = nullptr) {
+                 bool wet_road_reflections, const ProfileResultContext* profile = nullptr) {
     if (profile) {
-        const auto pages = profile_pages(race,replay,replay_mode,stats,unpause_resets,*profile,failure);
+        const auto pages = profile_pages(race,replay,replay_mode,wet_road_reflections,
+                                         stats,unpause_resets,*profile,failure);
         std::size_t page = 0;
         while (appletMainLoop()) {
             screen.show(pages[page]);
@@ -422,7 +427,11 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
 // --sky on draws the sky after the opaque world; off omits it; early is the
 // issue 227 diagnostic that submits it with the opaque pass, as before.
 void run(const std::string& root, bool replay_mode, bool panel_mode, bool profile_frame,
-         const std::string& sky, Screen& screen, PadState& pad) {
+          bool particles_enabled, const std::string& sky, bool tuned, bool glows,
+          bool car_shading, bool wet_road_reflections,
+          Screen& screen, PadState& pad) {
+    selected_car_label = tuned ? "TUNED" : "STOCK";
+    car_shading_label=car_shading ? "ON static" : "OFF";
     require(R_SUCCEEDED(romfsInit()), "cannot mount race shader/replay RomFS");
     struct Guard { ~Guard() { romfsExit(); } } guard;
     std::string error;
@@ -432,14 +441,20 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         const std::string text((std::istreambuf_iterator<char>(in)), {});
         require(bool(in) && replay.load(text,error), "bundled replay: "+error);
     }
-    RaceGpuScene scene; RaceRun race; HeapUsage heap;
+    RaceGpuScene scene; scene.set_particles_enabled(particles_enabled);
+    RaceRun race; HeapUsage heap;
+    std::printf("PARTICLES %s\n",particles_enabled?"ON":"OFF");
     require(scene.set_sky(sky != "off"), "sky mode set after scene load");
+    scene.set_wet_road_reflections(wet_road_reflections);
     const auto before = mallinfo(); heap.begin(before.uordblks,before.arena);
     Progress progress(screen,pad,heap);
     const auto load_start = armGetSystemTick();
     require(race.prepare_metadata(root,error,&progress),error);
-    require(scene.load(posix_file_system(), root, error, &progress, &progress), error);
-    screen.show({"ASSETS PASS. Preparing event 1, stock 240SX and race course..."});
+    require(scene.load(posix_file_system(), root, error, &progress, &progress,
+                       tuned, glows, car_shading), error);
+    screen.show({std::string("ASSETS PASS. Preparing event 1, ") +
+                 selected_car_label + " 240SX and race course..."});
+    screen.show({car_shading ? "CAR SHADING ON: static environment approximation" : "CAR SHADING OFF"});
     progress.checkpoint("race course");
     require(race.start(root,scene.track(),error,&progress),error);
     progress.checkpoint("race course prepared");
@@ -525,6 +540,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             const double tick_ms = ms(armGetSystemTick()-stage);
             simulation += tick_ms; simulation_ticks[ticks] = tick_ms;
             stage = armGetSystemTick(); require(race.commit(error),error);
+            scene.advance_particles(race.session());
             sound.on_tick(audio::race_audio_snapshot(race.session()));
             if (replay_mode) std::fputs(race.step_line().c_str(),stdout);
             residency += ms(armGetSystemTick()-stage);
@@ -579,8 +595,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                 draw,transfer,readback,previous_hud));
             lines.push_back(format("Previous PANEL FRAME %.2f ms (>25 ms %s) | debt %llu ticks | load %.0f ms | initial upload %.0f ms",
                 previous_frame,previous_frame>RaceFrameStats::kOverThresholdMs?"OVER":"WITHIN",(unsigned long long)clock.debt_ticks(),load_ms,initial_upload));
-            lines.push_back(format("DRAWS %zu track + %zu car | TRIANGLES %llu | far %.2f | visible %zu | unplaced %llu",
-                frame.track_draws,frame.car_draws,(unsigned long long)frame.triangles,frame.far_plane,frame.visible,(unsigned long long)frame.unplaced));
+            lines.push_back(format("DRAWS %zu track + %zu car + %zu glow | TRIANGLES %llu | far %.2f | visible %zu | unplaced %llu",
+                frame.track_draws,frame.car_draws,frame.glow_draws,(unsigned long long)frame.triangles,frame.far_plane,frame.visible,(unsigned long long)frame.unplaced));
             lines.push_back(format("RESIDENCY %zu sections | CPU stream %llu / 50331648 | persistent payload %llu / 67108864",
                 race.resident_count(),(unsigned long long)scene.track().streaming_bytes,(unsigned long long)persistent));
             lines.push_back(format("Command cache metadata EST %llu / 8388608 bytes (immutable track templates)",
@@ -660,8 +676,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                 frame_ms,frame_ms>RaceFrameStats::kOverThresholdMs?"OVER":"WITHIN",simulation,residency,record,upload,present_cpu,
                 present.acquire_ms,present.fence_wait_ms,measured.command_ms,present.submit_ms,
                 ticks,(unsigned long long)clock.debt_ticks());
-            std::printf("PERF %.1f KM/H gear %d pad %s | DRAWS %zu track + %zu car | TRIANGLES %llu | far %.2f | visible %zu | unplaced %llu | RESIDENCY %zu | GPU %llu / 268435456 | resources %zu\n",
-                speed,int(car.gear),connected?"CONNECTED":"DISCONNECTED - NEUTRAL",frame.track_draws,frame.car_draws,
+            std::printf("PERF %.1f KM/H gear %d pad %s | DRAWS %zu track + %zu car + %zu glow | TRIANGLES %llu | far %.2f | visible %zu | unplaced %llu | RESIDENCY %zu | GPU %llu / 268435456 | resources %zu\n",
+                speed,int(car.gear),connected?"CONNECTED":"DISCONNECTED - NEUTRAL",frame.track_draws,frame.car_draws,frame.glow_draws,
                 (unsigned long long)frame.triangles,frame.far_plane,frame.visible,
                 (unsigned long long)frame.unplaced,race.resident_count(),
                 (unsigned long long)renderer.gpu_bytes(),frame.commands.resource_table().resources.size());
@@ -747,9 +763,9 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                 renderer.memory_usage(),renderer.gpfifo_usage(),
                 sky == "off" ? "OFF" : sky == "early" ? "EARLY" : "ON"};
             show_result(screen,pad,race,replay,replay_mode,panel_mode,paused,
-                        stats,unpause_resets,last_perf,failure,&context);
+                        stats,unpause_resets,last_perf,failure,wet_road_reflections,&context);
         } else show_result(screen,pad,race,replay,replay_mode,panel_mode,paused,
-                           stats,unpause_resets,last_perf,failure);
+                           stats,unpause_resets,last_perf,failure,wet_road_reflections);
     }
 }
 } // namespace
@@ -761,19 +777,40 @@ int main(int argc, char** argv) {
         Screen screen; if (!screen.open()) return 1;
         try {
             std::string root = "sdmc:/nfsu";
-            bool replay = false, panel = false, profile_frame = false, selected = false, root_seen = false;
+            bool tuned = false;
+            bool replay = false, panel = false, profile_frame = false;
+            bool particles_enabled = true, selected = false, root_seen = false;
+            bool car_shading=false;
             std::string sky = "on";
+            bool glows = false;
+            bool wet_road_reflections = false;
             for (int i = 1; i < argc; ++i) {
                 const std::string arg = argv[i];
                 if (arg == "--replay") { replay = true; selected = true; }
                 else if (arg == "--live") { replay = false; selected = true; }
+                else if (arg == "--tuned") tuned = true;
                 else if (arg == "--panel") panel = true;
                 else if (arg == "--profile-frame") profile_frame = true;
+                else if (arg == "--particles=on") particles_enabled = true;
+                else if (arg == "--particles=off") particles_enabled = false;
+                else if (arg=="--car-shading" && i+1<argc) {
+                    const std::string mode=argv[++i];
+                    require(mode=="on" || mode=="off","--car-shading needs on or off");
+                    car_shading=mode=="on";
+                }
                 else if (arg == "--sky" && i+1 < argc &&
                          (std::strcmp(argv[i+1],"on") == 0 || std::strcmp(argv[i+1],"off") == 0 ||
                           std::strcmp(argv[i+1],"early") == 0)) sky = argv[++i];
+                else if (arg == "--glows") glows = true;
+                else if (arg == "--wet-road-reflections") {
+                    if (i + 1 >= argc) throw std::runtime_error("--wet-road-reflections needs on or off");
+                    const std::string value = argv[++i];
+                    if (value == "on") wet_road_reflections = true;
+                    else if (value == "off") wet_road_reflections = false;
+                    else throw std::runtime_error("--wet-road-reflections must be on or off");
+                }
                 else if (!root_seen && arg.rfind("--",0) != 0) { root = arg; root_seen = true; }
-                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--sky on|off|early]");
+                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--sky on|off|early] [--particles=on|--particles=off] [--tuned] [--glows] [--car-shading on|off] [--wet-road-reflections on|off]");
             }
             require(!(panel && profile_frame),"--profile-frame requires direct presentation");
             while (!selected && appletMainLoop()) {
@@ -782,17 +819,19 @@ int main(int argc, char** argv) {
                 if (down & HidNpadButton_A) selected = true;
                 if (down & HidNpadButton_X) { selected = true; replay = true; }
                 if ((down & HidNpadButton_Y) && !profile_frame) panel = !panel;
-                screen.show({"NFSU #196 - EVENT 1 / STOCK 240SX / TWO LAPS",format("BUILD %.12s",NFSU_RACE_BUILD_TAG),
+                screen.show({tuned ? "EVENT 1 / TUNED 240SX / TWO LAPS" : "NFSU #196 - EVENT 1 / STOCK 240SX / TWO LAPS",format("BUILD %.12s",NFSU_RACE_BUILD_TAG),
                     "A: drive with Joy-Con / Pro Controller", "X: replay the pinned desktop event1.txt", "+: exit",
                     profile_frame ? "PROFILE FRAME: direct only; Y panel toggle disabled" :
                         std::string("Y: diagnostic panel ")+(panel?"ON":"OFF")+" (readback and CPU text cost)",
+                    std::string("PARTICLES ")+(particles_enabled?"ON":"OFF"),
                     "The #47 first-lap check runs before track streaming. Assets: "+root,
                     "Release all controls during countdown to clear the #59 hot-plug latch.",
                     "Direct mode has no in-race HUD yet; choose PANEL for live driving evidence.",
                     "During the race: Y pauses, + opens results with driving-frame statistics.",
                     "No game data is bundled or written. Replay input is bundled in RomFS."});
             }
-            if (selected) run(root,replay,panel,profile_frame,sky,screen,pad);
+            if (selected) run(root,replay,panel,profile_frame,particles_enabled,sky,
+                              tuned,glows,car_shading,wet_road_reflections,screen,pad);
         } catch (const Cancel&) {
         } catch (const std::exception& e) {
             std::printf("ERROR: %s\n",e.what()); std::fflush(stdout);

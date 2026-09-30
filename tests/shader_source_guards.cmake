@@ -92,6 +92,17 @@ foreach(manifest IN LISTS manifests)
     endif()
 endforeach()
 
+# F2 of PR #242: wet (bit 1) and producer (bit 2) must not enable
+# flat lighting (bit 0), including on untextured fallback draws.
+foreach(stage fallback.frag.glsl textured.frag.glsl textured_opaque.frag.glsl)
+    file(READ "${SHADERS}/${stage}" lighting_source)
+    string(FIND "${lighting_source}" "(frame.options.z & 1u) != 0u && has_normal" flat_bit)
+    string(FIND "${lighting_source}" "frame.options.z != 0u" whole_word)
+    if(flat_bit LESS 0 OR NOT whole_word LESS 0)
+        message(FATAL_ERROR "${stage}: flat lighting must test only options.z bit 0")
+    endif()
+endforeach()
+
 # The regular textured shader must allow early depth testing. The cutout
 # shader remains available for material alpha tests and diagnostic cutoffs.
 file(READ "${SHADERS}/textured_opaque.frag.glsl" opaque_source)
@@ -100,6 +111,11 @@ if(opaque_source MATCHES "discard[ \t]*;" OR
    NOT cutout_source MATCHES "discard[ \t]*;")
     message(FATAL_ERROR "textured shader discard split is missing")
 endif()
+foreach(source IN ITEMS opaque_source cutout_source)
+    if(NOT ${source} MATCHES "material[.]fallback[.]w < 1[.]5")
+        message(FATAL_ERROR "textured shader lost the unlit particle gate")
+    endif()
+endforeach()
 # The sky keeps a diagnostic discard, so it must test depth before shading or
 # every covered sky fragment is shaded before the world rejects it (#227).
 file(READ "${SHADERS}/sky.frag.glsl" sky_source)
@@ -197,12 +213,12 @@ nfsu_case("a vertex attribute widened in the stage source"
 
 # Two attributes of one type swapped: the locations and types still agree,
 # and only the names say what moved.
-nfsu_case("two vertex attributes of one type swapped"
+nfsu_case("two vertex attribute names swapped"
     placed.vert.glsl track_textured.manifest
     "vertex attribute location 0: the manifest names it inPosition, placed.vert.glsl declares inColor"
     "layout (location = 0) in vec3 inPosition"
     "layout (location = 0) in vec3 inColor"
-    "layout (location = 1) in vec3 inColor"
+    "layout (location = 1) in vec4 inColor"
     "layout (location = 1) in vec3 inPosition")
 
 nfsu_case("a texture binding moved in the stage source"
@@ -245,8 +261,8 @@ nfsu_case("a varying's interpolation changed in the stage source"
 nfsu_case("a flat qualifier written before layout in the stage source"
     textured.frag.glsl car_textured.manifest
     "qualifies a declaration before its layout(...)"
-    "layout (location = 1) in vec3 inColor"
-    "flat layout (location = 1) in vec3 inColor")
+    "layout (location = 1) in vec4 inColor"
+    "flat layout (location = 1) in vec4 inColor")
 
 nfsu_case("a noperspective qualifier written before layout in the stage source"
     placed.vert.glsl track_textured.manifest
@@ -273,8 +289,8 @@ nfsu_case("a centroid qualifier written before layout in the stage source"
 nfsu_case("a sample qualifier written before layout in the stage source"
     textured.frag.glsl car_textured.manifest
     "qualifies a declaration before its layout(...)"
-    "layout (location = 1) in vec3 inColor"
-    "sample layout (location = 1) in vec3 inColor")
+    "layout (location = 1) in vec4 inColor"
+    "sample layout (location = 1) in vec4 inColor")
 
 # invariant is a third kind of qualifier the old fixed list never named
 # either - not an interpolation qualifier at all, but the same leading
@@ -313,15 +329,15 @@ nfsu_case("a vertex attribute moved in the manifest"
 
 nfsu_case("a texture binding moved in the manifest"
     car_textured.manifest car_textured.manifest
-    "texture baseTexture: the manifest binds it at 1, textured.frag.glsl at 0"
+    "texture baseTexture: the manifest binds it at 3, textured.frag.glsl at 0"
     "texture name=baseTexture binding=0"
-    "texture name=baseTexture binding=1")
+    "texture name=baseTexture binding=3")
 
 nfsu_case("a varying's interpolation changed in the manifest"
     track_fallback.manifest track_fallback.manifest
     "varying location 1 (outColor): the manifest says flat, placed.vert.glsl declares smooth"
-    "varying location=1 name=color type=vec3 interpolation=smooth"
-    "varying location=1 name=color type=vec3 interpolation=flat")
+    "varying location=1 name=color type=vec4 interpolation=smooth"
+    "varying location=1 name=color type=vec4 interpolation=flat")
 
 nfsu_case("a block member offset the std140 layout does not produce"
     car_textured.manifest car_textured.manifest

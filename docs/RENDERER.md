@@ -33,7 +33,7 @@ nfsu_viewer <GEOMETRY.BIN> <TEXTURES.BIN> <out.tga> [--shared-textures FILE]... 
 | `--vertex-color` | flag | off |
 | `--cull MODE` | `none`, `back`, `front` | `none` |
 | `--shading MODE` | `flat`, `none` | `flat` |
-| `--material-state MODE` | `off`, `retail` | `off` |
+| `--material-state MODE` | `off`, `retail` | `retail` for `--stock-car`, otherwise `off` |
 | `--material-alpha MIN,RANGE` | each 0..16 | 1,0 |
 | `--environment MIN,RANGE,POWER` | MIN and RANGE 0..16, POWER a whole 0..64 | 0,0,1 |
 | `--environment-color R,G,B` | each a whole 0..255 | 0,0,0 |
@@ -599,12 +599,15 @@ half turn of wheels 0 and 3 and the `(1, -1, 1, 1)` reflection of brakes
    cleared to 1.
 8. Attributes: u, v and vertex color are interpolated perspective-correctly
    as `sum(l_i a_i / w_i) / sum(l_i / w_i)`.
-9. Sampling: nearest texel of the decoded top mip level, repeat wrap on
-   both axes: `f = t - floor(t)`, `texel = min(floor(f * size), size - 1)`.
+9. Sampling: car draws use texel-centered bilinear filtering of the decoded
+   top mip level; track draws use nearest texels. Both repeat on each axis.
+   Nearest uses `f = t - floor(t)` and
+   `texel = min(floor(f * size), size - 1)`.
    Negative and large UVs wrap. A non-finite coordinate samples texel 0.
    UVs are raw by default. `--flip-v` samples `(u, 1 - v)` and is printed
    in the report as `flip_v 1`.
-10. Alpha policy. `--material-state off`, the default, is the historical
+10. Alpha policy. `--material-state off`, the default for explicit mesh
+    views, is the historical
     behaviour: there is no blending, every texel's decoded RGB is drawn
     opaquely and texel alpha reaches nothing but `--alpha-cutoff`. Written
     pixels always get alpha 255, in both modes. `--alpha-cutoff N` (for

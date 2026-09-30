@@ -70,9 +70,12 @@ std::uint32_t gamepad_buttons_from_npad(std::uint64_t buttons) noexcept;
 // render option or the viewport.
 std::vector<InputBinding> stock_view_bindings();
 
-// True when every field of options is RenderOptions{}'s: the camera, the
-// viewport, every render option, the coefficients and the background. The
-// pinned frames are rendered with RenderOptions{}, so this is when a
+// The stock viewer's pinned camera and retail material defaults.
+RenderOptions stock_view_default_options() noexcept;
+
+// True when every field of options matches stock_view_default_options():
+// the camera, the viewport, every render option, the coefficients and the
+// background. The pinned frames use these options, so this is when a
 // frame's hash can be compared with a pin at all. Exact comparison: a
 // camera that orbited away and back by hand is not the default unless its
 // every value came back to the bit, which is what reset_camera does.
@@ -97,7 +100,7 @@ public:
     StockView& operator=(const StockView&) = delete;
 
     // Binds a prepared scene, which must outlive the view, at
-    // RenderOptions{} and RenderLimits{}, and forgets every earlier
+    // stock_view_default_options() and RenderLimits{}, and forgets every earlier
     // controller frame. The first frame is then due: needs_render() is
     // true. False, with error set and no scene bound, when the Inspector
     // refuses the scene.

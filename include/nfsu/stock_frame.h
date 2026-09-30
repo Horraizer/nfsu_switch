@@ -71,26 +71,25 @@ constexpr std::size_t kStockFrameFileCount = 6;
 // Null for an index outside 0..kStockFrameFileCount-1.
 const char* stock_frame_file_path(std::size_t index) noexcept;
 
-// Issue #223 re-pinned both frames after retail window aliases and empty
-// sponsor decal suppression. The previous hashes were 3DEB2147... and
-// 8A5932A3... respectively.
+// Issue #232 re-pins the retail material-state default. The prior off-state
+// hashes were 79AB4AD5... and 89E4AB88... respectively.
 constexpr std::uint64_t kStock240sxFrameBytes = 3686418;
 constexpr const char* kStock240sxFrameSha256 =
-    "8FBA20E893590A6B48EA1CE40B9A711C74690127811BB5CC0CA208337C63BE84";
+    "0A0B7E23DB944328902F563FF536F8A8418E48B20CD9D589F57BAD8AC9E6CCE2";
 
 // The painted desktop frame, the command above with stock_240sx_skin(), as
 // docs/SWITCH_BUILD.md pins it.
 constexpr std::uint64_t kStock240sxPaintedFrameBytes = 3686418;
 constexpr const char* kStock240sxPaintedFrameSha256 =
-    "05203E9CCDEB15B8ECF478B8501777577620DAB94C3FBA6A34F428BA772AF6E0";
+    "FE7506F173A871A208F94451DFC71A3F3AEBF1EBE677C28AF2B73AD9CEA3AEE8";
 
 // The explicit kit, wheels, paint and vinyl of tuned_240sx_request/skin.
-// Re-pinned after Cars/WHEELS/TEXTURES.BIN resolved BBS tread and #225
-// resolved stock window aliases, decals and per-copy brake materials.
+// Re-pinned for issue #232's retail material-state default, after the tread,
+// window, decal and per-copy brake bindings were resolved.
 // tests/tuned_frame_retail.cmake pins three views.
 constexpr std::uint64_t kTuned240sxFrameBytes = 3686418;
 constexpr const char* kTuned240sxFrameSha256 =
-    "F1329A586C6CC352C6AF540981502E6C1E8EDA35C3806D0FED0881E65C3570DB";
+    "21F0757A7B345EF63BDEE28EB8963B5C83D491258C6CB93B420A444AD59DCD00";
 
 // The largest file read: 256 MiB, the limit every parser these files go
 // through applies to its input.
@@ -123,6 +122,8 @@ struct StockFrameInputs {
         return files[static_cast<std::size_t>(which)];
     }
     bool all_read() const noexcept;
+    // Missing paths and the same copy guidance as the car viewer. Empty on success.
+    std::string read_error(const std::filesystem::path& root) const;
 };
 
 // Reads six stock files, plus wheel geometry, wheel textures and vinyls when
@@ -171,7 +172,7 @@ struct StockFrameSkin {
 // - No vinyl, hood or spoiler vinyl: a stock car installs none.
 // - The base paint is a choice, not the game's. The front end installs a
 //   BASE_PAINT record named by CarTypeInfo +0xC5C (docs/CAR_SCENE.md), and
-//   that field is not decoded, so the stock colour is unknown. 30/60/160
+//   that field selects GLOSS_L1_COLOR08 (orange) in retail. 30/60/160
 //   with GLOSS 128 is the value docs/RENDERER.md already renders the retail
 //   skin with. No special colour is set, so all four fall back to it.
 // - The target is DUMMY_SKIN1, in the shared Cars/TEXTURES.BIN, and
@@ -251,13 +252,24 @@ bool prepare_stock_frame(
 // 1 + the number of shared sources. Also false, with error set, wherever
 // the viewer's skin block stops with exit status 2; a selected input that
 // was skipped is an issue and clears inputs_ok, as it makes the viewer
-// exit 3.
+// exit 3. GLOBALB material coefficients are decoded only when car_shading
+// is true; the default preserves the legacy shading-off preparation path.
 bool prepare_stock_frame(
     const StockFrameInputs& inputs,
     const StockSceneRequest& request,
     const StockFrameSkin& skin,
     StockFrame& frame,
-    std::string& error);
+    std::string& error,
+    bool car_shading = false);
+
+// Same preparation/resolution with shorter input lifetimes for the tuned race.
+// Geometry bytes are consumed after parsing; VINYLS is re-read only once the
+// geometry bytes are gone. Retains all LODs of the selected wheel part.
+// The stock path keeps its existing preparation and memory behavior.
+bool prepare_race_car_frame(StockFrameInputs& inputs, const std::filesystem::path& root,
+                           const StockSceneRequest& request, const StockFrameSkin& skin,
+                           StockFrame& frame, std::string& error,
+                           bool car_shading = false);
 
 // render_scene over the prepared scene, into frame.frame and frame.stats.
 bool render_stock_frame(StockFrame& frame, const RenderOptions& options, std::string& error);

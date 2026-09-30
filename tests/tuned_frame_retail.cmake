@@ -36,13 +36,13 @@ set(common
 set(pins
     # Default: WHEELS/TEXTURES.BIN resolves BBS tread; #225 resolves
     # window aliases, decals and per-copy brake materials.
-    "F1329A586C6CC352C6AF540981502E6C1E8EDA35C3806D0FED0881E65C3570DB"
+    "21F0757A7B345EF63BDEE28EB8963B5C83D491258C6CB93B420A444AD59DCD00"
     # Yaw 120: WHEELS/TEXTURES.BIN side tread beside the KIT01 skirt;
     # #225 resolves its windows, decals and per-copy brake materials.
-    "382859BF591DBBFE9AA6D845B47ADBF49EFE5B6EBE02EB40B0D4A1DC79B1A2A3"
+    "62B32EBFE1872C3AD387E2D79A909A69354C6BAA04A5D60F2F38C0DE4AC4EDFB"
     # Yaw 230: WHEELS/TEXTURES.BIN opposite tread and #225 rear glass,
     # decal and per-copy brake materials.
-    "516A226DBA41C4529A4DE3B81C95E99BEC99DFB7C1B09827F7D90066835C1DAA")
+    "F29FD421F796E0286B3588F12147870204071BF9CC71312412BE4F640B377DC0")
 set(angles default 120 230)
 foreach(i RANGE 0 2)
     list(GET angles ${i} angle)
@@ -78,9 +78,12 @@ foreach(i RANGE 0 2)
     file(SHA256 "${out}" actual)
     string(TOUPPER "${actual}" actual)
     if(NOT actual STREQUAL expected)
-        message(FATAL_ERROR "tuned ${angle}: hash ${actual}, expected ${expected}")
+        list(APPEND pin_errors "tuned ${angle}: hash ${actual}, expected ${expected}")
     endif()
 endforeach()
+if(pin_errors)
+    message(FATAL_ERROR "${pin_errors}")
+endif()
 
 execute_process(COMMAND "${TESTS}" --tuned-frame "${ROOT}"
                 RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE stderr)

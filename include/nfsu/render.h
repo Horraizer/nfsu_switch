@@ -101,6 +101,7 @@ struct ClipVertex {
     double g = 255.0;
     double b = 255.0;
     double a = 255.0;
+    double surface[7]{}; // diffuse RGB, additive RGB, alpha scale
 };
 
 ClipVertex project_point(const CameraFrame& frame, const Vec3& world) noexcept;
@@ -172,6 +173,7 @@ struct ReferenceDraw {
     RenderBlendMode blend = RenderBlendMode::disabled;
     bool alpha_test = false;
     std::uint8_t alpha_ref = kRenderAlphaRef;
+    bool car_shading = false;
     // The separate track sky pass, whose copy is numbered one past the
     // scenery instances.
     bool sky = false;
@@ -208,14 +210,10 @@ enum class MaterialStateMode {
 // "off" or "retail".
 const char* material_state_mode_name(MaterialStateMode mode) noexcept;
 
-// Explicit values for the car-effect coefficients the retail data does not
-// yet yield. Nothing here is a retail value and the renderer never invents
-// one: the coefficient objects, the harmonic lighting and the EnvMapTex
-// cube map are all still undecoded (docs/MATERIALS.md). The defaults make
-// the environment term vanish and leave the alpha lane at the identity 1,
-// which is an assumption and not a retail value; selecting
-// MaterialStateMode::retail alone therefore changes no coefficient.
-// Supplying values is a diagnostic.
+// Explicit diagnostic overrides, separate from decoded CarShadingMaterial.
+// Selecting MaterialStateMode::retail alone does not apply decoded coefficients.
+// These defaults leave alpha at the identity and suppress the environment term.
+// Opt-in car_shading uses the per-draw decoded surface instead.
 struct MaterialCoefficients {
     // diffuse_scale.w = alpha_min + vdotn * alpha_range. The effect uses it
     // as the output alpha scale and as the environment term scale. The
@@ -246,7 +244,10 @@ constexpr std::uint32_t kMaxEnvironmentPower = 64;
 bool validate_material_coefficients(
     const MaterialCoefficients& coefficients, std::string& error);
 
+struct WetRoadLamps;
 struct RenderOptions {
+    bool car_shading = false; // static environment approximation; opt-in
+    const WetRoadLamps* wet_lamps = nullptr;
     std::uint32_t width = 1280;
     std::uint32_t height = 720;
     OrbitCamera camera;
@@ -264,6 +265,11 @@ struct RenderOptions {
     // separate diagnostic, and with the retail state selected a textured
     // fragment must pass both tests.
     MaterialStateMode material_state = MaterialStateMode::off;
+    // Screen-projected track reflection, masked by solid flags and vertex alpha.
+    bool wet_road_reflections = false;
+    // Internal producer pass; never combines with wet_road_reflections.
+    bool reflection_pass = false;
+    std::uint32_t reflection_width = 160;
     MaterialCoefficients coefficients;
     // Separate track sky, when the prepared scene contains one.
     bool sky = false;
@@ -383,6 +389,7 @@ public:
 
 private:
     friend class Rasterizer;
+    friend bool compose_race_frame(const Frame&, const Frame&, Frame&);
     std::uint32_t width_ = 0;
     std::uint32_t height_ = 0;
     std::vector<unsigned char> rgba_;
@@ -395,9 +402,13 @@ private:
 // shade factor is the retail material state; its defaults are the opaque
 // state, so a caller that does not set them gets the historical behaviour.
 struct RasterMaterial {
-    const RenderTexture* texture = nullptr;  // null draws the fallback
+    bool car_shading = false;
     // Unlit world.efx modulation, texture * vertex RGB * 2, for the sky.
     bool sky = false;
+    // The retail car sampler uses linear filtering with repeat addressing.
+    // Track and synthetic raster draws keep their independently selected state.
+    bool linear_filter = false;
+    const RenderTexture* texture = nullptr;  // null draws the fallback
     unsigned char fallback[4] = {255, 255, 255, 255};
     // Flat shade factor 0..256 applied to RGB.
     std::uint32_t shade = 256;
@@ -426,6 +437,8 @@ struct RasterMaterial {
     // environment[k] * texel_alpha / 255. Zero unless the environment gate
     // keeps the term. It is added to textured fragments only.
     double environment[3] = {0.0, 0.0, 0.0};
+    // Borrowed reflection target; only effect-2 track solids receive it.
+    const Frame* reflected_scene = nullptr;
 };
 
 class Rasterizer {

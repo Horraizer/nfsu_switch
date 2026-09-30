@@ -1,4 +1,5 @@
 #pragma once
+#include "nfsu/car_shading.h"
 
 #include "nfsu/mesh.h"
 
@@ -310,6 +311,8 @@ struct PreparedMesh {
 // index_count indices from first_index with the texture at handle
 // texture, or the fallback for other bindings.
 struct PreparedDraw {
+    std::uint32_t material_key_hash = 0;
+    CarShadingMaterial shading;
     // Index into PreparedCarScene::meshes.
     std::size_t mesh = 0;
     // Index into the source Mesh::materials.

@@ -466,6 +466,7 @@ struct TextureSpec {
     std::string name;
     // Four A8R8G8B8 texels in a 2x2 block, repeated to fill 4x4.
     std::array<std::uint32_t, 4> texels;
+    std::uint8_t alpha_test_mode = 0;
 };
 
 // A JDLZ pack of 4x4 A8R8G8B8 textures, written into w at its current
@@ -524,6 +525,7 @@ void write_pack(Writer& w, const std::string& path, const std::vector<TextureSpe
         record[74] = 0x20;
         record[78] = 1;
         put_u32(record, 84, 0x01000000U);
+        record[85] = spec.alpha_test_mode;
         info.insert(info.end(), record.begin(), record.end());
     }
     w.leaf(nfsu::kTextureInfoTableId, info);
@@ -566,10 +568,12 @@ void write_pack(Writer& w, const std::string& path, const std::vector<TextureSpe
 
 // with_doorline false leaves the doorline's source and mask out, which is
 // how a test makes the skin skip its one input.
-Bytes car_textures(bool with_doorline = true) {
+Bytes car_textures(bool with_doorline = true, bool alpha_witness = false) {
     Writer w;
     std::vector<TextureSpec> specs = {
-        {kCarTexture, {0xFFC03020U, 0xFF20C030U, 0xFF3020C0U, 0xFFE0E0E0U}}};
+        {kCarTexture, {alpha_witness ? 0x00C03020U : 0xFFC03020U,
+                       0xFF20C030U, 0xFF3020C0U, 0xFFE0E0E0U},
+         static_cast<std::uint8_t>(alpha_witness ? 1 : 0)}};
     if (with_doorline) {
         specs.push_back({kDoorline, {0x3B101010U, 0x3BF0F0F0U, 0x3B101010U, 0x3BF0F0F0U}});
         specs.push_back(
@@ -722,10 +726,11 @@ Bytes global_bun() {
     return w.bytes();
 }
 
-std::vector<Bytes> fixture_files() {
+std::vector<Bytes> fixture_files(bool alpha_witness = false) {
     std::vector<Bytes> files(nfsu::kStockFrameFileCount);
     files[static_cast<std::size_t>(nfsu::StockFrameFile::car_geometry)] = car_geometry();
-    files[static_cast<std::size_t>(nfsu::StockFrameFile::car_textures)] = car_textures();
+    files[static_cast<std::size_t>(nfsu::StockFrameFile::car_textures)] =
+        car_textures(true, alpha_witness);
     files[static_cast<std::size_t>(nfsu::StockFrameFile::global_bun)] = global_bun();
     files[static_cast<std::size_t>(nfsu::StockFrameFile::shared_car_textures)] =
         shared_car_textures();
@@ -1094,6 +1099,21 @@ void test_missing_inputs() {
                   error == "1 of 6 input files could not be read",
               "nothing is prepared from a partial set: " + error);
     }
+    // The tuned race uses the same extra inputs and copy guidance as the viewer.
+    {
+        FixtureDirectory directory("missing-tuned");
+        std::string error;
+        check(write_fixture(directory.root, files, error), "tuned fixture: " + error);
+        nfsu::StockFrameInputs inputs;
+        check(!nfsu::read_stock_frame_inputs(directory.root, inputs, true), "missing tuned inputs refuse");
+        const auto report = inputs.read_error(directory.root);
+        for (const char* path : {"Cars/WHEELS/GEOMETRY.BIN", "Cars/WHEELS/TEXTURES.BIN", "Cars/240SX/VINYLS.BIN"})
+            check(report.find(path) != std::string::npos, "missing tuned path reported");
+        check(report.find("3 of 9 inputs could not be read. Copy each from the game's own installation to the same path under ") != std::string::npos,
+              "missing tuned inputs explain how to copy them");
+        check(nfsu::read_stock_frame_inputs(directory.root, inputs, false) && inputs.read_error(directory.root).empty(),
+              "stock does not request tuned extras");
+    }
     // A root that does not exist: all six named.
     auto run = std::make_unique<Run>();
     check(!nfsu::read_stock_frame_inputs(unique_directory("absent"), run->inputs),
@@ -1387,14 +1407,14 @@ void test_skin_refusals() {
 }
 
 // The view renders exactly what render_stock_frame renders at
-// RenderOptions{}: the same bytes, so the same hash.
+// stock_view_default_options(): the same bytes, so the same hash.
 void test_view_renders_the_stock_frame() {
     auto run = std::make_unique<Run>();
     fill_inputs(fixture_files(), run->inputs);
     std::string error;
     check(nfsu::prepare_stock_frame(run->inputs, nfsu::stock_240sx_request(), run->frame, error),
           "prepared: " + error);
-    check(nfsu::render_stock_frame(run->frame, nfsu::RenderOptions{}, error),
+    check(nfsu::render_stock_frame(run->frame, nfsu::stock_view_default_options(), error),
           "render_stock_frame: " + error);
     check(run->view.start(run->frame.scene, error), "the view starts: " + error);
     nfsu::Frame through_view;
@@ -1610,10 +1630,13 @@ void test_view_bindings() {
 }
 
 void test_default_check() {
-    check(nfsu::stock_view_is_default(nfsu::RenderOptions{}), "RenderOptions{} is the default");
+    check(nfsu::stock_view_is_default(nfsu::stock_view_default_options()),
+          "retail stock options are the default");
+    check(!nfsu::stock_view_is_default(nfsu::RenderOptions{}),
+          "material state off is not the stock default");
     int changed = 0;
     const auto differs = [&changed](const std::string& what, auto change) {
-        nfsu::RenderOptions options;
+        nfsu::RenderOptions options = nfsu::stock_view_default_options();
         change(options);
         check(!nfsu::stock_view_is_default(options), what + " changed is not the default");
         ++changed;
@@ -1635,7 +1658,7 @@ void test_default_check() {
     differs("vertex_color", [](O& o) { o.vertex_color = true; });
     differs("cull", [](O& o) { o.cull = nfsu::CullMode::back; });
     differs("shading", [](O& o) { o.shading = nfsu::ShadingMode::none; });
-    differs("material_state", [](O& o) { o.material_state = nfsu::MaterialStateMode::retail; });
+    differs("material_state", [](O& o) { o.material_state = nfsu::MaterialStateMode::off; });
     differs("alpha_min", [](O& o) { o.coefficients.alpha_min = 0.5; });
     differs("alpha_range", [](O& o) { o.coefficients.alpha_range = 0.5; });
     for (int k = 0; k < 3; ++k) {
@@ -1675,7 +1698,7 @@ void test_view_session() {
     check(!view.render(nothing, nothing_stats, error) && error == "no scene to render",
           "no scene: no render");
 
-    check(nfsu::render_stock_frame(run->frame, nfsu::RenderOptions{}, error),
+    check(nfsu::render_stock_frame(run->frame, nfsu::stock_view_default_options(), error),
           "the pinned camera's frame: " + error);
     const std::string pinned = frame_digest(run->frame.frame);
 
@@ -1777,9 +1800,11 @@ int main(int argc, char** argv) {
     if (argc == 3 && std::string(argv[1]) == "--tuned-frame") {
         return frame_mode(nfsu::argument_path(argv[2]), true, true);
     }
-    if (argc == 3 && std::string(argv[1]) == "--write-fixture") {
+    if (argc == 3 && (std::string(argv[1]) == "--write-fixture" ||
+                      std::string(argv[1]) == "--write-fixture-alpha")) {
         std::string error;
-        if (!write_fixture(nfsu::argument_path(argv[2]), fixture_files(), error)) {
+        if (!write_fixture(nfsu::argument_path(argv[2]),
+                           fixture_files(std::string(argv[1]) == "--write-fixture-alpha"), error)) {
             std::cerr << "error: " << error << '\n';
             return 2;
         }
@@ -1788,7 +1813,7 @@ int main(int argc, char** argv) {
     }
     if (argc != 1) {
         std::cerr << "usage: nfsu_stock_frame_tests [--frame ROOT | --painted-frame ROOT | "
-                     "--write-fixture DIR]\n";
+                     "--write-fixture DIR | --write-fixture-alpha DIR]\n";
         return 1;
     }
     test_file_layout();
