@@ -109,8 +109,8 @@ same RGBA stock preparation as the CPU reference, so both added top levels occup
 before deko3d alignment, derived from their dimensions and decoded format.
 This is larger than the compressed file spans. Existing shaders do the same
 per-fragment work.
-`nfsu_draw_commands_retail` reports the painted default-camera material
-groups and blended fragment count.
+`nfsu_viewer` reports the painted default-camera material groups and blended
+fragment count.
 Resolving window textures therefore adds blending work even though blank
 decal suppression removes draws. The net GPU-time change is unknown; more
 blend fragments can increase color-buffer traffic and overdraw. A 60 fps

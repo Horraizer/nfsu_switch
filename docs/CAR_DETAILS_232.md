@@ -66,9 +66,10 @@ with the state and `states.txt` pins in the race tests. The desktop race
 frame pins are checked by `nfsu_race_replay_check`. The new material state
 changes frame pixels while preserving simulation and replay inputs.
 
-`nfsu_draw_commands_retail` reports the painted stock reference's material
-groups and blended fragment count. At 6ec2dbd, the main-branch handheld
-measurement reported 20.59 ms with the sky off and 22.01 ms with the sky on;
+`nfsu_viewer` reports the painted stock reference's material groups and
+blended fragment count. At 3f53122, handheld race replay GPU scene mean:
+20.59 ms with the sky off and 22.01 ms with the sky on
+([board comment 5627](https://git.accad.pro/murzintsevav/nfsu-switch/issues/227#issuecomment-5627));
 both exceed the 16.67 ms frame budget. The additional sampler descriptor and
 retail blending cannot establish a 60 fps result from desktop timing. The
 console follow-up needs paired old/new handheld and docked frame and GPU

@@ -2,8 +2,10 @@
 
 `nfsu_switch_compare.nro` renders the same prepared stock 240SX twice in
 one process: `render_stock_frame` supplies the CPU reference, and #146's
-recorded commands supply the deko3d frame. It reads the same six files under
-`sdmc:/nfsu` as [SWITCH_BUILD.md](SWITCH_BUILD.md). It writes no files and
+recorded commands supply the deko3d frame. Default and `--unpainted` modes
+read the same six files under `sdmc:/nfsu` as
+[SWITCH_BUILD.md](SWITCH_BUILD.md); `--tuned` also reads wheel geometry,
+wheel textures and the vinyl pack. It writes no files and
 packages no game asset. The painted stock frame is the default; `--unpainted`
 selects the unpainted #141 frame, and `--tuned` selects the tuned preset. One
 positional argument can replace the input root. The CPU reference uses
@@ -54,9 +56,11 @@ The current painted and unpainted frame sizes and SHA-256 pins live in
 checks the stock and painted frames and compares both material-mode draw
 traces. `nfsu_stock_frame_retail` and
 `nfsu_stock_frame_painted_retail` exercise the shared viewer default. The
-Switch CTest `nfsu_switch_compare_reference_options` checks that both the CPU
-reference and GPU command recording use the shared options, so changing the
-compare path to a separate default fails the Switch gate.
+Switch CTest `nfsu_switch_compare_reference_options` checks that the
+compare path initializes one const options object exactly from
+`stock_view_default_options()`, does not write to it later, and passes it to
+both CPU rendering and GPU command recording. It is a source guard rather
+than an execution test of the compare path.
 
 A CPU pin mismatch displays overall FAIL even if the numerical GPU/CPU
 comparison passes. No threshold is adjusted to fit a result. Percentages
