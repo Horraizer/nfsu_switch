@@ -72,6 +72,15 @@ class Derivatives(unittest.TestCase):
         struct.pack_into("<2I", blob, 36, 0, 0)
         self.assertEqual(fix.process(bytes(blob), "VERT\n"), bytes(blob))
 
+    def test_fragment_without_derivatives(self):
+        blob = bytearray(fixture())
+        struct.pack_into("<2I", blob, 36, 0, 0)
+        self.assertEqual(fix.process(bytes(blob), "FRAG\n0: END\n"), bytes(blob))
+        with self.assertRaises(ValueError):
+            fix.process(bytes(blob), "FRAG\n0: DDY TEMP[0], IN[0]\n")
+        with self.assertRaises(ValueError):
+            fix.process(bytes(blob), "FRAG\nDCL CONST[0][0]\n")
+
     def test_cli(self):
         with tempfile.TemporaryDirectory(prefix="nfsu-uam-test-") as directory:
             root = Path(directory)

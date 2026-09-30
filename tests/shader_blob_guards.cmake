@@ -200,21 +200,21 @@ nfsu_case("a vertex attribute moved"
     "layout (location = 2) in vec2 inTexcoord"
     "layout (location = 3) in vec2 inTexcoord")
 
-nfsu_case("a vertex attribute widened and read"
+nfsu_case("a vertex attribute narrowed"
     placed.vert.glsl car_fallback.manifest
-    "vertex attribute location 1 (color): the manifest says vec3 (xyz), placed.vert.dksh fetches xyzw"
+    "vertex attribute location 1 (color): the manifest says vec4 (xyzw), placed.vert.dksh fetches xyz"
     OWN
-    "layout (location = 1) in vec3 inColor"
     "layout (location = 1) in vec4 inColor"
+    "layout (location = 1) in vec3 inColor"
     "    outColor = inColor;"
-    "    outColor = inColor.rgb * inColor.a;")
+    "    outColor = vec4(inColor, 1.0);")
 
 nfsu_case("a texture binding moved"
     textured.frag.glsl car_textured.manifest
-    "the compiled fragment shader samples a texture at binding 1 (textured.frag.tgsi: SAMP[1]), which the manifest does not give that stage"
+    "the compiled fragment shader samples a texture at binding 3 (textured.frag.tgsi: SAMP[3]), which the manifest does not give that stage"
     OWN
     "layout (binding = 0) uniform sampler2D baseTexture"
-    "layout (binding = 1) uniform sampler2D baseTexture")
+    "layout (binding = 3) uniform sampler2D baseTexture")
 
 nfsu_case("a fragment uniform block binding moved"
     textured_opaque.frag.glsl track_textured.manifest
@@ -246,10 +246,10 @@ nfsu_case("a varying's interpolation changed"
 
 nfsu_case("a varying moved in the vertex stage"
     placed.vert.glsl track_fallback.manifest
-    "placed.vert.dksh writes varying location 3 (xyz), which the manifest does not declare"
+    "placed.vert.dksh writes varying location 3 (xyzw), which the manifest does not declare"
     OWN
-    "layout (location = 1) out vec3 outColor"
-    "layout (location = 3) out vec3 outColor")
+    "layout (location = 1) out vec4 outColor"
+    "layout (location = 3) out vec4 outColor")
 
 nfsu_case("a colour output moved"
     fallback.frag.glsl track_fallback.manifest
@@ -266,15 +266,15 @@ nfsu_case("a vertex blob with the TGSI of another compile"
     placed.vert.glsl track_fallback.manifest
     "placed.vert.tgsi and placed.vert.dksh disagree on varying location 3: they are not one compile"
     UNCHANGED
-    "layout (location = 1) out vec3 outColor"
-    "layout (location = 3) out vec3 outColor")
+    "layout (location = 1) out vec4 outColor"
+    "layout (location = 3) out vec4 outColor")
 
 nfsu_case("a fragment blob with the TGSI of another compile"
     fallback.frag.glsl track_fallback.manifest
     "fallback.frag.tgsi and fallback.frag.dksh disagree on varying location 3: they are not one compile"
     UNCHANGED
-    "layout (location = 1) in vec3 inColor"
-    "layout (location = 3) in vec3 inColor")
+    "layout (location = 1) in vec4 inColor"
+    "layout (location = 3) in vec4 inColor")
 
 file(REMOVE_RECURSE "${work}" "${base}")
 if(NOT failed EQUAL 0)

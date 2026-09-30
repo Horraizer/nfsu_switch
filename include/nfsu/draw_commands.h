@@ -24,11 +24,14 @@ struct DrawInstanceUniform {
 };
 struct DrawMaterialUniform {
     float fallback[4]{};
-    // alpha.w carries PreparedInstance::lamp_mode (0..3).
+    // Textured particle draws set fallback.w to 2 to skip flat lighting.
+    // alpha.w carries PreparedInstance::lamp_mode (0..3), or 4 for the
+    // car ground shadow world-effect branch.
     float alpha[4] = {1, 0, 0, 0};
     float environment_min[4]{};
     float environment_range[4]{};
     float environment_color[4] = {0, 0, 0, 1};
+    CarShadingMaterial surface;
 };
 
 struct RecordedDraw {
@@ -76,6 +79,8 @@ public:
     virtual std::size_t selected_draw_count() const = 0;
     virtual RecordedDrawView selected_draw(std::size_t i) const = 0;
     virtual std::uint64_t command_generation() const = 0;
+    virtual std::size_t reflection_draw_count() const { return 0; }
+    virtual const RecordedDraw& reflection_draw(std::size_t) const = 0;
     // Immutable package enumerated once at renderer open. Track selections
     // refer to these definitions and placements by stable IDs.
     virtual std::size_t static_track_draw_count() const = 0;
@@ -92,6 +97,9 @@ private:
     // handles have the same positions as the resource references above.
     UploadTable uploads;
 public:
+    std::vector<RecordedDraw> reflections;
+    std::size_t reflection_draw_count() const;
+    const RecordedDraw& reflection_draw(std::size_t i) const;
     DrawFrameUniform frame;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
@@ -150,9 +158,16 @@ bool record_track_commands(const PreparedTrackScene& scene,
                            const RenderLimits& limits,
                            RecordedCommands& commands, std::string& error);
 
+struct TrackReflectionCache;
+bool record_lamp_reflections(const RenderOptions& options, const UploadTable& uploads,
+                             std::vector<RecordedDraw>& draws, std::string& error);
+bool record_track_reflections(const PreparedTrackScene& scene, const RenderOptions& options,
+                              const UploadTable& uploads, std::vector<RecordedDraw>& draws,
+                              std::string& error, bool cull = true);
+
 // One arena allocation, released by the caller after its last-use fence.
 // Frame at allocation.offset; draw i's Instance at offset + (1+2*i)*256,
-// Material at offset + (2+2*i)*256. Payload sizes are 112, 64 and 80 bytes;
+// Material at offset + (2+2*i)*256. Payload sizes are 112, 64 and 192 bytes;
 // padding is not read. Failure leaves allocation and arena unchanged.
 bool reserve_draw_uniforms(const RecordedCommands& commands, MemoryArena& arena,
                            ArenaAllocation& allocation, std::string& error);

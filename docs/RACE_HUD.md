@@ -138,10 +138,12 @@ There is no per-frame allocation or CPU readback in direct mode. The optional
 HUD through offscreen deko3d capture and compares it with CPU compositing.
 It needs the HUD files in the retail root; the result awaits a console run.
 Placement uses a 1280x720 logical canvas, 5% scale reduction and a right safe-area
-anchor for handheld and docked sizes. The desktop CPU reference composites
+anchor for handheld and docked sizes. A handheld 960x540 scene is linearly
+upscaled first; the HUD then draws into the 1280x720 presentation image. The
+forced 720p path draws the HUD there without a blit. The desktop CPU reference composites
 the same quads and atlas with nearest texel sampling.
 
-`tools/race_replay_check.py` pins 15 CPU output frames, including the early
+`tools/race_replay_check.py` pins CPU output frames, including the early
 straight at step 600, the first gear-slot 2-to-3 change (HUD 1 to 2) at
 steps 5449/5450, and
 the first lap crossing at 24287/24288. The frame hashes live in that test.

@@ -16,11 +16,11 @@ stage kind=fragment source=textured_opaque.frag.glsl
 # of nfsu::TrackVertex, which carries no normal.
 buffer index=0 stride=24 struct=nfsu::TrackVertex header=nfsu/track.h
 attribute location=0 name=position type=vec3 format=float32x3 buffer=0 offset=0 members=px,py,pz
-attribute location=1 name=color type=vec3 format=unorm8x4 buffer=0 offset=12 members=color
+attribute location=1 name=color type=vec4 format=unorm8x4 buffer=0 offset=12 members=color
 attribute location=2 name=texcoord type=vec2 format=float32x2 buffer=0 offset=16 members=u,v
 
 varying location=0 name=world type=vec3 interpolation=smooth
-varying location=1 name=color type=vec3 interpolation=smooth
+varying location=1 name=color type=vec4 interpolation=smooth
 varying location=2 name=texcoord type=vec2 interpolation=smooth
 
 block name=Frame binding=0 stages=vertex,fragment size=112
@@ -45,6 +45,8 @@ member block=Material name=environment_range type=vec4 offset=48
 member block=Material name=environment_color type=vec4 offset=64
 
 texture name=baseTexture binding=0 stage=fragment type=sampler2D filter=nearest wrap=repeat
+
+texture name=reflectionTexture binding=1 stage=fragment type=sampler2D filter=linear wrap=clamp_to_edge
 
 output location=0 name=color type=vec4 format=rgba8
 

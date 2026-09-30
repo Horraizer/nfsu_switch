@@ -101,8 +101,12 @@ add_custom_command(
     VERBATIM)
 
 add_custom_target(nfsu_shader_manifest DEPENDS ${NFSU_SHADER_MANIFEST_HEADER})
+add_library(nfsu_track_reflections src/track_reflections.cpp src/wet_road_lamps.cpp)
+target_link_libraries(nfsu_track_reflections PUBLIC nfsu_track_draw_list nfsu_render nfsu_track_contact nfsu_track_zones nfsu_gpu_upload nfsu_texture_decode)
+nfsu_enable_warnings(nfsu_track_reflections)
+
 add_library(nfsu_draw_commands src/draw_commands.cpp src/draw_execution.cpp ${NFSU_SHADER_MANIFEST_HEADER})
-target_link_libraries(nfsu_draw_commands PUBLIC nfsu_gpu_upload nfsu_render)
+target_link_libraries(nfsu_draw_commands PUBLIC nfsu_gpu_upload nfsu_render nfsu_track_reflections)
 target_include_directories(nfsu_draw_commands PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/generated)
 add_dependencies(nfsu_draw_commands nfsu_shader_manifest)
 nfsu_enable_warnings(nfsu_draw_commands)

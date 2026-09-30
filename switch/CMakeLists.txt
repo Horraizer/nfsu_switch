@@ -136,7 +136,7 @@ add_custom_target(nfsu_switch_shaders ALL DEPENDS ${NFSU_SHADER_STAMPS})
 if(NFSU_BUILD_TESTS)
     add_test(NAME nfsu_uam_derivatives_tests
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/uam_derivatives_tests.py)
-    foreach(stage IN ITEMS placed.vert textured.frag textured_opaque.frag fallback.frag)
+    foreach(stage IN ITEMS placed.vert textured.frag textured_opaque.frag fallback.frag car_shaded.vert car_shaded.frag sky.vert sky.frag)
         add_test(NAME nfsu_switch_derivatives_${stage}
             COMMAND ${Python3_EXECUTABLE} ${NFSU_SHADER_DERIVATIVES} --check
                 ${NFSU_SHADER_OUTPUT}/${stage}.dksh ${NFSU_SHADER_OUTPUT}/${stage}.tgsi)
@@ -225,7 +225,7 @@ nfsu_enable_warnings(nfsu_switch_deko3d)
 
 set(NFSU_DEKO_ROMFS ${CMAKE_CURRENT_BINARY_DIR}/deko_romfs)
 set(NFSU_DEKO_BLOBS "")
-foreach(stage IN ITEMS placed.vert textured.frag textured_opaque.frag fallback.frag)
+foreach(stage IN ITEMS placed.vert textured.frag textured_opaque.frag fallback.frag car_shaded.vert car_shaded.frag sky.vert sky.frag)
     set(blob ${NFSU_DEKO_ROMFS}/shaders/${stage}.dksh)
     add_custom_command(OUTPUT ${blob}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${NFSU_DEKO_ROMFS}/shaders
@@ -343,7 +343,7 @@ endif()
 add_executable(nfsu_switch_compare compare_main.cpp deko_renderer.cpp)
 target_link_libraries(nfsu_switch_compare PRIVATE
     nfsu_draw_commands nfsu_stock_frame nfsu_screen_text nfsu_frame_compare
-    nfsu_race_hud deko3d)
+    nfsu_race_hud nfsu_stock_view deko3d)
 set_target_properties(nfsu_switch_compare PROPERTIES
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
 nfsu_enable_warnings(nfsu_switch_compare)
@@ -352,13 +352,18 @@ nx_generate_nacp(OUTPUT nfsu_switch_compare.nacp NAME "nfsu_switch_compare"
 nx_create_nro(nfsu_switch_compare NACP nfsu_switch_compare.nacp
     ROMFS nfsu_switch_deko_romfs)
 if(NFSU_BUILD_TESTS)
+    add_test(NAME nfsu_switch_compare_reference_options
+        COMMAND ${CMAKE_COMMAND}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/compare_main.cpp
+            -P ${PROJECT_SOURCE_DIR}/tests/switch_compare_reference_options.cmake)
     add_test(NAME nfsu_switch_compare_nro
         COMMAND ${CMAKE_COMMAND}
             -DNRO=${CMAKE_CURRENT_BINARY_DIR}/nfsu_switch_compare.nro
             -DELF=$<TARGET_FILE:nfsu_switch_compare>
             -DTITLE=nfsu_switch_compare -DSHADERS=${NFSU_SHADER_OUTPUT}
             -P ${PROJECT_SOURCE_DIR}/tests/switch_deko_romfs_check.cmake)
-    set_tests_properties(nfsu_switch_compare_nro PROPERTIES TIMEOUT 60)
+    set_tests_properties(nfsu_switch_compare_reference_options
+        nfsu_switch_compare_nro PROPERTIES TIMEOUT 60)
 endif()
 
 # The vehicle on the track on the console (issue #60): runs every built-in
@@ -456,7 +461,7 @@ set_target_properties(nfsu_switch_race PROPERTIES CXX_STANDARD 17 CXX_STANDARD_R
 nfsu_enable_warnings(nfsu_switch_race)
 set(NFSU_RACE_ROMFS ${CMAKE_CURRENT_BINARY_DIR}/race_romfs)
 set(NFSU_RACE_ASSETS "")
-foreach(stage IN ITEMS placed.vert textured.frag textured_opaque.frag fallback.frag)
+foreach(stage IN ITEMS placed.vert textured.frag textured_opaque.frag fallback.frag car_shaded.vert car_shaded.frag sky.vert sky.frag)
     set(blob ${NFSU_RACE_ROMFS}/shaders/${stage}.dksh)
     add_custom_command(OUTPUT ${blob}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${NFSU_RACE_ROMFS}/shaders

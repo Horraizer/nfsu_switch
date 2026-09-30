@@ -14,7 +14,7 @@
 // Interface: shaders/car_textured.manifest and track_textured.manifest.
 
 layout (location = 0) in vec3 inWorld;
-layout (location = 1) in vec3 inColor;
+layout (location = 1) in vec4 inColor;
 layout (location = 2) in vec2 inTexcoord;
 
 layout (location = 0) out vec4 outColor;
@@ -32,9 +32,10 @@ layout (std140, binding = 0) uniform Frame {
 // Per draw. fallback.frag.glsl declares the same block, so one layout is
 // bound for both programs.
 layout (std140, binding = 2) uniform Material {
-    // rgb: the fallback_color bytes (0..255); a: 1 when the checker is on.
+    // rgb: fallback_color bytes; a: 2 for an unlit particle draw.
     vec4 fallback;
-    // x: alpha_min, y: alpha_range, z: diffuse gate, w: lamp mode 0..3.
+    // x: alpha_min, y: alpha_range, z: diffuse gate, w: lamp mode 0..3
+    // or 4 for the car ground shadow world-effect branch.
     vec4 alpha;
     // rgb: EnvmapMin and EnvmapRange.
     vec4 environment_min;
@@ -44,6 +45,7 @@ layout (std140, binding = 2) uniform Material {
 } material;
 
 layout (binding = 0) uniform sampler2D baseTexture;
+layout (binding = 1) uniform sampler2D reflectionTexture;
 
 void main()
 {
@@ -51,12 +53,21 @@ void main()
     if (frame.options.x != 0u) {
         uv.y = 1.0 - uv.y;
     }
-    // The nearest texel, wrapped; the manifest's sampler state is what makes
-    // this wrap_texel. Held as bytes, as the reference holds it.
+    // The manifest selects linear/repeat for the car and nearest/repeat for
+    // the track. The reference holds the resulting sample as bytes.
     uvec4 texel = uvec4(texture(baseTexture, uv) * 255.0 + 0.5);
     // RenderOptions::alpha_cutoff, a diagnostic on the texel alpha.
     if (texel.a < frame.options.w) {
         discard;
+    }
+
+    // Retail world.efx:61 modulates the ground shadow by 0x80 vertex RGB
+    // and two. Its runtime alpha comes from car height and alignment; the
+    // shadow draw disables depth writes and uses source-over blending.
+    if (material.alpha.w == 4.0) {
+        outColor = vec4(vec3(texel.rgb) / 255.0,
+                        clamp(float(texel.a) * material.alpha.x / 255.0, 0.0, 1.0));
+        return;
     }
 
     // The eye-facing geometric normal of the triangle, shared by the flat
@@ -74,7 +85,8 @@ void main()
     }
 
     uint shade = 256u;
-    if (frame.options.z != 0u && has_normal) {
+    if ((frame.options.z & 1u) != 0u && has_normal &&
+        material.fallback.w < 1.5 && material.environment_range.w < 0.5) {
         float k = 0.35 + 0.65 * max(0.0, dot(normal, frame.light.xyz));
         shade = uint(floor(clamp(k, 0.0, 1.0) * 256.0 + 0.5));
     }
@@ -90,8 +102,8 @@ void main()
         uint(clamp(float(texel.a) * alpha_scale + 0.5, 0.0, 255.0));
 
     uvec3 color = texel.rgb;
-    if (frame.options.y != 0u) {
-        uvec3 vertex = uvec3(clamp(floor(inColor * 255.0 + 0.5), 0.0, 255.0));
+    if (frame.options.y != 0u || material.environment_range.w > 0.5) {
+        uvec3 vertex = uvec3(clamp(floor(inColor.rgb * 255.0 + 0.5), 0.0, 255.0));
         color = (color * vertex + 127u) / 255u;
     }
     uvec3 value = min(uvec3(255u), (color * shade + 128u) >> 8u);
@@ -113,5 +125,13 @@ void main()
                  lamp_mode == 3u ? uvec3(192u, 28u, 18u) : uvec3(0u);
     value += ((uvec3(255u) - value) * lamp + 127u) / 255u;
 
+    if ((frame.options.z & 2u) != 0u && material.environment_min.w > 0.5) {
+        vec3 eye_delta = inWorld - frame.eye.xyz;
+        vec2 screen_uv = vec2(0.5) + vec2(dot(frame.right.xyz, eye_delta) * frame.projection.x,
+            -dot(frame.up.xyz, eye_delta) * frame.projection.y) * (0.5 / dot(frame.forward.xyz, eye_delta));
+        vec3 reflected = texture(reflectionTexture, screen_uv).rgb * 255.0;
+        float wet = clamp(inColor.a, 0.0, 1.0) * float(texel.a) / 255.0;
+        value = min(uvec3(255u), value + uvec3(floor(reflected * wet + 0.5)));
+    }
     outColor = vec4(vec3(value) / 255.0, float(source_alpha) / 255.0);
 }

@@ -268,12 +268,23 @@ std::vector<std::string> race_session_hud(const RaceSession& session) {
         "W/S GAS/BRAKE  A/D STEER  SPACE HANDBRAKE  R RESET  C CAMERA  ESC QUIT"};
 }
 
-bool compose_race_frame(const Frame& track, const Frame& car, std::vector<unsigned char>& rgba) {
+bool compose_race_frame(const Frame& track, const Frame& car, Frame& composed) {
     if (!track.width() || track.width()!=car.width() || track.height()!=car.height()) return false;
-    rgba=track.rgba();
-    for (std::size_t i=0;i<track.depth().size();++i)
-        if (car.ids()[i]!=kNoTriangle && car.depth()[i]<=track.depth()[i])
-            std::copy_n(car.rgba().data()+4*i,4,rgba.data()+4*i);
+    composed = track;
+    for (std::size_t i=0;i<track.depth().size();++i) {
+        if (car.ids()[i]==kNoTriangle || car.depth()[i]>track.depth()[i]) continue;
+        std::copy_n(car.rgba_.data()+4*i,4,composed.rgba_.data()+4*i);
+        composed.depth_[i]=car.depth_[i];
+        composed.ids_[i]=car.ids_[i];
+        composed.blended_[i]=car.blended_[i];
+    }
+    return true;
+}
+
+bool compose_race_frame(const Frame& track, const Frame& car, std::vector<unsigned char>& rgba) {
+    Frame composed;
+    if (!compose_race_frame(track, car, composed)) return false;
+    rgba = composed.rgba();
     return true;
 }
 } // namespace nfsu

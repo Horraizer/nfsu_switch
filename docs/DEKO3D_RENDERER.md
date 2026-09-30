@@ -20,9 +20,10 @@ evidence of a displayed GPU frame.
 
 The viewport is 1280x720. + exits; `appletMainLoop` handles a system close
 request. There is no orbit in this first GPU application. Optional arguments
-are `--unpainted`, `--material-state=retail`, and one replacement input root.
-Unknown arguments are errors. Retail state is opt-in, as in the desktop
-stock command, and selects the six recorded car variants.
+are `--unpainted`, `--tuned`, `--material-state=retail`,
+`--material-state=off`, and one replacement input root. Unknown arguments
+are errors. Retail state is the stock and tuned default; off remains a
+diagnostic. The loading report names the selected state before rendering.
 
 Missing inputs are named by path. Input issues, preparation, recording,
 arena refusals, shader loading and deko3d diagnostics stop rendering and
@@ -70,7 +71,8 @@ padded copies stay live through the upload fence. A full barrier invalidates the
 upload fence is waited before drawing. No CPU-cached block is used.
 
 Uniforms use the recorder's 256-byte slots and 112/64/80-byte Frame/Instance/
-Material payloads. Descriptors bind RGBA8 images and a nearest/repeat sampler.
+Material payloads. Descriptors bind RGBA8 images and nearest/repeat and
+linear/repeat samplers; the car uses linear filtering, the track uses nearest.
 `placed.vert.dksh`, `textured.frag.dksh` and `fallback.frag.dksh` load from
 mounted NRO RomFS. The build copies them only after manifest/blob checks.
 Runtime checks the DKSH header, size and stage, copies code into Code

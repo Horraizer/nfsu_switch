@@ -1,4 +1,5 @@
 #include "nfsu/track_render.h"
+#include "nfsu/track_reflections.h"
 
 #include <algorithm>
 #include <cmath>
@@ -356,7 +357,14 @@ bool render_track_draw_list(
     }
     // validate_track_draw_list recomputed cost.triangles from the entries, so
     // this is the number the loop below will actually submit.
-    const std::uint64_t submitted = list.cost.triangles;
+    std::uint64_t submitted = list.cost.triangles;
+    if (options.sky && scene.sky_mesh != kNoHandle) {
+        for (const auto& draw : scene.region.draws) {
+            if (draw.mesh != scene.sky_mesh || !draw.drawable ||
+                draw.binding != BindingKind::resolved) continue;
+            submitted += draw.index_count / 3;
+        }
+    }
     if (submitted > limits.max_submitted_triangles || submitted >= kNoTriangle) {
         error = "draw list submits " + std::to_string(submitted) +
                 " triangles; the limit is " +
@@ -401,6 +409,75 @@ bool render_track_draw_list(
             light.z /= length;
         }
     }
+    // Separate background pass; IDs stay kNoTriangle and depth stays clear.
+    // Constant far depth is an approximation for the bounded race camera.
+    const auto render_sky = [&]() {
+      if (options.sky && scene.sky_mesh != kNoHandle) {
+        RenderOptions sky_options = options;
+        sky_options.cull = CullMode::none;
+        RenderStats sky_stats;
+        RenderLimits sky_limits = limits;
+        sky_limits.max_pixel_tests -= stats.pixel_tests;
+        sky_limits.max_raster_triangles -= stats.raster_triangles;
+        Rasterizer sky_rasterizer(frame, sky_options, sky_limits, sky_stats);
+        const auto& mesh = scene.region.meshes[scene.sky_mesh];
+        for (std::size_t group = 0; group < scene.region.draws.size(); ++group) {
+            const auto& draw = scene.region.draws[group];
+            // The sky is a separate pass; unresolved groups cannot sample a
+            // texture and are skipped without suppressing the world frame.
+            if (draw.mesh != scene.sky_mesh || !draw.drawable ||
+                draw.binding != BindingKind::resolved) continue;
+            RasterMaterial material;
+            material.texture = &scene.region.textures[draw.texture];
+            material.depth_write = false; material.sky = true;
+            material.alpha_test = render_alpha_test_enabled(material.texture->alpha_test_mode);
+            material.blend = render_blend_mode_of(material.texture->alpha_blend_mode);
+            // The sky copy is numbered one past the scenery instances, as
+            // record_track_commands numbers it.
+            if (observe) observe(ReferenceDraw{group, draw.mesh, scene.instances.size(),
+                draw.texture, draw.first_index, draw.index_count, true, false, true,
+                CullMode::none, material.blend, material.alpha_test, material.alpha_ref,
+                false, true});
+            for (std::size_t n = draw.first_index/3; n < (draw.first_index+draw.index_count)/3; ++n) {
+                const auto& t = mesh.triangles[n];
+                const std::uint16_t indices[] = {t.a,t.b,t.c};
+                ClipVertex v[3];
+                for (int k = 0; k < 3; ++k) {
+                    const auto& source = mesh.vertices[indices[k]];
+                    v[k] = project_point(camera, track_placed_vertex(source, scene.sky_transform));
+                    v[k].z = v[k].w * 0.999999;
+                    v[k].u = source.u; v[k].v = source.v;
+                    v[k].r = source.color[0]; v[k].g = source.color[1]; v[k].b = source.color[2];
+                    v[k].a = source.color[3];
+                }
+                if (!sky_rasterizer.draw_triangle(v,material,kNoTriangle,error)) return false;
+            }
+        }
+        stats.pixel_tests += sky_stats.pixel_tests;
+        stats.raster_triangles += sky_stats.raster_triangles;
+      }
+      return true;
+    };
+    bool sky_drawn = false;
+    Frame reflected;
+    if (options.wet_road_reflections && !options.reflection_pass) {
+        RenderOptions mirror = options;
+        mirror.wet_road_reflections = false;
+        mirror.reflection_pass = true;
+        mirror.sky = false;
+        mirror.width = std::max(1U, std::min(options.width, options.reflection_width));
+        mirror.height = std::max(1U, mirror.width * options.height / options.width);
+        std::fill(std::begin(mirror.background), std::end(mirror.background), 0);
+        mirror.background[3] = 255;
+        RenderStats mirror_stats; TrackRenderStats mirror_track;
+        if (!render_track_draw_list(scene, list, mirror, limits, reflected,
+                                   mirror_stats, mirror_track, error)) return false;
+        const auto geometry_triangles = mirror_stats.triangles_submitted;
+        if (options.wet_lamps && !render_wet_road_lamps(*options.wet_lamps, mirror, limits, reflected, mirror_stats, error)) return false;
+        track_stats.reflection_draws = mirror_track.entries_drawn + (mirror_stats.triangles_submitted-geometry_triangles)/2;
+        track_stats.reflection_triangles = mirror_stats.triangles_submitted;
+        track_stats.reflection_fragments = mirror_stats.fragments;
+    }
     Rasterizer rasterizer(frame, options, limits, stats);
     std::uint32_t next_id = 0;
     stats.meshes = scene.region.meshes.size() +
@@ -415,15 +492,31 @@ bool render_track_draw_list(
     // uses, which is the rule TrackDrawListCost::texture_binds applies.
     std::size_t bound = kNoHandle;
     bool has_bound = false;
-    for (const TrackDrawListEntry& entry : list.entries) {
+    std::vector<TrackDrawListEntry> reflection_entries;
+    if (options.reflection_pass && !track_reflection_entries(scene, options, reflection_entries, error)) return false;
+    const auto& entries = options.reflection_pass ? reflection_entries : list.entries;
+    if (options.reflection_pass) {
+        std::uint64_t triangles = 0;
+        for (const auto& entry : entries) triangles += scene.region.draws[entry.draw].index_count/3;
+        if (triangles > limits.max_submitted_triangles || triangles >= kNoTriangle) {
+            error = "reflection triangles exceed submitted limit"; return false;
+        }
+    }
+    for (const TrackDrawListEntry& entry : entries) {
         const TrackDraw& draw = scene.region.draws[entry.draw];
         const PreparedTrackInstance& instance = scene.instances[entry.instance];
+        if (options.reflection_pass && ((instance.instance_flags ^ 0x60U) & 0x50U) != 0) continue;
+        TrackTransform placement = instance.transform;
+        // speed.exe 0x446103..0x446108: reflect about this instance's local origin.
+        if (options.reflection_pass) placement = track_reflection_transform(instance);
         const PreparedTrackMesh& mesh = scene.region.meshes[draw.mesh];
         if (group_named[entry.draw] == 0) {
             group_named[entry.draw] = 1;
             ++track_stats.groups;
         }
         RasterMaterial raster;
+        if (reflected.width() && track_vertex_format(mesh.vertex_format_flags).mask == 0x40)
+            raster.reflected_scene = &reflected;
         std::size_t key = kNoHandle;
         switch (draw.binding) {
         case BindingKind::resolved:
@@ -454,6 +547,15 @@ bool render_track_draw_list(
             has_bound = true;
         }
         fallback_color(draw.texture_hash, raster.fallback);
+
+        // Opaque depth rejects hidden sky pixels. Translucency must see
+        // the sky as its destination colour, so stop before the first blend.
+        // The parser excludes zero-index groups, matching the GPU path's
+        // skip before it selects the first blended draw.
+        if (!sky_drawn && raster.blend != RenderBlendMode::disabled) {
+            if (!render_sky()) return false;
+            sky_drawn = true;
+        }
 
         const std::uint64_t first = draw.first_index;
         const std::uint64_t count = draw.index_count;
@@ -493,7 +595,7 @@ bool render_track_draw_list(
             Vec3 world[3];
             for (int k = 0; k < 3; ++k) {
                 const TrackVertex& source = mesh.vertices[indices[k]];
-                world[k] = track_placed_vertex(source, instance.transform);
+                world[k] = track_placed_vertex(source, placement);
                 clip[k] = project_point(camera, world[k]);
                 clip[k].u = source.u;
                 clip[k].v = source.v;
@@ -544,6 +646,8 @@ bool render_track_draw_list(
             }
         }
     }
+
+    if (!sky_drawn && !render_sky()) return false;
 
     // The copies that reached the frame. Every copy is placed by
     // track_instance_transform over the record the file stores, which is the

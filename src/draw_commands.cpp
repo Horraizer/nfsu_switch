@@ -1,4 +1,5 @@
 #include "nfsu/draw_commands.h"
+#include "nfsu/track_reflections.h"
 
 #include <algorithm>
 #include <cmath>
@@ -14,7 +15,7 @@ namespace sm = shader_manifest;
 thread_local DrawValidationAudit* validation_audit = nullptr;
 static_assert(sizeof(DrawFrameUniform) == 112);
 static_assert(sizeof(DrawInstanceUniform) == 64);
-static_assert(sizeof(DrawMaterialUniform) == 80);
+static_assert(sizeof(DrawMaterialUniform) == 192);
 
 bool frame_state(const RenderOptions& options, const RenderLimits& limits,
                  RecordedCommands& out, std::string& error) {
@@ -49,7 +50,8 @@ bool frame_state(const RenderOptions& options, const RenderLimits& limits,
     out.frame.light[2] = static_cast<float>(kLightZ / length);
     out.frame.options[0] = options.flip_v ? 1 : 0;
     out.frame.options[1] = options.vertex_color ? 1 : 0;
-    out.frame.options[2] = options.shading == ShadingMode::flat ? 1 : 0;
+    out.frame.options[2] = (options.shading == ShadingMode::flat ? 1U : 0U) |
+                           (options.wet_road_reflections ? 2U : 0U);
     out.frame.options[3] = options.alpha_cutoff;
     out.width = options.width;
     out.height = options.height;
@@ -67,6 +69,7 @@ struct ResourceMap {
           textures(texture_count, kNoHandle) {
         for (std::size_t i = 0; i < table.resources.size(); ++i) {
             const auto& r = table.resources[i];
+            if (r.name.compare(0, 9, "race-car/") == 0 || r.name.compare(0, 9, "wet lamp ") == 0) continue;
             if (r.kind == UploadResourceKind::vertex_buffer) vertices[r.source] = i;
             else if (r.kind == UploadResourceKind::index_buffer) indices[r.source] = i;
             else textures[r.source] = i;
@@ -78,7 +81,7 @@ bool pipeline(RecordedDraw& draw, bool track, const RenderTexture* texture,
               std::uint32_t flags, std::uint32_t hash, const RenderOptions& options,
               std::string& error) {
     const char* name = track ? (texture ? "track_textured" : "track_fallback")
-                             : (texture ? "car_textured" : "car_fallback");
+                             : (texture ? (options.car_shading ? "car_shaded_textured" : "car_textured") : "car_fallback");
     for (const auto& p : sm::kPrograms) {
         if (std::strcmp(p.name, name) == 0) draw.program = &p;
     }
@@ -132,6 +135,7 @@ bool pipeline(RecordedDraw& draw, bool track, const RenderTexture* texture,
     fallback_color(hash, color);
     for (std::size_t i = 0; i < 3; ++i) draw.material.fallback[i] = color[i];
     draw.material.fallback[3] = 1;
+    // environment_min.w is assigned from the track solid effect selector.
     return true;
 }
 
@@ -269,34 +273,45 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
                    r.elements * r.element_bytes != r.bytes)
             return fail(r.name, "invalid buffer shape");
     }
-    for (std::size_t draw_index = 0; draw_index < commands.draw_count(); ++draw_index) {
-        const auto view = commands.draw_view(draw_index);
-        const auto& d = view.definition;
+    if (commands.reflection_draw_count() > 4096) return fail("reflection commands", "capacity exceeded");
+    for (std::size_t draw_index = 0; draw_index < commands.draw_count()+commands.reflection_draw_count(); ++draw_index) {
+        const auto& d = draw_index < commands.draw_count() ? commands.draw_view(draw_index).definition :
+            commands.reflection_draw(draw_index-commands.draw_count());
         bool known = false;
         for (const auto& program : sm::kPrograms) if (d.program == &program) known = true;
         if (!known) return fail(d.name, "unknown shader program");
+        const bool shaded = std::strcmp(d.program->name,"car_shaded_textured")==0;
         if (d.program->buffer_count != 1 || d.program->buffers[0].index != 0 ||
-            d.program->attribute_count != 3 || d.program->texture_count > 1)
+            d.program->attribute_count != (shaded ? 4U : 3U) || d.program->texture_count > 2)
             return fail(d.name, "unsupported shader interface");
         unsigned locations = 0;
         for (std::size_t i = 0; i < d.program->attribute_count; ++i) {
             const auto& a = d.program->attributes[i];
-            if (a.location >= 3 || (locations & (1U << a.location)) || a.buffer != 0 ||
+            if (a.location >= (shaded ? 4U : 3U) || (locations & (1U << a.location)) || a.buffer != 0 ||
                 (a.format != sm::VertexFormat::float32x2 && a.format != sm::VertexFormat::float32x3 &&
                  a.format != sm::VertexFormat::unorm8x4))
                 return fail(d.name, "unsupported vertex attribute");
             locations |= 1U << a.location;
         }
-        // These are the layouts of the four compiled programs, held together
+        // These are the layouts of the compiled programs, held together
         // by the manifest tests; never accept an arbitrary interface pointer.
         const bool textured = d.program->texture_count != 0;
-        const char* fragment = !textured ? "fallback.frag.glsl" :
+        const bool sky = std::strcmp(d.program->name, "sky_textured") == 0;
+        const char* fragment = shaded ? "car_shaded.frag.glsl" : sky ? "sky.frag.glsl" :
+            !textured ? "fallback.frag.glsl" :
             std::strcmp(d.program->name, "track_textured") == 0 ?
                 "textured_opaque.frag.glsl" : "textured.frag.glsl";
-        if (std::strcmp(d.program->vertex_source, "placed.vert.glsl") != 0 ||
+        if (std::strcmp(d.program->vertex_source, shaded ? "car_shaded.vert.glsl" :
+                        sky ? "sky.vert.glsl" : "placed.vert.glsl") != 0 ||
             std::strcmp(d.program->fragment_source, fragment) != 0 ||
-            (textured && (d.program->textures[0].filter != sm::Filter::nearest ||
-                          d.program->textures[0].wrap != sm::Wrap::repeat)))
+            (textured && (d.program->texture_count != (sky || shaded ? 1U : 2U) ||
+                          d.program->textures[0].filter !=
+                              (std::strcmp(d.program->name, "car_textured") == 0
+                                   ? sm::Filter::linear : sm::Filter::nearest) ||
+                          d.program->textures[0].wrap != sm::Wrap::repeat ||
+                          ((!sky && !shaded) &&
+                           (d.program->textures[1].filter != sm::Filter::linear ||
+                            d.program->textures[1].wrap != sm::Wrap::clamp_to_edge)))))
             return fail(d.name, "unsupported shader or sampler");
         if (d.vertex_resource >= resources.size() || d.index_resource >= resources.size())
             return fail(d.name, "buffer resource out of range");
@@ -370,8 +385,11 @@ bool record_car_commands(const PreparedCarScene& scene, const RenderOptions& opt
                     ? &scene.textures[override_texture]
                     : source.binding == BindingKind::resolved
                         ? &scene.textures[source.texture] : nullptr;
+                auto effective_options=options;
+                effective_options.car_shading = options.car_shading && source.shading.gates[0]!=0;
+                if (effective_options.car_shading) draw.material.surface=source.shading;
                 if (!buffers(scene.meshes[source.mesh], source, resources, draw, error) ||
-                    !pipeline(draw, false, texture, source.flags, source.texture_hash, options, error)) return false;
+                    !pipeline(draw, false, texture, source.flags, source.texture_hash, effective_options, error)) return false;
                 if (override_texture != kNoHandle) {
                     draw.texture_resource = resources.textures[override_texture];
                 }
@@ -400,8 +418,55 @@ bool record_track_commands(const PreparedTrackScene& scene, const TrackDrawList&
             !validate_track_draw_list(scene, list, error)) return false;
         std::uint64_t triangles = 0;
         for (const auto& mesh : scene.region.meshes) triangles += mesh.triangles.size();
-        if (!triangle_limits(triangles, list.cost.triangles, limits, error)) return false;
+        std::uint64_t submitted = list.cost.triangles;
+        if (options.sky && scene.sky_mesh != kNoHandle)
+            for (const auto& draw : scene.region.draws)
+                if (draw.mesh == scene.sky_mesh && draw.drawable &&
+                    draw.binding == BindingKind::resolved) submitted += draw.index_count/3;
+        if (!triangle_limits(triangles, submitted, limits, error)) return false;
         const ResourceMap resources(out.owning_uploads(), scene.region.meshes.size(), scene.region.textures.size());
+        if (options.sky && scene.sky_mesh != kNoHandle) {
+            for (std::size_t group = 0; group < scene.region.draws.size(); ++group) {
+                const auto& source = scene.region.draws[group];
+                if (source.mesh != scene.sky_mesh || !source.drawable ||
+                    source.binding != BindingKind::resolved) continue;
+                RecordedDraw draw;
+                // The sky is one placed copy, numbered one past the scenery
+                // instances so a prepared package can hold its placement.
+                draw.group = group; draw.mesh = source.mesh;
+                draw.instance = scene.instances.size();
+                draw.name = "track group " + std::to_string(group) + " copy " + std::to_string(draw.instance);
+                const auto& t = scene.sky_transform;
+                for (std::size_t i = 0; i < 3; ++i) {
+                    for (std::size_t j = 0; j < 3; ++j) draw.placement.rows[i*4+j] = t.linear[i*3+j];
+                    draw.placement.rows[12+i] = t.translation[i];
+                }
+                auto sky_options = options;
+                sky_options.material_state = MaterialStateMode::retail;
+                sky_options.cull = CullMode::none;
+                if (!pipeline(draw,true,&scene.region.textures[source.texture],0,source.texture_hash,sky_options,error)) return false;
+                const char* variant = draw.pipeline.name;
+                draw.program = nullptr;
+                for (const auto& program : sm::kPrograms)
+                    if (std::strcmp(program.name, "sky_textured") == 0) draw.program = &program;
+                if (!draw.program) { error = "sky shader is missing"; return false; }
+                if (!buffers(scene.region.meshes[source.mesh], source, resources, draw, error)) return false;
+                bool found_variant = false;
+                for (std::size_t i = 0; i < draw.program->variant_count; ++i)
+                    if (std::strcmp(draw.program->variants[i].name,variant)==0) {
+                        draw.pipeline=draw.program->variants[i];
+                        found_variant = true;
+                        break;
+                    }
+                if (!found_variant) {
+                    error = std::string("sky shader variant missing: ") + variant;
+                    return false;
+                }
+                out.owning_draws().push_back(std::move(draw));
+            }
+        }
+        const auto sky_count = out.owning_draws().size();
+        std::size_t sky_position = kNoHandle;
         for (const auto& entry : list.entries) {
             const auto& source = scene.region.draws[entry.draw];
             if (source.index_count == 0) continue;
@@ -418,14 +483,91 @@ bool record_track_commands(const PreparedTrackScene& scene, const TrackDrawList&
             const auto* texture = source.binding == BindingKind::resolved ? &scene.region.textures[source.texture] : nullptr;
             if (!buffers(scene.region.meshes[source.mesh], source, resources, draw, error) ||
                 !pipeline(draw, true, texture, 0, source.texture_hash, options, error)) return false;
+            draw.material.environment_min[3] =
+                track_vertex_format(scene.region.meshes[source.mesh].vertex_format_flags).mask == 0x40 ? 1.0F : 0.0F;
+            if (sky_position == kNoHandle && draw.pipeline.blend)
+                sky_position = out.owning_draws().size();
             out.owning_draws().push_back(std::move(draw));
         }
+        if (sky_position == kNoHandle) sky_position = out.owning_draws().size();
+        std::rotate(out.owning_draws().begin(), out.owning_draws().begin()+sky_count,
+                    out.owning_draws().begin()+sky_position);
+        if (options.wet_road_reflections && options.wet_lamps &&
+            !append_wet_lamp_uploads(*options.wet_lamps, out.owning_uploads(), error)) return false;
+        if (options.wet_road_reflections &&
+            !record_track_reflections(scene, options, out.owning_uploads(), out.reflections, error)) return false;
         commands = std::move(out);
         return true;
     } catch (const std::bad_alloc&) {
         error = "not enough memory for track draw commands";
         return false;
     }
+}
+
+std::size_t RecordedCommands::reflection_draw_count() const {
+    if (!generation_valid()) throw std::logic_error("expired command generation");
+    return source_ ? source_->reflection_draw_count() : reflections.size();
+}
+const RecordedDraw& RecordedCommands::reflection_draw(std::size_t i) const {
+    if (!generation_valid()) throw std::logic_error("expired command generation");
+    return source_ ? source_->reflection_draw(i) : reflections.at(i);
+}
+bool record_track_reflections(const PreparedTrackScene& scene, const RenderOptions& options,
+                              const UploadTable& uploads, std::vector<RecordedDraw>& draws,
+                              std::string& error, bool cull) {
+    draws.clear();
+    std::vector<TrackDrawListEntry> entries;
+    if (!track_reflection_entries(scene, options, entries, error, nullptr, cull)) return false;
+    const ResourceMap resources(uploads, scene.region.meshes.size(), scene.region.textures.size());
+    for (const auto& entry : entries) {
+        const auto& source = scene.region.draws[entry.draw];
+        const auto& instance = scene.instances[entry.instance];
+        RecordedDraw draw;
+        draw.group = entry.draw; draw.mesh = source.mesh; draw.instance = entry.instance;
+        draw.name = "reflection group " + std::to_string(entry.draw) + " copy " + std::to_string(entry.instance);
+        const auto transform = track_reflection_transform(instance);
+        for (std::size_t i = 0; i < 3; ++i) {
+            for (std::size_t j = 0; j < 3; ++j) draw.placement.rows[i*4+j] = transform.linear[i*3+j];
+            draw.placement.rows[12+i] = transform.translation[i];
+        }
+        const auto* texture = source.binding == BindingKind::resolved ? &scene.region.textures[source.texture] : nullptr;
+        if (!buffers(scene.region.meshes[source.mesh], source, resources, draw, error) ||
+            !pipeline(draw, true, texture, 0, source.texture_hash, options, error)) return false;
+        draws.push_back(std::move(draw));
+    }
+    return record_lamp_reflections(options, uploads, draws, error);
+}
+bool record_lamp_reflections(const RenderOptions& options, const UploadTable& uploads,
+                             std::vector<RecordedDraw>& draws, std::string& error) {
+    if (options.wet_lamps) {
+        const auto& lamps = *options.wet_lamps;
+        std::size_t resource = kNoHandle;
+        for (std::size_t i = 0; i < uploads.resources.size(); ++i)
+            if (uploads.resources[i].name == "wet lamp vertices") resource = i;
+        if (resource == kNoHandle) { error = "lamp uploads missing"; return false; }
+        CameraFrame camera;
+        if (!make_camera_frame(options.camera, options.width, options.height, camera, error)) return false;
+        for (std::size_t n = 0; n < lamps.lights.size(); ++n) {
+            TrackTransform placement;
+            if (!wet_road_lamp_placement(lamps.lights[n], camera, placement)) continue;
+            RecordedDraw draw; draw.name = "wet lamp " + std::to_string(n);
+            draw.vertex_resource = resource; draw.index_resource = resource+1; draw.texture_resource = resource+2;
+            draw.vertex_count = 4; draw.index_count = 6;
+            auto unlit = options; unlit.cull = CullMode::none;
+            if (!pipeline(draw, true, &lamps.texture, 0, lamps.texture.hash, unlit, error)) return false;
+            for (std::size_t i = 0; i < draw.program->variant_count; ++i)
+                if (std::strcmp(draw.program->variants[i].name, "additive") == 0) draw.pipeline = draw.program->variants[i];
+            draw.material.alpha[0] = 150.0F/255;
+            draw.material.environment_range[3] = 1; // Unlit effect sprite.
+            for (std::size_t i = 0; i < 3; ++i) {
+                for (std::size_t j = 0; j < 3; ++j) draw.placement.rows[i*4+j] = placement.linear[i*3+j];
+                draw.placement.rows[12+i] = placement.translation[i];
+            }
+            if (draws.size() >= 4096) { error = "lamp reflection capacity exceeded"; return false; }
+            draws.push_back(std::move(draw));
+        }
+    }
+    return true;
 }
 
 bool reserve_draw_uniforms(const RecordedCommands& commands, MemoryArena& arena,

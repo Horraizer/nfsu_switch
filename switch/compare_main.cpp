@@ -2,6 +2,7 @@
 #include "deko_renderer.h"
 #include "nfsu/frame_compare.h"
 #include "nfsu/stock_frame.h"
+#include "nfsu/stock_view.h"
 #include "nfsu/screen_text.h"
 #include <switch.h>
 #include <cstdio>
@@ -102,7 +103,7 @@ bool run(int argc, char** argv, PadState& pad, Report& report, std::string& erro
             return false;
         }
     }
-    nfsu::RenderOptions options; // Fixed desktop pinned camera and material-state=off.
+    const nfsu::RenderOptions options = nfsu::stock_view_default_options();
     report.line("NFSU #147: rendering CPU reference (same prepared scene).");
     const auto cpu_start = armGetSystemTick();
     if (!nfsu::render_stock_frame(stock, options, error)) return false;
@@ -137,7 +138,7 @@ bool run(int argc, char** argv, PadState& pad, Report& report, std::string& erro
     {
         nfsu::DekoRenderer renderer;
         if (!renderer.open(commands, error, false, 0, false, false,
-                           hud ? &hud_atlas : nullptr) ||
+                           false, 0, hud ? &hud_atlas : nullptr) ||
             !renderer.capture(gpu, gpu_ms, readback_ms, error,
                               hud ? &hud_frame : nullptr) || !renderer.close(error)) return false;
     } // Device and every GPU allocation die before displaying the captured bytes.
@@ -152,7 +153,7 @@ bool run(int argc, char** argv, PadState& pad, Report& report, std::string& erro
     const auto gpu_hash = nfsu::sha256_hex(nfsu::sha256(gpu.data(), gpu.size()));
     char text[2048];
     std::snprintf(text, sizeof text,
-        "NFSU #147 v1: %s, default camera, material-state=off%s\n"
+        "NFSU #147 v1: %s, viewer default camera and retail material state%s\n"
         "%s (requires CPU pin, within-2 >=99.0%% AND RGB PSNR >=35 dB)\n"
         "Exact RGBA: %.6f%% (%llu/%llu pixels)\n"
         "Within +/-2 RGBA: %.6f%% (%llu/%llu pixels)\n"

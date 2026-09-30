@@ -121,7 +121,7 @@ add_library(nfsu_track_render
     src/track_render.cpp
 )
 
-target_link_libraries(nfsu_track_render PUBLIC nfsu_render nfsu_track_draw_list)
+target_link_libraries(nfsu_track_render PUBLIC nfsu_render nfsu_track_draw_list nfsu_track_reflections)
 nfsu_enable_warnings(nfsu_track_render)
 
 # The desktop track slice's cost accounting: the four stages' own reports
@@ -362,7 +362,7 @@ if(NFSU_BUILD_TESTS)
         tests/track_render_tests.cpp
     )
 
-    target_link_libraries(nfsu_track_render_tests PRIVATE nfsu_track_render)
+    target_link_libraries(nfsu_track_render_tests PRIVATE nfsu_track_render nfsu_draw_commands)
     nfsu_enable_warnings(nfsu_track_render_tests)
     add_test(NAME nfsu_track_render_tests COMMAND nfsu_track_render_tests)
 
@@ -744,6 +744,14 @@ if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_link_options(nfsu_frame_budget_probe PRIVATE -static-libstdc++ -static-libgcc)
 endif()
 
+# Read-only issue #227 sky fragment accounting; not part of the race application.
+add_executable(nfsu_sky_fragment_probe tools/sky_fragment_probe.cpp)
+target_link_libraries(nfsu_sky_fragment_probe PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_platform_desktop)
+nfsu_enable_warnings(nfsu_sky_fragment_probe)
+if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_link_options(nfsu_sky_fragment_probe PRIVATE -static-libstdc++ -static-libgcc)
+endif()
+
 # The argument conversion is the desktop filesystem service: its three free
 # functions now go through the FileSystemService it implements, and the
 # argument loop they share moved into nfsu_platform unchanged.
@@ -787,6 +795,7 @@ target_link_libraries(nfsu_inspect_window PUBLIC nfsu_platform nfsu_input_camera
 # session of that application over nfsu_input_camera and nfsu_render; it
 # reads no clock either, because a controller frame carries its own time.
 set(NFSU_NEUTRAL_LIBRARIES
+    nfsu_track_reflections
     nfsu_image nfsu_core nfsu_scene nfsu_track nfsu_track_visibility
     nfsu_track_zones nfsu_track_draw_list nfsu_track_render nfsu_track_probe
     nfsu_track_budget nfsu_race_events
@@ -1524,6 +1533,10 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_track_slice_tests PRIVATE nfsu_track_slice nfsu_posix_file_system nfsu_platform_fakes)
     nfsu_enable_warnings(nfsu_track_slice_tests)
     add_test(NAME nfsu_track_slice_tests COMMAND nfsu_track_slice_tests)
+    add_executable(nfsu_sky_fog_retail tests/sky_fog_retail.cpp)
+    target_link_libraries(nfsu_sky_fog_retail PRIVATE nfsu_track_slice nfsu_posix_file_system
+        nfsu_track_render nfsu_stock_frame)
+    nfsu_enable_warnings(nfsu_sky_fog_retail)
 endif()
 
 # Race integration is clock-free; only the desktop executable owns I/O and UI.
@@ -1531,8 +1544,7 @@ list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_session)
 add_executable(nfsu_race src/race_main.cpp src/race_window.cpp)
 target_link_libraries(nfsu_race PRIVATE nfsu_race_session nfsu_race_events
     nfsu_track_residency nfsu_track_render nfsu_stock_frame nfsu_screen_text
-    nfsu_race_hud
-    nfsu_race_audio)
+    nfsu_race_run nfsu_race_hud nfsu_race_audio nfsu_light_glows)
 nfsu_enable_warnings(nfsu_race)
 if(WIN32)
     target_link_libraries(nfsu_race PRIVATE user32 gdi32)
@@ -1546,13 +1558,17 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_race_hud_tests PRIVATE nfsu_race_hud)
     nfsu_enable_warnings(nfsu_race_hud_tests)
     add_test(NAME nfsu_race_hud_tests COMMAND nfsu_race_hud_tests)
+    add_executable(nfsu_race_particles_tests tests/race_particles_tests.cpp)
+    target_link_libraries(nfsu_race_particles_tests PRIVATE nfsu_race_session)
+    nfsu_enable_warnings(nfsu_race_particles_tests)
+    add_test(NAME nfsu_race_particles_tests COMMAND nfsu_race_particles_tests)
     add_test(NAME nfsu_race_guards
         COMMAND ${CMAKE_COMMAND} -DRACE=$<TARGET_FILE:nfsu_race>
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/race-guards
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/race_guards.cmake)
 endif()
 
-list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_run nfsu_race_hud)
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_light_glows nfsu_race_run nfsu_race_hud)
 add_executable(nfsu_audio_dump src/audio_dump_main.cpp)
 target_link_libraries(nfsu_audio_dump PRIVATE nfsu_audio nfsu_sha256 nfsu_arg_path)
 nfsu_enable_warnings(nfsu_audio_dump)
@@ -1566,6 +1582,18 @@ if(NFSU_BUILD_TESTS)
     target_include_directories(nfsu_deko_draw_order_tests PRIVATE include)
     nfsu_enable_warnings(nfsu_deko_draw_order_tests)
     add_test(NAME nfsu_deko_draw_order_tests COMMAND nfsu_deko_draw_order_tests)
+
+    add_executable(nfsu_deko_scene_target_tests tests/deko_scene_target_tests.cpp)
+    target_include_directories(nfsu_deko_scene_target_tests PRIVATE include)
+    nfsu_enable_warnings(nfsu_deko_scene_target_tests)
+    add_test(NAME nfsu_deko_scene_target_tests COMMAND nfsu_deko_scene_target_tests)
+
+    add_executable(nfsu_profile_pages_tests tests/profile_pages_tests.cpp)
+    target_include_directories(nfsu_profile_pages_tests PRIVATE include ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    add_dependencies(nfsu_profile_pages_tests nfsu_shader_manifest)
+    target_link_libraries(nfsu_profile_pages_tests PRIVATE nfsu_screen_text)
+    nfsu_enable_warnings(nfsu_profile_pages_tests)
+    add_test(NAME nfsu_profile_pages_tests COMMAND nfsu_profile_pages_tests)
 
     add_executable(nfsu_audio_tests tests/audio_tests.cpp)
     target_link_libraries(nfsu_audio_tests PRIVATE nfsu_audio)
@@ -1676,6 +1704,7 @@ if(NFSU_BUILD_TESTS)
     set_tests_properties(nfsu_path_follow_tests PROPERTIES TIMEOUT 60)
 endif()
 
+
 # ---------------------------------------------------------------------------
 # Retail checks in CTest (issue #233)
 # ---------------------------------------------------------------------------
@@ -1761,6 +1790,10 @@ if(NFSU_BUILD_TESTS)
             COMMAND nfsu_race_run_tests
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
                 "${NFSU_RETAIL_ROOT}" --sample-draws)
+        add_test(NAME nfsu_race_run_retail_glows
+            COMMAND nfsu_race_run_tests
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
+                "${NFSU_RETAIL_ROOT}" --sample-draws --glows)
         # The fixed-pose frames' retained C++ allocations, over the cached and
         # the reference path: docs/SWITCH_PERFORMANCE.md. Its timings are
         # printed, never asserted.
@@ -1772,7 +1805,7 @@ if(NFSU_BUILD_TESTS)
             COMMAND nfsu_race_run_tests
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
                 "${NFSU_RETAIL_ROOT}" --profile-reference)
-        # tools/race_replay_check.py over this build's nfsu_race: the 15 race
+        # tools/race_replay_check.py over this build's nfsu_race: the 16 race
         # frame pins, the result lines, the state file, the 120 Hz trajectory
         # and the regenerated recording: docs/DESKTOP_RACE.md.
         add_test(NAME nfsu_race_replay_check
@@ -1780,14 +1813,45 @@ if(NFSU_BUILD_TESTS)
                     -DPYTHON=${Python3_EXECUTABLE}
                     -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/race_replay_check.py
                     -DRACE=$<TARGET_FILE:nfsu_race>
+                    -DPROBE=$<TARGET_FILE:nfsu_probe>
                     "-DROOT=${NFSU_RETAIL_ROOT}"
                     -DOUT_PARENT=${nfsu_retail_work}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/retail_replay_check.cmake)
+        add_test(NAME nfsu_race_particle_frame_guards
+            COMMAND ${CMAKE_COMMAND}
+                -DRACE_EXE=$<TARGET_FILE:nfsu_race>
+                -DREPLAY=${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
+                -DWORK_ROOT=${nfsu_retail_work}
+                "-DROOT=${NFSU_RETAIL_ROOT}"
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/race_particle_frame_guards.cmake)
+        add_test(NAME nfsu_race_replay_check_glows
+            COMMAND ${CMAKE_COMMAND}
+                    -DPYTHON=${Python3_EXECUTABLE}
+                    -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/race_replay_check.py
+                    -DRACE=$<TARGET_FILE:nfsu_race>
+                    "-DROOT=${NFSU_RETAIL_ROOT}"
+                    -DOUT_PARENT=${nfsu_retail_work}/race-replay-glows
+                    -DGLOWS=ON
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/retail_replay_check.cmake)
+        add_test(NAME nfsu_race_shading_replay_check
+            COMMAND ${CMAKE_COMMAND}
+                    -DPYTHON=${Python3_EXECUTABLE}
+                    -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/race_replay_check.py
+                    -DRACE=$<TARGET_FILE:nfsu_race>
+                    "-DROOT=${NFSU_RETAIL_ROOT}"
+                    -DOUT_PARENT=${nfsu_retail_work}/race-replay-shading
+                    -DCAR_SHADING=ON
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/retail_replay_check.cmake)
         # The stock car's recorded draws against the CPU reference trace in
         # both material modes, and the stock frame pins of
         # include/nfsu/stock_frame.h: docs/DRAW_COMMANDS.md.
         add_test(NAME nfsu_draw_commands_retail
             COMMAND nfsu_draw_commands_retail "${NFSU_RETAIL_ROOT}")
+        add_test(NAME nfsu_viewer_skin_shading_retail
+            COMMAND ${CMAKE_COMMAND} -DVIEWER=$<TARGET_FILE:nfsu_viewer>
+                    "-DROOT=${NFSU_RETAIL_ROOT}"
+                    -DWORK=${nfsu_retail_work}/viewer-skin-shading
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/viewer_skin_shading_retail.cmake)
         # The same two frames through the application's calls, compared with
         # the same constants: docs/SWITCH_BUILD.md.
         add_test(NAME nfsu_stock_frame_retail
@@ -1819,6 +1883,13 @@ if(NFSU_BUILD_TESTS)
         # The bounded index of the race music: docs/RACE_AUDIO.md.
         add_test(NAME nfsu_race_audio_retail
             COMMAND nfsu_race_audio_tests "${NFSU_RETAIL_ROOT}")
+        # The event 1 sky: its inventory, the overview and street frame pins
+        # and the complete CPU/GPU draw trace (issue #184): docs/SKY_FOG.md.
+        add_test(NAME nfsu_sky_fog_retail
+            COMMAND ${CMAKE_COMMAND} -DSKY_FOG=$<TARGET_FILE:nfsu_sky_fog_retail>
+                    "-DROOT=${NFSU_RETAIL_ROOT}"
+                    -DOUT_PARENT=${nfsu_retail_work}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/retail_sky_fog.cmake)
         # The three tuned 240SX frame pins through nfsu_viewer and the
         # Switch CPU path (issue #229): docs/INSTALLED_PARTS.md.
         add_test(NAME nfsu_tuned_frame_retail
@@ -1827,6 +1898,27 @@ if(NFSU_BUILD_TESTS)
                     -DWORK=${nfsu_retail_work}/tuned-frame
                     "-DROOT=${NFSU_RETAIL_ROOT}"
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/tuned_frame_retail.cmake)
+        # The tuned race uses the same explicit selection as the viewer:
+        # replay pins, every cached/reference draw, and the existing 48 MiB
+        # race loader bound. Each command receives the configure-time root.
+        foreach(nfsu_tuned_race_mode replay draws loader)
+            add_test(NAME nfsu_tuned_race_${nfsu_tuned_race_mode}_retail
+                COMMAND ${CMAKE_COMMAND}
+                    -DPYTHON=${Python3_EXECUTABLE}
+                    -DSOURCE=${PROJECT_SOURCE_DIR}
+                    -DWORK=${nfsu_retail_work}/tuned-race
+                    -DRACE=$<TARGET_FILE:nfsu_race>
+                    -DRUN_TESTS=$<TARGET_FILE:nfsu_race_run_tests>
+                    -DLOADER_TESTS=$<TARGET_FILE:nfsu_race_loader_peak_tests>
+                    -DMODE=${nfsu_tuned_race_mode}
+                    "-DROOT=${NFSU_RETAIL_ROOT}"
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/tuned_race_retail.cmake)
+        endforeach()
+        set_tests_properties(
+            nfsu_tuned_race_replay_retail nfsu_tuned_race_draws_retail
+            nfsu_tuned_race_loader_retail
+            PROPERTIES LABELS "retail;tuned-race"
+            FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 3600)
         # The retail files each set of the asset check names, against their
         # pinned sizes and SHA-256s; it exits 0 only when every file matches:
         # docs/SWITCH_ASSETS.md.
@@ -1845,13 +1937,17 @@ if(NFSU_BUILD_TESTS)
                 "-DRETAIL_ROOT=${NFSU_RETAIL_ROOT}"
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_retail.cmake)
         set_tests_properties(
-            nfsu_race_run_retail nfsu_race_run_retail_profile
+            nfsu_race_run_retail nfsu_race_run_retail_glows
+            nfsu_race_run_retail_profile
             nfsu_race_run_retail_profile_reference nfsu_race_replay_check
-            nfsu_draw_commands_retail nfsu_stock_frame_retail
+            nfsu_race_particle_frame_guards
+            nfsu_race_replay_check_glows
+            nfsu_race_shading_replay_check nfsu_draw_commands_retail
+            nfsu_viewer_skin_shading_retail nfsu_stock_frame_retail
             nfsu_stock_frame_painted_retail nfsu_race_loader_peak_retail
             nfsu_track_loader_peak_retail nfsu_track_slice_retail
             nfsu_racing_line_retail nfsu_race_audio_retail nfsu_audio_retail
-            nfsu_tuned_frame_retail nfsu_probe_asset_check_retail_first-lap
+            nfsu_sky_fog_retail nfsu_tuned_frame_retail nfsu_probe_asset_check_retail_first-lap
             nfsu_probe_asset_check_retail_stock-car
             nfsu_probe_asset_check_retail_event-1
             PROPERTIES LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only
@@ -1864,10 +1960,15 @@ if(NFSU_BUILD_TESTS)
                 COMMAND nfsu_race_run_tests
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
                     "${NFSU_RETAIL_ROOT}" --full-draws)
+            add_test(NAME nfsu_race_run_retail_full_shading_draws
+                COMMAND nfsu_race_run_tests
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
+                    "${NFSU_RETAIL_ROOT}" --full-draws --car-shading)
             add_test(NAME nfsu_track_slice_retail_full
                 COMMAND nfsu_track_slice_tests "${NFSU_RETAIL_ROOT}" --full)
             set_tests_properties(
-                nfsu_race_run_retail_full_draws nfsu_track_slice_retail_full
+                nfsu_race_run_retail_full_draws nfsu_race_run_retail_full_shading_draws
+                nfsu_track_slice_retail_full
                 PROPERTIES LABELS "retail;retail-full"
                 FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 3600)
         endif()

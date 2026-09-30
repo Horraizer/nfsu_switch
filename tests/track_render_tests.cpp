@@ -1,5 +1,7 @@
 #include "nfsu/geometry.h"
 #include "nfsu/track_render.h"
+#include "nfsu/draw_commands.h"
+#include "nfsu/track_reflections.h"
 
 #include <algorithm>
 #include <array>
@@ -665,6 +667,20 @@ std::vector<SectionSpec> tilted_sections() {
 
 Fixture tilted() {
     return make_fixture(tilted_meshes(), tilted_sections());
+}
+
+Fixture floor() {
+    auto meshes = fixture_meshes();
+    for (auto& vertex : meshes[0].vertices) {
+        vertex.px *= 8;
+        vertex.pz = -vertex.py * 8;
+        vertex.py = 0;
+    }
+    for (auto& vertex : meshes[1].vertices) vertex.py += 2;
+    auto fixture = make_fixture(meshes, fixture_sections());
+    fixture.scene.region.meshes[0].vertex_format_flags = 0x40;
+    fixture.scene.instances[2].instance_flags = 0x40;
+    return fixture;
 }
 
 // A third fixture: one mesh whose first triangle has a DIFFERENT unique
@@ -2034,6 +2050,151 @@ void test_render_honours_the_options() {
     check_eq_u64(shaded_stats.pixels_drawn, plain_stats.pixels_drawn,
                  "flat shading covers the same pixels");
 
+    // Wet reflections use the solid selector and the vertex alpha mask.
+    const Fixture wet_fixture = floor();
+    const nfsu::TrackDrawList wet_list =
+        make_list(wet_fixture.scene, nfsu::TrackDrawOrder::visible_instance);
+    nfsu::RenderOptions wet = small_options();
+    wet.vertex_color = true;
+    wet.camera.pitch_deg = 25.0;
+    wet.camera.target.y = 2.0;
+    wet.wet_road_reflections = true;
+    nfsu::Frame wet_frame;
+    nfsu::RenderStats wet_stats;
+    nfsu::TrackRenderStats wet_track;
+    check_ok(nfsu::render_track_draw_list(wet_fixture.scene, wet_list, wet, limits,
+                                       wet_frame, wet_stats, wet_track, error),
+              "the wet-reflection render succeeds", error);
+    nfsu::Frame dry_tilt_frame;
+    nfsu::RenderStats dry_tilt_stats;
+    nfsu::TrackRenderStats dry_tilt_track;
+    nfsu::RenderOptions dry_tilt = small_options();
+    dry_tilt.vertex_color = true;
+    dry_tilt.camera.pitch_deg = wet.camera.pitch_deg;
+    dry_tilt.camera.target.y = wet.camera.target.y;
+    check_ok(nfsu::render_track_draw_list(wet_fixture.scene, wet_list, dry_tilt,
+                                       limits, dry_tilt_frame, dry_tilt_stats,
+                                       dry_tilt_track, error),
+              "the dry tilted render succeeds", error);
+    check(wet_frame.rgba() != dry_tilt_frame.rgba(),
+          "wet reflections sample the actual mirrored source geometry");
+    check(wet_stats.pixels_drawn == dry_tilt_stats.pixels_drawn,
+          "wet reflections preserve surface coverage");
+    check(wet_track.reflection_draws > 0 && wet_track.reflection_fragments > 0,
+          "the reflection producer draws a nonempty selected scene");
+    auto render_wet = [&](const Fixture& changed) {
+        nfsu::Frame result;
+        check_ok(nfsu::render_track_draw_list(changed.scene, wet_list, wet, limits,
+            result, wet_stats, wet_track, error), "changed reflection scene renders", error);
+        return result.rgba();
+    };
+    auto changed = wet_fixture;
+    changed.scene.region.meshes[0].vertex_format_flags = 0;
+    check(render_wet(changed) == dry_tilt_frame.rgba(),
+          "an unflagged horizontal surface never receives reflections");
+    changed = wet_fixture;
+    for (auto& v : changed.scene.region.meshes[0].vertices) v.color[3] = 0;
+    check(render_wet(changed) == dry_tilt_frame.rgba(),
+          "zero vertex alpha removes the reflection without changing diffuse");
+    changed = wet_fixture;
+    for (std::size_t p = 3; p < changed.scene.region.textures[0].rgba.size(); p += 4)
+        changed.scene.region.textures[0].rgba[p] = 0;
+    check(render_wet(changed) == dry_tilt_frame.rgba(),
+          "zero diffuse alpha removes the reflection without changing opaque diffuse");
+    changed = wet_fixture;
+    changed.scene.instances[2].instance_flags = 0;
+    check(render_wet(changed) == dry_tilt_frame.rgba(),
+          "removing the source selector removes its reflection");
+    changed = wet_fixture;
+    for (auto& v : changed.scene.region.meshes[1].vertices) v.color[0] = 0;
+    const auto recolored = render_wet(changed);
+    std::size_t changed_reflections = 0;
+    for (std::size_t p = 0; p < recolored.size(); p += 4)
+        if (wet_frame.rgba()[p] != dry_tilt_frame.rgba()[p] &&
+            recolored[p] != wet_frame.rgba()[p]) ++changed_reflections;
+    check(changed_reflections > 0, "source color changes its road reflection");
+
+
+    // The reflection visibility list is independent of the main visible list.
+    std::vector<nfsu::TrackDrawListEntry> reflected;
+    check_ok(nfsu::track_reflection_entries(wet_fixture.scene, wet, reflected, error),
+             "separate reflection cull succeeds", error);
+    check(!reflected.empty(), "a reflection query needs no main-view visible entries");
+    changed = wet_fixture;
+    changed.scene.instances[2].transform.translation[0] = 100000;
+    check_ok(nfsu::track_reflection_entries(changed.scene, wet, reflected, error),
+             "reflection cull rejects a remote source", error);
+    check(reflected.empty(), "offscreen reflected bounds are rejected");
+    // Keep the reflected source centered inside the side planes and move
+    // it along the view axis. Only the far plane can reject this fixture.
+    changed = wet_fixture;
+    nfsu::CameraFrame reflection_camera;
+    check_ok(nfsu::make_camera_frame(wet.camera, wet.width, wet.height,
+        reflection_camera, error), "far-cull camera is valid", error);
+    const auto move_source = [&](double distance) {
+        const auto& c = reflection_camera;
+        auto& translation = changed.scene.instances[2].transform.translation;
+        translation[0] = float(c.eye.x + c.forward.x*distance);
+        translation[1] = float(-(c.eye.z + c.forward.z*distance));
+        translation[2] = float(c.eye.y + c.forward.y*distance);
+    };
+    move_source(reflection_camera.far_plane - 10);
+    check_ok(nfsu::track_reflection_entries(changed.scene, wet, reflected, error),
+             "source inside the far plane queries", error);
+    check(!reflected.empty(), "centered source inside far plane is retained");
+    move_source(reflection_camera.far_plane + 10);
+    check_ok(nfsu::track_reflection_entries(changed.scene, wet, reflected, error),
+             "source beyond the far plane queries", error);
+    check(reflected.empty(), "centered source beyond far plane is rejected");
+    check_ok(nfsu::track_reflection_entries(changed.scene, wet, reflected, error, nullptr, false),
+             "unculled far source queries", error);
+    check(!reflected.empty(), "far source still exists when culling is disabled");
+    auto instance = wet_fixture.scene.instances[2];
+    instance.transform.linear[8] = 3;
+    instance.transform.translation[2] = 7;
+    auto mirrored = nfsu::track_reflection_transform(instance);
+    check(mirrored.linear[8] == -3 && mirrored.translation[2] == 7,
+          "ordinary reflection negates local vertical without moving the origin");
+    instance.instance_flags |= 0x200;
+    mirrored = nfsu::track_reflection_transform(instance);
+    check(mirrored.linear[8] == 3 && mirrored.translation[2] == 7,
+          "baked 0x200 placement skips the second mirror");
+
+    nfsu::WetRoadLamps lamps;
+    lamps.texture = wet_fixture.scene.region.textures[0];
+    lamps.texture.rgba.assign(lamps.texture.rgba.size(), 255);
+    nfsu::WetRoadLamp light;
+    check(!nfsu::wet_road_lamp_ground_height(light, 0) &&
+          !nfsu::wet_road_lamp_ground_height(light, 0.049F) &&
+          !nfsu::wet_road_lamp_ground_height(light, -0.049F),
+          "mode 2 rejects ground hits within 0.05 of the lamp");
+    check(nfsu::wet_road_lamp_ground_height(light, 0.051F) &&
+          light.reflected_height == 0.102F,
+          "mode 2 keeps ground hits outside the height tolerance");
+    check(nfsu::wet_road_lamp_ground_height(light, 0.05F) &&
+          nfsu::wet_road_lamp_ground_height(light, -0.05F),
+          "mode 2 keeps ground hits exactly at the height tolerance");
+    light.position[2] = 2; light.reflected_height = -2; light.direction[2] = -1;
+    lamps.lights.push_back(light);
+    for (std::size_t i = 0; i < 4; ++i) {
+        auto& v = lamps.vertices[i];
+        v.px = (i == 1 || i == 2) ? 1 : -1;
+        v.py = i < 2 ? 1 : -1;
+        v.color[0] = 110; v.color[1] = 100; v.color[2] = 75; v.color[3] = 255;
+    }
+    wet.wet_lamps = &lamps;
+    const auto lit = render_wet(wet_fixture);
+    check(lit != wet_frame.rgba(), "a reflected street lamp contributes a pool on wet geometry");
+    lamps.lights.clear();
+    check(render_wet(wet_fixture) == wet_frame.rgba(), "removing lamp records removes the pool");
+    lamps.lights.push_back(light);
+    changed = wet_fixture;
+    for (auto& v : changed.scene.region.meshes[0].vertices) v.color[3] = 0;
+    check(render_wet(changed) == dry_tilt_frame.rgba(), "lamp streak obeys receiver alpha");
+    wet.camera.target.x += 1;
+    check(render_wet(wet_fixture) != lit, "camera movement reprojects the lamp streak");
+    wet.wet_lamps = nullptr;
+
     // The v flip. The corner texture has four distinct texels, so sampling
     // (u, 1 - v) must move colour.
     nfsu::RenderOptions flipped = small_options();
@@ -3021,7 +3182,129 @@ void test_framing_refuses_a_non_finite_option() {
 
 } // namespace
 
+void test_sky_background_and_transparency() {
+    using namespace nfsu;
+    auto meshes = fixture_meshes();
+    auto sky = meshes[0];
+    sky.hash = kSkydomeMeshHash; sky.name = "SKYDOME";
+    sky.texture_hashes = {kTexB};
+    for (auto& v : sky.vertices) { v.px *= 2000; v.py *= 2000; v.pz = 1000; }
+    meshes.push_back(sky);
+    auto sections = fixture_sections();
+    sections[0].objects[2].mesh_hash[0] = kSkydomeMeshHash;
+    auto fixture = make_fixture(meshes, sections);
+    auto& scene = fixture.scene;
+    check(scene.sky_mesh == 2 && scene.sky_transform.translation[0] == 6,
+          "sky uses its own first world placement");
+    auto options = small_options();
+    options.sky = true;
+    Frame frame; RenderStats stats; TrackRenderStats track; std::string error;
+    auto empty = list_over(scene, {});
+    check_ok(render_track_draw_list(scene,empty,options,{},frame,stats,track,error),"sky-only frame",error);
+    check(pixel_at(frame,80,60) == std::array<unsigned char,4>{255,120,90,255},
+          "sky ignores world far clip with world.efx modulation");
+    check(frame.ids()[60*160+80] == kNoTriangle && frame.depth()[60*160+80] == 1.0,
+          "sky preserves clear depth and owner");
+    options.sky = false;
+    check_ok(render_track_draw_list(scene,empty,options,{},frame,stats,track,error),"sky opt-out",error);
+    check(pixel_at(frame,80,60) == std::array<unsigned char,4>{10,20,30,255},"disabled sky preserves clear colour");
+    options.sky = true; options.material_state = MaterialStateMode::retail;
+    auto list = list_over(scene,{0});
+    auto& tex = scene.region.textures[scene.region.draws[0].texture];
+    for (std::size_t i=0;i<tex.rgba.size();i+=4) {
+        tex.rgba[i]=0; tex.rgba[i+1]=200; tex.rgba[i+2]=0; tex.rgba[i+3]=0;
+    }
+    tex.alpha_test_mode = 1;
+    check_ok(render_track_draw_list(scene,list,options,{},frame,stats,track,error),"foliage hole",error);
+    check(pixel_at(frame,80,60) == std::array<unsigned char,4>{255,120,90,255},"alpha-test holes expose sky");
+    for (std::size_t i=3;i<tex.rgba.size();i+=4) tex.rgba[i]=255;
+    check_ok(render_track_draw_list(scene,list,options,{},frame,stats,track,error),"opaque foliage",error);
+    check(pixel_at(frame,80,60) == std::array<unsigned char,4>{0,200,0,255},"opaque depth occludes sky");
+    check(frame.depth()[60*160+80] < 1.0,"foliage writes depth");
+    tex.alpha_test_mode = 0; tex.alpha_blend_mode = 1;
+    for (std::size_t i=3;i<tex.rgba.size();i+=4) tex.rgba[i]=128;
+    std::vector<ReferenceDraw> trace;
+    check_ok(render_track_draw_list(scene,list,options,{},frame,stats,track,error,
+        [&](const ReferenceDraw& d){trace.push_back(d);}),"sky behind glass",error);
+    check(pixel_at(frame,80,60) == std::array<unsigned char,4>{127,160,45,255},"glass blends over sky");
+    RecordedCommands commands;
+    check_ok(record_track_commands(scene,list,options,{},commands,error),"record sky and glass",error);
+    check_ok(validate_recorded_commands(commands,error),"validate sky interface",error);
+    check(commands.draw_count()==2 && trace.size()==2,"complete sky and glass trace");
+    if (commands.draw_count()==2 && trace.size()==2) {
+        check(std::string(commands.owning_draws()[0].program->name)=="sky_textured" &&
+              !commands.owning_draws()[0].pipeline.depth_write &&
+              commands.owning_draws()[0].placement.rows[12]==6,
+              "GPU sky state and world translation");
+        check(trace[0].mesh==commands.owning_draws()[0].mesh && trace[1].mesh==commands.owning_draws()[1].mesh,
+              "CPU/GPU sky before first blend");
+    }
+    // A cap with half vertex alpha and half texel alpha is still half
+    // opaque after the recovered factor of two. The unscaled alpha, or
+    // ignoring vertex alpha, produces a different source-over colour.
+    auto& sky_texture = scene.region.textures[scene.region.draws.back().texture];
+    sky_texture.alpha_blend_mode = 1;
+    for (std::size_t i=3;i<sky_texture.rgba.size();i+=4) sky_texture.rgba[i]=128;
+    for (auto& vertex : scene.region.meshes[scene.sky_mesh].vertices) vertex.color[3]=128;
+    check_ok(render_track_draw_list(scene,empty,options,{},frame,stats,track,error),"blended sky cap",error);
+    check(pixel_at(frame,80,60) == std::array<unsigned char,4>{134,71,60,255},"cap uses texture and vertex alpha times two");
+    check_ok(record_track_commands(scene,empty,options,{},commands,error),"record blended cap",error);
+    check(commands.draw_count()==1 && commands.owning_draws()[0].pipeline.blend &&
+          !commands.owning_draws()[0].pipeline.depth_write,"GPU cap blends without depth write");
+    RenderLimits limit; limit.max_submitted_triangles=1;
+    check(!record_track_commands(scene,empty,options,limit,commands,error),"sky counts toward submitted limit");
+    check(!render_track_draw_list(scene,empty,options,limit,frame,stats,track,error),"CPU sky submitted limit");
+    scene.sky_mesh=scene.region.meshes.size();
+    check(!validate_prepared_track_scene(scene,error),"invalid sky handle refused");
+}
+
+void test_unresolved_sky_keeps_world() {
+    using namespace nfsu;
+    auto meshes = fixture_meshes();
+    auto sky = meshes[0];
+    sky.hash = kSkydomeMeshHash; sky.name = "SKYDOME";
+    sky.texture_hashes = {0xDEAD0001U};
+    meshes.push_back(sky);
+    auto sections = fixture_sections();
+    sections[0].objects[2].mesh_hash[0] = kSkydomeMeshHash;
+    auto fixture = make_fixture(meshes,sections);
+    auto& scene = fixture.scene;
+    check(scene.sky_mesh == 2,"unresolved sky fixture selected its dome");
+    std::size_t unresolved = 0;
+    for (const auto& draw : scene.region.draws)
+        if (draw.mesh == scene.sky_mesh && draw.binding == BindingKind::unresolved)
+            ++unresolved;
+    check(unresolved == 1,"unresolved sky fixture reached the binding path");
+    auto list = list_over(scene,{0});
+    auto options = small_options();
+    options.sky = true; options.material_state = MaterialStateMode::retail;
+    Frame frame,baseline;
+    RenderStats stats; TrackRenderStats track;
+    std::string error;
+    std::vector<ReferenceDraw> trace;
+    check_ok(render_track_draw_list(scene,list,options,{},frame,stats,track,error,
+        [&](const ReferenceDraw& draw){trace.push_back(draw);}),
+        "unresolved sky preserves CPU world frame",error);
+    RecordedCommands commands;
+    check_ok(record_track_commands(scene,list,options,{},commands,error),
+             "unresolved sky preserves GPU world commands",error);
+    options.sky = false;
+    check_ok(render_track_draw_list(scene,list,options,{},baseline,stats,track,error),
+             "sky-disabled world baseline",error);
+    check(frame.rgba() == baseline.rgba() && frame.depth() == baseline.depth() &&
+          frame.ids() == baseline.ids(),
+          "unresolved sky leaves resolved world pixels and depth intact");
+    check(commands.draw_count() == 1 && trace.size() == 1,
+          "unresolved sky omits only its draw from CPU and GPU traces");
+    if (commands.draw_count() == 1 && trace.size() == 1)
+        check(commands.owning_draws()[0].mesh == trace[0].mesh &&
+              commands.owning_draws()[0].mesh != scene.sky_mesh,
+              "unresolved sky retained the resolved world group");
+}
+
 int main() {
+    test_sky_background_and_transparency();
+    test_unresolved_sky_keeps_world();
     test_fixture_parses();
 
     test_placed_vertex_identity();

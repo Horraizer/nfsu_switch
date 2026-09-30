@@ -1,4 +1,4 @@
-# tools/race_replay_check.py under CTest (issue #233): the 15 pinned race
+# tools/race_replay_check.py under CTest (issue #233): the 16 pinned race
 # frames, the result lines, the per-step state file, the 120 Hz trajectory
 # and, with --check-driver, the regenerated recording, for one nfsu_race.
 # The script's assertions are its own; this wrapper adds none and relaxes
@@ -30,9 +30,24 @@ if(EXISTS "${OUT}")
 endif()
 file(MAKE_DIRECTORY "${OUT_PARENT}")
 
+set(effect_arguments)
+if(DEFINED GLOWS AND GLOWS)
+    list(APPEND effect_arguments --glows)
+endif()
+if(CAR_SHADING)
+    list(APPEND effect_arguments --car-shading)
+    set(expected_frames 1)
+else()
+    set(expected_frames 16)
+endif()
+set(probe_arguments)
+if(DEFINED PROBE AND NOT PROBE STREQUAL "")
+    list(APPEND probe_arguments --probe "${PROBE}")
+endif()
+
 execute_process(
     COMMAND "${PYTHON}" "${SCRIPT}" --exe "${RACE}" --root "${ROOT}"
-            --out "${OUT}" --check-driver
+            --out "${OUT}" --check-driver ${probe_arguments} ${effect_arguments}
     RESULT_VARIABLE result
     OUTPUT_VARIABLE output
     ERROR_VARIABLE errors)
@@ -45,7 +60,14 @@ if(NOT result EQUAL 0)
 endif()
 # The script prints one PASS line per executable when every pin held; an
 # exit status of 0 without it is not a pass.
-if(NOT output MATCHES "(^|\n)PASS [^\n]*48336 step hashes, result, 15 frames, clean 120 Hz trajectory, generated recording")
+if(NOT output MATCHES "(^|\n)PASS [^\n]*48336 step hashes, result, ${expected_frames} frames, clean 120 Hz trajectory, generated recording")
     message(FATAL_ERROR "FAIL: race_replay_check.py exited 0 without its PASS line")
+endif()
+if(NOT output MATCHES "PASS wet replay:")
+    message(FATAL_ERROR "FAIL: missing paired wet replay checks")
+endif()
+if(DEFINED PROBE AND NOT PROBE STREQUAL "" AND
+   NOT output MATCHES "PASS wet hand path:")
+    message(FATAL_ERROR "FAIL: missing paired wet hand path checks")
 endif()
 file(REMOVE_RECURSE "${OUT}")

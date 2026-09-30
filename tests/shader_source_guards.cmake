@@ -38,6 +38,22 @@ foreach(variable IN ITEMS CHECKER SHADERS)
     endif()
 endforeach()
 
+# TGSI omits the mask for a full vec4. Optional unmatched regex captures
+# must not turn that default into an empty component mask (#184).
+include(${CHECKER})
+string(RANDOM LENGTH 12 ALPHABET "abcdefghijklmnopqrstuvwxyz0123456789" tgsi_token)
+set(tgsi_test "${CMAKE_CURRENT_BINARY_DIR}/nfsu_tgsi_${tgsi_token}.txt")
+file(WRITE "${tgsi_test}" "VERT\nDCL IN[0], GENERIC[1]\nDCL OUT[0], GENERIC[1]\nDCL OUT[1].xy, GENERIC[2]\n")
+_nfsu_sm_read_tgsi("${tgsi_test}" tgsi)
+file(REMOVE "${tgsi_test}")
+list(GET tgsi_ins 0 full_in)
+list(GET tgsi_outs 0 full_out)
+list(GET tgsi_outs 1 partial_out)
+if(NOT tgsi_error STREQUAL "" OR NOT full_in MATCHES "mask=xyzw" OR
+   NOT full_out MATCHES "mask=xyzw" OR NOT partial_out MATCHES "mask=xy[|]")
+    message(FATAL_ERROR "TGSI omitted/explicit component mask regression")
+endif()
+
 # A directory no other run shares: several sessions run ctest at once here.
 string(RANDOM LENGTH 12 ALPHABET "abcdefghijklmnopqrstuvwxyz0123456789" token)
 set(work "${CMAKE_CURRENT_BINARY_DIR}/nfsu_shader_source_guards_${token}")
@@ -76,6 +92,17 @@ foreach(manifest IN LISTS manifests)
     endif()
 endforeach()
 
+# F2 of PR #242: wet (bit 1) and producer (bit 2) must not enable
+# flat lighting (bit 0), including on untextured fallback draws.
+foreach(stage fallback.frag.glsl textured.frag.glsl textured_opaque.frag.glsl)
+    file(READ "${SHADERS}/${stage}" lighting_source)
+    string(FIND "${lighting_source}" "(frame.options.z & 1u) != 0u && has_normal" flat_bit)
+    string(FIND "${lighting_source}" "frame.options.z != 0u" whole_word)
+    if(flat_bit LESS 0 OR NOT whole_word LESS 0)
+        message(FATAL_ERROR "${stage}: flat lighting must test only options.z bit 0")
+    endif()
+endforeach()
+
 # The regular textured shader must allow early depth testing. The cutout
 # shader remains available for material alpha tests and diagnostic cutoffs.
 file(READ "${SHADERS}/textured_opaque.frag.glsl" opaque_source)
@@ -83,6 +110,17 @@ file(READ "${SHADERS}/textured.frag.glsl" cutout_source)
 if(opaque_source MATCHES "discard[ \t]*;" OR
    NOT cutout_source MATCHES "discard[ \t]*;")
     message(FATAL_ERROR "textured shader discard split is missing")
+endif()
+foreach(source IN ITEMS opaque_source cutout_source)
+    if(NOT ${source} MATCHES "material[.]fallback[.]w < 1[.]5")
+        message(FATAL_ERROR "textured shader lost the unlit particle gate")
+    endif()
+endforeach()
+# The sky keeps a diagnostic discard, so it must test depth before shading or
+# every covered sky fragment is shaded before the world rejects it (#227).
+file(READ "${SHADERS}/sky.frag.glsl" sky_source)
+if(NOT sky_source MATCHES "\n *layout ?[(]early_fragment_tests[)] in;")
+    message(FATAL_ERROR "sky shader early depth test is missing")
 endif()
 
 # nfsu_case(<label> <file> <manifest> <expected> [<from> <to>]...)
@@ -175,12 +213,12 @@ nfsu_case("a vertex attribute widened in the stage source"
 
 # Two attributes of one type swapped: the locations and types still agree,
 # and only the names say what moved.
-nfsu_case("two vertex attributes of one type swapped"
+nfsu_case("two vertex attribute names swapped"
     placed.vert.glsl track_textured.manifest
     "vertex attribute location 0: the manifest names it inPosition, placed.vert.glsl declares inColor"
     "layout (location = 0) in vec3 inPosition"
     "layout (location = 0) in vec3 inColor"
-    "layout (location = 1) in vec3 inColor"
+    "layout (location = 1) in vec4 inColor"
     "layout (location = 1) in vec3 inPosition")
 
 nfsu_case("a texture binding moved in the stage source"
@@ -223,8 +261,8 @@ nfsu_case("a varying's interpolation changed in the stage source"
 nfsu_case("a flat qualifier written before layout in the stage source"
     textured.frag.glsl car_textured.manifest
     "qualifies a declaration before its layout(...)"
-    "layout (location = 1) in vec3 inColor"
-    "flat layout (location = 1) in vec3 inColor")
+    "layout (location = 1) in vec4 inColor"
+    "flat layout (location = 1) in vec4 inColor")
 
 nfsu_case("a noperspective qualifier written before layout in the stage source"
     placed.vert.glsl track_textured.manifest
@@ -251,8 +289,8 @@ nfsu_case("a centroid qualifier written before layout in the stage source"
 nfsu_case("a sample qualifier written before layout in the stage source"
     textured.frag.glsl car_textured.manifest
     "qualifies a declaration before its layout(...)"
-    "layout (location = 1) in vec3 inColor"
-    "sample layout (location = 1) in vec3 inColor")
+    "layout (location = 1) in vec4 inColor"
+    "sample layout (location = 1) in vec4 inColor")
 
 # invariant is a third kind of qualifier the old fixed list never named
 # either - not an interpolation qualifier at all, but the same leading
@@ -291,15 +329,15 @@ nfsu_case("a vertex attribute moved in the manifest"
 
 nfsu_case("a texture binding moved in the manifest"
     car_textured.manifest car_textured.manifest
-    "texture baseTexture: the manifest binds it at 1, textured.frag.glsl at 0"
+    "texture baseTexture: the manifest binds it at 3, textured.frag.glsl at 0"
     "texture name=baseTexture binding=0"
-    "texture name=baseTexture binding=1")
+    "texture name=baseTexture binding=3")
 
 nfsu_case("a varying's interpolation changed in the manifest"
     track_fallback.manifest track_fallback.manifest
     "varying location 1 (outColor): the manifest says flat, placed.vert.glsl declares smooth"
-    "varying location=1 name=color type=vec3 interpolation=smooth"
-    "varying location=1 name=color type=vec3 interpolation=flat")
+    "varying location=1 name=color type=vec4 interpolation=smooth"
+    "varying location=1 name=color type=vec4 interpolation=flat")
 
 nfsu_case("a block member offset the std140 layout does not produce"
     car_textured.manifest car_textured.manifest
@@ -375,6 +413,18 @@ nfsu_case("a # that does not begin a line"
     "placed.vert.glsl: has a # that does not begin a line"
     "layout (location = 2) in vec2 inTexcoord;\n"
     "layout (location = 2) in vec2 inTexcoord; #define X\n")
+
+nfsu_case("early_fragment_tests in a vertex stage"
+    placed.vert.glsl car_textured.manifest
+    "placed.vert.glsl: early_fragment_tests outside a fragment stage"
+    "layout (location = 2) in vec2 inTexcoord;\n"
+    "layout (early_fragment_tests) in;\nlayout (location = 2) in vec2 inTexcoord;\n")
+
+nfsu_case("early_fragment_tests beside another qualifier"
+    sky.frag.glsl sky_textured.manifest
+    "`early_fragment_tests` is a layout qualifier the interface check does not read"
+    "layout (early_fragment_tests) in;"
+    "layout (early_fragment_tests, location = 3) in;")
 
 nfsu_case("an @ in a comment"
     placed.vert.glsl car_textured.manifest PASS

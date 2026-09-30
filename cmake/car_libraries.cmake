@@ -89,6 +89,7 @@ nfsu_enable_warnings(nfsu_texture_export)
 # Its public data model depends only on in-memory mesh types.
 add_library(nfsu_scene
     src/scene.cpp
+    src/car_shading.cpp
 )
 
 target_include_directories(nfsu_scene
