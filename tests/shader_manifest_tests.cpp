@@ -221,7 +221,8 @@ const char* element_name(sm::Element element) {
 // make, which is a variant this project would be inventing.
 void test_programs_are_the_reference_draw_kinds(const Programs& programs, Reporter& r) {
     const std::set<std::string> expected = {
-        "car_fallback", "car_textured", "sky_textured", "track_fallback", "track_textured"};
+        "car_fallback", "car_textured", "car_shaded_textured", "sky_textured",
+        "track_fallback", "track_textured"};
     std::set<std::string> got;
     for (const sm::Program& program : programs) {
         r.check(got.insert(program.name).second,
@@ -229,7 +230,7 @@ void test_programs_are_the_reference_draw_kinds(const Programs& programs, Report
     }
     r.check(got == expected,
             "the manifests are exactly car_textured, car_fallback, "
-            "track_textured and track_fallback");
+            "track_textured and track_fallback, plus car_shaded_textured");
 }
 
 // Each program reads one buffer, and it is the C++ struct its path holds:
@@ -583,7 +584,7 @@ std::vector<SelfCheck> self_check_cases() {
              return true;
          },
          "the manifests are exactly car_textured, car_fallback, track_textured and "
-         "track_fallback"},
+         "track_fallback, plus car_shaded_textured"},
         {"a car buffer of the track's struct",
          [](Tables& t) {
              const std::size_t i = t.index_of("car_textured");

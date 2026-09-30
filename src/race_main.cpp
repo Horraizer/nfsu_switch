@@ -115,6 +115,7 @@ public:
     bool glows = false;
     bool dirty = true;
     bool tuned = false; // Render selection only.
+    bool car_shading = false;
     std::uint64_t loads = 0, releases = 0, bytes_read = 0;
     Cost io_cost, prepare_cost, render_cost;
     explicit RaceScene(const TrackStreamTable& t, bool effects) : particles_enabled(effects), table(t) {}
@@ -123,7 +124,7 @@ public:
         if (!read_stock_frame_inputs(root,car_inputs,tuned))
             throw std::runtime_error(car_inputs.read_error(root));
         require(prepare_race_car_frame(car_inputs,root,tuned ? tuned_240sx_request() : stock_240sx_request(),
-                tuned ? tuned_240sx_skin() : stock_240sx_skin(),car,error),error);
+                tuned ? tuned_240sx_skin() : stock_240sx_skin(),car,error,car_shading),error);
         require(prepare_car_shadow(car_inputs,car.car_pack,shadow,error),error);
         base = car.scene.instances;
         glow_anchors = collect_car_glow_anchors(car);
@@ -214,6 +215,7 @@ public:
         prepare(); const auto begin=Clock::now(); std::string error;
         RenderOptions options; options.width=640; options.height=360;
         options.material_state = MaterialStateMode::retail;
+        options.car_shading=car_shading;
         require(drive_render_camera(session.camera(),ChaseFovMode::vertical_4_3,640,360,options.camera,error),error);
         Frame background; RenderStats stats; TrackRenderStats track_stats;
         RenderOptions track_options = options;
@@ -252,6 +254,7 @@ int run(int argc, char** argv) {
     bool live=false, smoke=false, tuned=false;
     bool particles_enabled=true, particle_events=false;
     bool glows=false;
+    bool car_shading=false;
     std::set<std::size_t> frames;
     // The path arguments arrive in the ANSI code page on Windows; convert
     // them as the other tools do, so a path outside ASCII opens.
@@ -263,6 +266,7 @@ int run(int argc, char** argv) {
             std::cout << "nfsu_race --root RETAIL (--input RECORDING | --generate RECORDING | --live)\n"
                          "  [--out NEW_DIRECTORY --frames 180,600,6000,22000,40000]\n"
                          "  [--particles=on|--particles=off] [--particle-events] [--tuned] [--glows]\n"
+                         "  [--car-shading on|off]\n"
                          "  live mode plays retail race audio when the device and banks are available\n";
             return 0;
         }
@@ -278,6 +282,10 @@ int run(int argc, char** argv) {
         else if (a=="--input") input=nfsu::argument_path(argv[i]);
         else if (a=="--generate") generate=nfsu::argument_path(argv[i]);
         else if (a=="--out") output=nfsu::argument_path(argv[i]);
+        else if (a=="--car-shading") {
+            require(value=="on" || value=="off","--car-shading needs on or off");
+            car_shading=value=="on";
+        }
         else if (a=="--frames") {
             std::istringstream in(value); std::string token;
             while (std::getline(in,token,',')) {
@@ -321,6 +329,7 @@ int run(int argc, char** argv) {
     RaceScene scene(table,particles_enabled); scene.tuned=tuned;
     scene.files.stream=root/"Tracks"/track_stream_file_name(*info);
     scene.glows = glows;
+    scene.car_shading=car_shading;
     scene.files.pack=root/"Tracks"/track_stream_pack_file_name(*info);
     scene.files.has_pack=fs::exists(scene.files.pack);
     scene.load_car(root,root/"Tracks"/track_texture_file_name(slot.track));

@@ -435,7 +435,8 @@ bool render_track_draw_list(
             // record_track_commands numbers it.
             if (observe) observe(ReferenceDraw{group, draw.mesh, scene.instances.size(),
                 draw.texture, draw.first_index, draw.index_count, true, false, true,
-                CullMode::none, material.blend, material.alpha_test, material.alpha_ref, true});
+                CullMode::none, material.blend, material.alpha_test, material.alpha_ref,
+                false, true});
             for (std::size_t n = draw.first_index/3; n < (draw.first_index+draw.index_count)/3; ++n) {
                 const auto& t = mesh.triangles[n];
                 const std::uint16_t indices[] = {t.a,t.b,t.c};

@@ -244,7 +244,8 @@ static bool prepare_stock_frame_impl(
     const StockSceneRequest& request,
     const StockFrameSkin& skin,
     StockFrame& frame,
-    std::string& error, StockFrameInputs* consumed, const fs::path& root) {
+    std::string& error, StockFrameInputs* consumed, const fs::path& root,
+    bool car_shading) {
     frame.car_geometry = GeometryReport{};
     frame.stock_geometry.clear();
     frame.parts = CarPartDatabase{};
@@ -668,6 +669,19 @@ static bool prepare_stock_frame_impl(
             ok = ok && source.ok();
         }
         frame.inputs_ok = ok;
+        if (car_shading) {
+            auto installed=frame.report.slots[30].record;
+            if (installed==kNoCarPart) {
+                const auto name=frame.car_types.records[frame.report.car_type].base_paint_part_hash;
+                installed=find_car_part(frame.parts,kAnyCarType,30,name,kNoCarPart,kAnyUpgradeLevel);
+            }
+            const auto paint=select_car_paint_material_hash(frame.parts,
+                installed,
+                skin.enabled ? std::optional<std::uint32_t>(skin.selection.base_color)
+                             : std::nullopt);
+            if (!apply_car_materials(frame.scene, parts_file.bytes.data(),
+                                     parts_file.bytes.size(), paint, error)) return false;
+        }
         return true;
     } catch (const std::bad_alloc&) {
         error = "out of memory while preparing the stock frame";
@@ -678,18 +692,19 @@ static bool prepare_stock_frame_impl(
 }
 
 bool prepare_stock_frame(const StockFrameInputs& inputs, const StockSceneRequest& request,
-                         const StockFrameSkin& skin, StockFrame& frame, std::string& error) {
-    return prepare_stock_frame_impl(inputs, request, skin, frame, error, nullptr, {});
+                         const StockFrameSkin& skin, StockFrame& frame, std::string& error,
+                         bool car_shading) {
+    return prepare_stock_frame_impl(inputs, request, skin, frame, error, nullptr, {}, car_shading);
 }
 
 bool prepare_race_car_frame(StockFrameInputs& inputs, const fs::path& root,
                            const StockSceneRequest& request, const StockFrameSkin& skin,
-                           StockFrame& frame, std::string& error) {
-    if (!inputs.tuned) return prepare_stock_frame(inputs, request, skin, frame, error);
+                           StockFrame& frame, std::string& error, bool car_shading) {
+    if (!inputs.tuned) return prepare_stock_frame(inputs, request, skin, frame, error, car_shading);
     // All nine inputs were checked by the shared reader. The large vinyl pack
     // need not overlap geometry decoding; re-read it at skin composition.
     std::vector<unsigned char>().swap(inputs.vinyls.bytes);
-    return prepare_stock_frame_impl(inputs, request, skin, frame, error, &inputs, root);
+    return prepare_stock_frame_impl(inputs, request, skin, frame, error, &inputs, root, car_shading);
 }
 
 bool render_stock_frame(StockFrame& frame, const RenderOptions& options, std::string& error) {

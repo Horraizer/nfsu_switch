@@ -75,7 +75,8 @@ struct DekoRenderer::Impl {
     bool sky_with_opaque = false;
     std::array<dk::Image, 2> colors;
     std::array<dk::Image, 2> depths;
-    dk::Shader vertex, textured, textured_opaque, fallback, sky_vertex, sky_fragment;
+    dk::Shader vertex, textured, textured_opaque, fallback;
+    dk::Shader car_vertex, car_fragment, sky_vertex, sky_fragment;
     const RecordedCommands* commands = nullptr;
     const PreparedCommandSource* package = nullptr;
     std::vector<const RecordedDraw*> static_definitions;
@@ -373,7 +374,9 @@ struct DekoRenderer::Impl {
         }
         uniform_live = true;
         write_uniforms(source, 0);
-        if (!shader("sky.vert", DkStage_Vertex, sky_vertex, error) ||
+        if (!shader("car_shaded.vert", DkStage_Vertex, car_vertex, error) ||
+            !shader("car_shaded.frag", DkStage_Fragment, car_fragment, error) ||
+            !shader("sky.vert", DkStage_Vertex, sky_vertex, error) ||
             !shader("sky.frag", DkStage_Fragment, sky_fragment, error) ||
             !shader("placed.vert", DkStage_Vertex, vertex, error) ||
             !shader("textured.frag", DkStage_Fragment, textured, error) ||
@@ -490,14 +493,18 @@ struct DekoRenderer::Impl {
         const bool has_texture = draw.texture_resource != kNoHandle;
         const bool cutout = deko_textured_uses_cutout_shader(
             state.alpha_test != sm::CompareOp::always, commands->frame.options[3]);
+        const bool shaded = std::strcmp(draw.program->name, "car_shaded_textured") == 0;
         const bool sky = std::strcmp(draw.program->name, "sky_textured") == 0;
-        dk::Shader* fragment = sky ? &sky_fragment : !has_texture ? &fallback :
+        dk::Shader* fragment = shaded ? &car_fragment : sky ? &sky_fragment :
+            !has_texture ? &fallback :
             cutout ? &textured : &textured_opaque;
         if (bind_fixed_state)
-            out.bindShaders(DkStageFlag_GraphicsMask, {sky ? &sky_vertex : &vertex, fragment});
+            out.bindShaders(DkStageFlag_GraphicsMask,
+                            {shaded ? &car_vertex : sky ? &sky_vertex : &vertex, fragment});
         if (instance_addr)
             out.bindUniformBuffer(DkStage_Vertex, 1, instance_addr, sizeof(DrawInstanceUniform));
         out.bindUniformBuffer(DkStage_Fragment, 2, material_addr, sizeof(DrawMaterialUniform));
+        if (shaded) out.bindUniformBuffer(DkStage_Vertex, 2, material_addr, sizeof(DrawMaterialUniform));
         if (bind_fixed_state && has_texture) out.bindTextures(DkStage_Fragment, 0,
             dkMakeTextureHandle(static_cast<std::uint32_t>(draw.texture_resource),
                 draw.program->textures[0].filter == sm::Filter::linear ? 1 : 0));
@@ -519,7 +526,7 @@ struct DekoRenderer::Impl {
             out.bindRasterizerState(raster); out.bindColorState(color);
             out.bindColorWriteState(write); out.bindBlendStates(0, blend); out.bindDepthStencilState(z);
             out.setAlphaRef(state.alpha_ref/255.0F);
-            std::array<DkVtxAttribState, 3> attributes{};
+            std::array<DkVtxAttribState, 4> attributes{};
             for (std::size_t a = 0; a < draw.program->attribute_count; ++a) {
                 const auto& input = draw.program->attributes[a];
                 const bool byte = input.format == sm::VertexFormat::unorm8x4;
@@ -527,7 +534,10 @@ struct DekoRenderer::Impl {
                     byte ? DkVtxAttribSize_4x8 : input.format == sm::VertexFormat::float32x3 ? DkVtxAttribSize_3x32 : DkVtxAttribSize_2x32,
                     byte ? DkVtxAttribType_Unorm : DkVtxAttribType_Float, 0};
             }
-            out.bindVtxAttribState(attributes);
+            const dk::detail::ArrayProxy<DkVtxAttribState const> attrib_states(
+                static_cast<std::uint32_t>(draw.program->attribute_count),
+                attributes.data());
+            out.bindVtxAttribState(attrib_states);
             out.bindVtxBufferState(DkVtxBufferState{draw.program->buffers[0].stride, 0});
         }
         const auto& v = records[draw.vertex_resource].placement;

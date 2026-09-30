@@ -1815,11 +1815,25 @@ if(NFSU_BUILD_TESTS)
                     -DOUT_PARENT=${nfsu_retail_work}/race-replay-glows
                     -DGLOWS=ON
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/retail_replay_check.cmake)
+        add_test(NAME nfsu_race_shading_replay_check
+            COMMAND ${CMAKE_COMMAND}
+                    -DPYTHON=${Python3_EXECUTABLE}
+                    -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/race_replay_check.py
+                    -DRACE=$<TARGET_FILE:nfsu_race>
+                    "-DROOT=${NFSU_RETAIL_ROOT}"
+                    -DOUT_PARENT=${nfsu_retail_work}/race-replay-shading
+                    -DCAR_SHADING=ON
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/retail_replay_check.cmake)
         # The stock car's recorded draws against the CPU reference trace in
         # both material modes, and the stock frame pins of
         # include/nfsu/stock_frame.h: docs/DRAW_COMMANDS.md.
         add_test(NAME nfsu_draw_commands_retail
             COMMAND nfsu_draw_commands_retail "${NFSU_RETAIL_ROOT}")
+        add_test(NAME nfsu_viewer_skin_shading_retail
+            COMMAND ${CMAKE_COMMAND} -DVIEWER=$<TARGET_FILE:nfsu_viewer>
+                    "-DROOT=${NFSU_RETAIL_ROOT}"
+                    -DWORK=${nfsu_retail_work}/viewer-skin-shading
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/viewer_skin_shading_retail.cmake)
         # The same two frames through the application's calls, compared with
         # the same constants: docs/SWITCH_BUILD.md.
         add_test(NAME nfsu_stock_frame_retail
@@ -1910,7 +1924,8 @@ if(NFSU_BUILD_TESTS)
             nfsu_race_run_retail_profile_reference nfsu_race_replay_check
             nfsu_race_particle_frame_guards
             nfsu_race_replay_check_glows
-            nfsu_draw_commands_retail nfsu_stock_frame_retail
+            nfsu_race_shading_replay_check nfsu_draw_commands_retail
+            nfsu_viewer_skin_shading_retail nfsu_stock_frame_retail
             nfsu_stock_frame_painted_retail nfsu_race_loader_peak_retail
             nfsu_track_loader_peak_retail nfsu_track_slice_retail
             nfsu_racing_line_retail nfsu_race_audio_retail nfsu_audio_retail
@@ -1927,10 +1942,15 @@ if(NFSU_BUILD_TESTS)
                 COMMAND nfsu_race_run_tests
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
                     "${NFSU_RETAIL_ROOT}" --full-draws)
+            add_test(NAME nfsu_race_run_retail_full_shading_draws
+                COMMAND nfsu_race_run_tests
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
+                    "${NFSU_RETAIL_ROOT}" --full-draws --car-shading)
             add_test(NAME nfsu_track_slice_retail_full
                 COMMAND nfsu_track_slice_tests "${NFSU_RETAIL_ROOT}" --full)
             set_tests_properties(
-                nfsu_race_run_retail_full_draws nfsu_track_slice_retail_full
+                nfsu_race_run_retail_full_draws nfsu_race_run_retail_full_shading_draws
+                nfsu_track_slice_retail_full
                 PROPERTIES LABELS "retail;retail-full"
                 FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 3600)
         endif()

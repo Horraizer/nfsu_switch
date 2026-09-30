@@ -60,6 +60,13 @@ TUNED_GLOW_FRAMES = (
     "REPIN_AT_END",  # 13128
     "REPIN_AT_END",  # 48336
 )
+# #182 opt-in frame 180 exercises the CARSKIN-to-blue-paint approximation,
+# the other recovered car materials, smooth normals and retail alpha/blend.
+# Track and simulation pins stay unchanged; off-state FRAMES remain baseline.
+SHADED_FRAME = "REPIN_AT_END"
+SHADED_GLOW_FRAME = "REPIN_AT_END"
+SHADED_TUNED_FRAME = "REPIN_AT_END"
+SHADED_TUNED_GLOW_FRAME = "REPIN_AT_END"
 RESULT = (
     "event 1 track 1003 laps 2 outcome finished steps 48336 resets 0",
     "lap 1 ticks 1616400 time 6:44.10",
@@ -113,10 +120,16 @@ def main():
     parser.add_argument("--check-driver", action="store_true", help="also regenerate the recording with each build")
     parser.add_argument("--tuned", action="store_true", help="check the shared tuned visual preset")
     parser.add_argument("--glows", action="store_true", help="check marker-driven night glows")
+    parser.add_argument("--car-shading", action="store_true", help="check the opt-in shaded frame and complete simulation")
     args = parser.parse_args()
-    frame_steps = TUNED_STEPS if args.tuned else STEPS
-    frames = (TUNED_GLOW_FRAMES if args.glows else TUNED_FRAMES) if args.tuned else (
-        GLOW_FRAMES if args.glows else FRAMES)
+    frame_steps = (180,) if args.car_shading else (TUNED_STEPS if args.tuned else STEPS)
+    if args.car_shading:
+        shaded = (SHADED_TUNED_GLOW_FRAME if args.glows else SHADED_TUNED_FRAME) if args.tuned else (
+            SHADED_GLOW_FRAME if args.glows else SHADED_FRAME)
+        frames = (shaded,)
+    else:
+        frames = (TUNED_GLOW_FRAMES if args.glows else TUNED_FRAMES) if args.tuned else (
+            GLOW_FRAMES if args.glows else FRAMES)
     require(len(frames) == len(frame_steps), "frame pin count differs from sampled steps")
     root, output = args.root.resolve(), args.out.resolve()
     require(root.is_dir(), "retail root does not exist")
@@ -130,6 +143,10 @@ def main():
         command = [str(exe.resolve()), "--root", str(root)]
         if args.tuned:
             command += ["--tuned"]
+        if args.car_shading:
+            command += ["--car-shading", "on"]
+        if args.glows:
+            command += ["--glows"]
         if args.check_driver:
             generated = output / (str(index) + "-generated.txt")
             result = retail_run(command + ["--generate", str(generated)], root)
@@ -137,8 +154,7 @@ def main():
             require(result.returncode == 0 and not result.stderr, "driver failed; see log")
             require(generated.read_bytes() == recording.read_bytes(), "scripted driver no longer generates the recording")
         result = retail_run(command + ["--input", str(recording), "--out", str(prefix),
-                             "--frames", ",".join(map(str, frame_steps))] +
-                            (["--glows"] if args.glows else []), root)
+                             "--frames", ",".join(map(str, frame_steps))], root)
         (output / (str(index) + ".log")).write_text(result.stdout + result.stderr, encoding="ascii")
         require(result.returncode == 0 and not result.stderr, "replay failed; see log")
         lines = result.stdout.splitlines()

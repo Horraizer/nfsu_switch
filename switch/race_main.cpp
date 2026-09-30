@@ -23,6 +23,7 @@
 
 namespace {
 const char* selected_car_label = "STOCK";
+const char* car_shading_label="OFF";
 using namespace nfsu;
 constexpr unsigned width = 1280, height = 720;
 double ms(std::uint64_t ticks) { return armTicksToNs(ticks)/1000000.0; }
@@ -346,6 +347,8 @@ ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
         rows.insert(rows.begin(),format("BUILD %.12s | %s | %s | SKY %s | PAGE %zu/%zu",
             NFSU_RACE_BUILD_TAG,mode,titles[i].c_str(),context.sky,i+1,pages.size()));
         rows.push_back(std::string("CAR ") + selected_car_label + " | LEFT/RIGHT page | + exits");
+        rows.push_back(std::string("CAR SHADING ")+car_shading_label+" | LEFT/RIGHT page | + exits");
+        rows.push_back(std::string("CAR ") + selected_car_label + " | LEFT/RIGHT page | + exits");
     }
     return pages;
 }
@@ -424,8 +427,10 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
 // issue 227 diagnostic that submits it with the opaque pass, as before.
 void run(const std::string& root, bool replay_mode, bool panel_mode, bool profile_frame,
           bool particles_enabled, const std::string& sky, bool tuned, bool glows,
+          bool car_shading,
           Screen& screen, PadState& pad) {
     selected_car_label = tuned ? "TUNED" : "STOCK";
+    car_shading_label=car_shading ? "ON static" : "OFF";
     require(R_SUCCEEDED(romfsInit()), "cannot mount race shader/replay RomFS");
     struct Guard { ~Guard() { romfsExit(); } } guard;
     std::string error;
@@ -443,9 +448,11 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     Progress progress(screen,pad,heap);
     const auto load_start = armGetSystemTick();
     require(race.prepare_metadata(root,error,&progress),error);
-    require(scene.load(posix_file_system(), root, error, &progress, &progress, tuned, glows), error);
+    require(scene.load(posix_file_system(), root, error, &progress, &progress,
+                       tuned, glows, car_shading), error);
     screen.show({std::string("ASSETS PASS. Preparing event 1, ") +
                  selected_car_label + " 240SX and race course..."});
+    screen.show({car_shading ? "CAR SHADING ON: static environment approximation" : "CAR SHADING OFF"});
     progress.checkpoint("race course");
     require(race.start(root,scene.track(),error,&progress),error);
     progress.checkpoint("race course prepared");
@@ -771,6 +778,7 @@ int main(int argc, char** argv) {
             bool tuned = false;
             bool replay = false, panel = false, profile_frame = false;
             bool particles_enabled = true, selected = false, root_seen = false;
+            bool car_shading=false;
             std::string sky = "on";
             bool glows = false;
             for (int i = 1; i < argc; ++i) {
@@ -782,12 +790,17 @@ int main(int argc, char** argv) {
                 else if (arg == "--profile-frame") profile_frame = true;
                 else if (arg == "--particles=on") particles_enabled = true;
                 else if (arg == "--particles=off") particles_enabled = false;
+                else if (arg=="--car-shading" && i+1<argc) {
+                    const std::string mode=argv[++i];
+                    require(mode=="on" || mode=="off","--car-shading needs on or off");
+                    car_shading=mode=="on";
+                }
                 else if (arg == "--sky" && i+1 < argc &&
                          (std::strcmp(argv[i+1],"on") == 0 || std::strcmp(argv[i+1],"off") == 0 ||
                           std::strcmp(argv[i+1],"early") == 0)) sky = argv[++i];
                 else if (arg == "--glows") glows = true;
                 else if (!root_seen && arg.rfind("--",0) != 0) { root = arg; root_seen = true; }
-                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--sky on|off|early] [--particles=on|--particles=off] [--tuned] [--glows]");
+                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--sky on|off|early] [--particles=on|--particles=off] [--tuned] [--glows] [--car-shading on|off]");
             }
             require(!(panel && profile_frame),"--profile-frame requires direct presentation");
             while (!selected && appletMainLoop()) {
@@ -807,7 +820,8 @@ int main(int argc, char** argv) {
                     "During the race: Y pauses, + opens results with driving-frame statistics.",
                     "No game data is bundled or written. Replay input is bundled in RomFS."});
             }
-            if (selected) run(root,replay,panel,profile_frame,particles_enabled,sky,tuned,glows,screen,pad);
+            if (selected) run(root,replay,panel,profile_frame,particles_enabled,sky,
+                              tuned,glows,car_shading,screen,pad);
         } catch (const Cancel&) {
         } catch (const std::exception& e) {
             std::printf("ERROR: %s\n",e.what()); std::fflush(stdout);

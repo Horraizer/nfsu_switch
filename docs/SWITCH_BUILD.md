@@ -389,8 +389,8 @@ in `include/nfsu/stock_frame.h` records it:
 - No vinyl and no hood or spoiler vinyl: a stock car installs none. That is
   also why the car's `VINYLS.BIN` is not needed.
 - The base paint is a choice, not the game's. The front end installs a
-  `BASE_PAINT` record named by `CarTypeInfo +0xC5C`, which is not decoded, so
-  the stock colour is unknown; 30/60/160 with GLOSS 128 is the value
+  `BASE_PAINT` record named by `CarTypeInfo +0xC5C`, now decoded as
+  `GLOSS_L1_COLOR08` (orange); 30/60/160 with GLOSS 128 is the value
   [`RENDERER.md`](RENDERER.md) already renders the retail skin with.
 
 The #141 frame was reported `EQUAL` on the owner's console in the review of

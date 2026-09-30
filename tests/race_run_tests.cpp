@@ -234,11 +234,12 @@ int main(int argc, char** argv) {
         require(!combine_race_commands(fixture, other, joined, error), "combined draw overflow accepted");
         std::cout << "PASS: fixed clock, exact replay cursor, refusal and combined draw guards\n";
         if (argc == 2) return 0;
-        bool tuned = false, glows = false;
+        bool tuned = false, glows = false, car_shading = false;
         for (int i = 4; i < argc; ++i) {
             const std::string option = argv[i];
             if (option == "--tuned") tuned = true;
             else if (option == "--glows") glows = true;
+            else if (option == "--car-shading") car_shading = true;
             else require(false, "unknown race option");
         }
         const std::filesystem::path root = argument_path(argv[2]);
@@ -255,7 +256,8 @@ int main(int argc, char** argv) {
                 if (std::string(phase) == "car prepared") car_prepared = true;
             }
         } polled;
-        require(scene.load(posix_file_system(), root, error, nullptr, &polled, tuned, glows), error);
+        require(scene.load(posix_file_system(), root, error, nullptr, &polled,
+                           tuned, glows, car_shading), error);
         require(polled.sections >= 4*scene.track().sections && polled.car_prepared,
                 "race scene disconnected the shared loader checkpoints");
         require(!scene.load(posix_file_system(),root,error),"loaded race scene allowed cache-invalidating reload");
@@ -298,11 +300,13 @@ int main(int argc, char** argv) {
         require(replay.load(text, error), error);
         require(scene.cache_bytes() <= 8*kMiB,"command cache exceeded metadata limit");
         std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 8*kMiB << '\n';
-        // Sky, shadow, particle and glow templates reside in the cache.
-        const auto cache_pin = tuned ? (glows ? 3894915U /* REPIN_AT_END */ :
-            3860280U /* REPIN_AT_END */) :
-            (glows ? 3894884U /* REPIN_AT_END */ :
-            3860249U /* REPIN_AT_END */);
+        // Sky, shadow, particle, glow and shading templates need merged pins.
+        constexpr std::uint64_t REPIN_AT_END = 0;
+        const auto cache_pin = car_shading ?
+            (tuned ? (glows ? REPIN_AT_END : REPIN_AT_END) :
+                     (glows ? REPIN_AT_END : REPIN_AT_END)) :
+            (tuned ? (glows ? REPIN_AT_END : REPIN_AT_END) :
+                     (glows ? REPIN_AT_END : REPIN_AT_END));
         require(scene.cache_bytes() == cache_pin,
                 "event 1 command cache metadata estimate differs from pin");
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
@@ -349,7 +353,8 @@ int main(int argc, char** argv) {
             RaceGpuScene no_sky; RaceGpuFrame plain;
             no_sky.set_particles_enabled(true);
             require(no_sky.set_sky(false), "sky mode refused before load");
-            require(no_sky.load(posix_file_system(), root, error, nullptr, nullptr, tuned, glows), error);
+            require(no_sky.load(posix_file_system(), root, error, nullptr, nullptr,
+                                tuned, glows, car_shading), error);
             require(no_sky.frame(race.session(), plain, error), error);
             std::size_t sky_views = 0;
             for (std::size_t i = 0; i < frame.commands.draw_count(); ++i)

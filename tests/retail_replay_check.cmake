@@ -34,6 +34,12 @@ set(effect_arguments)
 if(DEFINED GLOWS AND GLOWS)
     list(APPEND effect_arguments --glows)
 endif()
+if(CAR_SHADING)
+    list(APPEND effect_arguments --car-shading)
+    set(expected_frames 1)
+else()
+    set(expected_frames 12)
+endif()
 
 execute_process(
     COMMAND "${PYTHON}" "${SCRIPT}" --exe "${RACE}" --root "${ROOT}"
@@ -50,7 +56,7 @@ if(NOT result EQUAL 0)
 endif()
 # The script prints one PASS line per executable when every pin held; an
 # exit status of 0 without it is not a pass.
-if(NOT output MATCHES "(^|\n)PASS: [^\n]*48336 step hashes, result, 12 frames, clean 120 Hz trajectory, generated recording")
+if(NOT output MATCHES "(^|\n)PASS [^\n]*48336 step hashes, result, ${expected_frames} frames, clean 120 Hz trajectory, generated recording")
     message(FATAL_ERROR "FAIL: race_replay_check.py exited 0 without its PASS line")
 endif()
 file(REMOVE_RECURSE "${OUT}")

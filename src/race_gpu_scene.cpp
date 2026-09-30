@@ -243,10 +243,12 @@ bool combine_race_commands(RecordedCommands track, const RecordedCommands& car,
 }
 bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& root,
                         std::string& error, AssetCheckObserver* observer,
-                        TrackSliceLoadObserver* loading, bool tuned, bool glows) {
+                        TrackSliceLoadObserver* loading, bool tuned, bool glows,
+                        bool car_shading) {
     if (ready_) { error = "race scene is already loaded"; return false; }
     tuned_ = tuned;
     glows_enabled_ = glows;
+    car_shading_=car_shading;
     // Car source files and their decoded preparation are temporary. Complete
     // that work before streaming the track so neither source set overlaps the
     // other's allocation peak. Only the prepared car scene survives this scope.
@@ -260,7 +262,8 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
         if (loading) loading->checkpoint("car preparation");
         StockFrame stock;
         if (!prepare_race_car_frame(inputs, root, tuned ? tuned_240sx_request() : stock_240sx_request(),
-                tuned ? tuned_240sx_skin() : stock_240sx_skin(), stock, error)) return false;
+                tuned ? tuned_240sx_skin() : stock_240sx_skin(), stock, error,
+                car_shading_)) return false;
         if (!prepare_car_shadow(inputs, stock.car_pack, shadow_asset_, error)) return false;
         if (glows_enabled_) glow_anchors_ = collect_car_glow_anchors(stock);
         if (loading) loading->checkpoint("car prepared");
@@ -387,7 +390,10 @@ bool RaceGpuScene::prepare_frame_cache(std::string& error) {
         }
     }
     if (sky_draws_) track_placements_.back() = track_templates_.owning_draws().front().placement;
-    if (!record_car_commands(car_, race_render_options(sky_), {}, skin_source_, car_templates_, error)) return false;
+    auto car_options=race_render_options(sky_);
+    car_options.car_shading=car_shading_;
+    if (car_shading_) car_options.material_state=MaterialStateMode::retail;
+    if (!record_car_commands(car_, car_options, {}, skin_source_, car_templates_, error)) return false;
     car_draw_count_=car_templates_.owning_draws().size();
     if (particles_enabled_ && !append_particle_commands(car_templates_,error)) return false;
     if (!validate_recorded_commands(car_templates_,error)) return false;
@@ -604,6 +610,8 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
     const auto shadow = place_car_shadow(session);
     for (double far = 250; far >= 31.25; far *= 0.5) {
         RenderOptions options = race_render_options(sky_);
+        options.car_shading=car_shading_;
+        if (car_shading_) options.material_state=MaterialStateMode::retail;
         if (!drive_render_camera(session.camera(), ChaseFovMode::vertical_4_3,
                                  options.width, options.height, options.camera, error)) return false;
         options.camera.far_plane = far;

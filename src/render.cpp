@@ -150,6 +150,7 @@ ClipVertex lerp(const ClipVertex& a, const ClipVertex& b, double t) noexcept {
     out.g = a.g + (b.g - a.g) * t;
     out.b = a.b + (b.b - a.b) * t;
     out.a = a.a + (b.a - a.a) * t;
+    for (int k=0;k<7;++k) out.surface[k]=a.surface[k]+(b.surface[k]-a.surface[k])*t;
     return out;
 }
 
@@ -879,6 +880,7 @@ struct Rasterizer::ScreenVertex {
     double rq = 0.0;
     double gq = 0.0;
     double bq = 0.0;
+    double surface[7]{};
     double aq = 0.0;
 };
 
@@ -937,6 +939,7 @@ bool Rasterizer::draw_triangle(
         screen[i].rq = v.r * q;
         screen[i].gq = v.g * q;
         screen[i].bq = v.b * q;
+        for (int k=0;k<7;++k) screen[i].surface[k]=v.surface[k]*q;
         screen[i].aq = v.a * q;
     }
 
@@ -1078,6 +1081,9 @@ bool Rasterizer::fill(
                     if (options_.flip_v) {
                         tv = 1.0 - tv;
                     }
+                    double surface[7]{};
+                    if (material.car_shading) for (int k=0;k<7;++k)
+                        surface[k]=(l[0]*a->surface[k]+l[1]*b->surface[k]+l[2]*c->surface[k])*iq;
                     std::uint32_t color[4];
                     std::uint32_t source_alpha = 255;
                     bool keep = true;
@@ -1101,9 +1107,9 @@ bool Rasterizer::fill(
                             for (int k = 0; k < 4; ++k) color[k] = texel[k];
                         }
                         keep = color[3] >= options_.alpha_cutoff;
-                        if (scaled_alpha) {
+                        if (scaled_alpha || material.car_shading) {
                             const double value =
-                                static_cast<double>(color[3]) * material.alpha_scale;
+                                static_cast<double>(color[3]) * (material.car_shading ? surface[6] : material.alpha_scale);
                             source_alpha = value <= 0.0
                                                ? 0U
                                                : (value >= 255.0
@@ -1148,7 +1154,11 @@ bool Rasterizer::fill(
                                     ? 0U
                                     : std::min<std::uint32_t>(
                                           255U, (color[k] * shade + 128U) >> 8U);
-                            if (environment) {
+                            if (material.car_shading) {
+                                const double shaded=color[k]*surface[k] + color[3]*surface[3+k];
+                                value=static_cast<std::uint32_t>(std::clamp(std::floor(shaded+0.5),0.0,255.0));
+                            }
+                            if (environment && !material.car_shading) {
                                 // 4 * diffuse_scale.w * envmap_sample *
                                 // (EnvmapMin + envvdotn * EnvmapRange), times
                                 // the texel alpha, in 0..255 units.
@@ -1204,6 +1214,50 @@ bool Rasterizer::fill(
     }
     return true;
 }
+
+namespace {
+// Approximation: static sky/horizon/ground and one broad light replace the
+// untraced runtime HarmonicCoeff and six-face capture. Evaluated per vertex.
+void car_surface(const MeshVertex& vertex, const float* transform, const Vec3& world,
+                 const Vec3& eye, const CarShadingMaterial& c, double (&out)[7]) {
+    Vec3 n{vertex.nx, vertex.ny, -vertex.nz};
+    if (transform) {
+        const Vec3 r0{transform[0],transform[1],transform[2]};
+        const Vec3 r1{transform[4],transform[5],transform[6]};
+        const Vec3 r2{transform[8],transform[9],transform[10]};
+        const auto a=cross(r1,r2), b=cross(r2,r0), d=cross(r0,r1);
+        const double det=dot(r0,a);
+        if (std::abs(det)>1e-12) {
+            const Vec3 moved{(vertex.nx*a.x+vertex.nz*b.x+vertex.ny*d.x)/det,
+                             (vertex.nx*a.y+vertex.nz*b.y+vertex.ny*d.y)/det,
+                             (vertex.nx*a.z+vertex.nz*b.z+vertex.ny*d.z)/det};
+            n={moved.x,moved.z,-moved.y};
+        }
+    }
+    if (!normalize(n)) n={0,1,0};
+    Vec3 view=sub(eye,world); if (!normalize(view)) view={0,1,0};
+    if (dot(n,view)<0) n={-n.x,-n.y,-n.z};
+    const double v=std::clamp(dot(n,view),0.01,1.0);
+    const Vec3 refl{2*v*n.x-view.x,2*v*n.y-view.y,2*v*n.z-view.z};
+    Vec3 light{kLightX,kLightY,kLightZ}; normalize(light);
+    const double diffuse=0.42+0.58*std::max(0.0,dot(n,light));
+    const double spec=std::pow(std::max(0.0,dot(refl,light)),double(c.specular_min[3]));
+    const double sv=std::pow(v,double(c.specular_min[3]));
+    const double ev=std::pow(v,double(c.specular_range[3]));
+    const double sky=std::clamp(refl.y*0.5+0.5,0.0,1.0);
+    const double horizon=std::max(0.0,1.0-std::abs(refl.y)*5.0);
+    const double band=std::max(0.0,1.0-std::abs(refl.x-0.35)*5.0)*horizon;
+    const double ground[3]={0.055,0.045,0.035}, top[3]={0.20,0.27,0.38};
+    const double alpha=c.gates[1]*(c.diffuse_min[3]+v*c.diffuse_range[3]);
+    out[6]=alpha;
+    for (int k=0;k<3;++k) {
+        const double environment=ground[k]+sky*(top[k]-ground[k])+0.18*horizon+0.25*band;
+        out[k]=c.gates[1]*diffuse*(c.diffuse_min[k]+v*c.diffuse_range[k]);
+        out[3+k]=alpha*(c.gates[1]*spec*(c.specular_min[k]+sv*c.specular_range[k])+
+                     4*c.gates[2]*environment*(c.environment_min[k]+ev*c.environment_range[k]));
+    }
+}
+} // namespace
 
 bool render_scene(
     const PreparedCarScene& scene,
@@ -1416,6 +1470,7 @@ bool render_scene(
                 (environment || coefficients.alpha_min != 1.0 ||
                  coefficients.alpha_range != 0.0);
 
+            raster.car_shading = options.car_shading && raster.texture && draw.shading.gates[0] != 0;
             raster.lamp_mode = instanced ? scene.instances[copy].lamp_mode : 0;
             if ((first + count) / 3 > first / 3) {
                 copy_drawn[copy] = 1;
@@ -1425,7 +1480,7 @@ bool render_scene(
                     raster.texture ? (override_texture != kNoHandle
                         ? override_texture : draw.texture) : kNoHandle,
                     draw.first_index, draw.index_count, true, true, true,
-                    options.cull, raster.blend, raster.alpha_test, raster.alpha_ref});
+                    options.cull, raster.blend, raster.alpha_test, raster.alpha_ref, raster.car_shading});
             }
             for (std::uint64_t t = first / 3; t < (first + count) / 3; ++t) {
                 const std::uint32_t id = next_id++;
@@ -1453,6 +1508,8 @@ bool render_scene(
                     clip[k].g = source.color[1];
                     clip[k].b = source.color[2];
                     clip[k].a = source.color[3];
+                    if (raster.car_shading)
+                        car_surface(source,transform,world[k],camera.eye,draw.shading,clip[k].surface);
                 }
                 Vec3 normal = cross(sub(world[1], world[0]), sub(world[2], world[0]));
                 const bool has_normal = normalize(normal);

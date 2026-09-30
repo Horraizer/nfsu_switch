@@ -172,7 +172,7 @@ struct StockFrameSkin {
 // - No vinyl, hood or spoiler vinyl: a stock car installs none.
 // - The base paint is a choice, not the game's. The front end installs a
 //   BASE_PAINT record named by CarTypeInfo +0xC5C (docs/CAR_SCENE.md), and
-//   that field is not decoded, so the stock colour is unknown. 30/60/160
+//   that field selects GLOSS_L1_COLOR08 (orange) in retail. 30/60/160
 //   with GLOSS 128 is the value docs/RENDERER.md already renders the retail
 //   skin with. No special colour is set, so all four fall back to it.
 // - The target is DUMMY_SKIN1, in the shared Cars/TEXTURES.BIN, and
@@ -252,13 +252,15 @@ bool prepare_stock_frame(
 // 1 + the number of shared sources. Also false, with error set, wherever
 // the viewer's skin block stops with exit status 2; a selected input that
 // was skipped is an issue and clears inputs_ok, as it makes the viewer
-// exit 3.
+// exit 3. GLOBALB material coefficients are decoded only when car_shading
+// is true; the default preserves the legacy shading-off preparation path.
 bool prepare_stock_frame(
     const StockFrameInputs& inputs,
     const StockSceneRequest& request,
     const StockFrameSkin& skin,
     StockFrame& frame,
-    std::string& error);
+    std::string& error,
+    bool car_shading = false);
 
 // Same preparation/resolution with shorter input lifetimes for the tuned race.
 // Geometry bytes are consumed after parsing; VINYLS is re-read only once the
@@ -266,7 +268,8 @@ bool prepare_stock_frame(
 // The stock path keeps its existing preparation and memory behavior.
 bool prepare_race_car_frame(StockFrameInputs& inputs, const std::filesystem::path& root,
                            const StockSceneRequest& request, const StockFrameSkin& skin,
-                           StockFrame& frame, std::string& error);
+                           StockFrame& frame, std::string& error,
+                           bool car_shading = false);
 
 // render_scene over the prepared scene, into frame.frame and frame.stats.
 bool render_stock_frame(StockFrame& frame, const RenderOptions& options, std::string& error);
