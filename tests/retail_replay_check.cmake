@@ -1,4 +1,4 @@
-# tools/race_replay_check.py under CTest (issue #233): the 12 pinned race
+# tools/race_replay_check.py under CTest (issue #233): the 16 pinned race
 # frames, the result lines, the per-step state file, the 120 Hz trajectory
 # and, with --check-driver, the regenerated recording, for one nfsu_race.
 # The script's assertions are its own; this wrapper adds none and relaxes
@@ -38,7 +38,7 @@ if(CAR_SHADING)
     list(APPEND effect_arguments --car-shading)
     set(expected_frames 1)
 else()
-    set(expected_frames 12)
+    set(expected_frames 16)
 endif()
 set(probe_arguments)
 if(DEFINED PROBE AND NOT PROBE STREQUAL "")

@@ -305,7 +305,7 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
 void run(const std::string& root, bool replay_mode, bool panel_mode, bool profile_frame,
           bool particles_enabled, const std::string& sky, bool tuned, bool glows,
           bool car_shading, bool wet_road_reflections,
-          std::uint32_t requested_height, bool gpu_boost,
+          std::uint32_t requested_height, bool gpu_boost, bool hud_mode,
           Screen& screen, PadState& pad) {
     selected_car_label = tuned ? "TUNED" : "STOCK";
     car_shading_label=car_shading ? "ON static" : "OFF";
@@ -358,7 +358,12 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             audio_note = "audio disabled: startup failed without diagnostic";
     } else audio_note = "audio disabled: render core pin failed";
     std::printf("AUDIO: %s\n", audio_note.c_str());
-    const auto persistent = scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes()+sound.resident_bytes();
+    RaceHudAtlas hud_atlas;
+    if (hud_mode && !panel_mode)
+        require(load_race_hud_atlas(root,hud_atlas,error),error);
+    const auto persistent = scene.car_bytes()+race.persistent_bytes()+
+        scene.track().contacts.memory.resident_bytes+scene.cache_bytes()+
+        sound.resident_bytes()+hud_atlas.rgba.size();
     require(persistent <= kPersistentBudgetPlaceholder, "race persistent payload exceeds 64 MiB");
     RaceGpuFrame frame; require(scene.frame(race.session(),frame,error),error);
     const double load_ms = ms(armGetSystemTick()-load_start);
@@ -372,7 +377,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             "invalid scene target after operation mode change");
     DekoRenderer renderer;
     require(renderer.open(frame.commands,error,!panel_mode,kTrackSliceDrawLimit,profile_frame,true,
-                          sky == "early",scene_height),error);
+                          sky == "early",scene_height,
+                          hud_mode && !panel_mode ? &hud_atlas : nullptr),error);
     const double initial_upload = ms(armGetSystemTick()-upload_start);
     std::unique_ptr<FrameProfileStats> profile_stats;
     if (profile_frame) profile_stats = std::make_unique<FrameProfileStats>();
@@ -385,6 +391,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     double previous_frame = 0, previous_hud = 0;
     std::vector<std::string> last_perf;
     RaceFrameStats stats;
+    RaceHudFrame hud_frame;
     unsigned unpause_resets = 0;
     std::string failure;
     try {
@@ -395,7 +402,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             const auto next_height = deko_effective_scene_height(requested_height,docked,!panel_mode);
             if (next_height != scene_height) {
                 require(renderer.reconfigure_target(frame.commands,error,kTrackSliceDrawLimit,
-                        profile_frame,sky == "early",next_height),error);
+                        profile_frame,sky == "early",next_height,
+                        hud_mode && !panel_mode ? &hud_atlas : nullptr),error);
                 scene_height = next_height;
                 require(plan_deko_scene_target(width,height,!panel_mode,scene_height,scene_target),
                         "invalid scene target on operation mode change");
@@ -551,7 +559,10 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             static_cast<std::uint32_t>(frame.track_draws),
             static_cast<std::uint32_t>(frame.car_draws),driving_before && !finished};
         const auto present_start = armGetSystemTick();
-        require(renderer.present(error,&present,profile_frame ? &scene_frame : nullptr),error);
+        if (hud_mode) build_race_hud_frame(race.session(),frame.commands.width,
+                                           frame.commands.height,hud_frame);
+        require(renderer.present(error,&present,profile_frame ? &scene_frame : nullptr,
+                                 hud_mode ? &hud_frame : nullptr),error);
         present_cpu = ms(armGetSystemTick()-present_start);
         const auto mall_start = armGetSystemTick();
         const auto info = mallinfo();
@@ -683,6 +694,7 @@ int main(int argc, char** argv) {
             bool tuned = false;
             bool replay = false, panel = false, profile_frame = false;
             bool particles_enabled = true, selected = false, root_seen = false;
+            bool hud = true;
             bool car_shading=false;
             std::string sky = "on";
             std::uint32_t scene_height = 0;
@@ -696,6 +708,7 @@ int main(int argc, char** argv) {
                 else if (arg == "--tuned") tuned = true;
                 else if (arg == "--panel") panel = true;
                 else if (arg == "--profile-frame") profile_frame = true;
+            else if (arg == "--no-hud") hud = false;
                 else if (arg == "--scene-height" && i+1 < argc &&
                          deko_parse_scene_height(argv[i+1],scene_height)) ++i;
                 else if (arg == "--gpu-boost" && i+1 < argc &&
@@ -721,7 +734,7 @@ int main(int argc, char** argv) {
                     else throw std::runtime_error("--wet-road-reflections must be on or off");
                 }
                 else if (!root_seen && arg.rfind("--",0) != 0) { root = arg; root_seen = true; }
-                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--sky on|off|early] [--scene-height 720|540|450|360] [--gpu-boost on|off] [--particles=on|--particles=off] [--tuned] [--glows] [--car-shading on|off] [--wet-road-reflections on|off]");
+            else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--no-hud] [--sky on|off|early] [--scene-height 720|540|450|360] [--gpu-boost on|off] [--particles=on|--particles=off] [--tuned] [--glows] [--car-shading on|off] [--wet-road-reflections on|off]");
             }
             require(!(panel && profile_frame),"--profile-frame requires direct presentation");
             while (!selected && appletMainLoop()) {
@@ -737,12 +750,14 @@ int main(int argc, char** argv) {
                     std::string("PARTICLES ")+(particles_enabled?"ON":"OFF"),
                     "The #47 first-lap check runs before track streaming. Assets: "+root,
                     "Release all controls during countdown to clear the #59 hot-plug latch.",
-                    "Direct mode has no in-race HUD yet; choose PANEL for live driving evidence.",
+                    hud ? "Direct mode shows the race HUD; PANEL keeps diagnostics." :
+                          "Race HUD disabled for paired GPU measurement.",
                     "During the race: Y pauses, + opens results with driving-frame statistics.",
                     "No game data is bundled or written. Replay input is bundled in RomFS."});
             }
             if (selected) run(root,replay,panel,profile_frame,particles_enabled,sky,
-                              tuned,glows,car_shading,wet_road_reflections,scene_height,gpu_boost,screen,pad);
+                              tuned,glows,car_shading,wet_road_reflections,scene_height,
+                              gpu_boost,hud,screen,pad);
         } catch (const Cancel&) {
         } catch (const std::exception& e) {
             std::printf("ERROR: %s\n",e.what()); std::fflush(stdout);

@@ -114,7 +114,8 @@ Barriers complete rendering before the blit and complete the blit before
 the end timestamp, so page 7 includes upscale and synchronization cost.
 The native path allocates no extra image and issues no blit or extra
 barrier. The renderer's existing memory accounting/budget covers the new
-images. Future native-resolution HUD work belongs after this scene blit.
+images. The #64 HUD draws on the native presentation image after this blit;
+the same overlay path draws directly there when the scene is forced to 720p.
 
 Page 7 identifies both dimensions and says whether upscale is included.
 Page 2 retains the original replay result and hash reporting. Existing

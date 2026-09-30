@@ -57,12 +57,18 @@ constexpr RetailFile kRetailFiles[] = {
     {"FrontEnd/FrontB.lzc", 4182578,
      "76F368D5E5E30F96A8182BF457DBA4491395E075C3F336D86A32012B56E16F90",
      "the career event table: event 1's track, laps and direction"},
+    {"Global/DYNTEX.BIN", 4677572,
+     "020E99EBEA6A4AEFC7F7C858BA8672A48FA040E00299E2372E914687BF90525C",
+     "the in-race tachometer LINES and RED faces"},
     {"Global/GLOBALB.BUN", 2361176,
      "39DF38FAC2BE7CA0F0D0A92E0113CAAEDA5B1C60E14436C612B3D0874AFC8DB9",
      "the car part database, the car and track tables, shared textures"},
     {"Global/INGAMEB.BUN", 1670080,
      "044724AB4C167831587E80F29961A1E7D8404C9DD5266533F3563C555A997299",
      "the in-race textures the track draws with"},
+    {"Languages/LanguageTextures.bin", 517284,
+     "6A92604D9766557115DEE8F8CE18F392557AF1A8B0369E69B474F36DF2691615",
+     "the in-race LCD glyphs"},
     {"Tracks/STREAML1RA.BUN", 92394688,
      "2385556EC31142F7390434CA70152A9F3D629155AF991BB6595422FCB26A752E",
      "the L1RA stream: every section of track 1003"},
@@ -90,11 +96,11 @@ const std::vector<RetailSet>& retail_sets() {
     static const std::vector<RetailSet> sets = {
         {"first-lap",
          "one timed lap of event 1 in the stock 240SX (issue #159)",
-         {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}},
-        {"stock-car", "the stock 240SX nfsu_switch_car draws", {0, 1, 2, 3, 4, 6}},
+         {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}},
+        {"stock-car", "the stock 240SX nfsu_switch_car draws", {0, 1, 2, 3, 4, 7}},
         {"event-1",
          "race 1 of Underground mode: event 1, track 1003, stream L1RA",
-         {5, 6, 7, 8, 9, 10, 11}},
+         {5, 7, 8, 10, 11, 12, 13}},
     };
     return sets;
 }

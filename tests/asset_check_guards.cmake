@@ -143,19 +143,19 @@ nfsu_case("a set that is not one" 1
 # The root is asked for once and every file is missing because of it; the
 # copy list is the whole set, under the root as it was given.
 nfsu_case("a root that is not there" 2
-          "asset-check: root ${work}/absent\n;set first-lap: one timed lap of event 1 in the stock 240SX (issue #159), 12 files, 108907646 bytes\n;root ${work}/absent cannot be listed: it does not exist\n;MISSING       Cars/240SX/GEOMETRY.BIN  the root does not exist\n;MISSING       Tracks/TRACKB1003.lzc  the root does not exist\n;install: MISSING FILES - 0 of 12 files ok: 12 missing, 0 wrong size, 0 wrong version, 0 unreadable\n;copy these 12 files from the game's installation folder, keeping the folders:\n;  Tracks/STREAML1RA.BUN -> ${work}/absent/Tracks/STREAML1RA.BUN\n;  FrontEnd/FrontB.lzc -> ${work}/absent/FrontEnd/FrontB.lzc\n;read 0 bytes in 0 reads and 1 directory listings\n"
+          "asset-check: root ${work}/absent\n;set first-lap: one timed lap of event 1 in the stock 240SX (issue #159), 14 files, 114102502 bytes\n;root ${work}/absent cannot be listed: it does not exist\n;MISSING       Cars/240SX/GEOMETRY.BIN  the root does not exist\n;MISSING       Tracks/TRACKB1003.lzc  the root does not exist\n;install: MISSING FILES - 0 of 14 files ok: 14 missing, 0 wrong size, 0 wrong version, 0 unreadable\n;copy these 14 files from the game's installation folder, keeping the folders:\n;  Tracks/STREAML1RA.BUN -> ${work}/absent/Tracks/STREAML1RA.BUN\n;  FrontEnd/FrontB.lzc -> ${work}/absent/FrontEnd/FrontB.lzc\n;read 0 bytes in 0 reads and 1 directory listings\n"
           "ok  ;WRONG"
           "${work}/absent")
 
 file(WRITE "${work}/a-file" "not a directory")
 nfsu_case("a root that is a file" 2
-          "root ${work}/a-file cannot be listed: it is not a directory\n;install: MISSING FILES - 0 of 12"
+          "root ${work}/a-file cannot be listed: it is not a directory\n;install: MISSING FILES - 0 of 14"
           "ok  "
           "${work}/a-file")
 
 file(MAKE_DIRECTORY "${work}/empty")
 nfsu_case("an empty root" 3
-          "MISSING       Cars/240SX/GEOMETRY.BIN  no Cars in the root\n;MISSING       FrontEnd/FrontB.lzc  no FrontEnd in the root\n;MISSING       Tracks/STREAML1RA_1003.BUN  no Tracks in the root\n;install: MISSING FILES - 0 of 12 files ok: 12 missing;read 0 bytes in 0 reads and 1 directory listings\n"
+          "MISSING       Cars/240SX/GEOMETRY.BIN  no Cars in the root\n;MISSING       FrontEnd/FrontB.lzc  no FrontEnd in the root\n;MISSING       Tracks/STREAML1RA_1003.BUN  no Tracks in the root\n;install: MISSING FILES - 0 of 14 files ok: 14 missing;read 0 bytes in 0 reads and 1 directory listings\n"
           "cannot be listed"
           "${work}/empty")
 
@@ -182,14 +182,14 @@ nfsu_upper_hash("${mixed}/Cars/PLATES/GEOMETRY.BIN" plate_hash)
 
 # Two files hashed, one probed: 1 + 1 chunks and 3 probes.
 nfsu_case("a mixed install" 3
-          "ok            Tracks/STREAML1RA_1003.BUN  0 bytes, sha256 E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855 (found as tracks/STREAML1RA_1003.bun)\n;WRONG VERSION Tracks/TRACKB1003.lzc  433352 bytes, sha256 ${track_hash} expected ADA8206B5D66E3286BF582E2C7117FE0CC2BA9F6CADB756D922F7D32E7C696BA (found as tracks/trackb1003.LZC)\n;WRONG SIZE    Global/GLOBALB.BUN  1000 bytes, expected 2361176: shorter than the retail file: an interrupted copy?\n;WRONG VERSION Cars/PLATES/GEOMETRY.BIN  1184 bytes, sha256 ${plate_hash} expected 0EBCFD14DD303613F5DA3FF5D7A6DF57BE3CDE915F458BA243FE5D089B64BD8A\n;MISSING       Cars/240SX/GEOMETRY.BIN  no 240SX in Cars\n;MISSING       Global/INGAMEB.BUN  no INGAMEB.BUN in Global\n;MISSING       Tracks/STREAML1RA.BUN  no STREAML1RA.BUN in tracks\n;install: MISSING FILES - 1 of 12 files ok: 8 missing, 1 wrong size, 2 wrong version, 0 unreadable\n;copy these 11 files from the game's installation folder, keeping the folders:\n;  Tracks/TRACKB1003.lzc -> ${mixed}/Tracks/TRACKB1003.lzc\n;  Global/GLOBALB.BUN -> ${mixed}/Global/GLOBALB.BUN\n;read 434536 bytes in 5 reads and 5 directory listings\n"
+          "ok            Tracks/STREAML1RA_1003.BUN  0 bytes, sha256 E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855 (found as tracks/STREAML1RA_1003.bun)\n;WRONG VERSION Tracks/TRACKB1003.lzc  433352 bytes, sha256 ${track_hash} expected ADA8206B5D66E3286BF582E2C7117FE0CC2BA9F6CADB756D922F7D32E7C696BA (found as tracks/trackb1003.LZC)\n;WRONG SIZE    Global/GLOBALB.BUN  1000 bytes, expected 2361176: shorter than the retail file: an interrupted copy?\n;WRONG VERSION Cars/PLATES/GEOMETRY.BIN  1184 bytes, sha256 ${plate_hash} expected 0EBCFD14DD303613F5DA3FF5D7A6DF57BE3CDE915F458BA243FE5D089B64BD8A\n;MISSING       Cars/240SX/GEOMETRY.BIN  no 240SX in Cars\n;MISSING       Global/INGAMEB.BUN  no INGAMEB.BUN in Global\n;MISSING       Tracks/STREAML1RA.BUN  no STREAML1RA.BUN in tracks\n;install: MISSING FILES - 1 of 14 files ok: 10 missing, 1 wrong size, 2 wrong version, 0 unreadable\n;copy these 13 files from the game's installation folder, keeping the folders:\n;  Tracks/TRACKB1003.lzc -> ${mixed}/Tracks/TRACKB1003.lzc\n;  Global/GLOBALB.BUN -> ${mixed}/Global/GLOBALB.BUN\n;read 434536 bytes in 5 reads and 5 directory listings\n"
           "-> ${mixed}/Tracks/STREAML1RA_1003.BUN;cannot be listed"
           "${mixed}")
 
 # The same, with the root given relative to the directory the command runs
 # in: the same verdict, and the root echoed as it was given.
 nfsu_case("a relative root" 3
-          "asset-check: root mixed\n;install: MISSING FILES - 1 of 12 files ok: 8 missing, 1 wrong size, 2 wrong version, 0 unreadable\n;  Global/GLOBALB.BUN -> mixed/Global/GLOBALB.BUN\n"
+          "asset-check: root mixed\n;install: MISSING FILES - 1 of 14 files ok: 10 missing, 1 wrong size, 2 wrong version, 0 unreadable\n;  Global/GLOBALB.BUN -> mixed/Global/GLOBALB.BUN\n"
           "cannot be listed"
           "mixed")
 

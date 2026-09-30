@@ -67,13 +67,14 @@ bool run(int argc, char** argv, PadState& pad, Report& report, std::string& erro
     const auto mounted = romfsInit();
     if (R_FAILED(mounted)) { error = "offline shader RomFS mount failed: " + std::to_string(mounted); return false; }
     struct RomfsGuard { ~RomfsGuard() { romfsExit(); } } romfs_guard;
-    bool painted = true, tuned = false, have_root = false;
+    bool painted = true, tuned = false, hud = false, have_root = false;
     std::string root = "sdmc:/nfsu";
     for (int i=1; i<argc; ++i) {
         if (!argv[i] || !argv[i][0]) continue;
         const std::string argument = argv[i];
         if (argument == "--unpainted") painted = false;
         else if (argument == "--tuned") tuned = true;
+        else if (argument == "--hud") hud = true;
         else if (!have_root && argument[0] != '-') { root = argument; have_root = true; }
         else { error = "unknown argument: " + argument; return false; }
     }
@@ -119,14 +120,31 @@ bool run(int argc, char** argv, PadState& pad, Report& report, std::string& erro
     if (!nfsu::record_car_commands(stock.scene, options, {},
             painted ? stock.skin_binding.source : nfsu::kNoHandle, commands, error)) return false;
     std::vector<unsigned char> gpu, difference;
+    nfsu::RaceHudAtlas hud_atlas;
+    nfsu::RaceHudFrame hud_frame;
+    if (hud) {
+        if (!nfsu::load_race_hud_atlas(root,hud_atlas,error)) return false;
+        nfsu::VehicleState car{};
+        car.gear = nfsu::kVehicleGearFirst;
+        car.engine_rpm = 7500.0;
+        car.velocity.x = 22.0;
+        // This synthetic HUD uses engine B level 3's +1000 RPM for --tuned.
+        nfsu::build_race_hud_frame_for_car(car,tuned ? 9000 : 8000,
+                                            tuned ? 8500 : 7500,commands.width,
+                                            commands.height,hud_frame);
+    }
     double gpu_ms=0, readback_ms=0;
     report.line("NFSU #147: rendering GPU and reading back RGBA8 (no swapchain).");
     {
         nfsu::DekoRenderer renderer;
-        if (!renderer.open(commands, error, false) ||
-            !renderer.capture(gpu, gpu_ms, readback_ms, error) || !renderer.close(error)) return false;
+        if (!renderer.open(commands, error, false, 0, false, false,
+                           false, 0, hud ? &hud_atlas : nullptr) ||
+            !renderer.capture(gpu, gpu_ms, readback_ms, error,
+                              hud ? &hud_frame : nullptr) || !renderer.close(error)) return false;
     } // Device and every GPU allocation die before displaying the captured bytes.
-    const auto& cpu = stock.frame.rgba();
+    std::vector<unsigned char> cpu = stock.frame.rgba();
+    if (hud) nfsu::composite_race_hud(hud_atlas,hud_frame,cpu.data(),
+                                       commands.width,commands.height,commands.width*4);
     nfsu::RgbaFrameView cpu_view{cpu.data(), cpu.size(), stock.frame.width(), stock.frame.height(), stock.frame.width()*4};
     nfsu::RgbaFrameView gpu_view{gpu.data(), gpu.size(), commands.width, commands.height, commands.width*4};
     nfsu::FrameComparison metrics;
@@ -135,7 +153,7 @@ bool run(int argc, char** argv, PadState& pad, Report& report, std::string& erro
     const auto gpu_hash = nfsu::sha256_hex(nfsu::sha256(gpu.data(), gpu.size()));
     char text[2048];
     std::snprintf(text, sizeof text,
-        "NFSU #147 v1: %s, viewer default camera and retail material state\n"
+        "NFSU #147 v1: %s, viewer default camera and retail material state%s\n"
         "%s (requires CPU pin, within-2 >=99.0%% AND RGB PSNR >=35 dB)\n"
         "Exact RGBA: %.6f%% (%llu/%llu pixels)\n"
         "Within +/-2 RGBA: %.6f%% (%llu/%llu pixels)\n"
@@ -147,7 +165,7 @@ bool run(int argc, char** argv, PadState& pad, Report& report, std::string& erro
         "GPU raw RGBA SHA-256:\n%s\n"
         "A=GPU  B=CPU  X=DIFF x16  Y=toggle report  +=exit\n"
         "Photograph this report; coordinator records numbers on issue #147.",
-        tuned ? "tuned" : painted ? "painted" : "unpainted",
+        tuned ? "tuned" : painted ? "painted" : "unpainted", hud ? ", HUD" : "",
         pin_ok && metrics.passed ? "PASS" : "FAIL",
         100.0*metrics.exact_pixels/metrics.pixels,
         static_cast<unsigned long long>(metrics.exact_pixels), static_cast<unsigned long long>(metrics.pixels),

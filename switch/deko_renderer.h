@@ -3,6 +3,7 @@
 #include "nfsu/draw_commands.h"
 #include "nfsu/gpu_scene_profile.h"
 #include "nfsu/deko_gpfifo_budget.h"
+#include "nfsu/race_hud.h"
 #include "nfsu/deko_scene_target.h"
 #include <memory>
 
@@ -51,12 +52,14 @@ public:
     bool open(const RecordedCommands& commands, std::string& error, bool presentation = true,
               std::size_t draw_capacity = 0, bool profile_frame = false,
               bool opaque_first = false, bool sky_with_opaque = false,
-              std::uint32_t scene_height = 0);
+              std::uint32_t scene_height = 0,
+              const RaceHudAtlas* hud_atlas = nullptr);
     // Mode changes replace the swapchain and its scene/depth images after
     // waiting for GPU work. Resident assets are uploaded again on this rare path.
     bool reconfigure_target(const RecordedCommands& commands, std::string& error,
                             std::size_t draw_capacity, bool profile_frame,
-                            bool sky_with_opaque, std::uint32_t scene_height);
+                            bool sky_with_opaque, std::uint32_t scene_height,
+                            const RaceHudAtlas* hud_atlas = nullptr);
     // Reuses resident GPU resources. Presentation may have a frame in flight.
     bool update(const RecordedCommands& commands, std::string& error,
                 DekoUpdateTiming* timing = nullptr);
@@ -67,9 +70,11 @@ public:
     // fence. Times include command recording/submission/wait; upload and
     // allocation are excluded. No CPU rasterizer is invoked here.
     bool capture(std::vector<unsigned char>& rgba, double& render_ms,
-                 double& readback_ms, std::string& error);
+                 double& readback_ms, std::string& error,
+                 const RaceHudFrame* hud_frame = nullptr);
     bool present(std::string& error, DekoPresentTiming* timing = nullptr,
-                 const DekoSceneFrame* scene_frame = nullptr);
+                 const DekoSceneFrame* scene_frame = nullptr,
+                 const RaceHudFrame* hud_frame = nullptr);
     void reset_gpu_profile();
     const DekoGpuProfile& gpu_profile() const noexcept;
     std::uint64_t profile_storage_bytes() const noexcept;

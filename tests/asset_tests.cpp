@@ -188,10 +188,14 @@ const Pinned kPinned[] = {
      "999EC47CC816CADA2158317A46E00023832031B3A4A35DDCBA31F5FBD2F9EB58"},
     {"FrontEnd/FrontB.lzc", 4182578,
      "76F368D5E5E30F96A8182BF457DBA4491395E075C3F336D86A32012B56E16F90"},
+    {"Global/DYNTEX.BIN", 4677572,
+     "020E99EBEA6A4AEFC7F7C858BA8672A48FA040E00299E2372E914687BF90525C"},
     {"Global/GLOBALB.BUN", 2361176,
      "39DF38FAC2BE7CA0F0D0A92E0113CAAEDA5B1C60E14436C612B3D0874AFC8DB9"},
     {"Global/INGAMEB.BUN", 1670080,
      "044724AB4C167831587E80F29961A1E7D8404C9DD5266533F3563C555A997299"},
+    {"Languages/LanguageTextures.bin", 517284,
+     "6A92604D9766557115DEE8F8CE18F392557AF1A8B0369E69B474F36DF2691615"},
     {"Tracks/STREAML1RA.BUN", 92394688,
      "2385556EC31142F7390434CA70152A9F3D629155AF991BB6595422FCB26A752E"},
     {"Tracks/STREAML1RA_1003.BUN", 0,
@@ -237,9 +241,9 @@ void test_retail_sets() {
         check(nfsu::validate_asset_manifest(*manifest, reason),
               manifest->name + " validates: " + reason);
     }
-    check(first.files.size() == 12 && car.files.size() == 6 && event.files.size() == 7,
-          "12, 6 and 7 files");
-    check(nfsu::asset_manifest_bytes(first) == 108907646ULL, "first-lap bytes");
+    check(first.files.size() == 14 && car.files.size() == 6 && event.files.size() == 7,
+          "14, 6 and 7 files");
+    check(nfsu::asset_manifest_bytes(first) == 114102502ULL, "first-lap bytes");
     check(nfsu::asset_manifest_bytes(car) == 9140732ULL, "stock-car bytes");
     check(nfsu::asset_manifest_bytes(event) == 102128090ULL, "event-1 bytes");
 
@@ -251,16 +255,18 @@ void test_retail_sets() {
     for (const nfsu::AssetFile& file : event.files) {
         halves.insert(file.path);
     }
+    halves.insert("Global/DYNTEX.BIN");
+    halves.insert("Languages/LanguageTextures.bin");
     std::vector<std::string> first_paths;
     for (const nfsu::AssetFile& file : first.files) {
         first_paths.push_back(file.path);
     }
     check(std::vector<std::string>(halves.begin(), halves.end()) == first_paths,
-          "first-lap is stock-car and event-1 together, sorted");
+          "first-lap adds the HUD inputs to stock-car and event-1, sorted");
 
     // The pinned table, file by file.
     check(first.files.size() == sizeof(kPinned) / sizeof(kPinned[0]), "pinned count");
-    for (std::size_t i = 0; i < first.files.size() && i < 12; ++i) {
+    for (std::size_t i = 0; i < first.files.size() && i < 14; ++i) {
         check_equal(first.files[i].path, kPinned[i].path, "pinned path " + std::to_string(i));
         check(first.files[i].size == kPinned[i].size, "pinned size of " + first.files[i].path);
         check_equal(first.files[i].sha256, kPinned[i].sha256,
@@ -1182,11 +1188,11 @@ void test_console_run() {
             {
                 "config: sdmc:/config/nfsu_switch/assets.cfg not found; root sdmc:/nfsu (the "
                 "default)",
-                "set first-lap: one timed lap of event 1 in the stock 240SX (issue #159), 12 "
-                "files, 108907646 bytes",
-                "install: MISSING FILES - 0 of 12 files ok: 12 missing, 0 wrong size, 0 wrong "
+                "set first-lap: one timed lap of event 1 in the stock 240SX (issue #159), 14 "
+                "files, 114102502 bytes",
+                "install: MISSING FILES - 0 of 14 files ok: 14 missing, 0 wrong size, 0 wrong "
                 "version, 0 unreadable",
-                "copy these 12 files from the game's installation folder to the same paths "
+                "copy these 14 files from the game's installation folder to the same paths "
                 "under sdmc:/nfsu:",
                 "  Cars/240SX/GEOMETRY.BIN  4780816 bytes",
                 "  Cars/240SX/TEXTURES.BIN  697340 bytes",
@@ -1194,8 +1200,10 @@ void test_console_run() {
                 "  Cars/PLATES/GEOMETRY.BIN  1184 bytes",
                 "  Cars/TEXTURES.BIN  1230808 bytes",
                 "  FrontEnd/FrontB.lzc  4182578 bytes",
+                "  Global/DYNTEX.BIN  4677572 bytes",
                 "  Global/GLOBALB.BUN  2361176 bytes",
                 "  Global/INGAMEB.BUN  1670080 bytes",
+                "  Languages/LanguageTextures.bin  517284 bytes",
                 "  Tracks/STREAML1RA.BUN  92394688 bytes",
                 "  Tracks/STREAML1RA_1003.BUN  0 bytes",
                 "  Tracks/TEX1003TRACK.BIN  1086216 bytes",
@@ -1206,8 +1214,10 @@ void test_console_run() {
                 "MISSING       Cars/PLATES/GEOMETRY.BIN  no Cars in the root",
                 "MISSING       Cars/TEXTURES.BIN  no Cars in the root",
                 "MISSING       FrontEnd/FrontB.lzc  no FrontEnd in the root",
+                "MISSING       Global/DYNTEX.BIN  no Global in the root",
                 "MISSING       Global/GLOBALB.BUN  no Global in the root",
                 "MISSING       Global/INGAMEB.BUN  no Global in the root",
+                "MISSING       Languages/LanguageTextures.bin  no Languages in the root",
                 "MISSING       Tracks/STREAML1RA.BUN  no Tracks in the root",
                 "MISSING       Tracks/STREAML1RA_1003.BUN  no Tracks in the root",
                 "MISSING       Tracks/TEX1003TRACK.BIN  no Tracks in the root",
@@ -1266,7 +1276,7 @@ void test_console_fits() {
                            : status == nfsu::AssetStatus::wrong_size
                                ? nfsu::AssetVerdict::partial
                                : nfsu::AssetVerdict::wrong_version;
-            report.bytes_read = 108907646;
+            report.bytes_read = 114102502;
             report.reads = 123;
             report.listings = 8;
             const std::vector<nfsu::AssetLine> lines =

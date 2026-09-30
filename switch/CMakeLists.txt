@@ -343,7 +343,7 @@ endif()
 add_executable(nfsu_switch_compare compare_main.cpp deko_renderer.cpp)
 target_link_libraries(nfsu_switch_compare PRIVATE
     nfsu_draw_commands nfsu_stock_frame nfsu_screen_text nfsu_frame_compare
-    nfsu_stock_view deko3d)
+    nfsu_race_hud nfsu_stock_view deko3d)
 set_target_properties(nfsu_switch_compare PROPERTIES
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
 nfsu_enable_warnings(nfsu_switch_compare)
@@ -455,7 +455,7 @@ if(NOT NFSU_RACE_BUILD_TAG MATCHES "^[A-Za-z0-9._-]+$")
     message(FATAL_ERROR "NFSU_RACE_BUILD_TAG must be an ASCII identifier")
 endif()
 add_executable(nfsu_switch_race race_main.cpp deko_renderer.cpp)
-target_link_libraries(nfsu_switch_race PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_screen_text nfsu_stock_view nfsu_race_audio deko3d)
+target_link_libraries(nfsu_switch_race PRIVATE nfsu_race_run nfsu_race_hud nfsu_posix_file_system nfsu_screen_text nfsu_stock_view nfsu_race_audio deko3d)
 target_compile_definitions(nfsu_switch_race PRIVATE NFSU_RACE_BUILD_TAG="${NFSU_RACE_BUILD_TAG}")
 set_target_properties(nfsu_switch_race PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
 nfsu_enable_warnings(nfsu_switch_race)

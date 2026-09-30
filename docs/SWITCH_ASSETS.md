@@ -11,13 +11,18 @@ No game data is in this repository and none is packaged into an application:
 the owner copies the files from their own installation. This note holds file
 names, sizes and SHA-256 hashes only.
 
+Issue #64's direct in-race HUD reads `Global/DYNTEX.BIN` and
+`Languages/LanguageTextures.bin` from the same SD root. The first-lap
+asset check includes both files.
+
 The answer first:
 
-- **The first lap needs 12 retail files, 108907646 bytes**, listed under
+- **The first lap needs 14 retail files, 114102502 bytes**, listed under
   "The manifest" below: the six the stock-car application already reads,
-  and six more for the track and the race. The owner's SD card holds the
-  first six today; the other six are `FrontEnd/FrontB.lzc`,
-  `Global/INGAMEB.BUN`, `Tracks/STREAML1RA.BUN`,
+  six more for the track and race, and two for the HUD. The owner's SD card holds the
+  first six today; the other eight are `FrontEnd/FrontB.lzc`,
+  `Global/DYNTEX.BIN`, `Global/INGAMEB.BUN`,
+  `Languages/LanguageTextures.bin`, `Tracks/STREAML1RA.BUN`,
   `Tracks/STREAML1RA_1003.BUN`, `Tracks/TEX1003TRACK.BIN` and
   `Tracks/TRACKB1003.lzc`.
 - **They go under `sdmc:/nfsu/`, in the folders the game uses**, exactly as
@@ -29,7 +34,7 @@ The answer first:
   copy. Nothing goes over the network.
 - **`nfsu_probe asset-check <root>` runs the same check on the desktop**,
   against the game's folder or against the SD card in a card reader. Over
-  the owner's retail installation it reports all 12 files `ok` and exits 0.
+  the owner's retail installation it reports all 14 files `ok` and exits 0.
 - **Names are matched without regard to ASCII case**, sizes are compared
   before anything is read, and a file is hashed only when its size is right,
   in chunks of at most 1 MiB. The check writes nothing.
@@ -49,8 +54,10 @@ The answer first:
    | `Cars/PLATES/GEOMETRY.BIN` | `sdmc:/nfsu/Cars/PLATES/GEOMETRY.BIN` | 1184 |
    | `Cars/TEXTURES.BIN` | `sdmc:/nfsu/Cars/TEXTURES.BIN` | 1230808 |
    | `FrontEnd/FrontB.lzc` | `sdmc:/nfsu/FrontEnd/FrontB.lzc` | 4182578 |
+   | `Global/DYNTEX.BIN` | `sdmc:/nfsu/Global/DYNTEX.BIN` | 4677572 |
    | `Global/GLOBALB.BUN` | `sdmc:/nfsu/Global/GLOBALB.BUN` | 2361176 |
    | `Global/INGAMEB.BUN` | `sdmc:/nfsu/Global/INGAMEB.BUN` | 1670080 |
+   | `Languages/LanguageTextures.bin` | `sdmc:/nfsu/Languages/LanguageTextures.bin` | 517284 |
    | `Tracks/STREAML1RA.BUN` | `sdmc:/nfsu/Tracks/STREAML1RA.BUN` | 92394688 |
    | `Tracks/STREAML1RA_1003.BUN` | `sdmc:/nfsu/Tracks/STREAML1RA_1003.BUN` | 0 |
    | `Tracks/TEX1003TRACK.BIN` | `sdmc:/nfsu/Tracks/TEX1003TRACK.BIN` | 1086216 |
@@ -81,16 +88,16 @@ after the title:
 ```text
 nfsu_switch_assets: the retail files the first lap needs, on this SD card (issue #47)
 config: sdmc:/config/nfsu_switch/assets.cfg not found; root sdmc:/nfsu (the default)
-set first-lap: one timed lap of event 1 in the stock 240SX (issue #159), 12 files, 108907646 bytes
-install: <VERDICT> - <n> of 12 files ok: <n> missing, <n> wrong size, <n> wrong version, <n> unreadable
+set first-lap: one timed lap of event 1 in the stock 240SX (issue #159), 14 files, 114102502 bytes
+install: <VERDICT> - <n> of 14 files ok: <n> missing, <n> wrong size, <n> wrong version, <n> unreadable
 copy these <n> files from the game's installation folder to the same paths under sdmc:/nfsu:
   <path>  <bytes> bytes
-<12 lines, one per file>
+<14 lines, one per file>
 read <bytes> bytes in <n> reads and <n> directory listings
 checked in <seconds> s. Press + to exit.
 ```
 
-A complete card says `install: COMPLETE - all 12 files match by name, size
+A complete card says `install: COMPLETE - all 14 files match by name, size
 and SHA-256` in green and `nothing to copy` in place of the copy lines. Each
 file line starts with its status - `ok` in green, `MISSING`, `WRONG SIZE`,
 `WRONG VERSION`, `UNREADABLE` or `AMBIGUOUS` in red - then the file's path
@@ -107,34 +114,15 @@ and a file found under another case adds `(found as <path on the card>)`.
 On the console a hash is shown by its first 8 digits and a wrong size says
 only which way it is wrong, so that every file line of the first-lap set
 fits the 106 columns; `nfsu_asset_tests` holds that for every status. With
-the title, the config and the status line, a card on which all 12 files are
+the title, the config and the status line, a card on which all 14 files are
 wrong fits the 40 lines. If a report ever does not fit - a config root long
 enough to wrap every line, say - the first lines win and the last line that
 fits says how many more do not, so what is cut is the tail of the per-file
 lines, never the verdict or the files to copy.
 
-What the code predicts, from the same calls the application makes, run on
-the desktop over the retail files (`issue47-opus-r2` harness, not in the
-tree); neither has been seen on a console:
-
-- **With all 12 files copied**: the title, the config line, the set line,
-  `install: COMPLETE - all 12 files match by name, size and SHA-256` and
-  `nothing to copy` in green, twelve green `ok` lines, `read 108907646 bytes
-  in 123 reads and 8 directory listings`, and `checked in <seconds> s. Press
-  + to exit.` - 19 lines.
-- **With only the six stock-car files** (the card as it was before the rest
-  were staged): the title, the config line, the set line, `install: MISSING
-  FILES - 6 of 12 files ok: 6 missing, 0 wrong size, 0 wrong version, 0
-  unreadable`, `copy these 6 files from the game's installation folder to
-  the same paths under sdmc:/nfsu:` and six copy lines - `FrontEnd/FrontB.lzc
-  4182578 bytes`, `Global/INGAMEB.BUN 1670080 bytes`, `Tracks/STREAML1RA.BUN
-  92394688 bytes`, `Tracks/STREAML1RA_1003.BUN 0 bytes`,
-  `Tracks/TEX1003TRACK.BIN 1086216 bytes`, `Tracks/TRACKB1003.lzc 433352
-  bytes` - then the twelve file lines, the six car files `ok` and `MISSING`
-  for `FrontEnd/FrontB.lzc` (`no FrontEnd in the root`), `Global/INGAMEB.BUN`
-  (`no INGAMEB.BUN in Global`) and the four track files (`no Tracks in the
-  root`), `read 9140732 bytes in 19 reads and 6 directory listings`, and the
-  status line - 25 lines.
+`nfsu_asset_tests` checks that the complete, missing, wrong-size and wrong-hash
+console reports fit the screen. A card with only the six stock-car files
+reports eight missing first-lap files, including both HUD files.
 
 `+` exits, and so does a request from the system to close, while the check
 runs as well as after it: the application services the system and reads
@@ -146,10 +134,11 @@ card or anywhere else.
 ## The manifest
 
 `nfsu::retail_asset_manifest` (`include/nfsu/assets.h`,
-`src/assets.cpp`) holds three sets. `first-lap` is the default and is the
-other two together; `stock-car` is exactly the six files
+`src/assets.cpp`) holds three sets. `first-lap` is the default and combines
+the other two with the HUD files; `stock-car` is exactly the six files
 `stock_frame_file_path` names for the stock-car application, and
-`event-1` is what the game loads for event 1.
+`event-1` covers the event table and track files the port reads for event 1;
+the game's wider load also includes the HUD texture packs.
 
 | Path | Bytes | SHA-256 | Sets | What reads it |
 | --- | ---: | --- | --- | --- |
@@ -159,21 +148,23 @@ other two together; `stock-car` is exactly the six files
 | `Cars/PLATES/GEOMETRY.BIN` | 1184 | `0EBCFD14DD303613F5DA3FF5D7A6DF57BE3CDE915F458BA243FE5D089B64BD8A` | first-lap, stock-car | the licence plate mesh |
 | `Cars/TEXTURES.BIN` | 1230808 | `999EC47CC816CADA2158317A46E00023832031B3A4A35DDCBA31F5FBD2F9EB58` | first-lap, stock-car | the shared car textures, with the skin target `DUMMY_SKIN1` |
 | `FrontEnd/FrontB.lzc` | 4182578 | `76F368D5E5E30F96A8182BF457DBA4491395E075C3F336D86A32012B56E16F90` | first-lap, event-1 | the career event table: event 1's track, laps and direction ([`RACE_EVENTS.md`](RACE_EVENTS.md)) |
+| `Global/DYNTEX.BIN` | 4677572 | `020E99EBEA6A4AEFC7F7C858BA8672A48FA040E00299E2372E914687BF90525C` | first-lap | the selected in-race tachometer LINES and RED overlays |
 | `Global/GLOBALB.BUN` | 2361176 | `39DF38FAC2BE7CA0F0D0A92E0113CAAEDA5B1C60E14436C612B3D0874AFC8DB9` | first-lap, stock-car, event-1 | the car part database, the car and track tables, shared textures |
 | `Global/INGAMEB.BUN` | 1670080 | `044724AB4C167831587E80F29961A1E7D8404C9DD5266533F3563C555A997299` | first-lap, event-1 | the in-race textures the track draws with ([`TRACK_WHOLE.md`](TRACK_WHOLE.md)) |
+| `Languages/LanguageTextures.bin` | 517284 | `6A92604D9766557115DEE8F8CE18F392557AF1A8B0369E69B474F36DF2691615` | first-lap | the in-race LCD glyphs |
 | `Tracks/STREAML1RA.BUN` | 92394688 | `2385556EC31142F7390434CA70152A9F3D629155AF991BB6595422FCB26A752E` | first-lap, event-1 | the `L1RA` stream: every section of track 1003 ([`TRACK_WHOLE.md`](TRACK_WHOLE.md), [`TRACK_STREAMING.md`](TRACK_STREAMING.md)) |
 | `Tracks/STREAML1RA_1003.BUN` | 0 | `E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855` | first-lap, event-1 | track 1003's stream pack: empty in the retail game, which names it |
 | `Tracks/TEX1003TRACK.BIN` | 1086216 | `081B4D966C154D7B9823E70DD5031269A8D3293F8CD13ED515EF644F09573ED5` | first-lap, event-1 | track 1003's sky and track map textures |
 | `Tracks/TRACKB1003.lzc` | 433352 | `ADA8206B5D66E3286BF582E2C7117FE0CC2BA9F6CADB756D922F7D32E7C696BA` | first-lap, event-1 | track 1003's streaming table, zones, route and collision ([`TRACK_COLLISION.md`](TRACK_COLLISION.md)) |
 
 `stock-car` is 9140732 bytes and `event-1` 102128090; `GLOBALB.BUN` is in
-both, so `first-lap` is 12 files, not 13.
+both, and the two HUD files bring `first-lap` to 14 files.
 
 **Where the numbers come from.** Each size and hash was read from the
 owner's retail installation, strictly read-only (`stat -c %s` and
 `sha256sum`, with the installation's file list, sizes and modification
 times recorded before the first read and after the last and found
-identical). All twelve files are dated 2003 there. The hashes agree with
+identical). The retail files are dated 2003 there. The hashes agree with
 the ones the notes already pin for the same files - `RACE_EVENTS.md`,
 `TRACK_WHOLE.md`, `TRACK_STREAMING.md`, `FORMATS.md`, `RENDERER.md`,
 `BODY_SKIN.md` - except `BRAKES/GEOMETRY.BIN` and `PLATES/GEOMETRY.BIN`,
@@ -324,40 +315,9 @@ The root goes through the path-argument conversion of
 [`PATH_ARGUMENTS.md`](PATH_ARGUMENTS.md), so a root under a Cyrillic folder
 reads as any other.
 
-Over the owner's retail installation, read-only, the command exits 0 and
-prints:
-
-```text
-asset-check: root <the installation>
-set first-lap: one timed lap of event 1 in the stock 240SX (issue #159), 12 files, 108907646 bytes
-ok            Cars/240SX/GEOMETRY.BIN  4780816 bytes, sha256 002202192752838E1B65E9B7C219EAB381FD5F916C3D031DDE93428EB325F619
-ok            Cars/240SX/TEXTURES.BIN  697340 bytes, sha256 725DC56CB4807FF8E8E96F1D667F5FDF8DC5ADE3C7D06E759FC62E7DEEFDF6BA
-ok            Cars/BRAKES/GEOMETRY.BIN  69408 bytes, sha256 FEC4CBF4F9C3E7FB1CD883F0B874F920248652A2E63EE4A341446563F0B9B1A5
-ok            Cars/PLATES/GEOMETRY.BIN  1184 bytes, sha256 0EBCFD14DD303613F5DA3FF5D7A6DF57BE3CDE915F458BA243FE5D089B64BD8A
-ok            Cars/TEXTURES.BIN  1230808 bytes, sha256 999EC47CC816CADA2158317A46E00023832031B3A4A35DDCBA31F5FBD2F9EB58
-ok            FrontEnd/FrontB.lzc  4182578 bytes, sha256 76F368D5E5E30F96A8182BF457DBA4491395E075C3F336D86A32012B56E16F90
-ok            Global/GLOBALB.BUN  2361176 bytes, sha256 39DF38FAC2BE7CA0F0D0A92E0113CAAEDA5B1C60E14436C612B3D0874AFC8DB9
-ok            Global/INGAMEB.BUN  1670080 bytes, sha256 044724AB4C167831587E80F29961A1E7D8404C9DD5266533F3563C555A997299
-ok            Tracks/STREAML1RA.BUN  92394688 bytes, sha256 2385556EC31142F7390434CA70152A9F3D629155AF991BB6595422FCB26A752E
-ok            Tracks/STREAML1RA_1003.BUN  0 bytes, sha256 E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
-ok            Tracks/TEX1003TRACK.BIN  1086216 bytes, sha256 081B4D966C154D7B9823E70DD5031269A8D3293F8CD13ED515EF644F09573ED5
-ok            Tracks/TRACKB1003.lzc  433352 bytes, sha256 ADA8206B5D66E3286BF582E2C7117FE0CC2BA9F6CADB756D922F7D32E7C696BA
-install: COMPLETE - all 12 files match by name, size and SHA-256
-nothing to copy
-read 108907646 bytes in 123 reads and 8 directory listings
-```
-
-Everything after the first line - 16 lines, 1720 bytes with CR LF folded to
-LF - has SHA-256
-`8978B84F37FF895C3E699CB796CEAAC0C325D6CEB23BCD8BC2AF1BC2993B77F4`, from the
-default build and from the Release build alike. `--set stock-car` exits 0 with 10 such lines
-(954 bytes, `3BEFD53897776432CD19E43F19815E2D199E9696BD2B2D88AFEEC352511C5FDB`,
-9140732 bytes in 19 reads and 6 listings) and `--set event-1` with 11 (1100
-bytes, `D3B8D10578C26D9C0AC842E733C306BD01F82014C585D9CFE4686575ADEF62A2`,
-102128090 bytes in 108 reads and 4 listings). The 123 reads are 111 chunks
-of at most 1 MiB and one probe past the end of each of the 12 files; the 8
-listings are the root, `Cars`, `Cars/240SX`, `Cars/BRAKES`, `Cars/PLATES`,
-`FrontEnd`, `Global` and `Tracks`.
+The retail asset check is asserted by nfsu_probe_asset_check_retail_first-lap.
+The file list and hashes above identify the source installation; current
+output totals are held by nfsu_asset_tests.
 
 ## The file system service
 
@@ -459,8 +419,8 @@ digits past `F`, and a config file that grew while it was read. Each failed
   that is not observed either.
 - **The set will grow.** It is what the port reads today for the first lap:
   the car, the track, its textures and collision, and the event table. The
-  vehicle model's handling data is in `GLOBALB.BUN` already; sound, the HUD
-  and opponents (#56) will add files.
+  vehicle model's handling data is in `GLOBALB.BUN` already; later race
+  features and opponents (#56) may add files.
 - **`STREAML1RA_1003.BUN`** is empty and required. The game formats its
   name as the track's pack file (0x0044972C) and its streaming table
   declares it 0 bytes; whether the port's loader will open it at all is

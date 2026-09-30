@@ -62,11 +62,11 @@ A long sustained overload can therefore lag wall time; the nxlink performance
 line shows the debt instead of claiming 60 Hz from the display rate.
 
 The menu and loading progress use the libnx framebuffer. Direct mode closes
-it before creating the deko3d swapchain. It shows no HUD during the race;
-the countdown, lap, speed, gear and pause state go only to nxlink until the
-GPU HUD in #64 lands. Use `--panel` or menu Y for live-driving evidence now:
-that mode keeps the framebuffer and the original readback panel with the
-race HUD and heap rows. After the race finishes or Plus is pressed, the
+it before creating the deko3d swapchain. It draws the #64 speed, tachometer,
+needle, red zone and gear at native 1280x720 after any scene upscale;
+`--no-hud` disables that overlay for paired measurements. Other race status
+still reaches nxlink. Use `--panel` or menu Y for the diagnostic readback
+panel with race status and heap rows. After the race finishes or Plus is pressed, the
 renderer closes and a framebuffer result screen remains until Plus is
 pressed again. It contains run statistics that can be photographed without
 nxlink stdout. Loading, result and error text is clipped to 105 columns.
