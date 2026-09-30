@@ -126,9 +126,13 @@ material key `CARSKIN` (`0xD6D6080A`). There is no `CARSKIN` record among the
 the installed `BASE_PAINT` part in RideInfo slot 30 (`+0x4C4`), searches its
 attributes for key `0x6BA02C05`, and resolves the value in the material
 registry (`0x56B4F2..0x56B571`). A missing record falls back to `DEFAULT`.
-The result is bound to `CARSKIN` at `0x56F520` and `0x56F5A0`. In the part
-database 373 of 379 attributes with this key name a material record; the
-remaining six name `0xD6640DFF`, which takes the fallback. For example,
+The result is bound to `CARSKIN` at `0x56F520` and `0x56F5A0`. For model
+index 11, `0x56F475..0x56F5A0` uses the nonzero `[car+0x4E4]` override
+material instead of `[car+0x4D0]`; the port does not model that override.
+In the part database 373 of 379 attributes with this key name a material
+record. The remaining six are `CALIPERS_L1_COLOR05..10` in slot 115 and name
+`0xD6640DFF`, which takes the fallback. Every retail slot-30 `BASE_PAINT`
+attribute resolves; the unmatched paint test is synthetic. For example,
 `GLOSS_L1_COLOR03` selects `REGPAINTBLUE`, while `GLOSS_L1_COLOR05` and
 `GLOSS_L1_COLOR08` select `REGPAINTRED`.
 Retail stock 240SX installs `GLOSS_L1_COLOR08` (165, 75, 15, gloss 128),
@@ -193,10 +197,10 @@ chooses the nearest `GLOSS_L1_COLOR` swatch by squared distance over RED,
 GREEN, BLUE and GLOSS, then reads that swatch's material attribute. This
 surrogate part choice is a port rule. The project's blue stock skin
 (30, 60, 160, gloss 128) chooses `GLOSS_L1_COLOR03` (8, 60, 161) and
-`REGPAINTBLUE`; the tuned red skin (200, 30, 30, gloss 128) chooses a
-gloss-red swatch and `REGPAINTRED`. The project's blue stock skin predates
-this PR and differs from retail's orange stock 240SX paint. Other decoded keys
-distinguish chrome, windshield, plastic and lamp lenses. Lamp emission
+`REGPAINTBLUE`; the tuned red skin (200, 30, 30, gloss 128) chooses the
+orange `GLOSS_L1_COLOR08` swatch and `REGPAINTRED`. The project's blue stock
+skin predates this PR and differs from retail's orange stock 240SX paint.
+Other decoded keys distinguish chrome, windshield, plastic and lamp lenses. Lamp emission
 remains the separate existing lamp state.
 
 The port reads the existing smooth vertex normals and transforms them by
@@ -243,6 +247,8 @@ uniforms and state. None of these structural costs is a GPU-time estimate.
 legacy off-state pins stay intact. `tools/race_replay_check.py --car-shading`
 pins race frame 180 while checking the complete existing result, per-step
 hashes and trajectory. Its default mode retains all legacy race frame pins.
+`nfsu_viewer_skin_shading_retail` pins blue and red color-only viewer frames
+without `--stock-car`, using the shared `GLOBALB.BUN` part database.
 Desktop default and Release runs must both agree with these pins. The
 synthetic `nfsu_gpu_upload_tests` checks bounded record parsing, signed
 ranges, normal-dependent pixels, off-state invariance and command data.

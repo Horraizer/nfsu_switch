@@ -1598,14 +1598,26 @@ int main(int argc, char** argv) {
             installed=nfsu::find_car_part(stock_parts,nfsu::kAnyCarType,30,name,
                                            nfsu::kNoCarPart,nfsu::kAnyUpgradeLevel);
         }
-        const auto paint=nfsu::select_car_paint_material_hash(stock_parts,
-            installed,
-            skin.enabled ? std::optional<std::uint32_t>(skin.selection.base_color)
-                         : std::nullopt);
         bool found=false;
         for (const auto& bytes:shared_bytes) {
             std::vector<nfsu::CarMaterialRecord> records;
             if (nfsu::parse_car_materials(bytes.data(),bytes.size(),records,error) && !records.empty()) {
+                const nfsu::CarPartDatabase* parts=&stock_parts;
+                nfsu::CarPartDatabase skin_parts;
+                if (!stock.enabled && skin.enabled) {
+                    // The color-only skin still needs the GLOBALB swatches.
+                    // Use the same shared source that supplied the materials.
+                    skin_parts=nfsu::parse_car_part_database(bytes.data(),bytes.size());
+                    if (!skin_parts.ok()) {
+                        std::cerr << "error: car shading needs GLOBALB.BUN part database\n";
+                        return 2;
+                    }
+                    parts=&skin_parts;
+                }
+                const auto paint=nfsu::select_car_paint_material_hash(*parts,
+                    installed,
+                    skin.enabled ? std::optional<std::uint32_t>(skin.selection.base_color)
+                                 : std::nullopt);
                 if (!nfsu::apply_car_materials(scene,bytes.data(),bytes.size(),paint,error)) {
                     std::cerr << "error: " << error << '\n'; return 2;
                 }

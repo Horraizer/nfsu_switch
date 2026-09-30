@@ -1804,6 +1804,11 @@ if(NFSU_BUILD_TESTS)
         # include/nfsu/stock_frame.h: docs/DRAW_COMMANDS.md.
         add_test(NAME nfsu_draw_commands_retail
             COMMAND nfsu_draw_commands_retail "${NFSU_RETAIL_ROOT}")
+        add_test(NAME nfsu_viewer_skin_shading_retail
+            COMMAND ${CMAKE_COMMAND} -DVIEWER=$<TARGET_FILE:nfsu_viewer>
+                    "-DROOT=${NFSU_RETAIL_ROOT}"
+                    -DWORK=${nfsu_retail_work}/viewer-skin-shading
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/viewer_skin_shading_retail.cmake)
         # The same two frames through the application's calls, compared with
         # the same constants: docs/SWITCH_BUILD.md.
         add_test(NAME nfsu_stock_frame_retail
@@ -1870,7 +1875,8 @@ if(NFSU_BUILD_TESTS)
         set_tests_properties(
             nfsu_race_run_retail nfsu_race_run_retail_profile
             nfsu_race_run_retail_profile_reference nfsu_race_replay_check
-            nfsu_race_shading_replay_check nfsu_draw_commands_retail nfsu_stock_frame_retail
+            nfsu_race_shading_replay_check nfsu_draw_commands_retail
+            nfsu_viewer_skin_shading_retail nfsu_stock_frame_retail
             nfsu_stock_frame_painted_retail nfsu_race_loader_peak_retail
             nfsu_track_loader_peak_retail nfsu_track_slice_retail
             nfsu_racing_line_retail nfsu_race_audio_retail nfsu_audio_retail
