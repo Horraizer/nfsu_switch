@@ -73,10 +73,11 @@ Observed in `speed.exe`, using Capstone 5.0.7:
 - Within the `GaugeCluster` object at package offset `0x3F58`, the gauge
   sprites are `rpm_fill` (`0x4008`, SAT `0x4054`, depth 110), Redline
   (`0x40D4`, SAT `0x411C`, depth 8.33), Tach (`0x445C`, SAT `0x44AC`,
-  depth -1.67), and Needle (`0x452C`, SAT `0x457C`, depth 5). Their
-  depth order back to front is Tach, Needle, Redline, then the separate
-  `rpm_fill` layer. The port's supplemental `CENTER_DIAL` texture has no
-  FEng object; it is placed behind the needle so the ring stays visible.
+  depth -1.67), and Needle (`0x452C`, SAT `0x457C`, depth 5). Smaller FEng
+  depths draw in front, so their back-to-front order is Redline, Needle,
+  then Tach. The port draws its disc and supplemental `CENTER_DIAL` first.
+  Tach therefore leaves its blue ticks and hub ring visible over Redline
+  and the needle.
   The text records `3rdPersonSpeed` (`0x4268`, SAD `0x42F0`) and
   `3rdPersonGear` (`0x45FC`, SAD `0x4680`) store BGRA
   `(192,128,0,255)`. `3rdPersonSpeedUnits` (`0x4360`, SAD `0x43EC`)

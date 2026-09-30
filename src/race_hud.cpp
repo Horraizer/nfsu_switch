@@ -262,14 +262,15 @@ void build_race_hud_frame_for_car(const VehicleState& car,
     const float face_x=1134.0F-69.0F*texel;
     const float face_y=603.0F-70.0F*texel;
     const auto& slot=kLines[static_cast<std::size_t>(line-kLinesHashes.begin())];
-    // 3rdPersonTach owns the LINES image; its SAT colour is RGB(0,128,192)
-    // at full alpha. rpm_fill is a separate white, alpha-150 object.
-    place(slot,face_x,face_y,256.0F*texel,128.0F*texel,
-          {{0,128,192}},255);
-    // The FEng gauge depths put Tach (-1.67) behind Needle (5) and
-    // Redline (8.33). CENTER_DIAL is supplemental art, so keep it behind
-    // the needle ring at the shared hub.
+    // CENTER_DIAL is supplemental art; draw it before the FEng gauge layers.
     place(kHub,1122,591,24,24,{{255,255,255}});
+    // Redline (8.33), Needle (5), then Tach (-1.67) is back to front in
+    // FEng depth order because smaller depths are drawn in front.
+    if (red!=kRedHashes.end())
+        place(kRed[static_cast<std::size_t>(red-kRedHashes.begin())],
+              face_x+79.0F*texel,face_y+6.0F*texel,
+              64.0F*texel,32.0F*texel,
+              {{150,0,0}},150);
     // The FEng needle is centered on the face hub. Its ring surrounds source
     // row 64 and its shaft tip is near row 125, in the +v direction.
     // 0x004F6A70 rotates the sprite's +v axis to 270 - rotation in y-down
@@ -280,13 +281,10 @@ void build_race_hud_frame_for_car(const VehicleState& car,
     rotated(frame,kNeedle,center[0],center[1],16.0F*texel*scale,
             128.0F*texel*scale,8.0F*texel*scale,64.0F*texel*scale,
             4.7123889803846899-dial_angle,{{207,233,242}});
-    // Redline's SAT depth places it over the needle. Its BGRA fields are
-    // (0,0,150,150), including the vertex alpha.
-    if (red!=kRedHashes.end())
-        place(kRed[static_cast<std::size_t>(red-kRedHashes.begin())],
-              face_x+79.0F*texel,face_y+6.0F*texel,
-              64.0F*texel,32.0F*texel,
-              {{150,0,0}},150);
+    // The face is the frontmost FEng layer and keeps its blue ticks and hub
+    // ring visible over Redline and the needle.
+    place(slot,face_x,face_y,256.0F*texel,128.0F*texel,
+          {{0,128,192}},255);
     const int gear = car.gear;
     const char gear_label = gear == kVehicleGearReverse ? 'R' :
         gear == kVehicleGearNeutral ? 'N' :
