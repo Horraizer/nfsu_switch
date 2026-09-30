@@ -1072,19 +1072,25 @@ void test_reflection_loader_uses_last_node() {
     meshes[1].hash = kLast;
     SectionSpec section;
     section.number = 303;
-    section.objects.resize(4);
+    section.objects.resize(5);
+    section.objects[0].mesh_hash[0] = kFirst;
     section.objects[1].mesh_hash[0] = kFirst;
     section.objects[1].mesh_hash[2] = kLast;
     section.objects[2].mesh_hash[0] = kFirst;
     section.objects[2].mesh_hash[4] = kMissingHash;
     section.objects[3].mesh_hash[0] = kFirst;
     section.objects[3].mesh_hash[2] = kMissingHash;
+    section.objects[4].mesh_hash[0] = kFirst;
+    section.objects[4].mesh_hash[3] = kLast;
     for (int i = 0; i < 3; ++i) {
         InstanceSpec instance = row_instance(i, static_cast<std::uint16_t>(i + 1));
         instance.flags = 0x60;
         section.instances.push_back(instance);
     }
-    section.nodes.push_back(node_over(95, 305, {0, 1, 2}));
+    InstanceSpec slot_three_instance = row_instance(3, 4);
+    slot_three_instance.flags = 0x60;
+    section.instances.push_back(slot_three_instance);
+    section.nodes.push_back(node_over(95, 405, {0, 1, 2, 3}));
     const Fixture fixture = make_fixture(meshes, {section});
     nfsu::PreparedTrackScene scene;
     std::string error;
@@ -1092,7 +1098,9 @@ void test_reflection_loader_uses_last_node() {
                                   fixture.textures, nfsu::TrackSceneOptions{},
                                   scene, error),
           "reflection loader fixture builds: " + error);
-    if (scene.instances.size() != 3) return;
+    check_eq_u64(scene.instances.size(), 4,
+                 "reflection loader fixture places all four instances");
+    if (scene.instances.size() != 4) return;
     check(scene.instances[0].mesh_hash == kFirst &&
               scene.instances[0].reflection_mesh == 1 &&
               scene.region.meshes[scene.instances[0].reflection_mesh].mesh_hash == kLast,
@@ -1101,6 +1109,8 @@ void test_reflection_loader_uses_last_node() {
           "unresolved slot 4 retains its node and never falls back");
     check(scene.instances[2].reflection_mesh == nfsu::kNoReflectionMesh,
           "the last earlier node wins even when its hash is unresolved");
+    check(scene.instances[3].reflection_mesh == 1,
+          "slot 3 is included when it is the last earlier node");
 }
 
 // Slot 1 has no recovered fallback: an object that leaves it empty places
