@@ -24,7 +24,8 @@ struct DrawInstanceUniform {
 };
 struct DrawMaterialUniform {
     float fallback[4]{};
-    // alpha.w carries PreparedInstance::lamp_mode (0..3).
+    // alpha.w carries PreparedInstance::lamp_mode (0..3), or 4 for the
+    // car ground shadow world-effect branch.
     float alpha[4] = {1, 0, 0, 0};
     float environment_min[4]{};
     float environment_range[4]{};

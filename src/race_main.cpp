@@ -6,6 +6,7 @@
 #include "nfsu/screen_text.h"
 #include "nfsu/race_window.h"
 #include "nfsu/race_audio.h"
+#include "nfsu/car_shadow.h"
 #include "nfsu/arg_path.h"
 
 #include <algorithm>
@@ -52,11 +53,18 @@ std::string utf8_text(const fs::path& path) {
 }
 bool within(const fs::path& path, const fs::path& root) {
     // Make relative arguments absolute before normalizing their existing
-    // prefix. Refuse failures rather than silently guessing a writable path.
+    // prefix. An unresolved output is refused; an unresolvable root falls
+    // back to its normalized absolute spelling for containment checks.
     const auto absolute = [](const fs::path& value) {
         return fs::u8path(fs::absolute(value).generic_u8string());
     };
-    auto p = fs::weakly_canonical(absolute(path)), r = fs::canonical(absolute(root));
+    std::error_code path_error;
+    auto p = fs::weakly_canonical(absolute(path), path_error);
+    if (path_error) return true; // An unresolved output path is unsafe to write.
+    path_error.clear();
+    const auto absolute_root = absolute(root);
+    auto r = fs::weakly_canonical(absolute_root, path_error);
+    if (path_error) r = absolute_root.lexically_normal();
     // Windows comparisons below ignore case, as this desktop's files do.
     auto ps = utf8_text(p), rs = utf8_text(r);
 #ifdef _WIN32
@@ -83,6 +91,7 @@ public:
     TrackDrawList list;
     StockFrameInputs car_inputs;
     StockFrame car;
+    CarShadowAsset shadow;
     std::vector<PreparedInstance> base;
     bool dirty = true;
     std::uint64_t loads = 0, releases = 0, bytes_read = 0;
@@ -92,6 +101,7 @@ public:
         std::string error;
         require(read_stock_frame_inputs(root,car_inputs),"cannot read stock car inputs");
         require(prepare_stock_frame(car_inputs,stock_240sx_request(),stock_240sx_skin(),car,error),error);
+        require(prepare_car_shadow(car_inputs,car.car_pack,shadow,error),error);
         base = car.scene.instances;
         const std::array<fs::path,3> paths = {
             texture, root/"Global/INGAMEB.BUN", root/"Global/GLOBALB.BUN"};
@@ -185,6 +195,8 @@ public:
         track_options.sky = true;
         track_options.material_state = MaterialStateMode::retail;
         require(render_track_draw_list(track,list,track_options,{},background,stats,track_stats,error),error);
+        const auto shadow_pose = place_car_shadow(session);
+        require(render_car_shadow(shadow,shadow_pose,track_options,background,stats,error),error);
         require(drive_place_instances(base,session.car(),session.spec(),car.scene.instances,
                                       &session.animation()),"car placement failed");
         require(render_stock_frame(car,options,error),error);

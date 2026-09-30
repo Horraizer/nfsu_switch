@@ -6,24 +6,26 @@ import hashlib
 from pathlib import Path
 import subprocess
 
-STEPS = (180, 600, 6000, 11344, 12459, 13128, 24300, 35396, 36510, 37177, 48336)
-# PR #225 re-pins the car window aliases and blank decals. These frames also
-# depend on the inherited rasterizer depth-write guard from 3b1f644 (already
-# in base 97e3839): blended track groups preserve depth. Removing that guard
-# changes pixels but is not a revert of a change introduced by PR #225.
+STEPS = (1, 180, 600, 6000, 11344, 12459, 13128, 24300, 35396, 36510, 37177, 48336)
+# These frame pins were checked on the merged tree. PR #188 adds the ground
+# shadow and PR #227 adds sky pixels; both change every sampled CPU frame.
+# PR #225's car window/decal fixes remain in the base pixels. PR #221 changes
+# GPU draw order, not these CPU reference pixels. The rasterizer depth-write
+# guard from 3b1f644 is inherited from base 97e3839.
 # Replay steps, state hashes, input recording, and trajectory are unchanged.
 FRAMES = (
-    "90E5BDAD8981719AF5113D2A67609C0D4AFEA2109D1F5BC849577CEA51943E5A",  # 180: #184 sky over the #225/#231 car frames.
-    "8A92D4AE7CF6262C1E8090670F01B6A759AE6294A50A04D49A400CB20300C862",  # 600: #184 sky over the #225/#231 car frames.
-    "D7BBED06F7E49EBD0C4D76F4A845EFA68979FB9D1290FD213360EA10F8FECA94",  # 6000: #184 sky over the #225/#231 car frames.
-    "328E5CE43646B5050D36C07D8CD80E7D9624A3DBC24C8054525857001BAF4274",  # 11344: #184 sky over the #225/#231 car frames.
-    "BD2BD8F772EADF749B55C2D0FA14040BE7F5164FFFEBB01478444140D42E61A3",  # 12459: #184 sky over the #225/#231 car frames.
-    "2AF27EF38BCCB7294A8F9D3D617DF9A94475082CE52E2B6500097408F98543A8",  # 13128: #184 sky over the #225/#231 car frames.
-    "209A4A0BAA75AC51772DDDB82A289FAFEE10A27A68F722BF3CDAC53CEC5E6718",  # 24300: #184 sky over the #225/#231 car frames.
-    "85B281DB2098EE2EE9E0F8FD07A5587103A1D91743F084AD952BDD7618294BDF",  # 35396: #184 sky over the #225/#231 car frames.
-    "83BB50BD6FB3B5FF35E1A838079225453A434E04F7C86878F868428DAC35E13B",  # 36510: #184 sky over the #225/#231 car frames.
-    "BBDC5A42F2AAA1526106B0E62CE6624B34FFE28E3FFFD983A0ED8F839280B7AC",  # 37177: #184 sky over the #225/#231 car frames.
-    "553271D2F68C8C86AE576099796B5319B4E5C67AE320BFB20EFF4F8B5A972888",  # 48336: #184 sky over the #225/#231 car frames.
+    "1DB2683AC4AE29AC99E137F7637F7E64050C7EDCFDEC631F1EDD83A0518F7C54",  # 1: #188 shadow, #227 sky
+    "60264FBA71A52C1A55FC6EE139DB6CEDDFE251762B01B6A545A6ABA03C97C54B",  # 180: #188 shadow, #227 sky
+    "5BD77BD948467DEAD2FC730B3E43559DB37C8EC9E695D515B252754583FFD3AF",  # 600: #188 shadow, #227 sky
+    "5883EF7FAB5AD3C7858E1D9961C75ADC02E1C4A24E4C19C7865766CFFDE8EBCD",  # 6000: #188 shadow, #227 sky
+    "51DE569D37BAEC803E0D2701362D32332EEE2361DC11D4BFEB3C13A9E9A8D18F",  # 11344: #188 shadow, #227 sky
+    "3FE3952828A525512C6B74B69E4DB6BF26EDD2F9D1B16A3AA474CEEC2F48C002",  # 12459: #188 shadow, #227 sky
+    "016AD78AC707D504A879EBC91BEB311BEE21E124DA815727A79DA4EBD47E285E",  # 13128: #188 shadow, #227 sky
+    "C545FF413B44FFE5FD354FA5CEB731AA767E34DA130D1EE00EB17207376FAFD0",  # 24300: #188 shadow, #227 sky
+    "0C105D8384BB46EFBE4DFB9635FDE90A83D050C22AF1F73D461B4E55AD7FF38A",  # 35396: #188 shadow, #227 sky
+    "7E348C89F6E1C1ED51E23C213FD4BD49456BC95DEB1002AE3F0954D223F4E112",  # 36510: #188 shadow, #227 sky
+    "E87F47D913C557B7F69F3FB387A850AA772E5E3B904CA9B950FA49222E9998CD",  # 37177: #188 shadow, #227 sky
+    "C62FC38A8ED12474DB778900113E8FD8B76D020F416A92FAB7DA73D746AA474C",  # 48336: #188 shadow, #227 sky
 )
 RESULT = (
     "event 1 track 1003 laps 2 outcome finished steps 48336 resets 0",
@@ -128,7 +130,7 @@ def main():
             require(digest(frame.read_bytes()) == expected, "frame pin differs at " + str(tick))
             require(lines.count("frame " + str(tick) + " tga-sha256 " + expected) == 1,
                     "printed frame pin differs")
-        print("PASS", exe.name, str(STEPS[-1]) + " step hashes, result, " + str(len(STEPS)) + " frames, clean 120 Hz trajectory" +
+        print("PASS:", exe.name, str(STEPS[-1]) + " step hashes, result, " + str(len(STEPS)) + " frames, clean 120 Hz trajectory" +
               (", generated recording" if args.check_driver else ""))
 
 

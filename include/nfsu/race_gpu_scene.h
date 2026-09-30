@@ -2,6 +2,7 @@
 #include "nfsu/race_run.h"
 #include "nfsu/stock_frame.h"
 #include "nfsu/platform.h"
+#include "nfsu/car_shadow.h"
 
 namespace nfsu {
 // One combined command stream: track then car, one camera and one depth
@@ -49,7 +50,7 @@ private:
     bool select_track(const TrackCullReport& visible, RaceGpuFrame& out,
                       std::size_t& entries, std::string& error);
     const UploadTable& resource_table() const override { return combined_uploads_; }
-    std::size_t selected_draw_count() const override { return sky_draws_ + selection_.size() + car_templates_.owning_draws().size(); }
+    std::size_t selected_draw_count() const override { return sky_draws_ + selection_.size() + 1 + car_templates_.owning_draws().size(); }
     RecordedDrawView selected_draw(std::size_t i) const override;
     std::uint64_t command_generation() const override { return generation_; }
     std::size_t static_track_draw_count() const override { return sky_draws_ + selection_.size(); }
@@ -60,6 +61,8 @@ private:
     PreparedTrackCull culler_;
     UploadTable combined_uploads_;
     RecordedCommands car_templates_;
+    RecordedCommands shadow_templates_;
+    CarShadowAsset shadow_asset_;
     std::vector<std::size_t> mesh_first_, section_first_;
     std::vector<std::uint32_t> mesh_groups_;
     struct SelectedTrackDraw { std::uint32_t instance, draw; std::size_t ordinal; };
