@@ -192,6 +192,19 @@ int main(int argc, char** argv) {
                 kPersistentBudgetPlaceholder, "persistent payload over budget");
         RaceGpuFrame frame;
         require(scene.frame(race.session(), frame, error), error);
+        const std::uint32_t dry_options = frame.commands.frame.options[2];
+        const std::size_t dry_draw_count = frame.commands.draw_count();
+        scene.set_wet_road_reflections(true);
+        RaceGpuFrame wet_frame;
+        require(scene.frame(race.session(), wet_frame, error), error);
+        require((wet_frame.commands.frame.options[2] & 2U) != 0U &&
+                (wet_frame.commands.frame.options[2] & 1U) == (dry_options & 1U) &&
+                wet_frame.commands.draw_count() == dry_draw_count,
+                "wet-road toggle did not reach the cached race frame independently of flat shading");
+        scene.set_wet_road_reflections(false);
+        require(scene.frame(race.session(), frame, error), error);
+        require(frame.commands.frame.options[2] == dry_options,
+                "wet-road toggle did not return to the pinned dry state");
         require(frame.commands.package_identity() != nullptr &&
                 frame.commands.static_track_draw_count() == frame.track_draws &&
                 frame.commands.static_track_instance_count() == scene.track().scene.instances.size() &&

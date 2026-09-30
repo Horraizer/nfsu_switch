@@ -290,6 +290,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
     }
     for (double far = 250; far >= 31.25; far *= 0.5) {
         RenderOptions options = race_render_options();
+        options.wet_road_reflections = wet_road_reflections_;
         if (!drive_render_camera(session.camera(), ChaseFovMode::vertical_4_3,
                                  options.width, options.height, options.camera, error)) return false;
         options.camera.far_plane = far;

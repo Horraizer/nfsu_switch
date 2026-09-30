@@ -116,7 +116,7 @@ What a backend puts in the uniform blocks, per the reference:
 | `Frame.eye`, `.right`, `.up`, `.forward` | the `CameraFrame` vectors |
 | `Frame.projection` | `focal_x`, `focal_y`, `near_plane`, `far_plane` |
 | `Frame.light` | `(kLightX, kLightY, kLightZ)`, normalized |
-| `Frame.options` | `flip_v`, `vertex_color`, 1 for `ShadingMode::flat`, `alpha_cutoff` |
+| `Frame.options` | `flip_v`, `vertex_color`, bit 0 for flat shading and bit 1 for wet road reflections, `alpha_cutoff` |
 | `Instance.rows` | `PreparedInstance::transform` as four rows, the identity for a car profile with no instances; for a track instance, `TrackTransform::linear` as rows 0 to 2 and `translation` as row 3 |
 | `Material.fallback` | `fallback_color` of the group's hash, as bytes 0..255, and 1 in w for the checker pattern |
 | `Material.alpha` | `alpha_min`, `alpha_range` when the reference evaluates the view term, else 1 and 0; 0 and 0 with 1 in z when the diffuse gate is closed |

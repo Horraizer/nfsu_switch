@@ -49,7 +49,8 @@ bool frame_state(const RenderOptions& options, const RenderLimits& limits,
     out.frame.light[2] = static_cast<float>(kLightZ / length);
     out.frame.options[0] = options.flip_v ? 1 : 0;
     out.frame.options[1] = options.vertex_color ? 1 : 0;
-    out.frame.options[2] = options.shading == ShadingMode::flat ? 1 : 0;
+    out.frame.options[2] = (options.shading == ShadingMode::flat ? 1U : 0U) |
+                           (options.wet_road_reflections ? 2U : 0U);
     out.frame.options[3] = options.alpha_cutoff;
     out.width = options.width;
     out.height = options.height;
@@ -132,6 +133,8 @@ bool pipeline(RecordedDraw& draw, bool track, const RenderTexture* texture,
     fallback_color(hash, color);
     for (std::size_t i = 0; i < 3; ++i) draw.material.fallback[i] = color[i];
     draw.material.fallback[3] = 1;
+    // The fragment stage restricts the optional effect to track draws.
+    draw.material.environment_min[3] = track ? 1.0F : 0.0F;
     return true;
 }
 

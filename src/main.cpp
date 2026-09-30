@@ -6718,6 +6718,7 @@ enum class StreamPathList { events, all, none };
 
 struct TrackStreamPathArgs {
     bool gpu_textures = false;
+    bool wet_road_reflections = false;
     bool has_path_file = false;
     fs::path path_file;
     bool has_hand_path = false;
@@ -7432,6 +7433,7 @@ int run_track_stream_path(const fs::path& stream_path,
         nfsu::RenderOptions options_render;
         options_render.width = args.width;
         options_render.height = args.height;
+        options_render.wet_road_reflections = args.wet_road_reflections;
         nfsu::OrbitCamera& camera = options_render.camera;
         // World x is slot 0, world y slot 2 and world z minus slot 1.
         camera.target = nfsu::Vec3{
@@ -9540,6 +9542,7 @@ const Command kCommands[] = {
      "      [--pack <STREAM_NNNN.BUN>] [--texture <file>]...\n"
      "      [--list <events|all|none>] [--frame-every <N> --out <PREFIX>]\n"
      "      [--width <N>] [--height <N>] [--gpu-textures]\n"
+     "      [--wet-road-reflections on|off]\n"
      "      (runs the section streamer of speed.exe along a path, 60 steps\n"
      "       a second, and measures every resident set it meets; hand-1003\n"
      "       is a HAND-GIVEN path, not the game's route. --out writes\n"
@@ -9561,7 +9564,8 @@ const Command kCommands[] = {
          static const char* const kFlags[] = {
              "--path",   "--hand-path", "--speed",       "--policy", "--cost",
              "--budget", "--pack",      "--texture",     "--list",
-             "--frame-every", "--out",  "--width",       "--height", "--gpu-textures"};
+             "--frame-every", "--out",  "--width",       "--height", "--gpu-textures",
+             "--wet-road-reflections"};
          std::vector<std::string> seen;
          const auto given = [&seen](const char* flag) {
              return std::find(seen.begin(), seen.end(), flag) != seen.end();
@@ -9582,6 +9586,14 @@ const Command kCommands[] = {
              const std::string value = has_value ? argv[i + 1] : std::string();
              if (flag == "--gpu-textures") {
                  args.gpu_textures = true;
+             } else if (flag == "--wet-road-reflections") {
+                 if (value == "on") args.wet_road_reflections = true;
+                 else if (value == "off") args.wet_road_reflections = false;
+                 else {
+                     std::cerr << "error: --wet-road-reflections must be on or off\n";
+                     return 1;
+                 }
+                 ++i;
              } else if (flag == "--path") {
                  if (!has_value) {
                      std::cerr << "error: --path needs a path\n";

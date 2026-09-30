@@ -1130,6 +1130,21 @@ bool Rasterizer::fill(
                                 : material.lamp_mode == 3
                                 ? (k == 0 ? 192U : k == 1 ? 28U : 18U) : 0U;
                             value += ((255U - value) * lamp + 127U) / 255U;
+                            if (material.wet_road_strength > 0.0 && !fallback) {
+                                const double streak_a = std::max(0.0,
+                                    (std::sin(u * 4.7 + tv * 0.23 + 0.5) - 0.80) * 5.0);
+                                const double streak_b = std::max(0.0,
+                                    (std::sin(u * 2.1 - tv * 0.8 + 1.1) - 0.87) * 7.69);
+                                const double reflected = k == 0
+                                    ? streak_a * 42.0 + streak_b * 58.0
+                                    : k == 1 ? streak_a * 104.0 + streak_b * 72.0
+                                             : streak_a * 156.0 + streak_b * 39.0;
+                                const double wet = material.wet_road_strength;
+                                const double bright = value * (1.0 + wet * 0.12) +
+                                                      reflected * wet * 0.25;
+                                value = bright >= 255.0 ? 255U
+                                    : static_cast<std::uint32_t>(bright + 0.5);
+                            }
                             if (blending) {
                                 const std::uint32_t dst = out[k];
                                 if (material.blend == RenderBlendMode::source_over) {

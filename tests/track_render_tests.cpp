@@ -667,6 +667,16 @@ Fixture tilted() {
     return make_fixture(tilted_meshes(), tilted_sections());
 }
 
+Fixture floor() {
+    auto meshes = tilted_meshes();
+    for (auto& vertex : meshes[0].vertices) {
+        const float world_z = vertex.py;
+        vertex.py = 0.0F;
+        vertex.pz = -world_z;
+    }
+    return make_fixture(meshes, fixture_sections());
+}
+
 // A third fixture: one mesh whose first triangle has a DIFFERENT unique
 // extreme on each of its three vertices, and a second triangle that is
 // degenerate because two of its indices name the same vertex.
@@ -2033,6 +2043,35 @@ void test_render_honours_the_options() {
           "flat shading changes the frame");
     check_eq_u64(shaded_stats.pixels_drawn, plain_stats.pixels_drawn,
                  "flat shading covers the same pixels");
+
+    // Wet reflections affect upward-facing textured track surfaces only.
+    const Fixture wet_fixture = floor();
+    const nfsu::TrackDrawList wet_list =
+        make_list(wet_fixture.scene, nfsu::TrackDrawOrder::visible_instance);
+    nfsu::RenderOptions wet = small_options();
+    wet.camera.pitch_deg = 25.0;
+    wet.camera.target.y = 2.0;
+    wet.wet_road_reflections = true;
+    nfsu::Frame wet_frame;
+    nfsu::RenderStats wet_stats;
+    nfsu::TrackRenderStats wet_track;
+    check_ok(nfsu::render_track_draw_list(wet_fixture.scene, wet_list, wet, limits,
+                                       wet_frame, wet_stats, wet_track, error),
+              "the wet-reflection render succeeds", error);
+    nfsu::Frame dry_tilt_frame;
+    nfsu::RenderStats dry_tilt_stats;
+    nfsu::TrackRenderStats dry_tilt_track;
+    nfsu::RenderOptions dry_tilt = small_options();
+    dry_tilt.camera.pitch_deg = wet.camera.pitch_deg;
+    dry_tilt.camera.target.y = wet.camera.target.y;
+    check_ok(nfsu::render_track_draw_list(wet_fixture.scene, wet_list, dry_tilt,
+                                       limits, dry_tilt_frame, dry_tilt_stats,
+                                       dry_tilt_track, error),
+              "the dry tilted render succeeds", error);
+    check(wet_frame.rgba() != dry_tilt_frame.rgba(),
+          "wet reflections add a road sheen and colored streaks");
+    check(wet_stats.pixels_drawn == dry_tilt_stats.pixels_drawn,
+          "wet reflections preserve surface coverage");
 
     // The v flip. The corner texture has four distinct texels, so sampling
     // (u, 1 - v) must move colour.

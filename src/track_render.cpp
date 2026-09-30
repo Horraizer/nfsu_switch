@@ -531,6 +531,22 @@ bool render_track_draw_list(
                     normal = {-normal.x, -normal.y, -normal.z};
                 }
             }
+            if (options.wet_road_reflections && has_normal && normal.y > 0.70 &&
+                world[0].y < camera.eye.y - 0.25) {
+                Vec3 view{camera.eye.x - world[0].x, camera.eye.y - world[0].y,
+                          camera.eye.z - world[0].z};
+                const double view_length = det_sqrt(view.x * view.x + view.y * view.y +
+                                                    view.z * view.z);
+                const double grazing = view_length > 0.0
+                    ? std::clamp(0.35 + (1.0 - std::abs((normal.x * view.x + normal.y * view.y +
+                                                  normal.z * view.z) / view_length)) * 1.2,
+                                 0.0, 1.0)
+                    : 0.0;
+                raster.wet_road_strength = std::clamp((normal.y - 0.70) * 3.0,
+                                                       0.0, 1.0) * grazing;
+            } else {
+                raster.wet_road_strength = 0.0;
+            }
             raster.shade = 256;
             if (options.shading == ShadingMode::flat && has_normal) {
                 const double d = normal.x * light.x + normal.y * light.y +

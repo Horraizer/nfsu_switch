@@ -261,6 +261,9 @@ struct RenderOptions {
     // separate diagnostic, and with the retail state selected a textured
     // fragment must pass both tests.
     MaterialStateMode material_state = MaterialStateMode::off;
+    // Adds procedural wet sheen and elongated light streaks to upward-facing
+    // track surfaces. This approximates the retail projected reflection.
+    bool wet_road_reflections = false;
     MaterialCoefficients coefficients;
     unsigned char background[4] = {40, 44, 52, 255};
 };
@@ -419,6 +422,8 @@ struct RasterMaterial {
     // environment[k] * texel_alpha / 255. Zero unless the environment gate
     // keeps the term. It is added to textured fragments only.
     double environment[3] = {0.0, 0.0, 0.0};
+    // Per-triangle strength for the analytic wet-road highlight.
+    double wet_road_strength = 0.0;
 };
 
 class Rasterizer {

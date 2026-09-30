@@ -24,6 +24,7 @@ public:
     RaceGpuScene(const RaceGpuScene&) = delete;
     RaceGpuScene& operator=(const RaceGpuScene&) = delete;
     const TrackSlice& track() const { return track_; }
+    void set_wet_road_reflections(bool enabled) noexcept { wet_road_reflections_ = enabled; }
     bool load(FileSystemService& files, const std::filesystem::path& root,
               std::string& error, AssetCheckObserver* observer = nullptr,
               TrackSliceLoadObserver* loading = nullptr);
@@ -38,6 +39,7 @@ private:
     RecordedCommands track_templates_;
     std::vector<std::size_t> template_of_group_;
     bool ready_ = false;
+    bool wet_road_reflections_ = false;
     bool prepare_templates(std::string& error);
     bool prepare_frame_cache(std::string& error);
     bool select_track(const TrackCullReport& visible, RaceGpuFrame& out,
