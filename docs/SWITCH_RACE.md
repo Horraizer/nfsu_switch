@@ -25,7 +25,8 @@ lines clip labels to 12 characters; CTest checks the configured tag in the ELF.
 The menu offers A for live driving, X for replay and Y to toggle the
 diagnostic panel. Direct presentation is the default. With nxlink, optional
 arguments are `[sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame]
-[--sky on|off|early] [--particles=on|--particles=off] [--tuned]`.
+[--sky on|off|early] [--particles=on|--particles=off] [--tuned]
+[--glows] [--car-shading on|off] [--wet-road-reflections on|off]`.
 `--profile-frame` requires direct presentation.
 `--sky` exists for console cost A/B runs (issue #227): `on`, the default,
 draws the sky after the opaque world; `off` records no sky draws; `early` is
@@ -296,6 +297,15 @@ still describe e65960b; the new direct-present build needs a combined
 console timing and detailed visual check by the owner and coordinator.
 
 ## Tuned race selection (#237)
+
+For the integrated demo, these commands enable the red tuned car, tyre smoke
+and sparks, sky, car light glows, paint shading, wet road reflections, and the
+ground shadow. The shadow is part of the race scene and has no CLI toggle.
+
+```text
+nxlink -s build-switch/switch/nfsu_switch_race.nro -- sdmc:/nfsu --live --tuned --particles=on --sky on --glows --car-shading on --wet-road-reflections on
+nxlink -s build-switch/switch/nfsu_switch_race.nro -- sdmc:/nfsu --replay --profile-frame --tuned --particles=on --sky on --glows --car-shading on --wet-road-reflections on
+```
 
 Append `--tuned` to either race executable to use the viewer's red 240SX,
 KIT01 bumpers and skirts, BBS_STYLE01_15_23 wheels and TRIBAL5 vinyl.

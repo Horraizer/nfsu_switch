@@ -767,7 +767,13 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         if (sky_draws_ + list.entries.size() + 1 + car_commands.owning_draws().size() + glow_count_ > kTrackSliceDrawLimit) continue;
         RecordedCommands track_commands;
         options.material_state = MaterialStateMode::retail;
-        if (!record_track_commands(track_.scene, list, options, {}, track_commands, error)) return false;
+        // Keep the reference resource namespace in the same order as the
+        // prepared path: track, shadow, car, glows, then wet lamp uploads.
+        auto track_options = options;
+        track_options.wet_road_reflections = false;
+        track_options.wet_lamps = nullptr;
+        if (!record_track_commands(track_.scene, list, track_options, {}, track_commands, error)) return false;
+        if (wet_road_reflections_) track_commands.frame.options[2] |= 2U;
         stage(&RaceFrameProfile::track_ms);
         RaceGpuFrame result;
         result.car_draws = car_draw_count_; result.track_draws = track_commands.owning_draws().size();
@@ -798,6 +804,12 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
             DrawExecutionPlan plan;
             if (!validate_recorded_commands(result.commands,error) ||
                 !plan_draw_execution(result.commands,plan,error)) return false;
+        }
+        if (wet_road_reflections_) {
+            if (!append_wet_lamp_uploads(lamps_, result.commands.owning_uploads(), error) ||
+                !record_track_reflections(track_.scene, options,
+                                          result.commands.owning_uploads(),
+                                          result.commands.reflections, error)) return false;
         }
         stage(&RaceFrameProfile::combine_ms);
         out = std::move(result); return true;

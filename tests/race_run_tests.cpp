@@ -300,13 +300,10 @@ int main(int argc, char** argv) {
         require(replay.load(text, error), error);
         require(scene.cache_bytes() <= 8*kMiB,"command cache exceeded metadata limit");
         std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 8*kMiB << '\n';
-        // Sky, shadow, particle, glow and shading templates need merged pins.
-        constexpr std::uint64_t REPIN_AT_END = 0;
-        const auto cache_pin = car_shading ?
-            (tuned ? (glows ? REPIN_AT_END : REPIN_AT_END) :
-                     (glows ? REPIN_AT_END : REPIN_AT_END)) :
-            (tuned ? (glows ? REPIN_AT_END : REPIN_AT_END) :
-                     (glows ? REPIN_AT_END : REPIN_AT_END));
+        // Shading changes material uniforms, not retained command storage.
+        // Tuned selection adds one draw; four glow sprites add their templates.
+        const std::uint64_t cache_pin = (tuned ? 4333528U : 4333497U) +
+                                        (glows ? 35307U : 0U);
         const auto initial_cache_bytes = scene.cache_bytes();
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';
