@@ -266,29 +266,33 @@ void build_race_hud_frame_for_car(const VehicleState& car,
     // at full alpha. rpm_fill is a separate white, alpha-150 object.
     place(slot,face_x,face_y,256.0F*texel,128.0F*texel,
           {{0,128,192}},255);
-    // HUD_SingleRace.fng centers RED 17 texels left and 42 up from LINES.
-    // The different sprite sizes make their top-left origins (79,6) apart.
+    // The FEng gauge depths put Tach (-1.67) behind Needle (5) and
+    // Redline (8.33). CENTER_DIAL is supplemental art, so keep it behind
+    // the needle ring at the shared hub.
+    place(kHub,1122,591,24,24,{{255,255,255}});
+    // The FEng needle is centered on the face hub. Its ring surrounds source
+    // row 64 and its shaft tip is near row 125, in the +v direction.
+    // 0x004F6A70 rotates the sprite's +v axis to 270 - rotation in y-down
+    // screen space. At zero RPM the stock 44-degree input yields 226 degrees.
+    const double rotation=race_hud_needle_rotation(car.engine_rpm,max_rpm);
+    const double dial_angle=(270.0-rotation)*3.14159265358979323846/180.0;
+    const auto center=pos(1134,603);
+    rotated(frame,kNeedle,center[0],center[1],16.0F*texel*scale,
+            128.0F*texel*scale,8.0F*texel*scale,64.0F*texel*scale,
+            4.7123889803846899-dial_angle,{{207,233,242}});
+    // Redline's SAT depth places it over the needle. Its BGRA fields are
+    // (0,0,150,150), including the vertex alpha.
     if (red!=kRedHashes.end())
         place(kRed[static_cast<std::size_t>(red-kRedHashes.begin())],
               face_x+79.0F*texel,face_y+6.0F*texel,
               64.0F*texel,32.0F*texel,
-              {{228,55,43}},220);
-    // The FEng needle is centered on the face hub. Its ring surrounds source
-    // row 64 and its shaft tip is near row 125, in the +v direction.
-    // The 265-degree sprite-frame offset fits both endpoint labels.
-    const double rotation=race_hud_needle_rotation(car.engine_rpm,max_rpm);
-    const double dial_angle=(265.0-rotation)*3.14159265358979323846/180.0;
-    const auto center=pos(1134,603);
-    rotated(frame,kNeedle,center[0],center[1],16.0F*texel*scale,
-            128.0F*texel*scale,8.0F*texel*scale,64.0F*texel*scale,
-            4.7123889803846899-dial_angle,{{90,218,253}});
-    place(kHub,1122,591,24,24,{{100,220,255}});
+              {{150,0,0}},150);
     const int gear = car.gear;
     const char gear_label = gear == kVehicleGearReverse ? 'R' :
         gear == kVehicleGearNeutral ? 'N' :
         static_cast<char>('0'+std::max(1,std::min(6,gear-kVehicleGearFirst+1)));
     const auto gear_pos=pos(1214,581);
-    digit(frame,gear_label,gear_pos[0],gear_pos[1],48*scale,{{48,188,245}});
+    digit(frame,gear_label,gear_pos[0],gear_pos[1],48*scale,{{0,128,192}});
     place(kSpeedBox,1125,650,164,41,{{255,255,255}},140);
     // The port's vehicle state has no retail +0x3D4 scalar. Horizontal
     // velocity magnitude is the closest available visual-only estimate.
@@ -303,8 +307,8 @@ void build_race_hud_frame_for_car(const VehicleState& car,
     const auto speed_pos=pos(1160-(2-first)*22.0F,650);
     for (int i=first;i<3;++i)
         digit(frame,speed[i],speed_pos[0]+(i-first)*23*scale,
-              speed_pos[1],35*scale,{{35,178,235}});
-    place(kUnit,1203,632,55,14,{{190,223,242}});
+              speed_pos[1],35*scale,{{0,128,192}});
+    place(kUnit,1203,632,55,14,{{150,190,255}});
 }
 
 void composite_race_hud(const RaceHudAtlas& atlas, const RaceHudFrame& frame,

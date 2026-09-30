@@ -47,7 +47,10 @@ Observed in `speed.exe`, using Capstone 5.0.7:
   not substitute the `rpm_fill` colour. `Redline` begins at `0x40D4`;
   its SAT at `0x411C` gives centre `(124.3611,-76.56946)` and size
   `64x32`. `3rdPersonNeedle` at `0x452C` has SAT at `0x457C`, with centre
-  `(82.36,-27.57)` and size `16x128`. The images use their full UV rectangles: LINES
+  `(82.36,-27.57)` and size `16x128`. Redline's SAT stores BGRA
+  `(0,0,150,150)` and Needle's stores `(242,233,207,255)`; the port uses
+  RGB `(150,0,0)` at alpha 150 and RGB `(207,233,242)` at alpha 255.
+  The images use their full UV rectangles: LINES
   `(0,0)..(256,128)` and RED `(0,0)..(64,32)`. Their screen rectangles
   are centred on those SAT positions with the listed native sizes, under
   the HUD group's screen transform. The centre difference and sizes give
@@ -67,6 +70,17 @@ Observed in `speed.exe`, using Capstone 5.0.7:
   at rows 59..67, around the sprite centre, and the shaft tip is near row
   125. The FEng centre places that ring on the face hub; the tip points
   outward toward the tick marks.
+- Within the `GaugeCluster` object at package offset `0x3F58`, the gauge
+  sprites are `rpm_fill` (`0x4008`, SAT `0x4054`, depth 110), Redline
+  (`0x40D4`, SAT `0x411C`, depth 8.33), Tach (`0x445C`, SAT `0x44AC`,
+  depth -1.67), and Needle (`0x452C`, SAT `0x457C`, depth 5). Their
+  depth order back to front is Tach, Needle, Redline, then the separate
+  `rpm_fill` layer. The port's supplemental `CENTER_DIAL` texture has no
+  FEng object; it is placed behind the needle so the ring stays visible.
+  The text records `3rdPersonSpeed` (`0x4268`, SAD `0x42F0`) and
+  `3rdPersonGear` (`0x45FC`, SAD `0x4680`) store BGRA
+  `(192,128,0,255)`. `3rdPersonSpeedUnits` (`0x4360`, SAD `0x43EC`)
+  stores `(255,190,150,255)`.
 - `Global/INGAMEB.BUN` holds `3RDPERSON_RPMDIAL`
   (`0x40FAB387`, 16x128), `CENTER_DIAL`
   (`0x56447D19`, 16x16), and `SPEED_COUNTER_SPEEDBOX` (`0x6D079188`,
@@ -86,19 +100,24 @@ The selected stock face is labeled 0..8, with the red overlay between 7 and
 retail needle rotation, the FEng relative placement of LINES and RED, and
 the decoded face hub for needle registration. The needle uses the same
 logical scale per texture texel as LINES, with source row 64 at the hub.
-The 265-degree sprite-frame offset aligns its outward shaft with the 0
-and max label rays approximately; the absolute screen anchor and font
-spacing are still screenshot fits.
+The `0x004F6A70` rotation matrix sends the sprite's +v axis to screen
+angle `270 - rotation` in the y-down frame. It puts stock zero RPM at
+226 degrees. The earlier 265-degree offset was a five-degree label fit;
+the port now uses the traced frame. The absolute screen anchor and font
+spacing remain layout approximations.
 For the 8500LINES band below a 6500 RPM redline, retail leaves the RED
 output unwritten; the port deliberately omits RED. Drag mode selects a
 separate `3RDPERSONDRAG_` texture family and is outside this event-1 HUD.
 
 The port's car state has no recovered `+0x3D4` scalar. Its displayed MPH is
 an **approximation** from horizontal velocity magnitude times 2.237,
-truncated to an integer. Absolute placement, the other tints, backdrop opacity and safe-area fit
-are **approximations** from the owner's screenshots. `SPEED_COUNTER` belongs
-to the lap panel and is not drawn behind the gauge. The disc and speed box
-use translucent vertex alpha over the road. The small MPH label is generated with the project
+truncated to an integer. The Tach, Redline, Needle, speed, speed units and
+gear use their FEng colours and alpha. Absolute placement, supplemental
+backdrop art and safe-area fit remain **approximations** from the owner's
+screenshots. `SPEED_COUNTER` belongs
+to the lap panel and is not drawn behind the gauge. The generated disc uses
+texture alpha and the supplemental speed box uses vertex alpha over the road.
+The small MPH label is generated with the project
 font because the original label layout is still unknown. No retail or
 derived texture is committed; the selected textures are decoded from
 the user's installation into a transient 512x512 atlas at startup.
