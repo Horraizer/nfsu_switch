@@ -28,7 +28,7 @@ FRAMES = (
 # #182 opt-in frame 180 exercises the CARSKIN-to-blue-paint approximation,
 # the other recovered car materials, smooth normals and retail alpha/blend.
 # Track and simulation pins stay unchanged; off-state FRAMES remain baseline.
-SHADED_FRAME = "9EBF6805E48ADC8895D728EBB5CF58312421223BBC28E206709B16B08212AF72"
+SHADED_FRAME = "5B4D73B5A0207E2E89535F55AD2CB959C373AD62556ACBD9AA1C29E0B4EEFE48"
 RESULT = (
     "event 1 track 1003 laps 2 outcome finished steps 48336 resets 0",
     "lap 1 ticks 1616400 time 6:44.10",

@@ -187,9 +187,8 @@ int main(int argc, char** argv) {
         require(scene.cache_bytes() <= 8*kMiB,"command cache exceeded metadata limit");
         std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 8*kMiB << '\n';
         // #182 allocates 112 extra bytes in each of 4224 RecordedDraw slots.
-        // #223 suppresses 20 car draws and adds one upload record: -540 bytes.
         // #184/#227 add two sky definitions, names and one placement: +126.
-        require(scene.cache_bytes() == 4297913,"event 1 command cache metadata estimate differs from pin");
+        require(scene.cache_bytes() == 4298453,"event 1 command cache metadata estimate differs from pin");
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';
         require(scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes() <=
