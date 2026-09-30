@@ -1543,7 +1543,7 @@ list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_session)
 add_executable(nfsu_race src/race_main.cpp src/race_window.cpp)
 target_link_libraries(nfsu_race PRIVATE nfsu_race_session nfsu_race_events
     nfsu_track_residency nfsu_track_render nfsu_stock_frame nfsu_race_run nfsu_screen_text
-    nfsu_race_audio)
+    nfsu_race_audio nfsu_light_glows)
 nfsu_enable_warnings(nfsu_race)
 if(WIN32)
     target_link_libraries(nfsu_race PRIVATE user32 gdi32)
@@ -1563,7 +1563,7 @@ if(NFSU_BUILD_TESTS)
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/race_guards.cmake)
 endif()
 
-list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_run)
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_light_glows nfsu_race_run)
 add_executable(nfsu_audio_dump src/audio_dump_main.cpp)
 target_link_libraries(nfsu_audio_dump PRIVATE nfsu_audio nfsu_sha256 nfsu_arg_path)
 nfsu_enable_warnings(nfsu_audio_dump)
@@ -1773,6 +1773,10 @@ if(NFSU_BUILD_TESTS)
             COMMAND nfsu_race_run_tests
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
                 "${NFSU_RETAIL_ROOT}" --sample-draws)
+        add_test(NAME nfsu_race_run_retail_glows
+            COMMAND nfsu_race_run_tests
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
+                "${NFSU_RETAIL_ROOT}" --sample-draws --glows)
         # The fixed-pose frames' retained C++ allocations, over the cached and
         # the reference path: docs/SWITCH_PERFORMANCE.md. Its timings are
         # printed, never asserted.
@@ -1802,6 +1806,15 @@ if(NFSU_BUILD_TESTS)
                 -DWORK_ROOT=${nfsu_retail_work}
                 "-DROOT=${NFSU_RETAIL_ROOT}"
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/race_particle_frame_guards.cmake)
+        add_test(NAME nfsu_race_replay_check_glows
+            COMMAND ${CMAKE_COMMAND}
+                    -DPYTHON=${Python3_EXECUTABLE}
+                    -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/race_replay_check.py
+                    -DRACE=$<TARGET_FILE:nfsu_race>
+                    "-DROOT=${NFSU_RETAIL_ROOT}"
+                    -DOUT_PARENT=${nfsu_retail_work}/race-replay-glows
+                    -DGLOWS=ON
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/retail_replay_check.cmake)
         # The stock car's recorded draws against the CPU reference trace in
         # both material modes, and the stock frame pins of
         # include/nfsu/stock_frame.h: docs/DRAW_COMMANDS.md.
@@ -1892,9 +1905,11 @@ if(NFSU_BUILD_TESTS)
                 "-DRETAIL_ROOT=${NFSU_RETAIL_ROOT}"
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_retail.cmake)
         set_tests_properties(
-            nfsu_race_run_retail nfsu_race_run_retail_profile
+            nfsu_race_run_retail nfsu_race_run_retail_glows
+            nfsu_race_run_retail_profile
             nfsu_race_run_retail_profile_reference nfsu_race_replay_check
             nfsu_race_particle_frame_guards
+            nfsu_race_replay_check_glows
             nfsu_draw_commands_retail nfsu_stock_frame_retail
             nfsu_stock_frame_painted_retail nfsu_race_loader_peak_retail
             nfsu_track_loader_peak_retail nfsu_track_slice_retail

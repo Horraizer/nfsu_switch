@@ -30,9 +30,14 @@ if(EXISTS "${OUT}")
 endif()
 file(MAKE_DIRECTORY "${OUT_PARENT}")
 
+set(effect_arguments)
+if(DEFINED GLOWS AND GLOWS)
+    list(APPEND effect_arguments --glows)
+endif()
+
 execute_process(
     COMMAND "${PYTHON}" "${SCRIPT}" --exe "${RACE}" --root "${ROOT}"
-            --out "${OUT}" --check-driver
+            --out "${OUT}" --check-driver ${effect_arguments}
     RESULT_VARIABLE result
     OUTPUT_VARIABLE output
     ERROR_VARIABLE errors)

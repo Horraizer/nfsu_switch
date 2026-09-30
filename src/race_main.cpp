@@ -8,6 +8,7 @@
 #include "nfsu/race_audio.h"
 #include "nfsu/race_particles.h"
 #include "nfsu/car_shadow.h"
+#include "nfsu/light_glows.h"
 #include "nfsu/arg_path.h"
 
 #include <algorithm>
@@ -110,6 +111,8 @@ public:
     StockFrame car;
     CarShadowAsset shadow;
     std::vector<PreparedInstance> base;
+    CarGlowAnchors glow_anchors{};
+    bool glows = false;
     bool dirty = true;
     bool tuned = false; // Render selection only.
     std::uint64_t loads = 0, releases = 0, bytes_read = 0;
@@ -123,6 +126,7 @@ public:
                 tuned ? tuned_240sx_skin() : stock_240sx_skin(),car,error),error);
         require(prepare_car_shadow(car_inputs,car.car_pack,shadow,error),error);
         base = car.scene.instances;
+        glow_anchors = collect_car_glow_anchors(car);
         const std::array<fs::path,3> paths = {
             texture, root/"Global/INGAMEB.BUN", root/"Global/GLOBALB.BUN"};
         for (std::size_t i=0;i<paths.size();++i) {
@@ -222,8 +226,16 @@ public:
         require(render_stock_frame(car,options,error),error);
         require(!tuned || car.stats.triangles_fallback == 0,
                 "tuned race car has fallback triangles");
-        std::vector<unsigned char> rgba;
-        require(compose_race_frame(background,car.frame,rgba),"frame sizes differ");
+        Frame composed;
+        require(compose_race_frame(background,car.frame,composed),"frame sizes differ");
+        if (glows) {
+            CameraFrame camera;
+            require(make_camera_frame(options.camera,options.width,options.height,camera,error),error);
+            const auto sprites = place_car_glows(glow_anchors,car.scene,camera,
+                                                 session.animation().braking);
+            require(draw_car_glows(composed,options,sprites,stats,error),error);
+        }
+        std::vector<unsigned char> rgba = composed.rgba();
         if (particles_enabled)
             require(draw_race_particles(rgba,options,particles,error,&background,&car.frame),error);
         ScreenImage image{rgba.data(),640,360,640*4};
@@ -238,6 +250,7 @@ int run(int argc, char** argv) {
     fs::path root,input,output,generate;
     bool live=false, smoke=false, tuned=false;
     bool particles_enabled=true, particle_events=false;
+    bool glows=false;
     std::set<std::size_t> frames;
     // The path arguments arrive in the ANSI code page on Windows; convert
     // them as the other tools do, so a path outside ASCII opens.
@@ -248,7 +261,7 @@ int run(int argc, char** argv) {
         if (a=="--help") {
             std::cout << "nfsu_race --root RETAIL (--input RECORDING | --generate RECORDING | --live)\n"
                          "  [--out NEW_DIRECTORY --frames 180,600,6000,22000,40000]\n"
-                         "  [--particles=on|--particles=off] [--particle-events] [--tuned]\n"
+                         "  [--particles=on|--particles=off] [--particle-events] [--tuned] [--glows]\n"
                          "  live mode plays retail race audio when the device and banks are available\n";
             return 0;
         }
@@ -258,6 +271,7 @@ int run(int argc, char** argv) {
         if (a=="--particles=on") { particles_enabled=true; continue; }
         if (a=="--particles=off") { particles_enabled=false; continue; }
         if (a=="--particle-events") { particle_events=true; continue; }
+        if (a=="--glows") { glows=true; continue; }
         require(i+1<argc,"missing option value"); const std::string value=argv[++i];
         if (a=="--root") root=nfsu::argument_path(argv[i]);
         else if (a=="--input") input=nfsu::argument_path(argv[i]);
@@ -305,6 +319,7 @@ int run(int argc, char** argv) {
     require(residency.start(table,zones,slot.track,costs,options,startup,error),error);
     RaceScene scene(table,particles_enabled); scene.tuned=tuned;
     scene.files.stream=root/"Tracks"/track_stream_file_name(*info);
+    scene.glows = glows;
     scene.files.pack=root/"Tracks"/track_stream_pack_file_name(*info);
     scene.files.has_pack=fs::exists(scene.files.pack);
     scene.load_car(root,root/"Tracks"/track_texture_file_name(slot.track));

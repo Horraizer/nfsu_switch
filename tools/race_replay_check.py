@@ -41,6 +41,28 @@ TUNED_FRAMES = (
     # Finish: selection survives both laps and streaming transitions.
     "REPIN_AT_END",  # 48336
 )
+# Glow overlays use the same post-car combined-depth order as Switch.
+GLOW_FRAMES = (
+    "REPIN_AT_END",  # 1
+    "REPIN_AT_END",  # 180
+    "REPIN_AT_END",  # 600
+    "REPIN_AT_END",  # 6000
+    "REPIN_AT_END",  # 11344
+    "REPIN_AT_END",  # 12459
+    "REPIN_AT_END",  # 13128
+    "REPIN_AT_END",  # 24300
+    "REPIN_AT_END",  # 35396
+    "REPIN_AT_END",  # 36510
+    "REPIN_AT_END",  # 37177
+    "REPIN_AT_END",  # 48336
+)
+TUNED_GLOW_FRAMES = (
+    "REPIN_AT_END",  # 180
+    "REPIN_AT_END",  # 600
+    "REPIN_AT_END",  # 6000
+    "REPIN_AT_END",  # 13128
+    "REPIN_AT_END",  # 48336
+)
 RESULT = (
     "event 1 track 1003 laps 2 outcome finished steps 48336 resets 0",
     "lap 1 ticks 1616400 time 6:44.10",
@@ -93,9 +115,12 @@ def main():
     parser.add_argument("--out", type=Path, required=True, help="new directory outside retail")
     parser.add_argument("--check-driver", action="store_true", help="also regenerate the recording with each build")
     parser.add_argument("--tuned", action="store_true", help="check the shared tuned visual preset")
+    parser.add_argument("--glows", action="store_true", help="check marker-driven night glows")
     args = parser.parse_args()
     frame_steps = TUNED_STEPS if args.tuned else STEPS
-    frames = TUNED_FRAMES if args.tuned else FRAMES
+    frames = (TUNED_GLOW_FRAMES if args.glows else TUNED_FRAMES) if args.tuned else (
+        GLOW_FRAMES if args.glows else FRAMES)
+    require(len(frames) == len(frame_steps), "frame pin count differs from sampled steps")
     root, output = args.root.resolve(), args.out.resolve()
     require(root.is_dir(), "retail root does not exist")
     require(output != root and root not in output.parents, "output is inside retail")
@@ -115,7 +140,8 @@ def main():
             require(result.returncode == 0 and not result.stderr, "driver failed; see log")
             require(generated.read_bytes() == recording.read_bytes(), "scripted driver no longer generates the recording")
         result = retail_run(command + ["--input", str(recording), "--out", str(prefix),
-                             "--frames", ",".join(map(str, frame_steps))], root)
+                             "--frames", ",".join(map(str, frame_steps))] +
+                            (["--glows"] if args.glows else []), root)
         (output / (str(index) + ".log")).write_text(result.stdout + result.stderr, encoding="ascii")
         require(result.returncode == 0 and not result.stderr, "replay failed; see log")
         lines = result.stdout.splitlines()

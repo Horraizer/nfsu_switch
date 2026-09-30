@@ -85,6 +85,43 @@ int main(int argc, char** argv) {
                 deko_frame_gpfifo_bound(deko_track_list_calls(2047)) < kDekoGpfifoRingEntries &&
                 deko_frame_gpfifo_bound(1828) > kDekoGpfifoRingEntries,
                 "per-draw prepared calls would overflow the Switch GPFIFO ring");
+        PreparedCarScene lamp_car;
+        PreparedInstance head_part, tail_part;
+        head_part.part_slot = kSlotHeadlight;
+        tail_part.part_slot = kSlotBrakelight;
+        lamp_car.instances = {head_part, tail_part};
+        CarGlowAnchors lamp_anchors{};
+        lamp_anchors[0] = {{2, 0, 0}, true};
+        lamp_anchors[1] = {{2, 0.4, 0}, true};
+        lamp_anchors[2] = {{-2, 0, 0}, true};
+        lamp_anchors[3] = {{-2, 0.4, 0}, true};
+        CameraFrame lamp_camera;
+        lamp_camera.eye = {8, 0, 0};
+        const auto from_front = place_car_glows(lamp_anchors, lamp_car, lamp_camera, false);
+        lamp_camera.eye = {0, 8, 0};
+        const auto from_side = place_car_glows(lamp_anchors, lamp_car, lamp_camera, false);
+        lamp_camera.eye = {-8, 0, 0};
+        const auto from_rear = place_car_glows(lamp_anchors, lamp_car, lamp_camera, true);
+        const auto live_count = [](const CarGlowSprites& sprites) {
+            return std::count_if(sprites.begin(), sprites.end(), [](const CarGlowSprite& sprite) {
+                return sprite.opacity > 0.0 && sprite.radius > 0.0;
+            });
+        };
+        require(from_front[0].opacity > 0 && from_front[2].opacity == 0 &&
+                from_rear[0].opacity == 0 && from_rear[2].opacity > 0 &&
+                from_front.size() == 4 && from_side.size() == 4 && from_rear.size() == 4 &&
+                live_count(from_front) == 2 && live_count(from_side) == 0 &&
+                live_count(from_rear) == 2,
+                "car glows ignore marker side or camera-facing gate");
+        const auto head_glow = make_car_glow_texture(true);
+        const auto tail_glow = make_car_glow_texture(false);
+        require(head_glow.width == 64 && head_glow.height == 64 &&
+                tail_glow.width == 64 && tail_glow.height == 64 &&
+                head_glow.rgba.size() == 64U*64U*4U &&
+                tail_glow.rgba.size() == 64U*64U*4U &&
+                head_glow.rgba[4*(32*64+32)+3] > head_glow.rgba[3] &&
+                head_glow.rgba[4*(32*64+32)+1] > tail_glow.rgba[4*(32*64+32)+1],
+                "car glow textures are not bounded smooth head/tail images");
         RaceReplay replay; GamepadFrame pad;
         require(!replay.load("NFSU_RACE_INPUT 1\n1 0 0\n", error), "unverified replay accepted");
         require(!replay.next(0, pad, error), "empty replay accepted");
@@ -160,8 +197,13 @@ int main(int argc, char** argv) {
         require(!combine_race_commands(fixture, other, joined, error), "combined draw overflow accepted");
         std::cout << "PASS: fixed clock, exact replay cursor, refusal and combined draw guards\n";
         if (argc == 2) return 0;
-        const bool tuned = argc == 5 && std::string(argv[4]) == "--tuned";
-        require(argc <= 5 && (argc < 5 || tuned), "unknown car selection");
+        bool tuned = false, glows = false;
+        for (int i = 4; i < argc; ++i) {
+            const std::string option = argv[i];
+            if (option == "--tuned") tuned = true;
+            else if (option == "--glows") glows = true;
+            else require(false, "unknown race option");
+        }
         const std::filesystem::path root = argument_path(argv[2]);
         RaceGpuScene scene;
         scene.set_particles_enabled(true);
@@ -176,7 +218,7 @@ int main(int argc, char** argv) {
                 if (std::string(phase) == "car prepared") car_prepared = true;
             }
         } polled;
-        require(scene.load(posix_file_system(), root, error, nullptr, &polled, tuned), error);
+        require(scene.load(posix_file_system(), root, error, nullptr, &polled, tuned, glows), error);
         require(polled.sections >= 4*scene.track().sections && polled.car_prepared,
                 "race scene disconnected the shared loader checkpoints");
         require(!scene.load(posix_file_system(),root,error),"loaded race scene allowed cache-invalidating reload");
@@ -219,9 +261,12 @@ int main(int argc, char** argv) {
         require(replay.load(text, error), error);
         require(scene.cache_bytes() <= 8*kMiB,"command cache exceeded metadata limit");
         std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 8*kMiB << '\n';
-        // Sky, shadow and particle templates are all resident in this cache.
-        require(scene.cache_bytes() == (tuned ? 3860280U /* REPIN_AT_END */ :
-                3860249U /* REPIN_AT_END */),
+        // Sky, shadow, particle and glow templates reside in the cache.
+        const auto cache_pin = tuned ? (glows ? 3894915U /* REPIN_AT_END */ :
+            3860280U /* REPIN_AT_END */) :
+            (glows ? 3894884U /* REPIN_AT_END */ :
+            3860249U /* REPIN_AT_END */);
+        require(scene.cache_bytes() == cache_pin,
                 "event 1 command cache metadata estimate differs from pin");
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';
@@ -266,7 +311,7 @@ int main(int argc, char** argv) {
             RaceGpuScene no_sky; RaceGpuFrame plain;
             no_sky.set_particles_enabled(true);
             require(no_sky.set_sky(false), "sky mode refused before load");
-            require(no_sky.load(posix_file_system(), root, error, nullptr, nullptr, tuned), error);
+            require(no_sky.load(posix_file_system(), root, error, nullptr, nullptr, tuned, glows), error);
             require(no_sky.frame(race.session(), plain, error), error);
             std::size_t sky_views = 0;
             for (std::size_t i = 0; i < frame.commands.draw_count(); ++i)
@@ -400,6 +445,9 @@ int main(int argc, char** argv) {
                 RaceGpuFrame reference;
                 require(scene.frame(race.session(),reference,error,nullptr,true),error);
                 require(!reference.commands.borrowed(), "reference path returned a borrowed recording");
+                require(reference.glow_draws == frame.glow_draws &&
+                        reference.commands.draw_count() == frame.commands.draw_count(),
+                        "cached and independently selected glow draw counts differ");
                 require(reference.commands.width == frame.commands.width && reference.commands.height == frame.commands.height &&
                     std::memcmp(reference.commands.clear_color,frame.commands.clear_color,4) == 0 &&
                     reference.commands.draw_count() == frame.commands.draw_count() &&
@@ -441,13 +489,15 @@ int main(int argc, char** argv) {
                         frame.particle_draws == kRaceParticleLimit,
                         "missing track/car/particle commands");
                 require(frame.commands.draw_count() == frame.track_draws + frame.car_draws +
-                        frame.particle_draws + 1, "ground shadow or particles missing");
+                        frame.particle_draws + frame.glow_draws + 1,
+                        "ground shadow, particles or glows missing");
                 if (tick == 1164) {
                     unsigned visible_smoke=0, visible_sparks=0;
                     bool smoke_color_checked=false, spark_color_checked=false;
                     const auto& camera=frame.commands.frame;
                     for (std::size_t i=frame.commands.static_track_draw_count()+1+frame.car_draws;
-                         i<frame.commands.draw_count(); ++i) {
+                         i<frame.commands.static_track_draw_count()+1+frame.car_draws+
+                           frame.particle_draws; ++i) {
                         const auto view=frame.commands.draw_view(i);
                         const auto slot=i-frame.commands.static_track_draw_count()-1-frame.car_draws;
                         const bool spark=slot>=kRaceSmokeLimit;
@@ -533,6 +583,10 @@ int main(int argc, char** argv) {
                     }
                     require(shadows == 1, "resting/turning car shadow draw missing or duplicated");
                 }
+                require(frame.glow_draws == (glows ? 4U : 0U) &&
+                        frame.commands.draw_count() == frame.track_draws + 1 +
+                            frame.car_draws + frame.particle_draws + frame.glow_draws,
+                        "glow slots were not reserved at a fixed per-frame draw count");
                 require(deko_frame_gpfifo_bound(deko_track_list_calls(
                             static_cast<std::uint32_t>(frame.track_draws))) < kDekoGpfifoRingEntries,
                         "selected track draws exceed GPFIFO call budget");
@@ -584,7 +638,8 @@ int main(int argc, char** argv) {
                 require(validate_draw_update(uploaded, frame.commands, kTrackSliceDrawLimit, error), error);
                 max_draws = std::max(max_draws, frame.commands.draw_count()); ++frames;
                 if (inspect.count(tick)) std::cout << "frame " << tick << " draws " << frame.commands.draw_count()
-                    << " car " << frame.car_draws << " far " << frame.far_plane << '\n';
+                    << " car " << frame.car_draws << " glow " << frame.glow_draws
+                    << " far " << frame.far_plane << '\n';
             }
         }
         require(first_contact_tick == 0 && first_shadow_tick == 0,

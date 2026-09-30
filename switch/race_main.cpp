@@ -423,7 +423,7 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
 // --sky on draws the sky after the opaque world; off omits it; early is the
 // issue 227 diagnostic that submits it with the opaque pass, as before.
 void run(const std::string& root, bool replay_mode, bool panel_mode, bool profile_frame,
-          bool particles_enabled, const std::string& sky, bool tuned,
+          bool particles_enabled, const std::string& sky, bool tuned, bool glows,
           Screen& screen, PadState& pad) {
     selected_car_label = tuned ? "TUNED" : "STOCK";
     require(R_SUCCEEDED(romfsInit()), "cannot mount race shader/replay RomFS");
@@ -443,7 +443,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     Progress progress(screen,pad,heap);
     const auto load_start = armGetSystemTick();
     require(race.prepare_metadata(root,error,&progress),error);
-    require(scene.load(posix_file_system(), root, error, &progress, &progress, tuned), error);
+    require(scene.load(posix_file_system(), root, error, &progress, &progress, tuned, glows), error);
     screen.show({std::string("ASSETS PASS. Preparing event 1, ") +
                  selected_car_label + " 240SX and race course..."});
     progress.checkpoint("race course");
@@ -586,8 +586,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                 draw,transfer,readback,previous_hud));
             lines.push_back(format("Previous PANEL FRAME %.2f ms (>25 ms %s) | debt %llu ticks | load %.0f ms | initial upload %.0f ms",
                 previous_frame,previous_frame>RaceFrameStats::kOverThresholdMs?"OVER":"WITHIN",(unsigned long long)clock.debt_ticks(),load_ms,initial_upload));
-            lines.push_back(format("DRAWS %zu track + %zu car | TRIANGLES %llu | far %.2f | visible %zu | unplaced %llu",
-                frame.track_draws,frame.car_draws,(unsigned long long)frame.triangles,frame.far_plane,frame.visible,(unsigned long long)frame.unplaced));
+            lines.push_back(format("DRAWS %zu track + %zu car + %zu glow | TRIANGLES %llu | far %.2f | visible %zu | unplaced %llu",
+                frame.track_draws,frame.car_draws,frame.glow_draws,(unsigned long long)frame.triangles,frame.far_plane,frame.visible,(unsigned long long)frame.unplaced));
             lines.push_back(format("RESIDENCY %zu sections | CPU stream %llu / 50331648 | persistent payload %llu / 67108864",
                 race.resident_count(),(unsigned long long)scene.track().streaming_bytes,(unsigned long long)persistent));
             lines.push_back(format("Command cache metadata EST %llu / 8388608 bytes (immutable track templates)",
@@ -667,8 +667,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                 frame_ms,frame_ms>RaceFrameStats::kOverThresholdMs?"OVER":"WITHIN",simulation,residency,record,upload,present_cpu,
                 present.acquire_ms,present.fence_wait_ms,measured.command_ms,present.submit_ms,
                 ticks,(unsigned long long)clock.debt_ticks());
-            std::printf("PERF %.1f KM/H gear %d pad %s | DRAWS %zu track + %zu car | TRIANGLES %llu | far %.2f | visible %zu | unplaced %llu | RESIDENCY %zu | GPU %llu / 268435456 | resources %zu\n",
-                speed,int(car.gear),connected?"CONNECTED":"DISCONNECTED - NEUTRAL",frame.track_draws,frame.car_draws,
+            std::printf("PERF %.1f KM/H gear %d pad %s | DRAWS %zu track + %zu car + %zu glow | TRIANGLES %llu | far %.2f | visible %zu | unplaced %llu | RESIDENCY %zu | GPU %llu / 268435456 | resources %zu\n",
+                speed,int(car.gear),connected?"CONNECTED":"DISCONNECTED - NEUTRAL",frame.track_draws,frame.car_draws,frame.glow_draws,
                 (unsigned long long)frame.triangles,frame.far_plane,frame.visible,
                 (unsigned long long)frame.unplaced,race.resident_count(),
                 (unsigned long long)renderer.gpu_bytes(),frame.commands.resource_table().resources.size());
@@ -772,6 +772,7 @@ int main(int argc, char** argv) {
             bool replay = false, panel = false, profile_frame = false;
             bool particles_enabled = true, selected = false, root_seen = false;
             std::string sky = "on";
+            bool glows = false;
             for (int i = 1; i < argc; ++i) {
                 const std::string arg = argv[i];
                 if (arg == "--replay") { replay = true; selected = true; }
@@ -784,8 +785,9 @@ int main(int argc, char** argv) {
                 else if (arg == "--sky" && i+1 < argc &&
                          (std::strcmp(argv[i+1],"on") == 0 || std::strcmp(argv[i+1],"off") == 0 ||
                           std::strcmp(argv[i+1],"early") == 0)) sky = argv[++i];
+                else if (arg == "--glows") glows = true;
                 else if (!root_seen && arg.rfind("--",0) != 0) { root = arg; root_seen = true; }
-                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--sky on|off|early] [--particles=on|--particles=off] [--tuned]");
+                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--sky on|off|early] [--particles=on|--particles=off] [--tuned] [--glows]");
             }
             require(!(panel && profile_frame),"--profile-frame requires direct presentation");
             while (!selected && appletMainLoop()) {
@@ -805,7 +807,7 @@ int main(int argc, char** argv) {
                     "During the race: Y pauses, + opens results with driving-frame statistics.",
                     "No game data is bundled or written. Replay input is bundled in RomFS."});
             }
-            if (selected) run(root,replay,panel,profile_frame,particles_enabled,sky,tuned,screen,pad);
+            if (selected) run(root,replay,panel,profile_frame,particles_enabled,sky,tuned,glows,screen,pad);
         } catch (const Cancel&) {
         } catch (const std::exception& e) {
             std::printf("ERROR: %s\n",e.what()); std::fflush(stdout);
