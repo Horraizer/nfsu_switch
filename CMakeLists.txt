@@ -1826,6 +1826,13 @@ if(NFSU_BUILD_TESTS)
         # The bounded index of the race music: docs/RACE_AUDIO.md.
         add_test(NAME nfsu_race_audio_retail
             COMMAND nfsu_race_audio_tests "${NFSU_RETAIL_ROOT}")
+        # The event 1 sky: its inventory, the overview and street frame pins
+        # and the complete CPU/GPU draw trace (issue #184): docs/SKY_FOG.md.
+        add_test(NAME nfsu_sky_fog_retail
+            COMMAND ${CMAKE_COMMAND} -DSKY_FOG=$<TARGET_FILE:nfsu_sky_fog_retail>
+                    "-DROOT=${NFSU_RETAIL_ROOT}"
+                    -DOUT_PARENT=${nfsu_retail_work}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/retail_sky_fog.cmake)
         # The three tuned 240SX frame pins through nfsu_viewer and the
         # Switch CPU path (issue #229): docs/INSTALLED_PARTS.md.
         add_test(NAME nfsu_tuned_frame_retail
@@ -1858,7 +1865,7 @@ if(NFSU_BUILD_TESTS)
             nfsu_stock_frame_painted_retail nfsu_race_loader_peak_retail
             nfsu_track_loader_peak_retail nfsu_track_slice_retail
             nfsu_racing_line_retail nfsu_race_audio_retail nfsu_audio_retail
-            nfsu_tuned_frame_retail nfsu_probe_asset_check_retail_first-lap
+            nfsu_sky_fog_retail nfsu_tuned_frame_retail nfsu_probe_asset_check_retail_first-lap
             nfsu_probe_asset_check_retail_stock-car
             nfsu_probe_asset_check_retail_event-1
             PROPERTIES LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only

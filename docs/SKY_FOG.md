@@ -163,18 +163,38 @@ python tools/frame_budget_evidence.py "$RETAIL" out/sky-cost run -- build/nfsu_s
 cmp out/sky-cost/before.json out/sky-cost/after.json
 ```
 
-History: at 52fe3ca, desktop Debug build, the command above over the whole
-replay (805 frames, 1280x720): per frame 1397184 sky fragments rasterized;
+History: at 52fe3ca, desktop Debug build, and again at 3f53122, desktop
+Release build (the run handoff 5575 quotes), the command above over the
+whole replay printed identical output (805 frames, 1280x720): per frame 1397184 sky fragments rasterized;
 798148 pass depth in `list` order, 823083 in `early`, 185724 in `on`;
 162794 are uncovered by any depth-writing draw. The uncovered sky has a
 mean log2 texel footprint of -2.06 (magnified); 3.7 percent of it is
-minified.
+minified. Correction: this line first named only the Debug build.
 
-The cause is order, not texture sampling or upload. In list order the sky
-is submitted before most opaque scenery, so most sky fragments are shaded,
-blended and then overdrawn. The texture is magnified almost everywhere, so
-mip levels would not change the cost; no per-frame upload or re-record is
-involved (the sky lives in the static track package with its placement).
+The fragment accounting predicted that submission order drives the cost:
+in list order the sky is submitted before most opaque scenery, so most sky
+fragments are shaded and blended and then overdrawn. It counts fragments,
+not time, so it could not say how many milliseconds either order costs.
+The console measured that, one build and three runs:
+
+History: at 3f53122, owner's Switch, handheld, replay, GPU SCENE page,
+coordinator comment 5627
+(https://git.accad.pro/murzintsevav/nfsu-switch/pulls/227#issuecomment-5627):
+mean / p95 / max GPU scene ms, `--sky off` 20.59 / 25.50 / 26.21,
+`--sky on` 22.01 / 26.00 / 27.48, `--sky early` 25.64 / 33.00 / 35.79.
+
+So on hardware the order is the larger part: the sky before the world
+(`early`) costs 5.05 ms of mean GPU scene over no sky, and 3.63 ms of that
+is the order alone (`early` minus `on`). The sky itself, drawn after the
+opaque world with early depth tests, still costs about 1.4 ms of mean GPU
+scene (`on` minus `off`), not a fraction of a millisecond; that is the
+current price of the effect, and the owner keeps the sky on by default.
+Texture sampling is not a measured factor: the texture is magnified almost
+everywhere, so mip levels would not change the footprint, and no per-frame
+upload or re-record is involved (the sky lives in the static track package
+with its placement). The `early` run keeps PR #221's opaque-first world and
+opaque shader, so it approximates the 2c1b9a7 renderer rather than
+reproducing it.
 
 Implemented for the Switch race renderer:
 
@@ -192,7 +212,8 @@ The look is unchanged: both sky textures, both layers and the modulation
 stay as above, and the CPU reference and its pinned frames do not change.
 The GPU order differs from the CPU reference only where an alpha-tested or
 opaque draw follows the first blended draw; opaque-first ordering already
-made that difference in PR #221. The console A/B is the acceptance evidence.
+made that difference in PR #221. The console A/B above is the acceptance
+evidence.
 
 ## Reproduction and frame pins
 
@@ -210,7 +231,10 @@ python tools/frame_budget_evidence.py "$RETAIL" out/sky-replay run -- python too
 cmp out/sky-replay/before.json out/sky-replay/after.json
 ```
 
-Windows executables have the `.exe` suffix. `tests/sky_fog_retail.cpp` owns
+Windows executables have the `.exe` suffix. Configured with
+`NFSU_RETAIL_ROOT`, CTest runs the sky frame check as `nfsu_sky_fog_retail`
+(label `retail`) through `tests/retail_sky_fog.cmake`, and the replay check
+as `nfsu_race_replay_check`. `tests/sky_fog_retail.cpp` owns
 the overview and street camera definitions, inventory and TGA hashes. Both
 are new pins: the world-placed sky replaces the clear background. It renders
 each camera with sky off as well, requires a visible contribution, unchanged
