@@ -22,11 +22,11 @@ at other yaws.
 
 The Switch CPU and deko3d stock viewers now start at retail material state.
 The desktop viewer's stock default was already retail; explicit off-state
-options remain diagnostic. `nfsu_race_run_retail` checks the actual cached and reference
-race car commands: 74 car draws, 12 tire draws with alpha test and two badge
-draws with source-over blend. The complete frame contains 16 alpha-tested
-and 19 blended car draws. CPU command parity proves material selection, while
-the Switch capture must confirm the hardware result.
+options remain diagnostic. The cached and reference race paths use retail
+material states; `nfsu_race_run_retail` checks both paths, and
+`nfsu_draw_commands_retail` checks the complete frame. CPU command parity
+proves material selection, while the Switch capture must confirm the hardware
+result.
 
 ## Separate skin-strip traces
 
@@ -66,9 +66,10 @@ with the state and `states.txt` pins in the race tests. The desktop race
 frame pins are checked by `nfsu_race_replay_check`. The new material state
 changes frame pixels while preserving simulation and replay inputs.
 
-The prior painted stock reference reported four alpha-tested and 16 blended
-groups and 25952 blended fragments. Its previous 20.65 ms handheld mean
-exceeded the 16.67 ms frame budget. The additional sampler descriptor and
+`nfsu_draw_commands_retail` reports the painted stock reference's material
+groups and blended fragment count. At 6ec2dbd, the main-branch handheld
+measurement reported 20.59 ms with the sky off and 22.01 ms with the sky on;
+both exceed the 16.67 ms frame budget. The additional sampler descriptor and
 retail blending cannot establish a 60 fps result from desktop timing. The
 console follow-up needs paired old/new handheld and docked frame and GPU
 times, draw count, blended fragment or overdraw estimate, memory, and

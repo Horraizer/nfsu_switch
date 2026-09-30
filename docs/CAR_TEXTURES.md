@@ -109,10 +109,8 @@ same RGBA stock preparation as the CPU reference, so both added top levels occup
 before deko3d alignment, derived from their dimensions and decoded format.
 This is larger than the compressed file spans. Existing shaders do the same
 per-fragment work.
-At `bd8aff1`, the review's painted default-camera retail-mode viewer run
-reported 4 alpha-tested and 16 blended groups, with 25952 blended fragments;
-the pre-fix car at `97e3839` had 9 blended groups
-([PR #225, review comment 5290](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/225#issuecomment-5290)).
+`nfsu_draw_commands_retail` reports the painted default-camera material
+groups and blended fragment count.
 Resolving window textures therefore adds blending work even though blank
 decal suppression removes draws. The net GPU-time change is unknown; more
 blend fragments can increase color-buffer traffic and overdraw. A 60 fps

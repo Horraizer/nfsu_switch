@@ -1,0 +1,16 @@
+if(NOT DEFINED SOURCE OR NOT EXISTS "${SOURCE}")
+    message(FATAL_ERROR "switch compare reference options: source is missing")
+endif()
+
+file(READ "${SOURCE}" source_text)
+if(NOT source_text MATCHES "stock_view_default_options\\(\\)")
+    message(FATAL_ERROR "switch compare reference options: CPU reference must use stock_view_default_options()")
+endif()
+if(NOT source_text MATCHES "render_stock_frame\\(stock, options, error\\)")
+    message(FATAL_ERROR "switch compare reference options: shared options must render the CPU reference")
+endif()
+if(NOT source_text MATCHES "record_car_commands\\(stock.scene, options,")
+    message(FATAL_ERROR "switch compare reference options: shared options must record the GPU commands")
+endif()
+
+message(STATUS "switch compare reference options: CPU and GPU use the stock viewer defaults")

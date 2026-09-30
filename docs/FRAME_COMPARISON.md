@@ -5,15 +5,18 @@ one process: `render_stock_frame` supplies the CPU reference, and #146's
 recorded commands supply the deko3d frame. It reads the same six files under
 `sdmc:/nfsu` as [SWITCH_BUILD.md](SWITCH_BUILD.md). It writes no files and
 packages no game asset. The painted stock frame is the default; `--unpainted`
-selects the unpainted #141 frame. One positional argument can replace the
-input root. Unknown options, including retail material mode, are refused:
-the comparison uses the pinned default camera and material-state=off.
+selects the unpainted #141 frame, and `--tuned` selects the tuned preset. One
+positional argument can replace the input root. The CPU reference uses
+`stock_view_default_options()`, the same camera and retail material state as
+the stock viewers. The retail stock-frame tests pin that shared default, so a
+change that moves its rendered output fails the C++ gate.
 
 Build using [SWITCH_BUILD.md](SWITCH_BUILD.md), then deploy:
 
 ```text
 nxlink -a <ip> build-switch/switch/nfsu_switch_compare.nro
 nxlink -a <ip> build-switch/switch/nfsu_switch_compare.nro --unpainted
+nxlink -a <ip> build-switch/switch/nfsu_switch_compare.nro --tuned
 ```
 
 Replace `<ip>` with the console IP. Do not use `-s`: its return channel does
@@ -48,7 +51,12 @@ PASS also requires the CPU TGA to match its selected desktop pin:
 
 The current painted and unpainted frame sizes and SHA-256 pins live in
 `include/nfsu/stock_frame.h`; `nfsu_draw_commands_retail <retail-root>`
-checks both off-state frames and compares both material-mode draw traces.
+checks the stock and painted frames and compares both material-mode draw
+traces. `nfsu_stock_frame_retail` and
+`nfsu_stock_frame_painted_retail` exercise the shared viewer default. The
+Switch CTest `nfsu_switch_compare_reference_options` checks that both the CPU
+reference and GPU command recording use the shared options, so changing the
+compare path to a separate default fails the Switch gate.
 
 A CPU pin mismatch displays overall FAIL even if the numerical GPU/CPU
 comparison passes. No threshold is adjusted to fit a result. Percentages
