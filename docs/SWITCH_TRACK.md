@@ -163,10 +163,12 @@ forms are intercepted; live requested bytes are updated on every new/delete.
 The peak includes vector capacity, strings, metadata and transient C++
 allocations between checkpoints. Phase logging does not determine the peak.
 MinGW links the harness with static libstdc++/libgcc so DLL-internal C++
-allocations cannot bypass the executable's replacement operators.
-`--baseline` reports an over-budget result without asserting the limit; the
-normal retail invocation fails above 50331648. It is not used by CTest,
-which must not require proprietary assets.
+allocations cannot bypass the executable's replacement operators. `--baseline`
+reports an over-budget result without asserting the limit; the normal retail
+invocation fails above 50331648. CTest runs it as
+`nfsu_track_loader_peak_retail` (label `retail`) when the build is configured
+with `-DNFSU_RETAIL_ROOT=<installation>`; the `--baseline` measurement is not
+registered.
 
 At `1844834`, desktop GCC 13.2 default and Release, same retail root and
 allocation counter:
@@ -217,14 +219,16 @@ nfsu_track_slice_tests X:/Games/NFSU --full
 
 The retail sampled run checks nonempty frames, bounded draws, collision hits
 and clear columns. Clear is a valid query answer along this hand-given path.
-The default CTest invocation uses synthetic
-camera/mapping/refusal checks, allocator high-water accounting, and a
-missing/partial installation rejected before parsing; it requires no game
-files. The stream tests also check polling throughout parsing/merging and
-cancellation propagation. The `--full` run covers every path sample and
-checks that queries are neither outside nor refused and no frame is empty.
-Draw-update guards
-also test a changed index pointer that must be refused before dereference.
+Configured with `-DNFSU_RETAIL_ROOT=<installation>`, CTest runs the first as
+`nfsu_track_slice_retail` (label `retail`) and, in a Release configure, the
+second as `nfsu_track_slice_retail_full` (labels `retail` and `retail-full`).
+The default CTest invocation uses synthetic camera/mapping/refusal checks,
+allocator high-water accounting, and a missing/partial installation rejected
+before parsing; it requires no game files. The stream tests also check polling
+throughout parsing/merging and cancellation propagation. The `--full` run
+covers every path sample and checks that queries are neither outside nor
+refused and no frame is empty. Draw-update guards also test a changed index
+pointer that must be refused before dereference.
 
 The owner ran head `1429830` on the Switch on 2026-09-26; the coordinator's
 [photo transcription (comment 4378)](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/198#issuecomment-4378)

@@ -92,8 +92,10 @@ $tunedArgs = @(
 & ./build/nfsu_viewer.exe @($tunedArgs[0], $tunedArgs[1], 'build/tuned-230.tga') @($tunedArgs[3..($tunedArgs.Count - 1)]) --yaw 230
 ```
 
-`nfsu_tuned_frame_retail` runs `tests/tuned_frame_retail.cmake` when
-`NFSU_RETAIL_ROOT` is set and pins all three TGA hashes. It also bounds
+`nfsu_tuned_frame_retail` (label `retail`) runs
+`tests/tuned_frame_retail.cmake` when the build is configured with
+`-DNFSU_RETAIL_ROOT=<installation>`, which passes the root to it as `-DROOT`
+(issue #233), and pins all three TGA hashes. It also bounds
 fallback triangles at the stock painted frame's count. The default
 camera's pin is also in `include/nfsu/stock_frame.h` for the Switch viewer.
 The three tuned pins include the BBS tyre texture from
