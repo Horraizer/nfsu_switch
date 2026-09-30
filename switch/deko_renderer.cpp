@@ -78,7 +78,9 @@ struct DekoRenderer::Impl {
     bool opaque_first = false;
     bool sky_with_opaque = false;
     std::array<dk::Image, 2> colors;
+    std::array<dk::Image, 2> scene_colors;
     std::array<dk::Image, 2> depths;
+    DekoSceneTarget scene_target;
     dk::Shader vertex, textured, textured_opaque, fallback;
     dk::Shader car_vertex, car_fragment, sky_vertex, sky_fragment;
     const RecordedCommands* commands = nullptr;
@@ -102,6 +104,7 @@ struct DekoRenderer::Impl {
     std::uint32_t uniform_stride = 0;
     std::uint32_t sampler_offset = 0;
     char diagnostic[768]{};
+    bool shut_down = false;
 
     static void debug(void* owner, const char* context, DkResult result, const char* message) {
         if (result == DkResult_Success) return;
@@ -213,8 +216,12 @@ struct DekoRenderer::Impl {
     }
 
     bool open(const RecordedCommands& source, std::string& error, bool presentation,
-              std::size_t capacity, bool profile_frame, bool reorder_opaque, bool early_sky) {
+              std::size_t capacity, bool profile_frame, bool reorder_opaque, bool early_sky,
+              std::uint32_t scene_height) {
         if (commands) { error = "deko3d renderer open is one-shot"; return false; }
+        if (!plan_deko_scene_target(source.width, source.height, presentation, scene_height, scene_target)) {
+            error = "invalid scene resolution: scaling requires 1280x720 direct presentation"; return false;
+        }
         DrawExecutionPlan plan;
         if (!plan_draw_execution(source, plan, error)) return false;
         draw_capacity = capacity ? capacity : source.draw_count();
@@ -416,16 +423,27 @@ struct DekoRenderer::Impl {
             !shader("textured_opaque.frag", DkStage_Fragment, textured_opaque, error) ||
             !shader("fallback.frag", DkStage_Fragment, fallback, error)) return false;
         if (package && !prepare_static_commands(source, presentation, error)) return false;
-        dk::ImageLayout color_layout, depth_layout;
-        dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender | (presentation ? DkImageFlags_UsagePresent : 0))
+        dk::ImageLayout color_layout, depth_layout, scene_layout;
+        const auto transfer_flags = scene_target.upscale ? DkImageFlags_Usage2DEngine : 0;
+        dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender | transfer_flags |
+                                            (presentation ? DkImageFlags_UsagePresent : 0))
             .setFormat(DkImageFormat_RGBA8_Unorm).setDimensions(source.width, source.height).initialize(color_layout);
         dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender)
-            .setFormat(DkImageFormat_ZF32).setDimensions(source.width, source.height).initialize(depth_layout);
+            .setFormat(DkImageFormat_ZF32).setDimensions(scene_target.width, scene_target.height).initialize(depth_layout);
+        if (scene_target.upscale)
+            dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender | DkImageFlags_Usage2DEngine)
+                .setFormat(DkImageFormat_RGBA8_Unorm).setDimensions(scene_target.width, scene_target.height)
+                .initialize(scene_layout);
         for (std::size_t i = 0; i < (presentation ? 2U : 1U); ++i) {
             auto& color = colors[i];
             dk::MemBlock memory;
             if (!block(color_layout.getSize(), kImageFlags, "present image", memory, error)) return false;
             color.initialize(color_layout, memory, 0);
+            if (scene_target.upscale) {
+                dk::MemBlock scene_memory;
+                if (!block(scene_layout.getSize(), kImageFlags, "scene image", scene_memory, error)) return false;
+                scene_colors[i].initialize(scene_layout, scene_memory, 0);
+            }
         }
         for (std::size_t i = 0; i < (presentation ? 2U : 1U); ++i) {
             dk::MemBlock depth_memory;
@@ -722,10 +740,10 @@ struct DekoRenderer::Impl {
         }
         if (reflection_ready) cmd.bindTextures(DkStage_Fragment, 1,
             dkMakeTextureHandle(static_cast<std::uint32_t>(handles.size()), 2));
-        dk::ImageView color_view{target}, depth_view{depths[slot]};
+        dk::ImageView color_view{scene_target.upscale ? scene_colors[slot] : target}, depth_view{depths[slot]};
         cmd.bindRenderTargets(&color_view, &depth_view);
-        cmd.setViewports(0, {{0, 0, static_cast<float>(commands->width), static_cast<float>(commands->height), 0, 1}});
-        cmd.setScissors(0, {{0, 0, commands->width, commands->height}});
+        cmd.setViewports(0, {{0, 0, static_cast<float>(scene_target.width), static_cast<float>(scene_target.height), 0, 1}});
+        cmd.setScissors(0, {{0, 0, scene_target.width, scene_target.height}});
         const auto* clear = commands->clear_color;
         cmd.clearColor(0, DkColorMask_RGBA, clear[0]/255.0F, clear[1]/255.0F, clear[2]/255.0F, clear[3]/255.0F);
         cmd.clearDepthStencil(true, 1, 0, 0);
@@ -743,6 +761,17 @@ struct DekoRenderer::Impl {
             previous_dynamic = &view.definition;
         }
         cmd.barrier(DkBarrier_Fragments, 0);
+        if (scene_target.upscale) {
+            // Complete rendering before the 2D engine reads this slot. The
+            // second full barrier includes its work in the timestamp span
+            // and makes the native-size image ready for presentation/HUD.
+            cmd.barrier(DkBarrier_Full, DkInvalidateFlags_L2Cache);
+            dk::ImageView present_view{target};
+            cmd.blitImage(color_view, {0, 0, 0, scene_target.width, scene_target.height, 1},
+                          present_view, {0, 0, 0, commands->width, commands->height, 1},
+                          DkBlitFlag_FilterLinear);
+            cmd.barrier(DkBarrier_Full, DkInvalidateFlags_L2Cache);
+        }
         if (profile_enabled)
             cmd.reportCounter(DkCounter_Timestamp, query_memory.getGpuAddr()+slot*32+16);
         return true;
@@ -840,6 +869,8 @@ struct DekoRenderer::Impl {
     }
 
     bool shutdown(std::string& error) {
+        if (shut_down) return true;
+        shut_down = true;
         if (queue) queue.waitIdle();
         if (profile_enabled) for (std::size_t slot = 0; slot < query_pending.size(); ++slot) {
             if (!query_pending[slot]) continue;
@@ -879,11 +910,19 @@ DekoRenderer::~DekoRenderer() {
 }
 bool DekoRenderer::open(const RecordedCommands& commands, std::string& error, bool presentation,
                         std::size_t draw_capacity, bool profile_frame, bool opaque_first,
-                        bool sky_with_opaque) {
+                        bool sky_with_opaque, std::uint32_t scene_height) {
     error.clear();
     try { return impl_->open(commands, error, presentation, draw_capacity, profile_frame,
-                             opaque_first, sky_with_opaque); }
+                             opaque_first, sky_with_opaque, scene_height); }
     catch (const std::bad_alloc&) { error = "not enough memory for deko3d renderer"; return false; }
+}
+bool DekoRenderer::reconfigure_target(const RecordedCommands& commands, std::string& error,
+                                      std::size_t draw_capacity, bool profile_frame,
+                                      bool sky_with_opaque, std::uint32_t scene_height) {
+    if (!close(error)) return false;
+    impl_ = std::make_unique<Impl>();
+    return open(commands,error,true,draw_capacity,profile_frame,true,
+                sky_with_opaque,scene_height);
 }
 bool DekoRenderer::update(const RecordedCommands& commands, std::string& error,
                           DekoUpdateTiming* timing) {

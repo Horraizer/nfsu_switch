@@ -1579,6 +1579,18 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_deko_draw_order_tests)
     add_test(NAME nfsu_deko_draw_order_tests COMMAND nfsu_deko_draw_order_tests)
 
+    add_executable(nfsu_deko_scene_target_tests tests/deko_scene_target_tests.cpp)
+    target_include_directories(nfsu_deko_scene_target_tests PRIVATE include)
+    nfsu_enable_warnings(nfsu_deko_scene_target_tests)
+    add_test(NAME nfsu_deko_scene_target_tests COMMAND nfsu_deko_scene_target_tests)
+
+    add_executable(nfsu_profile_pages_tests tests/profile_pages_tests.cpp)
+    target_include_directories(nfsu_profile_pages_tests PRIVATE include ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    add_dependencies(nfsu_profile_pages_tests nfsu_shader_manifest)
+    target_link_libraries(nfsu_profile_pages_tests PRIVATE nfsu_screen_text)
+    nfsu_enable_warnings(nfsu_profile_pages_tests)
+    add_test(NAME nfsu_profile_pages_tests COMMAND nfsu_profile_pages_tests)
+
     add_executable(nfsu_audio_tests tests/audio_tests.cpp)
     target_link_libraries(nfsu_audio_tests PRIVATE nfsu_audio)
     nfsu_enable_warnings(nfsu_audio_tests)

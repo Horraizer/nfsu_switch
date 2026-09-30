@@ -2,6 +2,7 @@
 #include "nfsu/posix_file_system.h"
 #include "nfsu/platform_desktop.h"
 #include "nfsu/draw_execution.h"
+#include "nfsu/deko_draw_order.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -187,17 +188,40 @@ void sample(RaceGpuScene& scene, RaceRun& race) {
     std::set<std::size_t> textures, meshes, sections, instances;
     std::set<decltype(state_key(RecordedDraw{}))> states;
     std::uint64_t track_triangles = 0, texture_runs = 0, state_runs = 0, vb_runs = 0, ib_runs = 0;
+    std::uint64_t opaque_draws = 0, cutout_draws = 0, blend_draws = 0, sky_draws = 0;
+    std::uint64_t opaque_triangles = 0, cutout_triangles = 0, blend_triangles = 0, sky_triangles = 0;
     std::size_t textured = 0;
     for (std::size_t i = 0; i < frame.track_draws; ++i) {
         const auto view = frame.commands.draw_view(i);
         const auto& d = view.definition;
-        textures.insert(d.texture_resource); meshes.insert(d.mesh); instances.insert(view.instance);
-        sections.insert(source.instances.at(view.instance).section_index); states.insert(state_key(d));
+        textures.insert(d.texture_resource); states.insert(state_key(d));
+        const bool sky = std::strcmp(d.program->name, "sky_textured") == 0;
+        if (!sky) {
+            meshes.insert(d.mesh); instances.insert(view.instance);
+            sections.insert(source.instances.at(view.instance).section_index);
+        }
+        if (sky) { ++sky_draws; sky_triangles += d.index_count/3; }
+        else if (d.pipeline.blend) { ++blend_draws; blend_triangles += d.index_count/3; }
+        else if (deko_draw_in_opaque_pass(false, false,
+                     d.pipeline.alpha_test != shader_manifest::CompareOp::always,
+                     d.pipeline.depth_write, false)) {
+            ++opaque_draws; opaque_triangles += d.index_count/3;
+        } else { ++cutout_draws; cutout_triangles += d.index_count/3; }
         track_triangles += d.index_count/3; textured += d.texture_resource != kNoHandle;
         if (!i || d.texture_resource != frame.commands.draw_view(i-1).definition.texture_resource) ++texture_runs;
         if (!i || state_key(d) != state_key(frame.commands.draw_view(i-1).definition)) ++state_runs;
         if (!i || d.vertex_resource != frame.commands.draw_view(i-1).definition.vertex_resource) ++vb_runs;
         if (!i || d.index_resource != frame.commands.draw_view(i-1).definition.index_resource) ++ib_runs;
+    }
+    // Resident top-level payloads, not per-frame texture traffic. Count the
+    // actual upload formats rather than assuming every texture is RGBA8.
+    std::uint64_t format_count[3]{}, format_bytes[3]{}, rgba_equivalent = 0;
+    for (const auto& r : frame.commands.resource_table().resources) {
+        if (r.kind != UploadResourceKind::texture) continue;
+        const unsigned f = r.texture.format == TextureUploadFormat::dxt1 ? 1 :
+                           r.texture.format == TextureUploadFormat::dxt3 ? 2 : 0;
+        ++format_count[f]; format_bytes[f] += r.bytes;
+        rgba_equivalent += std::uint64_t{r.texture.width} * r.texture.height * 4;
     }
     std::cout << "POSE tick=" << race.session().timing().step << " track=" << frame.track_draws
         << " car=" << frame.car_draws << " track_triangles=" << track_triangles << " all_triangles=" << frame.triangles
@@ -207,6 +231,14 @@ void sample(RaceGpuScene& scene, RaceRun& race) {
         << " sections=" << sections.size() << " instances=" << instances.size() << " textured=" << textured
         << " texture_runs=" << texture_runs << " state_runs=" << state_runs << " vb_runs=" << vb_runs
         << " ib_runs=" << ib_runs << " index_visits_per_validation=" << frame.triangles*3 << '\n';
+    std::cout << "GPU_WORK opaque=" << opaque_draws << '/' << opaque_triangles
+        << " cutout_or_nonwriting=" << cutout_draws << '/' << cutout_triangles
+        << " blended=" << blend_draws << '/' << blend_triangles
+        << " sky=" << sky_draws << '/' << sky_triangles << " (draws/triangles)\n";
+    std::cout << "TEXTURE_PAYLOAD rgba8=" << format_count[0] << '/' << format_bytes[0]
+        << " bc1=" << format_count[1] << '/' << format_bytes[1]
+        << " bc2=" << format_count[2] << '/' << format_bytes[2]
+        << " rgba_equivalent=" << rgba_equivalent << " (resources/bytes; not bandwidth)\n";
     std::uint64_t reflected_triangles = 0, reflected_lamps = 0;
     for (std::size_t i = 0; i < frame.commands.reflection_draw_count(); ++i) {
         const auto& d = frame.commands.reflection_draw(i);
