@@ -18,6 +18,7 @@ struct WetRoadLamps {
 };
 bool load_wet_road_lamps(const std::filesystem::path& root, const TrackContactWorld& world,
                          WetRoadLamps& lamps, std::string& error);
+bool wet_road_lamp_ground_height(WetRoadLamp& lamp, float ground_height);
 bool wet_road_lamp_placement(const WetRoadLamp& lamp, const CameraFrame& camera, TrackTransform& out);
 bool append_wet_lamp_uploads(const WetRoadLamps& lamps, UploadTable& uploads, std::string& error);
 bool render_wet_road_lamps(const WetRoadLamps& lamps, const RenderOptions& options,

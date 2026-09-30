@@ -12,6 +12,13 @@ std::uint32_t word(const unsigned char* p) {
 }
 float scalar(const unsigned char* p) { auto bits = word(p); float f; std::memcpy(&f, &bits, 4); return f; }
 }
+bool wet_road_lamp_ground_height(WetRoadLamp& lamp, float ground_height) {
+    // 0x544899..0x5448BC: a hit within 0.05 of the light is marked with
+    // the 9999 sentinel, which mode 2 rejects at 0x544952.
+    if (std::abs(double(ground_height) - lamp.position[2]) < double(0.05F)) return false;
+    lamp.reflected_height = 2*ground_height-lamp.position[2];
+    return true;
+}
 bool load_wet_road_lamps(const std::filesystem::path& root, const TrackContactWorld& world,
                          WetRoadLamps& lamps, std::string& error) {
     lamps = {};
@@ -48,7 +55,7 @@ bool load_wet_road_lamps(const std::filesystem::path& root, const TrackContactWo
                         const auto status = query_track_contact_point(world, lamp.position, 0, 200, contact);
                         // The retail producer also omits a light when the ground query fails.
                         if (status != TrackContactStatus::hit) continue;
-                        lamp.reflected_height = 2*contact.point[2]-lamp.position[2];
+                        if (!wet_road_lamp_ground_height(lamp, contact.point[2])) continue;
                         lamps.lights.push_back(lamp);
                     }
                 }

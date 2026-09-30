@@ -48,10 +48,15 @@ Recovered by static disassembly:
   loader at `0x540F6A..0x54101D` accepts root `0x80135100`, aligned version-3
   header `0x135101` (count at +0x30), and 80-byte records in `0x135102`.
   These records are in decompressed `Tracks/TRACKB1003.lzc`, not the solid
-  STREAM data. Enabled type 9 records are the authored street-light flares.
+  STREAM data. Enabled type 9 records are one authored street-light class;
+  they are not the globe lamps visible at race tick 11344 (see below).
 - `0x544857..0x5448BC` queries ground with `0x440A40` and caches
   `2 * ground height - lamp height`. Mode 2 substitutes that reflected
   height at `0x544923..0x54495F`, before its separate sprite visibility test.
+  Ground hits strictly less than 0.05 from the light height become sentinel 9999 at
+  `0x544899..0x5448AB` and mode 2 rejects that sentinel at `0x544952`.
+  The port drops those records. Mode 2 also skips the other modes' 1.5
+  size multiplier at `0x5444A9`; the port does not apply that multiplier.
   `0x5443F0` builds the flare quad; `0x544566..0x5445B3` scales the vertical
   components of the billboard basis by 10 (constant `0x6F3DF4`) in mode 2.
   It submits through `0x40C300` at `0x544776`.
@@ -106,6 +111,8 @@ after solids, with additive blend, depth testing and no depth writes. Their
 reflected height comes from the collision ground query and their vertical
 billboard stretch follows the traced mode-2 path. Shared quad/texture data
 is uploaded once, and camera-facing placements are refreshed each frame.
+The loader explicitly targets TRACKB1003.lzc, matching the event-1-only
+race; selecting lamp data for other tracks is not implemented.
 The sprite size uses the recovered 30/100 endpoints with a port scale of
 0.02 and fixed alpha 150/255. The complete retail size/FOV/alpha curve is
 not recovered. Other flare categories, dynamic cars, bloom, and auxiliary
@@ -130,12 +137,51 @@ has been measured for this revision. Main scene diffuse lighting retains
 the port's existing rule; retail's 2x diffuse term is not introduced here.
 
 The source target is a render pass, not a procedural light pattern. Removing
-or recoloring a selected source changes its reflection. The race review
-now includes off/on frames at ticks 11344 and 11360,
-with warm elongated lamp pools that reproject as the camera moves. The
-supplied reference images were inspected in place without copying them.
-The result remains softer than retail's 320x240 source and does not yet
-match the original game's complete lighting appearance.
+or recoloring a selected source changes its reflection. The earlier claim
+that the warm elongated pools at ticks 11344 and 11360 came from lamps was
+wrong: review 5796 isolated them as reflected facades. The lamp-streak
+acceptance criterion remains unmet. No brightness gain or arbitrary mesh
+stretch has been added to disguise that missing result.
+
+## Globe-lamp investigation (review 5796)
+
+At `543122c`, an instrumented throwaway Release build recorded the draws
+changing 5x5 regions around the three lamp heads at tick 11344, 640x360.
+The glow is ordinary solid geometry: `XO_STREETLIGHTG_1B_00`, mesh hash
+`8C325EAC`, material texture `3394FE62`. The prepared draw is 2375, with
+90 indices starting at 564. Instances 1307, 566 and 564 produce the left,
+middle and right heads respectively. Their flags are 0x60, so all pass
+the reflection selector. The pole material is draw 2374, texture `4D49FB44`.
+These are not the type-9 TRACKB records or an unidentified auxiliary list.
+
+Their reflection slot selects `XO_STREETLIGHTG_1Z_00`, hash `8C3F87C4`.
+Its flare material is draw 2377, 60 indices starting at 276, with the
+same texture. Instrumentation confirms all three instances submit this
+draw to the existing reflection pass. The source solid containers are
+at STREAML1RA.BUN offsets `0x1A4BF44` and `0x1A4EB0C`; their children
+contain metadata, texture hashes and geometry, with no embedded effect
+record chunk. The reflection flare vertices form crossed, authored quads.
+
+The relevant executable path is scenery selection at `0x445EC0`, slot 4
+at `0x445F76..0x445F91`, and the mirrored placement at
+`0x4460B9..0x446130`. `0x446730` consumes that queue and submits its
+selected solid through `0x40C910` at `0x44685E`. The material loop at
+`0x40C9D0..0x40CA79` obtains the texture via material +0x1C and the
+solid's texture table +0x2C, then enqueues it through `0x40F1E0` at
+`0x40CA54`. Reflection scenery is drained at `0x409623`, before the
+separate mode-2 effects call at `0x409644`. The recovered mode-2 stretch
+at `0x5445AB/0x5445B3` therefore does not establish a stretch rule for
+these authored solid quads.
+
+At the same head, subtracting a render with reflection materials using
+`3394FE62` removed from the normal wet render isolates small spots, not
+long streaks. Rendering only those materials into the source target also
+produces spots. The two forms distinguish a missing producer from masking
+and occlusion: the solid glow producer already exists. This investigation
+does not establish another retail producer or a faithful inexpensive way
+to turn these spots into the requested streaks. Retail appearance and
+console performance remain blockers; the type-9 contribution must not be
+presented as having resolved either one.
 
 ## Cost and reproduction
 
@@ -189,8 +235,12 @@ must not be waived or inferred from desktop timings. Default stays off.
 
 - `nfsu_track_render_tests` checks source removal/recoloring, solid selection,
   zero vertex/diffuse alpha, lamp removal/masking/camera movement, separate
-  reflection culling, the 0x200 exception and unchanged surface coverage.
+  reflection culling including a source beyond only the far plane, the
+  0x200 exception, the lamp ground-height tolerance and unchanged coverage.
   `nfsu_track_draw_list_tests` checks independent slot-4 selection/fallback.
+- `nfsu_draw_execution_tests` requires the Switch lamp recorder to emit the
+  visible fixture lamp with its own quad/texture resources, reflected height,
+  unlit material, additive blend, depth test and disabled depth writes.
 - `nfsu_race_replay_check` checks paired wet/dry hand-path frames and wet race
   frames, complete per-step states, trajectory and results. Its current pins
   live in `tools/race_replay_check.py`, not this document.

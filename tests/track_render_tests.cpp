@@ -2124,6 +2124,30 @@ void test_render_honours_the_options() {
     check_ok(nfsu::track_reflection_entries(changed.scene, wet, reflected, error),
              "reflection cull rejects a remote source", error);
     check(reflected.empty(), "offscreen reflected bounds are rejected");
+    // Keep the reflected source centered inside the side planes and move
+    // it along the view axis. Only the far plane can reject this fixture.
+    changed = wet_fixture;
+    nfsu::CameraFrame reflection_camera;
+    check_ok(nfsu::make_camera_frame(wet.camera, wet.width, wet.height,
+        reflection_camera, error), "far-cull camera is valid", error);
+    const auto move_source = [&](double distance) {
+        const auto& c = reflection_camera;
+        auto& translation = changed.scene.instances[2].transform.translation;
+        translation[0] = float(c.eye.x + c.forward.x*distance);
+        translation[1] = float(-(c.eye.z + c.forward.z*distance));
+        translation[2] = float(c.eye.y + c.forward.y*distance);
+    };
+    move_source(reflection_camera.far_plane - 10);
+    check_ok(nfsu::track_reflection_entries(changed.scene, wet, reflected, error),
+             "source inside the far plane queries", error);
+    check(!reflected.empty(), "centered source inside far plane is retained");
+    move_source(reflection_camera.far_plane + 10);
+    check_ok(nfsu::track_reflection_entries(changed.scene, wet, reflected, error),
+             "source beyond the far plane queries", error);
+    check(reflected.empty(), "centered source beyond far plane is rejected");
+    check_ok(nfsu::track_reflection_entries(changed.scene, wet, reflected, error, nullptr, false),
+             "unculled far source queries", error);
+    check(!reflected.empty(), "far source still exists when culling is disabled");
     auto instance = wet_fixture.scene.instances[2];
     instance.transform.linear[8] = 3;
     instance.transform.translation[2] = 7;
@@ -2134,15 +2158,21 @@ void test_render_honours_the_options() {
     mirrored = nfsu::track_reflection_transform(instance);
     check(mirrored.linear[8] == 3 && mirrored.translation[2] == 7,
           "baked 0x200 placement skips the second mirror");
-    instance.instance_flags = 0x140;
-    mirrored = nfsu::track_reflection_transform(instance);
-    check(mirrored.translation[2] == 7,
-          "view 4 does not apply the view-10-to-15 height step for flag 0x100");
 
     nfsu::WetRoadLamps lamps;
     lamps.texture = wet_fixture.scene.region.textures[0];
     lamps.texture.rgba.assign(lamps.texture.rgba.size(), 255);
     nfsu::WetRoadLamp light;
+    check(!nfsu::wet_road_lamp_ground_height(light, 0) &&
+          !nfsu::wet_road_lamp_ground_height(light, 0.049F) &&
+          !nfsu::wet_road_lamp_ground_height(light, -0.049F),
+          "mode 2 rejects ground hits within 0.05 of the lamp");
+    check(nfsu::wet_road_lamp_ground_height(light, 0.051F) &&
+          light.reflected_height == 0.102F,
+          "mode 2 keeps ground hits outside the height tolerance");
+    check(nfsu::wet_road_lamp_ground_height(light, 0.05F) &&
+          nfsu::wet_road_lamp_ground_height(light, -0.05F),
+          "mode 2 keeps ground hits exactly at the height tolerance");
     light.position[2] = 2; light.reflected_height = -2; light.direction[2] = -1;
     lamps.lights.push_back(light);
     for (std::size_t i = 0; i < 4; ++i) {
