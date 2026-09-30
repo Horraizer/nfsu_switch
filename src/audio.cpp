@@ -410,6 +410,51 @@ std::vector<Segment> scan_ast_prefix(std::istream& input,
     return scan_ast(memory, max_segments);
 }
 
+Segment index_ast_segment_by_boundary(std::istream& input,
+                                      std::uint64_t offset,
+                                      std::uint64_t next_offset) {
+    const auto size = input_size(input);
+    if (offset >= next_offset || next_offset > size ||
+        next_offset - offset < 32)
+        fail(offset, "bad AST segment boundary");
+    const auto header = read_at(input, offset, 8, size);
+    const auto length = u32(header, 4);
+    if (block_tag(header) != kSCHl || length < 8 || length > 512 ||
+        length > next_offset - offset)
+        fail(offset, "bad AST segment header");
+    const auto bytes = read_at(input, offset, length, size);
+    const auto patches = parse_patches(bytes, 8, length);
+    Segment segment;
+    segment.offset = offset;
+    segment.frames = patches.get(0x85);
+    segment.rate = patches.get(0x84, 22050);
+    segment.channels = patches.get(0x82, 1);
+    segment.codec = codec_of(patches, offset);
+    check_audio_header(segment.frames, segment.rate, segment.channels, offset);
+    const auto count = read_at(input, offset + length, 12, size);
+    if (block_tag(count) != kSCCl || u32(count, 4) != 12)
+        fail(offset + length, "bad AST block count header");
+    segment.blocks = u32(count, 8);
+    if (!segment.blocks || segment.blocks > 10000000U)
+        fail(offset + length, "bad AST block count");
+    const auto tail_start = std::max(offset, next_offset -
+        std::min<std::uint64_t>(next_offset - offset, 128));
+    const auto tail = read_at(input, tail_start,
+        static_cast<std::size_t>(next_offset - tail_start), size);
+    for (std::size_t i = 0; i + 8 <= tail.size(); ++i) {
+        if (tail[i] != 'S' || tail[i + 1] != 'C' ||
+            tail[i + 2] != 'E' || tail[i + 3] != 'l') continue;
+        const auto n = u32(tail, i + 4);
+        if (n < 8 || n > tail.size() - i) continue;
+        if (std::any_of(tail.begin() + static_cast<std::ptrdiff_t>(i + n),
+                        tail.end(), [](Byte value) { return value != 0; }))
+            continue;
+        segment.end = tail_start + i + n;
+        return segment;
+    }
+    fail(next_offset, "AST segment end absent at boundary");
+}
+
 void decode_bank_sample(const std::vector<Byte>& bytes, const Sample& sample,
                         const PcmSink& sink) {
     if (sample.channels != 1) fail(sample.data_offset, "unsupported bank channel count");
@@ -434,6 +479,7 @@ void decode_ast_segment(std::istream& input, const Segment& segment,
         fail(segment.offset, "segment outside AST");
     std::uint64_t pos = segment.offset;
     std::uint64_t total = 0;
+    std::uint32_t block_count = 0;
     std::array<XaState, 2> states{};
     while (pos < segment.end) {
         const auto h = read_at(input, pos, 8, size);
@@ -442,6 +488,7 @@ void decode_ast_segment(std::istream& input, const Segment& segment,
         if (n < 8 || n > kMaxChunk || n > segment.end - pos)
             fail(pos, "bad segment chunk size");
         if (tag == kSCDl) {
+            ++block_count;
             const auto block = read_at(input, pos, n, size);
             const auto frames = u32(block, 8);
             if (!frames || frames > 1000000U || total + frames > segment.frames)
@@ -488,7 +535,9 @@ void decode_ast_segment(std::istream& input, const Segment& segment,
         }
         pos += n;
     }
-    if (total != segment.frames) fail(pos, "decoded frame total differs from header");
+    if (total != segment.frames ||
+        (segment.blocks && block_count != segment.blocks))
+        fail(pos, "decoded frame or block total differs from header");
 }
 
 } // namespace nfsu::audio

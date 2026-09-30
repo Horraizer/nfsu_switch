@@ -32,7 +32,7 @@ layout (std140, binding = 0) uniform Frame {
 // Per draw. fallback.frag.glsl declares the same block, so one layout is
 // bound for both programs.
 layout (std140, binding = 2) uniform Material {
-    // rgb: the fallback_color bytes (0..255); a: 1 when the checker is on.
+    // rgb: fallback_color bytes; a: 2 for an unlit particle draw.
     vec4 fallback;
     // x: alpha_min, y: alpha_range, z: diffuse gate, w: lamp mode 0..3.
     vec4 alpha;
@@ -74,7 +74,7 @@ void main()
     }
 
     uint shade = 256u;
-    if (frame.options.z != 0u && has_normal) {
+    if (frame.options.z != 0u && has_normal && material.fallback.w < 1.5) {
         float k = 0.35 + 0.65 * max(0.0, dot(normal, frame.light.xyz));
         shade = uint(floor(clamp(k, 0.0, 1.0) * 256.0 + 0.5));
     }

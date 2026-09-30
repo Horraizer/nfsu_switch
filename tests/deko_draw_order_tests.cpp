@@ -14,6 +14,19 @@ int main() {
         std::cerr << "textured shader selection lost an alpha path\n";
         return 1;
     }
+    // Arguments: sky, blend, alpha tested, depth write, sky with opaque.
+    if (!nfsu::deko_draw_in_opaque_pass(false, false, false, true, false) ||
+        nfsu::deko_draw_in_opaque_pass(false, true, false, true, false) ||
+        nfsu::deko_draw_in_opaque_pass(false, false, true, true, false) ||
+        nfsu::deko_draw_in_opaque_pass(false, false, false, false, false) ||
+        nfsu::deko_draw_in_opaque_pass(true, false, false, false, false) ||
+        nfsu::deko_draw_in_opaque_pass(true, false, false, true, false) ||
+        !nfsu::deko_draw_in_opaque_pass(true, true, false, false, true) ||
+        !nfsu::deko_draw_in_opaque_pass(false, false, false, true, true) ||
+        nfsu::deko_draw_in_opaque_pass(false, true, false, false, true)) {
+        std::cerr << "opaque pass admitted or lost a draw\n";
+        return 1;
+    }
     constexpr std::array<bool, 8> opaque{{false, true, false, true, true, false, true, false}};
     std::vector<std::size_t> order;
     nfsu::deko_visit_opaque_first(opaque.size(),

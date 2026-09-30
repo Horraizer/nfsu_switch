@@ -24,6 +24,7 @@ struct DrawInstanceUniform {
 };
 struct DrawMaterialUniform {
     float fallback[4]{};
+    // Textured particle draws set fallback.w to 2 to skip flat lighting.
     // alpha.w carries PreparedInstance::lamp_mode (0..3).
     float alpha[4] = {1, 0, 0, 0};
     float environment_min[4]{};

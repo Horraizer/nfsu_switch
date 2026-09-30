@@ -7,6 +7,7 @@
 #include "nfsu/race_window.h"
 #include "nfsu/race_audio.h"
 #include "nfsu/race_particles.h"
+#include "nfsu/arg_path.h"
 
 #include <algorithm>
 #include <array>
@@ -44,6 +45,12 @@ void write_text(const fs::path& path, const std::string& text) {
     std::ofstream out(path,std::ios::binary); out << text;
     require(bool(out),"cannot write output");
 }
+// A path as UTF-8 text. generic_string() would convert to the narrow
+// encoding, which throws for a character outside it (docs/PATH_ARGUMENTS.md).
+std::string utf8_text(const fs::path& path) {
+    const auto text = path.generic_u8string();
+    return std::string(text.begin(), text.end());
+}
 bool within(const fs::path& path, const fs::path& root) {
     // Make relative arguments absolute before normalizing their existing
     // prefix. Refuse failures rather than silently guessing a writable path.
@@ -52,7 +59,7 @@ bool within(const fs::path& path, const fs::path& root) {
     };
     const auto inside = [](const fs::path& p, const fs::path& r) {
         // Windows comparisons ignore case, as this desktop's files do.
-        auto ps = p.generic_string(), rs = r.generic_string();
+        auto ps = utf8_text(p), rs = utf8_text(r);
 #ifdef _WIN32
         for (char& c : ps) if (c >= 'A' && c <= 'Z') c += 'a'-'A';
         for (char& c : rs) if (c >= 'A' && c <= 'Z') c += 'a'-'A';
@@ -113,7 +120,7 @@ public:
             texture, root/"Global/INGAMEB.BUN", root/"Global/GLOBALB.BUN"};
         for (std::size_t i=0;i<paths.size();++i) {
             texture_packs[i] = load_texture_pack_set(paths[i],texture_bytes[i]);
-            require(texture_packs[i].complete,"track texture source is incomplete: "+paths[i].generic_string());
+            require(texture_packs[i].complete,"track texture source is incomplete: "+utf8_text(paths[i]));
         }
     }
     void apply(const TrackResidencyStep& step) {
@@ -198,6 +205,7 @@ public:
         require(drive_render_camera(session.camera(),ChaseFovMode::vertical_4_3,640,360,options.camera,error),error);
         Frame background; RenderStats stats; TrackRenderStats track_stats;
         RenderOptions track_options = options;
+        track_options.sky = true;
         track_options.material_state = MaterialStateMode::retail;
         require(render_track_draw_list(track,list,track_options,{},background,stats,track_stats,error),error);
         require(drive_place_instances(base,session.car(),session.spec(),car.scene.instances,
@@ -219,6 +227,10 @@ int run(int argc, char** argv) {
     fs::path root,input,output,generate;
     bool live=false, smoke=false, particles_enabled=true, particle_events=false;
     std::set<std::size_t> frames;
+    // The path arguments arrive in the ANSI code page on Windows; convert
+    // them as the other tools do, so a path outside ASCII opens.
+    std::string argument_error;
+    require(nfsu::check_arguments(argc,argv,1,argument_error),argument_error);
     for (int i=1;i<argc;++i) {
         const std::string a=argv[i];
         if (a=="--help") {
@@ -234,10 +246,10 @@ int run(int argc, char** argv) {
         if (a=="--particles=off") { particles_enabled=false; continue; }
         if (a=="--particle-events") { particle_events=true; continue; }
         require(i+1<argc,"missing option value"); const std::string value=argv[++i];
-        if (a=="--root") root=fs::u8path(value);
-        else if (a=="--input") input=fs::u8path(value);
-        else if (a=="--generate") generate=fs::u8path(value);
-        else if (a=="--out") output=fs::u8path(value);
+        if (a=="--root") root=nfsu::argument_path(argv[i]);
+        else if (a=="--input") input=nfsu::argument_path(argv[i]);
+        else if (a=="--generate") generate=nfsu::argument_path(argv[i]);
+        else if (a=="--out") output=nfsu::argument_path(argv[i]);
         else if (a=="--frames") {
             std::istringstream in(value); std::string token;
             while (std::getline(in,token,',')) {

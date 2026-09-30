@@ -1,14 +1,9 @@
-if(NOT DEFINED ENV{NFSU_RETAIL_ROOT} OR "$ENV{NFSU_RETAIL_ROOT}" STREQUAL "")
-    message("SKIPPED: NFSU_RETAIL_ROOT is unset")
-    return()
-endif()
-
 string(RANDOM LENGTH 12 ALPHABET 0123456789abcdef suffix)
 set(work "${WORK_ROOT}/race-particle-frame-${suffix}")
 if(EXISTS "${work}")
     message(FATAL_ERROR "Unique particle frame output already exists")
 endif()
-execute_process(COMMAND "${RACE_EXE}" --root "$ENV{NFSU_RETAIL_ROOT}"
+execute_process(COMMAND "${RACE_EXE}" --root "${ROOT}"
     --input "${REPLAY}" --particles=on --out "${work}" --frames 1170
     RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error)
 if(NOT result EQUAL 0)
@@ -18,7 +13,7 @@ if(NOT EXISTS "${work}/frame-1170.tga")
     message(FATAL_ERROR "Retail smoke frame was not written\n${output}")
 endif()
 file(SHA256 "${work}/frame-1170.tga" frame_hash)
-if(NOT frame_hash STREQUAL "996b3ef06e285758544deee15e724bfa895016b49eafc73dd99fa25480afcb9e")
+if(NOT frame_hash STREQUAL "685f69fa10ad42d404b491639212dfcf2021a6206817133362774df8e22aa9b6")
     message(FATAL_ERROR "Retail smoke frame changed: ${frame_hash}\n${output}")
 endif()
 if(NOT output MATCHES "state-sha256 79776F6DD3FC2727C99D3F6AD69A16E623BDEEB5CFFD2261458A15FC7F5B3BF9")

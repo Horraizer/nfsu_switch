@@ -10,7 +10,11 @@ At renderer open, deko3d uploads one aligned placement per track instance and
 one aligned material per track definition. Each fence protected frame slot
 caches the exact ordered visible track selection for invalidation. In the
 race renderer, command emission visits depth-writing opaque track draws first,
-then the remaining draws, preserving their order within each partition. The
+then the remaining draws, preserving their order within each partition.
+The separate sky (issue #184) is part of the package: its two definitions
+and one placement, numbered one past the scenery instances. It is never in
+the opaque partition, so the opaque world rejects every sky fragment it
+covers (issue #227; see SKY_FOG.md). The
 other Switch renderers retain the selected order. GPU ordering in the race
 therefore needs its own image and timing check on hardware. A changed
 selection re-records the chunks with static instance, material,

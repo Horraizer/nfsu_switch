@@ -2,6 +2,7 @@
 #include "nfsu/posix_file_system.h"
 #include "nfsu/platform_fakes.h"
 #include "nfsu/heap_usage.h"
+#include "nfsu/arg_path.h"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -59,7 +60,8 @@ int main(int argc, char** argv) {
         }
     } polled;
     TrackSlice slice;
-    if (!load_track_slice(posix_file_system(), argv[1], slice, error, nullptr, &polled)) {
+    if (!check_arguments(argc, argv, 1, error)) return fail(18, error.c_str());
+    if (!load_track_slice(posix_file_system(), argument_path(argv[1]), slice, error, nullptr, &polled)) {
         std::cerr << error << '\n'; return 5;
     }
     if (polled.sections < 4 * slice.sections)
@@ -104,5 +106,6 @@ int main(int argc, char** argv) {
     }
     std::cout << "PASS: frames " << frames << " max draws " << max_draws << " road hits " << hits << '\n';
     if (full) return frames == slice.path.size() && hits > 0 && max_draws <= kTrackSliceDrawLimit ? 0 : fail(8, "full path frame/contact/draw count");
-    return frames == 57 && hits == 55 && max_draws == 1769 ? 0 : fail(8, "sampled path frame/contact/draw pin");
+    // #184: the two borrowed SKYDOME groups add two background submissions.
+    return frames == 57 && hits == 55 && max_draws == 1771 ? 0 : fail(8, "sampled path frame/contact/draw pin");
 }

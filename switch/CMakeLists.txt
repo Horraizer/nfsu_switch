@@ -136,7 +136,7 @@ add_custom_target(nfsu_switch_shaders ALL DEPENDS ${NFSU_SHADER_STAMPS})
 if(NFSU_BUILD_TESTS)
     add_test(NAME nfsu_uam_derivatives_tests
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/uam_derivatives_tests.py)
-    foreach(stage IN ITEMS placed.vert textured.frag textured_opaque.frag fallback.frag)
+    foreach(stage IN ITEMS placed.vert textured.frag textured_opaque.frag fallback.frag sky.vert sky.frag)
         add_test(NAME nfsu_switch_derivatives_${stage}
             COMMAND ${Python3_EXECUTABLE} ${NFSU_SHADER_DERIVATIVES} --check
                 ${NFSU_SHADER_OUTPUT}/${stage}.dksh ${NFSU_SHADER_OUTPUT}/${stage}.tgsi)
@@ -225,7 +225,7 @@ nfsu_enable_warnings(nfsu_switch_deko3d)
 
 set(NFSU_DEKO_ROMFS ${CMAKE_CURRENT_BINARY_DIR}/deko_romfs)
 set(NFSU_DEKO_BLOBS "")
-foreach(stage IN ITEMS placed.vert textured.frag textured_opaque.frag fallback.frag)
+foreach(stage IN ITEMS placed.vert textured.frag textured_opaque.frag fallback.frag sky.vert sky.frag)
     set(blob ${NFSU_DEKO_ROMFS}/shaders/${stage}.dksh)
     add_custom_command(OUTPUT ${blob}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${NFSU_DEKO_ROMFS}/shaders
@@ -455,7 +455,7 @@ set_target_properties(nfsu_switch_race PROPERTIES CXX_STANDARD 17 CXX_STANDARD_R
 nfsu_enable_warnings(nfsu_switch_race)
 set(NFSU_RACE_ROMFS ${CMAKE_CURRENT_BINARY_DIR}/race_romfs)
 set(NFSU_RACE_ASSETS "")
-foreach(stage IN ITEMS placed.vert textured.frag textured_opaque.frag fallback.frag)
+foreach(stage IN ITEMS placed.vert textured.frag textured_opaque.frag fallback.frag sky.vert sky.frag)
     set(blob ${NFSU_RACE_ROMFS}/shaders/${stage}.dksh)
     add_custom_command(OUTPUT ${blob}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${NFSU_RACE_ROMFS}/shaders

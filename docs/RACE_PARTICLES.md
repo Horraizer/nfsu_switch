@@ -34,7 +34,9 @@ smoke under the approximation below, but its full trajectory has zero hull
 contacts. The assignment's assertion that it also contains a wall hit is
 therefore not supported by this replay. The wall-hit image pin uses a
 synthetic impulse in `nfsu_race_particles_tests`; the replay and its pins are
-unchanged.
+unchanged. Sparks are not seen in the real event1 replay. The synthetic
+spark frame is only a two-pixel dot, so it does not establish the look of
+a retail impact burst.
 
 ## Explicit approximations
 
@@ -46,12 +48,15 @@ unchanged.
 - A hull step with an impulse at speed above 1 m/s emits two sparks. The
   origin is estimated 0.85 m toward the struck side from the car centre,
   because the telemetry lacks a point. The two step-seeded directions,
-  18-step life, size and fading are approximations.
+  18-step life, size and fading are approximations. Only the horizontal
+  impulse supplies a side: a purely vertical impact emits no sparks, and a
+  nearly vertical one has an unreliable side.
 - Smoke uses a generated soft grey RGBA8 disc with source-over blending;
   sparks use a generated amber disc with additive blending. These textures
   and blend selections are approximations. They contain no retail or derived
   image bytes. The CPU overlay and GPU commands use the same texel and
-  opacity rules. Both depth-test against the car and track but do not write
+  opacity rules; GPU particle draws skip flat lighting. Both depth-test
+  against the car and track but do not write
   depth. The CPU path takes the nearer of its separate car/track depth
   buffers; the GPU uses its combined buffer. This depth state is an
   approximation because the retail particle pass has not been traced.
@@ -60,18 +65,15 @@ unchanged.
   reaches emission. Rendering can occur any number of times between steps
   without changing the particle list.
 
-The live limits are 16 smoke and 8 spark sprites. A new particle at capacity
-replaces the oldest of its type. At 1280x720, each projected sprite is capped
-at 48x48 pixels, so the worst submitted effect is 24 draws, 48 triangles and
-at most 55,296 square-bounds fragment samples before clipping. The two
-procedural textures occupy 2 KiB of source texels and dynamic draw uniforms
-occupy 12 KiB per frame slot. This is a submission bound, not a measured GPU
-time. Before implementation the GPU increment was estimated at 0.2..0.5 ms;
+The fixed array and sprite bounds are checked by `nfsu_race_particles_tests`
+and `nfsu_race_run_tests`. A new particle at capacity replaces the oldest of
+its type. The submission bound is not a measured GPU time. Before
+implementation the GPU increment was estimated at 0.2..0.5 ms;
 the paired handheld result is still required. At `6af1964`, the owner's
 handheld scene measurement was 20.65 ms mean and 26.31 ms worst against the
 16.67 ms 60 fps budget. A positive effect cost cannot fit that baseline.
-The Switch default is off until the paired handheld result establishes the
-cost. The single on/off argument measures the exact increment on one build.
+The Switch default is on. The `--particles=off` argument allows a paired
+handheld cost measurement on the same build.
 
 `nfsu_race_particles_tests` pins the CPU smoke and synthetic wall-hit frames
 by hash, with a reason at each assertion. `nfsu_race_run_tests` compares the

@@ -198,6 +198,7 @@ struct ProfileResultContext {
     std::uint64_t storage_bytes = 0;
     DekoMemoryUsage memory;
     DekoGpfifoUsage gpfifo;
+    const char* sky = "ON";
 };
 using ProfilePages = std::vector<std::vector<std::string>>;
 ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
@@ -220,7 +221,8 @@ ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
         std::strlen(NFSU_RACE_BUILD_TAG) >= 40 ? "FULL COMMIT: build tag above" :
             "FULL COMMIT: coordinator build record",
         "NRO SHA-256: coordinator build record (not derivable in NRO)",
-        format("%s | %s DIRECT | PROFILE ONE SCENE PAIR",mode,replay_mode?"REPLAY":"LIVE"),
+        format("%s | %s DIRECT | PROFILE ONE SCENE PAIR | SKY %s",mode,
+            replay_mode?"REPLAY":"LIVE",context.sky),
         format("TOOLCHAIN GCC %s | deko3d version unavailable",__VERSION__),
         clocks.cpu_bus_ok ? format("CPU clock %.1f MHz",clocks.cpu_bus_hz/1e6) :
             "CPU clock unavailable",
@@ -324,7 +326,8 @@ ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
         format("FRAME UNIFORMS %llu bytes",(unsigned long long)context.memory.frame_uniform_bytes),
         format("STATIC UNIFORMS %llu bytes",(unsigned long long)context.memory.static_uniform_bytes),
         format("PREPARED COMMANDS %llu bytes",(unsigned long long)context.memory.prepared_command_bytes),
-        format("LOAD HEAP OBS HWM %llu | over %llu bytes",(unsigned long long)heap.load_peak,
+        format("LOAD HEAP ABS %llu | DELTA %llu / 50331648 | OVER %llu",
+            (unsigned long long)heap.load_peak,(unsigned long long)heap.load_delta(),
             (unsigned long long)heap.load_overrun(50331648))
     });
     if (!failure.empty()) {
@@ -339,8 +342,8 @@ ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
     }
     for (std::size_t i = 0; i < pages.size(); ++i) {
         auto& rows = pages[i];
-        rows.insert(rows.begin(),format("BUILD %.12s | %s | %s | PAGE %zu/%zu",
-            NFSU_RACE_BUILD_TAG,mode,titles[i].c_str(),i+1,pages.size()));
+        rows.insert(rows.begin(),format("BUILD %.12s | %s | %s | SKY %s | PAGE %zu/%zu",
+            NFSU_RACE_BUILD_TAG,mode,titles[i].c_str(),context.sky,i+1,pages.size()));
         rows.push_back("D-pad LEFT/RIGHT changes page | + exits");
     }
     return pages;
@@ -416,9 +419,10 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
         if (padGetButtonsDown(&pad) & HidNpadButton_Plus) break;
     }
 }
+// --sky on draws the sky after the opaque world; off omits it; early is the
+// issue 227 diagnostic that submits it with the opaque pass, as before.
 void run(const std::string& root, bool replay_mode, bool panel_mode, bool profile_frame,
-         bool particles_enabled,
-         Screen& screen, PadState& pad) {
+         bool particles_enabled, const std::string& sky, Screen& screen, PadState& pad) {
     require(R_SUCCEEDED(romfsInit()), "cannot mount race shader/replay RomFS");
     struct Guard { ~Guard() { romfsExit(); } } guard;
     std::string error;
@@ -431,6 +435,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     RaceGpuScene scene; scene.set_particles_enabled(particles_enabled);
     RaceRun race; HeapUsage heap;
     std::printf("PARTICLES %s\n",particles_enabled?"ON":"OFF");
+    require(scene.set_sky(sky != "off"), "sky mode set after scene load");
     const auto before = mallinfo(); heap.begin(before.uordblks,before.arena);
     Progress progress(screen,pad,heap);
     const auto load_start = armGetSystemTick();
@@ -466,7 +471,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     const auto upload_start = armGetSystemTick();
     if (!panel_mode) screen.close();
     DekoRenderer renderer;
-    require(renderer.open(frame.commands,error,!panel_mode,kTrackSliceDrawLimit,profile_frame,true),error);
+    require(renderer.open(frame.commands,error,!panel_mode,kTrackSliceDrawLimit,profile_frame,true,
+                          sky == "early"),error);
     const double initial_upload = ms(armGetSystemTick()-upload_start);
     const auto clocks = profile_frame ? read_clocks() : ClockReadings{};
     std::unique_ptr<FrameProfileStats> profile_stats;
@@ -503,7 +509,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         if (elapsed > 1000000) { paused = true; clock.reset(); }
         const bool connected = padIsConnected(&pad);
         const bool running = race.session().timing().outcome == RaceOutcome::running;
-        sound.set_suspended(paused || !running);
+        sound.set_suspended(paused);
         const bool driving_before = !paused && !just_unpaused && running &&
             race.session().timing().stage == RaceStage::racing;
         if (!paused && running) clock.add(elapsed); else clock.reset();
@@ -539,7 +545,6 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             upload = ms(armGetSystemTick()-stage);
         }
         const bool finished = race.session().timing().outcome == RaceOutcome::finished;
-        if (finished) sound.set_suspended(true);
         RaceFrameSample measured;
         measured.simulation_ms = simulation;
         measured.residency_ms = residency;
@@ -727,10 +732,10 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         if (finished) break;
     }
     } catch (const std::exception& e) { failure = e.what(); }
-    // Every way out of the race loop (+, an error or the finish) mutes the
-    // audio with the service's fade before the result screen; before this
-    // only the finish did, so + left the engine and music playing.
-    sound.set_suspended(true);
+    // Leave the finish cue audible on the result screen. Other exits mute
+    // the still-running engine and music before showing that screen.
+    if (!failure.empty() || race.session().timing().outcome != RaceOutcome::finished)
+        sound.set_suspended(true);
     std::string close_error;
     if (!renderer.close(close_error)) {
         if (!failure.empty()) failure += " | ";
@@ -742,7 +747,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             const ProfileResultContext context{*profile_stats,renderer.gpu_profile(),heap,clocks,
                 load_ms,initial_upload,scene.track().streaming_bytes,persistent,renderer.gpu_bytes(),
                 sizeof(FrameProfileStats)+renderer.profile_storage_bytes(),
-                renderer.memory_usage(),renderer.gpfifo_usage()};
+                renderer.memory_usage(),renderer.gpfifo_usage(),
+                sky == "off" ? "OFF" : sky == "early" ? "EARLY" : "ON"};
             show_result(screen,pad,race,replay,replay_mode,panel_mode,paused,
                         stats,unpause_resets,last_perf,failure,&context);
         } else show_result(screen,pad,race,replay,replay_mode,panel_mode,paused,
@@ -759,7 +765,8 @@ int main(int argc, char** argv) {
         try {
             std::string root = "sdmc:/nfsu";
             bool replay = false, panel = false, profile_frame = false;
-            bool particles_enabled = false, selected = false, root_seen = false;
+            bool particles_enabled = true, selected = false, root_seen = false;
+            std::string sky = "on";
             for (int i = 1; i < argc; ++i) {
                 const std::string arg = argv[i];
                 if (arg == "--replay") { replay = true; selected = true; }
@@ -768,8 +775,11 @@ int main(int argc, char** argv) {
                 else if (arg == "--profile-frame") profile_frame = true;
                 else if (arg == "--particles=on") particles_enabled = true;
                 else if (arg == "--particles=off") particles_enabled = false;
+                else if (arg == "--sky" && i+1 < argc &&
+                         (std::strcmp(argv[i+1],"on") == 0 || std::strcmp(argv[i+1],"off") == 0 ||
+                          std::strcmp(argv[i+1],"early") == 0)) sky = argv[++i];
                 else if (!root_seen && arg.rfind("--",0) != 0) { root = arg; root_seen = true; }
-                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--particles=on|--particles=off]");
+                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--sky on|off|early] [--particles=on|--particles=off]");
             }
             require(!(panel && profile_frame),"--profile-frame requires direct presentation");
             while (!selected && appletMainLoop()) {
@@ -789,7 +799,7 @@ int main(int argc, char** argv) {
                     "During the race: Y pauses, + opens results with driving-frame statistics.",
                     "No game data is bundled or written. Replay input is bundled in RomFS."});
             }
-            if (selected) run(root,replay,panel,profile_frame,particles_enabled,screen,pad);
+            if (selected) run(root,replay,panel,profile_frame,particles_enabled,sky,screen,pad);
         } catch (const Cancel&) {
         } catch (const std::exception& e) {
             std::printf("ERROR: %s\n",e.what()); std::fflush(stdout);

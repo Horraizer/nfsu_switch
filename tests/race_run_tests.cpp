@@ -4,6 +4,7 @@
 #include "nfsu/draw_execution.h"
 #include "nfsu/deko_gpfifo_budget.h"
 #include "nfsu/platform_desktop.h"
+#include "nfsu/arg_path.h"
 #include <fstream>
 #include <iostream>
 #include <algorithm>
@@ -13,6 +14,7 @@
 #include <cstdlib>
 #include <new>
 #include <limits>
+#include <cmath>
 
 // Count live C++ allocation bytes without allocating inside the counter.
 // This is a per-frame retention check, not a claim about the newlib heap.
@@ -86,7 +88,8 @@ int main(int argc, char** argv) {
         require(!replay.load("NFSU_RACE_INPUT 1\n1 0 0\n", error), "unverified replay accepted");
         require(!replay.next(0, pad, error), "empty replay accepted");
         require(argc >= 2, "recording argument missing");
-        std::ifstream in(argv[1], std::ios::binary);
+        require(check_arguments(argc, argv, 1, error), error);
+        std::ifstream in(argument_path(argv[1]), std::ios::binary);
         const std::string text((std::istreambuf_iterator<char>(in)), {});
         require(bool(in) && replay.load(text, error), error);
         require(!replay.next(1, pad, error), "out of order replay tick accepted");
@@ -156,7 +159,7 @@ int main(int argc, char** argv) {
         require(!combine_race_commands(fixture, other, joined, error), "combined draw overflow accepted");
         std::cout << "PASS: fixed clock, exact replay cursor, refusal and combined draw guards\n";
         if (argc == 2) return 0;
-        const std::filesystem::path root(argv[2]);
+        const std::filesystem::path root = argument_path(argv[2]);
         RaceGpuScene scene;
         scene.set_particles_enabled(true);
         RaceRun race;
@@ -183,8 +186,8 @@ int main(int argc, char** argv) {
         require(replay.load(text, error), error);
         require(scene.cache_bytes() <= 8*kMiB,"command cache exceeded metadata limit");
         std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 8*kMiB << '\n';
-        // #186 adds 24 bounded particle definitions and four upload records.
-        require(scene.cache_bytes() == 3826108,"event 1 command cache metadata estimate differs from pin");
+        // #186 particles and #184 sky are both present in the merged cache.
+        require(scene.cache_bytes() == 3826234,"event 1 command cache metadata estimate differs from pin");
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';
         require(scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes() <=
@@ -193,7 +196,7 @@ int main(int argc, char** argv) {
         require(scene.frame(race.session(), frame, error), error);
         require(frame.commands.package_identity() != nullptr &&
                 frame.commands.static_track_draw_count() == frame.track_draws &&
-                frame.commands.static_track_instance_count() == scene.track().scene.instances.size() &&
+                frame.commands.static_track_instance_count() == scene.track().scene.instances.size() + 1 &&  // #184: the sky placement
                 frame.commands.static_track_instance_count() <= 65536 &&
                 frame.commands.static_track_definition_count() <= 4096,
                 "prepared static package identity or instance count changed");
@@ -205,6 +208,26 @@ int main(int argc, char** argv) {
                 static_by_group.resize(definition.group + 1, nullptr);
             require(!static_by_group[definition.group], "duplicate static track group");
             static_by_group[definition.group] = &definition;
+        }
+        require(!scene.set_sky(false), "sky mode changed after load");
+        {
+            // #227: --sky off records no sky draws; the package then holds
+            // only the scenery placements, at the same pose and far plane.
+            RaceGpuScene no_sky; RaceGpuFrame plain;
+            require(no_sky.set_sky(false), "sky mode refused before load");
+            require(no_sky.load(posix_file_system(), root, error), error);
+            require(no_sky.frame(race.session(), plain, error), error);
+            std::size_t sky_views = 0;
+            for (std::size_t i = 0; i < frame.commands.draw_count(); ++i)
+                if (std::strcmp(frame.commands.draw_view(i).definition.program->name, "sky_textured") == 0) ++sky_views;
+            for (std::size_t i = 0; i < plain.commands.draw_count(); ++i)
+                require(std::strcmp(plain.commands.draw_view(i).definition.program->name, "sky_textured") != 0,
+                        "sky drawn with the sky off");
+            require(sky_views == 2 && plain.track_draws + 2 == frame.track_draws &&
+                    plain.car_draws == frame.car_draws && plain.far_plane == frame.far_plane &&
+                    plain.commands.static_track_instance_count() == scene.track().scene.instances.size(),
+                    "sky switch changed more than the two sky draws");
+            std::cout << "PASS: sky off omits exactly the two sky draws and their placement\n";
         }
         const auto& const_commands = frame.commands;
         unsigned owning_refusals = 0;
@@ -346,15 +369,41 @@ int main(int argc, char** argv) {
                         "missing track/car/particle commands");
                 if (tick == 1164) {
                     unsigned visible_smoke=0, visible_sparks=0;
+                    bool smoke_color_checked=false, spark_color_checked=false;
                     for (std::size_t i=frame.commands.static_track_draw_count()+frame.car_draws;
                          i<frame.commands.draw_count(); ++i) {
                         const auto view=frame.commands.draw_view(i);
+                        const auto slot=i-frame.commands.static_track_draw_count()-frame.car_draws;
+                        const bool spark=slot>=kRaceSmokeLimit;
                         if (view.material.alpha[0] > 0)
-                            (i-frame.commands.static_track_draw_count()-frame.car_draws < kRaceSmokeLimit
-                                 ? visible_smoke : visible_sparks)++;
+                            (spark ? visible_sparks : visible_smoke)++;
+                        if ((!spark && view.material.alpha[0] > 0 && !smoke_color_checked) ||
+                            (slot == kRaceSmokeLimit && !spark_color_checked)) {
+                                // Evaluate the recorded textured shader state at two
+                                // opposed billboard headings against the CPU texel.
+                                const auto texel=race_particle_texel(
+                                    spark ? RaceParticleKind::spark : RaceParticleKind::smoke,8,8);
+                                const auto& state=frame.commands.frame;
+                                require(state.options[2] == 1 && view.material.fallback[3] == 2.0F &&
+                                        view.material.alpha[2] == 0.0F && view.material.alpha[3] == 0.0F,
+                                        "particle draw is not unlit under flat race shading");
+                                const float length=std::sqrt(state.light[0]*state.light[0]+state.light[1]*state.light[1]+
+                                                             state.light[2]*state.light[2]);
+                                require(length > 0.0F,"race light direction is zero");
+                                for (float heading : {-1.0F,1.0F}) {
+                                    const float dot=heading*length;
+                                    const unsigned shade=state.options[2] && view.material.fallback[3] < 1.5F
+                                        ? static_cast<unsigned>(std::floor((0.35F+0.65F*std::max(0.0F,dot))*256.0F+0.5F))
+                                        : 256U;
+                                    for (unsigned channel=0; channel<3; ++channel)
+                                        require(((static_cast<unsigned>(texel[channel])*shade+128U)>>8U)==texel[channel],
+                                                "GPU particle source color differs from CPU reference");
+                                }
+                                (spark ? spark_color_checked : smoke_color_checked)=true;
+                        }
                     }
                     require(visible_smoke >= 4 && visible_smoke <= kRaceSmokeLimit &&
-                            visible_sparks == 0,
+                            visible_sparks == 0 && smoke_color_checked && spark_color_checked,
                             "slide frame does not contain bounded smoke and no sparks");
                 }
                 require(deko_frame_gpfifo_bound(deko_track_list_calls(

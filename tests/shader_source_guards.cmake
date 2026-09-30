@@ -38,6 +38,22 @@ foreach(variable IN ITEMS CHECKER SHADERS)
     endif()
 endforeach()
 
+# TGSI omits the mask for a full vec4. Optional unmatched regex captures
+# must not turn that default into an empty component mask (#184).
+include(${CHECKER})
+string(RANDOM LENGTH 12 ALPHABET "abcdefghijklmnopqrstuvwxyz0123456789" tgsi_token)
+set(tgsi_test "${CMAKE_CURRENT_BINARY_DIR}/nfsu_tgsi_${tgsi_token}.txt")
+file(WRITE "${tgsi_test}" "VERT\nDCL IN[0], GENERIC[1]\nDCL OUT[0], GENERIC[1]\nDCL OUT[1].xy, GENERIC[2]\n")
+_nfsu_sm_read_tgsi("${tgsi_test}" tgsi)
+file(REMOVE "${tgsi_test}")
+list(GET tgsi_ins 0 full_in)
+list(GET tgsi_outs 0 full_out)
+list(GET tgsi_outs 1 partial_out)
+if(NOT tgsi_error STREQUAL "" OR NOT full_in MATCHES "mask=xyzw" OR
+   NOT full_out MATCHES "mask=xyzw" OR NOT partial_out MATCHES "mask=xy[|]")
+    message(FATAL_ERROR "TGSI omitted/explicit component mask regression")
+endif()
+
 # A directory no other run shares: several sessions run ctest at once here.
 string(RANDOM LENGTH 12 ALPHABET "abcdefghijklmnopqrstuvwxyz0123456789" token)
 set(work "${CMAKE_CURRENT_BINARY_DIR}/nfsu_shader_source_guards_${token}")
@@ -83,6 +99,17 @@ file(READ "${SHADERS}/textured.frag.glsl" cutout_source)
 if(opaque_source MATCHES "discard[ \t]*;" OR
    NOT cutout_source MATCHES "discard[ \t]*;")
     message(FATAL_ERROR "textured shader discard split is missing")
+endif()
+foreach(source IN ITEMS opaque_source cutout_source)
+    if(NOT ${source} MATCHES "material[.]fallback[.]w < 1[.]5")
+        message(FATAL_ERROR "textured shader lost the unlit particle gate")
+    endif()
+endforeach()
+# The sky keeps a diagnostic discard, so it must test depth before shading or
+# every covered sky fragment is shaded before the world rejects it (#227).
+file(READ "${SHADERS}/sky.frag.glsl" sky_source)
+if(NOT sky_source MATCHES "\n *layout ?[(]early_fragment_tests[)] in;")
+    message(FATAL_ERROR "sky shader early depth test is missing")
 endif()
 
 # nfsu_case(<label> <file> <manifest> <expected> [<from> <to>]...)
@@ -375,6 +402,18 @@ nfsu_case("a # that does not begin a line"
     "placed.vert.glsl: has a # that does not begin a line"
     "layout (location = 2) in vec2 inTexcoord;\n"
     "layout (location = 2) in vec2 inTexcoord; #define X\n")
+
+nfsu_case("early_fragment_tests in a vertex stage"
+    placed.vert.glsl car_textured.manifest
+    "placed.vert.glsl: early_fragment_tests outside a fragment stage"
+    "layout (location = 2) in vec2 inTexcoord;\n"
+    "layout (early_fragment_tests) in;\nlayout (location = 2) in vec2 inTexcoord;\n")
+
+nfsu_case("early_fragment_tests beside another qualifier"
+    sky.frag.glsl sky_textured.manifest
+    "`early_fragment_tests` is a layout qualifier the interface check does not read"
+    "layout (early_fragment_tests) in;"
+    "layout (early_fragment_tests, location = 3) in;")
 
 nfsu_case("an @ in a comment"
     placed.vert.glsl car_textured.manifest PASS
