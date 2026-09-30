@@ -129,10 +129,13 @@ registry (`0x56B4F2..0x56B571`). A missing record falls back to `DEFAULT`.
 The result is bound to `CARSKIN` at `0x56F520` and `0x56F5A0`. For model
 index 11, `0x56F475..0x56F5A0` uses the nonzero `[car+0x4E4]` override
 material instead of `[car+0x4D0]`; the port does not model that override.
-In the part database 373 of 379 attributes with this key name a material
-record. The remaining six are `CALIPERS_L1_COLOR05..10` in slot 115 and name
-`0xD6640DFF`, which takes the fallback. Every retail slot-30 `BASE_PAINT`
-attribute resolves; the unmatched paint test is synthetic. For example,
+In the part database, 373 of 379 attributes with this key name resolve to a
+material record. The six unmatched attributes are on
+`CALIPERS_L1_COLOR05..10` in slot 30, each with value `0xD6640DFF`. Of the 360
+slot-30 attributes, 354 resolve; these six take the missing-record path and
+use the on-disk `DEFAULT` material. Slot 115 is `WINDOW_TINT`, whose 19
+attributes all resolve. The unit test's unmatched case is synthetic, although
+retail slot-30 data also exercises this fallback. For example,
 `GLOSS_L1_COLOR03` selects `REGPAINTBLUE`, while `GLOSS_L1_COLOR05` and
 `GLOSS_L1_COLOR08` select `REGPAINTRED`.
 Retail stock 240SX installs `GLOSS_L1_COLOR08` (165, 75, 15, gloss 128),
@@ -200,8 +203,8 @@ surrogate part choice is a port rule. The project's blue stock skin
 `REGPAINTBLUE`; the tuned red skin (200, 30, 30, gloss 128) chooses the
 orange `GLOSS_L1_COLOR08` swatch and `REGPAINTRED`. The project's blue stock
 skin predates this PR and differs from retail's orange stock 240SX paint.
-Other decoded keys distinguish chrome, windshield, plastic and lamp lenses. Lamp emission
-remains the separate existing lamp state.
+Other decoded keys distinguish chrome, windshield, plastic and lamp lenses.
+Lamp emission remains the separate existing lamp state.
 
 The port reads the existing smooth vertex normals and transforms them by
 the inverse transpose of each placed instance, including the raw-axis to
