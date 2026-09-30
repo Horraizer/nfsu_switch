@@ -1048,6 +1048,11 @@ void test_lod_slot_zero() {
                                   scene, error),
           "the lod scene is built at slot 0: " + error);
     check_eq_u64(scene.cost.placed_instances, 5, "five instances place at slot 0");
+    check(scene.instances.at(0).reflection_mesh == 0,
+          "reflection slot 4 falls back to slot 0 independently of main LOD");
+    check(scene.instances.at(2).reflection_mesh == 1 && scene.instances.at(2).mesh == 0,
+          "reflection slot 4 names mesh B while the main view names A");
+
     check_eq_u64(scene.cost.slot_fallbacks, 0, "slot 0 has no fallback");
     check_eq_u64(scene.cost.unplaced_unresolved, 4, "four hashes resolve nothing");
     for (const nfsu::PreparedTrackInstance& placed : scene.instances) {

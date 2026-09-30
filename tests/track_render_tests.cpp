@@ -1,5 +1,6 @@
 #include "nfsu/geometry.h"
 #include "nfsu/track_render.h"
+#include "nfsu/track_reflections.h"
 
 #include <algorithm>
 #include <array>
@@ -2111,6 +2112,57 @@ void test_render_honours_the_options() {
         if (wet_frame.rgba()[p] != dry_tilt_frame.rgba()[p] &&
             recolored[p] != wet_frame.rgba()[p]) ++changed_reflections;
     check(changed_reflections > 0, "source color changes its road reflection");
+
+
+    // The reflection visibility list is independent of the main visible list.
+    std::vector<nfsu::TrackDrawListEntry> reflected;
+    check_ok(nfsu::track_reflection_entries(wet_fixture.scene, wet, reflected, error),
+             "separate reflection cull succeeds", error);
+    check(!reflected.empty(), "a reflection query needs no main-view visible entries");
+    changed = wet_fixture;
+    changed.scene.instances[2].transform.translation[0] = 100000;
+    check_ok(nfsu::track_reflection_entries(changed.scene, wet, reflected, error),
+             "reflection cull rejects a remote source", error);
+    check(reflected.empty(), "offscreen reflected bounds are rejected");
+    auto instance = wet_fixture.scene.instances[2];
+    instance.transform.linear[8] = 3;
+    instance.transform.translation[2] = 7;
+    auto mirrored = nfsu::track_reflection_transform(instance);
+    check(mirrored.linear[8] == -3 && mirrored.translation[2] == 7,
+          "ordinary reflection negates local vertical without moving the origin");
+    instance.instance_flags |= 0x200;
+    mirrored = nfsu::track_reflection_transform(instance);
+    check(mirrored.linear[8] == 3 && mirrored.translation[2] == 7,
+          "baked 0x200 placement skips the second mirror");
+    instance.instance_flags = 0x140;
+    mirrored = nfsu::track_reflection_transform(instance);
+    check(mirrored.translation[2] == 7,
+          "view 4 does not apply the view-10-to-15 height step for flag 0x100");
+
+    nfsu::WetRoadLamps lamps;
+    lamps.texture = wet_fixture.scene.region.textures[0];
+    lamps.texture.rgba.assign(lamps.texture.rgba.size(), 255);
+    nfsu::WetRoadLamp light;
+    light.position[2] = 2; light.reflected_height = -2; light.direction[2] = -1;
+    lamps.lights.push_back(light);
+    for (std::size_t i = 0; i < 4; ++i) {
+        auto& v = lamps.vertices[i];
+        v.px = (i == 1 || i == 2) ? 1 : -1;
+        v.py = i < 2 ? 1 : -1;
+        v.color[0] = 110; v.color[1] = 100; v.color[2] = 75; v.color[3] = 255;
+    }
+    wet.wet_lamps = &lamps;
+    const auto lit = render_wet(wet_fixture);
+    check(lit != wet_frame.rgba(), "a reflected street lamp contributes a pool on wet geometry");
+    lamps.lights.clear();
+    check(render_wet(wet_fixture) == wet_frame.rgba(), "removing lamp records removes the pool");
+    lamps.lights.push_back(light);
+    changed = wet_fixture;
+    for (auto& v : changed.scene.region.meshes[0].vertices) v.color[3] = 0;
+    check(render_wet(changed) == dry_tilt_frame.rgba(), "lamp streak obeys receiver alpha");
+    wet.camera.target.x += 1;
+    check(render_wet(wet_fixture) != lit, "camera movement reprojects the lamp streak");
+    wet.wet_lamps = nullptr;
 
     // The v flip. The corner texture has four distinct texels, so sampling
     // (u, 1 - v) must move colour.

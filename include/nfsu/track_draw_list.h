@@ -131,6 +131,7 @@ struct TrackUnplacedInstance {
 // the instance record holds nine int16 and three floats, and
 // track_instance_transform only divides the nine by kSceneryMatrixOne. A
 // 4x4 would add a row no record stores.
+constexpr std::uint32_t kNoReflectionMesh = 0xFFFFFFFFU;
 struct PreparedTrackInstance {
     // Index into PreparedTrackScene::region.meshes.
     std::size_t mesh = 0;
@@ -144,6 +145,7 @@ struct PreparedTrackInstance {
     std::uint32_t section_number = 0;
     char section_letter = '\0';
     bool has_section_letter = false;
+    bool slot_fallback_used = false;
     std::size_t instance_index = 0;
     std::size_t object_index = 0;
     // The slot whose hash placed the mesh, and whether it got there through
@@ -152,7 +154,7 @@ struct PreparedTrackInstance {
     // and requested_slot is the one the caller asked for.
     std::size_t slot = 0;
     std::size_t requested_slot = 0;
-    bool slot_fallback_used = false;
+    std::uint32_t reflection_mesh = kNoReflectionMesh;
     std::uint32_t mesh_hash = 0;
     // Instance record +14, kept raw. Bit 0x10 is runtime scratch and the
     // low byte is what the retail mask gate reads; nothing here interprets

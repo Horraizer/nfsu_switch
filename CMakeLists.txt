@@ -121,7 +121,7 @@ add_library(nfsu_track_render
     src/track_render.cpp
 )
 
-target_link_libraries(nfsu_track_render PUBLIC nfsu_render nfsu_track_draw_list)
+target_link_libraries(nfsu_track_render PUBLIC nfsu_render nfsu_track_draw_list nfsu_track_reflections)
 nfsu_enable_warnings(nfsu_track_render)
 
 # The desktop track slice's cost accounting: the four stages' own reports
@@ -787,6 +787,7 @@ target_link_libraries(nfsu_inspect_window PUBLIC nfsu_platform nfsu_input_camera
 # session of that application over nfsu_input_camera and nfsu_render; it
 # reads no clock either, because a controller frame carries its own time.
 set(NFSU_NEUTRAL_LIBRARIES
+    nfsu_track_reflections
     nfsu_image nfsu_core nfsu_scene nfsu_track nfsu_track_visibility
     nfsu_track_zones nfsu_track_draw_list nfsu_track_render nfsu_track_probe
     nfsu_track_budget nfsu_race_events

@@ -1,4 +1,5 @@
 #include "nfsu/draw_commands.h"
+#include "nfsu/track_reflections.h"
 
 #include <algorithm>
 #include <cmath>
@@ -68,6 +69,7 @@ struct ResourceMap {
           textures(texture_count, kNoHandle) {
         for (std::size_t i = 0; i < table.resources.size(); ++i) {
             const auto& r = table.resources[i];
+            if (r.name.compare(0, 9, "race-car/") == 0 || r.name.compare(0, 9, "wet lamp ") == 0) continue;
             if (r.kind == UploadResourceKind::vertex_buffer) vertices[r.source] = i;
             else if (r.kind == UploadResourceKind::index_buffer) indices[r.source] = i;
             else textures[r.source] = i;
@@ -271,9 +273,10 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
                    r.elements * r.element_bytes != r.bytes)
             return fail(r.name, "invalid buffer shape");
     }
-    for (std::size_t draw_index = 0; draw_index < commands.draw_count(); ++draw_index) {
-        const auto view = commands.draw_view(draw_index);
-        const auto& d = view.definition;
+    if (commands.reflection_draw_count() > 4096) return fail("reflection commands", "capacity exceeded");
+    for (std::size_t draw_index = 0; draw_index < commands.draw_count()+commands.reflection_draw_count(); ++draw_index) {
+        const auto& d = draw_index < commands.draw_count() ? commands.draw_view(draw_index).definition :
+            commands.reflection_draw(draw_index-commands.draw_count());
         bool known = false;
         for (const auto& program : sm::kPrograms) if (d.program == &program) known = true;
         if (!known) return fail(d.name, "unknown shader program");
@@ -430,12 +433,82 @@ bool record_track_commands(const PreparedTrackScene& scene, const TrackDrawList&
                 ((scene.instances[entry.instance].instance_flags ^ 0x60U) & 0x50U) == 0 ? 1.0F : 0.0F;
             out.owning_draws().push_back(std::move(draw));
         }
+        if (options.wet_road_reflections && options.wet_lamps &&
+            !append_wet_lamp_uploads(*options.wet_lamps, out.owning_uploads(), error)) return false;
+        if (options.wet_road_reflections &&
+            !record_track_reflections(scene, options, out.owning_uploads(), out.reflections, error)) return false;
         commands = std::move(out);
         return true;
     } catch (const std::bad_alloc&) {
         error = "not enough memory for track draw commands";
         return false;
     }
+}
+
+std::size_t RecordedCommands::reflection_draw_count() const {
+    if (!generation_valid()) throw std::logic_error("expired command generation");
+    return source_ ? source_->reflection_draw_count() : reflections.size();
+}
+const RecordedDraw& RecordedCommands::reflection_draw(std::size_t i) const {
+    if (!generation_valid()) throw std::logic_error("expired command generation");
+    return source_ ? source_->reflection_draw(i) : reflections.at(i);
+}
+bool record_track_reflections(const PreparedTrackScene& scene, const RenderOptions& options,
+                              const UploadTable& uploads, std::vector<RecordedDraw>& draws,
+                              std::string& error, bool cull) {
+    draws.clear();
+    std::vector<TrackDrawListEntry> entries;
+    if (!track_reflection_entries(scene, options, entries, error, nullptr, cull)) return false;
+    const ResourceMap resources(uploads, scene.region.meshes.size(), scene.region.textures.size());
+    for (const auto& entry : entries) {
+        const auto& source = scene.region.draws[entry.draw];
+        const auto& instance = scene.instances[entry.instance];
+        RecordedDraw draw;
+        draw.group = entry.draw; draw.mesh = source.mesh; draw.instance = entry.instance;
+        draw.name = "reflection group " + std::to_string(entry.draw) + " copy " + std::to_string(entry.instance);
+        const auto transform = track_reflection_transform(instance);
+        for (std::size_t i = 0; i < 3; ++i) {
+            for (std::size_t j = 0; j < 3; ++j) draw.placement.rows[i*4+j] = transform.linear[i*3+j];
+            draw.placement.rows[12+i] = transform.translation[i];
+        }
+        const auto* texture = source.binding == BindingKind::resolved ? &scene.region.textures[source.texture] : nullptr;
+        if (!buffers(scene.region.meshes[source.mesh], source, resources, draw, error) ||
+            !pipeline(draw, true, texture, 0, source.texture_hash, options, error)) return false;
+        draws.push_back(std::move(draw));
+    }
+    return record_lamp_reflections(options, uploads, draws, error);
+}
+bool record_lamp_reflections(const RenderOptions& options, const UploadTable& uploads,
+                             std::vector<RecordedDraw>& draws, std::string& error) {
+    if (options.wet_lamps) {
+        const auto& lamps = *options.wet_lamps;
+        std::size_t resource = kNoHandle;
+        for (std::size_t i = 0; i < uploads.resources.size(); ++i)
+            if (uploads.resources[i].name == "wet lamp vertices") resource = i;
+        if (resource == kNoHandle) { error = "lamp uploads missing"; return false; }
+        CameraFrame camera;
+        if (!make_camera_frame(options.camera, options.width, options.height, camera, error)) return false;
+        for (std::size_t n = 0; n < lamps.lights.size(); ++n) {
+            TrackTransform placement;
+            if (!wet_road_lamp_placement(lamps.lights[n], camera, placement)) continue;
+            RecordedDraw draw; draw.name = "wet lamp " + std::to_string(n);
+            draw.vertex_resource = resource; draw.index_resource = resource+1; draw.texture_resource = resource+2;
+            draw.vertex_count = 4; draw.index_count = 6;
+            auto unlit = options; unlit.cull = CullMode::none;
+            if (!pipeline(draw, true, &lamps.texture, 0, lamps.texture.hash, unlit, error)) return false;
+            for (std::size_t i = 0; i < draw.program->variant_count; ++i)
+                if (std::strcmp(draw.program->variants[i].name, "additive") == 0) draw.pipeline = draw.program->variants[i];
+            draw.material.alpha[0] = 150.0F/255;
+            draw.material.environment_range[3] = 1; // Unlit effect sprite.
+            for (std::size_t i = 0; i < 3; ++i) {
+                for (std::size_t j = 0; j < 3; ++j) draw.placement.rows[i*4+j] = placement.linear[i*3+j];
+                draw.placement.rows[12+i] = placement.translation[i];
+            }
+            if (draws.size() >= 4096) { error = "lamp reflection capacity exceeded"; return false; }
+            draws.push_back(std::move(draw));
+        }
+    }
+    return true;
 }
 
 bool reserve_draw_uniforms(const RecordedCommands& commands, MemoryArena& arena,

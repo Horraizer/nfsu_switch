@@ -75,7 +75,7 @@ void main()
     }
 
     uint shade = 256u;
-    if ((frame.options.z & 1u) != 0u && has_normal) {
+    if ((frame.options.z & 1u) != 0u && has_normal && material.environment_range.w < 0.5) {
         float k = 0.35 + 0.65 * max(0.0, dot(normal, frame.light.xyz));
         shade = uint(floor(clamp(k, 0.0, 1.0) * 256.0 + 0.5));
     }
@@ -91,7 +91,7 @@ void main()
         uint(clamp(float(texel.a) * alpha_scale + 0.5, 0.0, 255.0));
 
     uvec3 color = texel.rgb;
-    if (frame.options.y != 0u) {
+    if (frame.options.y != 0u || material.environment_range.w > 0.5) {
         uvec3 vertex = uvec3(clamp(floor(inColor.rgb * 255.0 + 0.5), 0.0, 255.0));
         color = (color * vertex + 127u) / 255u;
     }

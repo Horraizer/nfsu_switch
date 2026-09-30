@@ -243,7 +243,9 @@ constexpr std::uint32_t kMaxEnvironmentPower = 64;
 bool validate_material_coefficients(
     const MaterialCoefficients& coefficients, std::string& error);
 
+struct WetRoadLamps;
 struct RenderOptions {
+    const WetRoadLamps* wet_lamps = nullptr;
     std::uint32_t width = 1280;
     std::uint32_t height = 720;
     OrbitCamera camera;

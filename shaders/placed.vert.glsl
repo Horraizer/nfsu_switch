@@ -50,8 +50,7 @@ void main()
     vec3 slot = vec3(inPosition.x, inPosition.z, inPosition.y);
     vec3 moved = slot.x * instance.rows[0].xyz + slot.y * instance.rows[1].xyz +
                  slot.z * instance.rows[2].xyz + instance.rows[3].xyz;
-    // Retail reflection source pass: negate local vertical scale, keep origin.
-    if ((frame.options.z & 4u) != 0u) moved.z -= 2.0 * slot.z * instance.rows[2].z;
+    // Reflection source placements are prepared with the retail 0x200 exception.
     vec3 world = vec3(moved.x, moved.z, -moved.y);
 
     // project_point: a look-at basis and a D3D-style projection, so z is 0

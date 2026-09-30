@@ -1,4 +1,5 @@
 #include "nfsu/track_render.h"
+#include "nfsu/track_reflections.h"
 
 #include <algorithm>
 #include <cmath>
@@ -413,7 +414,9 @@ bool render_track_draw_list(
         RenderStats mirror_stats; TrackRenderStats mirror_track;
         if (!render_track_draw_list(scene, list, mirror, limits, reflected,
                                    mirror_stats, mirror_track, error)) return false;
-        track_stats.reflection_draws = mirror_track.entries_drawn;
+        const auto geometry_triangles = mirror_stats.triangles_submitted;
+        if (options.wet_lamps && !render_wet_road_lamps(*options.wet_lamps, mirror, limits, reflected, mirror_stats, error)) return false;
+        track_stats.reflection_draws = mirror_track.entries_drawn + (mirror_stats.triangles_submitted-geometry_triangles)/2;
         track_stats.reflection_triangles = mirror_stats.triangles_submitted;
         track_stats.reflection_fragments = mirror_stats.fragments;
     }
@@ -431,13 +434,23 @@ bool render_track_draw_list(
     // uses, which is the rule TrackDrawListCost::texture_binds applies.
     std::size_t bound = kNoHandle;
     bool has_bound = false;
-    for (const TrackDrawListEntry& entry : list.entries) {
+    std::vector<TrackDrawListEntry> reflection_entries;
+    if (options.reflection_pass && !track_reflection_entries(scene, options, reflection_entries, error)) return false;
+    const auto& entries = options.reflection_pass ? reflection_entries : list.entries;
+    if (options.reflection_pass) {
+        std::uint64_t triangles = 0;
+        for (const auto& entry : entries) triangles += scene.region.draws[entry.draw].index_count/3;
+        if (triangles > limits.max_submitted_triangles || triangles >= kNoTriangle) {
+            error = "reflection triangles exceed submitted limit"; return false;
+        }
+    }
+    for (const TrackDrawListEntry& entry : entries) {
         const TrackDraw& draw = scene.region.draws[entry.draw];
         const PreparedTrackInstance& instance = scene.instances[entry.instance];
         if (options.reflection_pass && ((instance.instance_flags ^ 0x60U) & 0x50U) != 0) continue;
         TrackTransform placement = instance.transform;
         // speed.exe 0x446103..0x446108: reflect about this instance's local origin.
-        if (options.reflection_pass) placement.linear[8] = -placement.linear[8];
+        if (options.reflection_pass) placement = track_reflection_transform(instance);
         const PreparedTrackMesh& mesh = scene.region.meshes[draw.mesh];
         if (group_named[entry.draw] == 0) {
             group_named[entry.draw] = 1;

@@ -277,6 +277,13 @@ bool place(
 
             PreparedTrackInstance placed;
             placed.mesh = lookup.mesh;
+            auto reflected = look_up_slot(meshes, object, 4);
+            for (std::size_t s = 0; !reflected.resolved && s < kSceneryObjectChainSlots; ++s)
+                reflected = look_up_slot(meshes, object, s);
+            if (reflected.resolved) {
+                if (reflected.mesh >= kNoReflectionMesh) { error = "reflection mesh index exceeds u32"; return false; }
+                placed.reflection_mesh = static_cast<std::uint32_t>(reflected.mesh);
+            }
             placed.transform = track_instance_transform(instance);
             placed.section_index = section.index;
             placed.section_number = section.number;
@@ -715,6 +722,9 @@ bool validate_prepared_track_scene(
                         std::to_string(i);
                 return false;
             }
+        }
+        if (instance.reflection_mesh != kNoReflectionMesh && instance.reflection_mesh >= scene.region.meshes.size()) {
+            error = "reflection mesh out of range"; return false;
         }
         if (instance.mesh >= scene.region.meshes.size()) {
             error = "scene instance " + std::to_string(i) + " names mesh " +

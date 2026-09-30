@@ -184,8 +184,8 @@ int main(int argc, char** argv) {
         require(replay.load(text, error), error);
         require(scene.cache_bytes() <= 8*kMiB,"command cache exceeded metadata limit");
         std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 8*kMiB << '\n';
-        // #223: 20 suppressed car draws and one added cache upload record: -540 bytes.
-        require(scene.cache_bytes() == 3825239,"event 1 command cache metadata estimate differs from pin");
+        // #183: two reflection vector headers add 48 bytes; wet payloads stay lazy.
+        require(scene.cache_bytes() == 3825287,"event 1 command cache metadata estimate differs from pin");
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';
         require(scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes() <=
@@ -201,6 +201,20 @@ int main(int argc, char** argv) {
                 (wet_frame.commands.frame.options[2] & 1U) == (dry_options & 1U) &&
                 wet_frame.commands.draw_count() == dry_draw_count,
                 "wet-road toggle did not reach the cached race frame independently of flat shading");
+        require(wet_frame.commands.reflection_draw_count() > 0, "wet reflection source is empty");
+        require(validate_recorded_commands(wet_frame.commands, error), error);
+        RaceGpuFrame wet_reference;
+        require(scene.frame(race.session(), wet_reference, error, nullptr, true), error);
+        require(wet_reference.commands.reflection_draw_count() == wet_frame.commands.reflection_draw_count(),
+                "cached/reference reflection draw counts differ");
+        for (std::size_t i = 0; i < wet_reference.commands.reflection_draw_count(); ++i) {
+            const auto& a = wet_frame.commands.reflection_draw(i);
+            const auto& b = wet_reference.commands.reflection_draw(i);
+            require(a.index_count == b.index_count && a.mesh == b.mesh && a.group == b.group &&
+                    std::memcmp(&a.placement, &b.placement, sizeof a.placement) == 0 &&
+                    std::memcmp(&a.material, &b.material, sizeof a.material) == 0,
+                    "cached/reference reflection definition differs");
+        }
         scene.set_wet_road_reflections(false);
         require(scene.frame(race.session(), frame, error), error);
         require(frame.commands.frame.options[2] == dry_options,

@@ -2,6 +2,7 @@
 #include "nfsu/race_events.h"
 #include "nfsu/track_residency.h"
 #include "nfsu/track_render.h"
+#include "nfsu/track_reflections.h"
 #include "nfsu/stock_frame.h"
 #include "nfsu/screen_text.h"
 #include "nfsu/race_window.h"
@@ -176,6 +177,7 @@ public:
         require(build_track_draw_list(track,visible,order,list,error),error);
         dirty=false; prepare_cost.add(begin);
     }
+    WetRoadLamps lamps;
     bool wet_road_reflections = false;
     std::vector<unsigned char> render(const RaceSession& session) {
         prepare(); const auto begin=Clock::now(); std::string error;
@@ -184,6 +186,7 @@ public:
         Frame background; RenderStats stats; TrackRenderStats track_stats;
         RenderOptions track_options = options;
         track_options.wet_road_reflections = wet_road_reflections;
+        track_options.wet_lamps = wet_road_reflections ? &lamps : nullptr;
         track_options.material_state = MaterialStateMode::retail;
         require(render_track_draw_list(track,list,track_options,{},background,stats,track_stats,error),error);
         require(drive_place_instances(base,session.car(),session.spec(),car.scene.instances,
@@ -271,6 +274,7 @@ int run(int argc, char** argv) {
     scene.files.pack=root/"Tracks"/track_stream_pack_file_name(*info);
     scene.files.has_pack=fs::exists(scene.files.pack);
     scene.load_car(root,root/"Tracks"/track_texture_file_name(slot.track));
+    if (wet_road_reflections) require(load_wet_road_lamps(root, course.world, scene.lamps, error),error);
     Sha256 sequence; const std::string version="NFSU_RACE_STATE 1\n";
     sequence.update(version.data(),version.size());
     for (const auto& step : startup) {

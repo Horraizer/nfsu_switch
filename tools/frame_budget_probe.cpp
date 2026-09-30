@@ -188,14 +188,9 @@ void sample(RaceGpuScene& scene, RaceRun& race) {
     std::set<decltype(state_key(RecordedDraw{}))> states;
     std::uint64_t track_triangles = 0, texture_runs = 0, state_runs = 0, vb_runs = 0, ib_runs = 0;
     std::size_t textured = 0;
-    std::uint64_t reflected_draws = 0, reflected_triangles = 0;
     for (std::size_t i = 0; i < frame.track_draws; ++i) {
         const auto view = frame.commands.draw_view(i);
         const auto& d = view.definition;
-        if (view.placement.rows[7] > 0.5F) {
-            ++reflected_draws;
-            reflected_triangles += d.index_count / 3;
-        }
         textures.insert(d.texture_resource); meshes.insert(d.mesh); instances.insert(view.instance);
         sections.insert(source.instances.at(view.instance).section_index); states.insert(state_key(d));
         track_triangles += d.index_count/3; textured += d.texture_resource != kNoHandle;
@@ -212,8 +207,15 @@ void sample(RaceGpuScene& scene, RaceRun& race) {
         << " sections=" << sections.size() << " instances=" << instances.size() << " textured=" << textured
         << " texture_runs=" << texture_runs << " state_runs=" << state_runs << " vb_runs=" << vb_runs
         << " ib_runs=" << ib_runs << " index_visits_per_validation=" << frame.triangles*3 << '\n';
-    std::cout << "REFLECTION_SOURCE draws=" << reflected_draws
-        << " triangles=" << reflected_triangles << " target=160x90 update=every-frame\n";
+    std::uint64_t reflected_triangles = 0, reflected_lamps = 0;
+    for (std::size_t i = 0; i < frame.commands.reflection_draw_count(); ++i) {
+        const auto& d = frame.commands.reflection_draw(i);
+        reflected_triangles += d.index_count/3;
+        reflected_lamps += d.material.environment_range[3] > 0.5F;
+    }
+    std::cout << "REFLECTION_SOURCE draws=" << frame.commands.reflection_draw_count()
+        << " triangles=" << reflected_triangles << " lamps=" << reflected_lamps
+        << " cache_bytes=" << scene.cache_bytes() << " target=160x90 update=every-frame\n";
     std::cout << "ALLOCATIONS mean=" << double(allocations)/120 << " max=" << max_allocations << '\n';
     std::cout << "FRAME_INDEX_VISITS mean=" << double(index_visits)/120 << " max=" << max_index_visits << '\n';
     std::cout << "FRAME_MS cull=" << sums.cull_ms/120 << " list=" << sums.list_ms/120 << " car=" << sums.car_ms/120
@@ -227,9 +229,12 @@ void sample(RaceGpuScene& scene, RaceRun& race) {
 }
 int main(int argc, char** argv) {
     try {
-        require(argc == 3, "usage: nfsu_frame_budget_probe RETAIL_ROOT RECORDING");
+        require(argc == 3 || (argc == 5 && std::strcmp(argv[3], "--wet-road-reflections") == 0 &&
+            (std::strcmp(argv[4], "off") == 0 || std::strcmp(argv[4], "on") == 0)),
+            "usage: nfsu_frame_budget_probe RETAIL_ROOT RECORDING [--wet-road-reflections off|on]");
         std::string error;
         RaceGpuScene scene;
+        scene.set_wet_road_reflections(argc == 5 && std::strcmp(argv[4], "on") == 0);
         struct Loading : TrackSliceLoadObserver {
             std::chrono::steady_clock::time_point begin;
             double preparation_ms = 0;
