@@ -668,13 +668,17 @@ Fixture tilted() {
 }
 
 Fixture floor() {
-    auto meshes = tilted_meshes();
+    auto meshes = fixture_meshes();
     for (auto& vertex : meshes[0].vertices) {
-        const float world_z = vertex.py;
-        vertex.py = 0.0F;
-        vertex.pz = -world_z;
+        vertex.px *= 8;
+        vertex.pz = -vertex.py * 8;
+        vertex.py = 0;
     }
-    return make_fixture(meshes, fixture_sections());
+    for (auto& vertex : meshes[1].vertices) vertex.py += 2;
+    auto fixture = make_fixture(meshes, fixture_sections());
+    fixture.scene.region.meshes[0].vertex_format_flags = 0x40;
+    fixture.scene.instances[2].instance_flags = 0x40;
+    return fixture;
 }
 
 // A third fixture: one mesh whose first triangle has a DIFFERENT unique
@@ -2044,11 +2048,12 @@ void test_render_honours_the_options() {
     check_eq_u64(shaded_stats.pixels_drawn, plain_stats.pixels_drawn,
                  "flat shading covers the same pixels");
 
-    // Wet reflections affect upward-facing textured track surfaces only.
+    // Wet reflections use the solid selector and the vertex alpha mask.
     const Fixture wet_fixture = floor();
     const nfsu::TrackDrawList wet_list =
         make_list(wet_fixture.scene, nfsu::TrackDrawOrder::visible_instance);
     nfsu::RenderOptions wet = small_options();
+    wet.vertex_color = true;
     wet.camera.pitch_deg = 25.0;
     wet.camera.target.y = 2.0;
     wet.wet_road_reflections = true;
@@ -2062,6 +2067,7 @@ void test_render_honours_the_options() {
     nfsu::RenderStats dry_tilt_stats;
     nfsu::TrackRenderStats dry_tilt_track;
     nfsu::RenderOptions dry_tilt = small_options();
+    dry_tilt.vertex_color = true;
     dry_tilt.camera.pitch_deg = wet.camera.pitch_deg;
     dry_tilt.camera.target.y = wet.camera.target.y;
     check_ok(nfsu::render_track_draw_list(wet_fixture.scene, wet_list, dry_tilt,
@@ -2069,9 +2075,42 @@ void test_render_honours_the_options() {
                                        dry_tilt_track, error),
               "the dry tilted render succeeds", error);
     check(wet_frame.rgba() != dry_tilt_frame.rgba(),
-          "wet reflections add a road sheen and colored streaks");
+          "wet reflections sample the actual mirrored source geometry");
     check(wet_stats.pixels_drawn == dry_tilt_stats.pixels_drawn,
           "wet reflections preserve surface coverage");
+    check(wet_track.reflection_draws > 0 && wet_track.reflection_fragments > 0,
+          "the reflection producer draws a nonempty selected scene");
+    auto render_wet = [&](const Fixture& changed) {
+        nfsu::Frame result;
+        check_ok(nfsu::render_track_draw_list(changed.scene, wet_list, wet, limits,
+            result, wet_stats, wet_track, error), "changed reflection scene renders", error);
+        return result.rgba();
+    };
+    auto changed = wet_fixture;
+    changed.scene.region.meshes[0].vertex_format_flags = 0;
+    check(render_wet(changed) == dry_tilt_frame.rgba(),
+          "an unflagged horizontal surface never receives reflections");
+    changed = wet_fixture;
+    for (auto& v : changed.scene.region.meshes[0].vertices) v.color[3] = 0;
+    check(render_wet(changed) == dry_tilt_frame.rgba(),
+          "zero vertex alpha removes the reflection without changing diffuse");
+    changed = wet_fixture;
+    for (std::size_t p = 3; p < changed.scene.region.textures[0].rgba.size(); p += 4)
+        changed.scene.region.textures[0].rgba[p] = 0;
+    check(render_wet(changed) == dry_tilt_frame.rgba(),
+          "zero diffuse alpha removes the reflection without changing opaque diffuse");
+    changed = wet_fixture;
+    changed.scene.instances[2].instance_flags = 0;
+    check(render_wet(changed) == dry_tilt_frame.rgba(),
+          "removing the source selector removes its reflection");
+    changed = wet_fixture;
+    for (auto& v : changed.scene.region.meshes[1].vertices) v.color[0] = 0;
+    const auto recolored = render_wet(changed);
+    std::size_t changed_reflections = 0;
+    for (std::size_t p = 0; p < recolored.size(); p += 4)
+        if (wet_frame.rgba()[p] != dry_tilt_frame.rgba()[p] &&
+            recolored[p] != wet_frame.rgba()[p]) ++changed_reflections;
+    check(changed_reflections > 0, "source color changes its road reflection");
 
     // The v flip. The corner texture has four distinct texels, so sampling
     // (u, 1 - v) must move colour.

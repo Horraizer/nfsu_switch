@@ -227,6 +227,7 @@ struct TrackRenderStats {
     // group": the case is unreachable from a file rather than impossible,
     // a hand-built scene can differ, and a backend reading these two
     // should not have to know which.
+    std::uint64_t reflection_draws = 0, reflection_triangles = 0, reflection_fragments = 0;
     std::uint64_t entries = 0;
     std::uint64_t entries_drawn = 0;
     // By the binding of the entry's group. resolved entries draw with a

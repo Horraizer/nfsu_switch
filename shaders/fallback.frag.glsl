@@ -9,7 +9,7 @@
 // Interface: shaders/car_fallback.manifest and track_fallback.manifest.
 
 layout (location = 0) in vec3 inWorld;
-layout (location = 1) in vec3 inColor;
+layout (location = 1) in vec4 inColor;
 layout (location = 2) in vec2 inTexcoord;
 
 layout (location = 0) out vec4 outColor;
@@ -62,13 +62,13 @@ void main()
     }
 
     uint shade = 256u;
-    if (frame.options.z != 0u && has_normal) {
+    if ((frame.options.z & 1u) != 0u && has_normal) {
         float k = 0.35 + 0.65 * max(0.0, dot(normal, frame.light.xyz));
         shade = uint(floor(clamp(k, 0.0, 1.0) * 256.0 + 0.5));
     }
 
     if (frame.options.y != 0u) {
-        uvec3 vertex = uvec3(clamp(floor(inColor * 255.0 + 0.5), 0.0, 255.0));
+        uvec3 vertex = uvec3(clamp(floor(inColor.rgb * 255.0 + 0.5), 0.0, 255.0));
         color = (color * vertex + 127u) / 255u;
     }
     uvec3 value = min(uvec3(255u), (color * shade + 128u) >> 8u);
@@ -78,5 +78,7 @@ void main()
                  lamp_mode == 3u ? uvec3(192u, 28u, 18u) : uvec3(0u);
     value += ((uvec3(255u) - value) * lamp + 127u) / 255u;
 
-    outColor = vec4(vec3(value) / 255.0, 1.0);
+    // Fallback variants write RGB only and never blend. Carry alpha through
+    // the shared interface; it has no effect on their framebuffer contents.
+    outColor = vec4(vec3(value) / 255.0, inColor.a);
 }

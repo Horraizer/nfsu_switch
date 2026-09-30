@@ -176,12 +176,14 @@ public:
         require(build_track_draw_list(track,visible,order,list,error),error);
         dirty=false; prepare_cost.add(begin);
     }
+    bool wet_road_reflections = false;
     std::vector<unsigned char> render(const RaceSession& session) {
         prepare(); const auto begin=Clock::now(); std::string error;
         RenderOptions options; options.width=640; options.height=360;
         require(drive_render_camera(session.camera(),ChaseFovMode::vertical_4_3,640,360,options.camera,error),error);
         Frame background; RenderStats stats; TrackRenderStats track_stats;
         RenderOptions track_options = options;
+        track_options.wet_road_reflections = wet_road_reflections;
         track_options.material_state = MaterialStateMode::retail;
         require(render_track_draw_list(track,list,track_options,{},background,stats,track_stats,error),error);
         require(drive_place_instances(base,session.car(),session.spec(),car.scene.instances,
@@ -199,6 +201,7 @@ public:
 
 int run(int argc, char** argv) {
     fs::path root,input,output,generate;
+    bool wet_road_reflections=false;
     bool live=false, smoke=false; std::set<std::size_t> frames;
     // The path arguments arrive in the ANSI code page on Windows; convert
     // them as the other tools do, so a path outside ASCII opens.
@@ -209,6 +212,7 @@ int run(int argc, char** argv) {
         if (a=="--help") {
             std::cout << "nfsu_race --root RETAIL (--input RECORDING | --generate RECORDING | --live)\n"
                          "  [--out NEW_DIRECTORY --frames 180,600,6000,22000,40000]\n"
+                         "  [--wet-road-reflections on|off]\n"
                          "  live mode plays retail race audio when the device and banks are available\n";
             return 0;
         }
@@ -219,6 +223,10 @@ int run(int argc, char** argv) {
         else if (a=="--input") input=nfsu::argument_path(argv[i]);
         else if (a=="--generate") generate=nfsu::argument_path(argv[i]);
         else if (a=="--out") output=nfsu::argument_path(argv[i]);
+        else if (a=="--wet-road-reflections") {
+            require(value=="on" || value=="off", "--wet-road-reflections must be on or off");
+            wet_road_reflections = value=="on";
+        }
         else if (a=="--frames") {
             std::istringstream in(value); std::string token;
             while (std::getline(in,token,',')) {
@@ -259,7 +267,7 @@ int run(int argc, char** argv) {
     TrackResidencyOptions options; options.budget_bytes=track_stream_pool_bytes(table);
     TrackResidencySession residency; std::vector<TrackResidencyStep> startup;
     require(residency.start(table,zones,slot.track,costs,options,startup,error),error);
-    RaceScene scene(table); scene.files.stream=root/"Tracks"/track_stream_file_name(*info);
+    RaceScene scene(table); scene.wet_road_reflections=wet_road_reflections; scene.files.stream=root/"Tracks"/track_stream_file_name(*info);
     scene.files.pack=root/"Tracks"/track_stream_pack_file_name(*info);
     scene.files.has_pack=fs::exists(scene.files.pack);
     scene.load_car(root,root/"Tracks"/track_texture_file_name(slot.track));

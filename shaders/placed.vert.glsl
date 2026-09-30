@@ -13,13 +13,12 @@
 
 // MeshVertex or TrackVertex px, py, pz, in that memory order.
 layout (location = 0) in vec3 inPosition;
-// Vertex color bytes 0..2 as unorm. The reference multiplies by those three
-// bytes only (RenderOptions::vertex_color).
-layout (location = 1) in vec3 inColor;
+// Vertex RGB modulates diffuse; alpha is the retail wet-surface mask.
+layout (location = 1) in vec4 inColor;
 layout (location = 2) in vec2 inTexcoord;
 
 layout (location = 0) out vec3 outWorld;
-layout (location = 1) out vec3 outColor;
+layout (location = 1) out vec4 outColor;
 layout (location = 2) out vec2 outTexcoord;
 
 // The reference camera (CameraFrame) and the per-frame render options.
@@ -32,7 +31,7 @@ layout (std140, binding = 0) uniform Frame {
     vec4 projection;
     // The normalized flat-shading light direction.
     vec4 light;
-    // flip_v, vertex_color, flat shading, alpha_cutoff
+    // flip_v, vertex_color, bits (flat=1, wet=2, reflected source=4), alpha_cutoff
     uvec4 options;
 } frame;
 
@@ -51,6 +50,8 @@ void main()
     vec3 slot = vec3(inPosition.x, inPosition.z, inPosition.y);
     vec3 moved = slot.x * instance.rows[0].xyz + slot.y * instance.rows[1].xyz +
                  slot.z * instance.rows[2].xyz + instance.rows[3].xyz;
+    // Retail reflection source pass: negate local vertical scale, keep origin.
+    if ((frame.options.z & 4u) != 0u) moved.z -= 2.0 * slot.z * instance.rows[2].z;
     vec3 world = vec3(moved.x, moved.z, -moved.y);
 
     // project_point: a look-at basis and a D3D-style projection, so z is 0

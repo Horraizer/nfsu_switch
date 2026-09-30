@@ -14,7 +14,7 @@
 // Interface: shaders/car_textured.manifest and track_textured.manifest.
 
 layout (location = 0) in vec3 inWorld;
-layout (location = 1) in vec3 inColor;
+layout (location = 1) in vec4 inColor;
 layout (location = 2) in vec2 inTexcoord;
 
 layout (location = 0) out vec4 outColor;
@@ -44,6 +44,7 @@ layout (std140, binding = 2) uniform Material {
 } material;
 
 layout (binding = 0) uniform sampler2D baseTexture;
+layout (binding = 1) uniform sampler2D reflectionTexture;
 
 void main()
 {
@@ -91,7 +92,7 @@ void main()
 
     uvec3 color = texel.rgb;
     if (frame.options.y != 0u) {
-        uvec3 vertex = uvec3(clamp(floor(inColor * 255.0 + 0.5), 0.0, 255.0));
+        uvec3 vertex = uvec3(clamp(floor(inColor.rgb * 255.0 + 0.5), 0.0, 255.0));
         color = (color * vertex + 127u) / 255u;
     }
     uvec3 value = min(uvec3(255u), (color * shade + 128u) >> 8u);
@@ -113,18 +114,13 @@ void main()
                  lamp_mode == 3u ? uvec3(192u, 28u, 18u) : uvec3(0u);
     value += ((uvec3(255u) - value) * lamp + 127u) / 255u;
 
-    if ((frame.options.z & 2u) != 0u && material.environment_min.w > 0.5 &&
-        has_normal && normal.y > 0.70 && inWorld.y < frame.eye.y - 0.25) {
-        float grazing = clamp(0.35 + (1.0 - abs(dot(normal, normalize(to_eye)))) * 1.2,
-                              0.0, 1.0);
-        float wet = clamp((normal.y - 0.70) * 3.0, 0.0, 1.0) * grazing;
-        float streak_a = max(0.0, (sin(uv.x * 4.7 + uv.y * 0.23 + 0.5) - 0.80) * 5.0);
-        float streak_b = max(0.0, (sin(uv.x * 2.1 - uv.y * 0.8 + 1.1) - 0.87) * 7.69);
-        vec3 reflected = vec3(streak_a * 42.0 + streak_b * 58.0,
-                              streak_a * 104.0 + streak_b * 72.0,
-                              streak_a * 156.0 + streak_b * 39.0);
-        value = uvec3(min(vec3(255.0), vec3(value) * (1.0 + wet * 0.12) +
-                          reflected * wet * 0.25));
+    if ((frame.options.z & 2u) != 0u && material.environment_min.w > 0.5) {
+        vec3 eye_delta = inWorld - frame.eye.xyz;
+        vec2 screen_uv = vec2(0.5) + vec2(dot(frame.right.xyz, eye_delta) * frame.projection.x,
+            -dot(frame.up.xyz, eye_delta) * frame.projection.y) * (0.5 / dot(frame.forward.xyz, eye_delta));
+        vec3 reflected = texture(reflectionTexture, screen_uv).rgb * 255.0;
+        float wet = clamp(inColor.a, 0.0, 1.0) * float(texel.a) / 255.0;
+        value = min(uvec3(255u), value + uvec3(floor(reflected * wet + 0.5)));
     }
     outColor = vec4(vec3(value) / 255.0, float(source_alpha) / 255.0);
 }

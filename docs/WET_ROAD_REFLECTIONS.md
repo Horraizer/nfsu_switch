@@ -1,92 +1,178 @@
 # Wet road reflections (#183)
 
-## Retail trace
+## Evidence and retail producer
 
-The read-only trace used Capstone 5.0.7 against the supplied `speed.exe`
-(SHA-256 `C0FAD450912952F53809A54690D235AA8B4E25B9F46650693C7CBEE1B4C074B7`)
-and XOR-decoded `fx` sources. Each read was bracketed by the 476-file retail
-manifest; before and after matched.
+The read-only Capstone 5.0.7 trace used `speed.exe`, SHA-256
+`C0FAD450912952F53809A54690D235AA8B4E25B9F46650693C7CBEE1B4C074B7`.
+Addresses are virtual addresses in that image. Research runs used
+`tools/frame_budget_evidence.py` to compare the full retail manifest before
+and after execution. The port reads `Global/GLOBALB.BUN`.
 
-- `0x0040C890` selects world effect 2 when the loaded track solid's `+0x0C`
-  flags contain `0x40`. That effect is `fx/worldreflect.efx`.
-- `0x0040C9D0..0x0040CA54` appends visible material groups from the selected
-  track solid. Material texture-info bytes `+81` and `+84` select the queue
-  row; the selected effect is the queue column.
-- `0x0040CA26..0x0040CA38` has a conditional override when the current
-  effect is 1, the material has more than one group, and the texture record's
-  `+0x56` byte is nonzero. It assigns the effect-0 descriptor at `0x71ABB8`;
-  it does not select effect 3. The trace does not establish a track draw that
-  selects `fx/worldheadlightreflect.efx`.
-- `0x0040ED50..0x0040F0CF` drains the effect/row queues. It calls
-  `0x0040F3D0` per material group; that routine skips unchanged effect and
-  texture state, then binds the effect texture parameter through its vtable
-  at `0x0040F41D` (offset `+0xD0`).
-- `worldreflect.efx` declares `ReflectedTex` and `ReflectedProj`, projects a
-  world vertex and samples the reflection texture; its color term is
-  multiplied by vertex alpha and diffuse alpha. Its source contains one-pass
-  and two-pass techniques, but the static pass count does not prove which
-  technique runs. `worldheadlightreflect.efx` also contains projected
-  reflection sampling and a `HeadlightTex` sample; the trace above does not
-  prove that this effect is selected for track draws.
+Recovered by static disassembly:
 
-The static trace establishes effect selection and the reflected-texture
-consumer. It does not establish the runtime producer for `ReflectedTex`, the
-contents of each reflected render, or per-section light values. The port has
-no equivalent reflection target today. The implementation below is therefore
-an explicitly visual approximation, not a claim of pixel-identical retail
-reflection.
+- `0x40C8BD..0x40C906` walks the selector table at `0x701440`:
+  bit 1 takes priority over 0x40, which takes priority over 0x80. The 0x40
+  row selects effect 2, associated with `fx/worldreflect.efx` by the effect
+  name table at `0x7014E0`. Track solid chunk `0x00134900 +12` supplies
+  these flags. `track_vertex_format` retains the selector precedence.
+- The XOR-0xAA effect source projects vertices to screen UV with flipped Y.
+  Its reflection term is `vertex alpha * diffuse alpha * ReflectedTex(uv)`.
+  Thus the track vertex color's fourth byte is the wetness mask; neither
+  an upward normal nor an invented road-height threshold selects wet areas.
+- `0x40A890..0x40A8F6`, gated by `0x700E90`, creates a one-level 320x240
+  render-target texture at `0x71AA28`, level-zero surface at `0x71AB68`,
+  and matching depth surface at `0x71AB64`. The D3D9 CreateTexture call
+  at `0x40A8C0` receives usage 1 and format from `0x702A94`.
+- The target descriptor at `0x71AA68` is used by view 4 (`0x7405E0`,
+  descriptor pointer `0x740638`). `0x40ABD0..0x40AC7A` binds its color and
+  depth targets, clears black/depth, and sets its viewport.
+- `0x40A671` calls the scene renderer `0x409580` each rendered frame.
+  `0x4095AE..0x4095D8` checks quality, active view, and target, then binds
+  and clears the reflection target. There is no reduced-rate or modulo
+  gate on this path. This is a static scheduling trace, not a GPU capture.
+- When quality `0x700E90 > 1`, `0x4095F5` submits scenery via `0x446730`,
+  followed by calls to `0x570DB0` and `0x570950`. The latter is the car
+  render-node path described in `PART_PLACEMENT.md` (wheel/brake matrix
+  copies at `0x570A77..0x570B02`); retail therefore includes dynamic car
+  content as well as scenery. Quality 1 skips these three calls.
+- The common tail calls `0x4AE650` for object `0x746DD0` at `0x40961E`,
+  then drains the queues at `0x409623`. That auxiliary producer is itself
+  gated by `0x4AE530`; it selects view-dependent data, iterates ten solid
+  records at `0x4AE73D..0x4AE785`, and submits via `0x40C910`.
+  Its asset identity is not recovered here. `0x700EA0` additionally gates
+  effect calls `0x544F30`, `0x570D00`, `0x570C70`, and `0x4AE7D0` at
+  `0x409634..0x40966A`. These auxiliary effects are not implemented here.
+- Reflection culling passes context bit `0x800` at `0x40903B..0x409045`.
+  `0x53E2E7..0x53E2F3` adds low-byte 0x40 to the common 0x10 mask.
+  `0x445EDA..0x445EEB` rejects an instance if
+  `((instance.flags ^ 0x60) & 0x50) != 0`. This is a selected scene,
+  not every object and not a brightness classification.
+- For that context, `0x445F5B..0x445F91` selects reflection LOD slot 4
+  (runtime pointer object +0x34), subject to the object +0x20 threshold.
+- `0x4460B9..0x4460DA` builds the instance matrix and translation.
+  `0x4460F8..0x446108` negates matrix +0x28, its local vertical diagonal,
+  leaving translation +0x38 unchanged. For upright objects the mirror is
+  about the object's local-origin height. This does not establish a single
+  global road plane. The special instance bit 0x200 follows the identity/
+  null-placement branch at `0x446063..0x4460A6` instead.
+- `0x40E7B0..0x40E7D4` binds texture `0x71AA28` through the effect's +0x84
+  parameter handle (`ReflectedTex`, name at `0x701EE0`). The projected
+  reflection parameter is set in the same effect setup. Material queues
+  drain through `0x40ED50`; `0x40F41D` binds the material's diffuse texture.
+  The override at `0x40CA26..0x40CA38` chooses effect 0, not effect 3.
 
-## Port behavior and cost
+## Implemented approximation
 
-`--wet-road-reflections on|off` controls the CPU track-path render and the
-Switch race command. It defaults to `off`. The shader adds an upward-normal and
-road-height mask, a 12 percent maximum base sheen, and two broad colored
-streak ribbons from the road UVs. It adds no draw, sampler, texture upload, or
-render target. CPU reference rendering applies the same mask and color math.
-The source tracks `Global/GLOBALB.BUN`; it does not use `GlobalB.lzc` or
-`GLOBALA.BUN`.
+`--wet-road-reflections on|off` is the single effect control, default `off`,
+for the track-path probe, desktop race and Switch race. The old fixed cyan
+UV ribbons and base brightening have been removed.
 
-The estimate before implementation was 0.1-0.4 ms at 1280x720, assuming about
-300,000 shaded road fragments and two sine terms plus a few arithmetic
-operations per selected fragment. This is a workload estimate, not a Switch
-measurement. The known handheld scene mean is 20.59 ms against a 16.67 ms
-target, so the effect cannot be declared within budget until the coordinator
-captures the paired console profile.
+The producer draws the selected real track instances to a black 160x90
+color/depth target at 16:9, applying the local vertical-matrix sign change.
+It borrows the existing geometry and texture uploads. The race producer
+uses the already selected visible main-view draws. Main-view geometry/LOD
+and culling are reused, instead of loading reflection LOD 4 or doing a
+second visibility query. Car reflections, auxiliary effect producers and
+the special 0x200 placement branch are omitted. These are explicit
+approximations; this is not a complete reconstruction of the retail pass.
 
-The `#157` hand-given 1003 path was rendered at samples 0, 3000 and 6000,
-1280x720, with the same 6903-step path and cost hashes in both modes:
+The source is refreshed every frame, avoiding stale reflected signs during
+camera movement. Halving both dimensions from the comparison source of
+320x180 quarters its pixel area. Reducing frequency would save producer
+work but introduce temporal lag; it is not an additional user mode.
 
-- path sequence SHA-256: `F64185A1E34258C03126E86EC80DC021716D3F0FE509933F6A8B0BD4D18CB643`
-- path cost SHA-256: `0AF10104BAB722F0E186CB0861B76BA6F01ED90144363F6D0D394091350C9D5C`
+Only solids selecting the 0x40 row sample the target. Reflection color is
+added at the screen-projected position, multiplied by perspective-correct
+vertex alpha and diffuse texel alpha. Bilinear sampling clamps at edges.
+CPU and GPU use per-fragment masks and round additions with floor(x+0.5).
+The old per-triangle strength and GPU truncation difference are gone.
 
-| Sample | Dry TGA SHA-256 | Wet TGA SHA-256 |
-| ---: | --- | --- |
-| 0 | `A8270F7AA0DC1671807992BB24947B5FAD5843370032AE3A0183D90224ADD43C` | `9534DC2C76C58232FCF992C59658C9EE0CCF3503980F4B46BFB124818CBC3F5F` |
-| 3000 | `FB345706C07DDE9DF20F42501922D238181F0C668D6F9B39B05EABD9E4E92507` | `51FB1A4D035E74C557A289437AEFC4810DA89C4776BDD760105C4B39E6204750` |
-| 6000 | `EF5797014996C2A3813A50148F38982BC92A5840B37F009FDD93099D487381EF` | `6ECE035C462F762275AC32EEC82C1C9657CCFE488FFDEC85E33C83D599FB5F53` |
+CPU/deko3d pixel equality is still approximate: software fixed-point edges,
+double versus GPU float arithmetic, hardware filter precision, and the
+existing opaque-first GPU ordering can differ. No hardware image comparison
+has been measured for this revision. Main scene diffuse lighting retains
+the port's existing rule; retail's 2x diffuse term is not introduced here.
 
-The generated frames were kept outside source control. The supplied retail
-screenshots were inspected in place and were not copied into this repository.
+The source target is a render pass, not a procedural light pattern. Removing
+or recoloring a selected source changes its reflection. On the reviewed
+hand-path view at sample 6000, red/white barriers now reflect directly below
+the barriers and the false blue road band is gone. The supplied reference
+images were inspected in place, without copying them. Compared with retail
+06/12, the result remains softer and fainter, especially the long bright
+lamp streaks: it lacks retail reflection LOD/effect content and glow/bloom.
+It does not yet match the original game's complete lighting appearance.
 
-## Verification
+## Cost and reproduction
 
-- Default build: 103/103 CTest tests passed, including all 19 retail tests.
-- Release build: 105/105 CTest tests passed, including full-draw and full-slice
-  retail checks.
-- Switch build: 22/22 CTest tests passed after the profile page was updated to
-  label the wet state.
-- Retail source manifests contained 476 files and matched before and after
-  every retail-backed run.
-- The event-1 replay remained at 48,336 steps, total 13:26.90, state SHA-256
-  `79776F6DD3FC2727C99D3F6AD69A16E623BDEEB5CFFD2261458A15FC7F5B3BF9`, and
-  steps SHA-256
-  `E4D4D6E955D59F7FF11C3318BC455D08B7903CA46BBDE8E1FC3F2AC32AEA54E5`.
+The former 0.1-0.4 ms estimate is withdrawn. Its assumed 300,000 road pixels
+was already below the reviewer's changed-pixel count, and the implementation
+now has an actual extra scene pass. A changed-pixel count also excludes
+occluded work and is not a shaded-fragment count.
 
-## Pending console pair
+Run the existing hand-path command with `--benchmark-wet-road` in Release.
+This diagnostic compares off, 160-wide and 320-wide reflection sources;
+it is not a second game setting. For each captured pose it warms once,
+times three complete CPU renders, prints their median, changed pixels,
+and producer draw/triangle/fragment counts. Texture/scene loading and file
+writes are outside that timed interval. The normal `--out` frame uses the
+single on/off setting. `tools/race_replay_check.py` contains the full path
+arguments. Example, with RETAIL set to the read-only installation:
 
-The coordinator must launch the same pinned event-1 replay twice from the PR
-head, once with `--wet-road-reflections off` and once with it `on`, then
-capture GPU SCENE page 7 and REPLAY page 2 after 60 seconds. Preserve the
-replay's 48,336 steps, state hash, steps hash, and 13:26.90 result. Compare the
-same frame phase, mode and clocks. The `CONSOLE_REQUEST` comment records the
-exact request; this document will be updated with the returned measurement.
+```sh
+python tools/frame_budget_evidence.py "$RETAIL" out/wet-cost run -- build-release/nfsu_probe track-stream-path "$RETAIL/Tracks/STREAML1RA.BUN" "$RETAIL/Tracks/TRACKB1003.lzc" 1003 --hand-path 1003 --texture "$RETAIL/Tracks/TEX1003TRACK.BIN" --texture "$RETAIL/Global/INGAMEB.BUN" --texture "$RETAIL/Global/GLOBALB.BUN" --list none --frame-every 3000 --out out/wet-cost-frame --width 1280 --height 720 --wet-road-reflections on --benchmark-wet-road
+cmp out/wet-cost/before.json out/wet-cost/after.json
+python tools/frame_budget_evidence.py "$RETAIL" out/wet-race-cost run -- build-release/nfsu_frame_budget_probe "$RETAIL" tests/recordings/event1.txt
+cmp out/wet-race-cost/before.json out/wet-race-cost/after.json
+```
+
+Windows executables use `.exe`. `REFLECTION_SOURCE` reports the additional
+race draws and triangles actually selected by the Switch command path.
+The CPU hand-path benchmark uses its larger diagnostic list, so its counts
+must not be presented as Switch race counts. The review handoff records the
+measured outputs and the exact revision.
+
+Expected Switch cost: extra geometry/submission work for those selected
+race draws, a low-resolution color/depth pass, one bilinear source lookup
+per wet receiver fragment, and two render-target transitions. Geometry
+processing does not shrink with target resolution. GPU timestamps bracket
+both passes. The target/depth/uniform/descriptor allocations are included
+in the renderer's memory accounting, including the off-state allocation.
+Main-view scene textures are not duplicated or uploaded each frame.
+
+No millisecond estimate can be validated by the CPU rasterizer. Expect a
+positive frame cost; the already over-budget handheld baseline has no
+headroom for this effect. The existing baseline measurements are recorded
+in PR #227 comment 5627. The mandatory 60 fps criterion remains unmet and
+must not be waived or inferred from desktop timings. Default stays off.
+
+## Automated checks and integration
+
+- `nfsu_track_render_tests` checks source removal/recoloring, solid selection,
+  zero vertex/diffuse alpha, and unchanged surface coverage.
+- `nfsu_race_replay_check` checks paired wet/dry hand-path frames and wet race
+  frames, complete per-step states, trajectory and results. Its current pins
+  live in `tools/race_replay_check.py`, not this document.
+- `nfsu_shader_source_guards` prevents the F2 fallback whole-word options
+  check. Bit 0 is flat shading; bit 1 is wet; bit 2 is the internal producer.
+  All shader manifests/blobs carry RGBA vertex color and the two textured
+  samplers. Fallback writes RGB only, so its carried output alpha is inert.
+- The Release gate retains `nfsu_race_run_retail_full_draws`; the main draw
+  comparison remains complete. The extra pass reuses those definitions.
+- CTest retail fixtures and explicit research wrappers check the retail
+  installation before and after execution. Run default, Release, Switch,
+  and ASCII gates as required by `CLAUDE.md`.
+
+No merge of origin/main is part of this fix round. The coordinator resolves
+the known #227 conflicts and must carry the options bit masks into its
+shaders, retain its sky ordering, and rerun merged-result gates.
+
+## Console request
+
+The structured `CONSOLE_REQUEST` on PR #242 identifies the exact head.
+The coordinator runs the same replay with wet off/on, each with
+`-- sdmc:/nfsu --replay --profile-frame --wet-road-reflections off|on`,
+and captures GPU SCENE page 7 and REPLAY page 2 after 60 seconds with the
+same mode/clocks. Check mean/p95/max GPU time, frame time, stable GPFIFO and
+memory, replay pins and visual reflection placement during camera motion.
+Include a wet-on, flat-off view containing a fallback draw to verify F2.
+Console performance and visual acceptance remain pending that paired run.

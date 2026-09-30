@@ -116,11 +116,11 @@ What a backend puts in the uniform blocks, per the reference:
 | `Frame.eye`, `.right`, `.up`, `.forward` | the `CameraFrame` vectors |
 | `Frame.projection` | `focal_x`, `focal_y`, `near_plane`, `far_plane` |
 | `Frame.light` | `(kLightX, kLightY, kLightZ)`, normalized |
-| `Frame.options` | `flip_v`, `vertex_color`, bit 0 for flat shading and bit 1 for wet road reflections, `alpha_cutoff` |
-| `Instance.rows` | `PreparedInstance::transform` as four rows, the identity for a car profile with no instances; for a track instance, `TrackTransform::linear` as rows 0 to 2 and `translation` as row 3 |
+| `Frame.options` | `flip_v`, `vertex_color`, bit 0 for flat shading, bit 1 for wet road reflections, bit 2 for the internal reflection producer, `alpha_cutoff` |
+| `Instance.rows` | `PreparedInstance::transform` as four rows, the identity for a car profile with no instances; for a track instance, `TrackTransform::linear` as rows 0 to 2 and `translation` as row 3; row 1 w carries the reflection-source eligibility flag |
 | `Material.fallback` | `fallback_color` of the group's hash, as bytes 0..255, and 1 in w for the checker pattern |
 | `Material.alpha` | `alpha_min`, `alpha_range` when the reference evaluates the view term, else 1 and 0; 0 and 0 with 1 in z when the diffuse gate is closed |
-| `Material.environment_min`, `.environment_range` | `EnvmapMin`, `EnvmapRange` when the environment gate keeps the term, else zero |
+| `Material.environment_min`, `.environment_range` | `EnvmapMin`, `EnvmapRange` when the environment gate keeps the term, else zero; `environment_min.w` selects effect-2 wet track receivers |
 | `Material.environment_color` | the constant colour as bytes 0..255, and `EnvmapPower` in w |
 
 The alpha reference 170 means the source alpha byte must exceed 0xAA. This
@@ -315,8 +315,8 @@ offset, run without a gap, hold exactly the bytes its format fetches and be
 made of the elements it reads - 4-byte floats for `float32`, unsigned bytes
 for `unorm8` and `uint8`, signed bytes for `snorm8`, 2-byte integers of the
 format's sign for the 16-bit formats; exactly the four programs above; the
-textured programs to sample one nearest, wrapped `sampler2D` and the fallback
-programs none; both textured programs' variants to be exactly the alpha test
+textured programs to sample a nearest, wrapped diffuse `sampler2D` plus a
+linear, edge-clamped reflection `sampler2D`, and the fallback programs none; both textured programs' variants to be exactly the alpha test
 and blend pairs the two decoders produce, each named for its state; both
 fallback programs to have only `opaque`; `render_track_draw_list` to accept
 the retail state; and every variant to share the state above.

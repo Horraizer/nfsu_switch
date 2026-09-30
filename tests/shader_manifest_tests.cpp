@@ -333,8 +333,8 @@ void test_textures_follow_the_draw_kind(const Programs& programs, Reporter& r) {
             r.check(program.texture_count == 0, name + ": samples no texture");
             continue;
         }
-        r.check(program.texture_count == 1, name + ": samples one texture");
-        if (program.texture_count != 1) {
+        r.check(program.texture_count == 2, name + ": samples diffuse and reflection textures");
+        if (program.texture_count != 2) {
             continue;
         }
         const sm::Texture& texture = program.textures[0];
@@ -346,6 +346,12 @@ void test_textures_follow_the_draw_kind(const Programs& programs, Reporter& r) {
                 name + ": the texture is sampled at the nearest texel");
         r.check(texture.wrap == sm::Wrap::repeat,
                 name + ": the texture coordinate wraps");
+        const sm::Texture& reflection = program.textures[1];
+        r.check(reflection.stage == sm::Stage::fragment &&
+                    std::string(reflection.type) == "sampler2D" &&
+                    reflection.filter == sm::Filter::linear &&
+                    reflection.wrap == sm::Wrap::clamp_to_edge,
+                name + ": reflection uses linear screen sampling with clamped edges");
     }
 }
 

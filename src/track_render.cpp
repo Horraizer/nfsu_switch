@@ -401,6 +401,22 @@ bool render_track_draw_list(
             light.z /= length;
         }
     }
+    Frame reflected;
+    if (options.wet_road_reflections && !options.reflection_pass) {
+        RenderOptions mirror = options;
+        mirror.wet_road_reflections = false;
+        mirror.reflection_pass = true;
+        mirror.width = std::max(1U, std::min(options.width, options.reflection_width));
+        mirror.height = std::max(1U, mirror.width * options.height / options.width);
+        std::fill(std::begin(mirror.background), std::end(mirror.background), 0);
+        mirror.background[3] = 255;
+        RenderStats mirror_stats; TrackRenderStats mirror_track;
+        if (!render_track_draw_list(scene, list, mirror, limits, reflected,
+                                   mirror_stats, mirror_track, error)) return false;
+        track_stats.reflection_draws = mirror_track.entries_drawn;
+        track_stats.reflection_triangles = mirror_stats.triangles_submitted;
+        track_stats.reflection_fragments = mirror_stats.fragments;
+    }
     Rasterizer rasterizer(frame, options, limits, stats);
     std::uint32_t next_id = 0;
     stats.meshes = scene.region.meshes.size() +
@@ -418,12 +434,18 @@ bool render_track_draw_list(
     for (const TrackDrawListEntry& entry : list.entries) {
         const TrackDraw& draw = scene.region.draws[entry.draw];
         const PreparedTrackInstance& instance = scene.instances[entry.instance];
+        if (options.reflection_pass && ((instance.instance_flags ^ 0x60U) & 0x50U) != 0) continue;
+        TrackTransform placement = instance.transform;
+        // speed.exe 0x446103..0x446108: reflect about this instance's local origin.
+        if (options.reflection_pass) placement.linear[8] = -placement.linear[8];
         const PreparedTrackMesh& mesh = scene.region.meshes[draw.mesh];
         if (group_named[entry.draw] == 0) {
             group_named[entry.draw] = 1;
             ++track_stats.groups;
         }
         RasterMaterial raster;
+        if (reflected.width() && track_vertex_format(mesh.vertex_format_flags).mask == 0x40)
+            raster.reflected_scene = &reflected;
         std::size_t key = kNoHandle;
         switch (draw.binding) {
         case BindingKind::resolved:
@@ -493,7 +515,7 @@ bool render_track_draw_list(
             Vec3 world[3];
             for (int k = 0; k < 3; ++k) {
                 const TrackVertex& source = mesh.vertices[indices[k]];
-                world[k] = track_placed_vertex(source, instance.transform);
+                world[k] = track_placed_vertex(source, placement);
                 clip[k] = project_point(camera, world[k]);
                 clip[k].u = source.u;
                 clip[k].v = source.v;
@@ -530,22 +552,6 @@ bool render_track_draw_list(
                 if (to_eye < 0.0) {
                     normal = {-normal.x, -normal.y, -normal.z};
                 }
-            }
-            if (options.wet_road_reflections && has_normal && normal.y > 0.70 &&
-                world[0].y < camera.eye.y - 0.25) {
-                Vec3 view{camera.eye.x - world[0].x, camera.eye.y - world[0].y,
-                          camera.eye.z - world[0].z};
-                const double view_length = det_sqrt(view.x * view.x + view.y * view.y +
-                                                    view.z * view.z);
-                const double grazing = view_length > 0.0
-                    ? std::clamp(0.35 + (1.0 - std::abs((normal.x * view.x + normal.y * view.y +
-                                                  normal.z * view.z) / view_length)) * 1.2,
-                                 0.0, 1.0)
-                    : 0.0;
-                raster.wet_road_strength = std::clamp((normal.y - 0.70) * 3.0,
-                                                       0.0, 1.0) * grazing;
-            } else {
-                raster.wet_road_strength = 0.0;
             }
             raster.shade = 256;
             if (options.shading == ShadingMode::flat && has_normal) {

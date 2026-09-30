@@ -17,7 +17,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-foreach(required PYTHON SCRIPT RACE ROOT OUT_PARENT)
+foreach(required PYTHON SCRIPT RACE PROBE ROOT OUT_PARENT)
     if(NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
         message(FATAL_ERROR "FAIL: retail_replay_check.cmake needs -D${required}")
     endif()
@@ -32,7 +32,7 @@ file(MAKE_DIRECTORY "${OUT_PARENT}")
 
 execute_process(
     COMMAND "${PYTHON}" "${SCRIPT}" --exe "${RACE}" --root "${ROOT}"
-            --out "${OUT}" --check-driver
+            --out "${OUT}" --check-driver --probe "${PROBE}"
     RESULT_VARIABLE result
     OUTPUT_VARIABLE output
     ERROR_VARIABLE errors)
@@ -47,5 +47,8 @@ endif()
 # exit status of 0 without it is not a pass.
 if(NOT output MATCHES "(^|\n)PASS [^\n]*48336 step hashes, result, 11 frames, clean 120 Hz trajectory, generated recording")
     message(FATAL_ERROR "FAIL: race_replay_check.py exited 0 without its PASS line")
+endif()
+if(NOT output MATCHES "PASS wet replay:" OR NOT output MATCHES "PASS wet hand path:")
+    message(FATAL_ERROR "FAIL: missing paired wet reflection checks")
 endif()
 file(REMOVE_RECURSE "${OUT}")

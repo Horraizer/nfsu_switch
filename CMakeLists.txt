@@ -1775,6 +1775,7 @@ if(NFSU_BUILD_TESTS)
                     -DPYTHON=${Python3_EXECUTABLE}
                     -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/race_replay_check.py
                     -DRACE=$<TARGET_FILE:nfsu_race>
+                    -DPROBE=$<TARGET_FILE:nfsu_probe>
                     "-DROOT=${NFSU_RETAIL_ROOT}"
                     -DOUT_PARENT=${nfsu_retail_work}
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/retail_replay_check.cmake)

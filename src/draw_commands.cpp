@@ -133,8 +133,7 @@ bool pipeline(RecordedDraw& draw, bool track, const RenderTexture* texture,
     fallback_color(hash, color);
     for (std::size_t i = 0; i < 3; ++i) draw.material.fallback[i] = color[i];
     draw.material.fallback[3] = 1;
-    // The fragment stage restricts the optional effect to track draws.
-    draw.material.environment_min[3] = track ? 1.0F : 0.0F;
+    // environment_min.w is assigned from the track solid effect selector.
     return true;
 }
 
@@ -279,7 +278,7 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
         for (const auto& program : sm::kPrograms) if (d.program == &program) known = true;
         if (!known) return fail(d.name, "unknown shader program");
         if (d.program->buffer_count != 1 || d.program->buffers[0].index != 0 ||
-            d.program->attribute_count != 3 || d.program->texture_count > 1)
+            d.program->attribute_count != 3 || d.program->texture_count > 2)
             return fail(d.name, "unsupported shader interface");
         unsigned locations = 0;
         for (std::size_t i = 0; i < d.program->attribute_count; ++i) {
@@ -298,8 +297,11 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
                 "textured_opaque.frag.glsl" : "textured.frag.glsl";
         if (std::strcmp(d.program->vertex_source, "placed.vert.glsl") != 0 ||
             std::strcmp(d.program->fragment_source, fragment) != 0 ||
-            (textured && (d.program->textures[0].filter != sm::Filter::nearest ||
-                          d.program->textures[0].wrap != sm::Wrap::repeat)))
+            (textured && (d.program->texture_count != 2 ||
+                          d.program->textures[0].filter != sm::Filter::nearest ||
+                          d.program->textures[0].wrap != sm::Wrap::repeat ||
+                          d.program->textures[1].filter != sm::Filter::linear ||
+                          d.program->textures[1].wrap != sm::Wrap::clamp_to_edge)))
             return fail(d.name, "unsupported shader or sampler");
         if (d.vertex_resource >= resources.size() || d.index_resource >= resources.size())
             return fail(d.name, "buffer resource out of range");
@@ -421,6 +423,11 @@ bool record_track_commands(const PreparedTrackScene& scene, const TrackDrawList&
             const auto* texture = source.binding == BindingKind::resolved ? &scene.region.textures[source.texture] : nullptr;
             if (!buffers(scene.region.meshes[source.mesh], source, resources, draw, error) ||
                 !pipeline(draw, true, texture, 0, source.texture_hash, options, error)) return false;
+            draw.material.environment_min[3] =
+                track_vertex_format(scene.region.meshes[source.mesh].vertex_format_flags).mask == 0x40 ? 1.0F : 0.0F;
+            // Unused affine w lane: retail reflection source mask, instance +14.
+            draw.placement.rows[7] =
+                ((scene.instances[entry.instance].instance_flags ^ 0x60U) & 0x50U) == 0 ? 1.0F : 0.0F;
             out.owning_draws().push_back(std::move(draw));
         }
         commands = std::move(out);
