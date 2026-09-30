@@ -325,7 +325,8 @@ ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
         format("FRAME UNIFORMS %llu bytes",(unsigned long long)context.memory.frame_uniform_bytes),
         format("STATIC UNIFORMS %llu bytes",(unsigned long long)context.memory.static_uniform_bytes),
         format("PREPARED COMMANDS %llu bytes",(unsigned long long)context.memory.prepared_command_bytes),
-        format("LOAD HEAP OBS HWM %llu | over %llu bytes",(unsigned long long)heap.load_peak,
+        format("LOAD HEAP ABS %llu | DELTA %llu / 50331648 | OVER %llu",
+            (unsigned long long)heap.load_peak,(unsigned long long)heap.load_delta(),
             (unsigned long long)heap.load_overrun(50331648))
     });
     if (!failure.empty()) {

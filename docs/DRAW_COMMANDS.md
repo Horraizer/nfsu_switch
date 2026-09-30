@@ -110,10 +110,11 @@ build/nfsu_draw_commands_retail.exe <retail-root>
 
 Take file manifests before and after running it. It records and compares the
 painted and unpainted stock 240SX in both material modes and checks every
-instance matrix. Its off mode checks the painted and unpainted frame sizes
-and SHA-256 pins in `include/nfsu/stock_frame.h`. It is deliberately outside
-CTest, so the normal gates require no retail data. No retail or derived
-asset is tracked.
+instance matrix. Its off mode checks the painted and unpainted frame sizes and
+SHA-256 pins in `include/nfsu/stock_frame.h`. CTest runs it as
+`nfsu_draw_commands_retail` (label `retail`) when the build is configured with
+`-DNFSU_RETAIL_ROOT=<installation>`; a build configured without the root does
+not run it. No retail or derived asset is tracked.
 
 The library is classified neutral. The neutrality gate follows generated
 project headers from the build's generated include directory and scans their

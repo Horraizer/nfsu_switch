@@ -1,5 +1,6 @@
 #include "nfsu/race_audio.h"
 #include "nfsu/audio.h"
+#include "nfsu/arg_path.h"
 
 #include <cmath>
 #include <algorithm>
@@ -57,10 +58,17 @@ void test_missing_audio() {
           "missing music fallback and visible diagnostic");
 }
 
-void test_retail_music_prefix() {
-    const char* root = std::getenv("NFSU_RETAIL_ROOT");
-    if (!root || !*root) return;
-    std::ifstream input(std::filesystem::path(root) /
+// The retail root comes only from the command line (issue #233): CTest
+// registers the retail run, nfsu_race_audio_retail, with the configured
+// NFSU_RETAIL_ROOT, and the plain run has no root and no retail half.
+void test_retail_music_prefix(const std::filesystem::path* root) {
+    if (!root) {
+        std::cout << "race audio: retail check not run here, no root argument "
+                     "(see nfsu_race_audio_retail)\n";
+        return;
+    }
+    check(!root->empty(), "the retail root argument is not empty");
+    std::ifstream input(*root /
         "SNDSTREAMS/STRM_Music_UG0_MB.ast", std::ios::binary);
     check(bool(input), "retail music stream available");
     unsigned polls = 0;
@@ -70,7 +78,7 @@ void test_retail_music_prefix() {
           segments[1].rate == 22050 && segments[1].channels == 2 &&
           polls >= 20, "retail music bounded index and progress");
 
-    std::ifstream bank_input(std::filesystem::path(root) /
+    std::ifstream bank_input(*root /
         "Sound/STRMBANK/STRM_Music_UG0_MB.abk", std::ios::binary);
     check(bool(bank_input), "retail music bank available");
     const std::vector<std::uint8_t> bank_bytes(
@@ -113,16 +121,26 @@ void test_retail_music_prefix() {
     check(playlist.size() == 26 && playlist.front().offset == 717824 &&
           playlist.back().offset == 143246848,
           "retail playlist follows full song entries");
+    std::cout << "race audio: retail music prefix pinned\n";
 }
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc > 2) {
+        std::cerr << "usage: nfsu_race_audio_tests [RETAIL_ROOT]\n";
+        return 1;
+    }
     try {
         test_weights();
         test_playlist_order();
         test_missing_audio();
-        test_retail_music_prefix();
+        std::string argument_error;
+        check(nfsu::check_arguments(argc, argv, 1, argument_error),
+              argument_error.c_str());
+        const std::filesystem::path root =
+            argc == 2 ? nfsu::argument_path(argv[1]) : std::filesystem::path();
+        test_retail_music_prefix(argc == 2 ? &root : nullptr);
         std::cout << "race audio tests passed\n";
         return 0;
     } catch (const std::exception& e) {

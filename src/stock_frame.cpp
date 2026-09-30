@@ -290,19 +290,21 @@ static bool prepare_stock_frame_impl(
         const StockFrameInput& car_textures = inputs.file(StockFrameFile::car_textures);
         const StockFrameInput& parts_file = inputs.file(StockFrameFile::global_bun);
 
-        // load_car_part_database and load_car_type_table of --stock-parts.
-        frame.parts =
-            parse_car_part_database(parts_file.bytes.data(), parts_file.bytes.size());
-        for (const CarPartIssue& issue : frame.parts.issues) {
-            frame.issues.push_back(at(parts_file.path, issue.offset, issue.message));
-        }
-        frame.car_types =
-            parse_car_type_table(parts_file.bytes.data(), parts_file.bytes.size());
-        for (const CarTypeIssue& issue : frame.car_types.issues) {
-            frame.issues.push_back(at(parts_file.path, issue.offset, issue.message));
-        }
+        const auto parse_part_tables = [&] {
+            frame.parts =
+                parse_car_part_database(parts_file.bytes.data(), parts_file.bytes.size());
+            for (const CarPartIssue& issue : frame.parts.issues) {
+                frame.issues.push_back(at(parts_file.path, issue.offset, issue.message));
+            }
+            frame.car_types =
+                parse_car_type_table(parts_file.bytes.data(), parts_file.bytes.size());
+            for (const CarTypeIssue& issue : frame.car_types.issues) {
+                frame.issues.push_back(at(parts_file.path, issue.offset, issue.message));
+            }
+        };
         std::vector<std::uint32_t> retained_hashes;
         if (consumed) {
+            parse_part_tables();
             StockParts selected;
             if (!select_installed_parts(frame.parts, request.car_type_name,
                                         request.installed_parts, selected, error)) return false;
@@ -348,6 +350,7 @@ static bool prepare_stock_frame_impl(
                 frame.issues.push_back(at(input.path, issue.offset, issue.message));
             }
         }
+        if (!consumed) parse_part_tables();
         std::vector<const GeometryReport*> sources;
         sources.push_back(&frame.car_geometry);
         for (const GeometryReport& source : frame.stock_geometry) {

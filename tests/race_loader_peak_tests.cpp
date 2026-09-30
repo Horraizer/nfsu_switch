@@ -3,6 +3,7 @@
 #include "nfsu/race_gpu_scene.h"
 #include "nfsu/race_audio.h"
 #include "nfsu/posix_file_system.h"
+#include "nfsu/arg_path.h"
 
 #include <algorithm>
 #include <atomic>
@@ -96,9 +97,10 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "Usage: nfsu_race_loader_peak_tests [root [--baseline|--no-audio|--tuned]]\n");
             return 1;
         }
-        const std::filesystem::path root(argv[1]);
-        nfsu::RaceGpuScene scene;
         std::string error;
+        if (!check(nfsu::check_arguments(argc, argv, 1, error), error.c_str())) return 1;
+        const std::filesystem::path root = nfsu::argument_path(argv[1]);
+        nfsu::RaceGpuScene scene;
         struct Observer : nfsu::TrackSliceLoadObserver {
             std::size_t baseline = 0, checkpoints = 0, last_peak = 0;
             const char* peak_phase = "none";

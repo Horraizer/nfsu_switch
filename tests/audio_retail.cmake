@@ -1,11 +1,13 @@
-# Optional retail decode pin. The files are read only, and both manifests
-# cover all files in the three audio directories, including companions.
-if(NOT DEFINED ENV{NFSU_RETAIL_ROOT} OR "$ENV{NFSU_RETAIL_ROOT}" STREQUAL "")
-    message("SKIPPED: NFSU_RETAIL_ROOT is unset")
-    return()
+# Retail decode pin. The files are read only, and both manifests cover all
+# files in the three audio directories, including companions. CMakeLists.txt
+# registers this script only when NFSU_RETAIL_ROOT is configured, and passes
+# the root as -DRETAIL_ROOT (issue #233); without it the script fails, never
+# passes.
+if(NOT DEFINED RETAIL_ROOT OR "${RETAIL_ROOT}" STREQUAL "")
+    message(FATAL_ERROR "FAIL: audio_retail.cmake needs -DRETAIL_ROOT")
 endif()
 
-set(retail "$ENV{NFSU_RETAIL_ROOT}")
+set(retail "${RETAIL_ROOT}")
 file(GLOB_RECURSE retail_files LIST_DIRECTORIES false
     "${retail}/Sound/*" "${retail}/SNDSTREAMS/*"
     "${retail}/SpeechStreams/*")

@@ -28,9 +28,9 @@ FRAMES = (
 # #237: visual-only preset. Same full replay, state/trajectory and input pins.
 TUNED_STEPS = (180, 600, 6000, 13128, 48336)
 TUNED_FRAMES = (
-    # Launch view: red paint, TRIBAL5 and KIT01 rear bumper.
+    # Launch view: red body and the KIT01 rear bumper from the chase camera.
     "03B2EB455384BDE6167D1BA58713E5DEB35398F59D1863BCB65AA44050DE16B4",
-    # Acceleration: rotating BBS wheels and tread beside the kit.
+    # Early chase view: rear of the red car as the replay accelerates.
     "91834F1FDA67FA317F11C8DC9999E64DE0B1A1A4B591CF8BA5EC51EF60262AA5",
     # First-lap driving: tuned assembly follows the moving chase camera.
     "C2A4E02ABCFBB3315158F6729E22363445017B37B10A3F6DC002648BD2C74A80",
