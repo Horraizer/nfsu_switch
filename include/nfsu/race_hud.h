@@ -30,6 +30,11 @@ bool load_race_hud_atlas(const std::filesystem::path& root,
 void build_race_hud_frame(const RaceSession& session,
                           std::uint32_t width, std::uint32_t height,
                           RaceHudFrame& frame) noexcept;
+// Pure geometry entry point for synthetic gear, speed and RPM checks.
+void build_race_hud_frame_for_car(const VehicleState& car,
+                                  double max_rpm, double redline_rpm,
+                                  std::uint32_t width, std::uint32_t height,
+                                  RaceHudFrame& frame) noexcept;
 // CPU reference for exactly the quads sent to the final deko3d pass.
 void composite_race_hud(const RaceHudAtlas& atlas, const RaceHudFrame& frame,
                          unsigned char* rgba, std::uint32_t width,

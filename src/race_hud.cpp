@@ -11,7 +11,6 @@ namespace nfsu {
 namespace {
 
 struct AtlasRect { int x, y, w, h; };
-constexpr AtlasRect kCounter{0, 0, 256, 128};
 constexpr AtlasRect kScale{256, 0, 128, 128};
 constexpr AtlasRect kNeedle{384, 0, 16, 128};
 constexpr AtlasRect kHub{400, 0, 16, 16};
@@ -25,12 +24,11 @@ struct SourceSpec {
     std::uint32_t hash;
     AtlasRect rect;
 };
-constexpr std::array<SourceSpec, 6> kSources{{
-    {"Global/INGAMEB.BUN", 0x56E2CCCF, kCounter},
+constexpr std::array<SourceSpec, 5> kSources{{
     {"Global/INGAMEB.BUN", 0x40FAB387, kNeedle},
     {"Global/INGAMEB.BUN", 0x56447D19, kHub},
     {"Global/INGAMEB.BUN", 0x6D079188, kSpeedBox},
-    {"Global/HUDTEX.BIN", 0xC2A22C87, kScale},
+    {"Global/HUDTEX.BIN", 0xC2A1A026, kScale},
     {"Languages/LanguageTextures.bin", 0xBBBA71C2, kLcd},
 }};
 
@@ -69,7 +67,8 @@ bool copy_texture(const std::vector<unsigned char>& bytes,
 
 void add_quad(RaceHudFrame& frame, const AtlasRect& uv,
               const std::array<std::array<float, 2>, 4>& corners,
-              std::array<unsigned char, 3> tint) noexcept {
+              std::array<unsigned char, 3> tint,
+              unsigned char opacity = 255) noexcept {
     if (frame.quads == kRaceHudMaxQuads) return;
     const float u0 = float(uv.x) / kRaceHudAtlasSize;
     const float v0 = float(uv.y) / kRaceHudAtlasSize;
@@ -83,15 +82,17 @@ void add_quad(RaceHudFrame& frame, const AtlasRect& uv,
         v.px = corners[i][0]; v.py = corners[i][1]; v.pz = 0;
         v.u = tex[i][0]; v.v = tex[i][1];
         v.color[0] = tint[0]; v.color[1] = tint[1];
-        v.color[2] = tint[2]; v.color[3] = 255;
+        v.color[2] = tint[2]; v.color[3] = opacity;
     }
     ++frame.quads;
 }
 
 void rect(RaceHudFrame& frame, const AtlasRect& uv,
           float x, float y, float w, float h,
-          std::array<unsigned char, 3> tint = {{255, 255, 255}}) noexcept {
-    add_quad(frame, uv, {{{{x, y}}, {{x+w, y}}, {{x+w, y+h}}, {{x, y+h}}}}, tint);
+          std::array<unsigned char, 3> tint = {{255, 255, 255}},
+          unsigned char opacity = 255) noexcept {
+    add_quad(frame, uv, {{{{x, y}}, {{x+w, y}}, {{x+w, y+h}}, {{x, y+h}}}}, tint,
+             opacity);
 }
 
 void rotated(RaceHudFrame& frame, const AtlasRect& uv,
@@ -168,6 +169,15 @@ bool load_race_hud_atlas(const std::filesystem::path& root,
 void build_race_hud_frame(const RaceSession& session,
                           std::uint32_t width, std::uint32_t height,
                           RaceHudFrame& frame) noexcept {
+    const auto& handling = session.spec().handling;
+    build_race_hud_frame_for_car(session.car(), handling.max_rpm,
+                                 handling.redline_rpm, width, height, frame);
+}
+
+void build_race_hud_frame_for_car(const VehicleState& car,
+                          double max_rpm, double redline_rpm,
+                          std::uint32_t width, std::uint32_t height,
+                          RaceHudFrame& frame) noexcept {
     frame.quads = 0;
     if (!width || !height) return;
     // 1280x720 is the logical canvas; scale within a 5% safe area in either
@@ -180,22 +190,31 @@ void build_race_hud_frame(const RaceSession& session,
                                      bottom+(y-720.0F)*scale}};
     };
     const auto place = [&](const AtlasRect& uv, float x, float y, float w, float h,
-                           std::array<unsigned char,3> tint) {
-        const auto p=pos(x,y); rect(frame,uv,p[0],p[1],w*scale,h*scale,tint);
+                           std::array<unsigned char,3> tint,
+                           unsigned char opacity = 255) {
+        const auto p=pos(x,y); rect(frame,uv,p[0],p[1],w*scale,h*scale,tint,opacity);
     };
-    place(kCounter,1005,487,340,174,{{255,255,255}});
-    place(kScale,1020,492,218,218,{{33,172,238}});
-    // Six short red bars mark the top end of the 0..9 scale. The retail
-    // threshold and exact angles are unknown; this 8..9 arc is approximate.
+    // The 240SX's 8000 dial reads 0 at 231.4 and 8 at 50.4 degrees.
+    // The opaque black texels become a translucent gauge surround.
+    place(kScale,1020,492,218,218,{{33,172,238}},128);
+    constexpr double kZeroAngle = 231.4;
+    constexpr double kEightAngle = 50.4;
+    const double dial_max = max_rpm > 0.0 ? max_rpm : 8000.0;
+    const auto rpm_angle = [&](double rpm) {
+        return kZeroAngle + (kEightAngle-kZeroAngle)*
+            std::max(0.0,std::min(dial_max,rpm))/dial_max;
+    };
+    // Red ticks begin at the handling redline and end at the last label.
+    const double red_start = rpm_angle(redline_rpm);
     for (int i=0;i<6;++i) {
-        const double angle = (52.0-i*6.5)*3.14159265358979323846/180.0;
+        const double angle = (red_start+(kEightAngle-red_start)*i/5.0)*
+            3.14159265358979323846/180.0;
         const auto center=pos(1134+99*std::cos(angle),603-99*std::sin(angle));
         rotated(frame,kWhite,center[0],center[1],3*scale,11*scale,
                 1.5F*scale,5.5F*scale,1.5707963267948966-angle,{{218,48,39}});
     }
-    const auto& car = session.car();
-    const double rpm = std::max(0.0,std::min(9000.0,car.engine_rpm));
-    const double dial_angle = (220.0-200.0*rpm/9000.0)*3.14159265358979323846/180.0;
+    const double dial_angle = rpm_angle(car.engine_rpm)*
+        3.14159265358979323846/180.0;
     const auto center=pos(1134,603);
     rotated(frame,kNeedle,center[0],center[1],24*scale,192*scale,
             12*scale,177*scale,1.5707963267948966-dial_angle,{{90,218,253}});
@@ -206,7 +225,7 @@ void build_race_hud_frame(const RaceSession& session,
         static_cast<char>('0'+std::max(1,std::min(6,gear-kVehicleGearFirst+1)));
     const auto gear_pos=pos(1214,581);
     digit(frame,gear_label,gear_pos[0],gear_pos[1],48*scale,{{48,188,245}});
-    place(kSpeedBox,1125,650,164,41,{{255,255,255}});
+    place(kSpeedBox,1125,650,164,41,{{255,255,255}},140);
     // The port's vehicle state has no retail +0x3D4 scalar. Horizontal
     // velocity magnitude is the closest available visual-only estimate.
     const double mps = vehicle_sqrt(car.velocity.x*car.velocity.x+
@@ -256,7 +275,7 @@ void composite_race_hud(const RaceHudAtlas& atlas, const RaceHudFrame& frame,
                 const int ty=std::max(0,std::min(511,static_cast<int>(vcoord*512)));
                 const auto* source=atlas.rgba.data()+(ty*512+tx)*4;
                 auto* target=rgba+y*pitch+x*4;
-                const unsigned alpha=source[3];
+                const unsigned alpha=(unsigned(source[3])*unsigned(v[0].color[3])+127)/255;
                 for (int k=0;k<3;++k) {
                     const unsigned tint=(unsigned(v[0].color[k])*unsigned(source[k])+127)/255;
                     target[k]=static_cast<unsigned char>((tint*alpha+

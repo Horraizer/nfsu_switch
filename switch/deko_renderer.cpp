@@ -466,7 +466,7 @@ struct DekoRenderer::Impl {
                 return false;
             }
         }
-        if (presentation && hud_atlas && !init_hud(*hud_atlas,error)) return false;
+        if (hud_atlas && !init_hud(*hud_atlas,error)) return false;
         std::printf("deko3d: %zu draws, %zu uploads, %llu bytes of GPU blocks (placeholder budget)\n",
             source.draw_count(), handles.size(), static_cast<unsigned long long>(gpu_bytes));
         return true;
@@ -834,7 +834,8 @@ struct DekoRenderer::Impl {
     }
 
     bool capture(std::vector<unsigned char>& rgba, double& render_ms,
-                 double& readback_ms, std::string& error) {
+                 double& readback_ms, std::string& error,
+                 const RaceHudFrame* hud_frame) {
         rgba.clear(); render_ms = readback_ms = 0;
         if (!commands || !queue || !cmd || swapchain || !healthy(error)) {
             if (error.empty()) error = "capture requires an open offscreen renderer";
@@ -849,7 +850,7 @@ struct DekoRenderer::Impl {
         auto* data = static_cast<unsigned char*>(readback.getCpuAddr());
         std::memset(data, 0xCD, bytes + 2*guard);
         const auto render_start = armGetSystemTick();
-        if (!record_frame(colors[0],0,nullptr,error)) return false;
+        if (!record_frame(colors[0],0,hud_frame,error)) return false;
         if (!submit(error)) return false;
         render_ms = armTicksToNs(armGetSystemTick() - render_start) / 1000000.0;
         const auto copy_start = armGetSystemTick();
@@ -933,9 +934,10 @@ DekoMemoryUsage DekoRenderer::memory_usage() const noexcept {
 }
 DekoGpfifoUsage DekoRenderer::gpfifo_usage() const noexcept { return impl_->gpfifo_usage; }
 bool DekoRenderer::capture(std::vector<unsigned char>& rgba, double& render_ms,
-                           double& readback_ms, std::string& error) {
+                           double& readback_ms, std::string& error,
+                           const RaceHudFrame* hud_frame) {
     error.clear();
-    try { return impl_->capture(rgba, render_ms, readback_ms, error); }
+    try { return impl_->capture(rgba, render_ms, readback_ms, error, hud_frame); }
     catch (const std::bad_alloc&) { rgba.clear(); error = "not enough memory for GPU readback"; return false; }
 }
 bool DekoRenderer::present(std::string& error, DekoPresentTiming* timing,

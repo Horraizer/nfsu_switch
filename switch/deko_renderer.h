@@ -55,7 +55,8 @@ public:
     // fence. Times include command recording/submission/wait; upload and
     // allocation are excluded. No CPU rasterizer is invoked here.
     bool capture(std::vector<unsigned char>& rgba, double& render_ms,
-                 double& readback_ms, std::string& error);
+                 double& readback_ms, std::string& error,
+                 const RaceHudFrame* hud_frame = nullptr);
     bool present(std::string& error, DekoPresentTiming* timing = nullptr,
                  const DekoSceneFrame* scene_frame = nullptr,
                  const RaceHudFrame* hud_frame = nullptr);

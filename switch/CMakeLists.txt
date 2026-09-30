@@ -342,7 +342,8 @@ endif()
 # No game asset is packaged; only the already-checked offline shaders.
 add_executable(nfsu_switch_compare compare_main.cpp deko_renderer.cpp)
 target_link_libraries(nfsu_switch_compare PRIVATE
-    nfsu_draw_commands nfsu_stock_frame nfsu_screen_text nfsu_frame_compare deko3d)
+    nfsu_draw_commands nfsu_stock_frame nfsu_screen_text nfsu_frame_compare
+    nfsu_race_hud deko3d)
 set_target_properties(nfsu_switch_compare PROPERTIES
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
 nfsu_enable_warnings(nfsu_switch_compare)

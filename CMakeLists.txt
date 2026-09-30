@@ -1542,6 +1542,10 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_race_session_tests PRIVATE nfsu_race_session)
     nfsu_enable_warnings(nfsu_race_session_tests)
     add_test(NAME nfsu_race_session_tests COMMAND nfsu_race_session_tests)
+    add_executable(nfsu_race_hud_tests tests/race_hud_tests.cpp)
+    target_link_libraries(nfsu_race_hud_tests PRIVATE nfsu_race_hud)
+    nfsu_enable_warnings(nfsu_race_hud_tests)
+    add_test(NAME nfsu_race_hud_tests COMMAND nfsu_race_hud_tests)
     add_test(NAME nfsu_race_guards
         COMMAND ${CMAKE_COMMAND} -DRACE=$<TARGET_FILE:nfsu_race>
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/race-guards
