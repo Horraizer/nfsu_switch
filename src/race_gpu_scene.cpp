@@ -12,6 +12,7 @@ namespace {
 RenderOptions race_render_options() {
     RenderOptions options;
     options.width = 1280; options.height = 720;
+    options.material_state = MaterialStateMode::retail;
     return options;
 }
 void append_car_resources(UploadTable& track, const UploadTable& car) {

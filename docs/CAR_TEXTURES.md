@@ -70,19 +70,11 @@ in PR #210. No palette change is made in this issue.
 ## Reproduction and result
 
 Use the painted command in `docs/SWITCH_BUILD.md` with the default yaw 35,
-then `--yaw -45` and `--yaw 145`. The table records measurements at base
-`97e3839` and texture fix `329e13b5`,
-using the painted viewer command at each yaw. Issue #232 changes the after
-pins again for the retail car sampler. Retail reads were bracketed by
-recursive filename, size and SHA-256 manifests, with zero differences.
-The current default pin and size are checked by `nfsu_draw_commands_retail`
-against `include/nfsu/stock_frame.h`. Orbit pins remain below.
-
-| Yaw | Before SHA-256 | After SHA-256 |
-| ---: | --- | --- |
-| 35 | `8A5932A302A22AA3C4C01776009B5348629D8D37B3B61E6E0AA303235B1CF48F` | `FE7506F173A871A208F94451DFC71A3F3AEBF1EBE677C28AF2B73AD9CEA3AEE8` (retail state) |
-| -45 | `52F496BA4BBB7F520973152A0ECA454B10BA9047C629AE74892B9429DE97B8D7` | `370A134DC58F2F3FD6FCC50F191AD800F32DA125CB472C5CAA894021D46B9403` |
-| 145 | `127C235F5E468E12F453AA9E85ABF809C95C62235D5BDFC1284DB86C6D9B9303` | `F136A9150C99EE367DA801228D642F7FF4E3DC801C79EC6B2B3DA6A002A2907F` |
+then `--yaw -45` and `--yaw 145`. `nfsu_draw_commands_retail` holds the
+default and orbit frame hashes, while `include/nfsu/stock_frame.h` holds
+the default pin shared with the Switch CPU check. Issue #232 changed the
+default to retail material state. Retail reads were bracketed by recursive
+filename, size and SHA-256 manifests, with zero differences.
 
 The default painted frame has no fallback triangles or pixels, checked by
 `nfsu_draw_commands_retail`. The viewer's `groups_invalid` statistic combines
@@ -94,7 +86,8 @@ The remaining unresolved hashes belong to disabled dummy decals. Window
 checker patterns,
 magenta strips, and the blank sponsor patterns are gone in all three views.
 The viewer now selects retail material state for `--stock-car` by default.
-Its alpha test removes the tire backing square at yaw 145; explicit
+Its alpha test removes the tire backing square at the default camera and
+yaw 145; explicit
 `--material-state off` retains the diagnostic old view. Whether the Switch
 hardware output has the same result needs the requested console capture;
 the wheel rim selection limit above also remains for that review.

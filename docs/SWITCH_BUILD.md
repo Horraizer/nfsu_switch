@@ -344,8 +344,8 @@ the console made the same bytes as the desktop. Either answer is a result; a
 difference is reported, not hidden.
 
 The current painted and unpainted default-frame hashes and sizes live in
-`include/nfsu/stock_frame.h`; `nfsu_draw_commands_retail` checks them in the
-explicit off mode and compares the CPU and GPU submissions in both modes.
+`include/nfsu/stock_frame.h`; `nfsu_draw_commands_retail` checks them in
+retail mode and compares the CPU and GPU submissions in both modes.
 The painted options add `--skin-car 240SX --skin-doorline plain
 --skin-base 30 60 160 128` to the stock command of
 [`RENDERER.md`](RENDERER.md). The unpainted options omit the skin.
@@ -364,7 +364,6 @@ nfsu_viewer <Cars/240SX/GEOMETRY.BIN> <Cars/240SX/TEXTURES.BIN> painted.tga
     --stock-car 240SX --stock-parts <Global/GLOBALB.BUN>
     --stock-geometry <Cars/BRAKES/GEOMETRY.BIN> --stock-geometry <Cars/PLATES/GEOMETRY.BIN>
     --place-wheels --skin-car 240SX --skin-doorline plain --skin-base 30 60 160 128
-    --material-state off
 ```
 
 It exits 0 with nothing on standard error. The skin is 512x512, type 32, one
@@ -541,12 +540,12 @@ the number of frames rendered.
   sources, plan, target path, assembly, composite and binding, the same
   stock assembly, `render_scene` with the default options - and
   `src/stock_frame.cpp` names the viewer step each one mirrors. The viewer
-  command for this pin now explicitly selects `--material-state off`, because
-  stock viewing defaults to retail material state. The application renders
+  command for this pin uses the stock viewer's retail material state. The application renders
   every frame through
   `nfsu::StockView::render`, which is `render_scene` over the same scene at
-  the camera's options; at the default camera those are `RenderOptions{}`
-  in every field, which `nfsu::stock_view_is_default` checks exactly. The
+  the camera's options; at the default camera those are
+  `stock_view_default_options()`, which `nfsu::stock_view_is_default`
+  checks exactly. The
   desktop test `nfsu_stock_frame_viewer_match` holds the two together: it
   renders six synthetic files in the game's layout with the viewer and with
   the application's calls, unpainted and painted, and requires the same TGA

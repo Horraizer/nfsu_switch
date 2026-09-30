@@ -30,20 +30,19 @@ set(common
     --stock-part WHEEL BBS_STYLE01_15_23
     --skin-car 240SX --skin-vinyls "${car}/VINYLS.BIN"
     --skin-doorline kit --skin-base 200 30 30 128
-    --skin-vinyl 0 TRIBAL5 16 no-remap
-    --material-state off)
+    --skin-vinyl 0 TRIBAL5 16 no-remap)
 
 # These are frame pins, not observations copied into documentation.
 set(pins
     # Default: WHEELS/TEXTURES.BIN resolves BBS tread; #225 resolves
     # window aliases, decals and per-copy brake materials.
-    "C60371D49654443E0F7CE264224FE5A6142BBD3CCA6B9342AB7477793909BFAF"
+    "21F0757A7B345EF63BDEE28EB8963B5C83D491258C6CB93B420A444AD59DCD00"
     # Yaw 120: WHEELS/TEXTURES.BIN side tread beside the KIT01 skirt;
     # #225 resolves its windows, decals and per-copy brake materials.
-    "D46E827BD18DEFBC5AF0BD8D9C728516D08F35FD6294F9A11E07591879231FCC"
+    "62B32EBFE1872C3AD387E2D79A909A69354C6BAA04A5D60F2F38C0DE4AC4EDFB"
     # Yaw 230: WHEELS/TEXTURES.BIN opposite tread and #225 rear glass,
     # decal and per-copy brake materials.
-    "49EDEB280EC45B9C70A0CE5BFAA594EEB39FC16108F82B2A159F266FE4BD79C7")
+    "F29FD421F796E0286B3588F12147870204071BF9CC71312412BE4F640B377DC0")
 set(angles default 120 230)
 foreach(i RANGE 0 2)
     list(GET angles ${i} angle)

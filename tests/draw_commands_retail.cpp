@@ -104,7 +104,7 @@ int main(int argc, char** argv) {
                 return 1;
             }
             const auto hash = nfsu::sha256_hex(image.sha256);
-            if (mode == nfsu::MaterialStateMode::off &&
+            if (mode == nfsu::MaterialStateMode::retail &&
                 (hash != (painted ? nfsu::kStock240sxPaintedFrameSha256 : nfsu::kStock240sxFrameSha256) ||
                  image.tga.size() != (painted ? nfsu::kStock240sxPaintedFrameBytes : nfsu::kStock240sxFrameBytes))) {
                 std::cerr << "FAIL: pinned stock frame changed: " << hash << '\n';
@@ -161,6 +161,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     nfsu::RenderOptions options;
+    options.material_state = nfsu::MaterialStateMode::retail;
     nfsu::RecordedCommands commands;
     if (!nfsu::record_car_commands(tuned.scene, options, {},
                                    tuned.skin_binding.source, commands, error)) {
@@ -191,7 +192,7 @@ int main(int argc, char** argv) {
         std::cerr << "FAIL: pinned tuned frame changed: " << error << '\n';
         return 1;
     }
-    std::cout << "PASS: tuned 240SX off: " << trace.size() << " draws, "
+    std::cout << "PASS: tuned 240SX retail: " << trace.size() << " draws, "
               << commands.owning_uploads().resources.size() << " resources, "
               << tuned.stats.triangles_submitted << " triangles, sha256 "
               << nfsu::sha256_hex(image.sha256) << '\n';

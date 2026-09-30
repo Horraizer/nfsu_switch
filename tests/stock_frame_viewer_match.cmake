@@ -2,9 +2,7 @@
 # on the same six files (issue #141).
 #
 # nfsu_stock_frame repeats the calls src/viewer_main.cpp makes for its
-# pinned stock-car command instead of sharing code with it: the viewer is
-# left unchanged, byte for byte, so its frames and reports are what they
-# were. This test is what holds the two copies together. It writes the
+# pinned stock-car command instead of sharing code with it. This test writes the
 # synthetic inputs nfsu_stock_frame_tests builds - every file in the layout
 # the game uses, each parsed by the real parsers - then renders them twice:
 # once with the viewer and the pinned command's options, once through the
@@ -80,7 +78,6 @@ set(viewer_options
     --stock-geometry "${ROOT}/Cars/PLATES/GEOMETRY.BIN")
 execute_process(
     COMMAND "${VIEWER}" ${viewer_inputs} "${SHOT}" ${viewer_options} --place-wheels
-            --material-state off
     RESULT_VARIABLE viewer_result
     OUTPUT_VARIABLE viewer_output
     ERROR_VARIABLE viewer_error)
@@ -96,25 +93,47 @@ file(SIZE "${SHOT}" viewer_size)
 file(SHA256 "${SHOT}" viewer_hash)
 string(TOUPPER "${viewer_hash}" viewer_hash)
 
-# Stock viewing defaults to retail alpha state, including the tire cutout.
-set(DEFAULT_RETAIL "${WORK}/viewer_default_retail.tga")
-set(EXPLICIT_RETAIL "${WORK}/viewer_explicit_retail.tga")
+# The separate fixture has a visible alpha-tested texel. It makes a
+# mistaken off default produce different image bytes, not just a label.
+set(ALPHA_ROOT "${WORK}/alpha/root")
+execute_process(COMMAND "${TESTS}" --write-fixture-alpha "${ALPHA_ROOT}"
+                RESULT_VARIABLE alpha_fixture_result ERROR_VARIABLE alpha_fixture_error)
+if(NOT alpha_fixture_result EQUAL 0)
+    message(FATAL_ERROR "FAIL: alpha witness fixture: ${alpha_fixture_error}")
+endif()
+set(alpha_inputs "${ALPHA_ROOT}/Cars/240SX/GEOMETRY.BIN"
+                 "${ALPHA_ROOT}/Cars/240SX/TEXTURES.BIN")
+set(alpha_options
+    --shared-textures "${ALPHA_ROOT}/Global/GLOBALB.BUN"
+    --shared-textures "${ALPHA_ROOT}/Cars/TEXTURES.BIN"
+    --stock-car 240SX --stock-parts "${ALPHA_ROOT}/Global/GLOBALB.BUN"
+    --stock-geometry "${ALPHA_ROOT}/Cars/BRAKES/GEOMETRY.BIN"
+    --stock-geometry "${ALPHA_ROOT}/Cars/PLATES/GEOMETRY.BIN"
+    --place-wheels)
+set(DEFAULT_RETAIL "${WORK}/alpha/default.tga")
+set(EXPLICIT_RETAIL "${WORK}/alpha/retail.tga")
+set(EXPLICIT_OFF "${WORK}/alpha/off.tga")
 execute_process(
-    COMMAND "${VIEWER}" ${viewer_inputs} "${DEFAULT_RETAIL}" ${viewer_options}
-            --place-wheels
+    COMMAND "${VIEWER}" ${alpha_inputs} "${DEFAULT_RETAIL}" ${alpha_options}
     RESULT_VARIABLE default_retail_result)
 execute_process(
-    COMMAND "${VIEWER}" ${viewer_inputs} "${EXPLICIT_RETAIL}" ${viewer_options}
-            --place-wheels --material-state retail
+    COMMAND "${VIEWER}" ${alpha_inputs} "${EXPLICIT_RETAIL}" ${alpha_options}
+            --material-state retail
     RESULT_VARIABLE explicit_retail_result)
-if(NOT default_retail_result EQUAL 0 OR NOT explicit_retail_result EQUAL 0)
-    message(FATAL_ERROR "the stock retail default could not render")
+execute_process(
+    COMMAND "${VIEWER}" ${alpha_inputs} "${EXPLICIT_OFF}" ${alpha_options}
+            --material-state off
+    RESULT_VARIABLE explicit_off_result)
+if(NOT default_retail_result EQUAL 0 OR NOT explicit_retail_result EQUAL 0 OR
+   NOT explicit_off_result EQUAL 0)
+    message(FATAL_ERROR "FAIL: stock alpha witness could not render")
 endif()
 file(SHA256 "${DEFAULT_RETAIL}" default_retail_hash)
 file(SHA256 "${EXPLICIT_RETAIL}" explicit_retail_hash)
+file(SHA256 "${EXPLICIT_OFF}" explicit_off_hash)
 if(NOT default_retail_hash STREQUAL explicit_retail_hash OR
-   default_retail_hash STREQUAL viewer_hash)
-    message(FATAL_ERROR "stock default must equal retail and differ from off")
+   default_retail_hash STREQUAL explicit_off_hash)
+    message(FATAL_ERROR "FAIL: stock default must equal retail and differ from off on alpha witness")
 endif()
 
 execute_process(
@@ -211,7 +230,6 @@ endif()
 set(PAINTED "${WORK}/viewer_painted.tga")
 execute_process(
     COMMAND "${VIEWER}" ${viewer_inputs} "${PAINTED}" ${viewer_options} --place-wheels
-            --material-state off
             --skin-car 240SX --skin-doorline plain --skin-base 30 60 160 128
     RESULT_VARIABLE painted_result
     OUTPUT_VARIABLE painted_output

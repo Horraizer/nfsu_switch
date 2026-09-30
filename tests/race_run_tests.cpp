@@ -51,6 +51,40 @@ void operator delete(void* p,std::size_t,std::align_val_t) noexcept { free_count
 void operator delete[](void* p,std::size_t,std::align_val_t) noexcept { free_counted(p); }
 
 void require(bool okay, const std::string& error) { if (!okay) throw std::runtime_error(error); }
+void require_retail_car_draws(const nfsu::RaceGpuFrame& frame, const char* path) {
+    using namespace nfsu;
+    namespace sm = nfsu::shader_manifest;
+    std::size_t tire = 0, badge = 0, alpha_draws = 0, blended_draws = 0;
+    const auto& resources = frame.commands.resource_table().resources;
+    for (std::size_t i = frame.track_draws; i < frame.commands.draw_count(); ++i) {
+        const auto& draw = frame.commands.draw_view(i).definition;
+        if (draw.pipeline.alpha_test == sm::CompareOp::greater) ++alpha_draws;
+        if (draw.pipeline.blend) ++blended_draws;
+        if (draw.texture_resource == kNoHandle) continue;
+        require(draw.texture_resource < resources.size(), "race car texture resource out of range");
+        const auto hash = resources[draw.texture_resource].texture_hash;
+        if (hash == 0x03A09493U) {
+            ++tire;
+            require(draw.pipeline.alpha_test == sm::CompareOp::greater &&
+                    draw.pipeline.alpha_ref == kRenderAlphaRef && !draw.pipeline.blend,
+                    std::string("FAIL: ") + path + " race tire lost retail alpha test");
+        }
+        if (hash == 0xB3DC27ABU) {
+            ++badge;
+            require(draw.pipeline.blend && draw.pipeline.depth_write &&
+                    draw.pipeline.blend_src == sm::BlendFactor::src_alpha &&
+                    draw.pipeline.blend_dst == sm::BlendFactor::one_minus_src_alpha &&
+                    draw.pipeline.blend_op == sm::BlendOp::add,
+                    std::string("FAIL: ") + path + " race badge lost retail source-over blend");
+        }
+    }
+    require(tire == 12 && badge == 2,
+            std::string("FAIL: ") + path + " race car tire/badge draw witness missing: tire " +
+                std::to_string(tire) + " badge " + std::to_string(badge));
+    std::cout << "PASS: " << path << " race car retail: " << frame.car_draws
+              << " draws, " << alpha_draws << " alpha-tested, " << blended_draws
+              << " blended (12 tire, 2 badge)\n";
+}
 bool same_upload_resource(const nfsu::UploadResource& a, const nfsu::UploadResource& b) {
     return a.kind == b.kind && a.lifetime == b.lifetime && a.memory == b.memory &&
         a.name == b.name && a.source == b.source && a.data == b.data &&
@@ -192,6 +226,7 @@ int main(int argc, char** argv) {
                 kPersistentBudgetPlaceholder, "persistent payload over budget");
         RaceGpuFrame frame;
         require(scene.frame(race.session(), frame, error), error);
+        require_retail_car_draws(frame, "cached");
         require(frame.commands.package_identity() != nullptr &&
                 frame.commands.static_track_draw_count() == frame.track_draws &&
                 frame.commands.static_track_instance_count() == scene.track().scene.instances.size() &&
@@ -303,6 +338,7 @@ int main(int argc, char** argv) {
                 require(frame.commands.borrowed(), "prepared frame reconstructed owning commands");
                 RaceGpuFrame reference;
                 require(scene.frame(race.session(),reference,error,nullptr,true),error);
+                if (tick == 1) require_retail_car_draws(reference, "reference");
                 require(!reference.commands.borrowed(), "reference path returned a borrowed recording");
                 require(reference.commands.width == frame.commands.width && reference.commands.height == frame.commands.height &&
                     std::memcmp(reference.commands.clear_color,frame.commands.clear_color,4) == 0 &&
