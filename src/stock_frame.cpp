@@ -134,6 +134,23 @@ bool StockFrameInputs::all_read() const noexcept {
     return !tuned || (wheel_geometry.read && wheel_textures.read && vinyls.read);
 }
 
+std::string StockFrameInputs::read_error(const fs::path& root) const {
+    std::string error;
+    std::size_t missing = 0;
+    const auto append = [&](const StockFrameInput& input) {
+        if (input.read) return;
+        ++missing;
+        error += "NOT READ " + (root / input.path).generic_u8string() + ": " + input.error + "\n";
+    };
+    for (const auto& input : files) append(input);
+    if (tuned) { append(wheel_geometry); append(wheel_textures); append(vinyls); }
+    if (missing) error += std::to_string(missing) + " of " +
+        std::to_string(kStockFrameFileCount + (tuned ? 3 : 0)) +
+        " inputs could not be read. Copy each from the game's own installation to the same path under " +
+        root.generic_u8string() + ".";
+    return error;
+}
+
 bool read_stock_frame_inputs(const fs::path& root, StockFrameInputs& inputs, bool tuned) {
     inputs.tuned = tuned;
     for (std::size_t i = 0; i < kStockFrameFileCount; ++i) {
@@ -222,12 +239,12 @@ bool prepare_stock_frame(
 // with the matching parse_* call and its default limits; here the bytes are
 // already in memory, so the parse_* call is made directly. For a file that
 // was read, the two are the same parse of the same bytes.
-bool prepare_stock_frame(
+static bool prepare_stock_frame_impl(
     const StockFrameInputs& inputs,
     const StockSceneRequest& request,
     const StockFrameSkin& skin,
     StockFrame& frame,
-    std::string& error) {
+    std::string& error, StockFrameInputs* consumed, const fs::path& root) {
     frame.car_geometry = GeometryReport{};
     frame.stock_geometry.clear();
     frame.parts = CarPartDatabase{};
@@ -273,9 +290,34 @@ bool prepare_stock_frame(
         const StockFrameInput& car_textures = inputs.file(StockFrameFile::car_textures);
         const StockFrameInput& parts_file = inputs.file(StockFrameFile::global_bun);
 
+        const auto parse_part_tables = [&] {
+            frame.parts =
+                parse_car_part_database(parts_file.bytes.data(), parts_file.bytes.size());
+            for (const CarPartIssue& issue : frame.parts.issues) {
+                frame.issues.push_back(at(parts_file.path, issue.offset, issue.message));
+            }
+            frame.car_types =
+                parse_car_type_table(parts_file.bytes.data(), parts_file.bytes.size());
+            for (const CarTypeIssue& issue : frame.car_types.issues) {
+                frame.issues.push_back(at(parts_file.path, issue.offset, issue.message));
+            }
+        };
+        std::vector<std::uint32_t> retained_hashes;
+        if (consumed) {
+            parse_part_tables();
+            StockParts selected;
+            if (!select_installed_parts(frame.parts, request.car_type_name,
+                                        request.installed_parts, selected, error)) return false;
+            for (const auto& slot : selected.slots) if (slot.record != kNoCarPart) {
+                const auto& hashes = frame.parts.records.at(slot.record).lod_mesh_hashes;
+                retained_hashes.insert(retained_hashes.end(), hashes.begin(), hashes.end());
+            }
+        }
         // load_geometry_file(<GEOMETRY.BIN>) and its "geometry issue" lines.
         frame.car_geometry =
             parse_geometry(car_geometry.bytes.data(), car_geometry.bytes.size());
+        if (consumed) std::vector<unsigned char>().swap(
+            consumed->files[static_cast<std::size_t>(StockFrameFile::car_geometry)].bytes);
         alias_stock_window_textures(frame.car_geometry);
         for (const GeometryIssue& issue : frame.car_geometry.issues) {
             frame.issues.push_back(at(car_geometry.path, issue.offset, issue.message));
@@ -288,6 +330,7 @@ bool prepare_stock_frame(
             const StockFrameInput& input = inputs.file(which);
             frame.stock_geometry.push_back(
                 parse_geometry(input.bytes.data(), input.bytes.size()));
+            if (consumed) std::vector<unsigned char>().swap(consumed->files[static_cast<std::size_t>(which)].bytes);
             alias_stock_window_textures(frame.stock_geometry.back());
             for (const GeometryIssue& issue : frame.stock_geometry.back().issues) {
                 frame.issues.push_back(at(input.path, issue.offset, issue.message));
@@ -295,27 +338,23 @@ bool prepare_stock_frame(
         }
         if (inputs.tuned) {
             const StockFrameInput& input = inputs.wheel_geometry;
+            GeometryLimits geometry_limits;
+            if (consumed) geometry_limits.retain_mesh = [&](const Mesh& mesh) {
+                const auto hash = bin_hash(mesh.name);
+                return std::find(retained_hashes.begin(), retained_hashes.end(), hash) != retained_hashes.end();
+            };
             frame.stock_geometry.push_back(
-                parse_geometry(input.bytes.data(), input.bytes.size()));
+                parse_geometry(input.bytes.data(), input.bytes.size(), geometry_limits));
+            if (consumed) std::vector<unsigned char>().swap(consumed->wheel_geometry.bytes);
             for (const GeometryIssue& issue : frame.stock_geometry.back().issues) {
                 frame.issues.push_back(at(input.path, issue.offset, issue.message));
             }
         }
+        if (!consumed) parse_part_tables();
         std::vector<const GeometryReport*> sources;
         sources.push_back(&frame.car_geometry);
         for (const GeometryReport& source : frame.stock_geometry) {
             sources.push_back(&source);
-        }
-        // load_car_part_database and load_car_type_table of --stock-parts.
-        frame.parts =
-            parse_car_part_database(parts_file.bytes.data(), parts_file.bytes.size());
-        for (const CarPartIssue& issue : frame.parts.issues) {
-            frame.issues.push_back(at(parts_file.path, issue.offset, issue.message));
-        }
-        frame.car_types =
-            parse_car_type_table(parts_file.bytes.data(), parts_file.bytes.size());
-        for (const CarTypeIssue& issue : frame.car_types.issues) {
-            frame.issues.push_back(at(parts_file.path, issue.offset, issue.message));
         }
         const SceneLimits scene_limits;
 
@@ -514,6 +553,11 @@ bool prepare_stock_frame(
             add_source(car_textures.bytes, SkinSourceKind::car_textures, "car-textures",
                        car_textures.path, {&frame.car_pack});
             if (inputs.tuned) {
+                if (consumed) {
+                    auto& vinyls = consumed->vinyls;
+                    vinyls.read = read_whole_file(root / vinyls.path, vinyls.bytes, vinyls.error);
+                    if (!vinyls.read) { error = consumed->read_error(root); return false; }
+                }
                 const StockFrameInput& input = inputs.vinyls;
                 frame.vinyl_pack = parse_texture_pack(input.bytes.data(), input.bytes.size());
                 for (const TextureIssue& issue : frame.vinyl_pack.issues) {
@@ -631,6 +675,21 @@ bool prepare_stock_frame(
         error = std::string("failed while preparing the stock frame: ") + caught.what();
     }
     return false;
+}
+
+bool prepare_stock_frame(const StockFrameInputs& inputs, const StockSceneRequest& request,
+                         const StockFrameSkin& skin, StockFrame& frame, std::string& error) {
+    return prepare_stock_frame_impl(inputs, request, skin, frame, error, nullptr, {});
+}
+
+bool prepare_race_car_frame(StockFrameInputs& inputs, const fs::path& root,
+                           const StockSceneRequest& request, const StockFrameSkin& skin,
+                           StockFrame& frame, std::string& error) {
+    if (!inputs.tuned) return prepare_stock_frame(inputs, request, skin, frame, error);
+    // All nine inputs were checked by the shared reader. The large vinyl pack
+    // need not overlap geometry decoding; re-read it at skin composition.
+    std::vector<unsigned char>().swap(inputs.vinyls.bytes);
+    return prepare_stock_frame_impl(inputs, request, skin, frame, error, &inputs, root);
 }
 
 bool render_stock_frame(StockFrame& frame, const RenderOptions& options, std::string& error) {

@@ -629,6 +629,16 @@ private:
             mesh.valid = false;
             clear_decoded_data(mesh);
         }
+        if (limits_.retain_mesh && !limits_.retain_mesh(mesh)) {
+            mesh.valid = false;
+            clear_decoded_data(mesh);
+            std::vector<MeshVertex>().swap(mesh.vertices);
+            std::vector<MeshTriangle>().swap(mesh.triangles);
+            std::vector<std::uint32_t>().swap(mesh.texture_hashes);
+            std::vector<std::uint32_t>().swap(mesh.material_key_hashes);
+            std::vector<MeshMaterial>().swap(mesh.materials);
+            std::vector<MeshMarker>().swap(mesh.markers);
+        }
         report_.meshes.push_back(std::move(mesh));
     }
 

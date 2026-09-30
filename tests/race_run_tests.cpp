@@ -160,6 +160,8 @@ int main(int argc, char** argv) {
         require(!combine_race_commands(fixture, other, joined, error), "combined draw overflow accepted");
         std::cout << "PASS: fixed clock, exact replay cursor, refusal and combined draw guards\n";
         if (argc == 2) return 0;
+        const bool tuned = argc == 5 && std::string(argv[4]) == "--tuned";
+        require(argc <= 5 && (argc < 5 || tuned), "unknown car selection");
         const std::filesystem::path root = argument_path(argv[2]);
         RaceGpuScene scene;
         scene.set_particles_enabled(true);
@@ -174,7 +176,7 @@ int main(int argc, char** argv) {
                 if (std::string(phase) == "car prepared") car_prepared = true;
             }
         } polled;
-        require(scene.load(posix_file_system(), root, error, nullptr, &polled), error);
+        require(scene.load(posix_file_system(), root, error, nullptr, &polled, tuned), error);
         require(polled.sections >= 4*scene.track().sections && polled.car_prepared,
                 "race scene disconnected the shared loader checkpoints");
         require(!scene.load(posix_file_system(),root,error),"loaded race scene allowed cache-invalidating reload");
@@ -218,13 +220,30 @@ int main(int argc, char** argv) {
         require(scene.cache_bytes() <= 8*kMiB,"command cache exceeded metadata limit");
         std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 8*kMiB << '\n';
         // Sky, shadow and particle templates are all resident in this cache.
-        require(scene.cache_bytes() == 3860249,"event 1 command cache metadata estimate differs from pin");
+        require(scene.cache_bytes() == (tuned ? 3860280U /* REPIN_AT_END */ :
+                3860249U /* REPIN_AT_END */),
+                "event 1 command cache metadata estimate differs from pin");
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';
         require(scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes() <=
                 kPersistentBudgetPlaceholder, "persistent payload over budget");
         RaceGpuFrame frame;
         require(scene.frame(race.session(), frame, error), error);
+        std::uint64_t car_triangles = 0, fallback_triangles = 0;
+        for (std::size_t i = frame.track_draws + 1;
+             i < frame.track_draws + 1 + frame.car_draws; ++i) {
+            const auto draw = frame.commands.draw_view(i);
+            car_triangles += draw.definition.index_count / 3;
+            if (draw.definition.texture_resource == kNoHandle)
+                fallback_triangles += draw.definition.index_count / 3;
+        }
+        // #237: KIT01/BBS selection adds one draw and 37 triangles; texture
+        // resolution must stay complete before any camera-dependent clipping.
+        require(frame.car_draws == (tuned ? 75U : 74U) && car_triangles == (tuned ? 6075U : 6038U),
+                "race car draw/triangle selection differs from pin");
+        require(fallback_triangles == 0, "race car has fallback triangles");
+        std::cout << "car selection " << (tuned ? "tuned" : "stock") << " draws " << frame.car_draws
+                  << " triangles " << car_triangles << " fallback " << fallback_triangles << '\n';
         require(frame.commands.package_identity() != nullptr &&
                 frame.commands.static_track_draw_count() == frame.track_draws &&
                 frame.commands.static_track_instance_count() == scene.track().scene.instances.size() + 1 &&  // #184: the sky placement
@@ -247,7 +266,7 @@ int main(int argc, char** argv) {
             RaceGpuScene no_sky; RaceGpuFrame plain;
             no_sky.set_particles_enabled(true);
             require(no_sky.set_sky(false), "sky mode refused before load");
-            require(no_sky.load(posix_file_system(), root, error), error);
+            require(no_sky.load(posix_file_system(), root, error, nullptr, nullptr, tuned), error);
             require(no_sky.frame(race.session(), plain, error), error);
             std::size_t sky_views = 0;
             for (std::size_t i = 0; i < frame.commands.draw_count(); ++i)
@@ -418,7 +437,7 @@ int main(int argc, char** argv) {
                         std::memcmp(&selected.material,&b.material,sizeof b.material) == 0,
                         "cached ordered draw differs from reference");
                 }
-                require(frame.track_draws > 0 && frame.car_draws == 74 &&
+                require(frame.track_draws > 0 && frame.car_draws == (tuned ? 75U : 74U) &&
                         frame.particle_draws == kRaceParticleLimit,
                         "missing track/car/particle commands");
                 require(frame.commands.draw_count() == frame.track_draws + frame.car_draws +
@@ -520,9 +539,10 @@ int main(int argc, char** argv) {
                 if (tick == 13128) {
                     require(race.session().animation().braking, "animation guard tick is not braking");
                     StockFrameInputs inputs;
-                    require(read_stock_frame_inputs(root, inputs), "animation guard retail car inputs unavailable");
+                    require(read_stock_frame_inputs(root, inputs, tuned), "animation guard retail car inputs unavailable");
                     StockFrame stock;
-                    require(prepare_stock_frame(inputs, stock_240sx_request(), stock_240sx_skin(), stock, error), error);
+                    require(prepare_stock_frame(inputs, tuned ? tuned_240sx_request() : stock_240sx_request(),
+                            tuned ? tuned_240sx_skin() : stock_240sx_skin(), stock, error), error);
                     std::vector<PreparedInstance> animated = stock.scene.instances;
                     std::vector<PreparedInstance> static_placed = stock.scene.instances;
                     require(drive_place_instances(stock.scene.instances, race.session().car(),
@@ -531,11 +551,14 @@ int main(int argc, char** argv) {
                     require(drive_place_instances(stock.scene.instances, race.session().car(),
                                 race.session().spec(), static_placed),
                             "animation guard static placement failed");
-                    std::size_t wheels = 0, moving_wheels = 0, headlights = 0, brakelights = 0;
+                    std::size_t wheels = 0, moving_wheels = 0, brakes = 0, headlights = 0, brakelights = 0;
                     for (std::size_t i = 0; i < frame.commands.draw_count(); ++i) {
                         const auto draw = frame.commands.draw_view(i);
                         if (draw.definition.name.rfind("race-car/car group ",0) != 0) continue;
                         require(draw.instance < stock.scene.instances.size(), "animation guard instance out of range");
+                        require(std::memcmp(draw.placement.rows, animated[draw.instance].transform,
+                                    sizeof animated[draw.instance].transform) == 0,
+                                "race part placement differs from selected animated car");
                         const auto slot = stock.scene.instances[draw.instance].part_slot;
                         if (slot == kSlotWheel) {
                             ++wheels;
@@ -545,6 +568,8 @@ int main(int argc, char** argv) {
                             if (std::memcmp(animated[draw.instance].transform,
                                             static_placed[draw.instance].transform,
                                             sizeof animated[draw.instance].transform) != 0) ++moving_wheels;
+                        } else if (slot == kSlotBrake) {
+                            ++brakes;
                         } else if (slot == kSlotHeadlight) {
                             ++headlights;
                             require(draw.material.alpha[3] == 1.0F, "race headlight mode is not on");
@@ -553,7 +578,7 @@ int main(int argc, char** argv) {
                             require(draw.material.alpha[3] == 3.0F, "braking race lamp mode is not bright");
                         }
                     }
-                    require(wheels > 0 && moving_wheels > 0 && headlights > 0 && brakelights > 0,
+                    require(wheels > 0 && moving_wheels > 0 && brakes > 0 && headlights > 0 && brakelights > 0,
                             "animation guard did not inspect moving wheels and both lamp slots");
                 }
                 require(validate_draw_update(uploaded, frame.commands, kTrackSliceDrawLimit, error), error);

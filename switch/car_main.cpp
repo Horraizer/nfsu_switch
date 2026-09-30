@@ -330,36 +330,30 @@ bool prepare(const Choice& choice, nfsu::StockFrame& frame, nfsu::StockView& vie
     nfsu::read_stock_frame_inputs(choice.root, *inputs, choice.tuned);
     const std::uint64_t read_end = armGetSystemTick();
 
-    std::size_t missing = 0;
-    for (const nfsu::StockFrameInput& input : inputs->files) {
+    const auto note_input = [&](const nfsu::StockFrameInput& input) {
         if (input.read) {
             report.line("read " + input.path + ": " + std::to_string(input.bytes.size()) +
                         " bytes");
-        } else {
-            ++missing;
-            report.line("NOT READ " + choice.root + "/" + input.path + ": " + input.error, kBad);
         }
-    }
+    };
+    for (const nfsu::StockFrameInput& input : inputs->files) note_input(input);
     if (choice.tuned) {
         for (const nfsu::StockFrameInput* input :
-             {&inputs->wheel_geometry, &inputs->wheel_textures, &inputs->vinyls}) {
-            if (input->read) {
-                report.line("read " + input->path + ": " +
-                            std::to_string(input->bytes.size()) + " bytes");
-            } else {
-                ++missing;
-                report.line("NOT READ " + choice.root + "/" + input->path + ": " +
-                                input->error, kBad);
-            }
-        }
+             {&inputs->wheel_geometry, &inputs->wheel_textures, &inputs->vinyls})
+            note_input(*input);
     }
-    if (missing != 0) {
-        report.line("nothing rendered: " + std::to_string(missing) + " of " +
-                        std::to_string(nfsu::kStockFrameFileCount +
-                                       (choice.tuned ? 3U : 0U)) +
-                        " inputs could not be read. Copy each from the game's own "
-                        "installation to the same path under " + choice.root + ".",
-                    kBad);
+    if (!inputs->all_read()) {
+        const std::string error = inputs->read_error(choice.root);
+        std::size_t first = 0;
+        while (first < error.size()) {
+            const std::size_t end = error.find('\n', first);
+            const bool summary = end == std::string::npos;
+            report.line((summary ? "nothing rendered: " : "") +
+                            error.substr(first, summary ? std::string::npos : end - first),
+                        kBad);
+            if (summary) break;
+            first = end + 1;
+        }
         return false;
     }
     report.line(std::string("preparing the ") + choice.name() + " car scene...");

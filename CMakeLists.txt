@@ -1687,6 +1687,7 @@ if(NFSU_BUILD_TESTS)
     set_tests_properties(nfsu_path_follow_tests PROPERTIES TIMEOUT 60)
 endif()
 
+
 # ---------------------------------------------------------------------------
 # Retail checks in CTest (issue #233)
 # ---------------------------------------------------------------------------
@@ -1852,6 +1853,27 @@ if(NFSU_BUILD_TESTS)
                     -DWORK=${nfsu_retail_work}/tuned-frame
                     "-DROOT=${NFSU_RETAIL_ROOT}"
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/tuned_frame_retail.cmake)
+        # The tuned race uses the same explicit selection as the viewer:
+        # replay pins, every cached/reference draw, and the existing 48 MiB
+        # race loader bound. Each command receives the configure-time root.
+        foreach(nfsu_tuned_race_mode replay draws loader)
+            add_test(NAME nfsu_tuned_race_${nfsu_tuned_race_mode}_retail
+                COMMAND ${CMAKE_COMMAND}
+                    -DPYTHON=${Python3_EXECUTABLE}
+                    -DSOURCE=${PROJECT_SOURCE_DIR}
+                    -DWORK=${nfsu_retail_work}/tuned-race
+                    -DRACE=$<TARGET_FILE:nfsu_race>
+                    -DRUN_TESTS=$<TARGET_FILE:nfsu_race_run_tests>
+                    -DLOADER_TESTS=$<TARGET_FILE:nfsu_race_loader_peak_tests>
+                    -DMODE=${nfsu_tuned_race_mode}
+                    "-DROOT=${NFSU_RETAIL_ROOT}"
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/tuned_race_retail.cmake)
+        endforeach()
+        set_tests_properties(
+            nfsu_tuned_race_replay_retail nfsu_tuned_race_draws_retail
+            nfsu_tuned_race_loader_retail
+            PROPERTIES LABELS "retail;tuned-race"
+            FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 3600)
         # The retail files each set of the asset check names, against their
         # pinned sizes and SHA-256s; it exits 0 only when every file matches:
         # docs/SWITCH_ASSETS.md.

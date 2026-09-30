@@ -1094,6 +1094,21 @@ void test_missing_inputs() {
                   error == "1 of 6 input files could not be read",
               "nothing is prepared from a partial set: " + error);
     }
+    // The tuned race uses the same extra inputs and copy guidance as the viewer.
+    {
+        FixtureDirectory directory("missing-tuned");
+        std::string error;
+        check(write_fixture(directory.root, files, error), "tuned fixture: " + error);
+        nfsu::StockFrameInputs inputs;
+        check(!nfsu::read_stock_frame_inputs(directory.root, inputs, true), "missing tuned inputs refuse");
+        const auto report = inputs.read_error(directory.root);
+        for (const char* path : {"Cars/WHEELS/GEOMETRY.BIN", "Cars/WHEELS/TEXTURES.BIN", "Cars/240SX/VINYLS.BIN"})
+            check(report.find(path) != std::string::npos, "missing tuned path reported");
+        check(report.find("3 of 9 inputs could not be read. Copy each from the game's own installation to the same path under ") != std::string::npos,
+              "missing tuned inputs explain how to copy them");
+        check(nfsu::read_stock_frame_inputs(directory.root, inputs, false) && inputs.read_error(directory.root).empty(),
+              "stock does not request tuned extras");
+    }
     // A root that does not exist: all six named.
     auto run = std::make_unique<Run>();
     check(!nfsu::read_stock_frame_inputs(unique_directory("absent"), run->inputs),

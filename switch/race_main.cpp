@@ -22,6 +22,7 @@
 #include <stdexcept>
 
 namespace {
+const char* selected_car_label = "STOCK";
 using namespace nfsu;
 constexpr unsigned width = 1280, height = 720;
 double ms(std::uint64_t ticks) { return armTicksToNs(ticks)/1000000.0; }
@@ -344,7 +345,7 @@ ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
         auto& rows = pages[i];
         rows.insert(rows.begin(),format("BUILD %.12s | %s | %s | SKY %s | PAGE %zu/%zu",
             NFSU_RACE_BUILD_TAG,mode,titles[i].c_str(),context.sky,i+1,pages.size()));
-        rows.push_back("D-pad LEFT/RIGHT changes page | + exits");
+        rows.push_back(std::string("CAR ") + selected_car_label + " | LEFT/RIGHT page | + exits");
     }
     return pages;
 }
@@ -422,7 +423,9 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
 // --sky on draws the sky after the opaque world; off omits it; early is the
 // issue 227 diagnostic that submits it with the opaque pass, as before.
 void run(const std::string& root, bool replay_mode, bool panel_mode, bool profile_frame,
-         bool particles_enabled, const std::string& sky, Screen& screen, PadState& pad) {
+          bool particles_enabled, const std::string& sky, bool tuned,
+          Screen& screen, PadState& pad) {
+    selected_car_label = tuned ? "TUNED" : "STOCK";
     require(R_SUCCEEDED(romfsInit()), "cannot mount race shader/replay RomFS");
     struct Guard { ~Guard() { romfsExit(); } } guard;
     std::string error;
@@ -440,8 +443,9 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     Progress progress(screen,pad,heap);
     const auto load_start = armGetSystemTick();
     require(race.prepare_metadata(root,error,&progress),error);
-    require(scene.load(posix_file_system(), root, error, &progress, &progress), error);
-    screen.show({"ASSETS PASS. Preparing event 1, stock 240SX and race course..."});
+    require(scene.load(posix_file_system(), root, error, &progress, &progress, tuned), error);
+    screen.show({std::string("ASSETS PASS. Preparing event 1, ") +
+                 selected_car_label + " 240SX and race course..."});
     progress.checkpoint("race course");
     require(race.start(root,scene.track(),error,&progress),error);
     progress.checkpoint("race course prepared");
@@ -764,6 +768,7 @@ int main(int argc, char** argv) {
         Screen screen; if (!screen.open()) return 1;
         try {
             std::string root = "sdmc:/nfsu";
+            bool tuned = false;
             bool replay = false, panel = false, profile_frame = false;
             bool particles_enabled = true, selected = false, root_seen = false;
             std::string sky = "on";
@@ -771,6 +776,7 @@ int main(int argc, char** argv) {
                 const std::string arg = argv[i];
                 if (arg == "--replay") { replay = true; selected = true; }
                 else if (arg == "--live") { replay = false; selected = true; }
+                else if (arg == "--tuned") tuned = true;
                 else if (arg == "--panel") panel = true;
                 else if (arg == "--profile-frame") profile_frame = true;
                 else if (arg == "--particles=on") particles_enabled = true;
@@ -779,7 +785,7 @@ int main(int argc, char** argv) {
                          (std::strcmp(argv[i+1],"on") == 0 || std::strcmp(argv[i+1],"off") == 0 ||
                           std::strcmp(argv[i+1],"early") == 0)) sky = argv[++i];
                 else if (!root_seen && arg.rfind("--",0) != 0) { root = arg; root_seen = true; }
-                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--sky on|off|early] [--particles=on|--particles=off]");
+                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--sky on|off|early] [--particles=on|--particles=off] [--tuned]");
             }
             require(!(panel && profile_frame),"--profile-frame requires direct presentation");
             while (!selected && appletMainLoop()) {
@@ -788,7 +794,7 @@ int main(int argc, char** argv) {
                 if (down & HidNpadButton_A) selected = true;
                 if (down & HidNpadButton_X) { selected = true; replay = true; }
                 if ((down & HidNpadButton_Y) && !profile_frame) panel = !panel;
-                screen.show({"NFSU #196 - EVENT 1 / STOCK 240SX / TWO LAPS",format("BUILD %.12s",NFSU_RACE_BUILD_TAG),
+                screen.show({tuned ? "EVENT 1 / TUNED 240SX / TWO LAPS" : "NFSU #196 - EVENT 1 / STOCK 240SX / TWO LAPS",format("BUILD %.12s",NFSU_RACE_BUILD_TAG),
                     "A: drive with Joy-Con / Pro Controller", "X: replay the pinned desktop event1.txt", "+: exit",
                     profile_frame ? "PROFILE FRAME: direct only; Y panel toggle disabled" :
                         std::string("Y: diagnostic panel ")+(panel?"ON":"OFF")+" (readback and CPU text cost)",
@@ -799,7 +805,7 @@ int main(int argc, char** argv) {
                     "During the race: Y pauses, + opens results with driving-frame statistics.",
                     "No game data is bundled or written. Replay input is bundled in RomFS."});
             }
-            if (selected) run(root,replay,panel,profile_frame,particles_enabled,sky,screen,pad);
+            if (selected) run(root,replay,panel,profile_frame,particles_enabled,sky,tuned,screen,pad);
         } catch (const Cancel&) {
         } catch (const std::exception& e) {
             std::printf("ERROR: %s\n",e.what()); std::fflush(stdout);

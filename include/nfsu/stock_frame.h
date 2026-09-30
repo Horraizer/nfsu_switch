@@ -123,6 +123,8 @@ struct StockFrameInputs {
         return files[static_cast<std::size_t>(which)];
     }
     bool all_read() const noexcept;
+    // Missing paths and the same copy guidance as the car viewer. Empty on success.
+    std::string read_error(const std::filesystem::path& root) const;
 };
 
 // Reads six stock files, plus wheel geometry, wheel textures and vinyls when
@@ -258,6 +260,14 @@ bool prepare_stock_frame(
     const StockFrameSkin& skin,
     StockFrame& frame,
     std::string& error);
+
+// Same preparation/resolution with shorter input lifetimes for the tuned race.
+// Geometry bytes are consumed after parsing; VINYLS is re-read only once the
+// geometry bytes are gone. Retains all LODs of the selected wheel part.
+// The stock path keeps its existing preparation and memory behavior.
+bool prepare_race_car_frame(StockFrameInputs& inputs, const std::filesystem::path& root,
+                           const StockSceneRequest& request, const StockFrameSkin& skin,
+                           StockFrame& frame, std::string& error);
 
 // render_scene over the prepared scene, into frame.frame and frame.stats.
 bool render_stock_frame(StockFrame& frame, const RenderOptions& options, std::string& error);

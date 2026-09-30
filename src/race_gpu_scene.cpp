@@ -224,22 +224,23 @@ bool combine_race_commands(RecordedCommands track, const RecordedCommands& car,
 }
 bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& root,
                         std::string& error, AssetCheckObserver* observer,
-                        TrackSliceLoadObserver* loading) {
+                        TrackSliceLoadObserver* loading, bool tuned) {
     if (ready_) { error = "race scene is already loaded"; return false; }
+    tuned_ = tuned;
     // Car source files and their decoded preparation are temporary. Complete
     // that work before streaming the track so neither source set overlaps the
     // other's allocation peak. Only the prepared car scene survives this scope.
     if (loading) loading->checkpoint("car input");
     {
         StockFrameInputs inputs;
-        if (!read_stock_frame_inputs(root, inputs)) {
-            error = "stock 240SX inputs could not be read";
-            for (const auto& file : inputs.files) if (!file.read) error += "\n" + file.path + ": " + file.error;
+        if (!read_stock_frame_inputs(root, inputs, tuned)) {
+            error = inputs.read_error(root);
             return false;
         }
         if (loading) loading->checkpoint("car preparation");
         StockFrame stock;
-        if (!prepare_stock_frame(inputs, stock_240sx_request(), stock_240sx_skin(), stock, error)) return false;
+        if (!prepare_race_car_frame(inputs, root, tuned ? tuned_240sx_request() : stock_240sx_request(),
+                tuned ? tuned_240sx_skin() : stock_240sx_skin(), stock, error)) return false;
         if (!prepare_car_shadow(inputs, stock.car_pack, shadow_asset_, error)) return false;
         if (loading) loading->checkpoint("car prepared");
         skin_source_ = stock.skin_binding.source;
@@ -366,6 +367,12 @@ bool RaceGpuScene::prepare_frame_cache(std::string& error) {
     if (particles_enabled_ && !append_particle_commands(car_templates_,error)) return false;
     if (!validate_recorded_commands(car_templates_,error)) return false;
     if (!record_car_shadow_commands(shadow_asset_, {}, race_render_options(sky_), shadow_templates_, error)) return false;
+    if (tuned_) for (const auto& draw : car_templates_.owning_draws()) {
+        if (draw.index_count && draw.texture_resource == kNoHandle) {
+            error = "tuned race car has fallback triangles: " + draw.name;
+            return false;
+        }
+    }
     const auto offset = track_templates_.owning_uploads().resources.size();
     if (offset + shadow_templates_.owning_uploads().resources.size() +
         car_templates_.owning_uploads().resources.size() > kTrackSliceResourceLimit) {
