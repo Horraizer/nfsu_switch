@@ -20,9 +20,10 @@ evidence of a displayed GPU frame.
 
 The viewport is 1280x720. + exits; `appletMainLoop` handles a system close
 request. There is no orbit in this first GPU application. Optional arguments
-are `--unpainted`, `--material-state=retail`, and one replacement input root.
-Unknown arguments are errors. Retail state is opt-in, as in the desktop
-stock command, and selects the six recorded car variants.
+are `--unpainted`, `--tuned`, `--material-state=retail`,
+`--material-state=off`, and one replacement input root. Unknown arguments
+are errors. Retail state is the stock and tuned default; off remains a
+diagnostic. The loading report names the selected state before rendering.
 
 Missing inputs are named by path. Input issues, preparation, recording,
 arena refusals, shader loading and deko3d diagnostics stop rendering and

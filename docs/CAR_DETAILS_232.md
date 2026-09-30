@@ -20,9 +20,9 @@ at other yaws.
 | Nissan badge at yaw 35 | Pixel (884,443), draw 6: `240SX_KIT00_FRONT_BUMPER_A`, mesh 40 group 0, `240SX_BADGING` hash `0xB3DC27AB`, record 76, DXT3 128x64. | The decoded atlas contains a readable NISSAN wordmark. Its main missing state was source-over blending. Retail blend restores the transparency; linear sampling helps the approximately 14-pixel badge. A nose closeup at yaw 0, pitch 0, distance 2, target (1.7,0.6,0) reads clearly in the CPU reference. |
 | Dark front arch at yaw -45 | Pixel (600,420), draw 55, triangle 2118: `240SX_KIT00_BODY_A`, mesh 259 group 2, generated `240SX_SKIN1`. Triangle 727 uses constant UV (0.597656,1). | The dark area is present in the source body art. Nearest repeat sampled opposite sides of the skin seam, producing black speckles; linear repeat smooths that seam. There is no independent retail trace proving the arch's precise appearance. |
 
-The stock viewer now starts at retail material state. The desktop viewer's
-stock default was already retail; explicit `--material-state off` remains a
-diagnostic. `nfsu_race_run_retail` checks the actual cached and reference
+The Switch CPU and deko3d stock viewers now start at retail material state.
+The desktop viewer's stock default was already retail; explicit off-state
+options remain diagnostic. `nfsu_race_run_retail` checks the actual cached and reference
 race car commands: 74 car draws, 12 tire draws with alpha test and two badge
 draws with source-over blend. The complete frame contains 16 alpha-tested
 and 19 blended car draws. CPU command parity proves material selection, while
