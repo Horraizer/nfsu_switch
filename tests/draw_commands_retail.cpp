@@ -140,6 +140,38 @@ int main(int argc, char** argv) {
     if (paint_groups!=9) {
         std::cerr << "FAIL: expected 9 CARSKIN paint groups, got " << paint_groups << '\n'; return 1;
     }
+    const auto installed_paint=nfsu::find_car_part(shaded.parts,nfsu::kAnyCarType,30,
+        shaded.car_types.records[shaded.report.car_type].base_paint_part_hash,
+        nfsu::kNoCarPart,nfsu::kAnyUpgradeLevel);
+    if (installed_paint==nfsu::kNoCarPart ||
+        shaded.parts.records[installed_paint].name!="GLOSS_L1_COLOR08") {
+        std::cerr << "FAIL: stock 240SX must install GLOSS_L1_COLOR08\n"; return 1;
+    }
+    const auto blue_hash=nfsu::select_car_paint_material_hash(shaded.parts,
+        installed_paint,nfsu::stock_240sx_skin().selection.base_color);
+    if (blue_hash!=0x827D95A1U) {
+        std::cerr << "FAIL: blue skin must select REGPAINTBLUE through BASE_PAINT\n"; return 1;
+    }
+    const auto red_hash=nfsu::select_car_paint_material_hash(shaded.parts,
+        installed_paint,nfsu::tuned_240sx_skin().selection.base_color);
+    if (red_hash!=0xFC329CF4U) {
+        std::cerr << "FAIL: red skin must select REGPAINTRED through BASE_PAINT\n"; return 1;
+    }
+    std::vector<nfsu::CarMaterialRecord> material_records;
+    const auto& material_bytes=inputs.files[
+        static_cast<std::size_t>(nfsu::StockFrameFile::global_bun)].bytes;
+    if (!nfsu::parse_car_materials(material_bytes.data(),material_bytes.size(),material_records,error)) {
+        std::cerr << "FAIL: parse paint records: " << error << '\n'; return 1;
+    }
+    const auto material_power=[&](std::uint32_t hash) {
+        for (const auto& record:material_records) if (record.hash==hash)
+            return record.values.specular_min[3];
+        return -1.0F;
+    };
+    for (const auto& draw:shaded.scene.draws) if (draw.material_key_hash==kCarSkinHash &&
+        draw.shading.specular_min[3]!=material_power(blue_hash)) {
+        std::cerr << "FAIL: blue CARSKIN must receive REGPAINTBLUE coefficients\n"; return 1;
+    }
     auto invalid_materials=inputs;
     auto& global=invalid_materials.files[
         static_cast<std::size_t>(nfsu::StockFrameFile::global_bun)].bytes;
@@ -199,6 +231,37 @@ int main(int argc, char** argv) {
         const auto hash=nfsu::sha256_hex(image.sha256);
         if (hash!=pins[i]) { std::cerr << "FAIL: shaded stock pin changed: " << hash << '\n'; return 1; }
         std::cout << "PASS: shaded stock yaw " << yaw[i] << " shaded draws " << shaded_draws << " sha256 " << hash << '\n';
+    }
+    nfsu::StockFrame red;
+    auto red_skin=nfsu::stock_240sx_skin();
+    red_skin.selection.base_color=nfsu::tuned_240sx_skin().selection.base_color;
+    if (!nfsu::prepare_stock_frame(inputs,nfsu::stock_240sx_request(),
+                                   red_skin,red,error,true)) {
+        std::cerr << "FAIL: red shaded preparation: " << error << '\n'; return 1;
+    }
+    for (const auto& draw:red.scene.draws) if (draw.material_key_hash==kCarSkinHash &&
+        draw.shading.specular_min[3]!=material_power(red_hash)) {
+        std::cerr << "FAIL: red CARSKIN must receive REGPAINTRED coefficients\n"; return 1;
+    }
+    auto unmatched_parts=shaded.parts;
+    auto& base=unmatched_parts.records[installed_paint];
+    bool changed=false;
+    for (std::int16_t i=0;i<base.attribute_count;++i) {
+        auto& attribute=unmatched_parts.attributes[base.attribute_index+static_cast<std::size_t>(i)];
+        if (attribute.key==0x6BA02C05U) { attribute.value=0xD6640DFFU; changed=true; break; }
+    }
+    const auto unmatched_hash=nfsu::select_car_paint_material_hash(unmatched_parts,
+        installed_paint,std::nullopt);
+    if (!changed || unmatched_hash!=0xD6640DFFU ||
+        !nfsu::apply_car_materials(shaded.scene,material_bytes.data(),material_bytes.size(),
+                                   unmatched_hash,error)) {
+        std::cerr << "FAIL: unmatched BASE_PAINT attribute must use DEFAULT: changed "
+                  << changed << " hash " << std::hex << unmatched_hash << std::dec
+                  << " error " << error << '\n'; return 1;
+    }
+    for (const auto& draw:shaded.scene.draws) if (draw.material_key_hash==kCarSkinHash &&
+        draw.shading.specular_min[3]!=material_power(0x2C420D64U)) {
+        std::cerr << "FAIL: unmatched CARSKIN must receive DEFAULT coefficients\n"; return 1;
     }
     nfsu::StockFrameInputs tuned_inputs;
     if (!nfsu::read_stock_frame_inputs(nfsu::argument_path(argv[1]), tuned_inputs, true)) {

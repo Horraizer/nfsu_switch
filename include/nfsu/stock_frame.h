@@ -171,7 +171,7 @@ struct StockFrameSkin {
 // - No vinyl, hood or spoiler vinyl: a stock car installs none.
 // - The base paint is a choice, not the game's. The front end installs a
 //   BASE_PAINT record named by CarTypeInfo +0xC5C (docs/CAR_SCENE.md), and
-//   that field is not decoded, so the stock colour is unknown. 30/60/160
+//   that field selects GLOSS_L1_COLOR08 (orange) in retail. 30/60/160
 //   with GLOSS 128 is the value docs/RENDERER.md already renders the retail
 //   skin with. No special colour is set, so all four fall back to it.
 // - The target is DUMMY_SKIN1, in the shared Cars/TEXTURES.BIN, and

@@ -345,6 +345,8 @@ struct CarTypeRecord {
     std::string compressed_path;
     std::string brand_name;
     std::uint32_t class_id = 0;
+    // Front-end stock paint part name hash at +0xC5C.
+    std::uint32_t base_paint_part_hash = 0;
     std::array<CarWheelPlacement, kCarWheelCount> wheels{};
 };
 

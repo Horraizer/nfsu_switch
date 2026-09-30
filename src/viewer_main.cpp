@@ -1592,11 +1592,21 @@ int main(int argc, char** argv) {
     }
 
     if (options.car_shading) {
+        auto installed=stock.enabled ? stock_report.slots[30].record : nfsu::kNoCarPart;
+        if (stock.enabled && installed==nfsu::kNoCarPart) {
+            const auto name=stock_types.records[stock_report.car_type].base_paint_part_hash;
+            installed=nfsu::find_car_part(stock_parts,nfsu::kAnyCarType,30,name,
+                                           nfsu::kNoCarPart,nfsu::kAnyUpgradeLevel);
+        }
+        const auto paint=nfsu::select_car_paint_material_hash(stock_parts,
+            installed,
+            skin.enabled ? std::optional<std::uint32_t>(skin.selection.base_color)
+                         : std::nullopt);
         bool found=false;
         for (const auto& bytes:shared_bytes) {
             std::vector<nfsu::CarMaterialRecord> records;
             if (nfsu::parse_car_materials(bytes.data(),bytes.size(),records,error) && !records.empty()) {
-                if (!nfsu::apply_car_materials(scene,bytes.data(),bytes.size(),skin.enabled,error)) {
+                if (!nfsu::apply_car_materials(scene,bytes.data(),bytes.size(),paint,error)) {
                     std::cerr << "error: " << error << '\n'; return 2;
                 }
                 found=true; break;

@@ -88,8 +88,9 @@ the [Direct3D 9 cube render-target procedure](https://learn.microsoft.com/en-us/
 
 `GLOBALB.BUN` contains 139 `0x00135200` records with a 160-byte payload.
 For example, the `ALUMINUM` record begins at file offset `0x0000`,
-`CHROME` at `0x0690`, `METPAINTBLUE` at `0x2610`, `REGPAINTBLUE` at
-`0x3528`, `SKIN` at `0x42F0`, and `WINDSHIELD` at `0x4EC0`. Each payload
+`CHROME` at `0x0690`, `DEFAULT` at `0x1650`, `METPAINTBLUE` at `0x2610`,
+`REGPAINTBLUE` at `0x3528`, `REGPAINTRED` at `0x3870`, `SKIN` at `0x42F0`,
+and `WINDSHIELD` at `0x4EC0`. Each payload
 starts after the eight-byte chunk header, has a name hash at payload
 `+0x0C`, and an ASCII name at payload `+0x14`. The executable resolves a
 geometry `0x00134013` key by hash against a registry object's `+0x0C`
@@ -97,8 +98,8 @@ at `0x540151..0x540191`; material byte `+32` selects the key slot at
 `0x40CA0E..0x40CA22`. The selected object reaches the coefficient upload
 at `0x40EE7B..0x40EE88` and `0x40FAE0`. Hence a car's geometry chooses a
 named material key, while the coefficients are stored in the global
-material record. Runtime replacement or mutation of these objects has
-not been traced.
+material record. Runtime replacement or mutation of these objects beyond
+the traced paint binding has not been established.
 
 For a concrete car-file join, the stock base mesh `240SX_BASE_A`
 (`docs/CAR_SCENE.md`, base level 0) has these `0x00134013` key selections
@@ -119,10 +120,19 @@ hashes match the `GLOBALB.BUN` payloads at the listed offsets:
 composition rather than this local texture pack (`docs/BODY_SKIN.md`,
 `docs/CAR_SCENE.md`). The nine painted stock groups instead use the geometry
 material key `CARSKIN` (`0xD6D6080A`). There is no `CARSKIN` record among the
-139 `GLOBALB.BUN` material records. At `0x540151..0x540191`, the executable
-falls back to a runtime default object at `[0x6F3DF0]` when the registry has
-no key; its values and the paint-customization path that fills or replaces it
-remain untraced.
+139 `GLOBALB.BUN` material records. The `0x00135200` loader at
+`0x540F54..0x540F5D` stores the on-disk `DEFAULT` record (hash
+`0x2C420D64`, offset `0x1650`) in `[0x6F3DF0]`. For paint, the game reads
+the installed `BASE_PAINT` part in RideInfo slot 30 (`+0x4C4`), searches its
+attributes for key `0x6BA02C05`, and resolves the value in the material
+registry (`0x56B4F2..0x56B571`). A missing record falls back to `DEFAULT`.
+The result is bound to `CARSKIN` at `0x56F520` and `0x56F5A0`. In the part
+database 373 of 379 attributes with this key name a material record; the
+remaining six name `0xD6640DFF`, which takes the fallback. For example,
+`GLOSS_L1_COLOR03` selects `REGPAINTBLUE`, while `GLOSS_L1_COLOR05` and
+`GLOSS_L1_COLOR08` select `REGPAINTRED`.
+Retail stock 240SX installs `GLOSS_L1_COLOR08` (165, 75, 15, gloss 128),
+which selects `REGPAINTRED` and explains the orange car in retail-01/05/06.
 
 The following are disk payload offsets, with `p` the payload start. The
 executable reads the same offsets from the selected object at
@@ -176,12 +186,16 @@ reference and deko3d. The default shading-off preparation does not parse this
 table. Signed ranges
 are retained, including chrome's decreasing environment range. The port
 uses the executable's initial specular multiplier 1.1; later mutation of
-that global is untraced. For the project's blue stock skin, the geometry's
-`CARSKIN` key maps to the recovered `REGPAINTBLUE` record at `0x3528`.
-This is an explicit approximation of the untraced runtime default paint
-object: `REGPAINTBLUE` is the recovered regular blue-paint record, matching
-the project's uniform blue base skin more closely than `METPAINTBLUE`.
-It does not claim that retail uses this record. Other decoded keys
+that global is untraced. The installed `BASE_PAINT` part supplies the paint
+material through attribute `0x6BA02C05`; an unmatched hash selects the
+on-disk `DEFAULT` record. A color-only skin has no part identity, so the port
+chooses the nearest `GLOSS_L1_COLOR` swatch by squared distance over RED,
+GREEN, BLUE and GLOSS, then reads that swatch's material attribute. This
+surrogate part choice is a port rule. The project's blue stock skin
+(30, 60, 160, gloss 128) chooses `GLOSS_L1_COLOR03` (8, 60, 161) and
+`REGPAINTBLUE`; the tuned red skin (200, 30, 30, gloss 128) chooses a
+gloss-red swatch and `REGPAINTRED`. The project's blue stock skin predates
+this PR and differs from retail's orange stock 240SX paint. Other decoded keys
 distinguish chrome, windshield, plastic and lamp lenses. Lamp emission
 remains the separate existing lamp state.
 

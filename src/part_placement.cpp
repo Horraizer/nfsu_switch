@@ -316,6 +316,7 @@ private:
             return false;
         }
         record.class_id = read_u32_le(r + kCarTypeClassOffset);
+        record.base_paint_part_hash = read_u32_le(r + 0xC5C);
         for (std::size_t w = 0; w < kCarWheelCount; ++w) {
             const std::size_t field = kCarWheelTableOffset + w * kCarWheelRecordSize;
             if (!parse_wheel(r + field, record.offset + field, w, record.wheels[w])) {

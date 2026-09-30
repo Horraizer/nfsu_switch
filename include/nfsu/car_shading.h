@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -22,11 +23,16 @@ struct CarMaterialRecord {
     CarShadingMaterial values;
 };
 struct PreparedCarScene;
+struct CarPartDatabase;
 // Bounded top-level GLOBALB.BUN walk. Invalid records fail transactionally.
 bool parse_car_materials(const unsigned char* bytes, std::size_t size,
                          std::vector<CarMaterialRecord>& out, std::string& error);
-// Join geometry material keys. Optional blue paint maps CARSKIN to
-// REGPAINTBLUE: an explicit approximation of the untraced runtime paint object.
+// Resolve slot 30's 0x6BA02C05 attribute. A color-only skin uses the nearest
+// GLOSS_L1_COLOR swatch as its surrogate installed BASE_PAINT part.
+// Zero means no attribute; apply_car_materials then uses DEFAULT.
+std::uint32_t select_car_paint_material_hash(const CarPartDatabase& database,
+    std::size_t installed_base_paint, std::optional<std::uint32_t> skin_color);
+// Join CARSKIN to the selected paint record, or DEFAULT if it is absent.
 bool apply_car_materials(PreparedCarScene& scene, const unsigned char* bytes,
-                         std::size_t size, bool blue_paint, std::string& error);
+                         std::size_t size, std::uint32_t paint_hash, std::string& error);
 } // namespace nfsu

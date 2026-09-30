@@ -625,9 +625,19 @@ bool prepare_stock_frame(
             ok = ok && source.ok();
         }
         frame.inputs_ok = ok;
-        if (car_shading &&
-            !apply_car_materials(frame.scene, parts_file.bytes.data(),
-                                 parts_file.bytes.size(), skin.enabled, error)) return false;
+        if (car_shading) {
+            auto installed=frame.report.slots[30].record;
+            if (installed==kNoCarPart) {
+                const auto name=frame.car_types.records[frame.report.car_type].base_paint_part_hash;
+                installed=find_car_part(frame.parts,kAnyCarType,30,name,kNoCarPart,kAnyUpgradeLevel);
+            }
+            const auto paint=select_car_paint_material_hash(frame.parts,
+                installed,
+                skin.enabled ? std::optional<std::uint32_t>(skin.selection.base_color)
+                             : std::nullopt);
+            if (!apply_car_materials(frame.scene, parts_file.bytes.data(),
+                                     parts_file.bytes.size(), paint, error)) return false;
+        }
         return true;
     } catch (const std::bad_alloc&) {
         error = "out of memory while preparing the stock frame";
