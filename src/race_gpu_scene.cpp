@@ -215,7 +215,6 @@ bool RaceGpuScene::prepare_frame_cache(std::string& error) {
     for (std::size_t n = 0; n < scene.instances.size(); ++n) {
         const auto& transform = scene.instances[n].transform;
         auto& placement = track_placements_[n];
-        placement.rows[7] = ((scene.instances[n].instance_flags ^ 0x60U) & 0x50U) == 0 ? 1.0F : 0.0F;
         for (std::size_t i = 0; i < 3; ++i) {
             for (std::size_t j = 0; j < 3; ++j) placement.rows[i*4+j] = transform.linear[i*3+j];
             placement.rows[12+i] = transform.translation[i];

@@ -428,9 +428,6 @@ bool record_track_commands(const PreparedTrackScene& scene, const TrackDrawList&
                 !pipeline(draw, true, texture, 0, source.texture_hash, options, error)) return false;
             draw.material.environment_min[3] =
                 track_vertex_format(scene.region.meshes[source.mesh].vertex_format_flags).mask == 0x40 ? 1.0F : 0.0F;
-            // Unused affine w lane: retail reflection source mask, instance +14.
-            draw.placement.rows[7] =
-                ((scene.instances[entry.instance].instance_flags ^ 0x60U) & 0x50U) == 0 ? 1.0F : 0.0F;
             out.owning_draws().push_back(std::move(draw));
         }
         if (options.wet_road_reflections && options.wet_lamps &&

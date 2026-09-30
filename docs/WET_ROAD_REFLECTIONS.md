@@ -98,9 +98,13 @@ for the track-path probe, desktop race and Switch race. The old fixed cyan
 UV ribbons and base brightening have been removed.
 
 The producer draws selected resident track instances to a black 160x90
-color/depth target at 16:9. It selects the object's reflection model (slot
-4, with the recovered fallback through slots 0 to 3), and skips the second
-mirror for baked `0x200` placement pieces. It borrows existing uploads.
+color/depth target at 16:9. It selects the object's reflection model from
+slot 4. When slot 4 is empty or skipped, the loader at
+`0x445A66..0x445A9A` copies the last non-empty, non-skipped node of slots
+0 to 3 into it. A non-empty slot 4 that does not resolve has its own node
+and does not fall back; nor does an unresolved last earlier slot yield to
+an earlier resolved one. The producer skips the second mirror for baked
+`0x200` placement pieces and borrows existing uploads.
 A separate conservative frustum query uses cached slot-4 bounds transformed
 by the reflected placement. A main-view visibility miss no longer removes
 a valid reflected source. This is not retail's exact spatial-tree/context

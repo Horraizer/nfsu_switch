@@ -2405,6 +2405,42 @@ void test_track_commands_match_cpu() {
     }
 }
 
+void test_track_wet_receiver_mask() {
+    auto fixture = track_fixture();
+    fixture.scene.region.meshes[0].vertex_format_flags = 0x40;
+    fixture.scene.region.meshes[1].vertex_format_flags = 0x80;
+    fixture.scene.region.meshes[2].vertex_format_flags = 0x1;
+    std::vector<nfsu::TrackVisibleInstance> visible;
+    for (std::size_t i = 0; i < 5; ++i) {
+        nfsu::TrackVisibleInstance v;
+        v.section_index = 0;
+        v.instance_index = i;
+        visible.push_back(v);
+    }
+    std::string error;
+    nfsu::TrackDrawList list;
+    if (!nfsu::build_track_draw_list(fixture.scene, visible, {}, list, error)) {
+        check(false, "build wet receiver list: " + error);
+        return;
+    }
+    nfsu::RenderOptions options;
+    options.wet_road_reflections = true;
+    nfsu::RecordedCommands commands;
+    if (!nfsu::record_track_commands(fixture.scene, list, options, {}, commands, error)) {
+        check(false, "record wet receivers: " + error);
+        return;
+    }
+    bool seen[3]{};
+    for (const auto& draw : commands.owning_draws()) {
+        if (draw.mesh >= 3) continue;
+        seen[draw.mesh] = true;
+        check(draw.material.environment_min[3] == (draw.mesh == 0 ? 1.0F : 0.0F),
+              draw.name + ": only 0x40 track surfaces receive Switch wet reflections");
+    }
+    check(seen[0] && seen[1] && seen[2],
+          "the wet receiver fixture submits 0x40, 0x80 and 0x1 surfaces");
+}
+
 void test_track_material_states_match_cpu() {
     const std::pair<std::uint8_t, std::uint8_t> states[] = {
         {0, 0}, {1, 0}, {0, 1}, {0, 2}, {1, 1}, {1, 2}};
@@ -2639,6 +2675,7 @@ const TestCase kTests[] = {
     {"draw_commands_match_cpu", test_draw_commands_match_cpu},
     {"draw_commands_resources_and_refusals", test_draw_commands_resources_and_refusals},
     {"track_commands_match_cpu", test_track_commands_match_cpu},
+    {"track_wet_receiver_mask", test_track_wet_receiver_mask},
     {"track_material_states_match_cpu", test_track_material_states_match_cpu},
     {"gate_accepts_rgba8", test_gate_accepts_rgba8},
     {"gate_refuses_invalid_native_payloads", test_gate_refuses_invalid_native_payloads},

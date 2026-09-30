@@ -277,9 +277,20 @@ bool place(
 
             PreparedTrackInstance placed;
             placed.mesh = lookup.mesh;
-            auto reflected = look_up_slot(meshes, object, 4);
-            for (std::size_t s = 0; !reflected.resolved && s < kSceneryObjectChainSlots; ++s)
-                reflected = look_up_slot(meshes, object, s);
+            SlotLookup reflected = look_up_slot(meshes, object, 4);
+            // speed.exe 0x445A66..0x445A9A retains the last non-empty,
+            // non-skipped node from slots 0..3 and copies it into slot 4
+            // only when slot 4 has no node. An unresolved hash still owns
+            // a node, so it must not trigger or be bypassed by fallback.
+            if (!reflected.resolved &&
+                reflected.reason != TrackUnplacedReason::unresolved_hash) {
+                for (std::size_t s = 0; s < kSceneryObjectChainSlots; ++s) {
+                    const SlotLookup candidate = look_up_slot(meshes, object, s);
+                    if (candidate.resolved ||
+                        candidate.reason == TrackUnplacedReason::unresolved_hash)
+                        reflected = candidate;
+                }
+            }
             if (reflected.resolved) {
                 if (reflected.mesh >= kNoReflectionMesh) { error = "reflection mesh index exceeds u32"; return false; }
                 placed.reflection_mesh = static_cast<std::uint32_t>(reflected.mesh);

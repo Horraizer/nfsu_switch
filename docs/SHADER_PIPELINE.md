@@ -117,7 +117,7 @@ What a backend puts in the uniform blocks, per the reference:
 | `Frame.projection` | `focal_x`, `focal_y`, `near_plane`, `far_plane` |
 | `Frame.light` | `(kLightX, kLightY, kLightZ)`, normalized |
 | `Frame.options` | `flip_v`, `vertex_color`, bit 0 for flat shading, bit 1 for wet road reflections, bit 2 for the internal reflection producer, `alpha_cutoff` |
-| `Instance.rows` | `PreparedInstance::transform` as four rows, the identity for a car profile with no instances; for a track instance, `TrackTransform::linear` as rows 0 to 2 and `translation` as row 3; row 1 w carries the reflection-source eligibility flag |
+| `Instance.rows` | `PreparedInstance::transform` as four rows, the identity for a car profile with no instances; for a track instance, `TrackTransform::linear` as rows 0 to 2 and `translation` as row 3 |
 | `Material.fallback` | `fallback_color` of the group's hash, as bytes 0..255, and 1 in w for the checker pattern |
 | `Material.alpha` | `alpha_min`, `alpha_range` when the reference evaluates the view term, else 1 and 0; 0 and 0 with 1 in z when the diffuse gate is closed |
 | `Material.environment_min`, `.environment_range` | `EnvmapMin`, `EnvmapRange` when the environment gate keeps the term, else zero; `environment_min.w` selects effect-2 wet track receivers |
