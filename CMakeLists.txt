@@ -1553,6 +1553,10 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_race_session_tests PRIVATE nfsu_race_session)
     nfsu_enable_warnings(nfsu_race_session_tests)
     add_test(NAME nfsu_race_session_tests COMMAND nfsu_race_session_tests)
+    add_executable(nfsu_race_particles_tests tests/race_particles_tests.cpp)
+    target_link_libraries(nfsu_race_particles_tests PRIVATE nfsu_race_session)
+    nfsu_enable_warnings(nfsu_race_particles_tests)
+    add_test(NAME nfsu_race_particles_tests COMMAND nfsu_race_particles_tests)
     add_test(NAME nfsu_race_guards
         COMMAND ${CMAKE_COMMAND} -DRACE=$<TARGET_FILE:nfsu_race>
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/race-guards
@@ -1790,6 +1794,13 @@ if(NFSU_BUILD_TESTS)
                     "-DROOT=${NFSU_RETAIL_ROOT}"
                     -DOUT_PARENT=${nfsu_retail_work}
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/retail_replay_check.cmake)
+        add_test(NAME nfsu_race_particle_frame_guards
+            COMMAND ${CMAKE_COMMAND}
+                -DRACE_EXE=$<TARGET_FILE:nfsu_race>
+                -DREPLAY=${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
+                -DWORK_ROOT=${nfsu_retail_work}
+                "-DROOT=${NFSU_RETAIL_ROOT}"
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/race_particle_frame_guards.cmake)
         # The stock car's recorded draws against the CPU reference trace in
         # both material modes, and the stock frame pins of
         # include/nfsu/stock_frame.h: docs/DRAW_COMMANDS.md.
@@ -1861,6 +1872,7 @@ if(NFSU_BUILD_TESTS)
         set_tests_properties(
             nfsu_race_run_retail nfsu_race_run_retail_profile
             nfsu_race_run_retail_profile_reference nfsu_race_replay_check
+            nfsu_race_particle_frame_guards
             nfsu_draw_commands_retail nfsu_stock_frame_retail
             nfsu_stock_frame_painted_retail nfsu_race_loader_peak_retail
             nfsu_track_loader_peak_retail nfsu_track_slice_retail

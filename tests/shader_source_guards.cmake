@@ -100,6 +100,11 @@ if(opaque_source MATCHES "discard[ \t]*;" OR
    NOT cutout_source MATCHES "discard[ \t]*;")
     message(FATAL_ERROR "textured shader discard split is missing")
 endif()
+foreach(source IN ITEMS opaque_source cutout_source)
+    if(NOT ${source} MATCHES "material[.]fallback[.]w < 1[.]5")
+        message(FATAL_ERROR "textured shader lost the unlit particle gate")
+    endif()
+endforeach()
 # The sky keeps a diagnostic discard, so it must test depth before shading or
 # every covered sky fragment is shaded before the world rejects it (#227).
 file(READ "${SHADERS}/sky.frag.glsl" sky_source)

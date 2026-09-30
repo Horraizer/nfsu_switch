@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <new>
 #include <limits>
+#include <cmath>
 
 // Count live C++ allocation bytes without allocating inside the counter.
 // This is a per-frame retention check, not a claim about the newlib heap.
@@ -161,6 +162,7 @@ int main(int argc, char** argv) {
         if (argc == 2) return 0;
         const std::filesystem::path root = argument_path(argv[2]);
         RaceGpuScene scene;
+        scene.set_particles_enabled(true);
         RaceRun race;
         require(race.prepare_metadata(root, error), error);
         require(!race.prepare_metadata(root, error) && error == "race metadata already prepared",
@@ -215,9 +217,8 @@ int main(int argc, char** argv) {
         require(replay.load(text, error), error);
         require(scene.cache_bytes() <= 8*kMiB,"command cache exceeded metadata limit");
         std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 8*kMiB << '\n';
-        // The #188 shadow adds its resident template and texture; #227 adds
-        // two sky definitions, diagnostic names and one static placement.
-        require(scene.cache_bytes() == 3859380,"event 1 command cache metadata estimate differs from pin");
+        // Sky, shadow and particle templates are all resident in this cache.
+        require(scene.cache_bytes() == 3860249,"event 1 command cache metadata estimate differs from pin");
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';
         require(scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes() <=
@@ -244,6 +245,7 @@ int main(int argc, char** argv) {
             // #227: --sky off records no sky draws; the package then holds
             // only the scenery placements, at the same pose and far plane.
             RaceGpuScene no_sky; RaceGpuFrame plain;
+            no_sky.set_particles_enabled(true);
             require(no_sky.set_sky(false), "sky mode refused before load");
             require(no_sky.load(posix_file_system(), root, error), error);
             require(no_sky.frame(race.session(), plain, error), error);
@@ -333,7 +335,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         std::size_t frames = 0, max_draws = 0;
-        const std::set<std::uint64_t> inspect = {1,163,180,600,6000,11344,12459,13128,24300,35396,36510,37177,48336};
+        const std::set<std::uint64_t> inspect = {1,163,180,600,1164,6000,11344,12459,13128,24300,35396,36510,37177,48336};
         const bool full = argc > 3 && std::string(argv[3]) == "--full-draws";
         const bool sampled = argc > 3 && std::string(argv[3]) == "--sample-draws";
         require(argc <= 3 || full || sampled, "unknown retail draw sampling option");
@@ -351,6 +353,7 @@ int main(int argc, char** argv) {
         require(all_wheels_have_contact(race.session().car().wheels) && first_contact_tick == 0 &&
                 first_shadow_tick == 0,
                 "starting grid has incomplete wheel contact or no visible shadow alpha");
+        RaceParticles expected_particles;
         while (race.session().timing().outcome == RaceOutcome::running) {
             require(replay.next(race.session().timing().step, pad, error), error);
             require(race.simulate(pad, error), error);
@@ -361,6 +364,8 @@ int main(int argc, char** argv) {
                 first_shadow_tick = prospective_tick;
             require(!race.simulate(pad, error), "second simulation before commit accepted");
             require(race.commit(error), error);
+            scene.advance_particles(race.session());
+            expected_particles.advance(race.session());
             const auto tick = race.session().timing().step;
             if (full || (sampled && tick%60 == 0) || inspect.count(tick)) {
                 DrawValidationAudit audit;
@@ -413,9 +418,85 @@ int main(int argc, char** argv) {
                         std::memcmp(&selected.material,&b.material,sizeof b.material) == 0,
                         "cached ordered draw differs from reference");
                 }
-                require(frame.track_draws > 0 && frame.car_draws == 74, "missing track/car commands");
-                require(frame.commands.draw_count() == frame.track_draws + frame.car_draws + 1,
-                        "ground shadow is not one additional draw");
+                require(frame.track_draws > 0 && frame.car_draws == 74 &&
+                        frame.particle_draws == kRaceParticleLimit,
+                        "missing track/car/particle commands");
+                require(frame.commands.draw_count() == frame.track_draws + frame.car_draws +
+                        frame.particle_draws + 1, "ground shadow or particles missing");
+                if (tick == 1164) {
+                    unsigned visible_smoke=0, visible_sparks=0;
+                    bool smoke_color_checked=false, spark_color_checked=false;
+                    const auto& camera=frame.commands.frame;
+                    for (std::size_t i=frame.commands.static_track_draw_count()+1+frame.car_draws;
+                         i<frame.commands.draw_count(); ++i) {
+                        const auto view=frame.commands.draw_view(i);
+                        const auto slot=i-frame.commands.static_track_draw_count()-1-frame.car_draws;
+                        const bool spark=slot>=kRaceSmokeLimit;
+                        const auto particle_index=spark?slot-kRaceSmokeLimit:slot;
+                        const auto count=spark?expected_particles.spark_count():expected_particles.smoke_count();
+                        if (particle_index<count) {
+                            const auto& particle=spark?expected_particles.spark(particle_index):
+                                                          expected_particles.smoke(particle_index);
+                            VehicleVec3 position;
+                            double diameter=0,opacity=0;
+                            require(race_particle_visual(particle,expected_particles.step(),position,diameter,opacity),
+                                    "live particle has no visual state");
+                            if (view.material.alpha[0] > 0.0F) {
+                                const double dx=view.placement.rows[12]-camera.eye[0];
+                                const double dy=view.placement.rows[14]-camera.eye[1];
+                                const double dz=-view.placement.rows[13]-camera.eye[2];
+                                const double depth=dx*camera.forward[0]+dy*camera.forward[1]+dz*camera.forward[2];
+                                const double max_diameter=48.0*2.0*depth/(camera.projection[1]*720.0);
+                                const double row0=std::sqrt(view.placement.rows[0]*view.placement.rows[0]+
+                                    view.placement.rows[1]*view.placement.rows[1]+view.placement.rows[2]*view.placement.rows[2]);
+                                const double row2=std::sqrt(view.placement.rows[8]*view.placement.rows[8]+
+                                    view.placement.rows[9]*view.placement.rows[9]+view.placement.rows[10]*view.placement.rows[10]);
+                                require(std::abs(view.placement.rows[12]-position.x)<1.0e-4 &&
+                                        std::abs(view.placement.rows[13]-position.y)<1.0e-4 &&
+                                        std::abs(view.placement.rows[14]-position.z)<1.0e-4,
+                                        "GPU particle placement differs from CPU visual position at slot " +
+                                        std::to_string(slot) + " expected " + std::to_string(position.x) + "," +
+                                        std::to_string(position.y) + "," + std::to_string(position.z) + " got " +
+                                        std::to_string(view.placement.rows[12]) + "," +
+                                        std::to_string(view.placement.rows[13]) + "," +
+                                        std::to_string(view.placement.rows[14]));
+                                require(std::abs(view.material.alpha[0]-opacity)<1.0e-5F,
+                                        "GPU particle opacity differs from CPU visual opacity");
+                                require(row0<=max_diameter+1.0e-5 && row2<=max_diameter+1.0e-5,
+                                        "GPU particle sprite exceeds the 48-pixel bound");
+                            }
+                        }
+                        if (view.material.alpha[0] > 0)
+                            (spark ? visible_sparks : visible_smoke)++;
+                        if ((!spark && view.material.alpha[0] > 0 && !smoke_color_checked) ||
+                            (slot == kRaceSmokeLimit && !spark_color_checked)) {
+                                // Evaluate the recorded textured shader state at two
+                                // opposed billboard headings against the CPU texel.
+                                const auto texel=race_particle_texel(
+                                    spark ? RaceParticleKind::spark : RaceParticleKind::smoke,8,8);
+                                const auto& state=frame.commands.frame;
+                                require(state.options[2] == 1 && view.material.fallback[3] == 2.0F &&
+                                        view.material.alpha[2] == 0.0F && view.material.alpha[3] == 0.0F,
+                                        "particle draw is not unlit under flat race shading");
+                                const float length=std::sqrt(state.light[0]*state.light[0]+state.light[1]*state.light[1]+
+                                                             state.light[2]*state.light[2]);
+                                require(length > 0.0F,"race light direction is zero");
+                                for (float heading : {-1.0F,1.0F}) {
+                                    const float dot=heading*length;
+                                    const unsigned shade=state.options[2] && view.material.fallback[3] < 1.5F
+                                        ? static_cast<unsigned>(std::floor((0.35F+0.65F*std::max(0.0F,dot))*256.0F+0.5F))
+                                        : 256U;
+                                    for (unsigned channel=0; channel<3; ++channel)
+                                        require(((static_cast<unsigned>(texel[channel])*shade+128U)>>8U)==texel[channel],
+                                                "GPU particle source color differs from CPU reference");
+                                }
+                                (spark ? spark_color_checked : smoke_color_checked)=true;
+                        }
+                    }
+                    require(visible_smoke >= 4 && visible_smoke <= kRaceSmokeLimit &&
+                            visible_sparks == 0 && smoke_color_checked && spark_color_checked,
+                            "slide frame does not contain bounded smoke and no sparks");
+                }
                 if (tick == 1 || tick == 180 || tick == 11344) {
                     std::size_t shadows = 0;
                     for (std::size_t i = 0; i < frame.commands.draw_count(); ++i) {
@@ -453,7 +534,7 @@ int main(int argc, char** argv) {
                     std::size_t wheels = 0, moving_wheels = 0, headlights = 0, brakelights = 0;
                     for (std::size_t i = 0; i < frame.commands.draw_count(); ++i) {
                         const auto draw = frame.commands.draw_view(i);
-                        if (draw.definition.name.compare(0, 9, "race-car/") != 0) continue;
+                        if (draw.definition.name.rfind("race-car/car group ",0) != 0) continue;
                         require(draw.instance < stock.scene.instances.size(), "animation guard instance out of range");
                         const auto slot = stock.scene.instances[draw.instance].part_slot;
                         if (slot == kSlotWheel) {

@@ -6,6 +6,7 @@
 #include "nfsu/screen_text.h"
 #include "nfsu/race_window.h"
 #include "nfsu/race_audio.h"
+#include "nfsu/race_particles.h"
 #include "nfsu/car_shadow.h"
 #include "nfsu/arg_path.h"
 
@@ -58,20 +59,34 @@ bool within(const fs::path& path, const fs::path& root) {
     const auto absolute = [](const fs::path& value) {
         return fs::u8path(fs::absolute(value).generic_u8string());
     };
-    std::error_code path_error;
-    auto p = fs::weakly_canonical(absolute(path), path_error);
-    if (path_error) return true; // An unresolved output path is unsafe to write.
-    path_error.clear();
-    const auto absolute_root = absolute(root);
-    auto r = fs::weakly_canonical(absolute_root, path_error);
-    if (path_error) r = absolute_root.lexically_normal();
-    // Windows comparisons below ignore case, as this desktop's files do.
-    auto ps = utf8_text(p), rs = utf8_text(r);
+    const auto inside = [](const fs::path& p, const fs::path& r) {
+        // Windows comparisons ignore case, as this desktop's files do.
+        auto ps = utf8_text(p), rs = utf8_text(r);
 #ifdef _WIN32
-    for (char& c : ps) if (c >= 'A' && c <= 'Z') c += 'a'-'A';
-    for (char& c : rs) if (c >= 'A' && c <= 'Z') c += 'a'-'A';
+        for (char& c : ps) if (c >= 'A' && c <= 'Z') c += 'a'-'A';
+        for (char& c : rs) if (c >= 'A' && c <= 'Z') c += 'a'-'A';
 #endif
-    return ps == rs || (ps.size() > rs.size() && ps.compare(0,rs.size(),rs)==0 && ps[rs.size()]=='/');
+        return ps == rs || (ps.size() > rs.size() && ps.compare(0,rs.size(),rs)==0 && ps[rs.size()]=='/');
+    };
+    auto p = absolute(path), r = absolute(root);
+    // Reject a direct child before canonicalizing.
+    if (inside(p.lexically_normal(),r.lexically_normal())) return true;
+    require(fs::is_directory(r),"root directory missing");
+    const auto resolved = [](const fs::path& value) {
+        try { return fs::weakly_canonical(value); }
+        catch (const fs::filesystem_error&) {
+            // MinGW Release can reject a newly created directory. A lexical
+            // fallback is safe only if no existing ancestor is a link.
+            fs::path ancestor=value.root_path();
+            for (const auto& part : value.relative_path()) {
+                ancestor /= part;
+                std::error_code ec;
+                if (fs::is_symlink(fs::symlink_status(ancestor,ec))) throw;
+            }
+            return value.lexically_normal();
+        }
+    };
+    return inside(resolved(p),resolved(r));
 }
 
 // Actual reads follow residency loads, and releases destroy their parsed
@@ -79,6 +94,8 @@ bool within(const fs::path& path, const fs::path& root) {
 // geometry or decoded-texture cache grows across laps.
 class RaceScene {
 public:
+    RaceParticles particles;
+    bool particles_enabled = true;
     TrackStreamFiles files;
     const TrackStreamTable& table;
     std::map<std::size_t,std::unique_ptr<TrackStreamLoad>> sections;
@@ -96,7 +113,7 @@ public:
     bool dirty = true;
     std::uint64_t loads = 0, releases = 0, bytes_read = 0;
     Cost io_cost, prepare_cost, render_cost;
-    explicit RaceScene(const TrackStreamTable& t) : table(t) {}
+    explicit RaceScene(const TrackStreamTable& t, bool effects) : particles_enabled(effects), table(t) {}
     void load_car(const fs::path& root, const fs::path& texture) {
         std::string error;
         require(read_stock_frame_inputs(root,car_inputs),"cannot read stock car inputs");
@@ -202,6 +219,8 @@ public:
         require(render_stock_frame(car,options,error),error);
         std::vector<unsigned char> rgba;
         require(compose_race_frame(background,car.frame,rgba),"frame sizes differ");
+        if (particles_enabled)
+            require(draw_race_particles(rgba,options,particles,error,&background,&car.frame),error);
         ScreenImage image{rgba.data(),640,360,640*4};
         const auto lines=race_session_hud(session);
         for (std::size_t i=0;i<lines.size();++i)
@@ -212,7 +231,8 @@ public:
 
 int run(int argc, char** argv) {
     fs::path root,input,output,generate;
-    bool live=false, smoke=false; std::set<std::size_t> frames;
+    bool live=false, smoke=false, particles_enabled=true, particle_events=false;
+    std::set<std::size_t> frames;
     // The path arguments arrive in the ANSI code page on Windows; convert
     // them as the other tools do, so a path outside ASCII opens.
     std::string argument_error;
@@ -222,11 +242,15 @@ int run(int argc, char** argv) {
         if (a=="--help") {
             std::cout << "nfsu_race --root RETAIL (--input RECORDING | --generate RECORDING | --live)\n"
                          "  [--out NEW_DIRECTORY --frames 180,600,6000,22000,40000]\n"
+                         "  [--particles=on|--particles=off] [--particle-events]\n"
                          "  live mode plays retail race audio when the device and banks are available\n";
             return 0;
         }
         if (a=="--live") { live=true; continue; }
         if (a=="--live-smoke") { live=true; smoke=true; continue; }
+        if (a=="--particles=on") { particles_enabled=true; continue; }
+        if (a=="--particles=off") { particles_enabled=false; continue; }
+        if (a=="--particle-events") { particle_events=true; continue; }
         require(i+1<argc,"missing option value"); const std::string value=argv[++i];
         if (a=="--root") root=nfsu::argument_path(argv[i]);
         else if (a=="--input") input=nfsu::argument_path(argv[i]);
@@ -272,7 +296,7 @@ int run(int argc, char** argv) {
     TrackResidencyOptions options; options.budget_bytes=track_stream_pool_bytes(table);
     TrackResidencySession residency; std::vector<TrackResidencyStep> startup;
     require(residency.start(table,zones,slot.track,costs,options,startup,error),error);
-    RaceScene scene(table); scene.files.stream=root/"Tracks"/track_stream_file_name(*info);
+    RaceScene scene(table,particles_enabled); scene.files.stream=root/"Tracks"/track_stream_file_name(*info);
     scene.files.pack=root/"Tracks"/track_stream_pack_file_name(*info);
     scene.files.has_pack=fs::exists(scene.files.pack);
     scene.load_car(root,root/"Tracks"/track_texture_file_name(slot.track));
@@ -303,6 +327,18 @@ int run(int argc, char** argv) {
     std::size_t run_index=0,run_tick=0; std::uint64_t resets=0;
     auto tick=[&](const GamepadFrame& pad) {
         auto begin=Clock::now(); require(session.advance(pad,error),error); simulation.add(begin);
+        const auto previous_smoke=scene.particles.smoke_count();
+        const auto previous_sparks=scene.particles.spark_count();
+        if (particles_enabled) scene.particles.advance(session);
+        if (particle_events &&
+            (scene.particles.smoke_count()!=previous_smoke ||
+             scene.particles.spark_count()!=previous_sparks ||
+             session.telemetry().impulses))
+            std::cout << "particle tick " << session.timing().step << " physics "
+                      << scene.particles.step() << " smoke " << scene.particles.smoke_count()
+                      << " sparks " << scene.particles.spark_count() << " impulses "
+                      << (session.physics_telemetry()[0].impulses+
+                          session.physics_telemetry()[1].impulses) << '\n';
         if (live && !smoke) sound.on_tick(audio::race_audio_snapshot(session));
         resets=session.telemetry().resets;
         if (trajectory.is_open()) for (const auto& t : session.physics_telemetry()) {

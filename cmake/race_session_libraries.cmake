@@ -1,4 +1,4 @@
-add_library(nfsu_race_session src/race_session.cpp)
+add_library(nfsu_race_session src/race_session.cpp src/race_particles.cpp)
 target_link_libraries(nfsu_race_session PUBLIC nfsu_drive_session nfsu_vehicle_track nfsu_race_timing)
 target_compile_features(nfsu_race_session PUBLIC cxx_std_17)
 nfsu_enable_warnings(nfsu_race_session)

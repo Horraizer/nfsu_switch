@@ -422,7 +422,7 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
 // --sky on draws the sky after the opaque world; off omits it; early is the
 // issue 227 diagnostic that submits it with the opaque pass, as before.
 void run(const std::string& root, bool replay_mode, bool panel_mode, bool profile_frame,
-         const std::string& sky, Screen& screen, PadState& pad) {
+         bool particles_enabled, const std::string& sky, Screen& screen, PadState& pad) {
     require(R_SUCCEEDED(romfsInit()), "cannot mount race shader/replay RomFS");
     struct Guard { ~Guard() { romfsExit(); } } guard;
     std::string error;
@@ -432,7 +432,9 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         const std::string text((std::istreambuf_iterator<char>(in)), {});
         require(bool(in) && replay.load(text,error), "bundled replay: "+error);
     }
-    RaceGpuScene scene; RaceRun race; HeapUsage heap;
+    RaceGpuScene scene; scene.set_particles_enabled(particles_enabled);
+    RaceRun race; HeapUsage heap;
+    std::printf("PARTICLES %s\n",particles_enabled?"ON":"OFF");
     require(scene.set_sky(sky != "off"), "sky mode set after scene load");
     const auto before = mallinfo(); heap.begin(before.uordblks,before.arena);
     Progress progress(screen,pad,heap);
@@ -525,6 +527,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             const double tick_ms = ms(armGetSystemTick()-stage);
             simulation += tick_ms; simulation_ticks[ticks] = tick_ms;
             stage = armGetSystemTick(); require(race.commit(error),error);
+            scene.advance_particles(race.session());
             sound.on_tick(audio::race_audio_snapshot(race.session()));
             if (replay_mode) std::fputs(race.step_line().c_str(),stdout);
             residency += ms(armGetSystemTick()-stage);
@@ -761,7 +764,8 @@ int main(int argc, char** argv) {
         Screen screen; if (!screen.open()) return 1;
         try {
             std::string root = "sdmc:/nfsu";
-            bool replay = false, panel = false, profile_frame = false, selected = false, root_seen = false;
+            bool replay = false, panel = false, profile_frame = false;
+            bool particles_enabled = true, selected = false, root_seen = false;
             std::string sky = "on";
             for (int i = 1; i < argc; ++i) {
                 const std::string arg = argv[i];
@@ -769,11 +773,13 @@ int main(int argc, char** argv) {
                 else if (arg == "--live") { replay = false; selected = true; }
                 else if (arg == "--panel") panel = true;
                 else if (arg == "--profile-frame") profile_frame = true;
+                else if (arg == "--particles=on") particles_enabled = true;
+                else if (arg == "--particles=off") particles_enabled = false;
                 else if (arg == "--sky" && i+1 < argc &&
                          (std::strcmp(argv[i+1],"on") == 0 || std::strcmp(argv[i+1],"off") == 0 ||
                           std::strcmp(argv[i+1],"early") == 0)) sky = argv[++i];
                 else if (!root_seen && arg.rfind("--",0) != 0) { root = arg; root_seen = true; }
-                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--sky on|off|early]");
+                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--sky on|off|early] [--particles=on|--particles=off]");
             }
             require(!(panel && profile_frame),"--profile-frame requires direct presentation");
             while (!selected && appletMainLoop()) {
@@ -786,13 +792,14 @@ int main(int argc, char** argv) {
                     "A: drive with Joy-Con / Pro Controller", "X: replay the pinned desktop event1.txt", "+: exit",
                     profile_frame ? "PROFILE FRAME: direct only; Y panel toggle disabled" :
                         std::string("Y: diagnostic panel ")+(panel?"ON":"OFF")+" (readback and CPU text cost)",
+                    std::string("PARTICLES ")+(particles_enabled?"ON":"OFF"),
                     "The #47 first-lap check runs before track streaming. Assets: "+root,
                     "Release all controls during countdown to clear the #59 hot-plug latch.",
                     "Direct mode has no in-race HUD yet; choose PANEL for live driving evidence.",
                     "During the race: Y pauses, + opens results with driving-frame statistics.",
                     "No game data is bundled or written. Replay input is bundled in RomFS."});
             }
-            if (selected) run(root,replay,panel,profile_frame,sky,screen,pad);
+            if (selected) run(root,replay,panel,profile_frame,particles_enabled,sky,screen,pad);
         } catch (const Cancel&) {
         } catch (const std::exception& e) {
             std::printf("ERROR: %s\n",e.what()); std::fflush(stdout);

@@ -2,6 +2,7 @@
 #include "nfsu/race_run.h"
 #include "nfsu/stock_frame.h"
 #include "nfsu/platform.h"
+#include "nfsu/race_particles.h"
 #include "nfsu/car_shadow.h"
 
 namespace nfsu {
@@ -13,6 +14,7 @@ bool combine_race_commands(RecordedCommands track, const RecordedCommands& car,
 struct RaceGpuFrame {
     RecordedCommands commands;
     std::size_t track_draws = 0, car_draws = 0, visible = 0;
+    std::size_t particle_draws = 0;
     std::uint64_t triangles = 0, unplaced = 0;
     double far_plane = 0;
 };
@@ -25,6 +27,11 @@ public:
     RaceGpuScene(const RaceGpuScene&) = delete;
     RaceGpuScene& operator=(const RaceGpuScene&) = delete;
     const TrackSlice& track() const { return track_; }
+    // Select before load. Both values use the same executable and assets.
+    void set_particles_enabled(bool enabled) { particles_enabled_ = enabled; }
+    void advance_particles(const RaceSession& session) noexcept {
+        if (particles_enabled_) particles_.advance(session);
+    }
     // The separate sky pass (issue 184), on by default. Off records no sky
     // draws, for console A/B cost runs. Refused once the scene is loaded.
     bool set_sky(bool enabled) { if (ready_) return false; sky_ = enabled; return true; }
@@ -76,5 +83,8 @@ private:
     std::vector<PreparedInstance> base_;
     std::size_t skin_source_ = kNoHandle;
     std::uint64_t car_bytes_ = 0;
+    RaceParticles particles_;
+    bool particles_enabled_ = false;
+    std::size_t car_draw_count_ = 0;
 };
 } // namespace nfsu
