@@ -199,6 +199,7 @@ struct ProfileResultContext {
     DekoMemoryUsage memory;
     DekoGpfifoUsage gpfifo;
     const char* sky = "ON";
+    DekoSceneTarget scene_target{width, height, false};
 };
 using ProfilePages = std::vector<std::vector<std::string>>;
 ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
@@ -300,6 +301,8 @@ ProfilePages profile_pages(const RaceRun& race, const RaceReplay& replay,
     });
     const auto& gpu = context.gpu;
     add_page("GPU SCENE",{
+        format("TARGET %ux%u -> %ux%u | %s",context.scene_target.width,context.scene_target.height,
+            width,height,context.scene_target.upscale ? "LINEAR UPSCALE INCLUDED" : "NATIVE DIRECT"),
         format("ONE SCENE PAIR | completed %llu | invalid %llu | dropped %llu",
             (unsigned long long)gpu.scene.count(),(unsigned long long)gpu.invalid,
             (unsigned long long)gpu.dropped),
@@ -422,7 +425,10 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
 // --sky on draws the sky after the opaque world; off omits it; early is the
 // issue 227 diagnostic that submits it with the opaque pass, as before.
 void run(const std::string& root, bool replay_mode, bool panel_mode, bool profile_frame,
-         const std::string& sky, Screen& screen, PadState& pad) {
+         const std::string& sky, std::uint32_t scene_height, Screen& screen, PadState& pad) {
+    DekoSceneTarget scene_target;
+    require(plan_deko_scene_target(width,height,!panel_mode,scene_height,scene_target),
+            "--scene-height below 720 requires direct presentation (no --panel)");
     require(R_SUCCEEDED(romfsInit()), "cannot mount race shader/replay RomFS");
     struct Guard { ~Guard() { romfsExit(); } } guard;
     std::string error;
@@ -470,7 +476,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     if (!panel_mode) screen.close();
     DekoRenderer renderer;
     require(renderer.open(frame.commands,error,!panel_mode,kTrackSliceDrawLimit,profile_frame,true,
-                          sky == "early"),error);
+                          sky == "early",scene_height),error);
     const double initial_upload = ms(armGetSystemTick()-upload_start);
     const auto clocks = profile_frame ? read_clocks() : ClockReadings{};
     std::unique_ptr<FrameProfileStats> profile_stats;
@@ -745,7 +751,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                 load_ms,initial_upload,scene.track().streaming_bytes,persistent,renderer.gpu_bytes(),
                 sizeof(FrameProfileStats)+renderer.profile_storage_bytes(),
                 renderer.memory_usage(),renderer.gpfifo_usage(),
-                sky == "off" ? "OFF" : sky == "early" ? "EARLY" : "ON"};
+                sky == "off" ? "OFF" : sky == "early" ? "EARLY" : "ON",scene_target};
             show_result(screen,pad,race,replay,replay_mode,panel_mode,paused,
                         stats,unpause_resets,last_perf,failure,&context);
         } else show_result(screen,pad,race,replay,replay_mode,panel_mode,paused,
@@ -763,17 +769,20 @@ int main(int argc, char** argv) {
             std::string root = "sdmc:/nfsu";
             bool replay = false, panel = false, profile_frame = false, selected = false, root_seen = false;
             std::string sky = "on";
+            std::uint32_t scene_height = 720;
             for (int i = 1; i < argc; ++i) {
                 const std::string arg = argv[i];
                 if (arg == "--replay") { replay = true; selected = true; }
                 else if (arg == "--live") { replay = false; selected = true; }
                 else if (arg == "--panel") panel = true;
                 else if (arg == "--profile-frame") profile_frame = true;
+                else if (arg == "--scene-height" && i+1 < argc &&
+                         deko_parse_scene_height(argv[i+1],scene_height)) ++i;
                 else if (arg == "--sky" && i+1 < argc &&
                          (std::strcmp(argv[i+1],"on") == 0 || std::strcmp(argv[i+1],"off") == 0 ||
                           std::strcmp(argv[i+1],"early") == 0)) sky = argv[++i];
                 else if (!root_seen && arg.rfind("--",0) != 0) { root = arg; root_seen = true; }
-                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--sky on|off|early]");
+                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--sky on|off|early] [--scene-height 720|540|450|360]");
             }
             require(!(panel && profile_frame),"--profile-frame requires direct presentation");
             while (!selected && appletMainLoop()) {
@@ -792,7 +801,7 @@ int main(int argc, char** argv) {
                     "During the race: Y pauses, + opens results with driving-frame statistics.",
                     "No game data is bundled or written. Replay input is bundled in RomFS."});
             }
-            if (selected) run(root,replay,panel,profile_frame,sky,screen,pad);
+            if (selected) run(root,replay,panel,profile_frame,sky,scene_height,screen,pad);
         } catch (const Cancel&) {
         } catch (const std::exception& e) {
             std::printf("ERROR: %s\n",e.what()); std::fflush(stdout);

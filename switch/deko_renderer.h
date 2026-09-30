@@ -3,6 +3,7 @@
 #include "nfsu/draw_commands.h"
 #include "nfsu/gpu_scene_profile.h"
 #include "nfsu/deko_gpfifo_budget.h"
+#include "nfsu/deko_scene_target.h"
 #include <memory>
 
 namespace nfsu {
@@ -45,9 +46,12 @@ public:
     // sky that follows them is depth-rejected wherever the world covers it.
     // sky_with_opaque is a diagnostic only: it moves the sky into the opaque
     // pass at its list position, as before issue 227, for console A/B runs.
+    // scene_height is zero/native, or a presentation-only A/B target from
+    // plan_deko_scene_target. The GPU scene timer includes the linear upscale.
     bool open(const RecordedCommands& commands, std::string& error, bool presentation = true,
               std::size_t draw_capacity = 0, bool profile_frame = false,
-              bool opaque_first = false, bool sky_with_opaque = false);
+              bool opaque_first = false, bool sky_with_opaque = false,
+              std::uint32_t scene_height = 0);
     // Reuses resident GPU resources. Presentation may have a frame in flight.
     bool update(const RecordedCommands& commands, std::string& error,
                 DekoUpdateTiming* timing = nullptr);
