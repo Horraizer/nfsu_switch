@@ -76,6 +76,15 @@ foreach(manifest IN LISTS manifests)
     endif()
 endforeach()
 
+# The regular textured shader must allow early depth testing. The cutout
+# shader remains available for material alpha tests and diagnostic cutoffs.
+file(READ "${SHADERS}/textured_opaque.frag.glsl" opaque_source)
+file(READ "${SHADERS}/textured.frag.glsl" cutout_source)
+if(opaque_source MATCHES "discard[ \t]*;" OR
+   NOT cutout_source MATCHES "discard[ \t]*;")
+    message(FATAL_ERROR "textured shader discard split is missing")
+endif()
+
 # nfsu_case(<label> <file> <manifest> <expected> [<from> <to>]...)
 #
 # Replaces each <from> with its <to> in <file> of a fresh copy of shaders/,
@@ -187,8 +196,8 @@ nfsu_case("a uniform block binding moved in the stage source"
     "layout (std140, binding = 3) uniform Material")
 
 nfsu_case("a member added to a uniform block"
-    textured.frag.glsl track_textured.manifest
-    "uniform block Material: the manifest lists 5 members, textured.frag.glsl declares 6"
+    textured_opaque.frag.glsl track_textured.manifest
+    "uniform block Material: the manifest lists 5 members, textured_opaque.frag.glsl declares 6"
     "    vec4 environment_color;\n} material;"
     "    vec4 environment_color;\n    vec4 extra;\n} material;")
 

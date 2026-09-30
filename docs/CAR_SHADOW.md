@@ -192,14 +192,20 @@ submitted at the body origin. Its half extents use the car's
 authored length and width, since the producers of the retail footprint
 fields are not fully traced. The planar grid uses more clearance than
 retail's per-point road lift because it does not sample each vertex; retail
-also raises selected vertices another 0.08. At the event-1 start, the
-old planar grid put one edge below the collision road and hid the shadow
-through the countdown. The replay checker now pins a visibly darkened
-frame 1. All four wheels contact the road and shadow alpha is positive at
-tick 0. Retail's grid queries at
-0x0056EEB0..0x0056EF10 have no countdown or first-contact gate; wheel
-queries are fallback. First-frame retail pixels have not been captured
-directly. The CPU/GPU
+also raises selected vertices another 0.08. An earlier planar placement put
+one edge below the collision road at the event-1 start and hid the shadow
+through the countdown. The current replay pins a visibly darkened frame 1.
+The event-1 replay runner using retail assets reports all four wheels in
+contact and positive shadow alpha at initialization (tick 0), so the first
+wheel contact and first nonzero alpha tick are both 0, with 0 invisible
+simulation ticks. The retail source path also has no countdown or
+first-contact gate: it queries the road grid at 0x0056EEB0..0x0056EEC7, uses
+wheel queries as fallbacks at 0x0056EEDD..0x0056EF10, and calculates height
+fade in 0x0056E3C4..0x0056E42C. That fade can reduce alpha to zero when the
+car is three or more units above the road. The retail executable's
+first-frame framebuffer has not been captured, so the trace supports
+immediate shadow placement with height-dependent visibility, but does not
+establish what its first displayed pixels look like. The CPU/GPU
 path batches the three retail strips into one draw. The track renderer
 currently draws the shadow after its track list; retail interleaves it in
 row 2 of an immediate queue, so overlap with later blended track layers

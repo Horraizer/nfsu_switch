@@ -2,7 +2,9 @@
 #include "nfsu/car_parts.h"
 #include "nfsu/posix_file_system.h"
 #include "nfsu/draw_execution.h"
+#include "nfsu/deko_gpfifo_budget.h"
 #include "nfsu/platform_desktop.h"
+#include "nfsu/arg_path.h"
 #include <fstream>
 #include <iostream>
 #include <algorithm>
@@ -78,11 +80,16 @@ int main(int argc, char** argv) {
         clock.add(1000000); for (int i = 0; i < 8; ++i) require(clock.take(), "catch-up tick missing");
         require(clock.debt_ticks() == 52, "clock discarded slow-frame debt");
         clock.reset(); require(!clock.take(), "clock reset failed");
+        require(deko_track_list_calls(65) == 2 &&
+                deko_frame_gpfifo_bound(deko_track_list_calls(2047)) < kDekoGpfifoRingEntries &&
+                deko_frame_gpfifo_bound(1828) > kDekoGpfifoRingEntries,
+                "per-draw prepared calls would overflow the Switch GPFIFO ring");
         RaceReplay replay; GamepadFrame pad;
         require(!replay.load("NFSU_RACE_INPUT 1\n1 0 0\n", error), "unverified replay accepted");
         require(!replay.next(0, pad, error), "empty replay accepted");
         require(argc >= 2, "recording argument missing");
-        std::ifstream in(argv[1], std::ios::binary);
+        require(check_arguments(argc, argv, 1, error), error);
+        std::ifstream in(argument_path(argv[1]), std::ios::binary);
         const std::string text((std::istreambuf_iterator<char>(in)), {});
         require(bool(in) && replay.load(text, error), error);
         require(!replay.next(1, pad, error), "out of order replay tick accepted");
@@ -152,7 +159,7 @@ int main(int argc, char** argv) {
         require(!combine_race_commands(fixture, other, joined, error), "combined draw overflow accepted");
         std::cout << "PASS: fixed clock, exact replay cursor, refusal and combined draw guards\n";
         if (argc == 2) return 0;
-        const std::filesystem::path root(argv[2]);
+        const std::filesystem::path root = argument_path(argv[2]);
         RaceGpuScene scene;
         RaceRun race;
         require(race.prepare_metadata(root, error), error);
@@ -216,6 +223,21 @@ int main(int argc, char** argv) {
                 kPersistentBudgetPlaceholder, "persistent payload over budget");
         RaceGpuFrame frame;
         require(scene.frame(race.session(), frame, error), error);
+        require(frame.commands.package_identity() != nullptr &&
+                frame.commands.static_track_draw_count() == frame.track_draws &&
+                frame.commands.static_track_instance_count() == scene.track().scene.instances.size() &&
+                frame.commands.static_track_instance_count() <= 65536 &&
+                frame.commands.static_track_definition_count() <= 4096,
+                "prepared static package identity or instance count changed");
+        std::vector<const RecordedDraw*> static_by_group;
+        for (std::size_t i = 0; i < frame.commands.static_track_definition_count(); ++i) {
+            const auto& definition = frame.commands.static_track_definition(i);
+            require(definition.group < 65536, "static track group exceeds Switch slot table");
+            if (definition.group >= static_by_group.size())
+                static_by_group.resize(definition.group + 1, nullptr);
+            require(!static_by_group[definition.group], "duplicate static track group");
+            static_by_group[definition.group] = &definition;
+        }
         const auto& const_commands = frame.commands;
         unsigned owning_refusals = 0;
         try { (void)frame.commands.owning_draws(); }
@@ -293,13 +315,28 @@ int main(int argc, char** argv) {
         const bool full = argc > 3 && std::string(argv[3]) == "--full-draws";
         const bool sampled = argc > 3 && std::string(argv[3]) == "--sample-draws";
         require(argc <= 3 || full || sampled, "unknown retail draw sampling option");
-        require(std::all_of(race.session().car().wheels.begin(), race.session().car().wheels.end(),
-                            [](const auto& wheel) { return wheel.contact; }) &&
-                place_car_shadow(race.session()).alpha > 0.0F,
-                "starting grid shadow has no wheel contact or alpha");
+        const auto no_contact_tick = std::numeric_limits<std::size_t>::max();
+        const auto has_wheel_contact = [](const auto& wheels) {
+            return std::any_of(wheels.begin(), wheels.end(),
+                               [](const auto& wheel) { return wheel.contact; });
+        };
+        const auto all_wheels_have_contact = [](const auto& wheels) {
+            return std::all_of(wheels.begin(), wheels.end(),
+                               [](const auto& wheel) { return wheel.contact; });
+        };
+        std::size_t first_contact_tick = has_wheel_contact(race.session().car().wheels) ? 0 : no_contact_tick;
+        std::size_t first_shadow_tick = place_car_shadow(race.session()).alpha > 0.0F ? 0 : no_contact_tick;
+        require(all_wheels_have_contact(race.session().car().wheels) && first_contact_tick == 0 &&
+                first_shadow_tick == 0,
+                "starting grid has incomplete wheel contact or no visible shadow alpha");
         while (race.session().timing().outcome == RaceOutcome::running) {
             require(replay.next(race.session().timing().step, pad, error), error);
             require(race.simulate(pad, error), error);
+            const auto prospective_tick = race.session().timing().step + 1;
+            if (first_contact_tick == no_contact_tick && has_wheel_contact(race.session().car().wheels))
+                first_contact_tick = prospective_tick;
+            if (first_shadow_tick == no_contact_tick && place_car_shadow(race.session()).alpha > 0.0F)
+                first_shadow_tick = prospective_tick;
             require(!race.simulate(pad, error), "second simulation before commit accepted");
             require(race.commit(error), error);
             const auto tick = race.session().timing().step;
@@ -332,6 +369,14 @@ int main(int argc, char** argv) {
                 for (std::size_t i = 0; i < frame.commands.draw_count(); ++i) {
                     const auto selected = frame.commands.draw_view(i);
                     const auto& a = selected.definition; const auto& b = reference.commands.owning_draws()[i];
+                    if (i < frame.commands.static_track_draw_count()) {
+                        require(a.group < static_by_group.size() &&
+                                static_by_group[a.group] == &a && selected.track_instance &&
+                                selected.instance < frame.commands.static_track_instance_count() &&
+                                &selected.placement == &frame.commands.static_track_instance(selected.instance) &&
+                                &selected.material == &a.material,
+                                "selected track draw escaped its static package");
+                    } else require(!selected.track_instance, "car draw entered static track range");
                     require(selected.diagnostic_name() == b.name && a.group == b.group && a.mesh == b.mesh && selected.instance == b.instance &&
                         a.vertex_resource == b.vertex_resource && a.index_resource == b.index_resource &&
                         a.texture_resource == b.texture_resource && a.first_vertex == b.first_vertex &&
@@ -349,7 +394,7 @@ int main(int argc, char** argv) {
                 require(frame.track_draws > 0 && frame.car_draws == 74, "missing track/car commands");
                 require(frame.commands.draw_count() == frame.track_draws + frame.car_draws + 1,
                         "ground shadow is not one additional draw");
-                if (tick == 180 || tick == 11344) {
+                if (tick == 1 || tick == 180 || tick == 11344) {
                     std::size_t shadows = 0;
                     for (std::size_t i = 0; i < frame.commands.draw_count(); ++i) {
                         const auto shadow = frame.commands.draw_view(i);
@@ -364,6 +409,9 @@ int main(int argc, char** argv) {
                     }
                     require(shadows == 1, "resting/turning car shadow draw missing or duplicated");
                 }
+                require(deko_frame_gpfifo_bound(deko_track_list_calls(
+                            static_cast<std::uint32_t>(frame.track_draws))) < kDekoGpfifoRingEntries,
+                        "selected track draws exceed GPFIFO call budget");
                 if (tick == 13128) {
                     require(race.session().animation().braking, "animation guard tick is not braking");
                     StockFrameInputs inputs;
@@ -409,6 +457,11 @@ int main(int argc, char** argv) {
                     << " car " << frame.car_draws << " far " << frame.far_plane << '\n';
             }
         }
+        require(first_contact_tick == 0 && first_shadow_tick == 0,
+                "race replay delayed first wheel contact or shadow alpha");
+        std::cout << "shadow startup: first wheel contact tick " << first_contact_tick
+                  << ", first nonzero alpha tick " << first_shadow_tick
+                  << ", invisible ticks " << first_shadow_tick-first_contact_tick << '\n';
         for (const auto& line : race.result_lines()) std::cout << line << '\n';
         require(replay.exhausted() && race.matches_event1_replay(), "Switch race runner differs from desktop pins");
         std::cout << "PASS: exact per-step stream and result; frames " << frames << " max draws " << max_draws << '\n';

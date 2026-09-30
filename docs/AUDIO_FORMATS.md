@@ -18,11 +18,13 @@ relative_path bank_count entry_count sample_count segment_count total_frames SHA
 ```
 
 Each count is local to that file. Samples and segments are concatenated in
-table order. `nfsu_audio_retail` checks that manifest and hashes every one of
-the 125 input files before and after the run. The decoded output is 16-bit
-little-endian interleaved PCM, at each header's own rate and channel count.
-No resampling, loop expansion, gain, or engine mixing is applied. The manifest
-therefore pins the decoder output, not the exact in-game playback mix.
+table order. `nfsu_audio_retail` (label `retail`, registered when the build is
+configured with `-DNFSU_RETAIL_ROOT=<installation>`) checks that manifest and
+hashes every one of the 125 input files before and after the run. The decoded
+output is 16-bit little-endian interleaved PCM, at each header's own rate and
+channel count. No resampling, loop expansion, gain, or engine mixing is
+applied. The manifest therefore pins the decoder output, not the exact in-game
+playback mix.
 
 ## ABK modules and BNK sample headers
 

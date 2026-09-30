@@ -7,24 +7,25 @@ from pathlib import Path
 import subprocess
 
 STEPS = (1, 180, 600, 6000, 11344, 12459, 13128, 24300, 35396, 36510, 37177, 48336)
-# PR #225 fixes car window aliases and blank decals; PR #220 adds the ground
-# shadow. Each frame below is measured with both changes. These frames also
-# depend on the inherited rasterizer depth-write guard from 3b1f644 (already
-# in base 97e3839): blended track groups preserve depth.
+# These frame pins were checked on the merged tree: PR #220 adds the ground
+# shadow, PR #225 fixes car window aliases and blank decals, and PR #221 sorts
+# opaque GPU draws before blended draws. The draw-order change affects GPU
+# submission, not these CPU reference pixels. The rasterizer depth-write guard
+# from 3b1f644 is inherited from base 97e3839.
 # Replay steps, state hashes, input recording, and trajectory are unchanged.
 FRAMES = (
-    "33C7EA1B1C700EF50C89A7D468CAAB012972D4FCFFE36D564B5D056DEC30E1F4",  # 1: visible ground shadow during countdown; no-shadow main is C544B32A3157AB6646E626032685A157CCA456BDB8833B45DF944B2C87AAC2C9
-    "ECA21EEA0E33071D8F54FE391F36E08D569FF697F84B561461F419C2EA8912C2",  # 180: car texture fix + shadow at launch lane
-    "52CCA0306D140F1CF12819A6547034294FBA83F37073BDE1C4125EFBD96CFD6E",  # 600: car texture fix + shadow at yellow lane
-    "0B12D812B7E9E6511BEBF4503FC1E888F57F2E4A7F49AB1F7DCB93A78E444828",  # 6000: car texture fix + shadow at junction
-    "57E1194E5ED738A718B55A67580C6AFC8D4883E8F9C25607759AE7CB0EF61EF8",  # 11344: car texture fix + shadow at bend
-    "59F874A000ED305B4367A2B6FBAB55E5C0469F5EF17BD05F32B49FAC9750CF60",  # 12459: car texture fix + shadow at straight
-    "2AE4CEC5325DDF56113B129A87973B437372D4FF345D11E3E928BFF107729E48",  # 13128: car texture fix + shadow at right edge
-    "24939BAB5AECD2969D6B5244ECCD7A654ED79F6E50966CD4B8ACCAA9890D1456",  # 24300: car texture fix + shadow at lap-two launch
-    "540739148B7323B6233F0786E6B10C320DF05FC8CAF46BD707835FD2B5CDC15B",  # 35396: car texture fix + shadow at lap-two bend
-    "022A558E9483A5486F555834A4CAFDF6A6AC783AB4D1A96BC5683EFB7F0E56DA",  # 36510: car texture fix + shadow at lap-two straight
-    "5D387BF5F326021C7F4D4417E7459247539C0EDCB35EFCBFEC8A6750461FC26F",  # 37177: car texture fix + shadow at lap-two right edge
-    "08F1B38E8EEA0C75B88CA1AE4BA479ED46A25E22D1323B376D778534830FDAFA",  # 48336: car texture fix + shadow at finish lane
+    "33C7EA1B1C700EF50C89A7D468CAAB012972D4FCFFE36D564B5D056DEC30E1F4",  # 1: PR #220 shadow + PR #225 texture + PR #221 draw order; shadow during countdown
+    "ECA21EEA0E33071D8F54FE391F36E08D569FF697F84B561461F419C2EA8912C2",  # 180: PR #220 shadow + PR #225 texture + PR #221 draw order; launch lane
+    "52CCA0306D140F1CF12819A6547034294FBA83F37073BDE1C4125EFBD96CFD6E",  # 600: PR #220 shadow + PR #225 texture + PR #221 draw order; yellow lane
+    "0B12D812B7E9E6511BEBF4503FC1E888F57F2E4A7F49AB1F7DCB93A78E444828",  # 6000: PR #220 shadow + PR #225 texture + PR #221 draw order; junction
+    "57E1194E5ED738A718B55A67580C6AFC8D4883E8F9C25607759AE7CB0EF61EF8",  # 11344: PR #220 shadow + PR #225 texture + PR #221 draw order; bend
+    "59F874A000ED305B4367A2B6FBAB55E5C0469F5EF17BD05F32B49FAC9750CF60",  # 12459: PR #220 shadow + PR #225 texture + PR #221 draw order; straight
+    "2AE4CEC5325DDF56113B129A87973B437372D4FF345D11E3E928BFF107729E48",  # 13128: PR #220 shadow + PR #225 texture + PR #221 draw order; right edge
+    "24939BAB5AECD2969D6B5244ECCD7A654ED79F6E50966CD4B8ACCAA9890D1456",  # 24300: PR #220 shadow + PR #225 texture + PR #221 draw order; lap-two launch
+    "540739148B7323B6233F0786E6B10C320DF05FC8CAF46BD707835FD2B5CDC15B",  # 35396: PR #220 shadow + PR #225 texture + PR #221 draw order; lap-two bend
+    "022A558E9483A5486F555834A4CAFDF6A6AC783AB4D1A96BC5683EFB7F0E56DA",  # 36510: PR #220 shadow + PR #225 texture + PR #221 draw order; lap-two straight
+    "5D387BF5F326021C7F4D4417E7459247539C0EDCB35EFCBFEC8A6750461FC26F",  # 37177: PR #220 shadow + PR #225 texture + PR #221 draw order; lap-two right edge
+    "08F1B38E8EEA0C75B88CA1AE4BA479ED46A25E22D1323B376D778534830FDAFA",  # 48336: PR #220 shadow + PR #225 texture + PR #221 draw order; finish lane
 )
 RESULT = (
     "event 1 track 1003 laps 2 outcome finished steps 48336 resets 0",
@@ -129,7 +130,7 @@ def main():
             require(digest(frame.read_bytes()) == expected, "frame pin differs at " + str(tick))
             require(lines.count("frame " + str(tick) + " tga-sha256 " + expected) == 1,
                     "printed frame pin differs")
-        print("PASS", exe.name, str(STEPS[-1]) + " step hashes, result, " + str(len(STEPS)) + " frames, clean 120 Hz trajectory" +
+        print("PASS:", exe.name, str(STEPS[-1]) + " step hashes, result, " + str(len(STEPS)) + " frames, clean 120 Hz trajectory" +
               (", generated recording" if args.check_driver else ""))
 
 

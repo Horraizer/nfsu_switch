@@ -117,8 +117,12 @@ python tools/frame_budget_evidence.py $retail out/full-release run -- ./build-re
 python tools/frame_budget_evidence.py $retail out/profile run -- ./build-release/nfsu_frame_budget_probe.exe $retail tests/recordings/event1.txt
 ```
 
-Run `cmp` on every output directory's `before.json` and `after.json` in
-Bash. Never launch retail or write under its installation or `E:/Games`.
+Run `cmp` on every output directory's `before.json` and `after.json` in Bash.
+The sampled and full-draws runs are also CTest's `nfsu_race_run_retail` and
+`nfsu_race_run_retail_full_draws` (labels `retail` and `retail-full`) when the
+build is configured with `-DNFSU_RETAIL_ROOT=<installation>`; the commands
+above remain for their recorded evidence. Never launch retail or write under
+its installation or `E:/Games`.
 
 The probe prints load time, the load-time render-preparation interval,
 per-stage means, per-frame allocation counts and index visits. It uses the

@@ -47,6 +47,11 @@ private:
     std::size_t selected_draw_count() const override { return selection_.size() + 1 + car_templates_.owning_draws().size(); }
     RecordedDrawView selected_draw(std::size_t i) const override;
     std::uint64_t command_generation() const override { return generation_; }
+    std::size_t static_track_draw_count() const override { return selection_.size(); }
+    std::size_t static_track_instance_count() const override { return track_placements_.size(); }
+    const DrawInstanceUniform& static_track_instance(std::size_t i) const override { return track_placements_.at(i); }
+    std::size_t static_track_definition_count() const override { return track_templates_.owning_draws().size(); }
+    const RecordedDraw& static_track_definition(std::size_t i) const override { return track_templates_.owning_draws().at(i); }
     PreparedTrackCull culler_;
     UploadTable combined_uploads_;
     RecordedCommands car_templates_;
