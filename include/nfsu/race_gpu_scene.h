@@ -24,6 +24,9 @@ public:
     RaceGpuScene(const RaceGpuScene&) = delete;
     RaceGpuScene& operator=(const RaceGpuScene&) = delete;
     const TrackSlice& track() const { return track_; }
+    // The separate sky pass (issue 184), on by default. Off records no sky
+    // draws, for console A/B cost runs. Refused once the scene is loaded.
+    bool set_sky(bool enabled) { if (ready_) return false; sky_ = enabled; return true; }
     bool load(FileSystemService& files, const std::filesystem::path& root,
               std::string& error, AssetCheckObserver* observer = nullptr,
               TrackSliceLoadObserver* loading = nullptr);
@@ -36,6 +39,9 @@ public:
 private:
     TrackSlice track_;
     RecordedCommands track_templates_;
+    bool sky_ = true;
+    std::size_t sky_draws_ = 0;
+    std::size_t sky_position_ = 0;
     std::vector<std::size_t> template_of_group_;
     bool ready_ = false;
     bool prepare_templates(std::string& error);
@@ -43,10 +49,10 @@ private:
     bool select_track(const TrackCullReport& visible, RaceGpuFrame& out,
                       std::size_t& entries, std::string& error);
     const UploadTable& resource_table() const override { return combined_uploads_; }
-    std::size_t selected_draw_count() const override { return selection_.size() + car_templates_.owning_draws().size(); }
+    std::size_t selected_draw_count() const override { return sky_draws_ + selection_.size() + car_templates_.owning_draws().size(); }
     RecordedDrawView selected_draw(std::size_t i) const override;
     std::uint64_t command_generation() const override { return generation_; }
-    std::size_t static_track_draw_count() const override { return selection_.size(); }
+    std::size_t static_track_draw_count() const override { return sky_draws_ + selection_.size(); }
     std::size_t static_track_instance_count() const override { return track_placements_.size(); }
     const DrawInstanceUniform& static_track_instance(std::size_t i) const override { return track_placements_.at(i); }
     std::size_t static_track_definition_count() const override { return track_templates_.owning_draws().size(); }

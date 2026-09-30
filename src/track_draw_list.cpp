@@ -225,6 +225,13 @@ bool place(
                 return false;
             }
             const TrackObject& object = section.objects[instance.object_index];
+            if (scene.sky_mesh == kNoHandle && object.mesh_hash[0] == kSkydomeMeshHash) {
+                const auto sky = meshes.find(kSkydomeMeshHash);
+                if (sky != meshes.end()) {
+                    scene.sky_mesh = sky->second;
+                    scene.sky_transform = track_instance_transform(instance);
+                }
+            }
 
             const SlotLookup requested =
                 look_up_slot(meshes, object, options.lod_slot);
@@ -586,6 +593,13 @@ bool validate_prepared_track_scene(
     error.clear();
 
     if (!validate_prepared_track_region(scene.region, error)) {
+        return false;
+    }
+    if (scene.sky_mesh != kNoHandle &&
+        (scene.sky_mesh >= scene.region.meshes.size() ||
+         scene.region.meshes[scene.sky_mesh].mesh_hash != kSkydomeMeshHash ||
+         !transform_finite(scene.sky_transform))) {
+        error = "invalid separate sky mesh or transform";
         return false;
     }
     if (scene.lod_slot >= kSceneryObjectMeshSlots) {

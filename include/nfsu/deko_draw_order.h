@@ -14,6 +14,15 @@ void deko_visit_opaque_first(std::size_t count, IsOpaque is_opaque, Visit visit)
             if (is_opaque(i) == (pass == 0)) visit(i);
 }
 
+// The race renderer's first pass: depth-writing opaque draws. The sky writes
+// no depth and follows them, so their depth rejects every sky fragment they
+// cover (issue 227). sky_with_opaque is the diagnostic that instead submits
+// the sky in this pass at its list position, as the renderer did before.
+inline bool deko_draw_in_opaque_pass(bool sky, bool blend, bool alpha_tested,
+                                     bool depth_write, bool sky_with_opaque) {
+    return sky ? sky_with_opaque : !blend && !alpha_tested && depth_write;
+}
+
 // The regular textured shader has no discard. Material alpha tests use the
 // fixed-function comparison, while the cutout shader retains the frame's
 // diagnostic alpha cutoff. No blend-count assumption enters this selection.

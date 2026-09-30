@@ -356,7 +356,14 @@ bool render_track_draw_list(
     }
     // validate_track_draw_list recomputed cost.triangles from the entries, so
     // this is the number the loop below will actually submit.
-    const std::uint64_t submitted = list.cost.triangles;
+    std::uint64_t submitted = list.cost.triangles;
+    if (options.sky && scene.sky_mesh != kNoHandle) {
+        for (const auto& draw : scene.region.draws) {
+            if (draw.mesh != scene.sky_mesh || !draw.drawable ||
+                draw.binding != BindingKind::resolved) continue;
+            submitted += draw.index_count / 3;
+        }
+    }
     if (submitted > limits.max_submitted_triangles || submitted >= kNoTriangle) {
         error = "draw list submits " + std::to_string(submitted) +
                 " triangles; the limit is " +
@@ -401,6 +408,55 @@ bool render_track_draw_list(
             light.z /= length;
         }
     }
+    // Separate background pass; IDs stay kNoTriangle and depth stays clear.
+    // Constant far depth is an approximation for the bounded race camera.
+    const auto render_sky = [&]() {
+      if (options.sky && scene.sky_mesh != kNoHandle) {
+        RenderOptions sky_options = options;
+        sky_options.cull = CullMode::none;
+        RenderStats sky_stats;
+        RenderLimits sky_limits = limits;
+        sky_limits.max_pixel_tests -= stats.pixel_tests;
+        sky_limits.max_raster_triangles -= stats.raster_triangles;
+        Rasterizer sky_rasterizer(frame, sky_options, sky_limits, sky_stats);
+        const auto& mesh = scene.region.meshes[scene.sky_mesh];
+        for (std::size_t group = 0; group < scene.region.draws.size(); ++group) {
+            const auto& draw = scene.region.draws[group];
+            // The sky is a separate pass; unresolved groups cannot sample a
+            // texture and are skipped without suppressing the world frame.
+            if (draw.mesh != scene.sky_mesh || !draw.drawable ||
+                draw.binding != BindingKind::resolved) continue;
+            RasterMaterial material;
+            material.texture = &scene.region.textures[draw.texture];
+            material.depth_write = false; material.sky = true;
+            material.alpha_test = render_alpha_test_enabled(material.texture->alpha_test_mode);
+            material.blend = render_blend_mode_of(material.texture->alpha_blend_mode);
+            // The sky copy is numbered one past the scenery instances, as
+            // record_track_commands numbers it.
+            if (observe) observe(ReferenceDraw{group, draw.mesh, scene.instances.size(),
+                draw.texture, draw.first_index, draw.index_count, true, false, true,
+                CullMode::none, material.blend, material.alpha_test, material.alpha_ref, true});
+            for (std::size_t n = draw.first_index/3; n < (draw.first_index+draw.index_count)/3; ++n) {
+                const auto& t = mesh.triangles[n];
+                const std::uint16_t indices[] = {t.a,t.b,t.c};
+                ClipVertex v[3];
+                for (int k = 0; k < 3; ++k) {
+                    const auto& source = mesh.vertices[indices[k]];
+                    v[k] = project_point(camera, track_placed_vertex(source, scene.sky_transform));
+                    v[k].z = v[k].w * 0.999999;
+                    v[k].u = source.u; v[k].v = source.v;
+                    v[k].r = source.color[0]; v[k].g = source.color[1]; v[k].b = source.color[2];
+                    v[k].a = source.color[3];
+                }
+                if (!sky_rasterizer.draw_triangle(v,material,kNoTriangle,error)) return false;
+            }
+        }
+        stats.pixel_tests += sky_stats.pixel_tests;
+        stats.raster_triangles += sky_stats.raster_triangles;
+      }
+      return true;
+    };
+    bool sky_drawn = false;
     Rasterizer rasterizer(frame, options, limits, stats);
     std::uint32_t next_id = 0;
     stats.meshes = scene.region.meshes.size() +
@@ -454,6 +510,15 @@ bool render_track_draw_list(
             has_bound = true;
         }
         fallback_color(draw.texture_hash, raster.fallback);
+
+        // Opaque depth rejects hidden sky pixels. Translucency must see
+        // the sky as its destination colour, so stop before the first blend.
+        // The parser excludes zero-index groups, matching the GPU path's
+        // skip before it selects the first blended draw.
+        if (!sky_drawn && raster.blend != RenderBlendMode::disabled) {
+            if (!render_sky()) return false;
+            sky_drawn = true;
+        }
 
         const std::uint64_t first = draw.first_index;
         const std::uint64_t count = draw.index_count;
@@ -544,6 +609,8 @@ bool render_track_draw_list(
             }
         }
     }
+
+    if (!sky_drawn && !render_sky()) return false;
 
     // The copies that reached the frame. Every copy is placed by
     // track_instance_transform over the record the file stores, which is the
