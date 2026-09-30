@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iostream>
 #include <algorithm>
+#include <cmath>
 #include <set>
 #include <stdexcept>
 #include <cstring>
@@ -178,6 +179,36 @@ int main(int argc, char** argv) {
                 "race scene disconnected the shared loader checkpoints");
         require(!scene.load(posix_file_system(),root,error),"loaded race scene allowed cache-invalidating reload");
         require(race.start(root, scene.track(), error), error);
+        // Partial wheel contact must change the fitted road plane, not drag
+        // the shadow across it toward the surviving contact points.
+        VehicleState shadow_state{};
+        shadow_state.position = {10.0,20.0,1.0};
+        const auto& com = race.session().spec().handling.centre_of_mass;
+        const VehicleVec3 body_origin{shadow_state.position.x-com[0],
+                                      shadow_state.position.y-com[1],
+                                      shadow_state.position.z-com[2]};
+        for (unsigned mask = 0; mask < (1U << kVehicleWheelCount); ++mask) {
+            unsigned contacts = 0;
+            for (std::size_t i = 0; i < kVehicleWheelCount; ++i) {
+                shadow_state.wheels[i].contact = (mask & (1U << i)) != 0;
+                contacts += shadow_state.wheels[i].contact ? 1U : 0U;
+            }
+            const auto shadow = place_car_shadow(shadow_state,race.session().spec());
+            const auto* rows = shadow.transform.rows;
+            const VehicleVec3 delta{rows[12]-body_origin.x,rows[13]-body_origin.y,
+                                    rows[14]-body_origin.z};
+            const VehicleVec3 normal{rows[8],rows[9],rows[10]};
+            const double tangent_squared =
+                std::pow(delta.y*normal.z-delta.z*normal.y,2) +
+                std::pow(delta.z*normal.x-delta.x*normal.z,2) +
+                std::pow(delta.x*normal.y-delta.y*normal.x,2);
+            require(tangent_squared < 1.0e-6,
+                    "car shadow centre drifted from body origin on partial contact");
+            if (!contacts)
+                require(shadow.alpha == 0.0F && std::abs(delta.x) < 1.0e-4 &&
+                        std::abs(delta.y) < 1.0e-4,
+                        "airborne shadow was visible or placed at world origin");
+        }
         RaceGpuScene unloaded_scene;
         RaceGpuFrame unloaded_frame;
         require(!unloaded_scene.frame(race.session(), unloaded_frame, error) &&
@@ -186,8 +217,8 @@ int main(int argc, char** argv) {
         require(replay.load(text, error), error);
         require(scene.cache_bytes() <= 8*kMiB,"command cache exceeded metadata limit");
         std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 8*kMiB << '\n';
-        // #186 particles and #184 sky are both present in the merged cache.
-        require(scene.cache_bytes() == 3826234,"event 1 command cache metadata estimate differs from pin");
+        // Sky, shadow and particle templates are all resident in this cache.
+        require(scene.cache_bytes() == 3860249,"event 1 command cache metadata estimate differs from pin");
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';
         require(scene.car_bytes()+race.persistent_bytes()+scene.track().contacts.memory.resident_bytes+scene.cache_bytes() <=
@@ -214,6 +245,7 @@ int main(int argc, char** argv) {
             // #227: --sky off records no sky draws; the package then holds
             // only the scenery placements, at the same pose and far plane.
             RaceGpuScene no_sky; RaceGpuFrame plain;
+            no_sky.set_particles_enabled(true);
             require(no_sky.set_sky(false), "sky mode refused before load");
             require(no_sky.load(posix_file_system(), root, error), error);
             require(no_sky.frame(race.session(), plain, error), error);
@@ -224,6 +256,7 @@ int main(int argc, char** argv) {
                 require(std::strcmp(plain.commands.draw_view(i).definition.program->name, "sky_textured") != 0,
                         "sky drawn with the sky off");
             require(sky_views == 2 && plain.track_draws + 2 == frame.track_draws &&
+                    plain.commands.draw_count() + 2 == frame.commands.draw_count() &&
                     plain.car_draws == frame.car_draws && plain.far_plane == frame.far_plane &&
                     plain.commands.static_track_instance_count() == scene.track().scene.instances.size(),
                     "sky switch changed more than the two sky draws");
@@ -306,9 +339,28 @@ int main(int argc, char** argv) {
         const bool full = argc > 3 && std::string(argv[3]) == "--full-draws";
         const bool sampled = argc > 3 && std::string(argv[3]) == "--sample-draws";
         require(argc <= 3 || full || sampled, "unknown retail draw sampling option");
+        const auto no_contact_tick = std::numeric_limits<std::size_t>::max();
+        const auto has_wheel_contact = [](const auto& wheels) {
+            return std::any_of(wheels.begin(), wheels.end(),
+                               [](const auto& wheel) { return wheel.contact; });
+        };
+        const auto all_wheels_have_contact = [](const auto& wheels) {
+            return std::all_of(wheels.begin(), wheels.end(),
+                               [](const auto& wheel) { return wheel.contact; });
+        };
+        std::size_t first_contact_tick = has_wheel_contact(race.session().car().wheels) ? 0 : no_contact_tick;
+        std::size_t first_shadow_tick = place_car_shadow(race.session()).alpha > 0.0F ? 0 : no_contact_tick;
+        require(all_wheels_have_contact(race.session().car().wheels) && first_contact_tick == 0 &&
+                first_shadow_tick == 0,
+                "starting grid has incomplete wheel contact or no visible shadow alpha");
         while (race.session().timing().outcome == RaceOutcome::running) {
             require(replay.next(race.session().timing().step, pad, error), error);
             require(race.simulate(pad, error), error);
+            const auto prospective_tick = race.session().timing().step + 1;
+            if (first_contact_tick == no_contact_tick && has_wheel_contact(race.session().car().wheels))
+                first_contact_tick = prospective_tick;
+            if (first_shadow_tick == no_contact_tick && place_car_shadow(race.session()).alpha > 0.0F)
+                first_shadow_tick = prospective_tick;
             require(!race.simulate(pad, error), "second simulation before commit accepted");
             require(race.commit(error), error);
             scene.advance_particles(race.session());
@@ -367,13 +419,15 @@ int main(int argc, char** argv) {
                 require(frame.track_draws > 0 && frame.car_draws == 74 &&
                         frame.particle_draws == kRaceParticleLimit,
                         "missing track/car/particle commands");
+                require(frame.commands.draw_count() == frame.track_draws + frame.car_draws +
+                        frame.particle_draws + 1, "ground shadow or particles missing");
                 if (tick == 1164) {
                     unsigned visible_smoke=0, visible_sparks=0;
                     bool smoke_color_checked=false, spark_color_checked=false;
-                    for (std::size_t i=frame.commands.static_track_draw_count()+frame.car_draws;
+                    for (std::size_t i=frame.commands.static_track_draw_count()+1+frame.car_draws;
                          i<frame.commands.draw_count(); ++i) {
                         const auto view=frame.commands.draw_view(i);
-                        const auto slot=i-frame.commands.static_track_draw_count()-frame.car_draws;
+                        const auto slot=i-frame.commands.static_track_draw_count()-1-frame.car_draws;
                         const bool spark=slot>=kRaceSmokeLimit;
                         if (view.material.alpha[0] > 0)
                             (spark ? visible_sparks : visible_smoke)++;
@@ -405,6 +459,23 @@ int main(int argc, char** argv) {
                     require(visible_smoke >= 4 && visible_smoke <= kRaceSmokeLimit &&
                             visible_sparks == 0 && smoke_color_checked && spark_color_checked,
                             "slide frame does not contain bounded smoke and no sparks");
+                }
+                if (tick == 1 || tick == 180 || tick == 11344) {
+                    std::size_t shadows = 0;
+                    for (std::size_t i = 0; i < frame.commands.draw_count(); ++i) {
+                        const auto shadow = frame.commands.draw_view(i);
+                        if (shadow.definition.name != "race-shadow/shadow ground") continue;
+                        ++shadows;
+                        const auto& draw = shadow.definition;
+                        const auto& texture = frame.commands.resource_table().resources.at(draw.texture_resource);
+                        require(draw.index_count == 54 && texture.texture_hash == 0xF36596F5U &&
+                                draw.pipeline.blend &&
+                                draw.pipeline.depth_test == shader_manifest::CompareOp::less_equal &&
+                                !draw.pipeline.depth_write &&
+                                shadow.material.alpha[0] > 0.0F,
+                                "resting/turning car shadow lost its retail texture, blend or depth state");
+                    }
+                    require(shadows == 1, "resting/turning car shadow draw missing or duplicated");
                 }
                 require(deko_frame_gpfifo_bound(deko_track_list_calls(
                             static_cast<std::uint32_t>(frame.track_draws))) < kDekoGpfifoRingEntries,
@@ -454,6 +525,11 @@ int main(int argc, char** argv) {
                     << " car " << frame.car_draws << " far " << frame.far_plane << '\n';
             }
         }
+        require(first_contact_tick == 0 && first_shadow_tick == 0,
+                "race replay delayed first wheel contact or shadow alpha");
+        std::cout << "shadow startup: first wheel contact tick " << first_contact_tick
+                  << ", first nonzero alpha tick " << first_shadow_tick
+                  << ", invisible ticks " << first_shadow_tick-first_contact_tick << '\n';
         for (const auto& line : race.result_lines()) std::cout << line << '\n';
         require(replay.exhausted() && race.matches_event1_replay(), "Switch race runner differs from desktop pins");
         std::cout << "PASS: exact per-step stream and result; frames " << frames << " max draws " << max_draws << '\n';

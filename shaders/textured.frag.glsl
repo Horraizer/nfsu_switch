@@ -34,7 +34,8 @@ layout (std140, binding = 0) uniform Frame {
 layout (std140, binding = 2) uniform Material {
     // rgb: fallback_color bytes; a: 2 for an unlit particle draw.
     vec4 fallback;
-    // x: alpha_min, y: alpha_range, z: diffuse gate, w: lamp mode 0..3.
+    // x: alpha_min, y: alpha_range, z: diffuse gate, w: lamp mode 0..3
+    // or 4 for the car ground shadow world-effect branch.
     vec4 alpha;
     // rgb: EnvmapMin and EnvmapRange.
     vec4 environment_min;
@@ -57,6 +58,15 @@ void main()
     // RenderOptions::alpha_cutoff, a diagnostic on the texel alpha.
     if (texel.a < frame.options.w) {
         discard;
+    }
+
+    // Retail world.efx:61 modulates the ground shadow by 0x80 vertex RGB
+    // and two. Its runtime alpha comes from car height and alignment; the
+    // shadow draw disables depth writes and uses source-over blending.
+    if (material.alpha.w == 4.0) {
+        outColor = vec4(vec3(texel.rgb) / 255.0,
+                        clamp(float(texel.a) * material.alpha.x / 255.0, 0.0, 1.0));
+        return;
     }
 
     // The eye-facing geometric normal of the triangle, shared by the flat
