@@ -99,6 +99,7 @@ struct DekoRenderer::Impl {
     std::uint32_t uniform_stride = 0;
     std::uint32_t sampler_offset = 0;
     char diagnostic[768]{};
+    bool shut_down = false;
 
     static void debug(void* owner, const char* context, DkResult result, const char* message) {
         if (result == DkResult_Success) return;
@@ -784,6 +785,8 @@ struct DekoRenderer::Impl {
     }
 
     bool shutdown(std::string& error) {
+        if (shut_down) return true;
+        shut_down = true;
         if (queue) queue.waitIdle();
         if (profile_enabled) for (std::size_t slot = 0; slot < query_pending.size(); ++slot) {
             if (!query_pending[slot]) continue;
@@ -828,6 +831,14 @@ bool DekoRenderer::open(const RecordedCommands& commands, std::string& error, bo
     try { return impl_->open(commands, error, presentation, draw_capacity, profile_frame,
                              opaque_first, sky_with_opaque, scene_height); }
     catch (const std::bad_alloc&) { error = "not enough memory for deko3d renderer"; return false; }
+}
+bool DekoRenderer::reconfigure_target(const RecordedCommands& commands, std::string& error,
+                                      std::size_t draw_capacity, bool profile_frame,
+                                      bool sky_with_opaque, std::uint32_t scene_height) {
+    if (!close(error)) return false;
+    impl_ = std::make_unique<Impl>();
+    return open(commands,error,true,draw_capacity,profile_frame,true,
+                sky_with_opaque,scene_height);
 }
 bool DekoRenderer::update(const RecordedCommands& commands, std::string& error,
                           DekoUpdateTiming* timing) {

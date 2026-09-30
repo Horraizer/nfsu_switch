@@ -23,6 +23,12 @@ inline bool deko_parse_scene_height(const char* text, std::uint32_t& height) {
     return false;
 }
 
+// A zero CLI height follows the console. Diagnostic readback stays native.
+inline std::uint32_t deko_effective_scene_height(std::uint32_t requested_height,
+                                                 bool docked, bool presentation) {
+    return requested_height ? requested_height : (docked || !presentation ? 720U : 540U);
+}
+
 inline bool plan_deko_scene_target(std::uint32_t width, std::uint32_t height,
                                   bool presentation, std::uint32_t requested_height,
                                   DekoSceneTarget& out) {

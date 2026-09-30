@@ -32,6 +32,7 @@ public:
 };
 ClockReadings read_clocks() {
     ClockReadings out;
+    out.configuration_ok = R_SUCCEEDED(appletGetCurrentPerformanceConfiguration(&out.configuration));
     if (hosversionAtLeast(8,0,0)) {
         if (R_FAILED(clkrstInitialize())) return out;
         const auto read = [](PcvModuleId module, std::uint32_t& hz) {
@@ -53,6 +54,37 @@ ClockReadings read_clocks() {
     }
     return out;
 }
+class HandheldGpuProfile {
+    u32 original_ = 0;
+    bool active_ = false;
+public:
+    explicit HandheldGpuProfile(bool enabled) {
+        if (!enabled) return;
+        if (R_FAILED(apmInitialize()))
+            throw std::runtime_error("cannot initialize apm for GPU boost");
+        if (R_FAILED(apmGetPerformanceConfiguration(ApmPerformanceMode_Normal,&original_))) {
+            apmExit();
+            throw std::runtime_error("cannot read original handheld GPU configuration");
+        }
+        active_ = true;
+        // Official Normal/handheld profile: 1020 CPU, 460.8 GPU, 1331.2 EMC.
+        // apm:am may reject it on some launch contexts; report that failure.
+        if (R_FAILED(apmSetPerformanceConfiguration(ApmPerformanceMode_Normal,0x92220008))) {
+            apmSetPerformanceConfiguration(ApmPerformanceMode_Normal,original_);
+            apmExit();
+            active_ = false;
+            throw std::runtime_error("apm rejected official handheld GPU configuration 0x92220008");
+        }
+    }
+    ~HandheldGpuProfile() {
+        if (active_) {
+            const auto result = apmSetPerformanceConfiguration(ApmPerformanceMode_Normal,original_);
+            if (R_FAILED(result)) std::printf("ERROR: could not restore handheld GPU configuration: 0x%08lX\n",
+                                              static_cast<unsigned long>(result));
+            apmExit();
+        }
+    }
+};
 std::string format(const char* pattern, ...) {
     char text[512]; va_list args; va_start(args, pattern);
     std::vsnprintf(text, sizeof text, pattern, args); va_end(args); return text;
@@ -269,7 +301,11 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
 // --sky on draws the sky after the opaque world; off omits it; early is the
 // issue 227 diagnostic that submits it with the opaque pass, as before.
 void run(const std::string& root, bool replay_mode, bool panel_mode, bool profile_frame,
-         const std::string& sky, std::uint32_t scene_height, Screen& screen, PadState& pad) {
+         const std::string& sky, std::uint32_t requested_height, bool gpu_boost,
+         Screen& screen, PadState& pad) {
+    HandheldGpuProfile gpu_profile(gpu_boost);
+    bool docked = appletGetOperationMode() == AppletOperationMode_Console;
+    auto scene_height = deko_effective_scene_height(requested_height,docked,!panel_mode);
     DekoSceneTarget scene_target;
     require(plan_deko_scene_target(width,height,!panel_mode,scene_height,scene_target),
             "--scene-height below 720 requires direct presentation (no --panel)");
@@ -318,11 +354,14 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     screen.show({"ASSETS PASS. Uploading track and car to deko3d..."});
     const auto upload_start = armGetSystemTick();
     if (!panel_mode) screen.close();
+    docked = appletGetOperationMode() == AppletOperationMode_Console;
+    scene_height = deko_effective_scene_height(requested_height,docked,!panel_mode);
+    require(plan_deko_scene_target(width,height,!panel_mode,scene_height,scene_target),
+            "invalid scene target after operation mode change");
     DekoRenderer renderer;
     require(renderer.open(frame.commands,error,!panel_mode,kTrackSliceDrawLimit,profile_frame,true,
                           sky == "early",scene_height),error);
     const double initial_upload = ms(armGetSystemTick()-upload_start);
-    const auto clocks = profile_frame ? read_clocks() : ClockReadings{};
     std::unique_ptr<FrameProfileStats> profile_stats;
     if (profile_frame) profile_stats = std::make_unique<FrameProfileStats>();
     SwitchTiming profile_clock;
@@ -338,6 +377,22 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     std::string failure;
     try {
     while (appletMainLoop()) {
+        const bool now_docked = appletGetOperationMode() == AppletOperationMode_Console;
+        if (now_docked != docked) {
+            docked = now_docked;
+            const auto next_height = deko_effective_scene_height(requested_height,docked,!panel_mode);
+            if (next_height != scene_height) {
+                require(renderer.reconfigure_target(frame.commands,error,kTrackSliceDrawLimit,
+                        profile_frame,sky == "early",next_height),error);
+                scene_height = next_height;
+                require(plan_deko_scene_target(width,height,!panel_mode,scene_height,scene_target),
+                        "invalid scene target on operation mode change");
+                stats.reset(); last_perf.clear();
+                if (profile_stats) profile_stats->reset();
+            }
+            clock.reset(); previous = armGetSystemTick();
+            continue;
+        }
         const auto begin = armGetSystemTick();
         const auto elapsed = armTicksToNs(begin-previous)/1000; previous = begin;
         padUpdate(&pad); const auto down = padGetButtonsDown(&pad);
@@ -591,7 +646,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     if (!failure.empty()) { std::printf("ERROR: %s\n",failure.c_str()); std::fflush(stdout); }
     if (appletMainLoop()) {
         if (profile_stats) {
-            const ProfileResultContext context{*profile_stats,renderer.gpu_profile(),heap,clocks,
+            const ProfileResultContext context{*profile_stats,renderer.gpu_profile(),heap,read_clocks(),
                 load_ms,initial_upload,scene.track().streaming_bytes,persistent,renderer.gpu_bytes(),
                 sizeof(FrameProfileStats)+renderer.profile_storage_bytes(),
                 renderer.memory_usage(),renderer.gpfifo_usage(),
@@ -613,7 +668,8 @@ int main(int argc, char** argv) {
             std::string root = "sdmc:/nfsu";
             bool replay = false, panel = false, profile_frame = false, selected = false, root_seen = false;
             std::string sky = "on";
-            std::uint32_t scene_height = 720;
+            std::uint32_t scene_height = 0;
+            bool gpu_boost = true;
             for (int i = 1; i < argc; ++i) {
                 const std::string arg = argv[i];
                 if (arg == "--replay") { replay = true; selected = true; }
@@ -622,11 +678,15 @@ int main(int argc, char** argv) {
                 else if (arg == "--profile-frame") profile_frame = true;
                 else if (arg == "--scene-height" && i+1 < argc &&
                          deko_parse_scene_height(argv[i+1],scene_height)) ++i;
+                else if (arg == "--gpu-boost" && i+1 < argc &&
+                         (std::strcmp(argv[i+1],"on") == 0 ||
+                          std::strcmp(argv[i+1],"off") == 0))
+                    gpu_boost = std::strcmp(argv[++i],"on") == 0;
                 else if (arg == "--sky" && i+1 < argc &&
                          (std::strcmp(argv[i+1],"on") == 0 || std::strcmp(argv[i+1],"off") == 0 ||
                           std::strcmp(argv[i+1],"early") == 0)) sky = argv[++i];
                 else if (!root_seen && arg.rfind("--",0) != 0) { root = arg; root_seen = true; }
-                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--sky on|off|early] [--scene-height 720|540|450|360]");
+                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--sky on|off|early] [--scene-height 720|540|450|360] [--gpu-boost on|off]");
             }
             require(!(panel && profile_frame),"--profile-frame requires direct presentation");
             while (!selected && appletMainLoop()) {
@@ -645,7 +705,7 @@ int main(int argc, char** argv) {
                     "During the race: Y pauses, + opens results with driving-frame statistics.",
                     "No game data is bundled or written. Replay input is bundled in RomFS."});
             }
-            if (selected) run(root,replay,panel,profile_frame,sky,scene_height,screen,pad);
+            if (selected) run(root,replay,panel,profile_frame,sky,scene_height,gpu_boost,screen,pad);
         } catch (const Cancel&) {
         } catch (const std::exception& e) {
             std::printf("ERROR: %s\n",e.what()); std::fflush(stdout);

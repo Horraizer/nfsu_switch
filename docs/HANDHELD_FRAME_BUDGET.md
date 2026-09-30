@@ -1,9 +1,8 @@
 # Handheld GPU budget, issue 55
 
-This round starts at `2f2b305a6e54e5481c51516a9fdf57bf04e02c57`.
+The first resolution round started at `2f2b305a6e54e5481c51516a9fdf57bf04e02c57`.
 The acceptance target remains 60 fps, with about 13 ms for the GPU scene
-and room for the HUD and pending effects. No console result from this
-round exists yet. Lowering the simulation rate or skipping frames is not
+and room for the HUD and pending effects. Lowering the simulation rate or skipping frames is not
 part of this change. A short scene mean alone cannot establish that every
 complete driving frame meets the budget.
 
@@ -27,8 +26,8 @@ the entire scene is fragment-bound.
 Inspection of the base renderer, rather than the older first-executor
 description in `DEKO3D_RENDERER.md`, establishes:
 
-- Native scene, color and depth targets are 1280x720 in handheld as well
-  as docked. The sky already follows opaque depth writers.
+- At the first-round base, scene, color and depth targets were 1280x720 in
+  handheld and docked. The sky already follows opaque depth writers.
 - `load_track_slice` retains DXT1/DXT3 top-level blocks. The backend uses
   BC1/BC2 images for them and RGBA8 for decoded/generated textures.
   Reimplementing compression is not a new saving. BC3/ASTC are SDK formats,
@@ -82,7 +81,7 @@ measure track texture minification or establish track bandwidth cost.
 
 | Order / lever | Expected gain and desktop evidence | Image change | Console must confirm |
 | --- | --- | --- | --- |
-| 1. Scene resolution, implemented | 540p removes 43.75% of pixels, 450p removes 60.94%; same geometry and draw selection. Existing console shader/order results justify testing pixel cost first. Savings apply only to the pixel-dependent component; upscale adds cost. | Behind `--scene-height`; default 720 unchanged | GPU mean/p95/max including upscale, full frame pacing, clarity and stability; target about 13 ms scene |
+| 1. Scene resolution, implemented | 540p removes 43.75% of pixels; same geometry and draw selection. Console result [PR 244 comment 5834](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/244#issuecomment-5834) supported the handheld choice. | Handheld default 540p; docked default native; `--scene-height` overrides | Full frame pacing, clarity and stability with the new clock profile |
 | 2. Opaque front-to-back | Potentially reduces opaque overdraw; the census shows many opaque draws. No additional ms saving is measured. It may reduce texture locality and change equal-depth winners. | Would require a switch and image review | Whether the remaining pixel cost is overdraw, and the tradeoff against state/bandwidth cost |
 | 3. Load-time static geometry merging | Could remove GPU draw/setup work; many more draws than texture identities remain. CPU preparation is already small. A section/material bucket is only an optimistic count: instance culling, transforms, material constants and blend order still constrain batches. | Identity only with exact selected geometry/order; coarse section batches change visibility | Resolution-insensitive floor, actual merged draw reduction, GPU benefit, peak memory and total load within about 15 s |
 | 4. Mipmaps / texture formats | Native BC1/BC2 already saves payload space. World minification is unmeasured. New mip retention/generation could improve locality but no saving is credited. | Would require a switch; cutout alpha coverage must be preserved deliberately | Track sampling/bandwidth cost and foliage quality; sky probe alone cannot justify it |
@@ -90,14 +89,17 @@ measure track texture minification or establish track bandwidth cost.
 | 6. Shader simplification | Current flat shading uses screen derivatives; changing lighting to vertex/baked shading risks the image and pending car/effect work. No gain is credited without profiling. | Would require a switch if lighting changes | ALU versus bandwidth cost; visual review with all effects |
 | Sky off / early | Existing diagnostic, not a production optimization. Existing late sky is already substantially cheaper than early. | Existing `--sky` switch | Use only to isolate remaining sky cost; acceptance keeps sky on |
 
-Only the first optimization lever is implemented in this round. The next
-choice depends on the resolution sweep: implementing section merges first
-would assume that draw/vertex cost dominates without measuring that claim.
-The other rows are evaluated candidates, not completed optimizations.
+Only the first rendering lever is implemented. The other rows are evaluated
+candidates, not completed optimizations.
 
 ## Resolution implementation and measurement model
 
-One NRO accepts `--scene-height 720|540|450|360`. The default is 720.
+One NRO accepts `--scene-height 720|540|450|360`. With no override, direct
+presentation uses 960x540 in handheld and the existing native 1280x720
+scene in docked mode. The docked scene is 720p; the system can output it to
+a 1080p TV. An operation mode change rebuilds the scene target and swapchain.
+`--panel` keeps its native 1280x720 capture path. The explicit override
+remains in force across operation mode changes.
 The corresponding scene targets are 1280x720, 960x540, 800x450 and 640x360.
 360p is a diagnostic for the remaining fixed cost, not a recommended
 quality setting. All preserve the camera's 16:9 aspect and source command
@@ -150,10 +152,24 @@ failed runs. The CTest retail fixture additionally checks directory
 metadata. All outputs stay outside `E:/Games`. The track loader reads
 `Global/GLOBALB.BUN`. No retail or derived asset belongs in Git.
 
-The coordinator's console request lists the exact arguments and required
-page photos. Start with the native/540p/450p runs in handheld, sky on,
-roughly 60 s each, with no pause/reset. Record window ticks and repeat
-unequal prefixes before attributing a difference. Then run a complete
-replay at the promising setting, verify EQUAL on page 2, and assess frame
-distribution with all effects before accepting 60 fps. An interrupted
-60 s replay correctly says RUNNING, not EQUAL.
+Historical console result at `0e89e85`, [PR 244 comment 5834](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/244#issuecomment-5834): handheld sky-on 720p scene mean 21.89 ms and p95 26.75 ms; 540p with linear upscale mean 13.61 ms, p95 15.75 ms and max 17.28 ms. The windows differ, so the new clock-profile A/B request uses longer runs. The owner accepted the 540p image and rejected 450p.
+
+The optional `--gpu-boost on|off` switch defaults on and requests the official
+Normal/handheld performance configuration `0x92220008` through libnx
+`apmSetPerformanceConfiguration`; see the [libnx API](https://switchbrew.github.io/libnx/apm_8h.html)
+and [configuration table](https://switchbrew.org/wiki/PPC_services#PerformanceConfiguration).
+It selects 1020 MHz CPU, 460.8 MHz GPU, and 1331.2 MHz memory. The prior
+configuration is restored when the race ends. Page 1 reports the active
+configuration and observed GPU clock when available. The docked performance
+configuration is untouched. The application keeps the native 720p docked
+scene, including on a 1080p TV output.
+
+At `0e89e85`, [PR 244 comment 5834](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/244#issuecomment-5834)
+reported 74 car draws and 1441 track draws in the 540p worst-tick view.
+Three additional cars at that detail add about 222 draws, or 14.7% of the
+current 1515 total. A naive proportional estimate adds about 2.0 ms to the
+historical 13.61 ms scene mean, reaching 15.6 ms before other opponent work.
+The scene is fragment-bound, so draw count does not reliably predict GPU
+milliseconds; the p95 was already 15.75 ms without opponents. Far-car LOD using the retail lower-detail
+models is the first lever, followed by distance culling, shared static
+materials or geometry, and texture/fragment work. None is implemented here.

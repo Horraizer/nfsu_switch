@@ -52,6 +52,11 @@ public:
               std::size_t draw_capacity = 0, bool profile_frame = false,
               bool opaque_first = false, bool sky_with_opaque = false,
               std::uint32_t scene_height = 0);
+    // Mode changes replace the swapchain and its scene/depth images after
+    // waiting for GPU work. Resident assets are uploaded again on this rare path.
+    bool reconfigure_target(const RecordedCommands& commands, std::string& error,
+                            std::size_t draw_capacity, bool profile_frame,
+                            bool sky_with_opaque, std::uint32_t scene_height);
     // Reuses resident GPU resources. Presentation may have a frame in flight.
     bool update(const RecordedCommands& commands, std::string& error,
                 DekoUpdateTiming* timing = nullptr);

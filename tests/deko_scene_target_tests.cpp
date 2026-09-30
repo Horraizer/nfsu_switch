@@ -8,6 +8,24 @@ int main() {
         if (!ok) std::cerr << "FAIL: " << message << '\n';
         return ok;
     };
+    for (const bool presentation : {false, true}) {
+        for (const bool docked : {false, true}) {
+            const auto automatic = deko_effective_scene_height(0,docked,presentation);
+            if (!check(automatic == (presentation && !docked ? 540U : 720U),
+                       "automatic mode target mismatch") ||
+                !check(plan_deko_scene_target(1280,720,presentation,automatic,target) &&
+                       target.height == automatic, "automatic mode target refused")) return 1;
+            for (const auto explicit_height : {720U,540U,450U,360U})
+                if (!check(deko_effective_scene_height(explicit_height,docked,presentation) ==
+                           explicit_height, "CLI override changed with mode")) return 1;
+        }
+    }
+    for (const auto docked : {false,true,false}) {
+        const auto selected = deko_effective_scene_height(0,docked,true);
+        if (!check(plan_deko_scene_target(1280,720,true,selected,target) &&
+                   target.height == (docked ? 720U : 540U) &&
+                   target.upscale == !docked, "mode transition retained stale target")) return 1;
+    }
     for (const auto height : {720U, 540U, 450U, 360U}) {
         if (!check(plan_deko_scene_target(1280,720,true,height,target), "valid target refused") ||
             !check(target.height == height && target.width * 9 == height * 16,

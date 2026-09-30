@@ -26,8 +26,8 @@ inline std::string profile_frame_percentile(const RaceFrameStats& stats, unsigne
         profile_format("%.2f", (bin+1)*RaceFrameStats::kBinWidthMs);
 }
 struct ClockReadings {
-    std::uint32_t cpu_bus_hz = 0, gpu_hz = 0, emc_hz = 0;
-    bool cpu_bus_ok = false, gpu_ok = false, emc_ok = false;
+    std::uint32_t cpu_bus_hz = 0, gpu_hz = 0, emc_hz = 0, configuration = 0;
+    bool cpu_bus_ok = false, gpu_ok = false, emc_ok = false, configuration_ok = false;
 };
 inline std::string profile_percentile(const ProfileDistribution& stats) {
     const auto bin = stats.percentile_bin(95);
@@ -78,7 +78,9 @@ inline ProfilePages build_profile_pages(std::vector<std::string> replay_rows,
         profile_format("TOOLCHAIN GCC %s | deko3d version unavailable",__VERSION__),
         clocks.cpu_bus_ok ? profile_format("CPU clock %.1f MHz",clocks.cpu_bus_hz/1e6) :
             "CPU clock unavailable",
-        clocks.gpu_ok ? profile_format("GPU clock %.1f MHz",clocks.gpu_hz/1e6) : "GPU clock unavailable",
+        profile_format("GPU config %s | clock %s", clocks.configuration_ok ?
+            profile_format("0x%08X",clocks.configuration).c_str() : "unavailable",
+            clocks.gpu_ok ? profile_format("%.1f MHz",clocks.gpu_hz/1e6).c_str() : "unavailable"),
         clocks.emc_ok ? profile_format("MEM/EMC clock %.1f MHz",clocks.emc_hz/1e6) : "MEM/EMC clock unavailable"
     });
     add_page("REPLAY",std::move(replay_rows));

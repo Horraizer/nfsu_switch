@@ -16,6 +16,10 @@ int main() {
     gpu.dropped = 3;
     HeapUsage heap;
     ProfileResultContext context{cpu, gpu, heap};
+    context.clocks.configuration = 0x92220008;
+    context.clocks.configuration_ok = true;
+    context.clocks.gpu_hz = 460800000;
+    context.clocks.gpu_ok = true;
     context.storage_bytes = 65536;
     context.gpfifo = {1024, 1280, 430};
     RaceFrameStats frames;
@@ -34,6 +38,14 @@ int main() {
                     2, context, "", "HANDHELD");
                 if (pages.size() != 8) {
                     std::cerr << "FAIL: expected eight profile pages\n";
+                    return 1;
+                }
+                bool clock_row = false;
+                for (const auto& row : pages[0])
+                    if (row.find("0x92220008") != std::string::npos &&
+                        row.find("460.8 MHz") != std::string::npos) clock_row = true;
+                if (!clock_row) {
+                    std::cerr << "FAIL: active GPU configuration or measured clock missing\n";
                     return 1;
                 }
                 for (std::size_t page = 0; page < pages.size(); ++page) {
