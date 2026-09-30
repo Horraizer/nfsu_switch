@@ -262,8 +262,10 @@ void build_race_hud_frame_for_car(const VehicleState& car,
     const float face_x=1134.0F-69.0F*texel;
     const float face_y=603.0F-70.0F*texel;
     const auto& slot=kLines[static_cast<std::size_t>(line-kLinesHashes.begin())];
+    // 3rdPersonTach owns the LINES image; its SAT colour is RGB(0,128,192)
+    // at full alpha. rpm_fill is a separate white, alpha-150 object.
     place(slot,face_x,face_y,256.0F*texel,128.0F*texel,
-          {{55,189,245}},220);
+          {{0,128,192}},255);
     // HUD_SingleRace.fng centers RED 17 texels left and 42 up from LINES.
     // The different sprite sizes make their top-left origins (79,6) apart.
     if (red!=kRedHashes.end())
@@ -271,13 +273,15 @@ void build_race_hud_frame_for_car(const VehicleState& car,
               face_x+79.0F*texel,face_y+6.0F*texel,
               64.0F*texel,32.0F*texel,
               {{228,55,43}},220);
-    // A 265-degree sprite-frame offset places the retail endpoint rotations
-    // through the face's 0 and max labels about its registered hub.
+    // The FEng needle is centered on the face hub. Its ring surrounds source
+    // row 64 and its shaft tip is near row 125, in the +v direction.
+    // The 265-degree sprite-frame offset fits both endpoint labels.
     const double rotation=race_hud_needle_rotation(car.engine_rpm,max_rpm);
     const double dial_angle=(265.0-rotation)*3.14159265358979323846/180.0;
     const auto center=pos(1134,603);
-    rotated(frame,kNeedle,center[0],center[1],24*scale,192*scale,
-            12*scale,177*scale,1.5707963267948966-dial_angle,{{90,218,253}});
+    rotated(frame,kNeedle,center[0],center[1],16.0F*texel*scale,
+            128.0F*texel*scale,8.0F*texel*scale,64.0F*texel*scale,
+            4.7123889803846899-dial_angle,{{90,218,253}});
     place(kHub,1122,591,24,24,{{100,220,255}});
     const int gear = car.gear;
     const char gear_label = gear == kVehicleGearReverse ? 'R' :

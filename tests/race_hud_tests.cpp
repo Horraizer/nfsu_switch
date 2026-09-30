@@ -11,18 +11,53 @@ void check(bool okay, const char* name) {
     if (!okay) { std::fprintf(stderr, "race HUD: %s\n", name); ++failures; }
 }
 
-double needle_angle(const nfsu::RaceHudFrame& frame, bool red = true) {
-    // Disc and LINES precede the optional RED and the needle.
+struct Point { double x, y; };
+
+std::pair<Point, Point> needle_ends(const nfsu::RaceHudFrame& frame,
+                                   bool red = true) {
+    // Disc and LINES precede the optional RED and the needle. The texture's
+    // ring is at row 64; the outward shaft ends near row 125.
     const auto* v = &frame.vertices[(red ? 3 : 2) * 4];
-    const double x = (v[0].px + v[1].px) * 0.5 - 1072.9;
-    const double y = 591.75 - (v[0].py + v[1].py) * 0.5;
-    double angle = std::atan2(y, x) * 180.0 / 3.14159265358979323846;
+    const Point top{(v[0].px+v[1].px)*0.5,(v[0].py+v[1].py)*0.5};
+    const Point bottom{(v[2].px+v[3].px)*0.5,(v[2].py+v[3].py)*0.5};
+    const auto at = [&](double row) {
+        return Point{top.x+(bottom.x-top.x)*row/128.0,
+                     top.y+(bottom.y-top.y)*row/128.0};
+    };
+    return {at(64.0),at(125.0)};
+}
+
+double needle_angle(const nfsu::RaceHudFrame& frame, bool red = true) {
+    const auto [ring, tip] = needle_ends(frame, red);
+    double angle = std::atan2(ring.y-tip.y,tip.x-ring.x) *
+                   180.0 / 3.14159265358979323846;
     if (angle < 0.0) angle += 360.0;
     return angle;
 }
 
-void test_face_registration(const nfsu::RaceHudFrame& frame,
-                            double max_rpm, bool red) {
+void test_needle_endpoint(const nfsu::RaceHudFrame& frame,
+                          double label_x, double label_y, bool red) {
+    const auto* face=&frame.vertices[4];
+    const double pitch=(face[1].px-face[0].px)/256.0;
+    const Point hub{face[0].px+69.0*pitch,face[0].py+70.0*pitch};
+    const Point label{face[0].px+label_x*pitch,
+                      face[0].py+label_y*pitch};
+    const auto [ring, tip]=needle_ends(frame,red);
+    const double vx=tip.x-ring.x, vy=tip.y-ring.y;
+    const double lx=label.x-ring.x, ly=label.y-ring.y;
+    const double length=std::hypot(vx,vy);
+    const double label_radius=std::hypot(lx,ly);
+    check(std::hypot(ring.x-hub.x,ring.y-hub.y)<0.5,
+          "needle ring sits on the decoded face hub");
+    check(std::abs(length-61.0*pitch)<0.5,
+          "needle shaft uses the FEng 128-texel length and shared scale");
+    check((vx*lx+vy*ly)/length>label_radius-2.0 &&
+          length>label_radius+10.0 &&
+          std::abs(vx*ly-vy*lx)/length<18.0,
+          "needle shaft tip points outward past the endpoint label");
+}
+
+void test_face_registration(const nfsu::RaceHudFrame& frame, bool red) {
     const auto* face=&frame.vertices[4];
     const double u0=face[0].u*512.0, v0=face[0].v*512.0;
     const double u1=face[1].u*512.0, v1=face[2].v*512.0;
@@ -34,22 +69,16 @@ void test_face_registration(const nfsu::RaceHudFrame& frame,
     const double hub_y=face[0].py+70.0*pitch;
     check(std::hypot(hub_x-1072.9,hub_y-591.75)<0.5,
           "decoded LINES hub registers with the needle pivot");
-    if (max_rpm==8000.0 || max_rpm==9000.0) {
-        // Label centres measured on the decoded stock 0..8 and tuned 0..9 faces.
-        const double label_x=max_rpm==9000.0 ? 107.0 : 106.0;
-        const double label_y=max_rpm==9000.0 ? 33.0 : 34.0;
-        for (const auto& label : {std::pair<double,double>{34.0,105.0},
-                                  {label_x,label_y}}) {
-            const double lx=face[0].px+label.first*pitch-hub_x;
-            const double ly=hub_y-(face[0].py+label.second*pitch);
-            const double car_rpm=label.first==34.0 ? 0.0 : max_rpm;
-            const double rotation=nfsu::race_hud_needle_rotation(car_rpm,max_rpm);
-            const double angle=(265.0-rotation)*3.14159265358979323846/180.0;
-            const double miss=std::abs(lx*std::sin(angle)-ly*std::cos(angle));
-            check(miss<(max_rpm==9000.0 ? 18.0 : 10.0),
-                  "needle ray passes over the face endpoint label");
-        }
-    }
+    const auto* needle=&frame.vertices[(red ? 3 : 2)*4];
+    check(std::abs((needle[1].u-needle[0].u)*512.0-16.0)<0.01 &&
+          std::abs((needle[3].v-needle[0].v)*512.0-128.0)<0.01,
+          "needle samples the complete 16x128 retail sprite");
+    check(needle[0].color[0]==90 && needle[0].color[1]==218 &&
+          needle[0].color[2]==253 && needle[0].color[3]==255,
+          "needle keeps its own tint");
+    check(face[0].color[0]==0 && face[0].color[1]==128 &&
+          face[0].color[2]==192 && face[0].color[3]==255,
+          "3rdPersonTach uses its own blue SAT colour");
     if (red) {
         const auto* overlay=&frame.vertices[8];
         check(std::abs((overlay[0].px-face[0].px)-79.0*pitch)<0.5 &&
@@ -96,7 +125,17 @@ void test_dial() {
             check(std::abs(needle_angle(frame,false)-221.0)<1.0,
                   "no RED keeps the needle at the stock zero angle");
         }
-        test_face_registration(frame,item.max,item.overlay!=0);
+        test_face_registration(frame,item.overlay!=0);
+        if (item.max==8000.0 || item.max==9000.0) {
+            const bool has_red=item.overlay!=0;
+            test_needle_endpoint(frame,34.0,105.0,has_red);
+            car.engine_rpm=item.max;
+            nfsu::build_race_hud_frame_for_car(car,item.max,item.red,
+                                               1280,720,frame);
+            test_needle_endpoint(frame,item.max==9000.0 ? 107.0 : 106.0,
+                                 item.max==9000.0 ? 33.0 : 34.0,has_red);
+            car.engine_rpm=0.0;
+        }
     }
 }
 
@@ -137,7 +176,7 @@ void test_gear_and_speed() {
     car.velocity.x = 45.0;
     nfsu::build_race_hud_frame_for_car(car,8000,7500,1280,720,frame);
     check(frame.quads == 11, "100 mph has three speed glyphs");
-    check(frame.vertices[4].color[3] < 255, "dial face is translucent");
+    check(frame.vertices[4].color[3] == 255, "Tach face has full SAT alpha");
 }
 
 } // namespace
