@@ -2663,6 +2663,28 @@ void test_car_shading_records_and_rendering() {
     check(!nfsu::parse_car_materials(duplicate.data(),duplicate.size(),records,error),"duplicate material hash refused");
     auto bad=bytes; store_float(bad.data()+8+0x58,std::numeric_limits<float>::quiet_NaN());
     check(!nfsu::parse_car_materials(bad.data(),bad.size(),records,error),"nonfinite material refused");
+    auto paint_bytes=bytes;
+    put_u32(paint_bytes,20,0x827D95A1U); // REGPAINTBLUE
+    auto paint_fixture=car_fixture(true);
+    for (auto& d:paint_fixture.scene.draws) {
+        d.material_key_hash=0xD6D6080AU; // CARSKIN
+        d.flags=0x180U; store_u32(d.raw.data()+56,d.flags);
+    }
+    check(nfsu::apply_car_materials(paint_fixture.scene,paint_bytes.data(),
+                                    paint_bytes.size(),true,error),
+          "join blue CARSKIN to the approximated paint record: "+error);
+    check(!paint_fixture.scene.draws.empty() &&
+          paint_fixture.scene.draws[0].shading.gates[0]==1.0F &&
+          paint_fixture.scene.draws[0].shading.specular_min[3]==4.4F,
+          "blue CARSKIN receives REGPAINTBLUE coefficients");
+    auto unmapped_fixture=car_fixture(true);
+    for (auto& d:unmapped_fixture.scene.draws) d.material_key_hash=0xD6D6080AU;
+    check(nfsu::apply_car_materials(unmapped_fixture.scene,paint_bytes.data(),
+                                   paint_bytes.size(),false,error),
+          "unpainted CARSKIN remains unjoined: "+error);
+    check(!unmapped_fixture.scene.draws.empty() &&
+          unmapped_fixture.scene.draws[0].shading.gates[0]==0.0F,
+          "CARSKIN is not mapped when the blue skin is disabled");
     auto fixture=car_fixture(true);
     auto& scene=fixture.scene;
     for (auto& d:scene.draws) {

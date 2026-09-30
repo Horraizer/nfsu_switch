@@ -520,7 +520,10 @@ struct DekoRenderer::Impl {
                     byte ? DkVtxAttribSize_4x8 : input.format == sm::VertexFormat::float32x3 ? DkVtxAttribSize_3x32 : DkVtxAttribSize_2x32,
                     byte ? DkVtxAttribType_Unorm : DkVtxAttribType_Float, 0};
             }
-            out.bindVtxAttribState(attributes);
+            const dk::detail::ArrayProxy<DkVtxAttribState const> attrib_states(
+                static_cast<std::uint32_t>(draw.program->attribute_count),
+                attributes.data());
+            out.bindVtxAttribState(attrib_states);
             out.bindVtxBufferState(DkVtxBufferState{draw.program->buffers[0].stride, 0});
         }
         const auto& v = records[draw.vertex_resource].placement;

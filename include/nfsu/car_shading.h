@@ -25,8 +25,8 @@ struct PreparedCarScene;
 // Bounded top-level GLOBALB.BUN walk. Invalid records fail transactionally.
 bool parse_car_materials(const unsigned char* bytes, std::size_t size,
                          std::vector<CarMaterialRecord>& out, std::string& error);
-// Join geometry material keys. Optional blue paint maps SKIN to REGPAINTBLUE:
-// an explicit approximation of the untraced runtime paint substitution.
+// Join geometry material keys. Optional blue paint maps CARSKIN to
+// REGPAINTBLUE: an explicit approximation of the untraced runtime paint object.
 bool apply_car_materials(PreparedCarScene& scene, const unsigned char* bytes,
                          std::size_t size, bool blue_paint, std::string& error);
 } // namespace nfsu

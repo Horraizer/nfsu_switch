@@ -75,7 +75,9 @@ bool apply_car_materials(PreparedCarScene& scene, const unsigned char* bytes,
     if (!parse_car_materials(bytes,size,records,error)) return false;
     for (auto& draw:scene.draws) {
         auto hash=draw.material_key_hash;
-        if (blue_paint && hash==hash_name("SKIN")) hash=hash_name("REGPAINTBLUE");
+        // CARSKIN is the geometry key; the retail runtime paint object is not
+        // present in GLOBALB.BUN. REGPAINTBLUE is the closest recovered record.
+        if (blue_paint && hash==hash_name("CARSKIN")) hash=hash_name("REGPAINTBLUE");
         draw.shading={};
         for (const auto& r:records) if (r.hash==hash) {
             draw.shading=r.values;

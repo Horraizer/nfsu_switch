@@ -80,7 +80,8 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
         }
         if (loading) loading->checkpoint("car preparation");
         StockFrame stock;
-        if (!prepare_stock_frame(inputs, stock_240sx_request(), stock_240sx_skin(), stock, error)) return false;
+        if (!prepare_stock_frame(inputs, stock_240sx_request(), stock_240sx_skin(),
+                                 stock, error, car_shading_)) return false;
         if (loading) loading->checkpoint("car prepared");
         skin_source_ = stock.skin_binding.source;
         car_ = std::move(stock.scene); base_ = car_.instances;

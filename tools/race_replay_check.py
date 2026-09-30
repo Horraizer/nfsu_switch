@@ -25,10 +25,10 @@ FRAMES = (
     "CBA5548ADE397AD43940F3C5D6469CFFB15B4C44D823908C140A8F23A2C87EB0",
     "0383137D34B8DEA42919AE0ED3E261C80F3F0F73EE3C6B969BBC5B9A9848B0C9",
 )
-# #182 opt-in race frame: smooth car normals, decoded material coefficients,
-# static environment and retail car alpha/blend state. Track and simulation
-# pins stay unchanged; the off-state FRAMES above remain the legacy baseline.
-SHADED_FRAME = "FF1CB7F76FD9FC42E8E819FCB7AB294A7EF986710394D99614AE3D9FEFBF7A58"
+# #182 opt-in frame 180 exercises the CARSKIN-to-blue-paint approximation,
+# the other recovered car materials, smooth normals and retail alpha/blend.
+# Track and simulation pins stay unchanged; off-state FRAMES remain baseline.
+SHADED_FRAME = "9EBF6805E48ADC8895D728EBB5CF58312421223BBC28E206709B16B08212AF72"
 RESULT = (
     "event 1 track 1003 laps 2 outcome finished steps 48336 resets 0",
     "lap 1 ticks 1616400 time 6:44.10",

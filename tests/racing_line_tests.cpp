@@ -1,12 +1,15 @@
 // The route chunk 0x00034121 (issue #63, docs/RACING_LINE.md).
 //
 // Every case below builds its own bytes, so the synthetic half needs no game
-// data. The retail half runs only when NFSU_RETAIL_ROOT names an install; it
+// data. The retail half runs only when the install is given as the one
+// command-line argument, which CTest does as nfsu_racing_line_retail when
+// NFSU_RETAIL_ROOT is configured (issue #233); it
 // opens Tracks/TRACKB1003.lzc for reading and nothing else, and pins the
 // file's own SHA-256, the route and point counts and a SHA-256 over every
 // decoded value.
 
 #include "nfsu/racing_line.h"
+#include "nfsu/arg_path.h"
 
 #include "nfsu/sha256.h"
 #include "nfsu/texture.h"
@@ -400,15 +403,17 @@ void test_image_walk() {
 
 // -------------------------------------------------------------------------
 
-void test_retail_1003() {
-    const char* root = std::getenv("NFSU_RETAIL_ROOT");
-    if (root == nullptr || *root == '\0') {
-        std::cout << "racing line: retail check skipped, NFSU_RETAIL_ROOT "
-                     "unset\n";
+// The retail root comes only from the command line (issue #233): CTest
+// registers the retail run, nfsu_racing_line_retail, with the configured
+// NFSU_RETAIL_ROOT, and the plain run has no root and no retail half.
+void test_retail_1003(const std::filesystem::path* root) {
+    if (root == nullptr) {
+        std::cout << "racing line: retail check not run here, no root "
+                     "argument (see nfsu_racing_line_retail)\n";
         return;
     }
-    const std::filesystem::path file =
-        std::filesystem::path(root) / "Tracks" / "TRACKB1003.lzc";
+    check(!root->empty(), "the retail root argument is not empty");
+    const std::filesystem::path file = *root / "Tracks" / "TRACKB1003.lzc";
     std::ifstream input(file, std::ios::binary);
     check(bool(input), "retail Tracks/TRACKB1003.lzc opens for reading");
     const std::vector<unsigned char> stored(
@@ -487,7 +492,11 @@ void test_retail_1003() {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc > 2) {
+        std::cerr << "usage: nfsu_racing_line_tests [RETAIL_ROOT]\n";
+        return 1;
+    }
     try {
         test_fields();
         test_two_records_tile_the_payload();
@@ -495,7 +504,11 @@ int main() {
         test_oversized();
         test_malformed();
         test_image_walk();
-        test_retail_1003();
+        std::string argument_error;
+        check(nfsu::check_arguments(argc, argv, 1, argument_error), argument_error);
+        const std::filesystem::path root =
+            argc == 2 ? nfsu::argument_path(argv[1]) : std::filesystem::path();
+        test_retail_1003(argc == 2 ? &root : nullptr);
         std::cout << "racing line tests passed\n";
         return 0;
     } catch (const std::exception& e) {

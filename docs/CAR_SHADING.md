@@ -117,10 +117,12 @@ hashes match the `GLOBALB.BUN` payloads at the listed offsets:
 
 `0x77A20245` is the `240SX_SKIN1` hash, supplied by runtime skin
 composition rather than this local texture pack (`docs/BODY_SKIN.md`,
-`docs/CAR_SCENE.md`). The presence of global `REGPAINTBLUE` and
-`METPAINTBLUE` records does not prove either is used for this raw base mesh
-or for the project's chosen blue stock skin. Which material key a retail
-paint customization substitutes at runtime remains untraced.
+`docs/CAR_SCENE.md`). The nine painted stock groups instead use the geometry
+material key `CARSKIN` (`0xD6D6080A`). There is no `CARSKIN` record among the
+139 `GLOBALB.BUN` material records. At `0x540151..0x540191`, the executable
+falls back to a runtime default object at `[0x6F3DF0]` when the registry has
+no key; its values and the paint-customization path that fills or replaces it
+remain untraced.
 
 The following are disk payload offsets, with `p` the payload start. The
 executable reads the same offsets from the selected object at
@@ -168,15 +170,20 @@ remain unchanged. This switch affects rendering only; no shading value
 feeds the fixed-step simulation.
 
 Observed material coefficients are decoded from bounded top-level
-`0x00135200` records by `src/car_shading.cpp`, joined through the geometry
-material key, and uploaded to the CPU reference and deko3d. Signed ranges
+`0x00135200` records by `src/car_shading.cpp` only when car shading is
+enabled, joined through the geometry material key, and uploaded to the CPU
+reference and deko3d. The default shading-off preparation does not parse this
+table. Signed ranges
 are retained, including chrome's decreasing environment range. The port
 uses the executable's initial specular multiplier 1.1; later mutation of
-that global is untraced. For the project's painted stock skin, `SKIN` maps
-to `REGPAINTBLUE`. That substitution is an explicit approximation of the
-untraced customization path, not a claim that retail selects this key.
-Other decoded keys distinguish chrome, windshield, plastic and lamp lenses.
-Lamp emission remains the separate existing lamp state.
+that global is untraced. For the project's blue stock skin, the geometry's
+`CARSKIN` key maps to the recovered `REGPAINTBLUE` record at `0x3528`.
+This is an explicit approximation of the untraced runtime default paint
+object: `REGPAINTBLUE` is the recovered regular blue-paint record, matching
+the project's uniform blue base skin more closely than `METPAINTBLUE`.
+It does not claim that retail uses this record. Other decoded keys
+distinguish chrome, windshield, plastic and lamp lenses. Lamp emission
+remains the separate existing lamp state.
 
 The port reads the existing smooth vertex normals and transforms them by
 the inverse transpose of each placed instance, including the raw-axis to
@@ -187,7 +194,8 @@ that dot and their respective powers. The geometry flag gates remain those
 traced in [MATERIALS.md](MATERIALS.md).
 
 Approximations replace the untraced harmonic inputs and live cube: one broad
-light supplies diffuse and gloss, and a world-fixed analytical sky, ground,
+light supplies diffuse and gloss; the retail harmonic specular luminance and
+its 0.5 factor are not reproduced. A world-fixed analytical sky, ground,
 horizon and bright vertical band supply the environment. These lighting
 colors and widths are chosen port constants, not retail data. Lighting is
 evaluated per vertex and interpolated perspective-correctly; the fragment

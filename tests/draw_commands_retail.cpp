@@ -4,8 +4,9 @@
 #include "nfsu/draw_execution.h"
 #include <iostream>
 
-// Explicit opt-in only: never part of CTest, which must need no retail files.
-// The operator takes before/after manifests; this program writes no files.
+// A retail check: CTest registers it as nfsu_draw_commands_retail only when
+// NFSU_RETAIL_ROOT is configured, inside the retail manifest fixture (issue
+// #233), so a build without retail files never runs it. It writes no files.
 int main(int argc, char** argv) {
     if (argc != 2) {
         std::cerr << "usage: nfsu_draw_commands_retail ROOT\n";
@@ -116,16 +117,51 @@ int main(int argc, char** argv) {
     }
     // #182: separate opt-in pins; the legacy off-state pins above stay fixed.
     const double yaw[] = {35,-45,145};
-    // 35: blue paint gloss, chrome wheels and windshield alpha/reflection.
+    // 35: blue body paint, BASE_A chrome and windshield alpha/reflection.
     // -45: the opposite side changes the normal/view-dependent terms.
     // 145: rear glass and lamp lenses exercise their own material records.
     const char* pins[] = {
-        "60E11A293FFB95FB07D4A2735D3DA49A16FC7938052C2DE05BD35897157A6EB6",
-        "607B4F9C96E239363D8E375B2C1B8893586DDE1FFA53D5842F4C195C62D18FE8",
-        "33D0CE02B1604395B949A483CE62CD00E47B96E4DF2BFEDB5DE4DB30A0081E44"};
+        "43BA1E737858BF2E6000039B70B5922851ECA077FD38FD3EB20ECECB7D3B2957",
+        "601139994EF03408198334AB42FBB57CF536BE46CFAD21498EF9DBCC94469DED",
+        "33CD708C9C3081DA7EF46CEE03C9CEF5FAEAEA5306C3C6ECA7A18DF24F0A290D"};
     nfsu::StockFrame shaded;
-    if (!nfsu::prepare_stock_frame(inputs,nfsu::stock_240sx_request(),nfsu::stock_240sx_skin(),shaded,error)) {
+    if (!nfsu::prepare_stock_frame(inputs,nfsu::stock_240sx_request(),
+                                   nfsu::stock_240sx_skin(),shaded,error,true)) {
         std::cerr << "FAIL: shaded preparation: " << error << '\n'; return 1;
+    }
+    constexpr std::uint32_t kCarSkinHash=0xD6D6080AU;
+    std::size_t paint_groups=0;
+    for (const auto& draw:shaded.scene.draws) if (draw.material_key_hash==kCarSkinHash) {
+        ++paint_groups;
+        if (draw.shading.gates[0]!=1.0F) {
+            std::cerr << "FAIL: CARSKIN paint group has no shading material\n"; return 1;
+        }
+    }
+    if (paint_groups!=9) {
+        std::cerr << "FAIL: expected 9 CARSKIN paint groups, got " << paint_groups << '\n'; return 1;
+    }
+    auto invalid_materials=inputs;
+    auto& global=invalid_materials.files[
+        static_cast<std::size_t>(nfsu::StockFrameFile::global_bun)].bytes;
+    constexpr std::size_t kRegPaintSpecularScale=0x3528+8+0x58;
+    if (global.size()<kRegPaintSpecularScale+4) {
+        std::cerr << "FAIL: GLOBALB.BUN is too short for the paint probe\n"; return 1;
+    }
+    global[kRegPaintSpecularScale+0]=0;
+    global[kRegPaintSpecularScale+1]=0;
+    global[kRegPaintSpecularScale+2]=0xC0;
+    global[kRegPaintSpecularScale+3]=0x7F;
+    nfsu::StockFrame legacy_off;
+    if (!nfsu::prepare_stock_frame(invalid_materials,nfsu::stock_240sx_request(),
+            nfsu::stock_240sx_skin(),legacy_off,error,false)) {
+        std::cerr << "FAIL: default shading-off preparation parsed material coefficients: "
+                  << error << '\n'; return 1;
+    }
+    nfsu::StockFrame shaded_invalid;
+    if (nfsu::prepare_stock_frame(invalid_materials,nfsu::stock_240sx_request(),
+            nfsu::stock_240sx_skin(),shaded_invalid,error,true) ||
+        error.find("car materials: coefficient out of range")==std::string::npos) {
+        std::cerr << "FAIL: enabled car shading did not reject the invalid material record\n"; return 1;
     }
     for (int i=0;i<3;++i) {
         nfsu::RenderOptions options;
@@ -141,7 +177,20 @@ int main(int argc, char** argv) {
         const auto mismatch=compare_draws(commands,trace,false);
         if (!mismatch.empty()) { std::cerr << "FAIL: " << mismatch << '\n'; return 1; }
         std::size_t shaded_draws=0;
-        for (const auto& d:commands.owning_draws()) if (std::string(d.program->name)=="car_shaded_textured") ++shaded_draws;
+        std::size_t shaded_paint_draws=0;
+        for (const auto& d:commands.owning_draws()) {
+            if (std::string(d.program->name)=="car_shaded_textured") ++shaded_draws;
+            if (d.group<shaded.scene.draws.size() &&
+                shaded.scene.draws[d.group].material_key_hash==kCarSkinHash) {
+                ++shaded_paint_draws;
+                if (std::string(d.program->name)!="car_shaded_textured") {
+                    std::cerr << "FAIL: CARSKIN paint draw fell back to an unshaded program\n"; return 1;
+                }
+            }
+        }
+        if (shaded_paint_draws!=paint_groups) {
+            std::cerr << "FAIL: not all CARSKIN paint groups produced shaded draws\n"; return 1;
+        }
         if (!shaded_draws || shaded.stats.triangles_fallback || shaded.stats.pixels_fallback) {
             std::cerr << "FAIL: shaded stock coverage or fallback\n"; return 1;
         }
@@ -151,5 +200,51 @@ int main(int argc, char** argv) {
         if (hash!=pins[i]) { std::cerr << "FAIL: shaded stock pin changed: " << hash << '\n'; return 1; }
         std::cout << "PASS: shaded stock yaw " << yaw[i] << " shaded draws " << shaded_draws << " sha256 " << hash << '\n';
     }
+    nfsu::StockFrameInputs tuned_inputs;
+    if (!nfsu::read_stock_frame_inputs(nfsu::argument_path(argv[1]), tuned_inputs, true)) {
+        std::cerr << "FAIL: could not read the tuned inputs\n";
+        return 1;
+    }
+    nfsu::StockFrame tuned;
+    if (!nfsu::prepare_stock_frame(tuned_inputs, nfsu::tuned_240sx_request(),
+                                   nfsu::tuned_240sx_skin(), tuned, error)) {
+        std::cerr << "FAIL: tuned prepare: " << error << '\n';
+        return 1;
+    }
+    nfsu::RenderOptions options;
+    nfsu::RecordedCommands commands;
+    if (!nfsu::record_car_commands(tuned.scene, options, {},
+                                   tuned.skin_binding.source, commands, error)) {
+        std::cerr << "FAIL: tuned record: " << error << '\n';
+        return 1;
+    }
+    nfsu::DrawExecutionPlan plan;
+    if (!nfsu::plan_draw_execution(commands, plan, error)) {
+        std::cerr << "FAIL: tuned execution plan: " << error << '\n';
+        return 1;
+    }
+    std::vector<nfsu::ReferenceDraw> trace;
+    if (!nfsu::render_scene(tuned.scene, options, {}, tuned.frame, tuned.stats, error,
+                            [&](const auto& draw) { trace.push_back(draw); })) {
+        std::cerr << "FAIL: tuned reference render: " << error << '\n';
+        return 1;
+    }
+    const auto mismatch = compare_draws(commands, trace, false);
+    if (!mismatch.empty() || trace.empty()) {
+        std::cerr << "FAIL: tuned draw comparison: " <<
+            (trace.empty() ? "empty CPU trace" : mismatch) << '\n';
+        return 1;
+    }
+    nfsu::StockFrameImage image;
+    if (!nfsu::encode_stock_frame(tuned.frame, image, error) ||
+        nfsu::sha256_hex(image.sha256) != nfsu::kTuned240sxFrameSha256 ||
+        image.tga.size() != nfsu::kTuned240sxFrameBytes) {
+        std::cerr << "FAIL: pinned tuned frame changed: " << error << '\n';
+        return 1;
+    }
+    std::cout << "PASS: tuned 240SX off: " << trace.size() << " draws, "
+              << commands.owning_uploads().resources.size() << " resources, "
+              << tuned.stats.triangles_submitted << " triangles, sha256 "
+              << nfsu::sha256_hex(image.sha256) << '\n';
     return 0;
 }
