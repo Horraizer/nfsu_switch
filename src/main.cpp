@@ -6718,6 +6718,8 @@ enum class StreamPathList { events, all, none };
 
 struct TrackStreamPathArgs {
     bool gpu_textures = false;
+    bool wet_road_reflections = false;
+    bool benchmark_wet_road = false;
     bool has_path_file = false;
     fs::path path_file;
     bool has_hand_path = false;
@@ -7432,6 +7434,7 @@ int run_track_stream_path(const fs::path& stream_path,
         nfsu::RenderOptions options_render;
         options_render.width = args.width;
         options_render.height = args.height;
+        options_render.wet_road_reflections = args.wet_road_reflections;
         nfsu::OrbitCamera& camera = options_render.camera;
         // World x is slot 0, world y slot 2 and world z minus slot 1.
         camera.target = nfsu::Vec3{
@@ -7455,6 +7458,34 @@ int run_track_stream_path(const fs::path& stream_path,
         nfsu::RenderStats stats;
         nfsu::TrackRenderStats track_stats;
         const nfsu::RenderLimits render_limits;
+        if (args.benchmark_wet_road) {
+            std::vector<unsigned char> dry;
+            for (const unsigned width : {0U, 160U, 320U}) {
+                auto measured = options_render;
+                measured.wet_road_reflections = width != 0;
+                measured.reflection_width = width;
+                std::vector<double> times;
+                for (unsigned repeat = 0; repeat < 4; ++repeat) {
+                    const auto start = std::chrono::steady_clock::now();
+                    if (!nfsu::render_track_draw_list(current->scene, current->list,
+                            measured, render_limits, frame, stats, track_stats, error)) {
+                        std::cerr << "error: " << error << '\n';
+                        return 2;
+                    }
+                    if (repeat) times.push_back(elapsed_ms(start, std::chrono::steady_clock::now()));
+                }
+                std::sort(times.begin(), times.end());
+                if (!width) dry = frame.rgba();
+                std::size_t changed = 0;
+                for (std::size_t p = 0; p < dry.size(); p += 4)
+                    if (!std::equal(dry.begin()+p, dry.begin()+p+3, frame.rgba().begin()+p)) ++changed;
+                std::cout << "wet-benchmark sample " << step.sample << " source-width " << width
+                          << " cpu-ms-median " << times[1] << " changed-pixels " << changed
+                          << " reflection-draws " << track_stats.reflection_draws
+                          << " reflection-triangles " << track_stats.reflection_triangles
+                          << " reflection-fragments " << track_stats.reflection_fragments << '\n';
+            }
+        }
         if (!nfsu::render_track_draw_list(current->scene, current->list,
                                           options_render, render_limits, frame,
                                           stats, track_stats, error)) {
@@ -9540,6 +9571,8 @@ const Command kCommands[] = {
      "      [--pack <STREAM_NNNN.BUN>] [--texture <file>]...\n"
      "      [--list <events|all|none>] [--frame-every <N> --out <PREFIX>]\n"
      "      [--width <N>] [--height <N>] [--gpu-textures]\n"
+     "      [--wet-road-reflections on|off]\n"
+     "      [--benchmark-wet-road] (CPU timings of off, 160 and 320 sources)\n"
      "      (runs the section streamer of speed.exe along a path, 60 steps\n"
      "       a second, and measures every resident set it meets; hand-1003\n"
      "       is a HAND-GIVEN path, not the game's route. --out writes\n"
@@ -9561,7 +9594,8 @@ const Command kCommands[] = {
          static const char* const kFlags[] = {
              "--path",   "--hand-path", "--speed",       "--policy", "--cost",
              "--budget", "--pack",      "--texture",     "--list",
-             "--frame-every", "--out",  "--width",       "--height", "--gpu-textures"};
+             "--frame-every", "--out",  "--width",       "--height", "--gpu-textures",
+             "--wet-road-reflections", "--benchmark-wet-road"};
          std::vector<std::string> seen;
          const auto given = [&seen](const char* flag) {
              return std::find(seen.begin(), seen.end(), flag) != seen.end();
@@ -9582,6 +9616,16 @@ const Command kCommands[] = {
              const std::string value = has_value ? argv[i + 1] : std::string();
              if (flag == "--gpu-textures") {
                  args.gpu_textures = true;
+             } else if (flag == "--benchmark-wet-road") {
+                 args.benchmark_wet_road = true;
+             } else if (flag == "--wet-road-reflections") {
+                 if (value == "on") args.wet_road_reflections = true;
+                 else if (value == "off") args.wet_road_reflections = false;
+                 else {
+                     std::cerr << "error: --wet-road-reflections must be on or off\n";
+                     return 1;
+                 }
+                 ++i;
              } else if (flag == "--path") {
                  if (!has_value) {
                      std::cerr << "error: --path needs a path\n";

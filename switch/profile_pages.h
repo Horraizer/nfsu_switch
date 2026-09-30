@@ -52,6 +52,8 @@ struct ProfileResultContext {
     DekoGpfifoUsage gpfifo;
     const char* sky = "ON";
     DekoSceneTarget scene_target{1280, 720, false};
+    bool tuned = false, particles = true, glows = false;
+    bool car_shading = false, wet_road_reflections = false;
 };
 using ProfilePages = std::vector<std::vector<std::string>>;
 inline ProfilePages build_profile_pages(std::vector<std::string> replay_rows,
@@ -170,7 +172,7 @@ inline ProfilePages build_profile_pages(std::vector<std::string> replay_rows,
     });
     if (!failure.empty()) {
         const auto wrapped = wrap_screen_text(failure,80);
-        for (std::size_t i = 0; i < wrapped.size(); i += 8) {
+        for (std::size_t i = 0; i < wrapped.size(); i += 7) {
             std::vector<std::string> rows;
             rows.push_back("ERROR - NO SUCCESS RESULT");
             const auto end = std::min<std::size_t>(i+7,wrapped.size());
@@ -182,6 +184,10 @@ inline ProfilePages build_profile_pages(std::vector<std::string> replay_rows,
         auto& rows = pages[i];
         rows.insert(rows.begin(),profile_format("BUILD %.12s | %s | %s | SKY %s | PAGE %zu/%zu",
             NFSU_RACE_BUILD_TAG,mode,titles[i].c_str(),context.sky,i+1,pages.size()));
+        rows.push_back(profile_format("CAR %s | PART %s | GLOW %s | SHADE %s | WET %s | SKY %s | SHADOW ON",
+            context.tuned ? "TUNED" : "STOCK", context.particles ? "ON" : "OFF",
+            context.glows ? "ON" : "OFF", context.car_shading ? "ON" : "OFF",
+            context.wet_road_reflections ? "ON" : "OFF", context.sky));
         rows.push_back("D-pad LEFT/RIGHT changes page | + exits");
     }
     return pages;

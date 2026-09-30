@@ -37,7 +37,8 @@ inline std::string compare_draws(const nfsu::RecordedCommands& commands,
         const bool textured = r.texture != nfsu::kNoHandle;
         const bool sky = track && r.sky;
         const char* program = sky ? "sky_textured" : track ? (textured ? "track_textured" : "track_fallback")
-                                    : (textured ? "car_textured" : "car_fallback");
+                                    : (textured ? (r.car_shading ? "car_shaded_textured" : "car_textured")
+                                                : "car_fallback");
         if (!d.program || std::strcmp(d.program->name, program)) return fail("shader program");
         if (d.program->buffer_count != 1 || d.program->buffers[0].stride != v.element_bytes ||
             d.program->buffers[0].type_size != v.element_bytes) return fail("vertex layout stride");
@@ -64,10 +65,18 @@ inline std::string compare_draws(const nfsu::RecordedCommands& commands,
             ? (r.alpha_test ? "alpha_tested_additive" : "additive")
             : (r.alpha_test ? "alpha_tested" : "opaque");
         if (!p.name || std::strcmp(p.name, variant)) return fail("shader variant");
-        if (d.program->texture_count != (textured ? 1U : 0U)) return fail("sampler count");
+        const bool two_samplers = std::strcmp(d.program->name, "track_textured") == 0 ||
+                                  std::strcmp(d.program->name, "car_textured") == 0;
+        if (d.program->texture_count != (two_samplers ? 2U : textured ? 1U : 0U))
+            return fail("sampler count");
         if (textured && (d.program->textures[0].binding != 0 ||
-            d.program->textures[0].filter != sm::Filter::nearest ||
-            d.program->textures[0].wrap != sm::Wrap::repeat)) return fail("sampler state");
+            d.program->textures[0].filter != (std::strcmp(d.program->name,
+                "car_textured") == 0 ? sm::Filter::linear : sm::Filter::nearest) ||
+            d.program->textures[0].wrap != sm::Wrap::repeat ||
+            (d.program->texture_count == 2 &&
+             (d.program->textures[1].binding != 1 ||
+              d.program->textures[1].filter != sm::Filter::linear ||
+              d.program->textures[1].wrap != sm::Wrap::clamp_to_edge)))) return fail("sampler state");
     }
     return {};
 }

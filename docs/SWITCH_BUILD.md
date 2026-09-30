@@ -85,6 +85,7 @@ runs on the build machine, not on a console:
 | `nfsu_switch_car_nro` | The same checks for `nfsu_switch_car.nro`, whose NACP is titled `nfsu_switch_car`. |
 | `nfsu_switch_assets_nro` | The same checks for `nfsu_switch_assets.nro`, whose NACP is titled `nfsu_switch_assets`. |
 | `nfsu_switch_deko3d_nro` | The GPU application's AArch64 ELF, NRO and NACP title, then its bounded RomFS section containing the exact bytes of every checked shader stage. |
+| `nfsu_switch_compare_reference_options` | A source-text guard checks the default options declaration, later member assignments, and the CPU/GPU call arguments; it runs its mutation self-tests on every invocation. See [FRAME_COMPARISON.md](FRAME_COMPARISON.md) for its exact coverage and limits. |
 | `nfsu_switch_compare_nro` | The comparison application's AArch64 ELF, NRO and NACP title, and its bounded RomFS with the exact checked offline shader stage bytes. |
 | `nfsu_switch_vehicle_nro` | The same checks for `nfsu_switch_vehicle.nro`, whose NACP is titled `nfsu_switch_vehicle`. |
 | `nfsu_switch_fma_census_guards` | Real AArch64 fast/off objects, each forbidden mnemonic, and invalid census inputs. |
@@ -344,8 +345,8 @@ the console made the same bytes as the desktop. Either answer is a result; a
 difference is reported, not hidden.
 
 The current painted and unpainted default-frame hashes and sizes live in
-`include/nfsu/stock_frame.h`; `nfsu_draw_commands_retail` checks them in the
-viewer material mode and compares the CPU and GPU submissions in both modes.
+`include/nfsu/stock_frame.h`; `nfsu_draw_commands_retail` checks them in
+retail mode and compares the CPU and GPU submissions in both modes.
 The painted options add `--skin-car 240SX --skin-doorline plain
 --skin-base 30 60 160 128` to the stock command of
 [`RENDERER.md`](RENDERER.md). The unpainted options omit the skin.
@@ -388,8 +389,8 @@ in `include/nfsu/stock_frame.h` records it:
 - No vinyl and no hood or spoiler vinyl: a stock car installs none. That is
   also why the car's `VINYLS.BIN` is not needed.
 - The base paint is a choice, not the game's. The front end installs a
-  `BASE_PAINT` record named by `CarTypeInfo +0xC5C`, which is not decoded, so
-  the stock colour is unknown; 30/60/160 with GLOSS 128 is the value
+  `BASE_PAINT` record named by `CarTypeInfo +0xC5C`, now decoded as
+  `GLOSS_L1_COLOR08` (orange); 30/60/160 with GLOSS 128 is the value
   [`RENDERER.md`](RENDERER.md) already renders the retail skin with.
 
 The #141 frame was reported `EQUAL` on the owner's console in the review of
@@ -540,10 +541,12 @@ the number of frames rendered.
   sources, plan, target path, assembly, composite and binding, the same
   stock assembly, `render_scene` with the default options - and
   `src/stock_frame.cpp` names the viewer step each one mirrors. The viewer
-  itself is unchanged. The application renders every frame through
+  command for this pin uses the stock viewer's retail material state. The application renders
+  every frame through
   `nfsu::StockView::render`, which is `render_scene` over the same scene at
-  the camera's options; at the default camera those are `RenderOptions{}`
-  in every field, which `nfsu::stock_view_is_default` checks exactly. The
+  the camera's options; at the default camera those are
+  `stock_view_default_options()`, which `nfsu::stock_view_is_default`
+  checks exactly. The
   desktop test `nfsu_stock_frame_viewer_match` holds the two together: it
   renders six synthetic files in the game's layout with the viewer and with
   the application's calls, unpainted and painted, and requires the same TGA

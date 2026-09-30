@@ -104,8 +104,14 @@ std::vector<InputBinding> stock_view_bindings() {
     };
 }
 
+RenderOptions stock_view_default_options() noexcept {
+    RenderOptions options;
+    options.material_state = MaterialStateMode::retail;
+    return options;
+}
+
 bool stock_view_is_default(const RenderOptions& options) noexcept {
-    const RenderOptions pinned;
+    const RenderOptions pinned = stock_view_default_options();
     for (std::size_t k = 0; k < 4; ++k) {
         if (options.background[k] != pinned.background[k]) {
             return false;
@@ -117,6 +123,8 @@ bool stock_view_is_default(const RenderOptions& options) noexcept {
            options.vertex_color == pinned.vertex_color && options.cull == pinned.cull &&
            options.shading == pinned.shading &&
            options.material_state == pinned.material_state &&
+           options.wet_road_reflections == pinned.wet_road_reflections &&
+           options.reflection_pass == pinned.reflection_pass &&
            same_coefficients(options.coefficients, pinned.coefficients);
 }
 
@@ -134,7 +142,7 @@ bool StockView::start(const PreparedCarScene& scene, std::string& error) {
         return false;
     }
     camera_.reset();
-    return inspector_.reset(scene, RenderOptions{}, RenderLimits{}, error);
+    return inspector_.reset(scene, stock_view_default_options(), RenderLimits{}, error);
 }
 
 StockViewStep StockView::step(const GamepadFrame& frame) {

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <ostream>
 #include <string>
 #include <vector>
@@ -89,6 +90,11 @@ struct GeometryLimits {
     std::int32_t max_vertices_per_mesh = 65536;
     std::int32_t max_faces_per_mesh = 1 << 20;
     std::int32_t max_materials_per_mesh = 4096;
+    // Optional retention policy, applied after full validation of each mesh.
+    // Unretained meshes keep identity/directory fields, but valid is false
+    // and decoded arrays release their storage. Parse issues are not hidden.
+    std::function<bool(const Mesh&)> retain_mesh;
+
 };
 
 struct GeometryReport {

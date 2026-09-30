@@ -284,6 +284,24 @@ bool place(
 
             PreparedTrackInstance placed;
             placed.mesh = lookup.mesh;
+            SlotLookup reflected = look_up_slot(meshes, object, 4);
+            // speed.exe 0x445A66..0x445A9A retains the last non-empty,
+            // non-skipped node from slots 0..3 and copies it into slot 4
+            // only when slot 4 has no node. An unresolved hash still owns
+            // a node, so it must not trigger or be bypassed by fallback.
+            if (!reflected.resolved &&
+                reflected.reason != TrackUnplacedReason::unresolved_hash) {
+                for (std::size_t s = 0; s < kSceneryObjectChainSlots; ++s) {
+                    const SlotLookup candidate = look_up_slot(meshes, object, s);
+                    if (candidate.resolved ||
+                        candidate.reason == TrackUnplacedReason::unresolved_hash)
+                        reflected = candidate;
+                }
+            }
+            if (reflected.resolved) {
+                if (reflected.mesh >= kNoReflectionMesh) { error = "reflection mesh index exceeds u32"; return false; }
+                placed.reflection_mesh = static_cast<std::uint32_t>(reflected.mesh);
+            }
             placed.transform = track_instance_transform(instance);
             placed.section_index = section.index;
             placed.section_number = section.number;
@@ -729,6 +747,9 @@ bool validate_prepared_track_scene(
                         std::to_string(i);
                 return false;
             }
+        }
+        if (instance.reflection_mesh != kNoReflectionMesh && instance.reflection_mesh >= scene.region.meshes.size()) {
+            error = "reflection mesh out of range"; return false;
         }
         if (instance.mesh >= scene.region.meshes.size()) {
             error = "scene instance " + std::to_string(i) + " names mesh " +

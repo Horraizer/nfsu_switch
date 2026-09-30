@@ -1,4 +1,5 @@
 #include "nfsu/track_render.h"
+#include "nfsu/track_reflections.h"
 
 #include <algorithm>
 #include <cmath>
@@ -435,7 +436,8 @@ bool render_track_draw_list(
             // record_track_commands numbers it.
             if (observe) observe(ReferenceDraw{group, draw.mesh, scene.instances.size(),
                 draw.texture, draw.first_index, draw.index_count, true, false, true,
-                CullMode::none, material.blend, material.alpha_test, material.alpha_ref, true});
+                CullMode::none, material.blend, material.alpha_test, material.alpha_ref,
+                false, true});
             for (std::size_t n = draw.first_index/3; n < (draw.first_index+draw.index_count)/3; ++n) {
                 const auto& t = mesh.triangles[n];
                 const std::uint16_t indices[] = {t.a,t.b,t.c};
@@ -457,6 +459,25 @@ bool render_track_draw_list(
       return true;
     };
     bool sky_drawn = false;
+    Frame reflected;
+    if (options.wet_road_reflections && !options.reflection_pass) {
+        RenderOptions mirror = options;
+        mirror.wet_road_reflections = false;
+        mirror.reflection_pass = true;
+        mirror.sky = false;
+        mirror.width = std::max(1U, std::min(options.width, options.reflection_width));
+        mirror.height = std::max(1U, mirror.width * options.height / options.width);
+        std::fill(std::begin(mirror.background), std::end(mirror.background), 0);
+        mirror.background[3] = 255;
+        RenderStats mirror_stats; TrackRenderStats mirror_track;
+        if (!render_track_draw_list(scene, list, mirror, limits, reflected,
+                                   mirror_stats, mirror_track, error)) return false;
+        const auto geometry_triangles = mirror_stats.triangles_submitted;
+        if (options.wet_lamps && !render_wet_road_lamps(*options.wet_lamps, mirror, limits, reflected, mirror_stats, error)) return false;
+        track_stats.reflection_draws = mirror_track.entries_drawn + (mirror_stats.triangles_submitted-geometry_triangles)/2;
+        track_stats.reflection_triangles = mirror_stats.triangles_submitted;
+        track_stats.reflection_fragments = mirror_stats.fragments;
+    }
     Rasterizer rasterizer(frame, options, limits, stats);
     std::uint32_t next_id = 0;
     stats.meshes = scene.region.meshes.size() +
@@ -471,15 +492,31 @@ bool render_track_draw_list(
     // uses, which is the rule TrackDrawListCost::texture_binds applies.
     std::size_t bound = kNoHandle;
     bool has_bound = false;
-    for (const TrackDrawListEntry& entry : list.entries) {
+    std::vector<TrackDrawListEntry> reflection_entries;
+    if (options.reflection_pass && !track_reflection_entries(scene, options, reflection_entries, error)) return false;
+    const auto& entries = options.reflection_pass ? reflection_entries : list.entries;
+    if (options.reflection_pass) {
+        std::uint64_t triangles = 0;
+        for (const auto& entry : entries) triangles += scene.region.draws[entry.draw].index_count/3;
+        if (triangles > limits.max_submitted_triangles || triangles >= kNoTriangle) {
+            error = "reflection triangles exceed submitted limit"; return false;
+        }
+    }
+    for (const TrackDrawListEntry& entry : entries) {
         const TrackDraw& draw = scene.region.draws[entry.draw];
         const PreparedTrackInstance& instance = scene.instances[entry.instance];
+        if (options.reflection_pass && ((instance.instance_flags ^ 0x60U) & 0x50U) != 0) continue;
+        TrackTransform placement = instance.transform;
+        // speed.exe 0x446103..0x446108: reflect about this instance's local origin.
+        if (options.reflection_pass) placement = track_reflection_transform(instance);
         const PreparedTrackMesh& mesh = scene.region.meshes[draw.mesh];
         if (group_named[entry.draw] == 0) {
             group_named[entry.draw] = 1;
             ++track_stats.groups;
         }
         RasterMaterial raster;
+        if (reflected.width() && track_vertex_format(mesh.vertex_format_flags).mask == 0x40)
+            raster.reflected_scene = &reflected;
         std::size_t key = kNoHandle;
         switch (draw.binding) {
         case BindingKind::resolved:
@@ -558,7 +595,7 @@ bool render_track_draw_list(
             Vec3 world[3];
             for (int k = 0; k < 3; ++k) {
                 const TrackVertex& source = mesh.vertices[indices[k]];
-                world[k] = track_placed_vertex(source, instance.transform);
+                world[k] = track_placed_vertex(source, placement);
                 clip[k] = project_point(camera, world[k]);
                 clip[k].u = source.u;
                 clip[k].v = source.v;

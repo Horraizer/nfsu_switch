@@ -553,6 +553,8 @@ bool prepare_scene_meshes(
                 draw.texture_hash = binding.hash;
                 draw.binding = binding.kind;
                 draw.material_key_slot = material.material_key_slot;
+                if (material.material_key_slot < mesh.material_key_hashes.size())
+                    draw.material_key_hash = mesh.material_key_hashes[material.material_key_slot];
                 draw.flags = material.flags;
                 draw.record_offset = material.offset;
                 std::copy(std::begin(material.bounds_min), std::end(material.bounds_min),
@@ -935,6 +937,9 @@ bool validate_scene(const PreparedCarScene& scene, std::string& error) {
     for (std::size_t i = 0; i < scene.draws.size(); ++i) {
         const PreparedDraw& draw = scene.draws[i];
         const std::string label = "prepared draw " + std::to_string(i);
+        if (!valid_car_shading_material(draw.shading)) {
+            error=label+" has invalid car shading coefficients"; return false;
+        }
         if (draw.mesh >= scene.meshes.size()) {
             error = label + " has an invalid mesh handle";
             return false;

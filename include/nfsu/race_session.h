@@ -88,6 +88,7 @@ std::vector<std::string> race_session_hud(const RaceSession& session);
 // Opaque passes rendered with the same camera, track first and car second.
 // A depth tie belongs to the car. MaterialStateMode::off is required for
 // both passes; alpha blending across separate depth buffers is not modeled.
+bool compose_race_frame(const Frame& track, const Frame& car, Frame& composed);
 bool compose_race_frame(const Frame& track, const Frame& car,
                         std::vector<unsigned char>& rgba);
 

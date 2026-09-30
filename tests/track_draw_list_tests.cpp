@@ -1048,12 +1048,69 @@ void test_lod_slot_zero() {
                                   scene, error),
           "the lod scene is built at slot 0: " + error);
     check_eq_u64(scene.cost.placed_instances, 5, "five instances place at slot 0");
+    check_eq_u64(scene.instances.at(0).reflection_mesh, 1,
+                 "reflection slot 4 takes the last populated earlier slot independently of main LOD");
+    check(scene.instances.at(2).reflection_mesh == 1 && scene.instances.at(2).mesh == 0,
+          "reflection slot 4 names mesh B while the main view names A");
+
     check_eq_u64(scene.cost.slot_fallbacks, 0, "slot 0 has no fallback");
     check_eq_u64(scene.cost.unplaced_unresolved, 4, "four hashes resolve nothing");
     for (const nfsu::PreparedTrackInstance& placed : scene.instances) {
         check(placed.mesh == 0 && placed.slot == 0,
               "every slot 0 placement is mesh A");
     }
+}
+
+void test_reflection_loader_uses_last_node() {
+    // STREAML1RA.BUN section 0x2B52068, object 1 has these exact hashes.
+    // Its 0x60 instance passes the reflection selector; retail uses slot 2.
+    constexpr std::uint32_t kFirst = 0x3D6C395BU;
+    constexpr std::uint32_t kLast = 0x3D6CC5BCU;
+    std::vector<MeshSpec> meshes = town_meshes();
+    meshes.resize(2);
+    meshes[0].hash = kFirst;
+    meshes[1].hash = kLast;
+    SectionSpec section;
+    section.number = 303;
+    section.objects.resize(5);
+    section.objects[0].mesh_hash[0] = kFirst;
+    section.objects[1].mesh_hash[0] = kFirst;
+    section.objects[1].mesh_hash[2] = kLast;
+    section.objects[2].mesh_hash[0] = kFirst;
+    section.objects[2].mesh_hash[4] = kMissingHash;
+    section.objects[3].mesh_hash[0] = kFirst;
+    section.objects[3].mesh_hash[2] = kMissingHash;
+    section.objects[4].mesh_hash[0] = kFirst;
+    section.objects[4].mesh_hash[3] = kLast;
+    for (int i = 0; i < 3; ++i) {
+        InstanceSpec instance = row_instance(i, static_cast<std::uint16_t>(i + 1));
+        instance.flags = 0x60;
+        section.instances.push_back(instance);
+    }
+    InstanceSpec slot_three_instance = row_instance(3, 4);
+    slot_three_instance.flags = 0x60;
+    section.instances.push_back(slot_three_instance);
+    section.nodes.push_back(node_over(95, 405, {0, 1, 2, 3}));
+    const Fixture fixture = make_fixture(meshes, {section});
+    nfsu::PreparedTrackScene scene;
+    std::string error;
+    check(nfsu::build_track_scene(fixture.geometry, fixture.objects,
+                                  fixture.textures, nfsu::TrackSceneOptions{},
+                                  scene, error),
+          "reflection loader fixture builds: " + error);
+    check_eq_u64(scene.instances.size(), 4,
+                 "reflection loader fixture places all four instances");
+    if (scene.instances.size() != 4) return;
+    check(scene.instances[0].mesh_hash == kFirst &&
+              scene.instances[0].reflection_mesh == 1 &&
+              scene.region.meshes[scene.instances[0].reflection_mesh].mesh_hash == kLast,
+          "retail object 1 reflects slot 2 rather than slot 0");
+    check(scene.instances[1].reflection_mesh == nfsu::kNoReflectionMesh,
+          "unresolved slot 4 retains its node and never falls back");
+    check(scene.instances[2].reflection_mesh == nfsu::kNoReflectionMesh,
+          "the last earlier node wins even when its hash is unresolved");
+    check(scene.instances[3].reflection_mesh == 1,
+          "slot 3 is included when it is the last earlier node");
 }
 
 // Slot 1 has no recovered fallback: an object that leaves it empty places
@@ -2487,6 +2544,7 @@ int main() {
     test_frustum_selects_a_prefix();
     test_residency_narrows_the_list();
     test_lod_slot_zero();
+    test_reflection_loader_uses_last_node();
     test_lod_slot_one_has_no_fallback();
     test_lod_slot_four_falls_back();
     test_lod_slot_five_falls_back_too();

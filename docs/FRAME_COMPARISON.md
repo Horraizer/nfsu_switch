@@ -2,18 +2,23 @@
 
 `nfsu_switch_compare.nro` renders the same prepared stock 240SX twice in
 one process: `render_stock_frame` supplies the CPU reference, and #146's
-recorded commands supply the deko3d frame. It reads the same six files under
-`sdmc:/nfsu` as [SWITCH_BUILD.md](SWITCH_BUILD.md). It writes no files and
+recorded commands supply the deko3d frame. Default and `--unpainted` modes
+read the same six files under `sdmc:/nfsu` as
+[SWITCH_BUILD.md](SWITCH_BUILD.md); `--tuned` also reads wheel geometry,
+wheel textures and the vinyl pack. It writes no files and
 packages no game asset. The painted stock frame is the default; `--unpainted`
-selects the unpainted #141 frame. One positional argument can replace the
-input root. Unknown options, including retail material mode, are refused:
-the comparison uses the pinned default camera and material-state=off.
+selects the unpainted #141 frame, and `--tuned` selects the tuned preset. One
+positional argument can replace the input root. The CPU reference uses
+`stock_view_default_options()`, the same camera and retail material state as
+the stock viewers. The retail stock-frame tests pin that shared default, so a
+change that moves its rendered output fails the C++ gate.
 
 Build using [SWITCH_BUILD.md](SWITCH_BUILD.md), then deploy:
 
 ```text
 nxlink -a <ip> build-switch/switch/nfsu_switch_compare.nro
 nxlink -a <ip> build-switch/switch/nfsu_switch_compare.nro --unpainted
+nxlink -a <ip> build-switch/switch/nfsu_switch_compare.nro --tuned
 ```
 
 Replace `<ip>` with the console IP. Do not use `-s`: its return channel does
@@ -48,7 +53,31 @@ PASS also requires the CPU TGA to match its selected desktop pin:
 
 The current painted and unpainted frame sizes and SHA-256 pins live in
 `include/nfsu/stock_frame.h`; `nfsu_draw_commands_retail <retail-root>`
-checks both off-state frames and compares both material-mode draw traces.
+checks the stock and painted frames and compares both material-mode draw
+traces. `nfsu_stock_frame_retail` and
+`nfsu_stock_frame_painted_retail` exercise the shared viewer default. The
+Switch CTest `nfsu_switch_compare_reference_options` strips C++ `//`
+line comments, then checks the source text for a const `nfsu::RenderOptions`
+named `options` initialized exactly from `stock_view_default_options()`, no
+member assignment through an identifier ending in `options`, and calls to
+`render_stock_frame(stock, options, error)` and
+`record_car_commands(stock.scene, options, ...)`. Its self-tests run every time:
+m2 and m3 must print `KILLED` for a non-const declaration and a later write;
+m22 and m23 must print `KILLED` when the old calls are comments and the live
+calls use temporary defaults; and m21b must print `PASS` for a harmless
+comment above the declaration.
+
+This is a source-text guard, not a C++ parser or execution test. It removes
+`//` line comments, including decoys such as m12 and the commented old calls
+in m22 and m23. It does not remove `/* */` block comments (m08 and m11), count
+declarations, or prove that the matching declaration is the only one or in
+the relevant scope; a decoy declaration in a dead scope (m09) can fool it.
+A string-literal decoy (m20) can also fool it, and it does not detect a
+`const_cast` write (m13, undefined behavior). The guard does not prove the
+runtime compare path uses the intended object. The write check fails closed
+on any member assignment whose identifier ends in `options`, including an
+unrelated name such as `tuned_options`; this can reject harmless code. The
+self-tests show the cases they exercise, not broader C++ semantic coverage.
 
 A CPU pin mismatch displays overall FAIL even if the numerical GPU/CPU
 comparison passes. No threshold is adjusted to fit a result. Percentages

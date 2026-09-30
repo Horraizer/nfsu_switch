@@ -22,6 +22,11 @@ int main() {
     context.clocks.gpu_ok = true;
     context.storage_bytes = 65536;
     context.gpfifo = {1024, 1280, 430};
+    context.tuned = true;
+    context.particles = true;
+    context.glows = true;
+    context.car_shading = true;
+    context.wet_road_reflections = true;
     RaceFrameStats frames;
     frames.add({18.5});
     const std::vector<std::string> replay_rows = {
@@ -49,7 +54,7 @@ int main() {
                     return 1;
                 }
                 for (std::size_t page = 0; page < pages.size(); ++page) {
-                    if (pages[page].size() < 2 || pages[page].size() - 2 > 8) {
+                    if (pages[page].size() < 3 || pages[page].size() - 3 > 8) {
                         std::cerr << "FAIL: page " << page + 1 << " exceeds eight data rows\n";
                         return 1;
                     }
@@ -77,6 +82,30 @@ int main() {
                         std::cerr << "FAIL: missing GPU field " << field << '\n';
                         return 1;
                     }
+                }
+                for (const char* effect : {"CAR TUNED", "PART ON", "GLOW ON",
+                                           "SHADE ON", "WET ON", "SKY ON", "SHADOW ON"}) {
+                    for (const auto& page : pages)
+                        if (page[page.size()-2].find(effect) == std::string::npos) {
+                            std::cerr << "FAIL: missing effect label " << effect << '\n';
+                            return 1;
+                        }
+                }
+                const std::string failure(800, 'X');
+                const auto wrapped = wrap_screen_text(failure, 80);
+                const auto errors = build_profile_pages(replay_rows, true, active ? frames : RaceFrameStats{},
+                    2, context, failure, "HANDHELD");
+                std::vector<std::string> actual;
+                for (std::size_t page = 8; page < errors.size(); ++page) {
+                    if (errors[page].size() - 3 > 8) {
+                        std::cerr << "FAIL: error page exceeds eight data rows\n";
+                        return 1;
+                    }
+                    actual.insert(actual.end(), errors[page].begin()+2, errors[page].end()-2);
+                }
+                if (actual != wrapped) {
+                    std::cerr << "FAIL: error page dropped wrapped text\n";
+                    return 1;
                 }
             } catch (const std::exception& error) {
                 std::cerr << "FAIL: scene height " << height << ": " << error.what() << '\n';
