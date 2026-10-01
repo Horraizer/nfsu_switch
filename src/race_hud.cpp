@@ -30,7 +30,17 @@ constexpr std::array<std::uint32_t, 8> kRedHashes{{
 constexpr AtlasRect kFill{0, 256, 256, 128};
 constexpr AtlasRect kNeedle{256, 256, 16, 128};
 constexpr AtlasRect kLcd{272, 256, 128, 128};
-constexpr AtlasRect kUnit{400, 256, 90, 32};
+constexpr AtlasRect kUnit{400, 256, 42, 14};
+struct HudGlyph {
+    AtlasRect uv;
+    int width, height, bearing_x, bearing_y, advance;
+};
+// English.bin FNTF records, with the one-texel UV border used at 0x004F4790.
+constexpr std::array<HudGlyph,3> kUnits{{
+    {{400,256,15,14},13,12,0,5,13},
+    {{415,256,13,14},11,12,0,5,11},
+    {{428,256,14,14},12,12,0,5,11}
+}};
 
 struct SourceSpec {
     const char* path;
@@ -58,27 +68,27 @@ constexpr std::array<SourceSpec, 15> kSources{{
 bool copy_units(const std::vector<unsigned char>& bytes,
                 const TexturePackSet& set, RaceHudAtlas& atlas,
                 std::string& error) {
-    // Measured glyph regions in FONT_CONDUITMDITCTT38BI. The font's runtime
-    // bearings/advance table is not recovered; these MPH bearings are a fit.
+    // Conduit 14 Italic matches the original stock MPH letterforms. These
+    // padded rectangles come from English.bin's FNTF, not an image fit.
     constexpr std::array<AtlasRect,3> letters{{
-        {372,50,33,32}, {408,50,25,32}, {317,83,30,32}
+        {112,32,15,14}, {22,32,13,14}, {75,45,14,14}
     }};
     for (const auto& pack : set.packs) for (const auto& record : pack.textures) {
-        if (record.hash != 0x9583AA1A) continue;
-        if (!record.valid || record.width != 512 || record.height != 512) break;
+        if (record.hash != 0x5B9D84DB) continue;
+        if (!record.valid || record.width != 256 || record.height != 256) break;
         std::vector<unsigned char> payload, rgba;
         std::size_t unused=0; std::uint64_t top=0;
         if (!texture_payload(bytes.data(),bytes.size(),record,payload,unused,error) ||
-            !level_size(record.format,512,512,top) || top>payload.size() ||
-            !decode_level(record.format,512,512,payload.data(),
+            !level_size(record.format,256,256,top) || top>payload.size() ||
+            !decode_level(record.format,256,256,payload.data(),
                           static_cast<std::size_t>(top),rgba,error)) return false;
         int x=kUnit.x;
         for (const auto& letter : letters) {
             for (int y=0; y<letter.h; ++y)
                 std::memcpy(atlas.rgba.data()+((kUnit.y+y)*512+x)*4,
-                            rgba.data()+((letter.y+y)*512+letter.x)*4,
+                            rgba.data()+((letter.y+y)*256+letter.x)*4,
                             static_cast<std::size_t>(letter.w)*4);
-            x+=letter.w+1;
+            x+=letter.w;
         }
         return true;
     }
@@ -169,28 +179,30 @@ void rotated(RaceHudFrame& frame, const AtlasRect& uv,
     add_quad(frame, uv, corners, tint);
 }
 
-AtlasRect glyph(char ch) noexcept {
+HudGlyph glyph(char ch) noexcept {
+    const auto lcd=[](int x,int y,int w,int h,int bx,int by,int advance) {
+        return HudGlyph{{kLcd.x+x-1,kLcd.y+y-1,w+2,h+2},w,h,bx,by,advance};
+    };
     switch (ch) {
-    case '0': return {kLcd.x+1,kLcd.y+1,27,34};
-    case '9': return {kLcd.x+28,kLcd.y+1,26,34};
-    case '2': return {kLcd.x+54,kLcd.y+1,27,34};
-    case '3': return {kLcd.x+81,kLcd.y+1,27,34};
-    case '8': return {kLcd.x+1,kLcd.y+35,27,35};
-    case '5': return {kLcd.x+28,kLcd.y+35,26,35};
-    case '6': return {kLcd.x+54,kLcd.y+35,27,35};
-    case 'R': return {kLcd.x+81,kLcd.y+35,25,35};
-    case '1': return {kLcd.x+106,kLcd.y+35,13,35};
-    case '7': return {kLcd.x+1,kLcd.y+70,25,35};
-    case 'N': return {kLcd.x+26,kLcd.y+70,26,35};
-    case '4': return {kLcd.x+52,kLcd.y+70,27,35};
-    default: return {kLcd.x+1,kLcd.y+1,27,34};
+    case '1': return lcd(104,36,13,35, 2,9,12);
+    case '2': return lcd(53,1,26,34, -1,9,22);
+    case '3': return lcd(80,1,24,34, -1,9,21);
+    case '4': return lcd(49,72,23,36, 2,8,23);
+    case '5': return lcd(28,36,23,34, 1,9,22);
+    case '6': return lcd(52,36,24,34, 0,9,23);
+    case '7': return lcd(1,72,20,35, 2,9,19);
+    case '8': return lcd(1,36,26,34, 0,9,24);
+    case '9': return lcd(28,1,24,34, 1,9,23);
+    case 'N': return lcd(22,72,26,36, 0,8,24);
+    case 'R': return lcd(77,36,26,35, 0,9,24);
+    default: return lcd(1,1,26,34, 0,9,24);
     }
 }
 
-void digit(RaceHudFrame& frame, char ch, float x, float y,
-           float scale, std::array<unsigned char, 3> tint) noexcept {
-    const auto uv = glyph(ch);
-    rect(frame, uv, x, y, uv.w*scale, uv.h*scale, tint);
+void glyph_quad(RaceHudFrame& frame, const HudGlyph& letter, float x, float y,
+                float scale, std::array<unsigned char, 3> tint) noexcept {
+    rect(frame, letter.uv,x+letter.bearing_x*scale,y+letter.bearing_y*scale,
+         letter.width*scale,letter.height*scale,tint);
 }
 
 } // namespace
@@ -310,10 +322,10 @@ void build_race_hud_frame_for_car(const VehicleState& car,
         gear == kVehicleGearNeutral ? 'N' :
         static_cast<char>('0'+std::max(1,std::min(6,gear-kVehicleGearFirst+1)));
     const float gear_scale=0.85F*texel*scale; // SAD 0x4680
-    const auto gear_uv=glyph(gear_label);
+    const auto gear_glyph=glyph(gear_label);
     const auto gear_pos=pos(59,-26);
-    digit(frame,gear_label,gear_pos[0]-gear_uv.w*gear_scale*0.5F,
-          gear_pos[1]+12*gear_scale,gear_scale,{{0,128,192}});
+    glyph_quad(frame,gear_glyph,gear_pos[0]-gear_glyph.advance*gear_scale,
+               gear_pos[1],gear_scale,{{0,128,192}});
     // The port's vehicle state has no retail +0x3D4 scalar. Horizontal
     // velocity magnitude is the closest available visual-only estimate.
     const int mph=frame.readout.mph;
@@ -324,17 +336,25 @@ void build_race_hud_frame_for_car(const VehicleState& car,
     const int first = mph >= 100 ? 0 : mph >= 10 ? 1 : 2;
     const float speed_scale=0.6F*texel*scale; // SAD 0x42F0
     float speed_width=0;
-    for (int i=first;i<3;++i) speed_width+=glyph(speed[i]).w;
+    for (int i=first;i<3;++i) speed_width+=glyph(speed[i]).advance;
     const auto speed_pos=pos(24.39F,25.82F);
-    float x=speed_pos[0]-speed_width*speed_scale*0.5F;
+    float x=speed_pos[0]-speed_width*speed_scale;
     for (int i=first;i<3;++i) {
-        digit(frame,speed[i],x,speed_pos[1]+12*speed_scale,
-              speed_scale,{{0,128,192}});
-        x+=glyph(speed[i]).w*speed_scale;
+        const auto letter=glyph(speed[i]);
+        glyph_quad(frame,letter,x,speed_pos[1],speed_scale,{{0,128,192}});
+        x+=letter.advance*speed_scale;
     }
-    // MPH bearings and size are a screenshot fit: the recovered SAD centre
-    // does not supply the font's missing runtime advance/bearing table.
-    place(kUnit,36.1F,22.8F,28,9.6F,{{150,190,255}});
+    // Right alignment matches the original stock captures; native FNTF
+    // bearings/advances and SAD 0x43EC scale replace the bold-font fit.
+    const float units_scale=0.8F*texel*scale;
+    const auto units_pos=pos(63.64F,16.57F);
+    float units_width=0;
+    for (const auto& letter : kUnits) units_width+=letter.advance;
+    x=units_pos[0]-units_width*units_scale;
+    for (const auto& letter : kUnits) {
+        glyph_quad(frame,letter,x,units_pos[1],units_scale,{{150,190,255}});
+        x+=letter.advance*units_scale;
+    }
 }
 
 void composite_race_hud(const RaceHudAtlas& atlas, const RaceHudFrame& frame,

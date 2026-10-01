@@ -9,7 +9,9 @@
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <windows.h>
 #include <winioctl.h>
 #else
@@ -160,7 +162,7 @@ void test_dial() {
                   std::lround(frame.vertices[1*4].v*512)==item.ry,
                   "frame uses the selected RED atlas slot");
         } else {
-            check(frame.quads==6,"below 6500 in the 8500LINES band draws no RED");
+            check(frame.quads==8,"below 6500 in the 8500LINES band draws no RED");
             check(std::abs(needle_angle(frame,false)-226.0)<1.0,
                   "no RED keeps the needle at the stock zero angle");
         }
@@ -212,16 +214,16 @@ void test_gear_and_speed() {
     nfsu::RaceHudFrame frame;
     car.gear = nfsu::kVehicleGearNeutral;
     nfsu::build_race_hud_frame_for_car(car,8000,7500,1280,720,frame);
-    check(std::lround(frame.vertices[4*4].u * 512) == 298,
+    check(std::lround(frame.vertices[4*4].u * 512) == 293,
           "neutral uses the N glyph");
     car.gear = nfsu::kVehicleGearReverse;
     nfsu::build_race_hud_frame_for_car(car,8000,7500,1280,720,frame);
-    check(std::lround(frame.vertices[4*4].u * 512) == 353,
+    check(std::lround(frame.vertices[4*4].u * 512) == 348,
           "reverse uses the R glyph");
-    check(frame.quads == 7, "zero mph has one speed glyph");
+    check(frame.quads == 9, "zero mph has one speed glyph and three unit letters");
     car.velocity.x = 45.0;
     nfsu::build_race_hud_frame_for_car(car,8000,7500,1280,720,frame);
-    check(frame.quads == 9, "100 mph has three speed glyphs");
+    check(frame.quads == 11, "100 mph has three speed glyphs and three unit letters");
     check(frame.vertices[12].color[3] == 255, "Tach face has full SAT alpha");
     const auto* gear=&frame.vertices[4*4];
     const auto* speed=&frame.vertices[5*4];
@@ -256,10 +258,32 @@ void test_layout_and_current_state() {
     }
     const auto* gear=&full.vertices[4*4];
     const auto* speed=&full.vertices[5*4];
-    check(std::abs((gear[0].px+gear[1].px)*0.5F-1231.3333F)<0.01 &&
-          std::abs(gear[0].py-574.6667F)<0.01 &&
-          std::abs(speed[0].py-656.0333F)<0.01,
-          "text uses SAD centres, scale and measured font ascent");
+    check(std::abs(gear[0].px-1217.1667F)<0.01 &&
+          std::abs(gear[0].py-570.4167F)<0.01 &&
+          std::abs(speed[0].px-1149.65F)<0.01 &&
+          std::abs(speed[0].py-653.0333F)<0.01,
+          "right-aligned SAD text uses native LCD bearings and advance");
+    // Narrow 1 and wide 0 have different bearings and advances. Their
+    // pen endpoints share the original right anchor for one/three digits.
+    car.velocity.x=45.0;
+    nfsu::build_race_hud_frame_for_car(car,8000,7500,1280,720,full);
+    speed=&full.vertices[5*4];
+    const auto* second=&full.vertices[6*4];
+    const auto* third=&full.vertices[7*4];
+    check(std::abs(speed[0].px-1115.65F)<0.01 &&
+          std::abs(second[0].px-1125.65F)<0.01 &&
+          std::abs(third[0].px-1149.65F)<0.01 &&
+          std::abs((speed[1].px-speed[0].px)-13.0F)<0.01 &&
+          std::lround(speed[0].u*512)==375 &&
+          std::lround(speed[0].v*512)==291,
+          "100 mph uses native proportional advance and padded 1 UVs");
+    const auto* units=&full.vertices[8*4];
+    check(std::abs(units[0].px-1192.4F)<0.01 &&
+          std::abs(units[0].py-635.2833F)<0.01 &&
+          std::abs((units[1].px-units[0].px)-17.3333F)<0.01 &&
+          std::lround(units[0].u*512)==400 &&
+          std::lround(units[1].u*512)==415,
+          "MPH uses native italic M metrics and the FEng 0.8 scale");
     // A deliberately inconsistent wheel-derived value cannot override the
     // completed engine value. Reusing a frame must not retain the old gear.
     struct Sample { int gear; double rpm, wheel; };
