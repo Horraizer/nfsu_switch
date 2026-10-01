@@ -141,9 +141,11 @@ mode. Replay verification chooses the corresponding distinct result pins.
 With the homebrew netloader waiting, the owner can capture stdout via nxlink:
 
 ```text
-nxlink -a 192.168.1.56 -s build-switch-ascii/switch/nfsu_switch_race.nro --args sdmc:/nfsu --live --performance-levels weight=0 --handling-telemetry
-nxlink -a 192.168.1.56 -s build-switch-ascii/switch/nfsu_switch_race.nro --args sdmc:/nfsu --live --performance-levels engine-a=1,gearbox=1,weight=1,suspension=1,tyres=1 --handling-telemetry
+nxlink -a 192.168.1.56 -s build-switch-ascii/switch/nfsu_switch_race.nro -- sdmc:/nfsu --live --performance-levels weight=0 --handling-telemetry
+nxlink -a 192.168.1.56 -s build-switch-ascii/switch/nfsu_switch_race.nro -- sdmc:/nfsu --live --performance-levels engine-a=1,gearbox=1,weight=1,suspension=1,tyres=1 --handling-telemetry
 ```
+
+Use `--` to end nxlink option parsing before the application arguments.
 
 Replace `--live` with `--replay` for the corresponding deterministic capture.
 The worker does not deploy. The PR CONSOLE_REQUEST records source SHA, NRO
