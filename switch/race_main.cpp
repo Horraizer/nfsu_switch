@@ -744,7 +744,7 @@ int main(int argc, char** argv) {
                     else throw std::runtime_error("--wet-road-reflections must be on or off");
                 }
                 else if (!root_seen && arg.rfind("--",0) != 0) { root = arg; root_seen = true; }
-            else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--no-hud] [--sky on|off|early] [--scene-height 720|540|450|360] [--gpu-boost on|off] [--particles=on|--particles=off] [--tuned] [--glows] [--car-shading on|off] [--wet-road-reflections on|off]");
+            else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--hud-trace] [--no-hud] [--sky on|off|early] [--scene-height 720|540|450|360] [--gpu-boost on|off] [--particles=on|--particles=off] [--tuned] [--glows] [--car-shading on|off] [--wet-road-reflections on|off]");
             }
             require(!(panel && profile_frame),"--profile-frame requires direct presentation");
             require(!hud_trace || (hud && !panel),"--hud-trace requires HUD and direct presentation");
@@ -753,10 +753,10 @@ int main(int argc, char** argv) {
                 if (down & HidNpadButton_Plus) throw Cancel{};
                 if (down & HidNpadButton_A) selected = true;
                 if (down & HidNpadButton_X) { selected = true; replay = true; }
-                if ((down & HidNpadButton_Y) && !profile_frame) panel = !panel;
+                if ((down & HidNpadButton_Y) && !profile_frame && !hud_trace) panel = !panel;
                 screen.show({tuned ? "EVENT 1 / TUNED 240SX / TWO LAPS" : "NFSU #196 - EVENT 1 / STOCK 240SX / TWO LAPS",format("BUILD %.12s",NFSU_RACE_BUILD_TAG),
                     "A: drive with Joy-Con / Pro Controller", "X: replay the pinned desktop event1.txt", "+: exit",
-                    profile_frame ? "PROFILE FRAME: direct only; Y panel toggle disabled" :
+                    (profile_frame || hud_trace) ? "DIRECT CAPTURE: Y panel toggle disabled" :
                         std::string("Y: diagnostic panel ")+(panel?"ON":"OFF")+" (readback and CPU text cost)",
                     std::string("PARTICLES ")+(particles_enabled?"ON":"OFF"),
                     "The #47 first-lap check runs before track streaming. Assets: "+root,

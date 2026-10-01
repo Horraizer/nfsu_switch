@@ -422,3 +422,15 @@ logs, fresh paired replay outputs, per-run manifests and a JSON summary.
 The trace script outputs bounded disassembly and runtime-read tables only
 under the requested scratch directory. Neither those outputs nor any retail
 or derived asset belongs in a commit.
+
+## HUD shift presentation dependency (#253)
+
+[HUD_253.md](HUD_253.md) names `HUD253_ENGINE_SHIFT_PARITY`: the port-only
+frame/RPM audit shows the needle follows the same completed engine and gear
+state through upshift and downshift. The rapid RPM rise and subsequent
+automatic downshift therefore originate in simulation state, rather than
+stale HUD data. This is a localization, not proof of a retail physics error.
+Matched original stock shift sequences and runtime scheduling evidence are
+still needed before changing the approximate engine feedback/clutch coupling
+or automatic shift hold. Cosmetic red paint does not identify a performance
+setup. The HUD work adds no smoothing or physics parameter change.

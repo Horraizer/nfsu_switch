@@ -6,6 +6,11 @@ diagnostic panel remains behind `--panel`; `--no-hud` disables this final
 pass for a paired console measurement. Nothing in the HUD writes to race
 state. The replay state and step pins are unchanged.
 
+Issue #253 refines the gauge art, glyphs and placement and adds a completed
+state audit. [HUD_253.md](HUD_253.md) distinguishes recovered geometry from
+screenshot fits, links durable comparisons, traces the RPM producer and
+consumer, and lists the unresolved original/console evidence.
+
 ## Retail trace and assets
 
 Observed in `speed.exe`, using Capstone 5.0.7:
@@ -75,7 +80,7 @@ Observed in `speed.exe`, using Capstone 5.0.7:
   (`0x40D4`, SAT `0x411C`, depth 8.33), Tach (`0x445C`, SAT `0x44AC`,
   depth -1.67), and Needle (`0x452C`, SAT `0x457C`, depth 5). Smaller FEng
   depths draw in front, so their back-to-front order is Redline, Needle,
-  then Tach. The port draws its disc and supplemental `CENTER_DIAL` first.
+  then Tach. The port draws the third-person angular fill first.
   Tach therefore leaves its blue ticks and hub ring visible over Redline
   and the needle.
   The text records `3rdPersonSpeed` (`0x4268`, SAD `0x42F0`) and
@@ -85,7 +90,10 @@ Observed in `speed.exe`, using Capstone 5.0.7:
 - `Global/INGAMEB.BUN` holds `3RDPERSON_RPMDIAL`
   (`0x40FAB387`, 16x128), `CENTER_DIAL`
   (`0x56447D19`, 16x16), and `SPEED_COUNTER_SPEEDBOX` (`0x6D079188`,
-  128x32). `Global/DYNTEX.BIN` holds the selected LINES and RED overlays:
+  128x32). The gauge uses screenshot-matched `3RDPERSON_7000FILL`
+  (`0x9107116C`, 256x128), rather than a generated disc and separate box.
+  Its later runtime binding is an inference documented in HUD_253.md.
+  `Global/DYNTEX.BIN` holds the selected LINES and RED overlays:
   `8500LINES` is `0xC41B7346` (256x128), `9500LINES` is `0x3897E447`,
   and `7000RED` is `0xD5D99FA0` (64x32). LINES contains the tick marks,
   numbers and hub ring visible in retail screenshots. The HUDTEX
@@ -93,14 +101,16 @@ Observed in `speed.exe`, using Capstone 5.0.7:
   `Languages/LanguageTextures.bin` holds
   `LCD_LET48` (`0xBBBA71C2`, 128x128), the digital glyph atlas. The
   `FrontEnd/FrontB.lzc` pack was inspected for the event definition; its
-  font/layout data is not yet decoded for the HUD.
+  font/layout data is not fully decoded for the HUD. MPH uses glyph pixels
+  from `FONT_CONDUITMDITCTT38BI` in LanguageTextures; its bearings are fits.
 
 The selected stock face is labeled 0..8, with the red overlay between 7 and
 8. Engine B upgrades add 500 or 1000 max RPM to the 240SX; a tuned 8500 or
 9000 RPM car selects the 0..9 `9500LINES` face. The port uses the recovered
 retail needle rotation, the FEng relative placement of LINES and RED, and
 the decoded face hub for needle registration. The needle uses the same
-logical scale per texture texel as LINES, with source row 64 at the hub.
+logical scale per texture texel as LINES, with source row 64 at the needle
+centre. The decoded LINES hub is one native pixel above that centre.
 The `0x004F6A70` rotation matrix sends the sprite's +v axis to screen
 angle `270 - rotation` in the y-down frame. It puts stock zero RPM at
 226 degrees. The earlier 265-degree offset was a five-degree label fit;
@@ -112,33 +122,31 @@ separate `3RDPERSONDRAG_` texture family and is outside this event-1 HUD.
 
 The port's car state has no recovered `+0x3D4` scalar. Its displayed MPH is
 an **approximation** from horizontal velocity magnitude times 2.237,
-truncated to an integer. The Tach, Redline, Needle, speed, speed units and
-gear use their FEng colours and alpha. Absolute placement, supplemental
-backdrop art and safe-area fit remain **approximations** from the owner's
-screenshots. `SPEED_COUNTER` belongs
-to the lap panel and is not drawn behind the gauge. The generated disc uses
-texture alpha and the supplemental speed box uses vertex alpha over the road.
-The small MPH label is generated with the project
-font because the original label layout is still unknown. No retail or
+truncated to an integer. The Tach, Redline, Needle, speed and speed units
+use their FEng colours and alpha. Gear retains blue: its orange/blue runtime
+flag producer remains unrecovered. Absolute placement, font bearings and
+advance/scale remain **approximations** from the original screenshots.
+`SPEED_COUNTER` belongs to the lap panel and is not drawn behind the gauge;
+neither the generated disc nor supplemental hub/speed-box art is used. No retail or
 derived texture is committed; the selected textures are decoded from
 the user's installation into a transient 512x512 atlas at startup.
 
 The #47 first-lap asset check includes `Global/DYNTEX.BIN` and
 `Languages/LanguageTextures.bin` under `sdmc:/nfsu/`.
-The source installation's 476-file manifest was identical before and after
-each trace and replay run.
+Before/after retail manifests bracket trace and replay runs; their exact
+results are recorded in the corresponding board evidence and handoff.
 
 ## Rendering and validation
 
-`build_race_hud_frame` fills fixed-capacity vertices; the maximal current
-frame uses 11 quads and 66 indices. The final deko3d pass makes one indexed
+`build_race_hud_frame` fills fixed-capacity vertices; quad counts and layout
+are checked in `nfsu_race_hud_tests`. The final deko3d pass makes one indexed
 draw with source-alpha blending and depth disabled. The atlas uploads once.
 There is no per-frame allocation or CPU readback in direct mode. The optional
 `nfsu_switch_compare.nro --hud` mode sends a synthetic 7500 rpm, first-gear
 HUD through offscreen deko3d capture and compares it with CPU compositing.
 It needs the HUD files in the retail root; the result awaits a console run.
-Placement uses a 1280x720 logical canvas, 5% scale reduction and a right safe-area
-anchor for handheld and docked sizes. A handheld 960x540 scene is linearly
+Placement uses a 1280x720 logical canvas and the screenshot-fitted lower-right
+anchor documented in HUD_253.md, for handheld and docked sizes. A handheld 960x540 scene is linearly
 upscaled first; the HUD then draws into the 1280x720 presentation image. The
 forced 720p path draws the HUD there without a blit. The desktop CPU reference composites
 the same quads and atlas with nearest texel sampling.

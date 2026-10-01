@@ -188,6 +188,13 @@ void test_rpm() {
           "10000 rpm band uses 45 to 225 degrees");
     check(std::abs(nfsu::race_hud_needle_rotation(9999,9999)-210.0)<0.001,
           "9999 max RPM stays in the 50 to 210 degree band");
+    for (const auto& sample : {std::pair<double,double>{8999,44},
+                              {9000,50}, {9999,50}, {10000,45}})
+        check(std::abs(nfsu::race_hud_needle_rotation(0,sample.first)-sample.second)<0.001,
+              "zero RPM selects the exact piecewise max-RPM boundary");
+    check(std::abs(nfsu::race_hud_needle_rotation(8000,9000)-192.222222222)<0.001 &&
+          std::abs(nfsu::race_hud_needle_rotation(9000,10000)-207.0)<0.001,
+          "explicit upgraded redlines use their own needle range");
 }
 
 void test_gear_and_speed() {
