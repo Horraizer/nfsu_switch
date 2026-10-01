@@ -4,7 +4,17 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <system_error>
 #include <utility>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <winioctl.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -287,12 +297,77 @@ void test_layout_and_current_state() {
     check(full.quads==0,"zero-sized canvas emits no stale geometry");
 }
 
+bool resolved_directory(const std::filesystem::path& directory,
+                        std::filesystem::path& resolved) {
+#ifdef _WIN32
+    // MinGW weakly_canonical does not resolve directory junctions. Resolve
+    // the existing directory through its handle, including nested aliases.
+    const HANDLE handle=CreateFileW(directory.c_str(),FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS,nullptr);
+    if (handle==INVALID_HANDLE_VALUE) return false;
+    const DWORD size=GetFinalPathNameByHandleW(handle,nullptr,0,FILE_NAME_NORMALIZED);
+    std::vector<wchar_t> name(size+1);
+    const DWORD length=size ? GetFinalPathNameByHandleW(handle,name.data(),
+        static_cast<DWORD>(name.size()),FILE_NAME_NORMALIZED) : 0;
+    CloseHandle(handle);
+    if (!length || length>=name.size()) return false;
+    std::wstring text(name.data(),length);
+    // The standard library used here cannot open extended-prefix paths.
+    if (text.compare(0,8,L"\\\\?\\UNC\\")==0) text=L"\\\\"+text.substr(8);
+    else if (text.compare(0,4,L"\\\\?\\")==0) text=text.substr(4);
+    resolved=std::filesystem::path(text);
+    return true;
+#else
+    std::error_code error;
+    resolved=std::filesystem::canonical(directory,error);
+    return !error;
+#endif
+}
+
+bool fresh_capture_outside(const std::filesystem::path& root,
+                           const std::filesystem::path& out) {
+    namespace fs=std::filesystem;
+    std::error_code error;
+    if (!fs::is_directory(root,error) || error) return false;
+    const auto target=fs::absolute(out,error);
+    if (error) return false;
+#ifdef _WIN32
+    // Refuse every existing entry, including a dangling reparse point.
+    if (GetFileAttributesW(target.c_str())!=INVALID_FILE_ATTRIBUTES) return false;
+    const DWORD status=GetLastError();
+    if (status!=ERROR_FILE_NOT_FOUND && status!=ERROR_PATH_NOT_FOUND) return false;
+#else
+    if (fs::symlink_status(target,error).type()!=fs::file_type::not_found) return false;
+    error.clear();
+#endif
+    // Resolve the deepest existing parent before walking its physical
+    // ancestors. Identity comparisons cover case, short names and aliases;
+    // a lexical prefix test cannot establish containment on this filesystem.
+    auto parent=target.parent_path();
+    while (!parent.empty()) {
+        if (fs::exists(parent,error)) {
+            if (error || !fs::is_directory(parent,error) || error) return false;
+            fs::path physical;
+            if (!resolved_directory(parent,physical)) return false;
+            while (!physical.empty()) {
+                if (fs::equivalent(root,physical,error) || error) return false;
+                const auto next=physical.parent_path();
+                if (next==physical) break;
+                physical=next;
+            }
+            return true;
+        }
+        if (error) return false;
+        const auto next=parent.parent_path();
+        if (next==parent) break;
+        parent=next;
+    }
+    return false;
+}
+
 int capture(const std::filesystem::path& root, const std::filesystem::path& out) {
-    const auto source=std::filesystem::weakly_canonical(root);
-    const auto target=std::filesystem::weakly_canonical(out);
-    auto si=source.begin(), ti=target.begin();
-    while (si!=source.end() && ti!=target.end() && *si==*ti) {++si; ++ti;}
-    if (si==source.end() || std::filesystem::exists(out)) {
+    if (!fresh_capture_outside(root,out)) {
         std::fprintf(stderr,"race HUD: capture needs a fresh directory outside retail\n"); return 1;
     }
     nfsu::RaceHudAtlas atlas; std::string error;
@@ -321,6 +396,97 @@ int capture(const std::filesystem::path& root, const std::filesystem::path& out)
     return 0;
 }
 
+bool directory_alias(const std::filesystem::path& target,
+                     const std::filesystem::path& link) {
+#ifdef _WIN32
+    // A junction needs no symlink privilege. All names belong to the fresh
+    // test fixture; no subprocess or narrow path conversion is involved.
+    std::error_code error;
+    if (!std::filesystem::create_directory(link,error) || error) return false;
+    const HANDLE handle=CreateFileW(link.c_str(),GENERIC_WRITE,
+        FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT,nullptr);
+    if (handle==INVALID_HANDLE_VALUE) { RemoveDirectoryW(link.c_str()); return false; }
+    const auto name=std::filesystem::absolute(target).native();
+    const auto substitute=L"\\??\\"+name;
+    const std::size_t bytes=(substitute.size()+name.size()+2)*sizeof(wchar_t);
+    if (bytes>0xffff-8) { CloseHandle(handle); RemoveDirectoryW(link.c_str()); return false; }
+    struct Header { DWORD tag; WORD bytes, reserved, offset, length, print_offset, print_length; };
+    static_assert(sizeof(Header)==16,"junction reparse header layout");
+    std::vector<unsigned char> data(sizeof(Header)+bytes,0);
+    const Header header{IO_REPARSE_TAG_MOUNT_POINT,static_cast<WORD>(bytes+8),0,0,
+        static_cast<WORD>(substitute.size()*sizeof(wchar_t)),
+        static_cast<WORD>((substitute.size()+1)*sizeof(wchar_t)),
+        static_cast<WORD>(name.size()*sizeof(wchar_t))};
+    std::memcpy(data.data(),&header,sizeof(header));
+    std::memcpy(data.data()+sizeof(header),substitute.c_str(),(substitute.size()+1)*sizeof(wchar_t));
+    std::memcpy(data.data()+sizeof(header)+(substitute.size()+1)*sizeof(wchar_t),
+                name.c_str(),(name.size()+1)*sizeof(wchar_t));
+    DWORD unused=0;
+    const bool okay=DeviceIoControl(handle,FSCTL_SET_REPARSE_POINT,data.data(),
+        static_cast<DWORD>(data.size()),nullptr,0,&unused,nullptr)!=0;
+    CloseHandle(handle);
+    if (!okay) RemoveDirectoryW(link.c_str());
+    return okay;
+#else
+    std::error_code error;
+    std::filesystem::create_directory_symlink(target,link,error);
+    return !error;
+#endif
+}
+
+void test_capture_paths() {
+    namespace fs=std::filesystem;
+#ifdef _WIN32
+    const auto pid=GetCurrentProcessId();
+#else
+    const auto pid=getpid();
+#endif
+    const auto base=fs::current_path()/(std::string("hud253-capture-")+std::to_string(pid));
+    std::error_code error;
+    // Never remove a pre-existing fixture, even if a process ID was reused.
+    if (!fs::create_directory(base,error) || error) {
+        check(false,"fresh capture safety fixture created"); return;
+    }
+    const auto root=base/"protected";
+    fs::create_directories(root/"nested");
+    fs::create_directory(base/"existing-output");
+    fs::create_directory(base/"protected-sibling");
+    check(!fresh_capture_outside(root,root/"new-output"),"direct protected descendant refused");
+    check(!fresh_capture_outside(root,root/"missing"/"deeper"),"missing protected descendants refused");
+    check(!fresh_capture_outside(root,base/"existing-output"),"existing output refused");
+    check(fresh_capture_outside(root,base/"new-output"),"fresh outside sibling accepted");
+    check(fresh_capture_outside(root,base/"protected-sibling"/"new-output"),
+          "similar lexical prefix outside protected root accepted");
+    const bool same=fs::equivalent(root,base/"PROTECTED",error);
+    check(fresh_capture_outside(root,base/"PROTECTED"/"new-output")!=same,
+          "case alias follows actual filesystem identity");
+    struct AliasCase { const char* name; fs::path target; bool inside; };
+    const AliasCase aliases[]={{"root-alias",root,true},
+        {"nested-alias",root/"nested",true},
+        {"outside-alias",base/"protected-sibling",false}};
+    for (const auto& item : aliases) {
+        const auto alias=base/item.name;
+        const bool made=directory_alias(item.target,alias);
+        check(made,"directory alias created in writable fixture");
+        if (made) {
+            check(!fresh_capture_outside(root,alias),"existing alias output refused");
+            check(fresh_capture_outside(root,alias/"new-output")!=item.inside,
+                  "root/nested aliases refused and outside alias accepted");
+            check(fresh_capture_outside(root,alias/"missing"/"deeper")!=item.inside,
+                  "uncreated descendants through alias follow protected identity");
+#ifdef _WIN32
+            check(RemoveDirectoryW(alias.c_str())!=0,"only junction entry removed");
+#else
+            check(fs::remove(alias,error) && !error,"only directory symlink removed");
+#endif
+        }
+    }
+    check(fs::is_empty(root/"nested"),"protected fixture remains untouched");
+    fs::remove_all(base,error);
+    check(!error,"own capture safety fixture cleaned");
+}
+
 } // namespace
 
 int main(int argc,char** argv) {
@@ -338,6 +504,7 @@ int main(int argc,char** argv) {
     test_rpm();
     test_gear_and_speed();
     test_layout_and_current_state();
+    test_capture_paths();
     std::printf("race HUD: %s\n",failures ? "FAIL" : "PASS");
     return failures ? 1 : 0;
 }
