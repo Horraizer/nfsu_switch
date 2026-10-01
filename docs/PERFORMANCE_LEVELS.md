@@ -105,9 +105,12 @@ tick 602 / collision step 878 / second substep (angles rounded here):
 | Requested / actual road angle, rad | -0.0194796 / -0.0194796 | -0.0137197 / -0.0137197 |
 | Model yaw, rad/s | -0.0264321 | -0.0185461 |
 | Gear slot / engine rpm | 2 / 3863.20 | 2 / 3618.65 |
-| Rear-left load, N | 2750.86 | 2516.83 |
-| Rear-left requested / applied torque, N m | -580.623 / -580.623 | -610.102 / -610.102 |
+| Wheel 2 load, N | 2750.86 | 2516.83 |
+| Wheel 2 requested / applied torque, N m | -580.623 / -580.623 | -610.102 / -610.102 |
 | Host sample age | unavailable | unavailable |
+
+Correction: the early history table called wheel 2 rear-left; labels now use
+the model index. Wheel 2 is rear-right in the retail wheel order.
 
 The route controller uses distinct stock/upgraded recordings; these rows
 illustrate instrumented boundaries. The negative torque is model engine
