@@ -481,14 +481,15 @@ void test_opaque_only_programs(const Programs& programs, Reporter& r) {
 
 void test_track_textured_variants_are_the_reference_pairs(const Programs& programs,
                                                            Reporter& r) {
-    const sm::Program* program = find_program(programs, "track_textured");
-    r.check(program != nullptr, "track_textured has a manifest");
-    if (program == nullptr) return;
+    for (const char* name : {"track_textured", "track_linear_textured"}) {
+    const sm::Program* program = find_program(programs, name);
+    r.check(program != nullptr, std::string(name)+" has a manifest");
+    if (program == nullptr) continue;
     std::set<std::pair<bool, int>> pairs;
     for (std::size_t i = 0; i < program->variant_count; ++i) {
         const sm::Variant& variant = program->variants[i];
         const bool alpha_test = variant.alpha_test == sm::CompareOp::greater;
-        const std::string what = std::string("track_textured variant ") + variant.name;
+        const std::string what = std::string(name)+" variant " + variant.name;
         r.check(variant.alpha_test == sm::CompareOp::always || alpha_test,
                 what + ": alpha test is off or GREATER");
         if (alpha_test) {
@@ -507,7 +508,8 @@ void test_track_textured_variants_are_the_reference_pairs(const Programs& progra
         r.check(variant.depth_write == (mode == nfsu::RenderBlendMode::disabled),
                 what + ": world blend disables depth writes");
     }
-    r.check(pairs.size() == 6, "track_textured has all six alpha and blend pairs");
+    r.check(pairs.size() == 6, std::string(name)+" has all six alpha and blend pairs");
+    }
 }
 
 // The state every draw of the reference shares. A fragment is kept when its

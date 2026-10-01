@@ -2574,7 +2574,8 @@ void test_car_instances_and_uniform_layout() {
         {"Material.surface_environment_range", offsetof(nfsu::DrawMaterialUniform, surface)+offsetof(nfsu::CarShadingMaterial, environment_range)},
         {"Material.surface_gates", offsetof(nfsu::DrawMaterialUniform, surface)+offsetof(nfsu::CarShadingMaterial, gates)}};
     for (const auto& program : nfsu::shader_manifest::kPrograms) {
-        const bool shaded=std::string(program.name)=="car_shaded_textured";
+        const bool shaded=std::string(program.name)=="car_shaded_textured" ||
+                          std::string(program.name)=="car_shaded_linear_textured";
         check_eq(program.block_count, 3, "three uniform blocks");
         for (std::size_t i = 0; i < program.block_count; ++i) {
             const auto& b = program.blocks[i];

@@ -738,6 +738,9 @@ nfsu_enable_warnings(nfsu_platform_desktop)
 # Read-only desktop research executable; not part of the race application.
 add_executable(nfsu_frame_budget_probe tools/frame_budget_probe.cpp)
 target_link_libraries(nfsu_frame_budget_probe PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_platform_desktop)
+add_executable(nfsu_texture_filter_compare src/texture_filter_compare_main.cpp)
+target_link_libraries(nfsu_texture_filter_compare PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_frame_compare nfsu_track_render nfsu_arg_path)
+nfsu_enable_warnings(nfsu_texture_filter_compare)
 nfsu_enable_warnings(nfsu_frame_budget_probe)
 if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     # The probe replaces new/delete; DLL allocator calls cannot interpose them.
@@ -1793,6 +1796,17 @@ if(NFSU_BUILD_TESTS)
         add_test(NAME nfsu_race_run_retail_linear
             COMMAND nfsu_race_run_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
                 "${NFSU_RETAIL_ROOT}" --sample-draws --texture-filter linear)
+        add_test(NAME nfsu_texture_filter_retail
+            COMMAND ${CMAKE_COMMAND}
+                -DPYTHON=${Python3_EXECUTABLE}
+                -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/texture_filter_evidence.py
+                -DCOMPARE=$<TARGET_FILE:nfsu_texture_filter_compare>
+                -DREFERENCES=${CMAKE_CURRENT_SOURCE_DIR}/include/nfsu/texture_filter_reference.h
+                -DRACE=$<TARGET_FILE:nfsu_race>
+                "-DROOT=${NFSU_RETAIL_ROOT}" -DWORK=${nfsu_retail_work}
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/texture_filter_expected.txt
+                -DRECORDING=${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/texture_filter_retail.cmake)
         add_test(NAME nfsu_race_run_retail_linear_shading
             COMMAND nfsu_race_run_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
                 "${NFSU_RETAIL_ROOT}" --sample-draws --texture-filter linear --car-shading)
@@ -1945,6 +1959,7 @@ if(NFSU_BUILD_TESTS)
         set_tests_properties(
             nfsu_race_run_retail nfsu_race_run_retail_glows
             nfsu_race_run_retail_linear nfsu_race_run_retail_linear_shading
+            nfsu_texture_filter_retail
             nfsu_race_run_retail_profile
             nfsu_race_run_retail_profile_reference nfsu_race_replay_check
             nfsu_race_particle_frame_guards
