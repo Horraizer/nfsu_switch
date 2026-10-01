@@ -1,3 +1,4 @@
+#include "nfsu/arg_path.h"
 #include "nfsu/track_stream.h"
 
 #include "nfsu/geometry.h"
@@ -2004,11 +2005,11 @@ void test_budget_rows() {
 // --write-fixture <trackb> <stream> <texture>: lays the fixture down for
 // tests/track_whole_guards.cmake and runs no check. It writes only where it
 // is told and never replaces a file.
-bool write_fixture(const std::vector<std::string>& paths) {
-    for (const std::string& path : paths) {
+bool write_fixture(const std::vector<fs::path>& paths) {
+    for (const fs::path& path : paths) {
         std::error_code code;
         if (fs::exists(path, code)) {
-            std::cerr << "error: --write-fixture " << path
+            std::cerr << "error: --write-fixture " << path.u8string()
                       << " already exists; this command never replaces a file\n";
             return false;
         }
@@ -2026,11 +2027,11 @@ bool write_fixture(const std::vector<std::string>& paths) {
 // --write-shares-fixture <trackb> <stream>: lays the minimal F4 share
 // fixture (make_shares_fixture, above) down for the new cases in
 // tests/track_stream_path_guards.cmake. Never replaces a file.
-bool write_shares_fixture(const std::vector<std::string>& paths) {
-    for (const std::string& path : paths) {
+bool write_shares_fixture(const std::vector<fs::path>& paths) {
+    for (const fs::path& path : paths) {
         std::error_code code;
         if (fs::exists(path, code)) {
-            std::cerr << "error: --write-shares-fixture " << path
+            std::cerr << "error: --write-shares-fixture " << path.u8string()
                       << " already exists; this command never replaces a file\n";
             return false;
         }
@@ -2047,11 +2048,18 @@ bool write_shares_fixture(const std::vector<std::string>& paths) {
 } // namespace
 
 int main(int argc, char** argv) {
+    std::string argument_error;
+    if (!nfsu::check_arguments(argc, argv, 1, argument_error)) {
+        std::cerr << "error: " << argument_error << '\n';
+        return 1;
+    }
     if (argc == 5 && std::string(argv[1]) == "--write-fixture") {
-        return write_fixture({argv[2], argv[3], argv[4]}) ? 0 : 1;
+        return write_fixture({nfsu::argument_path(argv[2]),
+                              nfsu::argument_path(argv[3]),
+                              nfsu::argument_path(argv[4])}) ? 0 : 1;
     }
     if (argc == 4 && std::string(argv[1]) == "--write-shares-fixture") {
-        return write_shares_fixture({argv[2], argv[3]}) ? 0 : 1;
+        return write_shares_fixture({nfsu::argument_path(argv[2]), nfsu::argument_path(argv[3])}) ? 0 : 1;
     }
     if (argc != 1) {
         std::cerr << "usage: nfsu_track_stream_tests [--write-fixture <trackb> <stream> "
