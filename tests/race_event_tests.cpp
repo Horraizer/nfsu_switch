@@ -1,3 +1,4 @@
+#include "nfsu/arg_path.h"
 #include "nfsu/race_events.h"
 
 #include <algorithm>
@@ -822,11 +823,11 @@ void test_load_from_file() {
 // fixture files down for tests/race_events_guards.cmake and runs no check.
 // It writes only where it is told and never replaces a file, the same rule
 // nfsu_track_probe_tests --write-fixture keeps.
-bool write_fixture(const std::vector<std::string>& paths) {
-    for (const std::string& path : paths) {
+bool write_fixture(const std::vector<fs::path>& paths) {
+    for (const fs::path& path : paths) {
         std::error_code code;
         if (fs::exists(path, code)) {
-            std::cerr << "error: --write-fixture " << path
+            std::cerr << "error: --write-fixture " << path.u8string()
                       << " already exists; this command never replaces a file\n";
             return false;
         }
@@ -846,8 +847,15 @@ bool write_fixture(const std::vector<std::string>& paths) {
 } // namespace
 
 int main(int argc, char** argv) {
+    std::string argument_error;
+    if (!nfsu::check_arguments(argc, argv, 1, argument_error)) {
+        std::cerr << "error: " << argument_error << '\n';
+        return 1;
+    }
     if (argc == 5 && std::string(argv[1]) == "--write-fixture") {
-        return write_fixture({argv[2], argv[3], argv[4]}) ? 0 : 1;
+        return write_fixture({nfsu::argument_path(argv[2]),
+                              nfsu::argument_path(argv[3]),
+                              nfsu::argument_path(argv[4])}) ? 0 : 1;
     }
     if (argc != 1) {
         std::cerr << "usage: nfsu_race_event_tests [--write-fixture <globalb> <frontb> "

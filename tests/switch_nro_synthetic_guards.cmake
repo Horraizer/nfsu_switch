@@ -1,3 +1,5 @@
+# Decode UTF-8 path diagnostics explicitly instead of using the Windows
+# console code page selected by AUTO.
 # tests/switch_nro_check.cmake against a synthetic NRO and ELF, and against
 # every header corruption tests/switch_nro_synthetic_tests.cpp knows how to
 # write. There is no console or emulator in this build, so this is what runs
@@ -48,6 +50,7 @@ file(REMOVE_RECURSE "${work}")
 file(MAKE_DIRECTORY "${work}")
 
 execute_process(
+    ENCODING UTF-8
     COMMAND "${WRITER}" --write-fixtures "${work}"
     RESULT_VARIABLE write_status
     OUTPUT_VARIABLE write_out
@@ -66,6 +69,7 @@ endif()
 # WRITER's own no-argument self-check, since only this script knows the
 # directory a run of it already populated.
 execute_process(
+    ENCODING UTF-8
     COMMAND "${WRITER}" --write-fixtures "${work}"
     RESULT_VARIABLE rewrite_status
     OUTPUT_VARIABLE rewrite_out
@@ -99,6 +103,7 @@ set(passed 0)
 # below searches the output, so a wrap never turns a real match into a miss.
 function(nfsu_run nro_name out_status out_text)
     execute_process(
+        ENCODING UTF-8
         COMMAND ${CMAKE_COMMAND} -DNRO=${work}/${nro_name} -DELF=${elf}
                 -DTITLE=${title} -P ${CHECKER}
         RESULT_VARIABLE status

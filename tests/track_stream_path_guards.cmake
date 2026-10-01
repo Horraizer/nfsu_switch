@@ -1,3 +1,5 @@
+# Decode UTF-8 path diagnostics explicitly instead of using the Windows
+# console code page selected by AUTO.
 # What `nfsu_probe track-stream-path` refuses, prints and exits with.
 #
 # The first half needs NO INPUT FILES AT ALL: the argument count, the track
@@ -46,6 +48,7 @@ function(nfsu_case label code needles banned)
     math(EXPR next_case "${cases}+1")
     set(cases "${next_case}" PARENT_SCOPE)
     execute_process(
+        ENCODING UTF-8
         COMMAND "${PROBE}" track-stream-path ${ARGN}
         OUTPUT_VARIABLE stdout_text
         ERROR_VARIABLE stderr_text
@@ -208,6 +211,7 @@ set(trackb "${work}/fixture_trackb.lzc")
 set(stream "${work}/fixture_stream.bun")
 set(texture "${work}/fixture_texture.bin")
 execute_process(
+    ENCODING UTF-8
     COMMAND "${TESTS}" --write-fixture "${trackb}" "${stream}" "${texture}"
     OUTPUT_VARIABLE fixture_text
     ERROR_VARIABLE fixture_error
@@ -288,6 +292,7 @@ nfsu_case("a wrong stream file names each section once" 3
           "" "${texture}" "${trackb}" 1003 --path "${path}" --speed 60 --list none)
 # The issues go to standard error; count them there.
 execute_process(
+    ENCODING UTF-8
     COMMAND "${PROBE}" track-stream-path "${texture}" "${trackb}" 1003 --path "${path}"
             --speed 60 --list none
     OUTPUT_VARIABLE ignored_out
@@ -373,6 +378,7 @@ endif()
 set(shares_trackb "${work}/shares_trackb.lzc")
 set(shares_stream "${work}/shares_stream.bun")
 execute_process(
+    ENCODING UTF-8
     COMMAND "${TESTS}" --write-shares-fixture "${shares_trackb}" "${shares_stream}"
     OUTPUT_VARIABLE shares_fixture_text
     ERROR_VARIABLE shares_fixture_error

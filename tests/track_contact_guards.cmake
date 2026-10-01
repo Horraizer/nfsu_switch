@@ -1,3 +1,5 @@
+# Decode UTF-8 path diagnostics explicitly instead of using the Windows
+# console code page selected by AUTO.
 # What `nfsu_probe track-contact` refuses, prints and exits with.
 #
 # The first cases need NO INPUT FILE: the argument count, coordinates that
@@ -47,6 +49,7 @@ endfunction()
 # with CR LF folded to LF, is left in ${last_stdout}.
 function(nfsu_case label code needles banned)
     execute_process(
+        ENCODING UTF-8
         COMMAND "${PROBE}" track-contact ${ARGN}
         OUTPUT_VARIABLE stdout_text
         ERROR_VARIABLE stderr_text
@@ -135,6 +138,7 @@ set(packed "${work}/fixture_packed.lzc")
 set(broken "${work}/fixture_broken.bin")
 file(REMOVE "${image}" "${packed}" "${broken}")
 execute_process(
+    ENCODING UTF-8
     COMMAND "${TESTS}" --write-fixture "${image}" "${packed}" "${broken}"
     OUTPUT_VARIABLE fixture_text
     ERROR_VARIABLE fixture_error
@@ -244,6 +248,7 @@ nfsu_case("a broken image is refused" 3
 set(protected "${work}/protected.bin")
 file(WRITE "${protected}" "keep-me-untouched")
 execute_process(
+    ENCODING UTF-8
     COMMAND "${TESTS}" --write-fixture "${work}/new_a.bin" "${protected}" "${work}/new_b.bin"
     OUTPUT_VARIABLE protect_text
     ERROR_VARIABLE protect_error
