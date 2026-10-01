@@ -112,9 +112,11 @@ comparison uses the existing #147 thresholds:
 Do not increase these tolerances to accept a discrepancy.
 
 ```text
-nxlink -a <ip> <artifact-dir>/nfsu_switch_texture_compare.nro --step 180 --texture-filter legacy --car-shading off
-nxlink -a <ip> <artifact-dir>/nfsu_switch_texture_compare.nro --step 180 --texture-filter linear --car-shading off
+nxlink -a <ip> <artifact-dir>/nfsu_switch_texture_compare.nro -- --step 180 --texture-filter legacy --car-shading off
+nxlink -a <ip> <artifact-dir>/nfsu_switch_texture_compare.nro -- --step 180 --texture-filter linear --car-shading off
 ```
+
+The `--` ends nxlink options; the following flags belong to the NRO.
 
 Repeat both at steps 600 and 6000 and with shading on. The legacy shaded
 sampler difference is a known diagnostic baseline, not an expected parity
@@ -125,8 +127,8 @@ For actual driving and performance, run this exact pair with unchanged
 settings in both handheld and docked mode:
 
 ```text
-nxlink -a <ip> <artifact-dir>/nfsu_switch_race.nro --replay --profile-frame --sky on --particles=on --car-shading on --texture-filter legacy
-nxlink -a <ip> <artifact-dir>/nfsu_switch_race.nro --replay --profile-frame --sky on --particles=on --car-shading on --texture-filter linear
+nxlink -a <ip> <artifact-dir>/nfsu_switch_race.nro -- --replay --profile-frame --sky on --particles=on --car-shading on --texture-filter legacy
+nxlink -a <ip> <artifact-dir>/nfsu_switch_race.nro -- --replay --profile-frame --sky on --particles=on --car-shading on --texture-filter linear
 ```
 
 Do not add a height override, boost override, tuned car or panel mode.
