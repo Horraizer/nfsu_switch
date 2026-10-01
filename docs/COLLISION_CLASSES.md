@@ -47,15 +47,20 @@ The same solver has material kind-dependent behavior:
    car-kind-4 contact does not enter this particular gate. The base
    restitution of both bodies is `0.1` in the traced path, per
    [VEHICLE_TRACK.md](VEHICLE_TRACK.md).
-2. The car collision record calls `0x00465D00` from `0x004658B0`. At an
-   accumulated impulse magnitude of at least 30 t m/s (`0x006B72BC`), the
-   block at `0x00465E75`..`0x00465EC3` can set car `+0x38` to 1 and zero
-   `+0x4CC`. `0x00465E8F`..`0x00465EAB` accepts kind-0/kind-0 or
-   kind-0/kind-4 pairs through `0x004663D0`; a track polygon is kind 3 and
-   does not satisfy it. State 1 changes car inverse-inertia scaling from
+2. The car collision record calls `0x00465D00` from `0x004658B0`. When the
+   current hit's impulse-vector magnitude is at least 30 t m/s
+   (`0x006B72BC`), the block at `0x00465E75`..`0x00465EC3` can set car
+   `+0x38` to 1 and zero `+0x4CC`. `0x00465E8F`..`0x00465EAB` accepts
+   kind-0/kind-0 or kind-0/kind-4 pairs through `0x004663D0`; a track
+   polygon is kind 3 and does not satisfy it. State 1 changes car
+   inverse-inertia scaling from
    `0.4` to `1.0` at `0x0046A0C0` and enables the four-wheel lever block via
    collision-record `+0x10` at `0x00465EB4`. The state later decays through
    `0x0042A530` under its wheel/time gates, which this pass did not remeasure.
+   `0x00465849`..`0x0046588B` also accumulates impulse components and
+   magnitudes in the record, but `0x00465850` passes the current hit's vector
+   to `0x00465D00`. Two aligned 20 t m/s hits can accumulate 40 in the record
+   without either call crossing this 30 t m/s state gate.
 3. A car's inverse mass is capped at `1/1.85` t at `0x0046A080` (constant
    `0x006B727C`), independent of the kind-3/4 distinction. For a moving
    world object, `0x005927E0` instead caps inverse mass at `1/0.3` t; for an
