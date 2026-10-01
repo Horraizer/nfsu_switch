@@ -119,6 +119,15 @@ def main():
                         b"FAIL" not in result.stdout and b"ERROR" not in result.stdout and target.is_file(),
                         "native reference failed: "+label)
                 require(digest(target.read_bytes()) == image_hash, "native reference pin differs: "+label)
+                if not any(row[0].startswith("native-") for row in rows):
+                    # Re-run an existing successful output, outside retail.
+                    # The exclusive no-replace writer must preserve every byte.
+                    refused = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    require(refused.returncode == 1 and b"FAIL: refusing to overwrite" in refused.stdout
+                            and not refused.stderr and digest(target.read_bytes()) == image_hash
+                            and not Path(str(target)+".partial").exists(),
+                            "native reference overwrite refusal failed")
+                    print("PASS: native comparison preserves existing output")
                 rows.append([label,image_hash])
             print("PASS: twelve native reference images match desktop pins")
         (output/"images.json").write_text(json.dumps(rows,indent=2)+"\n",encoding="ascii")

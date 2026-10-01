@@ -741,6 +741,14 @@ target_link_libraries(nfsu_frame_budget_probe PRIVATE nfsu_race_run nfsu_posix_f
 add_executable(nfsu_texture_filter_compare src/texture_filter_compare_main.cpp)
 target_link_libraries(nfsu_texture_filter_compare PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_frame_compare nfsu_track_render nfsu_arg_path)
 nfsu_enable_warnings(nfsu_texture_filter_compare)
+if(NFSU_BUILD_TESTS)
+    add_test(NAME nfsu_texture_filter_output_guards
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/texture_filter_output_guards.py
+                --compare $<TARGET_FILE:nfsu_texture_filter_compare>
+                --work ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(nfsu_texture_filter_output_guards PROPERTIES TIMEOUT 60)
+endif()
 nfsu_enable_warnings(nfsu_frame_budget_probe)
 if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     # The probe replaces new/delete; DLL allocator calls cannot interpose them.

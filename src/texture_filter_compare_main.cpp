@@ -14,6 +14,15 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 #if defined(__SWITCH__)
 #include "deko_renderer.h"
 #include "nfsu/screen_text.h"
@@ -30,6 +39,61 @@ std::filesystem::path comparison_path(const char* text) {
     return argument_path(text);
 #endif
 }
+
+
+#if !defined(__SWITCH__)
+std::filesystem::path physical_existing_path(const std::filesystem::path& path) {
+#if defined(_WIN32)
+    // This Windows GCC canonical implementation does not resolve junctions.
+    // Ask the opened existing object, without requesting write access.
+    const HANDLE handle = CreateFileW(path.c_str(),0,
+        FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS,nullptr);
+    require(handle != INVALID_HANDLE_VALUE,"cannot resolve output ancestry");
+    struct Guard { HANDLE handle; ~Guard(){CloseHandle(handle);} } guard{handle};
+    const DWORD length = GetFinalPathNameByHandleW(handle,nullptr,0,FILE_NAME_NORMALIZED);
+    require(length != 0,"cannot resolve output ancestry");
+    std::wstring name(length,L'\0');
+    const DWORD written = GetFinalPathNameByHandleW(handle,name.data(),length,FILE_NAME_NORMALIZED);
+    require(written != 0 && written < length,"cannot resolve output ancestry");
+    name.resize(written);
+    // Keep the filesystem library's normal DOS/UNC root parsing for parents.
+    if(name.compare(0,8,L"\\\\?\\UNC\\") == 0) name=L"\\\\"+name.substr(8);
+    else if(name.compare(0,4,L"\\\\?\\") == 0) name.erase(0,4);
+    return std::filesystem::path(name);
+#else
+    return std::filesystem::canonical(path);
+#endif
+}
+
+void protect_retail_output(const std::filesystem::path& root,
+                           const std::filesystem::path& output) {
+    auto ancestor=std::filesystem::absolute(output);
+    // A fresh leaf (and possibly its parents) need not exist. Resolve the
+    // deepest existing ancestor before walking parents: lexical parents of
+    // a sibling junction to root/nested would never reach root.
+    for(;;) {
+        std::error_code code;
+        const bool exists=std::filesystem::exists(ancestor,code);
+        require(!code,"cannot inspect output ancestry");
+        if(exists) break;
+        const auto parent=ancestor.parent_path();
+        require(parent != ancestor,"cannot find existing output ancestor");
+        ancestor=parent;
+    }
+    ancestor=physical_existing_path(ancestor);
+    const auto protected_root=physical_existing_path(root);
+    for(;;) {
+        std::error_code code;
+        const bool inside=std::filesystem::equivalent(ancestor,protected_root,code);
+        require(!code,"cannot compare output ancestry");
+        require(!inside,"output is inside retail installation");
+        const auto parent=ancestor.parent_path();
+        if(parent==ancestor) break;
+        ancestor=parent;
+    }
+}
+#endif
 
 Frame reference_frame(const std::filesystem::path& root, const RaceSession& session,
                       const PreparedTrackScene& source, const TrackDrawList& list,
@@ -157,14 +221,7 @@ int run(int argc,char** argv) {
     require(output.empty(),"console comparison is read-only");
 #else
     require(!output.empty(),"--out required on desktop");
-    auto ancestor=std::filesystem::absolute(output);
-    for(;;) {
-        std::error_code code;
-        require(!std::filesystem::equivalent(ancestor,root,code),"output is inside retail installation");
-        const auto parent=ancestor.parent_path();
-        if(parent==ancestor) break;
-        ancestor=parent;
-    }
+    protect_retail_output(root,output);
 #endif
     RaceRun race; RaceGpuScene scene; RaceReplay replay;
     require(scene.set_texture_filter(filter),"comparison filter refused");
