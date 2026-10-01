@@ -1848,7 +1848,9 @@ Expected:
   Switch yet, and its determinism across the two compilers is not measured.
 - The instruction path from the bundle load at 0x004482F0 to the loader
   table dispatch at 0x00447AC0.
-- Everything about dynamic collision: `CarCollisionBody`,
-  `WorldObjectCollisionBody`, `DynamicCollisionBody` and the
-  `AIWallCollision` pair at 0x007000DC are named in the executable and
-  decoded nowhere.
+- This static-track decoder does not resolve dynamic pairs. The car against
+  track polygons is traced in [VEHICLE_TRACK.md](VEHICLE_TRACK.md), and the
+  body-kind and state gates for cars and world objects are recorded in
+  [COLLISION_CLASSES.md](COLLISION_CLASSES.md). The dynamic pair scheduler,
+  world-object geometry, and `AIWallCollision` pair at 0x007000DC remain
+  untraced.
