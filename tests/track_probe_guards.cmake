@@ -1,3 +1,5 @@
+# Decode UTF-8 path diagnostics explicitly instead of using the Windows
+# console code page selected by AUTO.
 # What `nfsu_probe track-probe` refuses and what it exits with. Every case
 # below needs NO INPUT FILES AT ALL.
 #
@@ -63,6 +65,7 @@ endfunction()
 function(nfsu_case label code needle banned)
     nfsu_count(NFSU_PROBE_CASES)
     execute_process(
+        ENCODING UTF-8
         COMMAND "${PROBE}" track-probe ${ARGN}
         WORKING_DIRECTORY "${work}"
         OUTPUT_VARIABLE stdout_text
@@ -204,7 +207,7 @@ nfsu_case("--mesh with no name" 1 "--mesh needs a prepared mesh name" ""
           "${missing}" 0 16 0 16 --mesh)
 # The other half of that guard: a value that is there and is empty. The two
 # are separate conditions and one can go while the other stands - which
-# nfsu_case cannot show here. execute_process(COMMAND ... ${ARGN} ...) expands
+# nfsu_case cannot show here. execute_process(ENCODING UTF-8 COMMAND ... ${ARGN} ...) expands
 # an unquoted list, and CMake drops an empty element on that expansion, so a
 # case built through nfsu_case's ${ARGN} forwarding would hand the probe
 # "--mesh" alone and silently duplicate the case above. The empty argument is
@@ -212,6 +215,7 @@ nfsu_case("--mesh with no name" 1 "--mesh needs a prepared mesh name" ""
 # not subject to that expansion and reaches the child process as one.
 nfsu_count(NFSU_PROBE_CASES)
 execute_process(
+    ENCODING UTF-8
     COMMAND "${PROBE}" track-probe "${missing}" 0 16 0 16 --mesh ""
     WORKING_DIRECTORY "${work}"
     OUTPUT_VARIABLE mesh_empty_out
@@ -512,6 +516,7 @@ endif()
 set(fixture "${work}/fixture.bun")
 file(REMOVE "${fixture}")
 execute_process(
+    ENCODING UTF-8
     COMMAND "${TESTS}" --write-fixture "${fixture}"
     OUTPUT_VARIABLE fixture_text
     ERROR_VARIABLE fixture_error
@@ -548,6 +553,7 @@ set(protected_fixture "${work}/protected.bin")
 file(WRITE "${protected_fixture}" "keep-me-untouched")
 nfsu_count(NFSU_PROBE_CASES)
 execute_process(
+    ENCODING UTF-8
     COMMAND "${TESTS}" --write-fixture "${protected_fixture}"
     OUTPUT_VARIABLE protect_out
     ERROR_VARIABLE protect_err
@@ -592,6 +598,7 @@ function(nfsu_data_stream_case label code err_needle out_banned)
     nfsu_count(NFSU_PROBE_CASES)
     nfsu_count(NFSU_PROBE_DATA_CASES)
     execute_process(
+        ENCODING UTF-8
         COMMAND "${PROBE}" track-probe
                 "${fixture}" ${geo_off} ${geo_size} ${obj_off} ${obj_size}
                 ${ARGN}

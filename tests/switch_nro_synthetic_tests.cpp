@@ -26,6 +26,7 @@
 // split rather than the real one, which the checks below never depend on
 // past their own consistency.
 
+#include "nfsu/arg_path.h"
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -379,7 +380,7 @@ int write_fixtures(const fs::path& dir) {
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec) {
-        std::cerr << "could not create " << dir.string() << ": "
+        std::cerr << "could not create " << dir.u8string() << ": "
                   << ec.message() << '\n';
         return 1;
     }
@@ -388,7 +389,7 @@ int write_fixtures(const fs::path& dir) {
         const fs::path path = dir / fixture.filename;
         if (path_exists(path)) {
             std::cerr << "refusing to overwrite an existing fixture: "
-                      << path.string() << '\n';
+                      << path.u8string() << '\n';
             return 1;
         }
     }
@@ -396,7 +397,7 @@ int write_fixtures(const fs::path& dir) {
         write_binary(dir / fixture.filename, fixture.bytes);
     }
     std::cout << "wrote " << fixtures.size()
-              << " switch NRO synthetic fixtures to " << dir.string()
+              << " switch NRO synthetic fixtures to " << dir.u8string()
               << '\n';
     return 0;
 }
@@ -431,13 +432,18 @@ std::string unique_suffix() {
 // With `--write-fixtures <dir>`: writes every fixture into <dir> and exits,
 // which is the mode tests/switch_nro_synthetic_guards.cmake drives.
 int main(int argc, char** argv) {
+    std::string argument_error;
+    if (!nfsu::check_arguments(argc, argv, 1, argument_error)) {
+        std::cerr << "error: " << argument_error << '\n';
+        return 1;
+    }
     if (argc >= 2 && std::string(argv[1]) == "--write-fixtures") {
         if (argc != 3) {
             std::cerr << "--write-fixtures needs exactly one output "
                          "directory argument\n";
             return 1;
         }
-        return write_fixtures(fs::path(argv[2]));
+        return write_fixtures(nfsu::argument_path(argv[2]));
     }
     if (argc != 1) {
         std::cerr

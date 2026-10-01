@@ -1,3 +1,4 @@
+#include "nfsu/arg_path.h"
 #include "nfsu/race_route.h"
 #include "nfsu/sha256.h"
 
@@ -1462,10 +1463,10 @@ void test_absurd_data() {
 // first round's parser let through and its replay never returned from:
 // tiny-length (the path length 1e-30), huge-scale (the scale 3e38) and
 // far-node (node 7 at x = 1e30). Never replaces a file.
-bool write_fixture(const std::string& path, const std::string& variant) {
+bool write_fixture(const fs::path& path, const std::string& variant) {
     std::error_code code;
     if (fs::exists(path, code)) {
-        std::cerr << "error: --write-fixture " << path
+        std::cerr << "error: --write-fixture " << path.u8string()
                   << " already exists; this command never replaces a file\n";
         return false;
     }
@@ -1496,12 +1497,12 @@ void test_load_from_file() {
     const fs::path path = fs::temp_directory_path() / (unique_fixture("trackb") + ".lzc");
     std::error_code code;
     fs::remove(path, code);
-    check(write_fixture(path.string(), "circle"), "the fixture is written");
+    check(write_fixture(path, "circle"), "the fixture is written");
     std::vector<unsigned char> image;
     const nfsu::RaceRouteTrack track = nfsu::load_race_route_track(path, image);
     check(track.ok() && track.stored_size == image.size() && !track.jdlz,
           "the fixture loads from a file");
-    check(!write_fixture(path.string(), "circle"),
+    check(!write_fixture(path, "circle"),
           "the fixture writer never replaces a file");
     fs::remove(path, code);
     const nfsu::RaceRouteTrack missing = nfsu::load_race_route_track(path, image);
@@ -1513,8 +1514,13 @@ void test_load_from_file() {
 } // namespace
 
 int main(int argc, char** argv) {
+    std::string argument_error;
+    if (!nfsu::check_arguments(argc, argv, 1, argument_error)) {
+        std::cerr << "error: " << argument_error << '\n';
+        return 1;
+    }
     if ((argc == 3 || argc == 4) && std::string(argv[1]) == "--write-fixture") {
-        return write_fixture(argv[2], argc == 4 ? argv[3] : "circle") ? 0 : 1;
+        return write_fixture(nfsu::argument_path(argv[2]), argc == 4 ? argv[3] : "circle") ? 0 : 1;
     }
     if (argc != 1) {
         std::cerr << "usage: nfsu_race_route_tests [--write-fixture <trackb> "

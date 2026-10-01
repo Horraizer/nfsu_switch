@@ -1,3 +1,5 @@
+# Decode UTF-8 path diagnostics explicitly instead of using the Windows
+# console code page selected by AUTO.
 # What `nfsu_probe track-whole` refuses, prints and exits with.
 #
 # The first half needs NO INPUT FILES AT ALL: the argument count, the track
@@ -46,6 +48,7 @@ function(nfsu_case label code needles banned)
     math(EXPR next_case "${cases}+1")
     set(cases "${next_case}" PARENT_SCOPE)
     execute_process(
+        ENCODING UTF-8
         COMMAND "${PROBE}" track-whole ${ARGN}
         OUTPUT_VARIABLE stdout_text
         ERROR_VARIABLE stderr_text
@@ -208,6 +211,7 @@ set(stream "${work}/fixture_stream.bun")
 set(texture "${work}/fixture_texture.bin")
 file(REMOVE "${trackb}" "${stream}" "${texture}")
 execute_process(
+    ENCODING UTF-8
     COMMAND "${TESTS}" --write-fixture "${trackb}" "${stream}" "${texture}"
     OUTPUT_VARIABLE fixture_text
     ERROR_VARIABLE fixture_error
@@ -294,6 +298,7 @@ endif()
 set(protected "${work}/protected.bin")
 file(WRITE "${protected}" "keep-me-untouched")
 execute_process(
+    ENCODING UTF-8
     COMMAND "${TESTS}" --write-fixture "${work}/new_a.bin" "${protected}" "${work}/new_b.bin"
     OUTPUT_VARIABLE protect_text
     ERROR_VARIABLE protect_error

@@ -1,3 +1,5 @@
+# Decode UTF-8 path diagnostics explicitly instead of using the Windows
+# console code page selected by AUTO.
 # What `nfsu_probe asset-check` refuses, prints and exits with (issue #47).
 #
 # The first nine cases need NO INPUT FILES: the argument shapes, the set
@@ -50,6 +52,7 @@ endfunction()
 # after "asset-check".
 function(nfsu_case label code needles banned)
     execute_process(
+        ENCODING UTF-8
         COMMAND "${PROBE}" asset-check ${ARGN}
         WORKING_DIRECTORY "${work}"
         OUTPUT_VARIABLE stdout_text

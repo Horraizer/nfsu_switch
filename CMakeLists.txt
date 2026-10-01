@@ -393,7 +393,7 @@ if(NFSU_BUILD_TESTS)
         tests/track_probe_tests.cpp
     )
 
-    target_link_libraries(nfsu_track_probe_tests PRIVATE nfsu_track_probe)
+    target_link_libraries(nfsu_track_probe_tests PRIVATE nfsu_arg_path nfsu_track_probe)
     nfsu_enable_warnings(nfsu_track_probe_tests)
     add_test(NAME nfsu_track_probe_tests COMMAND nfsu_track_probe_tests)
     add_executable(nfsu_part_placement_tests
@@ -413,7 +413,7 @@ if(NFSU_BUILD_TESTS)
         tests/race_event_tests.cpp
     )
 
-    target_link_libraries(nfsu_race_event_tests PRIVATE nfsu_race_events)
+    target_link_libraries(nfsu_race_event_tests PRIVATE nfsu_arg_path nfsu_race_events)
     nfsu_enable_warnings(nfsu_race_event_tests)
     add_test(NAME nfsu_race_event_tests COMMAND nfsu_race_event_tests)
 
@@ -425,7 +425,7 @@ if(NFSU_BUILD_TESTS)
         tests/track_stream_tests.cpp
     )
 
-    target_link_libraries(nfsu_track_stream_tests PRIVATE nfsu_track_stream)
+    target_link_libraries(nfsu_track_stream_tests PRIVATE nfsu_arg_path nfsu_track_stream)
     nfsu_enable_warnings(nfsu_track_stream_tests)
     add_test(NAME nfsu_track_stream_tests COMMAND nfsu_track_stream_tests)
     set_tests_properties(nfsu_track_stream_tests PROPERTIES TIMEOUT 60)
@@ -440,7 +440,7 @@ if(NFSU_BUILD_TESTS)
         tests/race_route_tests.cpp
     )
 
-    target_link_libraries(nfsu_race_route_tests PRIVATE nfsu_race_route nfsu_sha256)
+    target_link_libraries(nfsu_race_route_tests PRIVATE nfsu_arg_path nfsu_race_route nfsu_sha256)
     nfsu_enable_warnings(nfsu_race_route_tests)
     add_test(NAME nfsu_race_route_tests COMMAND nfsu_race_route_tests)
     set_tests_properties(nfsu_race_route_tests PROPERTIES TIMEOUT 60)
@@ -1018,6 +1018,7 @@ if(NFSU_BUILD_TESTS)
     add_executable(nfsu_switch_nro_synthetic_tests
         tests/switch_nro_synthetic_tests.cpp
     )
+    target_link_libraries(nfsu_switch_nro_synthetic_tests PRIVATE nfsu_arg_path)
     nfsu_enable_warnings(nfsu_switch_nro_synthetic_tests)
     add_test(NAME nfsu_switch_nro_synthetic_tests
         COMMAND nfsu_switch_nro_synthetic_tests)
