@@ -95,6 +95,28 @@ Polling metadata and requested road angle are excluded from legacy encoders.
 
 ## Replay evidence and hardware request
 
+Historical captures at `c48e763`, default desktop build, commands above,
+tick 602 / collision step 878 / second substep (angles rounded here):
+
+| Quantity | Explicit stock | performance1 |
+| --- | --- | --- |
+| Raw steer axis | 4608 | 4096 |
+| Filtered steer | -0.0595556 | -0.0405926 |
+| Requested / actual road angle, rad | -0.0194796 / -0.0194796 | -0.0137197 / -0.0137197 |
+| Model yaw, rad/s | -0.0264321 | -0.0185461 |
+| Gear slot / engine rpm | 2 / 3863.20 | 2 / 3618.65 |
+| Rear-left load, N | 2750.86 | 2516.83 |
+| Rear-left requested / applied torque, N m | -580.623 / -580.623 | -610.102 / -610.102 |
+| Host sample age | unavailable | unavailable |
+
+The route controller uses distinct stock/upgraded recordings; these rows
+illustrate instrumented boundaries. The negative torque is model engine
+braking during that input sample. Use the same-input straight acceleration
+test for a controlled comparison. The historical captures each reached the
+logging cap and finished without resets. The upgrade replay was regenerated
+with the route driver and then independently replayed before storing its
+separate pins. Both before/after retail manifests were unchanged.
+
 `nfsu_performance_levels_tests` pins stock/upgraded straight acceleration,
 automatic gear transition steps and the synthetic upgraded race. It checks
 every exposed table at levels 1..3, mass/CG/inertia, ratios/RPM/torque,

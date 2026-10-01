@@ -39,7 +39,7 @@ bool HandlingTelemetryLog::write(const RaceSession& session, const GamepadFrame&
         if (std::fputc('\n',output_) == EOF || std::ferror(output_)) return false;
         ++rows_;
     }
-    if (rows_ == kMaxRows && std::fputs("handling limit reached: 2400 rows\n",output_) < 0) return false;
+    if (rows_ == kMaxRows && std::fputs("handling-limit reached: 2400 rows\n",output_) < 0) return false;
     return true;
 }
 } // namespace nfsu
