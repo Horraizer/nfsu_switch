@@ -37,6 +37,7 @@ def main():
             parser.error('output cannot be under an input directory')
     out.mkdir(parents=True, exist_ok=False)
     font = ImageFont.load_default(size=20)
+    table_font = ImageFont.load_default(size=16)
     identity = {'source': args.source, 'references': [], 'owner': [], 'generated': []}
     for group, paths in (
             ('references', sorted(args.reference.glob('retail-*'))),
@@ -108,10 +109,13 @@ def main():
         with Image.open(args.audit/('frame-'+str(tick)+'.tga')) as source:
             image.paste(source.convert('RGB').crop((465,235,640,360)).resize(
                 (350,250), Image.Resampling.NEAREST), (x,y))
-        label = ('tick %d / physics %s / %.6fs\ngear %d RPM %.3f\nrotation %.3f; screen %.3f' %
-                 (tick,row['physics'],float(row['seconds']),int(row['gear'])-1,
+        label = ('tick %d / %.6fs\nphysics %s; gear %d\nRPM %.3f / rotation %.3f\nscreen %.3f degrees' %
+                 (tick,float(row['seconds']),row['physics'],int(row['gear'])-1,
                   float(row['engine_rpm']),float(row['rotation']),270-float(row['rotation'])))
-        draw.multiline_text((x+5,y+254), label, font=font, fill='white', spacing=3)
+        for line in label.splitlines():
+            if draw.textbbox((0,0),line,font=table_font)[2] > 340:
+                raise ValueError('sequence label exceeds its panel')
+        draw.multiline_text((x+5,y+254), label, font=table_font, fill='white', spacing=3)
     image.save(out/'hud253-sequence.png')
     (out/'hud253-provenance.json').write_text(json.dumps(identity, ensure_ascii=True, indent=2)+'\n', encoding='ascii')
     print('PASS: 30 original and 5 owner identities; annotated stock/setup comparisons and port-only shift sequence/table')
