@@ -305,7 +305,7 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
 void run(const std::string& root, bool replay_mode, bool panel_mode, bool profile_frame,
           bool particles_enabled, const std::string& sky, bool tuned, bool glows,
           bool car_shading, bool wet_road_reflections,
-          std::uint32_t requested_height, bool gpu_boost, bool hud_mode,
+          std::uint32_t requested_height, bool gpu_boost, bool hud_mode, bool hud_trace,
           Screen& screen, PadState& pad) {
     selected_car_label = tuned ? "TUNED" : "STOCK";
     car_shading_label=car_shading ? "ON static" : "OFF";
@@ -564,6 +564,14 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         require(renderer.present(error,&present,profile_frame ? &scene_frame : nullptr,
                                  hud_mode ? &hud_frame : nullptr),error);
         present_cpu = ms(armGetSystemTick()-present_start);
+        if (hud_trace) {
+            const auto& r=hud_frame.readout;
+            std::printf("HUD_FRAME present %llu tick %llu physics %llu arm-tick %llu rpm %.9f wheel-rpm %.9f gear %d rotation %.9f max %.0f redline %.0f\n",
+                (unsigned long long)presented,
+                (unsigned long long)race.session().timing().step,
+                (unsigned long long)r.physics_step,(unsigned long long)present_start,
+                r.engine_rpm,r.wheel_rpm,r.gear,r.rotation,r.max_rpm,r.redline_rpm);
+        }
         const auto mall_start = armGetSystemTick();
         const auto info = mallinfo();
         mallinfo_ms = ms(armGetSystemTick()-mall_start);
@@ -695,6 +703,7 @@ int main(int argc, char** argv) {
             bool replay = false, panel = false, profile_frame = false;
             bool particles_enabled = true, selected = false, root_seen = false;
             bool hud = true;
+            bool hud_trace = false;
             bool car_shading=false;
             std::string sky = "on";
             std::uint32_t scene_height = 0;
@@ -708,6 +717,7 @@ int main(int argc, char** argv) {
                 else if (arg == "--tuned") tuned = true;
                 else if (arg == "--panel") panel = true;
                 else if (arg == "--profile-frame") profile_frame = true;
+                else if (arg == "--hud-trace") hud_trace = true;
             else if (arg == "--no-hud") hud = false;
                 else if (arg == "--scene-height" && i+1 < argc &&
                          deko_parse_scene_height(argv[i+1],scene_height)) ++i;
@@ -737,6 +747,7 @@ int main(int argc, char** argv) {
             else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--no-hud] [--sky on|off|early] [--scene-height 720|540|450|360] [--gpu-boost on|off] [--particles=on|--particles=off] [--tuned] [--glows] [--car-shading on|off] [--wet-road-reflections on|off]");
             }
             require(!(panel && profile_frame),"--profile-frame requires direct presentation");
+            require(!hud_trace || (hud && !panel),"--hud-trace requires HUD and direct presentation");
             while (!selected && appletMainLoop()) {
                 padUpdate(&pad); const auto down = padGetButtonsDown(&pad);
                 if (down & HidNpadButton_Plus) throw Cancel{};
@@ -757,7 +768,7 @@ int main(int argc, char** argv) {
             }
             if (selected) run(root,replay,panel,profile_frame,particles_enabled,sky,
                               tuned,glows,car_shading,wet_road_reflections,scene_height,
-                              gpu_boost,hud,screen,pad);
+                              gpu_boost,hud,hud_trace,screen,pad);
         } catch (const Cancel&) {
         } catch (const std::exception& e) {
             std::printf("ERROR: %s\n",e.what()); std::fflush(stdout);
