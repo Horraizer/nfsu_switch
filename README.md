@@ -5,6 +5,13 @@ Experimental clean-room engine research for Need for Speed: Underground.
 The repository contains no Electronic Arts code or game data. A user-provided
 PC installation is required for local research and testing.
 
+## Agent workflow
+
+[AGENTS.md](AGENTS.md) defines provider-independent coordinator, worker and
+reviewer roles. Start or resume with [Work recovery](docs/WORK_RECOVERY.md);
+[Work state](docs/WORK_STATE.md) is the dated index of current priorities.
+Verify its links against live Git and board state before acting.
+
 ## Current milestone
 
 The first milestone is `nfsu_probe`, a read-only installation and chunk-format
