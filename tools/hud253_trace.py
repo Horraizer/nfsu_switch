@@ -44,6 +44,52 @@ def jdlz(data):
     return result
 
 
+def font_metrics(data):
+    """Read selected 16-byte FNTF glyph records from the pinned language file."""
+    sha = hashlib.sha256(data).hexdigest().upper()
+    if sha != '6CBAB64235523149B95966B1844CDCA9FB858744126F8D9AD10E72C921AB8790':
+        raise ValueError('unsupported English.bin')
+    wanted = {'conduitmditc_tt14i': b'MPH', 'lcd_let48': b'0123456789NR'}
+    result = {'input_sha256': sha, 'fonts': {}}
+    at = 0
+    while at < len(data):
+        if at + 8 > len(data):
+            raise ValueError('truncated language chunk')
+        kind, size = struct.unpack_from('<II', data, at)
+        base, end = at + 8, at + 8 + size
+        if end > len(data):
+            raise ValueError('language chunk extends beyond file')
+        if kind == 0x30201:
+            if size < 640:
+                raise ValueError('truncated font header')
+            name = data[base:base+256].split(b'\0', 1)[0].decode('ascii').lower()
+            if name in wanted:
+                font = base + 512
+                if data[font:font+4] != b'FNTF':
+                    raise ValueError('font signature moved')
+                count = struct.unpack_from('<H', data, font+10)[0]
+                flags = struct.unpack_from('<I', data, font+12)[0]
+                if not flags & 0x40000 or font+128+16*count > end:
+                    raise ValueError('unsupported font record layout')
+                glyphs = {}
+                for index in range(count):
+                    record = font+128+16*index
+                    code, width, height, x, y = struct.unpack_from('<HBBHH', data, record)
+                    if code in set(wanted[name]):
+                        bx, by = struct.unpack_from('<bb', data, record+9)
+                        advance = struct.unpack_from('<h', data, record+14)[0]
+                        glyphs[chr(code)] = dict(record_offset=record, x=x, y=y,
+                            width=width, height=height, bearing_x=bx, bearing_y=by,
+                            advance=advance, uv_border=1)
+                if set(glyphs) != set(map(chr, wanted[name])) or name in result['fonts']:
+                    raise ValueError('missing or duplicate font/glyph')
+                result['fonts'][name] = dict(fntf_offset=font, glyphs=glyphs)
+        at = end
+    if set(result['fonts']) != set(wanted):
+        raise ValueError('required font absent')
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, required=True)
@@ -83,6 +129,8 @@ def main():
             ('paired-export-tail', 0x474A60, 0x474A83),
             ('integration-and-export-call', 0x474A90, 0x474C64),
             ('separate-synthetic-RPM-path', 0x427A30, 0x427BB0),
+            ('font-glyph-UV-and-geometry', 0x4F4790, 0x4F48A7),
+            ('font-string-renderer', 0x4F48B0, 0x4F4CF2),
         ]
         report = ['speed.exe SHA-256 ' + sha]
         md = Cs(CS_ARCH_X86, CS_MODE_32)
@@ -117,6 +165,9 @@ def main():
             report.append('%s %s %04X position/depth %s size-or-scale %s BGRA %s' %
                           (name, kind, at, position, shape, color))
         (out / 'feng.txt').write_text('\n'.join(report)+'\n', encoding='ascii')
+        metrics = font_metrics((root / 'Languages/English.bin').read_bytes())
+        (out / 'font-metrics.json').write_text(
+            json.dumps(metrics, indent=2, sort_keys=True)+'\n', encoding='ascii')
     finally:
         after = manifest(root), retail_manifest(root)
         (out / 'after.json').write_bytes(after[0])

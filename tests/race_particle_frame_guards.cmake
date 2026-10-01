@@ -14,7 +14,8 @@ if(NOT EXISTS "${work}/frame-1170.tga")
 endif()
 file(SHA256 "${work}/frame-1170.tga" frame_hash)
 # Issue 253 changes the HUD atlas/layout only; the replay state pin stays.
-if(NOT frame_hash STREQUAL "c3eb12bd089c00b6d862330d3c29317fa7876bcd0665d2758a2f41398411213c")
+# Font correction uses thin Conduit Italic and native FNTF LCD metrics.
+if(NOT frame_hash STREQUAL "53e878b6e46d4356d593bab3c713ef9d7697fad6c82c210775e0ac3ed81107ba")
     message(FATAL_ERROR "Retail smoke frame changed: ${frame_hash}\n${output}")
 endif()
 if(NOT output MATCHES "state-sha256 79776F6DD3FC2727C99D3F6AD69A16E623BDEEB5CFFD2261458A15FC7F5B3BF9")

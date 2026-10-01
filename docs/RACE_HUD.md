@@ -101,8 +101,12 @@ Observed in `speed.exe`, using Capstone 5.0.7:
   `Languages/LanguageTextures.bin` holds
   `LCD_LET48` (`0xBBBA71C2`, 128x128), the digital glyph atlas. The
   `FrontEnd/FrontB.lzc` pack was inspected for the event definition; its
-  font/layout data is not fully decoded for the HUD. MPH uses glyph pixels
-  from `FONT_CONDUITMDITCTT38BI` in LanguageTextures; its bearings are fits.
+  font/layout data is not fully decoded for the HUD. MPH uses the thin
+  `CONDUITMDITC_TT14I` atlas, supported by the original stock letterforms.
+  `Languages/English.bin` FNTF records provide glyph dimensions, signed
+  bearings and advances for that font and `LCD_LET48`; the bounded font
+  renderer trace establishes their one-texel UV border. Runtime units-font
+  binding remains an inference. See HUD_253.md for provenance/reproduction.
 
 The selected stock face is labeled 0..8, with the red overlay between 7 and
 8. Engine B upgrades add 500 or 1000 max RPM to the 240SX; a tuned 8500 or
@@ -114,8 +118,8 @@ centre. The decoded LINES hub is one native pixel above that centre.
 The `0x004F6A70` rotation matrix sends the sprite's +v axis to screen
 angle `270 - rotation` in the y-down frame. It puts stock zero RPM at
 226 degrees. The earlier 265-degree offset was a five-degree label fit;
-the port now uses the traced frame. The absolute screen anchor and font
-spacing remain layout approximations.
+the port now uses the traced frame. The absolute screen anchor remains a
+screenshot fit. Font spacing/bearings now use the recovered FNTF metrics.
 For the 8500LINES band below a 6500 RPM redline, retail leaves the RED
 output unwritten; the port deliberately omits RED. Drag mode selects a
 separate `3RDPERSONDRAG_` texture family and is outside this event-1 HUD.
@@ -124,8 +128,10 @@ The port's car state has no recovered `+0x3D4` scalar. Its displayed MPH is
 an **approximation** from horizontal velocity magnitude times 2.237,
 truncated to an integer. The Tach, Redline, Needle, speed and speed units
 use their FEng colours and alpha. Gear retains blue: its orange/blue runtime
-flag producer remains unrecovered. Absolute placement, font bearings and
-advance/scale remain **approximations** from the original screenshots.
+flag producer remains unrecovered. Absolute placement and units-font choice
+remain **approximations** supported by the original screenshots. Text uses
+the SAD scales, native FNTF bearings/advances and reference-supported right
+alignment at the SAD position.
 `SPEED_COUNTER` belongs to the lap panel and is not drawn behind the gauge;
 neither the generated disc nor supplemental hub/speed-box art is used. No retail or
 derived texture is committed; the selected textures are decoded from
