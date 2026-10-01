@@ -58,9 +58,11 @@ The `BB` constructor passes kind `4` to `0x00468340` at `0x005924AC`,
 installs vtable `0x006B8D88` at `0x005924F8`, and stores the object pointer
 at body `+0x140` at `0x0059254F`. It passes data reached through the
 argument at `[ebx+0x10]` then `+8` to `0x0053F5F0` at `0x00592587..0x00592597`.
-That reader follows its input `+0xC` and copies two three-float vectors
-from `+0x20..+0x28` and `+0x30..+0x38`; a null input yields two zero
-vectors (`0x0053F5F0..0x0053F657`). `0x0059259C..0x005925E9` allocates
+That reader first dereferences its input at `+0xC`, then copies two
+three-float vectors from the resulting pointer at `+0x20..+0x28` and
+`+0x30..+0x38`. Only a null nested `+0xC` pointer takes the branch that
+writes two zero vectors (`0x0053F5F0..0x0053F657`); there is no null-input
+guard before the initial dereference. `0x0059259C..0x005925E9` allocates
 a box shape, passes those vectors to `0x00473CF0`, and stores the result at
 body `+0x10`. `0x00473CF0..0x00473D5D` computes center as the average
 of the two vectors and half extents as half their difference. This proves
