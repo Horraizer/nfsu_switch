@@ -148,6 +148,21 @@ void check_sessions(const Record& record) {
     require(std::string(line).find(",27,")!=std::string::npos && std::string(line).find(",25,")!=std::string::npos,
             "host sample age and display frame reach telemetry");
     std::fclose(file);
+    // A wheel off the ground has no measured road slip. Raw input and
+    // sensor age are also unavailable for a disconnected replay pad.
+    VehicleTrackCourse airborne_course=course; airborne_course.start.ground.z+=20;
+    RaceSession airborne(airborne_course);
+    require(airborne.start(error),"airborne telemetry session");
+    while (race_car_held(airborne.timing())) require(airborne.advance({},error),error);
+    require(airborne.advance({},error),error);
+    require(!airborne.telemetry().model.wheels[0].contact,"airborne wheel has no ground contact");
+    file=std::tmpfile(); require(file!=nullptr,"airborne telemetry stream");
+    HandlingTelemetryLog airborne_log(file); require(airborne_log.write(airborne,{}),"airborne log");
+    std::rewind(file); require(std::fgets(line,sizeof line,file) && std::fgets(line,sizeof line,file),"airborne row");
+    require(std::string(line).find(",0,unavailable,unavailable,unavailable,")!=std::string::npos &&
+            std::string(line).find(",0,unavailable,unavailable,0,0,0")!=std::string::npos,
+            "disconnected raw/sample age and airborne slip are unavailable");
+    std::fclose(file);
     const VehicleModel stock(setup(record,{})),tuned(upgraded);
     require(stock.upshift_rpm()!=tuned.upshift_rpm(),"upgraded shift thresholds rebuilt");
     VehicleFlatGround ground; VehicleState s,t; require(stock.reset(s,{}) && tuned.reset(t,{}),"flat reset");

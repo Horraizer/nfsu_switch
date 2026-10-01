@@ -43,6 +43,9 @@ Steering laws, tyre stiffness balance, traction clamp, collision rules,
 HUD layout and renderer filtering are unchanged. An improvement in one
 decoded scalar is not a claim of retail handling parity. The solver retains
 the approximations documented in VEHICLE.md and HANDLING_GAPS.md.
+HUD consumers can keep using the existing read-only `RaceSession::spec()`
+accessor. Its handling is the chosen, immutable model setup; no new accessor
+or dependency on explicit upgrades is required for #253.
 
 ## Captures
 
@@ -71,9 +74,12 @@ Rows identify the simulation tick, host display frame when available,
 global collision step and substep. Raw axis/button values describe pad slot
 0; both race entry points currently populate only that slot. Disconnected
 raw inputs, absent host timing and zero-speed body slip are `unavailable`.
+Wheel slip is unavailable without ground contact; airborne load and applied
+torque remain the actual quantities the solver calculated.
 Filtered steering is the actual DriveControls output supplied to that
 physics step. Requested road angle is observed before the existing slew;
-actual angle and world-z yaw rate are step-end values. Body slip is
+actual angle and world-z yaw rate are model-step-end values, before the
+track adapter's body contacts or resets. Body slip is
 atan2(lateral speed, forward speed). Wheel loads are N, requested/applied
 drive torque is N m, wheel slip ratio/lateral slip are dimensionless, gear
 uses the model's slots (reverse 0, neutral 1, first 2). Camera heading is in
@@ -122,3 +128,22 @@ exit acceleration and lift-off. Keep visuals identical for this comparison.
 Repeat without telemetry for driving frame statistics; target remains
 60 fps. Owner driving feedback and console performance remain pending until
 board evidence is actually obtained, and are not desktop test passes.
+
+## Windows Switch packaging
+
+Desktop gates run from the real worktree under the non-ASCII workspace.
+The installed SDK's `elf2nro` cannot open a RomFS directory under that path.
+For Switch packaging only, use a free temporary ASCII drive alias pointing
+to the same worktree, derived from PowerShell's current directory:
+
+```powershell
+if (Test-Path -LiteralPath 'N:/') { throw 'N drive already exists' }
+subst N: (Get-Location).Path
+```
+
+From MSYS2, `cd /n`, configure `build-switch-ascii` using the documented
+Switch Release command in SWITCH_BUILD.md, with an ASCII source build tag,
+then build and run its complete CTest suite. The physical build still lives
+inside the worker's own worktree. Remove only this alias after use with
+`subst N: /D`; the NRO remains at its real workspace location. This is a
+packaging workaround, not a claim that the SDK passed non-ASCII paths.

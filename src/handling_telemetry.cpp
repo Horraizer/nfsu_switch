@@ -30,9 +30,12 @@ bool HandlingTelemetryLog::write(const RaceSession& session, const GamepadFrame&
         else std::fputs("unavailable",output_);
         std::fprintf(output_,",%d,%.17g,%.17g",t.gear,t.engine_rpm,
             session.camera().heading*(6.28318530717958647692/65536.0));
-        for (const auto& w : t.wheels)
-            std::fprintf(output_,",%.17g,%.17g,%.17g,%.17g,%.17g,%u",w.load,
-                w.slip_ratio,w.slip_lateral,w.drive_torque,w.drive_applied,unsigned(w.contact));
+        for (const auto& w : t.wheels) {
+            std::fprintf(output_,",%.17g,",w.load);
+            if (w.contact) std::fprintf(output_,"%.17g,%.17g",w.slip_ratio,w.slip_lateral);
+            else std::fputs("unavailable,unavailable",output_);
+            std::fprintf(output_,",%.17g,%.17g,%u",w.drive_torque,w.drive_applied,unsigned(w.contact));
+        }
         if (std::fputc('\n',output_) == EOF || std::ferror(output_)) return false;
         ++rows_;
     }
