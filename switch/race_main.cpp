@@ -304,7 +304,7 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
 // issue 227 diagnostic that submits it with the opaque pass, as before.
 void run(const std::string& root, bool replay_mode, bool panel_mode, bool profile_frame,
           bool particles_enabled, const std::string& sky, bool tuned, bool glows,
-          bool car_shading, bool wet_road_reflections,
+          bool car_shading, bool wet_road_reflections, TextureFilterMode texture_filter,
           std::uint32_t requested_height, bool gpu_boost, bool hud_mode,
           Screen& screen, PadState& pad) {
     selected_car_label = tuned ? "TUNED" : "STOCK";
@@ -324,7 +324,11 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         const std::string text((std::istreambuf_iterator<char>(in)), {});
         require(bool(in) && replay.load(text,error), "bundled replay: "+error);
     }
-    RaceGpuScene scene; scene.set_particles_enabled(particles_enabled);
+    RaceGpuScene scene;
+    require(scene.set_texture_filter(texture_filter), "invalid texture filter policy");
+    std::printf("TEXTURE FILTER %s (world/car diffuse; sky/effects unchanged)\n",
+                texture_filter == TextureFilterMode::linear ? "linear" : "legacy");
+    scene.set_particles_enabled(particles_enabled);
     RaceRun race; HeapUsage heap;
     std::printf("PARTICLES %s\n",particles_enabled?"ON":"OFF");
     require(scene.set_sky(sky != "off"), "sky mode set after scene load");
@@ -695,6 +699,7 @@ int main(int argc, char** argv) {
             bool replay = false, panel = false, profile_frame = false;
             bool particles_enabled = true, selected = false, root_seen = false;
             bool hud = true;
+            TextureFilterMode texture_filter=TextureFilterMode::legacy;
             bool car_shading=false;
             std::string sky = "on";
             std::uint32_t scene_height = 0;
@@ -717,6 +722,9 @@ int main(int argc, char** argv) {
                     gpu_boost = std::strcmp(argv[++i],"on") == 0;
                 else if (arg == "--particles=on") particles_enabled = true;
                 else if (arg == "--particles=off") particles_enabled = false;
+                else if (arg=="--texture-filter" && i+1<argc) {
+                    require(parse_texture_filter(argv[++i],texture_filter),"--texture-filter needs legacy or linear");
+                }
                 else if (arg=="--car-shading" && i+1<argc) {
                     const std::string mode=argv[++i];
                     require(mode=="on" || mode=="off","--car-shading needs on or off");
@@ -734,7 +742,7 @@ int main(int argc, char** argv) {
                     else throw std::runtime_error("--wet-road-reflections must be on or off");
                 }
                 else if (!root_seen && arg.rfind("--",0) != 0) { root = arg; root_seen = true; }
-            else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--no-hud] [--sky on|off|early] [--scene-height 720|540|450|360] [--gpu-boost on|off] [--particles=on|--particles=off] [--tuned] [--glows] [--car-shading on|off] [--wet-road-reflections on|off]");
+            else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--no-hud] [--sky on|off|early] [--scene-height 720|540|450|360] [--gpu-boost on|off] [--particles=on|--particles=off] [--tuned] [--glows] [--car-shading on|off] [--texture-filter legacy|linear] [--wet-road-reflections on|off]");
             }
             require(!(panel && profile_frame),"--profile-frame requires direct presentation");
             while (!selected && appletMainLoop()) {
@@ -756,7 +764,7 @@ int main(int argc, char** argv) {
                     "No game data is bundled or written. Replay input is bundled in RomFS."});
             }
             if (selected) run(root,replay,panel,profile_frame,particles_enabled,sky,
-                              tuned,glows,car_shading,wet_road_reflections,scene_height,
+                              tuned,glows,car_shading,wet_road_reflections,texture_filter,scene_height,
                               gpu_boost,hud,screen,pad);
         } catch (const Cancel&) {
         } catch (const std::exception& e) {

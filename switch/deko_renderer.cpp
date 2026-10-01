@@ -627,7 +627,8 @@ struct DekoRenderer::Impl {
         const bool has_texture = draw.texture_resource != kNoHandle;
         const bool cutout = deko_textured_uses_cutout_shader(
             state.alpha_test != sm::CompareOp::always, commands->frame.options[3]);
-        const bool shaded = std::strcmp(draw.program->name, "car_shaded_textured") == 0;
+        const bool shaded = std::strcmp(draw.program->name, "car_shaded_textured") == 0 ||
+                            std::strcmp(draw.program->name, "car_shaded_linear_textured") == 0;
         const bool sky = std::strcmp(draw.program->name, "sky_textured") == 0;
         dk::Shader* fragment = shaded ? &car_fragment : sky ? &sky_fragment :
             !has_texture ? &fallback :

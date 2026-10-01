@@ -1790,6 +1790,12 @@ if(NFSU_BUILD_TESTS)
             COMMAND nfsu_race_run_tests
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
                 "${NFSU_RETAIL_ROOT}" --sample-draws)
+        add_test(NAME nfsu_race_run_retail_linear
+            COMMAND nfsu_race_run_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
+                "${NFSU_RETAIL_ROOT}" --sample-draws --texture-filter linear)
+        add_test(NAME nfsu_race_run_retail_linear_shading
+            COMMAND nfsu_race_run_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
+                "${NFSU_RETAIL_ROOT}" --sample-draws --texture-filter linear --car-shading)
         add_test(NAME nfsu_race_run_retail_glows
             COMMAND nfsu_race_run_tests
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
@@ -1938,6 +1944,7 @@ if(NFSU_BUILD_TESTS)
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_retail.cmake)
         set_tests_properties(
             nfsu_race_run_retail nfsu_race_run_retail_glows
+            nfsu_race_run_retail_linear nfsu_race_run_retail_linear_shading
             nfsu_race_run_retail_profile
             nfsu_race_run_retail_profile_reference nfsu_race_replay_check
             nfsu_race_particle_frame_guards
@@ -1964,11 +1971,18 @@ if(NFSU_BUILD_TESTS)
                 COMMAND nfsu_race_run_tests
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
                     "${NFSU_RETAIL_ROOT}" --full-draws --car-shading)
+            add_test(NAME nfsu_race_run_retail_full_linear_draws
+                COMMAND nfsu_race_run_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
+                    "${NFSU_RETAIL_ROOT}" --full-draws --texture-filter linear)
+            add_test(NAME nfsu_race_run_retail_full_linear_shading_draws
+                COMMAND nfsu_race_run_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
+                    "${NFSU_RETAIL_ROOT}" --full-draws --texture-filter linear --car-shading)
             add_test(NAME nfsu_track_slice_retail_full
                 COMMAND nfsu_track_slice_tests "${NFSU_RETAIL_ROOT}" --full)
             set_tests_properties(
                 nfsu_race_run_retail_full_draws nfsu_race_run_retail_full_shading_draws
                 nfsu_track_slice_retail_full
+                nfsu_race_run_retail_full_linear_draws nfsu_race_run_retail_full_linear_shading_draws
                 PROPERTIES LABELS "retail;retail-full"
                 FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 3600)
         endif()
