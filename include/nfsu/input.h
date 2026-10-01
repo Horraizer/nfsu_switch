@@ -93,6 +93,11 @@ struct GamepadFrame {
     // difference between two frames is ever used.
     std::uint64_t time_us = 0;
     GamepadState pads[kMaxGamepads];
+    // Optional host polling metadata for diagnostics. Replays leave it
+    // unavailable; controls and legacy encoders read time_us only.
+    bool sample_clock_available = false;
+    std::uint64_t sample_time_us = 0;
+    std::uint64_t display_frame = 0;
 };
 
 // ---------------------------------------------------------------------------

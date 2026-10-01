@@ -25,7 +25,10 @@ double forward_speed(const VehicleState& state) {
 }
 
 RaceSession::RaceSession(const VehicleTrackCourse& course)
-    : course_(course), spec_(stock_240sx_vehicle_spec()), model_(spec_),
+    : RaceSession(course, stock_240sx_vehicle_spec()) {}
+
+RaceSession::RaceSession(const VehicleTrackCourse& course, const VehicleSpec& spec)
+    : course_(course), spec_(spec), model_(spec_),
       vehicle_(model_, course_, vehicle_track_first_lap_approximations()),
       chase_(stock_240sx_chase_camera_table(), {}, {}), camera_world_(course.world) {}
 

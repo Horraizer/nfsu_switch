@@ -35,9 +35,15 @@ target_compile_features(nfsu_vehicle PUBLIC cxx_std_17)
 target_link_libraries(nfsu_vehicle PUBLIC nfsu_sha256)
 nfsu_enable_warnings(nfsu_vehicle)
 
+add_library(nfsu_vehicle_tuning src/vehicle_tuning.cpp)
+target_include_directories(nfsu_vehicle_tuning PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(nfsu_vehicle_tuning PUBLIC cxx_std_17)
+target_link_libraries(nfsu_vehicle_tuning PUBLIC nfsu_vehicle)
+nfsu_enable_warnings(nfsu_vehicle_tuning)
+
 # gnu++17 on the console, as for the car-path libraries; the comment at the
 # end of cmake/car_libraries.cmake says why it is named there.
 if(NINTENDO_SWITCH)
-    set_target_properties(nfsu_vehicle
+    set_target_properties(nfsu_vehicle nfsu_vehicle_tuning
         PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
 endif()

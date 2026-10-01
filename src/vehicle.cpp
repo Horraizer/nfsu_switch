@@ -1373,6 +1373,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     t.steer = steer;
     t.handbrake = raw_input.handbrake;
     t.steer_angle = s.steer_angle;
+    t.requested_steer_angle = target;
     t.wheels = wheel_out;
     for (std::size_t k = 0; k < kVehicleWheelCount; ++k) {
         t.wheels[k].spin = s.wheels[k].spin;

@@ -3,6 +3,7 @@
 #include "profile_pages.h"
 #include "nfsu/race_gpu_scene.h"
 #include "nfsu/heap_usage.h"
+#include "nfsu/handling_telemetry.h"
 #include "nfsu/frame_profile_stats.h"
 #include "nfsu/posix_file_system.h"
 #include "nfsu/race_frame_stats.h"
@@ -231,7 +232,7 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
         const auto mode = appletGetOperationMode() == AppletOperationMode_Console ? "DOCKED" : "HANDHELD";
         const bool finished = race.session().timing().outcome == RaceOutcome::finished;
         const char* verdict = !failure.empty() ||
-            (finished && !(replay.exhausted() && race.matches_event1_replay()))
+            (finished && !(replay.exhausted() && race.matches_configured_replay()))
             ? "DIFFERENT" : finished ? "EQUAL" : "RUNNING";
         std::vector<std::string> replay_rows = {
             format("%s | REPLAY %s | LAST STEP %llu",
@@ -273,7 +274,7 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
         lines.insert(lines.end(), wrapped.begin(), wrapped.end());
     }
     if (replay_mode) {
-        const char* verdict = !failure.empty() || (finished && !(replay.exhausted() && race.matches_event1_replay()))
+        const char* verdict = !failure.empty() || (finished && !(replay.exhausted() && race.matches_configured_replay()))
             ? "DIFFERENT" : finished ? "EQUAL" : "RUNNING";
         lines.push_back(std::string("REPLAY ") + verdict + " desktop per-step stream and result");
     }
@@ -306,6 +307,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
           bool particles_enabled, const std::string& sky, bool tuned, bool glows,
           bool car_shading, bool wet_road_reflections,
           std::uint32_t requested_height, bool gpu_boost, bool hud_mode,
+          const VehicleUpgradeLevels* performance, bool handling_telemetry,
           Screen& screen, PadState& pad) {
     selected_car_label = tuned ? "TUNED" : "STOCK";
     car_shading_label=car_shading ? "ON static" : "OFF";
@@ -320,12 +322,20 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     std::string error;
     RaceReplay replay;
     if (replay_mode) {
-        std::ifstream in("romfs:/event1.txt", std::ios::binary);
+        const bool upgraded=performance && !performance_levels_equal(*performance,{});
+        require(!upgraded || performance_levels_equal(*performance,performance1_levels()),
+                "replay supports zero levels or the documented performance1 setup; use --live for other levels");
+        std::ifstream in(upgraded ? "romfs:/performance1.txt" : "romfs:/event1.txt", std::ios::binary);
         const std::string text((std::istreambuf_iterator<char>(in)), {});
-        require(bool(in) && replay.load(text,error), "bundled replay: "+error);
+        require(bool(in) && replay.load(text,error,upgraded), "bundled replay: "+error);
     }
     RaceGpuScene scene; scene.set_particles_enabled(particles_enabled);
     RaceRun race; HeapUsage heap;
+    if (performance) {
+        require(race.set_performance_levels(*performance,error),error);
+        std::printf("performance-levels %s\n",performance_levels_text(*performance).c_str());
+    } else if (handling_telemetry) std::puts("performance-levels legacy-stock");
+    HandlingTelemetryLog handling_log(handling_telemetry ? stdout : nullptr);
     std::printf("PARTICLES %s\n",particles_enabled?"ON":"OFF");
     require(scene.set_sky(sky != "off"), "sky mode set after scene load");
     scene.set_wet_road_reflections(wet_road_reflections);
@@ -394,6 +404,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     RaceHudFrame hud_frame;
     unsigned unpause_resets = 0;
     std::string failure;
+    std::uint64_t display_frame = 0;
     try {
     while (appletMainLoop()) {
         const bool now_docked = appletGetOperationMode() == AppletOperationMode_Console;
@@ -416,6 +427,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         const auto begin = armGetSystemTick();
         const auto elapsed = armTicksToNs(begin-previous)/1000; previous = begin;
         padUpdate(&pad); const auto down = padGetButtonsDown(&pad);
+        const auto sampled_us = armTicksToNs(armGetSystemTick())/1000;
+        ++display_frame;
         if (down & HidNpadButton_Plus) break;
         bool just_unpaused = false;
         if (down & HidNpadButton_Y) {
@@ -445,8 +458,16 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             GamepadFrame input;
             if (replay_mode) require(replay.next(race.session().timing().step,input,error),error);
             else input = sample(pad,race.session().timing().step);
+            if (!replay_mode) {
+                input.sample_clock_available = true;
+                input.sample_time_us = sampled_us;
+                input.display_frame = display_frame;
+            }
             auto stage = armGetSystemTick();
+            const auto consumed_us = armTicksToNs(stage)/1000;
             require(race.simulate(input,error),error);
+            require(handling_log.write(race.session(),input,consumed_us,!replay_mode),
+                    "handling telemetry write failed");
             const double tick_ms = ms(armGetSystemTick()-stage);
             simulation += tick_ms; simulation_ticks[ticks] = tick_ms;
             stage = armGetSystemTick(); require(race.commit(error),error);
@@ -478,7 +499,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         if (finished && !printed_result) {
             for (const auto& line : race.result_lines()) std::printf("%s\n",line.c_str());
             if (replay_mode) std::printf("REPLAY %s desktop per-step stream and result\n",
-                replay.exhausted() && race.matches_event1_replay() ? "EQUAL" : "DIFFERENT");
+                replay.exhausted() && race.matches_configured_replay() ? "EQUAL" : "DIFFERENT");
             std::fflush(stdout); printed_result = true;
         }
         DekoPresentTiming present;
@@ -525,7 +546,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             lines.push_back(format("HEAP RUN OBS HWM %llu | ARENA NOW %llu | ARENA OBS HWM %llu (sampled)",
                 (unsigned long long)heap.peak,(unsigned long long)heap.extent,(unsigned long long)heap.extent_peak));
             if (replay_mode) {
-                const char* verdict = finished ? (replay.exhausted() && race.matches_event1_replay()?"EQUAL":"DIFFERENT") : "RUNNING";
+                const char* verdict = finished ? (replay.exhausted() && race.matches_configured_replay()?"EQUAL":"DIFFERENT") : "RUNNING";
                 lines.push_back(std::string("REPLAY ")+verdict+" | state-sha256 "+race.sequence_hash());
                 lines.push_back("steps-sha256 "+race.steps_hash());
                 auto last = race.step_line(); if (!last.empty()) last.pop_back();
@@ -701,11 +722,20 @@ int main(int argc, char** argv) {
             bool gpu_boost = true;
             bool glows = false;
             bool wet_road_reflections = false;
+            bool explicit_performance = false, handling_telemetry = false;
+            VehicleUpgradeLevels performance;
             for (int i = 1; i < argc; ++i) {
                 const std::string arg = argv[i];
                 if (arg == "--replay") { replay = true; selected = true; }
                 else if (arg == "--live") { replay = false; selected = true; }
                 else if (arg == "--tuned") tuned = true;
+                else if (arg == "--handling-telemetry") handling_telemetry = true;
+                else if (arg == "--performance-levels" && i+1 < argc) {
+                    require(!explicit_performance,"duplicate --performance-levels");
+                    std::string setup_error;
+                    require(parse_performance_levels(argv[++i],performance,setup_error),setup_error);
+                    explicit_performance = true;
+                }
                 else if (arg == "--panel") panel = true;
                 else if (arg == "--profile-frame") profile_frame = true;
             else if (arg == "--no-hud") hud = false;
@@ -757,7 +787,8 @@ int main(int argc, char** argv) {
             }
             if (selected) run(root,replay,panel,profile_frame,particles_enabled,sky,
                               tuned,glows,car_shading,wet_road_reflections,scene_height,
-                              gpu_boost,hud,screen,pad);
+                              gpu_boost,hud,explicit_performance ? &performance : nullptr,
+                              handling_telemetry,screen,pad);
         } catch (const Cancel&) {
         } catch (const std::exception& e) {
             std::printf("ERROR: %s\n",e.what()); std::fflush(stdout);
