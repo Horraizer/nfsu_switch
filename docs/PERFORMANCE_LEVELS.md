@@ -138,8 +138,8 @@ mode. Replay verification chooses the corresponding distinct result pins.
 With the homebrew netloader waiting, the owner can capture stdout via nxlink:
 
 ```text
-nxlink -a 192.168.1.56 -s build-switch/switch/nfsu_switch_race.nro --args sdmc:/nfsu --live --performance-levels weight=0 --handling-telemetry
-nxlink -a 192.168.1.56 -s build-switch/switch/nfsu_switch_race.nro --args sdmc:/nfsu --live --performance-levels engine-a=1,gearbox=1,weight=1,suspension=1,tyres=1 --handling-telemetry
+nxlink -a 192.168.1.56 -s build-switch-ascii/switch/nfsu_switch_race.nro --args sdmc:/nfsu --live --performance-levels weight=0 --handling-telemetry
+nxlink -a 192.168.1.56 -s build-switch-ascii/switch/nfsu_switch_race.nro --args sdmc:/nfsu --live --performance-levels engine-a=1,gearbox=1,weight=1,suspension=1,tyres=1 --handling-telemetry
 ```
 
 Replace `--live` with `--replay` for the corresponding deterministic capture.
