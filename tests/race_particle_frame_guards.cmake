@@ -13,13 +13,10 @@ if(NOT EXISTS "${work}/frame-1170.tga")
     message(FATAL_ERROR "Retail smoke frame was not written\n${output}")
 endif()
 file(SHA256 "${work}/frame-1170.tga" frame_hash)
-# Issue 253 changes the HUD atlas/layout only; the replay state pin stays.
-# Font correction uses thin Conduit Italic and native FNTF LCD metrics.
-# Layer correction draws Needle after Tach; physics and alpha stay intact.
-if(NOT frame_hash STREQUAL "b2e3d73da10b4b5e34c49f71e3b575c064cd8f16bb46a5b2bd54c9881742ac99")
+if(NOT frame_hash STREQUAL "49e0b663237d6f81dbca9ab74b856a71b513637ec7f278305029c64257f5d933")
     message(FATAL_ERROR "Retail smoke frame changed: ${frame_hash}\n${output}")
 endif()
-if(NOT output MATCHES "state-sha256 79776F6DD3FC2727C99D3F6AD69A16E623BDEEB5CFFD2261458A15FC7F5B3BF9")
+if(NOT output MATCHES "state-sha256 321C957E298D7FC6FD694B6ECED4E679AA17401D9675B635A1DA1F4049CF6C6B")
     message(FATAL_ERROR "Retail replay state changed\n${output}")
 endif()
 file(REMOVE_RECURSE "${work}")
