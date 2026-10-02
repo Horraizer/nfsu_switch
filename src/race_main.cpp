@@ -1,4 +1,6 @@
 #include "nfsu/race_session.h"
+#include "nfsu/race_setup.h"
+#include "nfsu/handling_telemetry.h"
 #include "nfsu/race_hud.h"
 #include "nfsu/race_events.h"
 #include "nfsu/track_residency.h"
@@ -264,6 +266,8 @@ int run(int argc, char** argv) {
     bool car_shading=false;
     std::set<std::size_t> frames;
     bool wet_road_reflections=false;
+    bool explicit_performance=false, handling_telemetry=false;
+    VehicleUpgradeLevels performance;
     // The path arguments arrive in the ANSI code page on Windows; convert
     // them as the other tools do, so a path outside ASCII opens.
     std::string argument_error;
@@ -276,10 +280,12 @@ int run(int argc, char** argv) {
                          "  [--particles=on|--particles=off] [--particle-events] [--tuned] [--glows]\n"
                          "  [--car-shading on|off]\n"
                          "  [--wet-road-reflections on|off]\n"
+                         "  [--performance-levels name=0..3,...] [--handling-telemetry]\n"
                          "  live mode plays retail race audio when the device and banks are available\n";
             return 0;
         }
         if (a=="--tuned") { tuned=true; continue; }
+        if (a=="--handling-telemetry") { handling_telemetry=true; continue; }
         if (a=="--live") { live=true; continue; }
         if (a=="--live-smoke") { live=true; smoke=true; continue; }
         if (a=="--particles=on") { particles_enabled=true; continue; }
@@ -287,7 +293,12 @@ int run(int argc, char** argv) {
         if (a=="--particle-events") { particle_events=true; continue; }
         if (a=="--glows") { glows=true; continue; }
         require(i+1<argc,"missing option value"); const std::string value=argv[++i];
-        if (a=="--root") root=nfsu::argument_path(argv[i]);
+        if (a=="--performance-levels") {
+            require(!explicit_performance,"duplicate --performance-levels");
+            require(parse_performance_levels(value,performance,argument_error),argument_error);
+            explicit_performance=true;
+        }
+        else if (a=="--root") root=nfsu::argument_path(argv[i]);
         else if (a=="--input") input=nfsu::argument_path(argv[i]);
         else if (a=="--generate") generate=nfsu::argument_path(argv[i]);
         else if (a=="--out") output=nfsu::argument_path(argv[i]);
@@ -354,7 +365,14 @@ int run(int argc, char** argv) {
         scene.apply(step); const auto line=track_residency_step_line(table,step)+"\n";
         sequence.update(line.data(),line.size());
     }
-    RaceSession session(course); require(session.start(error),error);
+    VehicleSpec spec=stock_240sx_vehicle_spec();
+    if (explicit_performance) {
+        require(load_race_vehicle_spec(root/"Global/GLOBALB.BUN","240SX",performance,spec,error),error);
+        std::cout << "performance-levels " << performance_levels_text(performance) << '\n';
+    }
+    if (handling_telemetry && !explicit_performance) std::cout << "performance-levels legacy-stock\n";
+    HandlingTelemetryLog handling_log(handling_telemetry ? stdout : nullptr);
+    RaceSession session(course,spec); require(session.start(error),error);
     audio::RaceAudioService sound;
     if (live && !smoke) {
         std::string diagnostic;
@@ -374,7 +392,10 @@ int run(int argc, char** argv) {
     Cost simulation,streaming,hashing;
     std::size_t run_index=0,run_tick=0; std::uint64_t resets=0;
     auto tick=[&](const GamepadFrame& pad) {
+        const auto consumed_us=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+            Clock::now().time_since_epoch()).count());
         auto begin=Clock::now(); require(session.advance(pad,error),error); simulation.add(begin);
+        require(handling_log.write(session,pad,consumed_us,live),"handling telemetry write failed");
         const auto previous_smoke=scene.particles.smoke_count();
         const auto previous_sparks=scene.particles.spark_count();
         if (particles_enabled) scene.particles.advance(session);

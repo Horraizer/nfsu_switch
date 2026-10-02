@@ -11,6 +11,17 @@ std::filesystem::path asset(const std::filesystem::path& root, const TrackSlice&
     return {};
 }
 }
+bool RaceRun::set_performance_levels(const VehicleUpgradeLevels& levels, std::string& error) {
+    if (metadata_ready_ || session_) { error = "performance setup must precede metadata/start"; return false; }
+    // Validate levels and flags through the same application path before
+    // committing configuration, without any retail file access.
+    std::array<unsigned char,kVehicleRecordSize> original{};
+    encode_vehicle_handling(stock_240sx_handling(),original.data(),original.size());
+    encode_vehicle_tuning(stock_240sx_tuning(),original.data(),original.size());
+    VehicleSpec checked;
+    if (!make_race_vehicle_spec(original.data(),original.size(),levels,checked,error)) return false;
+    levels_ = levels; explicit_performance_ = true; return true;
+}
 bool RaceRun::read_metadata(const std::filesystem::path& front, const std::filesystem::path& global,
                             std::string& error, TrackSliceLoadObserver* observer) {
     {
@@ -73,7 +84,10 @@ bool RaceRun::start(const std::filesystem::path& root, const TrackSlice& track, 
     if (resident_ != prepared_ || bytes_read_ != track.input_bytes) {
         error = "race startup differs from the uploaded permanent set"; return false;
     }
-    session_ = std::make_unique<RaceSession>(course_);
+    VehicleSpec spec = stock_240sx_vehicle_spec();
+    if (explicit_performance_ && !load_race_vehicle_spec(
+            asset(root,track,"Global/GLOBALB.BUN"),"240SX",levels_,spec,error)) return false;
+    session_ = std::make_unique<RaceSession>(course_,spec);
     if (observer) observer->checkpoint("race session constructed");
     const auto started = session_->start(error);
     if (observer) observer->checkpoint("race session started");
@@ -123,11 +137,21 @@ std::string RaceRun::sequence_hash() const { auto copy = sequence_; return sha25
 std::string RaceRun::steps_hash() const { auto copy = steps_; return sha256_hex(copy.finish()); }
 bool RaceRun::matches_event1_replay() const {
     if (!session_ || pending_) return false;
+    if (explicit_performance_ && !performance_levels_equal(levels_,{})) return false;
     const auto& timing = session_->timing(); const auto& r = timing.racers[0];
     return timing.outcome == RaceOutcome::finished && timing.step == 48336 &&
         session_->telemetry().resets == 0 && r.highest_lap == 2 &&
         r.lap_ticks[1] == 1616400 && r.lap_ticks[2] == 1611200 && r.finish_ticks == 3227600 &&
         sequence_hash() == kEvent1SequenceHash && steps_hash() == kEvent1StepsHash;
+}
+bool RaceRun::matches_configured_replay() const {
+    if (!explicit_performance_ || performance_levels_equal(levels_,{})) return matches_event1_replay();
+    if (!session_ || pending_ || !performance_levels_equal(levels_,performance1_levels())) return false;
+    const auto& timing=session_->timing(); const auto& r=timing.racers[0];
+    return timing.outcome==RaceOutcome::finished && timing.step==48324 &&
+        session_->telemetry().resets==0 && r.highest_lap==2 &&
+        r.lap_ticks[1]==1616200 && r.lap_ticks[2]==1610560 && r.finish_ticks==3226760 &&
+        sequence_hash()==kPerformance1SequenceHash && steps_hash()==kPerformance1StepsHash;
 }
 std::vector<std::string> RaceRun::result_lines() const {
     if (!session_) return {"RACE NOT STARTED"};
@@ -145,9 +169,9 @@ std::vector<std::string> RaceRun::result_lines() const {
                     " bytes-read " + std::to_string(bytes_read_));
     return lines;
 }
-bool RaceReplay::load(const std::string& text, std::string& error) {
+bool RaceReplay::load(const std::string& text, std::string& error, bool performance1) {
     index_ = used_ = tick_ = 0; runs_.clear();
-    if (sha256_hex(sha256(text.data(), text.size())) != kEvent1InputHash) {
+    if (sha256_hex(sha256(text.data(), text.size())) != (performance1 ? kPerformance1InputHash : kEvent1InputHash)) {
         error = "event1.txt does not match the pinned desktop recording"; return false;
     }
     return parse_race_input(text, runs_, error);

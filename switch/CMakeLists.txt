@@ -475,6 +475,11 @@ add_custom_command(OUTPUT ${NFSU_RACE_ROMFS}/event1.txt
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${NFSU_RACE_INPUT} ${NFSU_RACE_ROMFS}/event1.txt
     DEPENDS ${NFSU_RACE_INPUT} VERBATIM)
 list(APPEND NFSU_RACE_ASSETS ${NFSU_RACE_ROMFS}/event1.txt)
+set(NFSU_PERFORMANCE_INPUT ${PROJECT_SOURCE_DIR}/tests/recordings/performance1.txt)
+add_custom_command(OUTPUT ${NFSU_RACE_ROMFS}/performance1.txt
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${NFSU_PERFORMANCE_INPUT} ${NFSU_RACE_ROMFS}/performance1.txt
+    DEPENDS ${NFSU_PERFORMANCE_INPUT} ${NFSU_RACE_ROMFS}/event1.txt VERBATIM)
+list(APPEND NFSU_RACE_ASSETS ${NFSU_RACE_ROMFS}/performance1.txt)
 add_custom_target(nfsu_switch_race_romfs DEPENDS ${NFSU_RACE_ASSETS})
 set_target_properties(nfsu_switch_race_romfs PROPERTIES
     DKP_ASSET_FOLDER ${NFSU_RACE_ROMFS} DKP_ASSET_FILES "${NFSU_RACE_ASSETS}")
@@ -486,6 +491,7 @@ if(NFSU_BUILD_TESTS)
         -DNRO=${CMAKE_CURRENT_BINARY_DIR}/nfsu_switch_race.nro
         -DELF=$<TARGET_FILE:nfsu_switch_race> -DTITLE=nfsu_switch_race
         -DSHADERS=${NFSU_SHADER_OUTPUT} -DREPLAY=${NFSU_RACE_INPUT}
+        -DPERFORMANCE_REPLAY=${NFSU_PERFORMANCE_INPUT}
         -DBUILD_TAG=${NFSU_RACE_BUILD_TAG}
         -P ${PROJECT_SOURCE_DIR}/tests/switch_race_romfs_check.cmake)
     set_tests_properties(nfsu_switch_race_nro PROPERTIES TIMEOUT 60)

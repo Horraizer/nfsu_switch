@@ -393,7 +393,7 @@ if(NFSU_BUILD_TESTS)
         tests/track_probe_tests.cpp
     )
 
-    target_link_libraries(nfsu_track_probe_tests PRIVATE nfsu_track_probe)
+    target_link_libraries(nfsu_track_probe_tests PRIVATE nfsu_arg_path nfsu_track_probe)
     nfsu_enable_warnings(nfsu_track_probe_tests)
     add_test(NAME nfsu_track_probe_tests COMMAND nfsu_track_probe_tests)
     add_executable(nfsu_part_placement_tests
@@ -413,7 +413,7 @@ if(NFSU_BUILD_TESTS)
         tests/race_event_tests.cpp
     )
 
-    target_link_libraries(nfsu_race_event_tests PRIVATE nfsu_race_events)
+    target_link_libraries(nfsu_race_event_tests PRIVATE nfsu_arg_path nfsu_race_events)
     nfsu_enable_warnings(nfsu_race_event_tests)
     add_test(NAME nfsu_race_event_tests COMMAND nfsu_race_event_tests)
 
@@ -425,7 +425,7 @@ if(NFSU_BUILD_TESTS)
         tests/track_stream_tests.cpp
     )
 
-    target_link_libraries(nfsu_track_stream_tests PRIVATE nfsu_track_stream)
+    target_link_libraries(nfsu_track_stream_tests PRIVATE nfsu_arg_path nfsu_track_stream)
     nfsu_enable_warnings(nfsu_track_stream_tests)
     add_test(NAME nfsu_track_stream_tests COMMAND nfsu_track_stream_tests)
     set_tests_properties(nfsu_track_stream_tests PROPERTIES TIMEOUT 60)
@@ -440,7 +440,7 @@ if(NFSU_BUILD_TESTS)
         tests/race_route_tests.cpp
     )
 
-    target_link_libraries(nfsu_race_route_tests PRIVATE nfsu_race_route nfsu_sha256)
+    target_link_libraries(nfsu_race_route_tests PRIVATE nfsu_arg_path nfsu_race_route nfsu_sha256)
     nfsu_enable_warnings(nfsu_race_route_tests)
     add_test(NAME nfsu_race_route_tests COMMAND nfsu_race_route_tests)
     set_tests_properties(nfsu_race_route_tests PROPERTIES TIMEOUT 60)
@@ -1018,6 +1018,7 @@ if(NFSU_BUILD_TESTS)
     add_executable(nfsu_switch_nro_synthetic_tests
         tests/switch_nro_synthetic_tests.cpp
     )
+    target_link_libraries(nfsu_switch_nro_synthetic_tests PRIVATE nfsu_arg_path)
     nfsu_enable_warnings(nfsu_switch_nro_synthetic_tests)
     add_test(NAME nfsu_switch_nro_synthetic_tests
         COMMAND nfsu_switch_nro_synthetic_tests)
@@ -1318,17 +1319,7 @@ endif()
 #
 # It links nfsu_vehicle for the record offsets, the handling decoder it
 # validates a record with and the two axle blocks it reuses.
-add_library(nfsu_vehicle_tuning
-    src/vehicle_tuning.cpp
-)
-
-target_include_directories(nfsu_vehicle_tuning
-    PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-target_compile_features(nfsu_vehicle_tuning PUBLIC cxx_std_17)
-target_link_libraries(nfsu_vehicle_tuning PUBLIC nfsu_vehicle)
-nfsu_enable_warnings(nfsu_vehicle_tuning)
+# nfsu_vehicle_tuning is declared for both hosts in vehicle_libraries.cmake.
 
 # `vehicle-tuning` decodes the tables of every car type of a GLOBALB.BUN.
 target_link_libraries(nfsu_probe PRIVATE nfsu_vehicle_tuning)
@@ -1554,6 +1545,13 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_race_session_tests PRIVATE nfsu_race_session)
     nfsu_enable_warnings(nfsu_race_session_tests)
     add_test(NAME nfsu_race_session_tests COMMAND nfsu_race_session_tests)
+    add_executable(nfsu_performance_levels_tests tests/performance_levels_tests.cpp)
+    target_link_libraries(nfsu_performance_levels_tests PRIVATE nfsu_race_session nfsu_race_events nfsu_arg_path)
+    nfsu_enable_warnings(nfsu_performance_levels_tests)
+    add_test(NAME nfsu_performance_levels_tests COMMAND nfsu_performance_levels_tests)
+    add_executable(nfsu_performance_replay_tests tests/performance_replay_tests.cpp)
+    target_link_libraries(nfsu_performance_replay_tests PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_arg_path)
+    nfsu_enable_warnings(nfsu_performance_replay_tests)
     add_executable(nfsu_race_hud_tests tests/race_hud_tests.cpp)
     target_link_libraries(nfsu_race_hud_tests PRIVATE nfsu_race_hud)
     nfsu_enable_warnings(nfsu_race_hud_tests)
@@ -1781,6 +1779,14 @@ if(NFSU_BUILD_TESTS)
         set_tests_properties(nfsu_retail_manifest_after PROPERTIES
             FIXTURES_CLEANUP nfsu_retail_read_only LABELS retail
             TIMEOUT 600)
+        add_test(NAME nfsu_performance_levels_retail COMMAND nfsu_performance_levels_tests "${NFSU_RETAIL_ROOT}")
+        set_tests_properties(nfsu_performance_levels_retail PROPERTIES
+            FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 180)
+        add_test(NAME nfsu_performance_replay_retail COMMAND nfsu_performance_replay_tests
+            "${NFSU_RETAIL_ROOT}" ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/performance1.txt)
+        set_tests_properties(nfsu_performance_replay_retail PROPERTIES
+            FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 600)
 
         # The replay, the command cache against the reference path, every
         # sampled frame's draws and uploads, the per-step stream and result

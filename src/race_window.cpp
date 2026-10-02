@@ -48,6 +48,10 @@ bool run_race_window(const std::function<void(const GamepadFrame&)>& tick,
                     bind(VK_SPACE,GamepadButton::face_south); bind('R',GamepadButton::select); bind('C',GamepadButton::face_north);
                     pad.pads[0].axes[0]=(down('D')?32767:0)-(down('A')?32767:0);
                 }
+                pad.sample_clock_available=true;
+                pad.sample_time_us=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count());
+                pad.display_frame=frames;
                 tick(pad);
             }
             if (count) {
@@ -59,7 +63,8 @@ bool run_race_window(const std::function<void(const GamepadFrame&)>& tick,
                 RECT rect{}; GetClientRect(window,&rect); const auto dc=GetDC(window);
                 StretchDIBits(dc,0,0,rect.right,rect.bottom,0,0,640,360,pixels.data(),&bitmap,DIB_RGB_COLORS,SRCCOPY);
                 ReleaseDC(window,dc);
-                if (smoke && ++frames==4) break;
+                ++frames;
+                if (smoke && frames==4) break;
             } else Sleep(1);
         }
     } catch (...) { if (IsWindow(window)) DestroyWindow(window); UnregisterClassA(cls.lpszClassName,instance); throw; }

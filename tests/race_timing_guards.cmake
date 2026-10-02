@@ -1,3 +1,5 @@
+# Decode UTF-8 path diagnostics explicitly instead of using the Windows
+# console code page selected by AUTO.
 # What `nfsu_probe race-timing` refuses, prints and exits with.
 #
 # The first cases need no input file at all: the argument count, the event
@@ -39,6 +41,7 @@ endfunction()
 # standard output with CR LF folded to LF is left in ${last_stdout}.
 function(nfsu_case label code needles banned)
     execute_process(
+        ENCODING UTF-8
         COMMAND "${PROBE}" race-timing ${ARGN}
         OUTPUT_VARIABLE stdout_text
         ERROR_VARIABLE stderr_text
@@ -148,11 +151,13 @@ set(broken "${work}/fixture_broken.bun")
 set(trackb "${work}/TRACKB1003.lzc")
 file(REMOVE "${globalb}" "${frontb}" "${broken}" "${trackb}")
 execute_process(
+    ENCODING UTF-8
     COMMAND "${EVENT_TESTS}" --write-fixture "${globalb}" "${frontb}" "${broken}"
     OUTPUT_VARIABLE event_text
     ERROR_VARIABLE event_error
     RESULT_VARIABLE event_status)
 execute_process(
+    ENCODING UTF-8
     COMMAND "${TESTS}" --write-fixture "${trackb}"
     OUTPUT_VARIABLE route_text
     ERROR_VARIABLE route_error

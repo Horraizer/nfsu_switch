@@ -1,3 +1,4 @@
+#include "nfsu/arg_path.h"
 #include "nfsu/geometry.h"
 #include "nfsu/track_probe.h"
 
@@ -3497,7 +3498,7 @@ void test_determinism() {
 // fixed one; issue #124 is about test binaries that write to a fixed
 // path under the system temp directory, and the gate hands this one a
 // path inside its own build directory.
-bool write_fixture(const std::string& path) {
+bool write_fixture(const std::filesystem::path& path) {
     // The same refusal track-render --out makes (src/main.cpp), for the
     // same reason: this is the only write path a test binary offers, and
     // aiming it at a real file - by a typo, or by a caller that copied the
@@ -3505,7 +3506,7 @@ bool write_fixture(const std::string& path) {
     // removes its own fixture first, so the refusal costs that case nothing.
     std::error_code code;
     if (std::filesystem::exists(path, code)) {
-        std::cerr << "error: --write-fixture " << path
+        std::cerr << "error: --write-fixture " << path.u8string()
                    << " already exists; this command never replaces a file\n";
         return false;
     }
@@ -3518,7 +3519,7 @@ bool write_fixture(const std::string& path) {
     }
     std::ofstream stream(path, std::ios::binary | std::ios::trunc);
     if (!stream) {
-        std::cerr << "cannot open " << path << " for writing\n";
+        std::cerr << "cannot open " << path.u8string() << " for writing\n";
         return false;
     }
     stream.write(reinterpret_cast<const char*>(geometry.data()),
@@ -3534,7 +3535,7 @@ bool write_fixture(const std::string& path) {
                  static_cast<std::streamsize>(scenery.size()));
     stream.flush();
     if (!stream) {
-        std::cerr << "failed to write " << path << '\n';
+        std::cerr << "failed to write " << path.u8string() << '\n';
         return false;
     }
     std::cout << "fixture: geometry " << kGeometryBase << ' '
@@ -3546,11 +3547,16 @@ bool write_fixture(const std::string& path) {
 } // namespace
 
 int main(int argc, char** argv) {
+    std::string argument_error;
+    if (!nfsu::check_arguments(argc, argv, 1, argument_error)) {
+        std::cerr << "error: " << argument_error << '\n';
+        return 1;
+    }
     // One argument mode, and it is not a test: --write-fixture <path>
     // lays the fixture down as a file for tests/track_probe_guards.cmake
     // and runs no check at all.
     if (argc == 3 && std::string(argv[1]) == "--write-fixture") {
-        return write_fixture(argv[2]) ? 0 : 1;
+        return write_fixture(nfsu::argument_path(argv[2])) ? 0 : 1;
     }
     if (argc != 1) {
         std::cerr << "usage: nfsu_track_probe_tests [--write-fixture <path>]\n";

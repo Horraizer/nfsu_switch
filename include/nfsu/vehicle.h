@@ -491,6 +491,8 @@ struct VehicleTelemetry {
     double steer = 0.0;
     bool handbrake = false;
     double steer_angle = 0.0;
+    // Diagnostic only; omitted from the legacy binary encoding and hash.
+    double requested_steer_angle = 0.0; // rad, before road-wheel slew
     std::array<VehicleWheelTelemetry, kVehicleWheelCount> wheels{};
 };
 

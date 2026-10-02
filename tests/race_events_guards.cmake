@@ -1,3 +1,5 @@
+# Decode UTF-8 path diagnostics explicitly instead of using the Windows
+# console code page selected by AUTO.
 # What `nfsu_probe race-events` refuses, prints and exits with.
 #
 # The first three cases need NO INPUT FILES AT ALL: the argument count and
@@ -44,6 +46,7 @@ endfunction()
 # ${last_stdout} for a case that pins more than a line.
 function(nfsu_case label code needles banned)
     execute_process(
+        ENCODING UTF-8
         COMMAND "${PROBE}" race-events ${ARGN}
         OUTPUT_VARIABLE stdout_text
         ERROR_VARIABLE stderr_text
@@ -114,6 +117,7 @@ set(frontb "${work}/fixture_frontb.lzc")
 set(broken "${work}/fixture_broken.bun")
 file(REMOVE "${globalb}" "${frontb}" "${broken}")
 execute_process(
+    ENCODING UTF-8
     COMMAND "${TESTS}" --write-fixture "${globalb}" "${frontb}" "${broken}"
     OUTPUT_VARIABLE fixture_text
     ERROR_VARIABLE fixture_error
@@ -174,6 +178,7 @@ nfsu_case("the event table without its track table" 3
 set(protected "${work}/protected.bin")
 file(WRITE "${protected}" "keep-me-untouched")
 execute_process(
+    ENCODING UTF-8
     COMMAND "${TESTS}" --write-fixture "${work}/new_a.bin" "${protected}" "${work}/new_b.bin"
     OUTPUT_VARIABLE protect_text
     ERROR_VARIABLE protect_error

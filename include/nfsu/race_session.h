@@ -22,6 +22,7 @@ private:
 class RaceSession {
 public:
     explicit RaceSession(const VehicleTrackCourse& course);
+    RaceSession(const VehicleTrackCourse& course, const VehicleSpec& spec);
     bool start(std::string& error);
     bool advance(const GamepadFrame& pad, std::string& error);
     const VehicleState& car() const { return vehicle_.state(); }
