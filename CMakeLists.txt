@@ -1763,7 +1763,7 @@ set(NFSU_RETAIL_ROOT "" CACHE PATH
 target_link_libraries(nfsu_race PRIVATE nfsu_arg_path)
 if(NFSU_BUILD_TESTS)
     foreach(nfsu_retail_driver
-            nfsu_race_run_tests nfsu_race_loader_peak_tests
+            nfsu_race_run_tests nfsu_race_loader_peak_tests nfsu_race_hud_tests
             nfsu_track_loader_peak_tests nfsu_track_slice_tests
             nfsu_racing_line_tests nfsu_race_audio_tests)
         target_link_libraries(${nfsu_retail_driver} PRIVATE nfsu_arg_path)

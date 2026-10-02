@@ -12,7 +12,9 @@ endif()
 if(NOT EXISTS "${MANIFEST}")
     message(FATAL_ERROR "manifest does not exist: ${MANIFEST}")
 endif()
-file(STRINGS "${MANIFEST}" entries)
+# Object paths can inherit a UTF-8 workspace directory. The default ASCII
+# reader truncates such a manifest entry at its first non-ASCII byte.
+file(STRINGS "${MANIFEST}" entries ENCODING UTF-8)
 if(NOT entries)
     message(FATAL_ERROR "no object to census")
 endif()
