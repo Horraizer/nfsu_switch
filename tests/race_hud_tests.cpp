@@ -1,6 +1,7 @@
 #include "nfsu/race_hud.h"
 #include "nfsu/arg_path.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -29,9 +30,9 @@ struct Point { double x, y; };
 
 std::pair<Point, Point> needle_ends(const nfsu::RaceHudFrame& frame,
                                     bool red = true) {
-    // Fill and optional RED precede Needle; Tach follows it in FEng
-    // depth order. The texture's ring is at row 64; its shaft ends near 125.
-    const auto* v = &frame.vertices[(red ? 2 : 1) * 4];
+    // Fill, optional RED and Tach precede Needle. Its ring is at row 64;
+    // the shaft ends near 125.
+    const auto* v = &frame.vertices[(red ? 3 : 2) * 4];
     const Point top{(v[0].px+v[1].px)*0.5,(v[0].py+v[1].py)*0.5};
     const Point bottom{(v[2].px+v[3].px)*0.5,(v[2].py+v[3].py)*0.5};
     const auto at = [&](double row) {
@@ -51,7 +52,7 @@ double needle_angle(const nfsu::RaceHudFrame& frame, bool red = true) {
 
 void test_needle_endpoint(const nfsu::RaceHudFrame& frame,
                           double label_x, double label_y, bool red = true) {
-    const auto* face=&frame.vertices[(red ? 3 : 2)*4];
+    const auto* face=&frame.vertices[(red ? 2 : 1)*4];
     const double pitch=(face[1].px-face[0].px)/256.0;
     const Point hub{face[0].px+69.0*pitch,face[0].py+70.0*pitch};
     const Point label{face[0].px+label_x*pitch,
@@ -75,7 +76,7 @@ void test_needle_endpoint(const nfsu::RaceHudFrame& frame,
 }
 
 void test_face_registration(const nfsu::RaceHudFrame& frame, bool red) {
-    const auto* face=&frame.vertices[(red ? 3 : 2)*4];
+    const auto* face=&frame.vertices[(red ? 2 : 1)*4];
     const double u0=face[0].u*512.0, v0=face[0].v*512.0;
     const double u1=face[1].u*512.0, v1=face[2].v*512.0;
     check(std::abs((u1-u0)-256.0)<0.01 &&
@@ -87,7 +88,7 @@ void test_face_registration(const nfsu::RaceHudFrame& frame, bool red) {
     check(std::abs(hub_x-1133.0)<0.01 &&
           std::abs(hub_y-(601.0-pitch))<0.01,
           "decoded LINES hub uses measured anchor and recovered SAT offset");
-    const auto* needle=&frame.vertices[(red ? 2 : 1)*4];
+    const auto* needle=&frame.vertices[(red ? 3 : 2)*4];
     check(std::abs((needle[1].u-needle[0].u)*512.0-16.0)<0.01 &&
           std::abs((needle[3].v-needle[0].v)*512.0-128.0)<0.01,
           "needle samples the complete 16x128 retail sprite");
@@ -100,7 +101,7 @@ void test_face_registration(const nfsu::RaceHudFrame& frame, bool red) {
           std::lround(fill[0].v*512)==256 &&
           std::lround(needle[0].u*512)==256 &&
           std::lround(needle[0].v*512)==256,
-          "needle follows retail fill and precedes the Tach face");
+          "needle samples its retail atlas after the Tach face");
     check(fill[0].px==face[0].px && fill[0].py==face[0].py &&
           fill[2].px==face[2].px && fill[2].py==face[2].py &&
           fill[0].color[3]==150,
@@ -108,11 +109,11 @@ void test_face_registration(const nfsu::RaceHudFrame& frame, bool red) {
     if (red)
         check(overlay[0].color[0]==150 && overlay[0].color[1]==0 &&
               overlay[0].color[2]==0 && overlay[0].color[3]==150 &&
-              needle>overlay && face>needle,
-              "draw order is fill, Redline, Needle, then Tach");
+              face>overlay && needle>face,
+              "draw order is fill, Redline, Tach, then Needle");
     else
-        check(needle>fill && face>needle,
-              "without Redline, draw order is fill, Needle, then Tach");
+        check(face>fill && needle>face,
+              "without Redline, draw order is fill, Tach, then Needle");
     check(face[0].color[0]==0 && face[0].color[1]==128 &&
           face[0].color[2]==192 && face[0].color[3]==255,
           "3rdPersonTach uses its own blue SAT colour");
@@ -153,7 +154,7 @@ void test_dial() {
         check(dial.lines_hash==item.lines && dial.red_hash==item.overlay,
               "retail max and redline select DYNTEX LINES and RED");
         nfsu::build_race_hud_frame_for_car(car,item.max,item.red,1280,720,frame);
-        const auto face_index=(item.overlay ? 3 : 2)*4;
+        const auto face_index=(item.overlay ? 2 : 1)*4;
         check(std::lround(frame.vertices[face_index].u*512)==item.x &&
               std::lround(frame.vertices[face_index].v*512)==item.y,
               "frame uses the selected LINES atlas slot");
@@ -209,6 +210,47 @@ void test_rpm() {
           "explicit upgraded redlines use their own needle range");
 }
 
+void test_needle_over_scale() {
+    // An opaque synthetic scale mark crosses the real needle geometry at
+    // numeral radius. This verifies compositing, not only vertex ordinals.
+    nfsu::RaceHudAtlas atlas;
+    atlas.rgba.assign(512*512*4,0);
+    const auto white=[&](int left,int top,int width,int height) {
+        for (int y=top;y<top+height;++y) for (int x=left;x<left+width;++x)
+            for (int channel=0;channel<4;++channel)
+                atlas.rgba[(y*512+x)*4+channel]=255;
+    };
+    white(256,0,256,128); // stock LINES slot
+    white(256,256,16,128); // Needle
+    for (const int width : {640,1280}) for (const bool red : {false,true})
+        for (const double rpm : {0.0,3000.0,6200.0,8000.0}) {
+            const int height=width*9/16;
+            nfsu::VehicleState car{};
+            car.engine_rpm=rpm;
+            nfsu::RaceHudFrame frame;
+            nfsu::build_race_hud_frame_for_car(car,8000,red ? 7500 : 6200,
+                                               width,height,frame);
+            const auto [ring,tip]=needle_ends(frame,red);
+            const int x=static_cast<int>(std::floor(ring.x+(tip.x-ring.x)*0.85));
+            const int y=static_cast<int>(std::floor(ring.y+(tip.y-ring.y)*0.85));
+            std::vector<unsigned char> pixels(width*height*4,17);
+            nfsu::composite_race_hud(atlas,frame,pixels.data(),width,height,width*4);
+            const auto at=(y*width+x)*4;
+            check(pixels[at]==207 && pixels[at+1]==233 && pixels[at+2]==242,
+                  "needle remains visible over an overlapping scale numeral");
+            check(pixels[0]==17 && pixels[1]==17 && pixels[2]==17,
+                  "layer correction leaves pixels outside HUD untouched");
+            // Negative control recreates the deployed ordering defect.
+            const int face=red ? 2 : 1, needle=face+1;
+            for (int i=0;i<4;++i)
+                std::swap(frame.vertices[face*4+i],frame.vertices[needle*4+i]);
+            std::fill(pixels.begin(),pixels.end(),17);
+            nfsu::composite_race_hud(atlas,frame,pixels.data(),width,height,width*4);
+            check(pixels[at]==0 && pixels[at+1]==128 && pixels[at+2]==192,
+                  "legacy order actually hides the needle at the same crossing");
+        }
+}
+
 void test_gear_and_speed() {
     nfsu::VehicleState car{};
     nfsu::RaceHudFrame frame;
@@ -224,7 +266,7 @@ void test_gear_and_speed() {
     car.velocity.x = 45.0;
     nfsu::build_race_hud_frame_for_car(car,8000,7500,1280,720,frame);
     check(frame.quads == 11, "100 mph has three speed glyphs and three unit letters");
-    check(frame.vertices[12].color[3] == 255, "Tach face has full SAT alpha");
+    check(frame.vertices[8].color[3] == 255, "Tach face has full SAT alpha");
     const auto* gear=&frame.vertices[4*4];
     const auto* speed=&frame.vertices[5*4];
     const auto* units=&frame.vertices[8*4];
@@ -526,6 +568,7 @@ int main(int argc,char** argv) {
     }
     test_dial();
     test_rpm();
+    test_needle_over_scale();
     test_gear_and_speed();
     test_layout_and_current_state();
     test_capture_paths();

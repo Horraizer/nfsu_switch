@@ -297,12 +297,15 @@ void build_race_hud_frame_for_car(const VehicleState& car,
     // supplemental hub and unrelated speed-counter box. rpm_fill SAT alpha
     // is 150 and its centre differs from Tach by less than 0.002 texels.
     place(kFill,face_x,face_y,256,128,{{255,255,255}},150);
-    // Redline (8.33), Needle (5), then Tach (-1.67) is back to front in
-    // FEng depth order because smaller depths are drawn in front.
+    // Preserve the fill/RED registration. Stored SAT z values do not by
+    // themselves establish the runtime painter order of GaugeCluster.
     if (red!=kRedHashes.end())
         place(kRed[static_cast<std::size_t>(red-kRedHashes.begin())],
               face_x+79.0F,face_y+6.0F,64,32,
               {{150,0,0}},150);
+    // GaugeCluster stores Tach before Needle. Draw scale marks first so the
+    // needle crosses above them, as in the original HUD.
+    place(slot,face_x,face_y,256,128,{{0,128,192}},255);
     // The FEng needle is centered on the face hub. Its ring surrounds source
     // row 64 and its shaft tip is near row 125, in the +v direction.
     // 0x004F6A70 rotates the sprite's +v axis to 270 - rotation in y-down
@@ -313,10 +316,6 @@ void build_race_hud_frame_for_car(const VehicleState& car,
     rotated(frame,kNeedle,center[0],center[1],16.0F*texel*scale,
             128.0F*texel*scale,8.0F*texel*scale,64.0F*texel*scale,
             4.7123889803846899-dial_angle,{{207,233,242}});
-    // The face is the frontmost FEng layer and keeps its blue ticks and hub
-    // ring visible over Redline and the needle.
-    place(slot,face_x,face_y,256,128,
-          {{0,128,192}},255);
     const int gear = car.gear;
     const char gear_label = gear == kVehicleGearReverse ? 'R' :
         gear == kVehicleGearNeutral ? 'N' :

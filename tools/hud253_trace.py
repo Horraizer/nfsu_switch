@@ -153,7 +153,8 @@ def main():
         if b'HUD_SingleRace.fng' not in package[:256]:
             raise ValueError('unexpected FEng package')
         report = ['HUD_SingleRace SHA-256 ' + hashlib.sha256(package).hexdigest().upper()]
-        for name, kind, at in (('fill', 'SAT', 0x4054), ('red', 'SAT', 0x411C),
+        for name, kind, at in (('gauge-group', 'SAD', 0x3F98),
+                               ('fill', 'SAT', 0x4054), ('red', 'SAT', 0x411C),
                                ('tach', 'SAT', 0x44AC), ('needle', 'SAT', 0x457C),
                                ('speed', 'SAD', 0x42F0), ('gear', 'SAD', 0x4680),
                                ('units', 'SAD', 0x43EC)):
