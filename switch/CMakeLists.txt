@@ -501,6 +501,7 @@ if(NFSU_BUILD_TESTS)
         -DNRO=${CMAKE_CURRENT_BINARY_DIR}/nfsu_switch_texture_compare.nro
         -DELF=$<TARGET_FILE:nfsu_switch_texture_compare> -DTITLE=nfsu_texture_compare
         -DSHADERS=${NFSU_SHADER_OUTPUT} -DREPLAY=${NFSU_RACE_INPUT}
+        -DPERFORMANCE_REPLAY=${NFSU_PERFORMANCE_INPUT}
         -DBUILD_TAG=${NFSU_RACE_BUILD_TAG}
         -P ${PROJECT_SOURCE_DIR}/tests/switch_race_romfs_check.cmake)
     set_tests_properties(nfsu_switch_texture_compare_nro PROPERTIES TIMEOUT 60)
