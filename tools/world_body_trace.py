@@ -210,7 +210,11 @@ def main():
     parser.add_argument('--census', action='store_true',
                         help='also inspect all nonempty immediate Global/Tracks/FrontEnd files')
     args = parser.parse_args()
-    root, out, workspace = args.root.resolve(), args.out.resolve(), Path.cwd().resolve()
+    workspace = Path.cwd().resolve()
+    # Windows Python 3.8 can leave resolve() relative if a parent is missing.
+    # Anchor CLI inputs before resolving so fresh output parents work too.
+    root = (workspace / args.root).resolve()
+    out = (workspace / args.out).resolve()
     protected = Path('E:/Games').resolve()
     if (out == root or root in out.parents or out in root.parents or
             out == protected or protected in out.parents):
