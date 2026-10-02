@@ -390,7 +390,8 @@ def main():
             (out / ('after-%d.json' % index)).write_bytes(value)
         if after != before:
             raise RuntimeError('input files/directories changed')
-    print('PASS: bounded HUD trace; full retail/reference manifests unchanged')
+    label = 'retail/reference' if args.reference else 'retail'
+    print('PASS: bounded HUD trace; full %s manifests unchanged' % label)
 
 
 if __name__ == '__main__':

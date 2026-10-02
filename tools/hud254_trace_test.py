@@ -165,7 +165,7 @@ class NativeReportGuards(unittest.TestCase):
                               ('language_sha256', LANGUAGE_SHA)):
             self.assertEqual(self.data[key], expected)
         before = sorted(REPORT.glob('before-*.json'))
-        self.assertEqual(len(before), 2)
+        self.assertIn(len(before), (1, 2))
         for path in before:
             self.assertEqual(path.read_bytes(), (REPORT/path.name.replace('before-', 'after-')).read_bytes())
             self.assertGreater(len(json.loads(path.read_bytes())), 30)
