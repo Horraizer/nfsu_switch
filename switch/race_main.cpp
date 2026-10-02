@@ -307,7 +307,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
           bool particles_enabled, const std::string& sky, bool tuned, bool glows,
           bool car_shading, bool wet_road_reflections,
           std::uint32_t requested_height, bool gpu_boost, bool hud_mode,
-          const VehicleUpgradeLevels* performance, bool handling_telemetry,
+          const VehicleUpgradeLevels* performance, bool handling_telemetry, RaceSteering steering,
           Screen& screen, PadState& pad) {
     selected_car_label = tuned ? "TUNED" : "STOCK";
     car_shading_label=car_shading ? "ON static" : "OFF";
@@ -331,6 +331,9 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     }
     RaceGpuScene scene; scene.set_particles_enabled(particles_enabled);
     RaceRun race; HeapUsage heap;
+    require(!replay_mode || steering==RaceSteering::baseline,"recovered steering requires --live; pinned replay uses baseline");
+    require(race.set_steering(steering,error),error);
+    std::printf("steering %s\n",race_steering_name(steering));
     if (performance) {
         require(race.set_performance_levels(*performance,error),error);
         std::printf("performance-levels %s\n",performance_levels_text(*performance).c_str());
@@ -724,12 +727,17 @@ int main(int argc, char** argv) {
             bool wet_road_reflections = false;
             bool explicit_performance = false, handling_telemetry = false;
             VehicleUpgradeLevels performance;
+            RaceSteering steering=RaceSteering::baseline; bool steering_seen=false;
             for (int i = 1; i < argc; ++i) {
                 const std::string arg = argv[i];
                 if (arg == "--replay") { replay = true; selected = true; }
                 else if (arg == "--live") { replay = false; selected = true; }
                 else if (arg == "--tuned") tuned = true;
                 else if (arg == "--handling-telemetry") handling_telemetry = true;
+                else if (arg == "--steering" && i+1<argc) {
+                    require(!steering_seen && parse_race_steering(argv[++i],steering),"--steering needs one baseline, recovered0 or recovered1");
+                    steering_seen=true;
+                }
                 else if (arg == "--performance-levels" && i+1 < argc) {
                     require(!explicit_performance,"duplicate --performance-levels");
                     std::string setup_error;
@@ -788,7 +796,7 @@ int main(int argc, char** argv) {
             if (selected) run(root,replay,panel,profile_frame,particles_enabled,sky,
                               tuned,glows,car_shading,wet_road_reflections,scene_height,
                               gpu_boost,hud,explicit_performance ? &performance : nullptr,
-                              handling_telemetry,screen,pad);
+                              handling_telemetry,steering,screen,pad);
         } catch (const Cancel&) {
         } catch (const std::exception& e) {
             std::printf("ERROR: %s\n",e.what()); std::fflush(stdout);

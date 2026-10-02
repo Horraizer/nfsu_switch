@@ -24,6 +24,7 @@
 # options, is in docs/VEHICLE.md.
 add_library(nfsu_vehicle
     src/vehicle.cpp
+    src/steering.cpp
     src/vehicle_script.cpp
 )
 

@@ -86,6 +86,10 @@ endif()
 # what an operating system is. Both programs link it, because both read
 # paths out of a narrow argv and both used to terminate on one that the
 # active ANSI code page spelled with a byte above 0x7E.
+add_executable(nfsu_steering_probe tools/steering_probe.cpp)
+target_link_libraries(nfsu_steering_probe PRIVATE nfsu_vehicle)
+nfsu_enable_warnings(nfsu_steering_probe)
+
 add_library(nfsu_arg_path
     src/arg_path.cpp
 )
@@ -1283,6 +1287,11 @@ if(NFSU_BUILD_TESTS)
     # request, the synthetic GLOBALB.BUN the probe guards read. It carries
     # the model's floating-point options because it recomputes the model's
     # own expressions and compares them bit for bit.
+    add_executable(nfsu_steering_tests tests/steering_tests.cpp)
+    target_link_libraries(nfsu_steering_tests PRIVATE nfsu_race_run)
+    nfsu_enable_warnings(nfsu_steering_tests)
+    add_test(NAME nfsu_steering_tests COMMAND nfsu_steering_tests)
+
     add_executable(nfsu_vehicle_tests
         tests/vehicle_tests.cpp
     )

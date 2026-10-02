@@ -63,6 +63,15 @@ def main():
             ('steering-target-and-slew', 0x460970, 0x460A76),
             ('steering-limit-and-angle-assist', 0x460A80, 0x460DD8),
             ('steering-rate', 0x460DE0, 0x460E66),
+            ('steering-constructor', 0x460E70, 0x460F2D),
+            ('steering-predicate', 0x4607A0, 0x4607D4),
+            ('history-allocation', 0x584180, 0x5841CF),
+            ('timed-history-constructor', 0x584360, 0x5843C4),
+            ('timed-history-clear', 0x5844B0, 0x5844FA),
+            ('timed-history-update', 0x584500, 0x58460E),
+            ('predicted-speed-consumer', 0x580240, 0x5802BC),
+            ('processed-control-writers', 0x461A60, 0x461D9D),
+            ('handbrake-input', 0x461E10, 0x461E58),
             ('angle-difference-helper', 0x464ED0, 0x464F11),
             ('ackermann', 0x588240, 0x5883DC),
             ('lateral-curve-caller', 0x5876F6, 0x587740),
@@ -88,7 +97,7 @@ def main():
             report.extend('%08X %-8s %s' % (i.address, i.mnemonic, i.op_str)
                           for i in instructions)
         curves = []
-        for va in (0x705F48, 0x705F5C, 0x705F70, 0x705F84, 0x705F98, 0x705FAC):
+        for va in (0x705F48, 0x705F5C, 0x705F70, 0x705F84, 0x705F98, 0x705FAC, 0x705F20, 0x705F34):
             n, x0, x1, scale, ptr = struct.unpack('<IfffI', read(va,20))
             if not 1 <= n <= 64:
                 raise ValueError('unexpected curve size')

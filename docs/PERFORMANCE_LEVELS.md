@@ -62,7 +62,7 @@ cmake -DMODE=before "-DROOT=$retail" -DMANIFEST=build/250-owner-manifest.txt -P 
 cmake -DMODE=after "-DROOT=$retail" -DMANIFEST=build/250-owner-manifest.txt -P tests/retail_manifest.cmake
 ```
 
-Telemetry goes to stdout, prefixed `handling-v1` (column names) and
+Telemetry goes to stdout, prefixed `handling-v2` (column names) and
 `handling ` (CSV rows). Normal execution emits neither. Two 120 Hz substeps
 are emitted every sixth driving tick, up to 2400 rows (120 driving seconds).
 Countdown has no physics rows. Logging uses fixed storage and stdio,
@@ -76,14 +76,23 @@ global collision step and substep. Raw axis/button values describe pad slot
 raw inputs, absent host timing and zero-speed body slip are `unavailable`.
 Wheel slip is unavailable without ground contact; airborne load and applied
 torque remain the actual quantities the solver calculated.
-Filtered steering is the actual DriveControls output supplied to that
-physics step. Requested road angle is observed before the existing slew;
+For baseline steering, filtered steering is the DriveControls output supplied
+to that physics step. For the optional recovered modes it is the input-history
+average; the separate raw-bound-steer column is the bound/calibrated input
+used for the target. Both use the model's sign, positive left, whereas the
+raw pad axis uses the player's sign, positive right. Requested road angle is
+observed before the selected road-wheel slew;
 actual angle and world-z yaw rate are model-step-end values, before the
 track adapter's body contacts or resets. Body slip is
 atan2(lateral speed, forward speed). Wheel loads are N, requested/applied
 drive torque is N m, wheel slip ratio/lateral slip are dimensionless, gear
 uses the model's slots (reverse 0, neutral 1, first 2). Camera heading is in
 radians and is the frame-end camera shared by the two substep rows.
+Version 2 also records forward speed in m/s, recovered limit/rate in degrees
+and degrees/s, shift-curve factor and steering mode (0 baseline, 1 recovered0,
+2 recovered1). Baseline's recovered limit/rate/factor columns are zero.
+See [Steering recovery](STEERING_RECOVERY.md) for the optional mode and its
+documented integration approximations. Historical captures below used version 1.
 
 For live input, sample age is microseconds from completion of host polling
 to entry at the simulation boundary. Switch catch-up ticks reuse the outer

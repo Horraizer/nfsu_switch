@@ -1,5 +1,9 @@
 # Handling gaps: why the demo feels heavy
 
+Issue #251 adds an opt-in steering consumer and numerical native comparison;
+see [Steering recovery](STEERING_RECOVERY.md) for its evidence and integration
+limits. This audit's observations below remain historical at their stated SHA.
+
 Issue #248, research at `9855277` (2026-09-30). The strongest explanation is
 too little turning authority: the invented speed/lock curve and front/rear
 tyre balance compound each other. The car responds fairly quickly to a new

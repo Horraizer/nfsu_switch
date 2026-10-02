@@ -27,10 +27,54 @@ double forward_speed(const VehicleState& state) {
 RaceSession::RaceSession(const VehicleTrackCourse& course)
     : RaceSession(course, stock_240sx_vehicle_spec()) {}
 
-RaceSession::RaceSession(const VehicleTrackCourse& course, const VehicleSpec& spec)
+RaceSession::RaceSession(const VehicleTrackCourse& course, const VehicleSpec& spec, RaceSteering steering)
     : course_(course), spec_(spec), model_(spec_),
       vehicle_(model_, course_, vehicle_track_first_lap_approximations()),
-      chase_(stock_240sx_chase_camera_table(), {}, {}), camera_world_(course.world) {}
+      chase_(stock_240sx_chase_camera_table(), {}, {}), camera_world_(course.world), steering_mode_(steering) {
+    // Explicit integration approximation: kinematic top-gear redline speed,
+    // not the unrecovered cached retail acceleration predictor (0x580240).
+    const auto& h = spec_.handling;
+    const int top = kVehicleGearFirst+int(h.forward_gears)-1;
+    if (top >= kVehicleGearFirst && top < int(kVehicleGearSlots)) {
+        const double final = h.final_drive_rear*h.rear_drive_fraction+
+            h.final_drive_front*(1-h.rear_drive_fraction);
+        const double ratio = final*h.gear_ratios[std::size_t(top)];
+        if (ratio>0) steering_max_speed_ = static_cast<float>(h.redline_rpm*
+            (6.28318530717958647692/60)*h.wheels[2].radius/ratio);
+    }
+}
+
+bool RaceSession::steer_input(VehicleInput& input, int substep, std::string& error) {
+    const auto& s = car(); const auto& q = s.orientation;
+    const double fx = 1-2*(q.y*q.y+q.z*q.z), fy = 2*(q.x*q.y+q.w*q.z);
+    const std::uint16_t difference = static_cast<std::uint16_t>(
+        chase_angle(fx,fy)-chase_angle(s.velocity.x,s.velocity.y));
+    SteeringContext context;
+    context.raw = float(input.steer);
+    context.seconds = float(1+double(steering_steps_)/120);
+    context.forward_speed = float(forward_speed(s));
+    context.speed = float(vehicle_sqrt(s.velocity.x*s.velocity.x+s.velocity.y*s.velocity.y+s.velocity.z*s.velocity.z));
+    context.heading_minus_velocity_deg = float(double(static_cast<std::int16_t>(difference))*(360.0/65536));
+    // Traced consumers are processed controls, not separate digital/analog
+    // sources. Use the applied port values, including reverse assist. The
+    // native speed/gear brake normalizer itself remains unrecovered here.
+    context.throttle = float(input.throttle);
+    context.handbrake = input.handbrake ? 1 : 0;
+    context.brake = float(input.brake);
+    context.predicted_max_speed = steering_max_speed_;
+    context.shift_elapsed = shifted_ ? float(double(steering_steps_-shift_step_)/120) : 1;
+    context.predicate = steering_mode_ == RaceSteering::recovered_predicate1;
+    if (!steering_step(context,steering_state_,steering_result_)) {
+        error = "recovered steering context refused at substep "+std::to_string(substep); return false;
+    }
+    input.road_steering = true;
+    input.road_angle = double(steering_result_.angle_deg)*(3.14159265358979323846/180);
+    input.road_target = double(steering_result_.target_deg)*(3.14159265358979323846/180);
+    input.steer_history = steering_result_.filtered;
+    input.steer_limit_deg=steering_result_.limit_deg; input.steer_rate_deg_s=steering_result_.rate_deg_s;
+    input.steer_shift_factor=steering_result_.shift_factor; input.steering_mode=int(steering_mode_);
+    return true;
+}
 
 double RaceCameraWorld::clear_fraction(const VehicleVec3& from, const VehicleVec3& to) const {
     const float a[3] = {float(from.x),float(from.y),float(from.z)};
@@ -46,6 +90,8 @@ double RaceCameraWorld::clear_fraction(const VehicleVec3& from, const VehicleVec
 
 bool RaceSession::start(std::string& error) {
     if (started_) { error = "race session is one-shot"; return false; }
+    if (steering_mode_ != RaceSteering::baseline && steering_mode_ != RaceSteering::recovered_predicate0 &&
+        steering_mode_ != RaceSteering::recovered_predicate1) { error="invalid steering mode"; return false; }
     if (!course_.has_route || !vehicle_.valid() || !vehicle_.start(course_.start)) {
         error = "race course/vehicle: " + vehicle_.error(); return false;
     }
@@ -73,9 +119,20 @@ bool RaceSession::advance(const GamepadFrame& pad, std::string& error) {
     if (!race_car_held(timing_)) {
         if (controls_.frame_state().reset) vehicle_.request_reset();
         for (int k = 0; k < 2; ++k) {
-            inputs_[k] = controls_.step(forward_speed(car()), car().gear, car().gearbox);
+            const bool recovered = steering_mode_ != RaceSteering::baseline;
+            inputs_[k] = controls_.step(forward_speed(car()), car().gear, car().gearbox,recovered);
+            if (recovered && !steer_input(inputs_[k],k,error)) { started_=false; return false; }
+            const int previous_gear = car().gear;
             if (!vehicle_.step(inputs_[k], track_telemetry_[k])) {
                 started_ = false; error = vehicle_.error(); return false;
+            }
+            if (recovered) {
+                if (track_telemetry_[k].reset != VehicleTrackReset::none) {
+                    steering_state_={}; steering_result_={}; shifted_=false;
+                } else if (previous_gear != car().gear) {
+                    shift_step_ = steering_steps_; shifted_=true;
+                }
+                ++steering_steps_;
             }
             for (std::size_t w = 0; w < kVehicleWheelCount; ++w) {
                 double phase = animation_.wheel_phase[w] +
@@ -142,6 +199,23 @@ void RaceSession::encode() {
     for (int k = 0; k < kRaceLapSlots; ++k) {
         u32(record_,static_cast<std::uint32_t>(r.lap_ticks[k]));
         u32(record_,static_cast<std::uint32_t>(r.lap_total_ticks[k]));
+    }
+    if (steering_mode_ != RaceSteering::baseline) {
+        u32(record_,0x31525453); // STR1, recovered-only state extension
+        u32(record_,static_cast<std::uint32_t>(steering_mode_));
+        const auto history = [this](const auto& h) {
+            for (float v : h.values) f32(record_,v);
+            for (float v : h.times) f32(record_,v);
+            f32(record_,h.sum); f32(record_,h.average);
+            for (auto v : {h.count,h.write,h.oldest}) u32(record_,static_cast<std::uint32_t>(v));
+        };
+        history(steering_state_.input); history(steering_state_.rate);
+        u32(record_,steering_state_.angle); f32(record_,steering_state_.previous_limit);
+        f32(record_,steering_state_.previous_raw); u32(record_,steering_state_.assist);
+        for (auto v : {steering_steps_,shift_step_}) {
+            u32(record_,static_cast<std::uint32_t>(v)); u32(record_,static_cast<std::uint32_t>(v>>32));
+        }
+        u32(record_,shifted_); f32(record_,steering_max_speed_);
     }
 }
 

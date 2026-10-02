@@ -100,9 +100,10 @@ enum class DriveThrottleCurve : std::uint8_t {
 };
 
 // How the steering input moves toward what the controller asks for, per
-// second of vehicle time. APPROXIMATION, all of it: speed.exe's input layer
+// second of vehicle time. Baseline APPROXIMATION: speed.exe's input layer
 // passes the steering byte through untouched (0x00461868..0x004618A4), and
-// whatever filters it later was not traced. The vehicle model already
+// #251's later steering path is now traced in docs/STEERING_RECOVERY.md.
+// The baseline vehicle model already
 // narrows the lock with speed and slews the road wheels at 3 rad/s; what it
 // cannot do is tell a button from a stick. A button jumps from 0 to full,
 // and at 30 m/s the model's full lock is reached in 25 ms, so a tap is a
@@ -290,7 +291,10 @@ public:
     // speed along its heading, m/s (VehicleTelemetry::forward_speed of the
     // step before; 0 before the first), `gear` its gear slot and `gearbox`
     // its mode, for the speed-sensitive steer rate and the reverse assist.
-    VehicleInput step(double forward_speed, int gear, VehicleGearbox gearbox);
+    // raw_steering bypasses only the approximate input slew for #251's
+    // recovered road-wheel path; binding, calibration and edges still run.
+    VehicleInput step(double forward_speed, int gear, VehicleGearbox gearbox,
+                      bool raw_steering = false);
 
     // The steering filter's value, player's sign (+1 right).
     double steer() const noexcept { return steer_; }

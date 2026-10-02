@@ -417,6 +417,14 @@ struct VehicleInput {
     double steer = 0.0;
     bool handbrake = false;
     VehicleShift shift = VehicleShift::none;
+    // #251 caller-computed road-wheel angle. When enabled, this replaces
+    // the approximate lock AND slew. Legacy input/telemetry bytes omit it.
+    bool road_steering = false;
+    double road_angle = 0;
+    double road_target = 0;
+    double steer_history = 0;
+    double steer_limit_deg = 0, steer_rate_deg_s = 0, steer_shift_factor = 0;
+    int steering_mode = 0;
 };
 
 struct VehicleWheelState {
@@ -493,6 +501,9 @@ struct VehicleTelemetry {
     double steer_angle = 0.0;
     // Diagnostic only; omitted from the legacy binary encoding and hash.
     double requested_steer_angle = 0.0; // rad, before road-wheel slew
+    double steering_history = 0.0; // diagnostic; omitted from legacy bytes
+    double steering_limit_deg = 0, steering_rate_deg_s = 0, steering_shift_factor = 0;
+    int steering_mode = 0;
     std::array<VehicleWheelTelemetry, kVehicleWheelCount> wheels{};
 };
 
