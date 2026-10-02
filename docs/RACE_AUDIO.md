@@ -11,7 +11,10 @@ silent so automated runs need no sound device.
 
 After each 60 Hz race tick, `race_audio_snapshot()` copies engine RPM,
 throttle, horizontal speed, maximum wheel slip, copied per-contact observations from both substeps,
-countdown, completed laps, and race finish state from `RaceSession`.
+the latest physics step, countdown, completed laps, and race finish state from
+`RaceSession`. The race tick identifies duplicate audio frames; contact aging
+uses the separately copied physics step because countdown advances only the
+race clock. An unchanged physics clock holds collision graph controls.
 The audio service has no mutable reference to
 the session. The simulator never reads from the audio service. The output
 thread mixes eleven fixed clip slots and one streamed stereo signal into

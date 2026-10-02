@@ -89,6 +89,7 @@ RaceAudioSnapshot race_audio_snapshot(const RaceSession& session) noexcept {
                 std::max(std::abs(wheel.slip_ratio), std::abs(wheel.slip_lateral)));
     snapshot.wheel_slip = finite_clamp(snapshot.wheel_slip, 0, 100);
     snapshot.tick = session.timing().step;
+    snapshot.physics_step = session.telemetry().step;
     for (const auto& step : session.physics_telemetry()) {
         snapshot.collision_reset |= step.reset != VehicleTrackReset::none;
         for (std::size_t i = 0; i < step.audio_contact_count && i < step.audio_contacts.size(); ++i) {
@@ -369,7 +370,7 @@ void RaceAudioService::on_tick(const RaceAudioSnapshot& snapshot) {
         finite_clamp((slip - 0.25) * 0.35, 0, 0.45) : 0;
     if (p.has_skid) p.mixer.control(4, q15(skid_gain), 65536);
     if (p.has_impact) {
-        const auto events = p.collisions.update(snapshot.tick,snapshot.contacts.data(),
+        const auto events = p.collisions.update(snapshot.tick,snapshot.physics_step,snapshot.contacts.data(),
             std::min(snapshot.contact_count,snapshot.contacts.size()),p.collision,snapshot.collision_reset);
         if (!events.processed) return;
         if (snapshot.collision_reset) {

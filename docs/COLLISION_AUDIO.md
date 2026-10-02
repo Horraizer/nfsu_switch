@@ -142,7 +142,10 @@ signals, stereo ratio, release, quiet unity and block-partition invariance.
 scaling/clamps in t m/s, polygon identity, tangent point speed and the current
 forward/up basis. It does not change solver arithmetic, contact order, RNG,
 state or encoded telemetry. `race_audio_snapshot()` copies both 120 Hz
-substeps. No audio object holds a mutable RaceSession reference.
+substeps and the latest physical step, separately from the race tick. The
+race tick includes countdown; it is never multiplied to infer contact time.
+Empty-contact expiry uses the copied physics clock, so countdown cannot expire
+live contacts. No audio object holds a mutable RaceSession reference.
 
 The live backend supplies only car-vs-track contacts. It uses contiguous
 polygon observations as contact episodes, with a new accumulator after a gap;
@@ -152,7 +155,9 @@ produce no guessed fallback. Live car/prop acceptance stays open until those
 backends exist. Episode starts select a variant, subsequent hits update the
 same voice's parameters from accumulated magnitudes; there is no invented
 impulse threshold or ten-tick cooldown. Duplicate ticks are ignored; pause
-holds the scheduler; reset discards pre-reset contacts and clears voices.
+holds the scheduler; an unchanged physics clock also holds graph controls.
+Reset discards pre-reset contacts and clears voices; repeated reset snapshots
+are idempotent. A physical clock rewind starts a fresh scheduler epoch.
 
 Two impact slots and two looping scrape slots are bounded port voice policy.
 Scrape separation ramps the voice to zero using the mixer's existing gain
@@ -176,6 +181,10 @@ cosmetic --tuned does not satisfy it. Console baseline is --scene-height 540
 --gpu-boost on; requested settings and observed clocks are separate evidence.
 `nfsu_race_audio_tests` checks selectors, boundaries, bank/curve identity,
 independent contacts, accumulated updates, episode reset, scrape modulation,
-duplicate ticks and output-only telemetry encoding. `nfsu_race_run_tests` and
+duplicate ticks and output-only telemetry encoding. Its real RaceSession
+countdown/wall run verifies copied contacts, scrape output, reset, paused
+snapshots and unchanged replay bytes against a silent session. A separate
+continuous-contact test covers clock offsets, empty-contact expiry and resume
+without extra graph/RNG advancement. `nfsu_race_run_tests` and
 the full replay gates check unchanged simulation pins. A build cannot replace
 matched original recordings or owner listening.

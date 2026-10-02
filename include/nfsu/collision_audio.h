@@ -55,7 +55,10 @@ struct CollisionAudioFrame {
 // a recovered retail body-pair lifetime or global admission algorithm.
 class CollisionScheduler {
 public:
-    CollisionAudioFrame update(std::uint64_t tick, const CollisionContact* contacts,
+    // tick identifies an audio frame; physics_step ages contacts even when
+    // the frame contains none. Neither clock is derived from the other.
+    CollisionAudioFrame update(std::uint64_t tick, std::uint64_t physics_step,
+                               const CollisionContact* contacts,
                                std::size_t count, const CollisionGraph& graph,
                                bool reset = false);
     void clear() noexcept;
@@ -77,6 +80,7 @@ private:
     unsigned family_four_ = 0, family_land_ = 0, family_three_ = 0;
     std::uint32_t rng_ = 0x2225A17U;
     std::uint64_t last_tick_ = 0;
+    std::uint64_t last_physics_step_ = 0;
     bool have_tick_ = false;
     unsigned random(unsigned range) noexcept;
 };

@@ -97,24 +97,28 @@ unsigned CollisionScheduler::random(unsigned range) noexcept {
 }
 void CollisionScheduler::clear() noexcept {
     pairs_ = {}; family_four_ = family_land_ = family_three_ = 0;
-    rng_ = 0x2225A17U; have_tick_ = false; last_tick_ = 0;
+    rng_ = 0x2225A17U; have_tick_ = false; last_tick_ = last_physics_step_ = 0;
 }
 
-CollisionAudioFrame CollisionScheduler::update(std::uint64_t tick,
+CollisionAudioFrame CollisionScheduler::update(std::uint64_t tick, std::uint64_t physics_step,
     const CollisionContact* contacts, std::size_t count, const CollisionGraph& g, bool reset) {
     CollisionAudioFrame out;
-    if (reset || (have_tick_ && tick < last_tick_)) clear();
     if (have_tick_ && tick == last_tick_) return out;
-    have_tick_ = true; last_tick_ = tick; out.processed = true;
+    if (reset || (have_tick_ && (tick < last_tick_ || physics_step < last_physics_step_))) clear();
+    // Countdown and held physics do not advance contact episodes or graph
+    // controls. Remember the race tick so a repeated reset is also idempotent.
+    const bool held = have_tick_ && physics_step == last_physics_step_;
+    have_tick_ = true; last_tick_ = tick; last_physics_step_ = physics_step;
+    if (held) return out;
+    out.processed = true;
     count = std::min(count,std::size_t(512));
     if (!contacts) count = 0;
     // A reset snapshot discards pre-reset contacts from the same tick.
     if (reset) count = 0;
-    std::uint64_t newest = tick*2;
-    for (std::size_t i = 0; i < count; ++i) newest = std::max(newest,contacts[i].step);
+    const std::uint64_t newest = physics_step;
     for (std::size_t i = 0; i < count; ++i) {
         const auto& c = contacts[i];
-        if ((c.other_kind != 3 && c.other_kind != 4) || !c.step) continue;
+        if ((c.other_kind != 3 && c.other_kind != 4) || !c.step || c.step > newest) continue;
         Pair* pair = nullptr;
         for (auto& p : pairs_) if (p.used && p.id == c.pair) { pair = &p; break; }
         if (!pair) for (auto& p : pairs_) if (!p.used || newest > p.last_step+2) {
