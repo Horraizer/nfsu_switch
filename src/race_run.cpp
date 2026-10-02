@@ -146,9 +146,9 @@ bool RaceRun::matches_event1_replay() const {
     if (!session_ || pending_) return false;
     if (explicit_performance_ && !performance_levels_equal(levels_,{})) return false;
     const auto& timing = session_->timing(); const auto& r = timing.racers[0];
-    return timing.outcome == RaceOutcome::finished && timing.step == 48336 &&
+    return timing.outcome == RaceOutcome::finished && timing.step == 48343 &&
         session_->telemetry().resets == 0 && r.highest_lap == 2 &&
-        r.lap_ticks[1] == 1616400 && r.lap_ticks[2] == 1611200 && r.finish_ticks == 3227600 &&
+        r.lap_ticks[1] == 1616320 && r.lap_ticks[2] == 1611720 && r.finish_ticks == 3228040 &&
         sequence_hash() == kEvent1SequenceHash && steps_hash() == kEvent1StepsHash;
 }
 bool RaceRun::matches_configured_replay() const {
@@ -156,9 +156,9 @@ bool RaceRun::matches_configured_replay() const {
     if (!explicit_performance_ || performance_levels_equal(levels_,{})) return matches_event1_replay();
     if (!session_ || pending_ || !performance_levels_equal(levels_,performance1_levels())) return false;
     const auto& timing=session_->timing(); const auto& r=timing.racers[0];
-    return timing.outcome==RaceOutcome::finished && timing.step==48324 &&
+    return timing.outcome==RaceOutcome::finished && timing.step==48293 &&
         session_->telemetry().resets==0 && r.highest_lap==2 &&
-        r.lap_ticks[1]==1616200 && r.lap_ticks[2]==1610560 && r.finish_ticks==3226760 &&
+        r.lap_ticks[1]==1615440 && r.lap_ticks[2]==1609240 && r.finish_ticks==3224680 &&
         sequence_hash()==kPerformance1SequenceHash && steps_hash()==kPerformance1StepsHash;
 }
 std::vector<std::string> RaceRun::result_lines() const {

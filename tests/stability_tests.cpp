@@ -103,6 +103,87 @@ void proving(std::ostream* output) {
     }
     std::cout<<"PASS deterministic walls, slope/crest, drop/landing, ground loss and reset matrix\n";
 }
+
+
+void no_contact(std::ostream* output) {
+    VehicleTrackLayout layout;layout.name="stability-flat";
+    for(int x=-512;x<512;x+=32)for(int y=-512;y<512;y+=32) {
+        VehicleTrackQuad q;
+        const float c[4][3]={{float(x),float(y),10},{float(x+32),float(y),10},
+            {float(x+32),float(y+32),10},{float(x),float(y+32),10}};
+        std::memcpy(q.corner,c,sizeof(c));layout.quads.push_back(q);
+    }
+    layout.loop={{{-400,-400}},{{400,-400}},{{400,400}},{{-400,400}}};
+    layout.grid[2]=10;
+    VehicleTrackCourse course;std::string error;
+    require(build_vehicle_track_course(layout,course,error),"flat course");
+    for(double speed:{0.,20.,35.,50.})for(int axis:{12000,32767})for(int mode=0;mode<3;++mode) {
+        course.start.speed=speed;
+        RaceSession a(course,stock_240sx_vehicle_spec(),RaceSteering(mode));
+        RaceSession b(course,stock_240sx_vehicle_spec(),RaceSteering(mode));
+        require(a.start(error)&&b.start(error),"flat starts");
+        const std::string label="flat-"+std::to_string(int(speed))+"-"+std::to_string(axis);
+        for(int tick=0;tick<600;++tick) {
+            const auto pad=race_input_frame({1,tick>0?gamepad_button_bit(GamepadButton::trigger_right):0,
+                tick>=60&&tick<480?axis:0},tick);
+            require(a.advance(pad,error)&&b.advance(pad,error),"flat advances");
+            require(a.record()==b.record(),"flat deterministic");
+            for(const auto& x:a.physics_telemetry()) {
+                if(!x.step)continue;
+                require(x.contacts==0 && x.resets==0,"no contact cornering stays clear");
+                const auto& q=x.orientation;
+                require(1-2*(q.x*q.x+q.y*q.y)>.98,"flat cornering stays upright");
+                if(output)write(*output,label.c_str(),mode,x);
+            }
+        }
+    }
+    std::cout<<"PASS paired no-contact cornering speeds and axes in all steering modes\n";
+}
+
+void curbs(std::ostream* output) {
+    const VehicleModel model(stock_240sx_vehicle_spec());
+    for(float height:{.125F,.25F,.5F}) {
+        VehicleTrackLayout layout;layout.name="stability-curb";
+        for(int x=-64;x<96;x+=32)for(int y=-96;y<96;y+=32) {
+            VehicleTrackQuad q;const float h=x<0?10:10+height;
+            const float c[4][3]={{float(x),float(y),h},{float(x+32),float(y),h},
+                {float(x+32),float(y+32),h},{float(x),float(y+32),h}};
+            std::memcpy(q.corner,c,sizeof(c));layout.quads.push_back(q);
+            if(x==0) {
+                VehicleTrackQuad face;
+                const float v[4][3]={{0,float(y),10},{0,float(y+32),10},
+                    {0,float(y+32),10+height},{0,float(y),10+height}};
+                std::memcpy(face.corner,v,sizeof(v));layout.quads.push_back(face);
+            }
+        }
+        layout.grid[0]=-8;layout.grid[2]=10;
+        VehicleTrackCourse course;std::string error;
+        require(build_vehicle_track_course(layout,course,error),"curb course");
+        for(double speed:{10.,20.,35.,50.})for(int angle:{0,2731,8192}) {
+            VehicleTrackSession a(model,course),b(model,course);
+            auto pose=course.start;pose.heading=vehicle_track_heading(angle);pose.speed=speed;
+            require(a.start(pose)&&b.start(pose),"curb start");
+            bool reached=false;
+            const std::string label="curb-"+std::to_string(int(height*1000))+"-"+
+                std::to_string(int(speed))+"-"+std::to_string(angle);
+            for(int k=0;k<240;++k) {
+                VehicleTrackTelemetry x,y;
+                require(a.step({},x)&&b.step({},y),"curb step");
+                std::array<std::uint8_t,kVehicleTrackTelemetryRecordBytes> xb{},yb{};
+                encode_vehicle_track_telemetry(x,xb);encode_vehicle_track_telemetry(y,yb);
+                require(xb==yb,"curb response deterministic");
+                require(x.resets==0,"no reset conceals curb response");
+                reached=reached||x.contacts>0;
+                for(const auto& w:x.model.wheels)
+                    reached=reached||(w.contact && std::fabs(w.ground_point.z-(10+height))<1e-6);
+                if(output)write(*output,label.c_str(),0,x);
+            }
+            require(reached,"raised curb reached by wheel or body");
+        }
+    }
+    std::cout<<"PASS paired curb heights, speeds and approach angles with body contacts\n";
+}
+
 void retail(const std::filesystem::path& root,std::ostream* output) {
     VehicleTrackCourse course;std::string error;
     require(load_vehicle_track_course(root/"Tracks/TRACKB1003.lzc",2,0,0,0,course,error),"retail course");
@@ -141,7 +222,7 @@ int main(int argc,char** argv) {
             else if(option=="--out") {const auto path=argument_path(argv[++i]);require(!std::filesystem::exists(path),"output must be fresh");output.open(path);require(bool(output),"output open");output<<std::setprecision(17);}
             else require(false,"unknown option");
         }
-        kernel();proving(output.is_open()?&output:nullptr);
+        kernel();proving(output.is_open()?&output:nullptr);no_contact(output.is_open()?&output:nullptr);curbs(output.is_open()?&output:nullptr);
         if(!root.empty())retail(root,output.is_open()?&output:nullptr);
         if(output.is_open()){output.flush();require(bool(output),"output write");}
         std::cout<<"stability tests: all checks passed\n";return 0;

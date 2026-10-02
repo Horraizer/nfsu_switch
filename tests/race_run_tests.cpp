@@ -176,7 +176,7 @@ int main(int argc, char** argv) {
                     pad.pads[0].axes[0] == run.steer && pad.time_us == ticks*1000000/60,
                     "replay pad differs from desktop");
         }
-        require(ticks == 48336 && replay.exhausted() && !replay.next(ticks, pad, error), "replay extent differs");
+        require(ticks == 48343 && replay.exhausted() && !replay.next(ticks, pad, error), "replay extent differs");
         RaceRun unopened;
         require(!unopened.commit(error) && !unopened.simulate({}, error), "unstarted race accepted");
         MeshVertex vertices[3]{}; std::uint16_t indices[] = {0,1,2};
@@ -465,7 +465,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         std::size_t frames = 0, max_draws = 0;
-        const std::set<std::uint64_t> inspect = {1,163,180,600,1164,6000,11344,12459,13128,24300,35396,36510,37177,48336};
+        const std::set<std::uint64_t> inspect = {1,163,180,600,1164,6000,11344,12459,13128,24300,35396,36510,37177,48343};
         const bool full = argc > 3 && std::string(argv[3]) == "--full-draws";
         const bool sampled = argc > 3 && std::string(argv[3]) == "--sample-draws";
         require(argc <= 3 || full || sampled, "unknown retail draw sampling option");

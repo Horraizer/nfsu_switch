@@ -51,7 +51,9 @@ Expected stability values live in that test, not this document.
 Without --root, the test checks the native table/torque contexts, independent
 linear jump motion and the existing proving-ground matrix: walls square,
 oblique and glancing at several speeds, slope/crest, drop/landing, ground
-loss, route/reset zones and manual/reset semantics. Existing planted pins
+loss, route/reset zones and manual/reset semantics. It also reaches curb
+faces at several heights, approach angles and speeds in paired sessions.
+Existing planted pins
 must remain unchanged. Airborne pins and recordings move because the old
 stream omitted the recovered torque; each changed pin needs fresh evidence.
 

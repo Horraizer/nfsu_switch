@@ -1357,7 +1357,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     for (const auto& wheel : s.wheels) support += wheel.contact ? 1U : 0U;
     const VehicleVec3 support_torque =
         vehicle_low_support_torque(s.angular_velocity, d_.mass, support, 0);
-    torque = add(torque, support_torque);
+    if (support < 2) torque = add(torque, support_torque);
 
     // Semi-implicit Euler.
     s.velocity = add(s.velocity, scale(force, dt / d_.mass));
