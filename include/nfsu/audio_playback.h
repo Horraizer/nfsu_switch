@@ -18,7 +18,7 @@
 namespace nfsu::audio {
 
 constexpr std::uint32_t kOutputRate = 48000;
-constexpr std::size_t kMixVoices = 9;
+constexpr std::size_t kMixVoices = 11;
 
 // PCM is interleaved signed 16-bit at its original rate. Loop end is exclusive.
 struct PcmClip {

@@ -44,12 +44,12 @@ struct ProfileResultContext {
     const FrameProfileStats& cpu;
     const DekoGpuProfile& gpu;
     const HeapUsage& heap;
-    ClockReadings clocks;
+    ClockReadings clocks{};
     double load_ms = 0, upload_ms = 0;
     std::uint64_t stream_bytes = 0, persistent_bytes = 0, gpu_bytes = 0;
     std::uint64_t storage_bytes = 0;
-    DekoMemoryUsage memory;
-    DekoGpfifoUsage gpfifo;
+    DekoMemoryUsage memory{};
+    DekoGpfifoUsage gpfifo{};
     const char* sky = "ON";
     DekoSceneTarget scene_target{1280, 720, false};
     bool tuned = false, particles = true, glows = false;

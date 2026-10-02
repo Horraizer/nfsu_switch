@@ -28,7 +28,7 @@ if(WIN32 AND NOT NINTENDO_SWITCH)
 endif()
 nfsu_enable_warnings(nfsu_audio_output)
 
-add_library(nfsu_race_audio src/race_audio.cpp)
+add_library(nfsu_race_audio src/race_audio.cpp src/collision_audio.cpp)
 target_link_libraries(nfsu_race_audio PUBLIC nfsu_audio_playback
     nfsu_audio_output nfsu_race_session)
 target_include_directories(nfsu_race_audio PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

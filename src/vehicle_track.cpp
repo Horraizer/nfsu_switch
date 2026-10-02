@@ -733,6 +733,15 @@ void VehicleTrackSession::resolve_body(VehicleState& s, VehicleTrackTelemetry& t
         const VehicleVec3 arm = hit.arm;
         const VehicleVec3 point_velocity = add(s.velocity, cross(s.angular_velocity, arm));
         const double approach = dot(point_velocity, hit.normal);
+        // Copy only: this observer never changes contact order or solver math.
+        VehicleContactObservation* audio_contact = nullptr;
+        if (t.audio_contact_count < t.audio_contacts.size()) {
+            audio_contact = &t.audio_contacts[t.audio_contact_count++];
+            audio_contact->polygon = static_cast<std::uint32_t>(hit.polygon);
+            audio_contact->forward = forward; audio_contact->up = up;
+            const auto audio_tangent = sub(point_velocity, scale(hit.normal, approach));
+            audio_contact->slide_mps = vehicle_sqrt(dot(audio_tangent, audio_tangent));
+        }
         if (!(approach < 0.0)) {
             continue;
         }
@@ -800,6 +809,7 @@ void VehicleTrackSession::resolve_body(VehicleState& s, VehicleTrackTelemetry& t
             }
         }
         // 0x0046A260, then 0x00584F60's two clamps and the angular factor.
+        if (audio_contact) audio_contact->impulse = scale(impulse, 1.0 / unit);
         VehicleVec3 applied = scale(impulse, mass_scale);
         const double linear_limit = kVehicleTrackImpulseLimit * unit;
         const double size = vehicle_sqrt(dot(applied, applied));

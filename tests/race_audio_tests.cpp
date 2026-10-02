@@ -124,6 +124,154 @@ void test_retail_music_prefix(const std::filesystem::path* root) {
     std::cout << "race audio: retail music prefix pinned\n";
 }
 
+// Source-derived collision selectors and port episode policy are tested
+// separately: these tests do not assert retail lifecycle/RNG parity.
+void test_collision_graph(const std::filesystem::path* root) {
+    using namespace nfsu::audio;
+    CollisionDeck deck;
+    unsigned previous=99;
+    for (unsigned cycle=0;cycle<6;++cycle) {
+        std::array<bool,10> seen{};
+        for (unsigned i=0;i<10;++i) {
+            const unsigned selected=deck.next(97*cycle+3*i+7);
+            check(selected<10 && !seen[selected],"deck consumes every variant once per cycle");
+            if (i==0) check(selected!=previous,"deck excludes previous cycle final choice at wrap");
+            seen[selected]=true; previous=selected;
+        }
+    }
+    CollisionContact c;
+    c.impulse={1,0,0};
+    check(world_collision_subtype(c)==4,"longitudinal subtype from greater branch");
+    c.impulse={0,1,0};
+    check(world_collision_subtype(c)==5,"transverse subtype from lesser branch");
+    c.impulse={0,0,1};
+    check(world_collision_subtype(c)==3,"upright vertical impulse");
+    c.up.z=0; check(world_collision_subtype(c)==2,"vertical overturned branch");
+    c.up.z=0.5; check(world_collision_subtype(c)==4,"vertical intermediate orientation");
+    c.up.z=double(0.7070000171661377F);
+    check(world_collision_subtype(c)==4,"vertical up boundary is strict");
+    c.up.z=std::nextafter(c.up.z,1.0);
+    check(world_collision_subtype(c)==3,"just above vertical up boundary");
+    c.up={0,0,1}; c.impulse={1,0,0}; c.forward={0.707,0,0};
+    check(world_collision_subtype(c)==5,"horizontal equality selects lesser family");
+    c.forward.x=std::nextafter(0.707,1.0);
+    check(world_collision_subtype(c)==4,"horizontal threshold greater selects family4");
+    c.other_kind=4; check(world_collision_subtype(c)==4,"placed body uses world class");
+    c.other_kind=1; check(world_collision_subtype(c)==-1,"smokeable not guessed as world");
+    c.other_kind=0; check(world_collision_subtype(c)==-1,"car class not guessed as world");
+    c.other_kind=3; c.impulse={};
+    check(world_collision_subtype(c)==-1,"zero impulse cannot classify impact");
+    check(collision_intensity(51,4)==127 && collision_intensity(39,5)==127 &&
+          collision_intensity(3,3)==127,"subtype-scaled saturation boundaries");
+    check(collision_intensity(51.0/2,4)==64 && collision_intensity(0,4)==0 &&
+          collision_intensity(-1,4)==0 && collision_intensity(1,-1)==0,
+          "intensity nearest-even and invalid input");
+    check(collision_intensity(51.0/254,4)==0 && collision_intensity(3*51.0/254,4)==2,
+          "half-integer intensity ties round to even");
+    CollisionGraph graph;
+    for (int i=0;i<128;++i) {
+        graph.impact_gain[i]=std::int16_t(i*200);
+        graph.impact_pitch[i]=std::int16_t(i*3-100);
+        graph.scrape_gain[i]=std::int16_t(i*200);
+        graph.scrape_pitch[i]=std::int16_t(2000+i*10);
+    }
+    graph.scrape_gain_targets.fill(32767); graph.scrape_pitch_targets.fill(400);
+    c={}; c.step=1; c.pair=7; c.impulse={51,0,0}; c.slide_mps=20;
+    CollisionScheduler scheduler;
+    auto f=scheduler.update(1,&c,1,graph);
+    check(f.processed && f.impacts.size()==1 && f.impacts[0].sample==40 &&
+          f.impacts[0].start,"increment-before-use three-family sample binding");
+    const auto volume=std::uint32_t(std::nearbyint(127.0*200*32767/32768));
+    check(f.impacts[0].gain_q15==volume,"graph gain product, not impulse guessed gain");
+    const int base_pitch=4096+127*3-100;
+    check(f.impacts[0].pitch_q16 >= unsigned(base_pitch-150)*16 &&
+          f.impacts[0].pitch_q16 <= unsigned(base_pitch+150)*16,
+          "pitch lookup plus separate bounded jitter");
+    check(f.scrapes.size()==1 && f.scrapes[0].start && f.scrapes[0].gain_q15>0,
+          "scrape starts and ramp leaves zero");
+    const double ramp_gain=32767.0*(1000.0/60)/370;
+    const int ramp_integer=int(std::nearbyint(ramp_gain));
+    const int scrape_base=int(std::nearbyint(64.0*200*20000/32768));
+    check(f.scrapes[0].gain_q15==std::uint32_t(std::nearbyint(
+          double(scrape_base)*ramp_integer*double(0x1.0002p-15F))),
+          "scrape gain curves, configured gain and native ramp product");
+    check(!scheduler.update(1,&c,1,graph).processed,"same tick ignored without silence command");
+    c.step=2; f=scheduler.update(2,&c,1,graph);
+    check(f.impacts.size()==1 && !f.impacts[0].start && f.impacts[0].sample==40,
+          "same episode updates parameters without restarting PCM");
+    // Another polygon is an independent port episode. Opposing impulses do
+    // not cancel and one event cannot impose an invented shared cooldown.
+    CollisionContact simultaneous[2]{c,c};
+    simultaneous[0].step=5; simultaneous[0].pair=8;
+    simultaneous[1].step=5; simultaneous[1].pair=9; simultaneous[1].impulse={-51,0,0};
+    f=scheduler.update(3,simultaneous,2,graph);
+    check(f.impacts.size()==2 && f.impacts[0].sample==41 && f.impacts[1].sample==39,
+          "simultaneous opposite contacts select independent round-robin variants");
+    f=scheduler.update(4,nullptr,0,graph);
+    check(f.scrapes.empty(),"contact separation stops scrape commands");
+    c.step=9; f=scheduler.update(5,&c,1,graph);
+    check(f.impacts.size()==1 && f.impacts[0].start,"separate contact restarts immediately, no ten-tick cooldown");
+    f=scheduler.update(6,&c,1,graph,true);
+    check(f.impacts.empty() && f.scrapes.empty(),"reset discards contacts copied before reset");
+    c.step=13; c.impulse={0,1,0}; f=scheduler.update(7,&c,1,graph);
+    check(f.impacts.size()==1 && f.impacts[0].sample==36,"reset restores four-family counter");
+    scheduler.clear(); c.step=1; c.impulse={25.5,0,0}; c.slide_mps=0;
+    f=scheduler.update(1,&c,1,graph);
+    const auto first_gain=f.impacts[0].gain_q15;
+    c.step=2; c.impulse={-25.5,0,0};
+    f=scheduler.update(2,&c,1,graph);
+    check(f.impacts.size()==1 && !f.impacts[0].start && f.impacts[0].gain_q15>first_gain &&
+          f.impacts[0].gain_q15==volume,"opposing impulses accumulate magnitudes within a pair");
+    scheduler.clear(); c.step=1; c.impulse={0,0,3}; c.slide_mps=20;
+    f=scheduler.update(1,&c,1,graph);
+    check(f.impacts.size()==1 && f.impacts[0].sample==31,"landing family is independent");
+    c.step=4; c.impulse={0,0,0}; c.slide_mps=20;
+    f=scheduler.update(2,&c,1,graph);
+    check(f.impacts.empty() && !f.scrapes.empty(),"slide observation need not manufacture an impulse");
+    for (unsigned tick=3;tick<180;++tick) {
+        CollisionContact steps[2]{c,c};
+        steps[0].step=2*tick-1; steps[1].step=2*tick;
+        f=scheduler.update(tick,steps,2,graph);
+        check(f.scrapes.size()==1 && !f.scrapes[0].start && f.scrapes[0].gain_q15<=20000,
+              "sustained scrape bounded across oscillator/deck wraps");
+    }
+    std::array<std::uint8_t,nfsu::kVehicleTrackTelemetryRecordBytes> before{},after{};
+    nfsu::VehicleTrackTelemetry telemetry;
+    nfsu::encode_vehicle_track_telemetry(telemetry,before);
+    telemetry.audio_contact_count=1; telemetry.audio_contacts[0].impulse={1,2,3};
+    nfsu::encode_vehicle_track_telemetry(telemetry,after);
+    check(before==after,"output contact copy excluded from replay bytes");
+    if (!root) return;
+    const auto read=[&](const char* name) {
+        std::ifstream in(*root/name,std::ios::binary);
+        check(bool(in),"retail collision bank available");
+        return std::vector<std::uint8_t>((std::istreambuf_iterator<char>(in)),{});
+    };
+    auto impact=read("Sound/IG_GLOBAL/IMPACT_MB.abk");
+    const auto scrape=read("Sound/IG_GLOBAL/SCRAPE_MB.abk");
+    const auto retail=collision_graph(impact,scrape);
+    // Expected entries are read independently at traced source offsets.
+    const auto signed16=[](const auto& b,std::size_t at) {
+        const unsigned u=unsigned(b[at]) | (unsigned(b[at+1])<<8);
+        return u<32768 ? int(u) : int(u)-65536;
+    };
+    for (unsigned i=0;i<128;++i)
+        check(retail.impact_gain[i]==signed16(impact,0xA4C+2*i) &&
+              retail.impact_pitch[i]==signed16(impact,0xB5C+2*i) &&
+              retail.scrape_gain[i]==signed16(scrape,0x39C+2*i) &&
+              retail.scrape_pitch[i]==signed16(scrape,0x4AC+2*i),
+              "collision curves bind to identified graph nodes");
+    const auto bank=parse_abk(impact);
+    for (unsigned sample=30;sample<=42;++sample)
+        check(std::any_of(bank.samples.begin(),bank.samples.end(),
+              [&](const auto& entry){return entry.index==sample && entry.frames>0;}),
+              "world Player table selects existing nonempty PCM");
+    impact[0]^=1;
+    bool rejected=false;
+    try { (void)collision_graph(impact,scrape); } catch(const std::runtime_error&) {rejected=true;}
+    check(rejected,"unsupported bank must fail, not guess a collision mapping");
+    std::cout << "race audio: collision graph checked\n";
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -141,6 +289,7 @@ int main(int argc, char** argv) {
         const std::filesystem::path root =
             argc == 2 ? nfsu::argument_path(argv[1]) : std::filesystem::path();
         test_retail_music_prefix(argc == 2 ? &root : nullptr);
+        test_collision_graph(argc == 2 ? &root : nullptr);
         std::cout << "race audio tests passed\n";
         return 0;
     } catch (const std::exception& e) {

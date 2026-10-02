@@ -43,6 +43,15 @@ RANGES = [
     ('integer-sum', 0x64D0D0, 0x64D0EC),
     ('player-selection', 0x64D860, 0x64D95D),
     ('curve-interpolation', 0x532840, 0x5328AB),
+    ('scrape-deck', 0x64CA80, 0x64CB25),
+    ('scrape-edge', 0x64CB90, 0x64CBCB),
+    ('scrape-oscillator', 0x64D960, 0x64DA70),
+    ('scrape-ramp', 0x64DA70, 0x64DB13),
+    ('graph-clock-fragment', 0x651E84, 0x651EFA),
+    ('pair-constructor', 0x465640, 0x4656F4),
+    ('pair-delete', 0x465700, 0x465764),
+    ('scrape-speed-fragment', 0x46C0A8, 0x46C0DC),
+    ('impulse-audio-call-fragment', 0x46C3DB, 0x46C3F3),
 ]
 
 
@@ -131,7 +140,8 @@ def main():
         (out / 'instructions.txt').write_text('\n'.join(lines)+'\n', encoding='ascii')
         constants = {}
         for va in (0x6CC7A4, 0x6CC7BC, 0x6CCB34, 0x6CCC3C, 0x6CCC68,
-                   0x6CCA38, 0x7000D8, 0x6B7288, 0x6B728C):
+                   0x6CCA38, 0x7000D8, 0x6B7288, 0x6B728C,
+                   0x6CCA94, 0x6CC9F8, 0x6CCB4C, 0x6CC7C8):
             b = read(va, 4)
             constants[hex(va)] = dict(u32=struct.unpack('<I', b)[0], f32=struct.unpack('<f', b)[0])
         constants['0x6ccc70'] = struct.unpack('<d', read(0x6CCC70, 8))[0]

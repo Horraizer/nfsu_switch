@@ -1,6 +1,7 @@
 # Collision audio trace (issue #222)
 
-This is a bounded static trace of PC retail, not owner listening acceptance.
+This is a bounded static trace and supported world-audio implementation.
+Owner listening acceptance remains open.
 The tool `tools/collision_audio_trace.py` reads the source identities below,
 checks exact instruction boundaries, resolves native-bank module exports and
 Player tables, and reports integer lookup curves and callback ordinals. It
@@ -29,8 +30,11 @@ used. Named fragment ranges are not claims of whole-function coverage.
 computes its magnitude and adds that magnitude to collision record `+0x60`.
 This is per record, not the magnitude of the sum of all impulses in a tick.
 The constructor at `0x00465640` clears it. `+0x0C` holds last-touch clock;
-`+0x30` the witness; `+0x40` a contact-motion parameter. The exact caller
-units and record reset/destruction cadence still need verification.
+`+0x30` the witness; `+0x40` a contact-motion parameter.
+`0x0046C0A8..0x0046C0D8` computes the magnitude of the tangent vector,
+and `0x0046C3DB..0x0046C3EE` passes it to the record update. The adapter
+uses tangent point speed in m/s. Retail pair reset/destruction cadence
+still needs verification.
 `0x00465AAC` calls vector normalizer `0x00567370` with the current impulse
 and writes its unit direction to record `+0x70`.
 
@@ -94,8 +98,19 @@ SCRAPE bank's only module: initializer `0x9C`, template `0x1B0`, Player
 `0x32C`, table `0x37C`, one entry selecting sample 1. `0x00531470` supplies
 variant 0. `0x00531030` maps record `+0x40` through the 0..40 input curve.
 `0x00531170` tests the contact-motion parameter for scrape admission.
-The graph has gain/pitch curves, oscillators and ramp nodes; single-carrier
-binding does not establish their modulation or time units. The smokeable
+The graph uses gain curve `0x38C`, pitch curve `0x49C`, square oscillators
+(callback 28, `0x0064D960`) with 250/2000 ms periods, rising-edge nodes
+(callback 10, `0x0064CB90`), and ten-entry decks without replacement
+(callback 8, `0x0064CA80`). The first draw after wrap excludes the last draw
+of the previous cycle. Deck indices select pitch targets at `0x5AC` and gain
+targets at `0x5D0`. Ramps (callback 29, `0x0064DA70`) have durations 261/370 ms.
+The initial deck index is zero before a rising edge. Gain first uses configured
+20000 (`0x006F4F28`) and 1/32768, then modulation factor float bits `0x38000100`.
+Pitch is the pitch-curve output plus its ramp; the nominal pitch parameter is
+not copied to this path. `0x00651E84..0x00651EFA` stores the graph's control
+delta with 10..100 bounds and a fallback; the tool reports its exact constants.
+The port evaluates the graph at 60 Hz with a private RNG; original scheduling
+and seed remain unknown. The smokeable
 scrape export is absent from this bank; no world-scrape fallback is proved.
 
 ## Lifetime, scope and missing evidence
@@ -107,9 +122,9 @@ physics pair accumulator resets on the same interval. Impact admission at
 `0x00531FF0` also suppresses competing records; its actor/pool ordering is
 not yet reproduced. No fixed ten-tick impact cooldown was found.
 
-Remaining evidence: pair creation/reset cadence; `+0x40` caller units;
-car-class variants; smokeable impact parameter path; scrape modulation and
-fade; global voice admission; category/spatial settings; audio RNG seed;
+Remaining evidence: pair creation/reset cadence;
+car-class variants; smokeable impact parameter path; exact scrape sample
+loop/restart/fade semantics; global voice admission; category/spatial settings; audio RNG seed;
 matched original event0 recordings and Switch listening. Synthetic typed
 car/prop events cannot prove live actors exist. Original evidence request:
 https://git.accad.pro/murzintsevav/nfsu-switch/issues/222#issuecomment-7025
@@ -120,3 +135,47 @@ linear release keep PCM16 bounded. Raw overloads, attenuated frames and final
 clips have separate counters; zero final clips alone does not prove sensible
 mix balance. `nfsu_audio_playback_tests` checks coherent and opposing full-scale
 signals, stereo ratio, release, quiet unity and block-partition invariance.
+
+## Port adapter and listening matrix
+
+`VehicleTrackTelemetry::audio_contacts` captures current solver J before mass
+scaling/clamps in t m/s, polygon identity, tangent point speed and the current
+forward/up basis. It does not change solver arithmetic, contact order, RNG,
+state or encoded telemetry. `race_audio_snapshot()` copies both 120 Hz
+substeps. No audio object holds a mutable RaceSession reference.
+
+The live backend supplies only car-vs-track contacts. It uses contiguous
+polygon observations as contact episodes, with a new accumulator after a gap;
+these are NOT recovered retail body-pair IDs or reset semantics. Typed kind 4
+inputs use the proved world path; kind 0 and 1 are explicitly unsupported and
+produce no guessed fallback. Live car/prop acceptance stays open until those
+backends exist. Episode starts select a variant, subsequent hits update the
+same voice's parameters from accumulated magnitudes; there is no invented
+impulse threshold or ten-tick cooldown. Duplicate ticks are ignored; pause
+holds the scheduler; reset discards pre-reset contacts and clears voices.
+
+Two impact slots and two looping scrape slots are bounded port voice policy.
+Scrape separation ramps the voice to zero using the mixer's existing gain
+ramp, without claiming the original fader duration. Spatial/category settings,
+retail record admission and exact retail random sequence are not reproduced.
+These limitations prevent a claim of complete collision-audio parity.
+
+| Scenario | Listen / record |
+| --- | --- |
+| Event0 original, low/medium/high wall hit | Same location, speed and angle; compare onset, family, pitch and loudness. |
+| Shallow wall hit and sustained slide | Impact once per episode, continuous scrape, smooth speed response and separation. |
+| Two hits within one second / simultaneous contacts | No invented shared cooldown; inspect voice replacement and loudness. |
+| Upright landing / sideways or overturned landing | Compare vertical family with orientation and original capture. |
+| Pause, resume, reset | No stale impact replay; scrape stops on reset and pauses with game. |
+| Music + engine + tyres + impact | Record OVER, LIMIT and CLIP; listen for limiter pumping and mix balance. |
+| Car / placed prop / smokeable prop | Typed mapping evidence only where proved; live actors are still missing. |
+
+Coordinator schedules all console runs. Required target remains original
+Underground intro event0, actual tuned setup, opponents and full HUD. Event1 or
+cosmetic --tuned does not satisfy it. Console baseline is --scene-height 540
+--gpu-boost on; requested settings and observed clocks are separate evidence.
+`nfsu_race_audio_tests` checks selectors, boundaries, bank/curve identity,
+independent contacts, accumulated updates, episode reset, scrape modulation,
+duplicate ticks and output-only telemetry encoding. `nfsu_race_run_tests` and
+the full replay gates check unchanged simulation pins. A build cannot replace
+matched original recordings or owner listening.
