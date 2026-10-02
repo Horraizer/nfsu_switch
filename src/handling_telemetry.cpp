@@ -7,7 +7,7 @@ bool HandlingTelemetryLog::write(const RaceSession& session, const GamepadFrame&
     if (!output_ || rows_ >= kMaxRows || !session.physics_telemetry()[0].step) return true;
     if (drive_ticks_++ % 6) return true;
     if (!header_) {
-        if (std::fputs("handling-v1 tick,frame,physics,substep,connected,raw_steer_axis,raw_buttons,sample_age_us,filtered_steer,requested_road_rad,actual_road_rad,yaw_world_rad_s,body_slip_rad,gear_slot,engine_rpm,camera_heading_rad,w0_load_N,w0_slip_ratio,w0_slip_lateral,w0_requested_Nm,w0_applied_Nm,w0_contact,w1_load_N,w1_slip_ratio,w1_slip_lateral,w1_requested_Nm,w1_applied_Nm,w1_contact,w2_load_N,w2_slip_ratio,w2_slip_lateral,w2_requested_Nm,w2_applied_Nm,w2_contact,w3_load_N,w3_slip_ratio,w3_slip_lateral,w3_requested_Nm,w3_applied_Nm,w3_contact\n",output_) < 0) return false;
+        if (std::fputs("handling-v2 tick,frame,physics,substep,connected,raw_steer_axis,raw_buttons,sample_age_us,filtered_steer,requested_road_rad,actual_road_rad,yaw_world_rad_s,body_slip_rad,gear_slot,engine_rpm,camera_heading_rad,forward_speed_m_s,raw_bound_steer,steer_limit_deg,steer_rate_deg_s,steer_shift_factor,steering_mode,w0_load_N,w0_slip_ratio,w0_slip_lateral,w0_requested_Nm,w0_applied_Nm,w0_contact,w1_load_N,w1_slip_ratio,w1_slip_lateral,w1_requested_Nm,w1_applied_Nm,w1_contact,w2_load_N,w2_slip_ratio,w2_slip_lateral,w2_requested_Nm,w2_applied_Nm,w2_contact,w3_load_N,w3_slip_ratio,w3_slip_lateral,w3_requested_Nm,w3_applied_Nm,w3_contact\n",output_) < 0) return false;
         header_ = true;
     }
     for (std::size_t k = 0; k < 2 && rows_ < kMaxRows; ++k) {
@@ -23,13 +23,15 @@ bool HandlingTelemetryLog::write(const RaceSession& session, const GamepadFrame&
         if (clock_available && pad.sample_clock_available && consumed_us >= pad.sample_time_us)
             std::fprintf(output_,"%llu",static_cast<unsigned long long>(consumed_us-pad.sample_time_us));
         else std::fputs("unavailable",output_);
-        std::fprintf(output_,",%.17g,%.17g,%.17g,%.17g,",t.steer,t.requested_steer_angle,
+        std::fprintf(output_,",%.17g,%.17g,%.17g,%.17g,",t.steering_history,t.requested_steer_angle,
             t.steer_angle,t.angular_velocity.z);
         if (t.forward_speed*t.forward_speed+t.lateral_speed*t.lateral_speed > 1e-12)
             std::fprintf(output_,"%.17g",std::atan2(t.lateral_speed,t.forward_speed));
         else std::fputs("unavailable",output_);
         std::fprintf(output_,",%d,%.17g,%.17g",t.gear,t.engine_rpm,
             session.camera().heading*(6.28318530717958647692/65536.0));
+        std::fprintf(output_,",%.17g,%.17g,%.17g,%.17g,%.17g,%d",t.forward_speed,t.steer,
+            t.steering_limit_deg,t.steering_rate_deg_s,t.steering_shift_factor,t.steering_mode);
         for (const auto& w : t.wheels) {
             std::fprintf(output_,",%.17g,",w.load);
             if (w.contact) std::fprintf(output_,"%.17g,%.17g",w.slip_ratio,w.slip_lateral);

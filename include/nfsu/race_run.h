@@ -20,6 +20,7 @@ public:
     bool prepare_metadata(const std::filesystem::path& root, std::string& error,
                           TrackSliceLoadObserver* observer = nullptr);
     bool set_performance_levels(const VehicleUpgradeLevels& levels, std::string& error);
+    bool set_steering(RaceSteering mode, std::string& error);
     bool start(const std::filesystem::path& root, const TrackSlice& track, std::string& error,
                TrackSliceLoadObserver* observer = nullptr);
     bool simulate(const GamepadFrame& pad, std::string& error);
@@ -48,6 +49,7 @@ private:
     bool pending_ = false;
     bool explicit_performance_ = false;
     VehicleUpgradeLevels levels_;
+    RaceSteering steering_ = RaceSteering::baseline;
     bool read_metadata(const std::filesystem::path& front, const std::filesystem::path& global,
                        std::string& error, TrackSliceLoadObserver* observer);
     bool apply(const TrackResidencyStep& step, std::string& error);

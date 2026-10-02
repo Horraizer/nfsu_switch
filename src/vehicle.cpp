@@ -1099,9 +1099,12 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     // limited rate (APPROXIMATION).
     const double speed_ratio = forward_speed / a.steer_speed_reference;
     const double lock = a.max_steer / (1.0 + speed_ratio * speed_ratio);
-    const double target = steer * lock;
+    const double target = raw_input.road_steering ?
+        sanitize(raw_input.road_target,-3.14159265358979323846,3.14159265358979323846) : steer * lock;
     const double max_change = a.steer_rate * dt;
-    s.steer_angle = s.steer_angle + clamp(target - s.steer_angle, -max_change, max_change);
+    if (raw_input.road_steering) s.steer_angle =
+        sanitize(raw_input.road_angle,-3.14159265358979323846,3.14159265358979323846);
+    else s.steer_angle = s.steer_angle + clamp(target - s.steer_angle, -max_change, max_change);
     const double steer_cos = vehicle_cos(s.steer_angle);
     const double steer_sin = vehicle_sin(s.steer_angle);
 
@@ -1374,6 +1377,11 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     t.handbrake = raw_input.handbrake;
     t.steer_angle = s.steer_angle;
     t.requested_steer_angle = target;
+    t.steering_history = raw_input.road_steering ? sanitize(raw_input.steer_history,-1,1) : steer;
+    if (raw_input.road_steering) {
+        t.steering_limit_deg=raw_input.steer_limit_deg; t.steering_rate_deg_s=raw_input.steer_rate_deg_s;
+        t.steering_shift_factor=raw_input.steer_shift_factor; t.steering_mode=raw_input.steering_mode;
+    }
     t.wheels = wheel_out;
     for (std::size_t k = 0; k < kVehicleWheelCount; ++k) {
         t.wheels[k].spin = s.wheels[k].spin;

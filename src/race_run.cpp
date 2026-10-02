@@ -22,6 +22,12 @@ bool RaceRun::set_performance_levels(const VehicleUpgradeLevels& levels, std::st
     if (!make_race_vehicle_spec(original.data(),original.size(),levels,checked,error)) return false;
     levels_ = levels; explicit_performance_ = true; return true;
 }
+bool RaceRun::set_steering(RaceSteering mode, std::string& error) {
+    if (metadata_ready_ || session_) { error="steering must precede metadata/start"; return false; }
+    if (mode != RaceSteering::baseline && mode != RaceSteering::recovered_predicate0 &&
+        mode != RaceSteering::recovered_predicate1) { error="invalid steering mode"; return false; }
+    steering_=mode; return true;
+}
 bool RaceRun::read_metadata(const std::filesystem::path& front, const std::filesystem::path& global,
                             std::string& error, TrackSliceLoadObserver* observer) {
     {
@@ -87,7 +93,7 @@ bool RaceRun::start(const std::filesystem::path& root, const TrackSlice& track, 
     VehicleSpec spec = stock_240sx_vehicle_spec();
     if (explicit_performance_ && !load_race_vehicle_spec(
             asset(root,track,"Global/GLOBALB.BUN"),"240SX",levels_,spec,error)) return false;
-    session_ = std::make_unique<RaceSession>(course_,spec);
+    session_ = std::make_unique<RaceSession>(course_,spec,steering_);
     if (observer) observer->checkpoint("race session constructed");
     const auto started = session_->start(error);
     if (observer) observer->checkpoint("race session started");
@@ -136,6 +142,7 @@ bool RaceRun::commit(std::string& error) {
 std::string RaceRun::sequence_hash() const { auto copy = sequence_; return sha256_hex(copy.finish()); }
 std::string RaceRun::steps_hash() const { auto copy = steps_; return sha256_hex(copy.finish()); }
 bool RaceRun::matches_event1_replay() const {
+    if (steering_ != RaceSteering::baseline) return false;
     if (!session_ || pending_) return false;
     if (explicit_performance_ && !performance_levels_equal(levels_,{})) return false;
     const auto& timing = session_->timing(); const auto& r = timing.racers[0];
@@ -145,6 +152,7 @@ bool RaceRun::matches_event1_replay() const {
         sequence_hash() == kEvent1SequenceHash && steps_hash() == kEvent1StepsHash;
 }
 bool RaceRun::matches_configured_replay() const {
+    if (steering_ != RaceSteering::baseline) return false;
     if (!explicit_performance_ || performance_levels_equal(levels_,{})) return matches_event1_replay();
     if (!session_ || pending_ || !performance_levels_equal(levels_,performance1_levels())) return false;
     const auto& timing=session_->timing(); const auto& r=timing.racers[0];

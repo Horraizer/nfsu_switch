@@ -1287,6 +1287,11 @@ if(NFSU_BUILD_TESTS)
     # request, the synthetic GLOBALB.BUN the probe guards read. It carries
     # the model's floating-point options because it recomputes the model's
     # own expressions and compares them bit for bit.
+    add_executable(nfsu_steering_tests tests/steering_tests.cpp)
+    target_link_libraries(nfsu_steering_tests PRIVATE nfsu_race_run)
+    nfsu_enable_warnings(nfsu_steering_tests)
+    add_test(NAME nfsu_steering_tests COMMAND nfsu_steering_tests)
+
     add_executable(nfsu_vehicle_tests
         tests/vehicle_tests.cpp
     )

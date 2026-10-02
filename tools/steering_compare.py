@@ -8,6 +8,7 @@ synthetic, not a retail driving replay or a claim of whole-car parity.
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 import struct
 import subprocess
@@ -196,6 +197,10 @@ def compare(root, out, probe):
     reset(); contexts.append('reset')
     for k, tick in enumerate((10000,10067,10200,10600,12200,16000,16067)):
         sample('history-expiry',.4 if k<4 else 0,tick,dt=1/60)
+    reset(); contexts.append('reset')
+    for k in range(120):
+        sample('mode-transitions',.6 if k<70 else -.6,10000+67*k,speed=18,
+               slip=8 if k<80 else -8,mode=(k//30)%2,predicate=(k//20)%2)
     source = '\n'.join(contexts)+'\n'
     (out/'contexts.txt').write_text(source,encoding='ascii')
     result = subprocess.run([str(probe)],input=source.encode('ascii'),stdout=subprocess.PIPE,
@@ -206,6 +211,9 @@ def compare(root, out, probe):
         raise RuntimeError('probe failed or table bytes differ')
     got = [[float(v) for v in line.split()[1:]] for line in lines[1:] if line.startswith('step ')]
     if len(got)!=len(expected): raise RuntimeError('missing output rows')
+    if len(lines)!=len(expected)+1 or any(len(row)!=9 or not all(math.isfinite(v) for v in row)
+                                         for row in got+expected):
+        raise RuntimeError('invalid or nonfinite numeric rows')
     # Retail uses x87 extended intermediates. Port uses binary64 with explicit
     # binary32 stores; accept one angle word and small float roundoff, never
     # a missing output, stale artifact, wrong assist branch or broad tolerance.

@@ -862,7 +862,8 @@ void DriveControls::update(const GamepadFrame& frame) {
     pending_down_ = pending_down_ || state.shift_down;
 }
 
-VehicleInput DriveControls::step(double forward_speed, int gear, VehicleGearbox gearbox) {
+VehicleInput DriveControls::step(double forward_speed, int gear, VehicleGearbox gearbox,
+                                bool raw_steering) {
     const double speed_signed = finite(forward_speed) ? forward_speed : 0.0;
     const double speed = speed_signed < 0.0 ? -speed_signed : speed_signed;
 
@@ -877,7 +878,7 @@ VehicleInput DriveControls::step(double forward_speed, int gear, VehicleGearbox 
                             (1.0 + speed / config_.steer.digital_rate_speed)
                       : config_.steer.analog_rate;
     }
-    if (outward && !button && rate == 0.0) {
+    if (raw_steering || (outward && !button && rate == 0.0)) {
         steer_ = target;
     } else {
         // Toward the target, never past it; a reversal first returns to

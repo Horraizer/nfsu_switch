@@ -268,6 +268,7 @@ int run(int argc, char** argv) {
     bool wet_road_reflections=false;
     bool explicit_performance=false, handling_telemetry=false;
     VehicleUpgradeLevels performance;
+    RaceSteering steering=RaceSteering::baseline; bool steering_seen=false;
     // The path arguments arrive in the ANSI code page on Windows; convert
     // them as the other tools do, so a path outside ASCII opens.
     std::string argument_error;
@@ -281,6 +282,7 @@ int run(int argc, char** argv) {
                          "  [--car-shading on|off]\n"
                          "  [--wet-road-reflections on|off]\n"
                          "  [--performance-levels name=0..3,...] [--handling-telemetry]\n"
+                         "  [--steering baseline|recovered0|recovered1]\n"
                          "  live mode plays retail race audio when the device and banks are available\n";
             return 0;
         }
@@ -297,6 +299,10 @@ int run(int argc, char** argv) {
             require(!explicit_performance,"duplicate --performance-levels");
             require(parse_performance_levels(value,performance,argument_error),argument_error);
             explicit_performance=true;
+        }
+        else if (a=="--steering") {
+            require(!steering_seen && parse_race_steering(value,steering),"--steering needs one baseline, recovered0 or recovered1");
+            steering_seen=true;
         }
         else if (a=="--root") root=nfsu::argument_path(argv[i]);
         else if (a=="--input") input=nfsu::argument_path(argv[i]);
@@ -372,7 +378,8 @@ int run(int argc, char** argv) {
     }
     if (handling_telemetry && !explicit_performance) std::cout << "performance-levels legacy-stock\n";
     HandlingTelemetryLog handling_log(handling_telemetry ? stdout : nullptr);
-    RaceSession session(course,spec); require(session.start(error),error);
+    if (steering_seen || handling_telemetry) std::cout << "steering " << race_steering_name(steering) << '\n';
+    RaceSession session(course,spec,steering); require(session.start(error),error);
     audio::RaceAudioService sound;
     if (live && !smoke) {
         std::string diagnostic;

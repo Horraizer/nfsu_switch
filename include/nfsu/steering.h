@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+#include <string>
 
 namespace nfsu {
 // Issue #251: the isolated 0x00460930 steering path. Inputs are explicit
@@ -55,4 +56,6 @@ bool steering_step(const SteeringContext&, SteeringState&, SteeringResult&) noex
 // Samples only, little endian. Tests rebuild and pin their combined SHA-256.
 std::vector<std::uint8_t> steering_table_bytes();
 enum class RaceSteering { baseline, recovered_predicate0, recovered_predicate1 };
+const char* race_steering_name(RaceSteering) noexcept;
+bool parse_race_steering(const std::string&, RaceSteering&) noexcept;
 } // namespace nfsu

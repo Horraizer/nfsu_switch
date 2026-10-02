@@ -67,6 +67,13 @@ template<std::size_t N> void bytes(std::vector<std::uint8_t>& out, const float (
         for (unsigned i=0;i<4;++i) out.push_back(static_cast<std::uint8_t>(bits>>(8*i)));
     }
 }
+template<std::size_t N> bool valid_history(const SteeringHistory<N>& h, float bound) {
+    if (h.count>N || h.write>=N || h.oldest>=N || !std::isfinite(h.sum) ||
+        !std::isfinite(h.average) || std::abs(h.average)>bound || std::abs(h.sum)>bound*N) return false;
+    for (std::size_t i=0;i<N;++i) if (!std::isfinite(h.values[i]) ||
+        std::abs(h.values[i])>bound || !std::isfinite(h.times[i]) || h.times[i]<0) return false;
+    return true;
+}
 }
 std::vector<std::uint8_t> steering_table_bytes() {
     std::vector<std::uint8_t> out;
@@ -74,12 +81,28 @@ std::vector<std::uint8_t> steering_table_bytes() {
     bytes(out,change_gain); bytes(out,rate_gain); bytes(out,predicate0); bytes(out,predicate1); bytes(out,shift);
     return out;
 }
+const char* race_steering_name(RaceSteering mode) noexcept {
+    switch (mode) {
+    case RaceSteering::baseline: return "baseline";
+    case RaceSteering::recovered_predicate0: return "recovered0";
+    case RaceSteering::recovered_predicate1: return "recovered1";
+    }
+    return "invalid";
+}
+bool parse_race_steering(const std::string& text, RaceSteering& mode) noexcept {
+    for (auto candidate : {RaceSteering::baseline,RaceSteering::recovered_predicate0,RaceSteering::recovered_predicate1})
+        if (text==race_steering_name(candidate)) { mode=candidate; return true; }
+    return false;
+}
 bool steering_step(const SteeringContext& c, SteeringState& state, SteeringResult& result) noexcept {
+    if (!valid_history(state.input,2) || !valid_history(state.rate,5) ||
+        !std::isfinite(state.previous_limit) || std::abs(state.previous_limit)>1000 ||
+        !std::isfinite(state.previous_raw) || std::abs(state.previous_raw)>1) return false;
     const float fields[] = {c.raw,c.seconds,c.dt,c.forward_speed,c.speed,
         c.heading_minus_velocity_deg,c.digital_throttle,c.analog_throttle,c.brake,
         c.multiplier,c.predicted_max_speed,c.shift_elapsed};
     for (float f : fields) if (!std::isfinite(f)) return false;
-    if (std::abs(c.raw)>1 || c.seconds<0 || c.dt<=0 || c.dt>1 ||
+    if (std::abs(c.raw)>1 || c.seconds<0 || c.dt<.000001F || c.dt>1 ||
         std::abs(c.forward_speed)>1000 || c.speed<0 || c.speed>2000 ||
         std::abs(c.heading_minus_velocity_deg)>180 || c.multiplier<0 || c.multiplier>4 ||
         c.predicted_max_speed<=0 || c.predicted_max_speed>1000 ||
@@ -87,6 +110,7 @@ bool steering_step(const SteeringContext& c, SteeringState& state, SteeringResul
         c.analog_throttle>1 || c.brake<0 || c.brake>1) return false;
     SteeringState s = state; SteeringResult r;
     sample(s.input,c.raw,c.seconds,.55F); r.filtered = s.input.average;
+    r.rate_history = s.rate.average;
     double limit;
     if (c.bypass_mode) limit = curve(alternate,.05625F,c.forward_speed);
     else {

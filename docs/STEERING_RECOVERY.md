@@ -88,12 +88,53 @@ and failures retain evidence in the ignored scratch directory.
 The comparison covers signed speed, positive/negative inputs, turn-in,
 sustained steer, release/reversal, shift progression, throttle/brake channels,
 both predicate branches, bypass mode, assist thresholds and history expiry.
-Retail uses x87 extended arithmetic; the portable code uses binary64 with
+The oracle explicitly initializes the x87 control word to 0x037F for each
+bounded call; this is a declared numeric context, not a measurement of the
+running game's startup control word. The portable code uses binary64 with
 explicit binary32 stores. Tolerances are in the script and results belong in
 tests or source-pinned board evidence, not as current numbers in this document.
 
-## Remaining work
+## Optional race integration and its limits
 
-The isolated steering consumer is implemented and compared. Race integration,
-reset/replay tests, full default/Release/Switch gates and owner driving are
-still required. No unmeasured hardware mapping or predictor has been promoted.
+Desktop and Switch race applications accept `--steering baseline|recovered0|recovered1`.
+The default is `baseline`. The recovered choices explicitly select predicate
+false or true; neither asserts a Joy-Con, Pro Controller, wheel, keyboard or
+D-pad mapping. The hardware bypass byte stays false. Switch pinned `--replay`
+requires baseline; use `--live` for the experiment. Desktop input recordings
+can drive either mode for comparisons. A recovered recording has an `STR1`
+state extension containing both histories, angle, previous raw/limit, assist,
+mode, shift/time state and predicted-speed reference. Baseline bytes stay intact.
+
+Recovered mode skips the old controls slew and old road-wheel lock/slew.
+Bindings, hot-plug calibration, throttle shaping, reverse assist and shift
+edges retain their behavior. Track reset clears both histories and the word.
+Gear changes observed after a model step start the shift timer for the next
+120 Hz step. This one-step delay and the port's existing gearbox schedule
+are integration approximations, not a recovered engine +0x14C writer.
+The kernel runs at the port's fixed 120 Hz with the recovered capacities;
+retail construction specifies 60 samples/s. This changes the effective ring
+span even though the native history algorithm and time windows are retained.
+
+The heading difference uses the existing deterministic `chase_angle` helper,
+which approximates retail `bATan` rather than using its lookup bytes. The
+bridge keeps the stock 240SX multiplier of one: applying upgrades that change
+an untraced steering multiplier is unsupported. Its maximum-speed reference
+is kinematic redline speed in top gear, using the selected handling record,
+wheel radius and weighted final drive. This is explicitly an approximation
+of the cached acceleration predictor, and a recovered shift consumer does
+not make that predictor recovered. These gaps prevent default promotion and
+whole-car parity claims even when the isolated context comparison passes.
+
+`--handling-telemetry` now emits `handling-v2`, with raw bound input, history
+input, requested/actual road angle, limit/rate/shift factor, steering mode,
+forward speed, gear, yaw and body slip. Logging is bounded and does not affect
+simulation state. Legacy binary telemetry and default replay pins are unchanged.
+`nfsu_steering_tests` pins native sample/table results and word sequences,
+checks filter replacement and manual shifts, and runs paired deterministic
+race sequences through corners, automatic shifts and reset.
+
+Full default/Release/Switch validation and owner driving are required in the
+worker handoff. The introductory event-0 race belongs to #268; this inherited
+event-1 executable is a diagnostic, not acceptance of that gameplay target.
+Owner driving acceptance uses the agreed handheld scene height 540 and GPU
+boost on after event-0 integration. No hardware acceptance is claimed here.

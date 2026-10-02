@@ -3,6 +3,7 @@
 #include "nfsu/drive_session.h"
 #include "nfsu/race_timing.h"
 #include "nfsu/vehicle_track.h"
+#include "nfsu/steering.h"
 
 namespace nfsu {
 
@@ -22,7 +23,8 @@ private:
 class RaceSession {
 public:
     explicit RaceSession(const VehicleTrackCourse& course);
-    RaceSession(const VehicleTrackCourse& course, const VehicleSpec& spec);
+    RaceSession(const VehicleTrackCourse& course, const VehicleSpec& spec,
+                RaceSteering steering = RaceSteering::baseline);
     bool start(std::string& error);
     bool advance(const GamepadFrame& pad, std::string& error);
     const VehicleState& car() const { return vehicle_.state(); }
@@ -36,6 +38,9 @@ public:
     const std::array<VehicleTrackTelemetry,2>& physics_telemetry() const { return track_telemetry_; }
     const std::vector<std::uint8_t>& record() const { return record_; }
     const VehicleTrackCourse& course() const { return course_; }
+    RaceSteering steering_mode() const { return steering_mode_; }
+    const SteeringState& steering_state() const { return steering_state_; }
+    const SteeringResult& steering_result() const { return steering_result_; }
 private:
     void encode();
     const VehicleTrackCourse& course_;
@@ -54,6 +59,13 @@ private:
     std::vector<std::uint8_t> record_;
     CarAnimationState animation_;
     bool started_ = false;
+    RaceSteering steering_mode_ = RaceSteering::baseline;
+    SteeringState steering_state_;
+    SteeringResult steering_result_;
+    std::uint64_t steering_steps_ = 0, shift_step_ = 0;
+    bool shifted_ = false;
+    float steering_max_speed_ = 1;
+    bool steer_input(VehicleInput&, int substep, std::string& error);
 };
 
 struct RaceInputRun {
