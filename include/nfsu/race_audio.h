@@ -1,6 +1,7 @@
 #pragma once
 
 #include "nfsu/audio.h"
+#include "nfsu/collision_audio.h"
 #include "nfsu/race_session.h"
 
 #include <cstdint>
@@ -20,8 +21,12 @@ struct RaceAudioSnapshot {
     double throttle = 0;
     double speed_mps = 0;
     double wheel_slip = 0;
-    double impact = 0;
-    std::uint32_t contact_events = 0;
+    std::uint64_t tick = 0;
+    // Latest 120 Hz physics step, independent of countdown/race tick epoch.
+    std::uint64_t physics_step = 0;
+    std::array<CollisionContact, 512> contacts{};
+    std::size_t contact_count = 0;
+    bool collision_reset = false;
     int countdown = 0;
     int completed_laps = 0;
     bool finished = false;
@@ -59,6 +64,8 @@ public:
         std::uint32_t queued_frames = 0;
         std::uint32_t thread_us = 0;
         std::uint64_t mix_clips = 0;
+        std::uint64_t mix_overloads = 0;
+        std::uint64_t mix_limited_frames = 0;
     };
     RaceAudioService();
     ~RaceAudioService();

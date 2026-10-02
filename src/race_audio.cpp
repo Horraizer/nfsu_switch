@@ -88,13 +88,17 @@ RaceAudioSnapshot race_audio_snapshot(const RaceSession& session) noexcept {
             snapshot.wheel_slip = std::max(snapshot.wheel_slip,
                 std::max(std::abs(wheel.slip_ratio), std::abs(wheel.slip_lateral)));
     snapshot.wheel_slip = finite_clamp(snapshot.wheel_slip, 0, 100);
+    snapshot.tick = session.timing().step;
+    snapshot.physics_step = session.telemetry().step;
     for (const auto& step : session.physics_telemetry()) {
-        snapshot.contact_events += step.impulses;
-        const auto& impulse = step.impulse;
-        snapshot.impact += std::sqrt(impulse.x * impulse.x +
-                                     impulse.y * impulse.y + impulse.z * impulse.z);
+        snapshot.collision_reset |= step.reset != VehicleTrackReset::none;
+        for (std::size_t i = 0; i < step.audio_contact_count && i < step.audio_contacts.size(); ++i) {
+            if (snapshot.contact_count == snapshot.contacts.size()) break;
+            const auto& c = step.audio_contacts[i];
+            snapshot.contacts[snapshot.contact_count++] =
+                {step.step,c.polygon,c.impulse,c.forward,c.up,c.slide_mps,3};
+        }
     }
-    snapshot.impact = finite_clamp(snapshot.impact, 0, 10000);
     const auto& timing = session.timing();
     snapshot.countdown = timing.countdown_shown;
     if (!timing.racers.empty())
@@ -156,13 +160,17 @@ std::array<double, 4> engine_layer_weights(double rpm) noexcept {
 
 struct RaceAudioService::Impl {
     std::array<PcmClip, 4> engine;
-    PcmClip skid, impact;
+    PcmClip skid, scrape;
+    std::array<PcmClip, 13> impacts;
+    CollisionGraph collision;
+    CollisionScheduler collisions;
+    std::array<std::uint32_t, 2> impact_pairs{UINT32_MAX,UINT32_MAX};
+    std::array<std::uint32_t, 2> scrape_pairs{UINT32_MAX,UINT32_MAX};
     std::array<PcmClip, 4> cue_clips;
     std::array<bool, 4> has_engine{};
     std::array<bool, 4> has_cue{};
     bool has_skid = false, has_impact = false, has_music = false, active = false;
     std::size_t music_tracks = 0;
-    unsigned impact_cooldown = 0;
     std::size_t impact_slot = 8;
     Mixer mixer;
     RaceCueScheduler cues;
@@ -174,6 +182,8 @@ struct RaceAudioService::Impl {
     std::string note;
     OutputFade fade;
     OutputFade music_fade;
+
+    Impl() { mixer.set_peak_limiter(true); }
 
     void render(std::int16_t* stereo, std::size_t frames) {
         const bool muted = suspended.load();
@@ -215,6 +225,8 @@ bool RaceAudioService::start(const std::filesystem::path& root,
                              const std::function<bool()>& decoder_thread_setup) {
     auto& p = *impl_;
     if (p.active) { diagnostic = "audio already running"; return false; }
+    p.collisions.clear(); p.impact_pairs = {UINT32_MAX,UINT32_MAX};
+    p.scrape_pairs = {UINT32_MAX,UINT32_MAX};
     std::ostringstream notes;
     const auto engine_path = root / "Sound/CAR_0/ENG_UG_0/C0U0_M0_ENG_MB.abk";
     for (std::size_t i = 0; i < p.engine.size(); ++i) {
@@ -233,9 +245,15 @@ bool RaceAudioService::start(const std::filesystem::path& root,
     } catch (const std::exception& e) { notes << "skid: " << e.what() << "; "; }
     if (progress) progress("audio impact");
     try {
-        p.impact = load_clip(root / "Sound/IG_GLOBAL/IMPACT_MB.abk", 1);
+        const auto impact_bytes = bank_bytes(root / "Sound/IG_GLOBAL/IMPACT_MB.abk");
+        const auto scrape_bytes = bank_bytes(root / "Sound/IG_GLOBAL/SCRAPE_MB.abk");
+        p.collision = collision_graph(impact_bytes,scrape_bytes);
+        const auto impact_bank = parse_abk(impact_bytes), scrape_bank = parse_abk(scrape_bytes);
+        for (std::size_t i = 0; i < p.impacts.size(); ++i)
+            p.impacts[i] = decode_clip(impact_bytes,impact_bank,30+std::uint32_t(i));
+        p.scrape = decode_clip(scrape_bytes,scrape_bank,1);
         p.has_impact = true;
-    } catch (const std::exception& e) { notes << "impact: " << e.what() << "; "; }
+    } catch (const std::exception& e) { notes << "collision: " << e.what() << "; "; }
     if (progress) progress("audio interface cues");
     try {
         const auto bytes = bank_bytes(root / "Sound/FE/FE_MB.abk");
@@ -317,7 +335,7 @@ bool RaceAudioService::start(const std::filesystem::path& root,
 
 void RaceAudioService::on_tick(const RaceAudioSnapshot& snapshot) {
     auto& p = *impl_;
-    if (!p.active) return;
+    if (!p.active || p.suspended.load()) return;
     std::lock_guard<std::mutex> lock(p.mixer_mutex);
     const auto cue = p.cues.update(snapshot);
     if (cue != RaceInterfaceCue::none) {
@@ -333,6 +351,7 @@ void RaceAudioService::on_tick(const RaceAudioSnapshot& snapshot) {
         for (std::size_t i = 0; i < p.engine.size(); ++i)
             if (p.has_engine[i]) p.mixer.control(i, 0, 65536);
         if (p.has_skid) p.mixer.control(4, 0, 65536);
+        p.mixer.control(9,0,65536); p.mixer.control(10,0,65536);
         return;
     }
     // Approximation: four equally ordered sample layers with linear RPM
@@ -350,15 +369,42 @@ void RaceAudioService::on_tick(const RaceAudioSnapshot& snapshot) {
     const double skid_gain = snapshot.speed_mps > 2 ?
         finite_clamp((slip - 0.25) * 0.35, 0, 0.45) : 0;
     if (p.has_skid) p.mixer.control(4, q15(skid_gain), 65536);
-    if (p.impact_cooldown) --p.impact_cooldown;
-    if (p.has_impact && !p.impact_cooldown && snapshot.contact_events &&
-        snapshot.impact > 2) {
-        const double gain = finite_clamp(snapshot.impact / 30, 0.1, 0.7);
-        p.mixer.control(p.impact_slot, 0, 65536);
-        p.impact_slot = p.impact_slot == 5 ? 8 : 5;
-        p.mixer.play(p.impact_slot, &p.impact, false,
-                     q15(gain), 65536, true);
-        p.impact_cooldown = 10;
+    if (p.has_impact) {
+        const auto events = p.collisions.update(snapshot.tick,snapshot.physics_step,snapshot.contacts.data(),
+            std::min(snapshot.contact_count,snapshot.contacts.size()),p.collision,snapshot.collision_reset);
+        if (!events.processed) return;
+        if (snapshot.collision_reset) {
+            p.mixer.stop(5); p.mixer.stop(8); p.mixer.stop(9); p.mixer.stop(10);
+            p.impact_pairs = {UINT32_MAX,UINT32_MAX}; p.scrape_pairs = {UINT32_MAX,UINT32_MAX};
+        }
+        for (const auto& e : events.impacts) {
+            // Two impact voices are a bounded port policy, not retail admission.
+            if (e.start) {
+                p.impact_slot = p.impact_slot == 5 ? 8 : 5;
+                p.impact_pairs[p.impact_slot == 5 ? 0 : 1] = e.pair;
+                p.mixer.play(p.impact_slot,&p.impacts[e.sample-30],false,e.gain_q15,e.pitch_q16,true);
+            } else for (std::size_t i = 0; i < 2; ++i)
+                if (p.impact_pairs[i] == e.pair) p.mixer.control(i == 0 ? 5 : 8,e.gain_q15,e.pitch_q16);
+        }
+        for (std::size_t i = 0; i < p.scrape_pairs.size(); ++i) {
+            const auto found = std::find_if(events.scrapes.begin(),events.scrapes.end(),
+                [&](const auto& e) { return e.pair == p.scrape_pairs[i]; });
+            if (found == events.scrapes.end()) {
+                p.mixer.control(9+i,0,65536); p.scrape_pairs[i] = UINT32_MAX;
+            }
+        }
+        for (const auto& e : events.scrapes) {
+            std::size_t slot = p.scrape_pairs.size();
+            for (std::size_t i = 0; i < p.scrape_pairs.size(); ++i)
+                if (p.scrape_pairs[i] == e.pair) { slot=i; break; }
+            if (slot == p.scrape_pairs.size()) for (std::size_t i=0; i<p.scrape_pairs.size(); ++i)
+                if (p.scrape_pairs[i] == UINT32_MAX) { slot=i; break; }
+            if (slot == p.scrape_pairs.size()) continue;
+            if (p.scrape_pairs[slot] != e.pair || e.start) {
+                p.scrape_pairs[slot]=e.pair;
+                p.mixer.play(9+slot,&p.scrape,true,e.gain_q15,e.pitch_q16,true);
+            } else p.mixer.control(9+slot,e.gain_q15,e.pitch_q16);
+        }
     }
 }
 
@@ -388,7 +434,8 @@ RaceAudioService::Stats RaceAudioService::stats() const noexcept {
     std::lock_guard<std::mutex> lock(p.mixer_mutex);
     return {p.stream.ring().underruns(), p.stream.ring().size(),
             p.stream.ring().capacity(), output.late, output.queued_frames,
-            output.work_us, p.mixer.clipped_samples()};
+            output.work_us, p.mixer.clipped_samples(),
+            p.mixer.overloaded_samples(), p.mixer.limited_frames()};
 }
 
 std::size_t RaceAudioService::resident_bytes() const noexcept {
@@ -396,7 +443,8 @@ std::size_t RaceAudioService::resident_bytes() const noexcept {
     std::size_t bytes = p.stream.ring().capacity() * 2 * sizeof(std::int16_t) + 3 * 4096;
     for (const auto& clip : p.engine) bytes += clip.pcm.capacity() * sizeof(std::int16_t);
     bytes += p.skid.pcm.capacity() * sizeof(std::int16_t);
-    bytes += p.impact.pcm.capacity() * sizeof(std::int16_t);
+    bytes += p.scrape.pcm.capacity() * sizeof(std::int16_t);
+    for (const auto& clip : p.impacts) bytes += clip.pcm.capacity() * sizeof(std::int16_t);
     for (const auto& clip : p.cue_clips)
         bytes += clip.pcm.capacity() * sizeof(std::int16_t);
     return bytes;
