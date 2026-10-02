@@ -86,6 +86,10 @@ endif()
 # what an operating system is. Both programs link it, because both read
 # paths out of a narrow argv and both used to terminate on one that the
 # active ANSI code page spelled with a byte above 0x7E.
+add_executable(nfsu_steering_probe tools/steering_probe.cpp)
+target_link_libraries(nfsu_steering_probe PRIVATE nfsu_vehicle)
+nfsu_enable_warnings(nfsu_steering_probe)
+
 add_library(nfsu_arg_path
     src/arg_path.cpp
 )
