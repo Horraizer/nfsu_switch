@@ -4,6 +4,7 @@
 #include "nfsu/deko_gpfifo_budget.h"
 #include "nfsu/deko_memory_usage.h"
 #include "nfsu/deko_draw_order.h"
+#include "nfsu/deko_texture_layout.h"
 
 #include <deko3d.hpp>
 #include <switch.h>
@@ -158,8 +159,11 @@ struct DekoRenderer::Impl {
         const auto format = resource.texture.format == TextureUploadFormat::dxt1 ? DkImageFormat_RGBA_BC1 :
                             resource.texture.format == TextureUploadFormat::dxt3 ? DkImageFormat_RGBA_BC2 :
                             DkImageFormat_RGBA8_Unorm;
-        dk::ImageLayoutMaker{device}.setFormat(format)
-            .setDimensions(resource.texture.width, resource.texture.height).initialize(layout);
+        auto maker = dk::ImageLayoutMaker{device};
+        maker.setFormat(format).setDimensions(resource.texture.width, resource.texture.height);
+        if (deko_texture_needs_one_gob(resource.texture))
+            maker.setFlags(DkImageFlags_CustomTileSize).setTileSize(DkTileSize_OneGob);
+        maker.initialize(layout);
         return layout;
     }
 

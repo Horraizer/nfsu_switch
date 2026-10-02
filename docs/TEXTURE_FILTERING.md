@@ -96,6 +96,38 @@ shading off/on retain the existing simulation and memory assertions.
 
 ## Console comparison and remaining acceptance
 
+The owner observed a hardware parity failure at `821457c` in handheld
+step 180, linear, shading off; the board record is
+[coordinator comment 6589](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/264#issuecomment-6589).
+CPU pin agreement did not establish GPU parity. A local draw trace identified
+the left opaque banner as DXT1 `0x6E7C9B86`, 128x32 (eight block rows).
+The upload layout was inherited unchanged from the base, rather than
+introduced by the linear policy.
+
+In the installed deko3d 0.5.0, automatic layout chooses two GOBs for six to
+eight physical rows. Its level allocation reduces that height to one GOB,
+but the base-level transfer retains two: successive 64-byte columns can
+skip memory and write beyond the image allocation. The primary source is
+[dk_image.cpp at v0.5.0](https://github.com/devkitPro/deko3d/blob/5cc144dcf5606fbcd78430f6c62923546e5f9cf4/source/dk_image.cpp),
+`calcLevelOffset`, `ImageInfo::fromImageView` and `dkImageLayoutInitialize`.
+[Upstream issue 10](https://github.com/devkitPro/deko3d/issues/10) reproduces
+the corresponding eight-row RGBA8 sampling problem. The app now requests a
+custom one-GOB layout only for those physical heights, including compressed
+edge blocks. Other heights retain automatic layout. Payloads, byte pitch,
+native compression, sampler/depth/blend state, CPU pins and comparison
+tolerances stay unchanged. `nfsu_draw_execution_tests` models the transfer
+and level addresses, reproduces the old skipped-column/out-of-image failure,
+and checks corrected round trips for RGBA8, BC1 and BC2. A new console run
+is still required to establish the repair's actual GPU result.
+
+The separate CPU car/track composition also differs from a common target
+for glass blending. At `821457c`, a local step180 linear/off shared-target
+experiment changed only car-region pixels and passed both comparison
+tolerances against the existing reference. This is a measured reference
+limitation, not proof that all hardware glass differences are explained.
+The diagnostic retains its pins; any residual hardware failure needs its
+own evidence rather than relaxed tolerances or new pins.
+
 `nfsu_switch_texture_compare.nro` captures the existing cached GPU scene and
 rasterizes its fixed replay pose on the CPU at 1280x720. It checks selected
 track identities/order against a rebuilt selector before drawing. Its CPU
