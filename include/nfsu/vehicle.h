@@ -340,6 +340,15 @@ struct VehicleVec3 {
     double z = 0.0;
 };
 
+// #275 low-support angular damping at 0x00474DD0..0x00474E85.
+// Curve pairs preserve binary32 source values. Torque uses SI mass and
+// world angular velocity; state 1 or >=2 grounded wheels disables it.
+// The zero-wheel alignment pass after 0x00474E8B is separate and unresolved.
+std::array<std::array<float, 2>, 3> vehicle_low_support_curve() noexcept;
+VehicleVec3 vehicle_low_support_torque(const VehicleVec3& angular_velocity,
+                                     double mass, unsigned grounded_wheels,
+                                     unsigned collision_state) noexcept;
+
 // Unit quaternion, body to world.
 struct VehicleQuat {
     double w = 1.0;
@@ -471,6 +480,7 @@ struct VehicleWheelTelemetry {
     double spin = 0.0;          // rad/s
     double slip_ratio = 0.0;    // (spin * radius - v_long) / max(|v_long|, floor)
     double slip_lateral = 0.0;  // v_lat / max(|v_long|, floor)
+    VehicleVec3 ground_point, ground_normal; // diagnostic only; omitted from bytes
     double force_long = 0.0;    // N, along the wheel's heading on the ground
     double force_lat = 0.0;     // N, toward the wheel's left on the ground
     double drive_torque = 0.0;  // N m from the engine, as the recovered split gives it
@@ -501,6 +511,8 @@ struct VehicleTelemetry {
     double steer_angle = 0.0;
     // Diagnostic only; omitted from the legacy binary encoding and hash.
     double requested_steer_angle = 0.0; // rad, before road-wheel slew
+    VehicleVec3 low_support_torque; // N m; diagnostic, omitted from legacy bytes
+    unsigned grounded_wheels = 0; // support counted before integration
     double steering_history = 0.0; // diagnostic; omitted from legacy bytes
     double steering_limit_deg = 0, steering_rate_deg_s = 0, steering_shift_factor = 0;
     int steering_mode = 0;

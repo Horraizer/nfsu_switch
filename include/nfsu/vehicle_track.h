@@ -398,6 +398,17 @@ enum class VehicleTrackBoundsCheck : std::uint8_t {
     none = 2,    // neither: out of bounds
 };
 
+// #275 diagnostic of the existing kind-3 approximation, not a retail witness.
+// Bounded by the hull's existing 256-point limit; omitted from legacy bytes.
+struct VehicleTrackContactEvent {
+    std::uint32_t polygon = 0, hull_point = 0, order = 0;
+    VehicleTrackSurface surface = VehicleTrackSurface::none;
+    VehicleVec3 normal, plane_point, arm, separation;
+    double depth = 0, approach = 0;
+    VehicleVec3 velocity_before, angular_before, velocity_after, angular_after;
+    VehicleVec3 contact_impulse, applied_impulse, accumulated_impulse;
+};
+
 // One record per step: the model's record for the step, which describes the
 // car before its body met the track, then the state the next step starts
 // from - after the body's collision and after a reset performed on this
@@ -422,6 +433,7 @@ struct VehicleTrackTelemetry {
     // The separation and the impulse applied, summed over the contacts.
     VehicleVec3 separation;
     VehicleVec3 impulse;
+    std::vector<VehicleTrackContactEvent> contact_events; // diagnostic only
     // Whether this step ended a 60 Hz tick, and the checks made on it.
     bool tick = false;
     VehicleTrackBoundsCheck bounds = VehicleTrackBoundsCheck::not_run;

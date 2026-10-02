@@ -89,6 +89,10 @@ endif()
 add_executable(nfsu_steering_probe tools/steering_probe.cpp)
 target_link_libraries(nfsu_steering_probe PRIVATE nfsu_vehicle)
 nfsu_enable_warnings(nfsu_steering_probe)
+add_executable(nfsu_low_support_probe tools/low_support_probe.cpp)
+target_link_libraries(nfsu_low_support_probe PRIVATE nfsu_vehicle)
+nfsu_enable_warnings(nfsu_low_support_probe)
+
 
 add_library(nfsu_arg_path
     src/arg_path.cpp
@@ -1291,6 +1295,11 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_steering_tests PRIVATE nfsu_race_run)
     nfsu_enable_warnings(nfsu_steering_tests)
     add_test(NAME nfsu_steering_tests COMMAND nfsu_steering_tests)
+    add_executable(nfsu_stability_tests tests/stability_tests.cpp)
+    target_link_libraries(nfsu_stability_tests PRIVATE nfsu_race_session nfsu_arg_path)
+    nfsu_enable_warnings(nfsu_stability_tests)
+    add_test(NAME nfsu_stability_tests COMMAND nfsu_stability_tests)
+
 
     add_executable(nfsu_vehicle_tests
         tests/vehicle_tests.cpp
@@ -1788,6 +1797,9 @@ if(NFSU_BUILD_TESTS)
         set_tests_properties(nfsu_retail_manifest_after PROPERTIES
             FIXTURES_CLEANUP nfsu_retail_read_only LABELS retail
             TIMEOUT 600)
+        add_test(NAME nfsu_stability_retail COMMAND nfsu_stability_tests --root "${NFSU_RETAIL_ROOT}")
+        set_tests_properties(nfsu_stability_retail PROPERTIES
+            FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 180)
         add_test(NAME nfsu_performance_levels_retail COMMAND nfsu_performance_levels_tests "${NFSU_RETAIL_ROOT}")
         set_tests_properties(nfsu_performance_levels_retail PROPERTIES
             FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 180)

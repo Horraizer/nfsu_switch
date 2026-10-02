@@ -663,6 +663,27 @@ std::size_t compare_vehicle_handling(const VehicleHandling& a,
     return first;
 }
 
+std::array<std::array<float, 2>, 3> vehicle_low_support_curve() noexcept {
+    // Descriptor 0x00705E98 -> three pairs at 0x00705E80.
+    return {{{0.0F, 0.0F}, {0.1F, 0.0F}, {2.0F, 20.0F}}};
+}
+
+VehicleVec3 vehicle_low_support_torque(const VehicleVec3& omega, double mass,
+                                     unsigned grounded, unsigned state) noexcept {
+    if (state == 1 || grounded >= 2 || !finite(omega) || !finite(mass) || !(mass > 0)) {
+        return {};
+    }
+    const double speed = vehicle_sqrt(dot(omega, omega));
+    const auto curve = vehicle_low_support_curve();
+    const double first = static_cast<double>(curve[1][0]);
+    const double last = static_cast<double>(curve[2][0]);
+    const double damping = speed <= first ? 0.0 : speed >= last ? curve[2][1] :
+        (speed - first) / (last - first) * curve[2][1];
+    // 0x00474E30..0x00474E85 adds -curve(|omega|)*mass*omega
+    // to world torque. It changes no position, velocity or support force.
+    return scale(omega, -damping * mass);
+}
+
 VehicleSpec stock_240sx_vehicle_spec() {
     VehicleSpec spec;
     spec.handling = stock_240sx_handling();
@@ -1231,6 +1252,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         const VehicleVec3 from = add(attach_world[k], scale(up, a.probe_lift));
         const VehicleVec3 contact = add(from, scale(up, -hits[k].distance));
         const VehicleVec3 arm_contact = sub(contact, s.position);
+        out.ground_point = contact; out.ground_normal = normal;
 
         // The strut's force reaches the body as the ground's reaction: along
         // the surface normal, at the contact. Along the body's up axis it
@@ -1328,6 +1350,15 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     const double speed = vehicle_sqrt(dot(s.velocity, s.velocity));
     force = add(force, scale(s.velocity, -d_.drag * speed));
 
+    // #275: 0x00474DD0..0x00474E85, car state != 1 and < 2 grounded
+    // wheels. This model only meets kind-3 track bodies (state remains 0).
+    // The separate zero-wheel alignment branch is not recovered here.
+    unsigned support = 0;
+    for (const auto& wheel : s.wheels) support += wheel.contact ? 1U : 0U;
+    const VehicleVec3 support_torque =
+        vehicle_low_support_torque(s.angular_velocity, d_.mass, support, 0);
+    torque = add(torque, support_torque);
+
     // Semi-implicit Euler.
     s.velocity = add(s.velocity, scale(force, dt / d_.mass));
     const VehicleVec3 body_torque = r.apply_transpose(torque);
@@ -1377,6 +1408,8 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     t.handbrake = raw_input.handbrake;
     t.steer_angle = s.steer_angle;
     t.requested_steer_angle = target;
+    t.low_support_torque = support_torque;
+    t.grounded_wheels = support;
     t.steering_history = raw_input.road_steering ? sanitize(raw_input.steer_history,-1,1) : steer;
     if (raw_input.road_steering) {
         t.steering_limit_deg=raw_input.steer_limit_deg; t.steering_rate_deg_s=raw_input.steer_rate_deg_s;
