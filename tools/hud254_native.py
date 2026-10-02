@@ -60,6 +60,7 @@ def lap_native(image, *, now, start, lap=0, laps=2, best=0x7FFFFFFF, locale=5,
     machine.write(argument + 4, view)
     machine.write(view + 0x1C, record)
     machine.write(0x73619C, status)
+    machine.write(0x6FBF14, 1)  # Use supplied view record; bypass fallback car lookup.
     machine.write(0x78A30C, 1)
     machine.write(0x78A31C, laps)
     machine.write(0x6EE6F0, locale)
@@ -158,6 +159,22 @@ def mask_native(image, stage, permission, view_state=3, view_mode=0, finished=Fa
                 lap_enabled=bool(low & 0x400), stub_calls=calls)
 
 
+def resource_native(image, index):
+    from unicorn.x86_const import UC_X86_REG_ECX
+    machine = Machine(image)
+    obj, context, indirect, table = 0x1001000, 0x1002000, 0x1003000, 0x1004000
+    machine.write(context + 8, indirect)
+    machine.write(indirect, table)
+    machine.write(obj + 0x18, 2)
+    machine.uc.mem_write(obj + 0x22, struct.pack('<H', index))
+    if index != 0xFFFF:
+        machine.write(table + index*24 + 0x10, 0x11220000 + index)
+        machine.write(table + index*24 + 0x14, 0x33440000 + index)
+    machine.run(0x5003C0, (obj,), {UC_X86_REG_ECX: context})
+    return dict(index=index, resolved_hash=machine.integer(obj+0x24),
+                resolved_handle=machine.integer(obj+0x28))
+
+
 def measure(image):
     ticks = (0, 1, 39, 40, 3999, 4000, 239999, 240000, 3599999,
              3600000, 14399999, 14400000, 0x7FFFFFFF, -40, -240000)
@@ -189,7 +206,10 @@ def measure(image):
              for state in (0, 1, 2, 3)]
     masks.append(dict(stage=4, permission=0x100, view_state=3, finished=True,
                       output=mask_native(image, 4, 0x100, finished=True)))
+    masks.append(dict(stage=4, permission=0x100, view_state=0, finished=True,
+                      output=mask_native(image, 4, 0x100, view_state=0, finished=True)))
     return dict(format_cases=formats, mask_cases=masks,
+                resource_cases=[resource_native(image, index) for index in (0, 3, 5, 0xFFFF)],
                 lap_cases=[dict(name=name, input=values, output=lap_native(image, **values))
                            for name, values in cases],
                 limits='Synthetic records; UI text/unhide stubs; no runtime visibility/render/actor/lifecycle proof')

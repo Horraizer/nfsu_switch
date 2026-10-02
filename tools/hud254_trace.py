@@ -11,6 +11,8 @@ import re
 import struct
 
 EXE_SHA = 'C0FAD450912952F53809A54690D235AA8B4E25B9F46650693C7CBEE1B4C074B7'
+BUNDLE_SHA = '044724AB4C167831587E80F29961A1E7D8404C9DD5266533F3563C555A997299'
+LANGUAGE_SHA = '6CBAB64235523149B95966B1844CDCA9FB858744126F8D9AD10E72C921AB8790'
 RANGES = (
     ('lap_constructor', 0x4A1580, 0x4A181F),
     ('lap_update', 0x4A1820, 0x4A1B44),
@@ -21,10 +23,13 @@ RANGES = (
     ('format_fields', 0x586090, 0x586485),
     ('text_draw', 0x4F48B0, 0x4F4CF2),
     ('glyph_geometry', 0x4F4790, 0x4F48A7),
+    ('bind_object_resource', 0x5003C0, 0x500410),
+    ('text_submit', 0x4F25F0, 0x4F27CC),
+    ('text_fields', 0x501AC0, 0x501B77),
 )
 CONTEXT = (
-    ('formatter_jump_tables', 0x586488, 0x5864E8),
-    ('text_binding_context', 0x4FCF00, 0x4FD240),
+    ('object_resource_index', 0x501887, 0x5018AC),
+    ('resource_request_copy', 0x501248, 0x5012E7),
 )
 
 
@@ -200,6 +205,8 @@ def feng_objects(data):
         row = dict(name=name, offset=start, fields=[])
         for tag, offset, value in fields:
             item = dict(tag=tag.decode('ascii'), offset=offset, bytes=len(value), raw=value.hex())
+            if tag == b'OP' and len(value) == 16:
+                item['resource_index'] = struct.unpack_from('<H', value, 12)[0]
             if tag == b'SH' and len(value) == 4:
                 item['string_hash'] = '%08X' % struct.unpack('<I', value)[0]
             if tag == b'Sj' and len(value) == 4:
@@ -213,6 +220,58 @@ def feng_objects(data):
             row['fields'].append(item)
         result.append(row)
     return result
+
+
+def resources(data):
+    rows = []
+    for match in re.finditer(rb'Res\xcc', data):
+        at = match.start()
+        if at + 8 > len(data):
+            raise ValueError('truncated resource enclosure')
+        end = at + 8 + struct.unpack_from('<I', data, at+4)[0]
+        if end > len(data):
+            raise ValueError('resources outside package')
+        row = dict(offset=at, chunks=[])
+        cursor = at + 8
+        while cursor < end:
+            if cursor + 8 > end:
+                raise ValueError('truncated resource child')
+            size = struct.unpack_from('<I', data, cursor+4)[0]
+            next_at = cursor + 8 + size
+            if next_at > end:
+                raise ValueError('resource child outside enclosure')
+            item = dict(tag=data[cursor:cursor+4].hex(), offset=cursor, bytes=size)
+            payload = data[cursor+8:next_at]
+            if data[cursor:cursor+4] == b'RsNm':
+                item['names'] = [{'offset': cursor+8+value.start(),
+                                  'text': value.group()[:-1].decode('ascii')}
+                                 for value in re.finditer(rb'[ -~]+\0', payload)]
+            else:
+                item['raw'] = payload.hex()
+                if data[cursor:cursor+4] == b'RsRq':
+                    if size < 4:
+                        raise ValueError('truncated resource count')
+                    count = struct.unpack_from('<I', payload)[0]
+                    if size != 4 + count * 24:
+                        raise ValueError('invalid resource record count')
+                    item['records'] = [dict(index=index, offset=cursor+12+index*24,
+                                            words=struct.unpack_from('<6I', payload, 4+index*24))
+                                       for index in range(count)]
+            row['chunks'].append(item)
+            cursor = next_at
+        names = [child for child in row['chunks'] if child['tag'] == b'RsNm'.hex()]
+        requests = [child for child in row['chunks'] if child['tag'] == b'RsRq'.hex()]
+        if len(names) != 1 or len(requests) != 1:
+            raise ValueError('missing or duplicate resource tables')
+        table = {entry['offset'] - names[0]['offset'] - 8: entry['text']
+                 for entry in names[0]['names']}
+        for entry in requests[0]['records']:
+            if entry['words'][1] not in table:
+                raise ValueError('resource name offset is not a string boundary')
+            entry['name'] = table[entry['words'][1]]
+            entry['type'] = entry['words'][2]
+        rows.append(row)
+    return rows
 
 
 def output_path(value, roots):
@@ -236,8 +295,11 @@ def main():
     parser.add_argument('--root', type=Path, required=True)
     parser.add_argument('--reference', type=Path)
     parser.add_argument('--out', type=Path, required=True)
+    parser.add_argument('--source', help='full source commit SHA recorded with the reports')
     parser.add_argument('--native', action='store_true', help='execute bounded pure retail consumers in Unicorn 2')
     args = parser.parse_args()
+    if args.source is not None and not re.fullmatch('[0-9a-f]{40}', args.source):
+        parser.error('source must be a full lowercase commit SHA')
     roots = [args.root.resolve()]
     if args.reference:
         roots.append(args.reference.resolve())
@@ -265,13 +327,16 @@ def main():
             report.extend('%08X %-8s %s' % (i.address, i.mnemonic, i.op_str) for i in decoded)
         (out / 'instructions.txt').write_text('\n'.join(report) + '\n', encoding='ascii')
         bun = (roots[0] / 'Global/INGAMEB.BUN').read_bytes()
+        if sha(bun) != BUNDLE_SHA:
+            raise ValueError('unsupported HUD bundle')
         package = jdlz(bun[0x16F40C:])
         if b'HUD_SingleRace.fng' not in package[:256]:
             raise ValueError('unexpected package')
         strings = []
         for match in re.finditer(rb'[ -~]{4,}\0', package):
             text = match.group()[:-1].decode('ascii')
-            if any(part in text.lower() for part in ('lap', 'time', 'current', 'best', 'speed_counter')):
+            if any(part in text.lower() for part in ('lap', 'time', 'current', 'best', 'speed_counter',
+                                                     'font', 'conduit', 'lcd', 'arial')):
                 strings.append(dict(offset=match.start(), text=text,
                                     context=package[max(0, match.start()-48):match.end()+144].hex()))
         shapes = []
@@ -285,19 +350,39 @@ def main():
                                size_scale=struct.unpack_from('<2f', package, at + 0x3C),
                                header=package[at:at+0x50].hex()))
         language = (roots[0] / 'Languages/English.bin').read_bytes()
+        if sha(language) != LANGUAGE_SHA:
+            raise ValueError('unsupported language file')
         pointers = (0x6C735C, 0x6C7350, 0x6C7344, 0x6C7334, 0x6C7324,
                     0x6C7310, 0x6C7308, 0x6C72F0, 0x6C72E8, 0x6C72DC,
                     0x6C7968, 0x6CC568)
         constants = [{'va': '%08X' % at, 'text': image.read(at, 80).split(b'\0', 1)[0].decode('ascii')}
                      for at in pointers]
-        result = dict(executable_sha256=sha(data), package_sha256=sha(package),
+        resource_tables = resources(package)
+        objects = feng_objects(package)
+        if len(resource_tables) != 1:
+            raise ValueError('expected one resource table')
+        requests = next(child['records'] for child in resource_tables[0]['chunks']
+                        if child['tag'] == b'RsRq'.hex())
+        for obj in objects:
+            fields = [field for field in obj['fields'] if field['tag'] == 'OP']
+            if len(fields) != 1 or fields[0]['bytes'] != 16:
+                raise ValueError('missing or unsupported OP field')
+            index = struct.unpack_from('<H', bytes.fromhex(fields[0]['raw']), 12)[0]
+            if index != 0xFFFF:
+                if index >= len(requests):
+                    raise ValueError('object resource index outside table')
+                obj['default_resource'] = requests[index]
+        result = dict(source_commit=args.source, probe_sha256=sha(Path(__file__).read_bytes()),
+                      executable_sha256=sha(data), package_sha256=sha(package),
                       bundle_sha256=sha(bun), language_sha256=sha(language),
                       strings=strings, shapes=shapes, fonts=fonts(language),
-                      objects=feng_objects(package), constants=constants)
+                      objects=objects, constants=constants, resources=resource_tables)
         (out / 'data.json').write_text(json.dumps(result, indent=2, ensure_ascii=True) + '\n', encoding='ascii')
         if args.native:
             from hud254_native import measure
             native = measure(image)
+            native['source_commit'] = args.source
+            native['oracle_sha256'] = sha((Path(__file__).parent/'hud254_native.py').read_bytes())
             (out / 'native.json').write_text(json.dumps(native, indent=2, ensure_ascii=True) + '\n', encoding='ascii')
     finally:
         after = [manifest(root) for root in roots]
