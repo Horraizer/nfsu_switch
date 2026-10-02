@@ -120,6 +120,7 @@ public:
     bool glows = false;
     bool dirty = true;
     bool tuned = false; // Render selection only.
+    TextureFilterMode texture_filter = TextureFilterMode::legacy;
     bool car_shading = false;
     std::uint64_t loads = 0, releases = 0, bytes_read = 0;
     Cost io_cost, prepare_cost, render_cost;
@@ -223,6 +224,7 @@ public:
         prepare(); const auto begin=Clock::now(); std::string error;
         RenderOptions options; options.width=640; options.height=360;
         options.material_state = MaterialStateMode::retail;
+        options.texture_filter=texture_filter;
         options.car_shading=car_shading;
         require(drive_render_camera(session.camera(),ChaseFovMode::vertical_4_3,640,360,options.camera,error),error);
         Frame background; RenderStats stats; TrackRenderStats track_stats;
@@ -263,6 +265,7 @@ int run(int argc, char** argv) {
     bool live=false, smoke=false, tuned=false;
     bool particles_enabled=true, particle_events=false;
     bool glows=false;
+    TextureFilterMode texture_filter=TextureFilterMode::legacy;
     bool car_shading=false;
     std::set<std::size_t> frames;
     bool wet_road_reflections=false;
@@ -279,7 +282,7 @@ int run(int argc, char** argv) {
             std::cout << "nfsu_race --root RETAIL (--input RECORDING | --generate RECORDING | --live)\n"
                          "  [--out NEW_DIRECTORY --frames 180,600,6000,22000,40000]\n"
                          "  [--particles=on|--particles=off] [--particle-events] [--tuned] [--glows]\n"
-                         "  [--car-shading on|off]\n"
+                         "  [--car-shading on|off] [--texture-filter legacy|linear]\n"
                          "  [--wet-road-reflections on|off]\n"
                          "  [--performance-levels name=0..3,...] [--handling-telemetry]\n"
                          "  [--steering baseline|recovered0|recovered1]\n"
@@ -308,6 +311,9 @@ int run(int argc, char** argv) {
         else if (a=="--input") input=nfsu::argument_path(argv[i]);
         else if (a=="--generate") generate=nfsu::argument_path(argv[i]);
         else if (a=="--out") output=nfsu::argument_path(argv[i]);
+        else if (a=="--texture-filter") {
+            require(parse_texture_filter(value,texture_filter),"--texture-filter needs legacy or linear");
+        }
         else if (a=="--car-shading") {
             require(value=="on" || value=="off","--car-shading needs on or off");
             car_shading=value=="on";
@@ -359,6 +365,7 @@ int run(int argc, char** argv) {
     RaceScene scene(table,particles_enabled); scene.tuned=tuned;
     scene.files.stream=root/"Tracks"/track_stream_file_name(*info);
     scene.glows = glows;
+    scene.texture_filter=texture_filter;
     scene.car_shading=car_shading;
     scene.wet_road_reflections=wet_road_reflections;
     scene.files.pack=root/"Tracks"/track_stream_pack_file_name(*info);

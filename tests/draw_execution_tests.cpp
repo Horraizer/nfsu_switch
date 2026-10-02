@@ -1,5 +1,6 @@
 #include "nfsu/draw_execution.h"
 #include "nfsu/track_reflections.h"
+#include "nfsu/deko_texture_layout.h"
 #include <cstdio>
 #include <cstring>
 #include <functional>
@@ -158,6 +159,65 @@ int main() {
               copy.staging_bytes == 64, "DXT copy counts block rows, not pixel rows");
         native.bytes -= 1;
         check(!plan_texture_copy(native, copy, error), "truncated DXT block is refused");
+    }
+    // One GOB is 64 bytes wide and eight physical rows high. Model the
+    // inter-GOB address (the intra-GOB permutation is identical on both
+    // sides). Give every byte a unique source index, including partial rows.
+    // The original base-level two-GOB transfer skips alternate columns and
+    // writes beyond the allocated image; it must fail this round trip.
+    error.clear();
+    const auto gob_address = [](std::uint64_t x, std::uint64_t y,
+                                std::uint64_t width_gobs, std::uint64_t tile_gobs) {
+        return ((y/(8*tile_gobs)*width_gobs+x/64)*tile_gobs+y/8%tile_gobs)*512
+            + y%8*64+x%64;
+    };
+    TextureUploadShape banner;
+    check(check_texture_upload_format(TextureUploadFormat::dxt1,128,32,2048,banner,error)
+          && deko_texture_needs_one_gob(banner),"retail banner eight-block-row layout");
+    for (const auto format : {TextureUploadFormat::rgba8, TextureUploadFormat::dxt1,
+                             TextureUploadFormat::dxt3}) {
+        for (const auto rows : {1U, 5U, 6U, 7U, 8U, 9U, 16U, 32U, 128U}) {
+            for (const auto width : {1U, 32U, 128U}) {
+                const auto compressed = format != TextureUploadFormat::rgba8;
+                const auto height = compressed ? rows*4-1 : rows;
+                const auto block_bytes = format == TextureUploadFormat::rgba8 ? 4U :
+                    format == TextureUploadFormat::dxt1 ? 8U : 16U;
+                const auto row_bytes = std::uint64_t{compressed ? (width+3)/4 : width}*block_bytes;
+                TextureUploadShape shape;
+                check(check_texture_upload_format(format,width,height,row_bytes*rows,shape,error),
+                      "block-linear model fixture shape");
+                // deko3d 0.5.0 automatic height, independently modeled in GOBs.
+                const auto desired_gobs = (rows+rows/2+7)/8;
+                unsigned automatic_gobs = 1;
+                while (automatic_gobs < 16 && automatic_gobs*2 <= desired_gobs)
+                    automatic_gobs *= 2;
+                unsigned level_gobs = automatic_gobs;
+                while (level_gobs > 1 && rows <= 8*(level_gobs/2)) level_gobs /= 2;
+                const auto width_gobs = (row_bytes+63)/64;
+                const auto image_bytes = width_gobs*((rows+8*level_gobs-1)/(8*level_gobs))
+                    *level_gobs*512;
+                const auto round_trip = [&](unsigned transfer_gobs) {
+                    std::vector<std::uint64_t> image(static_cast<std::size_t>(image_bytes),~std::uint64_t{0});
+                    for (unsigned y=0;y<rows;++y) for (std::uint64_t x=0;x<row_bytes;++x) {
+                        const auto at = gob_address(x,y,width_gobs,transfer_gobs);
+                        if (at >= image.size()) return false;
+                        image[static_cast<std::size_t>(at)] = y*row_bytes+x;
+                    }
+                    for (unsigned y=0;y<rows;++y) for (std::uint64_t x=0;x<row_bytes;++x)
+                        if (image[static_cast<std::size_t>(gob_address(x,y,width_gobs,level_gobs))]
+                            != y*row_bytes+x) return false;
+                    return true;
+                };
+                const auto custom = deko_texture_needs_one_gob(shape);
+                check(round_trip(custom ? 1U : automatic_gobs),
+                      "explicit small-height layout transfers every block byte inside its image");
+                if (width_gobs > 1 && rows >= 6 && rows <= 8)
+                    check(!round_trip(automatic_gobs),
+                          "original automatic layout reproduces skipped columns or out-of-image writes");
+                if (rows < 6 || rows > 8)
+                    check(!custom,"unaffected physical heights retain automatic layout");
+            }
+        }
     }
     r.texture.row_bytes = 1;
     copy.row_pitch_bytes = 99;

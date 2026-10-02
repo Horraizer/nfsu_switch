@@ -464,6 +464,7 @@ bool render_track_draw_list(
         RenderOptions mirror = options;
         mirror.wet_road_reflections = false;
         mirror.reflection_pass = true;
+        mirror.texture_filter = TextureFilterMode::legacy;
         mirror.sky = false;
         mirror.width = std::max(1U, std::min(options.width, options.reflection_width));
         mirror.height = std::max(1U, mirror.width * options.height / options.width);
@@ -515,6 +516,8 @@ bool render_track_draw_list(
             ++track_stats.groups;
         }
         RasterMaterial raster;
+        raster.linear_filter = !options.reflection_pass &&
+            options.texture_filter == TextureFilterMode::linear;
         if (reflected.width() && track_vertex_format(mesh.vertex_format_flags).mask == 0x40)
             raster.reflected_scene = &reflected;
         std::size_t key = kNoHandle;

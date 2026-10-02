@@ -221,7 +221,7 @@ const char* element_name(sm::Element element) {
 // make, which is a variant this project would be inventing.
 void test_programs_are_the_reference_draw_kinds(const Programs& programs, Reporter& r) {
     const std::set<std::string> expected = {
-        "car_fallback", "car_textured", "car_shaded_textured", "sky_textured",
+        "car_fallback", "car_textured", "car_shaded_textured", "car_shaded_linear_textured", "track_linear_textured", "sky_textured",
         "track_fallback", "track_textured"};
     std::set<std::string> got;
     for (const sm::Program& program : programs) {
@@ -334,7 +334,7 @@ void test_textures_follow_the_draw_kind(const Programs& programs, Reporter& r) {
             r.check(program.texture_count == 0, name + ": samples no texture");
             continue;
         }
-        const bool reflection = name == "track_textured" || name == "car_textured";
+        const bool reflection = name == "track_textured" || name == "track_linear_textured" || name == "car_textured";
         const std::size_t expected_count = reflection ? 2U : 1U;
         r.check(program.texture_count == expected_count,
                 name + ": samples the expected diffuse and reflection textures");
@@ -346,7 +346,7 @@ void test_textures_follow_the_draw_kind(const Programs& programs, Reporter& r) {
                 name + ": the texture is sampled by the fragment stage");
         r.check(std::string(texture.type) == "sampler2D",
                 name + ": the texture is a sampler2D");
-        r.check(texture.filter == (name == "car_textured"
+        r.check(texture.filter == (name == "car_textured" || name == "track_linear_textured" || name == "car_shaded_linear_textured"
                    ? sm::Filter::linear : sm::Filter::nearest),
                 name + ": the texture filter matches its effect");
         r.check(texture.wrap == sm::Wrap::repeat,
@@ -481,14 +481,15 @@ void test_opaque_only_programs(const Programs& programs, Reporter& r) {
 
 void test_track_textured_variants_are_the_reference_pairs(const Programs& programs,
                                                            Reporter& r) {
-    const sm::Program* program = find_program(programs, "track_textured");
-    r.check(program != nullptr, "track_textured has a manifest");
-    if (program == nullptr) return;
+    for (const char* name : {"track_textured", "track_linear_textured"}) {
+    const sm::Program* program = find_program(programs, name);
+    r.check(program != nullptr, std::string(name)+" has a manifest");
+    if (program == nullptr) continue;
     std::set<std::pair<bool, int>> pairs;
     for (std::size_t i = 0; i < program->variant_count; ++i) {
         const sm::Variant& variant = program->variants[i];
         const bool alpha_test = variant.alpha_test == sm::CompareOp::greater;
-        const std::string what = std::string("track_textured variant ") + variant.name;
+        const std::string what = std::string(name)+" variant " + variant.name;
         r.check(variant.alpha_test == sm::CompareOp::always || alpha_test,
                 what + ": alpha test is off or GREATER");
         if (alpha_test) {
@@ -507,7 +508,8 @@ void test_track_textured_variants_are_the_reference_pairs(const Programs& progra
         r.check(variant.depth_write == (mode == nfsu::RenderBlendMode::disabled),
                 what + ": world blend disables depth writes");
     }
-    r.check(pairs.size() == 6, "track_textured has all six alpha and blend pairs");
+    r.check(pairs.size() == 6, std::string(name)+" has all six alpha and blend pairs");
+    }
 }
 
 // The state every draw of the reference shares. A fragment is kept when its
@@ -535,7 +537,7 @@ void test_shared_fixed_function_state(const Programs& programs, Reporter& r) {
                 std::string(program.name) + " variant " + variant.name;
             r.check(variant.depth_test == sm::CompareOp::less_equal,
                     what + ": the depth test is LESS_EQUAL");
-            const bool world_blend = (std::string(program.name) == "track_textured" && variant.blend) ||
+            const bool world_blend = ((std::string(program.name) == "track_textured" || std::string(program.name) == "track_linear_textured") && variant.blend) ||
                                      std::string(program.name) == "sky_textured";
             r.check(variant.depth_write == !world_blend,
                     what + (world_blend ? ": leaves depth alone" : ": writes depth"));

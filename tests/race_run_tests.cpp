@@ -235,15 +235,18 @@ int main(int argc, char** argv) {
         std::cout << "PASS: fixed clock, exact replay cursor, refusal and combined draw guards\n";
         if (argc == 2) return 0;
         bool tuned = false, glows = false, car_shading = false;
+        TextureFilterMode filter = TextureFilterMode::legacy;
         for (int i = 4; i < argc; ++i) {
             const std::string option = argv[i];
             if (option == "--tuned") tuned = true;
             else if (option == "--glows") glows = true;
             else if (option == "--car-shading") car_shading = true;
+            else if (option == "--texture-filter" && i+1 < argc) require(parse_texture_filter(argv[++i],filter),"invalid filter");
             else require(false, "unknown race option");
         }
         const std::filesystem::path root = argument_path(argv[2]);
         RaceGpuScene scene;
+        require(scene.set_texture_filter(filter),"filter refused before load");
         scene.set_particles_enabled(true);
         RaceRun race;
         require(race.prepare_metadata(root, error), error);
@@ -260,6 +263,7 @@ int main(int argc, char** argv) {
                            tuned, glows, car_shading), error);
         require(polled.sections >= 4*scene.track().sections && polled.car_prepared,
                 "race scene disconnected the shared loader checkpoints");
+        require(!scene.set_texture_filter(TextureFilterMode::legacy),"loaded scene allowed sampler cache invalidation");
         require(!scene.load(posix_file_system(),root,error),"loaded race scene allowed cache-invalidating reload");
         require(race.start(root, scene.track(), error), error);
         // Partial wheel contact must change the fitted road plane, not drag
@@ -327,6 +331,32 @@ int main(int argc, char** argv) {
         std::cout << "car selection " << (tuned ? "tuned" : "stock") << " draws " << frame.car_draws
                   << " triangles " << car_triangles << " fallback " << fallback_triangles << '\n';
         require_retail_car_draws(frame, "cached", tuned);
+        const auto check_filter = [&](const RecordedCommands& commands) {
+            std::size_t world = 0, shaded = 0, effects = 0;
+            for (std::size_t i=0; i<commands.draw_count(); ++i) {
+                const auto& draw = commands.draw_view(i).definition;
+                const std::string name = draw.program->name;
+                const bool is_world = name == "track_textured" || name == "track_linear_textured";
+                const bool is_shaded = name == "car_shaded_textured" || name == "car_shaded_linear_textured";
+                if (is_world || is_shaded) {
+                    ++(is_world ? world : shaded);
+                    require(draw.program->textures[0].filter == (filter == TextureFilterMode::linear ?
+                            shader_manifest::Filter::linear : shader_manifest::Filter::nearest),
+                            "race policy lost world/shaded sampler");
+                } else if (name == "sky_textured") {
+                    require(draw.program->textures[0].filter == shader_manifest::Filter::nearest,"sky sampler changed");
+                } else if (draw.texture_resource != kNoHandle) {
+                    ++effects;
+                    require(draw.program->textures[0].filter == shader_manifest::Filter::linear,"ordinary car/effect sampler changed");
+                }
+            }
+            require(world && effects && (!car_shading || shaded),"filter census lost a material witness");
+        };
+        check_filter(frame.commands);
+        RaceGpuFrame filter_reference;
+        require(scene.frame(race.session(),filter_reference,error,nullptr,true),error);
+        check_filter(filter_reference.commands);
+        std::cout << "PASS: cached/rebuilt world/car policy and separate sky/effect samplers\n";
         const std::uint32_t dry_options = frame.commands.frame.options[2];
         const std::size_t dry_draw_count = frame.commands.draw_count();
         scene.set_wet_road_reflections(true);
@@ -374,6 +404,7 @@ int main(int argc, char** argv) {
             // #227: --sky off records no sky draws; the package then holds
             // only the scenery placements, at the same pose and far plane.
             RaceGpuScene no_sky; RaceGpuFrame plain;
+            require(no_sky.set_texture_filter(filter),"no-sky filter selection refused");
             no_sky.set_particles_enabled(true);
             require(no_sky.set_sky(false), "sky mode refused before load");
             require(no_sky.load(posix_file_system(), root, error, nullptr, nullptr,

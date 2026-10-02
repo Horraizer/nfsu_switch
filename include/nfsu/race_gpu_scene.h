@@ -30,6 +30,10 @@ public:
     RaceGpuScene& operator=(const RaceGpuScene&) = delete;
     const TrackSlice& track() const { return track_; }
     // Select before load. Both values use the same executable and assets.
+    bool set_texture_filter(TextureFilterMode mode) {
+        if (ready_ || (mode != TextureFilterMode::legacy && mode != TextureFilterMode::linear)) return false;
+        texture_filter_ = mode; return true;
+    }
     void set_particles_enabled(bool enabled) { particles_enabled_ = enabled; }
     void advance_particles(const RaceSession& session) noexcept {
         if (particles_enabled_) particles_.advance(session);
@@ -60,6 +64,7 @@ private:
     std::vector<std::size_t> template_of_group_;
     bool ready_ = false;
     bool tuned_ = false; // Visual selection only; never passed to RaceSession.
+    TextureFilterMode texture_filter_ = TextureFilterMode::legacy;
     bool car_shading_ = false;
     bool wet_road_reflections_ = false;
     bool prepare_templates(std::string& error);

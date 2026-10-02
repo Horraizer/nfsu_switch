@@ -486,7 +486,24 @@ set_target_properties(nfsu_switch_race_romfs PROPERTIES
 nx_generate_nacp(OUTPUT nfsu_switch_race.nacp NAME "nfsu_switch_race"
     AUTHOR "nfsu_switch contributors" VERSION "0.1.0")
 nx_create_nro(nfsu_switch_race NACP nfsu_switch_race.nacp ROMFS nfsu_switch_race_romfs)
+add_executable(nfsu_switch_texture_compare ${PROJECT_SOURCE_DIR}/src/texture_filter_compare_main.cpp
+    ${PROJECT_SOURCE_DIR}/src/track_render.cpp deko_renderer.cpp)
+target_include_directories(nfsu_switch_texture_compare PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(nfsu_switch_texture_compare PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_frame_compare nfsu_screen_text deko3d)
+target_compile_definitions(nfsu_switch_texture_compare PRIVATE NFSU_RACE_BUILD_TAG="${NFSU_RACE_BUILD_TAG}")
+set_target_properties(nfsu_switch_texture_compare PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
+nfsu_enable_warnings(nfsu_switch_texture_compare)
+nx_generate_nacp(OUTPUT nfsu_switch_texture_compare.nacp NAME "nfsu_texture_compare"
+    AUTHOR "nfsu_switch contributors" VERSION "0.1.0")
+nx_create_nro(nfsu_switch_texture_compare NACP nfsu_switch_texture_compare.nacp ROMFS nfsu_switch_race_romfs)
 if(NFSU_BUILD_TESTS)
+    add_test(NAME nfsu_switch_texture_compare_nro COMMAND ${CMAKE_COMMAND}
+        -DNRO=${CMAKE_CURRENT_BINARY_DIR}/nfsu_switch_texture_compare.nro
+        -DELF=$<TARGET_FILE:nfsu_switch_texture_compare> -DTITLE=nfsu_texture_compare
+        -DSHADERS=${NFSU_SHADER_OUTPUT} -DREPLAY=${NFSU_RACE_INPUT}
+        -DBUILD_TAG=${NFSU_RACE_BUILD_TAG}
+        -P ${PROJECT_SOURCE_DIR}/tests/switch_race_romfs_check.cmake)
+    set_tests_properties(nfsu_switch_texture_compare_nro PROPERTIES TIMEOUT 60)
     add_test(NAME nfsu_switch_race_nro COMMAND ${CMAKE_COMMAND}
         -DNRO=${CMAKE_CURRENT_BINARY_DIR}/nfsu_switch_race.nro
         -DELF=$<TARGET_FILE:nfsu_switch_race> -DTITLE=nfsu_switch_race

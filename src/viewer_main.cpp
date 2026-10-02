@@ -79,6 +79,7 @@ void print_usage() {
         << "Retail material state (docs/MATERIALS.md). Every option below\n"
         << "the first one needs --material-state retail:\n"
         << "  --material-state M   off or retail (default for --stock-car). retail applies the\n"
+        << "  --texture-filter M   legacy/linear (default legacy)\n"
         << "  --car-shading M      on/off static-environment approximation (default off)\n"
         << "                       texture-info alpha test and blend selection,\n"
         << "                       the coefficient gates and the bounded\n"
@@ -795,7 +796,7 @@ int parse_options(
         static const std::set<std::string> valued = {
             "--width", "--height", "--alpha-cutoff", "--yaw", "--pitch",
             "--distance", "--fov", "--near", "--far", "--target", "--cull",
-            "--shading", "--car-shading", "--material-state", "--material-alpha", "--environment",
+            "--shading", "--car-shading", "--texture-filter", "--material-state", "--material-alpha", "--environment",
             "--environment-color", "--environment-global", "--stock-car",
             "--stock-parts", "--stock-lod", "--stock-pass"};
         if (valued.count(name) == 0) {
@@ -849,6 +850,10 @@ int parse_options(
                 options.shading = nfsu::ShadingMode::none;
             } else {
                 ok = false;
+            }
+        } else if (name == "--texture-filter") {
+            if (!nfsu::parse_texture_filter(value,options.texture_filter)) {
+                std::cerr << "error: --texture-filter needs legacy or linear\n"; return 2;
             }
         } else if (name == "--car-shading") {
             if (value!="on" && value!="off") { std::cerr << "error: --car-shading needs on or off\n"; return 2; }
