@@ -175,6 +175,8 @@ struct RaceAudioService::Impl {
     OutputFade fade;
     OutputFade music_fade;
 
+    Impl() { mixer.set_peak_limiter(true); }
+
     void render(std::int16_t* stereo, std::size_t frames) {
         const bool muted = suspended.load();
         if (muted && fade.silent()) {
@@ -388,7 +390,8 @@ RaceAudioService::Stats RaceAudioService::stats() const noexcept {
     std::lock_guard<std::mutex> lock(p.mixer_mutex);
     return {p.stream.ring().underruns(), p.stream.ring().size(),
             p.stream.ring().capacity(), output.late, output.queued_frames,
-            output.work_us, p.mixer.clipped_samples()};
+            output.work_us, p.mixer.clipped_samples(),
+            p.mixer.overloaded_samples(), p.mixer.limited_frames()};
 }
 
 std::size_t RaceAudioService::resident_bytes() const noexcept {

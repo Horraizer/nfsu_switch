@@ -78,6 +78,11 @@ bool Mixer::active(std::size_t slot) const noexcept {
     return slot < voices_.size() && voices_[slot].clip;
 }
 
+void Mixer::set_peak_limiter(bool enabled) noexcept {
+    peak_limiter_ = enabled;
+    limiter_gain_q32_ = 1ULL << 32;
+}
+
 void Mixer::render(std::int16_t* stereo, std::size_t frames,
                    const std::int16_t* stream,
                    std::uint32_t stream_gain_q15) noexcept {
@@ -131,6 +136,24 @@ void Mixer::render(std::int16_t* stereo, std::size_t frames,
             left += static_cast<std::int64_t>(sample_left) * voice.gain_q15 / 32768;
             right += static_cast<std::int64_t>(sample_right) * voice.gain_q15 / 32768;
             voice.phase_q32 += steps[i];
+        }
+        overloaded_samples_ += left < -32768 || left > 32767;
+        overloaded_samples_ += right < -32768 || right > 32767;
+        if (peak_limiter_) {
+            constexpr std::uint64_t unity = 1ULL << 32;
+            constexpr std::uint64_t release = unity / (kOutputRate / 20);
+            const auto peak = static_cast<std::uint64_t>(std::max(
+                left < 0 ? -left : left, right < 0 ? -right : right));
+            // Division rounds down: neither polarity can exceed 32767 after
+            // scaling, even for all nine voices plus a full-scale stream.
+            const auto target = peak > 32767 ? (32767ULL * unity) / peak : unity;
+            limiter_gain_q32_ = std::min<std::uint64_t>(target,
+                std::min(unity, limiter_gain_q32_ + release));
+            limited_frames_ += limiter_gain_q32_ < unity;
+            left = left * static_cast<std::int64_t>(limiter_gain_q32_) /
+                   static_cast<std::int64_t>(unity);
+            right = right * static_cast<std::int64_t>(limiter_gain_q32_) /
+                    static_cast<std::int64_t>(unity);
         }
         clipped_samples_ += left < -32768 || left > 32767;
         clipped_samples_ += right < -32768 || right > 32767;

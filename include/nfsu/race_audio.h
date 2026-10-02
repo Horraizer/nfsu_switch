@@ -59,6 +59,8 @@ public:
         std::uint32_t queued_frames = 0;
         std::uint32_t thread_us = 0;
         std::uint64_t mix_clips = 0;
+        std::uint64_t mix_overloads = 0;
+        std::uint64_t mix_limited_frames = 0;
     };
     RaceAudioService();
     ~RaceAudioService();

@@ -43,6 +43,12 @@ public:
     void stop(std::size_t slot) noexcept;
     bool active(std::size_t slot) const noexcept;
     std::uint64_t clipped_samples() const noexcept { return clipped_samples_; }
+    // Opt-in stereo-linked peak limiter. Instant attack, linear 50 ms release.
+    // A port output policy, not a recovered retail mastering curve. Raw overflow
+    // remains observable independently of final PCM saturation.
+    void set_peak_limiter(bool enabled) noexcept;
+    std::uint64_t overloaded_samples() const noexcept { return overloaded_samples_; }
+    std::uint64_t limited_frames() const noexcept { return limited_frames_; }
     // Optional streamed voice is summed before the final clamp.
     void render(std::int16_t* stereo, std::size_t frames,
                 const std::int16_t* stream = nullptr,
@@ -60,6 +66,9 @@ private:
     };
     std::array<Voice, kMixVoices> voices_{};
     std::uint64_t clipped_samples_ = 0;
+    std::uint64_t overloaded_samples_ = 0, limited_frames_ = 0;
+    std::uint64_t limiter_gain_q32_ = 1ULL << 32;
+    bool peak_limiter_ = false;
 };
 
 // Fades the completed stereo mix over five milliseconds on mute and unmute.

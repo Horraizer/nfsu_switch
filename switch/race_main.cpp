@@ -219,6 +219,9 @@ void append_audio_status(std::vector<std::string>& lines,
         (unsigned long long)stats.output_late,
         stats.queued_frames, stats.thread_us,
         (unsigned long long)stats.mix_clips));
+    lines.push_back(format("AUDIO OVER %llu samples | LIMIT %llu frames",
+        (unsigned long long)stats.mix_overloads,
+        (unsigned long long)stats.mix_limited_frames));
     const auto diagnostic = sound.diagnostic();
     lines.push_back("AUDIO STATUS " +
                     (diagnostic.empty() ? startup_note : diagnostic));
