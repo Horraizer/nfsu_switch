@@ -465,7 +465,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         std::size_t frames = 0, max_draws = 0;
-        const std::set<std::uint64_t> inspect = {1,163,180,600,1164,6000,11344,12459,13128,24300,35396,36510,37177,48343};
+        const std::set<std::uint64_t> inspect = {1,163,180,600,1164,6000,11344,12459,13122,24300,35396,36510,37177,48343};
         const bool full = argc > 3 && std::string(argv[3]) == "--full-draws";
         const bool sampled = argc > 3 && std::string(argv[3]) == "--sample-draws";
         require(argc <= 3 || full || sampled, "unknown retail draw sampling option");
@@ -657,7 +657,7 @@ int main(int argc, char** argv) {
                 require(deko_frame_gpfifo_bound(deko_track_list_calls(
                             static_cast<std::uint32_t>(frame.track_draws))) < kDekoGpfifoRingEntries,
                         "selected track draws exceed GPFIFO call budget");
-                if (tick == 13128) {
+                if (tick == 13122) {
                     require(race.session().animation().braking, "animation guard tick is not braking");
                     StockFrameInputs inputs;
                     require(read_stock_frame_inputs(root, inputs, tuned), "animation guard retail car inputs unavailable");
