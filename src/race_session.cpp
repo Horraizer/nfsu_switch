@@ -55,10 +55,12 @@ bool RaceSession::steer_input(VehicleInput& input, int substep, std::string& err
     context.forward_speed = float(forward_speed(s));
     context.speed = float(vehicle_sqrt(s.velocity.x*s.velocity.x+s.velocity.y*s.velocity.y+s.velocity.z*s.velocity.z));
     context.heading_minus_velocity_deg = float(double(static_cast<std::int16_t>(difference))*(360.0/65536));
-    const auto& f = controls_.frame_state();
-    context.digital_throttle = float(f.throttle_digital);
-    context.analog_throttle = float(f.throttle_analog);
-    context.brake = float(f.brake_from_button ? f.brake_digital : f.brake_analog);
+    // Traced consumers are processed controls, not separate digital/analog
+    // sources. Use the applied port values, including reverse assist. The
+    // native speed/gear brake normalizer itself remains unrecovered here.
+    context.throttle = float(input.throttle);
+    context.handbrake = input.handbrake ? 1 : 0;
+    context.brake = float(input.brake);
     context.predicted_max_speed = steering_max_speed_;
     context.shift_elapsed = shifted_ ? float(double(steering_steps_-shift_step_)/120) : 1;
     context.predicate = steering_mode_ == RaceSteering::recovered_predicate1;

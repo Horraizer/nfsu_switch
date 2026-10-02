@@ -16,9 +16,9 @@ struct SteeringContext {
     float forward_speed = 0;
     float speed = 0;
     float heading_minus_velocity_deg = 0;
-    float digital_throttle = 0;
-    float analog_throttle = 0;
-    float brake = 0;
+    float throttle = 0; // processed controls +0x1DC, sent to engine
+    float handbrake = 0; // controls +0x1E0, from input +0x2AC
+    float brake = 0; // processed brake component, controls +0x1E4
     float multiplier = 1;
     float predicted_max_speed = 1;
     float shift_elapsed = 1; // >= 1 means no recent shift

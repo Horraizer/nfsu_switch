@@ -137,7 +137,7 @@ def compare(root, out, probe):
         for at in (0x7361a8,0x7361a4,0x735fa0): wi(at,0)
 
     contexts, expected, names = [], [], []
-    def sample(name, raw_input, tick, speed=25, slip=0, throttle=0, analog=0, brake=0,
+    def sample(name, raw_input, tick, speed=25, slip=0, throttle=0, handbrake=0, brake=0,
                elapsed=1, multiplier=1, mode=0, predicate=0, dt=1/120):
         wf(car+0x3d0,speed); wf(car+0x70,abs(speed)); wf(car+0x74,0); wf(car+0x78,0)
         heading = call(0x564db0,[abs(speed),0],floating=False)&0xffff
@@ -148,7 +148,7 @@ def compare(root, out, probe):
         native_slip *= rf(0x6cc9f4)
         wi(0x73ad3c,tick); wi(0x73ad34,tick)
         u.mem_write(0x736514,bytes([mode])); wi(0x735fa0,predicate)
-        wf(inputs+0x1dc,throttle); wf(inputs+0x1e0,analog); wf(inputs+0x1e4,brake)
+        wf(inputs+0x1dc,throttle); wf(inputs+0x1e0,handbrake); wf(inputs+0x1e4,brake)
         wf(setup+0x270,multiplier)
         # Supply a cached predicted maximum as an explicit context input.
         # This tests steering's consumer, not 0x57F2B0's engine predictor.
@@ -163,7 +163,7 @@ def compare(root, out, probe):
         actual_elapsed = (tick-struct.unpack('<I',u.mem_read(engine+0x14c,4))[0])*rf(0x6cca38)
         seconds = tick*rf(0x6cca38)
         contexts.append('step '+' '.join(str(v) for v in [raw_input,seconds,dt,speed,abs(speed),
-            native_slip,throttle,analog,brake,multiplier,50,actual_elapsed if elapsed<1 else 1,mode,predicate]))
+            native_slip,throttle,handbrake,brake,multiplier,50,actual_elapsed if elapsed<1 else 1,mode,predicate]))
         expected.append([rf(control+0x14),rf(control+0x48),rf(control+0x74),observed['target'],
                          observed.get('rate',0),signed*360/65536,observed.get('shift',0),word,
                          u.mem_read(control+4,1)[0]])
@@ -185,7 +185,7 @@ def compare(root, out, probe):
         for speed in (15,25,35,45):
             for controls in ((0,0,0),(1,0,0),(0,.7,0),(0,0,1)):
                 reset(); contexts.append('reset')
-                sample('shift',.3,10000,speed,elapsed=elapsed,throttle=controls[0],analog=controls[1],brake=controls[2])
+                sample('shift',.3,10000,speed,elapsed=elapsed,throttle=controls[0],handbrake=controls[1],brake=controls[2])
     for mode in (0,1):
         for predicate in (0,1):
             reset(); contexts.append('reset')

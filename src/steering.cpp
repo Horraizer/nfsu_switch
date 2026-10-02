@@ -99,15 +99,15 @@ bool steering_step(const SteeringContext& c, SteeringState& state, SteeringResul
         !std::isfinite(state.previous_limit) || std::abs(state.previous_limit)>1000 ||
         !std::isfinite(state.previous_raw) || std::abs(state.previous_raw)>1) return false;
     const float fields[] = {c.raw,c.seconds,c.dt,c.forward_speed,c.speed,
-        c.heading_minus_velocity_deg,c.digital_throttle,c.analog_throttle,c.brake,
+        c.heading_minus_velocity_deg,c.throttle,c.handbrake,c.brake,
         c.multiplier,c.predicted_max_speed,c.shift_elapsed};
     for (float f : fields) if (!std::isfinite(f)) return false;
     if (std::abs(c.raw)>1 || c.seconds<0 || c.dt<.000001F || c.dt>1 ||
         std::abs(c.forward_speed)>1000 || c.speed<0 || c.speed>2000 ||
         std::abs(c.heading_minus_velocity_deg)>180 || c.multiplier<0 || c.multiplier>4 ||
         c.predicted_max_speed<=0 || c.predicted_max_speed>1000 ||
-        c.digital_throttle<0 || c.digital_throttle>1 || c.analog_throttle<0 ||
-        c.analog_throttle>1 || c.brake<0 || c.brake>1) return false;
+        c.throttle<0 || c.throttle>1 || c.handbrake<0 ||
+        c.handbrake>1 || c.brake<0 || c.brake>1) return false;
     SteeringState s = state; SteeringResult r;
     sample(s.input,c.raw,c.seconds,.55F); r.filtered = s.input.average;
     r.rate_history = s.rate.average;
@@ -115,7 +115,7 @@ bool steering_step(const SteeringContext& c, SteeringState& state, SteeringResul
     if (c.bypass_mode) limit = curve(alternate,.05625F,c.forward_speed);
     else {
         const double factor = 1+double(.8F)*curve(response,.05625F,c.forward_speed)*
-            (1-.5*(double(c.digital_throttle)+1-.5*(double(c.analog_throttle)+c.brake)));
+            (1-.5*(double(c.throttle)+1-.5*(double(c.handbrake)+c.brake)));
         const float first = static_cast<float>(curve(base,.05625F,c.forward_speed)*factor);
         limit = curve(history_gain,5,std::abs(s.input.average))*first;
     }

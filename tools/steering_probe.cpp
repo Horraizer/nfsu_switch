@@ -15,7 +15,7 @@ int main() {
         if (command=="reset") { state={}; continue; }
         nfsu::SteeringContext c; int mode, predicate;
         if (command!="step" || !(std::cin >> c.raw >> c.seconds >> c.dt >> c.forward_speed >>
-            c.speed >> c.heading_minus_velocity_deg >> c.digital_throttle >> c.analog_throttle >>
+            c.speed >> c.heading_minus_velocity_deg >> c.throttle >> c.handbrake >>
             c.brake >> c.multiplier >> c.predicted_max_speed >> c.shift_elapsed >> mode >> predicate) ||
             (mode!=0 && mode!=1) || (predicate!=0 && predicate!=1)) {
             std::cerr << "ERROR: invalid context\n"; return 1;

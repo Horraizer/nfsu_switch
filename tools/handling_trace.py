@@ -70,6 +70,8 @@ def main():
             ('timed-history-clear', 0x5844B0, 0x5844FA),
             ('timed-history-update', 0x584500, 0x58460E),
             ('predicted-speed-consumer', 0x580240, 0x5802BC),
+            ('processed-control-writers', 0x461A60, 0x461D9D),
+            ('handbrake-input', 0x461E10, 0x461E58),
             ('angle-difference-helper', 0x464ED0, 0x464F11),
             ('ackermann', 0x588240, 0x5883DC),
             ('lateral-curve-caller', 0x5876F6, 0x587740),

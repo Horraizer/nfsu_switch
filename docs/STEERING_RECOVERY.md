@@ -33,11 +33,17 @@ Verified call path:
 | 0x00585D70 | Advances the cumulative time at 0x0073AD3C; it is not dt |
 
 Normal lock is the base speed curve times
-`1 + 0.8 * response(speed) * (1 - 0.5 * (digitalThrottle + 1 -
-0.5 * (analogThrottle + brake)))`, then the input-history gain. All constants
+`1 + 0.8 * response(speed) * (1 - 0.5 * (throttle + 1 -
+0.5 * (handbrake + brake)))`, then the input-history gain. All constants
 and table samples preserve their stored binary32 values. The rate is
 `110 * response(speed) * rateHistory * rateGain(abs(inputHistory))`.
 The target uses raw input; history changes gain/rate rather than replacing it.
+The channels are processed controls: +0x1DC feeds the engine at 0x00474B78;
++0x1E0 is copied from handbrake input +0x2AC at 0x00461ADE..0x00461AE4;
++0x1E4 is a brake component produced by 0x00461A60's speed/gear normalizer.
+They are not separate digital and analog throttle sources. The bridge uses
+applied port throttle/brake and its boolean handbrake, retaining the existing
+reverse assist; recovering the native brake/reverse normalization is separate.
 
 During the first second after a valid engine +0x14C shift timestamp, lock is
 multiplied by `shiftCurve(t) + (1-shiftCurve(t)) * (1-speedRatio)` with

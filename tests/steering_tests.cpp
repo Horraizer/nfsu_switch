@@ -93,7 +93,8 @@ int main() {
         bool saw_steer=false, saw_shift=false; int last_gear=2;
         for (int k=0;k<1200;++k) {
             const auto gas=gamepad_button_bit(GamepadButton::trigger_right);
-            const auto buttons=k==900 ? gamepad_button_bit(GamepadButton::select) : gas;
+            const auto buttons=k==900 ? gamepad_button_bit(GamepadButton::select) :
+                gas | (k>=390 && k<410 ? gamepad_button_bit(GamepadButton::face_south) : 0);
             const int axis=k<360 || k>=650 ? 0 : k<500 ? -9000 : 9000;
             auto frame=race_input_frame({1,buttons,axis},k);
             if (!a.advance(frame,error) || !b.advance(frame,error)) { check(false,"recovered replay advances"); break; }
