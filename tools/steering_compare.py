@@ -201,6 +201,16 @@ def compare(root, out, probe):
     for k in range(120):
         sample('mode-transitions',.6 if k<70 else -.6,10000+67*k,speed=18,
                slip=8 if k<80 else -8,mode=(k//30)%2,predicate=(k//20)%2)
+    for raw_input in (.001,.003,.016,.031,.05,1/45-1e-7,1/45,1/45+1e-7):
+        for sign in (-1,1):
+            for mode in (0,1):
+                for dt in (1/120,1/60):
+                    reset(); contexts.append('reset')
+                    sample('small-input-and-snap',sign*raw_input,10000,speed=15,mode=mode,dt=dt)
+    for multiplier in (.3,2):
+        for sign in (-1,1):
+            reset(); contexts.append('reset')
+            sample('multiplier-and-asymmetric-cap',sign,10000,speed=15,mode=1,multiplier=multiplier)
     source = '\n'.join(contexts)+'\n'
     (out/'contexts.txt').write_text(source,encoding='ascii')
     result = subprocess.run([str(probe)],input=source.encode('ascii'),stdout=subprocess.PIPE,

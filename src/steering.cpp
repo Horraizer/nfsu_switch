@@ -146,15 +146,17 @@ bool steering_step(const SteeringContext& c, SteeringState& state, SteeringResul
     r.target_deg = static_cast<float>(std::min(45.0,double(r.limit_deg)*c.raw*c.multiplier));
     float angle = r.target_deg;
     if (!c.bypass_mode) {
-        const float change = static_cast<float>(curve(change_gain,.5F,
-            std::abs((double(c.raw)-s.previous_raw)/c.dt)));
+        const float gradient = static_cast<float>(std::abs((double(c.raw)-s.previous_raw)/c.dt));
+        const float change = static_cast<float>(curve(change_gain,.5F,gradient));
         sample(s.rate,change,c.seconds,.15F); r.rate_history = s.rate.average;
         const double speed_rate = curve(response,.05625F,c.forward_speed)*110;
         const float first = static_cast<float>(speed_rate*s.rate.average);
-        r.rate_deg_s = static_cast<float>(curve(rate_gain,5,std::abs(s.input.average))*first);
+        const double rate = curve(rate_gain,5,std::abs(s.input.average))*first;
+        r.rate_deg_s = static_cast<float>(rate);
         double previous = double(s.angle)*(360.0/65536);
         if (previous >= 180) previous -= 360;
-        const double delta = double(r.rate_deg_s)*c.dt;
+        // Native returns the unrounded x87 rate to the target caller.
+        const double delta = rate*c.dt;
         angle = static_cast<float>(std::clamp(double(angle),previous-delta,previous+delta));
         if (std::abs(angle)<1) angle = 0;
     }
