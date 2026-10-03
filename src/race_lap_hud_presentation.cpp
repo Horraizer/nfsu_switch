@@ -93,6 +93,18 @@ bool decode_lap_hud_fntf(const unsigned char* bytes, std::size_t size,
         g.x = std::uint16_t(word(p+4)); g.y = std::uint16_t(word(p+6));
         g.bearing_x = signed_byte(p[9]); g.bearing_y = signed_byte(p[10]);
         g.advance = signed_word(p+14);
+        if (p[11]) {
+            // Native 0x6387F0: per-glyph pair count/index into the FNTF
+            // table at header+0x18, past its four-byte prefix.
+            const std::size_t table = dword(bytes+24);
+            const std::size_t index = word(p+12);
+            if (table < 128+std::size_t(count)*16 || table > size || size-table < 4 ||
+                index+std::size_t(p[11]) > (size-table-4)/4) return false;
+            for (unsigned j = 0; j < p[11]; ++j) {
+                const auto* pair = bytes+table+4+(index+j)*4;
+                g.kerning.push_back({std::uint16_t(word(pair)),signed_byte(pair[2])});
+            }
+        }
         if (std::any_of(result.glyphs.begin(),result.glyphs.end(),
             [&](const RaceLapHudGlyph& old) { return old.code == g.code; })) return false;
         result.glyphs.push_back(g);
@@ -107,14 +119,14 @@ bool decode_lap_hud_fntf(const unsigned char* bytes, std::size_t size,
 bool build_lap_hud_text_geometry(const RaceLapHudGeometryInput& in,
     const RaceLapHudFont& font, const char* text, RaceLapHudGeometry& out) {
     out = {};
-    if (!valid(in) || !in.layout_known || in.sl || in.sw || !font.known || !text ||
+    if (!valid(in) || !in.layout_known || in.sl || in.sw || (in.sj & ~0xFU) || !font.known || !text ||
         font.texture_hash != in.texture.hash || !std::isfinite(font.line_height) ||
         font.line_height <= 0 || font.baseline != 0 || font.line_spacing_scale != 1) return false;
     std::vector<const RaceLapHudGlyph*> selected;
     float width = 0;
     for (std::size_t i = 0; text[i]; ++i) {
         const auto code = static_cast<unsigned char>(text[i]);
-        if (i >= 128 || code < 32 || code > 126) return false;
+        if (i >= 128 || code < 32 || code > 126 || code == '^' || code == '$') return false;
         const auto it = std::find_if(font.glyphs.begin(),font.glyphs.end(),
             [&](const RaceLapHudGlyph& g) { return g.code == code; });
         // LCD_LET48 has no space record. The original numeric fixture skips
@@ -122,6 +134,11 @@ bool build_lap_hud_text_geometry(const RaceLapHudGeometryInput& in,
         if (it == font.glyphs.end()) {
             if (code == ' ') continue;
             return false;
+        }
+        if (i) {
+            const auto pair = std::find_if(it->kerning.begin(),it->kerning.end(),
+                [&](const RaceLapHudKerning& k) { return k.previous == static_cast<unsigned char>(text[i-1]); });
+            if (pair != it->kerning.end() && pair->adjustment) return false;
         }
         selected.push_back(&*it); width += float(it->advance);
     }

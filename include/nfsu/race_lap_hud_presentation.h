@@ -23,10 +23,15 @@ struct RaceLapHudVisibility {
 RaceLapHudVisibility lap_hud_visibility(RaceLapHudPermissions view,
     bool predicates_known, bool lap_path_allowed) noexcept;
 
+struct RaceLapHudKerning {
+    std::uint16_t previous = 0;
+    int adjustment = 0;
+};
 struct RaceLapHudGlyph {
     std::uint16_t code = 0, x = 0, y = 0;
     unsigned char width = 0, height = 0;
     int bearing_x = 0, bearing_y = 0, advance = 0;
+    std::vector<RaceLapHudKerning> kerning;
 };
 struct RaceLapHudFont {
     bool known = false;
@@ -84,6 +89,7 @@ struct RaceLapHudGeometry {
 // Bounded single-line ASCII English layout: Sl=Sw=0 and baseline=0.
 // Unsupported layout, missing glyph/texture/parent/visibility clears output.
 // An absent padding space is skipped, as in the recovered LCD numeric case.
+// Control markers, unproved Sj bits and active nonzero kerning are refused.
 bool build_lap_hud_text_geometry(const RaceLapHudGeometryInput& input,
     const RaceLapHudFont& font, const char* text, RaceLapHudGeometry& output);
 bool build_lap_hud_backing_geometry(const RaceLapHudGeometryInput& input,

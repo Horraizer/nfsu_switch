@@ -96,9 +96,29 @@ void tests() {
           "missing glyph clears output instead of font substitution");
     in.sw = 1;
     check(!build_lap_hud_text_geometry(in,font,"1",out),"unproved wrapping rejected");
+    in = explicit_input(); in.sj = 32;
+    check(!build_lap_hud_text_geometry(in,font,"1",out),"unproved Sj branches refused");
+    in = explicit_input();
+    for (char control : {'^','$'}) {
+        font.glyphs[0].code = static_cast<std::uint16_t>(control);
+        char text[] = {control,0};
+        check(!build_lap_hud_text_geometry(in,font,text,out),"native text control marker is not a literal glyph");
+    }
+    font.glyphs[0].code = '1'; font.glyphs[0].kerning.push_back({'1',-2});
+    check(!build_lap_hud_text_geometry(in,font,"11",out) && !out.known,
+          "unproved nonzero kerning cannot emit unkerned text");
+    check(build_lap_hud_text_geometry(in,font,"1",out),"first glyph has no previous-character kerning");
     check(!decode_lap_hud_fntf(fntf,143,42,10,0,1,font) && !font.known,
           "truncated FNTF clears previous font");
     check(!decode_lap_hud_fntf(fntf,144,42,10,1,1,font),"unproved runtime baseline rejected");
+    unsigned char pairs[152]{};
+    std::memcpy(pairs,fntf,sizeof(fntf)); pairs[24] = 144; pairs[139] = 1;
+    pairs[148] = '1'; pairs[150] = 254;
+    check(!decode_lap_hud_fntf(pairs,151,42,10,0,1,font),"truncated kerning table is refused");
+    check(decode_lap_hud_fntf(pairs,152,42,10,0,1,font) &&
+          font.glyphs[0].kerning.size() == 1 && font.glyphs[0].kerning[0].adjustment == -2,
+          "FNTF pair index/count and signed adjustment decoded");
+    check(!build_lap_hud_text_geometry(in,font,"11",out),"decoded active kerning remains unsupported");
     in = explicit_input(); std::vector<RaceLapHudGeometry> objects;
     for (float depth : {-5.F,0.F,300.F,255.F}) {
         in.sa.depth = depth; check(build_lap_hud_backing_geometry(in,out),"queue fixture builds");

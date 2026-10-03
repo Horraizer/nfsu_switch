@@ -29,10 +29,17 @@ after font loading/override resolution. `build_lap_hud_text_geometry` takes
 that font, actual texture dimensions, ASCII text, known Sj/Sl/Sw, local SA,
 effective parent transform/color and known visibility. This bounded layout
 supports single lines with Sl/Sw zero, baseline zero and line spacing one.
-Other layout modes are refused. Center Sj bits take precedence over the
+Other layout modes and Sj bits outside the recovered alignment nibble are
+refused. Center Sj bits take precedence over the
 right/bottom bits. Missing glyphs are refused except an absent padding space,
 which the original LCD numeric fixture skips without advance or a quad.
-No font registry, fallback, runtime replacement or localization is invented.
+The original routine treats caret/dollar as control markers; they are refused.
+The FNTF per-glyph pair count/index table is decoded using `0x6387F0`'s
+record layout. A selected pair with nonzero adjustment is refused: this
+bounded adapter does not silently draw unkerned text or claim general kerning
+support. Missing pair bytes invalidate the font. The existing numeric and
+label fixtures do not require nonzero adjustments. No font registry, fallback,
+runtime replacement or localization is invented.
 
 `build_lap_hud_backing_geometry` uses the same explicit SA/parent/texture and
 visibility inputs and the supplied sprite SA UV bounds. It constructs the

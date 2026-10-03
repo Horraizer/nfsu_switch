@@ -9,7 +9,7 @@ from pathlib import Path
 import struct
 import subprocess
 
-from hud254_trace import LANGUAGE_SHA, sha
+from hud254_trace import LANGUAGE_SHA, chunks, sha
 
 
 def run(probe, commands):
@@ -65,8 +65,8 @@ def main():
         command = ('g' if 'font' in row else 'b')+' '+' '.join(map(str,values))
         if 'font' in row:
             font = row['font']; at = metadata[font['name'].upper()]['fntf_offset']
-            count = struct.unpack_from('<H',language,at+10)[0]
-            fntf = language[at:at+128+16*count]
+            end = next(end for kind,begin,end in chunks(language) if kind == 0x30201 and begin+512 == at)
+            fntf = language[at:end]
             command += ' %s %s %s %s %s' % (font['line_height'],font['baseline'],
                 font['line_spacing_scale'],fntf.hex(),row['text'].encode('ascii').hex())
         commands.append(command)
