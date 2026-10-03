@@ -188,11 +188,11 @@ void show_comparison(const Frame& cpu, const std::vector<unsigned char>& gpu,
 int run(int argc,char** argv) {
     std::filesystem::path root,recording,output;
 #if defined(__SWITCH__)
-    root="sdmc:/nfsu"; recording="romfs:/event1.txt";
+    root="sdmc:/nfsu"; recording="romfs:/texture_filter_v2.txt";
     require(R_SUCCEEDED(romfsInit()),"comparison RomFS unavailable");
     struct Guard { ~Guard(){romfsExit();} } guard;
 #else
-    recording="tests/recordings/event1.txt";
+    recording="tests/recordings/texture_filter_v2.txt";
 #endif
     TextureFilterMode filter=TextureFilterMode::legacy;
     bool shaded=false;
@@ -200,7 +200,7 @@ int run(int argc,char** argv) {
     for(int i=1;i<argc;++i) {
         const std::string arg=argv[i];
         if(arg=="--help") {
-            std::puts("texture_filter_compare --root ROOT [--input REPLAY] [--step 180|600|6000] [--texture-filter legacy|linear] [--car-shading on|off] [--out NEW.tga (desktop)]");
+            std::puts("texture_filter_compare --root ROOT [--input V2_REPLAY] [--step 180|600|6000] [--texture-filter legacy|linear] [--car-shading on|off] [--out NEW.tga (desktop)]");
             return 0;
         }
         require(i+1<argc,"missing comparison option value");
@@ -223,18 +223,36 @@ int run(int argc,char** argv) {
     require(!output.empty(),"--out required on desktop");
     protect_retail_output(root,output);
 #endif
-    RaceRun race; RaceGpuScene scene; RaceReplay replay;
+    RaceRun race; RaceGpuScene scene;
     require(scene.set_texture_filter(filter),"comparison filter refused");
     require(race.prepare_metadata(root,error),error);
     require(scene.load(posix_file_system(),root,error,nullptr,nullptr,false,false,shaded),error);
     require(race.start(root,scene.track(),error),error);
     std::ifstream in(recording,std::ios::binary);
     const std::string text((std::istreambuf_iterator<char>(in)),{});
-    require(bool(in) && replay.load(text,error),"comparison recording failed: "+error);
+    require(bool(in),"comparison recording unavailable");
+    require(sha256_hex(sha256(text.data(),text.size()))==kTextureFilterFixtureHash,
+            "comparison recording differs from v2 fixture");
+    std::vector<RaceInputRun> runs;
+    require(parse_race_input(text,runs,error),"comparison recording failed: "+error);
+    std::size_t index=0, used=0;
     for(std::uint64_t tick=0;tick<step;++tick) {
         GamepadFrame pad;
-        require(replay.next(tick,pad,error) && race.simulate(pad,error) && race.commit(error),error);
+        require(index<runs.size(),"comparison fixture exhausted");
+        pad=race_input_frame(runs[index],tick);
+        if(++used==runs[index].ticks) { ++index; used=0; }
+        require(race.simulate(pad,error) && race.commit(error),error);
     }
+    // Input identity and simulation identity are separate gates. A gameplay
+    // recording edit cannot silently change this diagnostic, and a physics
+    // edit must be attributed before changing its pose/image references.
+    bool pose_pinned=false;
+    for(const auto& reference : kTextureFilterPoseReferences)
+        if(reference.step==step)
+            pose_pinned=race.sequence_hash()==reference.sequence && race.steps_hash()==reference.steps;
+    require(pose_pinned,"comparison v2 simulation differs from pinned pose");
+    std::printf("FIXTURE v2 input-sha256 %s sequence %s steps %s\n",
+                kTextureFilterFixtureHash,race.sequence_hash().c_str(),race.steps_hash().c_str());
     RaceGpuFrame frame; require(scene.frame(race.session(),frame,error),error);
     RenderOptions options;
     options.sky=true; options.material_state=MaterialStateMode::retail;
@@ -294,7 +312,7 @@ int run(int argc,char** argv) {
     require(compare_frames({cpu.rgba().data(),cpu.rgba().size(),1280,720,1280*4},
                            {gpu.data(),gpu.size(),1280,720,1280*4},metrics,error),error);
     metrics.passed=metrics.passed && pinned;
-    const std::string identity=std::string(pinned?"CPU PIN PASS | ":"CPU PIN FAIL | ")+"NFSU #262 step "+std::to_string(step)+" "+(filter==TextureFilterMode::linear?"linear":"legacy")+
+    const std::string identity=std::string(pinned?"CPU PIN PASS | ":"CPU PIN FAIL | ")+"NFSU #262 fixture v2 step "+std::to_string(step)+" "+(filter==TextureFilterMode::linear?"linear":"legacy")+
         " shading "+(shaded?"on":"off")+" build "+NFSU_RACE_BUILD_TAG;
     show_comparison(cpu,gpu,metrics,identity,cpu_ms,gpu_ms,readback_ms,hash);
     return metrics.passed?0:1;

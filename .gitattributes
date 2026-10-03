@@ -1,2 +1,3 @@
 tests/recordings/event1.txt text eol=lf
 tests/recordings/performance1.txt text eol=lf
+tests/recordings/texture_filter_v2.txt text eol=lf
