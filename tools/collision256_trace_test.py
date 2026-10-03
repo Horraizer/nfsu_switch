@@ -81,7 +81,7 @@ class CollisionEvidenceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             output_path(workspace, retail, Path('build') / chr(0xE9))
         # TemporaryDirectory owns exactly this newly created subtree.
-        with tempfile.TemporaryDirectory(prefix='256-test-', dir=str(workspace/'build')) as directory:
+        with tempfile.TemporaryDirectory(prefix='256-test-', dir=str(workspace)) as directory:
             with self.assertRaisesRegex(ValueError, 'fresh'):
                 output_path(workspace, retail, Path(directory))
 
