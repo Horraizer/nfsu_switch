@@ -9,7 +9,8 @@ from pathlib import Path
 import struct
 import subprocess
 
-from hud254_trace import LANGUAGE_SHA, chunks, sha
+from hud254_trace import EXE_SHA, LANGUAGE_SHA, PE, chunks, manifest, sha
+from hud254_adapter_regressions import regressions
 
 
 def run(probe, commands):
@@ -36,11 +37,17 @@ def main():
     p.add_argument('--source', required=True)
     p.add_argument('--root', type=Path, required=True)
     p.add_argument('--probe', type=Path, required=True)
+    p.add_argument('--reference', type=Path, required=True)
     args = p.parse_args()
     # Revalidate source identity, tool hashes, native assertions and manifests.
     subprocess.run([__import__('sys').executable, '-B', str(Path(__file__).with_name(
         'hud254_presentation_test.py')), '--report', str(args.report), '--source', args.source], check=True)
     report = json.loads((args.report/'presentation.json').read_text(encoding='ascii'))
+    roots = [args.root.resolve(),args.reference.resolve()]
+    full_before = [manifest(root) for root in roots]
+    executable = (args.root/'speed.exe').read_bytes()
+    if sha(executable) != EXE_SHA:
+        raise AssertionError('unsupported original executable')
     language_path = args.root/'Languages/English.bin'
     before = language_path.stat()
     language = language_path.read_bytes()
@@ -114,9 +121,12 @@ def main():
     for r,line in zip(report['queue'],run(args.probe,queue_commands)):
         if list(map(int,line.split())) != r['submission_indices']:
             raise AssertionError('queue ordering differs from original')
+    regressions(PE(executable),language,report,args.probe,commands,run,close)
     after = language_path.stat()
     if before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns or sha(language_path.read_bytes()) != LANGUAGE_SHA:
         raise AssertionError('font input changed')
+    if full_before != [manifest(root) for root in roots]:
+        raise AssertionError('retail/reference manifest changed during adapter regressions')
     print('PASS: C++ adapter matches %d original geometry cases, %d vertices, language/permission/queue cases; production gate closed' %
           (len(lines),vertices))
 

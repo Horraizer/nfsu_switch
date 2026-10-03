@@ -80,6 +80,7 @@ void tests() {
     check(!build_lap_hud_backing_geometry(in,out),"nonfinite geometry refused");
     unsigned char fntf[144]{};
     std::memcpy(fntf,"FNTF",4); fntf[10] = 1; fntf[14] = 4;
+    fntf[20] = 128;
     fntf[128] = '1'; fntf[130] = 5; fntf[131] = 8;
     fntf[132] = 10; fntf[134] = 20; fntf[137] = 255; fntf[138] = 254; fntf[142] = 6;
     RaceLapHudFont font;
@@ -119,6 +120,48 @@ void tests() {
           font.glyphs[0].kerning.size() == 1 && font.glyphs[0].kerning[0].adjustment == -2,
           "FNTF pair index/count and signed adjustment decoded");
     check(!build_lap_hud_text_geometry(in,font,"11",out),"decoded active kerning remains unsupported");
+    unsigned char relocated[176]{};
+    std::memcpy(relocated,pairs,sizeof(pairs));
+    std::memcpy(relocated+160,pairs+128,16); relocated[20] = 160;
+    relocated[137] = 31;
+    check(decode_lap_hud_fntf(relocated,sizeof(relocated),42,10,0,1,font) &&
+          font.glyphs[0].bearing_x == -1 && font.glyphs[0].kerning[0].adjustment == -2,
+          "declared glyph offset wins; separate earlier kerning table remains valid");
+    for (unsigned offset : {0U,127U,161U,0xFFFFFFFFU}) {
+        for (unsigned j = 0; j < 4; ++j) relocated[20+j] = static_cast<unsigned char>(offset >> (8*j));
+        check(!decode_lap_hud_fntf(relocated,sizeof(relocated),42,10,0,1,font) && !font.known,
+              "invalid glyph offset clears prior font without overflow or out-of-bounds access");
+    }
+    relocated[20] = 160; relocated[21] = relocated[22] = relocated[23] = 0;
+    relocated[24] = 164;
+    check(!decode_lap_hud_fntf(relocated,sizeof(relocated),42,10,0,1,font),
+          "kerning storage overlapping declared glyph table is refused");
+    relocated[24] = 156;
+    check(!decode_lap_hud_fntf(relocated,sizeof(relocated),42,10,0,1,font),
+          "kerning prefix before glyph table cannot overlap it");
+    in = explicit_input();
+    for (const auto& test : std::vector<std::pair<float,unsigned>>{
+        {std::nextafter(1.F,0.F),100},{-.0000001F,99},{-1e-15F,99},{-1e-18F,100}}) {
+        in.parent.matrix[14] = test.first;
+        check(build_lap_hud_backing_geometry(in,out) && out.bucket == test.second,
+              "depth uses x87 addition precision before integer truncation");
+    }
+    in.sa.depth = 255; in.parent.matrix[14] = -.0000001F;
+    check(build_lap_hud_backing_geometry(in,out) && out.bucket == 254,"upper bucket boundary keeps parent epsilon");
+    in.parent.matrix[14] = 0;
+    for (float depth : {2147483648.F,-4294967296.F}) {
+        in.sa.depth = depth;
+        check(!build_lap_hud_backing_geometry(in,out) && !out.known && out.quads.empty(),
+              "unsupported signed conversion range clears geometry");
+    }
+    in = explicit_input(); std::vector<RaceLapHudGeometry> tied;
+    for (float parent : {0.F,std::nextafter(1.F,0.F)}) {
+        in.parent.matrix[14] = parent; check(build_lap_hud_backing_geometry(in,out),"depth tie fixture builds");
+        tied.push_back(out);
+    }
+    std::vector<std::size_t> tie_order;
+    check(order_lap_hud_geometry(tied,tie_order) && tie_order == std::vector<std::size_t>({0,1}),
+          "x87-equal buckets preserve caller traversal");
     in = explicit_input(); std::vector<RaceLapHudGeometry> objects;
     for (float depth : {-5.F,0.F,300.F,255.F}) {
         in.sa.depth = depth; check(build_lap_hud_backing_geometry(in,out),"queue fixture builds");
@@ -161,12 +204,25 @@ int stream() {
                 std::cout << '\t' << view.flags << '\t' << p.flags << '\t' << unsigned(profile);
             }
             std::cout << '\n';
-        } else if (command == 'q') {
+        } else if (command == 'd') {
+            auto in = explicit_input(); std::cin >> in.sa.depth >> in.parent.matrix[14];
+            RaceLapHudGeometry out;
+            const bool ok = build_lap_hud_backing_geometry(in,out);
+            std::cout << ok << ' ' << out.known << ' ' << out.bucket << ' ' << out.quads.size() << '\n';
+        } else if (command == 'f') {
+            std::string hex; std::cin >> hex; auto bytes = unhex(hex);
+            RaceLapHudFont font;
+            const bool ok = decode_lap_hud_fntf(bytes.data(),bytes.size(),42,10,0,1,font);
+            std::cout << ok << ' ' << font.known << ' ' << font.glyphs.size();
+            for (const auto& g : font.glyphs) std::cout << ' ' << g.code << ' ' << g.bearing_x;
+            std::cout << '\n';
+        } else if (command == 'q' || command == 'r') {
             unsigned n; std::cin >> n; if (n > 128) return 2;
             std::vector<RaceLapHudGeometry> objects;
             auto in = explicit_input();
             for (unsigned i = 0; i < n; ++i) {
                 std::cin >> in.sa.depth; RaceLapHudGeometry out;
+                if (command == 'r') std::cin >> in.parent.matrix[14];
                 if (!build_lap_hud_backing_geometry(in,out)) return 2;
                 objects.push_back(out);
             }

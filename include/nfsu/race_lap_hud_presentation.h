@@ -41,6 +41,7 @@ struct RaceLapHudFont {
 };
 // Decode the explicit FNTF glyph records. Runtime metrics/texture binding are
 // supplied after font loading/override resolution, never inferred from a name.
+// Header+0x14 selects the bounded glyph table; kerning cannot overlap it.
 bool decode_lap_hud_fntf(const unsigned char* bytes, std::size_t size,
     std::uint32_t texture_hash, float line_height, float baseline,
     float line_spacing_scale, RaceLapHudFont& font);
@@ -94,7 +95,9 @@ bool build_lap_hud_text_geometry(const RaceLapHudGeometryInput& input,
     const RaceLapHudFont& font, const char* text, RaceLapHudGeometry& output);
 bool build_lap_hud_backing_geometry(const RaceLapHudGeometryInput& input,
     RaceLapHudGeometry& output);
-// Descending clamped/truncated SA+parent buckets; stable ties preserve the
+// SA+parent depth uses x87 64-bit addition before signed truncation/clamping;
+// effective sums outside [-2147483648,2147483648) are refused by builders.
+// Descending buckets and stable ties preserve the
 // caller's established traversal. Unknown inputs cannot be silently dropped.
 bool order_lap_hud_geometry(const std::vector<RaceLapHudGeometry>& objects,
     std::vector<std::size_t>& order);

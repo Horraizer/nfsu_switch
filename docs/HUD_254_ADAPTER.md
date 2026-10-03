@@ -24,7 +24,10 @@ lifecycle. It returns only the lap component, not a fabricated complete mask.
 Neither initialization nor a profile default establishes event0 visibility.
 
 `decode_lap_hud_fntf` decodes supplied glyph records with signed bearings and
-advances. Its texture binding and effective line metrics must be supplied
+advances, using the declared header+0x14 glyph-table offset. The entire table
+must fit the supplied buffer and lie outside the header. Kerning storage may
+precede a relocated glyph table but must not overlap it; truncated or invalid
+offsets clear the font. Its texture binding and effective line metrics must be supplied
 after font loading/override resolution. `build_lap_hud_text_geometry` takes
 that font, actual texture dimensions, ASCII text, known Sj/Sl/Sw, local SA,
 effective parent transform/color and known visibility. This bounded layout
@@ -50,7 +53,11 @@ establish that local rotation is absent. Other quaternions are refused.
 Effective parent supports affine 2D, with
 perspective and 3D inputs rejected. The parent transform precedes the native
 logical canvas center. Depth becomes the supplied quad depth in logical
-vertices; the bucket uses truncated/clamped SA plus parent depth.
+vertices; the bucket adds binary32 SA and parent depth at the original x87
+64-bit significand precision, then truncates to a signed integer and clamps.
+Wider long-double targets explicitly round the sum to that precision with
+nearest-even ties. Effective sums outside [-2147483648,2147483648) are refused
+instead of treating the native indefinite conversion result as a high bucket.
 
 Vertices expose logical positions, atlas UV, separately inset half-texel UV,
 and packed submission ARGB after parent channel multiplication and halving.
@@ -71,14 +78,21 @@ report with the existing independent presentation tests before comparing the
 compiled adapter against every original glyph/backing vertex, packed color,
 UV/inset, language setter/formatter, lap permission/toggle and depth queue
 fixture. It feeds full FNTF records read from pinned English.bin rather than
-the report's filtered glyph metadata. Expected measurements live in tests.
+the report's filtered glyph metadata. `hud254_adapter_regressions.py` also
+executes original queue arithmetic/append/drain for parent-depth boundaries,
+rounding ties, cancellation and signed-domain refusals. It relocates real FNTF
+tables in synthetic memory, poisons obsolete records, and compares every
+resulting vertex to original glyph lookup/layout. Invalid supplied-buffer
+offsets and overlapping tables are adapter refusal tests, not a claim that
+the original bounds-checks a buffer size it does not receive. Full retail and
+reference manifests bracket these extra executions. Expected measurements live in tests.
 
 From the actual worktree, using fresh ignored output on each run:
 
 ```text
 python -B tools/hud254_presentation.py --root <retail-root> --reference <reference-root> --source <full-head> --out out/254-adapter-fresh
-python -B tools/hud254_adapter_test.py --root <retail-root> --report out/254-adapter-fresh --source <full-head> --probe build/nfsu_race_lap_hud_presentation_tests.exe
-python -B tools/hud254_adapter_test.py --root <retail-root> --report out/254-adapter-fresh --source <full-head> --probe build-release/nfsu_race_lap_hud_presentation_tests.exe
+python -B tools/hud254_adapter_test.py --root <retail-root> --reference <reference-root> --report out/254-adapter-fresh --source <full-head> --probe build/nfsu_race_lap_hud_presentation_tests.exe
+python -B tools/hud254_adapter_test.py --root <retail-root> --reference <reference-root> --report out/254-adapter-fresh --source <full-head> --probe build-release/nfsu_race_lap_hud_presentation_tests.exe
 ```
 
 Derive reference/workspace locations from runtime path APIs. Dependency

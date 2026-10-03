@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 namespace nfsu {
 namespace {
@@ -10,6 +11,30 @@ unsigned word(const unsigned char* p) { return unsigned(p[0]) | unsigned(p[1]) <
 unsigned dword(const unsigned char* p) { return word(p) | word(p+2) << 16; }
 int signed_word(const unsigned char* p) { const int v = int(word(p)); return v >= 32768 ? v-65536 : v; }
 int signed_byte(unsigned char v) { return v >= 128 ? int(v)-256 : int(v); }
+bool depth_bucket(const RaceLapHudGeometryInput& in, unsigned& bucket) {
+    // 0x4F2FD6..0x4F2FEF adds binary32 operands in x87 precision before
+    // signed conversion. Some targets have a wider long double: round its
+    // sum to the x87 64-bit significand, including nearest-even ties.
+    static_assert(std::numeric_limits<long double>::digits >= 64,
+                  "lap HUD depth needs at least x87 precision");
+    long double d = static_cast<long double>(in.sa.depth) +
+                    static_cast<long double>(in.parent.matrix[14]);
+    if (!std::isfinite(d)) return false;
+    if (std::numeric_limits<long double>::digits > 64 && d != 0) {
+        int exponent = 0;
+        const long double scaled = std::ldexp(std::frexp(std::fabs(d), &exponent),64);
+        long double rounded = std::floor(scaled);
+        const long double fraction = scaled-rounded;
+        if (fraction > .5L || (fraction == .5L && std::fmod(rounded,2.L) != 0)) ++rounded;
+        d = std::copysign(std::ldexp(rounded,exponent-64),d);
+    }
+    // Outside this explicit domain the native signed conversion can yield
+    // the indefinite integer. Do not pretend that it is a high bucket.
+    if (d < -2147483648.L || d >= 2147483648.L) return false;
+    const auto integer = static_cast<std::int32_t>(d);
+    bucket = integer <= 0 ? 0 : integer >= 255 ? 255 : unsigned(integer);
+    return true;
+}
 bool valid(const RaceLapHudGeometryInput& in) {
     if (!in.sa.known || !in.parent.known || !in.texture.known ||
         !in.visibility_known || !in.texture.width || !in.texture.height ||
@@ -24,11 +49,8 @@ bool valid(const RaceLapHudGeometryInput& in) {
         m[8] != 0 || m[9] != 0 || m[11] != 0 || m[15] != 1) return false;
     for (unsigned v : in.sa.bgra) if (v > 255) return false;
     for (unsigned v : in.parent.bgra) if (v > 256) return false;
-    return std::isfinite(in.sa.depth + m[14]);
-}
-unsigned bucket(const RaceLapHudGeometryInput& in) {
-    const float d = in.sa.depth + in.parent.matrix[14];
-    return d <= 0 ? 0 : d >= 255 ? 255 : unsigned(d);
+    unsigned ignored;
+    return depth_bucket(in,ignored);
 }
 std::uint32_t color(const RaceLapHudGeometryInput& in) {
     unsigned c[4];
@@ -84,10 +106,13 @@ bool decode_lap_hud_fntf(const unsigned char* bytes, std::size_t size,
         !(dword(bytes+12) & 0x40000) || !std::isfinite(line_height) || line_height <= 0 ||
         baseline != 0 || line_spacing_scale != 1) return false;
     const unsigned count = word(bytes+10);
-    if (!count || count > (size-128)/16) return false;
+    const std::size_t glyph_offset = dword(bytes+20);
+    if (!count || glyph_offset < 128 || glyph_offset > size ||
+        count > (size-glyph_offset)/16) return false;
+    const std::size_t glyph_end = glyph_offset+std::size_t(count)*16;
     RaceLapHudFont result;
     for (unsigned i = 0; i < count; ++i) {
-        const auto* p = bytes+128+16*i;
+        const auto* p = bytes+glyph_offset+16*i;
         RaceLapHudGlyph g;
         g.code = std::uint16_t(word(p)); g.width = p[2]; g.height = p[3];
         g.x = std::uint16_t(word(p+4)); g.y = std::uint16_t(word(p+6));
@@ -98,8 +123,10 @@ bool decode_lap_hud_fntf(const unsigned char* bytes, std::size_t size,
             // table at header+0x18, past its four-byte prefix.
             const std::size_t table = dword(bytes+24);
             const std::size_t index = word(p+12);
-            if (table < 128+std::size_t(count)*16 || table > size || size-table < 4 ||
+            if (table < 128 || table > size || size-table < 4 ||
                 index+std::size_t(p[11]) > (size-table-4)/4) return false;
+            const std::size_t pairs_end = table+4+(index+std::size_t(p[11]))*4;
+            if (table < glyph_end && pairs_end > glyph_offset) return false;
             for (unsigned j = 0; j < p[11]; ++j) {
                 const auto* pair = bytes+table+4+(index+j)*4;
                 g.kerning.push_back({std::uint16_t(word(pair)),signed_byte(pair[2])});
@@ -144,7 +171,7 @@ bool build_lap_hud_text_geometry(const RaceLapHudGeometryInput& in,
     }
     float x = in.sj & 1 ? -width/2 : in.sj & 2 ? -width : 0;
     const float y = in.sj & 4 ? -font.line_height/2 : in.sj & 8 ? -font.line_height : 0;
-    RaceLapHudGeometry result; result.bucket = bucket(in);
+    RaceLapHudGeometry result; depth_bucket(in,result.bucket);
     if (in.visible) for (const auto* g : selected) {
         const float tw = float(in.texture.width), th = float(in.texture.height);
         const std::array<float,4> uv{{(float(g->x)-1)/tw,(float(g->y)-1)/th,
@@ -161,7 +188,7 @@ bool build_lap_hud_backing_geometry(const RaceLapHudGeometryInput& in,
     out = {};
     if (!valid(in)) return false;
     for (float v : in.uv) if (!std::isfinite(v)) return false;
-    RaceLapHudGeometry result; result.bucket = bucket(in);
+    RaceLapHudGeometry result; depth_bucket(in,result.bucket);
     if (in.visible) {
         const auto power = [](unsigned n) { unsigned p = 2; while (p < n) p *= 2; return p; };
         auto uv = in.uv;
