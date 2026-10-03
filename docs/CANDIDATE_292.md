@@ -1,6 +1,6 @@
 # Candidate292 owner test checklist
 
-This is a cumulative software candidate for issue292, assignment8283.
+This is a cumulative software candidate for issue292, assignment8283 and continuation8353.
 It is an event1 player-only diagnostic, not completed introductory Underground
 (event0), real opponents or the full original HUD. No deployment is authorized
 until the owner confirms netloader readiness. Target session: 2026-10-04
@@ -13,7 +13,7 @@ until the owner confirms netloader readiness. Target session: 2026-10-04
 | Reviewed PR281/282 substrate | Inherited through the pinned PR287/289 histories; existing event1 runner, gauge and texture diagnostics |
 | PR287 b50ea050e8ac030049a4e96bf8f8b136363fa125 | Included: authenticated event0 setup descriptor; metadata only; no live actor actuation |
 | PR289 065baa39e875d52a57eb99cfd4bb0cf9cecc8908 | Included: authenticated minimap resource and bounded geometry kernel; no production map renderer or real opponent markers |
-| PR310 182eafdd0fbf7ea4e93665361c0a90de271c23e3 | Excluded pending published exact-head independent review; no adapter activation assumed |
+| PR310 d2f9523da55096716bffb18620ce3cbbda4a6530 | Included after independent REVIEW_PASSED8348: conditional language/profile/font/parent geometry adapter with reviewed depth/FNTF fixes; presentation_ready remains false; no live lap panel draw activation |
 | PR308/309 research | Excluded; not required in this runnable candidate |
 | Full event0, opponents, traffic, actor contacts | Not implemented by these deltas; #258/#256/#257 acceptance remains open |
 | Original lap/time panels, minimap, results | Not established as live rendering; presentation_ready gates remain closed |
@@ -23,7 +23,13 @@ until the owner confirms netloader readiness. Target session: 2026-10-04
 Merge resolution: cmake/race_run_libraries.cmake keeps both nfsu_event0_setup
 and nfsu_minimap in the Switch target-properties list. No other manual source
 resolution was needed for PR287 plus PR289. Source history is preserved with
-a merge commit. The exact final source, build tag, NRO hashes/sizes, toolchain,
+a merge commit. Continuation8353 merges PR310 cleanly, with its reviewed
+fixes unchanged and no manual conflict resolution. The old candidate
+08acdc0ad300b76046b9149a33b8392e9a8d9d35 and its artifacts remain a
+separate baseline in build/night20261003-b6-s4-candidate292; its gate and
+artifact record is REVIEW_REQUESTED8337 on PR311. Prior baseline/input
+passes do not validate this changed cumulative tree.
+The exact final source, build tag, NRO hashes/sizes, toolchain,
 commands and complete results belong to the PR handoff and ignored manifest;
 read those before testing. Prior input passes do not validate this combination.
 
