@@ -52,8 +52,8 @@ supports scale and translation; an explicitly supplied SA quaternion must
 establish that local rotation is absent. Other quaternions are refused.
 Effective parent supports affine 2D, with
 perspective and 3D inputs rejected. The parent transform precedes the native
-logical canvas center. Depth becomes the supplied quad depth in logical
-vertices; the bucket adds binary32 SA and parent depth at the original x87
+logical canvas center. Logical quad vertices retain the recovered z=1;
+the queue bucket adds binary32 SA and parent depth at the original x87
 64-bit significand precision, then truncates to a signed integer and clamps.
 Wider long-double targets explicitly round the sum to that precision with
 nearest-even ties. Effective sums outside [-2147483648,2147483648) are refused
