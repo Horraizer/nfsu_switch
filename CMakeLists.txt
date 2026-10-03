@@ -1560,7 +1560,7 @@ if(NFSU_BUILD_TESTS)
 endif()
 
 # Race integration is clock-free; only the desktop executable owns I/O and UI.
-list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_session)
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_session nfsu_event0_setup)
 add_executable(nfsu_race src/race_main.cpp src/race_window.cpp)
 target_link_libraries(nfsu_race PRIVATE nfsu_race_session nfsu_race_events
     nfsu_track_residency nfsu_track_render nfsu_stock_frame nfsu_screen_text
