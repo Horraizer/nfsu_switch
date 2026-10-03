@@ -230,6 +230,51 @@ bool top_level(const unsigned char* data,
 
 } // namespace
 
+bool load_race_image(const std::filesystem::path& path,
+                     std::vector<unsigned char>& image,
+                     std::vector<RaceTableIssue>& issues,
+                     const RaceTableLimits& limits) {
+    std::uint64_t stored_size = 0;
+    bool jdlz = false;
+    if (!read_image(path, limits, image, stored_size, jdlz, issues)) return false;
+    if (image.size() > limits.max_image_size) {
+        issues.push_back({0, "image exceeds setup limit"});
+        image.clear();
+        return false;
+    }
+    return true;
+}
+
+bool find_race_chunk(const unsigned char* data, std::size_t size,
+                     std::uint32_t id, RaceChunkPayload& payload,
+                     std::vector<RaceTableIssue>& issues,
+                     const RaceTableLimits& limits) {
+    std::vector<ChunkSpan> roots;
+    if (!top_level(data, size, limits, roots, issues)) return false;
+    struct Pending { ChunkSpan span; unsigned depth; };
+    std::vector<Pending> pending;
+    for (const auto& root : roots) pending.push_back({root, 0});
+    std::size_t count = roots.size(), matches = 0;
+    RaceChunkPayload found;
+    while (!pending.empty()) {
+        const auto next = pending.back(); pending.pop_back();
+        const auto& span = next.span;
+        if (span.id == id) {
+            ++matches; found = {span.payload_offset, span.payload_offset + span.payload_size};
+        }
+        if ((span.id & kContainerBit) == 0) continue;
+        if (next.depth >= 16) { issues.push_back({span.offset, "chunk nesting exceeds 16"}); return false; }
+        std::vector<ChunkSpan> children;
+        if (!list_chunks(data, span.payload_offset, span.payload_offset + span.payload_size,
+                         limits.max_top_level_chunks - count, children, issues)) return false;
+        count += children.size();
+        for (const auto& child : children) pending.push_back({child, next.depth + 1});
+    }
+    if (matches != 1) { issues.push_back({0, "expected exactly one requested setup chunk"}); return false; }
+    payload = found;
+    return true;
+}
+
 const char* race_type_name(std::uint32_t type) noexcept {
     switch (type) {
     case 0:
