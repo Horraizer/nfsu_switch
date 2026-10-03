@@ -67,10 +67,13 @@ bool format_lap_hud_ticks(std::int32_t ticks, RaceLapHudStyle style,
     const bool quote = style == RaceLapHudStyle::native1 || style == RaceLapHudStyle::native3;
     const bool colon = style == RaceLapHudStyle::native2 || style == RaceLapHudStyle::native4 ||
                        style == RaceLapHudStyle::native6;
-    if (hours)
+    if (hours) {
         std::snprintf(text.data(), text.size(), quote ? "%2dh:%02d'%02d\"" : "%2dh:%02d:%02d",
                       hours % 100, minutes, seconds);
-    else
+        // The native padding test uses the original hour quotient, before
+        // discarding hundreds; 100h therefore starts with "00", not " 0".
+        if (hours >= 100 && hours % 100 < 10) text[0] = '0';
+    } else
         std::snprintf(text.data(), text.size(), quote ? "%2d'%02d\"%02d" :
                       colon ? "%2d:%02d:%02d" : "%2d:%02d.%02d", minutes, seconds, hundredths);
     if (negative) {

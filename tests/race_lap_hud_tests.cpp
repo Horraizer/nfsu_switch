@@ -74,6 +74,8 @@ void test_records() {
           std::strcmp(formatted.data(),"49h:07:50") == 0,"native hour field retains only two digits");
     check(format_lap_hud_ticks(-2147483646,RaceLapHudStyle::native5,formatted) &&
           std::strcmp(formatted.data(),"-49h:07:5") == 0,"negative long hour template preserves native truncation");
+    check(format_lap_hud_ticks(1440000000,RaceLapHudStyle::native5,formatted) &&
+          std::strcmp(formatted.data(),"00h:00:00") == 0,"wrapped hour padding uses original quotient");
 }
 
 void test_session() {

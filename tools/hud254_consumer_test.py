@@ -6,6 +6,7 @@ not event0 lifecycle, screen placement or hardware acceptance.
 """
 import argparse
 import json
+import random
 from pathlib import Path
 import subprocess
 
@@ -27,6 +28,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--probe', type=Path, required=True)
     parser.add_argument('--report', type=Path, required=True)
+    parser.add_argument('--native-root', type=Path,
+                        help='also execute signed integer boundaries and seeded random ticks (Unicorn required)')
     args = parser.parse_args()
     # Re-run the original report guards rather than treating JSON as authority.
     import sys
@@ -78,6 +81,25 @@ def main():
             require(int(label) == int(fields['SH']['string_hash'],16), name + ': wrong localization hash')
     print('PASS: %d native formatter/lap comparisons and %d package bindings; report guards passed' %
           (len(expected), len(rows)))
+    if args.native_root:
+        from hud254_trace import EXE_SHA, PE, sha
+        from hud254_native import format_native
+        raw = (args.native_root/'speed.exe').read_bytes()
+        require(sha(raw) == EXE_SHA, 'unsupported native executable')
+        image = PE(raw)
+        ticks = [2147483646, -2147483646, 1439999999, 1440000000,
+                 -1440000000, 29536000, -29536000, -3599999]
+        rng = random.Random(254)
+        ticks += [rng.randrange(-2147483647, 2147483647) for _ in range(40)]
+        cases = [(value, locale) for locale in (0, 1, 2, 3, 4, 5, 6) for value in ticks]
+        requests = ''.join('f %d %d\n' % (value, locale or 7) for value, locale in cases)
+        actual = run(args.probe, '--oracle-stream', requests)
+        require(len(actual) == len(cases), 'wrong boundary response count')
+        for (value, locale), got in zip(cases, actual):
+            wanted = format_native(image, value, locale)
+            require(got == wanted, 'native boundary mismatch %d/%d: %r != %r' %
+                    (value, locale, got, wanted))
+        print('PASS: %d additional native integer-boundary/random formatter comparisons, Random(254)' % len(cases))
 
 
 if __name__ == '__main__':
