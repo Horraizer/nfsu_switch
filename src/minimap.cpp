@@ -12,6 +12,13 @@
 namespace nfsu {
 namespace {
 bool finite(MapPoint p) noexcept { return std::isfinite(p[0]) && std::isfinite(p[1]); }
+bool finite_polygon(const std::array<MapPoint,4>& points) noexcept {
+    return std::all_of(points.begin(),points.end(),[](MapPoint p) { return finite(p); });
+}
+bool finite_vertex(const MinimapVertex& v) noexcept {
+    return finite(v.screen) && std::all_of(v.uvq.begin(),v.uvq.end(),
+        [](float x) { return std::isfinite(x); });
+}
 float f32(const unsigned char* p) { float f; std::memcpy(&f,p,4); return f; }
 std::uint16_t u16(const unsigned char* p) { return std::uint16_t(p[0] | (unsigned(p[1])<<8)); }
 MapPoint rotate(MapPoint p, std::uint16_t a) noexcept {
@@ -44,30 +51,39 @@ MinimapVertex interpolate(const MinimapVertex& a,const MinimapVertex& b,double t
 }
 // Native clips an ordered polygon and emits a fan of four-vertex pieces,
 // repeating the last vertex for a final triangle (0x0059090F onward).
-bool clip(MinimapPiece piece,const MinimapPresentation& p,MinimapGeometry& out,
+MinimapResult clip(MinimapPiece piece,const MinimapPresentation& p,MinimapGeometry& out,
            std::size_t capacity) noexcept {
     std::array<MinimapVertex,12> a{},b{};
+    std::array<float,4> bounds{};
+    for(int edge=0;edge<4;++edge) {
+        const int axis=(edge==0 || edge==2)?1:0;
+        bounds[edge]=p.native_center[axis]+(edge<2?-p.native_half_extent[axis]:p.native_half_extent[axis]);
+        if(!std::isfinite(bounds[edge])) return MinimapResult::invalid_input;
+    }
+    for(const auto& v:piece.vertices) if(!finite_vertex(v)) return MinimapResult::invalid_input;
     std::copy(piece.vertices.begin(),piece.vertices.end(),a.begin());
     std::size_t count=4;
     for(int edge=0;edge<4 && count; ++edge) {
         const int axis=(edge==0 || edge==2)?1:0;
         const bool lower=edge<2;
-        const float bound=p.native_center[axis]+(lower?-p.native_half_extent[axis]:p.native_half_extent[axis]);
+        const float bound=bounds[edge];
         std::size_t n=0;
         auto prev=a[count-1]; bool prev_in=lower?prev.screen[axis]>=bound:prev.screen[axis]<=bound;
         for(std::size_t i=0;i<count;++i) {
             const auto cur=a[i]; const bool cur_in=lower?cur.screen[axis]>=bound:cur.screen[axis]<=bound;
             if(cur_in!=prev_in) {
-                if(n==b.size()) return false;
+                if(n==b.size()) return MinimapResult::capacity_exceeded;
                 const double t=(double(bound)-prev.screen[axis])/(double(cur.screen[axis])-prev.screen[axis]);
+                if(!std::isfinite(t) || t<0 || t>1) return MinimapResult::invalid_input;
                 b[n]=interpolate(prev,cur,t); b[n++].screen[axis]=bound;
+                if(!finite_vertex(b[n-1])) return MinimapResult::invalid_input;
             }
-            if(cur_in) { if(n==b.size()) return false; b[n++]=cur; }
+            if(cur_in) { if(n==b.size()) return MinimapResult::capacity_exceeded; b[n++]=cur; }
             prev=cur; prev_in=cur_in;
         }
         a=b; count=n;
     }
-    if(count<3) return true;
+    if(count<3) return MinimapResult::ok;
     // 0x00590830: native fan starts at least y, breaking near-equal y
     // by x. This matters for affine marker UV interpolation under tilt.
     std::size_t first=0;
@@ -79,16 +95,16 @@ bool clip(MinimapPiece piece,const MinimapPresentation& p,MinimapGeometry& out,
     b=a;
     for(std::size_t i=0;i<count;++i) a[i]=b[(first+i)%count];
     for(std::size_t i=1;i+1<count;i+=2) {
-        if(out.count==capacity) return false;
+        if(out.count==capacity) return MinimapResult::capacity_exceeded;
         piece.vertices={{a[0],a[i],a[i+1],a[std::min(i+2,count-1)]}};
         for(auto& v:piece.vertices) {
             const double x=v.screen[0],y=v.screen[1]; const auto& t=p.screen_transform;
             v.screen={{float(t[0]*x+t[1]*y+t[2]),float(t[3]*x+t[4]*y+t[5])}};
-            if(!finite(v.screen)) return false;
+            if(!finite_vertex(v)) return MinimapResult::invalid_input;
         }
         out.pieces[out.count++]=piece;
     }
-    return true;
+    return MinimapResult::ok;
 }
 bool screen_quad(const std::array<MapPoint,4>& local,const std::array<MapPoint,4>& uv,
     const MinimapStyle& s,const MinimapPresentation& p,std::array<std::uint8_t,3> color,bool route,
@@ -101,14 +117,14 @@ bool screen_quad(const std::array<MapPoint,4>& local,const std::array<MapPoint,4
         auto& v=piece.vertices[i];
         const float y=float(cos*local[i][1]),z=float(sin*local[i][1]);
         const double denom=double(s.distance)+z;
-        if(!finite(local[i]) || !std::isfinite(denom) || denom<=0) return false;
+        if(!finite(local[i]) || !finite(uv[i]) || !std::isfinite(denom) || denom<=0) return false;
         v.screen={{float(double(s.distance)*local[i][0]/denom+anchor_x),float(double(s.distance)*y/denom+anchor_y)}};
         const double q=1.0/denom;
         // Route carries perspective UVQ; marker UVQ remains affine in native.
         v.uvq=route?std::array<float,3>{{float(uv[i][0]*q),float(uv[i][1]*q),float(q)}}:
                      std::array<float,3>{{uv[i][0],uv[i][1],1}};
         const double alpha_value=z>0?(1.0-double(z)/(double(ey)*float(0.6666666865348816)))*128:128;
-        if(!finite(v.screen) || !std::isfinite(alpha_value) || alpha_value< -2147483648.0 || alpha_value>2147483647.0) return false;
+        if(!finite_vertex(v) || !std::isfinite(alpha_value) || alpha_value< -2147483648.0 || alpha_value>2147483647.0) return false;
         const int alpha=int(alpha_value);
         const auto byte=std::uint8_t(alpha);
         v.color={{color[0],color[1],color[2],route?std::uint8_t(int(double(byte)*s.route_alpha)):byte}};
@@ -205,11 +221,13 @@ MinimapResult build_minimap_geometry(const MinimapResource& r,const MinimapStyle
     frame.center={{float((double(route_uv[0][0])+route_uv[2][0])*0.5),float((double(route_uv[0][1])+route_uv[2][1])*0.5)}};
     frame.boundary=s.centered?rectangle(uv,float(double(half)*float(1.2000000476837158)),
         float(double(top)*float(1.2000000476837158)),float(double(bottom)*float(1.2000000476837158)),p.map_angle):route_uv;
+    if(!finite_polygon(route_uv) || !finite(frame.center) || !finite_polygon(frame.boundary)) return MinimapResult::invalid_input;
     const std::array<MapPoint,4> local{{{{-ex,-ey}},{{ex,-ey}},{{ex,ey}},{{-ex,ey}}}};
     MinimapPiece route;
     if(!screen_quad(local,route_uv,s,p,{{128,128,128}},true,route)) return MinimapResult::invalid_input;
     route.kind=14; route.texture_hash=r.hash;
-    if(!clip(route,p,frame,capacity)) return MinimapResult::capacity_exceeded;
+    const auto route_result=clip(route,p,frame,capacity);
+    if(route_result!=MinimapResult::ok) return route_result;
     for(std::size_t i=0;i<count;++i) {
         const auto& a=actors[i]; if(!a.gate_4d0 || !a.gate_8a9) continue;
         MapPoint marker_uv{}; if(!project_minimap_world(r,a.raw_xy,marker_uv)) return MinimapResult::invalid_input;
@@ -222,7 +240,8 @@ MinimapResult build_minimap_geometry(const MinimapResource& r,const MinimapStyle
         MinimapPiece piece;
         if(!screen_quad(corners,{{{{0,0}},{{1,0}},{{1,1}},{{0,1}}}},s,p,a.color,false,piece)) return MinimapResult::invalid_input;
         piece.actor_id=a.id; piece.kind=a.kind; piece.texture_hash=a.texture_hash;
-        if(!clip(piece,p,frame,capacity)) return MinimapResult::capacity_exceeded;
+        const auto marker_result=clip(piece,p,frame,capacity);
+        if(marker_result!=MinimapResult::ok) return marker_result;
     }
     out=frame; return MinimapResult::ok;
 }

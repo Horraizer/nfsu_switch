@@ -49,6 +49,10 @@ triangle repeats its last vertex, as the native submission does. Native clipping
 precedes the supplied final transform. Failed calls clear the entire output;
 they never silently truncate. Unknown style, camera, presentation, texture or
 eligibility inputs remain different from false eligibility and capacity failure.
+Finite inputs that overflow derived boundary, UVQ, clipping or screen values
+fail as invalid_input with cleared output. Numeric rejection regressions live
+in `nfsu_minimap_tests`; the differential validates all native/driver numeric
+fields before comparisons and rejects non-finite data even on unsampled pieces.
 
 The measured branches are styles1,3,5 and disabled6. No event0 default is
 selected. Style11's separate cropped rule, selected-target zoom, other styles,
@@ -95,7 +99,9 @@ its own reads and C++ invocations. Nonzero/empty/error driver output fails.
 Its outputs contain numbers and identities only. No retail executable launches.
 
 Default and Release plain CTest include `nfsu_minimap_tests` plus the
-manifest-fixtured `nfsu_minimap_retail`. The library compiles on Switch through
+manifest-fixtured `nfsu_minimap_retail`.
+`nfsu_minimap_diff_tests` checks oracle numeric/protocol rejection without the
+optional emulator packages. The library compiles on Switch through
 the shared CMake list and is covered by its object FMA census; no console
 application links or enables it. Run the full protocol gates independently.
 

@@ -7,12 +7,30 @@ import argparse
 import json
 import math
 from pathlib import Path
-import struct
 import subprocess
 
-import minimap266_native as native
-from hud254_trace import PE, manifest, output_path, sha
-from minimap266_trace import INPUTS
+
+def require_finite(values, label):
+    if not all(math.isfinite(value) for value in values):
+        raise AssertionError('%s non-finite numeric data' % label)
+
+
+def finite_delta(expected, actual, label):
+    require_finite((expected, actual), label)
+    delta = abs(expected-actual)
+    require_finite((delta,), label)
+    return delta
+
+
+def validate_quads(quads, label):
+    # Validate every submitted value, including degenerate/uncovered vertices.
+    # NaN does not satisfy ordinary mismatch comparisons and must fail first.
+    for q in quads:
+        for field, width in (('screen', 2), ('uvq', 3), ('colors', 4)):
+            if len(q[field]) != 4 or any(len(row) != width for row in q[field]):
+                raise AssertionError('%s malformed %s' % (label, field))
+            for row in q[field]:
+                require_finite(row, label+' '+field)
 
 
 def triangles(quads):
@@ -22,23 +40,30 @@ def triangles(quads):
 
 
 def sample(quads, xy):
+    require_finite(xy, 'sample position')
     for t in triangles(quads):
         a, b, c = [r[0] for r in t]
         denom = (b[1]-c[1])*(a[0]-c[0])+(c[0]-b[0])*(a[1]-c[1])
+        require_finite((denom,), 'sample denominator')
         if abs(denom) < 1e-8:
             continue
         u = ((b[1]-c[1])*(xy[0]-c[0])+(c[0]-b[0])*(xy[1]-c[1]))/denom
         v = ((c[1]-a[1])*(xy[0]-c[0])+(a[0]-c[0])*(xy[1]-c[1]))/denom
         w = 1-u-v
+        require_finite((u, v, w), 'sample weights')
         if min(u, v, w) >= -1e-5:
-            return ([sum(weight*r[1][k] for weight, r in zip((u,v,w),t)) for k in range(3)],
-                    [sum(weight*r[2][k] for weight, r in zip((u,v,w),t)) for k in range(4)])
+            uvq = [sum(weight*r[1][k] for weight, r in zip((u,v,w),t)) for k in range(3)]
+            color = [sum(weight*r[2][k] for weight, r in zip((u,v,w),t)) for k in range(4)]
+            require_finite(uvq+color, 'sample attributes')
+            return uvq, color
     return None
 
 
 def compare(expected, actual, label, maxima):
     # Compare submission geometry independent of fan start/topology. Native
     # clipping decomposes a convex polygon into pieces; no rasterizer is run.
+    validate_quads(expected, label+' native')
+    validate_quads(actual, label+' port')
     expected_vertices=[v for q in expected for v in q['screen']]
     actual_vertices=[v for q in actual for v in q['screen']]
     for vertices,other_quads in ((expected_vertices,actual),(actual_vertices,expected)):
@@ -51,8 +76,13 @@ def compare(expected, actual, label, maxima):
                     b=q['screen'][(i+1)%4]
                     dx,dy=b[0]-p[0],b[1]-p[1]
                     length=dx*dx+dy*dy
-                    t=max(0,min(1,((v[0]-p[0])*dx+(v[1]-p[1])*dy)/length)) if length else 0
-                    distances.append(math.hypot(v[0]-p[0]-t*dx,v[1]-p[1]-t*dy))
+                    require_finite((length,), label+' edge length')
+                    t=((v[0]-p[0])*dx+(v[1]-p[1])*dy)/length if length else 0
+                    require_finite((t,), label+' edge parameter')
+                    t=max(0,min(1,t))
+                    distance=math.hypot(v[0]-p[0]-t*dx,v[1]-p[1]-t*dy)
+                    require_finite((distance,), label+' edge distance')
+                    distances.append(distance)
             delta=min(distances)
             maxima['screen']=max(maxima['screen'],delta)
             if delta>1e-4:
@@ -70,12 +100,12 @@ def compare(expected, actual, label, maxima):
             continue
         hits += 1
         for k in range(3):
-            delta = abs(e[0][k]-a[0][k])
+            delta = finite_delta(e[0][k],a[0][k],label+' UVQ')
             maxima['uvq'] = max(maxima['uvq'],delta)
             if delta > 1e-5:
                 raise AssertionError('%s UVQ mismatch %r %r at %r; native=%r port=%r' % (label,e,a,xy,expected,actual))
         for k in range(4):
-            delta = abs(e[1][k]-a[1][k])
+            delta = finite_delta(e[1][k],a[1][k],label+' color')
             maxima['color'] = max(maxima['color'],delta)
             if delta > 1.01:
                 raise AssertionError('%s color mismatch %r %r' % (label,e,a))
@@ -84,7 +114,62 @@ def compare(expected, actual, label, maxima):
     return hits
 
 
+def check_driver_output(output, rows, cases):
+    lines=iter(output.splitlines())
+    maxima=dict(projection=0,center=0,boundary=0,screen=0,uvq=0,color=0)
+
+    def tokens(tag, size):
+        row=next(lines, '').split()
+        if len(row)!=size or row[0]!=tag:
+            raise AssertionError('malformed driver '+tag+' row')
+        return row
+
+    for row in rows:
+        values=list(map(float,tokens('P',3)[1:]))
+        if len(row['uv'])!=2:
+            raise AssertionError('malformed native projection')
+        for e,a in zip(row['uv'],values):
+            delta=finite_delta(e,a,'projection'); maxima['projection']=max(maxima['projection'],delta)
+            if delta>=1e-7:
+                raise AssertionError((row['name'],e,a))
+    samples=0
+    for index,case in enumerate(cases):
+        row=tokens('G',12)
+        count=int(row[1]); values=list(map(float,row[2:])); quads=[]
+        if count<0 or count>128 or len(case['center'])!=2 or len(case['boundary'])!=4 or any(len(xy)!=2 for xy in case['boundary']):
+            raise AssertionError('malformed driver/native geometry')
+        require_finite(values,'driver geometry')
+        for e,a in zip(case['center'],values[:2]):
+            delta=finite_delta(e,a,'center'); maxima['center']=max(maxima['center'],delta)
+            if delta>=2e-6:
+                raise AssertionError((index,'center',e,a))
+        for e,a in zip([v for xy in case['boundary'] for v in xy],values[2:]):
+            delta=finite_delta(e,a,'boundary'); maxima['boundary']=max(maxima['boundary'],delta)
+            if delta>=2e-6:
+                raise AssertionError((index,'boundary',e,a))
+        for _ in range(count):
+            q=tokens('Q',40); v=list(map(float,q[4:]))
+            require_finite(v,'driver vertex')
+            route=int(q[1])
+            if route not in (0,1):
+                raise AssertionError('malformed driver route flag')
+            quads.append(dict(route=route,id=int(q[2]),kind=int(q[3]),
+                screen=[v[i:i+2] for i in range(0,36,9)],
+                uvq=[v[i+2:i+5] for i in range(0,36,9)],colors=[v[i+5:i+9] for i in range(0,36,9)]))
+        samples+=compare(case['route_clipped'],[q for q in quads if q['route']],str(index)+' route',maxima)
+        for i,marker in enumerate(case['markers']):
+            samples+=compare(marker['clipped'],[q for q in quads if not q['route'] and q['id']==100+i],str(index)+' '+marker['name'],maxima)
+    if next(lines,None)!='PASS: minimap checks' or next(lines,None) is not None:
+        raise AssertionError('missing or extra driver verdict')
+    require_finite(maxima.values(),'differential maxima')
+    return maxima,samples
+
+
 def main():
+    # Numeric regression checks do not require the optional emulation packages.
+    import minimap266_native as native
+    from hud254_trace import PE, manifest, output_path, sha
+    from minimap266_trace import INPUTS
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root',type=Path,required=True)
     parser.add_argument('--report',type=Path,required=True)
@@ -159,39 +244,13 @@ def main():
                               input='\n'.join(commands)+'\n',text=True,capture_output=True,check=False)
         if result.returncode or 'FAIL' in result.stdout+result.stderr or not result.stdout.endswith('PASS: minimap checks\n'):
             raise RuntimeError('driver failed: '+result.stdout+result.stderr)
-        lines=iter(result.stdout.splitlines())
-        maxima=dict(projection=0,center=0,boundary=0,screen=0,uvq=0,color=0)
-        for row in rows:
-            tokens=next(lines).split()
-            assert tokens[0]=='P'
-            for e,a in zip(row['uv'],map(float,tokens[1:])):
-                delta=abs(e-a); maxima['projection']=max(maxima['projection'],delta)
-                assert delta<1e-7, (row['name'],e,a)
-        samples=0
-        for index,case in enumerate(cases):
-            tokens=next(lines).split(); assert tokens[0]=='G'
-            count=int(tokens[1]); values=list(map(float,tokens[2:])); quads=[]
-            for e,a in zip(case['center'],values[:2]):
-                delta=abs(e-a); maxima['center']=max(maxima['center'],delta)
-                assert delta<2e-6,(index,'center',e,a)
-            for e,a in zip([v for xy in case['boundary'] for v in xy],values[2:]):
-                delta=abs(e-a); maxima['boundary']=max(maxima['boundary'],delta)
-                assert delta<2e-6,(index,'boundary',e,a)
-            for _ in range(count):
-                q=next(lines).split(); assert q[0]=='Q'
-                v=list(map(float,q[4:])); quads.append(dict(route=int(q[1]),id=int(q[2]),kind=int(q[3]),
-                    screen=[v[i:i+2] for i in range(0,36,9)],
-                    uvq=[v[i+2:i+5] for i in range(0,36,9)],colors=[v[i+5:i+9] for i in range(0,36,9)]))
-            samples+=compare(case['route_clipped'],[q for q in quads if q['route']],str(index)+' route',maxima)
-            for i,marker in enumerate(case['markers']):
-                samples+=compare(marker['clipped'],[q for q in quads if not q['route'] and q['id']==100+i],str(index)+' '+marker['name'],maxima)
-        assert next(lines)=='PASS: minimap checks'
+        maxima,samples=check_driver_output(result.stdout,rows,cases)
         out.mkdir(parents=True)
         (out/'differential.json').write_text(json.dumps(dict(source_commit=data['source_commit'],
             driver_sha256=sha(args.driver.read_bytes()),tool_sha256=sha(Path(__file__).read_bytes()),
             projections=len(rows),cases=len(cases),samples=samples,maxima=maxima,
             limits='Scalar native with synthetic inputs and submission/binding stubs; geometric samples, no pixels/GPU/runtime acceptance'),
-            indent=2,ensure_ascii=True)+'\n',encoding='ascii')
+            indent=2,ensure_ascii=True,allow_nan=False)+'\n',encoding='ascii')
     finally:
         after=manifest(root)
         if before!=after:

@@ -24,6 +24,16 @@ MinimapPresentation presentation() {
     p.native_center={{86,240}}; p.native_half_extent={{64,64}};
     p.screen_transform={{1,0,0,0,1,0}}; return p;
 }
+bool cleared(const MinimapGeometry& out) {
+    if(out.count || out.center!=MapPoint{}) return false;
+    for(auto xy:out.boundary) if(xy!=MapPoint{}) return false;
+    for(const auto& piece:out.pieces) {
+        if(piece.actor_id || piece.kind || piece.texture_hash || piece.route) return false;
+        for(const auto& v:piece.vertices) if(v.screen!=MapPoint{} ||
+            v.uvq!=std::array<float,3>{} || v.color!=std::array<std::uint8_t,4>{}) return false;
+    }
+    return true;
+}
 void guards() {
     auto r=fixture(); auto s=style3(); auto p=presentation(); MinimapGeometry out;
     MapPoint uv; check(project_minimap_world(r,{{1646.3746337890625F,268.5751647949219F}},uv),"project finite");
@@ -43,6 +53,19 @@ void guards() {
     p.camera_angle_valid=true; p.valid=false; check(run()==MinimapResult::unknown_input,"unknown final transform");
     p.valid=true; s.index=11; check(run()==MinimapResult::unknown_input,"unsupported style11");
     s=style3(); s.distance=0; check(run()==MinimapResult::invalid_input,"zero distance");
+    s=style3(); s.tilt=0; s.distance=std::numeric_limits<float>::denorm_min(); out=saved;
+    check(run()==MinimapResult::invalid_input && cleared(out),"tiny distance UVQ rejection atomic");
+    s=style3(); s.uv_extent={{std::numeric_limits<float>::max(),std::numeric_limits<float>::max()}}; out=saved;
+    check(run()==MinimapResult::invalid_input && cleared(out),"extreme finite UV extent rejection atomic");
+    s=style3(); p.native_center={{std::numeric_limits<float>::max(),0}};
+    p.screen_transform={{1000000,0,0,0,1,0}}; out=saved;
+    check(run()==MinimapResult::invalid_input && cleared(out),"final transform overflow rejection atomic");
+    p=presentation(); s=style3(); s.tilt=0;
+    p.native_center[0]=std::numeric_limits<float>::max()*0.75F;
+    p.native_half_extent[0]=std::numeric_limits<float>::max()*0.5F;
+    s.extent_add[0]=0; s.offset[0]=-p.native_center[0]; out=saved;
+    check(run()==MinimapResult::invalid_input && cleared(out),"clip bound overflow rejection atomic");
+    p=presentation();
     s=style3(); a.raw_xy[0]=std::numeric_limits<float>::quiet_NaN(); check(run()==MinimapResult::invalid_input,"nonfinite pose");
     a.raw_xy={{1646.3746337890625F,268.5751647949219F}};
     std::array<MinimapActor,2> duplicate{{a,a}};

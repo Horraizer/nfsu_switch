@@ -1589,6 +1589,8 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_minimap_tests PRIVATE nfsu_minimap nfsu_arg_path)
     nfsu_enable_warnings(nfsu_minimap_tests)
     add_test(NAME nfsu_minimap_tests COMMAND nfsu_minimap_tests)
+    add_test(NAME nfsu_minimap_diff_tests
+        COMMAND ${Python3_EXECUTABLE} -B ${PROJECT_SOURCE_DIR}/tests/minimap_diff_tests.py)
     add_executable(nfsu_race_lap_hud_tests tests/race_lap_hud_tests.cpp)
     target_link_libraries(nfsu_race_lap_hud_tests PRIVATE nfsu_race_hud)
     nfsu_enable_warnings(nfsu_race_lap_hud_tests)

@@ -79,7 +79,8 @@ struct MinimapGeometry {
 };
 enum class MinimapResult { ok, invalid_resource, unknown_input,
                            invalid_input, capacity_exceeded };
-// Atomic bounded output: failures clear out. No simulation, camera filtering,
+// Atomic bounded output: failures clear out. Non-finite derived geometry is
+// invalid_input, distinct from capacity_exceeded. No simulation, camera filtering,
 // eligibility defaults, roster synthesis or HUD rendering side effects.
 MinimapResult build_minimap_geometry(const MinimapResource& resource,
     const MinimapStyle& style, const MinimapPresentation& presentation,
