@@ -69,7 +69,7 @@ bool format_lap_hud_ticks(std::int32_t ticks, RaceLapHudStyle style,
                        style == RaceLapHudStyle::native6;
     if (hours)
         std::snprintf(text.data(), text.size(), quote ? "%2dh:%02d'%02d\"" : "%2dh:%02d:%02d",
-                      hours, minutes, seconds);
+                      hours % 100, minutes, seconds);
     else
         std::snprintf(text.data(), text.size(), quote ? "%2d'%02d\"%02d" :
                       colon ? "%2d:%02d:%02d" : "%2d:%02d.%02d", minutes, seconds, hundredths);

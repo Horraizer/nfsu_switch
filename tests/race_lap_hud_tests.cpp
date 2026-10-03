@@ -70,6 +70,10 @@ void test_records() {
           std::strcmp(formatted.data(),"-14:59.9") == 0,"native negative two-digit minute truncation");
     check(format_lap_hud_ticks(29536000,RaceLapHudStyle::native5,formatted) &&
           std::strcmp(formatted.data()," 2h:03:04") == 0,"hours use whole seconds and minute remainder");
+    check(format_lap_hud_ticks(2147483646,RaceLapHudStyle::native5,formatted) &&
+          std::strcmp(formatted.data(),"49h:07:50") == 0,"native hour field retains only two digits");
+    check(format_lap_hud_ticks(-2147483646,RaceLapHudStyle::native5,formatted) &&
+          std::strcmp(formatted.data(),"-49h:07:5") == 0,"negative long hour template preserves native truncation");
 }
 
 void test_session() {
