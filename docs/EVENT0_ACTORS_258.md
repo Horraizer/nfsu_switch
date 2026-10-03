@@ -188,7 +188,7 @@ has its own responsibility. This does not prove zero-time AI is inert. Neither
 this call order nor world tick quantization establishes a fixed scheduler Hz,
 number of substeps or exact input acquisition time. Record actual dt and calls.
 
-**S.** `0x00426930` reprojects actor world position via `0x004443A10` at
+**S.** `0x00426930` reprojects actor world position via `0x00443A10` at
 `0x00426AFE` with destination actor `+0x800`. Projection writes normalized
 coordinate at destination `+0x10` (actor `+0x810`) and world distance at
 `+0x14` (actor `+0x814`). Failure branches and pose discontinuities are not a
@@ -256,7 +256,7 @@ The constructor clears the table, walks route list `0x0077AF20`, indexes
 category plus five times direction, checks route enable bytes, and samples
 adjacent points of stride `0x88`. It reads s16 point `+0x3C + 2*index` for
 lateral position and byte point `+0x6A + index` as a divisor in its rate
-calculation. It projects those points with `0x004443A10` and `0x00434A10`,
+calculation. It projects those points with `0x00443A10` and `0x00434A10`,
 stores a positive rate into an as-yet-empty progress bin, fills missing bins
 from the previous rate (initial fallback `0x006CCD40`), and integrates
 `0x006CC8F0 / rate` into the cumulative table. Constants are printed by the
