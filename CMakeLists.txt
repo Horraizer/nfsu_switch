@@ -1841,6 +1841,7 @@ if(NFSU_BUILD_TESTS)
                 -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/texture_filter_evidence.py
                 -DCOMPARE=$<TARGET_FILE:nfsu_texture_filter_compare>
                 -DREFERENCES=${CMAKE_CURRENT_SOURCE_DIR}/include/nfsu/texture_filter_reference.h
+                -DDIAGNOSTIC_RECORDING=${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/texture_filter_v2.txt
                 -DRACE=$<TARGET_FILE:nfsu_race>
                 "-DROOT=${NFSU_RETAIL_ROOT}" -DWORK=${nfsu_retail_work}
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/texture_filter_expected.txt

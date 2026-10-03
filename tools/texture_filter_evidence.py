@@ -37,6 +37,7 @@ def main():
     parser.add_argument("--expected", type=Path)
     parser.add_argument("--compare", type=Path)
     parser.add_argument("--references", type=Path)
+    parser.add_argument("--diagnostic-recording", type=Path, default=Path("tests/recordings/texture_filter_v2.txt"))
     args = parser.parse_args()
     root, output = args.root.resolve(), args.output.resolve()
     require(root != output and root not in output.parents, "output is inside retail installation")
@@ -107,15 +108,20 @@ def main():
             references = re.findall(r'\{(\d+), TextureFilterMode::(legacy|linear), (true|false), "([A-F0-9]{64})"\}',
                                     args.references.read_text(encoding="ascii"))
             require(len(references) == 12 and len(set(references)) == 12, "reference pin table incomplete")
+            fixture_hash = re.search(r'kTextureFilterFixtureHash =\s*"([A-F0-9]{64})"',
+                                     args.references.read_text(encoding="ascii")).group(1)
+            require(digest(args.diagnostic_recording.read_bytes()) == fixture_hash,
+                    "diagnostic recording identity differs")
             for tick, mode, shaded, image_hash in references:
                 shade = "on" if shaded == "true" else "off"
                 label = "native-"+mode+"-"+shade+"-"+tick
                 target = output/(label+".tga")
-                command = [str(args.compare.resolve()), "--root", str(root), "--input", str(args.recording.resolve()),
+                command = [str(args.compare.resolve()), "--root", str(root), "--input", str(args.diagnostic_recording.resolve()),
                            "--step", tick, "--texture-filter", mode, "--car-shading", shade, "--out", str(target)]
                 result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 (output/(label+".log")).write_bytes(result.stdout+result.stderr)
                 require(result.returncode == 0 and result.stdout and not result.stderr and
+                        ("FIXTURE v2 input-sha256 "+fixture_hash).encode("ascii") in result.stdout and
                         b"FAIL" not in result.stdout and b"ERROR" not in result.stdout and target.is_file(),
                         "native reference failed: "+label)
                 require(digest(target.read_bytes()) == image_hash, "native reference pin differs: "+label)
@@ -128,6 +134,17 @@ def main():
                             and not Path(str(target)+".partial").exists(),
                             "native reference overwrite refusal failed")
                     print("PASS: native comparison preserves existing output")
+                    # The shared gameplay replay has identical early poses, but
+                    # its identity is intentionally not the bounded diagnostic.
+                    wrong = list(command)
+                    wrong[wrong.index("--input")+1] = str(args.recording.resolve())
+                    wrong[-1] = str(output/"wrong-fixture.tga")
+                    refused = subprocess.run(wrong, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    require(refused.returncode == 1 and not refused.stderr and
+                            b"FAIL: comparison recording differs from v2 fixture" in refused.stdout and
+                            not Path(wrong[-1]).exists() and not Path(wrong[-1]+".partial").exists(),
+                            "native comparison accepted shared gameplay recording")
+                    print("PASS: native comparison rejects shared gameplay recording")
                 rows.append([label,image_hash])
             print("PASS: twelve native reference images match desktop pins")
         (output/"images.json").write_text(json.dumps(rows,indent=2)+"\n",encoding="ascii")

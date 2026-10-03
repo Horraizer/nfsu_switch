@@ -1,12 +1,14 @@
 # Gated lap HUD consumer
 
 Partial implementation for [#254](https://git.accad.pro/murzintsevav/nfsu-switch/issues/254)
-on the explicitly approved development base
+originally on the explicitly approved development base
 `8090cb058c658089c83cc101299861754e03504e` from
 [PR281](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/281).
-That prerequisite is unmerged and has an inherited texture image diagnostic
-failure. This delta does not repair its oracle or change any visual fixture.
-The candidate and this consumer are not an accepted event0 release.
+Review-fix integration adopts that prerequisite at
+`10563e2555270cb564fac910f1f2e1ba9569d4e4`, including its independently reviewed
+texture diagnostic fixture separation. The HUD delta does not repin visual
+fixtures; the PR handoff records gates on the combined head. The prerequisite
+is unmerged and the candidate is not an accepted event0 or hardware release.
 
 ## Supported boundary
 
