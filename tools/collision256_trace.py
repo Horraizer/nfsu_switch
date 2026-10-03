@@ -21,12 +21,17 @@ RANGES = [
     ('serialization-caller-slice', 0x421E80, 0x421EA9),
     ('serialization-read-bytes', 0x571BA0, 0x571C16),
     ('serialization-direction-slice', 0x571C20, 0x571C99),
-    ('world-update-model-and-dispatch-slice', 0x420D96, 0x420E56),
+    ('world-driver-and-collision-dispatch-slice', 0x420D96, 0x420E56),
     ('frame-world-call-slice', 0x447924, 0x44797F),
     ('frame-clock-call-slice', 0x447A10, 0x447A2F),
     ('clock-accounting', 0x585D70, 0x585DF6),
-    ('model-constructor-slice', 0x4740D0, 0x474138),
-    ('model-integration', 0x474A90, 0x474C99),
+    ('controller-driver-alias-slice', 0x4260D4, 0x4260F6),
+    ('physics-construction-and-store-slice', 0x42620A, 0x426244),
+    ('physics-driver-relink-slice', 0x42628C, 0x426296),
+    ('ai-driver-vtable-install-slice', 0x45DBB0, 0x45DBF0),
+    ('real-driver-vtable-install-slice', 0x460E70, 0x460E91),
+    ('physics-constructor-slice', 0x4740D0, 0x474138),
+    ('physics-integration-dispatch-untraced', 0x474A90, 0x474C99),
     ('body-refresh-pass', 0x420310, 0x42037F),
     ('queue-scheduler', 0x420380, 0x42088D),
     ('group-scheduler', 0x420890, 0x420B3D),
@@ -68,6 +73,7 @@ RANGES = [
 # range lengths. Hash identity does not make a misaligned decode meaningful.
 CALLS = {
     0x421E97: 0x41FC00, 0x447969: 0x420B40,
+    0x426230: 0x4740D0,
     0x420E18: 0x420890, 0x420E1F: 0x420310, 0x420E26: 0x420380,
     0x474C2D: 0x46AA40, 0x420496: 0x469580,
     0x4204ED: 0x468060, 0x42054A: 0x46B5E0,
@@ -78,6 +84,32 @@ CALLS = {
     0x46C3EE: 0x465830, 0x4209BE: 0x592C50,
     0x593007: 0x46B790,
 }
+
+# A physics vtable slot alone cannot identify the world's driver receiver.
+# Check the receiver, alias stores, distinct physics store and installations.
+OWNERSHIP_INSTRUCTIONS = {
+    0x420DA9: ('mov', 'ecx, dword ptr [ebx + 0x30]'),
+    0x420DAF: ('mov', 'eax, dword ptr [ecx]'),
+    0x420DB2: ('call', 'dword ptr [eax + 4]'),
+    0x4260D4: ('mov', 'dword ptr [esi + 0x2c], eax'),
+    0x4260D7: ('mov', 'ecx, dword ptr [esi + 0x2c]'),
+    0x4260DA: ('mov', 'eax, dword ptr [ecx + 8]'),
+    0x4260DD: ('mov', 'edx, dword ptr [esi + 0x34]'),
+    0x4260E4: ('mov', 'dword ptr [esi + 0x30], eax'),
+    0x4260E7: ('mov', 'dword ptr [edx + 4], eax'),
+    0x426235: ('mov', 'dword ptr [esi + 0x34], eax'),
+    0x42628C: ('mov', 'edx, dword ptr [esi + 0x34]'),
+    0x42628F: ('mov', 'eax, dword ptr [esi + 0x30]'),
+    0x426292: ('mov', 'dword ptr [edx + 4], eax'),
+    0x45DBE9: ('mov', 'dword ptr [ebp], 0x6c8c18'),
+    0x460E8B: ('mov', 'dword ptr [esi], 0x6c8ad0'),
+    0x474110: ('mov', 'dword ptr [ebp], 0x6c8468'),
+}
+VTABLE_SLOTS = (
+    ('ai-driver', 0x6C8C18, 4, 0x45E970),
+    ('real-driver', 0x6C8AD0, 4, 0x4615E0),
+    ('separate-physics', 0x6C8468, 4, 0x474A90),
+)
 
 CONSTANTS = (0x6FFF10, 0x6B71E4, 0x6B71E8, 0x6CC8BC,
              0x700E5C, 0x700E60, 0x700088, 0x6EF2C8, 0x6CCAE0)
@@ -104,6 +136,16 @@ def source_trace(image):
         insn = decoded.get(site)
         if not insn or insn.mnemonic != 'call' or insn.op_str != hex(target):
             raise ValueError('call edge failed: %08X' % site)
+    for site, expected in OWNERSHIP_INSTRUCTIONS.items():
+        insn = decoded.get(site)
+        if not insn or (insn.mnemonic, insn.op_str) != expected:
+            raise ValueError('object ownership instruction failed: %08X' % site)
+    slots = []
+    for name, table, offset, target in VTABLE_SLOTS:
+        if struct.unpack('<I', image.read(table + offset, 4))[0] != target:
+            raise ValueError('vtable slot changed: ' + name)
+        slots.append(dict(object=name, table='%08X' % table, offset=offset,
+                          target='%08X' % target))
     constants = {}
     for va in CONSTANTS:
         raw = image.read(va, 4)
@@ -111,10 +153,16 @@ def source_trace(image):
                                      u32=struct.unpack('<I', raw)[0])
     strings = {('%08X' % va): image.read(va, 100).split(b'\0')[0].decode('ascii')
                for va in STRINGS}
-    if struct.unpack('<I', image.read(0x6C846C, 4))[0] != 0x474A90:
-        raise ValueError('model vtable slot changed')
     facts = dict(evidence='static-original-file', ranges=ranges,
                  calls={'%08X' % a: '%08X' % b for a, b in CALLS.items()},
+                 ownership_instructions={'%08X' % a: list(b)
+                                         for a, b in OWNERSHIP_INSTRUCTIONS.items()},
+                 vtable_slots=slots,
+                 world_driver_receiver='actor+0x30',
+                 separate_physics_pointer='actor+0x34',
+                 driver_to_physics_dispatch=None,
+                 physics_placement_within_world_call=None,
+                 runtime_driver_and_physics_targets=None,
                  constants=constants, serialization_labels=strings,
                  runtime_selector_00736200=None, runtime_cadence=None,
                  original_contact_matrix=None)
@@ -306,6 +354,8 @@ def main():
             (out/('256-'+name+'.json')).write_text(
                 json.dumps(value, ensure_ascii=True, allow_nan=False, indent=2)+'\n', encoding='ascii')
         print('PASS: pinned inputs, complete source ranges and checked call edges')
+        print('PASS: distinct driver/physics stores, receiver and vtable slots')
+        print('UNAVAILABLE: intervening driver-to-physics dispatch and placement')
         print('PASS: named prop definitions, duplicate hull records and scenery links')
         print('UNAVAILABLE: original execution, selector, cadence and contact matrix')
     finally:

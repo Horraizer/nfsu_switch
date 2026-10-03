@@ -76,9 +76,12 @@ Correction from the 2026-10-03 continuation: the block at
 `0x0041FD76..0x0041FDE8` is inside world serialization `0x0041FC00`,
 called at `0x00421E97`. Its body/polygon/pair calls serialize or reconstruct
 state; calling it the live collision dispatcher was incorrect. The actual
-world-update call `0x00447969 -> 0x00420B40` updates models, then selects
-between two collision paths at `0x00420E0D..0x00420E26`. See
-[COLLISION_SCHEDULER.md](COLLISION_SCHEDULER.md) for the checked call chain,
+world-update call `0x00447969 -> 0x00420B40` invokes each actor's
+`+0x30` CarDriver, then selects between two collision paths at
+`0x00420E0D..0x00420E26`. Physics is the separate actor `+0x34` object;
+the intervening driver-to-physics dispatch and integration placement remain
+untraced. See [COLLISION_SCHEDULER.md](COLLISION_SCHEDULER.md) for the checked
+driver/physics ownership and world call boundaries,
 branch-local queue/group order, witness/impulse boundaries and reproduction.
 The port's 120 Hz vehicle step still does not establish a retail collision
 rate. Live dt, selector, body membership and contact episodes remain unmeasured.

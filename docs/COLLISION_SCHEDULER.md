@@ -39,7 +39,7 @@ measure a serialization path, not the live contact schedule. This corrects
 the earlier timing paragraph; the earlier pair and BB constructor evidence
 does not depend on that paragraph.
 
-## Live update and integration placement
+## Live driver update and unresolved integration placement
 
 The live call is `0x00447969 -> 0x00420B40`. Its second argument comes
 from the returned time at `0x00447939` (`0x0043A8A0`), after
@@ -49,16 +49,47 @@ The source order within this invocation is:
 
 | Stage | Source | What it establishes |
 | --- | --- | --- |
-| Model update | `0x00420DA7..0x00420DD5` visits the world car array at `+0x28`, calls car `+0x30` virtual `+4` at `0x00420DB2` with the supplied dt. | Model methods complete before the following collision dispatch. Runtime array membership and actual virtual targets must be recorded. |
-| Recovered model subdivision | Vtable `0x006C8468`, installed at `0x00474110`, has `0x00474A90` at `+4`. At `0x00474BE4..0x00474C4B`, that method divides dt by float `0x006FFF10`, converts to an integer with `0x00674898`, adds one and integrates equal slices through `0x0046AA40`. | This model subdivides internally. Its nominal small step is not a collision callback: the collision dispatcher is outside this loop. Do not call it a fixed 120 Hz collision schedule. The tool prints the exact source float. |
-| Car preparation | `0x00420DE6..0x00420E03` calls `0x004267A0` for each car, then `0x00420E05` calls prop maintenance `0x00595670`. | These execute after the model loop and before either collision branch. |
+| CarDriver update | `0x00420DA7..0x00420DD5` visits the world car array at `+0x28`; `0x00420DA9` reads actor `+0x30`, then `0x00420DB2` calls that driver's virtual `+4` with the supplied dt. | Driver methods complete before the following collision dispatch. This is not a direct call to actor `+0x34` physics. Runtime array membership and actual virtual targets must be recorded. |
+| Car preparation | `0x00420DE6..0x00420E03` calls `0x004267A0` for each car, then `0x00420E05` calls prop maintenance `0x00595670`. | These execute after the driver loop and before either collision branch. |
 | Collision branch | `0x00420E0D..0x00420E26` reads `0x00736200`. Nonzero calls `0x00420890`; zero calls `0x00420310`, then `0x00420380`. | Two different algorithms exist. The selector is outside the PE's raw file-backed sections, so this tool deliberately reports its live value as unavailable. |
 | Post-contact car update | `0x00420E37..0x00420E4B` calls `0x00426930` for each car. | Capture here separately from immediately after impulse application. |
 | Clock accounting | Frame tail `0x00447A15 -> 0x00585D70` updates whole-tick counters and the remainder from frame time. | The 60-based conversion in that helper does not call `0x00420B40` repeatedly. It cannot prove 60 or 120 collision passes per second. Pause, playback and frame-time gates need runtime evidence. |
 
+The receiver ownership matters. Controller replacement stores the controller
+at actor `+0x2C` (`0x004260D4`), reads controller `+8`, and copies that
+CarDriver alias to actor `+0x30` and physics `+4`
+(`0x004260D7..0x004260E7`). One physics-replacement branch calls
+`0x004740D0` at `0x00426230`, stores its return at actor `+0x34`
+(`0x00426235`), and relinks physics `+4` to the driver at
+`0x0042628C..0x00426292`. The AI driver installs vtable `0x006C8C18`
+at `0x0045DBE9`, with virtual `+4=0x0045E970`. The human driver installs
+`0x006C8AD0` at `0x00460E8B`, with virtual `+4=0x004615E0`. These
+checked source targets differ from the separate physics target below; no
+live object selection follows from the static tables alone.
+
+The separate physics constructor installs vtable `0x006C8468` at
+`0x00474110`, with `0x00474A90` at `+4`. Within that physics method,
+`0x00474BE4..0x00474C4B` divides its supplied dt by float `0x006FFF10`,
+converts to an integer through `0x00674898`, adds one and integrates equal
+slices through `0x0046AA40`. The tool prints the exact source float.
+This is a local subdivision observation, not a recovered world-to-physics
+call chain. The intervening dispatch, its gates, supplied dt and integration
+placement relative to the world's collision branch remain untraced here.
+In particular, no claim is made that the world's driver call directly invokes
+this method, that every driver selects it, or that its slices each schedule
+a collision pass. A fixed 120 Hz collision cadence remains unestablished.
+
+At `13c1fc8`, this document incorrectly attached that physics subdivision
+to the world's actor `+0x30` call. This correction independently checks the
+stores and tables identified by [PR285 at7c6a5e3](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/285),
+and removes that asserted linkage. The reproduction now checks the receiver
+and both object stores as well as the three distinct vtable slots; it records
+the missing dispatch and placement as null fields. The append/lookup,
+separate collision selector and branch-local evidence below are unaffected.
+
 This is a conditional static call order, not an observed race timeline.
-In particular, one world call can resolve several contacts; that is different
-from several world calls or several model substeps.
+One world call can resolve several contacts; that is different from several
+world calls. Local physics slices also do not establish the world-call count.
 
 ## Pair creation, filtering and solve order
 
@@ -246,7 +277,8 @@ inside that workspace and outside retail/protected E:/Games. Pinned input
 size/SHA identities come from `world_body_trace.INPUTS`. Complete before/after
 retail manifests include paths, directories, sizes, mtimes and file hashes.
 Every bounded instruction range must decode fully; independently specified
-call boundaries/targets are checked. Reports include range hashes, source
+call boundaries/targets, receiver/alias/physics stores and distinct driver
+and physics vtable slots are checked. Reports include range hashes, source
 constants, duplicate record provenance and explicitly synthetic list/queue
 results. No executable, hull vertices or decompressed asset bytes are saved.
 Synthetic tests exercise duplicate retention, malformed input refusal, queue
@@ -265,8 +297,10 @@ clock. Retain source addresses and raw numeric fields, never fill an unknown
 with zero:
 
 - World entry/return `0x00420B40`, supplied dt and live `0x00736200`;
-  actual model virtual targets and substep boundaries; selected collision
-  branch and post-contact boundary `0x00420E2B`.
+  actor `+0x2C/+0x30/+0x34` identities and actual vtables; driver virtual
+  entry/return, the still-missing driver-to-physics call chain, its gates and
+  supplied dt, and actual physics substep boundaries. Correlate them with
+  the selected collision branch and post-contact boundary `0x00420E2B`.
 - Pair construction `0x00466CE0` (entry ESI pair, EAX body A, stack body B),
   body IDs/kinds, bounds/flags, source geometry, list/group identity and each
   filter result. Record failed/no-contact candidates as well as contacts.
