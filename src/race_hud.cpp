@@ -254,6 +254,8 @@ void build_race_hud_frame(const RaceSession& session,
     const auto& handling = session.spec().handling;
     build_race_hud_frame_for_car(session.car(), handling.max_rpm,
                                  handling.redline_rpm, width, height, frame);
+    const auto snapshot = race_lap_hud_snapshot(session.course().route, session.timing(), 0);
+    build_race_lap_hud_panel(snapshot, RaceLapHudStyle::unknown, frame.lap);
 }
 
 void build_race_hud_frame_for_car(const VehicleState& car,
@@ -261,6 +263,7 @@ void build_race_hud_frame_for_car(const VehicleState& car,
                           std::uint32_t width, std::uint32_t height,
                           RaceHudFrame& frame) noexcept {
     frame.quads = 0;
+    frame.lap = {};
     const double mps=vehicle_sqrt(car.velocity.x*car.velocity.x+
                                   car.velocity.y*car.velocity.y);
     frame.readout={car.step,car.engine_rpm,car.wheel_rpm,max_rpm,redline_rpm,

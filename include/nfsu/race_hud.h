@@ -1,6 +1,7 @@
 #pragma once
 
 #include "nfsu/race_session.h"
+#include "nfsu/race_lap_hud.h"
 #include "nfsu/track.h"
 
 #include <array>
@@ -32,6 +33,7 @@ struct RaceHudFrame {
     std::array<TrackVertex, kRaceHudMaxQuads * 4> vertices{};
     std::uint16_t quads = 0;
     RaceHudReadout readout{};
+    RaceLapHudPanel lap{};
 };
 
 struct RaceHudDial {
