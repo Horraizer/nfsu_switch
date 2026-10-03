@@ -57,6 +57,13 @@ consumer, text-submit, glyph and mask ranges in [HUD_254.md](HUD_254.md) leaves
 those producers outside the recovered consumer contract. No always-visible
 event0 panel, finish clamp, countdown, rank/result, opponent or map is inferred.
 
+The follow-up [presentation producer research](HUD_254_PRESENTATION.md) traces
+the language selector, profile-to-view permissions and bounded option updates,
+native Sj/glyph transforms, texture metadata and submission order. It narrows
+the unknowns but changes none of this consumer's runtime behavior. Actual event0
+profile/lifecycle, effective hierarchy/fonts, viewport/safe area and shader
+behavior remain outside the established production contract.
+
 The default bindings and local coordinates are usable evidence; a screen-space
 quad pass with an invented anchor/material would not be. This partial PR
 therefore delivers the timing/text/binding subset and records drawing as blocked,
