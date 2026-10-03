@@ -1603,7 +1603,7 @@ if(NFSU_BUILD_TESTS)
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/race_guards.cmake)
 endif()
 
-list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_light_glows nfsu_race_run nfsu_race_hud)
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_light_glows nfsu_race_run nfsu_race_hud nfsu_minimap)
 add_executable(nfsu_audio_dump src/audio_dump_main.cpp)
 target_link_libraries(nfsu_audio_dump PRIVATE nfsu_audio nfsu_sha256 nfsu_arg_path)
 nfsu_enable_warnings(nfsu_audio_dump)

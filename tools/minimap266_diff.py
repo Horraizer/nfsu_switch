@@ -39,6 +39,24 @@ def sample(quads, xy):
 def compare(expected, actual, label, maxima):
     # Compare submission geometry independent of fan start/topology. Native
     # clipping decomposes a convex polygon into pieces; no rasterizer is run.
+    expected_vertices=[v for q in expected for v in q['screen']]
+    actual_vertices=[v for q in actual for v in q['screen']]
+    for vertices,other_quads in ((expected_vertices,actual),(actual_vertices,expected)):
+        for v in vertices:
+            if not other_quads:
+                raise AssertionError('%s missing polygon' % label)
+            distances=[]
+            for q in other_quads:
+                for i,p in enumerate(q['screen']):
+                    b=q['screen'][(i+1)%4]
+                    dx,dy=b[0]-p[0],b[1]-p[1]
+                    length=dx*dx+dy*dy
+                    t=max(0,min(1,((v[0]-p[0])*dx+(v[1]-p[1])*dy)/length)) if length else 0
+                    distances.append(math.hypot(v[0]-p[0]-t*dx,v[1]-p[1]-t*dy))
+            delta=min(distances)
+            maxima['screen']=max(maxima['screen'],delta)
+            if delta>1e-4:
+                raise AssertionError('%s screen vertex mismatch %r: %r' % (label,v,delta))
     samples = [(x+0.37,y+0.29) for x in range(22,150,3) for y in range(176,304,3)]
     samples += [tuple(sum(v[0][k] for v in t)/3 for k in range(2)) for t in triangles(expected)
                 if abs((t[1][0][0]-t[0][0][0])*(t[2][0][1]-t[0][0][1])-
@@ -79,6 +97,11 @@ def main():
     try:
         data=json.loads((args.report/'data.json').read_text(encoding='ascii'))
         source=json.loads((args.report/'native.json').read_text(encoding='ascii'))
+        for name,digest in source['tool_hashes'].items():
+            if sha((Path(__file__).parent/name).read_bytes())!=digest:
+                raise ValueError('trace is stale for '+name)
+        if data['source_commit']!=source['source_commit']:
+            raise ValueError('trace source identities disagree')
         blob=(root/'speed.exe').read_bytes()
         if sha(blob)!=INPUTS['speed.exe']:
             raise ValueError('unsupported native executable')
@@ -137,7 +160,7 @@ def main():
         if result.returncode or 'FAIL' in result.stdout+result.stderr or not result.stdout.endswith('PASS: minimap checks\n'):
             raise RuntimeError('driver failed: '+result.stdout+result.stderr)
         lines=iter(result.stdout.splitlines())
-        maxima=dict(projection=0,center=0,boundary=0,uvq=0,color=0)
+        maxima=dict(projection=0,center=0,boundary=0,screen=0,uvq=0,color=0)
         for row in rows:
             tokens=next(lines).split()
             assert tokens[0]=='P'
