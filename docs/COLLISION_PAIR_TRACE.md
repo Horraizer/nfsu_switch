@@ -72,23 +72,25 @@ but remains an inference from the constructor.
 
 ## Timing and work still needed
 
-The dispatcher at `0x0041FD76..0x0041FDE8` conditionally calls
-`0x00593620` (or `0x004682C0`) before it calls pair processing
-`0x00467010`; `0x00593620` itself ends in `0x004682C0`. This gives local
-call order for pair cleanup and processing. It does **not** establish the
-retail rate of that dispatcher, the number of physics substeps, or placement
-of these calls relative to a 60 Hz gameplay tick. The port's 120 Hz vehicle
-step is an approximation documented in `docs/VEHICLE.md`, not a measured
-retail collision schedule. Do not wire a new solver to that assumption.
+Correction from the 2026-10-03 continuation: the block at
+`0x0041FD76..0x0041FDE8` is inside world serialization `0x0041FC00`,
+called at `0x00421E97`. Its body/polygon/pair calls serialize or reconstruct
+state; calling it the live collision dispatcher was incorrect. The actual
+world-update call `0x00447969 -> 0x00420B40` updates models, then selects
+between two collision paths at `0x00420E0D..0x00420E26`. See
+[COLLISION_SCHEDULER.md](COLLISION_SCHEDULER.md) for the checked call chain,
+branch-local queue/group order, witness/impulse boundaries and reproduction.
+The port's 120 Hz vehicle step still does not establish a retail collision
+rate. Live dt, selector, body membership and contact episodes remain unmeasured.
 
-The next trace should (1) identify the caller and frequency of the
-`0x0041FD76` dispatcher and its relationship to vehicle integration,
-(2) trace how `0x00469810` fills and sorts its polygon candidates, and
-(3) use a controlled retail/Deck scenario with one stationary `BB`
-object, one traffic car, and one race opponent to record pair order,
-witness flags, impulse, and post-impact velocity. Until those measurements
-exist, use the class-specific observations in `docs/COLLISION_CLASSES.md`
-as constraints, not as a complete collision model.
+The next original capture should identify the live scheduler branch, actual
+dt and the interleaved pair queries/resolutions, using the source-addressed
+capture boundaries in that continuation. It also needs a named kind-4
+instance, traffic and opponent cases with pre/post states, witnesses and
+current-hit versus accumulated impulse. The newly joined pylon hull records
+belong to kind 2/1 and cannot fill the kind-4 requirement. Until these
+measurements exist, use the class-specific observations in
+`docs/COLLISION_CLASSES.md` as constraints, not a complete collision model.
 
 ## Reproduction
 
