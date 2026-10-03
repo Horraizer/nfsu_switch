@@ -16,8 +16,11 @@ add_library(nfsu_race_hud src/race_hud.cpp src/race_lap_hud.cpp)
 target_link_libraries(nfsu_race_hud PUBLIC nfsu_race_session nfsu_core
     nfsu_screen_text)
 nfsu_enable_warnings(nfsu_race_hud)
+add_library(nfsu_minimap src/minimap.cpp)
+target_link_libraries(nfsu_minimap PUBLIC nfsu_race_events nfsu_sha256)
+nfsu_enable_warnings(nfsu_minimap)
 if(NINTENDO_SWITCH)
     set_target_properties(nfsu_event0_setup nfsu_race_events nfsu_light_glows nfsu_race_run
-        nfsu_race_hud PROPERTIES
+        nfsu_race_hud nfsu_minimap PROPERTIES
         CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
 endif()

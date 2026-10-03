@@ -1589,6 +1589,12 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_race_hud_tests PRIVATE nfsu_race_hud)
     nfsu_enable_warnings(nfsu_race_hud_tests)
     add_test(NAME nfsu_race_hud_tests COMMAND nfsu_race_hud_tests)
+    add_executable(nfsu_minimap_tests tests/minimap_tests.cpp)
+    target_link_libraries(nfsu_minimap_tests PRIVATE nfsu_minimap nfsu_arg_path)
+    nfsu_enable_warnings(nfsu_minimap_tests)
+    add_test(NAME nfsu_minimap_tests COMMAND nfsu_minimap_tests)
+    add_test(NAME nfsu_minimap_diff_tests
+        COMMAND ${Python3_EXECUTABLE} -B ${PROJECT_SOURCE_DIR}/tests/minimap_diff_tests.py)
     add_executable(nfsu_race_lap_hud_tests tests/race_lap_hud_tests.cpp)
     target_link_libraries(nfsu_race_lap_hud_tests PRIVATE nfsu_race_hud)
     nfsu_enable_warnings(nfsu_race_lap_hud_tests)
@@ -1603,7 +1609,7 @@ if(NFSU_BUILD_TESTS)
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/race_guards.cmake)
 endif()
 
-list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_light_glows nfsu_race_run nfsu_race_hud)
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_light_glows nfsu_race_run nfsu_race_hud nfsu_minimap)
 add_executable(nfsu_audio_dump src/audio_dump_main.cpp)
 target_link_libraries(nfsu_audio_dump PRIVATE nfsu_audio nfsu_sha256 nfsu_arg_path)
 nfsu_enable_warnings(nfsu_audio_dump)
@@ -1816,6 +1822,9 @@ if(NFSU_BUILD_TESTS)
         set_tests_properties(nfsu_retail_manifest_after PROPERTIES
             FIXTURES_CLEANUP nfsu_retail_read_only LABELS retail
             TIMEOUT 600)
+        add_test(NAME nfsu_minimap_retail COMMAND nfsu_minimap_tests --retail "${NFSU_RETAIL_ROOT}")
+        set_tests_properties(nfsu_minimap_retail PROPERTIES
+            FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 180)
         add_test(NAME nfsu_stability_retail COMMAND nfsu_stability_tests --root "${NFSU_RETAIL_ROOT}")
         add_test(NAME nfsu_event0_setup_retail COMMAND nfsu_event0_setup_tests "${NFSU_RETAIL_ROOT}")
         set_tests_properties(nfsu_event0_setup_retail PROPERTIES
