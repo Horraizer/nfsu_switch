@@ -52,6 +52,13 @@ const std::array<RaceLapHudBinding, kRaceLapHudFields>& race_lap_hud_bindings() 
     return bindings;
 }
 
+RaceLapHudStyle race_lap_hud_style(bool known, int selected_language) noexcept {
+    if (!known || selected_language < 0 || selected_language > 6)
+        return RaceLapHudStyle::unknown;
+    return selected_language == 0 ? RaceLapHudStyle::native_fallback :
+        static_cast<RaceLapHudStyle>(selected_language);
+}
+
 bool format_lap_hud_ticks(std::int32_t ticks, RaceLapHudStyle style,
                           RaceLapHudText& text) noexcept {
     text = {};
@@ -118,5 +125,9 @@ void build_race_lap_hud_panel(const RaceLapHudSnapshot& snapshot,
     if (snapshot.best_ticks == 0) std::strcpy(panel.fields[2].text.data(), "--:--:--");
     else best_formatted = format_lap_hud_ticks(snapshot.best_ticks, style, panel.fields[2].text);
     panel.formatting_valid = current_formatted && best_formatted;
+}
+void build_race_lap_hud_panel(const RaceLapHudSnapshot& snapshot,
+    RaceLapHudLanguage language, RaceLapHudPanel& panel) noexcept {
+    build_race_lap_hud_panel(snapshot,race_lap_hud_style(language.known,language.selected),panel);
 }
 } // namespace nfsu

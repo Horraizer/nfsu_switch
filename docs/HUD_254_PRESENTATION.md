@@ -179,6 +179,10 @@ without opening the production drawing gate:
 | Future logical geometry builder | Bound English font/FNTF, actual texture dimensions, text, Sj/Sl/Sw, SA, effective parent | Glyph/sprite quads, packed colors and ordered buckets, comparable to `presentation.json`; parent/font state must be supplied rather than assumed. |
 | Future draw backend | Ordered logical geometry plus proven viewport, shader and material | Raster output; the last three inputs and original runtime comparison remain missing. |
 
+The [conditional executable adapter](HUD_254_ADAPTER.md) implements this
+bounded explicit-input boundary while retaining the production gate. It
+compares compiled outputs against fresh original instruction submissions.
+
 Before enabling production presentation, recover the event0 profile/lifecycle,
 effective runtime font/hierarchy state, viewport and safe-area setup, actual
 shader/material behavior and package traversal. A real original clip/runtime
