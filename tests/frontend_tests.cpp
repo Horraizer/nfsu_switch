@@ -1,6 +1,7 @@
 #include "nfsu/frontend.h"
 #include "nfsu/race_session.h"
 #include "nfsu/race_run.h"
+#include "nfsu/posix_file_system.h"
 #include <iostream>
 #include <stdexcept>
 void check(bool value,const char* message) { if(!value) throw std::runtime_error(message); }
@@ -22,14 +23,17 @@ int main(int argc,char** argv) {
             std::vector<unsigned char> pixels(1280*720*4,0);
             art.draw({pixels.data(),1280,720,1280*4},menu);
             check(pixels[3]==255 && pixels[(719*1280+1279)*4+3]==255,"menu fills full image");
-            VehicleTrackCourse course;
-            check(load_vehicle_track_course(root/"Tracks/TRACKB1003.lzc",0,0,0,0,course,error),error.c_str());
-            check(course.route.laps==0,"free-drive route has no required finish");
-            RaceSession session(course); check(session.start(error),error.c_str());
+            RaceGpuScene scene;
+            check(run.prepare_metadata(root,error),error.c_str());
+            check(!run.set_free_drive(false,error),"mode cannot change after metadata preparation");
+            check(scene.load(posix_file_system(),root,error),error.c_str());
+            check(run.start(root,scene.track(),error),error.c_str());
+            const auto& session=run.session();
+            check(session.course().route.laps==0,"free-drive configuration reaches actual runtime route");
             RaceRouteDriver driver(RaceDrivingLine::event1_forward);
             unsigned ticks=0;
             for(;ticks<90000 && race_laps_completed(session.progress())<3;++ticks)
-                check(session.advance(driver.sample(session),error),error.c_str());
+                check(run.simulate(driver.sample(session),error) && run.commit(error),error.c_str());
             std::cout << "free-drive observed laps " << race_laps_completed(session.progress()) << " max " << session.progress().max_lap << " steps " << ticks << " resets " << session.telemetry().resets << std::endl;
             check(race_laps_completed(session.progress())>=3,"free driving passes former two-lap finish");
             check(!session.progress().finished && session.timing().outcome==RaceOutcome::running,"free driving still running");

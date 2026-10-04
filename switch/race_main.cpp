@@ -11,6 +11,7 @@
 #include "nfsu/stock_view.h"
 #include "nfsu/race_audio.h"
 #include "nfsu/frontend.h"
+#include "nfsu/intro_movie.h"
 #include <switch.h>
 #include <arpa/inet.h>
 #include <unistd.h>
@@ -108,6 +109,13 @@ public:
     }
     void close() {
         if (opened_) { framebufferClose(&fb_); opened_ = false; }
+    }
+    void movie(const MovieFrame& frame) {
+        if (!opened_ && !open()) throw std::runtime_error("framebuffer unavailable");
+        u32 stride=0; auto* pixels=static_cast<unsigned char*>(framebufferBegin(&fb_,&stride));
+        if (!pixels) throw std::runtime_error("framebuffer unavailable");
+        blit_movie(frame,pixels,width,height,stride);
+        framebufferEnd(&fb_);
     }
     void menu(const FrontendArt& art, const FrontendMenu& menu) {
         if (!opened_ && !open()) throw std::runtime_error("framebuffer unavailable");
@@ -814,10 +822,22 @@ int main(int argc, char** argv) {
                     gpu_boost,hud,hud_trace,explicit_performance ? &performance : nullptr,
                     handling_telemetry,steering,screen,pad);
             } else {
+                const auto intro=play_original_intro(root,[&] {
+                    if (!appletMainLoop()) return IntroControl::quit;
+                    padUpdate(&pad); const auto down=padGetButtonsDown(&pad);
+                    if (down&HidNpadButton_Plus) return IntroControl::quit;
+                    if (down&(HidNpadButton_A|HidNpadButton_B)) return IntroControl::skip;
+                    return IntroControl::continue_playback;
+                },[&](const MovieFrame& frame) { screen.movie(frame); });
+                if (intro.outcome==IntroOutcome::quit) throw Cancel{};
                 FrontendArt art; std::string frontend_error;
                 screen.show({"Loading original frontend..."});
                 require(art.load(root,frontend_error),frontend_error);
                 FrontendMenu menu;
+                if (intro.outcome==IntroOutcome::error) {
+                    std::printf("INTRO ERROR: %s\n",intro.error.c_str());
+                    menu.notice(std::string("INTRO: ")+intro.error);
+                }
                 bool stick_up=false,stick_down=false;
                 while (appletMainLoop()) {
                     padUpdate(&pad); const auto down=padGetButtonsDown(&pad);
@@ -832,7 +852,7 @@ int main(int argc, char** argv) {
                     const auto action=menu.update(input);
                     if (action==FrontendAction::exit) break;
                     if (action==FrontendAction::underground) {
-                        menu.notice("INTRODUCTORY RACE UNAVAILABLE: ORIGINAL EVENT0 BACKEND REQUIRED");
+                        menu.notice("INTRODUCTORY RACE IS NOT AVAILABLE IN THIS BUILD");
                     } else if (action==FrontendAction::free_drive) {
                         try {
                             run(root,false,false,false,particles_enabled,sky,
