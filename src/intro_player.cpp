@@ -73,7 +73,7 @@ IntroResult play_original_intro(const std::string& root,const IntroPoll& poll,co
                 throw std::runtime_error(error);
             bool video=true;
             std::uint64_t video_end=0;
-            auto last_progress=std::chrono::steady_clock::now();
+            unsigned no_progress_polls=0;
             std::uint64_t last_clock=0;
             const auto audio_end=(movie.audio_frames()*48000+movie.audio_rate()-1)/movie.audio_rate();
             for(;;) {
@@ -83,8 +83,11 @@ IntroResult play_original_intro(const std::string& root,const IntroPoll& poll,co
                 // Use the actual device sample position, including output queue
                 // latency, as the common clock. A late frame cannot slow audio.
                 const auto clock=output.stats().played_frames;
-                if(clock!=last_clock) {last_clock=clock;last_progress=std::chrono::steady_clock::now();}
-                if(std::chrono::steady_clock::now()-last_progress>std::chrono::seconds(2))
+                // Count active iterations: wall time includes HOME/sleep process
+                // suspension and must not trigger a false failure on resume.
+                if(clock!=last_clock) {last_clock=clock;no_progress_polls=0;}
+                else ++no_progress_polls;
+                if(no_progress_polls>2000)
                     throw std::runtime_error("movie audio device clock stalled");
                 if(video && clock/48>=frame.timestamp_ms) {
                     // Still decode every predictive frame when presentation is
