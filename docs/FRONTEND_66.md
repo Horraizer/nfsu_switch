@@ -35,12 +35,18 @@ in FrontB, Road_Segment textures and the RSX geometry/textures. Default stock RS
 paint is resolved through CarTypeInfo +0xC5C and the actual BASE_PAINT attributes,
 not an arbitrary requested color. Room modulation follows original world.efx.
 FEng image 0x4F2000 and font 0x4F48B0 halve channels before packed
-vertex color reaches Modulate2x; the port preserves that order for RGB and
-alpha, avoiding clipped white logo/highlight colors.
+vertex color submission. The port's decoded world material uses Modulate2x
+and preserves half-pack then material multiplication for RGB and
+alpha, avoiding clipped white logo/highlight colors. Original type9 renderer
+0x4F2280 supplies distinct TL/TR/BR/BL corner colors, packed /2 and drawn as
+a two-triangle fan. The port interpolates those native colors instead of
+flattening the main backing to one color or multiplying them by base SA color.
 `tools/frontend66_color_native.py <retail-root>` executes the original font
 packing instructions with explicit supplied color/stack preconditions.
 The car uses existing decoded retail material coefficients and runtime skin.
-The current camera framing is a port choice; the original animated camera,
+The active native FEng effect/sRGB context has not been executed; the selected
+world material is a port composition boundary. The current camera framing is
+a port choice; the original animated camera,
 saved-profile tuned car shown in the owner's photo and full original lighting
 have not been recovered. The background is cached for menu responsiveness.
 Original source assets remain read-only, memory-only and unbundled. Private

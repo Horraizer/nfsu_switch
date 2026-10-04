@@ -34,6 +34,7 @@ struct Object {
     float x=0,y=0,z=0,w=1,h=1,qz=0,qw=1;
     std::array<unsigned,4> color{{255,255,255,255}};
     std::array<float,4> uv{{0,0,1,1}};
+    std::array<std::array<unsigned,4>,4> corner_colors{};
 };
 struct Transform {float a=1,b=0,c=0,d=1,x=0,y=0,z=0;};
 Transform combine(const Transform& p,const Object& o,bool scale) {
@@ -47,7 +48,8 @@ Transform combine(const Transform& p,const Object& o,bool scale) {
 // Pixel rasterization of a recovered FEng affine quad; letterforms are FNTF
 // glyphs, never synthesized glyphs. Display preserves the 640x480 canvas.
 void quad(ScreenImage target,const Image& tex,const Transform& m,float x,float y,float w,float h,
-          std::array<float,4> uv,std::array<unsigned,4> color) {
+          std::array<float,4> uv,std::array<unsigned,4> color,
+          const std::array<std::array<unsigned,4>,4>* corners=nullptr) {
     if(!target.pixels || !w || !h || tex.rgba.empty()) return;
     const float s=std::min(float(target.width)/640,float(target.height)/480);
     const float ox=(float(target.width)-640*s)/2,oy=(float(target.height)-480*s)/2;
@@ -72,12 +74,21 @@ void quad(ScreenImage target,const Image& tex,const Transform& m,float x,float y
         const auto ty=std::min(tex.height-1,unsigned(std::max(0.F,tv)*float(tex.height)));
         const auto* src=tex.rgba.data()+(std::size_t(ty)*tex.width+tx)*4;
         auto* dst=target.pixels+std::size_t(py)*target.stride+std::size_t(px)*4;
-        const unsigned alpha=unsigned(src[3])*(std::min(255U,color[3])/2*2)/255;
+        std::array<float,4> modulation{};
+        for(unsigned channel=0;channel<4;++channel) {
+            if(corners) {
+                // Original D3D triangle fan: TL/TR/BR, then TL/BR/BL.
+                const float weights[4]={1-std::max(u,v),std::max(0.F,u-v),std::min(u,v),std::max(0.F,v-u)};
+                for(unsigned corner=0;corner<4;++corner)
+                    modulation[channel]+=weights[corner]*float(std::min(255U,(*corners)[corner][channel])/2)*2;
+            } else modulation[channel]=float(std::min(255U,color[channel])/2)*2;
+        }
+        const unsigned alpha=static_cast<unsigned>(float(src[3])*modulation[3]/255);
         for(unsigned c=0;c<3;++c) {
             // FEng image 0x4F2000 and font 0x4F48B0 pack channels /2;
-            // the world material then applies Modulate2x. Preserve that
+            // the port's decoded world material applies Modulate2x. Preserve that
             // order rather than doubling the original unhalved color.
-            const unsigned value=unsigned(src[c])*(std::min(255U,color[2-c])/2*2)/255;
+            const unsigned value=static_cast<unsigned>(float(src[c])*modulation[2-c]/255);
             const unsigned background=unsigned(dst[c])*(tex.blend==TextureAlphaBlend::additive?255:255-alpha);
             dst[c]=static_cast<unsigned char>(std::min(255U,(value*alpha+background+127)/255));
         }dst[3]=255;
@@ -186,7 +197,11 @@ bool FrontendArt::load(const std::filesystem::path& root,std::string& error) {
                     o.x=real(v+28);o.y=real(v+32);o.z=real(v+36);o.qz=real(v+48);o.qw=real(v+52);
                     o.w=real(v+56);o.h=real(v+60);
                     if(size>=84) for(unsigned i=0;i<4;++i) o.uv[i]=real(v+68+i*4);
-                    if(o.type==9 && size>=100) for(unsigned i=0;i<4;++i) o.color[i]=o.color[i]*dword(v+84+i*4)/255;
+                    if(o.type==9) {
+                        if(size<148) throw std::runtime_error("original colored backing corners absent");
+                        for(unsigned corner=0;corner<4;++corner) for(unsigned c=0;c<4;++c)
+                            o.corner_colors[corner][c]=dword(v+84+corner*16+c*4);
+                    }
                 }
                 at+=4+size;
             }
@@ -257,7 +272,7 @@ void FrontendArt::draw(ScreenImage image,const FrontendMenu& menu) const {
             p.text(image,o,m,label,color,o.resource);
         } else if((o.type==1 || o.type==9) && o.resource<8) {
             const auto tex=p.textures.find(hashes[o.resource]);if(tex==p.textures.end()) continue;
-            quad(image,tex->second,m,-o.w/2,-o.h/2,o.w,o.h,o.uv,color);
+            quad(image,tex->second,m,-o.w/2,-o.h/2,o.w,o.h,o.uv,color,o.type==9?&o.corner_colors:nullptr);
         }
     }
     // The identity logo is the final foreground image over its angular backing.
