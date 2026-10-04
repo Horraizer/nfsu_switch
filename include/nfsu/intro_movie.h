@@ -1,0 +1,48 @@
+#pragma once
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace nfsu {
+struct MovieFrame {
+    unsigned width = 0, height = 0;
+    std::uint32_t duration_ms = 0;
+    std::uint64_t timestamp_ms = 0;
+    std::vector<std::uint8_t> yuv;
+    std::vector<std::uint8_t> rgba;
+};
+// Each reader uses independent video/audio file cursors. Storage is bounded by
+// two YUV reference frames, one RGBA frame and one audio chunk, not movie length.
+class MovieReader {
+public:
+    explicit MovieReader(const std::string& path);
+    ~MovieReader();
+    MovieReader(const MovieReader&) = delete;
+    MovieReader& operator=(const MovieReader&) = delete;
+    bool next_video(MovieFrame& frame);
+    bool next_audio(std::vector<std::int16_t>& stereo);
+    unsigned audio_rate() const noexcept;
+    std::uint64_t audio_frames() const noexcept;
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+enum class IntroControl { continue_playback, skip, quit };
+enum class IntroOutcome { completed, skipped, quit, error };
+struct IntroResult {
+    IntroOutcome outcome = IntroOutcome::completed;
+    std::string error;
+    std::size_t movies_completed = 0;
+};
+using IntroPoll = std::function<IntroControl()>;
+using IntroPresent = std::function<void(const MovieFrame&)>;
+IntroResult play_original_intro(const std::string& retail_root,
+                               const IntroPoll& poll, const IntroPresent& present);
+// Retail video has square pixels. Fit it inside the destination without
+// distortion and paint every unused pixel opaque black.
+void blit_movie(const MovieFrame& frame, std::uint8_t* destination,
+                unsigned width, unsigned height, std::size_t stride);
+} // namespace nfsu

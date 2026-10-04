@@ -34,6 +34,7 @@ struct Output::Impl {
     bool thread_started = false;
     std::atomic<bool> running{false};
     std::atomic<std::uint64_t> late{0};
+    std::atomic<std::uint64_t> played_frames{0};
     std::atomic<std::uint32_t> queued_frames{0};
     std::atomic<std::uint32_t> work_us{0};
     mutable std::mutex error_mutex;
@@ -79,6 +80,7 @@ struct Output::Impl {
                 queued_frames = static_cast<std::uint32_t>(pending * kFrames);
                 work_us = static_cast<std::uint32_t>(armTicksToNs(
                     armGetSystemTick() - begin) / 1000);
+                played_frames = audrvVoiceGetPlayedSampleCount(&driver, 0);
                 primed = true;
                 eventWait(audrenGetFrameEvent(), 50000000ULL);
             }
@@ -205,7 +207,7 @@ std::string Output::error() const {
 }
 
 Output::Stats Output::stats() const noexcept {
-    return {impl_->late.load(), impl_->queued_frames.load(),
+    return {impl_->late.load(), impl_->played_frames.load(), impl_->queued_frames.load(),
             impl_->work_us.load()};
 }
 

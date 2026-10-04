@@ -112,6 +112,15 @@ std::string Output::error() const {
     std::lock_guard<std::mutex> lock(impl_->error_mutex);
     return impl_->failure;
 }
-Output::Stats Output::stats() const noexcept { return {}; }
+Output::Stats Output::stats() const noexcept {
+    Stats result;
+    if (impl_->device) {
+        MMTIME position{};
+        position.wType = TIME_SAMPLES;
+        if (waveOutGetPosition(impl_->device, &position, sizeof(position)) == MMSYSERR_NOERROR &&
+            position.wType == TIME_SAMPLES) result.played_frames = position.u.sample;
+    }
+    return result;
+}
 
 } // namespace nfsu::audio
