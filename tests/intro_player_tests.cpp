@@ -8,6 +8,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 #ifdef _WIN32
 #include <process.h>
@@ -16,6 +17,7 @@
 #endif
 namespace {
 unsigned starts=0,stops=0;
+unsigned frozen_polls=0;
 std::vector<std::int16_t> rendered;
 void require(bool b,const char* why){if(!b)throw std::runtime_error(why);}
 }
@@ -32,7 +34,7 @@ Output::Stats Output::stats() const noexcept {
     std::array<std::int16_t,200> pcm{};
     try {impl_->render(pcm.data(),100);rendered.insert(rendered.end(),pcm.begin(),pcm.end());}
     catch(const std::exception& e){impl_->error=e.what();}
-    impl_->clock+=100;Stats s;s.played_frames=impl_->clock;return s;
+    if(frozen_polls) --frozen_polls; else impl_->clock+=100;Stats s;s.played_frames=impl_->clock;return s;
 }
 }
 namespace {
@@ -109,6 +111,12 @@ int main() {
         require(r.outcome==nfsu::IntroOutcome::completed&&r.movies_completed==3&&shown==3&&starts==3&&stops==3,"sequence completion/output cleanup");
         require(rendered.size()>=62,"rendered audio missing");
         for(unsigned i=0;i<31;++i){const unsigned phase=i*44100;const unsigned sample=std::min(27U,phase/48000);const unsigned next=std::min(27U,sample+1);const int expected=int((sample*100ULL*(48000-phase%48000)+next*100ULL*(phase%48000))/48000);require(rendered[i*2]==expected&&rendered[i*2+1]==-expected,"44.1kHz resampling");}
+        bool suspended=false;frozen_polls=2;
+        r=nfsu::play_original_intro(dir.string(),[&]{
+            if(!suspended && starts>3){suspended=true;std::this_thread::sleep_for(std::chrono::milliseconds(2100));}
+            return nfsu::IntroControl::continue_playback;
+        },noop);
+        require(r.outcome==nfsu::IntroOutcome::completed&&starts==stops,"resume after suspended wall time");
         shown=0;r=nfsu::play_original_intro(dir.string(),[&]{return shown?nfsu::IntroControl::skip:nfsu::IntroControl::continue_playback;},[&](const nfsu::MovieFrame&){++shown;});
         require(r.outcome==nfsu::IntroOutcome::skipped&&starts==stops,"active skip cleanup");
         r=nfsu::play_original_intro(dir.string(),normal,[](const nfsu::MovieFrame&){throw std::runtime_error("presentation failed");});
