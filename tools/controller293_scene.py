@@ -1,7 +1,7 @@
 """Original event metadata and paired controller consumers on supplied poses.
 
-Stock 240SX physical data is deliberately retained for both actors. These
-conditional witnesses do not resolve event presets or integrate physics.
+The default witness retains stock240SX data. The event_rides variant executes
+original event presets/adaptive tuning. Neither variant integrates physics.
 """
 from event0_trace import chunks
 from world_body_trace import jdlz
@@ -38,21 +38,22 @@ def setup_event(m, retail, seed):
                 humans=m.get(0x78A320), rivals=m.get(0x78A324))
 
 
-def configurations(m, setup):
-    """Native constructor metadata with explicitly substituted stock RideInfo."""
+def configurations(m, setup, rides=None):
+    """Native config construction; omitted rides explicitly substitutes stock."""
+    rides = rides or [RIDE]*4
     # Original caller reads the settings reset's initial player grid byte.
     m.run(0x4B6079, end=0x4B6080)
     grid = m.reg('esi')
     m.run(0x4B6102, end=0x4B611C, esi=grid)
     player_args = [m.get(m.reg('esp') + 4*i) for i in range(7)]
-    player_args[2] = RIDE
+    player_args[2] = rides[0]
     m.run(0x5809C0, tuple(player_args), esi=CONFIGS)
     for i in range(3):
         record = setup + 0x5974 + i * 0x1C
         m.run(0x4B41EB, end=0x4B4227, esi=record)
         m.run(0x4B42FC, end=0x4B4321, ebx=i+2, edx=record)
         args = [m.get(m.reg('esp') + 4*j) for j in range(7)]
-        args[2] = RIDE
+        args[2] = rides[i+1]
         m.run(0x5809C0, tuple(args), esi=CONFIGS + (i+1)*0x750)
     # Array publication is a fixture. The grid permutation itself is original.
     m.put(0x78A418, CONFIGS)
@@ -76,9 +77,9 @@ class PairedController:
     Calls have dt0.02 and advance the 4000Hz clock by80. The call stream is
     explicit; no original frame scheduling or physical trajectory is claimed.
     """
-    def __init__(self, image, retail, seed=12345, elapsed_ticks=240000):
+    def __init__(self, image, retail, seed=12345, elapsed_ticks=240000, event_rides=False):
         from controller293_planner import ActorController, TRACK
-        self.actor = a = ActorController(image, retail, event_seed=seed)
+        self.actor = a = ActorController(image, retail, event_seed=seed, event_rides=event_rides)
         self.m = m = a.m
         self.elapsed_ticks = elapsed_ticks
         m.run(0x42B21E, end=0x42B22B, eax=0, ebx=REF)
@@ -86,10 +87,14 @@ class PairedController:
         m.put(REF+4, HUMAN)
         m.put(REF+0x10, 0)
         m.run(0x42B557, end=0x42B5B8, ebx=REF, edi=0)
-        m.put(HUMAN+0x10, RIDE)
-        m.put(HUMAN+0x20, RIDE+0x60)
+        human_ride = a.event['configs'][0]['address']+0x10 if event_rides else RIDE
+        m.put(HUMAN+0x10, human_ride)
+        m.put(HUMAN+0x20, human_ride+0x60)
         m.put(HUMAN+0x14, a.event['configs'][0]['address'])
-        m.run(0x464860, (RIDE+0x60,), eax=HUMAN+0x40,
+        if event_rides:
+            m.run(0x425598, end=0x4255A1, eax=m.get(HUMAN+0x14), ebx=HUMAN)
+            m.run(0x4255AB, end=0x4255CB, ebx=HUMAN, esi=human_ride)
+        m.run(0x464860, (human_ride+0x60,), eax=HUMAN+0x40,
               ecx=HUMAN+0x540, edx=HUMAN+0x828)
         a.pose(30, 20.0, update_world=False, actor=HUMAN)
         m.run(0x4257F7, end=0x425805, ebx=HUMAN)
@@ -104,6 +109,9 @@ class PairedController:
         m.run(0x59BFC0, (HUMAN_CONTROLLER,), ecx=HUMAN, budget=3000000)
         m.put(HUMAN+0x2C, HUMAN_CONTROLLER)
         m.put(HUMAN+0x30, m.get(HUMAN_CONTROLLER+8))
+        if event_rides:
+            from controller293_event_rides import hull
+            hull(m, retail, 'INTEGRA', 0x4000000, 0x800000)
         m.put(HUMAN+0x3C, 0x11AA000)
         m.run(0x469B00, (0x11AA000, HUMAN), end=0x469D1E)
         # The flow state and race status are distinct original objects.
@@ -133,6 +141,13 @@ class PairedController:
             progress=[m.get(m.get(x+0x1C)+0x14, 'f') for x in (HUMAN, ACTOR)],
             physical_selectors=[m.get(x+0x28) for x in (HUMAN, ACTOR)],
             world_rng=m.get(WORLD+0x2D0), elapsed_ticks=elapsed_ticks)
+        if event_rides:
+            from controller293_event_rides import snapshot
+            self.initial['actor_bindings'] = [dict(id=m.get(x+0xA, 'h'),
+                config=m.get(x+0x14), ride=m.get(x+0x10), physical=m.get(x+0x20),
+                body=m.get(x+0x3C), bounds=[m.get(m.get(x+0x3C)+off, 'f')
+                    for off in (0xF4, 0x104)], resolved=snapshot(m, m.get(x+0x10)))
+                for x in (HUMAN, ACTOR)]
         # Explicit resumed-clock input, no skipped simulation is claimed.
         a.tick = 500000
         m.put(0x73AD34, a.tick)
@@ -163,8 +178,8 @@ class PairedController:
             elapsed_ticks=self.elapsed_ticks, world_rng=m.get(WORLD+0x2D0), result=result)
 
 
-def suite(image, retail):
-    controller = PairedController(image, retail)
+def suite(image, retail, event_rides=False):
+    controller = PairedController(image, retail, event_rides=event_rides)
     frames = []
     for i in range(160):
         point, speed = ((20, 20.0), (30, 30.0), (37, 60.0))[min(i//40, 2)]
@@ -172,5 +187,5 @@ def suite(image, retail):
     m = controller.m
     return dict(initial=controller.initial, frames=frames, hooks=m.events,
                 visited=['%08X' % a for a in sorted(m.visited)],
-                physical_integration=False, actual_event0_roster=False,
+                physical_integration=False, actual_event0_roster=False, resolved_event_rides=event_rides,
                 original_runtime=None)

@@ -23,6 +23,9 @@ curve, planner callback or prebuilt driver history enters this new chain.
 The older frozen/supplied-path witnesses remain separate regression cases.
 The v4 continuation under assignment8569 adds original event setup metadata,
 grid permutation and a paired controller witness in `controller293_scene.py`.
+The v5 continuation under assignment8601 adds original event preset/adaptive
+RideInfo construction and a second paired witness using the event's player
+INTEGRA and first rival ECLIPSE, including their retail hulls.
 Its recursive retail chunk reader is the already tracked `event0_trace.py`;
 no additional foreign-branch dependency is needed.
 The original game runtime, actual event0 roster/scene and physical integration
@@ -57,6 +60,8 @@ The initialized planner additionally reads these authenticated retail inputs:
 | Tracks/TRACKB1003.lzc | 433352 | ADA8206B5D66E3286BF582E2C7117FE0CC2BA9F6CADB756D922F7D32E7C696BA |
 | GLOBAL/GLOBALB.BUN | 2361176 | 39DF38FAC2BE7CA0F0D0A92E0113CAAEDA5B1C60E14436C612B3D0874AFC8DB9 |
 | Cars/240SX/GEOMETRY.BIN | 4780816 | 002202192752838E1B65E9B7C219EAB381FD5F916C3D031DDE93428EB325F619 |
+| Cars/INTEGRA/GEOMETRY.BIN | 5780304 | C5E4808EBBEE5A5DD990A97E1BC035753042F55CFCC46678179F7441E49BFFB4 |
+| Cars/ECLIPSE/GEOMETRY.BIN | 5923024 | F28688371D708189E83B152168486618D29436D9A109B54E63E0C40D908084BF |
 
 Entire retail file/directory size/mtime/content manifests bracket each run,
 including failures. Reparse
@@ -473,7 +478,7 @@ countdown and metadata stores. A modified admission branch is rejected in the
 source guard tests. No semantic AI, path, catch-up, RNG or controls are hooked.
 
 The initialized planner context and positive returned path are recovered for
-these conditional scenes. Remaining work is full event0 tuning/scene ownership, complete
+these conditional scenes. Remaining work is complete scene ownership and
 scheduler/action selection beyond the retained first action, actor lifecycle,
 spatial registration, real collision/physics/progress
 integration, and original correlated runtime comparisons. Missing prepared
@@ -481,6 +486,60 @@ fixtures alone do not establish an external blocker: these producer paths can
 continue to be investigated from authenticated code and retail data. This
 change establishes an executable original oracle and a concrete conditional
 actor contract; it does not justify inventing a production AI approximation.
+
+## Original event RideInfo and config ownership
+
+**S/E.** `controller293_event_rides.py` removes the v4 stock RideInfo substitution
+in a separate `event_scene` witness. The v4 stock scene remains a regression
+case. `PairedController(..., event_rides=True)` selects the new witness.
+
+| Producer | Original execution |
+| --- | --- |
+| Preset registry | `4B25B0` loads FrontB chunk`30220` into its original linked registry |
+| Car types, variations and parts | whole loader`57C8B0` consumes GLOBAL chunks`34600`, `34601`, `80034602`; it publishes and relocates original tables in the mutable emulator copy |
+| Player preset and performance | builder slice`4B6071..4B6102` derives visual seed fields, calls full preset lookup/apply`4B2640`/`4B26F0`, and executes the event0 level stores; original`57F2B0` rebuilds physical data/rating |
+| Rival presets and adaptive tuning | caller slice`4B40A0..4B4197` initializes RideInfo, formats/hashes visual seed names and applies each event preset; `4B41EB..4B42BE` invokes full`57F700` and its original physical/rating rebuilds |
+| Config copies | original`5809C0` calls`4323F0` to copy each resolved RideInfo into its own config record |
+| Actor ownership | constructor source`425374..425382` derives config+10; original ID stores`425598` and RideInfo/physical stores`4255AB..4255CB` execute for both actors |
+| Body inputs | the original hull loader`472B00` consumes each car's own GEOMETRY chunk`80034020`; original body constructor through`469D1E` consumes the corresponding actor RideInfo |
+
+All four event preset RideInfo objects are constructed, including original
+adaptive outputs for the three rivals. Only the player and first rival are
+bound into the paired actor scene. `EventRideTests` owns their type IDs,
+performance vectors, visual seed fields, physical/category/rating assertions,
+opaque slot-binding hashes and complete control-frame pins. No tuning vector
+is assigned by Python and no preset, part-selection, rating or adaptive helper
+is replaced. Slots are processed by the original full preset loop, including
+its special paint/vinyl/decal/shared-part branches and enabled-part updates.
+The report hashes their resulting binding words without interpreting every
+slot as the same kind of catalog pointer. Rendering/compositing is not tested.
+
+The original caller's visual seed fields are distinct from the world/global
+RNG state. The tested adaptive path runs with the declared original state;
+its vectors are conditional outputs, not a universal event tuning table.
+Config copying and lazy rebuild may relocate internal physical-data pointers,
+so a raw physical-memory hash before copy need not equal one after copy.
+The native actor stores bind actor+10 to config+10 and actor+20 to RideInfo+60;
+the actor ID comes from that same config. Actual rebuilt category and curves
+then feed the existing original planner, cap and driver consumers.
+
+Preset diagnostics required two authenticated Windows pointer-probe imports,
+`IsBadReadPtr` and `IsBadWritePtr`. Their explicit external services check the
+emulator's mapped ranges and access flags; NULL data remains invalid. The
+report records pointer, size and result for every executed probe. Native
+diagnostic formatting remains original code. These services do not choose a
+part, skip a preset branch or supply a physical/AI value. Existing heap and
+external counter fixtures remain disclosed. The new exact execution blocks
+are frozen in `controller293_event_rides_ranges.py`, under the same fail-closed
+instruction and NULL guards. Source checks authenticate the import names and
+IAT entries as well as preset stores, performance stores and actor ownership.
+
+This closes the stock-car substitution for the new paired witness. It does
+not close complete event actor/world construction: only two actors run, body
+spatial registration and physics phases remain outside this oracle, poses and
+resumed clocks are supplied, and flow-stage entry remains conditional. The
+complete new-career/profile/options lifecycle, full field/traffic and actual
+integrated original-game trajectory are still required for full parity.
 
 ## Unmet original and hardware acceptance
 

@@ -16,9 +16,11 @@ from world_body_trace import Image, INPUTS, digest_file, manifest
 from controller293_planner import suite as planner_suite, inputs as planner_inputs
 from controller293_planner_ranges import RANGES as PLANNER_RANGES
 from controller293_scene_ranges import RANGES as SCENE_RANGES
+from controller293_event_rides_ranges import RANGES as RIDE_RANGES
 from controller293_scene import suite as scene_suite
 
-EXTRA_RANGES = STRATEGY_RANGES + PLANNER_RANGES + SCENE_RANGES + [
+EXTRA_RANGES = STRATEGY_RANGES + PLANNER_RANGES + SCENE_RANGES + RIDE_RANGES + [
+    ('actor-config-ride-ownership', 0x425374, 0x42538F),
     ('actor-state-construction', 0x42538F, 0x4253A9),
     ('actor-physical-binding', 0x4255AB, 0x4255CB),
     ('actor-world-binding', 0x425703, 0x42571B),
@@ -42,6 +44,11 @@ EXTRA_RANGES = STRATEGY_RANGES + PLANNER_RANGES + SCENE_RANGES + [
 ]
 
 ASSERTIONS = {
+    0x42537D: ('add', 'edi, 0x10'),
+    0x57C8C8: ('mov', 'dword ptr [0x734588], edi'),
+    0x4B2A5D: ('mov', 'dword ptr [eax + ebx*4 + 0x44c], esi'),
+    0x57F768: ('rep movsd', 'dword ptr es:[edi], dword ptr [esi]'),
+    0x4B6100: ('rep stosd', 'dword ptr es:[edi], eax'),
     0x4257F7: ('mov', 'byte ptr [ebx + 0x4d0], 1'),
     0x57A310: ('mov', 'cl, byte ptr [eax + 0x4d0]'),
     0x57A318: ('je', '0x57a320'),
@@ -138,6 +145,8 @@ ASSERTIONS = {
 }
 
 TABLES = {
+    'IsBadReadPtr-IAT': (0x697198, 0x2D2926),
+    'IsBadWritePtr-IAT': (0x69719C, 0x2D2936),
     'strategy-selection': (0x6C8A50, 0x4623D0),
     'strategy1-cap': (0x6C98E0, 0x44A1F0),
     'strategy2-cap': (0x6C98C0, 0x44A1F0),
@@ -161,6 +170,7 @@ TOOL_FILES = ('controller293_trace.py', 'controller293_native.py', 'controller29
               'controller293_strategy.py', 'controller293_planner.py',
               'controller293_planner_ranges.py',
               'controller293_scene.py', 'controller293_scene_ranges.py', 'event0_trace.py',
+              'controller293_event_rides.py', 'controller293_event_rides_ranges.py',
               'physics256_native.py', 'collision256_trace.py', 'world_body_trace.py')
 
 
@@ -186,6 +196,9 @@ def source(image):
     for name, (at, expected) in TABLES.items():
         if struct.unpack('<I', image.read(at, 4))[0] != expected:
             raise ValueError('source table failed: ' + name)
+    for at, expected in ((0x6D2928, b'IsBadReadPtr\0'), (0x6D2938, b'IsBadWritePtr\0')):
+        if image.read(at, len(expected)) != expected:
+            raise ValueError('external pointer-probe import name changed')
     # Provenance hashes, not exported retail data. Includes actual curve samples,
     # descriptors, control gains, angle table, and source-backed startup inputs.
     data_spans = []
@@ -253,9 +266,10 @@ def main():
                       strategy=strategy_suite(image),
                       planner=planner_suite(image, planner_inputs(root)),
                       scene=scene_suite(image, planner_inputs(root)),
+                      event_scene=scene_suite(image, planner_inputs(root), event_rides=True),
                       versions=dict(capstone=capstone.__version__, unicorn=unicorn.__version__),
                       tool_hashes={n: digest_file(Path(__file__).with_name(n)) for n in TOOL_FILES},
-                      contract='controller293-v4', original_runtime=None,
+                      contract='controller293-v5', original_runtime=None,
                       inherited_cpp_validated=False)
         (out / 'source.txt').write_text(lines, encoding='ascii')
         (out / 'report.json').write_text(json.dumps(report, ensure_ascii=True,
@@ -264,6 +278,7 @@ def main():
         print('PASS: bounded original-x86 controls captured; run controller293_test.py')
         print('PASS: retail-backed original planner, retained action and driver witnesses')
         print('PASS: original event metadata, paired context, history and catch-up witnesses')
+        print('PASS: original event preset/adaptive RideInfo and paired actor bindings')
         print('UNAVAILABLE: actual event0 scene/trajectory, overtake/contact, full parity')
     finally:
         after = manifest(root)

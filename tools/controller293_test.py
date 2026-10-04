@@ -229,7 +229,7 @@ class EvidenceTests(unittest.TestCase):
 
 class PlannerTests(unittest.TestCase):
     def test_original_producers_and_external_services(self):
-        self.assertEqual(REPORT['contract'], 'controller293-v4')
+        self.assertEqual(REPORT['contract'], 'controller293-v5')
         required = ('00442040', '004484F0', '00462070', '00417600',
                     '0057D160', '0057F2B0', '00464860', '0057A1B0',
                     '0057A380', '00472B00', '00469B00', '004620C0',
@@ -347,6 +347,85 @@ class SceneTests(unittest.TestCase):
         raw = json.dumps(frames, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('ascii')
         self.assertEqual(hashlib.sha256(raw).hexdigest(),
                          'f734eb93e4753fb251ca728db31f80eae0596fd9cb7ed440dc7f55df93a27c31')
+
+
+class EventRideTests(unittest.TestCase):
+    def test_native_event_presets_and_adaptive_tuning(self):
+        rides = REPORT['event_scene']['initial']['event']['rides']
+        self.assertEqual([r['car_type'] for r in rides], [14, 7, 9, 6])
+        self.assertEqual([r['levels'] for r in rides], [
+            [1]*11, [3, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1],
+            [2, 1, 2, 1, 1, 0, 1, 1, 1, 1, 1], [0, 1, 0, 0, 1, 3, 1, 1, 1, 0, 0]])
+        self.assertEqual([r['items'] for r in rides], [[0]*11]*4)
+        self.assertEqual([r['category'] for r in rides], [2]*4)
+        self.assertEqual([r['bound_slots'] for r in rides], [48, 46, 39, 37])
+        self.assertEqual([r['physical_sha256'] for r in rides], [
+            '98eb651cfdb1ab25d69022ba74554b84ce7875767ebf36ad91489c369f13cd9c',
+            '32fdc0de42865696be29d8c49440e0b01bef55993c10361d5fc7fc49af3d63c1',
+            '14abcaf92a808ca3ed0928afaffd93e9c4658e291f260d36542579443f078fc4',
+            'fa3a2126dfa59a8e1e6cfc337b45060e8cae3f18f9c8cd3a01627bcd31ffdc14'])
+        self.assertEqual([r['slot_binding_sha256'] for r in rides], [
+            'cbbc5a52e6404a8f971ab8f346e3c4a06b59d2569761a94bc6519940145c41da',
+            '9da5f8a07571c2288c38279340b7861b2f216ee279958f5ffaa4ec08bbdc4f5e',
+            '474cfc1ce83cc9b2baf209c7df1dbe33039045b50e5e6c2463eb90968f53f445',
+            '1583e9454276290df63bf83f28f950ac8e49949d34bb5907ba2aa04f7ac9301e'])
+        for i, ride in enumerate(rides):
+            self.assertEqual(ride['visual_seeds'], [0x530B82B0+i, 0xBD97DD90+i])
+            self.assertLess(abs(ride['rating']-rides[0]['rating']), 5.0)
+
+    def test_original_actor_ride_binding_and_consumption(self):
+        scene = REPORT['event_scene']
+        self.assertTrue(scene['resolved_event_rides'])
+        self.assertFalse(scene['actual_event0_roster'])
+        self.assertFalse(scene['physical_integration'])
+        for binding, car, identity in zip(scene['initial']['actor_bindings'], (14, 7), (0, 100)):
+            self.assertEqual(binding['id'], identity)
+            self.assertEqual(binding['ride'], binding['config']+0x10)
+            self.assertEqual(binding['physical'], binding['ride']+0x60)
+            self.assertEqual(binding['resolved']['car_type'], car)
+            self.assertEqual(binding['resolved']['category'], 2)
+            self.assertGreater(binding['bounds'][1], binding['bounds'][0])
+        self.assertEqual([b['resolved']['levels'] for b in scene['initial']['actor_bindings']],
+                         [r['levels'] for r in scene['initial']['event']['rides'][:2]])
+        for at in ('004B25B0', '0057C8B0', '004B2640', '004B26F0', '004B6100',
+                   '004B40A0', '0057F700', '0057F768', '005809C0', '004323F0',
+                   '00425598', '004255AB', '004255C8', '00472B00', '00469B00',
+                   '0045B050', '0045E970'):
+            self.assertIn(at, scene['visited'])
+        frames = scene['frames']
+        raw = json.dumps(frames, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('ascii')
+        self.assertEqual(hashlib.sha256(raw).hexdigest(),
+                         '12a1d98c6dd6372b1d28434f88d6966ba3aada211d052272b6a8af7f1063eabe')
+        self.assertNotEqual(frames[0]['result']['desired_speed'],
+                            REPORT['scene']['frames'][0]['result']['desired_speed'])
+
+    def test_external_pointer_services_are_disclosed_and_bounded(self):
+        hooks = REPORT['event_scene']['hooks']
+        self.assertEqual({h['hook'] for h in hooks},
+            {'external_heap_allocate', 'external_heap_release', 'external_QueryPerformanceCounter',
+             'external_IsBadReadPtr'})
+        probes = [h for h in hooks if h['hook'] == 'external_IsBadReadPtr']
+        self.assertTrue(probes)
+        for row in probes:
+            self.assertEqual(row['bytes'], 1)
+            self.assertFalse(row['bad_pointer'])
+            self.assertGreaterEqual(row['pointer'], 4096)
+
+    def test_pointer_service_rejects_null_unmapped_and_readonly_writes(self):
+        from controller293_event_rides import pointer_probe
+        m = HarnessTests.machine()
+        m.uc.mem_map(0x2000000, 4096, 1)
+        for pointer, write, expected in ((0, False, 1), (0xDEADBEEF, False, 1),
+                                         (0x2000000, True, 1), (0x2000000, False, 0),
+                                         (STOP+0x100, True, 0)):
+            m.reg('esp', 0x11F0000)
+            m.put(0x11F0000, STOP)
+            m.put(0x11F0004, pointer)
+            m.put(0x11F0008, 1)
+            m.events.append({})
+            pointer_probe(m, write)
+            self.assertEqual(m.reg('eax'), expected)
+            self.assertEqual(m.events[-1]['bad_pointer'], bool(expected))
 
 
 class HarnessTests(unittest.TestCase):

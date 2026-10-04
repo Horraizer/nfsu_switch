@@ -11,9 +11,12 @@ from physics256_native import Machine, ACTOR, RIDE, PHYSICS, STATUS, bits
 from controller293_strategy import CONTROLLER, ACTION
 from controller293_planner_ranges import RANGES
 from controller293_scene_ranges import RANGES as SCENE_RANGES
+from controller293_event_rides_ranges import RANGES as RIDE_RANGES
 from world_body_trace import chunks, jdlz, digest_file, INPUTS
 
 RETAIL = {
+    'Cars/INTEGRA/GEOMETRY.BIN': (5780304, 'C5E4808EBBEE5A5DD990A97E1BC035753042F55CFCC46678179F7441E49BFFB4'),
+    'Cars/ECLIPSE/GEOMETRY.BIN': (5923024, 'F28688371D708189E83B152168486618D29436D9A109B54E63E0C40D908084BF'),
     'FrontEnd/FrontB.lzc': (4182578, '76F368D5E5E30F96A8182BF457DBA4491395E075C3F336D86A32012B56E16F90'),
     'Tracks/TRACKB1003.lzc': INPUTS['Tracks/TRACKB1003.lzc'],
     'GLOBAL/GLOBALB.BUN': (2361176, '39DF38FAC2BE7CA0F0D0A92E0113CAAEDA5B1C60E14436C612B3D0874AFC8DB9'),
@@ -48,7 +51,7 @@ class PlannerMachine(Machine):
         import capstone
         md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
         self.instructions = {}
-        for name, start, end in RANGES + SCENE_RANGES:
+        for name, start, end in RANGES + SCENE_RANGES + RIDE_RANGES:
             rows = list(md.disasm(image.read(start, end - start), start))
             if sum(row.size for row in rows) != end - start:
                 raise ValueError('incomplete planner block: ' + name)
@@ -75,7 +78,7 @@ class ActorController:
     constructors produce those. pose() accepts exogenous retail-route samples;
     step() retains controller, action, driver and RNG state between calls.
     """
-    def __init__(self, image, retail, point_index=30, speed=20.0, event_seed=None):
+    def __init__(self, image, retail, point_index=30, speed=20.0, event_seed=None, event_rides=False):
         self.m = m = PlannerMachine(image)
         m.run(0x689FD0)
         m.run(0x689FF0)
@@ -120,22 +123,37 @@ class ActorController:
         if event_seed is not None:
             from controller293_scene import setup_event
             self.event = setup_event(m, retail, event_seed)
-        m.put(0x734588, GLOBAL + 1736752 - 18 * 0xC90)
-        m.run(0x417600, edx=RIDE)
-        m.run(0x57D160, (0, 0, 0), edx=RIDE, eax=18)
-        m.run(0x57F2B0, (0,), edi=RIDE, budget=3000000)
+        ride = RIDE
+        if event_rides:
+            if self.event is None:
+                raise ValueError('event rides require explicit event seed')
+            from controller293_event_rides import construct
+            from controller293_scene import configurations
+            sources, self.event['rides'] = construct(m, retail, self.event)
+            self.event['configs'] = configurations(m, self.event['setup'], sources)
+            ride = self.event['configs'][1]['address']+0x10
+        else:
+            m.put(0x734588, GLOBAL + 1736752 - 18 * 0xC90)
+            m.run(0x417600, edx=RIDE)
+            m.run(0x57D160, (0, 0, 0), edx=RIDE, eax=18)
+            m.run(0x57F2B0, (0,), edi=RIDE, budget=3000000)
+        self.ride = ride
         # Explicit actor scene: normal mode, role2, driver/physics selector3,
         # grounded, lap0, no player/rival catch-up target, RNG initial state0.
-        m.put(ACTOR + 0x10, RIDE)
-        m.put(ACTOR + 0x20, RIDE + 0x60)  # original store4255C8
-        m.run(0x464860, (RIDE + 0x60,), eax=ACTOR + 0x40,
+        m.put(ACTOR + 0x10, ride)
+        m.put(ACTOR + 0x20, ride + 0x60)  # original store4255C8
+        m.run(0x464860, (ride + 0x60,), eax=ACTOR + 0x40,
               ecx=ACTOR + 0x540, edx=ACTOR + 0x828)
         m.put(ACTOR + 0x14, 0x1152000)
         m.put(0x1152004, 2)
         if self.event is not None:
             from controller293_scene import configurations
-            self.event['configs'] = configurations(m, self.event['setup'])
+            if not event_rides:
+                self.event['configs'] = configurations(m, self.event['setup'])
             m.put(ACTOR + 0x14, self.event['configs'][1]['address'])
+        if event_rides:
+            m.run(0x425598, end=0x4255A1, eax=m.get(ACTOR+0x14), ebx=ACTOR)
+            m.run(0x4255AB, end=0x4255CB, ebx=ACTOR, esi=ride)
         m.put(ACTOR + 0x1C, RACE)
         m.put(ACTOR + 0x24, 3)
         m.put(ACTOR + 0x28, 3)
@@ -172,8 +190,12 @@ class ActorController:
         m.run(0x57A380, esi=m.get(m.get(ACTOR + 0x82C) + 0x20))
         # Original hull loader and constructor prefix including local bounds.
         # Stops before spatial world registration, which is outside this scene.
-        m.uc.mem_write(GEOMETRY, retail['Cars/240SX/GEOMETRY.BIN'])
-        m.run(0x472B00, (GEOMETRY + 4778496,))
+        if event_rides:
+            from controller293_event_rides import hull
+            hull(m, retail, 'ECLIPSE', GEOMETRY)
+        else:
+            m.uc.mem_write(GEOMETRY, retail['Cars/240SX/GEOMETRY.BIN'])
+            m.run(0x472B00, (GEOMETRY + 4778496,))
         m.put(0x736070, 0x1195000)
         m.put(0x1195000, 32)
         m.put(0x1195004, 0x1195100)
