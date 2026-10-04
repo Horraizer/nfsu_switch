@@ -252,6 +252,9 @@ struct StockFrame {
     // input that was skipped, which is about no one file - in the order the
     // viewer prints the same problems.
     std::vector<std::string> issues;
+    // How many lamp position-name hashes the runtime resolution rewrote to
+    // resting-state records (alias_stock_lamp_textures, issue #315).
+    std::size_t lamp_texture_aliases = 0;
     // The viewer's exit status 3 condition, negated: true when no input
     // reported any issue.
     bool inputs_ok = false;

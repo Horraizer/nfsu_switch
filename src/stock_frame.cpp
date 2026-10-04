@@ -485,6 +485,26 @@ static bool prepare_stock_frame_impl(
             }
         }
 
+        // The runtime lamp-name resolution (issue #315): every loaded
+        // texture source is parsed by now, so the resting-state rewrite
+        // below sees exactly the hashes the decode will find.
+        {
+            std::set<std::uint32_t> present;
+            for (const TextureRecord& texture : frame.car_pack.textures) {
+                present.insert(texture.hash);
+            }
+            for (const TexturePackSet& set : frame.shared_sets) {
+                for (const TexturePack& pack : set.packs) {
+                    for (const TextureRecord& texture : pack.textures) {
+                        present.insert(texture.hash);
+                    }
+                }
+            }
+            frame.lamp_texture_aliases =
+                alias_stock_lamp_textures(present, request.car_type_name,
+                                          frame.car_geometry);
+        }
+
         // "error: no valid meshes to render", exit 2.
         std::size_t valid_meshes = frame.car_geometry.valid_mesh_count();
         for (const GeometryReport& source : frame.stock_geometry) {

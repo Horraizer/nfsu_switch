@@ -563,6 +563,46 @@ drive of its own handling record, and the event0 player car's race sequence
 through the Switch race's load path; it also covers A/B/A reload isolation,
 absent-pack and invalid-name refusals, and the tuned-preset rule.
 
+### Runtime lamp and window name resolution (issue #315 round 3)
+
+Two name systems the executable resolves at draw time, recovered from
+`speed.exe` and the retail packs:
+
+- **Lamps.** The stock lamp meshes reference per-position texture names,
+  `<car>_KIT00_<lamp><position>` with lamp `HEADLIGHT` or `BRAKELIGHT` and
+  position `_LEFT`, `_RIGHT`, `_CENTRE`, `_GLASS_LEFT`, `_GLASS_RIGHT` or
+  `_GLASS_CENTRE`. The suffix strings sit at 0x006BA0A4..0x006BA120, and
+  the builder at 0x00580E40..0x00580F70 hashes them onto the car object's
+  lamp slots at +0x3E0..+0x408. Every retail car pack ships the state
+  records `<base>_OFF`, `_ON`, `_DAMAGE0`, `_GLASS_OFF`, `_GLASS_ON` and
+  `_GLASS_DAMAGE0`; nine packs (GOLF, NEON, TIBURON, SENTRA, 240SX, SKYLINE
+  among them) also ship records under the position names themselves. The
+  lamp state controller at 0x00583479 onward picks the state per lamp from
+  the world light level and braking. A static scene shows the resting
+  state, so `nfsu::alias_stock_lamp_textures` rewrites a position-name hash
+  to `<base>_OFF` / `<base>_GLASS_OFF`, but only when no loaded source
+  holds the position record and one holds the state record - the nine
+  cars with in-pack position records, and the 240SX frame pins with them,
+  pass through untouched.
+- **Windows.** The constructor at 0x0056A7D6..0x0056A804 installs twelve
+  window-slot name hashes in the car object; the first six are the
+  `WINDOW_FRONT`-family names the stock alias already mapped, and the
+  further six (0x90E09671, 0x13EE21F2, 0xD689A31B, 0xB8F3415C, 0x2433DF4E,
+  0xF95D432F, names unknown - no texture record with any of them exists
+  anywhere in the installation) appear in the 350Z and CELICA base meshes.
+  The rewrite at 0x0056CA60..0x0056CAC2 replaces every slot's hash with an
+  entry of the tables at 0x006F1B48 and 0x006F1B58 - `WINDOW` and
+  `WINDOW2` plus their `_DAMAGE0..2` variants, selected per window by a
+  two-bit damage state. The static undamaged binding is `WINDOW`, which
+  `alias_stock_window_textures` now maps all twelve names to, as it mapped
+  the first six since issue #223.
+
+`StockFrame::lamp_texture_aliases` reports how many hashes the lamp
+resolution rewrote, and the per-car regression asserts that no drawable
+material group of any racer remains without a resolved texture (round 3's
+checkerboard defect: SUPRA 9, CELICA 25, ECLIPSE 10 drawable groups drew
+the diagnostic checker at the reviewed head; all twenty are zero now).
+
 ### Still open after this slice
 
 - The pixel size itself: `[view+0xC]` in 0x545180 was not traced to a

@@ -74,27 +74,37 @@ const char* const kRetailPlayables[20] = {
 // installation the fixture verifies; a change that moves any one of them
 // fails its row. The 240SX frame row is kStock240sxPaintedFrameSha256 and is
 // additionally compared with that constant below.
+//
+// Round 3 re-pinned fourteen frame rows (FOCUS, MIATA, CIVIC, PEUGOT,
+// CELICA, ECLIPSE, RX7, SUPRA, S2000, RSX, IMPREZA, LANCER, INTEGRA, 350Z):
+// their lamp and window material groups had drawn the diagnostic checker
+// since the first pin, and the runtime lamp/window name resolution
+// (alias_stock_lamp_textures, alias_stock_window_textures) now binds their
+// real textures. The six cars whose packs ship position-name lamp records -
+// GOLF, NEON, TIBURON, SENTRA, 240SX, SKYLINE - and every drive row are
+// byte-identical to the first pin.
 const char* const kRetailFramePins[20] = {
     "54E769A9AA2D44C97470F3A6A9C41A01CA93BBC65121D75AECB8504F0ADA1204",
-    "EB770970A3659BC0C729AA3C032E88D877CA13810816B292A660AF9A51C16E61",
-    "69F105C3D059ABE87911D30FE55ADFC88EA6E32AB9748A42C269B9A987BFCD6E",
+    "51CD015A670CE0DB1A48025E0C5A48CABA8B9972679498BDA77EE6336BB6A463",
+    "818A71F95DA92E819431AD2C425C8574A94556DA474EA24961C3296DF137AE78",
     "FAF13BE7AA5E7295EB00458B306984904C03014AE9500FBE24C0285320282FBD",
-    "F5B19CE84C53FCC387DFA5849166733B0DA4BEE523769A271487EEAD53937A0D",
-    "FF5765260B5F8A3511BFF5F65B8FCA58C12D31A9E7B4446B93006F73F59B47A4",
-    "08E6488827C6BB2DBD8F3BFEE87F678BA20362F14A042E331D74AD3BA25F08E4",
-    "498ED64C5BB6E6DFB8E3F74542E96A5CE68354825C6F14A20EB011776D2800DA",
-    "F67ED1F25EC2AD40A3CA01F115F4123356B82B86A8CB660BC96BD0ADB97CAFE0",
-    "5DEB13322973381F74622EF8E357D7EA01D939D89BA08E5A907AD25CC255ABD6",
-    "1EA051742BE2C547D0226CE2EFABB0A8F79662DD8411288B1DAAED15EEF6A821",
-    "4396BA92C7C4FACBFA52E495562E602402BF97BA9DDFFDE486E63DEC889A51EA",
-    "C2BB32653E54AD3DC1725B5F466AC120D8CC7BC852AA11BB09743C95D70410E7",
-    "63B8BF0774835ED5E605A36C7528BD3EC68BFCB8956967C14C7752F5142E3C87",
-    "0F1E524CC9E2568DA859AD97E874D37DA277D7A16BD65794F08CB4FB8B925DEC",
+    "91F751EE952BCE8C02F6E90DAD4F2B70659AE93A758890626946376BF6DE2445",
+    "155B76F2BEB01295EE115ADA43BE0EAAB00EAE36F43AA950732DB89F0D2F6F60",
+    "47184762A747E80FD3C24E12865A56CEE3E4A9B9E7F7769DC658FEC207A6C577",
+    "8C118F9E4E0524FAFC953CAB7EAD3F30629E10FA17A97F5FEBAB46FBA2BF36A8",
+    "E73DFBDF2F64D749AEC6B9DCF17274C3ED103D932F3FD2A08EF85AD131306C72",
+    "FA7E650CD19136031B9FCEE5FCCD7C4C5F998F5F507422A0BFF7E2133F51BB0E",
+    "C634998DD6DCFE97AAFE3C0DEAD0F24685032692CD94CD0DA2DBD52FBA4831AA",
+    "7CBD1B76768889090FBB5E7E490876F1828C1E9C874AC748A54F40A61125456D",
+    "91DE7A8DA265B0E93961EBC33C7E712D8AA70136C2C87646C90191E31AE93E02",
+    "7B7FA7D3657E5AE26F03E1AD785D09F0EA98B91A46F18E8472AD9DA89D4057FB",
+    "804488AAF847A5167EF9D1965B44560E90A6EEF4FDC3C73CD54A03EAD0BA9515",
     "DE1A9248FDF1F586A5888026A7A5A9AF0840642C6192788092BE6CF4D504B3B4",
-    "A3B592D917A0045CEC9D9BE21C4F773A2E82EE560F27C974DBE0F9CF2BCEE63A",
+    "315562DE7E65378AA9A702A5D5562B59898DE92D72E73A8AE66E9846866D3533",
     "5BBB4ACDED09D854F58B4CF37801703F283443613FDCDF1F51B76F75EF76C36B",
     "FE7506F173A871A208F94451DFC71A3F3AEBF1EBE677C28AF2B73AD9CEA3AEE8",
-    "AF86D7FCA20E6DE052BA19EE9AB4B6A1C968B9532EDBFE224966DF6726C839A1"};
+    "AF86D7FCA20E6DE052BA19EE9AB4B6A1C968B9532EDBFE224966DF6726C839A1",
+};
 
 const char* const kRetailDrivePins[20] = {
     "FE6D3BDAD76BDCB359C3DB199821AC38DE062A223BE7F0F1869801861E0378A2",
@@ -116,7 +126,8 @@ const char* const kRetailDrivePins[20] = {
     "7F4D8C4C8A45DD4BCF0181D2EEEC67A9F474E373793A1D0648D9A1D50CBF21DA",
     "0121CFFB4FBC8F0AEABF91A47EC9EB0F3EABF3654B782DF8F92D505D53F13377",
     "ACCCDF91F45A3EDCA11758FD173CB0F52AA2BA73A8076D495C528525C054A323",
-    "E62CEA9DBC240B5AACB312D523CA7C7B27B9706286AF8FF4F250A9C4C1054F09"};
+    "E62CEA9DBC240B5AACB312D523CA7C7B27B9706286AF8FF4F250A9C4C1054F09",
+};
 
 // The event0 player car's own 900-step sequence through the Switch race's
 // load path and RaceRun, pinned with the two arrays above.
@@ -220,6 +231,8 @@ struct CarFrameResult {
     std::size_t drawn = 0;
     std::size_t fell_back = 0;
     std::size_t instances = 0;
+    std::size_t unresolved_draws = 0;
+    std::size_t lamp_texture_aliases = 0;
     bool inputs_ok = false;
 };
 
@@ -250,6 +263,15 @@ CarFrameResult render_car(const std::filesystem::path& root, const CarAssets& ca
     result.fell_back = frame.report.fell_back;
     result.instances = frame.report.instances;
     result.inputs_ok = frame.inputs_ok;
+    result.lamp_texture_aliases = frame.lamp_texture_aliases;
+    // The reviewer's own probe turned into a gate (issue #315 round 3): a
+    // drawable material group with no resolved texture draws the diagnostic
+    // checker, and no stock car may ship one.
+    for (const PreparedDraw& draw : frame.scene.draws) {
+        if (draw.drawable && draw.index_count && draw.texture == kNoHandle) {
+            ++result.unresolved_draws;
+        }
+    }
     // The shadow of the selected car, from its own pack.
     CarShadowAsset shadow;
     require(prepare_car_shadow(car.car_type_name, inputs, frame.car_pack, shadow, error),
@@ -314,12 +336,15 @@ void retail_checks(const std::filesystem::path& root) {
         require(rendered.drawn >= 20, name + " drew " + std::to_string(rendered.drawn) +
                                            " slots");
         require(rendered.instances > 0, name + " drew no instances");
+        require(rendered.unresolved_draws == 0,
+                name + " has " + std::to_string(rendered.unresolved_draws) +
+                    " drawable material groups with no texture (checker)");
         frames.emplace(name, rendered);
         std::cout << "car-frame " << name << " drawn " << rendered.drawn << " fallback "
                   << rendered.fell_back << " instances " << rendered.instances
+                  << " lamp-aliases " << rendered.lamp_texture_aliases
+                  << " unresolved " << rendered.unresolved_draws
                   << " sha256 " << rendered.tga_sha256 << '\n';
-        require(rendered.tga_sha256 == kRetailFramePins[row],
-                "the painted frame pin of " + name + " moved: " + rendered.tga_sha256);
 
         // The handling record of the same car: its own decode, its own drive,
         // against its pin.
@@ -331,8 +356,26 @@ void retail_checks(const std::filesystem::path& root) {
         const std::string drive = drive_car(spec);
         drive_pins.emplace(name, drive);
         std::cout << "car-drive " << name << " sha256 " << drive << '\n';
-        require(drive == kRetailDrivePins[row],
-                "the proving-ground drive pin of " + name + " moved: " + drive);
+    }
+
+    // Pin checks after the whole inventory ran, so one failing row does not
+    // hide the others.
+    for (std::size_t row = 0; row < names.size(); ++row) {
+        require(frames[names[row]].tga_sha256 == kRetailFramePins[row],
+                "the painted frame pin of " + names[row] +
+                    " moved: " + frames[names[row]].tga_sha256);
+        require(drive_pins[names[row]] == kRetailDrivePins[row],
+                "the proving-ground drive pin of " + names[row] +
+                    " moved: " + drive_pins[names[row]]);
+    }
+    // The presence guard: cars whose packs ship position-name lamp records
+    // - the pinned 240SX among them - must pass through the runtime lamp
+    // resolution untouched, and the reviewer's three must use it.
+    require(frames["240SX"].lamp_texture_aliases == 0,
+            "the 240SX lamp resolution rewrote in-pack position records");
+    for (const char* name : {"CELICA", "SUPRA", "ECLIPSE"}) {
+        require(frames[name].lamp_texture_aliases > 0,
+                std::string(name) + " did not resolve its lamp state records");
     }
 
     // The baseline car is unchanged by the selection layer: the painted 240SX
