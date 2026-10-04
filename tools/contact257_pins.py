@@ -63,6 +63,11 @@ def generate(report):
             'true' if bounds else 'false',bounds_text,
             'true' if case.get('record_gate_before') else 'false',
             vector(case['witness']['witness_a']),vector(case['witness']['witness_b'])))
+    lines+=['};','static const RefreshPin kRefreshPins[] = {']
+    for case in report['native']['refresh_cases']:
+        lines.append('    {"%s", %s, %s, %s, %s},'%(case['name'],
+            body(case['before']),number(case['raw_mass']),number(case['speed_limit']),
+            body(case['after'])))
     return '\n'.join(lines+['};',''])
 
 

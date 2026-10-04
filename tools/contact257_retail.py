@@ -42,6 +42,44 @@ def inputs(root):
     return data
 
 
+def refresh_cases(image, native):
+    """Original explicit refresh phase; no scheduler/publication placement claim."""
+    cases=[]
+    for name,mass,limit,momentum,angular,alternate in (
+        ('refresh_normal',2.,200.,(10.,20.,30.),(2.,3.,4.),False),
+        ('refresh_speed_clamped',2.,200.,(900.,1200.,0.),(2.,3.,4.),False),
+        ('refresh_low_mass',.5,200.,(900.,1200.,0.),(2.,3.,4.),False),
+        ('refresh_mass_boundary',.7,200.,(900.,1200.,0.),(2.,3.,4.),False),
+        ('refresh_mass_above',.7000000476837158,200.,(900.,1200.,0.),(2.,3.,4.),False),
+        ('refresh_angular_clamped',2.,200.,(10.,20.,30.),(300.,400.,0.),False),
+        ('refresh_alternate_tensor',2.,200.,(10.,20.,30.),(2.,3.,4.),True),
+        ('refresh_rotated_tensor',2.,200.,(10.,20.,30.),(2.,3.,4.),True)):
+        m=native.fixture(image,(3.,.7,0.),(0.,0.,0.),(0.,0.,0.),mass=mass)
+        rigid=native.RIGID_A
+        m.put(rigid+0x144,mass,'f');m.put(0x6F0904,limit,'f')
+        native.vector(m,rigid+0x70,momentum);native.vector(m,rigid+0x80,angular)
+        native.matrix(m,rigid+0x190)
+        if alternate:
+            m.put(rigid+0x138,1)
+            for offset,value in ((0,2.),(0x14,3.),(0x28,4.)):
+                m.put(rigid+0x190+offset,value,'f')
+        if name=='refresh_rotated_tensor':
+            for offset,value in ((0,0.),(4,1.),(0x10,-1.),(0x14,0.)):
+                m.put(rigid+0x30+offset,value,'f')
+            for offset,value in ((4,.25),(0x10,.25),(8,.125),(0x20,.125),
+                                 (0x18,.5),(0x24,.5)):
+                m.put(rigid+0x190+offset,value,'f')
+        before=native.snapshot(m)[0]
+        def world_tensor(x):
+            at=x.get(x.reg('esp')+12)
+            before['inverse_inertia']=[x.get(at+i*4,'f') for i in range(16)]
+        m.observers[0x5ABDAF]=world_tensor
+        m.run(0x585810,ecx=rigid,budget=3000000)
+        cases.append(dict(name=name,before=before,raw_mass=mass,speed_limit=limit,
+            after=native.snapshot(m)[0],executed=m.executed,hooks=m.events))
+    return cases
+
+
 def prepare(m, native, data):
     # SEH fs:[0] is the only permitted null-page access. No null actor field
     # is made readable by this environment prerequisite.

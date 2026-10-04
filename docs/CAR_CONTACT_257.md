@@ -126,6 +126,52 @@ and Release retail C++ gates, plus the Switch shader/NRO/object census gates.
 Switch compilation/census proves portability of the compiled core; desktop
 fixtures do not prove execution on Switch hardware.
 
+## Explicit velocity cache phase
+
+`refresh_car_contact_velocity` ports the velocity and angular velocity portion
+of original `00585810..005859E4`. The caller supplies raw mass, the mutable
+speed limit and the already selected and rotated world inverse inertia tensor.
+The speed clamp can alter linear momentum; the angular clamp alters the cache
+without rescaling angular momentum. Raw mass is compared with the original
+double boundary, rather than a rounded float boundary. Pose and collision state
+are preserved. Unsupported/nonfinite inputs refuse all mutation.
+
+`nfsu_car_contact_tests` compares this explicit operation with authenticated
+original refresh execution, including the raw-mass boundary, alternate tensor,
+nonidentity rotation and off-diagonal tensor. The generated refresh pins come
+from `tools/contact257_trace.py` and `tools/contact257_pins.py`. This operation
+does not choose a scheduler phase, transform local inertia, update force or
+orientation caches, notify a controller, or publish an actor/race snapshot.
+`resolve_prepared_car_contact` still leaves velocity caches and pose unchanged.
+
+## Controlled original queued episode
+
+`tools/contact257_episode.py` executes original full collision-body and driver
+constructors, selector-3 physics construction, retail track-grid loading,
+registered-pair scanning, job creation, record creation and queued response.
+Its cases assert a head-on, offset and glancing response, a separating pair
+without a current hit, and a distant pair without admission. Reports preserve
+ordered applications, geometry, records, cache refresh and controller
+notification boundaries, including resulting actor velocity publication.
+
+Run from the assigned worktree with the same pinned reference tools and own
+Python dependencies used above, choosing a fresh output directory each time:
+
+```text
+python -B tools/contact257_episode.py --reference-tools build/contact257-reference --root <retail-root> --out build/contact257-episode-r1
+```
+
+This is an explicit fixture: caller poses/state/config, two-body pool capacity,
+an empty optional region list, a bounded world-constructor list prefix, forced
+job scheduling and zero-QPC services are supplied. The authenticated
+`DSOUND.dll` ordinal-1 import is supplied an unavailable-driver result; original
+manager initialization performs its own disabled-service fallback. The original
+feedback tail remains omitted. The complete actor/world ownership constructors,
+live scheduler, successful audio mode and production adapter are not established
+by this witness. Retail files remain read-only and complete before/after
+manifests must match. Original instruction bytes are checked against the pinned
+executable throughout execution. Failed/incomplete cases produce no report.
+
 ## Closed integration gates and remaining acceptance
 
 No authenticated live-car admission/cadence or final kinematic publication
@@ -143,7 +189,8 @@ Before production integration, capture a correlated original contact and matched
 no-contact episode with real body/shape identities, hulls, pair admission/order,
 preparation, callback effects and the subsequent refresh/publication phase.
 Then implement the necessary unsupported callbacks and real prepared-pair
-adapter. Final velocity, yaw and integrated pose are still unavailable: the
-core modifies momenta and collision state while keeping raw velocity caches
-and positions unchanged. Real-race acceptance, Switch hardware determinism and
+adapter. The prepared solve modifies momenta and collision state; the explicit
+refresh can update velocity caches, but final actor velocity, yaw and integrated
+pose require the original notification/publication and scheduler contract.
+Real-race acceptance, Switch hardware determinism and
 owner event0 acceptance remain open on #257.

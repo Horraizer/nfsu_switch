@@ -22,6 +22,44 @@ bool valid(const ContactBody& b) noexcept {
         && finite(b.linear_momentum) && finite(b.angular_momentum);
 }
 }
+bool refresh_car_contact_velocity(ContactBody& body, float raw_mass,
+                                  float speed_limit) noexcept {
+    if (!valid(body) || !std::isfinite(raw_mass) || raw_mass <= 0
+        || !std::isfinite(speed_limit) || speed_limit < 0) return false;
+    for (const auto& row:body.inverse_inertia) if (!finite(row)) return false;
+    ContactBody next=body;
+    for(unsigned i=0;i<3;++i) next.cached_velocity[i]=next.linear_momentum[i]*next.inverse_mass;
+    const auto norm=[](const ContactVector& v) {
+        const float x=v[0]*v[0],y=v[1]*v[1],z=v[2]*v[2];
+        return static_cast<float>(det_sqrt(static_cast<double>((x+y)+z)));
+    };
+    const float speed=norm(next.cached_velocity);
+    if(!std::isfinite(speed)) return false;
+    // Original compares a float raw mass against the double constant.
+    if(speed>speed_limit && static_cast<double>(raw_mass)>0.7) {
+        const float scale=speed_limit/speed;
+        for(unsigned i=0;i<3;++i) {
+            next.linear_momentum[i]*=scale;
+            next.cached_velocity[i]=next.linear_momentum[i]*next.inverse_mass;
+        }
+    }
+    for(unsigned i=0;i<3;++i) {
+        const float x=next.angular_momentum[0]*next.inverse_inertia[0][i];
+        const float y=next.angular_momentum[1]*next.inverse_inertia[1][i];
+        const float z=next.angular_momentum[2]*next.inverse_inertia[2][i];
+        next.cached_angular_velocity[i]=(x+y)+z;
+    }
+    const float spin=norm(next.cached_angular_velocity);
+    if(!std::isfinite(spin)) return false;
+    if(spin>250.0F) {
+        const float scale=250.0F/spin;
+        for(float& component:next.cached_angular_velocity) component*=scale;
+    }
+    if(!finite(next.cached_velocity)||!finite(next.cached_angular_velocity)
+        || !finite(next.linear_momentum)) return false;
+    body=next;
+    return true;
+}
 bool prepare_car_contact_geometry(const ContactVector& witness_a,
     const ContactVector& witness_b, const ContactVector& position_a,
     const ContactVector& position_b, ContactGeometry& geometry) noexcept {

@@ -17,6 +17,12 @@ struct RecordPin {
     ContactVector current,after;
     float after_sum;
 };
+struct RefreshPin {
+    const char* name;
+    ContactBody before;
+    float raw_mass,speed_limit;
+    ContactBody after;
+};
 struct PairPin {
     const char* name;
     ContactBody a,b;
@@ -50,6 +56,17 @@ void check(bool pass,const char* name) {
 }
 int main() {
     using namespace nfsu;
+    for(const auto& p:kRefreshPins) {
+        auto body=p.before;
+        check(refresh_car_contact_velocity(body,p.raw_mass,p.speed_limit),p.name);
+        check(same_boundary(body,p.after),p.name);
+        auto repeated=p.before;
+        check(refresh_car_contact_velocity(repeated,p.raw_mass,p.speed_limit)
+              &&same_boundary(body,repeated),"explicit refresh repeat");
+        auto invalid=p.before;const auto before=invalid;
+        check(!refresh_car_contact_velocity(invalid,p.raw_mass,-1)
+              &&same_boundary(invalid,before),"invalid refresh transactional");
+    }
     for(const auto& p:kApplicationPins) {
         auto b=p.before;
         check(apply_car_contact_impulse(b,p.impulse,p.arm),p.name);

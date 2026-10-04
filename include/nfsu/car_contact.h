@@ -42,6 +42,12 @@ bool apply_car_contact_impulse(ContactBody& body, const ContactVector& impulse,
 bool apply_contact_pair(ContactBody& a, ContactBody& b,
                         const ContactVector& impulse_a, const ContactVector& arm_a,
                         const ContactVector& impulse_b, const ContactVector& arm_b) noexcept;
+// Explicit cache phase from 00585810..005859E4. The caller supplies the
+// original selected, rotated world inverse inertia in body.inverse_inertia,
+// raw mass and mutable speed limit. This does not choose scheduler placement,
+// integrate a pose or publish an actor/race snapshot.
+bool refresh_car_contact_velocity(ContactBody& body, float raw_mass,
+                                  float speed_limit) noexcept;
 // Prepared geometry response calculation only, through original 0046C3DB.
 // Normal/point must come from authenticated preparation; distant pairs are
 // deliberately NOT rejected here, just as original forced solver entry is not.
