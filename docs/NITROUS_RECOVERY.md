@@ -1,9 +1,10 @@
 # Nitrous runtime recovery for issue 314
 
-This is a reproducible recovery checkpoint at base
-`ec21749671603a1505a63148feb3806d0a1c5059`. It changes no vehicle input,
-dynamics, race controller, HUD readiness, audio or effects. Issue #314 remains
-open: bounded executable witnesses are not an integrated event0 race.
+This branch supplies a portable resource, torque and enabled controls contract
+from authenticated original consumers. Issue #314 remains open: no production
+event0 caller supplies this contract yet. RaceRun continues to use the existing
+diagnostic controls and vehicle path. HUD readiness, audio and effects remain
+pending their original and hardware evidence.
 
 ## Authenticated execution
 
@@ -81,37 +82,106 @@ meaning are not authenticated here. The legacy consumer at `0x004755E0`
 uses engine `+0x194`, whereas the live engine uses `+0x84`. Applying a legacy
 formula to the live object without tracing that bridge is not demonstrated.
 
-## Remaining original and integration evidence
+## Dispatcher and lifecycle continuation
 
 The input dispatcher calls the resource start at `0x00431C48` and the release
 stop at `0x00431CB1`. The start is suppressed by `0x0041F600` and
 `0x0042AB30`, then by availability `0x00431900`. The suppression helpers read
-mode bytes and global overrides. They are not speed/RPM/gear gates in these
-bounded instructions. This does not exclude restrictions earlier in the
-input dispatcher or elsewhere in the engine.
+mode bytes and global overrides. There is no speed/RPM/gear predicate in
+this executed nitrous branch. This does not exclude restrictions in callers
+or elsewhere in the engine.
+
+`tools/nitrous314_lifecycle.py` executes dispatcher entry `0x00431960` for
+the IDs selected by tables `0x00431CC0` and `0x00431CF8`. It covers press,
+release, duplicate press, empty resource, missing car and each suppression
+predicate. Its explicit mode context takes the original no-effect branch
+and disables the sound flag; no effect or sound call is stubbed.
+
+The tool executes world-clock update `0x00585E00`: zero world delta does
+not advance `0x0073AD34`. It executes constructor `0x00464860` through its
+resource-clearing prefix, then separately executes the resource initializer.
+Wheel-transform and intervening reset setup are omitted and identified in
+the report. Existing initialized charge survives the initializer; a freshly
+cleared resource initializes full.
+
+Authenticated retry dispatch gives `RC_RESTART_RACE` message8, route
+`0x00422BD4`, teardown `0x00422130` and reload `0x00421F00`, whose call at
+`0x00421FC7` reaches actor instantiation `0x00422A70`. The constructor calls
+reset `0x00464C80` after clearing the resource. This is an authenticated
+static call chain and executed fresh-resource operation, not execution of
+the complete world teardown/reload. Car reset's existing-object initializer
+preserves charge.
+
+Finish consumer `0x0042C1F0` is executed in an explicit nonselected-place
+context: first finish latches its world frame and stops the resource,
+committing elapsed consumption; later calls return without consuming again.
+Reaching it through the complete event0 finish producer remains pending.
+
+```text
+python tools/nitrous314_lifecycle.py --root "E:/Games/nfs/Need For Speed - Underground/Need For Speed Underground" --out build/nitrous314-lifecycle01
+```
+
+## Portable implementation and comparison
+
+`include/nfsu/nitrous.h` and `src/nitrous.cpp` expose resource operations,
+explicit dispatcher context, a read-only snapshot, transition events and
+the live additive torque consumer. Callers supply world ticks, installed
+tuning, the live curve descriptor, activation time and actual mode flags.
+The implementation does not select an event0 value for an untraced global.
+`nfsu_nitrous_tests` pins the recovered numeric curve's byte identity.
+The combined-torque modifier uses authenticated live-consumer constants
+under the original mode/time predicates. Native interpolation just below
+its origin is retained and covered by executable comparisons.
+
+`NitrousControls` in `include/nfsu/nitrous_controls.h` owns the input adapter.
+Owner comment8529 selects L. Enabled configuration removes every L driving
+binding, so pressing it cannot also shift down. Disabled configuration keeps
+the supplied diagnostic table, including default L shift-down. Held, pressed
+and released requests follow the existing slot/connect latch conventions;
+these platform rules are not an original Switch mapping claim. No application
+selects the enabled adapter yet. Changing modes resets the input latch; the
+caller must also perform its appropriate resource lifecycle operation.
+
+`tools/nitrous314_compare.py` launches a fresh portable probe and compares
+output against original instruction execution, including a seeded sequential
+resource exercise and torque across curve/time/mode boundaries. It rejects
+crashes, stderr, empty/incomplete output and stale report directories.
+Pointer-presence and unmapped-ID routing remain lifecycle-tool witnesses:
+the portable resource API has no actor pointer or original event ID.
+
+```text
+python tools/nitrous314_compare.py --root "E:/Games/nfs/Need For Speed - Underground/Need For Speed Underground" --probe build/nfsu_nitrous_tests.exe --out build/nitrous314-compare01
+```
+
+The comparison brackets the retail manifest and authenticates speed.exe.
+Counts and expected states live in executable tests. Run the comparison on
+both default and Release binaries beside the complete repository gates.
+
+## Remaining original and integration evidence
 
 Required before production integration:
 
-- Authenticate the complete event0 input-dispatch entry, input IDs and actor
-  reachability, including pre-GO and finish transitions. These isolated helper
-  contexts cannot authenticate physical controller binding.
+- Authenticate event0 callers of the now-executed dispatcher and actor
+  reachability, including pre-GO and finish transitions.
 - Trace the live engine wiring and the second conditional torque global to
   establish the ordinary event0 setting, rather than assuming its default.
-- Execute original pause, car reset, retry and finish lifecycles with explicit
-  initial state. The initializer's preservation of depleted charge makes a
-  guessed `reset()` refill observably unsafe. Existing recovery explicitly
-  leaves resource reset on introductory retry unknown.
+- Execute complete retry teardown/reconstruction and the finish producer,
+  beyond the bounded operations and static call chain above.
 - Establish any replenishment writer or absence through the complete resource
   lifecycle. No helper tested here replenishes charge during ordinary update.
-- Connect the supported authoritative state to the actual event0 candidate,
-  replay serialization, controls and read-only integration events. Then run
-  default/Release retail gates and Switch gates on that implementation.
+- Connect the public state/input contract to an actual event0 candidate,
+  its live engine descriptor and replay serialization. Controller issue293
+  has a research seam; it has not supplied a production caller.
 - Obtain original and Switch evidence for reachable HUD meter, correct sound
   and effect. A decoded tuning table, forced presentation readiness, or a
   synthetic boost schedule is not this acceptance.
 
-No production formula has been installed from these partial contexts. The
-smallest missing input is authenticated event0 execution/lifecycle evidence
-for the above callers and live globals, or a separately reviewed recovery of
-those paths. This branch provides the executable recovery to continue that
-work without inventing runtime behavior.
+Direct absolute-write and raw pointer candidate searches found no authenticated
+writer for `0x007361A8`. This BSS address has no raw-backed PE bytes; absence
+from raw data and synthetic harness zeros do not establish a production value.
+Indirect/aggregate initialization remains an investigation gap, not proof of
+no writer.
+
+The public implementation is independently reviewable. It does not satisfy
+working event0 boost, original presentation or console acceptance. No issue
+closure or production readiness is claimed.

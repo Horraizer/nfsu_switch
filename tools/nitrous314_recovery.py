@@ -17,7 +17,7 @@ SENTINEL = 0x7FFFFFFF
 
 
 class Oracle:
-    def __init__(self, image):
+    def __init__(self, image, extra_ranges=(), endpoints=()):
         from unicorn import Uc, UC_ARCH_X86, UC_MODE_32, UC_HOOK_CODE
         from unicorn import x86_const as x
         self.x = x
@@ -30,10 +30,10 @@ class Oracle:
         self.reached = set()
         allowed = ((0x464DC7, 0x464E6A), (0x465430, 0x465487), (0x465490, 0x4654E9),
                    (0x4654F0, 0x46552B), (0x465530, 0x4655AD),
-                   (0x674898, 0x67490D))
+                   (0x674898, 0x67490D)) + tuple(extra_ranges)
 
         def hook(cpu, address, size, _):
-            if address == 0x464E6A:
+            if address == 0x464E6A or address in endpoints:
                 cpu.emu_stop()
                 return
             if address == self.stop:
@@ -140,7 +140,7 @@ def witnesses(image):
 
 
 
-def torque_witnesses(image):
+def torque_witnesses(image, additional_rpms=(), additional_clocks=()):
     from unicorn import Uc, UC_ARCH_X86, UC_MODE_32, UC_HOOK_CODE
     from unicorn import x86_const as x
     u = Uc(UC_ARCH_X86, UC_MODE_32)
@@ -179,9 +179,9 @@ def torque_witnesses(image):
     multiplier = struct.unpack('<f', image.read(0x6B7238, 4))[0]
     curve = struct.unpack('<9f', image.read(0x6FFF34, 36))
     rows = []
-    for rpm in (1000, 3000, 5000, 9000):
+    for rpm in (1000, 3000, 5000, 9000) + tuple(additional_rpms):
         for flag, override in ((0, 0), (1, 0), (0, 1)):
-            for clock in (40000, 80000):
+            for clock in (40000, 80000) + tuple(additional_clocks):
                 u.reg_write(x.UC_X86_REG_ESP, stack)
                 u.reg_write(x.UC_X86_REG_EDI, engine)
                 floating(stack + 4, 2)
@@ -193,12 +193,14 @@ def torque_witnesses(image):
                 if u.reg_read(x.UC_X86_REG_EIP) != 0x46D0C4:
                     raise RuntimeError('torque instruction limit without endpoint')
                 actual = read_float(stack + 4)
-                point = (rpm - 1000) // 1000
-                expected = 2 + curve[point] * 0.5
-                if (flag or override) and clock * struct.unpack('<f', image.read(0x6CCA38, 4))[0] <= 10 + delay:
-                    expected *= multiplier
-                if abs(actual - expected) > 2e-6:
-                    raise AssertionError('live additive term mismatch: %r versus %r' % (actual, expected))
+                expected = None
+                if rpm in (1000, 3000, 5000, 9000):
+                    point = (rpm - 1000) // 1000
+                    expected = 2 + curve[point] * 0.5
+                    if (flag or override) and clock * struct.unpack('<f', image.read(0x6CCA38, 4))[0] <= 10 + delay:
+                        expected *= multiplier
+                    if abs(actual - expected) > 2e-6:
+                        raise AssertionError('live additive term mismatch: %r versus %r' % (actual, expected))
                 rows.append(dict(rpm=rpm, base_torque=2, flag=flag, override=override, clock=clock,
                                  observed_torque=actual, expected_torque=expected))
     # The original branch at 46D057 reads ZF established by engine +84.

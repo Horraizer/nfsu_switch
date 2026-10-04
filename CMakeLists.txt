@@ -1467,6 +1467,11 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_drive_tests)
     add_test(NAME nfsu_drive_tests COMMAND nfsu_drive_tests)
 
+    add_executable(nfsu_nitrous_tests tests/nitrous_tests.cpp)
+    target_link_libraries(nfsu_nitrous_tests PRIVATE nfsu_drive_controls nfsu_sha256)
+    nfsu_enable_warnings(nfsu_nitrous_tests)
+    add_test(NAME nfsu_nitrous_tests COMMAND nfsu_nitrous_tests)
+
     # What `drive-replay` refuses, prints and exits with, over files this
     # test writes, and the frames it renders from the synthetic stock-car
     # root nfsu_stock_frame_tests writes. tests/drive_replay_guards.cmake

@@ -33,6 +33,7 @@
 # (nfsu_switch_fma_census).
 add_library(nfsu_drive_controls
     src/drive_controls.cpp
+    src/nitrous_controls.cpp
 )
 target_link_libraries(nfsu_drive_controls PUBLIC nfsu_input nfsu_vehicle)
 

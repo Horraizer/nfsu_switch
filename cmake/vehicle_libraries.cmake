@@ -25,6 +25,7 @@
 add_library(nfsu_vehicle
     src/vehicle.cpp
     src/steering.cpp
+    src/nitrous.cpp
     src/vehicle_script.cpp
 )
 
