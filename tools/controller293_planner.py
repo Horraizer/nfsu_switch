@@ -12,6 +12,7 @@ from controller293_strategy import CONTROLLER, ACTION
 from controller293_planner_ranges import RANGES
 from controller293_scene_ranges import RANGES as SCENE_RANGES
 from controller293_event_rides_ranges import RANGES as RIDE_RANGES
+from controller293_world_ranges import RANGES as WORLD_RANGES
 from world_body_trace import chunks, jdlz, digest_file, INPUTS
 
 RETAIL = {
@@ -51,7 +52,7 @@ class PlannerMachine(Machine):
         import capstone
         md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
         self.instructions = {}
-        for name, start, end in RANGES + SCENE_RANGES + RIDE_RANGES:
+        for name, start, end in RANGES + SCENE_RANGES + RIDE_RANGES + WORLD_RANGES:
             rows = list(md.disasm(image.read(start, end - start), start))
             if sum(row.size for row in rows) != end - start:
                 raise ValueError('incomplete planner block: ' + name)

@@ -77,7 +77,7 @@ class PairedController:
     Calls have dt0.02 and advance the 4000Hz clock by80. The call stream is
     explicit; no original frame scheduling or physical trajectory is claimed.
     """
-    def __init__(self, image, retail, seed=12345, elapsed_ticks=240000, event_rides=False):
+    def __init__(self, image, retail, seed=12345, elapsed_ticks=240000, event_rides=False, native_ownership=False):
         from controller293_planner import ActorController, TRACK
         self.actor = a = ActorController(image, retail, event_seed=seed, event_rides=event_rides)
         self.m = m = a.m
@@ -128,12 +128,19 @@ class PairedController:
         m.run(0x434270, eax=STATUS, budget=3000000)
         for actor in (HUMAN, ACTOR):
             self.project(actor)
-        # Actor registration list is supplied; partition and rows are original.
-        nodes = [WORLD, HUMAN, ACTOR]
-        for i, node in enumerate(nodes):
-            m.put(node, nodes[(i+1)%3])
-            m.put(node+4, nodes[i-1])
-        m.run(0x445720, esi=WORLD+8)
+        if native_ownership:
+            # Original world list constructor and actor factory publication.
+            m.run(0x41F6FE, end=0x41F719, esi=WORLD)
+            for actor in (HUMAN, ACTOR):
+                m.run(0x42254A, end=0x42256A, esi=actor,
+                      edi=m.get(actor+0x24), budget=3000000)
+        else:
+            # Legacy conditional witness retains supplied registration links.
+            nodes = [WORLD, HUMAN, ACTOR]
+            for i, node in enumerate(nodes):
+                m.put(node, nodes[(i+1)%3])
+                m.put(node+4, nodes[i-1])
+            m.run(0x445720, esi=WORLD+8)
         m.run(0x41FE50, esi=WORLD)
         m.run(0x435D30, (STATUS,), budget=3000000)
         m.run(0x434A80, esi=STATUS, budget=3000000)

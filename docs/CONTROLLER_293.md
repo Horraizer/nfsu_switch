@@ -541,6 +541,62 @@ resumed clocks are supplied, and flow-stage entry remains conditional. The
 complete new-career/profile/options lifecycle, full field/traffic and actual
 integrated original-game trajectory are still required for full parity.
 
+## Original world ownership and controller phase
+
+**S/E.** The separate `world_phase` witness in `controller293_world.py`
+preserves both earlier paired cases. It executes the original world list
+constructor prefix`41F6FE..41F719`, then actor-factory publication
+`42254A..42256A`. The rival list node is allocated by original
+`5649F0`/`566DC0`; Python does not supply its links. Original`41FE50`
+partitions the registered actors by role.
+
+Actual human selector1 and rival selector3 physics factories`426110` run to
+return, including`476840` and`4740D0`. Their rigid bodies and module pointers
+come from original constructors. The event config count supplies native pool
+initializer`4764E0`. The retail route pose also needs road-grid constructor
+`441270`, cache pool initializer`4412B0`, and original loader`441ED0` on TRACK
+chunks`34130..34134`. The unused stack argument of`4412B0` is declared zero;
+its allocation size/capacity come from original code. The pose-dependent cache
+path was absent from the contact worker's origin-pose factory probe. That
+worker supplied the read-only selector3 prerequisite lead; this witness
+independently executes both selectors with its own exact instruction blocks.
+
+The original flow caller slice`4233A5..4233B2` requests countdown through
+full`434B50`. A declared external clock advance then lets full`435570` choose
+active race stage and initialize the race start tick. Its later calls compute
+elapsed time; Python does not write stage4 or advance race elapsed. Original
+static initializer`68D500..68D50A` produces the empty frontend registry used
+by its optional countdown notification. This proves the conditional race
+transition, not entry to the flow caller or a populated frontend lifecycle.
+The distinct flow object at`7361F0` retains the earlier supplied entry state.
+
+Native world slice`420C8A..420E05` owns role ordering, full controller virtual
+updates, full action scheduler`44B1B0`, driver updates and pre-physics road
+queries. The separate native post-physics loop`420E2B..420E50` calls full
+`426930`. The physical integration interval between these slices is omitted
+explicitly. The witness retains actors, modules, drivers and actions across
+calls with coherent dt and game-clock increments. `WorldPhaseTests` owns
+countdown, ordering, module identity, early-race action selection, generated
+driver path, controls, distance and complete frame pins.
+
+The native scheduler's early-race action differs from the manually entered
+planner case. Its driver path is original output; its empty action path and
+unselected planning context are recorded faithfully. This is not evidence
+that the full scheduler has entered the earlier positive planner scenario.
+The report retains both conditional observations instead of forcing an
+expected action. No semantic controller, driver, physics constructor, route,
+RNG or stage function is hooked.
+
+The contract still starts with assembled actors and unconstructed-module
+boundaries, supplied retail-route kinematics, a partial body constructor and
+an explicit view-to-actor binding. The reverse actor+18 link is absent, so
+the native human-input dispatch is skipped. Full actor/view constructors, body spatial
+registration, input-device provenance, the surrounding world update, physical
+integration and live trajectory remain open. Post-physics distance here is a
+native consumer of supplied velocity; it is not measured vehicle travel.
+`controller293_world_ranges.py` freezes additional executed instruction
+boundaries. All prior NULL, budget, retail identity and source guards apply.
+
 ## Unmet original and hardware acceptance
 
 No original game was launched, attached, patched or written. **R unavailable**:

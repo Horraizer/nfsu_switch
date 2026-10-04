@@ -18,8 +18,10 @@ from controller293_planner_ranges import RANGES as PLANNER_RANGES
 from controller293_scene_ranges import RANGES as SCENE_RANGES
 from controller293_event_rides_ranges import RANGES as RIDE_RANGES
 from controller293_scene import suite as scene_suite
+from controller293_world import suite as world_suite
+from controller293_world_ranges import RANGES as WORLD_RANGES
 
-EXTRA_RANGES = STRATEGY_RANGES + PLANNER_RANGES + SCENE_RANGES + RIDE_RANGES + [
+EXTRA_RANGES = STRATEGY_RANGES + PLANNER_RANGES + SCENE_RANGES + RIDE_RANGES + WORLD_RANGES + [
     ('actor-config-ride-ownership', 0x425374, 0x42538F),
     ('actor-state-construction', 0x42538F, 0x4253A9),
     ('actor-physical-binding', 0x4255AB, 0x4255CB),
@@ -44,6 +46,19 @@ EXTRA_RANGES = STRATEGY_RANGES + PLANNER_RANGES + SCENE_RANGES + RIDE_RANGES + [
 ]
 
 ASSERTIONS = {
+    0x420CBA: ('call', 'dword ptr [edx + 0xc]'),
+    0x420D39: ('call', 'dword ptr [edx + 0xc]'),
+    0x420DB2: ('call', 'dword ptr [eax + 4]'),
+    0x420DEF: ('call', '0x4267a0'),
+    0x420E3D: ('call', '0x426930'),
+    0x422555: ('mov', 'dword ptr [ecx], esi'),
+    0x422562: ('lea', 'esi, [eax + 8]'),
+    0x4233AD: ('call', '0x434b50'),
+    0x434B90: ('mov', 'dword ptr [eax], ecx'),
+    0x4355B5: ('call', '0x434b50'),
+    0x4355D7: ('mov', 'dword ptr [edi], ecx'),
+    0x4412FC: ('mov', 'dword ptr [0x736184], eax'),
+
     0x42537D: ('add', 'edi, 0x10'),
     0x57C8C8: ('mov', 'dword ptr [0x734588], edi'),
     0x4B2A5D: ('mov', 'dword ptr [eax + ebx*4 + 0x44c], esi'),
@@ -171,6 +186,7 @@ TOOL_FILES = ('controller293_trace.py', 'controller293_native.py', 'controller29
               'controller293_planner_ranges.py',
               'controller293_scene.py', 'controller293_scene_ranges.py', 'event0_trace.py',
               'controller293_event_rides.py', 'controller293_event_rides_ranges.py',
+              'controller293_world.py', 'controller293_world_ranges.py',
               'physics256_native.py', 'collision256_trace.py', 'world_body_trace.py')
 
 
@@ -267,9 +283,10 @@ def main():
                       planner=planner_suite(image, planner_inputs(root)),
                       scene=scene_suite(image, planner_inputs(root)),
                       event_scene=scene_suite(image, planner_inputs(root), event_rides=True),
+                      world_phase=world_suite(image, planner_inputs(root)),
                       versions=dict(capstone=capstone.__version__, unicorn=unicorn.__version__),
                       tool_hashes={n: digest_file(Path(__file__).with_name(n)) for n in TOOL_FILES},
-                      contract='controller293-v5', original_runtime=None,
+                      contract='controller293-v6', original_runtime=None,
                       inherited_cpp_validated=False)
         (out / 'source.txt').write_text(lines, encoding='ascii')
         (out / 'report.json').write_text(json.dumps(report, ensure_ascii=True,
@@ -279,6 +296,7 @@ def main():
         print('PASS: retail-backed original planner, retained action and driver witnesses')
         print('PASS: original event metadata, paired context, history and catch-up witnesses')
         print('PASS: original event preset/adaptive RideInfo and paired actor bindings')
+        print('PASS: original world registration, countdown and retained controller/driver phase')
         print('UNAVAILABLE: actual event0 scene/trajectory, overtake/contact, full parity')
     finally:
         after = manifest(root)

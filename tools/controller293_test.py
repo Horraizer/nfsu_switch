@@ -229,7 +229,7 @@ class EvidenceTests(unittest.TestCase):
 
 class PlannerTests(unittest.TestCase):
     def test_original_producers_and_external_services(self):
-        self.assertEqual(REPORT['contract'], 'controller293-v5')
+        self.assertEqual(REPORT['contract'], 'controller293-v6')
         required = ('00442040', '004484F0', '00462070', '00417600',
                     '0057D160', '0057F2B0', '00464860', '0057A1B0',
                     '0057A380', '00472B00', '00469B00', '004620C0',
@@ -426,6 +426,63 @@ class EventRideTests(unittest.TestCase):
             pointer_probe(m, write)
             self.assertEqual(m.reg('eax'), expected)
             self.assertEqual(m.events[-1]['bad_pointer'], bool(expected))
+
+
+class WorldPhaseTests(unittest.TestCase):
+    def test_native_world_registration_and_real_modules(self):
+        w = REPORT['world_phase']; initial = w['initial']
+        self.assertEqual(initial['world_order'], [0x11A2000, 0x1100000])
+        self.assertEqual(initial['rival_list_actor'], 0x1100000)
+        self.assertEqual(initial['list_links'], [[0x11A2000, 0x1100000],
+            [0x1100000, 0x2D10000], [0x2D10000, 0x11A2000]])
+        self.assertEqual(initial['loaded_grid_chunks'], list(range(0x34130, 0x34135)))
+        self.assertEqual([a['selector'] for a in initial['actors']], [1, 3])
+        self.assertEqual([a['table'] for a in initial['actors']], [0x6C8364, 0x6C8468])
+        self.assertEqual(len({a['physics'] for a in initial['actors']}), 2)
+        self.assertEqual(len({a['rigid'] for a in initial['actors']}), 2)
+        for a in initial['actors']:
+            self.assertGreater(a['physics'], 0x2200000)
+            self.assertGreater(a['rigid'], 0x2200000)
+            self.assertEqual(a['ride'], a['config']+0x10)
+            self.assertEqual(a['physical'], a['ride']+0x60)
+
+    def test_native_countdown_and_elapsed_producers(self):
+        w = REPORT['world_phase']; initial = w['initial']
+        self.assertEqual(initial['countdown'], dict(stage=3, tick=500000, interval=f32(0.9)))
+        self.assertEqual((initial['stage'], initial['race_start'], initial['elapsed']), (4, 516000, 0))
+        self.assertEqual(len(w['frames']), 160)
+        for i, f in enumerate(w['frames'], 1):
+            self.assertEqual(f['stage'], 4)
+            self.assertEqual(f['tick'], 516000+i*80)
+            self.assertEqual(f['elapsed'], i*80)
+            self.assertEqual(f['physics'], [a['physics'] for a in initial['actors']])
+
+    def test_native_early_action_path_controls_and_distance(self):
+        frames = REPORT['world_phase']['frames']
+        self.assertEqual({f['action_kind'] for f in frames}, {7})
+        self.assertEqual({f['action_count'] for f in frames}, {0})
+        self.assertEqual({f['context_count'] for f in frames}, {0})
+        self.assertTrue(all(f['driver_count'] == len(f['driver_path']) >= 2 for f in frames))
+        self.assertTrue(all(f['controls']['throttle'] == 1.0 for f in frames))
+        self.assertGreater(frames[-1]['distance'], frames[0]['distance'])
+        self.assertEqual(frames[-1]['controls']['steering'], 1952)
+        raw = json.dumps(frames, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('ascii')
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), '3386f6555521883f158424f10abe526761f164b82866d408b1d5ccf2ccae9ca3')
+
+    def test_native_phase_execution_and_limits(self):
+        w = REPORT['world_phase']
+        for at in ('0041F6FE', '00422555', '004A9900', '005649F0', '00566DC0',
+                   '00441B90', '004412B0', '00426450', '00476840', '004740D0',
+                   '00420CBA', '00420D39', '00420DB2', '00462430', '0044B1B0',
+                   '0059C210', '0045E970', '004267A0', '00426930', '00435570',
+                   '00434B50', '0068D500'):
+            self.assertIn(at, w['visited'])
+        self.assertEqual({h['hook'] for h in w['hooks']}, {'external_heap_allocate',
+            'external_heap_release', 'external_QueryPerformanceCounter', 'external_IsBadReadPtr'})
+        for key in ('physical_integration', 'complete_world_update', 'complete_actor_constructor'):
+            self.assertFalse(w[key])
+        self.assertFalse(w['initial']['player_input_bound'])
+        self.assertIsNone(w['original_runtime'])
 
 
 class HarnessTests(unittest.TestCase):
