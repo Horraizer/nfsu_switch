@@ -850,6 +850,10 @@ list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_route)
 # device lifetime and buffer submission are platform services separate from
 # the existing input/file/render facade in include/nfsu/platform.h.
 set(NFSU_PLATFORM_LIBRARIES nfsu_arg_path nfsu_render nfsu_texture_export nfsu_platform_desktop nfsu_det_sqrt nfsu_audio_output)
+# Intro playback streams files and schedules decode/presentation against the
+# audio device sample clock. Its thread polling and device lifetime are outside
+# the deterministic input/file/render facade in include/nfsu/platform.h.
+list(APPEND NFSU_PLATFORM_LIBRARIES nfsu_intro_movie)
 
 # Sources of a neutral library that are platform code on purpose: the one
 # window backend. src/texture.cpp used to be exempted here too, whole, for
