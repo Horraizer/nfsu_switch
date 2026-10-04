@@ -1870,6 +1870,18 @@ if(NFSU_BUILD_TESTS)
         add_test(NAME nfsu_car_selection_retail COMMAND nfsu_car_selection_tests "${NFSU_RETAIL_ROOT}")
         set_tests_properties(nfsu_car_selection_retail PROPERTIES
             FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 1800)
+        # The desktop viewer's own stock-car path resolves every material
+        # texture for the alias-needing cars and stays equivalent to the
+        # stock-frame path (issue #315 round 4 F2).
+        # tests/viewer_car_materials_retail.cmake.
+        add_test(NAME nfsu_viewer_car_materials_retail
+            COMMAND ${CMAKE_COMMAND} -DVIEWER=$<TARGET_FILE:nfsu_viewer>
+                    "-DROOT=${NFSU_RETAIL_ROOT}"
+                    -DWORK=${nfsu_retail_work}/viewer_car_materials
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/viewer_car_materials_retail.cmake
+            WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+        set_tests_properties(nfsu_viewer_car_materials_retail PROPERTIES
+            FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 600)
         add_test(NAME nfsu_performance_replay_retail COMMAND nfsu_performance_replay_tests
             "${NFSU_RETAIL_ROOT}" ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/performance1.txt)

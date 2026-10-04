@@ -584,24 +584,32 @@ Two name systems the executable resolves at draw time, recovered from
   holds the position record and one holds the state record - the nine
   cars with in-pack position records, and the 240SX frame pins with them,
   pass through untouched.
-- **Windows.** The constructor at 0x0056A7D6..0x0056A804 installs twelve
-  window-slot name hashes in the car object; the first six are the
-  `WINDOW_FRONT`-family names the stock alias already mapped, and the
-  further six (0x90E09671, 0x13EE21F2, 0xD689A31B, 0xB8F3415C, 0x2433DF4E,
-  0xF95D432F, names unknown - no texture record with any of them exists
-  anywhere in the installation) appear in the 350Z and CELICA base meshes.
-  The rewrite at 0x0056CA60..0x0056CAC2 replaces every slot's hash with an
-  entry of the tables at 0x006F1B48 and 0x006F1B58 - `WINDOW` and
-  `WINDOW2` plus their `_DAMAGE0..2` variants, selected per window by a
-  two-bit damage state. The static undamaged binding is `WINDOW`, which
-  `alias_stock_window_textures` now maps all twelve names to, as it mapped
-  the first six since issue #223.
+- **Windows.** The constructor at 0x0056A7C8..0x0056A804 installs the six
+  second-layer window-slot names beside the `WINDOW_FRONT` family the stock
+  alias has mapped since #223 (0x90E09671, 0x13EE21F2, 0xD689A31B,
+  0xB8F3415C, 0x2433DF4E, 0xF95D432F, names unknown - no texture record
+  with any of them exists anywhere in the installation); the 350Z and
+  CELICA base meshes reference four of them. The rewrite at
+  0x0056CA60..0x0056CAC2 fills the first-layer destinations from the table
+  at 0x006F1B48 and the second-layer destinations at +0x60 from the table
+  at 0x006F1B58 - `WINDOW` and `WINDOW2` respectively, plus their
+  `_DAMAGE0..2` variants selected per window by a two-bit damage state
+  (0x0056CA87 initializes the index to 0 undamaged). The static undamaged
+  binding therefore keeps the two layers apart: the first six names map to
+  `WINDOW`, the six second-layer names to `WINDOW2`, which
+  `alias_stock_window_textures` now does. Round 4 of the review caught the
+  first version of this alias mapping all twelve to `WINDOW`.
 
 `StockFrame::lamp_texture_aliases` reports how many hashes the lamp
 resolution rewrote, and the per-car regression asserts that no drawable
 material group of any racer remains without a resolved texture (round 3's
 checkerboard defect: SUPRA 9, CELICA 25, ECLIPSE 10 drawable groups drew
-the diagnostic checker at the reviewed head; all twenty are zero now).
+the diagnostic checker at the reviewed head; all twenty are zero now), that
+the 350Z and CELICA second-layer windows draw WINDOW2 rather than WINDOW
+(round 4 F1), and - because the desktop viewer loads its own sources -
+`nfsu_viewer_car_materials_retail` drives the real viewer command line for
+CELICA and SUPRA and requires the same zero unresolved groups plus the
+viewer/frame hash equivalence on CELICA (round 4 F2).
 
 ### Still open after this slice
 

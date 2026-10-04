@@ -13,31 +13,35 @@ namespace nfsu {
 
 void alias_stock_window_textures(GeometryReport& geometry) noexcept {
     constexpr std::uint32_t kWindow = 0x834B8017U;
+    constexpr std::uint32_t kWindow2 = 0xECBB8329U;
     for (Mesh& mesh : geometry.meshes) {
         for (std::uint32_t& hash : mesh.texture_hashes) {
             switch (hash) {
+            // The six first-layer window-slot names, rewritten to WINDOW
+            // (0x006F1B48 table, index 0) by 0x0056CA60..0x0056CAC2.
             case 0x7B220DDFU: // WINDOW_FRONT
             case 0x1B0763A0U: // WINDOW_REAR
             case 0xE7E4EF49U: // WINDOW_LEFT_FRONT
             case 0x4CDEBFCAU: // WINDOW_LEFT_REAR
             case 0x60F8B13CU: // WINDOW_RIGHT_FRONT
             case 0x0AB88F5DU: // WINDOW_RIGHT_REAR
-            // The six further window-slot names the constructor at
-            // 0x0056A7D6..0x0056A804 installs beside the six above. No
-            // texture record with any of these hashes exists anywhere in
-            // the installation; the game rewrites every entry of its
-            // window table to WINDOW or WINDOW2 (plus the _DAMAGEn
-            // variants) at 0x0056CA60..0x0056CAC2, through the tables at
-            // 0x006F1B48 and 0x006F1B58. The static scene binds the
-            // undamaged first layer, WINDOW, as the six above already do.
-            // 350Z and CELICA base meshes reference these (issue #315).
-            case 0x90E09671U: // unknown name, window slot 7
-            case 0x13EE21F2U: // unknown name, window slot 8
-            case 0xD689A31BU: // unknown name, window slot 9
-            case 0xB8F3415CU: // unknown name, window slot 10
-            case 0x2433DF4EU: // unknown name, window slot 11
-            case 0xF95D432FU: // unknown name, window slot 12
                 hash = kWindow;
+                break;
+            // The six second-layer window-slot names the constructor at
+            // 0x0056A7C8..0x0056A804 installs into the second group, whose
+            // destinations at +0x60 the rewrite at 0x0056CAA8 fills from the
+            // second table at 0x006F1B58: WINDOW2 undamaged, plus its
+            // _DAMAGE0..2 variants. No texture record with any of these
+            // hashes exists anywhere in the installation, so the undamaged
+            // static binding is WINDOW2, not WINDOW. The 350Z and CELICA
+            // base meshes reference four of them (issue #315 rounds 3-4).
+            case 0x90E09671U: // unknown name, second-layer slot 1
+            case 0x13EE21F2U: // unknown name, second-layer slot 2
+            case 0xD689A31BU: // unknown name, second-layer slot 3
+            case 0xB8F3415CU: // unknown name, second-layer slot 4
+            case 0x2433DF4EU: // unknown name, second-layer slot 5
+            case 0xF95D432FU: // unknown name, second-layer slot 6
+                hash = kWindow2;
                 break;
             default:
                 break;

@@ -82,7 +82,9 @@ const char* const kRetailPlayables[20] = {
 // (alias_stock_lamp_textures, alias_stock_window_textures) now binds their
 // real textures. The six cars whose packs ship position-name lamp records -
 // GOLF, NEON, TIBURON, SENTRA, 240SX, SKYLINE - and every drive row are
-// byte-identical to the first pin.
+// byte-identical to the first pin. Round 4 re-pinned CELICA and 350Z again:
+// their second-layer windows bind WINDOW2, not WINDOW (review F1), so only
+// those two frames moved; the other eighteen are byte-identical to round 3.
 const char* const kRetailFramePins[20] = {
     "54E769A9AA2D44C97470F3A6A9C41A01CA93BBC65121D75AECB8504F0ADA1204",
     "51CD015A670CE0DB1A48025E0C5A48CABA8B9972679498BDA77EE6336BB6A463",
@@ -90,7 +92,7 @@ const char* const kRetailFramePins[20] = {
     "FAF13BE7AA5E7295EB00458B306984904C03014AE9500FBE24C0285320282FBD",
     "91F751EE952BCE8C02F6E90DAD4F2B70659AE93A758890626946376BF6DE2445",
     "155B76F2BEB01295EE115ADA43BE0EAAB00EAE36F43AA950732DB89F0D2F6F60",
-    "47184762A747E80FD3C24E12865A56CEE3E4A9B9E7F7769DC658FEC207A6C577",
+    "F2B4DE7423EFC47EA469D2CCDE040435C041C4E789DBAD5EC22E8D1B8D0F00DC",
     "8C118F9E4E0524FAFC953CAB7EAD3F30629E10FA17A97F5FEBAB46FBA2BF36A8",
     "E73DFBDF2F64D749AEC6B9DCF17274C3ED103D932F3FD2A08EF85AD131306C72",
     "FA7E650CD19136031B9FCEE5FCCD7C4C5F998F5F507422A0BFF7E2133F51BB0E",
@@ -100,7 +102,7 @@ const char* const kRetailFramePins[20] = {
     "7B7FA7D3657E5AE26F03E1AD785D09F0EA98B91A46F18E8472AD9DA89D4057FB",
     "804488AAF847A5167EF9D1965B44560E90A6EEF4FDC3C73CD54A03EAD0BA9515",
     "DE1A9248FDF1F586A5888026A7A5A9AF0840642C6192788092BE6CF4D504B3B4",
-    "315562DE7E65378AA9A702A5D5562B59898DE92D72E73A8AE66E9846866D3533",
+    "A4668A88D4FA1FC20B87E063339E820A022027486AD1930A0A44B65E37E93C25",
     "5BBB4ACDED09D854F58B4CF37801703F283443613FDCDF1F51B76F75EF76C36B",
     "FE7506F173A871A208F94451DFC71A3F3AEBF1EBE677C28AF2B73AD9CEA3AEE8",
     "AF86D7FCA20E6DE052BA19EE9AB4B6A1C968B9532EDBFE224966DF6726C839A1",
@@ -214,6 +216,30 @@ void unit_checks() {
             error.find("resolve_car_assets") != std::string::npos &&
             inputs.files[0].path.empty(),
             "unit reader misuse guard: " + error);
+
+    // The window slot layers keep their original distinction (round 4 F1):
+    // the six first-layer names rewrite to WINDOW and the six second-layer
+    // names to WINDOW2, the two undamaged entries of the tables at
+    // 0x006F1B48 and 0x006F1B58.
+    {
+        GeometryReport windows;
+        Mesh mesh;
+        mesh.name = "UNIT_WINDOWS_A";
+        mesh.texture_hashes = {0x7B220DDFU, 0x1B0763A0U, 0xE7E4EF49U, 0x4CDEBFCAU,
+                               0x60F8B13CU, 0x0AB88F5DU, 0x90E09671U, 0x13EE21F2U,
+                               0xD689A31BU, 0xB8F3415CU, 0x2433DF4EU, 0xF95D432FU,
+                               0x834B8017U, 0xECBB8329U};
+        windows.meshes.push_back(mesh);
+        alias_stock_window_textures(windows);
+        const std::array<std::uint32_t, 14> expected = {
+            0x834B8017U, 0x834B8017U, 0x834B8017U, 0x834B8017U, 0x834B8017U,
+            0x834B8017U, 0xECBB8329U, 0xECBB8329U, 0xECBB8329U, 0xECBB8329U,
+            0xECBB8329U, 0xECBB8329U, 0x834B8017U, 0xECBB8329U};
+        require(windows.meshes[0].texture_hashes.size() == expected.size() &&
+                    std::equal(expected.begin(), expected.end(),
+                               windows.meshes[0].texture_hashes.begin()),
+                "window slot layers: first six to WINDOW, second six to WINDOW2");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +258,7 @@ struct CarFrameResult {
     std::size_t fell_back = 0;
     std::size_t instances = 0;
     std::size_t unresolved_draws = 0;
+    std::size_t window2_draws = 0;
     std::size_t lamp_texture_aliases = 0;
     bool inputs_ok = false;
 };
@@ -266,10 +293,15 @@ CarFrameResult render_car(const std::filesystem::path& root, const CarAssets& ca
     result.lamp_texture_aliases = frame.lamp_texture_aliases;
     // The reviewer's own probe turned into a gate (issue #315 round 3): a
     // drawable material group with no resolved texture draws the diagnostic
-    // checker, and no stock car may ship one.
+    // checker, and no stock car may ship one. Round 4 also proves WHICH
+    // texture the second-layer windows bind: WINDOW2, the undamaged second
+    // table entry, for the two cars that reference those slot names.
     for (const PreparedDraw& draw : frame.scene.draws) {
         if (draw.drawable && draw.index_count && draw.texture == kNoHandle) {
             ++result.unresolved_draws;
+        }
+        if (draw.drawable && draw.index_count && draw.texture_hash == 0xECBB8329U) {
+            ++result.window2_draws;
         }
     }
     // The shadow of the selected car, from its own pack.
@@ -376,6 +408,14 @@ void retail_checks(const std::filesystem::path& root) {
     for (const char* name : {"CELICA", "SUPRA", "ECLIPSE"}) {
         require(frames[name].lamp_texture_aliases > 0,
                 std::string(name) + " did not resolve its lamp state records");
+    }
+    // The second-layer window binding (round 4 F1): the 350Z and CELICA
+    // base meshes reference the second-group slot names, so their second
+    // window layer draws WINDOW2 - the undamaged entry of the table at
+    // 0x006F1B58 - and never WINDOW.
+    for (const char* name : {"CELICA", "350Z"}) {
+        require(frames[name].window2_draws > 0,
+                std::string(name) + " bound no second-layer WINDOW2 texture");
     }
 
     // The baseline car is unchanged by the selection layer: the painted 240SX
