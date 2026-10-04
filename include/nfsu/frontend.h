@@ -1,6 +1,7 @@
 #pragma once
 #include "nfsu/screen_text.h"
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -13,20 +14,24 @@ public:
     unsigned selected() const { return selected_; }
     void notice(std::string text) { notice_=std::move(text); }
     const std::string& notice() const { return notice_; }
+    void song(const char* artist,const char* title,const char* album) {artist_=artist;title_=title;album_=album;}
+    const std::string& artist() const {return artist_;}
+    const std::string& title() const {return title_;}
+    const std::string& album() const {return album_;}
 private:
     unsigned selected_=0;
     std::string notice_;
+    std::string artist_="Lil Jon & the Eastside Boyz",title_="Get Low",album_="Kings of Crunk";
 };
-// Only original texture pixels are retained. Layout and text are port UI;
-// this does not claim to interpret the original compressed FNG animations.
+// Original MU_Main_PC object transforms, sprite art and proportional FNTF text.
 class FrontendArt {
 public:
+    FrontendArt();
+    ~FrontendArt();
     bool load(const std::filesystem::path& root, std::string& error);
     void draw(ScreenImage image, const FrontendMenu& menu) const;
 private:
-    struct Image { unsigned width=0,height=0; std::vector<unsigned char> rgba; };
-    Image background_,selection_,logo_;
-    static void blit(ScreenImage target, const Image& source,
-                     unsigned x,unsigned y,unsigned w,unsigned h);
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 };
 }

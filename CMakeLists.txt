@@ -853,7 +853,8 @@ list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_route)
 # Startup media streaming/player owns file streams and cooperative real-time
 # device-clock polling/sleep pacing through audio::Output. It is application
 # playback rather than a deterministic simulation service in platform.h.
-set(NFSU_PLATFORM_LIBRARIES nfsu_arg_path nfsu_render nfsu_texture_export nfsu_platform_desktop nfsu_det_sqrt nfsu_audio_output nfsu_intro_movie)
+# Frontend music owns device-clock pacing and cooperative fade/drain waits.
+set(NFSU_PLATFORM_LIBRARIES nfsu_arg_path nfsu_render nfsu_texture_export nfsu_platform_desktop nfsu_det_sqrt nfsu_audio_output nfsu_intro_movie nfsu_frontend_music)
 
 # Sources of a neutral library that are platform code on purpose: the one
 # window backend. src/texture.cpp used to be exempted here too, whole, for
@@ -1677,7 +1678,7 @@ if(NFSU_BUILD_TESTS)
     endif()
     add_test(NAME nfsu_race_loader_peak_tests COMMAND nfsu_race_loader_peak_tests)
     add_executable(nfsu_frontend_tests tests/frontend_tests.cpp)
-    target_link_libraries(nfsu_frontend_tests PRIVATE nfsu_frontend nfsu_race_run nfsu_posix_file_system)
+    target_link_libraries(nfsu_frontend_tests PRIVATE nfsu_frontend nfsu_frontend_music nfsu_race_run nfsu_posix_file_system)
     nfsu_enable_warnings(nfsu_frontend_tests)
     add_test(NAME nfsu_frontend_tests COMMAND nfsu_frontend_tests)
     add_executable(nfsu_race_run_tests tests/race_run_tests.cpp)

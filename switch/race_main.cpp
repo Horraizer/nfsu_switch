@@ -11,6 +11,7 @@
 #include "nfsu/stock_view.h"
 #include "nfsu/race_audio.h"
 #include "nfsu/frontend.h"
+#include "nfsu/frontend_music.h"
 #include "nfsu/intro_movie.h"
 #include <switch.h>
 #include <arpa/inet.h>
@@ -399,7 +400,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                 return R_SUCCEEDED(svcSetThreadCoreMask(threadGetCurHandle(),
                            audio_core, 1U << audio_core)) &&
                        R_SUCCEEDED(svcSetThreadPriority(threadGetCurHandle(), 0x30));
-            });
+            },free_drive);
         if (!audio_started && audio_note.empty())
             audio_note = "audio disabled: startup failed without diagnostic";
     } else audio_note = "audio disabled: render core pin failed";
@@ -844,6 +845,8 @@ int main(int argc, char** argv) {
                 screen.show({"Loading original frontend..."});
                 require(art.load(root,frontend_error),frontend_error);
                 FrontendMenu menu;
+                audio::FrontendMusic music;
+                if(!music.start(root,frontend_error)) menu.notice("MUSIC: "+frontend_error);
                 if (intro.outcome==IntroOutcome::error) {
                     std::printf("INTRO ERROR: %s\n",intro.error.c_str());
                     menu.notice(std::string("INTRO: ")+intro.error);
@@ -864,6 +867,7 @@ int main(int argc, char** argv) {
                     if (action==FrontendAction::underground) {
                         menu.notice("INTRODUCTORY RACE IS NOT AVAILABLE IN THIS BUILD");
                     } else if (action==FrontendAction::free_drive) {
+                        music.stop();
                         try {
                             run(root,false,false,false,particles_enabled,sky,
                                 tuned,glows,car_shading,wet_road_reflections,texture_filter,scene_height,
@@ -876,8 +880,12 @@ int main(int argc, char** argv) {
                             std::printf("FREE DRIVE ERROR: %s\n",error.what());
                             menu.notice(std::string("FREE DRIVING: ")+error.what());
                         }
+                        if(!music.start(root,frontend_error)) menu.notice("MUSIC: "+frontend_error);
                         stick_up=stick_down=false;
                     }
+                    const auto music_error=music.error();
+                    if(!music_error.empty()) { music.stop(); menu.notice("MUSIC: "+music_error); }
+                    const auto song=music.now_playing();menu.song(song.artist,song.title,song.album);
                     screen.menu(art,menu);
                 }
             }

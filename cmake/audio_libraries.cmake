@@ -7,7 +7,7 @@ nfsu_enable_warnings(nfsu_audio)
 
 # Playback consumes PCM from the format decoder; race simulation never links
 # this library. Both desktop and Switch compile the same bounded mixer.
-add_library(nfsu_audio_playback src/audio_playback.cpp)
+add_library(nfsu_audio_playback src/audio_playback.cpp src/music_playlist.cpp)
 target_link_libraries(nfsu_audio_playback PUBLIC nfsu_audio)
 target_include_directories(nfsu_audio_playback PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(nfsu_audio_playback PUBLIC cxx_std_17)
