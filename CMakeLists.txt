@@ -63,6 +63,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/race_session_libraries.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/track_slice_libraries.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/race_run_libraries.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/audio_libraries.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/intro_movie_libraries.cmake)
 
 # The Switch build configures the shared car and draw libraries and switch/,
 # and nothing below this point: the desktop programs, the other libraries and every test of
