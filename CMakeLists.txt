@@ -50,6 +50,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/asset_libraries.cmake)
 # The vehicle model of issue #58, for both configures as well; it links
 # nfsu_sha256 from cmake/car_libraries.cmake, so it is included after it.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/vehicle_libraries.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/car_contact_libraries.cmake)
 # The driving controls and the chase camera of issue #59, for both configures;
 # they link nfsu_input and nfsu_render from cmake/car_libraries.cmake and
 # nfsu_vehicle from the file above, so they are included after both.
@@ -1291,7 +1292,7 @@ target_link_libraries(nfsu_probe PRIVATE nfsu_vehicle)
 # reads no file and no clock and calls nothing but the standard library and
 # nfsu_sha256. The manifest is written once the whole directory has been
 # read, so this append is in the list the gate classifies.
-list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_vehicle)
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_vehicle nfsu_car_contact)
 
 if(NFSU_BUILD_TESTS)
     # The model against its recovered rules and its approximations: the
@@ -2062,4 +2063,11 @@ if(NFSU_BUILD_TESTS)
                 FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 3600)
         endif()
     endif()
+endif()
+
+if(NFSU_BUILD_TESTS)
+    add_executable(nfsu_car_contact_tests tests/car_contact_tests.cpp)
+    target_link_libraries(nfsu_car_contact_tests PRIVATE nfsu_car_contact)
+    nfsu_enable_warnings(nfsu_car_contact_tests)
+    add_test(NAME nfsu_car_contact_tests COMMAND nfsu_car_contact_tests)
 endif()
