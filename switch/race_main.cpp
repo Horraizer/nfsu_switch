@@ -873,7 +873,7 @@ int main(int argc, char** argv) {
                                 tuned,glows,car_shading,wet_road_reflections,texture_filter,scene_height,
                                 gpu_boost,hud,false,explicit_performance ? &performance : nullptr,
                                 handling_telemetry,steering,screen,pad,true);
-                            menu.notice("FREE DRIVING - + RETURNS TO MENU");
+                            menu.notice("");
                         } catch (const Cancel&) {
                             menu.notice("LOADING CANCELLED");
                         } catch (const std::exception& error) {
