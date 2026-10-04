@@ -825,7 +825,7 @@ set(NFSU_NEUTRAL_LIBRARIES
     nfsu_inspect nfsu_inspect_window nfsu_input nfsu_platform
     nfsu_platform_fakes nfsu_input_camera nfsu_memory nfsu_gpu_upload nfsu_draw_commands
     nfsu_sha256 nfsu_stock_frame nfsu_screen_text nfsu_stock_view nfsu_frame_compare
-    nfsu_audio nfsu_audio_playback nfsu_race_audio)
+    nfsu_audio nfsu_audio_playback nfsu_race_audio nfsu_frontend)
 # nfsu_race_route (issue #61) decodes a TRACKB bundle with nothing but the
 # standard library, nfsu_core's JDLZ decoder and nfsu_track_zones' polygon
 # test, reads with std::ifstream as nfsu_core's loaders do, and reads no
@@ -850,7 +850,10 @@ list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_route)
 # nfsu_audio_output owns waveOut or audout and its callback thread. Audio
 # device lifetime and buffer submission are platform services separate from
 # the existing input/file/render facade in include/nfsu/platform.h.
-set(NFSU_PLATFORM_LIBRARIES nfsu_arg_path nfsu_render nfsu_texture_export nfsu_platform_desktop nfsu_det_sqrt nfsu_audio_output)
+# Startup media streaming/player owns file streams and cooperative real-time
+# device-clock polling/sleep pacing through audio::Output. It is application
+# playback rather than a deterministic simulation service in platform.h.
+set(NFSU_PLATFORM_LIBRARIES nfsu_arg_path nfsu_render nfsu_texture_export nfsu_platform_desktop nfsu_det_sqrt nfsu_audio_output nfsu_intro_movie)
 
 # Sources of a neutral library that are platform code on purpose: the one
 # window backend. src/texture.cpp used to be exempted here too, whole, for
