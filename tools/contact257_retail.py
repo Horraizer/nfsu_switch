@@ -1,7 +1,7 @@
 """Original retail hull/handling prerequisites on explicit synthetic pair poses.
 
 This is not a live actor admission or scheduler capture. Only the external
-allocator and profiling clock are supplied; original game math executes.
+allocator and explicit zero-QPC service are supplied; original game math executes.
 """
 import hashlib
 import capstone
@@ -46,8 +46,11 @@ def prepare(m, native, data):
     # SEH fs:[0] is the only permitted null-page access. No null actor field
     # is made readable by this environment prerequisite.
     m.uc.mem_map(0, 4096)
+    decoder = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
     def null_guard(uc, access, address, size, value, user):
-        if address != 0 or size != 4:
+        ip = uc.reg_read(UC_X86_REG_EIP)
+        instruction = next(decoder.disasm(m.image.read(ip, 16), ip, count=1))
+        if address != 0 or size != 4 or 'fs:[0]' not in instruction.op_str:
             raise RuntimeError('unexpected null-page access')
     m.uc.hook_add(UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE, null_guard, begin=0, end=4095)
     m.uc.mem_map(0x2000000, 0x1000000)
