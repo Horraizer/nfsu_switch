@@ -197,9 +197,11 @@ the scrape into the generic mixer's five-millisecond gain ramp.
 Predicted consequence: brief gaps during a wall rub can restart impact
 variants, reset accumulated intensity and scrape modulation, and cut tails
 early. This is conditional on the original body pair surviving; another
-destruction path can retire it earlier. Original body-pair identity has NOT
-been mapped to the port's polygon IDs. Adjacent polygons must not be merged
-just because a longer age threshold seems plausible.
+destruction path can retire it earlier. The focused
+[collision continuation](COLLISION_AUDIO_CONTRACT_312.md) now connects live
+track bodies to polygon-cache entries and proves record-protected pair
+retention. It gives a scoped identity/retirement contract for the port's
+polygon observations. Adjacent polygons remain separate bodies.
 
 ## Collision precision, randomness, admission and spatial gain
 
@@ -237,7 +239,11 @@ was found, and adding one would not implement those checks.
 half-category case yields 5500. The source path supplies subtype gain without
 those stages. That is a proved missing conditional transformation, not proof
 that the player's actual default gain should be quartered. Original listener
-state, pan/distance handling, live pool order and car/prop contacts remain open.
+state, live pool order and car/prop contacts remain open. The
+[continuation](COLLISION_AUDIO_CONTRACT_312.md) executes the impact spatial
+producer with the original profile and synthetic camera/actor inputs, maps
+category selection and the additional caller-side impact gain, and tests
+admission/retirement. Backend pan and live settings remain unmeasured.
 
 ## Decoder, rate, loops and output: alternative causes checked
 
@@ -277,8 +283,8 @@ acceptance remain in #222, and race/UI/music ownership remains in #202.
 | --- | --- | --- |
 | 1 | Resolve car group/upgrade and reproduce the selected engine graph's sample/gain/pitch controls. Preserve the native witness as an oracle. Resolve actual event0 tuning rather than calling stock evidence tuned parity. | Fixed gear and RPM sweep, then hold near the middle of the range and change throttle/coast. Compare bank-only correction with full graph correction at matched perceived loudness. |
 | 2 | Recover upstream audio RPM/load and gear transitions, then add separate exhaust and shift event graphs. The present witness intentionally stops short of these live producers. | Steady throttle versus release at the same RPM, low- and high-RPM upshifts, downshifts, and neutral revs. Listen for load timbre, exhaust release and synchronized shift cues rather than only volume. |
-| 3 | Map durable collision body/contact identity, then implement original record aging and the scrape retirement envelope. Keep accumulator/variant/RNG state across verified same-pair gaps. | One light wall tap; continuous wall rub with a brief separation and recontact; recontact after a longer separation. Distinguish premature retrigger/cutoff from wrong sample family. |
-| 4 | Correct intensity truncation locally, reproduce admission and attenuation with explicit fixtures, then recover RNG seed/order and control scheduling. | Weak taps around intensity boundaries, alternating left/right impacts and sustained scrape modulation. Original-vs-port event logs must show which record was admitted before comparing sound density. |
+| 3 | Implement the continuation's durable collision body/contact contract, original record aging and scrape retirement envelope. Keep accumulator/variant/RNG state across verified same-pair gaps. | One light wall tap; continuous wall rub with a brief separation and recontact; recontact after a longer separation. Distinguish premature retrigger/cutoff from wrong sample family. |
+| 4 | Correct intensity truncation locally and implement the continuation's admission/spatial fixtures, then recover complete pool ordering, RNG seed/order and control scheduling. | Weak taps around intensity boundaries, alternating left/right impacts and sustained scrape modulation. Original-vs-port event logs must show which record was admitted before comparing sound density. |
 | 5 | Once event/control paths agree, compare decoder/backend PCM and output configuration, and tune neither resampling nor limiting without that evidence. | Rate-specific isolated clips and loop seams, then the same race with music reduced and normal. Record output underruns/late cycles, raw overload and limiter counters alongside listening. |
 
 Use the same car, upgrades, camera/listener, route, race phase and audio
