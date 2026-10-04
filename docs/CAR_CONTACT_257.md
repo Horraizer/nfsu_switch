@@ -10,6 +10,10 @@ admission from witness flags, distance or solver success.
 
 The source-addressed original subset is:
 
+- Car/car point midpoint and normal preparation at `0x0046B8C0`, including
+  original coincident-witness fallback to the two body origins. Input shape
+  witness points are supplied by the caller; this does not perform hull query
+  or pair admission.
 - Relative contact velocity, closing rejection, effective inverse masses,
   state-scaled inverse inertia, normal denominator, restitution and minimum
   impulse at `0x0046BAE0` through the normal-mode kind-0 response branch.
@@ -20,11 +24,13 @@ The source-addressed original subset is:
   The current vector, accumulated vector and sum of magnitudes stay distinct.
 - Car impulse mass scaling and angular-state scaling at `0x0046A260`, then
   rigid impulse clamps and momentum stores at `0x00584F60`.
-- The witnessed hard-hit callback branch with opposing velocity directions,
+- The witnessed opposing and non-opposing car/car hard-hit callback branches,
   identity orientation, four wheels, null optional actor hooks, normal-mode
   globals and race-event bypass. It resets each eligible state timer, changes
-  state, applies the callback's two impulses to A before B, consumes the supplied
-  world PRNG state and projects the final arms after the callback record gate.
+  state, applies branch-specific callback impulses to A before B, consumes the supplied
+  world PRNG state in the opposing branch and projects final arms after the
+  callback record gate. The non-opposing branch uses authenticated actor
+  physical-data bounds and does not consume PRNG state.
 - Final B then A application order at `0x0046C5D2/0x0046C5E4`.
 
 The low-level calculation and application functions are usable independently.
@@ -33,7 +39,10 @@ admission false leaves both bodies and the record unchanged. Non-closing pairs
 also leave them unchanged. Without explicit `ContactCallbackContext`, a hard
 state-changing hit returns `needs_state_callback` and does not partially apply
 its hit or momentum. The same result names an unsupported callback branch or
-previous record gate. A caller must not interpret it as a solved collision.
+unsupported previous record gate. With explicit witness context, both actors
+already in state1 may reuse a gated record: original final-arm projection runs
+without callback impulses or PRNG consumption. A caller must not interpret a
+named gap as a solved collision.
 
 `ContactCallbackContext` certifies the synthetic witness mode described above.
 It must never be supplied for a production actor merely to bypass the gate.
@@ -64,6 +73,25 @@ original executions vary the second body's mass, each body's inverse inertia
 and angular cache independently, exercise the high linear impulse clamp and
 execute the alternate PRNG arm branch. Each application and bounded pair is
 repeated to check determinism.
+
+`tools/contact257_retail.py` extends the authenticated original execution with
+stock 240SX handling initialization and its retail `240SX_CV` collision hull.
+It checks the `GLOBALB.BUN` and geometry input identities documented in
+`VEHICLE_TRACK.md`, executes RideInfo construction/reset/rebuild, loads the
+hull and follows the car-body constructor's per-car clone/normalization path.
+Original pair query and geometry preparation then provide solver inputs for
+retail-hull hard/soft/state1/separating and distant-query fixtures. Pose,
+orientation, body mass/inertia and initial velocity remain explicit synthetic
+memory inputs; this does not capture admission or cadence of live actors.
+
+The actor constructor at `0x004255AB..0x004255C8` stores RideInfo at actor+10
+and its physical-data subobject at actor+20 (RideInfo+60). The non-opposing
+callback at `0x0046617E..0x004661EB` uses that subobject's lateral bounds;
+`0x004663A0` accepts both car-kind body bytes. Original hull support also calls
+an imported profiling clock. The trace supplies an explicit zero external
+QueryPerformanceCounter result and unit profiling divisor, distinct from the
+game timestamp. Heap allocation is an explicit external service. Neither
+service supplies geometry, handling, response or a game tick.
 
 The distant forced case still produces a response. This is intentional original
 behavior at direct solver entry and proves why the production admission gate
@@ -98,13 +126,15 @@ fixtures do not prove execution on Switch hardware.
 
 ## Closed integration gates and remaining acceptance
 
-No authenticated real-car hull/admission/preparation episode or final kinematic
-publication is available in PR308 or this work. The original effects tail is
+No authenticated live-car admission/cadence or final kinematic publication
+episode is available in PR308 or this work. Retail hull preparation is now
+executed under explicit synthetic pair poses. The original effects tail is
 still omitted by the witness and is not assumed inert. The hard callback's
-non-opposing branch uses `0x004663A0` eligibility and actor+0x20 data not supplied
-by these bounded fixtures; optional config and alternate/race modes remain
-outside the callable contract. Existing record-gated repeated contact is also
-not implemented by the bounded step. Those paths return a named callback gap
+non-opposing branch requires caller-authenticated physical bounds; optional
+config and alternate/race modes remain
+outside the callable contract. A pre-existing gate with both actors already
+state1 is supported under the witness contract; broader repeated-contact record
+creation/reset/lifetime remains unimplemented. Unsupported paths return a named callback gap
 rather than inventing controller/handling state.
 
 Before production integration, capture a correlated original contact and matched

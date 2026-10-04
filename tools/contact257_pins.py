@@ -50,13 +50,19 @@ def generate(report):
     for case in report['native']['cases']:
         a,b=case['before'];aa,bb=case['after']
         hit=case['hits'][0] if case['hits'] else None
-        lines.append('    {"%s", %s, %s, {%s,%s}, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s},'%(
+        bounds=case.get('retail_prerequisites',{}).get('physical_lateral_bounds')
+        bounds_text='{{'+', '.join('{'+', '.join(number(v) for v in row)+'}'
+                                  for row in (bounds or ((0,0),(0,0))))+'}}'
+        lines.append('    {"%s", %s, %s, {%s,%s}, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s},'%(
             case['name'],body(a),body(b),vector(case['geometry']['normal']),vector(case['geometry']['point']),
             'true' if case['input']['solver_invoked'] else 'false',
             vector(hit['impulse'] if hit else (0,0,0)),number(hit['tangent_speed'] if hit else 0),
             vector(case['input']['accumulated']),number(case['input']['magnitude_sum']),
             body(aa),body(bb),number(case['magnitude_sum']),
-            case.get('world_seed_before',12345),case.get('world_seed_after',0)))
+            case.get('world_seed_before',12345),case.get('world_seed_after',0),
+            'true' if bounds else 'false',bounds_text,
+            'true' if case.get('record_gate_before') else 'false',
+            vector(case['witness']['witness_a']),vector(case['witness']['witness_b'])))
     return '\n'.join(lines+['};',''])
 
 
@@ -66,7 +72,7 @@ def main():
     p.add_argument('--output',required=True,type=Path)
     args=p.parse_args()
     report=json.loads(args.report.read_text(encoding='ascii'))
-    for name in ('contact257_trace.py','contact257_pins.py'):
+    for name in ('contact257_trace.py','contact257_pins.py','contact257_retail.py'):
         actual=hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest().upper()
         if report.get('worker_tool_hashes',{}).get(name)!=actual:
             raise ValueError('worker tool hash mismatch: '+name)

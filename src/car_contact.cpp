@@ -22,6 +22,35 @@ bool valid(const ContactBody& b) noexcept {
         && finite(b.linear_momentum) && finite(b.angular_momentum);
 }
 }
+bool prepare_car_contact_geometry(const ContactVector& witness_a,
+    const ContactVector& witness_b, const ContactVector& position_a,
+    const ContactVector& position_b, ContactGeometry& geometry) noexcept {
+    if(!finite(witness_a)||!finite(witness_b)||!finite(position_a)||!finite(position_b))
+        return false;
+    ContactGeometry next;
+    for(unsigned i=0;i<3;++i) {
+        next.point[i]=(witness_b[i]+witness_a[i])*0.5F;
+        next.normal[i]=witness_b[i]-witness_a[i];
+    }
+    float norm=length(next.normal);
+    if(!std::isfinite(norm)) return false;
+    if(norm < 0.000001F) {
+        for(unsigned i=0;i<3;++i) next.normal[i]=position_b[i]-position_a[i];
+        const float x=next.normal[0]*next.normal[0];
+        const float y=next.normal[1]*next.normal[1];
+        const float z=next.normal[2]*next.normal[2];
+        norm=static_cast<float>(det_sqrt(static_cast<double>((x+y)+z)));
+        if(!std::isfinite(norm)) return false;
+        if(norm==0) next.normal={1,0,0};
+    }
+    if(norm!=0) {
+        const float scale=1.0F/norm;
+        for(float& v:next.normal) v*=scale;
+    }
+    if(!finite(next.point)||!finite(next.normal)) return false;
+    geometry=next;
+    return true;
+}
 bool accumulate_contact_hit(ContactRecord& record, const ContactVector& current,
                             const ContactVector& point, float tangent_speed,
                             float timestamp) noexcept {
@@ -188,7 +217,9 @@ ContactResolution resolve_prepared_car_contact(ContactBody& a, ContactBody& b,
 
     const bool hard = current_magnitude >= 30.0F
         && (a.collision_state == 0 || b.collision_state == 0);
-    if (record.state_gate || (hard && !witnessed_callback))
+    if ((record.state_gate && (!witnessed_callback
+        || a.collision_state != 1 || b.collision_state != 1))
+        || (hard && !witnessed_callback))
         return ContactResolution::needs_state_callback;
     ContactBody next_a=a, next_b=b;
     ContactRecord next_record=record;
@@ -197,9 +228,8 @@ ContactResolution resolve_prepared_car_contact(ContactBody& a, ContactBody& b,
                                calculated.tangent_speed,timestamp)) return ContactResolution::refused;
     ContactVector arm_a=calculated.arm_a, arm_b=calculated.arm_b;
     if (hard) {
-        // Only the source-addressed head-on hard callback branch is currently
-        // ported. Its normalized current impulse must oppose each car velocity.
-        // Other branches read actor+20 handling/config and 004663A0 eligibility.
+        // Both car kinds satisfy original 004663A0 eligibility. The
+        // non-opposing branch requires original actor+20 physical bounds.
         for (unsigned receiver=0;receiver<2;++receiver) {
             ContactBody& body = receiver == 0 ? next_a : next_b;
             if (body.collision_state != 0) continue;
@@ -215,33 +245,50 @@ ContactResolution resolve_prepared_car_contact(ContactBody& a, ContactBody& b,
             const auto direction=unit(directed), velocity=unit(body.cached_velocity);
             const float projection=(direction[0]*velocity[0]+velocity[2]*direction[2])
                 +velocity[1]*direction[1];
-            if(!(projection < -0.97F)) return ContactResolution::needs_state_callback;
+            const bool opposing = projection < -0.97F;
+            if (!opposing && (!callback.has_physical_bounds
+                || !std::isfinite(callback.physical_lateral_bounds[receiver][0])
+                || !std::isfinite(callback.physical_lateral_bounds[receiver][1])))
+                return ContactResolution::needs_state_callback;
             body.collision_state=1;body.state_timer=0;next_record.state_gate=true;
-            ContactVector sideways{};
-            for(unsigned i=0;i<3;++i) sideways[i]=direction[i]-velocity[i]*projection;
-            sideways=unit(sideways);
             const float severity=current_magnitude > 50.0F ? 50.0F : current_magnitude;
-            const float scale=-(std::fabs(projection)*0.2F*severity);
-            ContactVector extra{sideways[0]*scale,sideways[1]*scale,0};
             const auto arm=receiver == 0 ? calculated.arm_a : calculated.arm_b;
-            if(!apply_car_contact_impulse(body,extra,arm)) return ContactResolution::refused;
-            // 00466113 consumes original world seed once for each state-0 body.
-            const unsigned remainder=callback.world_seed%100;
-            const auto mixed=callback.world_seed^0x1D872B41U;
-            const auto shifted=(mixed>>5)^mixed;
-            callback.world_seed=(shifted<<27)^shifted^mixed;
             ContactVector local_arm=arm;
             local_arm[2]=0;
-            if(remainder>=50) local_arm[0]=-(local_arm[0]*1.1F);
-            if(std::fabs(local_arm[1])>0.13F) local_arm[1]*=0.2F;
+            if (opposing) {
+                ContactVector sideways{};
+                for(unsigned i=0;i<3;++i) sideways[i]=direction[i]-velocity[i]*projection;
+                sideways=unit(sideways);
+                const float scale=-(std::fabs(projection)*0.2F*severity);
+                ContactVector extra{sideways[0]*scale,sideways[1]*scale,0};
+                if(!apply_car_contact_impulse(body,extra,arm)) return ContactResolution::refused;
+                // 00466113 consumes seed only in the opposing branch.
+                const unsigned remainder=callback.world_seed%100;
+                const auto mixed=callback.world_seed^0x1D872B41U;
+                const auto shifted=(mixed>>5)^mixed;
+                callback.world_seed=(shifted<<27)^shifted^mixed;
+                if(remainder>=50) local_arm[0]=-(local_arm[0]*1.1F);
+                if(std::fabs(local_arm[1])>0.13F) local_arm[1]*=0.2F;
+            } else {
+                // 004663A0 accepts both car kinds. Physical data is the
+                // original actor+20=RideInfo+60 subobject, never guessed.
+                const auto& bounds=callback.physical_lateral_bounds[receiver];
+                const float limit=(std::fabs(bounds[0]-bounds[1])*1.19F)*0.5F;
+                if (!std::isfinite(limit)) return ContactResolution::refused;
+                local_arm[1]*=1.19F;
+                if(local_arm[1]>limit) local_arm[1]=limit;
+                if(local_arm[1]<-limit) local_arm[1]=-limit;
+                local_arm[0]*=1.0F;
+            }
             // Original clamp helper 00401C80: [-4.1,+4.1].
             float vertical=std::fabs(projection)*0.0675F*severity;
             if(vertical>4.1F) vertical=4.1F;
             if(!apply_car_contact_impulse(body,{0,0,vertical},local_arm)) return ContactResolution::refused;
         }
-        // Callback-set record gate, original four-wheel identity-up projection.
-        arm_a[2]=0;arm_b[2]=0;
     }
+    // Original record-gated four-wheel identity-up projection also runs on
+    // a later solve whose actors are already state1; no extra impulse/PRNG.
+    if(next_record.state_gate) { arm_a[2]=0;arm_b[2]=0; }
     if (!apply_contact_pair(next_a,next_b,calculated.current_impulse,arm_a,
                             calculated.impulse_b,arm_b)) return ContactResolution::refused;
     a=next_a; b=next_b; record=next_record;

@@ -87,6 +87,34 @@ def main():
         hard['world_seed_after']=last[0].get(native.CONFIG+0x12D0)
         result['cases'].append(hard)
         native.fixture=fixture
+        from contact257_retail import inputs as retail_inputs, prepare, binding_source
+        facts['retail_contact_bindings']=binding_source(image)
+        retail_data=retail_inputs(root)
+        prepared=[]
+        prior_record_gate=False
+        def retail_fixture(*a,**kw):
+            m=fixture(*a,**kw)
+            prepared[:]=[(m,prepare(m,native,retail_data))]
+            m.put(native.RECORD+0x10,int(prior_record_gate))
+            return m
+        native.fixture=retail_fixture
+        for name,off,va,vb,state in (
+            ('retail_cv_nonopposing',(3,.7,0),(150,0,0),(-150,0,0),0),
+            ('retail_cv_soft',(3,.7,0),(10,0,0),(-10,0,0),0),
+            ('retail_cv_state1',(3,.7,0),(150,0,0),(-150,0,0),1),
+            ('retail_cv_gated_state1',(3,.7,0),(150,0,0),(-150,0,0),1),
+            ('retail_cv_separating',(3,.7,0),(-10,0,0),(10,0,0),0),
+            ('retail_cv_distant',(20,0,0),(10,0,0),(-10,0,0),0)):
+            prior_record_gate=name=='retail_cv_gated_state1'
+            case=native.contact_case(image,name,off,va,vb,state=state,
+                                     solve=name!='retail_cv_distant')
+            m,prerequisites=prepared[0]
+            case['retail_prerequisites']=prerequisites
+            case['record_gate_before']=prior_record_gate
+            case['world_seed_before']=12345
+            case['world_seed_after']=m.get(native.CONFIG+0x12D0)
+            result['cases'].append(case)
+        native.fixture=fixture
         source_text,blocks=execution_source(image,result)
         report=dict(schema='contact256-v1',input=dict(size=size,sha256=sha),
             source=facts,native=result,executed_blocks=blocks,
@@ -95,7 +123,7 @@ def main():
                 source_text.encode('ascii')).hexdigest().upper(),
             reference_tools={name:digest_file(args.reference_tools/name) for name in TOOLS},
             worker_tool_hashes={name:digest_file(Path(__file__).with_name(name))
-                for name in ('contact257_trace.py','contact257_pins.py')})
+                for name in ('contact257_trace.py','contact257_pins.py','contact257_retail.py')})
     finally:
         after=manifest(root)
         (out/'after.json').write_bytes(after)
@@ -104,7 +132,7 @@ def main():
     (out/'report.json').write_text(json.dumps(report,ensure_ascii=True,allow_nan=False,indent=2)+'\n',encoding='ascii')
     print('PASS: extended independent mass/inertia/spin and clamp original execution')
     print('PASS: retail manifests unchanged; original instructions authenticated')
-    print('UNAVAILABLE: real hulls, admission, cadence and final publication')
+    print('UNAVAILABLE: live actor/hull admission, cadence and final publication')
 
 
 if __name__=='__main__':

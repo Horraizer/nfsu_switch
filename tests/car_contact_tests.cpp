@@ -29,6 +29,10 @@ struct PairPin {
     ContactBody after_a,after_b;
     float after_sum;
     unsigned seed_before,seed_after;
+    bool physical_bounds;
+    std::array<std::array<float,2>,2> bounds;
+    bool record_gate_before;
+    ContactVector witness_a,witness_b;
 };
 #include "car_contact_pins.inc"
 bool same(const ContactVector& a,const ContactVector& b) {
@@ -64,6 +68,9 @@ int main() {
         check(record.timestamp==5&&record.point==ContactVector{1,2,3}&&record.tangent_speed==4,"record metadata");
     }
     for(const auto& p:kPairPins) {
+        ContactGeometry prepared;
+        check(prepare_car_contact_geometry(p.witness_a,p.witness_b,p.a.position,p.b.position,prepared)
+              &&same(prepared.normal,p.geometry.normal)&&same(prepared.point,p.geometry.point),p.name);
         ContactResponse response;
         if(p.admitted) {
             check(calculate_car_contact_response(p.a,p.b,p.geometry,response),p.name);
@@ -71,8 +78,11 @@ int main() {
         }
         auto a=p.a,b=p.b;
         ContactRecord record;record.accumulated_impulse=p.accumulated;record.magnitude_sum=p.before_sum;
+        record.state_gate=p.record_gate_before;
         const auto before_record=record;
         ContactCallbackContext context{p.seed_before};
+        context.has_physical_bounds=p.physical_bounds;
+        context.physical_lateral_bounds=p.bounds;
         const auto result=resolve_prepared_car_contact(a,b,record,p.admitted,p.geometry,5,response,&context);
         check(result!=ContactResolution::refused&&result!=ContactResolution::needs_state_callback,p.name);
         check(same_boundary(a,p.after_a)&&same_boundary(b,p.after_b),p.name);
@@ -80,6 +90,8 @@ int main() {
         if(p.seed_after) check(context.world_seed==p.seed_after,"callback random state");
         auto repeat_a=p.a,repeat_b=p.b;auto repeat_record=before_record;
         ContactCallbackContext repeat_context{p.seed_before};ContactResponse repeat_response;
+        repeat_context.has_physical_bounds=p.physical_bounds;
+        repeat_context.physical_lateral_bounds=p.bounds;
         check(resolve_prepared_car_contact(repeat_a,repeat_b,repeat_record,p.admitted,p.geometry,5,
               repeat_response,&repeat_context)==result&&same_boundary(a,repeat_a)
               &&same_boundary(b,repeat_b)&&context.world_seed==repeat_context.world_seed,"pair deterministic repeat");
@@ -89,6 +101,14 @@ int main() {
                   ==ContactResolution::needs_state_callback,"explicit hard callback gate");
             check(same_boundary(a,p.a)&&same_boundary(b,p.b)&&record.magnitude_sum==before_record.magnitude_sum,
                   "callback gate transactional");
+        }
+        if(std::strcmp(p.name,"retail_cv_nonopposing")==0) {
+            a=p.a;b=p.b;record=before_record;
+            ContactCallbackContext missing_bounds{p.seed_before};
+            check(resolve_prepared_car_contact(a,b,record,true,p.geometry,5,response,&missing_bounds)
+                  ==ContactResolution::needs_state_callback,"original physical bounds required");
+            check(same_boundary(a,p.a)&&same_boundary(b,p.b)&&!record.state_gate
+                  &&missing_bounds.world_seed==p.seed_before,"missing physical bounds transactional");
         }
     }
     // Unsupported existing record state never impersonates a complete solve.

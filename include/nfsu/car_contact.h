@@ -48,6 +48,12 @@ bool apply_contact_pair(ContactBody& a, ContactBody& b,
 struct ContactGeometry {
     ContactVector normal{}, point{};
 };
+// Original 0046B8C0 car/car preparation from an authenticated shape query's
+// world witness points. Coincident witnesses use B-A body origins, then the
+// original zero-vector normalization fallback. This is not pair admission.
+bool prepare_car_contact_geometry(const ContactVector& witness_a,
+    const ContactVector& witness_b, const ContactVector& position_a,
+    const ContactVector& position_b, ContactGeometry& geometry) noexcept;
 struct ContactResponse {
     bool closing = false;
     ContactVector current_impulse{}, impulse_b{}, arm_a{}, arm_b{};
@@ -60,12 +66,18 @@ bool calculate_car_contact_response(const ContactBody& a, const ContactBody& b,
 // Synthetic witness callback mode: identity orientation, four wheels, null
 // optional actor feedback/config hooks and race-event bypass. This is explicit
 // caller evidence, never a default for production actors.
-struct ContactCallbackContext { std::uint32_t world_seed = 0; };
+struct ContactCallbackContext {
+    std::uint32_t world_seed = 0;
+    // Authenticated lateral physical-data bounds at actor+20+14/+44, A/B.
+    bool has_physical_bounds = false;
+    std::array<std::array<float,2>,2> physical_lateral_bounds{};
+};
 enum class ContactResolution { refused, not_admitted, non_closing, applied, needs_state_callback };
 // Explicitly admitted/prepared kind-0 pair in the witnessed normal mode.
 // This bounded step closes no production admission gate. A hard current hit on
 // a state-0 car requires explicit witnessed_callback evidence. Other callback
-// branches and a previously set record gate refuse all mutation. Optional alternate/race/effects modes are
+// branches refuse all mutation. A prior record gate is supported with explicit
+// callback context when both actors are already state1. Optional alternate/race/effects modes are
 // outside this API; caller must establish this witnessed mode before entry.
 ContactResolution resolve_prepared_car_contact(ContactBody& a, ContactBody& b,
     ContactRecord& record, bool admitted, const ContactGeometry& geometry,
