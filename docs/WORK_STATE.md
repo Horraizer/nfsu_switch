@@ -1,79 +1,120 @@
 # Work state snapshot
 
-Recorded 2026-10-01. This is a recovery index; verify live issue and PR state
-before acting. Read [AGENTS.md](../AGENTS.md) and
-[WORK_RECOVERY.md](WORK_RECOVERY.md) first. A reviewer reads the diff before
-this file. Only the coordinator updates this index; workers checkpoint their
-own issues. This snapshot does not authorize a new session to take ownership.
+Recorded 2026-10-04. This is a dated recovery index, not live authority.
+Read [AGENTS.md](../AGENTS.md) and [WORK_RECOVERY.md](WORK_RECOVERY.md).
+Reviewers inspect their pinned diff before narratives, including this file.
+Verify remote heads, issue state and ownership before acting. This snapshot
+never authorizes another coordinator, new workers or another batch.
 
-## Current direction and assignment
+## Product target
 
-The owner assigned the current Codex session as coordinator, then prioritized
-provider-independent roles and recovery before further game work. This
-protocol change is the current assignment, on branch
-`codex/portable-agent-protocol`, based on
-`765aec8bbab32ca1dd3cf0165db4432201911e52`. It has no gameplay changes.
-Validate and independently review the protocol before merging it. The PR and
-its checkpoint will record the final commit; this initial snapshot cannot
-claim that the new protocol is already reviewed or merged.
+The owner requires original startup videos with sound, then original menu
+presentation and music, with exactly two available gameplay modes:
 
-## Game work to resume
+- Underground: the complete introductory event 0, with original cars,
+  visual/performance tuning and decals, real opponents/traffic, shared
+  contacts, nitrous on Switch L, original HUD/minimap/audio, start, finish,
+  results and return/retry lifecycle.
+- Continuous free driving on the first track, with return to the menu.
+  This does not authorize an expanded open world.
 
-The owner launched [#252](https://git.accad.pro/murzintsevav/nfsu-switch/issues/252)
-to investigate wall/track-object, traffic and opponent collisions separately.
-The current port's static track response is insufficient; traffic and opponent
-behavior must be measured rather than assigned speculative impulse rules.
+Other gameplay modes remain unavailable for this milestone. The complete
+original game remains future work. See the
+[owner decision](https://git.accad.pro/murzintsevav/nfsu-switch/issues/291#issuecomment-8658).
+The owner rejected partial menu delivery. An unfinished research handoff
+is not FINISHED product acceptance.
 
-Verified research already merged:
+## Merged baseline and completed overnight scope
 
-- [PR #255](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/255), merge
-  `c752c80d34979ecb0888f46556d5e7c62e0c16f7`: body classes and current limits in
-  [COLLISION_CLASSES.md](COLLISION_CLASSES.md).
-- [PR #260](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/260), merge
-  `765aec8bbab32ca1dd3cf0165db4432201911e52`: pair creation, witness updates and
-  the BB object data path in [COLLISION_PAIR_TRACE.md](COLLISION_PAIR_TRACE.md).
-  Both PRs received independent review. They changed documentation, not the
-  running collision solver.
+Live origin/main was checked at
+`ec21749671603a1505a63148feb3806d0a1c5059`, the merge of
+[PR #311](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/311).
+The runnable baseline is an event 1 player-only diagnostic on track 1003,
+with controls, rendering, streaming, static track response, audio and a
+speedometer. It is not a complete introductory event 0.
 
-[#256](https://git.accad.pro/murzintsevav/nfsu-switch/issues/256) remains open.
-Next technical action: trace the caller and frequency of dispatcher
-`0x0041FD76` and its placement relative to vehicle integration, using the
-pinned retail executable described in COLLISION_PAIR_TRACE.md. Global pair
-order, a named placed object instance and pre/post contact measurements also
-remain unresolved. Static tracing can continue while owner recordings are
-pending; clips alone cannot establish internal solver order or impulse.
+The overnight authorization ended with 24 terminal scopes: 15 worker
+deliverables and 9 independent review assignments, not 24 gameplay features.
+Its quota remains exhausted. Some research PRs remain open; scope completion
+does not mean every PR was merged or every parent issue was completed.
+See the [completion checkpoint](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/276#issuecomment-8382)
+and [final inventory/test plan](https://git.accad.pro/murzintsevav/nfsu-switch/issues/292#issuecomment-8373).
+These records carry artifact identities and historical gate results.
+Do not rerun or poll the closed overnight runner.
 
-The owner agreed to record original-game examples on Deck: wall/object,
-traffic and opponent impacts, with the HUD visible before and after. Those
-clips have not yet been received in this snapshot. Their agreement is recorded
-on [#252](https://git.accad.pro/murzintsevav/nfsu-switch/issues/252#issuecomment-6129).
-See the latest [#252 phase report](https://git.accad.pro/murzintsevav/nfsu-switch/issues/252#issuecomment-6206)
-and [#256 remaining criteria](https://git.accad.pro/murzintsevav/nfsu-switch/issues/256#issuecomment-6204).
+## Active owner-authorized work
 
-Dependent implementation tasks are
-[#257](https://git.accad.pro/murzintsevav/nfsu-switch/issues/257) (two-car
-contacts), [#258](https://git.accad.pro/murzintsevav/nfsu-switch/issues/258)
-(traffic/opponent integration), and
-[#259](https://git.accad.pro/murzintsevav/nfsu-switch/issues/259) (placed objects).
-Check their actual dependencies before dispatch. Parent #252 stays open until
-its acceptance criteria are met.
+| Scope | Owner and branch | State and next action |
+| --- | --- | --- |
+| [Cars #315 / PR #319](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/319) | External GLM; `codex/day20261004-glm-cars315` | Owner drove five models at `bc473b9493f8f8cc05ec4ee1a4f50bc686931f1c`. Material defects independently reproduced; changes requested. Correct original runtime bindings, add regression coverage and re-review. |
+| [Startup media #320](https://git.accad.pro/murzintsevav/nfsu-switch/issues/320) | Existing Sol worker `intro_media`; `codex/day20261004-intro-media` | Owner confirmed sound and rejected video proportions. Worker pushed scaling correction `ce86b62dd36655a0ca6c0c6b3218bb9d9c15f9a0`; full gates, integration, independent review and hardware retest remain pending. |
+| [Menu #66](https://git.accad.pro/murzintsevav/nfsu-switch/issues/66) | Existing Sol worker `menu66`; `codex/day20261004-menu66` | Demo `42f96af6c9abeac09aa69421195e385b19c1893e` supplies intro/menu/free-drive/return but failed original appearance/music acceptance. Worker resumed original layout/fonts/garage/music implementation. No accepted final artifact yet. |
 
-## Other owner priorities
+Car hardware findings and reproduction are in
+[review 8678](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/319#issuecomment-8678),
+which supersedes the earlier passing review's merge eligibility. Checker
+materials are not accepted original rendering. Shadow and handling concerns
+are recorded; root causes are not established by the video alone. Steering
+remains baseline. Capstone was installed for the existing GLM investigation;
+see [tooling checkpoint](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/319#issuecomment-8682).
 
-- [#253](https://git.accad.pro/murzintsevav/nfsu-switch/issues/253): finish the
-  speedometer against original references, including needle behavior during
-  gear changes. Then [#254](https://git.accad.pro/murzintsevav/nfsu-switch/issues/254):
-  lap timing display like the original game.
-- [#202](https://git.accad.pro/murzintsevav/nfsu-switch/issues/202) and
-  [#222](https://git.accad.pro/murzintsevav/nfsu-switch/issues/222): owner reports
-  wrong impact and finish sounds (finish resembles nitrous depletion).
-  Whether simple races should have a countdown sound is unresolved; the owner
-  recalled none on Deck. Treat that as an open question, not a confirmed rule.
-- [#250](https://git.accad.pro/murzintsevav/nfsu-switch/issues/250) and
-  [#251](https://git.accad.pro/murzintsevav/nfsu-switch/issues/251): tuning and
-  steering work already on the board; inspect scope before assignment.
+Frontend rejection and resumed ownership are recorded on
+[#66](https://git.accad.pro/murzintsevav/nfsu-switch/issues/66#issuecomment-8680)
+and [#320](https://git.accad.pro/murzintsevav/nfsu-switch/issues/320#issuecomment-8681).
+The movie scaling correction is a
+[worker checkpoint](https://git.accad.pro/murzintsevav/nfsu-switch/issues/320#issuecomment-8683),
+not an independent PASS. The owner's original Deck menu reference identifies
+"Get Low" by Lil Jon & the East Side Boyz. The menu worker reports original
+executable selection evidence; new implementation still needs independent
+review and hardware acceptance.
 
-No active worker assignment for further gameplay implementation is asserted
-by this snapshot. Read later checkpoints and confirm ownership before taking
-over. Missing local screenshots, clips or scratch files must be reported as
-missing evidence; prose about them is not a substitute for the originals.
+These workers retain their own worktrees. Root coordinates and reviews only
+changes it did not author. Recurring monitors remain paused; local workers
+report directly and GLM uses its existing external handoff channel. This
+snapshot does not restart the old batch or grant more workers.
+
+## Other unmerged work and remaining acceptance
+
+- [Audio #312 / PR #313](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/313):
+  terminal bounded research at `2667c3fac7f27893a788c6226ba49f748d770b18`;
+  independent review pending. Engine/shift/impact/scrape fidelity remains
+  open. Research findings do not demonstrate original live mix parity.
+- [Controller PR #316](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/316),
+  [nitrous PR #317](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/317),
+  and [contacts PR #318](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/318)
+  remain open. Their earlier local workers stopped at a provider limit;
+  worktrees/evidence are preserved. Verify current remote heads and verdicts.
+  A gate or verdict for a different head is not current merge authorization.
+- [Integration #292](https://git.accad.pro/murzintsevav/nfsu-switch/issues/292)
+  remains open: event 0 actors/presets/opponents/traffic, shared contact
+  integration and the complete race lifecycle are not accepted.
+- [Tuning #250](https://git.accad.pro/murzintsevav/nfsu-switch/issues/250),
+  [steering #251](https://git.accad.pro/murzintsevav/nfsu-switch/issues/251),
+  [lap HUD #254](https://git.accad.pro/murzintsevav/nfsu-switch/issues/254),
+  [traffic/opponents #258](https://git.accad.pro/murzintsevav/nfsu-switch/issues/258),
+  [filtering #262](https://git.accad.pro/murzintsevav/nfsu-switch/issues/262),
+  [minimap #266](https://git.accad.pro/murzintsevav/nfsu-switch/issues/266),
+  and [props #270](https://git.accad.pro/murzintsevav/nfsu-switch/issues/270)
+  were verified open. Conditional HUD presentation is not ready.
+- The older [roadmap PR #276](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/276)
+  remains open. Reconcile its documentation against this snapshot before
+  integration; its older prose is not live implementation state.
+
+## Hardware and recovery discipline
+
+The five-car run used the PR #319 artifact. The frontend demo used the
+separate menu branch artifact. Neither proves the other branch or is a
+merged release. Use the board's exact artifact/argument records.
+Requested `--scene-height 540 --gpu-boost on` is distinct from measured
+clocks. Frame comparison, limited driving measurements and successful
+loading do not establish original fidelity or complete-race acceptance.
+Any new upload requires the owner's current netloader readiness.
+
+Keep retail/reference data read-only. Owner photos and recordings stay
+private and local; publish only authorized ASCII technical observations.
+Preserve worktrees and evidence. No secrets, private transcripts or retail
+assets in commits/attachments. Follow ASCII and standalone-interpreter gates.
+
+Next product delivery is the corrected combined intro/menu build after
+software checks and independent review, followed by owner hardware
+acceptance. This does not close event 0 or authorize unrelated PR merges.
