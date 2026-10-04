@@ -72,11 +72,12 @@ void quad(ScreenImage target,const Image& tex,const Transform& m,float x,float y
         const auto ty=std::min(tex.height-1,unsigned(std::max(0.F,tv)*float(tex.height)));
         const auto* src=tex.rgba.data()+(std::size_t(ty)*tex.width+tx)*4;
         auto* dst=target.pixels+std::size_t(py)*target.stride+std::size_t(px)*4;
-        const unsigned alpha=unsigned(src[3])*std::min(255U,color[3])/255;
+        const unsigned alpha=unsigned(src[3])*(std::min(255U,color[3])/2*2)/255;
         for(unsigned c=0;c<3;++c) {
-            // The retail world/world_fixed quad material uses Modulate2x,
-            // its White16x16 stores neutral 0x80 RGB channels.
-            const unsigned value=std::min(255U,unsigned(src[c])*color[2-c]*2/255);
+            // FEng image 0x4F2000 and font 0x4F48B0 pack channels /2;
+            // the world material then applies Modulate2x. Preserve that
+            // order rather than doubling the original unhalved color.
+            const unsigned value=unsigned(src[c])*(std::min(255U,color[2-c])/2*2)/255;
             const unsigned background=unsigned(dst[c])*(tex.blend==TextureAlphaBlend::additive?255:255-alpha);
             dst[c]=static_cast<unsigned char>(std::min(255U,(value*alpha+background+127)/255));
         }dst[3]=255;

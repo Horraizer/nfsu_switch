@@ -34,6 +34,11 @@ The background is rendered from the nine original TRFE_ROAD02 tunnel solids
 in FrontB, Road_Segment textures and the RSX geometry/textures. Default stock RSX
 paint is resolved through CarTypeInfo +0xC5C and the actual BASE_PAINT attributes,
 not an arbitrary requested color. Room modulation follows original world.efx.
+FEng image 0x4F2000 and font 0x4F48B0 halve channels before packed
+vertex color reaches Modulate2x; the port preserves that order for RGB and
+alpha, avoiding clipped white logo/highlight colors.
+`tools/frontend66_color_native.py <retail-root>` executes the original font
+packing instructions with explicit supplied color/stack preconditions.
 The car uses existing decoded retail material coefficients and runtime skin.
 The current camera framing is a port choice; the original animated camera,
 saved-profile tuned car shown in the owner's photo and full original lighting
