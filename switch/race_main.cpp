@@ -10,6 +10,7 @@
 #include "nfsu/screen_text.h"
 #include "nfsu/stock_view.h"
 #include "nfsu/race_audio.h"
+#include "nfsu/frontend.h"
 #include <switch.h>
 #include <arpa/inet.h>
 #include <unistd.h>
@@ -107,6 +108,13 @@ public:
     }
     void close() {
         if (opened_) { framebufferClose(&fb_); opened_ = false; }
+    }
+    void menu(const FrontendArt& art, const FrontendMenu& menu) {
+        if (!opened_ && !open()) throw std::runtime_error("framebuffer unavailable");
+        u32 stride=0; auto* pixels=static_cast<unsigned char*>(framebufferBegin(&fb_,&stride));
+        if (!pixels) throw std::runtime_error("framebuffer unavailable");
+        art.draw({pixels,width,height,stride},menu);
+        framebufferEnd(&fb_);
     }
     void show(const std::vector<std::string>& lines, const std::vector<unsigned char>* rgba = nullptr) {
         if (!opened_ && !open()) throw std::runtime_error("framebuffer unavailable");
@@ -311,7 +319,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
           bool car_shading, bool wet_road_reflections, TextureFilterMode texture_filter,
           std::uint32_t requested_height, bool gpu_boost, bool hud_mode, bool hud_trace,
           const VehicleUpgradeLevels* performance, bool handling_telemetry, RaceSteering steering,
-          Screen& screen, PadState& pad) {
+          Screen& screen, PadState& pad, bool free_drive = false) {
     selected_car_label = tuned ? "TUNED" : "STOCK";
     car_shading_label=car_shading ? "ON static" : "OFF";
     HandheldGpuProfile gpu_profile(gpu_boost);
@@ -338,6 +346,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                 texture_filter == TextureFilterMode::linear ? "linear" : "legacy");
     scene.set_particles_enabled(particles_enabled);
     RaceRun race; HeapUsage heap;
+    require(race.set_free_drive(free_drive,error),error);
     require(!replay_mode || steering==RaceSteering::baseline,"recovered steering requires --live; pinned replay uses baseline");
     require(race.set_steering(steering,error),error);
     std::printf("steering %s\n",race_steering_name(steering));
@@ -707,7 +716,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         failure += "renderer close: " + close_error;
     }
     if (!failure.empty()) { std::printf("ERROR: %s\n",failure.c_str()); std::fflush(stdout); }
-    if (appletMainLoop()) {
+    if (appletMainLoop() && !free_drive) {
         if (profile_stats) {
             const ProfileResultContext context{*profile_stats,renderer.gpu_profile(),heap,read_clocks(),
                 load_ms,initial_upload,scene.track().streaming_bytes,persistent,renderer.gpu_bytes(),
@@ -797,28 +806,46 @@ int main(int argc, char** argv) {
             }
             require(!(panel && profile_frame),"--profile-frame requires direct presentation");
             require(!hud_trace || (hud && !panel),"--hud-trace requires HUD and direct presentation");
-            while (!selected && appletMainLoop()) {
-                padUpdate(&pad); const auto down = padGetButtonsDown(&pad);
-                if (down & HidNpadButton_Plus) throw Cancel{};
-                if (down & HidNpadButton_A) selected = true;
-                if (down & HidNpadButton_X) { selected = true; replay = true; }
-                if ((down & HidNpadButton_Y) && !profile_frame && !hud_trace) panel = !panel;
-                screen.show({tuned ? "EVENT 1 / TUNED 240SX / TWO LAPS" : "NFSU #196 - EVENT 1 / STOCK 240SX / TWO LAPS",format("BUILD %.12s",NFSU_RACE_BUILD_TAG),
-                    "A: drive with Joy-Con / Pro Controller", "X: replay the pinned desktop event1.txt", "+: exit",
-                    (profile_frame || hud_trace) ? "DIRECT CAPTURE: Y panel toggle disabled" :
-                        std::string("Y: diagnostic panel ")+(panel?"ON":"OFF")+" (readback and CPU text cost)",
-                    std::string("PARTICLES ")+(particles_enabled?"ON":"OFF"),
-                    "The #47 first-lap check runs before track streaming. Assets: "+root,
-                    "Release all controls during countdown to clear the #59 hot-plug latch.",
-                    hud ? "Direct mode shows the race HUD; PANEL keeps diagnostics." :
-                          "Race HUD disabled for paired GPU measurement.",
-                    "During the race: Y pauses, + opens results with driving-frame statistics.",
-                    "No game data is bundled or written. Replay input is bundled in RomFS."});
+            if (selected) {
+                run(root,replay,panel,profile_frame,particles_enabled,sky,
+                    tuned,glows,car_shading,wet_road_reflections,texture_filter,scene_height,
+                    gpu_boost,hud,hud_trace,explicit_performance ? &performance : nullptr,
+                    handling_telemetry,steering,screen,pad);
+            } else {
+                FrontendArt art; std::string frontend_error;
+                screen.show({"Loading original frontend..."});
+                require(art.load(root,frontend_error),frontend_error);
+                FrontendMenu menu;
+                bool stick_up=false,stick_down=false;
+                while (appletMainLoop()) {
+                    padUpdate(&pad); const auto down=padGetButtonsDown(&pad);
+                    const auto stick=padGetStickPos(&pad,0);
+                    const bool up=stick.y>16000, below=stick.y<-16000;
+                    FrontendInput input;
+                    input.up=(down&HidNpadButton_Up) || (up&&!stick_up);
+                    input.down=(down&HidNpadButton_Down) || (below&&!stick_down);
+                    input.accept=down&HidNpadButton_A;
+                    input.back=down&(HidNpadButton_B|HidNpadButton_Plus);
+                    stick_up=up; stick_down=below;
+                    const auto action=menu.update(input);
+                    if (action==FrontendAction::exit) break;
+                    if (action==FrontendAction::underground) {
+                        menu.notice("INTRODUCTORY RACE UNAVAILABLE: ORIGINAL EVENT0 BACKEND REQUIRED");
+                    } else if (action==FrontendAction::free_drive) {
+                        try {
+                            run(root,false,false,false,particles_enabled,sky,
+                                tuned,glows,car_shading,wet_road_reflections,texture_filter,scene_height,
+                                gpu_boost,hud,false,explicit_performance ? &performance : nullptr,
+                                handling_telemetry,steering,screen,pad,true);
+                            menu.notice("FREE DRIVING - + RETURNS TO MENU");
+                        } catch (const Cancel&) {
+                            menu.notice("LOADING CANCELLED");
+                        }
+                        stick_up=stick_down=false;
+                    }
+                    screen.menu(art,menu);
+                }
             }
-            if (selected) run(root,replay,panel,profile_frame,particles_enabled,sky,
-                              tuned,glows,car_shading,wet_road_reflections,texture_filter,scene_height,
-                              gpu_boost,hud,hud_trace,explicit_performance ? &performance : nullptr,
-                              handling_telemetry,steering,screen,pad);
         } catch (const Cancel&) {
         } catch (const std::exception& e) {
             std::printf("ERROR: %s\n",e.what()); std::fflush(stdout);

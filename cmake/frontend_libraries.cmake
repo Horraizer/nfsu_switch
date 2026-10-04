@@ -1,0 +1,4 @@
+add_library(nfsu_frontend src/frontend.cpp)
+target_link_libraries(nfsu_frontend PUBLIC nfsu_race_events nfsu_screen_text nfsu_sha256)
+target_compile_features(nfsu_frontend PUBLIC cxx_std_17)
+nfsu_enable_warnings(nfsu_frontend)

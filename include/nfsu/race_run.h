@@ -21,6 +21,8 @@ public:
                           TrackSliceLoadObserver* observer = nullptr);
     bool set_performance_levels(const VehicleUpgradeLevels& levels, std::string& error);
     bool set_steering(RaceSteering mode, std::string& error);
+    // Port free driving: same first track and controls, no lap finish.
+    bool set_free_drive(bool enabled, std::string& error);
     bool start(const std::filesystem::path& root, const TrackSlice& track, std::string& error,
                TrackSliceLoadObserver* observer = nullptr);
     bool simulate(const GamepadFrame& pad, std::string& error);
@@ -48,6 +50,7 @@ private:
     bool metadata_ready_ = false;
     bool pending_ = false;
     bool explicit_performance_ = false;
+    bool free_drive_ = false;
     VehicleUpgradeLevels levels_;
     RaceSteering steering_ = RaceSteering::baseline;
     bool read_metadata(const std::filesystem::path& front, const std::filesystem::path& global,

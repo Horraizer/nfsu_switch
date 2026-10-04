@@ -22,6 +22,11 @@ bool RaceRun::set_performance_levels(const VehicleUpgradeLevels& levels, std::st
     if (!make_race_vehicle_spec(original.data(),original.size(),levels,checked,error)) return false;
     levels_ = levels; explicit_performance_ = true; return true;
 }
+bool RaceRun::set_free_drive(bool enabled, std::string& error) {
+    if (metadata_ready_ || session_) { error = "driving mode must precede metadata/start"; return false; }
+    free_drive_ = enabled;
+    return true;
+}
 bool RaceRun::set_steering(RaceSteering mode, std::string& error) {
     if (metadata_ready_ || session_) { error="steering must precede metadata/start"; return false; }
     if (mode != RaceSteering::baseline && mode != RaceSteering::recovered_predicate0 &&
@@ -43,7 +48,7 @@ bool RaceRun::read_metadata(const std::filesystem::path& front, const std::files
         if (!info || slot.track != 1003 || slot.laps != 2 || slot.direction != 0) {
             error = "event 1 must be forward track 1003, two laps"; return false;
         }
-        laps_ = slot.laps;
+        laps_ = free_drive_ ? 0 : slot.laps;
         direction_ = slot.direction;
         lap_skip_ = info->lap_skip;
     }

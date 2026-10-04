@@ -63,6 +63,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/race_session_libraries.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/track_slice_libraries.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/race_run_libraries.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/audio_libraries.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/frontend_libraries.cmake)
 
 # The Switch build configures the shared car and draw libraries and switch/,
 # and nothing below this point: the desktop programs, the other libraries and every test of
@@ -1671,6 +1672,10 @@ if(NFSU_BUILD_TESTS)
         target_link_options(nfsu_race_loader_peak_tests PRIVATE -static-libstdc++ -static-libgcc)
     endif()
     add_test(NAME nfsu_race_loader_peak_tests COMMAND nfsu_race_loader_peak_tests)
+    add_executable(nfsu_frontend_tests tests/frontend_tests.cpp)
+    target_link_libraries(nfsu_frontend_tests PRIVATE nfsu_frontend nfsu_race_run)
+    nfsu_enable_warnings(nfsu_frontend_tests)
+    add_test(NAME nfsu_frontend_tests COMMAND nfsu_frontend_tests)
     add_executable(nfsu_race_run_tests tests/race_run_tests.cpp)
     target_link_libraries(nfsu_race_run_tests PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_platform_desktop)
     nfsu_enable_warnings(nfsu_race_run_tests)
@@ -1830,6 +1835,9 @@ if(NFSU_BUILD_TESTS)
         set_tests_properties(nfsu_minimap_retail PROPERTIES
             FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 180)
         add_test(NAME nfsu_stability_retail COMMAND nfsu_stability_tests --root "${NFSU_RETAIL_ROOT}")
+        add_test(NAME nfsu_frontend_retail COMMAND nfsu_frontend_tests "${NFSU_RETAIL_ROOT}")
+        set_tests_properties(nfsu_frontend_retail PROPERTIES LABELS "retail"
+            FIXTURES_REQUIRED nfsu_retail_read_only)
         add_test(NAME nfsu_event0_setup_retail COMMAND nfsu_event0_setup_tests "${NFSU_RETAIL_ROOT}")
         set_tests_properties(nfsu_event0_setup_retail PROPERTIES
             FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 180)
