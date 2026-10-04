@@ -36,6 +36,35 @@ The executable and package offsets above are tied to these inputs:
 | Movies/PSA.mad | 6291068 | cbb41e6acb311a9ed06ff10ff2ed26e828d690078ea21470405cdb5bcd1b3fcd |
 | Movies/e3_title.mad | 26059320 | 65991efa4970a4a5d48c8937a1165889bb1e2077db718e1c30516e7fa9e9c615 |
 
+## Original display geometry
+
+Encoded dimensions are 512x256 for `na_boot` and `PSA`, and 512x512 for
+`e3_title`. These samples are not square pixels in the original frontend.
+All three original Movie objects have Size 640x480. The nested FNG packages
+are `LS_EAlogo` at `0xBB380C`, `LS_PSAMovie` at `0xBB3A8C`, and
+`LS_IntroFMV` at `0xBB4E8C`; their Size float pairs are at package offsets
+`0x25C`, `0x248`, and `0x3E8`, respectively. The trace tool checks each pair.
+
+Native Movie type7 dispatch at `0x4F2D2D` calls renderer `0x4F1D80`.
+It centers the frontend at (320,240) and calls object geometry `0x4F1810`.
+That geometry multiplies SizeX and SizeY at `0x4F1AE2` and `0x4F1B26`.
+Encoded texture width/height are read later at `0x4F1E95` and `0x4F1E9B`
+for UV extent within the backing texture; they do not set quad proportions.
+The trace checks the dispatch, Size multipliers and center instructions.
+
+The original player supplies display geometry separately from decoded sample
+width/height. `blit_movie` fits that 4:3 rectangle into the destination and
+samples the complete encoded picture into it. A widescreen Switch therefore
+uses side bars. No picture is cropped or fitted using raw sample proportions.
+The Switch Screen uses a linear RGBA framebuffer and passes its byte stride
+unchanged to this helper. The padded-stride regression checks geometry and
+source mapping for both original sample aspects, odd sizes and tall viewports.
+
+Owner testing of integrated source `42f96af6` reported working intro audio
+and rejected image scaling. That build fitted encoded dimensions and is not
+accepted for movie presentation. The geometry correction preserves its audio
+path. Corrected hardware image acceptance remains pending owner retest.
+
 ## Player contract
 
 `include/nfsu/intro_movie.h` exposes the player and a stride-aware RGBA

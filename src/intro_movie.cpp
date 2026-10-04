@@ -264,8 +264,11 @@ std::uint64_t MovieReader::audio_frames() const noexcept{return impl_->total_aud
 void blit_movie(const MovieFrame& f,std::uint8_t* dest,unsigned w,unsigned h,std::size_t stride) {
     if(!dest||!w||!h||stride<std::size_t(w)*4||!f.width||!f.height||f.rgba.size()!=std::size_t(f.width)*f.height*4) bad("invalid movie destination");
     for(unsigned y=0;y<h;++y) for(unsigned x=0;x<w;++x) {auto* p=dest+y*stride+x*4;p[0]=p[1]=p[2]=0;p[3]=255;}
-    unsigned dw=w,dh=unsigned(std::uint64_t(w)*f.height/f.width);
-    if(dh>h){dh=h;dw=unsigned(std::uint64_t(h)*f.width/f.height);}
+    if(bool(f.display_width)!=bool(f.display_height)) bad("incomplete movie display aspect");
+    const unsigned aspect_w=f.display_width?f.display_width:f.width;
+    const unsigned aspect_h=f.display_height?f.display_height:f.height;
+    unsigned dw=w,dh=unsigned(std::uint64_t(w)*aspect_h/aspect_w);
+    if(std::uint64_t(w)*aspect_h>std::uint64_t(h)*aspect_w){dh=h;dw=unsigned(std::uint64_t(h)*aspect_w/aspect_h);}
     if(!dw||!dh)return;
     const unsigned left=(w-dw)/2,top=(h-dh)/2;
     for(unsigned y=0;y<dh;++y) for(unsigned x=0;x<dw;++x) {

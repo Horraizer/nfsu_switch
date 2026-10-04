@@ -38,6 +38,46 @@ Output::Stats Output::stats() const noexcept {
 }
 }
 namespace {
+void display_geometry() {
+    for(unsigned source_h:{256U,512U}) {
+        nfsu::MovieFrame f;f.width=512;f.height=source_h;
+        f.display_width=640;f.display_height=480;
+        f.rgba.assign(std::size_t(f.width)*f.height*4,255);
+        for(unsigned y=0;y<f.height;++y)for(unsigned x=0;x<f.width;++x){
+            auto* q=f.rgba.data()+(std::size_t(y)*f.width+x)*4;
+            q[0]=static_cast<std::uint8_t>(x%251+1);
+            q[1]=static_cast<std::uint8_t>(y%251+1);
+        }
+        // Different encoded aspects must yield the same original display
+        // rectangle. Padded stride models framebufferBegin's byte pitch.
+        for(const auto dims:{std::array<unsigned,6>{1280,720,160,0,960,720},
+                             std::array<unsigned,6>{640,480,0,0,640,480},
+                             std::array<unsigned,6>{720,1280,0,370,720,540},
+                             std::array<unsigned,6>{1279,719,160,0,958,719}}) {
+            const unsigned w=dims[0],h=dims[1],left=dims[2],top=dims[3],dw=dims[4],dh=dims[5];
+            const std::size_t stride=w*4+28;
+            std::vector<std::uint8_t> dest(stride*h+32,23);
+            nfsu::blit_movie(f,dest.data()+16,w,h,stride);
+            for(unsigned y=0;y<h;++y) {
+                for(unsigned x=0;x<w;++x) {
+                    const auto* q=dest.data()+16+y*stride+x*4;
+                    const bool inside=x>=left&&x<left+dw&&y>=top&&y<top+dh;
+                    require(q[3]==255,"display alpha");
+                    if(inside) {
+                        const auto source=(std::size_t(y-top)*f.height/dh*f.width+std::size_t(x-left)*f.width/dw)*4;
+                        for(unsigned c=0;c<4;++c)require(q[c]==f.rgba[source+c],"display source mapping");
+                    } else require(q[0]==0&&q[1]==0&&q[2]==0,"display black bars");
+                }
+                for(std::size_t i=w*4;i<stride;++i)require(dest[16+y*stride+i]==23,"display stride padding");
+            }
+            for(unsigned i=0;i<16;++i)require(dest[i]==23&&dest[dest.size()-1-i]==23,"display outer bounds");
+        }
+        f.display_height=0;bool failed=false;
+        std::array<std::uint8_t,4> dest{};
+        try{nfsu::blit_movie(f,dest.data(),1,1,4);}catch(const std::exception&){failed=true;}
+        require(failed,"incomplete display metadata accepted");
+    }
+}
 using Bytes=std::vector<std::uint8_t>;
 void u32(Bytes& b,unsigned v){for(unsigned i=0;i<4;++i)b.push_back(static_cast<std::uint8_t>(v>>(8*i)));}
 void append(Bytes& b,const char* tag,const Bytes& payload){b.insert(b.end(),tag,tag+4);u32(b,unsigned(payload.size()+8));b.insert(b.end(),payload.begin(),payload.end());}
@@ -80,6 +120,7 @@ int main() {
 #endif
     const auto dir=std::filesystem::temp_directory_path()/("nfsu-intro-"+std::to_string(pid)+"-"+std::to_string(stamp));
     try {
+        display_geometry();
         std::filesystem::create_directories(dir/"Movies");
         const auto path=dir/"movie.mad";
         const auto original=fixture();write(path,original);
@@ -107,7 +148,7 @@ int main() {
         r=nfsu::play_original_intro(dir.string(),[]{return nfsu::IntroControl::quit;},noop);
         require(r.outcome==nfsu::IntroOutcome::quit&&starts==0,"initial quit");
         unsigned shown=0;rendered.clear();
-        r=nfsu::play_original_intro(dir.string(),normal,[&](const nfsu::MovieFrame&){++shown;});
+        r=nfsu::play_original_intro(dir.string(),normal,[&](const nfsu::MovieFrame& f){require(f.display_width==640&&f.display_height==480,"original display metadata");++shown;});
         require(r.outcome==nfsu::IntroOutcome::completed&&r.movies_completed==3&&shown==3&&starts==3&&stops==3,"sequence completion/output cleanup");
         require(rendered.size()>=62,"rendered audio missing");
         for(unsigned i=0;i<31;++i){const unsigned phase=i*44100;const unsigned sample=std::min(27U,phase/48000);const unsigned next=std::min(27U,sample+1);const int expected=int((sample*100ULL*(48000-phase%48000)+next*100ULL*(phase%48000))/48000);require(rendered[i*2]==expected&&rendered[i*2+1]==-expected,"44.1kHz resampling");}

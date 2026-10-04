@@ -29,6 +29,19 @@ def main():
         raise ValueError('EA logo constructor differs')
     if exe[0xDEC18:0xDEC1D] != bytes.fromhex('68fc3a6c00'):
         raise ValueError('PSA constructor differs')
+    # Native type7 Movie draw: object geometry controls vertices. Texture
+    # dimensions subsequently control only UV extent/backing texture padding.
+    for address, code in [(0x4F2D2D, '565357e84bf0ffff'),
+                          (0x4F1AE2, 'd84f38'), (0x4F1B26, 'd84f3c'),
+                          (0x4F1E29, 'c74424600000a043'),
+                          (0x4F1E31, 'c744246400007043')]:
+        offset = address - 0x400000
+        if exe[offset:offset + len(bytes.fromhex(code))] != bytes.fromhex(code):
+            raise ValueError('native Movie geometry differs at 0x%X' % address)
+    movie_objects = {b'LS_EAlogo.fng\0': 0x25C,
+                     b'LS_PSAMovie.fng\0': 0x248,
+                     b'LS_IntroFMV.fng\0': 0x3E8}
+    found_objects = set()
     found = False
     for match in re.finditer(b'JDLZ', image):
         offset = match.start()
@@ -39,11 +52,20 @@ def main():
             package = jdlz(image[offset:offset + size])
         except ValueError:
             continue
+        for name, size_offset in movie_objects.items():
+            if name in package:
+                display = struct.unpack_from('<ff', package, size_offset)
+                if display != (640.0, 480.0):
+                    raise ValueError('original Movie Size differs: ' + name.decode('ascii'))
+                found_objects.add(name)
+                print('%s package=0x%X Size=(640,480)' % (name[:-1].decode('ascii'), offset))
         if b'LS_IntroFMV.fng\0' in package:
             if package[0x304:0x30D] != b'e3_title\0':
                 raise ValueError('intro FNG movie differs')
             print('intro_fng_offset=0x%X object=e3_title' % offset)
             found = True
+    if found_objects != set(movie_objects):
+        raise ValueError('original Movie geometry missing')
     if not found:
         raise ValueError('intro FNG missing')
     print('bootflow=' + ' -> '.join(names))

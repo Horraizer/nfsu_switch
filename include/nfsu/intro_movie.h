@@ -9,6 +9,9 @@
 namespace nfsu {
 struct MovieFrame {
     unsigned width = 0, height = 0;
+    // Frontend object geometry, independent of encoded sample dimensions.
+    // Both zero means square pixels for callers without display metadata.
+    unsigned display_width = 0, display_height = 0;
     std::uint32_t duration_ms = 0;
     std::uint64_t timestamp_ms = 0;
     std::vector<std::uint8_t> yuv;
@@ -41,8 +44,8 @@ using IntroPoll = std::function<IntroControl()>;
 using IntroPresent = std::function<void(const MovieFrame&)>;
 IntroResult play_original_intro(const std::string& retail_root,
                                const IntroPoll& poll, const IntroPresent& present);
-// Retail video has square pixels. Fit it inside the destination without
-// distortion and paint every unused pixel opaque black.
+// Fit the frontend display aspect inside the destination, sample the encoded
+// image into that rectangle and paint unused pixels opaque black.
 void blit_movie(const MovieFrame& frame, std::uint8_t* destination,
                 unsigned width, unsigned height, std::size_t stride);
 } // namespace nfsu
