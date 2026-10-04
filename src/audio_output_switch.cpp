@@ -99,6 +99,13 @@ bool Output::start(Render render, std::string& error) {
         error = "audio output already open or callback missing";
         return false;
     }
+    // Each start is a new playback session, including after backend failure.
+    { std::lock_guard<std::mutex> lock(p.error_mutex); p.failure.clear(); }
+    error.clear();
+    p.late = 0;
+    p.played_frames = 0;
+    p.queued_frames = 0;
+    p.work_us = 0;
     const AudioRendererConfig config{
         AudioRendererOutputRate_48kHz, kChannelPool, 0, 1, 1, 2};
     if (R_FAILED(audrenInitialize(&config))) {
@@ -197,6 +204,12 @@ void Output::stop() {
         audrenExit();
         p.audren_initialized = false;
     }
+    // audrvClose owns only driver storage, not these caller-owned records.
+    // Reset only after the thread and renderer no longer reference them.
+    p.buffers = {};
+    p.render = {};
+    p.queued_frames = 0;
+    p.work_us = 0;
     free(p.pcm);
     p.pcm = nullptr;
 }

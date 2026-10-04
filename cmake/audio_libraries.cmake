@@ -34,3 +34,18 @@ target_link_libraries(nfsu_race_audio PUBLIC nfsu_audio_playback
 target_include_directories(nfsu_race_audio PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(nfsu_race_audio PUBLIC cxx_std_17)
 nfsu_enable_warnings(nfsu_race_audio)
+
+# Compile the actual Switch Output against host service stubs. The driver close
+# stub deliberately leaves caller-owned wave-buffer states intact like libnx.
+if(NOT NINTENDO_SWITCH AND NFSU_BUILD_TESTS)
+    find_package(Threads REQUIRED)
+    add_executable(nfsu_audio_output_switch_tests
+        tests/audio_output_switch_tests.cpp src/audio_output_switch.cpp)
+    target_include_directories(nfsu_audio_output_switch_tests PRIVATE
+        tests/audio_output_switch_stubs include)
+    target_compile_features(nfsu_audio_output_switch_tests PRIVATE cxx_std_17)
+    target_link_libraries(nfsu_audio_output_switch_tests PRIVATE Threads::Threads)
+    nfsu_enable_warnings(nfsu_audio_output_switch_tests)
+    add_test(NAME nfsu_audio_output_switch_tests COMMAND nfsu_audio_output_switch_tests)
+    set_tests_properties(nfsu_audio_output_switch_tests PROPERTIES TIMEOUT 10)
+endif()
