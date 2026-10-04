@@ -48,6 +48,25 @@ int oracle() {
             input >> clock >> pressed >> context.flag_78a345 >> context.override_7361a4
                   >> context.flag_78a346 >> context.override_7361a0 >> context.held_mode;
             nfsu::nitrous_dispatch(state, clock, pressed, context);
+        } else if (op == "bridge") {
+            nfsu::NitrousEngineState engine;
+            std::uint32_t clock = 0;
+            input >> engine.active >> engine.activation_seconds >> clock;
+            if (!input) { std::cerr << "test failure: bridge input\n"; return 1; }
+            engine.update(state, clock);
+            std::cout << state.capacity << ' ' << state.step << ' ' << state.remaining << ' '
+                      << state.started << ' ' << engine.active << ' '
+                      << std::setprecision(9) << engine.activation_seconds << '\n';
+            continue;
+        } else if (op == "descriptor") {
+            float idle = 0, redline = 0;
+            nfsu::NitrousCurveDescriptor descriptor;
+            input >> idle >> redline;
+            if (!input || !descriptor.initialize(idle, redline)) {
+                std::cerr << "test failure: descriptor input\n"; return 1;
+            }
+            std::cout << std::setprecision(9) << descriptor.rpm_origin << ' ' << descriptor.rpm_scale << '\n';
+            continue;
         } else if (op == "torque") {
             float base = 0, angular = 0, rate = 0; bool active = false;
             nfsu::NitrousTorqueContext context;
@@ -156,11 +175,43 @@ void torque_tests() {
     context.clock = 80000;
     check(nfsu::nitrous_engine_torque(2, angular, 0.5F, true, context) == boosted, "time window ends modifier");
 }
+void engine_bridge_tests() {
+    nfsu::NitrousResource resource;
+    nfsu::NitrousEngineState engine;
+    resource.initialize(2, 2);
+    engine.update(resource, 10000);
+    check(!engine.active && engine.activation_seconds == 0, "inactive engine initialization");
+    resource.start(10000, true);
+    engine.update(resource, 11000);
+    const float activation = engine.activation_seconds;
+    check(engine.active && activation == 2.7500002384185791015625F,
+          "original engine rising edge stamps rounded world time");
+    engine.update(resource, 12000);
+    check(engine.activation_seconds == activation, "held engine does not restart modifier window");
+    engine.update(resource, 18000);
+    check(engine.active, "engine bridge preserves exact exhaustion");
+    engine.update(resource, 18001);
+    check(!engine.active && resource.remaining == 0 && engine.activation_seconds == activation,
+          "engine bridge commits depletion without erasing activation time");
+    resource = {}; resource.initialize(2, 2); resource.start(20000, true);
+    engine.update(resource, 21000);
+    check(engine.active && engine.activation_seconds == 5.250000476837158203125F,
+          "next original activation stamps again");
+    resource.stop(22000); engine.update(resource, 22000);
+    check(!engine.active && engine.activation_seconds == 5.250000476837158203125F,
+          "release disables engine boost");
+    nfsu::NitrousCurveDescriptor descriptor;
+    check(descriptor.initialize(800, 7500) && descriptor.rpm_origin == 800 &&
+          descriptor.rpm_scale == static_cast<float>(8.0 / 6700.0), "constructor idle/redline descriptor");
+    const auto valid = descriptor;
+    check(!descriptor.initialize(800, 800) && descriptor.rpm_scale == valid.rpm_scale,
+          "invalid descriptor preserves validated state");
+}
 }
 int main(int argc, char** argv) {
     if (argc == 2 && std::string(argv[1]) == "--oracle") return oracle();
     if (argc != 1) return 1;
-    resource_tests(); controls_tests(); torque_tests();
+    resource_tests(); controls_tests(); torque_tests(); engine_bridge_tests();
     if (failures) { std::cerr << "FAIL: " << failures << " nitrous tests\n"; return 1; }
     std::cout << "PASS: nitrous resource, controls and torque tests\n";
     return 0;

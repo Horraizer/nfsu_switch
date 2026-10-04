@@ -31,6 +31,25 @@ struct NitrousResource {
     std::uint32_t remaining_at(std::uint32_t clock) const noexcept;
 };
 
+// Original live-engine +84/+88, initialized by 46C7C0. Physics bridge
+// 477637..477684 commits active() twice at the same world tick and stamps
+// activation seconds only on an inactive-to-active transition. It does not
+// manufacture a refill or choose the production physics caller.
+struct NitrousEngineState {
+    bool active = false;
+    float activation_seconds = 0;
+    void update(NitrousResource& resource, std::uint32_t clock) noexcept;
+};
+
+// Original 46C842..46C867 derives the nitrous descriptor from physical
+// engine idle/redline, not its maximum RPM. The table is kNitrousTorqueCurve.
+struct NitrousCurveDescriptor {
+    float rpm_origin = 0;
+    float rpm_scale = 0;
+    // Refuses invalid input without changing an existing descriptor.
+    bool initialize(float idle_rpm, float redline_rpm) noexcept;
+};
+
 // These are explicit original predicate inputs, not assumed production
 // defaults. Dispatcher 431960 suppresses both press and release when any
 // predicate is true. Their initialization remains a caller evidence gap.

@@ -15,6 +15,7 @@ import subprocess
 from event0_trace import Image, digest_file, manifest
 from nitrous314_recovery import EXE_SHA, Oracle, witnesses, torque_witnesses
 from nitrous314_lifecycle import dispatch
+from nitrous314_bridge import engine_witnesses
 
 
 def f32(value):
@@ -23,9 +24,10 @@ def f32(value):
 
 def compare(image, probe):
     commands, expected = [], []
-    def add(command, state=None, result=None, torque=None):
+    def add(command, state=None, result=None, torque=None, engine=None, descriptor=None):
         commands.append(command)
-        expected.append(dict(command=command, state=state, result=result, torque=torque))
+        expected.append(dict(command=command, state=state, result=result, torque=torque,
+                             engine=engine, descriptor=descriptor))
     rows, _ = witnesses(image)
     operations = {'00465490': 'available', '00465430': 'active',
                   '004654F0': 'start', '00465530': 'stop'}
@@ -87,6 +89,15 @@ def compare(image, probe):
         add('torque 2 %.17g 0.5 %s 1000 0.001 10 %s %s %s' %
             (angular, int(row.get('active', True)), row.get('clock', 40000),
              row.get('flag', 0), row.get('override', 0)), torque=row['observed_torque'])
+    engine_rows, _ = engine_witnesses(image)
+    for row in engine_rows:
+        if row['name'] == 'descriptor-constructor-prefix':
+            add('descriptor %s %s' % (row['idle'], row['redline']),
+                descriptor=(row['descriptor'][1], row['descriptor'][3]))
+        else:
+            add('load ' + ' '.join(map(str, row['initial_resource'])), row['initial_resource'])
+            add('bridge %s %.17g %s' % (row['prior_active'], row['prior_seconds'], row['clock']),
+                row['resource'], engine=(row['active'], row['seconds']))
     run = subprocess.run([str(probe), '--oracle'], input='\n'.join(commands) + '\n',
                          text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
     if run.returncode != 0 or run.stderr or not run.stdout:
@@ -96,7 +107,16 @@ def compare(image, probe):
     if len(lines) != len(expected):
         raise AssertionError('fresh output count %d versus %d' % (len(lines), len(expected)))
     for line, want in zip(lines, expected):
-        if want['torque'] is not None:
+        if want['descriptor'] is not None:
+            actual = tuple(float(value) for value in line.split())
+            if tuple(f32(value) for value in actual) != want['descriptor']:
+                raise AssertionError('portable constructor descriptor differs: ' + line)
+        elif want['engine'] is not None:
+            words = line.split()
+            if len(words) != 6 or list(map(int, words[:4])) != want['state'] or (
+                    int(words[4]), f32(float(words[5]))) != want['engine']:
+                raise AssertionError('portable engine bridge differs: ' + line)
+        elif want['torque'] is not None:
             if abs(float(line) - want['torque']) > 2e-6:
                 raise AssertionError('portable torque %s: %s versus %s' % (want['command'], line, want['torque']))
         else:
@@ -106,6 +126,7 @@ def compare(image, probe):
                 raise AssertionError('portable resource %s: %s versus %r' % (want['command'], line, want))
     return dict(resource_witnesses=len(rows), dispatcher_witnesses=dispatch_count,
                 resource_sequence_operations=sequence_count, torque_witnesses=len(torque_rows),
+                engine_witnesses=len(engine_rows),
                 fresh_probe_lines=len(lines), stdout_sha256=hashlib.sha256(run.stdout.encode('ascii')).hexdigest().upper())
 
 

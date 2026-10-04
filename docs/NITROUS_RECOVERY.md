@@ -131,6 +131,55 @@ python tools/nitrous314_lifecycle.py --root "E:/Games/nfs/Need For Speed - Under
 
 ## Portable implementation and comparison
 
+### Original phase and engine producers
+
+`tools/nitrous314_bridge.py` executes original stage selector
+`0x0042D470..0x0042D4E1`, including its table at `0x0042D4F0`.
+It reads the stage object through `0x007361F0`. This object is distinct
+from race status at `0x0073619C`, which the input dispatcher reads.
+The receiver is the player/view object registered in `0x007361BC`, not
+the human actor's RealController. Original main-loop suffix
+`0x00447783..0x004477A6` iterates that registered list and calls the
+selector. The bounded loop witness uses matching current states and
+therefore omits allocator-backed input re-registration. The complete
+main-loop imports and stage producers remain outside this witness.
+
+For stage values4/5/6/8/10, receiver `+0x4AF` selects state3; otherwise
+`+0x4AE` selects state2 or4. The original state table registers nitrous
+for these three states. Finish `+0x58` selects state8, and the original
+index into `0x00700B3C` can override it with state5. The flags and stage
+are explicit witness inputs, not assumed production defaults.
+
+The live-engine constructor `0x0046C7C0` derives the nitrous descriptor
+from physical engine idle and redline, not maximum RPM: nine points,
+origin at physical `+0x00`, endpoint at `+0x04`, scale8 divided by their
+difference, and table `0x006FFF34`. Caller `0x00476BD9..0x00476BF1`
+passes physical owner `+0x54` plus `0x1F0` and stores the engine at
+owner `+0x48`. The executed constructor prefix ends at `0x0046C8E0`
+before its maximum-torque helper and remaining object setup.
+
+Original physics suffix `0x00477637..0x00477684` connects owner `+0x58`
+resource to owner `+0x48` engine. It invokes resource active twice at the
+same world tick. On an inactive-to-active engine transition it stores
+the original rounded world seconds at engine `+0x88`; the second active
+result commits engine `+0x84`. Held activation preserves that timestamp,
+release disables boost, and past exhaustion commits depletion. Neither
+this suffix nor the portable adapter refills charge.
+
+`NitrousEngineState` implements that bounded state bridge;
+`NitrousCurveDescriptor` implements the constructor's idle/redline
+descriptor. Callers still supply the actual mode flags and appropriate
+original engine/base torque units. There is no application caller or
+full engine-braking/damage/gearbox pipeline wired by this adapter.
+
+```text
+python tools/nitrous314_bridge.py --root "E:/Games/nfs/Need For Speed - Underground/Need For Speed Underground" --out build/nitrous314-bridge01
+```
+
+Counts and expected values live in the executable tests. The portable
+comparison also checks the original constructor descriptor and resource
+to engine bridge, including signed clock-word and exhaustion boundaries.
+
 `include/nfsu/nitrous.h` and `src/nitrous.cpp` expose resource operations,
 explicit dispatcher context, a read-only snapshot, transition events and
 the live additive torque consumer. Callers supply world ticks, installed
@@ -171,7 +220,8 @@ Required before production integration:
 
 - Authenticate event0 callers of the now-executed dispatcher and actor
   reachability, including pre-GO and finish transitions.
-- Trace the live engine wiring and the second conditional torque global to
+- Reach the bounded live engine bridge through the complete actor/physics
+  caller and downstream units. Trace the second conditional torque global to
   establish the ordinary event0 setting, rather than assuming its default.
 - Execute complete retry teardown/reconstruction and the finish producer,
   beyond the bounded operations and static call chain above.
@@ -187,8 +237,25 @@ Required before production integration:
 Direct absolute-write and raw pointer candidate searches found no authenticated
 writer for `0x007361A8`. This BSS address has no raw-backed PE bytes; absence
 from raw data and synthetic harness zeros do not establish a production value.
-Indirect/aggregate initialization remains an investigation gap, not proof of
-no writer.
+Game startup and indirect/aggregate writes remain an investigation gap, not
+proof of no writer.
+
+`tools/nitrous314_image_init.py` now measures actual initial image words with
+Windows `CreateFileMappingW` using `PAGE_READONLY|SEC_IMAGE_NO_EXECUTE` and
+`MapViewOfFile` using `FILE_MAP_READ`. The authenticated original code and
+raw-backed held-mode word are positive controls. The initial override words
+at `0x007361A0`, `0x007361A4` and `0x007361A8` are zero in this OS mapping.
+No original entrypoint, import, startup or event0 instruction is executed.
+This closes the initial-image measurement gap; it does not establish the
+ordinary event0 value or exclude later indirect/aggregate writes. The
+portable caller still supplies the actual runtime override.
+The non-executing mapping contract is described by
+[CreateFileMappingW](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-createfilemappingw)
+and [MapViewOfFile](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-mapviewoffile).
+
+```text
+python tools/nitrous314_image_init.py --root "E:/Games/nfs/Need For Speed - Underground/Need For Speed Underground" --out build/nitrous314-image-init01
+```
 
 The public implementation is independently reviewable. It does not satisfy
 working event0 boost, original presentation or console acceptance. No issue

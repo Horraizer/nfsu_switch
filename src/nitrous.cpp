@@ -61,6 +61,21 @@ void NitrousResource::stop(std::uint32_t clock) noexcept {
 std::uint32_t NitrousResource::remaining_at(std::uint32_t clock) const noexcept {
     return timestamp(started) ? committed_remaining(*this, clock) : remaining;
 }
+void NitrousEngineState::update(NitrousResource& resource, std::uint32_t clock) noexcept {
+    if (resource.active(clock) && !active) {
+        activation_seconds = static_cast<float>(
+            static_cast<double>(signed_word(clock)) * tick_seconds);
+    }
+    active = resource.active(clock);
+}
+bool NitrousCurveDescriptor::initialize(float idle, float redline) noexcept {
+    if (!std::isfinite(idle) || !std::isfinite(redline) || idle < 0 || redline <= idle) return false;
+    const float scale = static_cast<float>(8.0 / (static_cast<double>(redline) - idle));
+    if (!std::isfinite(scale) || scale <= 0) return false;
+    rpm_origin = idle;
+    rpm_scale = scale;
+    return true;
+}
 NitrousTransition nitrous_dispatch(NitrousResource& resource, std::uint32_t clock,
                       bool pressed, const NitrousDispatchContext& context) noexcept {
     if (context.flag_78a345 || context.override_7361a4 ||
