@@ -96,6 +96,12 @@ the IDs selected by tables `0x00431CC0` and `0x00431CF8`. It covers press,
 release, duplicate press, empty resource, missing car and each suppression
 predicate. Its explicit mode context takes the original no-effect branch
 and disables the sound flag; no effect or sound call is stubbed.
+The tool also executes registered callback wrapper `0x0042ABB0` through
+the dispatcher. Authenticated state-transition tables at `0x0042D97C`
+select registration block `0x0042D74C` for controller `+0x278` states2/3/4;
+its instructions register both nitrous IDs with this wrapper and the
+controller context through `0x00574020`. The full callback allocation/list
+machinery and event0 state producers are not executed by this witness.
 
 The tool executes world-clock update `0x00585E00`: zero world delta does
 not advance `0x0073AD34`. It executes constructor `0x00464860` through its
@@ -116,6 +122,8 @@ Finish consumer `0x0042C1F0` is executed in an explicit nonselected-place
 context: first finish latches its world frame and stops the resource,
 committing elapsed consumption; later calls return without consuming again.
 Reaching it through the complete event0 finish producer remains pending.
+The tool executes the caller suffix `0x004352EA..0x004352FC`, including
+the actual call at `0x004352F7`; earlier lap/place eligibility is omitted.
 
 ```text
 python tools/nitrous314_lifecycle.py --root "E:/Games/nfs/Need For Speed - Underground/Need For Speed Underground" --out build/nitrous314-lifecycle01

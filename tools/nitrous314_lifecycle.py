@@ -15,7 +15,7 @@ from nitrous314_recovery import Oracle, EXE_SHA
 def dispatch(image):
     ranges = ((0x431960, 0x431CBD), (0x4318D0, 0x4318F3),
               (0x431900, 0x431920), (0x41F600, 0x41F619),
-              (0x42AB30, 0x42AB49))
+              (0x42AB30, 0x42AB49), (0x42ABB0, 0x42ABC8))
     machine = Oracle(image, ranges)
     u, x = machine.uc, machine.x
     car, controller, mode = 0x1000100, 0x1001000, 0x1002000
@@ -31,7 +31,8 @@ def dispatch(image):
         raise AssertionError('nitrous dispatch table changed')
     rows = []
     def check(name, input_id, pressed, state, expected, drag=0, drift=0,
-              drag_override=0, drift_override=0, car_present=True, clock=10000):
+              drag_override=0, drift_override=0, car_present=True, clock=10000,
+              callback=False):
         machine.prepare(state, clock)
         machine.write(controller + 4, car if car_present else 0)
         u.mem_write(0x78A345, bytes([drag]))
@@ -40,11 +41,14 @@ def dispatch(image):
         machine.write(0x7361A0, drift_override)
         machine.write(machine.stack, machine.stop)
         machine.write(machine.stack + 4, 0)
-        machine.write(machine.stack + 8, pressed)
+        machine.write(machine.stack + 8, input_id if callback else pressed)
+        if callback:
+            machine.write(machine.stack + 12, pressed)
+            machine.write(machine.stack + 16, controller)
         u.reg_write(x.UC_X86_REG_ESP, machine.stack)
         u.reg_write(x.UC_X86_REG_EAX, input_id)
         u.reg_write(x.UC_X86_REG_ECX, controller)
-        u.emu_start(0x431960, machine.stop, count=20000)
+        u.emu_start(0x42ABB0 if callback else 0x431960, machine.stop, count=20000)
         if u.reg_read(x.UC_X86_REG_EIP) != machine.stop:
             raise RuntimeError('dispatcher instruction limit')
         actual = machine.state()
@@ -54,7 +58,7 @@ def dispatch(image):
                          expected=expected, actual=actual, clock=clock, drag=drag,
                          drift=drift, drag_override=drag_override,
                          drift_override=drift_override, car_present=car_present,
-                         mode_context=4, audio_flag=False))
+                         mode_context=4, audio_flag=False, callback_wrapper=callback))
     full = [8000, 4000, 8000, 0]
     active = [8000, 8000, 8000, 10000]
     for input_id in ids:
@@ -67,6 +71,7 @@ def dispatch(image):
         check('drift-suppressed', input_id, 1, full, full, drift=1)
         check('drag-override-suppressed', input_id, 1, full, full, drag_override=1)
         check('drift-override-suppressed', input_id, 1, full, full, drift_override=1)
+        check('registered-callback-press', input_id, 1, full, active, callback=True)
     check('unmapped-input', 0x74, 1, full, full)
     return rows, sorted('%08X' % a for a in machine.reached)
 
@@ -127,12 +132,28 @@ def clock_and_constructor(image):
             raise AssertionError('restart/constructor call changed at %08X' % at)
     rows.append(dict(name='authenticated-restart-call-chain', evidence='message8 -> 422BD4 -> teardown422130, reload421F00 -> actor instantiate422A70; constructor464860 clears resource then reset464C80',
                      context='static authenticated calls; not complete world reload execution'))
+    registration = struct.unpack('<7I', image.read(0x42D97C, 28))
+    if registration[:3] != (0x42D74C,) * 3:
+        raise AssertionError('controller states2/3/4 callback registration route changed')
+    for callback_at, id_at, input_id, call_at in (
+            (0x42D7C9, 0x42D7CE, 0x9B, 0x42D7D3),
+            (0x42D7DC, 0x42D7E1, 0x9C, 0x42D7E6)):
+        if image.read(callback_at, 5) != b'\x68' + struct.pack('<I', 0x42ABB0):
+            raise AssertionError('nitrous callback pointer changed')
+        if image.read(id_at, 5) != b'\x68' + struct.pack('<I', input_id):
+            raise AssertionError('nitrous callback ID changed')
+        raw = image.read(call_at, 5)
+        if raw[0] != 0xE8 or call_at + 5 + struct.unpack('<i', raw[1:])[0] != 0x574020:
+            raise AssertionError('nitrous callback registration call changed')
+    rows.append(dict(name='authenticated-controller-callback-registration',
+        evidence='controller +278 states2/3/4 route42D74C; IDs9B/9C register callback42ABB0 with controller context via574020',
+        context='authenticated table and instructions; event0 phase producers still pending'))
     return rows
 
 
 
 def finish_consumer(image):
-    machine = Oracle(image, ((0x42C1F0, 0x42C338),))
+    machine = Oracle(image, ((0x42C1F0, 0x42C338), (0x4352EA, 0x4352FC)), (0x4352FC,))
     u, x = machine.uc, machine.x
     car, controller, mode, racer = 0x1000100, 0x1001000, 0x1002000, 0x1003000
     machine.obj = car + 0x40
@@ -168,6 +189,17 @@ def finish_consumer(image):
     if machine.state() != [8000, 0, 7000, 0]:
         raise AssertionError('latched finish consumed again')
     rows.append(dict(name='latched-finish-resource-unchanged', clock=13000, state=machine.state()))
+    machine.write(controller + 0x58, 0)
+    machine.prepare(state, 11000)
+    machine.write(machine.stack, machine.stop)
+    u.reg_write(x.UC_X86_REG_ESP, machine.stack)
+    u.reg_write(x.UC_X86_REG_EDI, mode)
+    u.reg_write(x.UC_X86_REG_EBX, controller)
+    u.emu_start(0x4352EA, 0x4352FC, count=20000)
+    if u.reg_read(x.UC_X86_REG_EIP) != 0x4352FC or machine.state() != [8000, 0, 7000, 0]:
+        raise AssertionError('finish caller suffix did not reach resource stop')
+    rows.append(dict(name='original-finish-caller-suffix', entry='4352EA', endpoint='4352FC',
+                     state=machine.state(), context='lap/place update suffix; earlier producer eligibility omitted'))
     return rows
 
 def main():
