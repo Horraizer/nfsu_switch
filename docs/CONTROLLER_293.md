@@ -21,6 +21,10 @@ original objects, publishes the self world object, generates action paths and
 returns controls from original driver updates. No supplied path, substitute
 curve, planner callback or prebuilt driver history enters this new chain.
 The older frozen/supplied-path witnesses remain separate regression cases.
+The v4 continuation under assignment8569 adds original event setup metadata,
+grid permutation and a paired controller witness in `controller293_scene.py`.
+Its recursive retail chunk reader is the already tracked `event0_trace.py`;
+no additional foreign-branch dependency is needed.
 The original game runtime, actual event0 roster/scene and physical integration
 remain outside this conditional executable adapter.
 
@@ -49,6 +53,7 @@ The initialized planner additionally reads these authenticated retail inputs:
 
 | Relative input | Bytes | SHA-256 |
 | --- | --- | --- |
+| FrontEnd/FrontB.lzc | 4182578 | 76F368D5E5E30F96A8182BF457DBA4491395E075C3F336D86A32012B56E16F90 |
 | Tracks/TRACKB1003.lzc | 433352 | ADA8206B5D66E3286BF582E2C7117FE0CC2BA9F6CADB756D922F7D32E7C696BA |
 | GLOBAL/GLOBALB.BUN | 2361176 | 39DF38FAC2BE7CA0F0D0A92E0113CAAEDA5B1C60E14436C612B3D0874AFC8DB9 |
 | Cars/240SX/GEOMETRY.BIN | 4780816 | 002202192752838E1B65E9B7C219EAB381FD5F916C3D031DDE93428EB325F619 |
@@ -75,9 +80,9 @@ files are never patched. This is not a mutation-sweep score.
 virtual+0x0C is `0x00462430`; that calls the base action scheduler
 `0x0044B1B0` at `0x004624B8`. The driver table `0x006C8C18` has virtual+4
 `0x0045E970`. Neither the controller nor driver table is the physics table.
-The factory's event0 role/config selection remains the pinned #268/#258
-contract; this probe does not replay new-career construction or instantiate
-the actual roster.
+The paired witness below executes the event metadata/config selection, while
+retaining conditional stock car inputs. It does not instantiate the actual
+event roster or execute the complete new-career flow.
 
 `0x0044C550` is the new concrete boundary between action selection and driver
 inputs. It first sends action+0x20 to driver virtual+0x3C (`0x0045FAF0`).
@@ -362,8 +367,8 @@ rival catch-up target. It supplies the status records, initial speed scale and
 zero RNG state explicitly. These are conditional scene choices, not observed
 event0 values. Original RNG instructions subsequently advance retained state;
 no random value or catch-up result is hooked. The no-reference catch-up branch
-executes and returns its original scale. Rival-dependent numerical catch-up
-and overtake/avoidance branches remain unmeasured.
+executes and returns its original scale. These are the v3 isolated cases;
+the v4 paired case below exercises reference-dependent catch-up separately.
 
 `pose` selects a real route1 sample for position, forward vector and progress;
 velocity and signed/absolute speed are supplied. Original atan2 produces the
@@ -382,8 +387,9 @@ contract described above still applies. There is no implemented RaceSession
 hook and no claim that this Python object supplies one.
 
 External service hooks are restricted to heap allocation/release and a disclosed
-zero profiling `QueryPerformanceCounter` with divisor1. Profiling is separate
-from game time. Free-list storage, memory placement, SEH chain and empty graphics
+zero `QueryPerformanceCounter` with divisor1, separate from the supplied game
+clock. This does not establish timer independence for other hull-query code.
+Free-list storage, memory placement, SEH chain and empty graphics
 registries are fixture infrastructure. Original scalar D3DX dispatch initializes
 math operations. The body constructor stops before spatial world registration;
 this is sufficient for the recovered local-bounds consumer, not a collision
@@ -396,12 +402,80 @@ NULL page permits only the explicit FS:[0] SEH chain; this guard found missing
 original state/type producers during recovery. Heap bounds also fail closed.
 The legacy supplied-path evolving fixture now uses the same coherent clock/dt.
 
-### Remaining integration work
+## Event metadata and paired original controller witness
+
+**S/E.** `controller293_scene.PairedController` adds these original producers:
+
+| Input or lifecycle | Executed producer |
+| --- | --- |
+| Event table and event0 setup | FrontB loader`5A00A0`, career reset core`5A0A26..5A0B30`, selection`5A0CE0`, copy`5A2350`, setup`5A2930` |
+| Settings and explicit seed | settings reset`431DF0`, human count store`4B5E36`, career builder`4B5E61..4B602B`; world initialization core`41F7C9..41F891` derives world+2D0 and advances original RNG |
+| Config metadata and grid | caller slices`4B6102..4B611C`, `4B41EB..4B4227`, `4B42FC..4B4321`; constructor`5809C0`; event grid swap`4B628B..4B6299` calling`4B6300` |
+| Controller/physics selectors | role consumer`422ACA..422AEA`, physics selector`425150` |
+| Player reference and history | registry slice`42B21E..42B22B`, history construction`42B557..42B5B8`, RealController`59BFC0`, update`59C210`, sampling`430758..4308D6` and`584270` |
+| Race rows and initial route | marker loader`441ED0`, race status`434270`, role partition`41FE50`, route assignment`435D30`, row registration`434A80`, projection`443A10`, row refresh`4338C0`, sorting`434ED0` |
+| Nearby human admission | original state`464860`, world object`57A1B0`/`57A380`, constructor active stores`4257F7..425805`, eligibility`57A300`, context query`57A910` |
+| Catch-up and retained action | reference-dependent`44BD10`/`44C010`, original action flag/path update`450210`, publication and driver chain used by the isolated witness |
+
+`SceneTests` owns the metadata, grid, seed, history, context and complete frame
+pins. Native config construction preserves the event's IDs, roles, context and
+mode bytes and final grid permutation. The original caller RideInfo argument
+is explicitly replaced with the previously constructed stock240SX RideInfo;
+resolved event presets/adaptive performance are not claimed. Four metadata
+records are constructed, but only the human and first rival are instantiated
+in this witness. It is not the event's complete field or traffic population.
+
+The seed before settings reset is a declared input. Both settings and world
+initialization execute the original RNG transforms. The world initialization
+core executes before controller construction. The later resumed world-clock
+and race-elapsed values are explicit snapshot inputs; no intervening simulation
+is implied. Each subsequent call advances both clocks consistently with dt.
+
+The player/view object referenced through`7361BC` is distinct from the human's
+RealController. Its actor link and registry ownership are explicit bindings.
+The race status and flow object are also distinct. Stage4 is an entry
+condition; its transition has not been recovered here. Empty replay state is
+constructed by`571FA0`. The actor linked list and config array publication are
+fixture ownership; original code partitions roles and creates/ranks race rows.
+The initial lap/progress projection is produced by that registration code.
+
+The caller supplies coherent position, heading, tangent and velocity snapshots
+through the shared `pose` method. Their time evolution is deliberately
+nonphysical. Nearby human admission required recovering actor+4D0 from the
+original constructor: `57A300` excludes inactive or actor+8A8-marked actors,
+apart from the query's special self handling. No eligibility callback or
+prebuilt context row is supplied. The tests exercise both a self-only context
+and a context containing the nearby human, followed by original action refresh.
+They do not establish general overtake or collision behavior.
+
+Human history samples on its own original countdown. The fixture never forces
+that countdown or the action catch-up flag to refresh. Race progress, rank and
+human history reach the original catch-up comparator; resulting scales and
+driver desired speeds vary. The action and driver retain their state across
+the supplied call stream. Complete hooks, visited addresses, input metadata
+and raw result frames remain in the report.
+
+### Caller contract and remaining integration work
+
+The executable research entry is `PairedController(image, retail, seed,
+elapsed_ticks)`, followed by `step(human_point, human_speed)`. The explicit
+snapshot fields and returned controls describe a conditional original-code
+oracle, not a C++ or RaceSession hook. A production caller must replace route
+sample snapshots with the same actor identity's integrated state, bind actual
+resolved RideInfo/config/world ownership, provide original phase/clock/RNG
+state and preserve histories across calls. It must not copy these fixture
+poses, partial field or selected call cadence into gameplay.
+
+The v4 exact instruction additions are frozen in
+`controller293_scene_ranges.py`; the same boundary/length and NULL guards apply.
+Source assertions include active admission, original seed storage, history
+countdown and metadata stores. A modified admission branch is rejected in the
+source guard tests. No semantic AI, path, catch-up, RNG or controls are hooked.
 
 The initialized planner context and positive returned path are recovered for
-this scene. Remaining work is the event0 construction/scene recipe, complete
+these conditional scenes. Remaining work is full event0 tuning/scene ownership, complete
 scheduler/action selection beyond the retained first action, actor lifecycle,
-multiple world actors and spatial registration, real collision/physics/progress
+spatial registration, real collision/physics/progress
 integration, and original correlated runtime comparisons. Missing prepared
 fixtures alone do not establish an external blocker: these producer paths can
 continue to be investigated from authenticated code and retail data. This

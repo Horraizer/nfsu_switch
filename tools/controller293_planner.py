@@ -10,9 +10,11 @@ from unicorn.x86_const import UC_X86_REG_EIP
 from physics256_native import Machine, ACTOR, RIDE, PHYSICS, STATUS, bits
 from controller293_strategy import CONTROLLER, ACTION
 from controller293_planner_ranges import RANGES
+from controller293_scene_ranges import RANGES as SCENE_RANGES
 from world_body_trace import chunks, jdlz, digest_file, INPUTS
 
 RETAIL = {
+    'FrontEnd/FrontB.lzc': (4182578, '76F368D5E5E30F96A8182BF457DBA4491395E075C3F336D86A32012B56E16F90'),
     'Tracks/TRACKB1003.lzc': INPUTS['Tracks/TRACKB1003.lzc'],
     'GLOBAL/GLOBALB.BUN': (2361176, '39DF38FAC2BE7CA0F0D0A92E0113CAAEDA5B1C60E14436C612B3D0874AFC8DB9'),
     'Cars/240SX/GEOMETRY.BIN': (4780816, '002202192752838E1B65E9B7C219EAB381FD5F916C3D031DDE93428EB325F619'),
@@ -46,7 +48,7 @@ class PlannerMachine(Machine):
         import capstone
         md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
         self.instructions = {}
-        for name, start, end in RANGES:
+        for name, start, end in RANGES + SCENE_RANGES:
             rows = list(md.disasm(image.read(start, end - start), start))
             if sum(row.size for row in rows) != end - start:
                 raise ValueError('incomplete planner block: ' + name)
@@ -73,7 +75,7 @@ class ActorController:
     constructors produce those. pose() accepts exogenous retail-route samples;
     step() retains controller, action, driver and RNG state between calls.
     """
-    def __init__(self, image, retail, point_index=30, speed=20.0):
+    def __init__(self, image, retail, point_index=30, speed=20.0, event_seed=None):
         self.m = m = PlannerMachine(image)
         m.run(0x689FD0)
         m.run(0x689FF0)
@@ -86,7 +88,8 @@ class ActorController:
             m.hook(address, 'external_heap_allocate', callback=self.allocate)
         for address in (0x671102, 0x565CE0):
             m.hook(address, 'external_heap_release')
-        # Profiling service, independent from the game tick at 73AD34.
+        # Explicit external counter fixture, separate from game tick73AD34.
+        # No claim of general timer independence for unexecuted hull queries.
         m.put(0x69717C, 0x1000500)
         m.put(0x7349C8, 1)
         m.hook(0x1000500, 'external_QueryPerformanceCounter', callback=self.qpc)
@@ -113,6 +116,10 @@ class ActorController:
         # Authenticated retail resource identities, not a hand-built AI table.
         assert struct.unpack_from('<II', global_data, 2181120) == (0x34B00, 0x82C)
         m.run(0x462070, (GLOBAL + 2181120,))
+        self.event = None
+        if event_seed is not None:
+            from controller293_scene import setup_event
+            self.event = setup_event(m, retail, event_seed)
         m.put(0x734588, GLOBAL + 1736752 - 18 * 0xC90)
         m.run(0x417600, edx=RIDE)
         m.run(0x57D160, (0, 0, 0), edx=RIDE, eax=18)
@@ -125,9 +132,17 @@ class ActorController:
               ecx=ACTOR + 0x540, edx=ACTOR + 0x828)
         m.put(ACTOR + 0x14, 0x1152000)
         m.put(0x1152004, 2)
+        if self.event is not None:
+            from controller293_scene import configurations
+            self.event['configs'] = configurations(m, self.event['setup'])
+            m.put(ACTOR + 0x14, self.event['configs'][1]['address'])
         m.put(ACTOR + 0x1C, RACE)
         m.put(ACTOR + 0x24, 3)
         m.put(ACTOR + 0x28, 3)
+        if self.event is not None:
+            m.put(ACTOR + 0x24, self.event['configs'][1]['controller_selector'])
+            m.run(0x425150, eax=ACTOR)
+            m.put(ACTOR + 0x28, m.reg('eax'))
         m.put(ACTOR + 0x2C, CONTROLLER)
         m.put(ACTOR + 0x34, PHYSICS)
         m.put(PHYSICS, 0x6C8468)
@@ -138,9 +153,10 @@ class ActorController:
         m.put(0x7361F0, STATUS)
         m.put(STATUS, 4)
         m.put(STATUS + 4, 1)
-        m.put(0x7361F8, COUNTERS)
-        m.put(0x73AD34, 100000)
-        m.put(0x78A2F0, 1003)
+        if self.event is None:
+            m.put(0x7361F8, COUNTERS)
+            m.put(0x73AD34, 100000)
+            m.put(0x78A2F0, 1003)
         self.pose(point_index, speed, update_world=False)
         # Type registry and the actual CarWorldObject factory/pose publisher.
         m.run(0x577B00, (0x73B118, 0, 0, 0), ecx=0x6BA6CC)
@@ -179,7 +195,7 @@ class ActorController:
                             driver_count=m.get(self.driver + 0x10, 'B'),
                             marker=m.get(CONTROLLER + 0x478, 'i'))
         m.run(0x44C250, (1,), ecx=CONTROLLER, budget=3000000)
-        self.tick = 100000
+        self.tick = m.get(0x73AD34)
 
     def allocate(self, m):
         size = m.get(m.reg('esp') + 4)
@@ -202,31 +218,32 @@ class ActorController:
         for i in range(count):
             m.put(block + i * 0x100, block + (i + 1) * 0x100 if i + 1 < count else 0)
 
-    def pose(self, point_index, speed, update_world=True):
+    def pose(self, point_index, speed, update_world=True, actor=ACTOR):
         m = self.m
         route = m.get(0x77AF34)
         if not 0 <= point_index < m.get(route + 0x10, 'h') or not math.isfinite(speed):
             raise ValueError('unsupported exogenous pose')
         point = route + 0x27C + point_index * 0x88
         for j in range(3):
-            m.put(ACTOR + 0x60 + j * 4, m.get(point + j * 4, 'f'), 'f')
+            m.put(actor + 0x60 + j * 4, m.get(point + j * 4, 'f'), 'f')
         for j in range(2):
             tangent = m.get(point + 0xC + j * 4, 'f')
-            m.put(ACTOR + 0x70 + j * 4, speed * tangent, 'f')
-            m.put(ACTOR + 0x90 + j * 4, tangent, 'f')
-        m.put(ACTOR + 0xA0, -m.get(ACTOR + 0x94, 'f'), 'f')
-        m.put(ACTOR + 0xA4, m.get(ACTOR + 0x90, 'f'), 'f')
-        m.put(ACTOR + 0xB8, 1.0, 'f')
-        m.put(ACTOR + 0xCC, 1.0, 'f')
+            m.put(actor + 0x70 + j * 4, speed * tangent, 'f')
+            m.put(actor + 0x90 + j * 4, tangent, 'f')
+        m.put(actor + 0xA0, -m.get(actor + 0x94, 'f'), 'f')
+        m.put(actor + 0xA4, m.get(actor + 0x90, 'f'), 'f')
+        m.put(actor + 0xB8, 1.0, 'f')
+        m.put(actor + 0xCC, 1.0, 'f')
         # Recover heading through the original atan2 implementation.
-        m.run(0x564DB0, (m.get(ACTOR + 0x94), m.get(ACTOR + 0x90)))
-        m.put(ACTOR + 0x3B4, m.reg('eax') & 65535, 'H')
-        m.put(ACTOR + 0x3D0, speed, 'f')
-        m.put(ACTOR + 0x3D4, abs(speed), 'f')
-        m.put(ACTOR + 0x814, m.get(point + 0x38, 'f'), 'f')
+        m.run(0x564DB0, (m.get(actor + 0x94), m.get(actor + 0x90)))
+        m.put(actor + 0x3B4, m.reg('eax') & 65535, 'H')
+        m.put(actor + 0x3D0, speed, 'f')
+        m.put(actor + 0x3D4, abs(speed), 'f')
+        m.put(actor + 0x814, m.get(point + 0x38, 'f'), 'f')
         if update_world:
-            m.run(0x57A380, esi=m.get(m.get(ACTOR + 0x82C) + 0x20))
-        self.pose_input = dict(route_id=1, point_index=point_index, speed=speed)
+            m.run(0x57A380, esi=m.get(m.get(actor + 0x82C) + 0x20))
+        if actor == ACTOR:
+            self.pose_input = dict(route_id=1, point_index=point_index, speed=speed)
 
     def step(self, dt=0.02):
         if dt != 0.02:

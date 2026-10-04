@@ -15,8 +15,10 @@ from controller293_strategy import RANGES as STRATEGY_RANGES, suite as strategy_
 from world_body_trace import Image, INPUTS, digest_file, manifest
 from controller293_planner import suite as planner_suite, inputs as planner_inputs
 from controller293_planner_ranges import RANGES as PLANNER_RANGES
+from controller293_scene_ranges import RANGES as SCENE_RANGES
+from controller293_scene import suite as scene_suite
 
-EXTRA_RANGES = STRATEGY_RANGES + PLANNER_RANGES + [
+EXTRA_RANGES = STRATEGY_RANGES + PLANNER_RANGES + SCENE_RANGES + [
     ('actor-state-construction', 0x42538F, 0x4253A9),
     ('actor-physical-binding', 0x4255AB, 0x4255CB),
     ('actor-world-binding', 0x425703, 0x42571B),
@@ -40,6 +42,13 @@ EXTRA_RANGES = STRATEGY_RANGES + PLANNER_RANGES + [
 ]
 
 ASSERTIONS = {
+    0x4257F7: ('mov', 'byte ptr [ebx + 0x4d0], 1'),
+    0x57A310: ('mov', 'cl, byte ptr [eax + 0x4d0]'),
+    0x57A318: ('je', '0x57a320'),
+    0x41F889: ('mov', 'dword ptr [esi + 0x2d0], edx'),
+    0x4B5E36: ('mov', 'dword ptr [0x78a320], 1'),
+    0x430795: ('sub', 'ecx, eax'),
+    0x5809E3: ('mov', 'byte ptr [esi + 3], cl'),
     0x4253A4: ('call', '0x464860'),
     0x4255C8: ('mov', 'dword ptr [ebx + 0x20], esi'),
     0x425715: ('mov', 'dword ptr [ebx + 0x82c], eax'),
@@ -151,6 +160,7 @@ TABLES = {
 TOOL_FILES = ('controller293_trace.py', 'controller293_native.py', 'controller293_test.py',
               'controller293_strategy.py', 'controller293_planner.py',
               'controller293_planner_ranges.py',
+              'controller293_scene.py', 'controller293_scene_ranges.py', 'event0_trace.py',
               'physics256_native.py', 'collision256_trace.py', 'world_body_trace.py')
 
 
@@ -193,7 +203,8 @@ def negative_source(image):
     results = []
     for address, byte, expected in [(0x45EB7F, 0x85, 'source assertion failed: 0045EB7E'),
                                     (0x44C7CB, 0x7B, 'source assertion failed: 0044C7CB'),
-                                    (0x4623F0, 0x85, 'source assertion failed: 004623EF')]:
+                                    (0x4623F0, 0x85, 'source assertion failed: 004623EF'),
+                                    (0x57A318, 0x75, 'source assertion failed: 0057A318')]:
         class ChangedRead:
             def read(self, va, size):
                 raw = bytearray(image.read(va, size))
@@ -241,9 +252,10 @@ def main():
                       negative_source_guards=negative_source(image), native=suite(image),
                       strategy=strategy_suite(image),
                       planner=planner_suite(image, planner_inputs(root)),
+                      scene=scene_suite(image, planner_inputs(root)),
                       versions=dict(capstone=capstone.__version__, unicorn=unicorn.__version__),
                       tool_hashes={n: digest_file(Path(__file__).with_name(n)) for n in TOOL_FILES},
-                      contract='controller293-v3', original_runtime=None,
+                      contract='controller293-v4', original_runtime=None,
                       inherited_cpp_validated=False)
         (out / 'source.txt').write_text(lines, encoding='ascii')
         (out / 'report.json').write_text(json.dumps(report, ensure_ascii=True,
@@ -251,6 +263,7 @@ def main():
         print('PASS: authenticated controller source, tables and wrong-branch guards')
         print('PASS: bounded original-x86 controls captured; run controller293_test.py')
         print('PASS: retail-backed original planner, retained action and driver witnesses')
+        print('PASS: original event metadata, paired context, history and catch-up witnesses')
         print('UNAVAILABLE: actual event0 scene/trajectory, overtake/contact, full parity')
     finally:
         after = manifest(root)

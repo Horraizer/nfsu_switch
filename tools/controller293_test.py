@@ -47,7 +47,7 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(tables['input-setter'], ['006C8C50', '0045E180'])
         self.assertEqual(REPORT['negative_source_guards'], [
             'source assertion failed: 0045EB7E', 'source assertion failed: 0044C7CB',
-            'source assertion failed: 004623EF'])
+            'source assertion failed: 004623EF', 'source assertion failed: 0057A318'])
         self.assertEqual(REPORT['source']['assertions']['0044C731'],
                          ['fmul', 'dword ptr [ebx + 0x4b8]'])
 
@@ -229,7 +229,7 @@ class EvidenceTests(unittest.TestCase):
 
 class PlannerTests(unittest.TestCase):
     def test_original_producers_and_external_services(self):
-        self.assertEqual(REPORT['contract'], 'controller293-v3')
+        self.assertEqual(REPORT['contract'], 'controller293-v4')
         required = ('00442040', '004484F0', '00462070', '00417600',
                     '0057D160', '0057F2B0', '00464860', '0057A1B0',
                     '0057A380', '00472B00', '00469B00', '004620C0',
@@ -292,6 +292,61 @@ class PlannerTests(unittest.TestCase):
             for a, b in zip(rows, rows[1:]):
                 self.assertEqual(b['inputs']['world_tick'] - a['inputs']['world_tick'],
                                  b['inputs']['dt'] * 4000)
+
+
+class SceneTests(unittest.TestCase):
+    def test_original_event_metadata_and_grid_construction(self):
+        event = REPORT['scene']['initial']['event']
+        self.assertEqual([event[k] for k in ('track', 'mode', 'difficulty', 'laps', 'humans', 'rivals')],
+                         [1003, 1, 1, 2, 1, 3])
+        fields = ('id', 'role', 'grid', 'context', 'mode', 'controller_selector')
+        self.assertEqual([[c[k] for k in fields] for c in event['configs']],
+                         [[0, 1, 2, -2, 0, 1], [100, 2, 1, 0, 1, 3],
+                          [101, 2, 4, 0, 1, 3], [102, 2, 3, 1, 1, 3]])
+        self.assertEqual(REPORT['scene']['initial']['physical_selectors'], [1, 3])
+        self.assertEqual(event['input_seed'], event['settings_seed'])
+        self.assertEqual(event['settings_next_seed'], event['world_seed'])
+        self.assertEqual([event[k] for k in ('input_seed', 'world_seed', 'next_seed', 'initial_tick')],
+                         [12345, 418134235, 808147100, 4000])
+
+    def test_original_paired_producers_are_executed(self):
+        scene = REPORT['scene']
+        for at in ('005A00A0', '005A0CE0', '00431DF0', '004B5E36', '005809C0',
+                   '004B6300', '00425150', '0041F889', '00434270', '00434A80',
+                   '00435D30', '00441ED0', '0041FE50', '004338C0', '00434ED0',
+                   '0059BFC0', '0059C210', '00430758', '00584270', '004257F7',
+                   '0057A300', '0057A910', '0044BD10', '0044C010'):
+            self.assertIn(at, scene['visited'])
+        self.assertEqual({h['hook'] for h in scene['hooks']},
+                         {'external_heap_allocate', 'external_heap_release', 'external_QueryPerformanceCounter'})
+        self.assertFalse(scene['physical_integration'])
+        self.assertFalse(scene['actual_event0_roster'])
+        self.assertIsNone(scene['original_runtime'])
+
+    def test_paired_context_history_catchup_and_refresh(self):
+        frames = REPORT['scene']['frames']
+        self.assertEqual(len(frames), 160)
+        self.assertEqual([frames[i]['result']['context_count'] for i in (0, 39, 40, 159)], [1, 1, 2, 2])
+        self.assertEqual([frames[i]['history_count'] for i in (0, 50, 51, 101, 102, 159)], [1, 1, 2, 2, 3, 4])
+        self.assertEqual([frames[i]['history_timer'] for i in (0, 50, 51)], [4000, 0, 4000])
+        self.assertLess(frames[0]['progress'][0], frames[0]['progress'][1])
+        self.assertEqual(frames[40]['progress'][0], frames[40]['progress'][1])
+        self.assertGreater(frames[80]['progress'][0], frames[80]['progress'][1])
+        self.assertEqual({f['result']['action_tick'] for f in frames}, {500080, 512080})
+        self.assertEqual(len({f['result']['catchup_scale'] for f in frames}), 3)
+        for i, frame in enumerate(frames):
+            result = frame['result']
+            self.assertEqual(result['inputs']['world_tick'], 500000+(i+1)*80)
+            self.assertEqual(frame['elapsed_ticks'], 240000+(i+1)*80)
+            self.assertEqual(frame['reference'], 0x11A0000)
+            self.assertEqual(frame['action_catchup'], 1)
+            self.assertGreater(len(result['path']), 1)
+            self.assertGreater(result['desired_speed'], 0)
+            self.assertGreater(result['catchup_scale'], 0)
+            self.assertLess(result['catchup_scale'], 1)
+        raw = json.dumps(frames, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('ascii')
+        self.assertEqual(hashlib.sha256(raw).hexdigest(),
+                         'f734eb93e4753fb251ca728db31f80eae0596fd9cb7ed440dc7f55df93a27c31')
 
 
 class HarnessTests(unittest.TestCase):
