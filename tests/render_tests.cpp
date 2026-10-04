@@ -1093,6 +1093,36 @@ void test_material_alpha_test() {
           "an alpha lane below 1 drops both");
 }
 
+void test_linear_filter_witnesses() {
+    nfsu::RenderTexture texture = make_texture(2, 2);
+    texture.rgba = {0,0,0,0, 200,0,0,80, 0,160,0,160, 200,160,240,240};
+    const auto sample = [&](double u, double v, bool alpha = false,
+                            nfsu::RenderBlendMode blend = nfsu::RenderBlendMode::disabled) {
+        Canvas canvas(1,1);
+        nfsu::RasterMaterial material;
+        material.texture = &texture; material.linear_filter = true;
+        material.alpha_test = alpha; material.blend = blend;
+        nfsu::ClipVertex tri[3] = {at(canvas,-2,-2),at(canvas,-2,4),at(canvas,4,-2)};
+        for (auto& vertex : tri) { vertex.u=u; vertex.v=v; }
+        canvas.draw(tri,1,&material);
+        return std::array<unsigned,3>{canvas.pixel(0,0)[0],canvas.pixel(0,0)[1],canvas.pixel(0,0)[2]};
+    };
+    check(sample(0.375,0.625) == std::array<unsigned,3>{50,120,45},
+          "bilinear sample uses all four weights and both axes");
+    check(sample(-0.625,-0.375) == sample(0.375,0.625) &&
+          sample(2.375,3.625) == sample(0.375,0.625), "negative and repeated UVs agree");
+    texture = make_texture(1,1); texture.rgba={37,83,191,255};
+    check(sample(-7.5,9.0)==std::array<unsigned,3>{37,83,191},"one-texel linear texture is constant");
+    texture = make_texture(1,2); texture.rgba={200,0,0,255,0,0,200,255};
+    check(sample(-8.25,0.5)==std::array<unsigned,3>{100,0,100},"one-wide texture interpolates vertically");
+    texture = make_texture(2,1); texture.rgba={200,0,0,169,200,0,0,171};
+    check(sample(0.5,0.5,true)==std::array<unsigned,3>{0,0,0} &&
+          sample(0.75,0.5,true)==std::array<unsigned,3>{200,0,0},"filtered alpha keeps strict GREATER 170");
+    texture.rgba={200,0,0,0,200,0,0,255};
+    check(sample(0.5,0.5,false,nfsu::RenderBlendMode::source_over)==std::array<unsigned,3>{100,0,0},
+          "source-over consumes interpolated alpha");
+}
+
 void test_car_linear_repeat_sample() {
     nfsu::RenderTexture texture = make_texture(2, 1);
     texture.rgba = {255, 0, 0, 255, 0, 0, 255, 255};
@@ -2899,6 +2929,7 @@ int main() {
     test_material_gates();
     test_material_alpha_test();
     test_car_linear_repeat_sample();
+    test_linear_filter_witnesses();
     test_blend_modes();
     test_environment_term();
     test_material_coefficient_validation();

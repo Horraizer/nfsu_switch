@@ -120,6 +120,7 @@ public:
     bool glows = false;
     bool dirty = true;
     bool tuned = false; // Render selection only.
+    TextureFilterMode texture_filter = TextureFilterMode::legacy;
     bool car_shading = false;
     std::uint64_t loads = 0, releases = 0, bytes_read = 0;
     Cost io_cost, prepare_cost, render_cost;
@@ -223,6 +224,7 @@ public:
         prepare(); const auto begin=Clock::now(); std::string error;
         RenderOptions options; options.width=640; options.height=360;
         options.material_state = MaterialStateMode::retail;
+        options.texture_filter=texture_filter;
         options.car_shading=car_shading;
         require(drive_render_camera(session.camera(),ChaseFovMode::vertical_4_3,640,360,options.camera,error),error);
         Frame background; RenderStats stats; TrackRenderStats track_stats;
@@ -263,12 +265,14 @@ int run(int argc, char** argv) {
     bool live=false, smoke=false, tuned=false;
     bool particles_enabled=true, particle_events=false;
     bool glows=false;
+    TextureFilterMode texture_filter=TextureFilterMode::legacy;
     bool car_shading=false;
     std::set<std::size_t> frames;
     bool wet_road_reflections=false;
     bool explicit_performance=false, handling_telemetry=false;
     VehicleUpgradeLevels performance;
     RaceSteering steering=RaceSteering::baseline; bool steering_seen=false;
+    bool hud_trace=false;
     // The path arguments arrive in the ANSI code page on Windows; convert
     // them as the other tools do, so a path outside ASCII opens.
     std::string argument_error;
@@ -279,10 +283,11 @@ int run(int argc, char** argv) {
             std::cout << "nfsu_race --root RETAIL (--input RECORDING | --generate RECORDING | --live)\n"
                          "  [--out NEW_DIRECTORY --frames 180,600,6000,22000,40000]\n"
                          "  [--particles=on|--particles=off] [--particle-events] [--tuned] [--glows]\n"
-                         "  [--car-shading on|off]\n"
+                         "  [--car-shading on|off] [--texture-filter legacy|linear]\n"
                          "  [--wet-road-reflections on|off]\n"
                          "  [--performance-levels name=0..3,...] [--handling-telemetry]\n"
                          "  [--steering baseline|recovered0|recovered1]\n"
+                         "  [--hud-trace] writes completed HUD states to --out/hud.csv\n"
                          "  live mode plays retail race audio when the device and banks are available\n";
             return 0;
         }
@@ -294,6 +299,7 @@ int run(int argc, char** argv) {
         if (a=="--particles=off") { particles_enabled=false; continue; }
         if (a=="--particle-events") { particle_events=true; continue; }
         if (a=="--glows") { glows=true; continue; }
+        if (a=="--hud-trace") { hud_trace=true; continue; }
         require(i+1<argc,"missing option value"); const std::string value=argv[++i];
         if (a=="--performance-levels") {
             require(!explicit_performance,"duplicate --performance-levels");
@@ -308,6 +314,9 @@ int run(int argc, char** argv) {
         else if (a=="--input") input=nfsu::argument_path(argv[i]);
         else if (a=="--generate") generate=nfsu::argument_path(argv[i]);
         else if (a=="--out") output=nfsu::argument_path(argv[i]);
+        else if (a=="--texture-filter") {
+            require(parse_texture_filter(value,texture_filter),"--texture-filter needs legacy or linear");
+        }
         else if (a=="--car-shading") {
             require(value=="on" || value=="off","--car-shading needs on or off");
             car_shading=value=="on";
@@ -327,6 +336,7 @@ int run(int argc, char** argv) {
     }
     require(!root.empty() && int(live)+int(!input.empty())+int(!generate.empty())==1,"choose one input mode and --root");
     require(frames.empty() || !output.empty(),"--frames requires --out");
+    require(!hud_trace || !output.empty(),"--hud-trace requires --out");
     require(!live || (output.empty() && frames.empty()),"live mode does not export files");
     require(fs::is_directory(root),"retail root is not a directory");
     for (const auto& path : {output,generate}) if (!path.empty()) {
@@ -359,6 +369,7 @@ int run(int argc, char** argv) {
     RaceScene scene(table,particles_enabled); scene.tuned=tuned;
     scene.files.stream=root/"Tracks"/track_stream_file_name(*info);
     scene.glows = glows;
+    scene.texture_filter=texture_filter;
     scene.car_shading=car_shading;
     scene.wet_road_reflections=wet_road_reflections;
     scene.files.pack=root/"Tracks"/track_stream_pack_file_name(*info);
@@ -387,7 +398,7 @@ int run(int argc, char** argv) {
         std::cout << "audio: " << diagnostic << '\n';
     }
     RaceRouteDriver driver(RaceDrivingLine::event1_forward); std::vector<RaceInputRun> recording;
-    std::ofstream states, trajectory;
+    std::ofstream states, trajectory, hud_audit;
     if (!output.empty()) {
         require(fs::create_directory(output),"cannot create output directory");
         states.open(output/"states.txt",std::ios::binary); require(bool(states),"cannot create state hashes");
@@ -395,6 +406,12 @@ int run(int argc, char** argv) {
         require(bool(trajectory),"cannot create trajectory audit");
         trajectory.imbue(std::locale::classic()); trajectory << std::setprecision(17);
         trajectory << "tick,physics,lap,x,y,z,speed,up,contacts,road_wheels,resets\n";
+        if (hud_trace) {
+            hud_audit.open(output/"hud.csv",std::ios::binary);
+            require(bool(hud_audit),"cannot create HUD audit");
+            hud_audit.imbue(std::locale::classic()); hud_audit << std::setprecision(17);
+            hud_audit << "tick,physics,seconds,engine_rpm,wheel_rpm,gear,rotation,max_rpm,redline_rpm\n";
+        }
     }
     Cost simulation,streaming,hashing;
     std::size_t run_index=0,run_tick=0; std::uint64_t resets=0;
@@ -403,6 +420,15 @@ int run(int argc, char** argv) {
             Clock::now().time_since_epoch()).count());
         auto begin=Clock::now(); require(session.advance(pad,error),error); simulation.add(begin);
         require(handling_log.write(session,pad,consumed_us,live),"handling telemetry write failed");
+        if (hud_audit.is_open()) {
+            RaceHudFrame hud;
+            build_race_hud_frame(session,640,360,hud);
+            const auto& r=hud.readout;
+            hud_audit << session.timing().step << ',' << r.physics_step << ','
+                << double(session.timing().step)/60.0 << ',' << r.engine_rpm << ','
+                << r.wheel_rpm << ',' << r.gear << ',' << r.rotation << ','
+                << r.max_rpm << ',' << r.redline_rpm << '\n';
+        }
         const auto previous_smoke=scene.particles.smoke_count();
         const auto previous_sparks=scene.particles.spark_count();
         if (particles_enabled) scene.particles.advance(session);

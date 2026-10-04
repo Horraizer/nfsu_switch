@@ -222,6 +222,7 @@ struct HullHit {
     VehicleVec3 normal;
     // The point less the centre of mass: where the impulse acts.
     VehicleVec3 arm;
+    VehicleVec3 plane_point;
     double depth = 0.0;
 };
 
@@ -652,6 +653,7 @@ void VehicleTrackSession::resolve_body(VehicleState& s, VehicleTrackTelemetry& t
         }
         hit.normal = widen(contact.normal);
         hit.arm = sub(point, centre);
+        hit.plane_point = widen(contact.point);
         hit.depth = dot(sub(widen(contact.point), point), hit.normal);
         if (!(hit.depth > 0.0)) {
             hit.depth = 0.0;
@@ -708,6 +710,17 @@ void VehicleTrackSession::resolve_body(VehicleState& s, VehicleTrackTelemetry& t
         }
         const HullHit& hit = hits[i];
         ++t.contacts;
+        auto& event = t.contact_events.emplace_back();
+        event.polygon = static_cast<std::uint32_t>(hit.polygon);
+        event.hull_point = static_cast<std::uint32_t>(hit.point);
+        event.order = t.contacts - 1;
+        event.surface = hit.kind == TrackContactKind::road ? VehicleTrackSurface::road :
+                                                            VehicleTrackSurface::wall;
+        event.normal = hit.normal; event.plane_point = hit.plane_point; event.arm = hit.arm;
+        event.depth = hit.depth;
+        event.velocity_before = s.velocity; event.angular_before = s.angular_velocity;
+        event.velocity_after = s.velocity; event.angular_after = s.angular_velocity;
+        event.accumulated_impulse = applied_total;
         if (t.deepest_polygon == kNoPolygon || hit.depth > t.deepest_depth) {
             t.deepest_polygon = static_cast<std::uint32_t>(hit.polygon);
             t.deepest_surface = hit.kind == TrackContactKind::road ? VehicleTrackSurface::road
@@ -724,6 +737,7 @@ void VehicleTrackSession::resolve_body(VehicleState& s, VehicleTrackTelemetry& t
             if (vehicle_track_separation(hit.normal_f, needed, move)) {
                 s.position = add(s.position, move);
                 moved = add(moved, move);
+                event.separation = move;
             }
         }
 
@@ -733,6 +747,16 @@ void VehicleTrackSession::resolve_body(VehicleState& s, VehicleTrackTelemetry& t
         const VehicleVec3 arm = hit.arm;
         const VehicleVec3 point_velocity = add(s.velocity, cross(s.angular_velocity, arm));
         const double approach = dot(point_velocity, hit.normal);
+        event.approach = approach;
+        // Copy only: this observer never changes contact order or solver math.
+        VehicleContactObservation* audio_contact = nullptr;
+        if (t.audio_contact_count < t.audio_contacts.size()) {
+            audio_contact = &t.audio_contacts[t.audio_contact_count++];
+            audio_contact->polygon = static_cast<std::uint32_t>(hit.polygon);
+            audio_contact->forward = forward; audio_contact->up = up;
+            const auto audio_tangent = sub(point_velocity, scale(hit.normal, approach));
+            audio_contact->slide_mps = vehicle_sqrt(dot(audio_tangent, audio_tangent));
+        }
         if (!(approach < 0.0)) {
             continue;
         }
@@ -800,6 +824,8 @@ void VehicleTrackSession::resolve_body(VehicleState& s, VehicleTrackTelemetry& t
             }
         }
         // 0x0046A260, then 0x00584F60's two clamps and the angular factor.
+        event.contact_impulse = impulse;
+        if (audio_contact) audio_contact->impulse = scale(impulse, 1.0 / unit);
         VehicleVec3 applied = scale(impulse, mass_scale);
         const double linear_limit = kVehicleTrackImpulseLimit * unit;
         const double size = vehicle_sqrt(dot(applied, applied));
@@ -816,6 +842,8 @@ void VehicleTrackSession::resolve_body(VehicleState& s, VehicleTrackTelemetry& t
         s.velocity = add(s.velocity, scale(applied, inverse_mass));
         s.angular_velocity = add(s.angular_velocity, inverse_inertia(angular));
         applied_total = add(applied_total, applied);
+        event.applied_impulse = applied; event.accumulated_impulse = applied_total;
+        event.velocity_after = s.velocity; event.angular_after = s.angular_velocity;
     }
     t.separation = moved;
     t.impulse = applied_total;

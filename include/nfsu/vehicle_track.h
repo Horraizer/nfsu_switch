@@ -398,10 +398,30 @@ enum class VehicleTrackBoundsCheck : std::uint8_t {
     none = 2,    // neither: out of bounds
 };
 
+// #275 diagnostic of the existing kind-3 approximation, not a retail witness.
+// Bounded by the hull's existing 256-point limit; omitted from legacy bytes.
+struct VehicleTrackContactEvent {
+    std::uint32_t polygon = 0, hull_point = 0, order = 0;
+    VehicleTrackSurface surface = VehicleTrackSurface::none;
+    VehicleVec3 normal, plane_point, arm, separation;
+    double depth = 0, approach = 0;
+    VehicleVec3 velocity_before, angular_before, velocity_after, angular_after;
+    VehicleVec3 contact_impulse, applied_impulse, accumulated_impulse;
+};
+
 // One record per step: the model's record for the step, which describes the
 // car before its body met the track, then the state the next step starts
 // from - after the body's collision and after a reset performed on this
 // step - and what this layer did.
+// Output-only contact observation. Never encoded in replay telemetry.
+// Current solver J before mass scaling/clamps, in t m/s, and current basis.
+// Polygon IDs are port contact IDs, not recovered retail body-pair IDs.
+struct VehicleContactObservation {
+    std::uint32_t polygon = 0;
+    VehicleVec3 impulse, forward, up;
+    double slide_mps = 0;
+};
+
 struct VehicleTrackTelemetry {
     std::uint64_t step = 0;  // steps of this run, 1 for the first
     VehicleTelemetry model;
@@ -422,6 +442,9 @@ struct VehicleTrackTelemetry {
     // The separation and the impulse applied, summed over the contacts.
     VehicleVec3 separation;
     VehicleVec3 impulse;
+    std::vector<VehicleTrackContactEvent> contact_events; // diagnostic only
+    std::array<VehicleContactObservation, 256> audio_contacts{};
+    std::size_t audio_contact_count = 0;
     // Whether this step ended a 60 Hz tick, and the checks made on it.
     bool tick = false;
     VehicleTrackBoundsCheck bounds = VehicleTrackBoundsCheck::not_run;
@@ -438,6 +461,7 @@ struct VehicleTrackTelemetry {
 // The fixed binary form: every double as its IEEE-754 bits, every integer,
 // enum and flag as a u32 (the step a u64, the percent its float bits), all
 // little-endian, in declaration order, the model's record in its own form.
+// Output-only audio_contacts and their count are deliberately excluded.
 constexpr std::size_t kVehicleTrackTelemetryRecordBytes =
     8 + kVehicleTelemetryRecordBytes + 24 + 32 + 24 + 24 + kVehicleWheelCount * 4 +
     3 * 4 + 4 + 4 + 8 + 24 + 24 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4;

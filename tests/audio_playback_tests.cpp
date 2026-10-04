@@ -67,6 +67,66 @@ void await_size(const audio::StereoRing& ring, std::size_t wanted) {
     check(ring.size() >= wanted, "AST decoder did not fill ring");
 }
 
+void test_race_peak_limiter() {
+    // Coherent synthetic PCM is a reproducible worst case: the voices peak
+    // together rather than relying on a fortuitous phase relationship.
+    audio::PcmClip positive{{30000}, 48000, 1};
+    audio::PcmClip negative{{-30000}, 48000, 1};
+    std::array<std::int16_t, 2> music{30000, 15000}, out{};
+    audio::Mixer raw;
+    for (const auto slot : {0U, 4U, 5U}) raw.play(slot, &positive, true, 16384);
+    raw.render(out.data(), 1, music.data(), 16384);
+    check(out[0] == 32767 && out[1] == 32767 && raw.clipped_samples() == 2,
+          "music engine tyre impact reproduce existing saturation");
+    audio::Mixer safe;
+    safe.set_peak_limiter(true);
+    for (const auto slot : {0U, 4U, 5U}) safe.play(slot, &positive, true, 16384);
+    safe.render(out.data(), 1, music.data(), 16384);
+    // Raw L=60000, R=52500. The common gain is floor(32767*2^32/60000).
+    const auto gain = (32767ULL << 32) / 60000;
+    check(out[0] == static_cast<std::int16_t>(60000ULL * gain / (1ULL << 32)) &&
+          out[1] == static_cast<std::int16_t>(52500ULL * gain / (1ULL << 32)) &&
+          safe.clipped_samples() == 0 && safe.overloaded_samples() == 2 &&
+          safe.limited_frames() == 1, "linked limiter preserves stereo and overflow evidence");
+    for (std::size_t i = 0; i < audio::kMixVoices; ++i)
+        safe.play(i, &negative, true);
+    music = {-32768, 32767};
+    safe.render(out.data(), 1, music.data(), 32768);
+    check(out[0] >= -32767 && out[0] < -32000 && out[1] < -25000 &&
+          safe.clipped_samples() == 0 && safe.overloaded_samples() == 4,
+          "all voices and both stream polarities remain bounded without muting");
+    for (std::size_t i = 0; i < audio::kMixVoices; ++i) safe.stop(i);
+    music = {1000,-1000};
+    std::array<std::int16_t, 2401 * 2> recovery{};
+    std::array<std::int16_t, 2401 * 2> quiet_music{};
+    for (std::size_t i = 0; i < 2401; ++i) {
+        quiet_music[i*2] = 1000; quiet_music[i*2+1] = -1000;
+    }
+    safe.render(recovery.data(), 2401, quiet_music.data(), 32768);
+    check(recovery[0] > 0 && recovery[0] < 1000 &&
+          recovery[recovery.size()-2] == 1000 && recovery.back() == -1000,
+          "release restores quiet mix within fifty milliseconds");
+    for (std::size_t i = 2; i < recovery.size(); i += 2)
+        check(recovery[i] >= recovery[i-2] && recovery[i]-recovery[i-2] <= 1,
+              "release is monotonic without block boundary steps");
+    audio::Mixer split, whole;
+    split.set_peak_limiter(true); whole.set_peak_limiter(true);
+    split.play(5,&positive,true); whole.play(5,&positive,true);
+    std::array<std::int16_t, 6> stream{30000,-30000,0,0,20000,-20000};
+    std::array<std::int16_t, 6> a{}, b{};
+    whole.render(a.data(),3,stream.data(),32768);
+    split.render(b.data(),1,stream.data(),32768);
+    split.render(b.data()+2,2,stream.data()+2,32768);
+    check(a == b && split.overloaded_samples() == whole.overloaded_samples(),
+          "limiter history is independent of callback block partition");
+    audio::Mixer unity;
+    unity.set_peak_limiter(true);
+    const std::array<std::int16_t,2> quiet{1000,-2000};
+    unity.render(out.data(),1,quiet.data(),32768);
+    check(out == quiet && unity.limited_frames() == 0,
+          "quiet output is bit exact at unity gain");
+}
+
 void test_mixer() {
     audio::Mixer mixer;
     audio::PcmClip constant{{10000}, 48000, 1};
@@ -342,6 +402,7 @@ void test_decoder_thread_setup_failure() {
 int main() {
     try {
         test_mixer();
+        test_race_peak_limiter();
         test_output_fade();
         test_alias_rejection();
         test_ring();

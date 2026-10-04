@@ -244,8 +244,20 @@ constexpr std::uint32_t kMaxEnvironmentPower = 64;
 bool validate_material_coefficients(
     const MaterialCoefficients& coefficients, std::string& error);
 
+// Legacy preserves each existing material sampler, including shaded-car GPU
+// nearest versus CPU linear. Linear selects bilinear repeat for world and car
+// diffuse materials only; sky and separate effects retain their samplers.
+enum class TextureFilterMode : std::uint8_t { legacy, linear };
+inline bool parse_texture_filter(const std::string& text, TextureFilterMode& mode) {
+    if (text == "legacy") mode = TextureFilterMode::legacy;
+    else if (text == "linear") mode = TextureFilterMode::linear;
+    else return false;
+    return true;
+}
+
 struct WetRoadLamps;
 struct RenderOptions {
+    TextureFilterMode texture_filter = TextureFilterMode::legacy;
     bool car_shading = false; // static environment approximation; opt-in
     const WetRoadLamps* wet_lamps = nullptr;
     std::uint32_t width = 1280;

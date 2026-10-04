@@ -89,6 +89,10 @@ endif()
 add_executable(nfsu_steering_probe tools/steering_probe.cpp)
 target_link_libraries(nfsu_steering_probe PRIVATE nfsu_vehicle)
 nfsu_enable_warnings(nfsu_steering_probe)
+add_executable(nfsu_low_support_probe tools/low_support_probe.cpp)
+target_link_libraries(nfsu_low_support_probe PRIVATE nfsu_vehicle)
+nfsu_enable_warnings(nfsu_low_support_probe)
+
 
 add_library(nfsu_arg_path
     src/arg_path.cpp
@@ -742,6 +746,17 @@ nfsu_enable_warnings(nfsu_platform_desktop)
 # Read-only desktop research executable; not part of the race application.
 add_executable(nfsu_frame_budget_probe tools/frame_budget_probe.cpp)
 target_link_libraries(nfsu_frame_budget_probe PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_platform_desktop)
+add_executable(nfsu_texture_filter_compare src/texture_filter_compare_main.cpp)
+target_link_libraries(nfsu_texture_filter_compare PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_frame_compare nfsu_track_render nfsu_arg_path)
+nfsu_enable_warnings(nfsu_texture_filter_compare)
+if(NFSU_BUILD_TESTS)
+    add_test(NAME nfsu_texture_filter_output_guards
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/texture_filter_output_guards.py
+                --compare $<TARGET_FILE:nfsu_texture_filter_compare>
+                --work ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(nfsu_texture_filter_output_guards PROPERTIES TIMEOUT 60)
+endif()
 nfsu_enable_warnings(nfsu_frame_budget_probe)
 if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     # The probe replaces new/delete; DLL allocator calls cannot interpose them.
@@ -1291,6 +1306,11 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_steering_tests PRIVATE nfsu_race_run)
     nfsu_enable_warnings(nfsu_steering_tests)
     add_test(NAME nfsu_steering_tests COMMAND nfsu_steering_tests)
+    add_executable(nfsu_stability_tests tests/stability_tests.cpp)
+    target_link_libraries(nfsu_stability_tests PRIVATE nfsu_race_session nfsu_arg_path)
+    nfsu_enable_warnings(nfsu_stability_tests)
+    add_test(NAME nfsu_stability_tests COMMAND nfsu_stability_tests)
+
 
     add_executable(nfsu_vehicle_tests
         tests/vehicle_tests.cpp
@@ -1540,7 +1560,7 @@ if(NFSU_BUILD_TESTS)
 endif()
 
 # Race integration is clock-free; only the desktop executable owns I/O and UI.
-list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_session)
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_race_session nfsu_event0_setup)
 add_executable(nfsu_race src/race_main.cpp src/race_window.cpp)
 target_link_libraries(nfsu_race PRIVATE nfsu_race_session nfsu_race_events
     nfsu_track_residency nfsu_track_render nfsu_stock_frame nfsu_screen_text
@@ -1554,6 +1574,10 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_race_session_tests PRIVATE nfsu_race_session)
     nfsu_enable_warnings(nfsu_race_session_tests)
     add_test(NAME nfsu_race_session_tests COMMAND nfsu_race_session_tests)
+    add_executable(nfsu_event0_setup_tests tests/event0_setup_tests.cpp)
+    target_link_libraries(nfsu_event0_setup_tests PRIVATE nfsu_event0_setup nfsu_arg_path)
+    nfsu_enable_warnings(nfsu_event0_setup_tests)
+    add_test(NAME nfsu_event0_setup_tests COMMAND nfsu_event0_setup_tests)
     add_executable(nfsu_performance_levels_tests tests/performance_levels_tests.cpp)
     target_link_libraries(nfsu_performance_levels_tests PRIVATE nfsu_race_session nfsu_race_events nfsu_arg_path)
     nfsu_enable_warnings(nfsu_performance_levels_tests)
@@ -1565,6 +1589,20 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_race_hud_tests PRIVATE nfsu_race_hud)
     nfsu_enable_warnings(nfsu_race_hud_tests)
     add_test(NAME nfsu_race_hud_tests COMMAND nfsu_race_hud_tests)
+    add_executable(nfsu_minimap_tests tests/minimap_tests.cpp)
+    target_link_libraries(nfsu_minimap_tests PRIVATE nfsu_minimap nfsu_arg_path)
+    nfsu_enable_warnings(nfsu_minimap_tests)
+    add_test(NAME nfsu_minimap_tests COMMAND nfsu_minimap_tests)
+    add_test(NAME nfsu_minimap_diff_tests
+        COMMAND ${Python3_EXECUTABLE} -B ${PROJECT_SOURCE_DIR}/tests/minimap_diff_tests.py)
+    add_executable(nfsu_race_lap_hud_tests tests/race_lap_hud_tests.cpp)
+    target_link_libraries(nfsu_race_lap_hud_tests PRIVATE nfsu_race_hud)
+    nfsu_enable_warnings(nfsu_race_lap_hud_tests)
+    add_test(NAME nfsu_race_lap_hud_tests COMMAND nfsu_race_lap_hud_tests)
+    add_executable(nfsu_race_lap_hud_presentation_tests tests/race_lap_hud_presentation_tests.cpp)
+    target_link_libraries(nfsu_race_lap_hud_presentation_tests PRIVATE nfsu_race_hud)
+    nfsu_enable_warnings(nfsu_race_lap_hud_presentation_tests)
+    add_test(NAME nfsu_race_lap_hud_presentation_tests COMMAND nfsu_race_lap_hud_presentation_tests)
     add_executable(nfsu_race_particles_tests tests/race_particles_tests.cpp)
     target_link_libraries(nfsu_race_particles_tests PRIVATE nfsu_race_session)
     nfsu_enable_warnings(nfsu_race_particles_tests)
@@ -1575,7 +1613,7 @@ if(NFSU_BUILD_TESTS)
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/race_guards.cmake)
 endif()
 
-list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_light_glows nfsu_race_run nfsu_race_hud)
+list(APPEND NFSU_NEUTRAL_LIBRARIES nfsu_light_glows nfsu_race_run nfsu_race_hud nfsu_minimap)
 add_executable(nfsu_audio_dump src/audio_dump_main.cpp)
 target_link_libraries(nfsu_audio_dump PRIVATE nfsu_audio nfsu_sha256 nfsu_arg_path)
 nfsu_enable_warnings(nfsu_audio_dump)
@@ -1752,7 +1790,7 @@ set(NFSU_RETAIL_ROOT "" CACHE PATH
 target_link_libraries(nfsu_race PRIVATE nfsu_arg_path)
 if(NFSU_BUILD_TESTS)
     foreach(nfsu_retail_driver
-            nfsu_race_run_tests nfsu_race_loader_peak_tests
+            nfsu_race_run_tests nfsu_race_loader_peak_tests nfsu_race_hud_tests
             nfsu_track_loader_peak_tests nfsu_track_slice_tests
             nfsu_racing_line_tests nfsu_race_audio_tests)
         target_link_libraries(${nfsu_retail_driver} PRIVATE nfsu_arg_path)
@@ -1788,6 +1826,15 @@ if(NFSU_BUILD_TESTS)
         set_tests_properties(nfsu_retail_manifest_after PROPERTIES
             FIXTURES_CLEANUP nfsu_retail_read_only LABELS retail
             TIMEOUT 600)
+        add_test(NAME nfsu_minimap_retail COMMAND nfsu_minimap_tests --retail "${NFSU_RETAIL_ROOT}")
+        set_tests_properties(nfsu_minimap_retail PROPERTIES
+            FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 180)
+        add_test(NAME nfsu_stability_retail COMMAND nfsu_stability_tests --root "${NFSU_RETAIL_ROOT}")
+        add_test(NAME nfsu_event0_setup_retail COMMAND nfsu_event0_setup_tests "${NFSU_RETAIL_ROOT}")
+        set_tests_properties(nfsu_event0_setup_retail PROPERTIES
+            FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 180)
+        set_tests_properties(nfsu_stability_retail PROPERTIES
+            FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 180)
         add_test(NAME nfsu_performance_levels_retail COMMAND nfsu_performance_levels_tests "${NFSU_RETAIL_ROOT}")
         set_tests_properties(nfsu_performance_levels_retail PROPERTIES
             FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 180)
@@ -1805,6 +1852,24 @@ if(NFSU_BUILD_TESTS)
             COMMAND nfsu_race_run_tests
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
                 "${NFSU_RETAIL_ROOT}" --sample-draws)
+        add_test(NAME nfsu_race_run_retail_linear
+            COMMAND nfsu_race_run_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
+                "${NFSU_RETAIL_ROOT}" --sample-draws --texture-filter linear)
+        add_test(NAME nfsu_texture_filter_retail
+            COMMAND ${CMAKE_COMMAND}
+                -DPYTHON=${Python3_EXECUTABLE}
+                -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/texture_filter_evidence.py
+                -DCOMPARE=$<TARGET_FILE:nfsu_texture_filter_compare>
+                -DREFERENCES=${CMAKE_CURRENT_SOURCE_DIR}/include/nfsu/texture_filter_reference.h
+                -DDIAGNOSTIC_RECORDING=${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/texture_filter_v2.txt
+                -DRACE=$<TARGET_FILE:nfsu_race>
+                "-DROOT=${NFSU_RETAIL_ROOT}" -DWORK=${nfsu_retail_work}
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/texture_filter_expected.txt
+                -DRECORDING=${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/texture_filter_retail.cmake)
+        add_test(NAME nfsu_race_run_retail_linear_shading
+            COMMAND nfsu_race_run_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
+                "${NFSU_RETAIL_ROOT}" --sample-draws --texture-filter linear --car-shading)
         add_test(NAME nfsu_race_run_retail_glows
             COMMAND nfsu_race_run_tests
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
@@ -1953,6 +2018,8 @@ if(NFSU_BUILD_TESTS)
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_retail.cmake)
         set_tests_properties(
             nfsu_race_run_retail nfsu_race_run_retail_glows
+            nfsu_race_run_retail_linear nfsu_race_run_retail_linear_shading
+            nfsu_texture_filter_retail
             nfsu_race_run_retail_profile
             nfsu_race_run_retail_profile_reference nfsu_race_replay_check
             nfsu_race_particle_frame_guards
@@ -1979,11 +2046,18 @@ if(NFSU_BUILD_TESTS)
                 COMMAND nfsu_race_run_tests
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
                     "${NFSU_RETAIL_ROOT}" --full-draws --car-shading)
+            add_test(NAME nfsu_race_run_retail_full_linear_draws
+                COMMAND nfsu_race_run_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
+                    "${NFSU_RETAIL_ROOT}" --full-draws --texture-filter linear)
+            add_test(NAME nfsu_race_run_retail_full_linear_shading_draws
+                COMMAND nfsu_race_run_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
+                    "${NFSU_RETAIL_ROOT}" --full-draws --texture-filter linear --car-shading)
             add_test(NAME nfsu_track_slice_retail_full
                 COMMAND nfsu_track_slice_tests "${NFSU_RETAIL_ROOT}" --full)
             set_tests_properties(
                 nfsu_race_run_retail_full_draws nfsu_race_run_retail_full_shading_draws
                 nfsu_track_slice_retail_full
+                nfsu_race_run_retail_full_linear_draws nfsu_race_run_retail_full_linear_shading_draws
                 PROPERTIES LABELS "retail;retail-full"
                 FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 3600)
         endif()

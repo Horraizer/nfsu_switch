@@ -3302,7 +3302,48 @@ void test_unresolved_sky_keeps_world() {
               "unresolved sky retained the resolved world group");
 }
 
+void test_texture_filter_policy() {
+    using namespace nfsu;
+    auto fixture = town();
+    auto& scene = fixture.scene;
+    for (auto& mesh : scene.region.meshes) for (auto& vertex : mesh.vertices) {
+        vertex.u=0.0F; vertex.v=0.5F;
+    }
+    for (auto& texture : scene.region.textures) {
+        texture.width=2; texture.height=2; texture.rgba={255,0,0,255,0,0,255,255,255,0,0,255,0,0,255,255};
+    }
+    const auto list = make_list(scene,TrackDrawOrder::visible_instance);
+    auto options=small_options();
+    Frame legacy,linear; RenderStats stats; TrackRenderStats track; std::string error;
+    check_ok(render_track_draw_list(scene,list,options,{},legacy,stats,track,error),"legacy sampler witness",error);
+    RecordedCommands old_commands,new_commands;
+    check_ok(record_track_commands(scene,list,options,{},old_commands,error),"legacy track recording",error);
+    options.texture_filter=TextureFilterMode::linear;
+    check_ok(render_track_draw_list(scene,list,options,{},linear,stats,track,error),"linear sampler witness",error);
+    check_ok(record_track_commands(scene,list,options,{},new_commands,error),"linear track recording",error);
+    std::size_t hits=0;
+    for (std::size_t i=0;i<linear.ids().size();++i) if (linear.ids()[i]!=kNoTriangle) {
+        ++hits;
+        check(linear.rgba()[i*4]==128 && linear.rgba()[i*4+2]==128 &&
+              legacy.rgba()[i*4]==255 && legacy.rgba()[i*4+2]==0,"CPU track policy reaches seam sample");
+    }
+    check(hits && linear.depth()==legacy.depth() && linear.ids()==legacy.ids(),"filter preserves coverage/depth/order");
+    check(old_commands.draw_count()==new_commands.draw_count(),"filter preserves command count");
+    for (std::size_t i=0;i<new_commands.draw_count();++i) {
+        const auto& a=old_commands.draw_view(i).definition;
+        const auto& b=new_commands.draw_view(i).definition;
+        check(a.program->textures[0].filter==shader_manifest::Filter::nearest &&
+              b.program->textures[0].filter==shader_manifest::Filter::linear &&
+              b.program->textures[0].wrap==shader_manifest::Wrap::repeat,"GPU track policy matches CPU sample");
+        check(std::strcmp(a.pipeline.name,b.pipeline.name)==0 &&
+              a.pipeline.alpha_test==b.pipeline.alpha_test && a.pipeline.alpha_ref==b.pipeline.alpha_ref &&
+              a.pipeline.blend==b.pipeline.blend && a.pipeline.depth_write==b.pipeline.depth_write &&
+              a.texture_resource==b.texture_resource,"filter preserves material state and binding");
+    }
+}
+
 int main() {
+    test_texture_filter_policy();
     test_sky_background_and_transparency();
     test_unresolved_sky_keeps_world();
     test_fixture_parses();

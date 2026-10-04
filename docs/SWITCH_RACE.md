@@ -28,6 +28,11 @@ arguments are `[sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame]
 [--sky on|off|early] [--particles=on|--particles=off] [--tuned]
 [--glows] [--car-shading on|off] [--wet-road-reflections on|off]`.
 `--profile-frame` requires direct presentation.
+Issue #253 adds `--hud-trace` for a logged submitted HUD state on each direct
+frame. It requires HUD enabled and disables the menu panel toggle. Its
+timestamp is submission time, not scanout; logging changes frame cost and
+must be off for performance acceptance. See [HUD_253.md](HUD_253.md) for
+capture commands, matched shift evidence and remaining console criteria.
 `--sky` exists for console cost A/B runs (issue #227): `on`, the default,
 draws the sky after the opaque world; `off` records no sky draws; `early` is
 a diagnostic that submits the sky with the opaque pass at its list position,

@@ -228,7 +228,7 @@ std::vector<VehicleTrackScenario> proving_ground_scenarios() {
         scenario("slope", "full throttle from (152, 48) up the 8.5-degree ramp at px 192..232 "
                           "onto the plateau",
                  120.0, 0.0, 0.0, 0, {segment(780, 1.0, 0.0, 0.0)},
-                 "712498B9A7053B6A1B8628AF44BF45019491DEAE5D81EE34F0A79F9DCC34FB3C"),
+                 "F568FFB6B4F99A9735E661FAEB508ABF151CA5A22E800773D16503B64DB34D5A"),
         scenario("wall", "full throttle from (32, 80) at 45 degrees into the north wall at "
                          "pz 96, then along it",
                  0.0, 32.0, 0.0, kTurn45, {segment(480, 1.0, 0.0, 0.0)},
@@ -250,11 +250,11 @@ std::vector<VehicleTrackScenario> proving_ground_scenarios() {
                  "0A7ABFBAF1E1CCF928FA4A4AF4CF47D1FAFBD494944BAEEB9403999ED5683407"),
         scenario("drop", "dropped from five metres above the start, no input", 0.0, 0.0, 5.0,
                  0, {segment(360, 0.0, 0.0, 0.0)},
-                 "C23FF8D9C84D990E56F36673D1494AA28DAA56222667050FD1B24E0F798DCE72"),
+                 "42F487ED449BAC275708B0B3368C22C76BD8C3B7D55D502A3F5BB9C2F29D4D5D"),
         scenario("leave", "full throttle from (176, 20) along -y off the open edge at pz 0, "
                           "over no cell: out of bounds, then reset",
                  144.0, -28.0, 0.0, -kTurn90, {segment(600, 1.0, 0.0, 0.0)},
-                 "34AC6A755315958245AC729D589C8AF651045D41A9F68AE75913AA1B6A28BDC7"),
+                 "CAD2A27BD41870D8E1D310EE83D041B439D1F5B4CB6874E29BC26176410C7D92"),
         scenario("zone", "0.6 throttle from (128, 60) along +y into the RESET zone at "
                          "pz 80..92",
                  96.0, 12.0, 0.0, kTurn90, {segment(600, 0.6, 0.0, 0.0)},
@@ -290,7 +290,7 @@ std::vector<VehicleTrackScenario> circuit_scenarios() {
                  "90307C728F9FA8C68570108D3B3FA198727E3860CFB12D10F6F767E29B106BF0"),
         scenario("drop", "dropped from five metres above the grid, no input", 0.0, 0.0, 5.0, 0,
                  {segment(360, 0.0, 0.0, 0.0)},
-                 "CF520902A784D7BD1070130FED20FC550709635AB4011BD85EBA1822813ACE61"),
+                 "09366F932463BF2635D337B550D66919668948F8FCBE7A9CB5CDA1F6D4F4DEE5"),
         scenario("leave", "20 m left of the grid, over no collision cell, no input: it falls, "
                           "is out of bounds, and is reset",
                  0.0, 20.0, 1.0, 0, {segment(360, 0.0, 0.0, 0.0)},

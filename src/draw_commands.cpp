@@ -25,6 +25,10 @@ bool frame_state(const RenderOptions& options, const RenderLimits& limits,
         error = "draw commands: frame dimensions exceed render limits";
         return false;
     }
+    if (options.texture_filter != TextureFilterMode::legacy &&
+        options.texture_filter != TextureFilterMode::linear) {
+        error = "draw commands: invalid texture filter policy"; return false;
+    }
     CameraFrame camera;
     if (!make_camera_frame(options.camera, options.width, options.height, camera, error)) {
         return false;
@@ -80,8 +84,9 @@ struct ResourceMap {
 bool pipeline(RecordedDraw& draw, bool track, const RenderTexture* texture,
               std::uint32_t flags, std::uint32_t hash, const RenderOptions& options,
               std::string& error) {
-    const char* name = track ? (texture ? "track_textured" : "track_fallback")
-                             : (texture ? (options.car_shading ? "car_shaded_textured" : "car_textured") : "car_fallback");
+    const bool linear = options.texture_filter == TextureFilterMode::linear;
+    const char* name = track ? (texture ? (linear ? "track_linear_textured" : "track_textured") : "track_fallback")
+                             : (texture ? (options.car_shading ? (linear ? "car_shaded_linear_textured" : "car_shaded_textured") : "car_textured") : "car_fallback");
     for (const auto& p : sm::kPrograms) {
         if (std::strcmp(p.name, name) == 0) draw.program = &p;
     }
@@ -280,7 +285,10 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
         bool known = false;
         for (const auto& program : sm::kPrograms) if (d.program == &program) known = true;
         if (!known) return fail(d.name, "unknown shader program");
-        const bool shaded = std::strcmp(d.program->name,"car_shaded_textured")==0;
+        const bool shaded = std::strcmp(d.program->name,"car_shaded_textured")==0 ||
+                            std::strcmp(d.program->name,"car_shaded_linear_textured")==0;
+        const bool linear = std::strcmp(d.program->name,"track_linear_textured")==0 ||
+                            std::strcmp(d.program->name,"car_shaded_linear_textured")==0;
         if (d.program->buffer_count != 1 || d.program->buffers[0].index != 0 ||
             d.program->attribute_count != (shaded ? 4U : 3U) || d.program->texture_count > 2)
             return fail(d.name, "unsupported shader interface");
@@ -299,14 +307,15 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
         const bool sky = std::strcmp(d.program->name, "sky_textured") == 0;
         const char* fragment = shaded ? "car_shaded.frag.glsl" : sky ? "sky.frag.glsl" :
             !textured ? "fallback.frag.glsl" :
-            std::strcmp(d.program->name, "track_textured") == 0 ?
+            (std::strcmp(d.program->name, "track_textured") == 0 ||
+             std::strcmp(d.program->name, "track_linear_textured") == 0) ?
                 "textured_opaque.frag.glsl" : "textured.frag.glsl";
         if (std::strcmp(d.program->vertex_source, shaded ? "car_shaded.vert.glsl" :
                         sky ? "sky.vert.glsl" : "placed.vert.glsl") != 0 ||
             std::strcmp(d.program->fragment_source, fragment) != 0 ||
             (textured && (d.program->texture_count != (sky || shaded ? 1U : 2U) ||
                           d.program->textures[0].filter !=
-                              (std::strcmp(d.program->name, "car_textured") == 0
+                              (linear || std::strcmp(d.program->name, "car_textured") == 0
                                    ? sm::Filter::linear : sm::Filter::nearest) ||
                           d.program->textures[0].wrap != sm::Wrap::repeat ||
                           ((!sky && !shaded) &&
@@ -444,6 +453,7 @@ bool record_track_commands(const PreparedTrackScene& scene, const TrackDrawList&
                 auto sky_options = options;
                 sky_options.material_state = MaterialStateMode::retail;
                 sky_options.cull = CullMode::none;
+                sky_options.texture_filter = TextureFilterMode::legacy;
                 if (!pipeline(draw,true,&scene.region.textures[source.texture],0,source.texture_hash,sky_options,error)) return false;
                 const char* variant = draw.pipeline.name;
                 draw.program = nullptr;
@@ -512,10 +522,12 @@ const RecordedDraw& RecordedCommands::reflection_draw(std::size_t i) const {
     if (!generation_valid()) throw std::logic_error("expired command generation");
     return source_ ? source_->reflection_draw(i) : reflections.at(i);
 }
-bool record_track_reflections(const PreparedTrackScene& scene, const RenderOptions& options,
+bool record_track_reflections(const PreparedTrackScene& scene, const RenderOptions& supplied_options,
                               const UploadTable& uploads, std::vector<RecordedDraw>& draws,
                               std::string& error, bool cull) {
     draws.clear();
+    auto options = supplied_options;
+    options.texture_filter = TextureFilterMode::legacy;
     std::vector<TrackDrawListEntry> entries;
     if (!track_reflection_entries(scene, options, entries, error, nullptr, cull)) return false;
     const ResourceMap resources(uploads, scene.region.meshes.size(), scene.region.textures.size());
@@ -554,6 +566,7 @@ bool record_lamp_reflections(const RenderOptions& options, const UploadTable& up
             draw.vertex_resource = resource; draw.index_resource = resource+1; draw.texture_resource = resource+2;
             draw.vertex_count = 4; draw.index_count = 6;
             auto unlit = options; unlit.cull = CullMode::none;
+            unlit.texture_filter = TextureFilterMode::legacy;
             if (!pipeline(draw, true, &lamps.texture, 0, lamps.texture.hash, unlit, error)) return false;
             for (std::size_t i = 0; i < draw.program->variant_count; ++i)
                 if (std::strcmp(draw.program->variants[i].name, "additive") == 0) draw.pipeline = draw.program->variants[i];

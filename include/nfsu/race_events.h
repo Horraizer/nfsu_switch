@@ -196,6 +196,21 @@ struct RaceTableLimits {
     std::size_t max_top_level_chunks = 1U << 20;
 };
 
+// Shared bounded pack reader and nested-chunk locator for setup consumers.
+// Offsets refer to decompressed bytes. No borrowed storage is retained.
+bool load_race_image(const std::filesystem::path& path,
+                     std::vector<unsigned char>& image,
+                     std::vector<RaceTableIssue>& issues,
+                     const RaceTableLimits& limits = RaceTableLimits{});
+struct RaceChunkPayload {
+    std::uint64_t begin = 0;
+    std::uint64_t end = 0;
+};
+bool find_race_chunk(const unsigned char* data, std::size_t size,
+                     std::uint32_t id, RaceChunkPayload& payload,
+                     std::vector<RaceTableIssue>& issues,
+                     const RaceTableLimits& limits = RaceTableLimits{});
+
 struct TrackInfoTable {
     // Bytes of the parsed image, and of the file as stored when a loader
     // read it (0 otherwise).
