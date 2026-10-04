@@ -1,6 +1,8 @@
 # nfsu-switch
 
-Experimental clean-room engine research for Need for Speed: Underground.
+Experimental native Nintendo Switch engine port and clean-room research for
+Need for Speed: Underground. A playable driving diagnostic exists; the complete
+introductory Underground race is still in development.
 
 The repository contains no Electronic Arts code or game data. A user-provided
 PC installation is required for local research and testing.
@@ -12,17 +14,53 @@ reviewer roles. Start or resume with [Work recovery](docs/WORK_RECOVERY.md);
 [Work state](docs/WORK_STATE.md) is the dated index of current priorities.
 Verify its links against live Git and board state before acting.
 
-## Current milestone
+## Project status
 
-The first milestone is `nfsu_probe`, a read-only installation and chunk-format
-inspector. It validates the expected game layout and walks NFS chunk containers
-without loading whole asset files into memory. `nfsu_viewer` renders a decoded
-car to a screenshot with a portable CPU reference renderer, and with
-`--interactive` opens a desktop window on the same scene for inspection.
-`nfsu_race` integrates a full two-lap event 1 with collision, streaming,
-controls, chase camera and lap timing. It replays a checked-in scripted
-controller recording or opens a live keyboard window on Windows; see
-[`docs/DESKTOP_RACE.md`](docs/DESKTOP_RACE.md) for commands and deterministic pins.
+Status recorded 2026-10-04 against merged gameplay baseline `ec217496`.
+[Work state](docs/WORK_STATE.md) links the dated evidence and active work;
+check the live board before treating a branch or hardware result as current.
+
+### Available in main
+
+- `nfsu_switch_race` provides live player-only driving on track 1003 with
+  deko3d rendering, streamed scenery, controls, chase camera, static track
+  collision, audio and a speedometer. Its event 1 diagnostic has two-lap
+  timing. This is not the complete introductory Underground event 0.
+- The renderer includes selectable texture filtering, sky, particles,
+  glows, car shading and wet-road reflections. These paths still contain
+  approximations; enabling them does not establish original visual fidelity.
+- `nfsu_race` provides the desktop event 1 diagnostic and scripted replay;
+  see [DESKTOP_RACE](docs/DESKTOP_RACE.md). `nfsu_viewer` provides car inspection,
+  and `nfsu_probe` inspects the installation and decoded formats read-only.
+
+### Work in branches, not accepted as complete
+
+- [All-car support, PR #319](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/319):
+  the owner drove Skyline, Supra, Celica, Tiburon and Eclipse on Switch.
+  Hardware material defects returned the branch to changes requested;
+  catalog loading does not establish correct materials, tuning or handling.
+- [Intro playback, #320](https://git.accad.pro/murzintsevav/nfsu-switch/issues/320)
+  and [menu, #66](https://git.accad.pro/murzintsevav/nfsu-switch/issues/66):
+  a combined test build reaches videos, menu, free driving and return.
+  The owner confirmed video sound but rejected video proportions and menu
+  appearance. Original menu music and presentation are being completed.
+- Controller, nitrous, shared contacts and audio research have separate open
+  PRs. A recovered contract or passing unit test is not a completed race.
+
+### Target milestone
+
+Original startup videos and sound lead into the original-style menu with
+the requested original music. Only two gameplay modes will be available:
+
+1. **Underground:** one complete introductory event 0, including its cars,
+   tuning and decals, opponents, traffic and contacts, nitrous on Switch L,
+   original HUD/minimap, start, finish/results and return/retry flow.
+2. **Free driving:** continuous driving on the first track, with return to
+   the menu. This does not imply an expanded open world.
+
+The complete event 0, frontend presentation/music, original audio/visual
+fidelity and end-to-end hardware acceptance remain open. This repository
+does not yet provide the complete original game or career.
 
 ## Build
 
@@ -31,6 +69,11 @@ cmake -S . -B build -G Ninja
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+
+This basic build omits retail validation. For a qualifying native gate,
+configure with `-DNFSU_RETAIL_ROOT=<local-PC-installation>` and a standalone
+Python interpreter, run the tests with zero skips, and repeat in Release.
+[AGENTS.md](AGENTS.md) defines the full validation requirements.
 
 The Nintendo Switch build is opt-in and needs devkitPro; see
 [`docs/SWITCH_BUILD.md`](docs/SWITCH_BUILD.md). Its shaders are compiled
