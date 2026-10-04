@@ -398,6 +398,26 @@ void retail_checks(const std::filesystem::path& root) {
     require(missing.find("Cars/INTEGRA_X/GEOMETRY.BIN") != std::string::npos,
             "the missing pack is named: " + missing);
 
+    // The application boundary (review F1 of the first round): the Switch
+    // race's own load must surface the named missing pack - or the refusal
+    // sentence - in the error it returns, never an empty message.
+    {
+        RaceGpuScene missing_scene;
+        require(!missing_scene.load(posix_file_system(), root, error, nullptr, nullptr,
+                                    false, false, false, &moved),
+                "a scene with a missing pack loaded");
+        require(!error.empty() &&
+                error.find("Cars/INTEGRA_X/GEOMETRY.BIN") != std::string::npos,
+                "the application names the missing pack: '" + error + "'");
+        RaceGpuScene unresolved_scene;
+        const CarAssets unresolved;
+        require(!unresolved_scene.load(posix_file_system(), root, error, nullptr, nullptr,
+                                       false, false, false, &unresolved),
+                "a scene with an unresolved selection loaded");
+        require(error.find("resolve_car_assets") != std::string::npos,
+                "the application preserves the resolver refusal: '" + error + "'");
+    }
+
     // The tuned reader route of another car reads its own vinyls.
     CarAssets celica;
     require(load_car_assets(global, "CELICA", celica, error), error);

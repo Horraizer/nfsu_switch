@@ -146,6 +146,16 @@ bool read_stock_frame_inputs(const std::filesystem::path& root, StockFrameInputs
 bool read_car_frame_inputs(const std::filesystem::path& root, const CarAssets& car,
                            StockFrameInputs& inputs, bool tuned, std::string& error);
 
+// The message an application reports when read_car_frame_inputs returned
+// false: `error` itself when the call refused the caller (an unresolved
+// selection), otherwise the inputs' own missing-file report, which names
+// every pack that could not be read and where to copy it from. Without
+// this, a false return leaves the message empty exactly when a car's pack
+// was not copied (review F1 of issue #315's first round).
+std::string car_frame_inputs_error(const StockFrameInputs& inputs,
+                                   const std::string& error,
+                                   const std::filesystem::path& root);
+
 // The pinned command's stock request: car type 240SX, LOD A, the world
 // pass, and the wheels and brakes at the culling placements.
 StockSceneRequest stock_240sx_request();

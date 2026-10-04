@@ -129,9 +129,7 @@ public:
         std::string error;
         require(load_race_hud_atlas(root,hud_atlas,error),error);
         if (!read_car_frame_inputs(root,selection,car_inputs,tuned,error))
-            throw std::runtime_error(error);
-        if (!car_inputs.all_read())
-            throw std::runtime_error(car_inputs.read_error(root));
+            throw std::runtime_error(car_frame_inputs_error(car_inputs,error,root));
         require(prepare_race_car_frame(car_inputs,root,
                 tuned ? tuned_240sx_request() : stock_car_request(selection.car_type_name),
                 tuned ? tuned_240sx_skin() : stock_car_skin(selection.car_type_name),

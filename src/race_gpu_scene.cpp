@@ -266,9 +266,11 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
     if (loading) loading->checkpoint("car input");
     {
         StockFrameInputs inputs;
-        if (!read_car_frame_inputs(root, selection, inputs, tuned, error)) return false;
-        if (!inputs.all_read()) {
-            error = inputs.read_error(root);
+        // A false return covers both a refused selection and a pack that was
+        // not copied; either way the message names the cause (review F1 of
+        // issue #315's first round).
+        if (!read_car_frame_inputs(root, selection, inputs, tuned, error)) {
+            error = car_frame_inputs_error(inputs, error, root);
             return false;
         }
         if (loading) loading->checkpoint("car preparation");

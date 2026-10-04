@@ -187,8 +187,7 @@ bool read_stock_frame_inputs(const fs::path& root, StockFrameInputs& inputs, boo
 }
 
 bool read_car_frame_inputs(const fs::path& root, const CarAssets& car,
-                           StockFrameInputs& inputs, bool tuned, std::string& error) {
-    if (car.car_type == kNoCarType || car.geometry_path.empty() ||
+                           StockFrameInputs& inputs, bool tuned, std::string& error) {    if (car.car_type == kNoCarType || car.geometry_path.empty() ||
         car.textures_path.empty() || car.vinyls_path.empty()) {
         error = "car inputs need a car resolved through resolve_car_assets";
         return false;
@@ -236,6 +235,15 @@ bool read_car_frame_inputs(const fs::path& root, const CarAssets& car,
     read_extra(inputs.wheel_textures, "Cars/WHEELS/TEXTURES.BIN");
     read_extra(inputs.vinyls, car.vinyls_path);
     return inputs.all_read();
+}
+
+std::string car_frame_inputs_error(const StockFrameInputs& inputs,
+                                   const std::string& error,
+                                   const fs::path& root) {
+    // A caller-misuse refusal already carries its sentence; a file failure
+    // left `error` empty on purpose, and the inputs' own report names every
+    // unread pack.
+    return error.empty() ? inputs.read_error(root) : error;
 }
 
 StockSceneRequest stock_240sx_request() {
