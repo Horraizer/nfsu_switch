@@ -61,7 +61,9 @@ def prepare(m, native, data):
         x.ret(value=address)
     m.hook(0x67121A, 'synthetic_external_allocator', callback=allocate)
     # 00472F7F calls the imported QueryPerformanceCounter through 0069717C.
-    # Supply zero profiling time, preserving the original call's stdcall ABI.
+    # Supply an explicit zero counter, preserving the original stdcall ABI.
+    # The quotient plus a PRNG remainder supplies vertex cache stamps; no
+    # clock-independent query or live timer claim follows from this fixture.
     # The game timestamp at 0073AD34 is separate and remains caller-supplied.
     def timer(x):
         stack = x.reg('esp')
@@ -72,7 +74,7 @@ def prepare(m, native, data):
         x.reg('eax', 1)
         x.uc.reg_write(UC_X86_REG_EIP, 0x472F85)
     m.put(0x7349C8, 1)
-    m.hook(0x472F7F, 'synthetic_external_profiling_clock_call', callback=timer)
+    m.hook(0x472F7F, 'synthetic_external_query_performance_counter_call', callback=timer)
     table_offset = 1736752-18*0xC90
     m.uc.mem_write(0x2300000, data['GLOBAL/GLOBALB.BUN'][table_offset:table_offset+35*0xC90])
     m.put(0x734588, 0x2300000)

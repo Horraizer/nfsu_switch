@@ -88,10 +88,12 @@ The actor constructor at `0x004255AB..0x004255C8` stores RideInfo at actor+10
 and its physical-data subobject at actor+20 (RideInfo+60). The non-opposing
 callback at `0x0046617E..0x004661EB` uses that subobject's lateral bounds;
 `0x004663A0` accepts both car-kind body bytes. Original hull support also calls
-an imported profiling clock. The trace supplies an explicit zero external
-QueryPerformanceCounter result and unit profiling divisor, distinct from the
-game timestamp. Heap allocation is an explicit external service. Neither
-service supplies geometry, handling, response or a game tick.
+an imported performance counter. The trace supplies an explicit zero external
+QueryPerformanceCounter result and unit divisor, distinct from the game
+timestamp. Original support code combines the counter quotient with a PRNG
+remainder to form vertex cache stamps. This fixture proves no live timer or
+general clock-independent query. Heap allocation is an explicit external
+service. Original code supplies hull coordinates, handling and response.
 
 The distant forced case still produces a response. This is intentional original
 behavior at direct solver entry and proves why the production admission gate
