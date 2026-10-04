@@ -364,7 +364,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     require(race.prepare_metadata(root,error,&progress),error);
     require(scene.load(posix_file_system(), root, error, &progress, &progress,
                        tuned, glows, car_shading), error);
-    screen.show({std::string("ASSETS PASS. Preparing event 1, ") +
+    screen.show({std::string(free_drive ? "Preparing free driving, " : "ASSETS PASS. Preparing event 1, ") +
                  selected_car_label + " 240SX and race course..."});
     screen.show({car_shading ? "CAR SHADING ON: static environment approximation" : "CAR SHADING OFF"});
     progress.checkpoint("race course");
@@ -491,7 +491,9 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             simulation += tick_ms; simulation_ticks[ticks] = tick_ms;
             stage = armGetSystemTick(); require(race.commit(error),error);
             scene.advance_particles(race.session());
-            sound.on_tick(audio::race_audio_snapshot(race.session()));
+            auto audio_snapshot=audio::race_audio_snapshot(race.session());
+            if (free_drive) { audio_snapshot.completed_laps=0; audio_snapshot.finished=false; }
+            sound.on_tick(audio_snapshot);
             if (replay_mode) std::fputs(race.step_line().c_str(),stdout);
             residency += ms(armGetSystemTick()-stage);
             ++ticks;
@@ -840,6 +842,9 @@ int main(int argc, char** argv) {
                             menu.notice("FREE DRIVING - + RETURNS TO MENU");
                         } catch (const Cancel&) {
                             menu.notice("LOADING CANCELLED");
+                        } catch (const std::exception& error) {
+                            std::printf("FREE DRIVE ERROR: %s\n",error.what());
+                            menu.notice(std::string("FREE DRIVING: ")+error.what());
                         }
                         stick_up=stick_down=false;
                     }
