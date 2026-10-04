@@ -144,7 +144,7 @@ public:
     }
 };
 class Progress final : public AssetCheckObserver, public TrackSliceLoadObserver {
-    Screen& screen_; PadState& pad_; HeapUsage& heap_;
+    Screen& screen_; PadState& pad_; HeapUsage& heap_; bool frontend_;
     std::string file_; std::uint64_t previous_ = 0, last_screen_ = 0;
     void poll() {
         const auto info = mallinfo();
@@ -153,12 +153,16 @@ class Progress final : public AssetCheckObserver, public TrackSliceLoadObserver 
         if (!appletMainLoop() || (padGetButtonsDown(&pad_) & HidNpadButton_Plus)) throw Cancel{};
     }
 public:
-    Progress(Screen& screen, PadState& pad, HeapUsage& heap) : screen_(screen), pad_(pad), heap_(heap) {}
+    Progress(Screen& screen, PadState& pad, HeapUsage& heap, bool frontend = false) : screen_(screen), pad_(pad), heap_(heap), frontend_(frontend) {}
     void checkpoint(const char* phase) override {
         poll();
         const auto now = armGetSystemTick();
         if (ms(now-last_screen_) >= 100) {
             last_screen_ = now;
+            if (frontend_) {
+                screen_.show({"Loading free driving...", "+ cancels loading"});
+                return;
+            }
             screen_.show({std::string("Loading: ")+phase,
                 format("HEAP LOAD OBS HWM delta %llu / 50331648 | over %llu",
                     (unsigned long long)heap_.load_delta(), (unsigned long long)heap_.load_overrun(50331648)),
@@ -167,12 +171,17 @@ public:
     }
     void file_started(std::size_t index, std::size_t total, const AssetFile& file) override {
         poll(); previous_ = 0; file_ = file.path;
-        screen_.show({format("NFSU #196 / #47 first-lap check %zu/%zu",index+1,total),file_,"All game files read-only. + cancels."});
+        if (frontend_) screen_.show({format("Loading free driving... %zu / %zu",index+1,total),"+ cancels loading"});
+        else screen_.show({format("NFSU #196 / #47 first-lap check %zu/%zu",index+1,total),file_,"All game files read-only. + cancels."});
     }
     void file_progress(std::size_t, std::uint64_t hashed, std::uint64_t bytes) override {
         poll();
         if (hashed == bytes || hashed-previous_ >= 8*1024*1024) {
             previous_ = hashed;
+            if (frontend_) {
+                screen_.show({"Loading free driving...", "+ cancels loading"});
+                return;
+            }
             screen_.show({"#47 FIRST-LAP ASSET CHECK",file_,format("%llu / %llu bytes",
                          (unsigned long long)hashed,(unsigned long long)bytes),"+ cancels"});
         }
@@ -367,14 +376,14 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     require(scene.set_sky(sky != "off"), "sky mode set after scene load");
     scene.set_wet_road_reflections(wet_road_reflections);
     const auto before = mallinfo(); heap.begin(before.uordblks,before.arena);
-    Progress progress(screen,pad,heap);
+    Progress progress(screen,pad,heap,free_drive);
     const auto load_start = armGetSystemTick();
     require(race.prepare_metadata(root,error,&progress),error);
     require(scene.load(posix_file_system(), root, error, &progress, &progress,
                        tuned, glows, car_shading), error);
     screen.show({std::string(free_drive ? "Preparing free driving, " : "ASSETS PASS. Preparing event 1, ") +
                  selected_car_label + " 240SX and race course..."});
-    screen.show({car_shading ? "CAR SHADING ON: static environment approximation" : "CAR SHADING OFF"});
+    if (!free_drive) screen.show({car_shading ? "CAR SHADING ON: static environment approximation" : "CAR SHADING OFF"});
     progress.checkpoint("race course");
     require(race.start(root,scene.track(),error,&progress),error);
     progress.checkpoint("race course prepared");
@@ -405,7 +414,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     RaceGpuFrame frame; require(scene.frame(race.session(),frame,error),error);
     const double load_ms = ms(armGetSystemTick()-load_start);
     const auto after = mallinfo(); heap.finish_load(after.uordblks,after.arena);
-    screen.show({"ASSETS PASS. Uploading track and car to deko3d..."});
+    screen.show({free_drive ? "Starting free driving..." : "ASSETS PASS. Uploading track and car to deko3d..."});
     const auto upload_start = armGetSystemTick();
     if (!panel_mode) screen.close();
     docked = appletGetOperationMode() == AppletOperationMode_Console;
@@ -726,6 +735,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         failure += "renderer close: " + close_error;
     }
     if (!failure.empty()) { std::printf("ERROR: %s\n",failure.c_str()); std::fflush(stdout); }
+    if (free_drive && !failure.empty()) throw std::runtime_error(failure);
     if (appletMainLoop() && !free_drive) {
         if (profile_stats) {
             const ProfileResultContext context{*profile_stats,renderer.gpu_profile(),heap,read_clocks(),
