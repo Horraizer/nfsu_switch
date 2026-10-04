@@ -14,17 +14,15 @@ at `7c6a5e30e977160105cad778b843323ac90d978e`; phase context is
 This delta adds no production actors, path follower, solver or C++.
 Its tests do not accept inherited C++/Release/Switch changes.
 
-The new result is executable control production: the complete original driver
-`0x0045E970`, including its lookahead, angular errors, history filters and
-throttle/brake path, runs without helper hooks for the bounded fixtures below.
-The continuation removes the injected strategy-cap boundary for the recovered
-controller3 strategy selection. Original scheduler dispatch, pooled allocation,
-strategy constructors and initial action constructors execute without hooks.
-The constructed action/strategy feed the actual publication/setter on a
-synthetic longer path. A separate mirrored experiment changes actor pose,
-velocity, speed and desired speed while preserving driver history.
-The original first action also reaches a precise unexecuted planner boundary.
-Full action selection/planning and original runtime parity remain open.
+The continuation executes an initialized original planner and retained driver,
+using authenticated retail route, AI policy, track policy, stock RideInfo and
+convex hull inputs. `controller293_planner.ActorController` constructs the
+original objects, publishes the self world object, generates action paths and
+returns controls from original driver updates. No supplied path, substitute
+curve, planner callback or prebuilt driver history enters this new chain.
+The older frozen/supplied-path witnesses remain separate regression cases.
+The original game runtime, actual event0 roster/scene and physical integration
+remain outside this conditional executable adapter.
 
 Evidence labels: **S** authenticated PE instructions/data; **E** original x86
 interpreted by Unicorn on synthetic state; **R** original running game,
@@ -47,11 +45,19 @@ Use a fresh output directory each time. Paths derive from `Path.cwd()` and
 ASCII relative components; no encoded copy of the workspace path is needed.
 The executable identity is 3178496 bytes, SHA-256
 `C0FAD450912952F53809A54690D235AA8B4E25B9F46650693C7CBEE1B4C074B7`.
-No other retail file supplies probe inputs. Entire retail file/directory
-size/mtime/content manifests bracket each run, including failures. Reparse
+The initialized planner additionally reads these authenticated retail inputs:
+
+| Relative input | Bytes | SHA-256 |
+| --- | --- | --- |
+| Tracks/TRACKB1003.lzc | 433352 | ADA8206B5D66E3286BF582E2C7117FE0CC2BA9F6CADB756D922F7D32E7C696BA |
+| GLOBAL/GLOBALB.BUN | 2361176 | 39DF38FAC2BE7CA0F0D0A92E0113CAAEDA5B1C60E14436C612B3D0874AFC8DB9 |
+| Cars/240SX/GEOMETRY.BIN | 4780816 | 002202192752838E1B65E9B7C219EAB381FD5F916C3D031DDE93428EB325F619 |
+
+Entire retail file/directory size/mtime/content manifests bracket each run,
+including failures. Reparse
 points, retail overlap, existing output and paths outside the workspace fail.
-Reports stay local and ignored; no executable, geometry or derived asset is
-exported. `source.txt` is decoded source evidence; `report.json` contains tool
+Reports stay local and ignored. No retail file or complete asset is exported;
+reported path coordinates and bounds are bounded research measurements. `source.txt` is decoded source evidence; `report.json` contains tool
 hashes, source assertions, span hashes and E results. Tests own numeric pins.
 
 Every executed original range is explicitly allowed. Unlisted execution,
@@ -100,8 +106,9 @@ null-route cases distinguish the branches. The route-byte fixture supplies a
 synthetic point and scale. The only hook is the strategy virtual+0x10 returning
 the declared cap. The path-copy/resampling entry and setter execute original
 instructions. Catch-up returns through its actual null-actor-status gate.
-The action scheduler, ordinary RNG-offset route branch and controller tail
-are S only. These cases do not establish real event0 desired speeds.
+These legacy publication cases leave the action scheduler, ordinary RNG-offset
+route branch and controller tail at S. The initialized planner witness below
+executes the ordinary route/RNG branch. Neither establishes actual event0 inputs.
 
 ## Lookahead and steering
 
@@ -110,7 +117,8 @@ are S only. These cases do not establish real event0 desired speeds.
 - Ordinary physics3/controller3 uses actual curve `0x00706118` evaluated on
   actor+0x3D0 and multiplies it by category curve `0x00706168`, using signed
   RideInfo+0x424. Category -1 invokes preparation `0x0057F2B0`; that branch
-  is outside E, whose categories are explicit and already resolved.
+  is outside the legacy driver fixtures. The initialized planner now executes
+  original RideInfo preparation before category use.
 - Other selector combinations use the indexed constants at `0x006B7418` and
   `0x006B7434`. Physics/controller selectors are distinct inputs.
 - With at least two path points, `0x004590A0` walks/interpolates/extrapolates
@@ -307,40 +315,98 @@ transitions retain previous driver state. These states are hand-specified,
 not observed original frames or physics integration. No contact, overtaking,
 collision solver or successful closed-loop driving is claimed.
 
-## Actor adapter boundary and next original input
+## Initialized planner and executable actor contract
 
-`controller293-v2` retains the racer key and phase order above. An adapter can
-instantiate the following record without deciding missing behavior:
+`controller293-v3` adds `ActorController(image, retail)` with retained
+`pose(point_index, speed)` and `step(dt=0.02)` operations. It is an original-x86
+research oracle implemented in Python/Unicorn, usable on the supported inputs;
+it is not the production C++ RaceSession actor. The trace entry authenticates
+the executable and all retail files before constructing it. A caller using the
+class directly must use the same authenticated `Image` and `inputs(root)`.
+The bounded instruction allowlist intentionally rejects other execution paths.
 
-| Owned state or required input | Contract and provenance |
+**S/E producer chain:**
+
+| Input/object | Original producer executed |
 | --- | --- |
-| Identity and links | generation/config ID key; distinct actor, controller, driver, physics and RideInfo; S/P identity policy above |
-| Selection context | actor config+4, track ID and the four raw mode/special globals from the selection table; reject absent context instead of assuming normal |
-| Persistent state | original strategy/action selection plus per-driver path cache and five histories; E construction/reuse only for the bounded strategies |
-| Per-tick snapshot | actor position+0x60, velocity+0x70, heading+0x3B4, signed/absolute speed+0x3D0/+0x3D4, contact flags and world tick/dt; provided externally, never inferred from controls |
-| Planner result | action path+0x20, route state/category, selected route index or full ordinary-route inputs; required original producer/capture, no fallback synthetic path in a production actor |
-| Speed publication | original strategy cap for kinds1/2/3, action fields and catch-up/route inputs; publish through actual setter before driver update |
-| Output | raw steering word, gear command, throttle, brake, handbrake as one snapshot; existing physics/contact stages consume it |
+| Route manager, geometry, links and preprocessing | `442B00`, `4434D0`, `442DD0`, `4430B0`; TRACKB1003 chunks34121..34124 and80034147 |
+| Track policy and AI policy | GLOBALB chunks34201 and34B00; `442040`, track selector`4484F0`, AI loader`462070` |
+| Stock240SX RideInfo and generated performance curve | `417600`, `57D160`, `57F2B0`; GLOBALB CarTypeInfo entry18 |
+| Actor physical/state links | actor+20=RideInfo+60 from store`4255C8`; state constructor`464860`, called with actor+40/+540/+828 by`42538F..4253A4` |
+| Self world object and pose publication | original type registration`577B00`/`577C30`, factory`57A1B0`, publication`57A380`; actor+82C store`425715` |
+| Convex hull and local bounds | retail hull loader`472B00`, body constructor`469B00` through`469D1E`, including`472E40` and`468A50` |
+| Controller, driver and histories | whole `4620C0` and `45DBB0` constructors; strategy/action dispatch`44B831..44B85D` |
+| Selected route/context | route reset`44C250`, context update`44CF30` and self-world query`57A910` |
+| Action/path lifecycle | whole action7 update`450210`, planner`45B050`, route path producer`45AE10`, original path copy`45032D` |
+| Controls | publication`44C550..44C7F1`, cap`44A1F0`, setter`45E180`, driver`45E970` |
 
-**S/E boundary.** With the new action7, elapsed synthetic world time and an
-empty planner choice, the original virtual+8 update `0x00450210` executes
-through call`0x004502D7` and stops before the first instruction of planner
-`0x0045B050`. The executable `planner_boundary` report records this stop and
-unchanged empty action path; it does not report a planner PASS. The continuation
-does not substitute the supplied polyline for the outcome of that call.
+The context must select the actual published self entry and the action must
+return a usable path. Empty context/path cannot report success. Initial action
+and driver paths are empty from their constructors; tests verify transition to
+generated paths, changing pose, retained histories, braking and the original
+action refresh interval. `PlannerTests` owns frame/path/control pins. The old
+`planner_boundary` case still demonstrates its deliberately incomplete fixture;
+it is no longer the furthest recovered boundary.
 
-The next concrete research input is the initialized route/planner context
-passed as controller+0x2C, tied to actor/config/route identity at that call,
-and its returned path before action+0x20 publication. Recover or capture it
-with the race mode flags, selected route/category, world tick/dt and current
-strategy/action. It must include route geometry/indices and initialized world
-state rather than only a list of target points. The controller's actual
-catch-up status and ordinary-route RNG branch remain separate missing inputs.
-A runtime trace must subsequently correlate those with driver controls and
-physical actor updates. A complete portable AI controller is therefore not
-implemented by this change: implementing one now would choose missing planner
-and action behavior. The executable producer result is usable by #258 as a
-conditional construction/input contract, not as a ready autonomous opponent.
+The selected track policy was recovered after the higher-speed case accessed
+`[736174]+B8` in `4628C7`. `4484F0` selects the matching track ID at record+6C
+from the original loader's GLOBALB table. This input is retail data rather than
+a manually chosen branch flag. Complete manifests confirm retail files remain
+unchanged; mutable copies live only in emulator memory.
+
+### Caller-owned scene inputs and limits
+
+The adapter supplies one isolated role2 actor, controller3/physics3 selectors,
+stock240SX, track1003, normal mode, lap0, grounded contact flags and no player or
+rival catch-up target. It supplies the status records, initial speed scale and
+zero RNG state explicitly. These are conditional scene choices, not observed
+event0 values. Original RNG instructions subsequently advance retained state;
+no random value or catch-up result is hooked. The no-reference catch-up branch
+executes and returns its original scale. Rival-dependent numerical catch-up
+and overtake/avoidance branches remain unmeasured.
+
+`pose` selects a real route1 sample for position, forward vector and progress;
+velocity and signed/absolute speed are supplied. Original atan2 produces the
+heading. The caller's original distance-accumulator slice`426A5C..426A95`
+executes using supplied speed and dt. Each step advances the game clock at
+4000ticks/second. Repeated/finitely jumped pose samples are deliberately
+exogenous and do not constitute a physically consistent trajectory. A future
+RaceSession caller must provide actual integrated pose/velocity/contact state
+and preserve the controller's retained history; it cannot feed these fixture
+poses into production as an AI implementation.
+
+The returned snapshot contains raw steering word, gear command, throttle,
+brake, handbrake and target point, together with generated path, selected route,
+desired speed, action tick and input provenance. The same racer key and phase
+contract described above still applies. There is no implemented RaceSession
+hook and no claim that this Python object supplies one.
+
+External service hooks are restricted to heap allocation/release and a disclosed
+zero profiling `QueryPerformanceCounter` with divisor1. Profiling is separate
+from game time. Free-list storage, memory placement, SEH chain and empty graphics
+registries are fixture infrastructure. Original scalar D3DX dispatch initializes
+math operations. The body constructor stops before spatial world registration;
+this is sufficient for the recovered local-bounds consumer, not a collision
+world. No semantic AI, path, control or policy function is hooked.
+
+`controller293_planner_ranges.py` freezes exact decoded instruction blocks.
+`PlannerMachine` checks every instruction's start and length. Unexpected code,
+NULL data accesses, exhausted budgets and non-finite outputs fail. A mapped
+NULL page permits only the explicit FS:[0] SEH chain; this guard found missing
+original state/type producers during recovery. Heap bounds also fail closed.
+The legacy supplied-path evolving fixture now uses the same coherent clock/dt.
+
+### Remaining integration work
+
+The initialized planner context and positive returned path are recovered for
+this scene. Remaining work is the event0 construction/scene recipe, complete
+scheduler/action selection beyond the retained first action, actor lifecycle,
+multiple world actors and spatial registration, real collision/physics/progress
+integration, and original correlated runtime comparisons. Missing prepared
+fixtures alone do not establish an external blocker: these producer paths can
+continue to be investigated from authenticated code and retail data. This
+change establishes an executable original oracle and a concrete conditional
+actor contract; it does not justify inventing a production AI approximation.
 
 ## Unmet original and hardware acceptance
 
@@ -352,8 +418,9 @@ path points and selected line/lane, RNG state, world tick/dt, driver history,
 entry/exit controls and subsequent physics/contact/progress by call identity.
 Include straight/corner/braking, no-contact overtakes, contact, recovery,
 pause and restart. Preserve the distinction between frozen-input E fixtures
-and evolving original trajectories. The smallest missing input is that trace,
-not permission to invent a controller from #63's project path follower.
+and evolving original trajectories. That trace is needed for runtime parity. Static producer recovery and actor
+integration may continue independently; #63's project path follower is not
+evidence for the missing original behavior.
 
 Issue293 remains open for action/planner/difficulty research, independent
 review and original comparisons; #258 retains actor integration and full-race

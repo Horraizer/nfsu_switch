@@ -13,8 +13,13 @@ from collision256_trace import output_path
 from controller293_native import EXEC_RANGES, suite
 from controller293_strategy import RANGES as STRATEGY_RANGES, suite as strategy_suite
 from world_body_trace import Image, INPUTS, digest_file, manifest
+from controller293_planner import suite as planner_suite, inputs as planner_inputs
+from controller293_planner_ranges import RANGES as PLANNER_RANGES
 
-EXTRA_RANGES = STRATEGY_RANGES + [
+EXTRA_RANGES = STRATEGY_RANGES + PLANNER_RANGES + [
+    ('actor-state-construction', 0x42538F, 0x4253A9),
+    ('actor-physical-binding', 0x4255AB, 0x4255CB),
+    ('actor-world-binding', 0x425703, 0x42571B),
     ('action17-constructor', 0x453730, 0x453754),
     ('action17-exit', 0x453830, 0x45385D),
     ('controller-constructor', 0x4620C0, 0x462228),
@@ -35,6 +40,12 @@ EXTRA_RANGES = STRATEGY_RANGES + [
 ]
 
 ASSERTIONS = {
+    0x4253A4: ('call', '0x464860'),
+    0x4255C8: ('mov', 'dword ptr [ebx + 0x20], esi'),
+    0x425715: ('mov', 'dword ptr [ebx + 0x82c], eax'),
+    0x44204F: ('mov', 'dword ptr [0x736168], ecx'),
+    0x44851F: ('mov', 'dword ptr [0x736174], ecx'),
+    0x45032D: ('rep movsd', 'dword ptr es:[edi], dword ptr [esi]'),
     0x44B83F: ('call', 'dword ptr [eax + 0x60]'),
     0x44B854: ('call', 'dword ptr [edx + 0x18]'),
     0x44B857: ('mov', 'dword ptr [ebx + 0x3f8], eax'),
@@ -138,7 +149,8 @@ TABLES = {
 }
 
 TOOL_FILES = ('controller293_trace.py', 'controller293_native.py', 'controller293_test.py',
-              'controller293_strategy.py',
+              'controller293_strategy.py', 'controller293_planner.py',
+              'controller293_planner_ranges.py',
               'physics256_native.py', 'collision256_trace.py', 'world_body_trace.py')
 
 
@@ -228,16 +240,18 @@ def main():
         report = dict(input=dict(size=size, sha256=sha), source=facts,
                       negative_source_guards=negative_source(image), native=suite(image),
                       strategy=strategy_suite(image),
+                      planner=planner_suite(image, planner_inputs(root)),
                       versions=dict(capstone=capstone.__version__, unicorn=unicorn.__version__),
                       tool_hashes={n: digest_file(Path(__file__).with_name(n)) for n in TOOL_FILES},
-                      contract='controller293-v2', original_runtime=None,
+                      contract='controller293-v3', original_runtime=None,
                       inherited_cpp_validated=False)
         (out / 'source.txt').write_text(lines, encoding='ascii')
         (out / 'report.json').write_text(json.dumps(report, ensure_ascii=True,
             allow_nan=False, indent=2) + '\n', encoding='ascii')
         print('PASS: authenticated controller source, tables and wrong-branch guards')
         print('PASS: bounded original-x86 controls captured; run controller293_test.py')
-        print('UNAVAILABLE: live event0 action/route selection, overtake/contact, full parity')
+        print('PASS: retail-backed original planner, retained action and driver witnesses')
+        print('UNAVAILABLE: actual event0 scene/trajectory, overtake/contact, full parity')
     finally:
         after = manifest(root)
         (out / 'after.json').write_bytes(after)

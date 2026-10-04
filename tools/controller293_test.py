@@ -2,6 +2,7 @@
 
 import argparse
 import ast
+import hashlib
 import json
 from pathlib import Path
 import struct
@@ -10,6 +11,8 @@ import unittest
 
 from controller293_trace import TOOL_FILES
 from physics256_native import Machine, STOP
+from controller293_planner import PlannerMachine, RETAIL, low_memory
+from unicorn import UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE
 from world_body_trace import INPUTS, digest_file
 
 REPORT = None
@@ -224,6 +227,73 @@ class EvidenceTests(unittest.TestCase):
         self.assertNotIn('00450321', row['visited'])
 
 
+class PlannerTests(unittest.TestCase):
+    def test_original_producers_and_external_services(self):
+        self.assertEqual(REPORT['contract'], 'controller293-v3')
+        required = ('00442040', '004484F0', '00462070', '00417600',
+                    '0057D160', '0057F2B0', '00464860', '0057A1B0',
+                    '0057A380', '00472B00', '00469B00', '004620C0',
+                    '0045DBB0', '0044CF30', '00450210', '0045B050',
+                    '0045032D', '0044C550', '0045FAF0', '0045E180',
+                    '0044A1F0', '00426A5C', '0045E970')
+        for case in REPORT['planner']['cases']:
+            self.assertEqual(case['input_identities'], {k: list(v) for k, v in RETAIL.items()})
+            self.assertEqual(case['initial'], dict(action_count=0, driver_count=0, marker=-1))
+            self.assertEqual(case['shape_kind'], 1)
+            self.assertEqual(case['category'], 3)
+            self.assertEqual(case['body_width'], 1.7545678615570068)
+            self.assertFalse(case['physical_integration'])
+            self.assertIsNone(case['original_runtime'])
+            for at in required:
+                self.assertIn(at, case['visited'])
+            self.assertEqual({row['hook'] for row in case['hooks']},
+                             {'external_heap_allocate', 'external_heap_release',
+                              'external_QueryPerformanceCounter'})
+
+    def test_generated_paths_and_complete_frame_pins(self):
+        hashes = ('f6b53ef5df0cd8cf8d5a66d707da4675ca7a23459345d8988cf2186ad188cc26',
+                  '9af0f5303bac43732ad6418ef2f1e86bb0a6c3377249772c6f4d85adb1059563',
+                  '48ceca873c166b6edf06c75f07dcfa90d36655b378f0c15818f1e618655be3e1')
+        for case, expected in zip(REPORT['planner']['cases'], hashes):
+            raw = json.dumps(case['frames'], sort_keys=True, separators=(',', ':'),
+                             allow_nan=False).encode('ascii')
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), expected)
+            for i, frame in enumerate(case['frames']):
+                self.assertEqual(frame['selected_self'], 0)
+                self.assertGreaterEqual(frame['context_count'], 1)
+                self.assertGreaterEqual(len(frame['path']), 2)
+                self.assertGreater(frame['driver_count'], 0)
+                self.assertEqual(frame['inputs']['world_tick'], 100000 + (i + 1) * 80)
+                self.assertEqual(frame['inputs']['dt'], 80 / 4000)
+                self.assertGreater(frame['desired_speed'], 0)
+                self.assertEqual(frame['catchup_scale'], 1)
+                for name in ('throttle', 'brake', 'handbrake'):
+                    self.assertGreaterEqual(frame['controls'][name], 0)
+                    self.assertLessEqual(frame['controls'][name], 1)
+
+    def test_retained_driver_braking_and_action_refresh(self):
+        normal, fast, lifecycle = REPORT['planner']['cases']
+        self.assertEqual([len(c['frames']) for c in (normal, fast, lifecycle)], [24, 24, 160])
+        rows = normal['frames']
+        self.assertEqual(rows[0]['path'], rows[1]['path'])
+        self.assertLess(rows[0]['controls']['throttle'], rows[1]['controls']['throttle'])
+        self.assertNotEqual(rows[0]['path'], rows[-1]['path'])
+        self.assertGreater(rows[-1]['controls']['steering_word'], 0)
+        self.assertEqual([f['controls']['brake'] for f in fast['frames'][:5]],
+                         [f32(v) for v in (0.2, 0.4, 0.6, 0.8, 1.0)])
+        self.assertGreater(fast['frames'][-1]['controls']['throttle'], 0)
+        self.assertEqual({f['action_tick'] for f in lifecycle['frames']}, {100080, 112080})
+        self.assertEqual(lifecycle['frames'][149]['action_tick'], 100080)
+        self.assertEqual(lifecycle['frames'][150]['action_tick'], 112080)
+
+    def test_clock_matches_dt_in_supplied_path_legacy_fixture(self):
+        for case in REPORT['strategy']['evolving']:
+            rows = case['frames']
+            for a, b in zip(rows, rows[1:]):
+                self.assertEqual(b['inputs']['world_tick'] - a['inputs']['world_tick'],
+                                 b['inputs']['dt'] * 4000)
+
+
 class HarnessTests(unittest.TestCase):
     @staticmethod
     def machine():
@@ -244,6 +314,29 @@ class HarnessTests(unittest.TestCase):
         m.allowed.append((STOP + 0x400, STOP + 0x402))
         with self.assertRaisesRegex(RuntimeError, 'budget exhausted'):
             m.run(STOP + 0x400, budget=10)
+
+    def test_null_page_only_permits_explicit_fs_chain(self):
+        m = self.machine()
+        m.uc.mem_map(0, 4096)
+        m.uc.hook_add(UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE, low_memory, begin=0, end=4095)
+        m.uc.mem_write(STOP + 0x400, bytes.fromhex('64a100000000c3'))
+        m.allowed.append((STOP + 0x400, STOP + 0x407))
+        m.run(STOP + 0x400)
+        m.uc.mem_write(STOP + 0x400, bytes.fromhex('a100000000c3'))
+        with self.assertRaisesRegex(RuntimeError, 'NULL memory access'):
+            m.run(STOP + 0x400)
+
+    def test_planner_exact_boundary_rejects_unknown_and_wrong_size(self):
+        class FakeUC:
+            def emu_stop(self):
+                raise AssertionError('not a stop address')
+        machine = object.__new__(PlannerMachine)
+        machine.visited, machine.hooks = set(), {}
+        machine.end, machine.instructions = STOP, {0x401000: 5}
+        machine.instruction(FakeUC(), 0x401000, 5, None)
+        for address, size in ((0x401001, 4), (0x401000, 4)):
+            with self.assertRaisesRegex(RuntimeError, 'undeclared planner execution'):
+                machine.instruction(FakeUC(), address, size, None)
 
     def test_python38_grammar_and_ascii_tools(self):
         for name in TOOL_FILES:

@@ -133,7 +133,7 @@ def evolving_case(image, mirror=False):
         (31, 29, -2, 14, 14, 16384, 24), (22, 44, -12, 8, 14, 24576, 24)]):
         values = dict(position=[x, y*sign, 0], velocity=[vx, vy*sign, 0],
                       speed=speed, heading=int(heading*sign) & 65535, target=target,
-                      world_tick=100000+i*20, dt=0.02)
+                      world_tick=100000+i*80, dt=0.02)
         for base, vector in ((0x60, values['position']), (0x70, values['velocity'])):
             for j, value in enumerate(vector):
                 m.put(ACTOR + base + 4*j, float(value), 'f')
