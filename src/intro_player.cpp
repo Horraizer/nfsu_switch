@@ -92,6 +92,10 @@ IntroResult play_original_intro(const std::string& root,const IntroPoll& poll,co
                 if(video && clock/48>=frame.timestamp_ms) {
                     // Still decode every predictive frame when presentation is
                     // late; only presentation can be dropped safely.
+                    // All three original Movie objects use Size 640x480.
+                    // The MAD samples are non-square; native type7 rendering
+                    // uses FNG geometry, not the encoded texture aspect.
+                    frame.display_width=640;frame.display_height=480;
                     if(clock/48<frame.timestamp_ms+frame.duration_ms) present(frame);
                     video_end=frame.timestamp_ms+frame.duration_ms;
                     video=movie.next_video(frame);
