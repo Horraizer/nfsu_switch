@@ -1,5 +1,6 @@
 #pragma once
 
+#include "nfsu/car_assets.h"
 #include "nfsu/car_parts.h"
 #include "nfsu/geometry.h"
 #include "nfsu/part_placement.h"
@@ -134,9 +135,24 @@ struct StockFrameInputs {
 bool read_stock_frame_inputs(const std::filesystem::path& root, StockFrameInputs& inputs,
                              bool tuned = false);
 
+// The same nine files for any playable car resolved through the car type
+// table (include/nfsu/car_assets.h, issue #315). The car's own geometry,
+// textures and vinyls come from the CarAssets paths; the other five files
+// are the shared ones every stock car reads. `error` is set, with nothing
+// read and `inputs` untouched, only when `car` was not resolved by
+// resolve_car_assets; a file that could not be read is reported by the
+// inputs themselves, exactly as read_stock_frame_inputs reports it, and the
+// return value is all_read().
+bool read_car_frame_inputs(const std::filesystem::path& root, const CarAssets& car,
+                           StockFrameInputs& inputs, bool tuned, std::string& error);
+
 // The pinned command's stock request: car type 240SX, LOD A, the world
 // pass, and the wheels and brakes at the culling placements.
 StockSceneRequest stock_240sx_request();
+// The same request for any car type name (issue #315). Every option is the
+// stock one; only the car type differs, and the part database, wheel table
+// and decal names follow the name.
+StockSceneRequest stock_car_request(const std::string& car_type_name);
 StockSceneRequest tuned_240sx_request();
 
 // The viewer's runtime body skin options (src/viewer_main.cpp SkinOptions)
@@ -178,6 +194,9 @@ struct StockFrameSkin {
 // - The target is DUMMY_SKIN1, in the shared Cars/TEXTURES.BIN, and
 //   240SX_SKIN1 is bound as well, as the viewer does by default.
 StockFrameSkin stock_240sx_skin();
+// The same selection for any car type name (issue #315): plain doorline and
+// the 30/60/160 GLOSS base, each resolved from that car's own textures.
+StockFrameSkin stock_car_skin(const std::string& car_type_name);
 StockFrameSkin tuned_240sx_skin();
 
 // What the frame is made of, kept so that a caller can report on it. It is

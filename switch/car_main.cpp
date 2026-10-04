@@ -24,7 +24,11 @@
 // frame time is shown throughout.
 //
 // With the argument --unpainted it prepares the frame of issue #141
-// instead, without the skin, and compares it with that frame's pin. Any
+// instead, without the skin, and compares it with that frame's pin. With
+// --car NAME (issue #315) it draws any playable racer of the retail car
+// type table, resolved against the root's Global/GLOBALB.BUN, reading that
+// car's own Cars/<NAME> files; a car other than the 240SX has no pinned
+// desktop frame, and the application reports its hash and says so. Any
 // other argument replaces sdmc:/nfsu as the root.
 //
 // It opens its inputs for reading only and writes no file anywhere. A
@@ -46,6 +50,7 @@
 #include <cstdio>
 #include <cstring>
 #include <exception>
+#include <filesystem>
 #include <memory>
 #include <new>
 #include <string>
@@ -252,7 +257,14 @@ struct Choice {
     bool painted = true;
     bool tuned = false;
     std::string ignored;
+    // The car type name to load; resolved against the retail car type table
+    // in main, which reports a name no record holds.
+    std::string car_name = "240SX";
+    nfsu::CarAssets car;
 
+    // Only the 240SX has a pinned desktop frame (issue #315); every other
+    // car reports its own hash with no pin to compare with.
+    bool has_pin() const { return car.car_type_name == "240SX"; }
     const char* pinned_hash() const {
         return tuned ? nfsu::kTuned240sxFrameSha256 :
                painted ? nfsu::kStock240sxPaintedFrameSha256 : nfsu::kStock240sxFrameSha256;
@@ -272,6 +284,11 @@ Choice parse_arguments(int argc, char** argv) {
             continue;
         }
         const std::string argument = argv[i];
+        if (argument == "--car" && i + 1 < argc && argv[i + 1] != nullptr) {
+            choice.car_name = argv[i + 1];
+            ++i;
+            continue;
+        }
         if (argument == kUnpaintedArgument) {
             choice.painted = false;
         } else if (argument == "--tuned") {
@@ -290,7 +307,8 @@ Choice parse_arguments(int argc, char** argv) {
 }
 
 // The hash of the frame now in `frame`, compared with the pin, as status
-// lines and on stdout. Only called at the default camera.
+// lines and on stdout. Only called at the default camera. A car with no
+// pinned desktop frame reports its hash and says so.
 std::vector<Line> compare_with_pin(const nfsu::Frame& frame, const Choice& choice,
                                    std::string& encode_ms) {
     std::vector<Line> lines;
@@ -305,7 +323,11 @@ std::vector<Line> compare_with_pin(const nfsu::Frame& frame, const Choice& choic
         const std::string hash = nfsu::sha256_hex(image.sha256);
         lines.push_back(Line{"tga_bytes " + std::to_string(image.tga.size()) + "  sha256 " + hash,
                              kPlain});
-        if (hash == choice.pinned_hash() && image.tga.size() == choice.pinned_bytes()) {
+        if (!choice.has_pin()) {
+            lines.push_back(Line{"no pinned desktop frame for " + choice.car.car_type_name +
+                                     "; record this hash to pin it",
+                                 kNote});
+        } else if (hash == choice.pinned_hash() && image.tga.size() == choice.pinned_bytes()) {
             lines.push_back(Line{"result: EQUAL to the pinned desktop frame", kGood});
         } else {
             lines.push_back(Line{"result: DIFFERENT from the pinned desktop frame, " +
@@ -327,7 +349,8 @@ bool prepare(const Choice& choice, nfsu::StockFrame& frame, nfsu::StockView& vie
              Report& report, Screen& screen, std::string& timings) {
     const std::uint64_t read_start = armGetSystemTick();
     auto inputs = std::make_unique<nfsu::StockFrameInputs>();
-    nfsu::read_stock_frame_inputs(choice.root, *inputs, choice.tuned);
+    std::string read_error;
+    nfsu::read_car_frame_inputs(choice.root, choice.car, *inputs, choice.tuned, read_error);
     const std::uint64_t read_end = armGetSystemTick();
 
     const auto note_input = [&](const nfsu::StockFrameInput& input) {
@@ -341,6 +364,10 @@ bool prepare(const Choice& choice, nfsu::StockFrame& frame, nfsu::StockView& vie
         for (const nfsu::StockFrameInput* input :
              {&inputs->wheel_geometry, &inputs->wheel_textures, &inputs->vinyls})
             note_input(*input);
+    }
+    if (!read_error.empty()) {
+        report.line("nothing rendered: " + read_error, kBad);
+        return false;
     }
     if (!inputs->all_read()) {
         const std::string error = inputs->read_error(choice.root);
@@ -362,9 +389,9 @@ bool prepare(const Choice& choice, nfsu::StockFrame& frame, nfsu::StockView& vie
     std::string error;
     const std::uint64_t prepare_start = armGetSystemTick();
     const nfsu::StockFrameSkin skin = choice.tuned ? nfsu::tuned_240sx_skin() :
-        choice.painted ? nfsu::stock_240sx_skin() : nfsu::StockFrameSkin{};
+        choice.painted ? nfsu::stock_car_skin(choice.car.car_type_name) : nfsu::StockFrameSkin{};
     const nfsu::StockSceneRequest request = choice.tuned ? nfsu::tuned_240sx_request() :
-        nfsu::stock_240sx_request();
+        nfsu::stock_car_request(choice.car.car_type_name);
     const bool prepared =
         nfsu::prepare_stock_frame(*inputs, request, skin, frame, error);
     const std::uint64_t prepare_end = armGetSystemTick();
@@ -445,7 +472,7 @@ bool orbit(const Choice& choice, nfsu::StockFrame& frame, nfsu::StockView& view,
                     // line reported is its caption.
                     screen.show_frame(frame.frame.rgba());
                     report.line("nfsu_switch_car: the " + std::string(choice.name()) +
-                                " 240SX from " + choice.root +
+                                " " + choice.car.car_type_name + " from " + choice.root +
                                 ", CPU reference renderer, 1280x720");
                     report.detail(nfsu::stock_frame_slots_line(frame.report));
                     for (const std::string& line : nfsu::stock_frame_stats_lines(frame.stats)) {
@@ -511,16 +538,54 @@ int main(int argc, char** argv) {
     Screen screen;
     const bool have_screen = screen.open();
     Report report(screen);
-    report.line("nfsu_switch_car: the 240SX, drawn by the CPU reference renderer");
+    Choice choice = parse_arguments(argc, argv);
+    report.line("nfsu_switch_car: the " + choice.car_name +
+                ", drawn by the CPU reference renderer");
     if (!have_screen) {
         report.detail("the framebuffer could not be created; reporting on stdout only");
     }
-    const Choice choice = parse_arguments(argc, argv);
-    report.line("inputs: " + choice.root + "  frame: " + choice.name());
+    // Resolve the selected car through the retail car type table before any
+    // input is read, so a bad name stops with the playable list rather than
+    // a missing file (issue #315).
+    bool car_ok = true;
+    {
+        std::string error;
+        car_ok = nfsu::load_car_assets(std::filesystem::path(choice.root) / "Global/GLOBALB.BUN",
+                                       choice.car_name, choice.car, error);
+        if (!car_ok) {
+            report.line("stopped: car selection: " + error, kBad);
+        } else if (choice.tuned && !nfsu::tuned_preset_available_for(choice.car)) {
+            car_ok = false;
+            report.line("stopped: the --tuned preset is the 240SX's own part set; it cannot "
+                        "dress car type " + choice.car.car_type_name, kBad);
+        }
+    }
+    report.line("inputs: " + choice.root + "  frame: " + choice.name() + "  car: " +
+                choice.car.car_type_name + (choice.car.brand_name.empty()
+                                                ? std::string()
+                                                : " (" + choice.car.brand_name + ")"));
     if (!choice.ignored.empty()) {
         report.line("ignored arguments: " + choice.ignored, kBad);
     }
     screen.present();
+    if (!car_ok) {
+        report.line("Press + to exit.");
+        while (appletMainLoop()) {
+            padUpdate(&pad);
+            if ((padGetButtonsDown(&pad) & HidNpadButton_Plus) != 0) {
+                break;
+            }
+            screen.present();
+        }
+        screen.close();
+        if (nxlink_socket >= 0) {
+            close(nxlink_socket);
+        }
+        if (sockets) {
+            socketExit();
+        }
+        return 0;
+    }
 
     // Kept until exit: the screen shows the frame, and the view reads the
     // scene inside it.

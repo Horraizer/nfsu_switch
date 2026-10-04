@@ -6,6 +6,23 @@ through event 1: track 1003, two laps, forward. It reads that selection from
 the owner's FRONTB/GLOBALB tables and refuses a different event definition.
 No retail asset is included here. The recording is controller input only.
 
+Issue #315 adds `--car NAME`: any of the 20 playable racers the retail car
+type table holds, each with its own geometry, textures, stock parts, wheel
+table, body skin and the handling record decoded from its own car type
+record. `240SX` remains the default, and the default run - no `--car` - is
+byte-identical to the pinned baseline replay; `tests/car_selection_tests.cpp`
+pins every racer's frame, drive and race sequence. The event0 player car is
+`--car INTEGRA` and its rivals `--car ECLIPSE|SUPRA|CELICA`
+(docs/EVENT0_SETUP_HUD.md).
+
+```text
+build-release/nfsu_race --root X:/Games/NFSU --input tests/recordings/event1.txt --car INTEGRA
+```
+
+An unknown name, a traffic-only vehicle (car type class 2) or `--tuned` with
+a car other than the 240SX is refused with the playable roster listed. The
+tuned visual preset stays the 240SX's own part set.
+
 ## Run
 
 Build with the usual desktop CMake configuration. Substitute the local

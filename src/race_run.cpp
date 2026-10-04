@@ -28,6 +28,11 @@ bool RaceRun::set_steering(RaceSteering mode, std::string& error) {
         mode != RaceSteering::recovered_predicate1) { error="invalid steering mode"; return false; }
     steering_=mode; return true;
 }
+bool RaceRun::set_car(const std::string& car_type_name, std::string& error) {
+    if (metadata_ready_ || session_) { error="car selection must precede metadata/start"; return false; }
+    if (car_type_name.empty()) { error="car selection needs a car type name"; return false; }
+    car_=car_type_name; return true;
+}
 bool RaceRun::read_metadata(const std::filesystem::path& front, const std::filesystem::path& global,
                             std::string& error, TrackSliceLoadObserver* observer) {
     {
@@ -91,8 +96,11 @@ bool RaceRun::start(const std::filesystem::path& root, const TrackSlice& track, 
         error = "race startup differs from the uploaded permanent set"; return false;
     }
     VehicleSpec spec = stock_240sx_vehicle_spec();
-    if (explicit_performance_ && !load_race_vehicle_spec(
-            asset(root,track,"Global/GLOBALB.BUN"),"240SX",levels_,spec,error)) return false;
+    // The default 240SX keeps the built-in spec, so the pinned baseline
+    // replay is untouched; any other car - and any explicit performance
+    // levels - decode the selected car's own record from the retail table.
+    if ((explicit_performance_ || car_ != "240SX") && !load_race_vehicle_spec(
+            asset(root,track,"Global/GLOBALB.BUN"),car_,levels_,spec,error)) return false;
     session_ = std::make_unique<RaceSession>(course_,spec,steering_);
     if (observer) observer->checkpoint("race session constructed");
     const auto started = session_->start(error);
@@ -144,6 +152,8 @@ std::string RaceRun::steps_hash() const { auto copy = steps_; return sha256_hex(
 bool RaceRun::matches_event1_replay() const {
     if (steering_ != RaceSteering::baseline) return false;
     if (!session_ || pending_) return false;
+    // The pin is the 240SX player-only replay; no other car may claim it.
+    if (car_ != "240SX") return false;
     if (explicit_performance_ && !performance_levels_equal(levels_,{})) return false;
     const auto& timing = session_->timing(); const auto& r = timing.racers[0];
     return timing.outcome == RaceOutcome::finished && timing.step == 48343 &&
@@ -153,6 +163,8 @@ bool RaceRun::matches_event1_replay() const {
 }
 bool RaceRun::matches_configured_replay() const {
     if (steering_ != RaceSteering::baseline) return false;
+    // The performance replay is as 240SX as the baseline one.
+    if (car_ != "240SX") return false;
     if (!explicit_performance_ || performance_levels_equal(levels_,{})) return matches_event1_replay();
     if (!session_ || pending_ || !performance_levels_equal(levels_,performance1_levels())) return false;
     const auto& timing=session_->timing(); const auto& r=timing.racers[0];

@@ -529,6 +529,40 @@ pre-existing geometry rejections listed above and prepare their scenes
 anyway. The 15 traffic vehicles have 5 installed slots, 4 of them with a
 model, and draw 3 in 9 instances.
 
+### Car selection through the retail table (issue #315)
+
+`nfsu::resolve_car_assets` / `load_car_assets`
+(`include/nfsu/car_assets.h`) turn a car type name into that car's own
+inputs. The name is matched byte for byte against the 0x00034600 records,
+and the class field +0xC54 (0 racer, 2 traffic, per
+[`FORMATS.md`](FORMATS.md)) is the original classification the layer
+enforces: a traffic-only vehicle is refused, never silently resolved to a
+racer. The record's geometry path (`CARS\<NAME>\GEOMETRY.BIN` in its
+spelling) is normalized to the installation's relative form
+(`Cars/<NAME>/GEOMETRY.BIN`); `TEXTURES.BIN` and `VINYLS.BIN` come from the
+same directory, the one triplet every one of the 39 retail `Cars/*`
+directories holds. The runtime path formatting of those two names was not
+traced in speed.exe; the loaders fail with the per-car path named if an
+installation ever differs.
+
+`read_car_frame_inputs` reads the nine files a selected car needs (its own
+three, `Global/GLOBALB.BUN`, shared `Cars/TEXTURES.BIN`, `Cars/BRAKES`,
+`Cars/PLATES`, and for the tuned route `Cars/WHEELS` geometry and textures),
+`stock_car_request`/`stock_car_skin` are the per-car forms of the 240SX
+preset functions, and `RaceRun::set_car` plus the `--car NAME` options of
+`nfsu_race`, `nfsu_switch_race.nro` and `nfsu_switch_car.nro` select through
+it. The default without a selection stays the pinned 240SX paths and the
+built-in 240SX spec, so the baseline replay and frame pins are untouched; a
+selected car drives the handling record decoded from its own car type
+record (`load_race_vehicle_spec`). The shadow texture is the car's own
+`<NAME>_SHADOWIG`, one 128x64 DXT3 image in every retail car directory.
+
+`tests/car_selection_tests.cpp` pins, for each of the 20 racers, the painted
+stock frame through the per-car paths, a bounded deterministic proving-ground
+drive of its own handling record, and the event0 player car's race sequence
+through the Switch race's load path; it also covers A/B/A reload isolation,
+absent-pack and invalid-name refusals, and the tuned-preset rule.
+
 ### Still open after this slice
 
 - The pixel size itself: `[view+0xC]` in 0x545180 was not traced to a

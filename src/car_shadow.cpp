@@ -1,4 +1,5 @@
 #include "nfsu/car_shadow.h"
+#include "nfsu/texture.h"
 #include "nfsu/texture_decode.h"
 
 #include <algorithm>
@@ -7,7 +8,6 @@
 
 namespace nfsu {
 namespace {
-constexpr std::uint32_t kShadowHash = 0xF36596F5U; // 240SX_SHADOWIG
 
 VehicleVec3 add(VehicleVec3 a, VehicleVec3 b) { return {a.x+b.x,a.y+b.y,a.z+b.z}; }
 VehicleVec3 sub(VehicleVec3 a, VehicleVec3 b) { return {a.x-b.x,a.y-b.y,a.z-b.z}; }
@@ -32,10 +32,15 @@ void row(float* values, std::size_t index, VehicleVec3 world) {
 }
 } // namespace
 
-bool prepare_car_shadow(const StockFrameInputs& inputs, const TexturePack& pack,
-                        CarShadowAsset& out, std::string& error) {
+bool prepare_car_shadow(const std::string& car_type_name, const StockFrameInputs& inputs,
+                        const TexturePack& pack, CarShadowAsset& out, std::string& error) {
     error.clear();
-    std::vector<std::uint32_t> wanted{kShadowHash};
+    // The retail shadow texture of the selected car: <name>_SHADOWIG in the
+    // car's own TEXTURES.BIN, one 128x64 DXT3 image in every retail car
+    // directory (issue #315). The 240SX's hash was 0xF36596F5.
+    const std::string shadow_name = car_type_name + "_SHADOWIG";
+    const std::uint32_t shadow_hash = bin_hash(shadow_name);
+    std::vector<std::uint32_t> wanted{shadow_hash};
     RenderTextureSource source;
     source.bytes = &inputs.file(StockFrameFile::car_textures).bytes;
     source.packs.push_back(&pack);
@@ -43,10 +48,11 @@ bool prepare_car_shadow(const StockFrameInputs& inputs, const TexturePack& pack,
     RenderTextureSet decoded;
     if (!decode_render_texture_sources({source}, {}, decoded, error)) return false;
     if (decoded.textures.size() != 1 || !decoded.textures[0].usable() ||
-        decoded.textures[0].hash != kShadowHash) {
-        error = "240SX_SHADOWIG is missing or unusable"; return false;
+        decoded.textures[0].hash != shadow_hash) {
+        error = shadow_name + " is missing or unusable"; return false;
     }
     out.texture = std::move(decoded.textures[0]);
+    out.texture_name = shadow_name;
     // The retail path has four samples on each axis and three eight-vertex
     // strips. Triangle-list form keeps its eighteen covered triangles in
     // one resident draw; per-point road sampling remains an approximation.
@@ -172,7 +178,7 @@ bool record_car_shadow_commands(const CarShadowAsset& asset,
     indices.elements = asset.triangles.size()*3;
     table.resources.push_back(indices);
     UploadResource texture;
-    texture.name = "240SX_SHADOWIG";
+    texture.name = asset.texture_name.c_str();
     texture.kind = UploadResourceKind::texture;
     texture.memory = UploadMemory::image;
     texture.data = asset.texture.rgba.data();
@@ -180,7 +186,7 @@ bool record_car_shadow_commands(const CarShadowAsset& asset,
     texture.alignment = kTextureStagingAlignment;
     texture.element_bytes = 4;
     texture.elements = std::uint64_t{asset.texture.width}*asset.texture.height;
-    texture.texture_hash = kShadowHash;
+    texture.texture_hash = asset.texture.hash;
     if (!check_texture_upload_format(TextureUploadFormat::rgba8,asset.texture.width,
                                      asset.texture.height,texture.bytes,texture.texture,error)) return false;
     table.resources.push_back(texture);

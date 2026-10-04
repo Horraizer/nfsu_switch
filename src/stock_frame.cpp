@@ -186,9 +186,65 @@ bool read_stock_frame_inputs(const fs::path& root, StockFrameInputs& inputs, boo
     return inputs.all_read();
 }
 
+bool read_car_frame_inputs(const fs::path& root, const CarAssets& car,
+                           StockFrameInputs& inputs, bool tuned, std::string& error) {
+    if (car.car_type == kNoCarType || car.geometry_path.empty() ||
+        car.textures_path.empty() || car.vinyls_path.empty()) {
+        error = "car inputs need a car resolved through resolve_car_assets";
+        return false;
+    }
+    error.clear();
+    inputs.tuned = tuned;
+    // The same six slots, with the car's own two files in place of the
+    // 240SX's, and the same three tuned extras with the car's own vinyls.
+    static_assert(kStockFrameFileCount == 6, "the per-car reader fills six files");
+    const std::string paths[kStockFrameFileCount] = {
+        car.geometry_path,
+        car.textures_path,
+        kFilePaths[static_cast<std::size_t>(StockFrameFile::global_bun)],
+        kFilePaths[static_cast<std::size_t>(StockFrameFile::shared_car_textures)],
+        kFilePaths[static_cast<std::size_t>(StockFrameFile::brake_geometry)],
+        kFilePaths[static_cast<std::size_t>(StockFrameFile::plate_geometry)]};
+    for (std::size_t i = 0; i < kStockFrameFileCount; ++i) {
+        StockFrameInput& input = inputs.files[i];
+        input.path = paths[i];
+        input.read = false;
+        input.error.clear();
+        try {
+            input.read = read_whole_file(root / fs::path(paths[i]), input.bytes,
+                                         input.error);
+        } catch (const std::exception&) {
+            input.bytes.clear();
+            input.read = false;
+            input.error = "failed to read file";
+        }
+    }
+    const auto read_extra = [&](StockFrameInput& input, const std::string& path) {
+        input.path = path;
+        input.read = false;
+        input.error.clear();
+        input.bytes.clear();
+        if (tuned) {
+            try {
+                input.read = read_whole_file(root / fs::path(path), input.bytes, input.error);
+            } catch (const std::exception&) {
+                input.error = "failed to read file";
+            }
+        }
+    };
+    read_extra(inputs.wheel_geometry, "Cars/WHEELS/GEOMETRY.BIN");
+    read_extra(inputs.wheel_textures, "Cars/WHEELS/TEXTURES.BIN");
+    read_extra(inputs.vinyls, car.vinyls_path);
+    return inputs.all_read();
+}
+
 StockSceneRequest stock_240sx_request() {
+    return stock_car_request("240SX");
+}
+
+StockSceneRequest stock_car_request(const std::string& car_type_name) {
     StockSceneRequest request;
-    request.car_type_name = "240SX";
+    request.car_type_name = car_type_name;
     request.lod = 0;
     request.pass = CarDrawPass::world;
     request.place_wheels_from_culling_table = true;
@@ -205,9 +261,13 @@ StockSceneRequest tuned_240sx_request() {
 }
 
 StockFrameSkin stock_240sx_skin() {
+    return stock_car_skin("240SX");
+}
+
+StockFrameSkin stock_car_skin(const std::string& car_type_name) {
     StockFrameSkin skin;
     skin.enabled = true;
-    skin.car = "240SX";
+    skin.car = car_type_name;
     skin.selection.car_name = skin.car;
     skin.selection.doorline = SkinDoorlineSelection{SkinDoorlineVariant::plain};
     skin.selection.base_color = skin_pack_paint(30, 60, 160, 128);
