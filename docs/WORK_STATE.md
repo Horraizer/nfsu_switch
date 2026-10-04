@@ -20,7 +20,7 @@ presentation and music, with exactly two available gameplay modes:
 
 Other gameplay modes remain unavailable for this milestone. The complete
 original game remains future work. See the
-[owner decision](https://git.accad.pro/murzintsevav/nfsu-switch/issues/292#issuecomment-8658).
+[owner decision](https://git.accad.pro/murzintsevav/nfsu-switch/issues/291#issuecomment-8658).
 The owner rejected partial menu delivery. An unfinished research handoff
 is not FINISHED product acceptance.
 
