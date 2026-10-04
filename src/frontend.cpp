@@ -153,10 +153,10 @@ bool FrontendArt::load(const std::filesystem::path& root,std::string& error) {
         std::vector<unsigned char> front,global,language,font_global,language_textures;
         std::vector<RaceTableIssue> issues;RaceTableLimits limits;
         limits.max_file_size=8*1024*1024;limits.max_image_size=16*1024*1024;
-        const auto read=[&](const char* name,std::vector<unsigned char>& bytes) {
+        const auto read_image=[&](const char* name,std::vector<unsigned char>& bytes) {
             issues.clear();if(!load_race_image(root/name,bytes,issues,limits)) throw std::runtime_error(std::string(name)+": unreadable frontend input");
         };
-        read("FrontEnd/FrontB.lzc",front);
+        read_image("FrontEnd/FrontB.lzc",front);
         if(sha256_hex(sha256(front.data(),front.size()))!="94A714D1E8E3BEF7F77AEDCEE4FDC6350E285B06059B92D392687710E64E5D77") throw std::runtime_error("frontend identity mismatch");
         // The exact installed MU_Main_PC compressed package, authenticated by
         // its enclosing image. Decompression is bounded by load_race_image's
@@ -196,10 +196,10 @@ bool FrontendArt::load(const std::filesystem::path& root,std::string& error) {
             out.objects.push_back(std::move(o));pos+=15+n;
         }
         if(out.objects.size()!=161) throw std::runtime_error("main menu object count changed");
-        read("Global/GLOBALB.BUN",global);
+        read_image("Global/GLOBALB.BUN",global);
         if(sha256_hex(sha256(global.data(),global.size()))!="39DF38FAC2BE7CA0F0D0A92E0113CAAEDA5B1C60E14436C612B3D0874AFC8DB9") throw std::runtime_error("original global frontend identity mismatch");
-        read("Global/GLOBALA.BUN",font_global);
-        read("Languages/English.bin",language);read("Languages/LanguageTextures.bin",language_textures);
+        read_image("Global/GLOBALA.BUN",font_global);
+        read_image("Languages/English.bin",language);read_image("Languages/LanguageTextures.bin",language_textures);
         if(sha256_hex(sha256(font_global.data(),font_global.size()))!="1502D9305F37E51503D4C4E57CAE32890059497AC450FEEE6D72B50323568953") throw std::runtime_error("original global font identity mismatch");
         const auto font=[&](const std::vector<unsigned char>& bytes,const char* name,RaceLapHudFont& f,unsigned& hash) {
             for(std::size_t at=0;at+8<=bytes.size();) {
