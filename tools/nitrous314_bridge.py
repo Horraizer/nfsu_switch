@@ -111,7 +111,8 @@ def engine_witnesses(image):
         ('released', [8000, 0, 7000, 0], 1, 1.25, 12000, 0),
         ('empty', [8000, 0, 0, 0], 0, 1.25, 12000, 0),
         ('negative-clock-word', [8000, 8000, 8000, 0x80000000], 0, 1.25, 0x80000000, 1),
-        ('inactive-sentinel', [8000, 8000, 8000, 0x7FFFFFFF], 0, 1.25, 12000, 0)):
+        ('inactive-sentinel', [8000, 8000, 8000, 0x7FFFFFFF], 0, 1.25, 12000, 0),
+        ('single-round-clock-boundary', [8000, 8000, 8000, 1400075121], 0, 1.25, 1400075121, 1)):
         machine.prepare(state, clock)
         machine.write(engine + 0x84, prior_active)
         u.mem_write(engine + 0x88, struct.pack('<f', prior_seconds))
@@ -121,8 +122,11 @@ def engine_witnesses(image):
         u.emu_start(0x477637, 0x477684, count=20000)
         active, seconds = struct.unpack('<If', u.mem_read(engine + 0x84, 8))
         signed_clock = clock if clock < 0x80000000 else clock - 0x100000000
-        expected_seconds = struct.unpack('<f', struct.pack('<f', signed_clock * tick_seconds))[0] \
-            if wanted_active and not prior_active else prior_seconds
+        if name == 'single-round-clock-boundary':
+            expected_seconds = 350018.78125
+        else:
+            expected_seconds = struct.unpack('<f', struct.pack('<f', signed_clock * tick_seconds))[0] \
+                if wanted_active and not prior_active else prior_seconds
         if u.reg_read(x.UC_X86_REG_EIP) != 0x477684 or (active, seconds) != (wanted_active, expected_seconds):
             raise AssertionError('original resource-to-engine bridge differs')
         rows.append(dict(name=name, initial_resource=state, resource=machine.state(),
@@ -130,6 +134,77 @@ def engine_witnesses(image):
                          clock=clock, active=active, seconds=seconds,
                          context='physics owner+58 resource and+48 engine'))
     return rows, sorted('%08X' % at for at in machine.reached)
+
+
+def registration_witness(image):
+    ranges = ((0x42D470, 0x42D4F0), (0x42D520, 0x42D920),
+              (0x574020, 0x5740AB), (0x567160, 0x5671B9),
+              (0x573970, 0x57398E), (0x5748C0, 0x5749B0),
+              (0x5749B0, 0x5749F4), (0x574A00, 0x574A61),
+              (0x40A880, 0x40A881), (0x42ABB0, 0x42ABC8),
+              (0x431960, 0x431CBD), (0x4318D0, 0x4318F3),
+              (0x431900, 0x431920), (0x41F600, 0x41F619),
+              (0x42AB30, 0x42AB49))
+    machine = Oracle(image, ranges, (0x42D876, 0x42D88B))
+    u, x = machine.uc, machine.x
+    view, stage, status, pool = 0x1001000, 0x1003000, 0x1004000, 0x1008000
+    car, nodes = 0x1005000, 0x100A000
+    machine.obj = car + 0x40
+    machine.write(view + 4, car)
+    machine.write(view + 8, 1)
+    machine.write(view + 0x10, 0)
+    machine.write(0x7361F0, stage)
+    machine.write(stage, 4)
+    machine.write(0x73619C, status)
+    machine.write(status, 4)
+    machine.write(0x7345CC, pool)
+    machine.write(pool + 0x10, nodes)
+    for index in range(32):
+        machine.write(nodes + index * 0x24, nodes + (index + 1) * 0x24 if index < 31 else 0)
+    registry = 0x73B260 + 0x18C
+    machine.write(registry, registry)
+    machine.write(registry + 4, registry)
+    machine.write(machine.stack, machine.stop)
+    u.reg_write(x.UC_X86_REG_ESP, machine.stack)
+    u.reg_write(x.UC_X86_REG_EAX, view)
+    u.emu_start(0x42D470, machine.stop, count=200000)
+    if u.reg_read(x.UC_X86_REG_EIP) != 0x42D88B:
+        raise AssertionError('phase did not reach post-registration endpoint')
+    registrations = []
+    pointer = struct.unpack('<I', u.mem_read(registry, 4))[0]
+    while pointer != registry:
+        if len(registrations) >= 32:
+            raise AssertionError('registered list did not terminate')
+        words = struct.unpack('<9I', u.mem_read(pointer, 0x24))
+        registrations.append(dict(node='%08X' % pointer, event=words[2], mapping=words[3],
+                                  callback='%08X' % words[4], context='%08X' % words[5]))
+        pointer = words[0]
+    nitrous = [row for row in registrations if row['event'] in (0x9B, 0x9C)]
+    assert [row['event'] for row in nitrous] == [0x9B, 0x9C]
+    assert all(row['callback'] == '0042ABB0' and row['context'] == '%08X' % view for row in nitrous)
+    machine.prepare([8000, 4000, 8000, 0], 10000)
+    callback = nitrous[0]
+    machine.write(machine.stack, machine.stop)
+    for offset, value in ((4, 0), (8, callback['event']), (12, 1), (16, int(callback['context'], 16))):
+        machine.write(machine.stack + offset, value)
+    u.reg_write(x.UC_X86_REG_ESP, machine.stack)
+    u.emu_start(int(callback['callback'], 16), machine.stop, count=200000)
+    assert u.reg_read(x.UC_X86_REG_EIP) == machine.stop
+    assert machine.state() == [8000, 8000, 8000, 10000]
+    activated = machine.state()
+    machine.prepare(activated, 11000)
+    callback = nitrous[1]
+    machine.write(machine.stack, machine.stop)
+    for offset, value in ((4, 0), (8, callback['event']), (12, 0), (16, int(callback['context'], 16))):
+        machine.write(machine.stack + offset, value)
+    u.reg_write(x.UC_X86_REG_ESP, machine.stack)
+    u.emu_start(int(callback['callback'], 16), machine.stop, count=200000)
+    assert u.reg_read(x.UC_X86_REG_EIP) == machine.stop
+    assert machine.state() == [8000, 0, 7000, 0]
+    return dict(context='explicit registry/pool/device1; physical mapping and frontend assignment unresolved',
+                registrations=registrations, nitrous=nitrous, activated=activated,
+                released=machine.state(), endpoint='before camera/actor attachment',
+                reached=sorted('%08X' % at for at in machine.reached))
 
 
 def main():
@@ -152,9 +227,11 @@ def main():
         image = Image((root / 'speed.exe').read_bytes())
         phases, loop = phase_witnesses(image)
         engines, reached = engine_witnesses(image)
+        registration = registration_witness(image)
         report = dict(executable_sha256=EXE_SHA, phases=phases, view_loop=loop,
-                      engines=engines, engine_reached=reached)
+                      engines=engines, engine_reached=reached, registration=registration)
         (out / 'bridge.json').write_text(json.dumps(report, indent=2) + '\n', encoding='ascii')
+        print('PASS: original stage to native registration to logical press/release callback')
         print('PASS: %d original phase cases, registered-view loop, %d engine cases' %
               (len(phases), len(engines)))
     finally:

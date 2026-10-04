@@ -200,6 +200,10 @@ void engine_bridge_tests() {
     resource.stop(22000); engine.update(resource, 22000);
     check(!engine.active && engine.activation_seconds == 5.250000476837158203125F,
           "release disables engine boost");
+    resource = {8000, 8000, 8000, 1400075121U}; engine = {};
+    engine.update(resource, 1400075121U);
+    check(engine.active && engine.activation_seconds == 350018.78125F,
+          "original timestamp rounds once at large signed clock boundary");
     nfsu::NitrousCurveDescriptor descriptor;
     check(descriptor.initialize(800, 7500) && descriptor.rpm_origin == 800 &&
           descriptor.rpm_scale == static_cast<float>(8.0 / 6700.0), "constructor idle/redline descriptor");

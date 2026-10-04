@@ -63,8 +63,11 @@ std::uint32_t NitrousResource::remaining_at(std::uint32_t clock) const noexcept 
 }
 void NitrousEngineState::update(NitrousResource& resource, std::uint32_t clock) noexcept {
     if (resource.active(clock) && !active) {
-        activation_seconds = static_cast<float>(
-            static_cast<double>(signed_word(clock)) * tick_seconds);
+        // Original fild/fmul/fstp rounds once to binary32. A double
+        // intermediate double-rounds at clock1400075121. The float tick
+        // constant is exactly 8589935 * 2^-35; its integer product fits
+        // int64. Round that product directly to float, then scale exactly.
+        activation_seconds = static_cast<float>(signed_word(clock) * 8589935LL) * 0x1p-35F;
     }
     active = resource.active(clock);
 }

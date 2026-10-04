@@ -260,3 +260,25 @@ python tools/nitrous314_image_init.py --root "E:/Games/nfs/Need For Speed - Unde
 The public implementation is independently reviewable. It does not satisfy
 working event0 boost, original presentation or console acceptance. No issue
 closure or production readiness is claimed.
+
+## Bounded native callback registration
+
+The bridge witness executes stage selection into the original state setter,
+native pool allocation and callback registration, then reads the resulting
+nitrous callback/context nodes and executes their logical press and release.
+Registry, free-list storage and device selector are explicit fixture inputs;
+physical mapping metadata is not initialized. Execution ends before camera
+and actor attachment. This proves the bounded logical chain, not a captured
+physical input or the complete event0 startup.
+
+The receiver device has authenticated frontend provenance: constructor
+`0x0042B0D0` stores its device argument at view+8 and player index at view+10.
+Caller `0x00422316` supplies the first device from `0x0078A348`; the second
+player uses `0x0078A34C`. Career builder `0x004B5F90` copies frontend
+assignments from `0x00748F78`. No fixed device0/device1 value is asserted.
+
+The resource-to-engine clock stamp preserves the original single binary32
+rounding of signed world ticks multiplied by the binary32 tick inverse.
+The exact integer significand product avoids an intervening binary64
+rounding. `nfsu_nitrous_tests` and the bridge comparison cover a counterexample
+to the former double-then-float expression.
