@@ -10,6 +10,9 @@ from pathlib import Path
 import subprocess
 import sys
 
+# Imports must never create caches in a read-only reference/dependency tree.
+sys.dont_write_bytecode = True
+
 PIN = '988bc892f643c463ba02a8c83e33b48918f889c3'
 TOOLS = ('contact256_trace.py','contact256_native.py','contact256_test.py',
          'physics256_native.py','world_body_trace.py','collision256_trace.py')
@@ -90,7 +93,9 @@ def main():
             evidence='original-x86-emulation-synthetic-memory',runtime_capture=None,
             final_published_kinematics=None,cadence=None,source_sha256=hashlib.sha256(
                 source_text.encode('ascii')).hexdigest().upper(),
-            reference_tools={name:digest_file(args.reference_tools/name) for name in TOOLS})
+            reference_tools={name:digest_file(args.reference_tools/name) for name in TOOLS},
+            worker_tool_hashes={name:digest_file(Path(__file__).with_name(name))
+                for name in ('contact257_trace.py','contact257_pins.py')})
     finally:
         after=manifest(root)
         (out/'after.json').write_bytes(after)

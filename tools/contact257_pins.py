@@ -1,5 +1,6 @@
 """Generate application, response and pair pins from contact257_trace.py evidence."""
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -64,7 +65,12 @@ def main():
     p.add_argument('--report',required=True,type=Path)
     p.add_argument('--output',required=True,type=Path)
     args=p.parse_args()
-    text=generate(json.loads(args.report.read_text(encoding='ascii')))
+    report=json.loads(args.report.read_text(encoding='ascii'))
+    for name in ('contact257_trace.py','contact257_pins.py'):
+        actual=hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest().upper()
+        if report.get('worker_tool_hashes',{}).get(name)!=actual:
+            raise ValueError('worker tool hash mismatch: '+name)
+    text=generate(report)
     with args.output.open('x',encoding='ascii',newline='\n') as out: out.write(text)
     print('PASS: bounded original pins generated; synthetic evidence only')
 

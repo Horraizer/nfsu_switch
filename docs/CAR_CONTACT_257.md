@@ -89,7 +89,8 @@ python -B tools/contact257_pins.py --report build/contact257-r2/report.json --ou
 ```
 
 Compare both fresh reports/source files and both generated pin files, then
-compare the generated pins with the tracked test include. Neither a failed
+compare the generated pins with the `git show HEAD:tests/car_contact_pins.inc`
+blob. This avoids treating checkout CRLF conversion as a numerical mismatch. Neither a failed
 execution nor an old output counts as agreement. Run the repository's default
 and Release retail C++ gates, plus the Switch shader/NRO/object census gates.
 Switch compilation/census proves portability of the compiled core; desktop
