@@ -1,6 +1,7 @@
 #include "nfsu/frontend.h"
 #include "nfsu/race_session.h"
 #include "nfsu/race_run.h"
+#include "nfsu/race_gpu_scene.h"
 #include "nfsu/posix_file_system.h"
 #include <iostream>
 #include <stdexcept>
