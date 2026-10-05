@@ -109,6 +109,14 @@ int main(int argc,char** argv) {
             skyline_request.installed_parts=installed;skyline_request.pass=CarDrawPass::front_end;
             auto skyline_skin=stock_car_skin("SKYLINE");skyline_skin.selection=skin;
             check(prepare_stock_frame(skyline_inputs,skyline_request,skyline_skin,skyline,error,true),error.c_str());
+            check(bind_frontend_skyline_runtime_skin(skyline,skyline_request,error),error.c_str());
+            unsigned global_draws=0;
+            for(const auto& draw:skyline.scene.draws)if(draw.texture_hash==0xDDA11455U) {
+                check(draw.binding==BindingKind::resolved &&
+                    skyline.scene.textures.at(draw.texture).source==skyline.skin_binding.source,
+                    "native GLOBAL_SKIN1 uses existing generated body surface");++global_draws;
+            }
+            check(global_draws!=0,"authored GLOBAL_SKIN1 material retained");
             check(bind_frontend_sponsors(skyline_inputs,installed,skyline,error),error.c_str());
             for(unsigned slot:{26U,27U}) {
                 unsigned bound=0;
@@ -121,6 +129,18 @@ int main(int argc,char** argv) {
                         }
                 check(bound==4,"original widebody door renders four selected sponsors");
             }
+            FrontendGpuScene gpu_scene;
+            if(!gpu_scene.load(root,1280,720,error))throw std::runtime_error(error);
+            const auto initial_commands=gpu_scene.commands().owning_draws();
+            check(!initial_commands.empty(),"original frontend resident GPU submission");
+            for(const auto& draw:initial_commands)
+                check(draw.program && std::string(draw.program->name).find("fallback")==std::string::npos,
+                    "native frontend submits no placeholder fallback material");
+            check(gpu_scene.frame(1.0F/60,4000,error),error.c_str());
+            const auto& moving_commands=gpu_scene.commands().owning_draws();
+            check(moving_commands.size()==initial_commands.size() &&
+                moving_commands.front().placement.rows[12]!=initial_commands.front().placement.rows[12],
+                "resident original road translates without rebuilding draw definitions");
             audio::FrontendSfx sfx;
             check(sfx.load(root,error),error.c_str());
             std::vector<std::int16_t> unchanged(1024*2,1234);

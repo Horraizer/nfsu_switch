@@ -150,8 +150,19 @@ menu effect parity.
 
 PR319 dependency 9eb9a2dfcd43354253ee7288e36324186cb5d90f is integrated locally
 with its source history preserved. GLOBALB supplies the otherwise missing
-HEADLIGHTGLOW texture. Tunnel hash 0xC2456B43 still requires its actual binding;
-a prior static view hiding it does not qualify a moving no-fallback scene.
+HEADLIGHTGLOW texture. Tunnel hash 0xC2456B43 has the original absent-texture policy: solid
+initializer 0x53F9B0 calls lookup 0x5461C0 with missing fallback enabled.
+Texture initializer 0x545998 selects DEFAULTALPHA for global 0x73551C;
+static initializer 0x689AD0 hashes that same name for the draw skip comparison.
+The actual tunnel caller 0x4AE650 submits through 0x40C910, which skips that
+texture at 0x40CA0C. The A/Z/Y scene-model replacement tables are zero in
+0x4ADA60. The reflection target 0x71AA28 is separately bound as ReflectedTex
+at 0x40E7B0; it does not replace this solid diffuse entry. Frontend commands
+therefore omit only the authenticated absent hash on detailed04/07_A while
+keeping authored geometry resident; other unresolved drawable bindings fail.
+`tools/frontend66_material_native.py <retail-root>` executes the original
+missing lookup and draw branch with an explicit no-match bucket. This is a
+bounded policy witness, not original whole-game startup or a GPU capture.
 Sponsor alias consumer 0x56C3D0 selects NAME plus panel SHAPE suffixes
 (_SQUARE/_RECT/_WIDE), not a guessed sponsor TEXTURE attribute. Native witness
 results identify SPARCO_WHITE_WIDE on the rear window and KENWOOD/NX/SPARCO/HKS
@@ -167,7 +178,7 @@ and GLM helper semantics are unchanged.
 
 The resident FrontendGpuScene scaffold records road/car resources once and
 updates the five native road placements through command transforms. It is
-not connected to live presentation yet and refuses unresolved drawable
+not connected to live presentation yet and refuses unexpected unresolved drawable
 textures as a diagnostic. That refusal is not final user experience. Camera
 orbit, wheel motion, required effects and measured input timings still need
 their original consumers and live integration.
@@ -191,3 +202,13 @@ that submission alone cannot retire the device. This is a port lifecycle
 contract, not a recovered original scene-transition timing claim.
 The full combined default/Release/retail/Switch gates and independent review
 remain pending. No current work-in-progress preview is a hardware candidate.
+
+Original GLOBAL_SKIN1 is an authored runtime alias, not an empty material.
+Genuine 0x580B00 hashes its source at 0x580BA6; 0x580C37..0x580C73 gives
+body and global slots the same installed RideInfo target. The global
+substitution entry is updated at 0x56C375..0x56C389. Frontend preparation
+reuses the existing composed RuntimeSkin through bind_runtime_skin and
+re-prepares the same installed assembly. The material witness executes these
+original source/target slices with the profile target as an explicit boundary.
+The frontend retail regression checks the GLOBAL draw uses the generated
+surface and that resident GPU road commands move without rebuilding definitions.

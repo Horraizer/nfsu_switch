@@ -8,6 +8,9 @@ namespace nfsu {
 struct StockFrameInputs;
 struct StockFrame;
 struct InstalledPartSelection;
+struct StockSceneRequest;
+bool bind_frontend_skyline_runtime_skin(StockFrame& car,
+    const StockSceneRequest& request,std::string& error);
 // Native per-panel sponsor substitution, applied after the installed car and
 // its runtime skin are prepared. Refuses conflicting mesh/panel ownership.
 bool bind_frontend_sponsors(const StockFrameInputs& inputs,

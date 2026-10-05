@@ -11,6 +11,21 @@
 #include <algorithm>
 #include <stdexcept>
 namespace nfsu {
+bool bind_frontend_skyline_runtime_skin(StockFrame& car,const StockSceneRequest& request,std::string& error) {
+    if(!car.skinned || request.car_type_name!="SKYLINE") {
+        error="original frontend runtime skin unavailable";return false;
+    }
+    // 0x580C37..0x580C73 gives body and global source slots the same
+    // installed target. 0x56C375..0x56C389 binds GLOBAL_SKIN1 to that target.
+    // Reuse the already-composed surface; never compose a second skin.
+    const std::vector<std::uint32_t> bound={car.skin.target_hash,bin_hash("SKYLINE_SKIN1"),bin_hash("GLOBAL_SKIN1")};
+    if(!bind_runtime_skin(car.skin,bound,car.skin_binding.source,car.textures,car.skin_binding,error))return false;
+    std::vector<const GeometryReport*> sources={&car.car_geometry};
+    for(const auto& geometry:car.stock_geometry)sources.push_back(&geometry);
+    if(!prepare_stock_car_scene(sources,car.textures,car.parts,car.car_types,request,
+        SceneLimits{},car.scene,car.report,error))return false;
+    car.skin_bound_names.push_back("GLOBAL_SKIN1");return true;
+}
 bool bind_frontend_sponsors(const StockFrameInputs& inputs,const InstalledPartSelection& installed,
     StockFrame& car,std::string& error) {
     StockParts parts;
@@ -119,9 +134,9 @@ bool load_scene_assets(const std::filesystem::path& root,unsigned width,unsigned
     }
     const auto global_packs=parse_texture_pack_set(tunnel_globals.data(),tunnel_globals.size());
     const auto packs=parse_texture_pack_set(road.data(),road.size());
-    RenderTextureSource source;source.bytes=&road;
+    RenderTextureSource source;source.bytes=&road;source.complete=packs.complete;
     for(const auto& pack:packs.packs) source.packs.push_back(&pack);
-    RenderTextureSource global_source;global_source.bytes=&tunnel_globals;
+    RenderTextureSource global_source;global_source.bytes=&tunnel_globals;global_source.complete=global_packs.complete;
     for(const auto& pack:global_packs.packs) global_source.packs.push_back(&pack);
     RenderTextureSet textures;
     if(!decode_render_texture_sources({source,global_source},RenderTextureLimits{},textures,error)) return false;
@@ -141,6 +156,7 @@ bool load_scene_assets(const std::filesystem::path& root,unsigned width,unsigned
     auto skin=stock_car_skin("SKYLINE");
     if(!resolve_frontend_skyline_skin(globals,parts,installed,skin.selection,error)) return false;
     if(!prepare_stock_frame(inputs,request,skin,car,error,true) ||
+       !bind_frontend_skyline_runtime_skin(car,request,error) ||
        !bind_frontend_sponsors(inputs,installed,car,error)) return false;
     options.width=width;options.height=height;
     // Native 0x486C80/0x487680 initial camera: raw-axis position from
@@ -169,15 +185,35 @@ bool FrontendGpuScene::load(const std::filesystem::path& root,unsigned width,uns
     if(impl_->ready) {error="frontend GPU scene already loaded";return false;}
     auto next=std::make_unique<Impl>();auto& p=*next;
     if(!load_scene_assets(root,width,height,p.tunnel,p.car,p.options,error))return false;
+    // Original solid lookup 0x53F9B0 requests missing->DEFAULTALPHA through
+    // 0x5461C0. The tunnel's zero replacement table bypasses 0x53F540;
+    // 0x40C910 skips DEFAULTALPHA at 0x40CA0C, before reflection uniforms.
+    // Only the authenticated absent wall-strip hash receives that policy.
+    // Keep its authored geometry resident; other missing assets still fail.
+    std::set<std::size_t> native_empty;
+    for(std::size_t group=0;group<p.tunnel.draws.size();++group) {
+        const auto& draw=p.tunnel.draws[group];
+        if(draw.binding==BindingKind::unresolved && draw.texture_hash==0xC2456B43U) {
+            const auto& name=p.tunnel.meshes.at(draw.mesh).name;
+            if(name!="TRFE_ROAD02_04_A" && name!="TRFE_ROAD02_07_A") {
+                error="native empty tunnel material outside authenticated meshes";return false;
+            }
+            native_empty.insert(group);
+        }
+    }
     for(const auto* scene:{&p.tunnel,&p.car.scene})for(const auto& draw:scene->draws)
-        if(draw.drawable && draw.binding!=BindingKind::resolved) {
+        if(draw.drawable && draw.binding!=BindingKind::resolved &&
+           !(scene==&p.tunnel && draw.binding==BindingKind::unresolved && draw.texture_hash==0xC2456B43U)) {
             std::ostringstream message;message<<"original frontend texture binding unresolved: 0x"<<std::hex<<draw.texture_hash;
             error=message.str();return false;
         }
     RecordedCommands road,car;
     if(!record_car_commands(p.tunnel,p.options,RenderLimits{},kNoHandle,road,error) ||
        !record_car_commands(p.car.scene,p.options,RenderLimits{},p.car.skinned?p.car.skin_binding.source:kNoHandle,car,error))return false;
-    const auto originals=road.owning_draws();p.road_groups=originals.size();
+    auto& road_draws=road.owning_draws();
+    road_draws.erase(std::remove_if(road_draws.begin(),road_draws.end(),
+        [&](const auto& draw){return native_empty.count(draw.group)!=0;}),road_draws.end());
+    const auto originals=road_draws;p.road_groups=originals.size();
     auto& repeated=road.owning_draws();repeated.clear();repeated.reserve(p.road_groups*5);
     for(unsigned segment=0;segment<5;++segment)for(const auto& original:originals) {
         repeated.push_back(original);auto& draw=repeated.back();
