@@ -2,6 +2,7 @@
 #include "nfsu/audio_output.h"
 #include <algorithm>
 #include <iostream>
+#include <fstream>
 #include <stdexcept>
 #include <vector>
 // Exercise actual FrontendMusic and AST decoder with a deterministic device.
@@ -33,9 +34,28 @@ int main(int argc,char** argv){
         for(const auto cue:{FrontendSound::select,FrontendSound::back}){
             FrontendMusic music;check(music.start(root,error),error.c_str());
             pump(1024);played=submitted; // Prime the actual music fade.
-            FrontendSfx reference;check(reference.load(root,error),error.c_str());reference.play(cue);
+            std::ifstream input(root/"Sound/GLOBAL/FE_COMMON_MB.abk",std::ios::binary|std::ios::ate);
+            check(bool(input),"reference cue bank opens");
+            const auto length=input.tellg();check(length>0,"reference cue bank nonempty");
+            std::vector<std::uint8_t> bank_bytes(static_cast<std::size_t>(length));input.seekg(0);
+            check(bool(input.read(reinterpret_cast<char*>(bank_bytes.data()),length)),"reference cue bank reads");
+            const auto bank=parse_abk(bank_bytes);
+            const unsigned entry=cue==FrontendSound::select?4:5;
+            check(bank.entries.size()>entry && bank.entries[entry].value>0 &&
+                bank.entries[entry].value<=bank.samples.size(),"reference original cue entry");
+            const auto& sample=bank.samples[bank.entries[entry].value-1];
+            PcmClip clip;clip.rate=sample.rate;clip.channels=sample.channels;
+            decode_bank_sample(bank_bytes,sample,[&](const std::uint8_t* pcm,std::size_t count){
+                check(count%2==0,"reference original PCM framing");
+                for(std::size_t i=0;i<count;i+=2)clip.pcm.push_back(static_cast<std::int16_t>(
+                    std::uint16_t(pcm[i])|(std::uint16_t(pcm[i+1])<<8)));
+            });
+            Mixer reference;
+            // Independent expected value from genuine 0x5364E0/0x523120,
+            // not FrontendSfx's configuration or its output.
+            check(reference.play(0,&clip,false,16357,65536),"reference native cue gain/unity pitch");
             std::vector<std::int16_t> expected(48000*2);
-            reference.mix(expected.data(),48000);
+            reference.render(expected.data(),48000);
             check(std::any_of(expected.begin()+480,expected.end(),[](auto v){return v!=0;}),
                 "original cue extends beyond music fade");
             music.sound(cue);music.begin_stop();

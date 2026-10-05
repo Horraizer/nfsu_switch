@@ -3,6 +3,9 @@
 #include <filesystem>
 #include <mutex>
 namespace nfsu::audio {
+// Native 0x523120 with original 0x5364E0 master defaults and
+// FE descriptor 0x6F43B0 (type4: no distance attenuation).
+constexpr std::uint32_t kFrontendCueGainQ15 = 16357;
 enum class FrontendSound { up, down, select, back };
 // Original common bank cues, mixed into the existing menu device.
 class FrontendSfx {

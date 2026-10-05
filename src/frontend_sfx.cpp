@@ -41,7 +41,7 @@ bool FrontendSfx::load(const std::filesystem::path& root,std::string& error) {
 void FrontendSfx::play(FrontendSound cue) {
     const auto index=static_cast<unsigned>(cue);if(index>=clips_.size()) return;
     std::lock_guard<std::mutex> lock(mutex_);
-    if(ready_) {mixer_.play(voice_,&clips_[index],false);voice_=(voice_+1)%kMixVoices;}
+    if(ready_) {mixer_.play(voice_,&clips_[index],false,kFrontendCueGainQ15,65536);voice_=(voice_+1)%kMixVoices;}
 }
 bool FrontendSfx::active() {
     std::lock_guard<std::mutex> lock(mutex_);

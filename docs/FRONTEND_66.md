@@ -115,8 +115,8 @@ than a tuning choice inferred from the owner's photograph. `frontend_preset`
 resolves these records from the authenticated images. The native install
 consumer 0x57EA80 disables the ordinary bumpers, body, skirts and decal
 meshes when the widebody is present, and disables the engine under the hood.
-A bounded native witness and actual-source comparison cover assigned part
-indices and enable bytes; the witness supplies stock initialization as an
+`tools/frontend66_preset_native.py <retail-root>` and the actual-source tests
+cover assigned part indices, enable bytes and sponsor substitutions; the witness supplies stock initialization as an
 explicit precondition and does not establish full game startup.
 
 Road constructor 0x4ADA60 initializes a repeating environment. Update
@@ -158,7 +158,13 @@ results identify SPARCO_WHITE_WIDE on the rear window and KENWOOD/NX/SPARCO/HKS
 _WHITE_RECT on the doors; their draw bindings are not yet connected.
 
 Original FE_COMMON logical up/down/select/back dispatch is implemented with
-native entries 0/1/4/5. Original cue gain/pitch/voice policy remains under investigation. Select/back
+native entries 0/1/4/5. `tools/frontend66_sound_native.py <retail-root>` executes the original sound
+settings constructor 0x5364E0, unattenuated gain initializer 0x52E3F0 and
+arithmetic slice of cue method 0x523120. Descriptor 0x6F43B0 type4 bypasses
+distance attenuation. The cue master is settings second-array record5 field+4;
+constructor 0x5361D0 initializes that field. The port now applies the native
+Q15 gain and unity pitch. Event registry PlayCommonSample (0x262943B9) voice
+allocation/overlap policy remains under investigation. Select/back
 transition lifetime is now handled by begin_stop/stop_ready: the caller keeps
 servicing input, applet and menu presentation, the music alone fades, and the
 device is retired only after its played-frame cursor acknowledges the last
