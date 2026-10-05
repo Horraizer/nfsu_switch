@@ -98,7 +98,7 @@ void load_ui_loops(const unsigned char* data,std::size_t length,Object& object) 
         at+=n+8;
     }
 }
-// Authenticated nonloop selection scripts; retain authored event targets.
+// Authenticated nonloop text entry/fade and selection scripts.
 void load_ui_states(const unsigned char* data,std::size_t length,Object& object) {
     for(std::size_t at=0;at+8<=length;) {
         const unsigned n=dword(data+at+4);if(n>length-at-8)throw std::runtime_error("frontend state chunk truncated");
@@ -110,10 +110,12 @@ void load_ui_states(const unsigned char* data,std::size_t length,Object& object)
                 if(size>at+8+n-field-4)throw std::runtime_error("frontend state field outside chunk");
                 if(!std::memcmp(tag,"Sn",2))state.name=ascii(v,size);
                 const bool selection=state.name=="HighLight" || state.name=="UnHighLight";
+                const bool text_entry=object.type==2 && (state.name=="Init" || state.name=="FadeIn");
+                const bool retained=selection || text_entry;
                 if(!std::memcmp(tag,"Sh",2) && size==16)nonloop=dword(v+8)==0;
                 if(!std::memcmp(tag,"FI",2) && size==8) {
                     track=UiLoop{};track.kind=v[0];track.duration=dword(v+4)&0xffffff;
-                    if(selection && (!nonloop || v[1]!=(track.kind==4?12:16) || v[2]!=1 || v[3]!=0))
+                    if(retained && (!nonloop || v[1]!=(track.kind==4?12:16) || v[2]!=1 || v[3]!=0))
                         throw std::runtime_error("unsupported native selection frame");
                 }
                 if(!std::memcmp(tag,"To",2) && size==4)track.target=dword(v);
@@ -121,7 +123,7 @@ void load_ui_states(const unsigned char* data,std::size_t length,Object& object)
                     if(size%12)throw std::runtime_error("frontend selection event truncated");
                     for(unsigned e=0;e<size;e+=12)state.events.push_back({{dword(v+e),dword(v+e+4),dword(v+e+8)}});
                 }
-                if(!std::memcmp(tag,"Kd",2) && selection) {
+                if(!std::memcmp(tag,"Kd",2) && retained) {
                     const unsigned stride=track.kind==4?16:20;
                     if(!size || size%stride || !((track.kind==6 && track.target==0) ||
                        (track.kind==4 && (track.target==7 || track.target==14))))
@@ -141,7 +143,8 @@ void load_ui_states(const unsigned char* data,std::size_t length,Object& object)
                 }
                 field+=size+4;
             }
-            if(state.name=="HighLight" || state.name=="UnHighLight")object.states.push_back(std::move(state));
+            if(state.name=="HighLight" || state.name=="UnHighLight" ||
+               (object.type==2 && (state.name=="Init" || state.name=="FadeIn")))object.states.push_back(std::move(state));
         }
         at+=n+8;
     }
@@ -253,6 +256,11 @@ struct FrontendArt::Impl {
     struct ActiveState {unsigned state=0;std::uint64_t start=0;bool settled=false;};
     mutable std::map<unsigned,ActiveState> active_states;
     mutable unsigned last_selection=2;
+    void start_named_state(const Object& object,const std::string& name,std::uint64_t start) const {
+        for(unsigned i=0;i<object.states.size();++i)if(object.states[i].name==name) {
+            active_states[object.id]={i,start,false};return;
+        }
+    }
     void start_state(const Object& object,bool high,std::uint64_t start,bool settled=false) const {
         const std::string name=high?"HighLight":"UnHighLight";
         for(unsigned i=0;i<object.states.size();++i)if(object.states[i].name==name) {
@@ -276,6 +284,10 @@ struct FrontendArt::Impl {
             const bool high=selected==(object.name=="QuickRace"?1U:0U);
             start_state(object,high,start,first && !high);
         }
+        // Original main handler4B371D..4B3766 starts Description FadeIn
+        // on the selected item HighLight event; switching restarts its keys.
+        for(const auto& object:objects)if(object.name=="Description")
+            start_named_state(object,"FadeIn",start);
         last_selection=selected;
     }
 
@@ -527,6 +539,10 @@ void FrontendArt::draw_overlay(ScreenImage image,const FrontendMenu& menu) const
 void FrontendArt::advance(float seconds) {
     if(!std::isfinite(seconds) || seconds<0 || seconds>60)throw std::runtime_error("invalid frontend UI time step");
     // 4F5CF0 multiplies original frame seconds73AD38 by1200 then truncates.
+    if(!impl_->temporal) {
+        for(const auto& object:impl_->objects)if(object.type==2)
+            impl_->start_named_state(object,"Init",0);
+    }
     impl_->temporal=true;impl_->ui_ticks+=static_cast<unsigned>(double(seconds)*1200);
 }
 const FrontendUiAtlas& FrontendArt::atlas() const {return impl_->atlas;}
@@ -545,7 +561,7 @@ void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu) const {
         const auto o=p.sample(p.objects[i]);if(!p.visible(o,menu.selected()) || o.type==5 || o.name=="NFSU_logo") continue;
         auto color=o.color;
         // Original steady states from UnHighlight/Highlight, after Init fades.
-        if(!color[3] && (o.type==2 || o.type==5)) color[3]=255;
+        if(!p.temporal && !color[3] && (o.type==2 || o.type==5)) color[3]=255;
         if(!color[3]) continue;
         const auto m=p.transform(p.objects[i]);
         if((o.type==1 || o.type==9) && m.y>150) continue;
@@ -557,7 +573,8 @@ void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu) const {
             if(o.name=="Customize") label="CUSTOMIZE RIDE";
             if(o.name=="Description") label=menu.selected()==0?"Begin your Underground career":"Drive the first track. + returns to the menu.";
             if((underground || free) && !p.temporal) color=(menu.selected()==(free?1U:0U))?std::array<unsigned,4>{{242,233,207,255}}:std::array<unsigned,4>{{180,154,84,255}};
-            else if(o.name=="STATISTICS" || o.name=="Options" || o.name=="Customize" || o.name=="Online") color={{110,110,110,180}};
+            else if(o.name=="STATISTICS" || o.name=="Options" || o.name=="Customize" || o.name=="Online")
+                color={{110,110,110,p.temporal?(color[3]*180+127)/255:180}};
             color=p.parent_color(o,color);
             p.text(image,o,m,label,color,o.resource);
         } else if((o.type==1 || o.type==9) && o.resource<8) {

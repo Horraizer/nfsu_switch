@@ -231,6 +231,19 @@ int main(int argc,char** argv) {
         check(road.speed_kmh==12.5F && std::abs(road.velocity-13.88888931F)<0.000002F,
             "forced road speed preserves native acceleration state");
         FrontendMenu menu;
+        FrontendClock frontend_clock;
+        check(frontend_clock.sample(1000000000)==0,"menu clock first anchor has no elapsed animation");
+        check(frontend_clock.sample(1033333333)==33333333 && frontend_clock.original_ticks()==133,
+            "menu clock retains ordinary frame delta and native phase");
+        check(frontend_clock.sample(62033333333ULL)==0 && frontend_clock.original_ticks()==133,
+            "long applet or blocked-I/O gap does not advance menu phase or throw");
+        check(frontend_clock.sample(62533333333ULL)==500000000,
+            "ordinary half-second slow frame is not clamped");
+        const auto resume_phase=frontend_clock.original_ticks();frontend_clock.resume();
+        check(frontend_clock.sample(125533333333ULL)==0 && frontend_clock.original_ticks()==resume_phase,
+            "explicit applet resume resets anchor while keeping scene phase");
+        check(frontend_clock.sample(125550000000ULL)==16666667,
+            "normal frames resume from fresh applet anchor");
         check(menu.update({false,false,true,false})==FrontendAction::underground,"initial Underground selection");
         check(menu.update({false,true,false,false})==FrontendAction::none,"navigation has no launch side effect");
         check(menu.update({false,false,true,false})==FrontendAction::free_drive,"free driving selection");
@@ -730,6 +743,52 @@ int main(int argc,char** argv) {
             check(short_arc_found,"authored circle short-arc interpolation matches independent native image corners");
             // Genuine4FC100 nonloop scripts and4F1810 parent modulation:
             // actual two-mode child records, four corners, packed colors.
+            // Actual nonloop title Init and Description FadeIn color tracks,
+            // independently executed through original4FC100. Native byte /2
+            // packing is retained. Alpha0 must submit no resurrected glyph.
+            for(unsigned tick:{0U,1100U,1110U,1120U,1400U}) {
+                FrontendArt entry_art;FrontendMenu entry_menu;
+                check(entry_art.load(root,error,false),error.c_str());
+                entry_art.advance((float(tick)+.25F)/1200);
+                entry_art.record_ui(1280,720,entry_menu,ui);
+                unsigned title_alpha=0;bool title_present=false;
+                for(std::size_t i=0;i<ui.vertices.size();i+=4) {
+                    const auto& v=ui.vertices[i];
+                    if(std::abs(v.px-891.9F)<.01F && std::abs(v.py-97.35F)<.01F) {
+                        title_present=true;title_alpha=v.color[3];
+                        for(unsigned corner=0;corner<4;++corner)
+                            check(ui.vertices[i+corner].color[3]==title_alpha,
+                                  "title Init alpha applies to all glyph corners");
+                    }
+                }
+                const unsigned expected=tick<=1100?0:tick==1110?80:160;
+                check(title_present==(expected!=0) && title_alpha==expected,
+                      "native title Init zero, midpoint and endpoint alpha survive UI draw");
+            }
+            FrontendArt description_art;FrontendMenu description_menu;
+            check(description_art.load(root,error,false),error.c_str());
+            const auto description_alpha=[&]() {
+                description_art.record_ui(1280,720,description_menu,ui);
+                unsigned alpha=0;
+                for(const auto& v:ui.vertices)if(v.py>540 && v.py<580 &&
+                    v.color[0]==84 && v.color[1]==154 && v.color[2]==180) {
+                    check(!alpha || alpha==v.color[3],"Description glyphs share native FadeIn alpha");
+                    alpha=v.color[3];
+                }
+                return alpha;
+            };
+            description_art.advance(0);
+            check(description_alpha()==0,"entry HighLight starts Description FadeIn at invisible key");
+            description_art.advance(.1F);
+            check(description_alpha()==128,"Description native FadeIn midpoint alpha");
+            description_art.advance(.1F);
+            check(description_alpha()==254,"Description native FadeIn endpoint with half-byte packing");
+            description_menu.update({false,true,false,false});
+            check(description_alpha()==0,"selection event replaces settled Description state with FadeIn start");
+            description_art.advance(.1F);
+            check(description_alpha()==128,"new selection Description uses authored FadeIn midpoint");
+            description_menu.update({true,false,false,false});
+            check(description_alpha()==0,"immediate reverse restarts native non-rebased FadeIn keys");
             FrontendArt selection_art;FrontendMenu selection_menu;
             check(selection_art.load(root,error,false),error.c_str());
             const auto selection_quad=[&](double x,double y,unsigned alpha) {

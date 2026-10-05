@@ -568,3 +568,27 @@ with genuine5447C0/5443F0/40C300. The source regression also checks original
 resident texture bindings and independent supplied-marker native fixtures.
 Texture allocation and primary clipping remain explicit probe boundaries.
 This does not assert original occlusion or car-floor sprite parity.
+
+### Text entry state and applet clock recovery
+
+Main-menu type2 nonloop Init records preserve their authored zero-alpha
+intervals, including main_menu_title. Selection HighLight/UnHighLight
+replaces the active object state and retains original backing events. The
+actual main handler at4B371D..4B3766 updates Description and starts its
+FadeIn through4F6B70; selection restarts the original FadeIn keys. The
+static diagnostic mode retains its settled label treatment, while live
+temporal draw never revives an alpha0 glyph. Disabled labels retain their
+original fade alpha under the existing gray availability treatment.
+
+tools/frontend66_text_entry_native.py executes genuine4FC100 for title,
+Description and Options entry/fade tracks at supplied phase boundaries.
+The frontend retail test pins zero, midpoint and endpoint glyph alpha,
+selection/reverse restart, and the existing backing event behavior.
+
+FrontendClock follows the existing live race policy for gaps above one
+second and preserves ordinary slow-frame elapsed time. The frontend
+applet OnResume/OnFocusState hook resets its wall-clock anchor; authored
+UI and road phase remain resident. SDK applet.h documents background
+focus for HOME/sleep and the resume hook. No observation of CNTpct
+advancing through hardware deep sleep is claimed. Actual-source tests
+cover a long gap, explicit resume and the next ordinary frame.

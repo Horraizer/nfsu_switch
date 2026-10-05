@@ -2,6 +2,7 @@
 #include "nfsu/screen_text.h"
 #include "nfsu/track.h"
 #include <filesystem>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
@@ -23,6 +24,22 @@ private:
     unsigned selected_=0;
     std::string notice_;
     std::string artist_="Lil Jon & the Eastside Boyz",title_="Get Low",album_="Kings of Crunk";
+};
+// Match the live race pause policy: gaps above one second are suspension,
+// while ordinary slow frames retain their full elapsed time. Resume hooks
+// reset only the wall-clock anchor; authored animation phase stays resident.
+class FrontendClock {
+public:
+    void resume() { anchored_=false; }
+    std::uint64_t sample(std::uint64_t now_ns) {
+        const auto elapsed=anchored_ && now_ns>=previous_?now_ns-previous_:0;
+        previous_=now_ns;anchored_=true;
+        if(elapsed>1000000000ULL)return 0;
+        active_ns_+=elapsed;return elapsed;
+    }
+    std::uint32_t original_ticks() const {return static_cast<std::uint32_t>(active_ns_/250000);}
+private:
+    std::uint64_t previous_=0,active_ns_=0;bool anchored_=false;
 };
 constexpr std::size_t kFrontendUiMaxQuads=2048;
 struct FrontendUiAtlas {

@@ -32,6 +32,18 @@ namespace {
 std::string selected_car_label = "STOCK";
 const char* car_shading_label="OFF";
 using namespace nfsu;
+class FrontendAppletClockHook {
+public:
+    explicit FrontendAppletClockHook(FrontendClock& clock):clock_(clock) {
+        appletHook(&cookie_,[](AppletHookType event,void* state) {
+            if(event==AppletHookType_OnResume || event==AppletHookType_OnFocusState)
+                static_cast<FrontendClock*>(state)->resume();
+        },&clock_);
+    }
+    ~FrontendAppletClockHook() {appletUnhook(&cookie_);}
+private:
+    FrontendClock& clock_;AppletHookCookie cookie_{};
+};
 constexpr unsigned width = 1280, height = 720;
 double ms(std::uint64_t ticks) { return armTicksToNs(ticks)/1000000.0; }
 class SwitchTiming final : public TimingService {
@@ -871,8 +883,8 @@ int main(int argc, char** argv) {
                     require(frontend_renderer->open_frontend(frontend_scene.commands(),art.atlas(),frontend_error),frontend_error);
                 };
                 open_frontend();
-                auto frontend_previous=armGetSystemTick();
-                const auto frontend_epoch=frontend_previous;
+                FrontendClock frontend_clock;
+                FrontendAppletClockHook frontend_clock_hook(frontend_clock);
                 FrontendMenu menu;
                 audio::FrontendMusic music;
                 if(!music.start(root,frontend_error)) menu.notice("MUSIC: "+frontend_error);
@@ -883,6 +895,7 @@ int main(int argc, char** argv) {
                 bool stick_up=false,stick_down=false;
                 FrontendAction pending=FrontendAction::none;
                 while (appletMainLoop()) {
+                    if(appletGetFocusState()!=AppletFocusState_InFocus) {frontend_clock.resume();continue;}
                     const auto poll_begin=armGetSystemTick();
                     padUpdate(&pad); const auto down=padGetButtonsDown(&pad);
                     const auto stick=padGetStickPos(&pad,0);
@@ -928,15 +941,14 @@ int main(int argc, char** argv) {
                         if(!music.start(root,frontend_error)) menu.notice("MUSIC: "+frontend_error);
                         stick_up=stick_down=false;
                         open_frontend();
-                        frontend_previous=armGetSystemTick();
+                        frontend_clock.resume();
                     }
                     const auto music_error=music.error();
                     if(!music_error.empty()) { music.stop(); menu.notice("MUSIC: "+music_error); }
                     const auto song=music.now_playing();menu.song(song.artist,song.title,song.album);
                     const auto scene_begin=armGetSystemTick();
-                    const auto elapsed_ns=armTicksToNs(scene_begin-frontend_previous);
-                    frontend_previous=scene_begin;
-                    const auto original_ticks=static_cast<std::uint32_t>(armTicksToNs(scene_begin-frontend_epoch)/250000);
+                    const auto elapsed_ns=frontend_clock.sample(armTicksToNs(scene_begin));
+                    const auto original_ticks=frontend_clock.original_ticks();
                     require(frontend_scene.frame(static_cast<float>(elapsed_ns/1000000000.0),original_ticks,frontend_error),frontend_error);
                     const auto scene_done=armGetSystemTick();
                     art.advance(static_cast<float>(elapsed_ns/1000000000.0));
