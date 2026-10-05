@@ -31,10 +31,12 @@ std::string ascii(const unsigned char* p,std::size_t n) {
 struct Image {unsigned width=0,height=0,atlas_x=0,atlas_y=0;std::vector<unsigned char> rgba;TextureAlphaBlend blend=TextureAlphaBlend::source_over;};
 struct UiKey {int tick=0;std::array<double,4> value{};};
 struct UiLoop {unsigned kind=0,target=0,duration=0;std::array<double,4> base{};std::vector<UiKey> keys;};
+struct UiState {std::string name;std::vector<UiLoop> tracks;std::vector<std::array<unsigned,3>> events;};
 struct Object {
     unsigned id=0,parent=0,type=0,resource=0,justification=0;
     std::string name,text;
     std::vector<UiLoop> loops;
+    std::vector<UiState> states;
     float x=0,y=0,z=0,w=1,h=1,qz=0,qw=1;
     std::array<unsigned,4> color{{255,255,255,255}};
     std::array<float,4> uv{{0,0,1,1}};
@@ -92,6 +94,54 @@ void load_ui_loops(const unsigned char* data,std::size_t length,Object& object) 
                 }
                 field+=size+4;
             }
+        }
+        at+=n+8;
+    }
+}
+// Authenticated nonloop selection scripts; retain authored event targets.
+void load_ui_states(const unsigned char* data,std::size_t length,Object& object) {
+    for(std::size_t at=0;at+8<=length;) {
+        const unsigned n=dword(data+at+4);if(n>length-at-8)throw std::runtime_error("frontend state chunk truncated");
+        if(!std::memcmp(data+at,"Scrp",4)) {
+            UiState state;UiLoop track;bool nonloop=false;
+            for(std::size_t field=at+8;field<at+8+n;) {
+                if(at+8+n-field<4)throw std::runtime_error("frontend state field truncated");
+                const auto* tag=data+field;const unsigned size=word(tag+2);const auto* v=tag+4;
+                if(size>at+8+n-field-4)throw std::runtime_error("frontend state field outside chunk");
+                if(!std::memcmp(tag,"Sn",2))state.name=ascii(v,size);
+                const bool selection=state.name=="HighLight" || state.name=="UnHighLight";
+                if(!std::memcmp(tag,"Sh",2) && size==16)nonloop=dword(v+8)==0;
+                if(!std::memcmp(tag,"FI",2) && size==8) {
+                    track=UiLoop{};track.kind=v[0];track.duration=dword(v+4)&0xffffff;
+                    if(selection && (!nonloop || v[1]!=(track.kind==4?12:16) || v[2]!=1 || v[3]!=0))
+                        throw std::runtime_error("unsupported native selection frame");
+                }
+                if(!std::memcmp(tag,"To",2) && size==4)track.target=dword(v);
+                if(!std::memcmp(tag,"EV",2) && selection) {
+                    if(size%12)throw std::runtime_error("frontend selection event truncated");
+                    for(unsigned e=0;e<size;e+=12)state.events.push_back({{dword(v+e),dword(v+e+4),dword(v+e+8)}});
+                }
+                if(!std::memcmp(tag,"Kd",2) && selection) {
+                    const unsigned stride=track.kind==4?16:20;
+                    if(!size || size%stride || !((track.kind==6 && track.target==0) ||
+                       (track.kind==4 && (track.target==7 || track.target==14))))
+                        throw std::runtime_error("unsupported authored selection keys");
+                    for(unsigned k=0;k<size/stride;++k) {
+                        UiKey key;key.tick=static_cast<int>(dword(v+k*stride));
+                        for(unsigned c=0;c<(track.kind==4?3U:4U);++c)key.value[c]=track.kind==6?
+                            double(static_cast<int>(dword(v+k*stride+4+c*4))):double(real(v+k*stride+4+c*4));
+                        if(!k) {if(key.tick!=-1)throw std::runtime_error("selection base absent");track.base=key.value;}
+                        else {
+                            if(key.tick<0 || unsigned(key.tick)>track.duration || (!track.keys.empty() && key.tick<=track.keys.back().tick))
+                                throw std::runtime_error("invalid selection key time");
+                            track.keys.push_back(key);
+                        }
+                    }
+                    state.tracks.push_back(track);
+                }
+                field+=size+4;
+            }
+            if(state.name=="HighLight" || state.name=="UnHighLight")object.states.push_back(std::move(state));
         }
         at+=n+8;
     }
@@ -200,6 +250,35 @@ struct FrontendArt::Impl {
     RaceLapHudFont large,small;
     unsigned large_hash=0,small_hash=0;
     std::uint64_t ui_ticks=0;bool temporal=false;
+    struct ActiveState {unsigned state=0;std::uint64_t start=0;bool settled=false;};
+    mutable std::map<unsigned,ActiveState> active_states;
+    mutable unsigned last_selection=2;
+    void start_state(const Object& object,bool high,std::uint64_t start,bool settled=false) const {
+        const std::string name=high?"HighLight":"UnHighLight";
+        for(unsigned i=0;i<object.states.size();++i)if(object.states[i].name==name) {
+            active_states[object.id]={i,start,settled};
+            for(const auto& event:object.states[i].events) {
+                if(event[2]!=0 || event[0]!=(high?0xabc08912U:0x55d1e635U))
+                    throw std::runtime_error("unsupported native selection event");
+                const auto target=std::find_if(objects.begin(),objects.end(),[&](const Object& o){return o.id==event[1];});
+                if(target==objects.end())throw std::runtime_error("selection event target absent");
+                start_state(*target,high,start,settled);
+            }
+            return;
+        }
+        throw std::runtime_error("authored selection state absent");
+    }
+    void select(unsigned selected) const {
+        if(!temporal || selected==last_selection)return;
+        const bool first=last_selection==2;
+        const auto start=first?0:ui_ticks;
+        for(const auto& object:objects)if(object.name=="UndergroundMode" || object.name=="QuickRace") {
+            const bool high=selected==(object.name=="QuickRace"?1U:0U);
+            start_state(object,high,start,first && !high);
+        }
+        last_selection=selected;
+    }
+
     Object sample(const Object& original) const {
         Object o=original;
         if(!temporal)return o;
@@ -245,6 +324,25 @@ struct FrontendArt::Impl {
                 else {o.w=float(value[0]);o.h=float(value[1]);}
             }
         }
+        const auto active=active_states.find(o.id);
+        if(active!=active_states.end())for(const auto& track:o.states[active->second.state].tracks) {
+            const unsigned tick=active->second.settled?track.duration:
+                unsigned(std::min<std::uint64_t>(track.duration,ui_ticks-active->second.start));
+            std::array<double,4> value=track.base;
+            if(!track.keys.empty()) {
+                auto next=std::lower_bound(track.keys.begin(),track.keys.end(),int(tick),[](const UiKey& k,int t){return k.tick<t;});
+                const auto& b=next==track.keys.end()?track.keys.back():*next;
+                const auto& a=next==track.keys.begin()?b:next==track.keys.end()?b:*(next-1);
+                const double fraction=b.tick>a.tick?double(int(tick)-a.tick)/(b.tick-a.tick):1;
+                for(unsigned c=0;c<4;++c) {
+                    const double delta=(b.value[c]-a.value[c])*fraction;
+                    value[c]+=a.value[c]+(track.kind==6?double(static_cast<int>(delta+.5)):delta);
+                }
+            }
+            if(track.target==0)for(unsigned c=0;c<4;++c)o.color[c]=unsigned(std::max(0.,std::min(255.,value[c])));
+            else if(track.target==7){o.x=float(value[0]);o.y=float(value[1]);o.z=float(value[2]);}
+            else {o.w=float(value[0]);o.h=float(value[1]);}
+        }
         return o;
     }
     Transform transform(const Object& o,unsigned depth=0) const {
@@ -258,9 +356,20 @@ struct FrontendArt::Impl {
         const auto current=sample(o);
         return combine(parent,current,current.type==2 || current.type==5);
     }
+    std::array<unsigned,4> parent_color(const Object& o,std::array<unsigned,4> color,unsigned depth=0) const {
+        if(!temporal || !o.parent)return color;
+        if(depth>32)throw std::runtime_error("frontend parent color cycle");
+        const auto it=std::find_if(objects.begin(),objects.end(),[&](const Object& p){return p.id==o.parent;});
+        if(it==objects.end())throw std::runtime_error("frontend color parent absent");
+        const auto parent=sample(*it);
+        const auto effective=parent_color(parent,parent.color,depth+1);
+        // Genuine4F1810..4F1D76 parent channel multiplication before /2 pack.
+        for(unsigned c=0;c<4;++c)color[c]=(color[c]*effective[c]+128)>>8;
+        return color;
+    }
     bool visible(const Object& o,unsigned selected,unsigned depth=0) const {
         if(depth>32) return false;
-        if(o.name.rfind("hightlight",0)==0 && o.type==5) {
+        if(!temporal && o.name.rfind("hightlight",0)==0 && o.type==5) {
             // Native Highlight event target IDs: UG->df300d, QuickRace->ee300d.
             const unsigned wanted=selected==0?0xd30df:0xd30ee;
             if(o.id!=wanted) return false;
@@ -347,6 +456,7 @@ bool FrontendArt::load(const std::filesystem::path& root,std::string& error,bool
             const std::size_t outer=dword(fng.data()+pos+4);
             if(outer<n+8 || outer>fng.size()-pos-8)throw std::runtime_error("frontend object script package invalid");
             load_ui_loops(fng.data()+pos+16+n,outer-n-8,o);
+            load_ui_states(fng.data()+pos+16+n,outer-n-8,o);
             out.objects.push_back(std::move(o));pos+=15+n;
         }
         if(out.objects.size()!=161) throw std::runtime_error("main menu object count changed");
@@ -427,6 +537,7 @@ void FrontendArt::record_ui(unsigned width,unsigned height,const FrontendMenu& m
 }
 void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu) const {
     const auto& p=*this;
+    p.select(menu.selected());
     std::vector<std::size_t> order(p.objects.size());for(std::size_t i=0;i<order.size();++i) order[i]=i;
     std::stable_sort(order.begin(),order.end(),[&](std::size_t a,std::size_t b) {return p.transform(p.objects[a]).z>p.transform(p.objects[b]).z;});
     const unsigned hashes[]={0xe2a5c626,0x1f3bdb88,0x1abedeb1,0,bin_hash("ARROW3"),bin_hash("CIRCLE"),0x868a1fcf,bin_hash("NFSU_LOGO")};
@@ -445,12 +556,16 @@ void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu) const {
             if(free) label="FREE DRIVING";
             if(o.name=="Customize") label="CUSTOMIZE RIDE";
             if(o.name=="Description") label=menu.selected()==0?"Begin your Underground career":"Drive the first track. + returns to the menu.";
-            if(underground || free) color=(menu.selected()==(free?1U:0U))?std::array<unsigned,4>{{242,233,207,255}}:std::array<unsigned,4>{{180,154,84,255}};
+            if((underground || free) && !p.temporal) color=(menu.selected()==(free?1U:0U))?std::array<unsigned,4>{{242,233,207,255}}:std::array<unsigned,4>{{180,154,84,255}};
             else if(o.name=="STATISTICS" || o.name=="Options" || o.name=="Customize" || o.name=="Online") color={{110,110,110,180}};
+            color=p.parent_color(o,color);
             p.text(image,o,m,label,color,o.resource);
         } else if((o.type==1 || o.type==9) && o.resource<8) {
             const auto tex=p.textures.find(hashes[o.resource]);if(tex==p.textures.end()) continue;
-            quad(image,tex->second,m,-o.w/2,-o.h/2,o.w,o.h,o.uv,color,o.type==9?&o.corner_colors:nullptr);
+            color=p.parent_color(o,color);
+            auto corners=o.corner_colors;
+            if(o.type==9)for(auto& corner:corners)corner=p.parent_color(o,corner);
+            quad(image,tex->second,m,-o.w/2,-o.h/2,o.w,o.h,o.uv,color,o.type==9?&corners:nullptr);
         }
     }
     // The identity logo is the final foreground image over its angular backing.

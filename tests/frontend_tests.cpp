@@ -660,6 +660,40 @@ int main(int argc,char** argv) {
                 short_arc_found |= same;
             }
             check(short_arc_found,"authored circle short-arc interpolation matches independent native image corners");
+            // Genuine4FC100 nonloop scripts and4F1810 parent modulation:
+            // actual two-mode child records, four corners, packed colors.
+            FrontendArt selection_art;FrontendMenu selection_menu;
+            check(selection_art.load(root,error,false),error.c_str());
+            const auto selection_quad=[&](double x,double y,unsigned alpha) {
+                for(std::size_t i=0;i<ui.vertices.size();i+=4) {
+                    const double xs[]={x,x+247.25,x+247.25,x};
+                    const double ys[]={y,y,y+20,y+20};bool same=true;
+                    for(unsigned c=0;c<4;++c) {const auto& v=ui.vertices[i+c];
+                        same &= std::abs(v.px-xs[c]*2)<.001 && std::abs(v.py-ys[c]*1.5)<.001 &&
+                            v.color[0]==4 && v.color[1]==134 && v.color[2]==196 && v.color[3]==alpha;
+                    }
+                    if(same)return true;
+                }
+                return false;
+            };
+            const unsigned times[]={0,20,100,200};
+            const double xs[]={323,324.5,330.5,338};const unsigned alphas[]={4,16,64,124};
+            for(unsigned phase=0;phase<4;++phase) {
+                selection_art.advance(float(phase?times[phase]-times[phase-1]:0)/1200);
+                selection_art.record_ui(1280,720,selection_menu,ui);
+                check(selection_quad(xs[phase],104,alphas[phase]),"original UG backing all corners and parent alpha during HighLight");
+            }
+            selection_menu.update({false,true,false,false});
+            selection_art.record_ui(1280,720,selection_menu,ui);
+            check(selection_quad(323,146,4) && selection_quad(338,104,124),
+                "immediate selection forwards native start events to both backing groups");
+            selection_art.advance(20.F/1200);selection_art.record_ui(1280,720,selection_menu,ui);
+            check(selection_quad(324.5,146,16) && selection_quad(338,104,112),
+                "original selected fade-in and previous fade-out run simultaneously");
+            selection_menu.update({true,false,false,false});
+            selection_art.record_ui(1280,720,selection_menu,ui);
+            check(selection_quad(323,104,4) && selection_quad(338,146,124),
+                "rapid reverse restarts authored mode1 keys without optional rebasing or delay");
             RaceGpuScene scene;
             check(run.prepare_metadata(root,error),error.c_str());
             check(!run.set_free_drive(false,error),"mode cannot change after metadata preparation");

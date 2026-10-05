@@ -419,15 +419,16 @@ reflection defaults remain unchanged.
   orientation/projection and environment equation; hardware appearance remains
   unaccepted. Reflection origin zero remains an explicit startup assumption.
 - Floor reflection: connected native Z-family producer and worldreflect
-  receiver; sprite contribution remains part of the flare/glow item below.
-- Flare/glow: recover and connect applicable main-menu sprite consumer/state.
+  receiver and original road sprite contribution.
+- Flare/glow: original road sprites connected across primary/cube/floor;
+  car-specific enable and consumer remain to be completed.
 - Dynamic road lighting: original four flare-marker inputs and the full
   native 32-slot producer/nearby selector are reproduced by
   `tools/frontend66_road_light_native.py`. Its RGB, height and attenuation are
   explicit synthetic test boundaries, not recovered retail defaults. Actual
   source harmonic population and unresolved startup inputs remain pending.
-- Authored UI temporal/state: finish native header animation and circular
-  indicators using original authored consumers.
+- Authored UI temporal/state: native header Init loops and two-mode
+  HighLight/UnHighLight key/event transitions connected and source-tested.
 - Acceptance: full combined native default/Release retail and Switch gates,
   independent exact-head review, measured pad-to-present responsiveness and
   owner hardware visual/audio acceptance remain required. This checklist does
@@ -463,7 +464,7 @@ interpolation rounding order. `tools/frontend66_ui_temporal_native.py`
 executes original interpolation and image submission from the authored
 circle records. `nfsu_frontend_retail` compares time-varying corners, alpha
 and loop wrap against those independent native outputs. Selection event
-Highlight/UnHighlight temporal scripts remain separate from these Init loops.
+HighLight/UnHighLight event playback is described separately below.
 
 ### Bounded native road sprite witness
 
@@ -505,3 +506,21 @@ retains explicit quality, texture allocation and primary near/far boundaries;
 these comparisons do not establish original depth/occlusion parity. CPU
 reference diagnostics compose these same commands with the original UI.
 Car-specific headlight activation remains subject to main-entry state proof.
+
+
+### Authored selection event state
+
+The two selectable labels use original HighLight/UnHighLight scripts.
+Their EV records forward event ABC08912/55D1E635 to the authored backing
+IDs; the original4FFC30 consumer queues them through4F0700. Nonloop4FFEB0
+clamps the time to the endpoint rather than wrapping. Label color/position
+states are immediate; backing color/position follows the authored keys.
+
+The mode1 FI records do not use dynamic rebasing. Genuine4FF030 only
+rebases modes3/4; tools/frontend66_selection_native.py executes the guard
+and original4FC100 arithmetic, then submits actual backing children through
+the native parent-color consumer. Supplied script phase and parent state
+remain explicit boundaries. The retail source test checks simultaneous
+highlight/unhighlight and immediate reverse selection against those native
+corners and channel values. Original parent channel multiplication precedes
+the existing half-channel pack. No sleep is added to the input path.
