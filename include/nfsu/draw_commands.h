@@ -101,6 +101,8 @@ public:
     std::size_t reflection_draw_count() const;
     const RecordedDraw& reflection_draw(std::size_t i) const;
     DrawFrameUniform frame;
+    FrontendLighting frontend_light;
+    bool frontend_light_enabled=false;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     unsigned char clear_color[4]{};

@@ -264,6 +264,7 @@ struct WetRoadLamps;
 struct RenderOptions {
     TextureFilterMode texture_filter = TextureFilterMode::legacy;
     bool car_shading = false; // static environment approximation; opt-in
+    const FrontendLighting* frontend_lighting = nullptr; // separate native FE consumer
     const WetRoadLamps* wet_lamps = nullptr;
     std::uint32_t width = 1280;
     std::uint32_t height = 720;
@@ -420,6 +421,7 @@ private:
 // state, so a caller that does not set them gets the historical behaviour.
 struct RasterMaterial {
     bool car_shading = false;
+    bool frontend_lighting = false;
     // Unlit world.efx modulation, texture * vertex RGB * 2, for the sky.
     bool sky = false;
     // The retail car sampler uses linear filtering with repeat addressing.

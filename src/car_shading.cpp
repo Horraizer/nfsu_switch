@@ -3,6 +3,7 @@
 #include "nfsu/scene.h"
 #include <algorithm>
 #include <cmath>
+#include <algorithm>
 #include <cstring>
 #include <map>
 
@@ -131,5 +132,72 @@ bool apply_car_materials(PreparedCarScene& scene, const unsigned char* bytes,
         }
     }
     return true;
+}
+} // namespace nfsu
+
+namespace nfsu {
+FrontendLighting frontend_startup_lighting() noexcept {
+    // Authentic 542E40 -> 544390 witness: mode 3, actual primary CView and
+    // reflection basis, 735548/73554C zero, road light RGB zero and no race
+    // light list. Those unresolved startup inputs remain explicit assumptions.
+    const float values[10][2]={
+        {.35557228326797485F,.49166592955589294F},
+        {-.03482309728860855F,-.04815147817134857F},
+        {.03482309728860855F,.04815147817134857F},
+        {-.07494521141052246F,-.10363014787435532F},
+        {-.028591757640242577F,-.039535120129585266F},
+        {.04231078550219536F,.058505043387413025F},
+        {.09493815898895264F,.13127529621124268F},
+        {.22944235801696777F,.31726035475730896F},
+        {.16954396665096283F,.23443613946437836F},
+        {.32748597860336304F,.4528297185897827F}};
+    FrontendLighting result;
+    for(unsigned i=0;i<10;++i) {
+        for(unsigned c=0;c<3;++c) result.harmonic[i][c]=values[i][0];
+        result.harmonic[i][3]=values[i][1];
+    }
+    return result;
+}
+void frontend_local_eye(const float* placement,const double* raw_eye,float (&out)[4]) noexcept {
+    // 542C20: subtract translation then transpose the placement 3x3.
+    // Both independently read native clamp endpoints equal 2.7799999714.
+    double delta[3],local[3];
+    for(unsigned i=0;i<3;++i)delta[i]=raw_eye[i]-(placement?placement[12+i]:0);
+    double squared=0;
+    for(unsigned i=0;i<3;++i) {
+        local[i]=placement ? placement[i*4]*delta[0]+placement[i*4+1]*delta[1]+
+            placement[i*4+2]*delta[2] : delta[i];
+        squared+=local[i]*local[i];
+    }
+    const double scale=squared>0 ? 2.7799999713897705/std::sqrt(squared) : 0;
+    for(unsigned i=0;i<3;++i)out[i]=static_cast<float>(local[i]*scale);
+    out[3]=1;
+}
+void frontend_surface(const FrontendLighting& lighting,const CarShadingMaterial& c,
+    const float* position,const float* normal,const float* eye,double (&out)[7]) noexcept {
+    double view[3],squared=0;
+    for(unsigned i=0;i<3;++i){view[i]=double(eye[i])-position[i];squared+=view[i]*view[i];}
+    const double length=std::sqrt(squared);
+    for(auto& value:view)value=length>0 ? value/length : 0;
+    double v=0;for(unsigned i=0;i<3;++i)v+=view[i]*normal[i];
+    v=std::max(.01,v); // car.efx neither flips normals nor clamps the upper bound.
+    double reflected[3];for(unsigned i=0;i<3;++i)reflected[i]=2*v*normal[i]-view[i];
+    const auto harmonic=[&](const auto* n,unsigned channel) {
+        const double terms[10]={1,n[0]*n[0],n[1]*n[1],n[2]*n[2],
+            n[0]*n[1],n[2]*n[0],n[1]*n[2],n[0],n[1],n[2]};
+        double value=0;for(unsigned i=0;i<10;++i)value+=lighting.harmonic[i][channel]*terms[i];
+        return value;
+    };
+    const double spec_v=std::pow(v,double(c.specular_min[3]));
+    const double spec_luma=std::pow(std::clamp(harmonic(reflected,3),0.0,1.0),double(c.specular_min[3]));
+    for(unsigned i=0;i<3;++i) {
+        out[i]=c.gates[1]*harmonic(normal,i)*(c.diffuse_min[i]+v*c.diffuse_range[i]);
+        out[3+i]=.5*c.gates[1]*harmonic(reflected,i)*spec_luma*
+            (c.specular_min[i]+spec_v*c.specular_range[i]);
+    }
+    // The native pixel shader multiplies interpolated diffuse alpha and
+    // interpolated specular RGB separately, rather than at each vertex.
+    out[6]=c.gates[1]*(c.diffuse_min[3]+v*c.diffuse_range[3]);
+    // EnvMap is a separate live capture consumer, not a fabricated sky band.
 }
 } // namespace nfsu

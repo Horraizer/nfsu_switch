@@ -278,6 +278,8 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
                    r.elements * r.element_bytes != r.bytes)
             return fail(r.name, "invalid buffer shape");
     }
+    if(commands.frontend_light_enabled)for(const auto& vector:commands.frontend_light.harmonic)
+        for(float value:vector)if(!std::isfinite(value))return fail("frontend light","nonfinite harmonic");
     if (commands.reflection_draw_count() > 4096) return fail("reflection commands", "capacity exceeded");
     for (std::size_t draw_index = 0; draw_index < commands.draw_count()+commands.reflection_draw_count(); ++draw_index) {
         const auto& d = draw_index < commands.draw_count() ? commands.draw_view(draw_index).definition :
@@ -285,12 +287,14 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
         bool known = false;
         for (const auto& program : sm::kPrograms) if (d.program == &program) known = true;
         if (!known) return fail(d.name, "unknown shader program");
-        const bool shaded = std::strcmp(d.program->name,"car_shaded_textured")==0 ||
+        const bool frontend = std::strcmp(d.program->name,"frontend_car_textured")==0;
+        if(frontend && !commands.frontend_light_enabled)return fail(d.name,"missing frontend harmonic record");
+        const bool shaded = frontend || std::strcmp(d.program->name,"car_shaded_textured")==0 ||
                             std::strcmp(d.program->name,"car_shaded_linear_textured")==0;
-        const bool linear = std::strcmp(d.program->name,"track_linear_textured")==0 ||
+        const bool linear = frontend || std::strcmp(d.program->name,"track_linear_textured")==0 ||
                             std::strcmp(d.program->name,"car_shaded_linear_textured")==0;
         if (d.program->buffer_count != 1 || d.program->buffers[0].index != 0 ||
-            d.program->attribute_count != (shaded ? 4U : 3U) || d.program->texture_count > 2)
+            d.program->attribute_count != (shaded && !frontend ? 4U : 3U) || d.program->texture_count > 2)
             return fail(d.name, "unsupported shader interface");
         unsigned locations = 0;
         for (std::size_t i = 0; i < d.program->attribute_count; ++i) {
@@ -305,12 +309,12 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
         // by the manifest tests; never accept an arbitrary interface pointer.
         const bool textured = d.program->texture_count != 0;
         const bool sky = std::strcmp(d.program->name, "sky_textured") == 0;
-        const char* fragment = shaded ? "car_shaded.frag.glsl" : sky ? "sky.frag.glsl" :
+        const char* fragment = frontend ? "frontend_car.frag.glsl" : shaded ? "car_shaded.frag.glsl" : sky ? "sky.frag.glsl" :
             !textured ? "fallback.frag.glsl" :
             (std::strcmp(d.program->name, "track_textured") == 0 ||
              std::strcmp(d.program->name, "track_linear_textured") == 0) ?
                 "textured_opaque.frag.glsl" : "textured.frag.glsl";
-        if (std::strcmp(d.program->vertex_source, shaded ? "car_shaded.vert.glsl" :
+        if (std::strcmp(d.program->vertex_source, frontend ? "frontend_car.vert.glsl" : shaded ? "car_shaded.vert.glsl" :
                         sky ? "sky.vert.glsl" : "placed.vert.glsl") != 0 ||
             std::strcmp(d.program->fragment_source, fragment) != 0 ||
             (textured && (d.program->texture_count != (sky || shaded ? 1U : 2U) ||

@@ -334,3 +334,37 @@ These camera/UI corrections do not complete FE harmonic lighting, live cube
 capture or the remaining original temporal UI effects. Current source frames
 remain diagnostics until combined validation, independent review and owner
 hardware acceptance are complete.
+
+## Bounded FE harmonic shader integration
+
+The menu now has a separate frontend_car shader and ten-vector harmonic
+uniform. Existing car_shaded race/viewer shaders keep their analytic default.
+The CPU diagnostic evaluates the same original car.efx polynomial, specular
+luminance exponent and pixel product. The original shader uses local raw
+normals without an eye-facing flip or upper vdotn clamp, ignores vertex RGB,
+and multiplies independently interpolated diffuse alpha and specular RGB.
+It does not substitute the analytic broad light or artificial sky band.
+
+Original 0x56DEF0 reads primary CView +0x40 for 0x544390. Its 0x542C20
+consumer subtracts placement translation, applies the transposed placement
+3x3 and clamps LocalEyePos length with 0x6B6348/0x6B634C. The CPU and GPU
+receive that per-draw vector, including whole-car root and wheel placement.
+The actual-source frontend test names the independent native vector witness
+and representative shader contractions, including back-facing and nonunit
+normals. The Switch compiled-interface gate checks the dedicated shader.
+
+The current harmonic startup record is a bounded diagnostic state. It comes
+from genuine 0x542E40 and 0x544390 with the recovered main-entry primary
+CView, original 0x487590 reflection getter and 0x5707B0/0x40AD60 basis.
+Unresolved zero-BSS flags 0x735548/0x73554C, reflection origin 0x7365A0,
+and empty light-list sentinels are supplied boundary assumptions. They are
+not proven retail profile defaults. tools/frontend66_lighting_native.py
+repeats this witness and labels those limits explicitly. Actual 0x4AE1F0
+road light-pool population and authored flare markers have been recovered
+separately; this startup witness does not certify that populated state.
+
+Live EnvMap cube capture, populated road-light harmonic generation, reflected
+view consumers and remaining temporal UI still need connection. The FE shader
+currently leaves the missing cube term absent, making that gap visible in the
+source diagnostic instead of filling it with an invented environment. This
+is an implementation checkpoint, not original-effect parity or acceptance.

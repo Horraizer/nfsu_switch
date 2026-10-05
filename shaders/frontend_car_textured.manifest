@@ -1,0 +1,82 @@
+# Linear diffuse candidate; legacy uses car_shaded_textured.manifest.
+# Interface manifest: the car path's textured draw.
+#
+# One material group of a PreparedCarScene whose binding is resolved, drawn
+# by render_scene (src/render.cpp). docs/SHADER_PIPELINE.md defines every
+# record kind below and says which check reads each one: the GLSL check in
+# the desktop CTest suite, the compiled-shader check in the Switch build, and
+# the C++ layout check against nfsu::MeshVertex.
+
+format 1
+program frontend_car_textured
+
+stage kind=vertex source=frontend_car.vert.glsl
+stage kind=fragment source=frontend_car.frag.glsl
+
+# PreparedMesh::vertices uploaded as they are: one interleaved buffer of
+# nfsu::MeshVertex. Bytes 12..23 hold the stored smooth normal. Color is
+# fetched as four unorm bytes and the stage reads the first three, which is
+# all RenderOptions::vertex_color multiplies by.
+buffer index=0 stride=36 struct=nfsu::MeshVertex header=nfsu/mesh.h
+attribute location=0 name=position type=vec3 format=float32x3 buffer=0 offset=0 members=px,py,pz
+attribute location=2 name=texcoord type=vec2 format=float32x2 buffer=0 offset=28 members=u,v
+
+attribute location=3 name=normal type=vec3 format=float32x3 buffer=0 offset=12 members=nx,ny,nz
+
+varying location=2 name=texcoord type=vec2 interpolation=smooth
+
+varying location=3 name=diffuse type=vec3 interpolation=smooth
+varying location=4 name=additive type=vec3 interpolation=smooth
+varying location=5 name=alphaScale type=float interpolation=smooth
+
+# std140. Frame is one buffer bound at slot 0 of both stages.
+block name=Frame binding=0 stages=vertex,fragment size=112
+member block=Frame name=eye type=vec4 offset=0
+member block=Frame name=right type=vec4 offset=16
+member block=Frame name=up type=vec4 offset=32
+member block=Frame name=forward type=vec4 offset=48
+member block=Frame name=projection type=vec4 offset=64
+member block=Frame name=light type=vec4 offset=80
+member block=Frame name=options type=uvec4 offset=96
+
+block name=Instance binding=1 stages=vertex size=64
+member block=Instance name=rows type=vec4[4] offset=0
+
+block name=Material binding=2 stages=vertex,fragment size=192
+member block=Material name=fallback type=vec4 offset=0
+member block=Material name=alpha type=vec4 offset=16
+member block=Material name=environment_min type=vec4 offset=32
+member block=Material name=environment_range type=vec4 offset=48
+member block=Material name=environment_color type=vec4 offset=64
+
+member block=Material name=surface_diffuse_min type=vec4 offset=80
+member block=Material name=surface_diffuse_range type=vec4 offset=96
+member block=Material name=surface_specular_min type=vec4 offset=112
+member block=Material name=surface_specular_range type=vec4 offset=128
+member block=Material name=surface_environment_min type=vec4 offset=144
+member block=Material name=surface_environment_range type=vec4 offset=160
+member block=Material name=surface_gates type=vec4 offset=176
+
+# The resolved texture: RenderTexture's decoded top level, sampled at the
+# nearest texel with the coordinate wrapped (wrap_texel).
+block name=FrontendLight binding=3 stages=vertex size=160
+member block=FrontendLight name=harmonic type=vec4[10] offset=0
+
+texture name=baseTexture binding=0 stage=fragment type=sampler2D filter=linear wrap=repeat
+
+output location=0 name=color type=vec4 format=rgba8
+
+# The fixed-function state each draw is made with. render_scene takes the
+# alpha test from texture-info +85 (render_alpha_test_enabled) and the blend
+# from +86 (render_blend_mode_of), independently, and only under
+# MaterialStateMode::retail; with the off state every draw is `opaque`.
+# The six variants are every pair those two decoders can produce, which
+# tests/shader_manifest_tests.cpp checks against the decoders themselves.
+# A blended draw writes depth, as the retail path does; the frame's alpha
+# is never written, because the reference keeps it at 255.
+variant name=opaque alpha_test=always blend=off depth_test=less_equal depth_write=on color_write=rgb cull=none
+variant name=alpha_tested alpha_test=greater alpha_ref=170 blend=off depth_test=less_equal depth_write=on color_write=rgb cull=none
+variant name=source_over alpha_test=always blend=on blend_src=src_alpha blend_dst=one_minus_src_alpha blend_op=add depth_test=less_equal depth_write=on color_write=rgb cull=none
+variant name=additive alpha_test=always blend=on blend_src=src_alpha blend_dst=one blend_op=add depth_test=less_equal depth_write=on color_write=rgb cull=none
+variant name=alpha_tested_source_over alpha_test=greater alpha_ref=170 blend=on blend_src=src_alpha blend_dst=one_minus_src_alpha blend_op=add depth_test=less_equal depth_write=on color_write=rgb cull=none
+variant name=alpha_tested_additive alpha_test=greater alpha_ref=170 blend=on blend_src=src_alpha blend_dst=one blend_op=add depth_test=less_equal depth_write=on color_write=rgb cull=none

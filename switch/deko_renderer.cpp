@@ -59,7 +59,7 @@ struct DekoRenderer::Impl {
     dk::MemBlock hud_uniforms, hud_descriptors;
     dk::Image hud_image;
     bool hud_enabled = false;
-    dk::MemBlock reflection_uniforms;
+    dk::MemBlock reflection_uniforms, frontend_light_uniforms;
     dk::Image reflection_color, reflection_depth;
     bool reflection_ready = false;
     static constexpr std::size_t reflection_capacity = 4096;
@@ -89,6 +89,7 @@ struct DekoRenderer::Impl {
     std::array<dk::Image, 2> depths;
     DekoSceneTarget scene_target;
     dk::Shader vertex, textured, textured_opaque, fallback, frontend_vertex, frontend_fragment;
+    dk::Shader frontend_car_vertex, frontend_car_fragment;
     dk::Shader car_vertex, car_fragment, sky_vertex, sky_fragment;
     const RecordedCommands* commands = nullptr;
     const PreparedCommandSource* package = nullptr;
@@ -496,6 +497,9 @@ struct DekoRenderer::Impl {
         reflection_ready = true;
         }
         write_uniforms(source, 0);
+        if (!block(2*256,kDataFlags,"frontend light uniforms",frontend_light_uniforms,error))return false;
+        if (!shader("frontend_car.vert",DkStage_Vertex,frontend_car_vertex,error) ||
+            !shader("frontend_car.frag",DkStage_Fragment,frontend_car_fragment,error))return false;
         if (!shader("car_shaded.vert", DkStage_Vertex, car_vertex, error) ||
             !shader("car_shaded.frag", DkStage_Fragment, car_fragment, error) ||
             !shader("sky.vert", DkStage_Vertex, sky_vertex, error) ||
@@ -612,6 +616,8 @@ struct DekoRenderer::Impl {
         auto* data = static_cast<unsigned char*>(uniforms.getCpuAddr()) +
             uniform_allocation.offset + slot * uniform_stride;
         std::memcpy(data, &source.frame, sizeof source.frame);
+        std::memcpy(static_cast<unsigned char*>(frontend_light_uniforms.getCpuAddr())+slot*256,
+            &source.frontend_light,sizeof source.frontend_light);
         auto mirror = source.frame;
         mirror.options[2] = (mirror.options[2] & 1U) | 4U;
         if (reflection_ready) {
@@ -640,15 +646,16 @@ struct DekoRenderer::Impl {
         const bool has_texture = draw.texture_resource != kNoHandle;
         const bool cutout = deko_textured_uses_cutout_shader(
             state.alpha_test != sm::CompareOp::always, commands->frame.options[3]);
-        const bool shaded = std::strcmp(draw.program->name, "car_shaded_textured") == 0 ||
+        const bool frontend=std::strcmp(draw.program->name,"frontend_car_textured")==0;
+        const bool shaded = frontend || std::strcmp(draw.program->name, "car_shaded_textured") == 0 ||
                             std::strcmp(draw.program->name, "car_shaded_linear_textured") == 0;
         const bool sky = std::strcmp(draw.program->name, "sky_textured") == 0;
-        dk::Shader* fragment = shaded ? &car_fragment : sky ? &sky_fragment :
+        dk::Shader* fragment = frontend ? &frontend_car_fragment : shaded ? &car_fragment : sky ? &sky_fragment :
             !has_texture ? &fallback :
             cutout ? &textured : &textured_opaque;
         if (bind_fixed_state)
             out.bindShaders(DkStageFlag_GraphicsMask,
-                            {shaded ? &car_vertex : sky ? &sky_vertex : &vertex, fragment});
+                            {frontend ? &frontend_car_vertex : shaded ? &car_vertex : sky ? &sky_vertex : &vertex, fragment});
         if (instance_addr)
             out.bindUniformBuffer(DkStage_Vertex, 1, instance_addr, sizeof(DrawInstanceUniform));
         out.bindUniformBuffer(DkStage_Fragment, 2, material_addr, sizeof(DrawMaterialUniform));
@@ -893,6 +900,7 @@ struct DekoRenderer::Impl {
         cmd.clearDepthStencil(true, 1, 0, 0);
         cmd.bindUniformBuffer(DkStage_Vertex, 0, base, sizeof(DrawFrameUniform));
         cmd.bindUniformBuffer(DkStage_Fragment, 0, base, sizeof(DrawFrameUniform));
+        cmd.bindUniformBuffer(DkStage_Vertex,3,frontend_light_uniforms.getGpuAddr()+slot*256,sizeof(FrontendLighting));
         for (const auto list : static_lists[slot]) cmd.callList(list);
         const auto first_dynamic = package ? commands->static_track_draw_count() : 0;
         const RecordedDraw* previous_dynamic = nullptr;

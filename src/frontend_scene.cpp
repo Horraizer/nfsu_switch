@@ -283,6 +283,7 @@ struct FrontendGpuScene::Impl {
     PreparedCarScene tunnel;
     StockFrame car;
     RenderOptions options;
+    FrontendLighting lighting=frontend_startup_lighting();
     FrontendRoad road;
     CarShadowAsset shadow;
     std::size_t car_draw_count=0;
@@ -356,6 +357,11 @@ bool FrontendGpuScene::load(const std::filesystem::path& root,unsigned width,uns
     RecordedCommands with_shadow;
     if(!combine_race_commands(std::move(p.commands),shadow_commands,with_shadow,error))return false;
     p.commands=std::move(with_shadow);
+    for(auto& draw:p.commands.owning_draws())if(draw.material.surface.gates[0]!=0) {
+        for(const auto& program:shader_manifest::kPrograms)
+            if(std::string(program.name)=="frontend_car_textured")draw.program=&program;
+    }
+    p.commands.frontend_light=p.lighting;p.commands.frontend_light_enabled=true;
     p.ready=true;impl_.swap(next);return frame(0,0,error);
 }
 bool FrontendGpuScene::frame(float seconds,std::uint32_t ticks,std::string& error) {
@@ -387,7 +393,11 @@ bool FrontendGpuScene::frame(float seconds,std::uint32_t ticks,std::string& erro
         rotated.rows[14]+=p.car_root_height;
         draw.placement=rotated;
     }
-    return record_frame_state(p.options,RenderLimits{},p.commands,error);
+    if(!record_frame_state(p.options,RenderLimits{},p.commands,error))return false;
+    const double raw_eye[3]={p.commands.frame.eye[0],-p.commands.frame.eye[2],p.commands.frame.eye[1]};
+    for(auto& draw:draws)if(draw.material.surface.gates[0]!=0)
+        frontend_local_eye(draw.placement.rows,raw_eye,draw.material.environment_color);
+    return true;
 }
 const RecordedCommands& FrontendGpuScene::commands() const {
     if(!impl_->ready)throw std::logic_error("frontend GPU scene not loaded");
@@ -426,9 +436,10 @@ bool FrontendGpuScene::render_reference(std::vector<unsigned char>& rgba,std::st
         std::copy_n(draw.placement.rows,16,car.instances.at(draw.instance).transform);
     }
     Frame output,car_frame;RenderStats stats;
+    auto car_options=p.options;car_options.frontend_lighting=&p.lighting;
     auto room_options=p.options;room_options.car_shading=false;
     if(!render_scene(tunnel,room_options,RenderLimits{},output,stats,error) ||
-       !render_scene(car,p.options,RenderLimits{},car_frame,stats,error))return false;
+       !render_scene(car,car_options,RenderLimits{},car_frame,stats,error))return false;
     CarShadowPlacement shadow_placement;shadow_placement.alpha=184.0F/255;
     if(!render_car_shadow(p.shadow,shadow_placement,p.options,output,stats,error))return false;
     rgba=output.rgba();

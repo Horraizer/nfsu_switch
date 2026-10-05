@@ -1150,7 +1150,7 @@ bool Rasterizer::fill(
                                    id > frame_.ids_[index])))) {
                         ++stats_.fragments_depth_failed;
                     } else {
-                        if (options_.vertex_color || material.sky) {
+                        if ((options_.vertex_color && !material.frontend_lighting) || material.sky) {
                             const double vc[3] = {
                                 (l[0] * a->rq + l[1] * b->rq + l[2] * c->rq) * iq,
                                 (l[0] * a->gq + l[1] * b->gq + l[2] * c->gq) * iq,
@@ -1169,7 +1169,8 @@ bool Rasterizer::fill(
                                     : std::min<std::uint32_t>(
                                           255U, (color[k] * shade + 128U) >> 8U);
                             if (material.car_shading) {
-                                const double shaded=color[k]*surface[k] + color[3]*surface[3+k];
+                                const double shaded=color[k]*surface[k] + color[3]*surface[3+k]*
+                                    (material.frontend_lighting ? surface[6] : 1);
                                 value=static_cast<std::uint32_t>(std::clamp(std::floor(shaded+0.5),0.0,255.0));
                             }
                             if (environment && !material.car_shading) {
@@ -1502,6 +1503,7 @@ bool render_scene(
                  coefficients.alpha_range != 0.0);
 
             raster.car_shading = options.car_shading && raster.texture && draw.shading.gates[0] != 0;
+            raster.frontend_lighting=raster.car_shading && options.frontend_lighting;
             raster.lamp_mode = instanced ? scene.instances[copy].lamp_mode : 0;
             if ((first + count) / 3 > first / 3) {
                 copy_drawn[copy] = 1;
@@ -1539,8 +1541,15 @@ bool render_scene(
                     clip[k].g = source.color[1];
                     clip[k].b = source.color[2];
                     clip[k].a = source.color[3];
-                    if (raster.car_shading)
-                        car_surface(source,transform,world[k],camera.eye,draw.shading,clip[k].surface);
+                    if (raster.car_shading) {
+                        if(options.frontend_lighting) {
+                            const double raw_eye[3]={camera.eye.x,-camera.eye.z,camera.eye.y};
+                            float local_eye[4];frontend_local_eye(transform,raw_eye,local_eye);
+                            const float position[3]={source.px,source.pz,source.py};
+                            const float normal[3]={source.nx,source.nz,source.ny};
+                            frontend_surface(*options.frontend_lighting,draw.shading,position,normal,local_eye,clip[k].surface);
+                        } else car_surface(source,transform,world[k],camera.eye,draw.shading,clip[k].surface);
+                    }
                 }
                 Vec3 normal = cross(sub(world[1], world[0]), sub(world[2], world[0]));
                 const bool has_normal = normalize(normal);

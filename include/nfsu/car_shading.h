@@ -17,6 +17,17 @@ struct CarShadingMaterial {
     float environment_range[4]{};
     float gates[4]{}; // x: enabled, y: diffuse/specular, z: environment
 };
+// Original FE harmonic record (+0x120), supplied independently of materials.
+// The startup record below has explicit unresolved zero-BSS input assumptions;
+// it is a bounded diagnostic state, not a retail profile-default claim.
+struct FrontendLighting {
+    float harmonic[10][4]{};
+};
+FrontendLighting frontend_startup_lighting() noexcept;
+void frontend_local_eye(const float* placement,const double* raw_eye,float (&out)[4]) noexcept;
+void frontend_surface(const FrontendLighting& lighting,const CarShadingMaterial& material,
+    const float* raw_position,const float* raw_normal,const float* local_eye,
+    double (&out)[7]) noexcept;
 bool valid_car_shading_material(const CarShadingMaterial& material) noexcept;
 struct CarMaterialRecord {
     std::uint32_t hash = 0;

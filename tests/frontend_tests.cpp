@@ -19,6 +19,36 @@ void check(bool value,const char* message) { if(!value) throw std::runtime_error
 int main(int argc,char** argv) {
     using namespace nfsu;
     try {
+        // Independent original 542C20/544390 witness: actual mode-0 CView
+        // and whole-car root. Shader expectations below follow authenticated
+        // car.efx equations, with supplied startup-light boundary state.
+        const double raw_eye[3]={2.7437283992767334,1.8576174974441528,.7651561498641968};
+        float placement[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,.20027998089790344F,1};
+        float eye[4];frontend_local_eye(placement,raw_eye,eye);
+        const double native_eye[4]={2.269277334213257,1.536394476890564,.46719667315483093,1};
+        for(unsigned i=0;i<4;++i)check(std::abs(eye[i]-native_eye[i])<1e-6,"native FE clamped LocalEyePos");
+        CarShadingMaterial material;material.gates[1]=1;
+        for(unsigned i=0;i<3;++i) {
+            material.diffuse_min[i]=.2F;material.diffuse_range[i]=.4F;
+            material.specular_min[i]=.3F;material.specular_range[i]=.5F;
+        }
+        material.diffuse_min[3]=.6F;material.diffuse_range[3]=.2F;
+        material.specular_min[3]=2;
+        const float position[3]={0,0,0};
+        const float normals[3][3]={{0,0,1},{0,0,-1},{2,0,0}};
+        const double expected[3][3]={
+            {.16250151481665143,.00020057602170786372,.6336112707115158},
+            {-.009559216976165772,5.485728244575609e-10,.602},
+            {.5759352854850635,.14024445869762775,.9265147171733882}};
+        const auto lighting=frontend_startup_lighting();
+        for(unsigned n=0;n<3;++n) {
+            double surface[7];frontend_surface(lighting,material,position,normals[n],eye,surface);
+            for(unsigned i=0;i<3;++i) {
+                check(std::abs(surface[i]-expected[n][0])<1e-6,"native harmonic diffuse without normal flip");
+                check(std::abs(surface[i+3]-expected[n][1])<1e-6,"native harmonic specular without upper dot clamp");
+            }
+            check(std::abs(surface[6]-expected[n][2])<1e-6,"native FE diffuse alpha remains separate");
+        }
         audio::Bank bank;std::vector<audio::Segment> segments;
         for(unsigned i=0;i<27;++i) {
             bank.entries.push_back({1,i*100,0});
