@@ -11,6 +11,7 @@
 #include "nfsu/stock_view.h"
 #include "nfsu/race_audio.h"
 #include "nfsu/frontend.h"
+#include "nfsu/frontend_scene.h"
 #include "nfsu/frontend_music.h"
 #include "nfsu/intro_movie.h"
 #include <switch.h>
@@ -859,7 +860,19 @@ int main(int argc, char** argv) {
                 if (intro.outcome==IntroOutcome::quit) throw Cancel{};
                 FrontendArt art; std::string frontend_error;
                 screen.show({"Loading original frontend..."});
-                require(art.load(root,frontend_error),frontend_error);
+                require(art.load(root,frontend_error,false),frontend_error);
+                FrontendGpuScene frontend_scene;
+                require(frontend_scene.load(root,width,height,frontend_error),frontend_error);
+                FrontendUiFrame frontend_ui;
+                std::unique_ptr<DekoRenderer> frontend_renderer;
+                const auto open_frontend=[&] {
+                    screen.close();
+                    frontend_renderer=std::make_unique<DekoRenderer>();
+                    require(frontend_renderer->open_frontend(frontend_scene.commands(),art.atlas(),frontend_error),frontend_error);
+                };
+                open_frontend();
+                auto frontend_previous=armGetSystemTick();
+                const auto frontend_epoch=frontend_previous;
                 FrontendMenu menu;
                 audio::FrontendMusic music;
                 if(!music.start(root,frontend_error)) menu.notice("MUSIC: "+frontend_error);
@@ -870,6 +883,7 @@ int main(int argc, char** argv) {
                 bool stick_up=false,stick_down=false;
                 FrontendAction pending=FrontendAction::none;
                 while (appletMainLoop()) {
+                    const auto poll_begin=armGetSystemTick();
                     padUpdate(&pad); const auto down=padGetButtonsDown(&pad);
                     const auto stick=padGetStickPos(&pad,0);
                     const bool up=stick.y>16000, below=stick.y<-16000;
@@ -881,6 +895,7 @@ int main(int argc, char** argv) {
                     stick_up=up; stick_down=below;
                     const auto previous_selection=menu.selected();
                     auto action=pending==FrontendAction::none?menu.update(input):FrontendAction::none;
+                    const auto selection_done=armGetSystemTick();
                     if(pending==FrontendAction::none && input.back) music.sound(audio::FrontendSound::back);
                     else if(pending==FrontendAction::none && input.accept) music.sound(audio::FrontendSound::select);
                     else if(menu.selected()!=previous_selection)
@@ -896,6 +911,8 @@ int main(int argc, char** argv) {
                         menu.notice("INTRODUCTORY RACE IS NOT AVAILABLE IN THIS BUILD");
                     } else if (action==FrontendAction::free_drive) {
                         music.stop();
+                        require(frontend_renderer->close(frontend_error),frontend_error);
+                        frontend_renderer.reset();
                         try {
                             run(root,false,false,false,particles_enabled,sky,
                                 tuned,glows,car_shading,wet_road_reflections,texture_filter,scene_height,
@@ -910,12 +927,33 @@ int main(int argc, char** argv) {
                         }
                         if(!music.start(root,frontend_error)) menu.notice("MUSIC: "+frontend_error);
                         stick_up=stick_down=false;
+                        open_frontend();
+                        frontend_previous=armGetSystemTick();
                     }
                     const auto music_error=music.error();
                     if(!music_error.empty()) { music.stop(); menu.notice("MUSIC: "+music_error); }
                     const auto song=music.now_playing();menu.song(song.artist,song.title,song.album);
-                    screen.menu(art,menu);
+                    const auto scene_begin=armGetSystemTick();
+                    const auto elapsed_ns=armTicksToNs(scene_begin-frontend_previous);
+                    frontend_previous=scene_begin;
+                    const auto original_ticks=static_cast<std::uint32_t>(armTicksToNs(scene_begin-frontend_epoch)/250000);
+                    require(frontend_scene.frame(static_cast<float>(elapsed_ns/1000000000.0),original_ticks,frontend_error),frontend_error);
+                    const auto scene_done=armGetSystemTick();
+                    art.record_ui(width,height,menu,frontend_ui);
+                    const auto ui_done=armGetSystemTick();
+                    DekoUpdateTiming update_timing;
+                    require(frontend_renderer->update(frontend_scene.commands(),frontend_error,&update_timing),frontend_error);
+                    DekoPresentTiming present_timing;
+                    require(frontend_renderer->present_frontend(frontend_ui,frontend_error,&present_timing),frontend_error);
+                    const auto presented=armGetSystemTick();
+                    if(menu.selected()!=previous_selection) {
+                        std::printf("MENU INPUT selected=%u selection_ms=%.3f scene_ms=%.3f ui_ms=%.3f present_ms=%.3f total_ms=%.3f acquire_ms=%.3f fence_ms=%.3f record_ms=%.3f quads=%zu\n",
+                            static_cast<unsigned>(menu.selected()),ms(selection_done-poll_begin),ms(scene_done-scene_begin),
+                            ms(ui_done-scene_done),ms(presented-ui_done),ms(presented-poll_begin),
+                            present_timing.acquire_ms,present_timing.fence_wait_ms,present_timing.record_ms,frontend_ui.additive.size());
+                    }
                 }
+                require(frontend_renderer->close(frontend_error),frontend_error);
             }
         } catch (const Cancel&) {
         } catch (const std::exception& e) {

@@ -27,7 +27,7 @@ std::string ascii(const unsigned char* p,std::size_t n) {
         s+=char(p[i]);
     }return s;
 }
-struct Image {unsigned width=0,height=0;std::vector<unsigned char> rgba;TextureAlphaBlend blend=TextureAlphaBlend::source_over;};
+struct Image {unsigned width=0,height=0,atlas_x=0,atlas_y=0;std::vector<unsigned char> rgba;TextureAlphaBlend blend=TextureAlphaBlend::source_over;};
 struct Object {
     unsigned id=0,parent=0,type=0,resource=0,justification=0;
     std::string name,text;
@@ -45,17 +45,40 @@ Transform combine(const Transform& p,const Object& o,bool scale) {
     t.c=(p.c*ca-p.a*sa)*sy;t.d=(p.d*ca-p.b*sa)*sy;
     t.x=p.x+p.a*o.x+p.c*o.y;t.y=p.y+p.b*o.x+p.d*o.y;t.z=p.z+o.z;return t;
 }
+struct Canvas : ScreenImage {
+    FrontendUiFrame* gpu=nullptr;
+    unsigned atlas_width=0,atlas_height=0;
+    Canvas(ScreenImage image):ScreenImage(image){}
+    Canvas(unsigned w,unsigned h,const FrontendUiAtlas& atlas,FrontendUiFrame& frame):
+        ScreenImage{nullptr,w,h,w*4},gpu(&frame),atlas_width(atlas.width),atlas_height(atlas.height){}
+};
 // Pixel rasterization of a recovered FEng affine quad; letterforms are FNTF
 // glyphs, never synthesized glyphs. Display preserves the 640x480 canvas.
-void quad(ScreenImage target,const Image& tex,const Transform& m,float x,float y,float w,float h,
+void quad(Canvas target,const Image& tex,const Transform& m,float x,float y,float w,float h,
           std::array<float,4> uv,std::array<unsigned,4> color,
           const std::array<std::array<unsigned,4>,4>* corners=nullptr) {
-    if(!target.pixels || !w || !h || tex.rgba.empty()) return;
+    if((!target.pixels && !target.gpu) || !w || !h || tex.rgba.empty()) return;
     const float s=std::min(float(target.width)/640,float(target.height)/480);
     const float ox=(float(target.width)-640*s)/2,oy=(float(target.height)-480*s)/2;
     const float det=m.a*m.d-m.b*m.c;
     if(std::abs(det)<0.00001F) return;
     const float xs[4]={x,x+w,x+w,x},ys[4]={y,y,y+h,y+h};
+    if(target.gpu) {
+        auto& frame=*target.gpu;
+        if(frame.additive.size()>=kFrontendUiMaxQuads)throw std::runtime_error("frontend GPU quad capacity exceeded");
+        const float us[4]={uv[0],uv[2],uv[2],uv[0]},vs[4]={uv[1],uv[1],uv[3],uv[3]};
+        for(unsigned i=0;i<4;++i) {
+            TrackVertex vertex;
+            vertex.px=ox+(320+m.x+m.a*xs[i]+m.c*ys[i])*s;
+            vertex.py=oy+(240+m.y+m.b*xs[i]+m.d*ys[i])*s;vertex.pz=-1;
+            const auto& modulation=corners?(*corners)[i]:color;
+            for(unsigned c=0;c<4;++c)vertex.color[c]=static_cast<unsigned char>(std::min(255U,modulation[c==3?3:2-c])/2);
+            vertex.u=(tex.atlas_x+std::max(0.F,std::min(1.F,us[i]))*tex.width)/target.atlas_width;
+            vertex.v=(tex.atlas_y+std::max(0.F,std::min(1.F,vs[i]))*tex.height)/target.atlas_height;
+            frame.vertices.push_back(vertex);
+        }
+        frame.additive.push_back(tex.blend==TextureAlphaBlend::additive);return;
+    }
     float l=1e6F,r=-1e6F,t=1e6F,b=-1e6F;
     for(unsigned i=0;i<4;++i) {
         const float px=ox+(320+m.x+m.a*xs[i]+m.c*ys[i])*s;
@@ -109,6 +132,8 @@ bool texture(const std::vector<unsigned char>& bytes,unsigned hash,Image& image,
 }
 struct FrontendArt::Impl {
     Image background;
+    FrontendUiAtlas atlas;
+    void draw(Canvas image,const FrontendMenu& menu) const;
     std::map<unsigned,Image> textures;
     std::vector<Object> objects;
     RaceLapHudFont large,small;
@@ -134,7 +159,7 @@ struct FrontendArt::Impl {
         if(o.parent) for(const auto& parent:objects) if(parent.id==o.parent) return visible(parent,selected,depth+1);
         return true;
     }
-    void text(ScreenImage target,const Object& o,const Transform& m,std::string value,
+    void text(Canvas target,const Object& o,const Transform& m,std::string value,
               std::array<unsigned,4> color,unsigned resource) const {
         const auto& font=resource==8?small:large;
         const unsigned hash=resource==8?small_hash:large_hash;
@@ -159,7 +184,7 @@ struct FrontendArt::Impl {
 };
 FrontendArt::FrontendArt():impl_(std::make_unique<Impl>()) {}
 FrontendArt::~FrontendArt()=default;
-bool FrontendArt::load(const std::filesystem::path& root,std::string& error) {
+bool FrontendArt::load(const std::filesystem::path& root,std::string& error,bool background) {
     impl_=std::make_unique<Impl>();auto& out=*impl_;
     try {
         std::vector<unsigned char> front,global,language,font_global,language_textures;
@@ -239,16 +264,47 @@ bool FrontendArt::load(const std::filesystem::path& root,std::string& error) {
             if(!texture(front,hash,image,error) && !texture(global,hash,image,error) && !texture(font_global,hash,image,error) && !texture(language_textures,hash,image,error)) throw std::runtime_error("original frontend sprite/font atlas absent hash="+std::to_string(hash));
             out.textures.emplace(hash,std::move(image));
         }
+        out.atlas.width=2048;
+        unsigned x=0,y=0,row_height=0;
+        for(auto& item:out.textures) {
+            auto& image=item.second;
+            if(image.width+2>out.atlas.width)throw std::runtime_error("frontend atlas texture exceeds width");
+            if(x+image.width+2>out.atlas.width){x=0;y+=row_height;row_height=0;}
+            image.atlas_x=x+1;image.atlas_y=y+1;
+            x+=image.width+2;row_height=std::max(row_height,image.height+2);
+        }
+        out.atlas.height=1;while(out.atlas.height<y+row_height)out.atlas.height*=2;
+        if(out.atlas.height>4096)throw std::runtime_error("frontend atlas exceeds resident budget");
+        out.atlas.rgba.assign(std::size_t(out.atlas.width)*out.atlas.height*4,0);
+        for(const auto& item:out.textures) {
+            const auto& image=item.second;
+            for(int row=-1;row<=int(image.height);++row)for(int column=-1;column<=int(image.width);++column) {
+                const auto sy=std::max(0,std::min(int(image.height)-1,row));
+                const auto sx=std::max(0,std::min(int(image.width)-1,column));
+                const auto target=(std::size_t(int(image.atlas_y)+row)*out.atlas.width+int(image.atlas_x)+column)*4;
+                std::copy_n(image.rgba.data()+(std::size_t(sy)*image.width+sx)*4,4,out.atlas.rgba.data()+target);
+            }
+        }
         out.background.width=1280;out.background.height=720;
-        if(!load_frontend_scene(root,out.background.rgba,1280,720,error)) return false;
+        if(background && !load_frontend_scene(root,out.background.rgba,1280,720,error)) return false;
         error.clear();return true;
     } catch(const std::exception& e) {error=e.what();return false;}
 }
 void FrontendArt::draw(ScreenImage image,const FrontendMenu& menu) const {
     const auto& p=*impl_;
-    if(!image.pixels || image.stride<std::size_t(image.width)*4) return;
-    for(unsigned y=0;y<image.height;++y) for(unsigned x=0;x<image.width;++x)
+    if(!image.pixels || image.stride<std::size_t(image.width)*4 || p.background.rgba.empty())return;
+    for(unsigned y=0;y<image.height;++y)for(unsigned x=0;x<image.width;++x)
         std::copy_n(p.background.rgba.data()+((std::size_t(y)*p.background.height/image.height)*p.background.width+std::size_t(x)*p.background.width/image.width)*4,4,image.pixels+y*image.stride+x*4);
+    p.draw(Canvas{image},menu);
+}
+const FrontendUiAtlas& FrontendArt::atlas() const {return impl_->atlas;}
+void FrontendArt::record_ui(unsigned width,unsigned height,const FrontendMenu& menu,FrontendUiFrame& frame) const {
+    frame.vertices.clear();frame.additive.clear();
+    frame.vertices.reserve(kFrontendUiMaxQuads*4);frame.additive.reserve(kFrontendUiMaxQuads);
+    impl_->draw(Canvas{width,height,impl_->atlas,frame},menu);
+}
+void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu) const {
+    const auto& p=*this;
     std::vector<std::size_t> order(p.objects.size());for(std::size_t i=0;i<order.size();++i) order[i]=i;
     std::stable_sort(order.begin(),order.end(),[&](std::size_t a,std::size_t b) {return p.transform(p.objects[a]).z>p.transform(p.objects[b]).z;});
     const unsigned hashes[]={0xe2a5c626,0x1f3bdb88,0x1abedeb1,0,bin_hash("ARROW3"),bin_hash("CIRCLE"),0x868a1fcf,bin_hash("NFSU_LOGO")};
@@ -299,8 +355,13 @@ void FrontendArt::draw(ScreenImage image,const FrontendMenu& menu) const {
     Transform footer;footer.x=-266;footer.y=219;
     p.text(image,help,footer,"A: Enter   B: Exit    Other modes locked",{{242,233,207,255}},8);
     if(!menu.notice().empty()) {
-        fill_screen_rect(image,0,0,image.width,35,{0,0,0,220});
-        draw_screen_text(image,12,8,menu.notice().substr(0,100),2,{255,210,120,255},{0,0,0,255});
+        if(image.gpu) {
+            Transform notice;notice.x=-266;notice.y=-218;notice.a=.6F;notice.d=.6F;
+            p.text(image,help,notice,menu.notice().substr(0,100),{{255,210,120,255}},8);
+        } else {
+            fill_screen_rect(image,0,0,image.width,35,{0,0,0,220});
+            draw_screen_text(image,12,8,menu.notice().substr(0,100),2,{255,210,120,255},{0,0,0,255});
+        }
     }
 }
 }

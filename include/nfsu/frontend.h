@@ -1,5 +1,6 @@
 #pragma once
 #include "nfsu/screen_text.h"
+#include "nfsu/track.h"
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -23,13 +24,24 @@ private:
     std::string notice_;
     std::string artist_="Lil Jon & the Eastside Boyz",title_="Get Low",album_="Kings of Crunk";
 };
+constexpr std::size_t kFrontendUiMaxQuads=2048;
+struct FrontendUiAtlas {
+    unsigned width=0,height=0;
+    std::vector<unsigned char> rgba;
+};
+struct FrontendUiFrame {
+    std::vector<TrackVertex> vertices;
+    std::vector<unsigned char> additive;
+};
 // Original MU_Main_PC object transforms, sprite art and proportional FNTF text.
 class FrontendArt {
 public:
     FrontendArt();
     ~FrontendArt();
-    bool load(const std::filesystem::path& root, std::string& error);
+    bool load(const std::filesystem::path& root, std::string& error,bool background=true);
     void draw(ScreenImage image, const FrontendMenu& menu) const;
+    const FrontendUiAtlas& atlas() const;
+    void record_ui(unsigned width,unsigned height,const FrontendMenu& menu,FrontendUiFrame& frame) const;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

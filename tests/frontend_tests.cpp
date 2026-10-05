@@ -172,6 +172,44 @@ int main(int argc,char** argv) {
             std::vector<unsigned char> pixels(1280*720*4,0);
             art.draw({pixels.data(),1280,720,1280*4},menu);
             check(pixels[3]==255 && pixels[(719*1280+1279)*4+3]==255,"menu fills full image");
+            // GPU-only loading must retain authored textures/font coordinates
+            // and update selection without a CPU background or texture reload.
+            FrontendArt gpu_art;
+            check(gpu_art.load(root,error,false),error.c_str());
+            const auto& atlas=gpu_art.atlas();
+            check(atlas.width && atlas.height && atlas.rgba.size()==atlas.width*atlas.height*4ULL,
+                "resident original frontend atlas contains complete pixel storage");
+            FrontendUiFrame ui;
+            FrontendMenu gpu_menu;
+            gpu_art.record_ui(1280,720,gpu_menu,ui);
+            check(!ui.additive.empty() && ui.vertices.size()==ui.additive.size()*4 &&
+                ui.additive.size()<=kFrontendUiMaxQuads,"authored UI fits resident overlay capacity");
+            bool atlas_pixels=false;
+            for(const auto& vertex:ui.vertices) {
+                check(std::isfinite(vertex.px) && std::isfinite(vertex.py) &&
+                    vertex.u>=0 && vertex.u<=1 && vertex.v>=0 && vertex.v<=1,
+                    "original font and FEng quads have valid atlas coordinates");
+                const auto x=std::min(atlas.width-1,static_cast<unsigned>(vertex.u*atlas.width));
+                const auto y=std::min(atlas.height-1,static_cast<unsigned>(vertex.v*atlas.height));
+                atlas_pixels |= atlas.rgba[(y*atlas.width+x)*4+3]!=0;
+            }
+            check(atlas_pixels,"UI vertices bind decoded original texture pixels");
+            const auto initial_ui=ui.vertices;
+            const auto* resident_pixels=atlas.rgba.data();
+            FrontendInput navigation;navigation.down=true;gpu_menu.update(navigation);
+            gpu_art.record_ui(1280,720,gpu_menu,ui);
+            bool highlight_changed=ui.vertices.size()!=initial_ui.size();
+            if(!highlight_changed)for(std::size_t i=0;i<ui.vertices.size();++i) {
+                const auto& a=ui.vertices[i];const auto& b=initial_ui[i];
+                highlight_changed |= a.color[0]!=b.color[0] || a.color[1]!=b.color[1] || a.color[2]!=b.color[2] ||
+                                     a.px!=b.px || a.py!=b.py;
+            }
+            check(highlight_changed && atlas.rgba.data()==resident_pixels,
+                "selection updates original highlight quads with resident texture storage");
+            gpu_menu.song("Lil Jon","Get Low","Kings of Crunk");
+            gpu_art.record_ui(1280,720,gpu_menu,ui);
+            check(ui.vertices.size()==ui.additive.size()*4 && !ui.vertices.empty(),
+                "current song text reaches GPU original font submission");
             RaceGpuScene scene;
             check(run.prepare_metadata(root,error),error.c_str());
             check(!run.set_free_drive(false,error),"mode cannot change after metadata preparation");

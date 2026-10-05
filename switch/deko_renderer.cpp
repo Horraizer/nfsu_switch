@@ -1,4 +1,5 @@
 #include "deko_renderer.h"
+#include "nfsu/frontend.h"
 #include "nfsu/memory_budget.h"
 #include "nfsu/draw_execution.h"
 #include "nfsu/deko_gpfifo_budget.h"
@@ -224,29 +225,32 @@ struct DekoRenderer::Impl {
         return true;
     }
 
-    bool init_hud(const RaceHudAtlas& atlas, std::string& error) {
-        constexpr std::uint32_t side = kRaceHudAtlasSize;
-        constexpr std::uint32_t texel_bytes = side*side*4;
-        constexpr std::uint32_t vertex_slot_bytes =
-            sizeof(TrackVertex)*kRaceHudMaxQuads*4;
-        if (atlas.rgba.size() != texel_bytes) {
+    std::size_t overlay_capacity=0;
+    bool init_overlay(const std::vector<unsigned char>& pixels,std::uint32_t width,std::uint32_t height,
+                      std::size_t capacity,std::string& error) {
+        if(!width || !height || width>4096 || height>4096 || !capacity || capacity>kFrontendUiMaxQuads) {
+            error="overlay atlas dimensions or capacity invalid";return false;
+        }
+        const std::uint32_t texel_bytes=width*height*4;
+        const std::uint32_t vertex_slot_bytes=sizeof(TrackVertex)*capacity*4;
+        if (pixels.size() != texel_bytes) {
             error = "HUD atlas has the wrong size"; return false;
         }
         dk::ImageLayout layout;
         dk::ImageLayoutMaker{device}.setFormat(DkImageFormat_RGBA8_Unorm)
-            .setDimensions(side,side).initialize(layout);
+            .setDimensions(width,height).initialize(layout);
         if (!block(layout.getSize(),kImageFlags,"HUD image",hud_image_memory,error) ||
             !block(texel_bytes,kDataFlags,"HUD staging",hud_staging,error) ||
             !block(vertex_slot_bytes*2,kDataFlags,"HUD vertices",hud_vertices,error) ||
-            !block(kRaceHudMaxQuads*6*sizeof(std::uint16_t),kDataFlags,
+            !block(capacity*6*sizeof(std::uint16_t),kDataFlags,
                    "HUD indices",hud_indices,error) ||
             !block(3*256,kDataFlags,"HUD uniforms",hud_uniforms,error) ||
             !block(2*kDrawDescriptorBytes,kDataFlags,"HUD descriptors",hud_descriptors,error))
             return false;
         hud_image.initialize(layout,hud_image_memory,0);
-        std::memcpy(hud_staging.getCpuAddr(),atlas.rgba.data(),texel_bytes);
+        std::memcpy(hud_staging.getCpuAddr(),pixels.data(),texel_bytes);
         auto* indices=static_cast<std::uint16_t*>(hud_indices.getCpuAddr());
-        for (std::uint16_t i=0;i<kRaceHudMaxQuads;++i) {
+        for (std::uint16_t i=0;i<capacity;++i) {
             const std::uint16_t b=i*4;
             const std::uint16_t six[6]={b,static_cast<std::uint16_t>(b+1),
                 static_cast<std::uint16_t>(b+2),b,
@@ -278,15 +282,18 @@ struct DekoRenderer::Impl {
         std::memcpy(static_cast<unsigned char*>(hud_descriptors.getCpuAddr())+
                     kDrawDescriptorBytes,&sampler_descriptor,sizeof sampler_descriptor);
         begin();
-        cmd.copyBufferToImage({hud_staging.getGpuAddr(),side*4,texel_bytes},
-                              view,{0,0,0,side,side,1});
+        cmd.copyBufferToImage({hud_staging.getGpuAddr(),width*4,texel_bytes},
+                              view,{0,0,0,width,height,1});
         cmd.barrier(DkBarrier_Full,DkInvalidateFlags_Image|
                     DkInvalidateFlags_Descriptors);
         if (!submit(error)) return false;
-        hud_enabled=true;
+        overlay_capacity=capacity;hud_enabled=true;
         return true;
     }
 
+    bool init_hud(const RaceHudAtlas& atlas,std::string& error) {
+        return init_overlay(atlas.rgba,kRaceHudAtlasSize,kRaceHudAtlasSize,kRaceHudMaxQuads,error);
+    }
     float source_width() const { return static_cast<float>(commands->width); }
     float source_height() const { return static_cast<float>(commands->height); }
 
@@ -773,13 +780,14 @@ struct DekoRenderer::Impl {
         return true;
     }
 
-    void emit_hud(std::size_t slot, const RaceHudFrame& frame) {
-        if (!hud_enabled || !frame.quads || frame.quads>kRaceHudMaxQuads) return;
-        constexpr std::uint32_t slot_bytes=sizeof(TrackVertex)*kRaceHudMaxQuads*4;
+    void emit_overlay(std::size_t slot,const TrackVertex* input,std::size_t quads,
+                      const unsigned char* additive=nullptr) {
+        if (!hud_enabled || !quads || quads>overlay_capacity) return;
+        const std::uint32_t slot_bytes=sizeof(TrackVertex)*overlay_capacity*4;
         auto* vertices=reinterpret_cast<TrackVertex*>(
             static_cast<unsigned char*>(hud_vertices.getCpuAddr())+slot*slot_bytes);
-        for (std::size_t i=0;i<frame.quads*4;++i) {
-            vertices[i]=frame.vertices[i];
+        for (std::size_t i=0;i<quads*4;++i) {
+            vertices[i]=input[i];
             vertices[i].px-=source_width()*0.5F;
             vertices[i].py-=source_height()*0.5F;
             vertices[i].pz=-1;
@@ -816,13 +824,21 @@ struct DekoRenderer::Impl {
         cmd.bindVtxAttribState(attributes);
         cmd.bindVtxBufferState(DkVtxBufferState{sizeof(TrackVertex),0});
         cmd.bindVtxBuffer(0,hud_vertices.getGpuAddr()+slot*slot_bytes,
-                          frame.quads*4*sizeof(TrackVertex));
+                          quads*4*sizeof(TrackVertex));
         cmd.bindIdxBuffer(DkIdxFormat_Uint16,hud_indices.getGpuAddr());
-        cmd.drawIndexed(DkPrimitive_Triangles,frame.quads*6,1,0,0,0);
+        for(std::size_t first=0;first<quads;) {
+            const bool add=additive && additive[first];
+            std::size_t end=first+1;
+            while(end<quads && bool(additive && additive[end])==add)++end;
+            blend.setFactors(DkBlendFactor_SrcAlpha,add?DkBlendFactor_One:DkBlendFactor_InvSrcAlpha,
+                             DkBlendFactor_One,DkBlendFactor_Zero);
+            cmd.bindBlendStates(0,blend);
+            cmd.drawIndexed(DkPrimitive_Triangles,(end-first)*6,1,first*6,0,0);first=end;
+        }
     }
 
     bool record_frame(const dk::Image& target, std::size_t slot,
-                      const RaceHudFrame* hud, std::string& error) {
+                      const RaceHudFrame* hud, std::string& error,const FrontendUiFrame* frontend=nullptr) {
         if (package && !prepare_visible_commands(slot, error)) return false;
         const auto track_draws = package ? commands->static_track_draw_count() : 0;
         const auto calls = static_cast<std::uint32_t>(static_lists[slot].size());
@@ -903,7 +919,8 @@ struct DekoRenderer::Impl {
             cmd.setViewports(0, {{0, 0, source_width(), source_height(), 0, 1}});
             cmd.setScissors(0, {{0, 0, commands->width, commands->height}});
         }
-        if (hud) emit_hud(slot,*hud);
+        if (hud) emit_overlay(slot,hud->vertices.data(),hud->quads);
+        if (frontend) emit_overlay(slot,frontend->vertices.data(),frontend->additive.size(),frontend->additive.data());
         cmd.barrier(DkBarrier_Fragments, 0);
         if (profile_enabled)
             cmd.reportCounter(DkCounter_Timestamp, query_memory.getGpuAddr()+slot*32+16);
@@ -911,7 +928,7 @@ struct DekoRenderer::Impl {
     }
 
     bool present(std::string& error, DekoPresentTiming* timing,
-                 const DekoSceneFrame* scene_frame, const RaceHudFrame* hud_frame) {
+                 const DekoSceneFrame* scene_frame, const RaceHudFrame* hud_frame,const FrontendUiFrame* frontend=nullptr) {
         if (timing) *timing = {};
         if (!swapchain || !healthy(error)) {
             if (error.empty()) error = "deko3d renderer is not open";
@@ -945,7 +962,7 @@ struct DekoRenderer::Impl {
         write_uniforms(*commands, slot);
         if (timing) timing->uniform_write_ms = elapsed_ms(stage);
         stage = armGetSystemTick();
-        if (!record_frame(colors[slot],slot,hud_frame,error)) return false;
+        if (!record_frame(colors[slot],slot,hud_frame,error,frontend)) return false;
         if (timing) timing->record_ms = elapsed_ms(stage);
         stage = armGetSystemTick();
         const auto list = cmd.finishList();
@@ -1051,6 +1068,18 @@ bool DekoRenderer::open(const RecordedCommands& commands, std::string& error, bo
     try { return impl_->open(commands, error, presentation, draw_capacity, profile_frame,
                              opaque_first, sky_with_opaque, scene_height, hud_atlas); }
     catch (const std::bad_alloc&) { error = "not enough memory for deko3d renderer"; return false; }
+}
+bool DekoRenderer::open_frontend(const RecordedCommands& commands,const FrontendUiAtlas& atlas,std::string& error) {
+    if(!open(commands,error))return false;
+    if(impl_->init_overlay(atlas.rgba,atlas.width,atlas.height,kFrontendUiMaxQuads,error))return true;
+    const auto failure=error;std::string cleanup;close(cleanup);error=failure;return false;
+}
+bool DekoRenderer::present_frontend(const FrontendUiFrame& frame,std::string& error,DekoPresentTiming* timing) {
+    if(frame.additive.size()>kFrontendUiMaxQuads || frame.vertices.size()!=frame.additive.size()*4 ||
+       std::any_of(frame.additive.begin(),frame.additive.end(),[](auto mode){return mode>1;})) {
+        error="frontend overlay frame invalid";return false;
+    }
+    return impl_->present(error,timing,nullptr,nullptr,&frame);
 }
 bool DekoRenderer::reconfigure_target(const RecordedCommands& commands, std::string& error,
                                       std::size_t draw_capacity, bool profile_frame,
