@@ -145,12 +145,13 @@ struct MovieReader::Impl {
         if(!rate) bad("missing movie audio header");
     }
     void decode_video(const Bytes& b,MovieFrame& frame) {
-        range(b,0,26); const auto nw=le16(b,16),nh=le16(b,18),duration=le16(b,14);
-        if(nw<16||nh<16||nw>1024||nh>1024||nw%16||nh%16||!duration||duration>1000) bad("invalid video dimensions or duration");
+        range(b,0,26); const auto nw=le16(b,16),nh=le16(b,18),duration=le32(b,12);
+        if(nw<16||nh<16||nw>1024||nh>1024||nw%16||nh%16||duration<65535U||duration>1000U*65535U) bad("invalid video dimensions or duration");
         const bool inter=!tag(b,"MADk");
         if(inter && (nw!=w||nh!=h||previous.empty())) bad("missing video reference");
         w=nw; h=nh; const unsigned luma=w*h;
-        frame.width=w;frame.height=h;frame.duration_ms=duration;frame.timestamp_ms=timestamp;
+        frame.width=w;frame.height=h;frame.duration_units=duration;frame.timestamp_units=timestamp;
+        frame.duration_ms=duration/65535;frame.timestamp_ms=timestamp/65535;
         frame.yuv.assign(luma*3/2,0);
         Bytes payload(b.begin()+24,b.end()); Bits bits(payload);
         std::array<int,64> quant{};

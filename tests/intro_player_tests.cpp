@@ -18,6 +18,8 @@
 namespace {
 unsigned starts=0,stops=0;
 unsigned frozen_polls=0;
+unsigned clock_step=100;
+std::uint64_t observed_clock=0;
 std::vector<std::int16_t> rendered;
 void require(bool b,const char* why){if(!b)throw std::runtime_error(why);}
 }
@@ -31,10 +33,10 @@ bool Output::start(Render render,std::string&) {impl_->render=std::move(render);
 void Output::stop(){if(impl_->active){impl_->active=false;++stops;}}
 std::string Output::error() const{return impl_->error;}
 Output::Stats Output::stats() const noexcept {
-    std::array<std::int16_t,200> pcm{};
-    try {impl_->render(pcm.data(),100);rendered.insert(rendered.end(),pcm.begin(),pcm.end());}
+    std::array<std::int16_t,1600> pcm{};
+    try {impl_->render(pcm.data(),clock_step);rendered.insert(rendered.end(),pcm.begin(),pcm.begin()+clock_step*2);}
     catch(const std::exception& e){impl_->error=e.what();}
-    if(frozen_polls) --frozen_polls; else impl_->clock+=100;Stats s;s.played_frames=impl_->clock;return s;
+    if(frozen_polls) --frozen_polls; else impl_->clock+=clock_step;observed_clock=impl_->clock;Stats s;s.played_frames=impl_->clock;return s;
 }
 }
 namespace {
@@ -134,6 +136,18 @@ int main() {
         std::vector<std::uint8_t> dest(32*32*4+32,23);nfsu::blit_movie(f,dest.data()+16,32,32,128);
         for(unsigned i=0;i<16;++i)require(dest[i]==23&&dest[dest.size()-1-i]==23,"blit bounds");
         require(dest[16+3]==255,"blit alpha"); }
+        // Authenticated retail duration is a full fixed-point dword. Its
+        // low word must survive parsing and cumulative scheduling.
+        Bytes precise;auto v=video();v[4]=0xE0;v[5]=0x5D;v[6]=0x21;v[7]=0;
+        for(unsigned i=0;i<2426;++i){append(precise,"MADk",v);if(!i)append(precise,"SCHl",header());}
+        append(precise,"SCDl",sound());append(precise,"SCEl",{});
+        write(path,precise);
+        {nfsu::MovieReader m(path.string());nfsu::MovieFrame f;unsigned i=0;
+         while(m.next_video(f)){
+             require(f.duration_units==2186720&&f.timestamp_units==std::uint64_t(i)*2186720,"fractional/cumulative MAD timebase");
+             require(f.timestamp_ms==std::uint64_t(i)*2186720/65535,"diagnostic timestamp conversion");++i;
+         }
+         require(i==2426,"long fractional timeline count");}
         auto bad=original;bad[4]=7;rejects(path,bad);
         bad=original;bad.resize(25);rejects(path,bad);
         bad=original;bad[16]=255;rejects(path,bad);
@@ -152,6 +166,23 @@ int main() {
         require(r.outcome==nfsu::IntroOutcome::completed&&r.movies_completed==3&&shown==3&&starts==3&&stops==3,"sequence completion/output cleanup");
         require(rendered.size()>=62,"rendered audio missing");
         for(unsigned i=0;i<31;++i){const unsigned phase=i*44100;const unsigned sample=std::min(27U,phase/48000);const unsigned next=std::min(27U,sample+1);const int expected=int((sample*100ULL*(48000-phase%48000)+next*100ULL*(phase%48000))/48000);require(rendered[i*2]==expected&&rendered[i*2+1]==-expected,"44.1kHz resampling");}
+        // Drive presentation with the actual fake-device sample position,
+        // including non-integral deadlines. This rejects 33ms/highword-only
+        // pacing and compares every presentation deadline to its source PTS.
+        Bytes timed;for(unsigned i=0;i<30;++i){append(timed,"MADk",v);if(!i)append(timed,"SCHl",header());}
+        append(timed,"SCDl",sound());append(timed,"SCEl",{});
+        for(const char* name:{"na_boot.mad","PSA.mad","e3_title.mad"})write(dir/"Movies"/name,timed);
+        unsigned index=0;clock_step=800;
+        r=nfsu::play_original_intro(dir.string(),normal,[&](const nfsu::MovieFrame& f){
+            const auto expected=std::uint64_t(index%30)*2186720;
+            require(f.timestamp_units==expected,"scheduled source timestamp");
+            const auto due=(expected*48+65534)/65535;
+            require(observed_clock>=due&&observed_clock<=due+clock_step,"fractional audio-clock presentation deadline");++index;
+        });
+        if(r.outcome!=nfsu::IntroOutcome::completed)std::fprintf(stderr,"timing error: %s index=%u\n",r.error.c_str(),index);
+        require(r.outcome==nfsu::IntroOutcome::completed&&index==90&&starts==stops,"fractional clocked completion");
+        clock_step=100;
+        for(const char* name:{"na_boot.mad","PSA.mad","e3_title.mad"})write(dir/"Movies"/name,fixture());
         bool suspended=false;frozen_polls=2;
         r=nfsu::play_original_intro(dir.string(),[&]{
             if(!suspended && starts>3){suspended=true;std::this_thread::sleep_for(std::chrono::milliseconds(2100));}
