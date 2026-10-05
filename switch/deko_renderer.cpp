@@ -88,7 +88,7 @@ struct DekoRenderer::Impl {
     std::array<dk::Image, 2> scene_colors;
     std::array<dk::Image, 2> depths;
     DekoSceneTarget scene_target;
-    dk::Shader vertex, textured, textured_opaque, fallback;
+    dk::Shader vertex, textured, textured_opaque, fallback, frontend_vertex, frontend_fragment;
     dk::Shader car_vertex, car_fragment, sky_vertex, sky_fragment;
     const RecordedCommands* commands = nullptr;
     const PreparedCommandSource* package = nullptr;
@@ -503,6 +503,8 @@ struct DekoRenderer::Impl {
             !shader("placed.vert", DkStage_Vertex, vertex, error) ||
             !shader("textured.frag", DkStage_Fragment, textured, error) ||
             !shader("textured_opaque.frag", DkStage_Fragment, textured_opaque, error) ||
+            !shader("frontend_ui.vert", DkStage_Vertex, frontend_vertex, error) ||
+            !shader("frontend_ui.frag", DkStage_Fragment, frontend_fragment, error) ||
             !shader("fallback.frag", DkStage_Fragment, fallback, error)) return false;
         if (package && !prepare_static_commands(source, presentation, error)) return false;
         dk::ImageLayout color_layout, depth_layout, scene_layout;
@@ -792,7 +794,7 @@ struct DekoRenderer::Impl {
             vertices[i].py-=source_height()*0.5F;
             vertices[i].pz=-1;
         }
-        cmd.bindShaders(DkStageFlag_GraphicsMask,{&vertex,&textured_opaque});
+        cmd.bindShaders(DkStageFlag_GraphicsMask,{additive?&frontend_vertex:&vertex,additive?&frontend_fragment:&textured_opaque});
         const auto base=hud_uniforms.getGpuAddr();
         cmd.bindUniformBuffer(DkStage_Vertex,0,base,sizeof(DrawFrameUniform));
         cmd.bindUniformBuffer(DkStage_Fragment,0,base,sizeof(DrawFrameUniform));

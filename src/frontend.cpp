@@ -72,7 +72,7 @@ void quad(Canvas target,const Image& tex,const Transform& m,float x,float y,floa
             vertex.px=ox+(320+m.x+m.a*xs[i]+m.c*ys[i])*s;
             vertex.py=oy+(240+m.y+m.b*xs[i]+m.d*ys[i])*s;vertex.pz=-1;
             const auto& modulation=corners?(*corners)[i]:color;
-            for(unsigned c=0;c<4;++c)vertex.color[c]=static_cast<unsigned char>(std::min(255U,modulation[c==3?3:2-c])/2);
+            for(unsigned c=0;c<4;++c)vertex.color[c]=static_cast<unsigned char>(std::min(255U,modulation[c==3?3:2-c])/2*2);
             vertex.u=(tex.atlas_x+std::max(0.F,std::min(1.F,us[i]))*tex.width)/target.atlas_width;
             vertex.v=(tex.atlas_y+std::max(0.F,std::min(1.F,vs[i]))*tex.height)/target.atlas_height;
             frame.vertices.push_back(vertex);

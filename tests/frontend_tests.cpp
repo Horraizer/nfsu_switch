@@ -147,13 +147,50 @@ int main(int argc,char** argv) {
             check(moving_commands.size()==initial_commands.size() &&
                 moving_commands.front().placement.rows[12]!=initial_commands.front().placement.rows[12],
                 "resident original road translates without rebuilding draw definitions");
-            bool wheel_moved=false;
+            // Independently executed 0x40BA40 at native phase 7253, with
+            // authenticated SKYLINE wheel-0 radius and the frame above.
+            const double native_cosine=.7678149938583374;
+            const double native_sine=.6406716108322144;
+            std::array<bool,4> rolling_copies{},stationary_brakes{};
             for(std::size_t i=0;i<moving_commands.size();++i) {
-                const auto& before=initial_commands[i].placement.rows;
-                const auto& after=moving_commands[i].placement.rows;
-                wheel_moved |= before[0]!=after[0] || before[2]!=after[2];
+                const auto& draw=moving_commands[i];
+                if(draw.name.find("_FE_SEGMENT")!=std::string::npos)continue;
+                const auto& instance=skyline.scene.instances.at(draw.instance);
+                if(instance.part_slot==17) {
+                    check(instance.copy<4,"original rolling wheel index");
+                    rolling_copies[instance.copy]=true;
+                    const auto& mesh=skyline.scene.meshes.at(instance.mesh);
+                    check(!mesh.vertices.empty(),"original wheel vertex retained");
+                    for(std::size_t v:{std::size_t(0),mesh.vertices.size()-1}) {
+                        const auto& point=mesh.vertices[v];
+                        const double slot[3]={point.px,point.pz,point.py};
+                        double before[3]{},actual[3]{};
+                        for(unsigned c=0;c<3;++c) {
+                            before[c]=instance.transform[12+c];actual[c]=draw.placement.rows[12+c];
+                            for(unsigned k=0;k<3;++k) {
+                                before[c]+=slot[k]*instance.transform[k*4+c];
+                                actual[c]+=slot[k]*draw.placement.rows[k*4+c];
+                            }
+                        }
+                        const double x=before[0]-instance.animation_pivot[0];
+                        const double z=before[2]-instance.animation_pivot[2];
+                        const double expected[3]={x*native_cosine+z*native_sine+instance.animation_pivot[0],
+                            before[1],-x*native_sine+z*native_cosine+instance.animation_pivot[2]};
+                        for(unsigned c=0;c<3;++c)
+                            check(std::abs(actual[c]-expected[c])<.00001,
+                                "all four original wheel vertices match native spin axis/sign/pivot");
+                    }
+                } else if(instance.part_slot==16) {
+                    check(instance.copy<4,"original stationary brake index");
+                    stationary_brakes[instance.copy]=true;
+                    for(unsigned c=0;c<16;++c)
+                        check(draw.placement.rows[c]==initial_commands[i].placement.rows[c],
+                            "brake matrices do not inherit wheel rolling");
+                }
             }
-            check(wheel_moved,"original frontend rolling changes resident wheel matrices");
+            check(std::all_of(rolling_copies.begin(),rolling_copies.end(),[](bool b){return b;}) &&
+                std::all_of(stationary_brakes.begin(),stationary_brakes.end(),[](bool b){return b;}),
+                "native rolling witness covers all four wheels and all four stationary brakes");
             audio::FrontendSfx sfx;
             check(sfx.load(root,error),error.c_str());
             std::vector<std::int16_t> unchanged(1024*2,1234);
@@ -197,15 +234,19 @@ int main(int argc,char** argv) {
             gpu_art.record_ui(1280,720,gpu_menu,ui);
             check(!ui.additive.empty() && ui.vertices.size()==ui.additive.size()*4 &&
                 ui.additive.size()<=kFrontendUiMaxQuads,"authored UI fits resident overlay capacity");
-            bool atlas_pixels=false;
+            bool atlas_pixels=false,restored_color=false;
             for(const auto& vertex:ui.vertices) {
                 check(std::isfinite(vertex.px) && std::isfinite(vertex.py) &&
                     vertex.u>=0 && vertex.u<=1 && vertex.v>=0 && vertex.v<=1,
                     "original font and FEng quads have valid atlas coordinates");
                 const auto x=std::min(atlas.width-1,static_cast<unsigned>(vertex.u*atlas.width));
                 const auto y=std::min(atlas.height-1,static_cast<unsigned>(vertex.v*atlas.height));
+                restored_color |= vertex.color[0]>127 || vertex.color[1]>127 || vertex.color[2]>127;
+                check(vertex.color[0]%2==0 && vertex.color[1]%2==0 && vertex.color[2]%2==0 && vertex.color[3]%2==0,
+                    "GPU overlay preserves native half-byte quantization and restores Modulate2x");
                 atlas_pixels |= atlas.rgba[(y*atlas.width+x)*4+3]!=0;
             }
+            check(restored_color,"native modulation restored before dedicated GPU UI shader");
             check(atlas_pixels,"UI vertices bind decoded original texture pixels");
             const auto initial_ui=ui.vertices;
             const auto* resident_pixels=atlas.rgba.data();
