@@ -496,8 +496,8 @@ struct DekoRenderer::Impl {
                     &reflected_descriptor, sizeof reflected_descriptor);
         reflection_ready = true;
         }
-        write_uniforms(source, 0);
         if (!block(2*256,kDataFlags,"frontend light uniforms",frontend_light_uniforms,error))return false;
+        write_uniforms(source, 0);
         if (!shader("frontend_car.vert",DkStage_Vertex,frontend_car_vertex,error) ||
             !shader("frontend_car.frag",DkStage_Fragment,frontend_car_fragment,error))return false;
         if (!shader("car_shaded.vert", DkStage_Vertex, car_vertex, error) ||
