@@ -191,7 +191,7 @@ bool bind_frontend_sponsors(const StockFrameInputs& inputs,const InstalledPartSe
 }
 namespace {
 bool load_scene_assets(const std::filesystem::path& root,unsigned width,unsigned height,
-    PreparedCarScene& tunnel,StockFrame& car,RenderOptions& options,std::string& error,CarShadowAsset* shadow=nullptr,PreparedCarScene* capture=nullptr,PreparedCarScene* floor=nullptr) {
+    PreparedCarScene& tunnel,StockFrame& car,RenderOptions& options,std::string& error,CarShadowAsset* shadow=nullptr,PreparedCarScene* capture=nullptr,PreparedCarScene* floor=nullptr,PreparedCarScene* sprites=nullptr,std::vector<MeshMarker>* road_markers=nullptr) {
     std::vector<unsigned char> front,road;
     std::vector<RaceTableIssue> issues;
     RaceTableLimits limits; limits.max_file_size=32*1024*1024;limits.max_image_size=64*1024*1024;
@@ -214,6 +214,42 @@ bool load_scene_assets(const std::filesystem::path& root,unsigned width,unsigned
         }
         geometry.meshes.push_back(std::move(mesh));
     }
+    if(road_markers) {
+        const auto u32=[&](std::size_t offset) {
+            std::uint32_t value=0;for(unsigned i=0;i<4;++i)value|=std::uint32_t(front.at(offset+i))<<(8*i);
+            return value;
+        };
+        for(const auto& mesh:region.meshes)if(mesh.name=="TRFE_ROAD02_A") {
+            const auto begin=std::size_t(mesh.offset)+8;
+            const auto end=begin+u32(std::size_t(mesh.offset)+4);
+            if(end>381824){error="FE road marker owner truncated";return false;}
+            for(std::size_t offset=begin;offset<end;) {
+                if(end-offset<8){error="FE road marker header truncated";return false;}
+                const auto tag=u32(offset),bytes=u32(offset+4);const auto payload=offset+8;
+                if(bytes>end-payload){error="FE road marker chunk truncated";return false;}
+                if(tag==kMarkerListId) {
+                    const auto aligned=(payload+kMarkerDataAlignment-1)&~(kMarkerDataAlignment-1);
+                    if(aligned>payload+bytes || (payload+bytes-aligned)%kMarkerRecordSize ||
+                        (payload+bytes-aligned)/kMarkerRecordSize>kMaxMarkersPerMesh) {
+                        error="FE road marker table invalid";return false;
+                    }
+                    for(auto i=payload;i<aligned;++i)if(front[i]!=0x11) {
+                        error="FE road marker alignment invalid";return false;
+                    }
+                    for(auto i=aligned;i<payload+bytes;i+=kMarkerRecordSize) {
+                        MeshMarker marker;marker.offset=i;marker.name_hash=u32(i);
+                        for(unsigned c=0;c<16;++c) {
+                            const auto bits=u32(i+16+c*4);std::memcpy(&marker.matrix[c],&bits,4);
+                            if(!std::isfinite(marker.matrix[c])){error="FE road marker nonfinite";return false;}
+                        }
+                        if(marker.name_hash==bin_hash("TRFE_ROAD02_FLARE"))road_markers->push_back(marker);
+                    }
+                }
+                offset=payload+bytes;
+            }
+        }
+        if(road_markers->size()!=4){error="FE original road flare markers absent";return false;}
+    }
     MeshSelection selection;
     for(const auto& mesh:geometry.meshes) {
         if(mesh.name.rfind("TRFE_ROAD02",0)==0 && mesh.name.size()>2 && mesh.name.substr(mesh.name.size()-2)=="_A")
@@ -234,6 +270,22 @@ bool load_scene_assets(const std::filesystem::path& root,unsigned width,unsigned
     RenderTextureSet textures;
     if(!decode_render_texture_sources({source,global_source},RenderTextureLimits{},textures,error)) return false;
     if(!prepare_car_scene(geometry,textures,selection,SceneLimits{},tunnel,error)) return false;
+    if(sprites) {
+        GeometryReport sprite_geometry;Mesh quad;quad.index=0;quad.name="_FE_ROAD_GLOW";quad.valid=true;
+        quad.texture_hashes.push_back(0x3394FE62U);
+        for(unsigned i=0;i<4;++i) {
+            MeshVertex v;v.px=i==0 || i==3?-1:1;v.py=i<2?1:-1;
+            v.u=i==0 || i==3?0:1;v.v=i<2?0:1;
+            v.color[0]=110;v.color[1]=100;v.color[2]=75;v.color[3]=255;
+            quad.vertices.push_back(v);
+        }
+        quad.triangles={{0,1,2},{0,2,3}};MeshMaterial material;material.index_count=6;material.raw[12]=6;
+        quad.materials.push_back(material);sprite_geometry.meshes.push_back(std::move(quad));
+        if(!prepare_car_scene(sprite_geometry,textures,MeshSelection{},SceneLimits{},*sprites,error))return false;
+        if(sprites->textures.size()!=1 || !sprites->textures[0].usable()) {
+            error="original HEADLIGHTGLOW texture absent";return false;
+        }
+    }
     if(capture) {
         MeshSelection cube_selection;
         for(const auto& mesh:geometry.meshes)if(mesh.name=="TRFE_ROAD02_Y")
@@ -290,8 +342,33 @@ bool load_scene_assets(const std::filesystem::path& root,unsigned width,unsigned
     return true;
 }
 }
+namespace {
+bool draw_frontend_road_sprites(Frame& target,const RenderOptions& options,
+    const CameraFrame& camera,const std::vector<RecordedDraw>& draws,unsigned view,
+    const RenderTexture& texture,std::string& error) {
+    RenderStats stats;Rasterizer raster(target,options,RenderLimits{},stats);
+    for(const auto& draw:draws)if(draw.frontend_sprite_view==view && draw.material.alpha[0]>0) {
+        RasterMaterial material;material.texture=&texture;material.blend=RenderBlendMode::additive;
+        material.depth_write=false;material.linear_filter=true;material.alpha_scale=draw.material.alpha[0];
+        ClipVertex corners[4];const int signs[4][2]={{-1,1},{1,1},{1,-1},{-1,-1}};
+        for(unsigned i=0;i<4;++i) {
+            float raw[3];for(unsigned axis=0;axis<3;++axis)raw[axis]=draw.placement.rows[12+axis]+
+                signs[i][0]*draw.placement.rows[axis]+signs[i][1]*draw.placement.rows[8+axis];
+            corners[i]=project_point(camera,{raw[0],raw[2],-raw[1]});
+            corners[i].u=i==0 || i==3?0:1;corners[i].v=i<2?0:1;
+            corners[i].r=110;corners[i].g=100;corners[i].b=75;
+        }
+        const ClipVertex a[3]={corners[0],corners[1],corners[2]},b[3]={corners[0],corners[2],corners[3]};
+        if(!raster.draw_triangle(a,material,0x7FFE0000U,error) ||
+            !raster.draw_triangle(b,material,0x7FFE0001U,error))return false;
+    }
+    return true;
+}
+}
 struct FrontendGpuScene::Impl {
-    PreparedCarScene tunnel,capture,floor;
+    PreparedCarScene tunnel,capture,floor,sprites;
+    std::vector<MeshMarker> road_markers;
+    std::size_t sprite_start=0,cube_sprite_start=0,floor_sprite_start=0;
     CameraFrame floor_camera;
     std::size_t floor_mesh=kNoHandle;
     std::array<CameraFrame,6> cube_cameras;
@@ -314,7 +391,7 @@ FrontendGpuScene::~FrontendGpuScene()=default;
 bool FrontendGpuScene::load(const std::filesystem::path& root,unsigned width,unsigned height,std::string& error) {
     if(impl_->ready) {error="frontend GPU scene already loaded";return false;}
     auto next=std::make_unique<Impl>();auto& p=*next;
-    if(!load_scene_assets(root,width,height,p.tunnel,p.car,p.options,error,&p.shadow,&p.capture,&p.floor))return false;
+    if(!load_scene_assets(root,width,height,p.tunnel,p.car,p.options,error,&p.shadow,&p.capture,&p.floor,&p.sprites,&p.road_markers))return false;
     // Original solid lookup 0x53F9B0 requests missing->DEFAULTALPHA through
     // 0x5461C0. The tunnel's zero replacement table bypasses 0x53F540;
     // 0x40C910 skips DEFAULTALPHA at 0x40CA0C, before reflection uniforms.
@@ -409,6 +486,30 @@ bool FrontendGpuScene::load(const std::filesystem::path& root,unsigned width,uns
             if(std::string(program.name)=="frontend_car_textured")draw.program=&program;
     }
     p.commands.frontend_light=p.lighting;p.commands.frontend_light_enabled=true;
+    RecordedCommands sprite_commands;
+    auto sprite_options=p.options;sprite_options.car_shading=false;
+    if(!record_car_commands(p.sprites,sprite_options,RenderLimits{},kNoHandle,sprite_commands,error))return false;
+    auto sprite=sprite_commands.owning_draws().at(0);sprite.name="_FE_ROAD_GLOW";
+    for(std::size_t i=0;i<sprite.program->variant_count;++i)
+        if(std::string(sprite.program->variants[i].name)=="additive")sprite.pipeline=sprite.program->variants[i];
+    sprite.pipeline.depth_write=false;sprite.material.environment_range[3]=1;
+    sprite_commands.owning_draws().assign(20,sprite);
+    p.sprite_start=p.commands.owning_draws().size();
+    RecordedCommands resident_sprites;
+    if(!combine_race_commands(std::move(p.commands),sprite_commands,resident_sprites,error))return false;
+    p.commands=std::move(resident_sprites);
+    auto& sprites=p.commands.owning_draws();
+    for(unsigned i=0;i<20;++i) {sprites[p.sprite_start+i].instance=i;sprites[p.sprite_start+i].frontend_sprite_view=1;}
+    p.floor_sprite_start=p.commands.reflections.size();p.cube_sprite_start=p.commands.frontend_cube_draws.size();
+    for(unsigned i=0;i<12;++i) {
+        auto draw=sprites[p.sprite_start];draw.instance=i;draw.frontend_sprite_view=4;
+        p.commands.reflections.push_back(draw);
+    }
+    for(unsigned face=0;face<6;++face)for(unsigned i=0;i<12;++i) {
+        auto draw=sprites[p.sprite_start];draw.instance=i;draw.frontend_sprite_view=face+10;
+        p.commands.frontend_cube_draws.push_back(draw);
+    }
+    p.commands.frontend_light=p.lighting;p.commands.frontend_light_enabled=true;
     p.ready=true;impl_.swap(next);return frame(0,0,error);
 }
 bool FrontendGpuScene::frame(float seconds,std::uint32_t ticks,std::string& error) {
@@ -444,6 +545,7 @@ bool FrontendGpuScene::frame(float seconds,std::uint32_t ticks,std::string& erro
     std::array<FrontendRoadPlacement,5> cube_placements;
     if(p.road.placements(10,cube_placements)!=3){error="original FE cube road placement missing";return false;}
     for(auto& draw:p.commands.frontend_cube_draws) {
+        if(draw.frontend_sprite_view)continue;
         const auto& placement=cube_placements.at(draw.instance);
         draw.placement.rows[12]=placement.longitudinal;draw.placement.rows[14]=placement.vertical;
     }
@@ -479,9 +581,65 @@ bool FrontendGpuScene::frame(float seconds,std::uint32_t ticks,std::string& erro
     std::array<FrontendRoadPlacement,5> floor_placements;
     if(p.road.placements(4,floor_placements)!=3){error="original FE floor placements absent";return false;}
     for(auto& draw:p.commands.reflections) {
+        if(draw.frontend_sprite_view)continue;
         auto& rows=draw.placement.rows;rows[12]=floor_placements.at(draw.instance).longitudinal;
         rows[13]=0;rows[14]=floor_placements.at(draw.instance).vertical;
     }
+    const auto update_sprite=[&](RecordedDraw& draw,const CameraFrame& camera) {
+        const auto view=draw.frontend_sprite_view;
+        std::array<FrontendRoadPlacement,5> copies;p.road.placements(view,copies);
+        const auto& marker=p.road_markers.at(draw.instance%4);
+        const auto& copy=copies.at(draw.instance/4);
+        const float point[3]={marker.matrix[12]+copy.longitudinal,marker.matrix[13],
+            view==4?-marker.matrix[14]:marker.matrix[14]+copy.vertical};
+        const double world[3]={point[0],point[2],-point[1]};
+        const double delta[3]={world[0]-camera.eye.x,world[1]-camera.eye.y,world[2]-camera.eye.z};
+        const double distance2=delta[0]*delta[0]+delta[1]*delta[1]+delta[2]*delta[2];
+        const unsigned mode=view==4?2:view>=10?1:0;
+        bool visible=distance2>0 && distance2<=(mode==1?4000:40000);
+        const double extent=mode==2?10:mode==1?2:0;
+        const double right3[3]={camera.right.x,camera.right.y,camera.right.z};
+        const double up3[3]={camera.up.x,camera.up.y,camera.up.z};
+        const double forward3[3]={camera.forward.x,camera.forward.y,camera.forward.z};
+        double depth=0;for(unsigned axis=0;axis<3;++axis)depth+=delta[axis]*forward3[axis];
+        const auto plane=[&](const double (&normal)[3],double constant) {
+            double value=constant,radius=0;
+            for(unsigned axis=0;axis<3;++axis){value+=delta[axis]*normal[axis];radius+=extent*std::abs(normal[axis]);}
+            return mode==0?value>0:value+radius>=0;
+        };
+        for(unsigned axis=0;axis<2;++axis)for(int sign:{-1,1}) {
+            double normal[3];for(unsigned c=0;c<3;++c)normal[c]=forward3[c]+
+                sign*(axis==0?right3[c]*camera.focal_x:up3[c]*camera.focal_y);
+            visible=visible && plane(normal,0);
+        }
+        double far_normal[3]={-forward3[0],-forward3[1],-forward3[2]};
+        visible=visible && plane(forward3,-camera.near_plane) && plane(far_normal,camera.far_plane);
+        const double distance=distance2>0?std::sqrt(distance2):1;
+        const float toward_eye[3]={float(-delta[0]/distance),float(delta[2]/distance),float(-delta[1]/distance)};
+        const float right[3]={float(camera.right.x),float(-camera.right.z),float(camera.right.y)};
+        const float up[3]={float(-camera.up.x),float(camera.up.z),float(-camera.up.y)};
+        // Original5447C0 mode2 mirrors the marker normal Z. Its road
+        // mode0/1 facing vector remains zero at544CA3, not the marker normal.
+        double dot=0;if(mode==2)for(unsigned axis=0;axis<3;++axis)
+            dot+=toward_eye[axis]*double(marker.matrix[8+axis])*(axis==2?-1:1);
+        // Original40DCB0 uses main display width701034/2, not cube/floor capture width.
+        const auto fov=static_cast<std::uint16_t>((mode==1?0x4000U:12463U)/2);
+        const double denominator=(p.options.width/2)*double(frontend_fixed_sine(fov+0x4000U))/frontend_fixed_sine(fov);
+        FrontendRoadGlow quad;
+        visible=visible && frontend_road_glow(point,toward_eye,right,up,float(std::max(0.,dot)),
+            float(depth/denominator),mode,quad);
+        auto& rows=draw.placement.rows;std::fill_n(rows,16,0);rows[15]=1;
+        if(visible)for(unsigned axis=0;axis<3;++axis) {
+            rows[axis]=(quad.corners[1][axis]-quad.corners[0][axis])*.5F;
+            rows[8+axis]=(quad.corners[0][axis]-quad.corners[3][axis])*.5F;
+            rows[12+axis]=(quad.corners[0][axis]+quad.corners[2][axis])*.5F;
+        }
+        draw.material.alpha[0]=visible?float(quad.rgba[3])/255:0;
+    };
+    for(std::size_t i=p.sprite_start;i<draws.size();++i)update_sprite(draws[i],primary);
+    for(auto& draw:p.commands.reflections)if(draw.frontend_sprite_view)update_sprite(draw,p.floor_camera);
+    for(auto& draw:p.commands.frontend_cube_draws)if(draw.frontend_sprite_view)
+        update_sprite(draw,p.cube_cameras[draw.frontend_sprite_view-10]);
     const double raw_eye[3]={p.commands.frame.eye[0],-p.commands.frame.eye[2],p.commands.frame.eye[1]};
     for(auto& draw:draws)if(draw.material.surface.gates[0]!=0)
         frontend_local_eye(draw.placement.rows,raw_eye,draw.material.environment_color);
@@ -539,7 +697,9 @@ bool FrontendGpuScene::render_reference(std::vector<unsigned char>& rgba,std::st
         auto options=p.options;options.car_shading=false;options.width=options.height=128;
         options.explicit_camera=&p.cube_cameras[face];
         options.background[0]=options.background[1]=options.background[2]=0;options.background[3]=255;
-        if(!render_scene(capture,options,RenderLimits{},cube[face],capture_stats,error))return false;
+        if(!render_scene(capture,options,RenderLimits{},cube[face],capture_stats,error) ||
+            !draw_frontend_road_sprites(cube[face],options,p.cube_cameras[face],p.commands.frontend_cube_draws,
+                face+10,p.sprites.textures.at(0),error))return false;
     }
     auto floor=p.floor;floor.profile=SelectionProfile::stock_car;
     floor.selectors.clear();floor.instances.clear();for(auto& mesh:floor.meshes)mesh.selector=kNoHandle;
@@ -553,7 +713,9 @@ bool FrontendGpuScene::render_reference(std::vector<unsigned char>& rgba,std::st
     Frame floor_frame;auto floor_options=p.options;floor_options.car_shading=false;
     floor_options.width=320;floor_options.height=240;floor_options.explicit_camera=&p.floor_camera;
     floor_options.background[0]=floor_options.background[1]=floor_options.background[2]=0;floor_options.background[3]=255;
-    if(!render_scene(floor,floor_options,RenderLimits{},floor_frame,capture_stats,error))return false;
+    if(!render_scene(floor,floor_options,RenderLimits{},floor_frame,capture_stats,error) ||
+        !draw_frontend_road_sprites(floor_frame,floor_options,p.floor_camera,p.commands.reflections,
+            4,p.sprites.textures.at(0),error))return false;
     Frame output,car_frame;RenderStats stats;
     auto car_options=p.options;car_options.frontend_lighting=&p.lighting;car_options.frontend_cube=cube.data();
     auto room_options=p.options;room_options.car_shading=false;
@@ -562,10 +724,13 @@ bool FrontendGpuScene::render_reference(std::vector<unsigned char>& rgba,std::st
        !render_scene(car,car_options,RenderLimits{},car_frame,stats,error))return false;
     CarShadowPlacement shadow_placement;shadow_placement.alpha=184.0F/255;
     if(!render_car_shadow(p.shadow,shadow_placement,p.options,output,stats,error))return false;
-    rgba=output.rgba();
-    for(std::size_t i=0;i<output.depth().size();++i)
-        if(car_frame.depth()[i]<output.depth()[i])
-            std::copy_n(car_frame.rgba().data()+i*4,4,rgba.data()+i*4);
+    Frame combined;
+    if(!compose_race_frame(output,car_frame,combined)){error="FE diagnostic scene compose failed";return false;}
+    CameraFrame primary;
+    if(!make_camera_frame(p.options.camera,p.options.width,p.options.height,primary,error) ||
+        !draw_frontend_road_sprites(combined,p.options,primary,p.commands.owning_draws(),
+            1,p.sprites.textures.at(0),error))return false;
+    rgba=combined.rgba();
     return true;
 }
 bool load_frontend_scene(const std::filesystem::path& root,

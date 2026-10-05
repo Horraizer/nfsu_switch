@@ -917,6 +917,7 @@ struct DekoRenderer::Impl {
                 const RecordedDraw* previous=nullptr;
                 for(std::size_t i=0;i<commands->frontend_cube_draws.size();++i) {
                     const auto& draw=commands->frontend_cube_draws[i];
+                    if(draw.frontend_sprite_view && draw.frontend_sprite_view!=face+10)continue;
                     emit_draw(cmd,draw,cube+(6+2*i)*256,cube+(7+2*i)*256,
                         !previous || !same_fixed_state(*previous,draw));previous=&draw;
                 }

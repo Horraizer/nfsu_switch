@@ -482,3 +482,26 @@ Primary/floor near/far and texture allocation/quality remain supplied
 boundaries. Native initial-phase primary culling is not mode0 suppression
 and cannot establish the appearance of later phases. This witness does not
 implement the source sprite shader or prove depth/occlusion parity.
+
+
+### Resident road glow integration
+
+The source now records the original HEADLIGHTGLOW texture and resident unit
+quad for the primary, reflected floor and six cube views. Source marker reads
+reuse the geometry parser alignment, record size, signed count limit and
+finite-matrix rules. No generated flare texture replaces the authored asset.
+
+Genuine5443F0 supplies descriptor interpolation, direction offset, depth
+clamp and reflected vertical stretch. Genuine544CA3 supplies zero facing
+vector in road modes0/1 and reflected marker normal in mode2. Genuine40DCB0
+uses half MAIN display width701034, including for smaller capture targets;
+it does not substitute the cube or floor target width.
+
+The actual-source regression tools/frontend66_glow_scene_probe.py compares
+all quad corners, opacity and per-view visibility against genuine native
+execution at a later moving-road phase. nfsu_frontend_retail also covers the
+resident bindings and independent native reflected quad. The native helper
+retains explicit quality, texture allocation and primary near/far boundaries;
+these comparisons do not establish original depth/occlusion parity. CPU
+reference diagnostics compose these same commands with the original UI.
+Car-specific headlight activation remains subject to main-entry state proof.

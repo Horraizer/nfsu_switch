@@ -35,6 +35,7 @@ struct DrawMaterialUniform {
 };
 
 struct RecordedDraw {
+    unsigned frontend_sprite_view=0; // Optional native FE sprite view; zero is shared geometry.
     // Stable diagnostic identity; source group plus source instance, never
     // the position in the sorted list. No source mesh name is required.
     std::string name;

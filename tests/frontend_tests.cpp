@@ -16,6 +16,15 @@
 #include <iostream>
 #include <cstring>
 #include <stdexcept>
+constexpr float native_floor_sprite[4][3]={{-6.0781331062316895F,-1.393865942955017F,-26.813892364501953F},
+                {-8.132206916809082F,.6465035676956177F,-23.452316284179688F},
+                {-7.844092845916748F,.4596937894821167F,5.491459846496582F},
+                {-5.790019512176514F,-1.580675721168518F,2.1298818588256836F}};
+constexpr float native_floor_sprite1280[4][3]={
+    {-6.409250259399414F,-1.0463234186172485F,-20.75663948059082F},
+    {-7.693046569824219F,.22890740633010864F,-18.65565299987793F},
+    {-7.512975692749023F,.11215132474899292F,-.5657939910888672F},
+    {-6.229179382324219F,-1.1630796194076538F,-2.666780471801758F}};
 void check(bool value,const char* message) { if(!value) throw std::runtime_error(message); }
 int main(int argc,char** argv) {
     using namespace nfsu;
@@ -122,6 +131,23 @@ int main(int argc,char** argv) {
         check(rejected,"missing AST bank boundary rejected");
         // Values come from bounded execution of retail 0x4AE1F0 and
         // 0x4AE530, with ready state, 50 km/h and a 1/60-second frame.
+        {
+            // Independent genuine5443F0 stack quad, actual view4 road marker.
+            const float point[3]={-9.519950866699219F,-1.0800316333770752F,-13.673964500427246F};
+            const float eye_direction[3]={.63970947265625F,.15323638916015625F,.753186821937561F};
+            const float right[3]={-.7047351002693176F,.7000333666801453F,.11533286422491074F};
+            const float up[3]={-.0988493338227272F,.06409282982349396F,-.9930362105369568F};
+            FrontendRoadGlow quad;
+            check(frontend_road_glow(point,eye_direction,right,up,.7531868815422058F,
+                .017617058008909225F,2,quad),"native floor streetlamp billboard");
+            for(unsigned i=0;i<4;++i)for(unsigned axis=0;axis<3;++axis)
+                check(std::abs(quad.corners[i][axis]-native_floor_sprite[i][axis])<.000004F,
+                    "all native floor sprite corners and vertical stretch");
+            check(quad.rgba[0]==110 && quad.rgba[1]==100 && quad.rgba[2]==75 &&
+                quad.rgba[3]==140,"native descriptor interpolation and truncation");
+            check(!frontend_road_glow(point,eye_direction,right,up,1,1,3,quad),
+                "unknown sprite view refuses publication");
+        }
         check(frontend_wheel_phase(0,.231441572F,.31F)==7787 &&
               frontend_wheel_phase(0,.229F,.31F)==7705 &&
               frontend_wheel_phase(0,1.F,.31F)==33646,
@@ -265,6 +291,7 @@ int main(int argc,char** argv) {
             check(native_cube_mesh && native_cube_mesh->valid,"authenticated original Y solid is decoded");
             unsigned cube_segments=0;
             for(const auto& draw:cube_commands.frontend_cube_draws) {
+                if(draw.frontend_sprite_view)continue;
                 check(draw.instance<3,"original cube view uses native three translated copies");
                 const auto& vertices=cube_commands.resource_table().resources.at(draw.vertex_resource);
                 check(vertices.elements==native_cube_mesh->vertices.size(),"cube geometry vertex count matches original Y solid");
@@ -279,6 +306,37 @@ int main(int argc,char** argv) {
                 check(draw.texture_resource!=kNoHandle,"original cube diffuse texture is bound");
             }
             check(cube_segments==7,"all original cube road segments are represented");
+            unsigned native_glows[6]={2,2,0,2,2,1},active_glows[6]={};
+            for(const auto& draw:cube_commands.frontend_cube_draws)if(draw.frontend_sprite_view && draw.material.alpha[0]>0)
+                ++active_glows[draw.frontend_sprite_view-10];
+            for(unsigned face=0;face<6;++face)check(active_glows[face]==native_glows[face],
+                "native actual cube frustum streetlamp visibility per face");
+            unsigned floor_glows=0,primary_glows=0;
+            const RecordedDraw* native_floor_glow=nullptr;
+            for(const auto& draw:cube_commands.reflections)if(draw.frontend_sprite_view && draw.material.alpha[0]>0) {
+                ++floor_glows;if(!native_floor_glow)native_floor_glow=&draw;
+            }
+            for(const auto& draw:cube_commands.owning_draws())if(draw.frontend_sprite_view && draw.material.alpha[0]>0)++primary_glows;
+            check(floor_glows==5 && primary_glows==0,"initial native primary point/floor box culling, not mode suppression");
+            check(native_floor_glow && native_floor_glow->instance==6,"native first visible floor marker and segment");
+            if(native_floor_glow) {
+                const auto& resource=cube_commands.resource_table().resources.at(native_floor_glow->texture_resource);
+                check(resource.texture_hash==0x3394FE62U && resource.bytes!=0,
+                    "authored HEADLIGHTGLOW receives resident original pixels");
+                check(!native_floor_glow->pipeline.depth_write,
+                    "native sprite additive pass has no depth write");
+                const int signs[4][2]={{-1,1},{1,1},{1,-1},{-1,-1}};
+                for(unsigned i=0;i<4;++i)for(unsigned axis=0;axis<3;++axis) {
+                    const auto& rows=native_floor_glow->placement.rows;
+                    const float point=rows[12+axis]+signs[i][0]*rows[axis]+signs[i][1]*rows[8+axis];
+                    check(std::abs(point-native_floor_sprite1280[i][axis])<.0002F,
+                        "actual resident floor sprite placement matches all native corners");
+                }
+                check(std::abs(native_floor_glow->material.alpha[0]-140.F/255)<.000001F,
+                    "actual native floor sprite opacity survives publication");
+
+            }
+
             const TrackMesh* native_floor=nullptr;const TrackMesh* native_z=nullptr;
             for(const auto& mesh:native_road_region.meshes) {
                 if(mesh.name=="TRFE_ROAD02_A")native_floor=&mesh;
@@ -298,6 +356,7 @@ int main(int argc,char** argv) {
                     floor_frame.up[axis]==cube_commands.frame.up[axis],"floor capture shares native primary pose");
             unsigned z_segments=0,floor_receivers=0;
             for(const auto& draw:cube_commands.reflections) {
+                if(draw.frontend_sprite_view)continue;
                 check(draw.instance<3 && draw.material.surface.gates[0]==0,
                     "native FE reflected mode3 uses three Z solids without invented mirrored car");
                 z_segments|=1U<<draw.instance;
@@ -368,7 +427,7 @@ int main(int argc,char** argv) {
             // Independent native 4B17F5..4B1825 witness with original
             // SKYLINE wheel-0 radius/vertical and normal main-view flag.
             for(const auto& draw:initial_commands) {
-                if(draw.name.find("_FE_")!=std::string::npos)continue;
+                if(draw.frontend_sprite_view || draw.name.find("_FE_")!=std::string::npos)continue;
                 const auto& instance=skyline.scene.instances.at(draw.instance);
                 check(std::abs(draw.placement.rows[14]-instance.transform[14]-.20027998089790344)<.00001,
                     "whole FE car receives original contact-plane root height");
@@ -385,7 +444,7 @@ int main(int argc,char** argv) {
             std::array<bool,4> rolling_copies{},stationary_brakes{};
             for(std::size_t i=0;i<moving_commands.size();++i) {
                 const auto& draw=moving_commands[i];
-                if(draw.name.find("_FE_")!=std::string::npos)continue;
+                if(draw.frontend_sprite_view || draw.name.find("_FE_")!=std::string::npos)continue;
                 const auto& instance=skyline.scene.instances.at(draw.instance);
                 if(instance.part_slot==17) {
                     check(instance.copy<4,"original rolling wheel index");

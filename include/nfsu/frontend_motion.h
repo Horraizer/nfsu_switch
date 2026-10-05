@@ -6,6 +6,15 @@ namespace nfsu {
 float frontend_fixed_sine(std::uint16_t phase) noexcept;
 // Native 0x4B18F7..0x4B192A uses wheel 0 radius for all four wheels.
 std::uint16_t frontend_wheel_phase(std::uint16_t phase, float travel, float radius) noexcept;
+// Original5443F0 type9 quad. All vectors are in the raw slot frame.
+// View visibility is decided by the caller; this function never invents it.
+struct FrontendRoadGlow {
+    float corners[4][3]{};
+    unsigned char rgba[4]{};
+};
+bool frontend_road_glow(const float (&point)[3],const float (&toward_eye)[3],
+    const float (&right)[3],const float (&up)[3],float facing,float depth_scale,
+    unsigned mode,FrontendRoadGlow& out) noexcept;
 struct FrontendRoadPlacement {
     unsigned group = 0;
     unsigned family = 0; // 0: _A, 1: _Z, 2: _Y, from 0x4AE530.

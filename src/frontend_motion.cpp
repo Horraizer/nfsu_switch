@@ -24,6 +24,29 @@ std::uint16_t frontend_wheel_phase(std::uint16_t phase,float travel,float radius
     // Native CRT conversion truncates before the 16-bit accumulator wraps.
     return static_cast<std::uint16_t>(unsigned(phase)+static_cast<std::uint32_t>(static_cast<std::int32_t>(increment)));
 }
+bool frontend_road_glow(const float (&point)[3],const float (&toward_eye)[3],
+    const float (&right)[3],const float (&up)[3],float facing,float depth_scale,
+    unsigned mode,FrontendRoadGlow& out) noexcept {
+    out={};
+    if(mode>2 || !std::isfinite(facing) || !std::isfinite(depth_scale))return false;
+    for(unsigned i=0;i<3;++i)if(!std::isfinite(point[i]) || !std::isfinite(toward_eye[i]) ||
+        !std::isfinite(right[i]) || !std::isfinite(up[i]))return false;
+    // Type9 descriptor6F40D8: exponent1, size30..100, offset4,
+    // screen-depth clamp .001.. .1. Native floor mode skips the1.5 scale.
+    const double gain=std::min(1.0,double(std::max(0.0F,facing)));
+    const double size=(30+70*gain)*std::clamp(double(depth_scale),
+        double(.0010000000474974513F),double(.10000000149011612F))*(mode==2?1:1.5);
+    if(size<=0)return false;
+    const int signs[4][2]={{-1,1},{1,1},{1,-1},{-1,-1}};
+    for(unsigned corner=0;corner<4;++corner)for(unsigned axis=0;axis<3;++axis) {
+        const double extent=size*(signs[corner][0]*double(right[axis])+
+            signs[corner][1]*double(up[axis]))*(mode==2 && axis==2?10:1);
+        out.corners[corner][axis]=float(double(point[axis])+4*double(toward_eye[axis])+extent);
+    }
+    out.rgba[0]=110;out.rgba[1]=100;out.rgba[2]=75;
+    out.rgba[3]=static_cast<unsigned char>(110+40*gain);
+    return true;
+}
 void FrontendRoad::update(float seconds,std::uint32_t ticks,bool forced) noexcept {
     if(!std::isfinite(seconds) || seconds<0) return;
     // 0x4AE1F0 uses the previous speed for this frame's velocity.
