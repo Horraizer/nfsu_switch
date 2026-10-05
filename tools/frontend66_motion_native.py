@@ -29,4 +29,18 @@ for delta,radius,expected in ((.231441572,.31,7787),(.229,.31,7705),(1.,.31,3364
   print('PHASE',delta,radius,actual)
  except Exception:raise
 
-print("PASS: original frontend wheel phase slices and 40BA40 spin matrices")
+# Original normal/reflected FE car root placement. Explicit RideInfo wheel
+# fields are authenticated CarType SKYLINE radius/vertical; stop before the
+# remainder of scene matrix publication. No host height approximation.
+for reflected in (0,1):
+ m=Machine(im);ride=0x1001000;main=0x1002000;view=0x1003000;frame=0x1004000;stack=0x1005000
+ m.uc.mem_write(ride+0x80,struct.pack('<f',.32659998536109924));m.uc.mem_write(ride+0x78,struct.pack('<f',.14632000029087067))
+ m.write(frame+0x10,reflected);m.write(main+0xf0,0)
+ for reg,value in ((UC_X86_REG_EAX,ride),(UC_X86_REG_EDI,main),(UC_X86_REG_ESI,view),(UC_X86_REG_EBP,frame),(UC_X86_REG_ESP,stack),(UC_X86_REG_EBX,0)):
+  m.uc.reg_write(reg,value)
+ m.uc.emu_start(0x4b17f5,0x4b182b,count=100)
+ assert m.uc.reg_read(UC_X86_REG_EIP)==0x4b182b
+ height=struct.unpack('<f',m.uc.mem_read(view+0x748,4))[0]
+ assert abs(height-(-1 if reflected else 1)*.20027998089790344)<1e-8
+ print('CAR_ROOT_HEIGHT',reflected,height)
+print("PASS: original frontend phase, spin matrices and contact-plane root placement")

@@ -142,6 +142,14 @@ int main(int argc,char** argv) {
             for(const auto& draw:initial_commands)
                 check(draw.program && std::string(draw.program->name).find("fallback")==std::string::npos,
                     "native frontend submits no placeholder fallback material");
+            // Independent native 4B17F5..4B1825 witness with original
+            // SKYLINE wheel-0 radius/vertical and normal main-view flag.
+            for(const auto& draw:initial_commands) {
+                if(draw.name.find("_FE_SEGMENT")!=std::string::npos)continue;
+                const auto& instance=skyline.scene.instances.at(draw.instance);
+                check(std::abs(draw.placement.rows[14]-instance.transform[14]-.20027998089790344)<.00001,
+                    "whole FE car receives original contact-plane root height");
+            }
             check(gpu_scene.frame(1.0F/60,4000,error),error.c_str());
             const auto& moving_commands=gpu_scene.commands().owning_draws();
             check(moving_commands.size()==initial_commands.size() &&
@@ -175,7 +183,7 @@ int main(int argc,char** argv) {
                         const double x=before[0]-instance.animation_pivot[0];
                         const double z=before[2]-instance.animation_pivot[2];
                         const double expected[3]={x*native_cosine+z*native_sine+instance.animation_pivot[0],
-                            before[1],-x*native_sine+z*native_cosine+instance.animation_pivot[2]};
+                            before[1],-x*native_sine+z*native_cosine+instance.animation_pivot[2]+.20027998089790344};
                         for(unsigned c=0;c<3;++c)
                             check(std::abs(actual[c]-expected[c])<.00001,
                                 "all four original wheel vertices match native spin axis/sign/pivot");

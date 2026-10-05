@@ -232,3 +232,24 @@ re-prepares the same installed assembly. The material witness executes these
 original source/target slices with the profile target as an explicit boundary.
 The frontend retail regression checks the GLOBAL draw uses the generated
 surface and that resident GPU road commands move without rebuilding definitions.
+
+### FE root contact-plane placement and current-state diagnostic
+
+The genuine FE car update at `0x4B1760` reads RideInfo wheel zero:
+`0x4B17F5..0x4B1825` computes radius (`+0x80`) minus vertical
+(`+0x78`) plus the executable float at `0x6F1AD4`, then writes the
+normal scene position at view-scene `+0x748`. Its reflected branch negates
+that result. This root placement follows each car-local part transform;
+rolling wheels retain their original local pivot before the root is added.
+The independently executed normal/reflected slices are reproduced by
+`tools/frontend66_motion_native.py`. `nfsu_frontend_tests` checks the
+native normal root on every car draw and checks transformed vertices for
+all four rolling wheels with that root, while brakes remain unspun.
+
+`FrontendGpuScene::render_reference` is a diagnostic CPU rendering of the
+currently submitted road and car placements. It copies resident source
+scenes, applies the current command matrices, and excludes only the already
+proved native-empty C245 material groups. The live resident geometry is
+unchanged. This diagnostic still uses the existing analytical material
+implementation and does not certify FE lighting, reflection capture or GPU
+appearance. The original static `load_frontend_scene` API remains separate.

@@ -181,6 +181,7 @@ struct FrontendGpuScene::Impl {
     std::vector<DrawInstanceUniform> base_car_placements;
     std::uint16_t wheel_phase=0;
     float wheel_radius=0;
+    float car_root_height=0;
     bool ready=false;
 };
 FrontendGpuScene::FrontendGpuScene():impl_(std::make_unique<Impl>()){}
@@ -226,11 +227,16 @@ bool FrontendGpuScene::load(const std::filesystem::path& root,unsigned width,uns
     if(!combine_race_commands(std::move(road),car,p.commands,error))return false;
     const auto& type=p.car.car_types.records.at(p.car.report.car_type);
     p.wheel_radius=type.wheels[0].rolling_radius;
+    // Original 0x4B17F5..0x4B1825 places the whole FE car above its
+    // wheel-0 contact plane. Part matrices below remain car-local.
+    p.car_root_height=p.wheel_radius-type.wheels[0].vertical+.02F;
     if(!std::isfinite(p.wheel_radius) || p.wheel_radius<=0) {
         error="original frontend rolling radius invalid";return false;
     }
     for(std::size_t i=p.road_groups*5;i<p.commands.owning_draws().size();++i)
         p.base_car_placements.push_back(p.commands.owning_draws()[i].placement);
+    for(std::size_t i=p.road_groups*5;i<p.commands.owning_draws().size();++i)
+        p.commands.owning_draws()[i].placement.rows[14]+=p.car_root_height;
     p.ready=true;impl_.swap(next);return frame(0,0,error);
 }
 bool FrontendGpuScene::frame(float seconds,std::uint32_t ticks,std::string& error) {
@@ -259,6 +265,7 @@ bool FrontendGpuScene::frame(float seconds,std::uint32_t ticks,std::string& erro
             rotated.rows[r*4+c]=static_cast<float>(value);
         }
         for(unsigned c=0;c<3;++c)rotated.rows[12+c]+=instance.animation_pivot[c];
+        rotated.rows[14]+=p.car_root_height;
         draw.placement=rotated;
     }
     return record_frame_state(p.options,RenderLimits{},p.commands,error);
@@ -324,6 +331,3 @@ bool load_frontend_scene(const std::filesystem::path& root,
     return true;
 }
 }
-
-
-
