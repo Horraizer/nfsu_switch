@@ -267,6 +267,48 @@ const RecordedCommands& FrontendGpuScene::commands() const {
     if(!impl_->ready)throw std::logic_error("frontend GPU scene not loaded");
     return impl_->commands;
 }
+bool FrontendGpuScene::render_reference(std::vector<unsigned char>& rgba,std::string& error) const {
+    const auto& p=*impl_;
+    if(!p.ready){error="frontend GPU scene not loaded";return false;}
+    auto tunnel=p.tunnel;
+    auto car=p.car.scene;
+    tunnel.profile=SelectionProfile::stock_car;
+    tunnel.selectors.clear();tunnel.instances.clear();
+    for(auto& mesh:tunnel.meshes)mesh.selector=kNoHandle;
+    const auto& draws=p.commands.owning_draws();
+    // Each repeated mesh receives exactly the placement sent to the GPU.
+    // Material groups share the mesh placement; preserve their authored data.
+    for(unsigned segment=0;segment<5;++segment) {
+        std::set<std::size_t> placed;
+        for(std::size_t group=0;group<p.road_groups;++group) {
+            const auto& draw=draws[segment*p.road_groups+group];
+            if(!placed.insert(draw.mesh).second)continue;
+            PreparedInstance instance;instance.mesh=draw.mesh;
+            std::copy_n(draw.placement.rows,16,instance.transform);
+            tunnel.instances.push_back(instance);
+        }
+    }
+    tunnel.draws.erase(std::remove_if(tunnel.draws.begin(),tunnel.draws.end(),
+        [](const auto& draw){return draw.binding==BindingKind::unresolved &&
+            draw.texture_hash==0xC2456B43U;}),tunnel.draws.end());
+    tunnel.unresolved_hashes.clear();
+    for(auto& mesh:tunnel.meshes)mesh.material_count=0;
+    for(auto& draw:tunnel.draws)
+        draw.material_index=tunnel.meshes[draw.mesh].material_count++;
+    for(std::size_t i=p.road_groups*5;i<draws.size();++i) {
+        const auto& draw=draws[i];
+        std::copy_n(draw.placement.rows,16,car.instances.at(draw.instance).transform);
+    }
+    Frame output,car_frame;RenderStats stats;
+    auto room_options=p.options;room_options.car_shading=false;
+    if(!render_scene(tunnel,room_options,RenderLimits{},output,stats,error) ||
+       !render_scene(car,p.options,RenderLimits{},car_frame,stats,error))return false;
+    rgba=output.rgba();
+    for(std::size_t i=0;i<output.depth().size();++i)
+        if(car_frame.depth()[i]<output.depth()[i])
+            std::copy_n(car_frame.rgba().data()+i*4,4,rgba.data()+i*4);
+    return true;
+}
 bool load_frontend_scene(const std::filesystem::path& root,
     std::vector<unsigned char>& rgba,unsigned width,unsigned height,std::string& error) {
     PreparedCarScene tunnel;StockFrame car;RenderOptions options;
@@ -282,3 +324,6 @@ bool load_frontend_scene(const std::filesystem::path& root,
     return true;
 }
 }
+
+
+

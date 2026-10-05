@@ -25,6 +25,9 @@ public:
     bool load(const std::filesystem::path& root,unsigned width,unsigned height,std::string& error);
     bool frame(float seconds,std::uint32_t ticks,std::string& error);
     const RecordedCommands& commands() const;
+    // Diagnostic CPU rendering of the current road/wheel command placements.
+    // Uses the reference material implementation; does not certify FE effects.
+    bool render_reference(std::vector<unsigned char>& rgba,std::string& error) const;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
