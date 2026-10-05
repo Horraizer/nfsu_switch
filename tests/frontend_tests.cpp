@@ -40,6 +40,25 @@ int main(int argc,char** argv) {
         check(run.set_free_drive(true,error),"free-drive configuration before startup");
         if(argc==2) {
             const std::filesystem::path root=argv[1]; FrontendArt art;
+            audio::FrontendSfx sfx;
+            check(sfx.load(root,error),error.c_str());
+            std::vector<std::int16_t> unchanged(1024*2,1234);
+            sfx.mix(unchanged.data(),1024);
+            check(std::all_of(unchanged.begin(),unchanged.end(),[](auto v){return v==1234;}),
+                "idle effects preserve in-place music samples");
+            std::vector<std::int16_t> up(24000*2,0),down(up.size(),0),restart(up.size(),0);
+            sfx.play(audio::FrontendSound::up);sfx.mix(up.data(),24000);
+            sfx.reset();sfx.play(audio::FrontendSound::down);sfx.mix(down.data(),24000);
+            check(std::any_of(up.begin(),up.end(),[](auto v){return v!=0;}) &&
+                  std::any_of(down.begin(),down.end(),[](auto v){return v!=0;}) && up!=down,
+                "original up and down cues are audible and distinct");
+            sfx.reset();sfx.play(audio::FrontendSound::up);sfx.mix(restart.data(),24000);
+            check(restart==up,"effect reset starts original cue from its first sample");
+            sfx.play(audio::FrontendSound::select);sfx.reset();
+            std::fill(restart.begin(),restart.end(),0);sfx.mix(restart.data(),24000);
+            check(std::all_of(restart.begin(),restart.end(),[](auto v){return v==0;}),
+                "effect reset retires queued voices before menu reentry");
+
             // Exercise retail bank indexing and decoder-thread failure cleanup
             // repeatedly without depending on an attached audio device.
             audio::FrontendMusic music;

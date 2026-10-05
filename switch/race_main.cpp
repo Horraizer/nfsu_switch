@@ -878,7 +878,12 @@ int main(int argc, char** argv) {
                     input.accept=down&HidNpadButton_A;
                     input.back=down&(HidNpadButton_B|HidNpadButton_Plus);
                     stick_up=up; stick_down=below;
+                    const auto previous_selection=menu.selected();
                     const auto action=menu.update(input);
+                    if(input.back) music.sound(audio::FrontendSound::back);
+                    else if(input.accept) music.sound(audio::FrontendSound::select);
+                    else if(menu.selected()!=previous_selection)
+                        music.sound(input.up?audio::FrontendSound::up:audio::FrontendSound::down);
                     if (action==FrontendAction::exit) break;
                     if (action==FrontendAction::underground) {
                         menu.notice("INTRODUCTORY RACE IS NOT AVAILABLE IN THIS BUILD");

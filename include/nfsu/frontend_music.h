@@ -1,5 +1,6 @@
 #pragma once
 #include "nfsu/audio.h"
+#include "nfsu/frontend_sfx.h"
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -18,6 +19,7 @@ public:
     bool start(const std::filesystem::path& root, std::string& error,
         const std::function<bool()>& thread_setup = {});
     void stop();
+    void sound(FrontendSound cue);
     std::string error() const;
     MenuSong now_playing() const;
 private:

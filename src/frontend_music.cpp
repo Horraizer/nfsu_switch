@@ -14,6 +14,7 @@ struct FrontendMusic::Impl {
     std::unique_ptr<AstStreamer> stream;
     Output output;
     OutputFade fade;
+    FrontendSfx sfx;
     bool active=false;
     std::atomic<bool> ending{false},silenced{false};
     unsigned first=0,next=0;
@@ -35,6 +36,7 @@ bool FrontendMusic::start(const std::filesystem::path& root,std::string& error,
     stop();
     auto& p=*impl_;
     try {
+        if(!p.sfx.load(root,error)) throw std::runtime_error(error);
         std::ifstream bank_input(root/"Sound/STRMBANK/STRM_Music_UG0_MB.abk",std::ios::binary|std::ios::ate);
         if(!bank_input || bank_input.tellg()!=968) throw std::runtime_error("original music ABK identity/size mismatch");
         std::vector<std::uint8_t> bytes(968); bank_input.seekg(0);
@@ -70,7 +72,7 @@ bool FrontendMusic::start(const std::filesystem::path& root,std::string& error,
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         if(!p.stream->error().empty()) throw std::runtime_error(p.stream->error());
         if(!p.output.start([&p](std::int16_t* pcm,std::size_t count) {
-            p.stream->pop(pcm,count); p.fade.apply(pcm,count,p.ending.load());
+            p.stream->pop(pcm,count); p.sfx.mix(pcm,count); p.fade.apply(pcm,count,p.ending.load());
             if(p.ending.load() && p.fade.silent()) p.silenced=true;
         },error)) { p.stream->stop(); p.stream.reset(); return false; }
         p.active=true; error.clear(); return true;
@@ -86,8 +88,9 @@ void FrontendMusic::stop() {
     }
     p.output.stop();
     if(p.stream) { p.stream->stop(); p.stream.reset(); }
-    p.active=false;
+    p.sfx.reset();p.active=false;
 }
+void FrontendMusic::sound(FrontendSound cue) { impl_->sfx.play(cue); }
 std::string FrontendMusic::error() const {
     if(!impl_->active) return {};
     const auto device=impl_->output.error();

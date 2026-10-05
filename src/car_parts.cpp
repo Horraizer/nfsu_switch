@@ -730,6 +730,15 @@ bool select_installed_parts(
         return false;
     }
     for (std::size_t slot = 0; slot < kCarSlotCount; ++slot) {
+        if (selection.records[slot]) {
+            const auto record = *selection.records[slot];
+            if (record != kNoCarPart && record >= database.records.size()) {
+                error = "native installed part outside database";
+                parts = StockParts{}; return false;
+            }
+            parts.slots[slot].record = record;
+            parts.slots[slot].overridden = true;
+        }
         const auto& name = selection.names[slot];
         if (!name) {
             continue;
