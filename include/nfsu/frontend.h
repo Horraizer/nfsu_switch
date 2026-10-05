@@ -39,6 +39,7 @@ public:
     FrontendArt();
     ~FrontendArt();
     bool load(const std::filesystem::path& root, std::string& error,bool background=true);
+    void advance(float seconds);
     void draw(ScreenImage image, const FrontendMenu& menu) const;
     void draw_overlay(ScreenImage image,const FrontendMenu& menu) const;
     const FrontendUiAtlas& atlas() const;

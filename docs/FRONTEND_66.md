@@ -444,3 +444,23 @@ all four circle objects, including their independent authored rotations.
 `nfsu_frontend_retail` compares the actual overlay submissions against those
 native corners, channel quantization and alpha. This restores the authored
 asset bindings; temporal script playback remains a separate unfinished item.
+
+### Authored Init loop playback
+
+The native script loader `0x501EA0` parses FI records into 0x38-byte frames
+and Kd base/key records. Frame application `0x5001B0` calls interpolation
+`0x4FC100`; `0x4FCCB0` selects the next key and the loop consumer wraps across
+last/first keys when the key list does not end at script duration.
+`0x4FFEB0` updates script phase and applies modulo for loop mode1. The native
+clock writer `0x4F5CF0` reads frame seconds at `0x73AD38`, multiplies the
+constant at `0x6CCDE4`, and truncates through `0x674898`.
+
+The source parses the authenticated main-menu Init loops: RGBA, position,
+scale and the four planar circle quaternion tracks. Their authenticated orthogonal and
+45-degree quaternion key pairs use the original fixed-angle sine path;
+other quaternion angles are rejected until recovered. Colors preserve original `0x4FC8E0`
+interpolation rounding order. `tools/frontend66_ui_temporal_native.py`
+executes original interpolation and image submission from the authored
+circle records. `nfsu_frontend_retail` compares time-varying corners, alpha
+and loop wrap against those independent native outputs. Selection event
+Highlight/UnHighlight temporal scripts remain separate from these Init loops.

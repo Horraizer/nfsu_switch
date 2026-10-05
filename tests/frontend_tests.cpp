@@ -562,6 +562,45 @@ int main(int argc,char** argv) {
             gpu_art.record_ui(1280,720,gpu_menu,ui);
             check(ui.vertices.size()==ui.additive.size()*4 && !ui.vertices.empty(),
                 "current song text reaches GPU original font submission");
+            const double native_temporal[4][4][2]={
+                {{462,19},{494,19},{494,51},{462,51}},
+                {{462,50.9936408996582},{462.00634765625,18.999996185302734},{494,19.006359100341797},{493.99365234375,51.000003814697266}},
+                {{494,51.000003814697266},{462,50.999996185302734},{462,18.9999942779541},{494,19.0000057220459}},
+                {{493.99365234375,19.00000762939453},{494,50.99365234375},{462.00634765625,50.99999237060547},{462,19.00634765625}}};
+            const unsigned temporal_alpha[4]={80,46,10,44};
+            for(unsigned phase=0;phase<5;++phase) {
+                gpu_art.advance(phase?.5F:0.F);gpu_art.record_ui(1280,720,gpu_menu,ui);
+                const unsigned expected=phase%4;bool found=false;
+                for(std::size_t i=0;i<ui.vertices.size();i+=4) {
+                    bool same=true;
+                    for(unsigned corner=0;corner<4;++corner) {
+                        const auto& v=ui.vertices[i+corner];
+                        same &= std::abs(v.px-native_temporal[expected][corner][0]*2)<.002 &&
+                                std::abs(v.py-native_temporal[expected][corner][1]*1.5)<.002 &&
+                                v.color[3]==temporal_alpha[expected];
+                    }
+                    found |= same;
+                }
+                check(found,"original timed circle quaternion/color and two-second loop match genuine FEng");
+                check(atlas.rgba.data()==resident_pixels,"authored temporal UI reuses resident texture atlas");
+            }
+            // Circle(58) has the sole authored 45-degree quaternion pair.
+            // Genuine 4FC640 uses sine phases4095/4095/8191 at its midpoint.
+            gpu_art.advance(.75F);gpu_art.record_ui(1280,720,gpu_menu,ui);
+            const double native_short_arc[4][2]={{489.3743896484375,34.99565887451172},
+                {512.0043334960938,12.374380111694336},{534.6256103515625,35.00434112548828},
+                {511.99566650390625,57.62561798095703}};
+            bool short_arc_found=false;
+            for(std::size_t i=0;i<ui.vertices.size();i+=4) {
+                bool same=true;
+                for(unsigned corner=0;corner<4;++corner) {
+                    const auto& v=ui.vertices[i+corner];
+                    same &= std::abs(v.px-native_short_arc[corner][0]*2)<.002 &&
+                            std::abs(v.py-native_short_arc[corner][1]*1.5)<.002 && v.color[3]==60;
+                }
+                short_arc_found |= same;
+            }
+            check(short_arc_found,"authored circle short-arc interpolation matches independent native image corners");
             RaceGpuScene scene;
             check(run.prepare_metadata(root,error),error.c_str());
             check(!run.set_free_drive(false,error),"mode cannot change after metadata preparation");

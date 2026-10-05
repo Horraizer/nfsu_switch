@@ -1,5 +1,6 @@
 #include "nfsu/frontend.h"
 #include "nfsu/frontend_scene.h"
+#include "nfsu/frontend_motion.h"
 #include "nfsu/race_events.h"
 #include "nfsu/race_lap_hud_presentation.h"
 #include "nfsu/sha256.h"
@@ -28,14 +29,73 @@ std::string ascii(const unsigned char* p,std::size_t n) {
     }return s;
 }
 struct Image {unsigned width=0,height=0,atlas_x=0,atlas_y=0;std::vector<unsigned char> rgba;TextureAlphaBlend blend=TextureAlphaBlend::source_over;};
+struct UiKey {int tick=0;std::array<double,4> value{};};
+struct UiLoop {unsigned kind=0,target=0,duration=0;std::array<double,4> base{};std::vector<UiKey> keys;};
 struct Object {
     unsigned id=0,parent=0,type=0,resource=0,justification=0;
     std::string name,text;
+    std::vector<UiLoop> loops;
     float x=0,y=0,z=0,w=1,h=1,qz=0,qw=1;
     std::array<unsigned,4> color{{255,255,255,255}};
     std::array<float,4> uv{{0,0,1,1}};
     std::array<std::array<unsigned,4>,4> corner_colors{};
 };
+// Original FI/Kd loop records, limited to the authored main-menu consumers.
+void load_ui_loops(const unsigned char* data,std::size_t length,Object& object) {
+    for(std::size_t at=0;at+8<=length;) {
+        const unsigned n=dword(data+at+4);
+        if(n>length-at-8)throw std::runtime_error("frontend script chunk truncated");
+        if(!std::memcmp(data+at,"Scrp",4)) {
+            bool init=false,loop=false;UiLoop track;
+            for(std::size_t field=at+8;field<at+8+n;) {
+                if(at+8+n-field<4)throw std::runtime_error("frontend script field truncated");
+                const auto* tag=data+field;const unsigned size=word(tag+2);const auto* v=tag+4;
+                if(size>at+8+n-field-4)throw std::runtime_error("frontend script field outside chunk");
+                if(!std::memcmp(tag,"Sn",2))init=ascii(v,size)=="Init";
+                if(!std::memcmp(tag,"Sh",2) && size==16)loop=dword(v+8)==1;
+                if(!std::memcmp(tag,"FI",2) && size==8) {
+                    track=UiLoop{};track.kind=v[0];track.duration=dword(v+4)&0xffffff;
+                    if(init && loop && (v[1]!=(track.kind==4?12:16) || v[2]!=1 || v[3]!=1))
+                        throw std::runtime_error("unsupported native frontend loop frame");
+                }
+                if(!std::memcmp(tag,"To",2) && size==4)track.target=dword(v);
+                if(!std::memcmp(tag,"Kd",2) && init && loop) {
+                    const unsigned stride=track.kind==4?16:20;
+                    if(!track.duration || size<stride*2 || size%stride ||
+                       !((track.kind==6 && track.target==0) || (track.kind==5 && track.target==10) ||
+                         (track.kind==4 && (track.target==7 || track.target==14))))
+                        throw std::runtime_error("unsupported authored frontend loop keys");
+                    for(unsigned key=0;key<size/stride;++key) {
+                        UiKey value;value.tick=static_cast<int>(dword(v+key*stride));
+                        for(unsigned c=0;c<(track.kind==4?3U:4U);++c)value.value[c]=track.kind==6?
+                            double(static_cast<int>(dword(v+key*stride+4+c*4))):double(real(v+key*stride+4+c*4));
+                        if(!key) {if(value.tick!=-1)throw std::runtime_error("frontend loop base missing");track.base=value.value;}
+                        else {
+                            if(value.tick<0 || unsigned(value.tick)>track.duration ||
+                            (!track.keys.empty() && value.tick<=track.keys.back().tick))
+                                throw std::runtime_error("invalid frontend loop key times");
+                            track.keys.push_back(value);}
+                    }
+                    if(track.keys.empty())
+                        throw std::runtime_error("frontend loop endpoints absent");
+                    if(track.kind==5) {
+                        if(track.base[0]!=0 || track.base[1]!=0)throw std::runtime_error("frontend loop quaternion plane");
+                        for(unsigned k=0;k<track.keys.size();++k) {
+                            const auto& q=track.keys[k].value;
+                            if(q[0]!=0 || q[1]!=0)throw std::runtime_error("frontend quaternion key plane");
+                            if(k && std::abs(q[2]*track.keys[k-1].value[2]+q[3]*track.keys[k-1].value[3])>1e-5 &&
+                               std::abs(std::abs(q[2]*track.keys[k-1].value[2]+q[3]*track.keys[k-1].value[3])-.70710678)>1e-5)
+                                throw std::runtime_error("frontend quaternion native angle requires recovery");
+                        }
+                    }
+                    object.loops.push_back(track);
+                }
+                field+=size+4;
+            }
+        }
+        at+=n+8;
+    }
+}
 struct Transform {float a=1,b=0,c=0,d=1,x=0,y=0,z=0;};
 Transform combine(const Transform& p,const Object& o,bool scale) {
     const float ca=1-2*o.qz*o.qz,sa=2*o.qz*o.qw;
@@ -139,6 +199,54 @@ struct FrontendArt::Impl {
     std::vector<Object> objects;
     RaceLapHudFont large,small;
     unsigned large_hash=0,small_hash=0;
+    std::uint64_t ui_ticks=0;bool temporal=false;
+    Object sample(const Object& original) const {
+        Object o=original;
+        if(!temporal)return o;
+        for(const auto& loop:o.loops) {
+            const unsigned tick=unsigned(ui_ticks%loop.duration);
+            auto next=std::lower_bound(loop.keys.begin(),loop.keys.end(),int(tick),
+                [](const UiKey& key,int t){return key.tick<t;});
+            const UiKey* before=nullptr;const UiKey* after=nullptr;double elapsed=0,span=0;
+            if(next==loop.keys.end()) {
+                before=&loop.keys.back();after=&loop.keys.front();
+                elapsed=double(tick-before->tick);span=double(loop.duration)+after->tick-before->tick;
+            } else if(next==loop.keys.begin() && tick!=unsigned(next->tick)) {
+                before=&loop.keys.back();after=&*next;
+                elapsed=double(loop.duration)+tick-before->tick;span=double(loop.duration)+after->tick-before->tick;
+            } else {
+                after=&*next;before=next==loop.keys.begin()?after:&*(next-1);
+                elapsed=double(tick-before->tick);span=double(after->tick-before->tick);
+            }
+            const auto& a=*before;const auto& b=*after;
+            const float fraction=span>0?float(elapsed/span):1.F;
+            std::array<double,4> value{};
+            if(loop.kind==5) {
+                if(tick==unsigned(b.tick))value=b.value;
+                else {
+                    // Authenticated circle key pairs use native 4FC640 sine phases:
+                    // orthogonal16383 and the sole 45-degree pair8191.
+                    const double dot=a.value[2]*b.value[2]+a.value[3]*b.value[3];
+                    const unsigned angle=std::abs(dot)<1e-5?16383:8191;
+                    const float denominator=frontend_fixed_sine(static_cast<std::uint16_t>(angle));
+                    const float wb=frontend_fixed_sine(static_cast<std::uint16_t>(double(fraction)*angle))/denominator;
+                    const float wa=frontend_fixed_sine(static_cast<std::uint16_t>((1-double(fraction))*angle))/denominator;
+                    for(unsigned c=0;c<4;++c)value[c]=double(wa)*a.value[c]+double(wb)*(dot<0?-b.value[c]:b.value[c]);
+                }
+                o.qz=float(loop.base[3]*value[2]+loop.base[2]*value[3]);
+                o.qw=float(loop.base[3]*value[3]-loop.base[2]*value[2]);
+            } else {
+                for(unsigned c=0;c<4;++c) {
+                    const double delta=(b.value[c]-a.value[c])*double(fraction);
+                    value[c]=loop.base[c]+a.value[c]+(loop.kind==6?double(static_cast<int>(delta+.5)):delta);
+                }
+                if(loop.target==0)for(unsigned c=0;c<4;++c)o.color[c]=unsigned(std::max(0.,std::min(255.,value[c])));
+                else if(loop.target==7){o.x=float(value[0]);o.y=float(value[1]);o.z=float(value[2]);}
+                else {o.w=float(value[0]);o.h=float(value[1]);}
+            }
+        }
+        return o;
+    }
     Transform transform(const Object& o,unsigned depth=0) const {
         if(depth>32) throw std::runtime_error("frontend parent cycle");
         Transform parent;
@@ -147,7 +255,8 @@ struct FrontendArt::Impl {
             if(it==objects.end()) throw std::runtime_error("frontend parent absent");
             parent=transform(*it,depth+1);
         }
-        return combine(parent,o,o.type==2 || o.type==5);
+        const auto current=sample(o);
+        return combine(parent,current,current.type==2 || current.type==5);
     }
     bool visible(const Object& o,unsigned selected,unsigned depth=0) const {
         if(depth>32) return false;
@@ -235,6 +344,9 @@ bool FrontendArt::load(const std::filesystem::path& root,std::string& error,bool
                 // MU_Main_PC MenuScreen Init Kd origin, final delta zero.
                 o.x=-5.6F;o.y=-111.155F;o.z=118.75F;
             }
+            const std::size_t outer=dword(fng.data()+pos+4);
+            if(outer<n+8 || outer>fng.size()-pos-8)throw std::runtime_error("frontend object script package invalid");
+            load_ui_loops(fng.data()+pos+16+n,outer-n-8,o);
             out.objects.push_back(std::move(o));pos+=15+n;
         }
         if(out.objects.size()!=161) throw std::runtime_error("main menu object count changed");
@@ -302,6 +414,11 @@ void FrontendArt::draw_overlay(ScreenImage image,const FrontendMenu& menu) const
     if(!image.pixels || image.stride<std::size_t(image.width)*4)return;
     impl_->draw(Canvas{image},menu);
 }
+void FrontendArt::advance(float seconds) {
+    if(!std::isfinite(seconds) || seconds<0 || seconds>60)throw std::runtime_error("invalid frontend UI time step");
+    // 4F5CF0 multiplies original frame seconds73AD38 by1200 then truncates.
+    impl_->temporal=true;impl_->ui_ticks+=static_cast<unsigned>(double(seconds)*1200);
+}
 const FrontendUiAtlas& FrontendArt::atlas() const {return impl_->atlas;}
 void FrontendArt::record_ui(unsigned width,unsigned height,const FrontendMenu& menu,FrontendUiFrame& frame) const {
     frame.vertices.clear();frame.additive.clear();
@@ -314,12 +431,12 @@ void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu) const {
     std::stable_sort(order.begin(),order.end(),[&](std::size_t a,std::size_t b) {return p.transform(p.objects[a]).z>p.transform(p.objects[b]).z;});
     const unsigned hashes[]={0xe2a5c626,0x1f3bdb88,0x1abedeb1,0,bin_hash("ARROW3"),bin_hash("CIRCLE"),0x868a1fcf,bin_hash("NFSU_LOGO")};
     for(auto i:order) {
-        const auto& o=p.objects[i];if(!p.visible(o,menu.selected()) || o.type==5 || o.name=="NFSU_logo") continue;
+        const auto o=p.sample(p.objects[i]);if(!p.visible(o,menu.selected()) || o.type==5 || o.name=="NFSU_logo") continue;
         auto color=o.color;
         // Original steady states from UnHighlight/Highlight, after Init fades.
         if(!color[3] && (o.type==2 || o.type==5)) color[3]=255;
         if(!color[3]) continue;
-        const auto m=p.transform(o);
+        const auto m=p.transform(p.objects[i]);
         if((o.type==1 || o.type==9) && m.y>150) continue;
         if(o.type==2) {
             if(o.resource!=3 && o.resource!=8) continue;

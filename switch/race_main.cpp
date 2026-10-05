@@ -939,6 +939,7 @@ int main(int argc, char** argv) {
                     const auto original_ticks=static_cast<std::uint32_t>(armTicksToNs(scene_begin-frontend_epoch)/250000);
                     require(frontend_scene.frame(static_cast<float>(elapsed_ns/1000000000.0),original_ticks,frontend_error),frontend_error);
                     const auto scene_done=armGetSystemTick();
+                    art.advance(static_cast<float>(elapsed_ns/1000000000.0));
                     art.record_ui(width,height,menu,frontend_ui);
                     const auto ui_done=armGetSystemTick();
                     DekoUpdateTiming update_timing;
