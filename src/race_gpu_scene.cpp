@@ -244,27 +244,43 @@ bool combine_race_commands(RecordedCommands track, const RecordedCommands& car,
 bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& root,
                         std::string& error, AssetCheckObserver* observer,
                         TrackSliceLoadObserver* loading, bool tuned, bool glows,
-                        bool car_shading) {
+                        bool car_shading, const CarAssets* car) {
     if (ready_) { error = "race scene is already loaded"; return false; }
     tuned_ = tuned;
     glows_enabled_ = glows;
     car_shading_=car_shading;
+    CarAssets selection;
+    if (car != nullptr) {
+        selection = *car;
+    } else if (!load_car_assets(root / "Global/GLOBALB.BUN", "240SX", selection, error)) {
+        return false;
+    }
+    if (tuned && selection.car_type_name != "240SX") {
+        error = "the tuned preset is the 240SX's own part set; it cannot dress car type " +
+                selection.car_type_name;
+        return false;
+    }
     // Car source files and their decoded preparation are temporary. Complete
     // that work before streaming the track so neither source set overlaps the
     // other's allocation peak. Only the prepared car scene survives this scope.
     if (loading) loading->checkpoint("car input");
     {
         StockFrameInputs inputs;
-        if (!read_stock_frame_inputs(root, inputs, tuned)) {
-            error = inputs.read_error(root);
+        // A false return covers both a refused selection and a pack that was
+        // not copied; either way the message names the cause (review F1 of
+        // issue #315's first round).
+        if (!read_car_frame_inputs(root, selection, inputs, tuned, error)) {
+            error = car_frame_inputs_error(inputs, error, root);
             return false;
         }
         if (loading) loading->checkpoint("car preparation");
         StockFrame stock;
-        if (!prepare_race_car_frame(inputs, root, tuned ? tuned_240sx_request() : stock_240sx_request(),
-                tuned ? tuned_240sx_skin() : stock_240sx_skin(), stock, error,
-                car_shading_)) return false;
-        if (!prepare_car_shadow(inputs, stock.car_pack, shadow_asset_, error)) return false;
+        if (!prepare_race_car_frame(inputs, root,
+                tuned ? tuned_240sx_request() : stock_car_request(selection.car_type_name),
+                tuned ? tuned_240sx_skin() : stock_car_skin(selection.car_type_name),
+                stock, error, car_shading_)) return false;
+        if (!prepare_car_shadow(selection.car_type_name, inputs, stock.car_pack,
+                                shadow_asset_, error)) return false;
         if (glows_enabled_) glow_anchors_ = collect_car_glow_anchors(stock);
         if (loading) loading->checkpoint("car prepared");
         skin_source_ = stock.skin_binding.source;

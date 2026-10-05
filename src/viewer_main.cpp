@@ -1322,6 +1322,26 @@ int main(int argc, char** argv) {
         std::cerr << "error: no valid meshes to render\n";
         return 2;
     }
+    // The runtime lamp-name resolution (issue #315 round 4): every texture
+    // source is parsed by now, so the resting-state rewrite sees exactly the
+    // hashes the decode will find - the same call prepare_stock_frame_impl
+    // makes, keeping the viewer and the stock-frame path equivalent. The
+    // vinyl pack is a skin input source only and never a material source,
+    // so it is not part of the presence set.
+    if (stock.enabled) {
+        std::set<std::uint32_t> present;
+        for (const nfsu::TextureRecord& texture : pack.textures) {
+            present.insert(texture.hash);
+        }
+        for (const nfsu::TexturePackSet& set : shared_sets) {
+            for (const nfsu::TexturePack& source : set.packs) {
+                for (const nfsu::TextureRecord& texture : source.textures) {
+                    present.insert(texture.hash);
+                }
+            }
+        }
+        nfsu::alias_stock_lamp_textures(present, stock.car, geometry);
+    }
     // Which meshes a stock car draws comes from the part database, not from
     // the command line, so the hashes worth decoding out of a shared source
     // are known only once the assembly has been resolved. It is resolved

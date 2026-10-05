@@ -815,6 +815,9 @@ target_link_libraries(nfsu_inspect_window PUBLIC nfsu_platform nfsu_input_camera
 # nfsu_stock_view, which issue #148 added, is the control table and camera
 # session of that application over nfsu_input_camera and nfsu_render; it
 # reads no clock either, because a controller frame carries its own time.
+# nfsu_car_assets (issue #315, cmake/car_libraries.cmake) resolves a car
+# type name through nfsu_core's table loader - std::ifstream, no clock - and
+# nothing else.
 set(NFSU_NEUTRAL_LIBRARIES
     nfsu_track_reflections
     nfsu_image nfsu_core nfsu_scene nfsu_track nfsu_track_visibility
@@ -824,8 +827,8 @@ set(NFSU_NEUTRAL_LIBRARIES
     nfsu_texture_decode nfsu_body_skin nfsu_skin_inputs nfsu_runtime_skin
     nfsu_inspect nfsu_inspect_window nfsu_input nfsu_platform
     nfsu_platform_fakes nfsu_input_camera nfsu_memory nfsu_gpu_upload nfsu_draw_commands
-    nfsu_sha256 nfsu_stock_frame nfsu_screen_text nfsu_stock_view nfsu_frame_compare
-    nfsu_audio nfsu_audio_playback nfsu_race_audio nfsu_frontend)
+    nfsu_sha256 nfsu_car_assets nfsu_stock_frame nfsu_screen_text nfsu_stock_view
+    nfsu_frame_compare nfsu_audio nfsu_audio_playback nfsu_race_audio nfsu_frontend)
 # nfsu_race_route (issue #61) decodes a TRACKB bundle with nothing but the
 # standard library, nfsu_core's JDLZ decoder and nfsu_track_zones' polygon
 # test, reads with std::ifstream as nfsu_core's loaders do, and reads no
@@ -1124,6 +1127,27 @@ if(NFSU_BUILD_TESTS)
         nfsu_sha256_tests nfsu_screen_text_tests nfsu_stock_frame_tests
         nfsu_stock_frame_viewer_match
         PROPERTIES TIMEOUT 60)
+endif()
+
+# ---------------------------------------------------------------------------
+# Data-driven car selection over the retail car type table (issue #315)
+# ---------------------------------------------------------------------------
+#
+# Appended as its own block. The unit half (refusals, path derivation, the
+# reader's misuse guard) runs in every desktop build; the retail half is
+# registered with the other retail checks at the end of this file as
+# nfsu_car_selection_retail and drives the whole playable inventory.
+if(NFSU_BUILD_TESTS)
+    add_executable(nfsu_car_selection_tests
+        tests/car_selection_tests.cpp
+    )
+
+    target_link_libraries(nfsu_car_selection_tests
+        PRIVATE nfsu_stock_frame nfsu_stock_view nfsu_race_session nfsu_race_run
+                nfsu_posix_file_system nfsu_arg_path)
+    nfsu_enable_warnings(nfsu_car_selection_tests)
+    add_test(NAME nfsu_car_selection_tests COMMAND nfsu_car_selection_tests)
+    set_tests_properties(nfsu_car_selection_tests PROPERTIES TIMEOUT 120)
 endif()
 
 if(NFSU_BUILD_TESTS)
@@ -1851,6 +1875,26 @@ if(NFSU_BUILD_TESTS)
         add_test(NAME nfsu_performance_levels_retail COMMAND nfsu_performance_levels_tests "${NFSU_RETAIL_ROOT}")
         set_tests_properties(nfsu_performance_levels_retail PROPERTIES
             FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 180)
+        # The playable inventory of issue #315: every racer resolved, read,
+        # prepared, skinned, rendered, encoded, shadowed, handling-decoded and
+        # driven through the real paths the applications use, plus A/B/A
+        # reload, absent-pack and invalid-name refusals and the Switch race
+        # load path with a selected car. tests/car_selection_tests.cpp.
+        add_test(NAME nfsu_car_selection_retail COMMAND nfsu_car_selection_tests "${NFSU_RETAIL_ROOT}")
+        set_tests_properties(nfsu_car_selection_retail PROPERTIES
+            FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 1800)
+        # The desktop viewer's own stock-car path resolves every material
+        # texture for the alias-needing cars and stays equivalent to the
+        # stock-frame path (issue #315 round 4 F2).
+        # tests/viewer_car_materials_retail.cmake.
+        add_test(NAME nfsu_viewer_car_materials_retail
+            COMMAND ${CMAKE_COMMAND} -DVIEWER=$<TARGET_FILE:nfsu_viewer>
+                    "-DROOT=${NFSU_RETAIL_ROOT}"
+                    -DWORK=${nfsu_retail_work}/viewer_car_materials
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/viewer_car_materials_retail.cmake
+            WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+        set_tests_properties(nfsu_viewer_car_materials_retail PROPERTIES
+            FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 600)
         add_test(NAME nfsu_performance_replay_retail COMMAND nfsu_performance_replay_tests
             "${NFSU_RETAIL_ROOT}" ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/performance1.txt)

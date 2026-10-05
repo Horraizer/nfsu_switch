@@ -125,14 +125,16 @@ public:
     std::uint64_t loads = 0, releases = 0, bytes_read = 0;
     Cost io_cost, prepare_cost, render_cost;
     explicit RaceScene(const TrackStreamTable& t, bool effects) : particles_enabled(effects), table(t) {}
-    void load_car(const fs::path& root, const fs::path& texture) {
+    void load_car(const fs::path& root, const fs::path& texture, const CarAssets& selection) {
         std::string error;
         require(load_race_hud_atlas(root,hud_atlas,error),error);
-        if (!read_stock_frame_inputs(root,car_inputs,tuned))
-            throw std::runtime_error(car_inputs.read_error(root));
-        require(prepare_race_car_frame(car_inputs,root,tuned ? tuned_240sx_request() : stock_240sx_request(),
-                tuned ? tuned_240sx_skin() : stock_240sx_skin(),car,error,car_shading),error);
-        require(prepare_car_shadow(car_inputs,car.car_pack,shadow,error),error);
+        if (!read_car_frame_inputs(root,selection,car_inputs,tuned,error))
+            throw std::runtime_error(car_frame_inputs_error(car_inputs,error,root));
+        require(prepare_race_car_frame(car_inputs,root,
+                tuned ? tuned_240sx_request() : stock_car_request(selection.car_type_name),
+                tuned ? tuned_240sx_skin() : stock_car_skin(selection.car_type_name),
+                car,error,car_shading),error);
+        require(prepare_car_shadow(selection.car_type_name,car_inputs,car.car_pack,shadow,error),error);
         base = car.scene.instances;
         glow_anchors = collect_car_glow_anchors(car);
         const std::array<fs::path,3> paths = {
@@ -263,6 +265,7 @@ public:
 int run(int argc, char** argv) {
     fs::path root,input,output,generate;
     bool live=false, smoke=false, tuned=false;
+    std::string car_name="240SX"; bool car_seen=false;
     bool particles_enabled=true, particle_events=false;
     bool glows=false;
     TextureFilterMode texture_filter=TextureFilterMode::legacy;
@@ -283,6 +286,7 @@ int run(int argc, char** argv) {
             std::cout << "nfsu_race --root RETAIL (--input RECORDING | --generate RECORDING | --live)\n"
                          "  [--out NEW_DIRECTORY --frames 180,600,6000,22000,40000]\n"
                          "  [--particles=on|--particles=off] [--particle-events] [--tuned] [--glows]\n"
+                         "  [--car NAME] a playable car type from the retail table; 240SX by default\n"
                          "  [--car-shading on|off] [--texture-filter legacy|linear]\n"
                          "  [--wet-road-reflections on|off]\n"
                          "  [--performance-levels name=0..3,...] [--handling-telemetry]\n"
@@ -309,6 +313,11 @@ int run(int argc, char** argv) {
         else if (a=="--steering") {
             require(!steering_seen && parse_race_steering(value,steering),"--steering needs one baseline, recovered0 or recovered1");
             steering_seen=true;
+        }
+        else if (a=="--car") {
+            require(!car_seen,"duplicate --car");
+            require(!value.empty(),"--car needs a car type name");
+            car_name=value; car_seen=true;
         }
         else if (a=="--root") root=nfsu::argument_path(argv[i]);
         else if (a=="--input") input=nfsu::argument_path(argv[i]);
@@ -339,6 +348,10 @@ int run(int argc, char** argv) {
     require(!hud_trace || !output.empty(),"--hud-trace requires --out");
     require(!live || (output.empty() && frames.empty()),"live mode does not export files");
     require(fs::is_directory(root),"retail root is not a directory");
+    // The tuned preset is the 240SX's own part set, and a car other than the
+    // 240SX must never wear it silently (issue #315).
+    require(!(tuned && car_name!="240SX"),
+            "the --tuned preset is the 240SX's own part set; it cannot dress car type "+car_name);
     for (const auto& path : {output,generate}) if (!path.empty()) {
         require(!fs::exists(path),"output already exists");
         require(!within(path,root),"output must be outside the retail tree");
@@ -357,6 +370,16 @@ int run(int argc, char** argv) {
     require(event && event->races.size()==1,"event 1 missing or not one race");
     const auto& slot=event->races[0]; const auto* info=find_track_info(tracks,slot.track);
     require(info && slot.track==1003 && slot.laps==2 && slot.direction==0,"event 1 is not the supported forward two-lap 1003 circuit");
+    // The selected car, resolved after the argument and output checks so
+    // their refusals keep their order (tests/race_guards.cmake), and before
+    // any course or scene loading (issue #315).
+    CarAssets selected_car;
+    {
+        std::string car_error;
+        if (!nfsu::load_car_assets(root/"Global/GLOBALB.BUN",car_name,selected_car,car_error))
+            throw std::runtime_error("car selection: "+car_error);
+    }
+    std::cout << "car " << selected_car.car_type_name << ' ' << selected_car.brand_name << '\n';
     const auto trackb=root/"Tracks"/track_bundle_file_name(slot.track);
     VehicleTrackCourse course;
     require(load_vehicle_track_course(trackb,slot.laps,slot.direction,info->lap_skip,0,course,error),error);
@@ -374,7 +397,7 @@ int run(int argc, char** argv) {
     scene.wet_road_reflections=wet_road_reflections;
     scene.files.pack=root/"Tracks"/track_stream_pack_file_name(*info);
     scene.files.has_pack=fs::exists(scene.files.pack);
-    scene.load_car(root,root/"Tracks"/track_texture_file_name(slot.track));
+    scene.load_car(root,root/"Tracks"/track_texture_file_name(slot.track),selected_car);
     if (wet_road_reflections) require(load_wet_road_lamps(root, course.world, scene.lamps, error),error);
     Sha256 sequence; const std::string version="NFSU_RACE_STATE 1\n";
     sequence.update(version.data(),version.size());
@@ -383,8 +406,13 @@ int run(int argc, char** argv) {
         sequence.update(line.data(),line.size());
     }
     VehicleSpec spec=stock_240sx_vehicle_spec();
+    if (explicit_performance || selected_car.car_type_name!="240SX") {
+        // Every car but the default drives its own decoded handling record;
+        // the built-in 240SX spec keeps the pinned baseline replay exact.
+        require(load_race_vehicle_spec(root/"Global/GLOBALB.BUN",selected_car.car_type_name,
+                                       performance,spec,error),error);
+    }
     if (explicit_performance) {
-        require(load_race_vehicle_spec(root/"Global/GLOBALB.BUN","240SX",performance,spec,error),error);
         std::cout << "performance-levels " << performance_levels_text(performance) << '\n';
     }
     if (handling_telemetry && !explicit_performance) std::cout << "performance-levels legacy-stock\n";

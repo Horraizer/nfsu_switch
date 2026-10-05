@@ -443,9 +443,14 @@ only, so the tuned viewers report a missing tuned file themselves.
 stdout arrives on the PC; `-a <address>` names the console when nxlink cannot
 find it. `--args` passes the application an argument: `--unpainted` draws
 and checks the unpainted frame of issue #141, `--tuned` draws issue #229's
-selection, and a root argument replaces `sdmc:/nfsu`. The `--args=--tuned`
-form follows nxlink's option syntax; it has not yet been tried on hardware.
-When the application was not
+selection, `--car NAME` (issue #315) draws any playable racer of the retail
+car type table - resolved against the installed `Global/GLOBALB.BUN`, with
+that car's own `Cars/<NAME>` files expected beside the shared set - and a
+root argument replaces `sdmc:/nfsu`. Only the 240SX has a pinned desktop
+frame; another car reports its own hash and says there is no pin. `--tuned`
+with any car but the 240SX is refused: that preset is the 240SX's own part
+set. The `--args=--tuned` form follows nxlink's option syntax; it has not
+yet been tried on hardware. When the application was not
 started by nxlink it opens no socket and reports on the screen alone.
 
 ### Controls

@@ -1,6 +1,8 @@
 // Stock 240SX through the neutral recorder and the Switch-only executor.
 // Same six read-only SD inputs as nfsu_switch_car, no CPU rasterization.
+// --car NAME (issue #315) selects any playable racer the same way.
 #include "deko_renderer.h"
+#include "nfsu/car_assets.h"
 #include "nfsu/stock_frame.h"
 #include "nfsu/screen_text.h"
 #include <switch.h>
@@ -8,6 +10,7 @@
 #include <unistd.h>
 #include <cstdio>
 #include <exception>
+#include <filesystem>
 #include <string>
 
 namespace {
@@ -17,7 +20,7 @@ namespace {
 class Report {
     Framebuffer fb_{};
     bool open_ = false;
-    char text_[2048] = "nfsu_switch_deko3d: loading the stock 240SX. + exits.";
+    char text_[2048] = "nfsu_switch_deko3d: loading the stock car. + exits.";
 public:
     ~Report() { close(); }
     void close() { if (open_) framebufferClose(&fb_); open_ = false; }
@@ -74,6 +77,7 @@ bool run(int argc, char** argv, PadState& pad, Report& report, std::string& erro
     bool tuned = false;
     bool retail = true;
     bool have_root = false;
+    std::string car_name = "240SX";
     for (int i = 1; i < argc; ++i) {
         if (!argv[i] || !argv[i][0]) continue;
         const std::string argument = argv[i];
@@ -81,17 +85,33 @@ bool run(int argc, char** argv, PadState& pad, Report& report, std::string& erro
         else if (argument == "--tuned") tuned = true;
         else if (argument == "--material-state=retail") retail = true;
         else if (argument == "--material-state=off") retail = false;
+        else if (argument == "--car" && i + 1 < argc && argv[i + 1]) {
+            car_name = argv[++i];
+        }
         else if (!have_root && argument[0] != '-') { root = argument; have_root = true; }
         else { error = "unknown argument: " + argument; return false; }
     }
     if (tuned) painted = true;
-    report.line(("inputs: " + root + (tuned ? " (tuned)" :
-                 painted ? " (painted)" : " (unpainted)")).c_str());
+    nfsu::CarAssets selected_car;
+    if (!nfsu::load_car_assets(std::filesystem::path(root) / "Global/GLOBALB.BUN",
+                               car_name, selected_car, error)) {
+        error = "car selection: " + error; return false;
+    }
+    if (tuned && !nfsu::tuned_preset_available_for(selected_car)) {
+        error = "the --tuned preset is the 240SX's own part set; it cannot dress car type " +
+                selected_car.car_type_name;
+        return false;
+    }
+    report.line(("inputs: " + root + " car " + selected_car.car_type_name +
+                 (tuned ? " (tuned)" : painted ? " (painted)" : " (unpainted)")).c_str());
     report.line((std::string("material state: ") + (retail ? "retail" : "off")).c_str());
     nfsu::StockFrame frame;
     {
         nfsu::StockFrameInputs inputs;
-        const bool read = nfsu::read_stock_frame_inputs(root, inputs, tuned);
+        std::string read_error;
+        const bool read = nfsu::read_car_frame_inputs(root, selected_car, inputs, tuned,
+                                                      read_error);
+        if (!read_error.empty()) { error = read_error; return false; }
         for (const auto& input : inputs.files) {
             const auto line = root + "/" + input.path + ": " +
                 (input.read ? "read " + std::to_string(input.bytes.size()) + " bytes" : input.error);
@@ -110,9 +130,9 @@ bool run(int argc, char** argv, PadState& pad, Report& report, std::string& erro
         }
         if (!read) return false;
         const auto skin = tuned ? nfsu::tuned_240sx_skin() :
-            painted ? nfsu::stock_240sx_skin() : nfsu::StockFrameSkin{};
+            painted ? nfsu::stock_car_skin(selected_car.car_type_name) : nfsu::StockFrameSkin{};
         const auto request = tuned ? nfsu::tuned_240sx_request() :
-            nfsu::stock_240sx_request();
+            nfsu::stock_car_request(selected_car.car_type_name);
         if (!nfsu::prepare_stock_frame(inputs, request, skin, frame, error)) return false;
         if (!frame.inputs_ok) {
             error = "stock input issues:\n";

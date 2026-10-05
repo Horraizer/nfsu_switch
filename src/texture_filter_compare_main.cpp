@@ -125,7 +125,7 @@ Frame reference_frame(const std::filesystem::path& root, const RaceSession& sess
     require(read_stock_frame_inputs(root,inputs),"comparison car input missing");
     require(prepare_race_car_frame(inputs,root,stock_240sx_request(),stock_240sx_skin(),car,error,options.car_shading),error);
     CarShadowAsset shadow;
-    require(prepare_car_shadow(inputs,car.car_pack,shadow,error),error);
+    require(prepare_car_shadow("240SX",inputs,car.car_pack,shadow,error),error);
     require(render_car_shadow(shadow,place_car_shadow(session),options,background,stats,error),error);
     const auto base = car.scene.instances;
     require(drive_place_instances(base,session.car(),session.spec(),car.scene.instances,&session.animation()),
