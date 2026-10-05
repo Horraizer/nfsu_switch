@@ -4,6 +4,8 @@
 namespace nfsu {
 // Original 0x564B10 fixed-angle polynomial, not host-library sine.
 float frontend_fixed_sine(std::uint16_t phase) noexcept;
+// Native 0x4B18F7..0x4B192A uses wheel 0 radius for all four wheels.
+std::uint16_t frontend_wheel_phase(std::uint16_t phase, float travel, float radius) noexcept;
 struct FrontendRoadPlacement {
     unsigned group = 0;
     unsigned family = 0; // 0: _A, 1: _Z, 2: _Y, from 0x4AE530.

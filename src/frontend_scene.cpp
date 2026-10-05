@@ -1,4 +1,5 @@
 #include "nfsu/frontend_scene.h"
+#include <cmath>
 #include "nfsu/frontend_preset.h"
 #include "nfsu/frontend_motion.h"
 #include "nfsu/race_gpu_scene.h"
@@ -177,6 +178,9 @@ struct FrontendGpuScene::Impl {
     FrontendRoad road;
     RecordedCommands commands;
     std::size_t road_groups=0;
+    std::vector<DrawInstanceUniform> base_car_placements;
+    std::uint16_t wheel_phase=0;
+    float wheel_radius=0;
     bool ready=false;
 };
 FrontendGpuScene::FrontendGpuScene():impl_(std::make_unique<Impl>()){}
@@ -220,6 +224,13 @@ bool FrontendGpuScene::load(const std::filesystem::path& root,unsigned width,uns
         draw.name+="_FE_SEGMENT"+std::to_string(segment);draw.instance=segment;
     }
     if(!combine_race_commands(std::move(road),car,p.commands,error))return false;
+    const auto& type=p.car.car_types.records.at(p.car.report.car_type);
+    p.wheel_radius=type.wheels[0].rolling_radius;
+    if(!std::isfinite(p.wheel_radius) || p.wheel_radius<=0) {
+        error="original frontend rolling radius invalid";return false;
+    }
+    for(std::size_t i=p.road_groups*5;i<p.commands.owning_draws().size();++i)
+        p.base_car_placements.push_back(p.commands.owning_draws()[i].placement);
     p.ready=true;impl_.swap(next);return frame(0,0,error);
 }
 bool FrontendGpuScene::frame(float seconds,std::uint32_t ticks,std::string& error) {
@@ -231,6 +242,24 @@ bool FrontendGpuScene::frame(float seconds,std::uint32_t ticks,std::string& erro
     for(unsigned segment=0;segment<5;++segment)for(std::size_t group=0;group<p.road_groups;++group) {
         auto& rows=draws[segment*p.road_groups+group].placement.rows;
         rows[12]=placements[segment].longitudinal;rows[13]=0;rows[14]=placements[segment].vertical;
+    }
+    p.wheel_phase=frontend_wheel_phase(p.wheel_phase,p.road.delta,p.wheel_radius);
+    const float sine=frontend_fixed_sine(p.wheel_phase);
+    const float cosine=frontend_fixed_sine(static_cast<std::uint16_t>(p.wheel_phase+0x4000));
+    const float spin[16]={cosine,0,-sine,0,0,1,0,0,sine,0,cosine,0,0,0,0,1};
+    for(std::size_t i=p.road_groups*5;i<draws.size();++i) {
+        auto& draw=draws[i];const auto& instance=p.car.scene.instances.at(draw.instance);
+        if(instance.part_slot!=kSlotWheel) continue;
+        auto base=p.base_car_placements.at(i-p.road_groups*5);
+        for(unsigned c=0;c<3;++c)base.rows[12+c]-=instance.animation_pivot[c];
+        DrawInstanceUniform rotated;
+        for(unsigned r=0;r<4;++r)for(unsigned c=0;c<4;++c) {
+            double value=0;
+            for(unsigned k=0;k<4;++k)value+=double(base.rows[r*4+k])*spin[k*4+c];
+            rotated.rows[r*4+c]=static_cast<float>(value);
+        }
+        for(unsigned c=0;c<3;++c)rotated.rows[12+c]+=instance.animation_pivot[c];
+        draw.placement=rotated;
     }
     return record_frame_state(p.options,RenderLimits{},p.commands,error);
 }

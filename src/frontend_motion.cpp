@@ -17,6 +17,13 @@ float frontend_fixed_sine(std::uint16_t phase) noexcept {
         (x-x2*x*double(0.1666666716337204F))) -
         x7*double(0.00019841270113829523F))) * sign);
 }
+std::uint16_t frontend_wheel_phase(std::uint16_t phase,float travel,float radius) noexcept {
+    if(!std::isfinite(travel) || !std::isfinite(radius) || radius<=0) return phase;
+    const double increment=double(travel)/(double(radius)*double(6.283180236816406F))*double(65535.9453125F);
+    if(increment < -2147483648.0 || increment >= 2147483648.0) return phase;
+    // Native CRT conversion truncates before the 16-bit accumulator wraps.
+    return static_cast<std::uint16_t>(unsigned(phase)+static_cast<std::uint32_t>(static_cast<std::int32_t>(increment)));
+}
 void FrontendRoad::update(float seconds,std::uint32_t ticks,bool forced) noexcept {
     if(!std::isfinite(seconds) || seconds<0) return;
     // 0x4AE1F0 uses the previous speed for this frame's velocity.

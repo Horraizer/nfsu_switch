@@ -38,6 +38,12 @@ int main(int argc,char** argv) {
         check(rejected,"missing AST bank boundary rejected");
         // Values come from bounded execution of retail 0x4AE1F0 and
         // 0x4AE530, with ready state, 50 km/h and a 1/60-second frame.
+        check(frontend_wheel_phase(0,.231441572F,.31F)==7787 &&
+              frontend_wheel_phase(0,.229F,.31F)==7705 &&
+              frontend_wheel_phase(0,1.F,.31F)==33646,
+              "native wheel phase uses original constants and truncation");
+        check(frontend_wheel_phase(65000,1.F,.31F)==33110,
+              "native wheel phase wraps 16-bit accumulator");
         const float native_velocity[]={13.6864938736F,13.6265792847F,14.0879993439F,12.9644823074F};
         const unsigned native_seconds[]={0,1,10,30};
         for(unsigned i=0;i<4;++i) {
@@ -141,6 +147,13 @@ int main(int argc,char** argv) {
             check(moving_commands.size()==initial_commands.size() &&
                 moving_commands.front().placement.rows[12]!=initial_commands.front().placement.rows[12],
                 "resident original road translates without rebuilding draw definitions");
+            bool wheel_moved=false;
+            for(std::size_t i=0;i<moving_commands.size();++i) {
+                const auto& before=initial_commands[i].placement.rows;
+                const auto& after=moving_commands[i].placement.rows;
+                wheel_moved |= before[0]!=after[0] || before[2]!=after[2];
+            }
+            check(wheel_moved,"original frontend rolling changes resident wheel matrices");
             audio::FrontendSfx sfx;
             check(sfx.load(root,error),error.c_str());
             std::vector<std::int16_t> unchanged(1024*2,1234);

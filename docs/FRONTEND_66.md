@@ -140,13 +140,33 @@ Its _A family and five translated copies are the verified main-view binding;
 _Z/_Y belong to their separate view passes.
 
 Camera constructor 0x486C80 and matrix builder 0x487680 establish the initial
-orbit state. Original idle logic in 0x4B0340 starts orbit only after its native
-idle threshold, and 0x4870C0 advances the rates. Initial car yaw is zero in
-0x4AF73D and consumed by 0x4B1760. The owner's photograph can show a later
-orbit angle; it does not justify arbitrarily flipping this initial model pose.
-Wheel actuation and scene-specific reflection, lighting, shadow and glow
-consumers are still being investigated. General race shading is not original
-menu effect parity.
+pose. Idle orbit in 0x4B0340 is gated by Main +0x124 == 4 at 0x4B0ABD.
+The actual FE_SKYLINE install entry 0x4B2C30 zeroes EDI at 0x4B2EF7 before
+calling 0x4B2480; 0x4B14E8 stores that zero to Main +0x124. Constructor
+state 4 alone therefore does not establish a main-menu orbit. The current
+main-menu camera preserves the original initial pose. State-4 car-selection
+callers are separate consumers; no arbitrary orbit is forced on this entry.
+
+The genuine Main constructor enables rolling at 0x4AF71D (Main +0x10C = 1)
+and initializes the phase to zero at 0x4AF76B. Wheel builder 0x4B1760 updates
+Main +0x108 at 0x4B18F7..0x4B192A from road travel 0x746DD8 plus car-switch
+travel Main +0x104, divided by wheel-0 rolling radius and the executable's
+circumference constant. It truncates before adding to the 16-bit accumulator.
+The original 0x40BA40 spin matrix is consumed by all four wheel node matrices;
+brake matrices do not receive that spin. The menu reuses the existing prepared
+wheel placement and applies the recovered phase around its recorded pivot.
+`tools/frontend66_motion_native.py <retail-root>` executes the original phase
+slice and spin matrices with explicit travel/radius/zero-switch boundary
+inputs; `nfsu_frontend_tests` pins those native phase samples and checks resident
+wheel matrix updates. This is not a whole-game render capture.
+
+Live Switch presentation now uploads the resident scene and one padded atlas
+of original frontend textures/fonts, then submits FEng and font quads every
+frame. The CPU pixel background copy is absent from this path. Selection
+changes log pad-poll-to-selection, scene/UI CPU time, acquire/fence/record and
+present/total time. Hardware timing remains unmeasured. Original FEng temporal
+animation and scene-specific reflection, lighting, shadow and glow consumers
+remain incomplete; general race shading is not original menu effect parity.
 
 PR319 dependency 9eb9a2dfcd43354253ee7288e36324186cb5d90f is integrated locally
 with its source history preserved. GLOBALB supplies the otherwise missing
