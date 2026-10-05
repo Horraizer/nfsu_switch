@@ -539,5 +539,9 @@ if(NFSU_BUILD_TESTS)
             --source ${CMAKE_CURRENT_SOURCE_DIR}/race_main.cpp
             --renderer ${CMAKE_CURRENT_SOURCE_DIR}/deko_renderer.cpp)
     set_tests_properties(nfsu_switch_race_embedded_shaders PROPERTIES TIMEOUT 60)
+    add_test(NAME nfsu_switch_vertex_locations
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/switch_vertex_locations_tests.py
+            --root ${PROJECT_SOURCE_DIR})
+    set_tests_properties(nfsu_switch_vertex_locations PROPERTIES TIMEOUT 60)
 
 endif()

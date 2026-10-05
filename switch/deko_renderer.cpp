@@ -722,10 +722,10 @@ struct DekoRenderer::Impl {
                     byte ? DkVtxAttribSize_4x8 : input.format == sm::VertexFormat::float32x3 ? DkVtxAttribSize_3x32 : DkVtxAttribSize_2x32,
                     byte ? DkVtxAttribType_Unorm : DkVtxAttribType_Float, 0};
             }
-            const dk::detail::ArrayProxy<DkVtxAttribState const> attrib_states(
-                static_cast<std::uint32_t>(draw.program->attribute_count),
-                attributes.data());
-            out.bindVtxAttribState(attrib_states);
+            // Attribute locations can be sparse (FE car: 0, 2, 3). The
+            // API count covers locations, not the number of manifest records.
+            // Zero initialized holes have DkVtxAttribType_None.
+            out.bindVtxAttribState(attributes);
             out.bindVtxBufferState(DkVtxBufferState{draw.program->buffers[0].stride, 0});
         }
         const auto& v = records[draw.vertex_resource].placement;
@@ -1145,14 +1145,16 @@ bool DekoRenderer::open(const RecordedCommands& commands, std::string& error, bo
 bool DekoRenderer::open_frontend(const RecordedCommands& commands,const FrontendUiAtlas& atlas,std::string& error) {
     if(!open(commands,error))return false;
     if(impl_->init_overlay(atlas.rgba,atlas.width,atlas.height,kFrontendUiMaxQuads,error))return true;
-    const auto failure=error;std::string cleanup;close(cleanup);error=failure;return false;
+    const auto failure=std::string("frontend atlas upload: ")+error;
+    std::string cleanup;close(cleanup);error=failure;return false;
 }
 bool DekoRenderer::present_frontend(const FrontendUiFrame& frame,std::string& error,DekoPresentTiming* timing) {
     if(frame.additive.size()>kFrontendUiMaxQuads || frame.vertices.size()!=frame.additive.size()*4 ||
        std::any_of(frame.additive.begin(),frame.additive.end(),[](auto mode){return mode>1;})) {
         error="frontend overlay frame invalid";return false;
     }
-    return impl_->present(error,timing,nullptr,nullptr,&frame);
+    if(impl_->present(error,timing,nullptr,nullptr,&frame))return true;
+    error="frontend composed frame: "+error;return false;
 }
 bool DekoRenderer::reconfigure_target(const RecordedCommands& commands, std::string& error,
                                       std::size_t draw_capacity, bool profile_frame,

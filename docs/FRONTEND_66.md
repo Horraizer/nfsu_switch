@@ -610,3 +610,19 @@ its bytes, break its hash lookup while preserving its name and bytes, and
 corrupt its embedded payload. It also rejects the former race-only mount
 source contract. This is file/source evidence; opening the final menu on
 Switch remains the runtime acceptance check.
+
+## Frontend GPU submission follow-up
+
+The hardware queue error after scene-open at b6f85c6 is not a successful
+presentation. The open diagnostic precedes the separate UI atlas upload,
+so that log alone does not locate the failing submission. Frontend errors
+now distinguish atlas upload from composed-frame submission.
+
+A confirmed input mismatch was found separately: frontend_car_textured
+has sparse vertex attribute locations 0, 2, 3. The old recorder sent only
+three slots, omitting normal location 3. It now sends all four initialized
+slots, retaining None for the unused location 1. The Switch-only
+nfsu_switch_vertex_locations test checks actual manifests and recorder
+span, including a negative control for the old truncated count. This is
+a source binding correction; hardware evidence is required to establish
+whether it also resolves the queue error.
