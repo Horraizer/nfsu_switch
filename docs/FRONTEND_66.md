@@ -464,3 +464,21 @@ executes original interpolation and image submission from the authored
 circle records. `nfsu_frontend_retail` compares time-varying corners, alpha
 and loop wrap against those independent native outputs. Selection event
 Highlight/UnHighlight temporal scripts remain separate from these Init loops.
+
+### Bounded native road sprite witness
+
+`tools/frontend66_flare_native.py` executes the original road sprite caller
+and billboard consumer against the authenticated retail inputs. The original
+constructor gives each road marker two records: kind1/subtype9 on the sprite
+list at environment+1020 and kind2/subtype2 on the light list at+1028. These
+are separate consumers. The sprite descriptor selects HEADLIGHTGLOW; no
+procedural replacement is justified by this witness.
+
+The caller uses the unit model at78BCC0, initialized by genuine40B5E0. The
+actual sprite output is the local quad passed in EAX to40C300, with vertices
+at+10/+20/+30/+40 and colors at+80. Full40DD00 publishes actual frustum planes;
+the helper executes both40DC60 and40DB20 without visibility overrides.
+Primary/floor near/far and texture allocation/quality remain supplied
+boundaries. Native initial-phase primary culling is not mode0 suppression
+and cannot establish the appearance of later phases. This witness does not
+implement the source sprite shader or prove depth/occlusion parity.
