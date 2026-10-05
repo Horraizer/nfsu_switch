@@ -7,13 +7,16 @@ not recovered retail profile defaults. Actual moving road lights remain a
 separate populated-state witness. No lighting/matrix arithmetic is stubbed.
 """
 from pathlib import Path
-import argparse,sys,struct,hashlib
+import argparse,sys,struct,hashlib,runpy
 sys.dont_write_bytecode=True
 from event0_trace import Image
 from hud254_native import Machine
 from unicorn.x86_const import *
 parser=argparse.ArgumentParser();parser.add_argument('--retail-root',type=Path,required=True)
-raw=(parser.parse_args().retail_root/'speed.exe').read_bytes()
+parser.add_argument('--road-offset',type=float,default=None)
+parser.add_argument('--trace-accumulation',action='store_true')
+args=parser.parse_args()
+raw=(args.retail_root/'speed.exe').read_bytes()
 assert hashlib.sha256(raw).hexdigest()=='c0fad450912952f53809a54690d235aa8b4e25b9f46650693c7cbee1b4c074b7'
 im=Image(raw);im.sections=[(a,s,r) for a,s,r,n in im.sections]
 m=Machine(im)
@@ -53,7 +56,21 @@ assert m.uc.reg_read(UC_X86_REG_EIP)==0x47d1db
 m.uc.hook_del(hook)
 print('NATIVE_PRIMARY_CVIEW_EYE',struct.unpack('<3f',m.uc.mem_read(cv+0x40,12)))
 m.write(scene+0x40,cv);m.uc.mem_write(car_matrix,identity);m.uc.mem_write(car_matrix+0x38,struct.pack('<f',.20027998089790344))
+if args.road_offset is not None:
+ saved_argv=sys.argv[:]
+ sys.argv=[str(Path(__file__).with_name('frontend66_road_light_native.py')),'--retail-root',str(args.retail_root),'--road-offset',str(args.road_offset)]
+ try:road=runpy.run_path(sys.argv[0])
+ finally:sys.argv=saved_argv
+ producer=road['m'];m.uc.mem_write(0x1001000,bytes(producer.uc.mem_read(0x1001000,0x5000)))
+ m.write(0x743c10,0x100101c);m.write(0x743c14,0x100101c)
+ print('BOUNDARY_ROAD_INPUTS: original pool; injected RGB17/39/71 height.125 attenuation.4/.03/.001 not defaults')
+def accumulation(uc,at,size,data):
+ if at==0x5416e0:
+  sp=uc.reg_read(UC_X86_REG_ESP);color=uc.reg_read(UC_X86_REG_ECX)
+  print('NATIVE_SH_ACCUMULATE',struct.unpack('<4f',uc.mem_read(color,16)),struct.unpack('<4f',uc.mem_read(sp+4,16)))
+accumulation_hook=m.uc.hook_add(UC_HOOK_CODE,accumulation) if args.trace_accumulation else None
 m.run(0x542e40,(0x1003000,car_matrix+0x30,0,0x78ea40),{UC_X86_REG_EAX:scene})
+if accumulation_hook is not None:m.uc.hook_del(accumulation_hook)
 m.run(0x544390,(0x78ea40,cv+0x40,scene,0x1003000),{UC_X86_REG_EAX:local,UC_X86_REG_ESI:car_matrix})
 print('NATIVE_FE_LOCAL_EYE',struct.unpack('<4f',m.uc.mem_read(local+0xc0,16)))
 print('NATIVE_FE_LOCAL_HARMONIC',struct.unpack('<40f',m.uc.mem_read(local+0x120,160)))

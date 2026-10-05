@@ -75,6 +75,39 @@ int main(int argc,char** argv) {
             {.16250151481665143,.00020057602170786372,.6336112707115158},
             {-.009559216976165772,5.485728244575609e-10,.602},
             {.5759352854850635,.14024445869762775,.9265147171733882}};
+        // Original4AE1F0/5411B0/542E40/544390 populated-state witness.
+        // RGB/lateral/attenuation are deliberately nonzero test inputs,
+        // not retail defaults; all channel vectors are independently native.
+        const float marker_positions[4][3]={
+            {41.37820053100586F,-1.0800316333770752F,13.673964500427246F},
+            {16.810354232788086F,-1.0800316333770752F,13.673964500427246F},
+            {-9.519950866699219F,-1.0800316333770752F,13.673964500427246F},
+            {-35.60659408569336F,-1.0800316333770752F,13.673964500427246F}};
+        const float rgb[3]={17,39,71},attenuation[3]={.4F,.03F,.001F},car_position[3]={0,0,.20027998089790344F};
+        FrontendRoad light_road;light_road.offset=99;std::array<FrontendPointLight,32> pool;
+        const auto count=frontend_road_lights(light_road,marker_positions,.125F,rgb,attenuation,pool);
+        check(count==20,"native moving road fills20 of32 slots");
+        check(std::abs(pool[0].position[0]-142.37820434570312)<.00002 &&
+            std::abs(pool[5].position[0]-17.810354232788086)<.00002 &&
+            std::abs(pool[6].position[0]+8.519950866699219)<.00002 &&
+            std::abs(pool[5].position[1]+.9550316333770752)<.000001 &&
+            std::abs(pool[5].position[2]-13.964964866638184)<.000001,
+            "native moving pool includes original lateral, vertical and segment offsets");
+        const float native_h[10][4]={
+            {.37331944704055786F,.3836084306240082F,.39857423305511475F,.4948277175426483F},
+            {-.03231409192085266F,-.027825508266687393F,-.02129666693508625F,-.03618179261684418F},
+            {.03231409192085266F,.027825508266687393F,.02129666693508625F,.03618179261684418F},
+            {-.06558123975992203F,-.050790976732969284F,-.02927788533270359F,-.06640803813934326F},
+            {-.028355663642287254F,-.027030684053897858F,-.025103433057665825F,-.03498077765107155F},
+            {.028719954192638397F,.009623236022889614F,-.018153807148337364F,.013481257483363152F},
+            {.09651527553796768F,.09517118334770203F,.09321616590023041F,.12297910451889038F},
+            {.22620627284049988F,.2138376086950302F,.19584684073925018F,.27683430910110474F},
+            {.1727355718612671F,.17082083225250244F,.16803576052188873F,.22070521116256714F},
+            {.3578336238861084F,.3854305148124695F,.42557138204574585F,.4962257146835327F}};
+        const auto populated=frontend_point_lighting(pool.data(),count,car_position);
+        for(unsigned term=0;term<10;++term)for(unsigned channel=0;channel<4;++channel)
+            check(std::abs(populated.harmonic[term][channel]-native_h[term][channel])<1e-6,
+                "all40 populated moving road harmonic values match genuine native consumer");
         const auto lighting=frontend_startup_lighting();
         for(unsigned n=0;n<3;++n) {
             double surface[7];frontend_surface(lighting,material,position,normals[n],eye,surface);

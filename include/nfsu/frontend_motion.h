@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include "nfsu/car_shading.h"
 #include <cstdint>
 namespace nfsu {
 // Original 0x564B10 fixed-angle polynomial, not host-library sine.
@@ -33,4 +34,9 @@ struct FrontendRoad {
     // Return 0 for a view that does not draw this environment.
     unsigned placements(unsigned view, std::array<FrontendRoadPlacement,5>& out) const noexcept;
 };
+// Original4AE1F0 fills20 of32 road slots. Lateral/color/attenuation are
+// explicit unresolved startup inputs; callers must not invent defaults.
+unsigned frontend_road_lights(const FrontendRoad& road,const float (&markers)[4][3],
+    float lateral,const float (&rgb)[3],const float (&attenuation)[3],
+    std::array<FrontendPointLight,32>& out) noexcept;
 }

@@ -23,6 +23,16 @@ struct CarShadingMaterial {
 struct FrontendLighting {
     float harmonic[10][4]{};
 };
+struct FrontendPointLight {
+    float position[3]{};
+    float rgb[3]{};
+    float radius=23.3700008392334F;
+    float attenuation[3]{};
+};
+// Original FE main-camera/reflection basis, with explicit startup assumptions.
+// Point records come from the moving road producer, never invented lights.
+FrontendLighting frontend_point_lighting(const FrontendPointLight* lights,std::size_t count,
+    const float (&raw_car_position)[3]) noexcept;
 FrontendLighting frontend_startup_lighting() noexcept;
 // Native face projection, with samples clamped to each logical128-square
 // face's texel centers before atlas packing; unrelated tiles cannot bleed.

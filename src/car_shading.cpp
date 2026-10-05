@@ -136,27 +136,73 @@ bool apply_car_materials(PreparedCarScene& scene, const unsigned char* bytes,
 } // namespace nfsu
 
 namespace nfsu {
-FrontendLighting frontend_startup_lighting() noexcept {
-    // Authentic 542E40 -> 544390 witness: mode 3, actual primary CView and
-    // reflection basis, 735548/73554C zero, road light RGB zero and no race
-    // light list. Those unresolved startup inputs remain explicit assumptions.
-    const float values[10][2]={
-        {.35557228326797485F,.49166592955589294F},
-        {-.03482309728860855F,-.04815147817134857F},
-        {.03482309728860855F,.04815147817134857F},
-        {-.07494521141052246F,-.10363014787435532F},
-        {-.028591757640242577F,-.039535120129585266F},
-        {.04231078550219536F,.058505043387413025F},
-        {.09493815898895264F,.13127529621124268F},
-        {.22944235801696777F,.31726035475730896F},
-        {.16954396665096283F,.23443613946437836F},
-        {.32748597860336304F,.4528297185897827F}};
-    FrontendLighting result;
-    for(unsigned i=0;i<10;++i) {
-        for(unsigned c=0;c<3;++c) result.harmonic[i][c]=values[i][0];
-        result.harmonic[i][3]=values[i][1];
+FrontendLighting frontend_point_lighting(const FrontendPointLight* lights,std::size_t count,
+    const float (&car)[3]) noexcept {
+    struct Input {float direction[3],color[4];};Input input[14]{};unsigned used=3;
+    // Genuine542E40 normalized FE table directions under the recovered,
+    // fixed main-menu reflection basis. Remaining table intensities are zero.
+    const float directions[3][4]={
+        {.12326809763908386F,.829439640045166F,.5448254942893982F,221.82000732421875F},
+        {.9293131232261658F,-.3390888571739197F,.1462731659412384F,144.58999633789062F},
+        {-.37582290172576904F,-.5062289834022522F,.7762018442153931F,67.66000366210938F}};
+    for(unsigned i=0;i<3;++i) {
+        for(unsigned c=0;c<3;++c){input[i].direction[c]=directions[i][c];input[i].color[c]=directions[i][3];}
     }
+    // Genuine5411B0 range/inner-radius selector, in stable road pool order.
+    for(std::size_t i=0;lights && i<std::min<std::size_t>(count,32) && used<14;++i) {
+        const auto& light=lights[i];float delta[3];double squared=0;
+        for(unsigned c=0;c<3;++c){delta[c]=light.position[c]-car[c];squared+=double(delta[c])*delta[c];}
+        const double radius=double(light.radius)*light.radius;
+        if(!(squared<radius))continue;
+        const double inner=double(light.attenuation[0])*light.attenuation[0];
+        const float weight=static_cast<float>(squared>inner?1-(squared-inner)/(radius-inner):1);
+        const double length=std::sqrt(squared);auto& dst=input[used++];
+        for(unsigned c=0;c<3;++c) {
+            dst.direction[c]=length>0?float(delta[c]/length):(c==0?1.F:0.F);
+            dst.color[c]=light.rgb[c]*1.5F*weight;
+        }
+    }
+    float energy=0;
+    for(unsigned i=0;i<used;++i) {
+        auto& color=input[i].color;
+        for(unsigned c=0;c<3;++c)color[c]*=.003921568859368563F;
+        color[3]=color[2]*.17000000178813934F+color[0]*.28999999165534973F+color[1]*.5400000214576721F;
+        energy+=color[3];
+    }
+    // Genuine542DC0 sixth-order normalization polynomial, then1/poly^4.
+    const long double x=energy,x3=x*x*x,x4=x3*x,x5=static_cast<float>(x4)*x;
+    const long double poly=x5*x*.0000006906000180606497F+x5*.000005430199962574989F+
+        x4*.00017156200192403048F+x3*.002591371303424239F+
+        static_cast<float>(.03125758469104767F*x*x+x*.24999868869781494F+1);
+    const long double gain=energy>2?2.L/energy:1-1/(poly*poly*poly*poly);
+    FrontendLighting result;
+    for(unsigned i=0;i<used;++i) {
+        for(unsigned sign=0;sign<2;++sign) {
+            const float direction_scale=sign?-1.F:1.F,color_scale=sign?-.05000000074505806F:1.F;
+            const float a=input[i].direction[0]*direction_scale,b=input[i].direction[1]*direction_scale,
+                c=input[i].direction[2]*direction_scale;
+            for(unsigned channel=0;channel<4;++channel) {
+                const float color=static_cast<float>(input[i].color[channel]*gain)*color_scale;
+                const float c6=color*.48860299587249756F,c7=color*1.0925480127334595F,
+                    c9=color*.31539198756217957F*(c*c*3-1),c8=color*.5462740063667297F;
+                const float values[10]={.2820949852466583F*color*.886227011680603F-c9*.24770799279212952F,
+                    c8*(a*a-b*b)*.4290429949760437F,-c8*(a*a-b*b)*.4290429949760437F,
+                    c9*.7431250214576721F,b*a*c7*.8580859899520874F,a*c*c7*.8580859899520874F,
+                    c7*b*c*.4290429949760437F,c6*a*1.0233279466629028F,
+                    c6*b*1.0233279466629028F,c6*c*1.0233279466629028F};
+                for(unsigned term=0;term<10;++term)result.harmonic[term][channel]+=values[term];
+            }
+        }
+    }
+    // Genuine541FC0:735548 zero leaves RGB unnormalized, specular luma
+    // is normalized to original6F3E0C. These startup flags remain assumptions.
+    double squared=0;for(const auto& vector:result.harmonic)squared+=double(vector[3])*vector[3];
+    if(squared>0)for(auto& vector:result.harmonic)vector[3]=float(vector[3]*.800000011920929/std::sqrt(squared));
     return result;
+}
+FrontendLighting frontend_startup_lighting() noexcept {
+    const float origin[3]={0,0,.20027998089790344F};
+    return frontend_point_lighting(nullptr,0,origin);
 }
 bool frontend_cube_coordinates(const double (&d)[3],unsigned& face,double& u,double& v) noexcept {
     for(double value:d)if(!std::isfinite(value))return false;

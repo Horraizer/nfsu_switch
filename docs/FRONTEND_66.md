@@ -524,3 +524,20 @@ remain explicit boundaries. The retail source test checks simultaneous
 highlight/unhighlight and immediate reverse selection against those native
 corners and channel values. Original parent channel multiplication precedes
 the existing half-channel pack. No sleep is added to the input path.
+
+
+### Moving road harmonic consumer
+
+The actual twenty-entry road pool feeds the original radius/inner selector
+(5411B0), normalization polynomial (542DC0), two-direction harmonic
+accumulation (5416E0/541BF0) and luma-only normalization (541FC0).
+The main camera/car basis is shared with the existing frontend shader.
+Tools/frontend66_road_harmonic_probe.py compares every populated slot and
+all forty coefficients against genuine execution across road phases.
+The frontend source regression retains the independent populated fixture.
+
+Startup inputs735E90..735EA8 (lateral, attenuation and RGB) remain
+unresolved zero-BSS boundaries. Runtime uses those explicit zeros; colored
+probe inputs are supplied comparison boundaries, never inferred defaults.
+Existing reflection-origin/flags and empty race-list assumptions remain.
+This closes the moving arithmetic pipeline, not exact startup-light parity.

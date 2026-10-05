@@ -9,7 +9,9 @@ from event0_trace import Image,jdlz,chunks,name_hash
 from hud254_native import Machine
 from unicorn.x86_const import *
 p=argparse.ArgumentParser();p.add_argument('--retail-root',type=Path,required=True)
-root=p.parse_args().retail_root
+p.add_argument('--road-offset',type=float,default=None)
+args=p.parse_args();root=args.retail_root
+assert args.road_offset is None or 0<=args.road_offset<200
 raw=(root/'speed.exe').read_bytes()
 assert hashlib.sha256(raw).hexdigest()=='c0fad450912952f53809a54690d235aa8b4e25b9f46650693c7cbee1b4c074b7'
 front=jdlz((root/'FrontEnd/FrontB.lzc').read_bytes())
@@ -29,7 +31,7 @@ for tag,a,end in chunks(front,0,381824):
  if name=='TRFE_ROAD02_A':markers=[matrix for h,matrix in records if h==name_hash('TRFE_ROAD02_FLARE')]
 assert len(markers)==4
 im=Image(raw);im.sections=[(a,s,r) for a,s,r,n in im.sections]
-for offset in (0.,99.,101.,199.):
+for offset in ((0.,99.,101.,199.) if args.road_offset is None else (args.road_offset,)):
  m=Machine(im);env=0x1001000
  m.uc.mem_write(env,struct.pack('<7f',200.,offset,0.,50.,50.,0.,1.))
  m.write(0x7364dc,1);m.write(0x7404c4,1)

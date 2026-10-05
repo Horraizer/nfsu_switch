@@ -376,6 +376,10 @@ struct FrontendGpuScene::Impl {
     RenderOptions options;
     FrontendLighting lighting=frontend_startup_lighting();
     FrontendRoad road;
+    std::array<FrontendPointLight,32> road_lights;
+    // Original735E90..735EA8 zero-BSS startup values are unresolved.
+    // Preserve explicit zeros until an authenticated setter is established.
+    float road_lateral=0,road_rgb[3]{},road_attenuation[3]{};
     CarShadowAsset shadow;
     std::size_t car_draw_count=0;
     RecordedCommands commands;
@@ -515,6 +519,14 @@ bool FrontendGpuScene::load(const std::filesystem::path& root,unsigned width,uns
 bool FrontendGpuScene::frame(float seconds,std::uint32_t ticks,std::string& error) {
     auto& p=*impl_;if(!p.ready){error="frontend GPU scene not loaded";return false;}
     p.road.update(seconds,ticks);
+    float marker_positions[4][3];
+    for(unsigned marker=0;marker<4;++marker)for(unsigned c=0;c<3;++c)
+        marker_positions[marker][c]=p.road_markers[marker].matrix[12+c];
+    const auto light_count=frontend_road_lights(p.road,marker_positions,p.road_lateral,
+        p.road_rgb,p.road_attenuation,p.road_lights);
+    const float car_position[3]={0,0,p.car_root_height};
+    p.lighting=frontend_point_lighting(p.road_lights.data(),light_count,car_position);
+    p.commands.frontend_light=p.lighting;
     std::array<FrontendRoadPlacement,5> placements;
     if(p.road.placements(1,placements)!=5){error="original frontend road view missing";return false;}
     auto& draws=p.commands.owning_draws();

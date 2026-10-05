@@ -84,4 +84,19 @@ unsigned FrontendRoad::placements(unsigned view,std::array<FrontendRoadPlacement
     }
     return extent*2+1;
 }
+unsigned frontend_road_lights(const FrontendRoad& road,const float (&markers)[4][3],
+    float lateral,const float (&rgb)[3],const float (&attenuation)[3],
+    std::array<FrontendPointLight,32>& out) noexcept {
+    out={};std::array<FrontendRoadPlacement,5> placements;
+    const unsigned count=road.placements(1,placements);unsigned used=0;
+    for(unsigned copy=0;copy<count;++copy)for(unsigned marker=0;marker<4;++marker) {
+        auto& light=out[used++];
+        light.position[0]=markers[marker][0]+placements[copy].longitudinal;
+        light.position[1]=markers[marker][1]+lateral;
+        light.position[2]=markers[marker][2]+placements[copy].vertical;
+        for(unsigned c=0;c<3;++c){light.rgb[c]=rgb[c];light.attenuation[c]=attenuation[c];}
+    }
+    return used;
+}
+
 }
