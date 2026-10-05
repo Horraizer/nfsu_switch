@@ -1,4 +1,7 @@
 #include "nfsu/frontend_scene.h"
+#include "nfsu/car_shadow.h"
+#include <cstring>
+#include <limits>
 #include <cmath>
 #include "nfsu/frontend_preset.h"
 #include "nfsu/frontend_motion.h"
@@ -12,6 +15,82 @@
 #include <algorithm>
 #include <stdexcept>
 namespace nfsu {
+namespace {
+bool prepare_frontend_shadow(const StockFrameInputs& inputs,const StockFrame& car,
+    CarShadowAsset& shadow,std::string& error) {
+    std::vector<std::uint32_t> loaded;
+    for(const auto& mesh:car.car_geometry.meshes)if(mesh.has_directory_entry)loaded.push_back(mesh.directory_hash);
+    for(const auto& source:car.stock_geometry)for(const auto& mesh:source.meshes)
+        if(mesh.has_directory_entry)loaded.push_back(mesh.directory_hash);
+    std::sort(loaded.begin(),loaded.end());loaded.erase(std::unique(loaded.begin(),loaded.end()),loaded.end());
+    float low[3]={std::numeric_limits<float>::max(),std::numeric_limits<float>::max(),std::numeric_limits<float>::max()};
+    float high[3]={-low[0],-low[1],-low[2]};
+    const auto& bytes=inputs.file(StockFrameFile::car_geometry).bytes;
+    auto u32=[&](std::size_t at){std::uint32_t v=0;for(unsigned c=0;c<4;++c)v|=std::uint32_t(bytes.at(at+c))<<(c*8);return v;};
+    // Constructor 0x56AB08..0x56AB70 reduces LOD-A solid-header bounds
+    // for slots 0..11, including disabled models and zero absent models.
+    for(unsigned slot=0;slot<12;++slot) {
+        float a[3]{},b[3]{};const auto record=car.report.slots[slot].record;
+        if(record!=kNoCarPart) {
+            std::array<PartModel,kCarPartLodCount> models;
+            if(!resolve_part_models(car.parts.records.at(record),loaded,models,error))return false;
+            if(models[0].resolved) {
+                auto mesh=std::find_if(car.car_geometry.meshes.begin(),car.car_geometry.meshes.end(),
+                    [&](const auto& m){return m.has_directory_entry && m.directory_hash==models[0].hash;});
+                if(mesh==car.car_geometry.meshes.end()){error="FE footprint model outside car geometry";return false;}
+                std::size_t cursor=mesh->offset+8,end=mesh->offset+8+u32(mesh->offset+4);bool found=false;
+                while(cursor<end) {
+                    if(end-cursor<8){error="FE footprint chunk truncated";return false;}
+                    const auto tag=u32(cursor),size=u32(cursor+4);const auto payload=cursor+8;
+                    if(size>end-payload){error="FE footprint chunk exceeds solid";return false;}
+                    if(tag==kMeshMetadataId) {
+                        const auto aligned=(payload+15)&~std::size_t(15);
+                        if(payload+size<aligned+0x3c){error="FE footprint header truncated";return false;}
+                        for(unsigned c=0;c<3;++c) {
+                            auto v=u32(aligned+0x20+c*4);std::memcpy(a+c,&v,4);
+                            v=u32(aligned+0x30+c*4);std::memcpy(b+c,&v,4);
+                            if(!std::isfinite(a[c]) || !std::isfinite(b[c]) || a[c]>b[c]){error="FE footprint bounds invalid";return false;}
+                        }
+                        found=true;break;
+                    }
+                    cursor=payload+size;
+                }
+                if(!found){error="FE footprint solid header absent";return false;}
+            }
+        }
+        for(unsigned c=0;c<3;++c){low[c]=std::min(low[c],a[c]);high[c]=std::max(high[c],b[c]);}
+    }
+    for(unsigned c=0;c<3;++c){low[c]-=.1F;high[c]+=.1F;}
+    const auto hash=bin_hash("SKYLINE_SHADOWFE");std::vector<std::uint32_t> wanted{hash};
+    RenderTextureSource source;source.bytes=&inputs.file(StockFrameFile::car_textures).bytes;
+    source.packs.push_back(&car.car_pack);source.wanted=&wanted;RenderTextureSet decoded;
+    if(!decode_render_texture_sources({source},{},decoded,error))return false;
+    if(decoded.textures.size()!=1 || !decoded.textures[0].usable() || !decoded.textures[0].claims_hash(hash)) {
+        error="original SKYLINE_SHADOWFE missing or unusable";return false;
+    }
+    shadow.texture=std::move(decoded.textures[0]);shadow.texture_name="SKYLINE_SHADOWFE";
+    // FE branch 0x56EB40 uses X=1.115 and Y=1; original grid height
+    // 0x56EFA6..0x56EFD7 is fixed ground .02, with four lifted samples.
+    low[0]*=1.115F;high[0]*=1.115F;
+    const float dx=(high[0]-low[0])*(1.0F/3),dy=(high[1]-low[1])*(1.0F/3);
+    float y=low[1];std::size_t triangle=0;
+    for(unsigned row=0;row<4;++row,y+=dy) {
+        float x=low[0];
+        for(unsigned column=0;column<4;++column,x+=dx) {
+            const auto i=row*4+column;auto& v=shadow.vertices[i];v.px=x;v.pz=y;
+            v.py=.02F+((((i>>1)^i)&5)==5?.08F:0.F);
+            v.u=column*(1.0F/3);v.v=row*(1.0F/3);
+            v.color[0]=v.color[1]=v.color[2]=128;v.color[3]=92;
+            if(row<3 && column<3) {
+                const auto a=static_cast<std::uint16_t>(i);
+                shadow.triangles[triangle++]={a,static_cast<std::uint16_t>(a+1),static_cast<std::uint16_t>(a+4)};
+                shadow.triangles[triangle++]={static_cast<std::uint16_t>(a+1),static_cast<std::uint16_t>(a+5),static_cast<std::uint16_t>(a+4)};
+            }
+        }
+    }
+    return true;
+}
+}
 bool bind_frontend_skyline_runtime_skin(StockFrame& car,const StockSceneRequest& request,std::string& error) {
     if(!car.skinned || request.car_type_name!="SKYLINE") {
         error="original frontend runtime skin unavailable";return false;
@@ -23,8 +102,21 @@ bool bind_frontend_skyline_runtime_skin(StockFrame& car,const StockSceneRequest&
     if(!bind_runtime_skin(car.skin,bound,car.skin_binding.source,car.textures,car.skin_binding,error))return false;
     std::vector<const GeometryReport*> sources={&car.car_geometry};
     for(const auto& geometry:car.stock_geometry)sources.push_back(&geometry);
+    const auto enriched=car.scene.draws;
     if(!prepare_stock_car_scene(sources,car.textures,car.parts,car.car_types,request,
         SceneLimits{},car.scene,car.report,error))return false;
+    // A runtime skin alias changes texture ownership, not material selection.
+    // prepare_stock_car_scene starts a new scene; retain the material vectors
+    // already applied by prepare_stock_frame after checking stable identity.
+    if(car.scene.draws.size()!=enriched.size()){error="FE skin rebind changed material group count";return false;}
+    for(std::size_t i=0;i<enriched.size();++i) {
+        auto& draw=car.scene.draws[i];const auto& original=enriched[i];
+        if(draw.mesh!=original.mesh || draw.material_index!=original.material_index ||
+            draw.material_key_hash!=original.material_key_hash) {
+            error="FE skin rebind changed material group identity";return false;
+        }
+        draw.shading=original.shading;
+    }
     car.skin_bound_names.push_back("GLOBAL_SKIN1");return true;
 }
 bool bind_frontend_sponsors(const StockFrameInputs& inputs,const InstalledPartSelection& installed,
@@ -99,7 +191,7 @@ bool bind_frontend_sponsors(const StockFrameInputs& inputs,const InstalledPartSe
 }
 namespace {
 bool load_scene_assets(const std::filesystem::path& root,unsigned width,unsigned height,
-    PreparedCarScene& tunnel,StockFrame& car,RenderOptions& options,std::string& error) {
+    PreparedCarScene& tunnel,StockFrame& car,RenderOptions& options,std::string& error,CarShadowAsset* shadow=nullptr) {
     std::vector<unsigned char> front,road;
     std::vector<RaceTableIssue> issues;
     RaceTableLimits limits; limits.max_file_size=32*1024*1024;limits.max_image_size=64*1024*1024;
@@ -159,6 +251,7 @@ bool load_scene_assets(const std::filesystem::path& root,unsigned width,unsigned
     if(!prepare_stock_frame(inputs,request,skin,car,error,true) ||
        !bind_frontend_skyline_runtime_skin(car,request,error) ||
        !bind_frontend_sponsors(inputs,installed,car,error)) return false;
+    if(shadow && !prepare_frontend_shadow(inputs,car,*shadow,error))return false;
     options.width=width;options.height=height;
     // Native 0x486C80/0x487680 initial camera: raw-axis position from
     // rotating the original (0,0.75,6) offset, looking at (0,0,0.75).
@@ -176,6 +269,8 @@ struct FrontendGpuScene::Impl {
     StockFrame car;
     RenderOptions options;
     FrontendRoad road;
+    CarShadowAsset shadow;
+    std::size_t car_draw_count=0;
     RecordedCommands commands;
     std::size_t road_groups=0;
     std::vector<DrawInstanceUniform> base_car_placements;
@@ -189,7 +284,7 @@ FrontendGpuScene::~FrontendGpuScene()=default;
 bool FrontendGpuScene::load(const std::filesystem::path& root,unsigned width,unsigned height,std::string& error) {
     if(impl_->ready) {error="frontend GPU scene already loaded";return false;}
     auto next=std::make_unique<Impl>();auto& p=*next;
-    if(!load_scene_assets(root,width,height,p.tunnel,p.car,p.options,error))return false;
+    if(!load_scene_assets(root,width,height,p.tunnel,p.car,p.options,error,&p.shadow))return false;
     // Original solid lookup 0x53F9B0 requests missing->DEFAULTALPHA through
     // 0x5461C0. The tunnel's zero replacement table bypasses 0x53F540;
     // 0x40C910 skips DEFAULTALPHA at 0x40CA0C, before reflection uniforms.
@@ -237,6 +332,15 @@ bool FrontendGpuScene::load(const std::filesystem::path& root,unsigned width,uns
         p.base_car_placements.push_back(p.commands.owning_draws()[i].placement);
     for(std::size_t i=p.road_groups*5;i<p.commands.owning_draws().size();++i)
         p.commands.owning_draws()[i].placement.rows[14]+=p.car_root_height;
+    p.car_draw_count=p.commands.owning_draws().size()-p.road_groups*5;
+    RecordedCommands shadow_commands;CarShadowPlacement shadow_placement;
+    // Native FE alpha byte is 92; world.efx Modulate2x doubles alpha.
+    shadow_placement.alpha=184.0F/255;
+    if(!record_car_shadow_commands(p.shadow,shadow_placement,p.options,shadow_commands,error))return false;
+    shadow_commands.owning_draws()[0].name="_FE_SHADOW";
+    RecordedCommands with_shadow;
+    if(!combine_race_commands(std::move(p.commands),shadow_commands,with_shadow,error))return false;
+    p.commands=std::move(with_shadow);
     p.ready=true;impl_.swap(next);return frame(0,0,error);
 }
 bool FrontendGpuScene::frame(float seconds,std::uint32_t ticks,std::string& error) {
@@ -253,7 +357,7 @@ bool FrontendGpuScene::frame(float seconds,std::uint32_t ticks,std::string& erro
     const float sine=frontend_fixed_sine(p.wheel_phase);
     const float cosine=frontend_fixed_sine(static_cast<std::uint16_t>(p.wheel_phase+0x4000));
     const float spin[16]={cosine,0,-sine,0,0,1,0,0,sine,0,cosine,0,0,0,0,1};
-    for(std::size_t i=p.road_groups*5;i<draws.size();++i) {
+    for(std::size_t i=p.road_groups*5;i<p.road_groups*5+p.car_draw_count;++i) {
         auto& draw=draws[i];const auto& instance=p.car.scene.instances.at(draw.instance);
         if(instance.part_slot!=kSlotWheel) continue;
         auto base=p.base_car_placements.at(i-p.road_groups*5);
@@ -302,7 +406,7 @@ bool FrontendGpuScene::render_reference(std::vector<unsigned char>& rgba,std::st
     for(auto& mesh:tunnel.meshes)mesh.material_count=0;
     for(auto& draw:tunnel.draws)
         draw.material_index=tunnel.meshes[draw.mesh].material_count++;
-    for(std::size_t i=p.road_groups*5;i<draws.size();++i) {
+    for(std::size_t i=p.road_groups*5;i<p.road_groups*5+p.car_draw_count;++i) {
         const auto& draw=draws[i];
         std::copy_n(draw.placement.rows,16,car.instances.at(draw.instance).transform);
     }
@@ -310,6 +414,8 @@ bool FrontendGpuScene::render_reference(std::vector<unsigned char>& rgba,std::st
     auto room_options=p.options;room_options.car_shading=false;
     if(!render_scene(tunnel,room_options,RenderLimits{},output,stats,error) ||
        !render_scene(car,p.options,RenderLimits{},car_frame,stats,error))return false;
+    CarShadowPlacement shadow_placement;shadow_placement.alpha=184.0F/255;
+    if(!render_car_shadow(p.shadow,shadow_placement,p.options,output,stats,error))return false;
     rgba=output.rgba();
     for(std::size_t i=0;i<output.depth().size();++i)
         if(car_frame.depth()[i]<output.depth()[i])

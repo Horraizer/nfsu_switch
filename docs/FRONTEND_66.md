@@ -253,3 +253,39 @@ proved native-empty C245 material groups. The live resident geometry is
 unchanged. This diagnostic still uses the existing analytical material
 implementation and does not certify FE lighting, reflection capture or GPU
 appearance. The original static `load_frontend_scene` API remains separate.
+
+### FE shadow and material retention
+
+The resident menu adds `SKYLINE_SHADOWFE`, selected by original constructor
+`0x56ABEF..0x56AC7E` when game mode `0x77A920` is 3. Its footprint uses
+the original slots 0..11 LOD-A model-header reducer, including disabled
+models and zero bounds for absent models. Original `0x567890` reduces
+bounds and `0x56AB99..0x56ABEC` expands each bound by 0.1. The FE grid
+consumer `0x56EB33..0x56EFD9` uses distinct FE axis scales, sixteen samples
+and authored UV ordering, with fixed ground height and selected lifted
+samples. It overrides the root height for shadow ground samples; the car
+retains its independently recovered contact-plane root placement.
+
+`tools/frontend66_shadow_native.py <retail-root>` executes the genuine
+preset lookup, bounds reducer, inflation, grid and alpha slices. It supplies
+the solid loader boundary from authenticated SKYLINE headers and the
+previously recovered A/B fallback contract; it does not execute an asset
+queue or a live whole-game startup. The SKYLINE geometry provenance is
+SHA-256 `64DA8A1F29AC7C94832675C1FD164B2C0236104AD6B9E97010AFD873C12F1F12`.
+The native FE alpha stays 92 across tested fade inputs; the original
+`world.efx` Modulate2x doubles alpha. `nfsu_frontend_tests` pins all sixteen
+native vertices/UVs, original texture identity, alpha and depth-write state.
+The old race shadow placement and its terrain approximation are not used.
+
+A texture-only `GLOBAL_SKIN1` reprepare previously discarded the material
+vectors that `prepare_stock_frame` applied after its scene preparation.
+The rebind now checks stable material-group identity and preserves those
+already-decoded vectors. The frontend test verifies every vector and gate
+survives and requires nonzero diffuse treatment. This restores the existing
+material approximation; original harmonic lighting and live cube capture
+remain separate unfinished FE work.
+
+`FrontendArt::draw_overlay` draws the existing authored UI on an existing
+CPU scene image, for current-scene diagnostics. The live Switch menu still
+records those objects into its resident GPU atlas/overlay path. This CPU
+diagnostic does not certify hardware opacity, frame time or temporal effects.

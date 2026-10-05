@@ -13,6 +13,7 @@
 #include "nfsu/race_gpu_scene.h"
 #include "nfsu/posix_file_system.h"
 #include <iostream>
+#include <cstring>
 #include <stdexcept>
 void check(bool value,const char* message) { if(!value) throw std::runtime_error(message); }
 int main(int argc,char** argv) {
@@ -115,7 +116,19 @@ int main(int argc,char** argv) {
             skyline_request.installed_parts=installed;skyline_request.pass=CarDrawPass::front_end;
             auto skyline_skin=stock_car_skin("SKYLINE");skyline_skin.selection=skin;
             check(prepare_stock_frame(skyline_inputs,skyline_request,skyline_skin,skyline,error,true),error.c_str());
+            const auto original_materials=skyline.scene.draws;
             check(bind_frontend_skyline_runtime_skin(skyline,skyline_request,error),error.c_str());
+            check(original_materials.size()==skyline.scene.draws.size(),"texture-only FE rebind preserves material groups");
+            bool shaded_material=false;
+            for(std::size_t i=0;i<original_materials.size();++i) {
+                const auto& expected=original_materials[i].shading;
+                const auto& actual=skyline.scene.draws[i].shading;
+                check(std::memcmp(&expected,&actual,sizeof(expected))==0,
+                    "GLOBAL_SKIN1 rebind preserves decoded material gates and vectors");
+                shaded_material|=actual.gates[0]!=0 && actual.gates[1]!=0 &&
+                    (actual.diffuse_min[0]!=0 || actual.diffuse_range[0]!=0);
+            }
+            check(shaded_material,"original FE materials retain nonzero diffuse gate and vectors");
             unsigned global_draws=0;
             for(const auto& draw:skyline.scene.draws)if(draw.texture_hash==0xDDA11455U) {
                 check(draw.binding==BindingKind::resolved &&
@@ -139,13 +152,37 @@ int main(int argc,char** argv) {
             if(!gpu_scene.load(root,1280,720,error))throw std::runtime_error(error);
             const auto initial_commands=gpu_scene.commands().owning_draws();
             check(!initial_commands.empty(),"original frontend resident GPU submission");
+            const auto shadow=std::find_if(initial_commands.begin(),initial_commands.end(),
+                [](const auto& d){return d.name.find("_FE_SHADOW")!=std::string::npos;});
+            check(shadow!=initial_commands.end(),"original SHADOWFE resident draw connected");
+            if(shadow!=initial_commands.end()) {
+                const auto& resources=gpu_scene.commands().resource_table().resources;
+                const auto& vertices=resources.at(shadow->vertex_resource);
+                const auto& texture=resources.at(shadow->texture_resource);
+                check(vertices.elements==16 && texture.texture_hash==bin_hash("SKYLINE_SHADOWFE"),
+                    "FE shadow uses original texture and sixteen native samples");
+                // Independently executed original 567890/56AB99/56EB33 slices,
+                // authenticated FE_SKYLINE parts and original solid headers.
+                const double x[]={-2.746955156326294,-.8996659517288208,.9476232528686523,2.794912338256836};
+                const double y[]={-1.1095234155654907,-.3698313236236572,.36986076831817627,1.1095528602600098};
+                const auto* v=reinterpret_cast<const MeshVertex*>(vertices.data);
+                for(unsigned i=0;i<16;++i) {
+                    const double z=(((i>>1)^i)&5)==5?.09999999403953552:.019999999552965164;
+                    check(std::abs(v[i].px-x[i%4])<.00001 && std::abs(v[i].pz-y[i/4])<.00001 &&
+                        std::abs(v[i].py-z)<.000001,"all FE shadow vertices match original footprint and ground consumer");
+                    check(std::abs(v[i].u-(i%4)/3.)<.000001 && std::abs(v[i].v-(i/4)/3.)<.000001,
+                        "original FE shadow UV orientation retained");
+                }
+                check(std::abs(shadow->material.alpha[0]-184./255)<.000001 && !shadow->pipeline.depth_write,
+                    "native fixed FE alpha92 receives original Modulate2x and no depth writes");
+            }
             for(const auto& draw:initial_commands)
                 check(draw.program && std::string(draw.program->name).find("fallback")==std::string::npos,
                     "native frontend submits no placeholder fallback material");
             // Independent native 4B17F5..4B1825 witness with original
             // SKYLINE wheel-0 radius/vertical and normal main-view flag.
             for(const auto& draw:initial_commands) {
-                if(draw.name.find("_FE_SEGMENT")!=std::string::npos)continue;
+                if(draw.name.find("_FE_")!=std::string::npos)continue;
                 const auto& instance=skyline.scene.instances.at(draw.instance);
                 check(std::abs(draw.placement.rows[14]-instance.transform[14]-.20027998089790344)<.00001,
                     "whole FE car receives original contact-plane root height");
@@ -162,7 +199,7 @@ int main(int argc,char** argv) {
             std::array<bool,4> rolling_copies{},stationary_brakes{};
             for(std::size_t i=0;i<moving_commands.size();++i) {
                 const auto& draw=moving_commands[i];
-                if(draw.name.find("_FE_SEGMENT")!=std::string::npos)continue;
+                if(draw.name.find("_FE_")!=std::string::npos)continue;
                 const auto& instance=skyline.scene.instances.at(draw.instance);
                 if(instance.part_slot==17) {
                     check(instance.copy<4,"original rolling wheel index");

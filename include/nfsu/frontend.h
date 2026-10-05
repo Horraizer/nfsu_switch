@@ -40,6 +40,7 @@ public:
     ~FrontendArt();
     bool load(const std::filesystem::path& root, std::string& error,bool background=true);
     void draw(ScreenImage image, const FrontendMenu& menu) const;
+    void draw_overlay(ScreenImage image,const FrontendMenu& menu) const;
     const FrontendUiAtlas& atlas() const;
     void record_ui(unsigned width,unsigned height,const FrontendMenu& menu,FrontendUiFrame& frame) const;
 private:

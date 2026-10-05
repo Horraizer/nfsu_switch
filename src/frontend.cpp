@@ -295,7 +295,11 @@ void FrontendArt::draw(ScreenImage image,const FrontendMenu& menu) const {
     if(!image.pixels || image.stride<std::size_t(image.width)*4 || p.background.rgba.empty())return;
     for(unsigned y=0;y<image.height;++y)for(unsigned x=0;x<image.width;++x)
         std::copy_n(p.background.rgba.data()+((std::size_t(y)*p.background.height/image.height)*p.background.width+std::size_t(x)*p.background.width/image.width)*4,4,image.pixels+y*image.stride+x*4);
-    p.draw(Canvas{image},menu);
+    draw_overlay(image,menu);
+}
+void FrontendArt::draw_overlay(ScreenImage image,const FrontendMenu& menu) const {
+    if(!image.pixels || image.stride<std::size_t(image.width)*4)return;
+    impl_->draw(Canvas{image},menu);
 }
 const FrontendUiAtlas& FrontendArt::atlas() const {return impl_->atlas;}
 void FrontendArt::record_ui(unsigned width,unsigned height,const FrontendMenu& menu,FrontendUiFrame& frame) const {
