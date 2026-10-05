@@ -383,7 +383,52 @@ with the same road state, then samples the equivalent bounded logical faces.
 Both capture paths clear black. This is a backend representation of the six
 views, not an authored replacement environment.
 
-Populated road-light harmonic generation, reflected-view and glow consumers,
+Populated road-light harmonic generation and glow consumers,
 and remaining temporal UI still need connection. The harmonic startup/list
 and zero reflection-origin assumptions above remain explicit. Source capture
 integration and its diagnostics are not original-effect parity or acceptance.
+
+### Native FE floor target
+
+The FE floor is a separate consumer from the car environment cube. Original
+pointer-publication block `0x40A7F0..0x40A876` assigns the same `0x78D270`
+CView to primary scene `0x7404C0` and floor scene `0x7405E0`, with distinct
+floor target descriptor `0x71AA68`. `tools/frontend66_floor_native.py`
+executes that exact block and the genuine view-4 projection for the original
+320x240 target. Supplied clipping planes remain explicit witness boundaries.
+
+Only `TRFE_ROAD02_A` has the authenticated solid selector `0x40`; this
+selects `worldreflect.efx`. The other detailed A, Y and Z solids have selector
+zero. The source preserves original floor RGBA instead of pre-doubling alpha,
+then evaluates the native equation: twice diffuse times vertex RGB, plus
+vertex alpha times diffuse alpha times the projected floor target. Output
+alpha is one. The original effect input is 4832 bytes with SHA-256
+`50c69d273ebd6a7dea23dfcb10c51ad467325af2bc5e2e15ad42d89f9d89e2bb`.
+
+The target receives the three original Z-family segments selected by
+`0x4AE530` and submitted by `0x4AE650` from `0x40961E`. It does not invent a
+mirrored car: the genuine `0x570950` node path skips reflected nodes when
+render mode exceeds two, including FE mode three. Additional sprite effects
+are a separate pending consumer. CPU diagnostic and GPU use separate floor
+and cube captures, with explicit per-draw sampler binding; general race
+reflection defaults remain unchanged.
+
+### Remaining original menu presentation checklist
+
+- Car environment cube: connected native Y-family producer, native six-face
+  orientation/projection and environment equation; hardware appearance remains
+  unaccepted. Reflection origin zero remains an explicit startup assumption.
+- Floor reflection: connected native Z-family producer and worldreflect
+  receiver; sprite contribution remains part of the flare/glow item below.
+- Flare/glow: recover and connect applicable main-menu sprite consumer/state.
+- Dynamic road lighting: original four flare-marker inputs and the full
+  native 32-slot producer/nearby selector are reproduced by
+  `tools/frontend66_road_light_native.py`. Its RGB, height and attenuation are
+  explicit synthetic test boundaries, not recovered retail defaults. Actual
+  source harmonic population and unresolved startup inputs remain pending.
+- Authored UI temporal/state: finish native header animation and circular
+  indicators using original authored consumers.
+- Acceptance: full combined native default/Release retail and Switch gates,
+  independent exact-head review, measured pad-to-present responsiveness and
+  owner hardware visual/audio acceptance remain required. This checklist does
+  not add unrelated race effects or claim original-effect parity prematurely.

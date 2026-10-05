@@ -267,6 +267,8 @@ struct RenderOptions {
     bool car_shading = false; // static environment approximation; opt-in
     const FrontendLighting* frontend_lighting = nullptr; // separate native FE consumer
     const CameraFrame* explicit_camera = nullptr; // bounded FE cube-view consumer
+    const Frame* frontend_floor = nullptr; // native worldreflect target, borrowed
+    std::size_t frontend_floor_mesh = kNoHandle;
     const Frame* frontend_cube = nullptr; // borrowed diagnostic capture
     const WetRoadLamps* wet_lamps = nullptr;
     std::uint32_t width = 1280;
@@ -463,6 +465,7 @@ struct RasterMaterial {
     // keeps the term. It is added to textured fragments only.
     double environment[3] = {0.0, 0.0, 0.0};
     // Borrowed reflection target; only effect-2 track solids receive it.
+    bool frontend_floor = false;
     const Frame* reflected_scene = nullptr;
 };
 

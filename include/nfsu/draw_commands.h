@@ -101,6 +101,7 @@ public:
     std::size_t reflection_draw_count() const;
     const RecordedDraw& reflection_draw(std::size_t i) const;
     DrawFrameUniform frame;
+    DrawFrameUniform frontend_floor_frame;
     FrontendLighting frontend_light;
     bool frontend_light_enabled=false;
     std::array<DrawFrameUniform,6> frontend_cube_frames;

@@ -1142,6 +1142,7 @@ bool Rasterizer::fill(
                             keep = source_alpha > material.alpha_ref;
                         }
                     }
+                    if(material.frontend_floor) {keep=true;source_alpha=255;}
                     if (!keep) {
                         ++stats_.fragments_alpha_discarded;
                     } else if (!(z < frame_.depth_[index] ||
@@ -1150,14 +1151,14 @@ bool Rasterizer::fill(
                                    id > frame_.ids_[index])))) {
                         ++stats_.fragments_depth_failed;
                     } else {
-                        if ((options_.vertex_color && !material.frontend_lighting) || material.sky) {
+                        if ((options_.vertex_color && !material.frontend_lighting && !material.frontend_floor) || material.sky) {
                             const double vc[3] = {
                                 (l[0] * a->rq + l[1] * b->rq + l[2] * c->rq) * iq,
                                 (l[0] * a->gq + l[1] * b->gq + l[2] * c->gq) * iq,
                                 (l[0] * a->bq + l[1] * b->bq + l[2] * c->bq) * iq};
                             for (int k = 0; k < 3; ++k) {
                                 color[k] = std::min(255U, (color[k] * channel(vc[k]) *
-                                    (material.sky ? 2U : 1U) + 127U) / 255U);
+                                    ((material.sky || material.frontend_floor) ? 2U : 1U) + 127U) / 255U);
                             }
                         }
                         const std::uint32_t shade = std::min<std::uint32_t>(material.shade, 256U);
@@ -1229,7 +1230,13 @@ bool Rasterizer::fill(
                                     sample += reflected.rgba()[(std::size_t(ry)*reflected.width()+rx)*4+k] *
                                         (dx ? fx : 1-fx) * (dy ? fy : 1-fy);
                                 }
-                                value = static_cast<std::uint32_t>(std::min(255.0,
+                                if(material.frontend_floor) {
+                                    const double vc=(l[0]*(k==0?a->rq:k==1?a->gq:a->bq)+
+                                        l[1]*(k==0?b->rq:k==1?b->gq:b->bq)+
+                                        l[2]*(k==0?c->rq:k==1?c->gq:c->bq))*iq;
+                                    const double native=2.0*color[k]*vc/255.0+sample*va*color[3]/(255.0*255.0);
+                                    value=static_cast<std::uint32_t>(std::clamp(std::floor(native+.5),0.0,255.0));
+                                } else value = static_cast<std::uint32_t>(std::min(255.0,
                                     value + std::floor(sample * va * color[3] / (255.0*255.0) + 0.5)));
                             }
                             if (blending) {
@@ -1531,6 +1538,9 @@ bool render_scene(
                 raster.frontend_cube=options.frontend_cube;
                 std::copy_n(draw.shading.environment_min,3,raster.frontend_environment_min);
                 std::copy_n(draw.shading.environment_range,3,raster.frontend_environment_range);
+            }
+            if(options.frontend_floor && draw.mesh==options.frontend_floor_mesh) {
+                raster.frontend_floor=true;raster.reflected_scene=options.frontend_floor;
             }
             raster.lamp_mode = instanced ? scene.instances[copy].lamp_mode : 0;
             if ((first + count) / 3 > first / 3) {

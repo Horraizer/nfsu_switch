@@ -54,6 +54,17 @@ void main()
     }
     // The nearest texel, wrapped; the manifest's sampler state is what makes
     // this wrap_texel. Held as bytes, as the reference holds it.
+    // Original FE worldreflect.efx: alpha is1 after the pixel equation.
+    // Retain original vertex alpha as mask, not doubled world alpha.
+    if((frame.options.z & 8u)!=0u && material.environment_min.w>0.5) {
+        vec4 diffuse=texture(baseTexture,uv);
+        vec3 delta=inWorld-frame.eye.xyz;
+        vec2 reflected_uv=vec2(0.5)+vec2(dot(frame.right.xyz,delta)*frame.projection.x,
+            -dot(frame.up.xyz,delta)*frame.projection.y)*(0.5/dot(frame.forward.xyz,delta));
+        vec3 reflection=texture(reflectionTexture,reflected_uv).rgb;
+        outColor=vec4(diffuse.rgb*inColor.rgb*2.0+inColor.a*diffuse.a*reflection,1.0);
+        return;
+    }
     uvec4 texel = uvec4(texture(baseTexture, uv) * 255.0 + 0.5);
     // This shader is selected only when the frame alpha cutoff is zero and
     // the material alpha test is off, so it has no fragment discard.

@@ -20,6 +20,31 @@ void check(bool value,const char* message) { if(!value) throw std::runtime_error
 int main(int argc,char** argv) {
     using namespace nfsu;
     try {
+        {
+            Frame reflected,output;RenderLimits limits;std::string error;
+            const unsigned char reflected_color[4]={100,80,60,255};
+            const unsigned char black[4]={0,0,0,255};
+            check(reflected.reset(1,1,reflected_color,limits,error),"synthetic original floor target");
+            check(output.reset(8,8,black,limits,error),"floor equation target");
+            RenderTexture texture;texture.width=texture.height=1;texture.valid=true;
+            texture.rgba={128,64,32,128};RasterMaterial state;state.texture=&texture;
+            state.frontend_floor=true;state.reflected_scene=&reflected;
+            state.alpha_test=true;state.alpha_ref=170;
+            RenderOptions options;options.vertex_color=true;RenderStats stats;
+            Rasterizer raster(output,options,limits,stats);
+            ClipVertex triangle[3];triangle[0].x=-1;triangle[0].y=-1;
+            triangle[1].x=1;triangle[1].y=-1;triangle[2].x=-1;triangle[2].y=1;
+            for(auto& vertex:triangle) {vertex.z=.5;vertex.r=64;vertex.g=128;vertex.b=192;vertex.a=32;}
+            check(raster.draw_triangle(triangle,state,0,error),"actual-source native floor equation");
+            check(stats.fragments_written!=0,"native floor pixelalpha1 passes alpha test despite diffusealpha128");
+            // Independent worldreflect.efx arithmetic, including original
+            // vertex mask32 (undoubled) and final UNORM rounding.
+            const unsigned char native_pixel[4]={71,69,52,255};
+            for(std::size_t i=0;i<output.ids().size();++i)if(output.ids()[i]!=kNoTriangle)
+                for(unsigned channel=0;channel<4;++channel)
+                    check(output.rgba()[i*4+channel]==native_pixel[channel],
+                        "native float floor modulation and independent reflection-alpha mask");
+        }
         // Independent original 542C20/544390 witness: actual mode-0 CView
         // and whole-car root. Shader expectations below follow authenticated
         // car.efx equations, with supplied startup-light boundary state.
@@ -254,6 +279,46 @@ int main(int argc,char** argv) {
                 check(draw.texture_resource!=kNoHandle,"original cube diffuse texture is bound");
             }
             check(cube_segments==7,"all original cube road segments are represented");
+            const TrackMesh* native_floor=nullptr;const TrackMesh* native_z=nullptr;
+            for(const auto& mesh:native_road_region.meshes) {
+                if(mesh.name=="TRFE_ROAD02_A")native_floor=&mesh;
+                if(mesh.name=="TRFE_ROAD02_Z")native_z=&mesh;
+            }
+            check(native_floor && native_floor->vertex_format_flags==0x40 && native_z && native_z->valid,
+                "original worldreflect selector belongs to authored base floor and Z capture is valid");
+            check((cube_commands.frame.options[2]&8U)!=0 && cube_commands.reflection_draw_count()!=0,
+                "native FE floor target is separately enabled beside car cube");
+            const auto& floor_frame=cube_commands.frontend_floor_frame;
+            check(std::abs(floor_frame.projection[0]-1.2961782217025757)<1e-6 &&
+                std::abs(floor_frame.projection[1]-1.660086750984192)<1e-6,
+                "original320x240 view4 projection uses shared main CView");
+            for(unsigned axis=0;axis<3;++axis)
+                check(floor_frame.eye[axis]==cube_commands.frame.eye[axis] &&
+                    floor_frame.right[axis]==cube_commands.frame.right[axis] &&
+                    floor_frame.up[axis]==cube_commands.frame.up[axis],"floor capture shares native primary pose");
+            unsigned z_segments=0,floor_receivers=0;
+            for(const auto& draw:cube_commands.reflections) {
+                check(draw.instance<3 && draw.material.surface.gates[0]==0,
+                    "native FE reflected mode3 uses three Z solids without invented mirrored car");
+                z_segments|=1U<<draw.instance;
+                const auto& resource=cube_commands.resource_table().resources.at(draw.vertex_resource);
+                check(resource.elements==native_z->vertices.size(),"resident reflection geometry has original Z vertex count");
+                const auto* vertices=reinterpret_cast<const MeshVertex*>(resource.data);
+                for(std::size_t v=0;v<resource.elements;++v)
+                    check(vertices[v].px==native_z->vertices[v].px && vertices[v].py==native_z->vertices[v].py &&
+                        vertices[v].pz==native_z->vertices[v].pz && vertices[v].u==native_z->vertices[v].u &&
+                        vertices[v].v==native_z->vertices[v].v,"every Z capture vertex/UV is authored retail geometry");
+            }
+            check(z_segments==7,"all native Z-family segments resident");
+            for(const auto& draw:cube_commands.owning_draws())if(draw.material.environment_min[3]==1) {
+                ++floor_receivers;const auto& resource=cube_commands.resource_table().resources.at(draw.vertex_resource);
+                check(resource.elements==native_floor->vertices.size(),"worldreflect mask only binds authenticated floor solid");
+                const auto* vertices=reinterpret_cast<const MeshVertex*>(resource.data);
+                for(std::size_t v=0;v<resource.elements;++v)for(unsigned c=0;c<4;++c)
+                    check(vertices[v].color[c]==native_floor->vertices[v].color[c],
+                        "floor retains native RGB and independent undoubled reflection-alpha mask");
+            }
+            check(floor_receivers!=0,"worldreflect receiver connected");
             const auto& entry_frame=gpu_scene.commands().frame;
             const double native_eye[]={2.743728462142889,.7651561591125922,-1.8576175162722057};
             const double native_right[]={-.7047351002693176,.11533286422491074,-.7000333666801453};

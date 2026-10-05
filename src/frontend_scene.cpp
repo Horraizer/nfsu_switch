@@ -191,7 +191,7 @@ bool bind_frontend_sponsors(const StockFrameInputs& inputs,const InstalledPartSe
 }
 namespace {
 bool load_scene_assets(const std::filesystem::path& root,unsigned width,unsigned height,
-    PreparedCarScene& tunnel,StockFrame& car,RenderOptions& options,std::string& error,CarShadowAsset* shadow=nullptr,PreparedCarScene* capture=nullptr) {
+    PreparedCarScene& tunnel,StockFrame& car,RenderOptions& options,std::string& error,CarShadowAsset* shadow=nullptr,PreparedCarScene* capture=nullptr,PreparedCarScene* floor=nullptr) {
     std::vector<unsigned char> front,road;
     std::vector<RaceTableIssue> issues;
     RaceTableLimits limits; limits.max_file_size=32*1024*1024;limits.max_image_size=64*1024*1024;
@@ -209,7 +209,7 @@ bool load_scene_assets(const std::filesystem::path& root,unsigned width,unsigned
         mesh.materials=source_mesh.materials;mesh.triangles=source_mesh.triangles;
         for(const auto& v:source_mesh.vertices) {
             MeshVertex vertex;vertex.px=v.px;vertex.py=v.py;vertex.pz=v.pz;
-            for(unsigned c=0;c<4;++c) vertex.color[c]=static_cast<unsigned char>(std::min(255U,unsigned(v.color[c])*2));
+            for(unsigned c=0;c<4;++c) vertex.color[c]=floor && source_mesh.vertex_format_flags==0x40?v.color[c]:static_cast<unsigned char>(std::min(255U,unsigned(v.color[c])*2));
             vertex.u=v.u;vertex.v=v.v;mesh.vertices.push_back(vertex);
         }
         geometry.meshes.push_back(std::move(mesh));
@@ -240,6 +240,10 @@ bool load_scene_assets(const std::filesystem::path& root,unsigned width,unsigned
             cube_selection.selectors.push_back({MeshSelectorKind::name,0,mesh.name,0});
         if(cube_selection.selectors.size()!=1){error="original FE cube road solid missing";return false;}
         if(!prepare_car_scene(geometry,textures,cube_selection,SceneLimits{},*capture,error))return false;
+    }
+    if(floor) {
+        MeshSelection selected;selected.selectors.push_back({MeshSelectorKind::name,0,"TRFE_ROAD02_Z",0});
+        if(!prepare_car_scene(geometry,textures,selected,SceneLimits{},*floor,error))return false;
     }
     CarAssets assets;
     if(!load_car_assets(root/"Global/GLOBALB.BUN","SKYLINE",assets,error)) return false;
@@ -287,7 +291,9 @@ bool load_scene_assets(const std::filesystem::path& root,unsigned width,unsigned
 }
 }
 struct FrontendGpuScene::Impl {
-    PreparedCarScene tunnel,capture;
+    PreparedCarScene tunnel,capture,floor;
+    CameraFrame floor_camera;
+    std::size_t floor_mesh=kNoHandle;
     std::array<CameraFrame,6> cube_cameras;
     StockFrame car;
     RenderOptions options;
@@ -308,7 +314,7 @@ FrontendGpuScene::~FrontendGpuScene()=default;
 bool FrontendGpuScene::load(const std::filesystem::path& root,unsigned width,unsigned height,std::string& error) {
     if(impl_->ready) {error="frontend GPU scene already loaded";return false;}
     auto next=std::make_unique<Impl>();auto& p=*next;
-    if(!load_scene_assets(root,width,height,p.tunnel,p.car,p.options,error,&p.shadow,&p.capture))return false;
+    if(!load_scene_assets(root,width,height,p.tunnel,p.car,p.options,error,&p.shadow,&p.capture,&p.floor))return false;
     // Original solid lookup 0x53F9B0 requests missing->DEFAULTALPHA through
     // 0x5461C0. The tunnel's zero replacement table bypasses 0x53F540;
     // 0x40C910 skips DEFAULTALPHA at 0x40CA0C, before reflection uniforms.
@@ -381,6 +387,23 @@ bool FrontendGpuScene::load(const std::filesystem::path& root,unsigned width,uns
     auto& all_draws=p.commands.owning_draws();
     p.commands.frontend_cube_draws.assign(all_draws.begin()+visible_count,all_draws.end());
     all_draws.resize(visible_count);
+    RecordedCommands floor_commands;
+    if(!record_car_commands(p.floor,capture_options,RenderLimits{},kNoHandle,floor_commands,error))return false;
+    const auto floor_templates=floor_commands.owning_draws();floor_commands.owning_draws().clear();
+    for(unsigned segment=0;segment<3;++segment)for(const auto& draw:floor_templates) {
+        floor_commands.owning_draws().push_back(draw);floor_commands.owning_draws().back().instance=segment;
+    }
+    const auto count=p.commands.owning_draws().size();
+    RecordedCommands resident_floor;
+    if(!combine_race_commands(std::move(p.commands),floor_commands,resident_floor,error))return false;
+    p.commands=std::move(resident_floor);
+    auto& complete=p.commands.owning_draws();
+    p.commands.reflections.assign(complete.begin()+count,complete.end());complete.resize(count);
+    for(std::size_t mesh=0;mesh<p.tunnel.meshes.size();++mesh)
+        if(p.tunnel.meshes[mesh].name=="TRFE_ROAD02_A")p.floor_mesh=mesh;
+    if(p.floor_mesh==kNoHandle){error="native worldreflect floor absent";return false;}
+    for(std::size_t i=0;i<p.road_groups*5;++i)if(complete[i].mesh==p.floor_mesh)
+        complete[i].material.environment_min[3]=1;
     for(auto& draw:p.commands.owning_draws())if(draw.material.surface.gates[0]!=0) {
         for(const auto& program:shader_manifest::kPrograms)
             if(std::string(program.name)=="frontend_car_textured")draw.program=&program;
@@ -443,6 +466,22 @@ bool FrontendGpuScene::frame(float seconds,std::uint32_t ticks,std::string& erro
         if(!record_frame_state(cube_options,RenderLimits{},cube_frame,error))return false;
         p.commands.frontend_cube_frames[face]=cube_frame.frame;
     }
+    p.commands.frame.options[2]|=8U;
+    p.floor_camera=primary;
+    // Original shared CView78D270 with floor descriptor71AA68,320x240;
+    // genuine40DD00 view4 projection with native FOV12463.
+    p.floor_camera.focal_x=1.2961782217025757;p.floor_camera.focal_y=1.660086750984192;
+    auto floor_options=p.options;floor_options.width=320;floor_options.height=240;
+    floor_options.explicit_camera=&p.floor_camera;floor_options.car_shading=false;
+    RecordedCommands floor_frame;
+    if(!record_frame_state(floor_options,RenderLimits{},floor_frame,error))return false;
+    p.commands.frontend_floor_frame=floor_frame.frame;
+    std::array<FrontendRoadPlacement,5> floor_placements;
+    if(p.road.placements(4,floor_placements)!=3){error="original FE floor placements absent";return false;}
+    for(auto& draw:p.commands.reflections) {
+        auto& rows=draw.placement.rows;rows[12]=floor_placements.at(draw.instance).longitudinal;
+        rows[13]=0;rows[14]=floor_placements.at(draw.instance).vertical;
+    }
     const double raw_eye[3]={p.commands.frame.eye[0],-p.commands.frame.eye[2],p.commands.frame.eye[1]};
     for(auto& draw:draws)if(draw.material.surface.gates[0]!=0)
         frontend_local_eye(draw.placement.rows,raw_eye,draw.material.environment_color);
@@ -502,9 +541,23 @@ bool FrontendGpuScene::render_reference(std::vector<unsigned char>& rgba,std::st
         options.background[0]=options.background[1]=options.background[2]=0;options.background[3]=255;
         if(!render_scene(capture,options,RenderLimits{},cube[face],capture_stats,error))return false;
     }
+    auto floor=p.floor;floor.profile=SelectionProfile::stock_car;
+    floor.selectors.clear();floor.instances.clear();for(auto& mesh:floor.meshes)mesh.selector=kNoHandle;
+    for(unsigned segment=0;segment<3;++segment) {
+        PreparedInstance instance;instance.mesh=0;
+        for(const auto& draw:p.commands.reflections)if(draw.instance==segment) {
+            std::copy_n(draw.placement.rows,16,instance.transform);break;
+        }
+        floor.instances.push_back(instance);
+    }
+    Frame floor_frame;auto floor_options=p.options;floor_options.car_shading=false;
+    floor_options.width=320;floor_options.height=240;floor_options.explicit_camera=&p.floor_camera;
+    floor_options.background[0]=floor_options.background[1]=floor_options.background[2]=0;floor_options.background[3]=255;
+    if(!render_scene(floor,floor_options,RenderLimits{},floor_frame,capture_stats,error))return false;
     Frame output,car_frame;RenderStats stats;
     auto car_options=p.options;car_options.frontend_lighting=&p.lighting;car_options.frontend_cube=cube.data();
     auto room_options=p.options;room_options.car_shading=false;
+    room_options.frontend_floor=&floor_frame;room_options.frontend_floor_mesh=p.floor_mesh;
     if(!render_scene(tunnel,room_options,RenderLimits{},output,stats,error) ||
        !render_scene(car,car_options,RenderLimits{},car_frame,stats,error))return false;
     CarShadowPlacement shadow_placement;shadow_placement.alpha=184.0F/255;
