@@ -18,6 +18,10 @@ public:
     ~FrontendMusic();
     bool start(const std::filesystem::path& root, std::string& error,
         const std::function<bool()>& thread_setup = {});
+    // The caller keeps servicing input/applet/presentation while the device
+    // plays the fade and any original cue. stop() then releases the device.
+    void begin_stop();
+    bool stop_ready() const;
     void stop();
     void sound(FrontendSound cue);
     std::string error() const;

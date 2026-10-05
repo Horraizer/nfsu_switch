@@ -17,6 +17,8 @@ struct FrontendMusic::Impl {
     FrontendSfx sfx;
     bool active=false;
     std::atomic<bool> ending{false},silenced{false};
+    std::uint64_t rendered_frames=0;
+    std::atomic<std::uint64_t> drain_boundary{0};
     unsigned first=0,next=0;
     std::vector<std::uint64_t> lengths;
     unsigned current() const {
@@ -59,7 +61,7 @@ bool FrontendMusic::start(const std::filesystem::path& root,std::string& error,
         for(std::size_t i=0;i<offsets.size();++i)
             indexed.push_back(index_ast_segment_by_boundary(*input,offsets[i],
                 i+1<offsets.size()?offsets[i+1]:static_cast<std::uint64_t>(end)));
-        p.stream=std::make_unique<AstStreamer>(); p.fade=OutputFade{};p.ending=false;p.silenced=false;
+        p.stream=std::make_unique<AstStreamer>(); p.fade=OutputFade{};p.ending=false;p.silenced=false;p.rendered_frames=0;p.drain_boundary=0;
         auto playlist=original_music_playlist(bank,indexed,true);
         p.first=p.next;
         std::rotate(playlist.begin(),playlist.begin()+p.first,playlist.end());
@@ -72,25 +74,39 @@ bool FrontendMusic::start(const std::filesystem::path& root,std::string& error,
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         if(!p.stream->error().empty()) throw std::runtime_error(p.stream->error());
         if(!p.output.start([&p](std::int16_t* pcm,std::size_t count) {
-            p.stream->pop(pcm,count); p.sfx.mix(pcm,count); p.fade.apply(pcm,count,p.ending.load());
-            if(p.ending.load() && p.fade.silent()) p.silenced=true;
+            p.stream->pop(pcm,count);
+            const bool ending=p.ending.load();
+            const bool effect=p.sfx.active();
+            const bool audible_music=!p.fade.silent();
+            // Cue gain is independent of the music transition fade.
+            p.fade.apply(pcm,count,ending); p.sfx.mix(pcm,count);
+            p.rendered_frames+=count;
+            if(effect || audible_music)p.drain_boundary=p.rendered_frames;
+            if(ending && p.fade.silent() && !p.sfx.active())p.silenced=true;
         },error)) { p.stream->stop(); p.stream.reset(); return false; }
         p.active=true; error.clear(); return true;
     } catch(const std::exception& e) { error=e.what(); stop(); return false; }
 }
+void FrontendMusic::begin_stop() {
+    auto& p=*impl_;
+    if(p.active && !p.ending.exchange(true))p.next=(p.current()+1)%7;
+}
+bool FrontendMusic::stop_ready() const {
+    const auto& p=*impl_;
+    if(!p.active || !p.output.error().empty() || !p.stream->error().empty())return true;
+    return p.ending.load() && p.silenced.load() &&
+        p.output.stats().played_frames>=p.drain_boundary.load();
+}
 void FrontendMusic::stop() {
-    auto& p=*impl_; if(p.active) {
-        p.next=(p.current()+1)%7;p.ending=true;
-        for(unsigned i=0;i<20 && !p.silenced.load();++i)
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        // Let the bounded device queue play the fade before flushing the voice.
-        std::this_thread::sleep_for(std::chrono::milliseconds(70));
-    }
+    auto& p=*impl_;
+    if(p.active && !p.ending.load())p.next=(p.current()+1)%7;
     p.output.stop();
     if(p.stream) { p.stream->stop(); p.stream.reset(); }
     p.sfx.reset();p.active=false;
 }
-void FrontendMusic::sound(FrontendSound cue) { impl_->sfx.play(cue); }
+void FrontendMusic::sound(FrontendSound cue) {
+    if(!impl_->ending.load())impl_->sfx.play(cue);
+}
 std::string FrontendMusic::error() const {
     if(!impl_->active) return {};
     const auto device=impl_->output.error();

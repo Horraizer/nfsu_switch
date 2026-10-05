@@ -43,6 +43,11 @@ void FrontendSfx::play(FrontendSound cue) {
     std::lock_guard<std::mutex> lock(mutex_);
     if(ready_) {mixer_.play(voice_,&clips_[index],false);voice_=(voice_+1)%kMixVoices;}
 }
+bool FrontendSfx::active() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for(std::size_t i=0;i<kMixVoices;++i)if(mixer_.active(i))return true;
+    return false;
+}
 void FrontendSfx::reset(){std::lock_guard<std::mutex> lock(mutex_);mixer_=Mixer{};voice_=0;}
 void FrontendSfx::mix(std::int16_t* stereo,std::size_t frames) {
     std::lock_guard<std::mutex> lock(mutex_);mixer_.render(stereo,frames,stereo,32768);

@@ -10,6 +10,7 @@ public:
     bool load(const std::filesystem::path& root, std::string& error);
     void play(FrontendSound cue);
     void reset();
+    bool active();
     void mix(std::int16_t* stereo, std::size_t frames);
 private:
     std::mutex mutex_;

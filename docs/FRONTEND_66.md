@@ -133,8 +133,11 @@ with the negative longitudinal segment offset, lateral global 0x735E90 and
 vertical global 0x6FB044, then submits ten model slots per segment. Initialization
 names these families _A, _Z and _Y. Views 1..3 use _A; 4..5 use _Z; 10..15 use
 _Y. These are view identifiers, not camera-controller type identifiers. The
-menu's actual active view must be established before selecting a family.
-The current static CPU scene's _A choice is not evidence of this binding.
+primary context 0x7404C0 is view1: CRT constructor 0x6922A0 builds view records
+at 0x740460 with stride 0x60 using 0x5450F0, which computes the index and stores
+it at +4. The original road update explicitly passes this primary context.
+Its _A family and five translated copies are the verified main-view binding;
+_Z/_Y belong to their separate view passes.
 
 Camera constructor 0x486C80 and matrix builder 0x487680 establish the initial
 orbit state. Original idle logic in 0x4B0340 starts orbit only after its native
@@ -155,7 +158,15 @@ results identify SPARCO_WHITE_WIDE on the rear window and KENWOOD/NX/SPARCO/HKS
 _WHITE_RECT on the doors; their draw bindings are not yet connected.
 
 Original FE_COMMON logical up/down/select/back dispatch is implemented with
-native entries 0/1/4/5. Original cue gain, pitch and voice policy, and complete
-select/back cue lifetime during an immediate transition remain to be verified.
+native entries 0/1/4/5. Original cue gain/pitch/voice policy remains under investigation. Select/back
+transition lifetime is now handled by begin_stop/stop_ready: the caller keeps
+servicing input, applet and menu presentation, the music alone fades, and the
+device is retired only after its played-frame cursor acknowledges the last
+cue/fade block. New cues are suppressed after the transition is committed.
+`nfsu_frontend_music_transition_retail` runs the actual music/SFX source and AST
+decoder with a controlled device callback and independent played-frame cursor.
+It compares complete original select/back PCM after the music fade, then checks
+that submission alone cannot retire the device. This is a port lifecycle
+contract, not a recovered original scene-transition timing claim.
 The full combined default/Release/retail/Switch gates and independent review
 remain pending. No current work-in-progress preview is a hardware candidate.

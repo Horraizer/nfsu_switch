@@ -868,6 +868,7 @@ int main(int argc, char** argv) {
                     menu.notice(std::string("INTRO: ")+intro.error);
                 }
                 bool stick_up=false,stick_down=false;
+                FrontendAction pending=FrontendAction::none;
                 while (appletMainLoop()) {
                     padUpdate(&pad); const auto down=padGetButtonsDown(&pad);
                     const auto stick=padGetStickPos(&pad,0);
@@ -879,12 +880,18 @@ int main(int argc, char** argv) {
                     input.back=down&(HidNpadButton_B|HidNpadButton_Plus);
                     stick_up=up; stick_down=below;
                     const auto previous_selection=menu.selected();
-                    const auto action=menu.update(input);
-                    if(input.back) music.sound(audio::FrontendSound::back);
-                    else if(input.accept) music.sound(audio::FrontendSound::select);
+                    auto action=pending==FrontendAction::none?menu.update(input):FrontendAction::none;
+                    if(pending==FrontendAction::none && input.back) music.sound(audio::FrontendSound::back);
+                    else if(pending==FrontendAction::none && input.accept) music.sound(audio::FrontendSound::select);
                     else if(menu.selected()!=previous_selection)
                         music.sound(input.up?audio::FrontendSound::up:audio::FrontendSound::down);
-                    if (action==FrontendAction::exit) break;
+                    if(action==FrontendAction::exit || action==FrontendAction::free_drive) {
+                        pending=action;music.begin_stop();action=FrontendAction::none;
+                    }
+                    if(pending!=FrontendAction::none && music.stop_ready()) {
+                        action=pending;pending=FrontendAction::none;
+                    }
+                    if (action==FrontendAction::exit) {music.stop();break;}
                     if (action==FrontendAction::underground) {
                         menu.notice("INTRODUCTORY RACE IS NOT AVAILABLE IN THIS BUILD");
                     } else if (action==FrontendAction::free_drive) {
