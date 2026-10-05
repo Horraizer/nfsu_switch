@@ -399,7 +399,8 @@ private:
 // preview part is set (RideInfo +0x71C is zero after 0x57d160). Slots 6
 // and 12 are empty: with a wide body the routine would also install parts.
 void derive_enabled(const CarPartDatabase& database,
-                    std::array<StockPartSlot, kCarSlotCount>& slots) {
+                    std::array<StockPartSlot, kCarSlotCount>& slots,
+                    bool native_installed = false) {
     const auto at = [&](int slot) -> StockPartSlot& {
         return slots[static_cast<std::size_t>(slot)];
     };
@@ -432,6 +433,22 @@ void derive_enabled(const CarPartDatabase& database,
         // preview part; neither has an effect here. The wide-body branch
         // of 0x57ed2e is not reproduced: it also installs parts, and the
         // stock routine never fills slot 6.
+        if (native_installed && s == 8 && installed(kSlotEngine)) {
+            // 0x57EC29 with the native preset and no garage preview part:
+            // expose engine only when the hood is absent or disabled.
+            at(kSlotEngine).enabled = !installed(8) || !at(8).enabled;
+        }
+        if (native_installed && s == kSlotWideBody && installed(kSlotWideBody)) {
+            // 0x57ED2E..0x57EF7A. Native preset resolution supplies the four
+            // original widebody decal records before this enable consumer.
+            for (const int slot : {kSlotFrontBumper, kSlotRearBumper, kSlotSkirt, kSlotBody})
+                at(slot).enabled = false;
+            at(kSlotWideBody).enabled = true;
+            for (int i = 0; i < 4; ++i) {
+                at(kSlotDecalLeftDoor + i).enabled = false;
+                at(kSlotWideBodyDecalLeftDoor + i).enabled = true;
+            }
+        }
         if (s == kSlotWideBody && !installed(kSlotWideBody)) {
             // 0x57ef81, the branch without a wide body part.
             for (const int slot : {kSlotFrontBumper, kSlotRearBumper, kSlotSkirt,
@@ -777,7 +794,9 @@ bool select_installed_parts(
         entry.record = record;
         entry.overridden = true;
     }
-    derive_enabled(database, parts.slots);
+    const bool native_installed = std::any_of(selection.records.begin(),selection.records.end(),
+        [](const auto& record) { return record.has_value(); });
+    derive_enabled(database, parts.slots, native_installed);
     return true;
 }
 

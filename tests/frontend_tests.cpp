@@ -1,4 +1,9 @@
 #include "nfsu/frontend.h"
+#include "nfsu/frontend_motion.h"
+#include "nfsu/frontend_preset.h"
+#include "nfsu/race_events.h"
+#include "nfsu/sha256.h"
+#include <cmath>
 #include "nfsu/frontend_music.h"
 #include <algorithm>
 #include "nfsu/race_session.h"
@@ -29,6 +34,30 @@ int main(int argc,char** argv) {
         segments.pop_back();bool rejected=false;
         try {audio::original_music_playlist(bank,segments,true);} catch(const std::exception&) {rejected=true;}
         check(rejected,"missing AST bank boundary rejected");
+        // Values come from bounded execution of retail 0x4AE1F0 and
+        // 0x4AE530, with ready state, 50 km/h and a 1/60-second frame.
+        const float native_velocity[]={13.6864938736F,13.6265792847F,14.0879993439F,12.9644823074F};
+        const unsigned native_seconds[]={0,1,10,30};
+        for(unsigned i=0;i<4;++i) {
+            FrontendRoad road;road.offset=199.9F;
+            road.update(1.0F/60,native_seconds[i]*4000);
+            check(std::abs(road.velocity-native_velocity[i])<0.000002F,"native road speed modulation");
+            check(road.offset>=0 && road.offset<1,"native road wraps rather than discontinuously resetting");
+        }
+        FrontendRoad road;road.offset=200;
+        road.update(0,0,true);
+        check(road.offset==200,"native road preserves exact wrap boundary");
+        std::array<FrontendRoadPlacement,5> placements;
+        check(road.placements(1,placements)==5 && placements[0].group==0 &&
+            placements[0].longitudinal==200 && placements[1].group==1 &&
+            placements[4].longitudinal==-200,"native repeated road placement and parity");
+        check(road.placements(4,placements)==3 && placements[0].family==1 &&
+            road.placements(11,placements)==3 && placements[0].family==2 &&
+            road.placements(0,placements)==0,"native view selects road families and extent");
+        road.speed_kmh=10;road.target_kmh=20;
+        road.update(0.25F,0,true);
+        check(road.speed_kmh==12.5F && std::abs(road.velocity-13.88888931F)<0.000002F,
+            "forced road speed preserves native acceleration state");
         FrontendMenu menu;
         check(menu.update({false,false,true,false})==FrontendAction::underground,"initial Underground selection");
         check(menu.update({false,true,false,false})==FrontendAction::none,"navigation has no launch side effect");
@@ -40,6 +69,36 @@ int main(int argc,char** argv) {
         check(run.set_free_drive(true,error),"free-drive configuration before startup");
         if(argc==2) {
             const std::filesystem::path root=argv[1]; FrontendArt art;
+            std::vector<unsigned char> front,globals;std::vector<RaceTableIssue> part_issues;
+            check(load_race_image(root/"FrontEnd/FrontB.lzc",front,part_issues),"original preset image");
+            check(load_race_image(root/"Global/GLOBALB.BUN",globals,part_issues),"original part database image");
+            const auto database=parse_car_part_database(globals.data(),globals.size());
+            InstalledPartSelection installed;
+            check(resolve_frontend_skyline_parts(front,database,installed,error),error.c_str());
+            StockParts selected;
+            check(select_installed_parts(database,"SKYLINE",installed,selected,error),error.c_str());
+            std::vector<unsigned char> native_slots;
+            for(const auto& part:installed.records) {
+                const auto index=!part || *part==kNoCarPart?0xFFFFFFFFU:static_cast<std::uint32_t>(*part);
+                for(unsigned byte=0;byte<4;++byte)native_slots.push_back(static_cast<unsigned char>(index>>(byte*8)));
+            }
+            for(const auto& slot:selected.slots)native_slots.push_back(slot.enabled?1:0);
+            check(sha256_hex(sha256(native_slots.data(),native_slots.size()))==
+                "27DE93661A7153D9B74C74198B14C2DD8016E863A5CE641FA93B86B54AF1074F",
+                "native FE_SKYLINE 120 assigned slots and installation enable bytes");
+            BodySkinSelection skin;
+            check(resolve_frontend_skyline_skin(globals,database,installed,skin,error),error.c_str());
+            check(skin.base_color==skin_pack_paint(145,63,16,128) &&
+                skin.vinyl_layers[3] && skin.vinyl_layers[3]->texture=="EDDIE" &&
+                !skin.vinyl_layers[3]->remap,"native FE_SKYLINE paint and Eddie vinyl");
+            FrontendSponsorHashes sponsors;
+            check(resolve_frontend_sponsors(database,selected,sponsors,error),error.c_str());
+            const std::uint32_t native_doors[]={0x8A571203,0xB015F6F2,0xB891CDB4,0x0F4108B2};
+            for(unsigned panel=0;panel<7;++panel)for(unsigned decal=0;decal<8;++decal) {
+                const auto expected=panel==2 && decal==0?0xB8949CAFU:
+                    (panel==3 || panel==4) && decal<4?native_doors[decal]:0x66994F4AU;
+                check(sponsors[panel][decal]==expected,"native original 56C3D0 sponsor substitutions");
+            }
             audio::FrontendSfx sfx;
             check(sfx.load(root,error),error.c_str());
             std::vector<std::int16_t> unchanged(1024*2,1234);

@@ -30,25 +30,22 @@ Statistics, Customize Ride, Options and Play Online remain visible and locked.
 The original Chyron EA logo, banner dimensions and proportional text are adapted
 to the bottom safe area. Controller hints describe the actual Switch controls.
 
-The background is rendered from the nine original TRFE_ROAD02 tunnel solids
-in FrontB, Road_Segment textures and the RSX geometry/textures. Default stock RSX
-paint is resolved through CarTypeInfo +0xC5C and the actual BASE_PAINT attributes,
-not an arbitrary requested color. Room modulation follows original world.efx.
+The prior static stock RSX background was rejected by the owner. The current
+work in progress resolves the native FE_SKYLINE preset, its installed parts,
+base paint and EDDIE vinyl. The reference CPU renderer still caches a scene;
+it is not the accepted moving menu implementation. The GPU scene and original
+material/effect consumers remain under recovery.
+
 FEng image 0x4F2000 and font 0x4F48B0 halve channels before packed
 vertex color submission. The port's decoded world material uses Modulate2x
-and preserves half-pack then material multiplication for RGB and
-alpha, avoiding clipped white logo/highlight colors. Original type9 renderer
-0x4F2280 supplies distinct TL/TR/BR/BL corner colors, packed /2 and drawn as
-a two-triangle fan. The port interpolates those native colors instead of
-flattening the main backing to one color or multiplying them by base SA color.
-`tools/frontend66_color_native.py <retail-root>` executes the original font
-packing instructions with explicit supplied color/stack preconditions.
-The car uses existing decoded retail material coefficients and runtime skin.
+and preserves half-pack then material multiplication for RGB and alpha.
+Original type9 renderer 0x4F2280 supplies distinct TL/TR/BR/BL corner colors,
+packed /2 and drawn as a two-triangle fan. The port interpolates those native
+colors. `tools/frontend66_color_native.py <retail-root>` executes the original
+font packing instructions with explicit supplied color/stack preconditions.
 The active native FEng effect/sRGB context has not been executed; the selected
-world material is a port composition boundary. The current camera framing is
-a port choice; the original animated camera,
-saved-profile tuned car shown in the owner's photo and full original lighting
-have not been recovered. The background is cached for menu responsiveness.
+world material remains a port composition boundary.
+
 Original source assets remain read-only, memory-only and unbundled. Private
 owner photos and local render previews are not published or tracked.
 
@@ -105,3 +102,60 @@ including camera/profile/lighting above. The corrected original movie display
 aspect is supplied by the independently authored intro patch; hardware listening,
 proportions and transition acceptance must be checked on the exact new artifact.
 No source, synthetic test or cross-build is a substitute for that evidence.
+
+## Presentation recovery in progress
+
+Authenticated speed.exe SHA-256:
+C0FAD450912952F53809A54690D235AA8B4E25B9F46650693C7CBEE1B4C074B7.
+The decoded FrontB FE_SKYLINE row at offset 11949952 is consumed by menu
+constructor 0x4B2C30 through preset application 0x4B26F0. Its native selected
+parts include Skyline MANTIS widebody, SUPERNOVA wing and BBS RX2 20 wheels.
+The body skin uses METAL_L3_TEST04 paint attributes and EDDIE vinyl, rather
+than a tuning choice inferred from the owner's photograph. `frontend_preset`
+resolves these records from the authenticated images. The native install
+consumer 0x57EA80 disables the ordinary bumpers, body, skirts and decal
+meshes when the widebody is present, and disables the engine under the hood.
+A bounded native witness and actual-source comparison cover assigned part
+indices and enable bytes; the witness supplies stock initialization as an
+explicit precondition and does not establish full game startup.
+
+Road constructor 0x4ADA60 initializes a repeating environment. Update
+0x4AE1F0 changes world translation using the native 4000-tick clock, a speed
+state, acceleration and fixed-angle sinusoidal modulation. It is not merely
+texture scrolling or a camera orbit. `FrontendRoad` reproduces this consumer;
+`nfsu_frontend_tests` checks its native velocity samples, strict wrap boundary,
+segment spacing, parity and view-family selection. The fixed-angle
+polynomial comes from genuine function 0x564B10 and its executable constants.
+
+Placement 0x4AE530 computes trunc(2*offset/wrapLength), alternating parity,
+and translated copies. Draw consumer 0x4AE650 assigns identity transforms
+with the negative longitudinal segment offset, lateral global 0x735E90 and
+vertical global 0x6FB044, then submits ten model slots per segment. Initialization
+names these families _A, _Z and _Y. Views 1..3 use _A; 4..5 use _Z; 10..15 use
+_Y. These are view identifiers, not camera-controller type identifiers. The
+menu's actual active view must be established before selecting a family.
+The current static CPU scene's _A choice is not evidence of this binding.
+
+Camera constructor 0x486C80 and matrix builder 0x487680 establish the initial
+orbit state. Original idle logic in 0x4B0340 starts orbit only after its native
+idle threshold, and 0x4870C0 advances the rates. Initial car yaw is zero in
+0x4AF73D and consumed by 0x4B1760. The owner's photograph can show a later
+orbit angle; it does not justify arbitrarily flipping this initial model pose.
+Wheel actuation and scene-specific reflection, lighting, shadow and glow
+consumers are still being investigated. General race shading is not original
+menu effect parity.
+
+PR319 dependency 9eb9a2dfcd43354253ee7288e36324186cb5d90f is integrated locally
+with its source history preserved. GLOBALB supplies the otherwise missing
+HEADLIGHTGLOW texture. Tunnel hash 0xC2456B43 still requires its actual binding;
+a prior static view hiding it does not qualify a moving no-fallback scene.
+Sponsor alias consumer 0x56C3D0 selects NAME plus panel SHAPE suffixes
+(_SQUARE/_RECT/_WIDE), not a guessed sponsor TEXTURE attribute. Native witness
+results identify SPARCO_WHITE_WIDE on the rear window and KENWOOD/NX/SPARCO/HKS
+_WHITE_RECT on the doors; their draw bindings are not yet connected.
+
+Original FE_COMMON logical up/down/select/back dispatch is implemented with
+native entries 0/1/4/5. Original cue gain, pitch and voice policy, and complete
+select/back cue lifetime during an immediate transition remain to be verified.
+The full combined default/Release/retail/Switch gates and independent review
+remain pending. No current work-in-progress preview is a hardware candidate.

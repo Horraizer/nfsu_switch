@@ -68,4 +68,117 @@ bool resolve_frontend_skyline_parts(const std::vector<unsigned char>& front,
     }
     error.clear();return true;
 }
+
+bool resolve_frontend_skyline_skin(const std::vector<unsigned char>& globals,
+    const CarPartDatabase& db,const InstalledPartSelection& parts,
+    BodySkinSelection& skin,std::string& error) {
+    skin=BodySkinSelection{};
+    const auto part=[&](unsigned slot)->const CarPartRecord* {
+        const auto record=parts.records[slot];
+        return record && *record!=kNoCarPart && *record<db.records.size() ? &db.records[*record] : nullptr;
+    };
+    const auto paint=[&](const CarPartRecord& p,std::uint32_t& result) {
+        unsigned colors[4]{};const char* names[]={"RED","GREEN","BLUE","GLOSS"};
+        for(unsigned k=0;k<4;++k) {
+            bool present=false;
+            for(int a=0;a<p.attribute_count;++a) {
+                const auto& item=db.attributes[p.attribute_index+static_cast<unsigned>(a)];
+                if(item.key==bin_hash(names[k])) {colors[k]=item.value;present=true;break;}
+            }
+            if(!present || colors[k]>255) return false;
+        }
+        result=skin_pack_paint(colors[0],colors[1],colors[2],colors[3]);return true;
+    };
+    const auto* base=part(30);
+    if(!db.ok() || !base || !paint(*base,skin.base_color)) {
+        error="original frontend base paint attributes absent";return false;
+    }
+    skin.car_name="SKYLINE";
+    skin.doorline=SkinDoorlineSelection{part(6)?SkinDoorlineVariant::wide_body:SkinDoorlineVariant::plain};
+    for(unsigned k=0;k<4;++k) if(const auto* selected=part(37+k)) {
+        std::uint32_t color=0;if(!paint(*selected,color)) {error="invalid frontend special paint";return false;}
+        skin.special_colors[k]=color;
+    }
+    // Original part TEXTURE attributes index the database string table.
+    // Locate its enclosing database, then require an in-bounds ASCII string.
+    const unsigned char* strings=nullptr;std::size_t string_bytes=0;
+    for(std::size_t at=0;at+8<=globals.size();) {
+        const auto tag=word(globals.data()+at),size=word(globals.data()+at+4);
+        if(size>globals.size()-at-8) {error="invalid frontend global chunk";return false;}
+        if(tag==kCarPartDatabaseId) {
+            for(std::size_t child=at+8;child+8<=at+8+size;) {
+                const auto child_size=word(globals.data()+child+4);
+                if(child_size>at+8+size-child-8) {error="invalid frontend part child";return false;}
+                if(word(globals.data()+child)==kCarPartStringTableId) {
+                    strings=globals.data()+child+8;string_bytes=child_size;
+                }
+                child+=8+child_size;
+            }
+        }
+        at+=8+size;
+    }
+    if(!strings) {error="frontend part strings absent";return false;}
+    for(unsigned layer=0;layer<4;++layer) if(const auto* selected=part(31+layer)) {
+        bool duplicate=false;
+        for(unsigned previous=0;previous<layer;++previous)
+            duplicate=duplicate || part(31+previous)==selected;
+        if(duplicate) continue; // 0x5A9F25 compares installed part identity.
+        const auto offset=attribute(db,*selected,bin_hash("TEXTURE"));
+        if(offset>=string_bytes) {error="frontend vinyl texture string outside database";return false;}
+        SkinVinylLayerSelection vinyl;
+        for(std::size_t k=offset;k<string_bytes && strings[k];++k) {
+            if(strings[k]<32 || strings[k]>126) {error="invalid frontend vinyl texture name";return false;}
+            vinyl.texture+=char(strings[k]);
+        }
+        if(vinyl.texture.empty() || offset+vinyl.texture.size()>=string_bytes) {
+            error="frontend vinyl texture name absent";return false;
+        }
+        vinyl.palette_size=attribute(db,*selected,bin_hash("NUMCOLOURS"));
+        vinyl.remap=attribute(db,*selected,bin_hash("REMAP"))!=0;
+        if(vinyl.remap) for(unsigned k=0;k<4;++k) if(const auto* color_part=part(42+layer*4+k)) {
+            std::uint32_t color=0;
+            if(!paint(*color_part,color)) {error="invalid frontend remap paint";return false;}
+            vinyl.remap_colors[k]=color;
+        }
+        skin.vinyl_layers[layer]=std::move(vinyl);
+    }
+    error.clear();return true;
+}
+bool resolve_frontend_sponsors(const CarPartDatabase& db,const StockParts& parts,
+    FrontendSponsorHashes& hashes,std::string& error) {
+    for(auto& panel:hashes) panel.fill(bin_hash("DEFAULTALPHA"));
+    if(!db.ok()) {error="invalid frontend sponsor database";return false;}
+    for(const auto& slot:parts.slots) if(slot.record!=kNoCarPart && slot.record>=db.records.size()) {
+        error="frontend sponsor part outside database";return false;
+    }
+    const auto part=[&](unsigned slot)->const CarPartRecord* {
+        const auto index=parts.slots[slot].record;
+        return index!=kNoCarPart && index<db.records.size()?&db.records[index]:nullptr;
+    };
+    const auto attr=[&](const CarPartRecord& p,std::uint32_t key)->const CarPartAttribute* {
+        for(int i=0;i<p.attribute_count;++i) {
+            const auto& a=db.attributes[p.attribute_index+static_cast<unsigned>(i)];
+            if(a.key==key)return &a;
+        }
+        return nullptr;
+    };
+    for(unsigned panel=0;panel<7;++panel) {
+        const auto* rectangle=part(19+panel);
+        if(!rectangle || (panel==0 && !part(12)))continue;
+        const auto* size=attr(*rectangle,bin_hash("SIZE"));
+        const auto* shape=attr(*rectangle,bin_hash("SHAPE"));
+        if(!size || !shape)continue;
+        const char* suffix=shape->value==bin_hash("SQUARE")?"_SQUARE":
+            shape->value==bin_hash("RECT")?"_RECT":shape->value==bin_hash("WIDE")?"_WIDE":"";
+        for(unsigned decal=0;decal<8;++decal) if(const auto* sponsor=part(59+panel*8+decal)) {
+            const auto* name=attr(*sponsor,bin_hash("NAME"));
+            if(!name)continue;
+            auto hash=name->value;
+            for(const char* c=suffix;*c;++c)hash=hash*33+static_cast<unsigned char>(*c);
+            hashes[panel][decal]=hash;
+        }
+    }
+    error.clear();return true;
+}
+
 }
