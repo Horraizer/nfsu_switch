@@ -58,8 +58,9 @@ void quad(Canvas target,const Image& tex,const Transform& m,float x,float y,floa
           std::array<float,4> uv,std::array<unsigned,4> color,
           const std::array<std::array<unsigned,4>,4>* corners=nullptr) {
     if((!target.pixels && !target.gpu) || !w || !h || tex.rgba.empty()) return;
-    const float s=std::min(float(target.width)/640,float(target.height)/480);
-    const float ox=(float(target.width)-640*s)/2,oy=(float(target.height)-480*s)/2;
+    // Native FEng submit maps its 640x480 canvas independently to NDC.
+    // Letterboxing exposes authored control markers outside that canvas.
+    const float sx=float(target.width)/640,sy=float(target.height)/480;
     const float det=m.a*m.d-m.b*m.c;
     if(std::abs(det)<0.00001F) return;
     const float xs[4]={x,x+w,x+w,x},ys[4]={y,y,y+h,y+h};
@@ -69,8 +70,8 @@ void quad(Canvas target,const Image& tex,const Transform& m,float x,float y,floa
         const float us[4]={uv[0],uv[2],uv[2],uv[0]},vs[4]={uv[1],uv[1],uv[3],uv[3]};
         for(unsigned i=0;i<4;++i) {
             TrackVertex vertex;
-            vertex.px=ox+(320+m.x+m.a*xs[i]+m.c*ys[i])*s;
-            vertex.py=oy+(240+m.y+m.b*xs[i]+m.d*ys[i])*s;vertex.pz=-1;
+            vertex.px=(320+m.x+m.a*xs[i]+m.c*ys[i])*sx;
+            vertex.py=(240+m.y+m.b*xs[i]+m.d*ys[i])*sy;vertex.pz=-1;
             const auto& modulation=corners?(*corners)[i]:color;
             for(unsigned c=0;c<4;++c)vertex.color[c]=static_cast<unsigned char>(std::min(255U,modulation[c==3?3:2-c])/2*2);
             vertex.u=(tex.atlas_x+std::max(0.F,std::min(1.F,us[i]))*tex.width)/target.atlas_width;
@@ -81,14 +82,14 @@ void quad(Canvas target,const Image& tex,const Transform& m,float x,float y,floa
     }
     float l=1e6F,r=-1e6F,t=1e6F,b=-1e6F;
     for(unsigned i=0;i<4;++i) {
-        const float px=ox+(320+m.x+m.a*xs[i]+m.c*ys[i])*s;
-        const float py=oy+(240+m.y+m.b*xs[i]+m.d*ys[i])*s;
+        const float px=(320+m.x+m.a*xs[i]+m.c*ys[i])*sx;
+        const float py=(240+m.y+m.b*xs[i]+m.d*ys[i])*sy;
         l=std::min(l,px);r=std::max(r,px);t=std::min(t,py);b=std::max(b,py);
     }
     const int left=std::max(0,int(std::floor(l))),right=std::min(int(target.width),int(std::ceil(r)));
     const int top=std::max(0,int(std::floor(t))),bottom=std::min(int(target.height),int(std::ceil(b)));
     for(int py=top;py<bottom;++py) for(int px=left;px<right;++px) {
-        const float rx=(float(px)+.5F-ox)/s-320-m.x,ry=(float(py)+.5F-oy)/s-240-m.y;
+        const float rx=(float(px)+.5F)/sx-320-m.x,ry=(float(py)+.5F)/sy-240-m.y;
         const float lx=(m.d*rx-m.c*ry)/det,ly=(m.a*ry-m.b*rx)/det;
         const float u=(lx-x)/w,v=(ly-y)/h;
         if(u<0 || u>=1 || v<0 || v>=1) continue;
@@ -175,9 +176,9 @@ struct FrontendArt::Impl {
         for(unsigned char code:value) for(const auto& g:font.glyphs) if(g.code==code) {
             for(const auto& k:g.kerning) if(k.previous==previous) x+=float(k.adjustment);
             const float tw=float(tex->second.width),th=float(tex->second.height);
-            quad(target,tex->second,m,x+float(g.bearing_x)-1,y+float(g.bearing_y)-1,
-                float(g.width)+2,float(g.height)+2,
-                {{(float(g.x)-1)/tw,(float(g.y)-1)/th,(float(g.x)+g.width+1)/tw,(float(g.y)+g.height+1)/th}},color);
+            quad(target,tex->second,m,x+float(g.bearing_x),y+float(g.bearing_y),
+                float(g.width),float(g.height),
+                {{(float(g.x)-.5F)/tw,(float(g.y)-.5F)/th,(float(g.x)+g.width+.5F)/tw,(float(g.y)+g.height+.5F)/th}},color);
             x+=float(g.advance);previous=code;break;
         }
     }

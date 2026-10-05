@@ -620,6 +620,12 @@ bool validate_camera(const OrbitCamera& camera, std::string& error) {
         error = "yaw must be finite and within +-36000 degrees";
         return false;
     }
+    if (!in_range(camera.roll_deg, -kMaxYawMagnitude, kMaxYawMagnitude) ||
+        !in_range(camera.focal_x_override, 0.0, 10000.0) ||
+        !in_range(camera.focal_y_override, 0.0, 10000.0)) {
+        error = "camera roll or horizontal projection is invalid";
+        return false;
+    }
     if (!in_range(camera.pitch_deg, kMinPitch, kMaxPitch)) {
         error = "pitch must be within -89..89 degrees";
         return false;
@@ -690,10 +696,18 @@ bool make_camera_frame(
         error = "camera basis is degenerate";
         return false;
     }
+    if (camera.roll_deg != 0.0) {
+        const double c = det_cos_deg(camera.roll_deg), s = det_sin_deg(camera.roll_deg);
+        const Vec3 right = frame.right, up = frame.up;
+        frame.right = {right.x*c-up.x*s, right.y*c-up.y*s, right.z*c-up.z*s};
+        frame.up = {up.x*c+right.x*s, up.y*c+right.y*s, up.z*c+right.z*s};
+    }
     const double half = camera.fov_y_deg * 0.5;
     frame.focal_y = det_cos_deg(half) / det_sin_deg(half);
     frame.focal_x = frame.focal_y * static_cast<double>(height) /
                     static_cast<double>(width);
+    if (camera.focal_y_override != 0.0) frame.focal_y = camera.focal_y_override;
+    if (camera.focal_x_override != 0.0) frame.focal_x = camera.focal_x_override;
     frame.near_plane = camera.near_plane;
     frame.far_plane = camera.far_plane;
     return true;

@@ -150,6 +150,25 @@ int main(int argc,char** argv) {
             }
             FrontendGpuScene gpu_scene;
             if(!gpu_scene.load(root,1280,720,error))throw std::runtime_error(error);
+            // Independent original 486ECD/487BA0/4870C0/487680 execution:
+            // mode0 saved entry, VIEW inverse and raw -> world basis conversion.
+            const auto& entry_frame=gpu_scene.commands().frame;
+            const double native_eye[]={2.743728462142889,.7651561591125922,-1.8576175162722057};
+            const double native_right[]={-.7047351002693176,.11533286422491074,-.7000333666801453};
+            const double native_up[]={.0988493338227272,.9930362105369568,.06409282982349396};
+            const double native_forward[]={-.7025505304336548,.02402937039732933,.71122807264328};
+            for(unsigned axis=0;axis<3;++axis) {
+                check(std::abs(entry_frame.eye[axis]-native_eye[axis])<1e-5,
+                    "main entry native camera eye, not constructor default");
+                check(std::abs(entry_frame.right[axis]-native_right[axis])<1e-5 &&
+                    std::abs(entry_frame.up[axis]-native_up[axis])<1e-5 &&
+                    std::abs(entry_frame.forward[axis]-native_forward[axis])<1e-5,
+                    "main entry native camera basis preserves original roll");
+            }
+            // Genuine original 40DD00 primary view1, 1280x720 viewport.
+            check(std::abs(entry_frame.projection[0]-1.2961782217025757)<1e-6 &&
+                std::abs(entry_frame.projection[1]-2.32236385345459)<1e-6,
+                "main entry original independent fixed-angle projection scales");
             const auto initial_commands=gpu_scene.commands().owning_draws();
             check(!initial_commands.empty(),"original frontend resident GPU submission");
             const auto shadow=std::find_if(initial_commands.begin(),initial_commands.end(),
@@ -279,6 +298,42 @@ int main(int argc,char** argv) {
             gpu_art.record_ui(1280,720,gpu_menu,ui);
             check(!ui.additive.empty() && ui.vertices.size()==ui.additive.size()*4 &&
                 ui.additive.size()<=kFrontendUiMaxQuads,"authored UI fits resident overlay capacity");
+            unsigned outside_markers=0;
+            for(std::size_t i=0;i<ui.vertices.size();i+=4) {
+                if(ui.vertices[i].color[0]!=254 || ui.vertices[i].color[1]!=0 ||
+                    ui.vertices[i].color[2]!=0) continue;
+                // Genuine original FEng image submit places the three authored
+                // red control markers wholly outside clipX [-1,1]. Keep their
+                // geometry; production viewport clipping excludes them.
+                for(unsigned corner=0;corner<4;++corner) {
+                    const double clip_x=2*double(ui.vertices[i+corner].px)/1280-1;
+                    const double native_x=(corner==0 || corner==3)?-1.084375023841858:-1.0343749523162842;
+                    check(std::abs(clip_x-native_x)<1e-6 && clip_x<-1,
+                        "authored menu marker remains outside original viewport");
+                }
+                ++outside_markers;
+            }
+            check(outside_markers==3,"native off-canvas controls retained without visible red squares");
+            const double native_logo[4][2]={{-1.1467323303222656,.9117122888565063},
+                {.29381564259529114,.9117122888565063},
+                {.29381564259529114,.6716209650039673},
+                {-1.1467323303222656,.6716209650039673}};
+            const double native_text[4][2]={{.40000003576278687,.2124999612569809},
+                {.4437500238418579,.2124999612569809},
+                {.4437500238418579,.14583328366279602},
+                {.40000003576278687,.14583328366279602}};
+            const auto native_quad_present=[&](const double (&pin)[4][2]) {
+                for(std::size_t i=0;i<ui.vertices.size();i+=4) {
+                    bool same=true;
+                    for(unsigned corner=0;corner<4;++corner)
+                        same &= std::abs(2*double(ui.vertices[i+corner].px)/1280-1-pin[corner][0])<1e-6 &&
+                            std::abs(1-2*double(ui.vertices[i+corner].py)/720-pin[corner][1])<1e-6;
+                    if(same)return true;
+                }
+                return false;
+            };
+            check(native_quad_present(native_logo),"onscreen authored logo matches original FEng clip corners");
+            check(native_quad_present(native_text),"onscreen original font glyph matches original FEng clip corners");
             bool atlas_pixels=false,restored_color=false;
             for(const auto& vertex:ui.vertices) {
                 check(std::isfinite(vertex.px) && std::isfinite(vertex.py) &&

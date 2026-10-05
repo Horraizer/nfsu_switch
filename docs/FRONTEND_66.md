@@ -289,3 +289,48 @@ remain separate unfinished FE work.
 CPU scene image, for current-scene diagnostics. The live Switch menu still
 records those objects into its resident GPU atlas/overlay path. This CPU
 diagnostic does not certify hardware opacity, frame time or temporal effects.
+
+
+## Main-entry camera and authored UI viewport
+
+The constructor camera is not the main-menu camera. Main entry calls
+0x487BA0 with mode zero, publishing camera state one and saved mode zero.
+The next genuine 0x4870C0 update selects the saved table at 0x7788E0 before
+0x487680. The latter builds a VIEW matrix through inverse and look-at
+consumers 0x40BC10 and 0x40B780. Its translation is not a world-space eye.
+The frontend scene uses the inverted view and raw-to-world coordinate mapping,
+including the authored roll. Shared camera roll and focal overrides are opt-in;
+existing race and viewer inputs retain their prior zero defaults.
+
+The original update publishes a fixed-angle FOV word, consumed by primary-view
+projection 0x40DD00. For view one, 0x40DDD2 through 0x40DEF4 applies the
+viewport ratio and globals 0x6B7C6C/0x6B7C70/0x6B7C74, truncates the two
+half-angles, and evaluates their original fixed-angle cotangents independently.
+The menu does not substitute a direct vertical FOV or an aspect-derived
+horizontal focal scale for that consumer. tools/frontend66_camera_native.py
+executes authenticated constructor-tail, entry, view and projection slices.
+Explicit preconditions are zero camera storage, original scalar CPU dispatch,
+a supplied viewport and clipping inputs. Only the recovered focal scales are
+claimed from the projection slice; it stops before scene submission.
+
+The authored DisplayMenuBar, quit_tag and back_tag are image objects outside
+the original UI canvas. Their OP flags are copied unchanged by 0x5017D0;
+this is not evidence for a hidden flag. Genuine image geometry and submission
+place each quad entirely outside the horizontal clip range. Uniform
+letterboxing in the port exposed those quads inside the wider screen. The
+frontend CPU and GPU paths now map the original canvas independently on X
+and Y, preserving those objects and allowing normal viewport clipping.
+This mapping is separate from intro-media aspect handling.
+
+The actual-source frontend retail test compares the native entry eye and full
+basis, including roll, the original projection scales, all offscreen control
+corners, and onscreen logo/font corners. tools/frontend66_ui_native.py repeats
+the native UI witnesses with authentic FNG and font records. Its documented
+boundaries supply allocation, texture metadata, COM capture and the authored
+identity-rotation/unit-scale LogoCover parent translation. No visibility mask
+or arbitrary object-name suppression replaces the native clipping result.
+
+These camera/UI corrections do not complete FE harmonic lighting, live cube
+capture or the remaining original temporal UI effects. Current source frames
+remain diagnostics until combined validation, independent review and owner
+hardware acceptance are complete.

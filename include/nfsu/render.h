@@ -45,6 +45,11 @@ struct OrbitCamera {
     double fov_y_deg = 35.0;
     double near_plane = 0.05;
     double far_plane = 100.0;
+    // Authored FE camera roll and independent native horizontal projection.
+    // Zero keeps the existing upright orbit/aspect-derived projection.
+    double roll_deg = 0.0;
+    double focal_x_override = 0.0;
+    double focal_y_override = 0.0;
 };
 
 constexpr double kMinPitch = -89.0;

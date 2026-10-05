@@ -253,11 +253,26 @@ bool load_scene_assets(const std::filesystem::path& root,unsigned width,unsigned
        !bind_frontend_sponsors(inputs,installed,car,error)) return false;
     if(shadow && !prepare_frontend_shadow(inputs,car,*shadow,error))return false;
     options.width=width;options.height=height;
-    // Native 0x486C80/0x487680 initial camera: raw-axis position from
-    // rotating the original (0,0.75,6) offset, looking at (0,0,0.75).
-    // Subsequent original road and orbit updates are recorded by the GPU path.
-    options.camera.yaw_deg=155;options.camera.pitch_deg=3.01;options.camera.distance=5.961;
-    options.camera.target={0,0.75,0};options.camera.fov_y_deg=45;
+    // Main entry 0x487BA0 mode0 -> 0x4870C0 selects saved table0 at
+    // 0x7788E0, not constructor camera fields. These pose values invert the
+    // genuine 0x487680 VIEW matrix, then map raw (x,y,z) -> world (x,z,-y).
+    // Preserve its roll, target and eye through the shared CPU/GPU camera.
+    options.camera.yaw_deg=-45.35166721096892;
+    options.camera.pitch_deg=-1.37691385807865;
+    options.camera.distance=3.905382401886139;
+    options.camera.target={0,0.859000027179718,0.9200000166893005};
+    options.camera.roll_deg=-6.62474634639572;
+    // Original 0x48753D publishes fixed FOV12463. Primary-view projection
+    // 0x40DD00 scales horizontal half-angle by 6B7C70 and vertical half-angle
+    // by viewport height/width * 6B7C74/6B7C6C, truncating before native sine.
+    const auto cotangent=[](double phase) {
+        const auto half=static_cast<std::uint16_t>(static_cast<unsigned>(phase));
+        return double(frontend_fixed_sine(static_cast<std::uint16_t>(half+0x4000U))) /
+            double(frontend_fixed_sine(half));
+    };
+    options.camera.focal_x_override=cotangent(12463.0*double(1.100000023841858F)*.5);
+    options.camera.focal_y_override=cotangent(12463.0*double(height)/double(width)*
+        double(1.100000023841858F)/double(0.9090908765792847F)*.5);
     options.camera.far_plane=300;options.material_state=MaterialStateMode::retail;
     options.texture_filter=TextureFilterMode::linear;
     options.vertex_color=true;options.shading=ShadingMode::none;options.car_shading=true;
