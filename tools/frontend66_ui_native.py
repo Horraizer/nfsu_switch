@@ -30,7 +30,7 @@ while pos+16<=len(fng):
  objects[struct.unpack_from('<I',fields[b'OP'])[0]]=fields;pos=end
 for fields in objects.values():
  name=fields.get(b'On',b'').split(b'\0')[0].decode('ascii')
- if name not in ('STATISTICS','NFSU_logo','DisplayMenuBar','quit_tag','back_tag'):continue
+ if name not in ('STATISTICS','NFSU_logo','DisplayMenuBar','quit_tag','back_tag') and not name.startswith('circle'):continue
  obj={'fields':[{'tag':tag.decode('ascii'),'raw':value.hex()} for tag,value in fields.items()],'default_resource':{'name':'conduitmditc_tt21i' if name=='STATISTICS' else 'NFSU_LOGO' if name=='NFSU_logo' else 'White16x16'}}
  native=Renderer(image)
  if name=='STATISTICS':
@@ -40,6 +40,10 @@ for fields in objects.values():
   assert b'PA' not in parent
   sa=parent[b'SA'];matrix=[1.,0,0,0,0,1.,0,0,0,0,1.,0]+list(struct.unpack_from('<3f',sa,28))+[1.]
   native.object_fields(obj,'',parent={'matrix':matrix,'color':struct.unpack_from('<4I',sa)});result=native.render_image((512,64))
+ elif name.startswith('circle'):
+  obj['default_resource']={'name':'CIRCLE'}
+  assert b'PA' not in fields
+  native.object_fields(obj,'');result=native.render_image((32,32))
  else:
   native.object_fields(obj,'');result=native.render_image((16,16))
   assert all(v['position'][0]<-1 for v in result['draws'][0]['vertices'])

@@ -465,6 +465,37 @@ int main(int argc,char** argv) {
             gpu_art.record_ui(1280,720,gpu_menu,ui);
             check(!ui.additive.empty() && ui.vertices.size()==ui.additive.size()*4 &&
                 ui.additive.size()<=kFrontendUiMaxQuads,"authored UI fits resident overlay capacity");
+            // Independent MainMenu.fng resource5 circle submissions: authored
+            // positions and alpha, before any temporal-state approximation.
+            // Missing CIRCLE atlas binding used to silently omit all four.
+            const double native_circles[4][4][2]={
+                {{556.4586791992188,33.027889251708984},{580.9721069335938,12.458686828613281},{601.5413208007812,36.972110748291016},{577.0278930664062,57.54131317138672}},
+                {{522.4586791992188,33.027889251708984},{546.9721069335938,12.458686828613281},{567.5413208007812,36.972110748291016},{543.0278930664062,57.54131317138672}},
+                {{533.8563842773438,29.14358901977539},{517.8563842773438,56.85640335083008},{490.1435852050781,40.85641098022461},{506.1435852050781,13.143595695495605}},
+                {{456.1435852050781,29.143592834472656},{483.8564147949219,13.143593788146973},{499.8564147949219,40.856407165527344},{472.1435852050781,56.856407165527344}}};
+            const unsigned circle_alpha[4]={60,104,74,68};
+            for(unsigned circle=0;circle<4;++circle) {
+                bool found=false;
+                for(std::size_t i=0;i<ui.vertices.size();i+=4) {
+                    bool same=true;
+                    for(unsigned corner=0;corner<4;++corner) {
+                        const auto& v=ui.vertices[i+corner];
+                        same &= std::abs(v.px-native_circles[circle][corner][0]*2)<.001 &&
+                                std::abs(v.py-native_circles[circle][corner][1]*1.5)<.001;
+                    }
+                    if(!same)continue;
+                    found=true;
+                    for(unsigned corner=0;corner<4;++corner) {
+                        const auto& v=ui.vertices[i+corner];
+                        check(v.color[0]==206 && v.color[1]==232 && v.color[2]==242 &&
+                              v.color[3]==circle_alpha[circle],
+                              "original header circle native color and alpha");
+                    }
+                    check(ui.vertices[i+2].u>ui.vertices[i].u && ui.vertices[i+2].v>ui.vertices[i].v,
+                        "original circle binds nonempty resident texture coordinates");
+                }
+                check(found,"original rotated header circle matches genuine FEng submission");
+            }
             unsigned outside_markers=0;
             for(std::size_t i=0;i<ui.vertices.size();i+=4) {
                 if(ui.vertices[i].color[0]!=254 || ui.vertices[i].color[1]!=0 ||

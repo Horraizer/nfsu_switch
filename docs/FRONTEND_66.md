@@ -432,3 +432,15 @@ reflection defaults remain unchanged.
   independent exact-head review, measured pad-to-present responsiveness and
   owner hardware visual/audio acceptance remain required. This checklist does
   not add unrelated race effects or claim original-effect parity prematurely.
+
+### Original header indicator resources
+
+MainMenu.fng resource4 is ARROW3 (FrontB hash509F3FFD), and resource5 is
+CIRCLE (hash54A68051). Both authored references now have resident decoded
+atlas bindings. Previously the draw resource table referenced them while
+atlas loading omitted them, silently dropping the header indicators.
+`tools/frontend66_ui_native.py` executes original FEng image submission for
+all four circle objects, including their independent authored rotations.
+`nfsu_frontend_retail` compares the actual overlay submissions against those
+native corners, channel quantization and alpha. This restores the authored
+asset bindings; temporal script playback remains a separate unfinished item.

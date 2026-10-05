@@ -260,7 +260,7 @@ bool FrontendArt::load(const std::filesystem::path& root,std::string& error,bool
         };
         font(font_global,"conduitmditc_tt21i",out.large,out.large_hash);
         font(language,"conduitmditc_tt14i",out.small,out.small_hash);
-        for(unsigned hash:{out.large_hash,out.small_hash,0xe2a5c626U,0x1abedeb1U,0x1f3bdb88U,0x868a1fcfU,bin_hash("NFSU_LOGO"),0x5ed3f261U}) {
+        for(unsigned hash:{out.large_hash,out.small_hash,0xe2a5c626U,0x1abedeb1U,0x1f3bdb88U,0x868a1fcfU,bin_hash("NFSU_LOGO"),bin_hash("ARROW3"),bin_hash("CIRCLE"),0x5ed3f261U}) {
             Image image;
             if(!texture(front,hash,image,error) && !texture(global,hash,image,error) && !texture(font_global,hash,image,error) && !texture(language_textures,hash,image,error)) throw std::runtime_error("original frontend sprite/font atlas absent hash="+std::to_string(hash));
             out.textures.emplace(hash,std::move(image));
