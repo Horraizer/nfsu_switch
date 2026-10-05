@@ -360,8 +360,6 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     DekoSceneTarget scene_target;
     require(plan_deko_scene_target(width,height,!panel_mode,scene_height,scene_target),
             "--scene-height below 720 requires direct presentation (no --panel)");
-    require(R_SUCCEEDED(romfsInit()), "cannot mount race shader/replay RomFS");
-    struct Guard { ~Guard() { romfsExit(); } } guard;
     std::string error;
     RaceReplay replay;
     if (replay_mode) {
@@ -774,6 +772,10 @@ int main(int argc, char** argv) {
     {
         Screen screen; if (!screen.open()) return 1;
         try {
+            // Shaders belong to both frontend and race. Keep this mount
+            // alive through menu -> race -> menu and until all renderers close.
+            require(R_SUCCEEDED(romfsInit()), "cannot mount application shader/replay RomFS");
+            struct RomfsGuard { ~RomfsGuard() { romfsExit(); } } romfs_guard;
             std::string root = "sdmc:/nfsu";
             bool tuned = false;
             bool replay = false, panel = false, profile_frame = false;

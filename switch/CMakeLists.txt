@@ -532,4 +532,12 @@ if(NFSU_BUILD_TESTS)
         -DBUILD_TAG=${NFSU_RACE_BUILD_TAG}
         -P ${PROJECT_SOURCE_DIR}/tests/switch_race_romfs_check.cmake)
     set_tests_properties(nfsu_switch_race_nro PROPERTIES TIMEOUT 60)
+    add_test(NAME nfsu_switch_race_embedded_shaders
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/switch_embedded_shaders_tests.py
+            --nro ${CMAKE_CURRENT_BINARY_DIR}/nfsu_switch_race.nro
+            --shaders ${NFSU_SHADER_OUTPUT}
+            --source ${CMAKE_CURRENT_SOURCE_DIR}/race_main.cpp
+            --renderer ${CMAKE_CURRENT_SOURCE_DIR}/deko_renderer.cpp)
+    set_tests_properties(nfsu_switch_race_embedded_shaders PROPERTIES TIMEOUT 60)
+
 endif()

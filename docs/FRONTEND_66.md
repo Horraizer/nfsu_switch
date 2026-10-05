@@ -592,3 +592,21 @@ UI and road phase remain resident. SDK applet.h documents background
 focus for HOME/sleep and the resume hook. No observation of CNTpct
 advancing through hardware deep sleep is claimed. Actual-source tests
 cover a long gap, explicit resume and the next ordinary frame.
+
+### Application RomFS lifetime and actual packed shader lookup
+
+The hardware rejection at44b3bf3 was an unmounted RomFS, not omitted
+frontend shader bytes. Its authenticated uploaded NRO contained both
+frontend_car stages and valid filename hash chains. The mount existed
+only inside the race run function, while the default frontend opened its
+renderer first. The application now owns the scoped mount before either
+entry path; race return cannot unmount the frontend shader filesystem.
+
+nfsu_switch_race_embedded_shaders reads the actual NRO asset section and
+resolves every shader requested by deko_renderer.cpp through directory
+and file hash tables, then compares exact bytes with checked DKSH output.
+Its in-memory negative controls rename a frontend shader while preserving
+its bytes, break its hash lookup while preserving its name and bytes, and
+corrupt its embedded payload. It also rejects the former race-only mount
+source contract. This is file/source evidence; opening the final menu on
+Switch remains the runtime acceptance check.
