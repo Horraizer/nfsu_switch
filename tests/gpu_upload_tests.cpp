@@ -2572,21 +2572,25 @@ void test_car_instances_and_uniform_layout() {
         {"Material.surface_specular_range", offsetof(nfsu::DrawMaterialUniform, surface)+offsetof(nfsu::CarShadingMaterial, specular_range)},
         {"Material.surface_environment_min", offsetof(nfsu::DrawMaterialUniform, surface)+offsetof(nfsu::CarShadingMaterial, environment_min)},
         {"Material.surface_environment_range", offsetof(nfsu::DrawMaterialUniform, surface)+offsetof(nfsu::CarShadingMaterial, environment_range)},
-        {"Material.surface_gates", offsetof(nfsu::DrawMaterialUniform, surface)+offsetof(nfsu::CarShadingMaterial, gates)}};
+        {"Material.surface_gates", offsetof(nfsu::DrawMaterialUniform, surface)+offsetof(nfsu::CarShadingMaterial, gates)},
+        {"FrontendLight.harmonic", offsetof(nfsu::FrontendLighting, harmonic)}};
     for (const auto& program : nfsu::shader_manifest::kPrograms) {
-        const bool shaded=std::string(program.name)=="car_shaded_textured" ||
+        const bool frontend_car=std::string(program.name)=="frontend_car_textured";
+        const bool frontend_ui=std::string(program.name)=="frontend_ui";
+        const bool shaded=frontend_car || std::string(program.name)=="car_shaded_textured" ||
                           std::string(program.name)=="car_shaded_linear_textured";
-        check_eq(program.block_count, 3, "three uniform blocks");
+        check_eq(program.block_count, frontend_car?4:frontend_ui?2:3, "program-specific uniform block count");
         for (std::size_t i = 0; i < program.block_count; ++i) {
             const auto& b = program.blocks[i];
             const std::string name = b.name;
             const auto size = name == "Frame" ? sizeof(nfsu::DrawFrameUniform) :
                 name == "Instance" ? sizeof(nfsu::DrawInstanceUniform) :
+                name == "FrontendLight" ? sizeof(nfsu::FrontendLighting) :
                 shaded ? sizeof(nfsu::DrawMaterialUniform) : offsetof(nfsu::DrawMaterialUniform,surface);
             check_eq(b.size, size, name + ": std140 size");
-            check_eq(b.binding, name == "Frame" ? 0 : name == "Instance" ? 1 : 2, name + ": uniform binding");
+            check_eq(b.binding, name == "Frame" ? 0 : name == "Instance" ? 1 : name=="FrontendLight"?3:2, name + ": uniform binding");
         }
-        check_eq(program.member_count, shaded ? offsets.size() : offsets.size()-7, "all uniform members checked");
+        check_eq(program.member_count, frontend_car?offsets.size():frontend_ui?8:shaded?offsets.size()-1:offsets.size()-8, "all uniform members checked");
         for (std::size_t i = 0; i < program.member_count; ++i) {
             const auto& m = program.members[i];
             const auto key = std::string(m.block) + "." + m.name;

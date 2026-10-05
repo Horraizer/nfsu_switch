@@ -309,8 +309,12 @@ int main(int argc, char** argv) {
         // templates. Issue #315 moved the shadow texture's name into
         // CarShadowAsset (the car's own <NAME>_SHADOWIG, was the 240SX
         // literal), one std::string = 32 retained bytes on both selections.
-        const std::uint64_t cache_pin = (tuned ? 4333560U : 4333529U) +
-                                        (glows ? 35307U : 0U);
+        // FE command fields grow RecordedCommands304->1280 and
+        // RecordedDraw384->392. Two retained commands plus4225 retained
+        // draw capacities add35752 bytes. Six inline glow records add48.
+        // Layout/capacity probes separately verified both selections.
+        const std::uint64_t cache_pin = (tuned ? 4369312U : 4369281U) +
+                                        (glows ? 35355U : 0U);
         const auto initial_cache_bytes = scene.cache_bytes();
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';
