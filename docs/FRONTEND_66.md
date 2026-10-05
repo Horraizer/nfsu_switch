@@ -626,3 +626,14 @@ nfsu_switch_vertex_locations test checks actual manifests and recorder
 span, including a negative control for the old truncated count. This is
 a source binding correction; hardware evidence is required to establish
 whether it also resolves the queue error.
+
+The subsequent hardware log at 010cbef identifies composed-frame submission
+as the failing stage; the atlas upload succeeds. A controlled diagnostic
+now fences the first live frame after every cube face, the floor pass,
+main program groups and UI. All authored effects remain submitted. Command
+memory is reused only after each fence completes, and later frames use
+the ordinary asynchronous path. These added first-frame full barriers
+change scheduling: a successful diagnostic can locate an ordering defect,
+but cannot by itself validate the original unsplit frame. The
+nfsu_switch_frontend_pass_diagnostics source contract has negative controls
+for missing waits, unbounded diagnostics and omitted floor isolation.

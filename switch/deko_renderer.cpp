@@ -65,6 +65,7 @@ struct DekoRenderer::Impl {
     dk::MemBlock frontend_cube_uniforms;
     dk::Image frontend_cube_color,frontend_cube_depth;
     bool frontend_cube_ready=false;
+    bool frontend_first_frame=true;
     std::size_t frontend_cube_capacity=0;
     static constexpr std::size_t reflection_capacity = 4096;
     std::size_t reflection_limit=reflection_capacity;
@@ -894,6 +895,18 @@ struct DekoRenderer::Impl {
         gpfifo_usage.last_entries = entries;
         gpfifo_usage.max_entries = std::max(gpfifo_usage.max_entries, entries);
         begin(slot);
+        // Diagnose the first live FE frame without dropping any pass. Waiting
+        // completes each command-memory use before begin() reuses that slot.
+        // Later frames keep the ordinary asynchronous presentation path.
+        const bool diagnose=frontend && frontend_first_frame;
+        const auto checkpoint=[&](const char* pass) {
+            if(!diagnose)return true;
+            std::printf("frontend GPU first frame: submit %s\n",pass);
+            cmd.barrier(DkBarrier_Full,DkInvalidateFlags_Image|DkInvalidateFlags_L2Cache);
+            if(!submit(error)) {error=std::string("first-frame ")+pass+": "+error;return false;}
+            std::printf("frontend GPU first frame: complete %s\n",pass);
+            begin(slot);return true;
+        };
         if (profile_enabled)
             cmd.reportCounter(DkCounter_TimestampPipelineTop, query_memory.getGpuAddr()+slot*32);
         const auto base = uniforms.getGpuAddr() + uniform_allocation.offset + slot * uniform_stride;
@@ -921,6 +934,8 @@ struct DekoRenderer::Impl {
                     emit_draw(cmd,draw,cube+(6+2*i)*256,cube+(7+2*i)*256,
                         !previous || !same_fixed_state(*previous,draw));previous=&draw;
                 }
+                char pass[32];std::snprintf(pass,sizeof pass,"cube face%u",face);
+                if(!checkpoint(pass))return false;
             }
             cmd.barrier(DkBarrier_Fragments,DkInvalidateFlags_Image);
             cmd.bindTextures(DkStage_Fragment,1,dkMakeTextureHandle(static_cast<std::uint32_t>(handles.size()),2));
@@ -946,6 +961,7 @@ struct DekoRenderer::Impl {
                 previous = &draw;
             }
             cmd.barrier(DkBarrier_Fragments, DkInvalidateFlags_Image);
+            if(!checkpoint("floor reflection"))return false;
         }
         if (reflection_ready) cmd.bindTextures(DkStage_Fragment, 1,
             dkMakeTextureHandle(static_cast<std::uint32_t>(handles.size()+(frontend_cube_ready?1:0)), 2));
@@ -965,6 +981,11 @@ struct DekoRenderer::Impl {
         for (std::size_t i = first_dynamic; i < commands->draw_count(); ++i) {
             const auto view = commands->draw_view(i);
             const auto index = i - first_dynamic;
+            if(diagnose && previous_dynamic &&
+                previous_dynamic->program!=view.definition.program) {
+                if(!checkpoint(previous_dynamic->program->name))return false;
+                previous_dynamic=nullptr;
+            }
             if(frontend_cube_ready && reflection_ready) {
                 const bool car=std::strcmp(view.definition.program->name,"frontend_car_textured")==0;
                 cmd.bindTextures(DkStage_Fragment,1,dkMakeTextureHandle(
@@ -976,6 +997,7 @@ struct DekoRenderer::Impl {
             previous_dynamic = &view.definition;
         }
         cmd.barrier(DkBarrier_Fragments, 0);
+        if(!checkpoint(previous_dynamic?previous_dynamic->program->name:"main scene"))return false;
         if (scene_target.upscale) {
             // Complete rendering before the 2D engine reads this slot. The
             // second full barrier includes its work in the timestamp span
@@ -994,6 +1016,8 @@ struct DekoRenderer::Impl {
         }
         if (hud) emit_overlay(slot,hud->vertices.data(),hud->quads);
         if (frontend) emit_overlay(slot,frontend->vertices.data(),frontend->additive.size(),frontend->additive.data());
+        if(!checkpoint("UI overlay"))return false;
+        if(diagnose)frontend_first_frame=false;
         cmd.barrier(DkBarrier_Fragments, 0);
         if (profile_enabled)
             cmd.reportCounter(DkCounter_Timestamp, query_memory.getGpuAddr()+slot*32+16);
