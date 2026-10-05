@@ -38,6 +38,15 @@ def main():
         offset = address - 0x400000
         if exe[offset:offset + len(bytes.fromhex(code))] != bytes.fromhex(code):
             raise ValueError('native Movie geometry differs at 0x%X' % address)
+    # Original MAD decoder reads the complete interval dword at offset 12.
+    # Its denominator is the native constant 65535, not a highword 33ms.
+    if struct.unpack_from('<f', exe, 0x6CCD08 - 0x400000)[0] != 65535.0:
+        raise ValueError('native MAD timebase denominator differs')
+    if exe[0x2490C8:0x2490CA] != bytes.fromhex('6a04') or exe[0x2490E5:0x2490F1] != bytes.fromhex('d83508cd6c00d83d44c86c00'):
+        raise ValueError('native MAD interval conversion differs')
+    if struct.unpack_from('<I', exe, 0x6A9854 + 16 - 0x400000)[0] != 0x648FC9 or exe[0x248FD3:0x248FD6] != bytes.fromhex('d94004'):
+        raise ValueError('native MAD framerate vtable/getter differs')
+    print('native_mad_duration_units_per_ms=65535 header_offset=12 bytes=4')
     movie_objects = {b'LS_EAlogo.fng\0': 0x25C,
                      b'LS_PSAMovie.fng\0': 0x248,
                      b'LS_IntroFMV.fng\0': 0x3E8}

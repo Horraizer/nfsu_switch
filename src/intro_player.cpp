@@ -89,19 +89,19 @@ IntroResult play_original_intro(const std::string& root,const IntroPoll& poll,co
                 else ++no_progress_polls;
                 if(no_progress_polls>2000)
                     throw std::runtime_error("movie audio device clock stalled");
-                if(video && clock/48>=frame.timestamp_ms) {
+                if(video && clock*65535>=frame.timestamp_units*48) {
                     // Still decode every predictive frame when presentation is
                     // late; only presentation can be dropped safely.
                     // All three original Movie objects use Size 640x480.
                     // The MAD samples are non-square; native type7 rendering
                     // uses FNG geometry, not the encoded texture aspect.
                     frame.display_width=640;frame.display_height=480;
-                    if(clock/48<frame.timestamp_ms+frame.duration_ms) present(frame);
-                    video_end=frame.timestamp_ms+frame.duration_ms;
+                    if(clock*65535<(frame.timestamp_units+frame.duration_units)*48) present(frame);
+                    video_end=frame.timestamp_units+frame.duration_units;
                     video=movie.next_video(frame);
                     continue;
                 }
-                if(!video && pcm.finished && clock>=audio_end && clock/48>=video_end) break;
+                if(!video && pcm.finished && clock>=audio_end && clock*65535>=video_end*48) break;
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
             output.stop();++result.movies_completed;

@@ -92,6 +92,24 @@ rate and linearly resampled to the platform's 48 kHz output when required.
 The installed movie formats are supported directly: MADk, MADm and MADe
 YUV420 frames with stereo R2 audio at 44.1 or 48 kHz.
 
+## Native movie timebase
+
+MAD frame interval is a four-byte value at chunk offset 12, including a
+fractional low word. The original executable reads all four bytes at
+`0x6490C8`, then divides the interval by the float constant 65535.0 at
+`0x6CCD08` and computes 1000/interval at `0x6490E5`/`0x6490EB`.
+The MAD framerate getter `0x648FC9` returns that value to the playback
+scheduler through the decoder vtable. `tools/intro_media_trace.py` checks
+this native conversion against the authenticated executable.
+
+The reader retains complete duration units and cumulative timestamps. The
+player compares those exact timestamps to played 48kHz audio samples by
+cross multiplication; integer milliseconds are diagnostics only. Geometry,
+PCM decoding, resampling and audio output are unchanged. FFmpeg's EA demuxer
+uses the interval's high word, so its frame-time reference does not establish
+the original native cadence. The long fractional timeline and device-clock
+presentation tests in `nfsu_intro_player_tests` guard this distinction.
+
 ## Verification
 
 `nfsu_intro_movie_retail` decodes the complete three movies and checks video

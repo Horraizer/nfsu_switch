@@ -12,6 +12,11 @@ struct MovieFrame {
     // Frontend object geometry, independent of encoded sample dimensions.
     // Both zero means square pixels for callers without display metadata.
     unsigned display_width = 0, display_height = 0;
+    // Native MAD duration units: 65535 units per millisecond. Keep the
+    // fractional word and accumulate before conversion. Integer ms are
+    // diagnostic only; scheduling uses the exact units below.
+    std::uint32_t duration_units = 0;
+    std::uint64_t timestamp_units = 0;
     std::uint32_t duration_ms = 0;
     std::uint64_t timestamp_ms = 0;
     std::vector<std::uint8_t> yuv;
