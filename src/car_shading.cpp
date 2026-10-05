@@ -158,6 +158,19 @@ FrontendLighting frontend_startup_lighting() noexcept {
     }
     return result;
 }
+bool frontend_cube_coordinates(const double (&d)[3],unsigned& face,double& u,double& v) noexcept {
+    for(double value:d)if(!std::isfinite(value))return false;
+    double major,sx,sy;
+    if(std::abs(d[0])>=std::abs(d[1]) && std::abs(d[0])>=std::abs(d[2])) {
+        major=std::abs(d[0]);face=d[0]>=0?0:1;sx=d[0]>=0?-d[2]:d[2];sy=-d[1];
+    } else if(std::abs(d[1])>=std::abs(d[2])) {
+        major=std::abs(d[1]);face=d[1]>=0?2:3;sx=d[0];sy=d[1]>=0?d[2]:-d[2];
+    } else {major=std::abs(d[2]);face=d[2]>=0?4:5;sx=d[2]>=0?d[0]:-d[0];sy=-d[1];}
+    if(major==0)return false;
+    u=std::clamp((sx/major+1)*.5,.5/128,127.5/128);
+    v=std::clamp((sy/major+1)*.5,.5/128,127.5/128);
+    return true;
+}
 void frontend_local_eye(const float* placement,const double* raw_eye,float (&out)[4]) noexcept {
     // 542C20: subtract translation then transpose the placement 3x3.
     // Both independently read native clamp endpoints equal 2.7799999714.
@@ -198,6 +211,6 @@ void frontend_surface(const FrontendLighting& lighting,const CarShadingMaterial&
     // The native pixel shader multiplies interpolated diffuse alpha and
     // interpolated specular RGB separately, rather than at each vertex.
     out[6]=c.gates[1]*(c.diffuse_min[3]+v*c.diffuse_range[3]);
-    // EnvMap is a separate live capture consumer, not a fabricated sky band.
+    // EnvMap is sampled separately per fragment, not a fabricated sky band.
 }
 } // namespace nfsu

@@ -28,6 +28,8 @@ varying location=2 name=texcoord type=vec2 interpolation=smooth
 varying location=3 name=diffuse type=vec3 interpolation=smooth
 varying location=4 name=additive type=vec3 interpolation=smooth
 varying location=5 name=alphaScale type=float interpolation=smooth
+varying location=6 name=cubeDirection type=vec3 interpolation=smooth
+varying location=7 name=environmentPower type=float interpolation=smooth
 
 # std140. Frame is one buffer bound at slot 0 of both stages.
 block name=Frame binding=0 stages=vertex,fragment size=112
@@ -63,6 +65,8 @@ block name=FrontendLight binding=3 stages=vertex size=160
 member block=FrontendLight name=harmonic type=vec4[10] offset=0
 
 texture name=baseTexture binding=0 stage=fragment type=sampler2D filter=linear wrap=repeat
+
+texture name=environmentTexture binding=1 stage=fragment type=sampler2D filter=linear wrap=clamp_to_edge
 
 output location=0 name=color type=vec4 format=rgba8
 

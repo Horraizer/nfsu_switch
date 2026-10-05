@@ -14,6 +14,7 @@ namespace {
 namespace sm = shader_manifest;
 thread_local DrawValidationAudit* validation_audit = nullptr;
 static_assert(sizeof(DrawFrameUniform) == 112);
+static_assert(sizeof(FrontendLighting)==160);
 static_assert(sizeof(DrawInstanceUniform) == 64);
 static_assert(sizeof(DrawMaterialUniform) == 192);
 
@@ -30,7 +31,8 @@ bool frame_state(const RenderOptions& options, const RenderLimits& limits,
         error = "draw commands: invalid texture filter policy"; return false;
     }
     CameraFrame camera;
-    if (!make_camera_frame(options.camera, options.width, options.height, camera, error)) {
+    if(options.explicit_camera)camera=*options.explicit_camera;
+    else if (!make_camera_frame(options.camera, options.width, options.height, camera, error)) {
         return false;
     }
     if (options.material_state == MaterialStateMode::retail &&
@@ -280,10 +282,13 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
     }
     if(commands.frontend_light_enabled)for(const auto& vector:commands.frontend_light.harmonic)
         for(float value:vector)if(!std::isfinite(value))return fail("frontend light","nonfinite harmonic");
+    if(commands.frontend_cube_draws.size()>256)return fail("frontend cube","draw capacity exceeded");
     if (commands.reflection_draw_count() > 4096) return fail("reflection commands", "capacity exceeded");
-    for (std::size_t draw_index = 0; draw_index < commands.draw_count()+commands.reflection_draw_count(); ++draw_index) {
+    for (std::size_t draw_index = 0; draw_index < commands.draw_count()+commands.reflection_draw_count()+commands.frontend_cube_draws.size(); ++draw_index) {
         const auto& d = draw_index < commands.draw_count() ? commands.draw_view(draw_index).definition :
-            commands.reflection_draw(draw_index-commands.draw_count());
+            draw_index < commands.draw_count()+commands.reflection_draw_count() ?
+            commands.reflection_draw(draw_index-commands.draw_count()) :
+            commands.frontend_cube_draws.at(draw_index-commands.draw_count()-commands.reflection_draw_count());
         bool known = false;
         for (const auto& program : sm::kPrograms) if (d.program == &program) known = true;
         if (!known) return fail(d.name, "unknown shader program");
@@ -317,12 +322,12 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
         if (std::strcmp(d.program->vertex_source, frontend ? "frontend_car.vert.glsl" : shaded ? "car_shaded.vert.glsl" :
                         sky ? "sky.vert.glsl" : "placed.vert.glsl") != 0 ||
             std::strcmp(d.program->fragment_source, fragment) != 0 ||
-            (textured && (d.program->texture_count != (sky || shaded ? 1U : 2U) ||
+            (textured && (d.program->texture_count != ((sky || shaded) && !frontend ? 1U : 2U) ||
                           d.program->textures[0].filter !=
                               (linear || std::strcmp(d.program->name, "car_textured") == 0
                                    ? sm::Filter::linear : sm::Filter::nearest) ||
                           d.program->textures[0].wrap != sm::Wrap::repeat ||
-                          ((!sky && !shaded) &&
+                          (((!sky && !shaded) || frontend) &&
                            (d.program->textures[1].filter != sm::Filter::linear ||
                             d.program->textures[1].wrap != sm::Wrap::clamp_to_edge)))))
             return fail(d.name, "unsupported shader or sampler");

@@ -1,7 +1,7 @@
 #version 460
 
 // Native FE harmonic/specular equation. Startup input assumptions are
-// explicit in frontend_startup_lighting; live EnvMap is not connected yet.
+// explicit in frontend_startup_lighting; EnvMap uses the native logical faces.
 // MeshVertex px, py, pz, in that memory order.
 layout (location = 0) in vec3 inPosition;
 // Vertex color bytes 0..2 as unorm. The reference multiplies by those three
@@ -12,6 +12,8 @@ layout (location = 3) in vec3 inNormal;
 layout (location = 3) out vec3 outDiffuse;
 layout (location = 4) out vec3 outAdditive;
 layout (location = 5) out float outAlphaScale;
+layout (location = 6) out vec3 outCubeDirection;
+layout (location = 7) out float outEnvironmentPower;
 layout (location = 2) out vec2 outTexcoord;
 
 // The reference camera (CameraFrame) and the per-frame render options.
@@ -90,5 +92,8 @@ void main() {
     outAlphaScale=material.surface_gates.y*
         (material.surface_diffuse_min.w+v*material.surface_diffuse_range.w);
     outTexcoord=inTexcoord;
-    // Live EnvMap capture remains a separate, unfinished consumer.
+    vec3 rawReflected=reflected.x*instance.rows[0].xyz+reflected.y*instance.rows[1].xyz+reflected.z*instance.rows[2].xyz;
+    vec3 worldReflected=vec3(rawReflected.x,rawReflected.z,-rawReflected.y);
+    outCubeDirection=vec3(dot(frame.right.xyz,worldReflected),-dot(frame.up.xyz,worldReflected),dot(frame.forward.xyz,worldReflected));
+    outEnvironmentPower=positivePower(v,material.surface_specular_range.w);
 }

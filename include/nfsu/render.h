@@ -261,10 +261,13 @@ inline bool parse_texture_filter(const std::string& text, TextureFilterMode& mod
 }
 
 struct WetRoadLamps;
+class Frame;
 struct RenderOptions {
     TextureFilterMode texture_filter = TextureFilterMode::legacy;
     bool car_shading = false; // static environment approximation; opt-in
     const FrontendLighting* frontend_lighting = nullptr; // separate native FE consumer
+    const CameraFrame* explicit_camera = nullptr; // bounded FE cube-view consumer
+    const Frame* frontend_cube = nullptr; // borrowed diagnostic capture
     const WetRoadLamps* wet_lamps = nullptr;
     std::uint32_t width = 1280;
     std::uint32_t height = 720;
@@ -422,6 +425,9 @@ private:
 struct RasterMaterial {
     bool car_shading = false;
     bool frontend_lighting = false;
+    const Frame* frontend_cube=nullptr;
+    float frontend_environment_min[3]{};
+    float frontend_environment_range[3]{};
     // Unlit world.efx modulation, texture * vertex RGB * 2, for the sky.
     bool sky = false;
     // The retail car sampler uses linear filtering with repeat addressing.

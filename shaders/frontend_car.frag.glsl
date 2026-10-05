@@ -4,6 +4,8 @@ layout (location = 2) in vec2 inTexcoord;
 layout (location = 3) in vec3 inDiffuse;
 layout (location = 4) in vec3 inAdditive;
 layout (location = 5) in float inAlphaScale;
+layout (location = 6) in vec3 inCubeDirection;
+layout (location = 7) in float inEnvironmentPower;
 layout (location = 0) out vec4 outColor;
 layout (std140, binding = 0) uniform Frame {
     vec4 eye;
@@ -30,13 +32,36 @@ layout (std140, binding = 2) uniform Material {
     vec4 surface_gates;
 } material;
 layout (binding = 0) uniform sampler2D baseTexture;
+// Six native 128-square faces packed 3x2. Explicit native face orientation
+// avoids an API cubemap Y/handedness convention changing the original views.
+layout (binding = 1) uniform sampler2D environmentTexture;
+vec3 cubeSample(vec3 d) {
+    vec3 a=abs(d);float major;vec2 uv;int face;
+    if(a.x>=a.y && a.x>=a.z) {major=a.x;face=d.x>=0.0?0:1;uv=vec2(d.x>=0.0?-d.z:d.z,-d.y);}
+    else if(a.y>=a.z) {major=a.y;face=d.y>=0.0?2:3;uv=vec2(d.x,d.y>=0.0?d.z:-d.z);}
+    else {major=a.z;face=d.z>=0.0?4:5;uv=vec2(d.z>=0.0?d.x:-d.x,-d.y);}
+    if(major==0.0)return vec3(0);
+    uv=clamp(uv/major*.5+.5,vec2(.5/128.0),vec2(127.5/128.0));
+    // Fetch all four taps by bounded face-local integer coordinates. Even
+    // atlas-UV rounding cannot sample a neighboring tile at a face edge.
+    vec2 pixel=uv*128.0-.5;ivec2 a0=ivec2(floor(pixel));
+    ivec2 a1=min(a0+ivec2(1),ivec2(127));vec2 f=fract(pixel);
+    ivec2 origin=ivec2((face%3)*128,(face/3)*128);
+    vec3 p00=texelFetch(environmentTexture,origin+a0,0).rgb;
+    vec3 p10=texelFetch(environmentTexture,origin+ivec2(a1.x,a0.y),0).rgb;
+    vec3 p01=texelFetch(environmentTexture,origin+ivec2(a0.x,a1.y),0).rgb;
+    vec3 p11=texelFetch(environmentTexture,origin+a1,0).rgb;
+    return mix(mix(p00,p10,f.x),mix(p01,p11,f.x),f.y);
+}
 void main() {
     vec2 uv=inTexcoord;
     if (frame.options.x!=0u) uv.y=1.0-uv.y;
     uvec4 texel=uvec4(texture(baseTexture,uv)*255.0+0.5);
     if (texel.a<frame.options.w) discard;
     uvec3 color=texel.rgb;
-    uvec3 value=uvec3(clamp(floor(vec3(color)*inDiffuse+float(texel.a)*inAlphaScale*inAdditive+0.5),0.0,255.0));
+    vec3 environment=4.0*material.surface_gates.z*cubeSample(inCubeDirection)*
+        (material.surface_environment_min.rgb+inEnvironmentPower*material.surface_environment_range.rgb);
+    uvec3 value=uvec3(clamp(floor(vec3(color)*inDiffuse+float(texel.a)*inAlphaScale*(inAdditive+environment)+0.5),0.0,255.0));
     uint lamp_mode=uint(material.alpha.w+0.5);
     uvec3 lamp=lamp_mode==1u ? uvec3(120,120,110) : lamp_mode==2u ? uvec3(52,4,2) :
         lamp_mode==3u ? uvec3(192,28,18) : uvec3(0);

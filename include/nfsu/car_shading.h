@@ -6,7 +6,7 @@
 #include <vector>
 
 namespace nfsu {
-// Seven std140 vectors shared by the cheap static-environment approximation.
+// Seven decoded std140 vectors shared by car render consumers.
 // Record values are decoded, not tuned. Only lighting/capture are approximated.
 struct CarShadingMaterial {
     float diffuse_min[4]{};
@@ -24,6 +24,10 @@ struct FrontendLighting {
     float harmonic[10][4]{};
 };
 FrontendLighting frontend_startup_lighting() noexcept;
+// Native face projection, with samples clamped to each logical128-square
+// face's texel centers before atlas packing; unrelated tiles cannot bleed.
+bool frontend_cube_coordinates(const double (&direction)[3],unsigned& face,
+    double& u,double& v) noexcept;
 void frontend_local_eye(const float* placement,const double* raw_eye,float (&out)[4]) noexcept;
 void frontend_surface(const FrontendLighting& lighting,const CarShadingMaterial& material,
     const float* raw_position,const float* raw_normal,const float* local_eye,

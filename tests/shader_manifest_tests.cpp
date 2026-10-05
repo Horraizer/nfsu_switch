@@ -335,7 +335,7 @@ void test_textures_follow_the_draw_kind(const Programs& programs, Reporter& r) {
             r.check(program.texture_count == 0, name + ": samples no texture");
             continue;
         }
-        const bool reflection = name == "track_textured" || name == "track_linear_textured" || name == "car_textured";
+        const bool reflection = name == "frontend_car_textured" || name == "track_textured" || name == "track_linear_textured" || name == "car_textured";
         const std::size_t expected_count = reflection ? 2U : 1U;
         r.check(program.texture_count == expected_count,
                 name + ": samples the expected diffuse and reflection textures");

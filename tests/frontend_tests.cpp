@@ -1,5 +1,6 @@
 #include "nfsu/frontend.h"
 #include "nfsu/frontend_scene.h"
+#include "nfsu/track.h"
 #include "nfsu/stock_frame.h"
 #include "nfsu/frontend_motion.h"
 #include "nfsu/frontend_preset.h"
@@ -48,6 +49,33 @@ int main(int argc,char** argv) {
                 check(std::abs(surface[i+3]-expected[n][1])<1e-6,"native harmonic specular without upper dot clamp");
             }
             check(std::abs(surface[6]-expected[n][2])<1e-6,"native FE diffuse alpha remains separate");
+        }
+        const double cube_directions[6][3]={{1,.25,.5},{-1,.25,.5},{.2,1,.6},{.2,-1,.6},{.2,.4,1},{.2,.4,-1}};
+        // Asymmetric projected markers from original40AD60 native face bases,
+        // not the appearance of a symmetric tunnel. Native Y faces differ.
+        const double cube_uv[6][2]={{.25,.375},{.75,.375},{.6,.8},{.6,.2},{.6,.3},{.4,.3}};
+        for(unsigned expected_face=0;expected_face<6;++expected_face) {
+            unsigned face;double u,v;
+            check(frontend_cube_coordinates(cube_directions[expected_face],face,u,v) && face==expected_face &&
+                std::abs(u-cube_uv[expected_face][0])<1e-9 && std::abs(v-cube_uv[expected_face][1])<1e-9,
+                "native asymmetric cube marker handedness and orientation");
+            for(unsigned corner=0;corner<4;++corner) {
+                double edge[3]{};unsigned component=0;
+                for(unsigned axis=0;axis<3;++axis)if(axis!=expected_face/2)
+                    edge[axis]=(corner&(1U<<component++))?1.:-1.;
+                edge[expected_face/2]=expected_face&1?-1.000001:1.000001;
+                check(frontend_cube_coordinates(edge,face,u,v) && face==expected_face,
+                    "native cube edge keeps intended face");
+                for(double coordinate:{u,v}) {
+                    const double pixel=coordinate*128-.5;
+                    const auto lo=static_cast<unsigned>(std::floor(pixel));
+                    const auto hi=std::min(lo+1,127U);
+                    check(pixel>=0 && pixel<=127 && lo<=127 && hi<=127,
+                        "all bilinear atlas edge taps stay inside original128-square face");
+                    check(coordinate==.5/128 || coordinate==127.5/128,
+                        "face corners use native edge texel clamp instead of adjacent atlas tile");
+                }
+            }
         }
         audio::Bank bank;std::vector<audio::Segment> segments;
         for(unsigned i=0;i<27;++i) {
@@ -182,6 +210,50 @@ int main(int argc,char** argv) {
             if(!gpu_scene.load(root,1280,720,error))throw std::runtime_error(error);
             // Independent original 486ECD/487BA0/4870C0/487680 execution:
             // mode0 saved entry, VIEW inverse and raw -> world basis conversion.
+            // Independently captured genuine40AD60 six input VIEW matrices,
+            // raw -> world basis and original negative vertical projection.
+            // FOV follows genuine CRT initializer689920 and original40DD00.
+            const double native_cube_basis[6][9]={
+                {0.7025555372238159,-0.02402954176068306,-0.7112331986427307,-0.0988493338227272,-0.9930362105369568,-0.06409282982349396,-0.7047401070594788,0.1153336837887764,-0.7000383734703064},
+                {-0.7025555372238159,0.02402954176068306,0.7112331986427307,-0.0988493338227272,-0.9930362105369568,-0.06409282982349396,0.7047401070594788,-0.1153336837887764,0.7000383734703064},
+                {-0.7047401070594788,0.1153336837887764,-0.7000383734703064,0.7025580406188965,-0.024029627442359924,-0.711235761642456,-0.09884968400001526,-0.9930397868156433,-0.06409306079149246},
+                {-0.7047401070594788,0.1153336837887764,-0.7000383734703064,-0.7025580406188965,0.024029627442359924,0.711235761642456,0.09884968400001526,0.9930397868156433,0.06409306079149246},
+                {-0.7047401070594788,0.1153336837887764,-0.7000383734703064,-0.0988493338227272,-0.9930362105369568,-0.06409282982349396,-0.7025555372238159,0.02402954176068306,0.7112331986427307},
+                {0.7047376036643982,-0.11533327400684357,0.7000358700752258,-0.0988493338227272,-0.9930362105369568,-0.06409282982349396,0.7025530338287354,-0.024029456079006195,-0.7112306356430054}};
+            const auto& cube_commands=gpu_scene.commands();
+            check(!cube_commands.frontend_cube_draws.empty(),"original Y-family cube resources resident");
+            check(validate_recorded_commands(cube_commands,error),error.c_str());
+            for(unsigned face=0;face<6;++face) {
+                const auto& frame=cube_commands.frontend_cube_frames[face];
+                check(frame.projection[0]==1 && frame.projection[1]==1 &&
+                    frame.projection[2]==.5F && frame.projection[3]==64,
+                    "all six native cube projections use original CRT FOV and clipping planes");
+                for(unsigned axis=0;axis<3;++axis)
+                    check(std::abs(frame.right[axis]-native_cube_basis[face][axis])<1e-5 &&
+                        std::abs(frame.up[axis]-native_cube_basis[face][3+axis])<1e-5 &&
+                        std::abs(frame.forward[axis]-native_cube_basis[face][6+axis])<1e-5,
+                        "all six cube capture bases match native asymmetric orientation");
+            }
+            const auto native_road_region=parse_track_region(front.data(),381824,0);
+            const TrackMesh* native_cube_mesh=nullptr;
+            for(const auto& mesh:native_road_region.meshes)if(mesh.name=="TRFE_ROAD02_Y")native_cube_mesh=&mesh;
+            check(native_cube_mesh && native_cube_mesh->valid,"authenticated original Y solid is decoded");
+            unsigned cube_segments=0;
+            for(const auto& draw:cube_commands.frontend_cube_draws) {
+                check(draw.instance<3,"original cube view uses native three translated copies");
+                const auto& vertices=cube_commands.resource_table().resources.at(draw.vertex_resource);
+                check(vertices.elements==native_cube_mesh->vertices.size(),"cube geometry vertex count matches original Y solid");
+                const auto* decoded=reinterpret_cast<const MeshVertex*>(vertices.data);
+                for(std::size_t v=0;v<vertices.elements;++v) {
+                    const auto& original=native_cube_mesh->vertices[v];
+                    check(decoded[v].px==original.px && decoded[v].py==original.py && decoded[v].pz==original.pz &&
+                        decoded[v].u==original.u && decoded[v].v==original.v,
+                        "every resident cube vertex and UV comes from authenticated Y solid");
+                }
+                cube_segments|=1U<<draw.instance;
+                check(draw.texture_resource!=kNoHandle,"original cube diffuse texture is bound");
+            }
+            check(cube_segments==7,"all original cube road segments are represented");
             const auto& entry_frame=gpu_scene.commands().frame;
             const double native_eye[]={2.743728462142889,.7651561591125922,-1.8576175162722057};
             const double native_right[]={-.7047351002693176,.11533286422491074,-.7000333666801453};

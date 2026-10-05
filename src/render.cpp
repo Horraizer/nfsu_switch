@@ -1169,7 +1169,29 @@ bool Rasterizer::fill(
                                     : std::min<std::uint32_t>(
                                           255U, (color[k] * shade + 128U) >> 8U);
                             if (material.car_shading) {
-                                const double shaded=color[k]*surface[k] + color[3]*surface[3+k]*
+                                double cube_term=0;
+                                if(material.frontend_cube) {
+                                    const double direction[3]={
+                                        (l[0]*a->rq+l[1]*b->rq+l[2]*c->rq)*iq,
+                                        (l[0]*a->gq+l[1]*b->gq+l[2]*c->gq)*iq,
+                                        (l[0]*a->bq+l[1]*b->bq+l[2]*c->bq)*iq};
+                                    const double ev=(l[0]*a->aq+l[1]*b->aq+l[2]*c->aq)*iq;
+                                    unsigned face=0;double u=0,v=0;
+                                    const bool sampleable=frontend_cube_coordinates(direction,face,u,v);
+                                    const auto& image=material.frontend_cube[face];
+                                    if(sampleable && image.width() && image.height()) {
+                                        const double px=std::clamp(u*image.width()-.5,0.0,double(image.width()-1));
+                                        const double py=std::clamp(v*image.height()-.5,0.0,double(image.height()-1));
+                                        const auto ix=static_cast<unsigned>(px),iy=static_cast<unsigned>(py);
+                                        const auto jx=std::min(ix+1,image.width()-1),jy=std::min(iy+1,image.height()-1);
+                                        const double fx=px-ix,fy=py-iy;
+                                        const auto texel=[&](unsigned tx,unsigned ty){return image.rgba()[(ty*image.width()+tx)*4+k]/255.0;};
+                                        const double sample=(1-fy)*((1-fx)*texel(ix,iy)+fx*texel(jx,iy))+
+                                            fy*((1-fx)*texel(ix,jy)+fx*texel(jx,jy));
+                                        cube_term=4*sample*(material.frontend_environment_min[k]+ev*material.frontend_environment_range[k]);
+                                    }
+                                }
+                                const double shaded=color[k]*surface[k] + color[3]*(surface[3+k]+cube_term)*
                                     (material.frontend_lighting ? surface[6] : 1);
                                 value=static_cast<std::uint32_t>(std::clamp(std::floor(shaded+0.5),0.0,255.0));
                             }
@@ -1301,7 +1323,8 @@ bool render_scene(
     const ReferenceDrawObserver& observe) {
     stats = RenderStats{};
     CameraFrame camera;
-    if (!make_camera_frame(options.camera, std::max<std::uint32_t>(options.width, 1),
+    if (options.explicit_camera)camera=*options.explicit_camera;
+    else if (!make_camera_frame(options.camera, std::max<std::uint32_t>(options.width, 1),
                            std::max<std::uint32_t>(options.height, 1), camera,
                            error)) {
         return false;
@@ -1504,6 +1527,11 @@ bool render_scene(
 
             raster.car_shading = options.car_shading && raster.texture && draw.shading.gates[0] != 0;
             raster.frontend_lighting=raster.car_shading && options.frontend_lighting;
+            if(raster.frontend_lighting && draw.shading.gates[2]!=0) {
+                raster.frontend_cube=options.frontend_cube;
+                std::copy_n(draw.shading.environment_min,3,raster.frontend_environment_min);
+                std::copy_n(draw.shading.environment_range,3,raster.frontend_environment_range);
+            }
             raster.lamp_mode = instanced ? scene.instances[copy].lamp_mode : 0;
             if ((first + count) / 3 > first / 3) {
                 copy_drawn[copy] = 1;
@@ -1548,6 +1576,21 @@ bool render_scene(
                             const float position[3]={source.px,source.pz,source.py};
                             const float normal[3]={source.nx,source.nz,source.ny};
                             frontend_surface(*options.frontend_lighting,draw.shading,position,normal,local_eye,clip[k].surface);
+                            Vec3 view{local_eye[0]-position[0],local_eye[1]-position[1],local_eye[2]-position[2]};
+                            if(!normalize(view))view={0,0,0};
+                            const double v=std::max(.01,view.x*normal[0]+view.y*normal[1]+view.z*normal[2]);
+                            const Vec3 reflected{2*v*normal[0]-view.x,2*v*normal[1]-view.y,2*v*normal[2]-view.z};
+                            Vec3 raw=reflected;
+                            if(transform)raw={reflected.x*transform[0]+reflected.y*transform[4]+reflected.z*transform[8],
+                                reflected.x*transform[1]+reflected.y*transform[5]+reflected.z*transform[9],
+                                reflected.x*transform[2]+reflected.y*transform[6]+reflected.z*transform[10]};
+                            const Vec3 world_reflected{raw.x,raw.z,-raw.y};
+                            // FE ignores IN.color; its existing four interpolation lanes
+                            // carry native WorldView reflection direction and env exponent.
+                            clip[k].r=dot(camera.right,world_reflected);
+                            clip[k].g=-dot(camera.up,world_reflected);
+                            clip[k].b=dot(camera.forward,world_reflected);
+                            clip[k].a=std::pow(v,double(draw.shading.specular_range[3]));
                         } else car_surface(source,transform,world[k],camera.eye,draw.shading,clip[k].surface);
                     }
                 }

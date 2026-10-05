@@ -363,8 +363,27 @@ repeats this witness and labels those limits explicitly. Actual 0x4AE1F0
 road light-pool population and authored flare markers have been recovered
 separately; this startup witness does not certify that populated state.
 
-Live EnvMap cube capture, populated road-light harmonic generation, reflected
-view consumers and remaining temporal UI still need connection. The FE shader
-currently leaves the missing cube term absent, making that gap visible in the
-source diagnostic instead of filling it with an invented environment. This
-is an implementation checkpoint, not original-effect parity or acceptance.
+At b383c33 the FE shader left the missing cube term absent, making that gap
+visible in the source diagnostic. The subsequent capture integration prepares
+the authored TRFE_ROAD02_Y solid and original three translated copies for all
+six cube views. Native 0x40AD60 face bases follow the primary CView, including
+the independently checked Y-face orientation. Initializer 0x689920 writes the
+cube FOV at 0x78BD40; its pointer at 0x6D4A1C is inside the original startup
+iterator's 0x6D4000..0x6D4A48 table. Genuine 0x40DD00 cube-view projection
+uses that initializer and original clipping values. The actual-source frontend
+test pins all six native bases and projection values; the authenticated witness
+is tools/frontend66_cube_native.py.
+
+The GPU packs six logical cube faces in a resident 3x2 target. The native face
+lookup projects directions explicitly, and four bilinear taps use face-local
+integer texelFetch coordinates. Every tap is bounded to its own face before
+packing, so a tile edge cannot sample another face due to atlas-coordinate
+rounding. The CPU diagnostic captures the same Y geometry and translates it
+with the same road state, then samples the equivalent bounded logical faces.
+Both capture paths clear black. This is a backend representation of the six
+views, not an authored replacement environment.
+
+Populated road-light harmonic generation, reflected-view and glow consumers,
+and remaining temporal UI still need connection. The harmonic startup/list
+and zero reflection-origin assumptions above remain explicit. Source capture
+integration and its diagnostics are not original-effect parity or acceptance.

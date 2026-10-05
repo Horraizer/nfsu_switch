@@ -103,6 +103,8 @@ public:
     DrawFrameUniform frame;
     FrontendLighting frontend_light;
     bool frontend_light_enabled=false;
+    std::array<DrawFrameUniform,6> frontend_cube_frames;
+    std::vector<RecordedDraw> frontend_cube_draws;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     unsigned char clear_color[4]{};
