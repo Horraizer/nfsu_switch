@@ -115,6 +115,8 @@ void main()
     uvec3 color = texel.rgb;
     if (frame.options.y != 0u || material.environment_range.w > 0.5) {
         uvec3 vertex = uvec3(clamp(floor(inColor.rgb * 255.0 + 0.5), 0.0, 255.0));
+        if (material.environment_range.w > 1.5)
+            vertex = uvec3(clamp(floor(material.environment_color.rgb + 0.5), 0.0, 255.0));
         color = (color * vertex + 127u) / 255u;
     }
     uvec3 value = min(uvec3(255u), (color * shade + 128u) >> 8u);

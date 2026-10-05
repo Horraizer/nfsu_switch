@@ -9,7 +9,7 @@ cpp=scratch/'menu66-glow-scene-native-probe.cpp';exe=cpp.with_suffix('.exe')
 cpp.write_text(r'''#include "nfsu/frontend_scene.h"
 #include <iostream>
 #include <iomanip>
-void emit(const nfsu::RecordedDraw& d){if(!d.frontend_sprite_view||d.material.alpha[0]<=0)return;
+void emit(const nfsu::RecordedDraw& d){if(d.frontend_sprite_kind!=0||!d.frontend_sprite_view||d.material.alpha[0]<=0)return;
  std::cout<<"SOURCE_QUAD "<<d.frontend_sprite_view<<" [";int k[4][2]={{-1,1},{1,1},{1,-1},{-1,-1}};
  for(unsigned i=0;i<4;++i){if(i)std::cout<<",";std::cout<<"[";
  for(unsigned a=0;a<3;++a){if(a)std::cout<<",";std::cout<<d.placement.rows[12+a]+k[i][0]*d.placement.rows[a]+k[i][1]*d.placement.rows[8+a];}std::cout<<"]";}

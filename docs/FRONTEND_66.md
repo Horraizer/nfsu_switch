@@ -421,12 +421,13 @@ reflection defaults remain unchanged.
 - Floor reflection: connected native Z-family producer and worldreflect
   receiver and original road sprite contribution.
 - Flare/glow: original road sprites connected across primary/cube/floor;
-  car-specific enable and consumer remain to be completed.
+  primary car-specific enable, marker and inner/outer/tail consumers connected.
+  Car floor/occlusion behavior is not claimed by this bounded state.
 - Dynamic road lighting: original four flare-marker inputs and the full
   native 32-slot producer/nearby selector are reproduced by
   `tools/frontend66_road_light_native.py`. Its RGB, height and attenuation are
   explicit synthetic test boundaries, not recovered retail defaults. Actual
-  source harmonic population and unresolved startup inputs remain pending.
+  source harmonic population is connected; startup inputs remain unresolved.
 - Authored UI temporal/state: native header Init loops and two-mode
   HighLight/UnHighLight key/event transitions connected and source-tested.
 - Acceptance: full combined native default/Release retail and Switch gates,
@@ -541,3 +542,29 @@ unresolved zero-BSS boundaries. Runtime uses those explicit zeros; colored
 probe inputs are supplied comparison boundaries, never inferred defaults.
 Existing reflection-origin/flags and empty race-list assumptions remain.
 This closes the moving arithmetic pipeline, not exact startup-light parity.
+
+
+### Primary car flare consumer
+
+Original FE callers4AFCA2/4AFCAB and4B060A/4B0617 use56A040 to bind
+frontend RideInfo;56A040 constructs56A130 with its third parameter zero.
+That value is model[0], the owner used by56D8D0. Its null-owner branch
+uses executable head1 and resting tail6B5DA0, unlike the separate type3
+owner branch. The earlier supplied type3 witness did not prove membership
+and was discarded as a menu default before binding.
+
+The selected preset marker records provide positions and normals. Original
+SKYLINE body-A solid origins are zero at header70;56A130/56CC40 subtract
+that origin before the root placement. The root matches the existing native
+wheel-contact consumer. Types0 and1 use descriptors6F3EF8/6F3F34/6F3F70,
+original flare-inner/outer/glow pixels, powered facing, screen-depth clamp,
+direction offset and native byte truncation. Primary sprites share the
+existing frustum state and use an opt-in uniform tint, additive blend and
+no depth writes. Road sprites retain their previous descriptor and state.
+
+Tools/frontend66_car_glow_scene_probe.py prepares the actual installed
+preset and compares all source primary sprite corners, RGBA and visibility
+with genuine5447C0/5443F0/40C300. The source regression also checks original
+resident texture bindings and independent supplied-marker native fixtures.
+Texture allocation and primary clipping remain explicit probe boundaries.
+This does not assert original occlusion or car-floor sprite parity.

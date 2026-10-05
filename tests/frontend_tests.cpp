@@ -181,6 +181,27 @@ int main(int argc,char** argv) {
             check(!frontend_road_glow(point,eye_direction,right,up,1,1,3,quad),
                 "unknown sprite view refuses publication");
         }
+        {
+            // Genuine5447C0 ->5443F0 ->40C300, main CView and supplied marker.
+            const float point[3]={1.5F,-.6000000238418579F,.700279951095581F};
+            const float eye[3]={.4514164924621582F,.8920027017593384F,.023547090590000153F};
+            const float right[3]={-.7047351002693176F,.7000333666801453F,.11533286422491074F};
+            const float up[3]={-.0988493338227272F,.06409282982349396F,-.9930362105369568F};
+            const float expected[3][4][3]={
+                {{2.04470229149F,-.07907266915F,.383308231831F},{1.61766624451F,.345114171505F,.453194439411F},{1.67756426334F,.306276977062F,1.054927110672F},{2.10460019112F,-.11790986359F,.985040843487F}},
+                {{2.11560511589F,-.153492882848F,.25360262394F},{1.52362775803F,.434535175562F,.350482225418F},{1.60666108131F,.380697220564F,1.18463265896F},{2.1986386776F,-.207330867648F,1.08775305748F}},
+                {{1.81307506561F,-.655442774296F,.29742822051F},{1.29479527473F,-.140620738268F,.382246911526F},{1.36749148369F,-.187756210566F,1.112550497055F},{1.88577127457F,-.702578246593F,1.027731776237F}}};
+            const unsigned char colors[3][4]={{31,37,53,25},{9,11,12,1},{57,0,0,36}};
+            for(unsigned descriptor=0;descriptor<3;++descriptor) {
+                FrontendRoadGlow q;check(frontend_car_glow(point,eye,right,up,eye[0],
+                    .002785184420645237F,0,descriptor,1,q),"native car sprite descriptor accepted");
+                for(unsigned c=0;c<4;++c) {
+                    check(q.rgba[c]==colors[descriptor][c],"native car sprite all color channels");
+                    for(unsigned a=0;a<3;++a)check(std::abs(q.corners[c][a]-expected[descriptor][c][a])<.000004F,
+                        "native car sprite all four corners");
+                }
+            }
+        }
         check(frontend_wheel_phase(0,.231441572F,.31F)==7787 &&
               frontend_wheel_phase(0,.229F,.31F)==7705 &&
               frontend_wheel_phase(0,1.F,.31F)==33646,
@@ -339,17 +360,31 @@ int main(int argc,char** argv) {
                 check(draw.texture_resource!=kNoHandle,"original cube diffuse texture is bound");
             }
             check(cube_segments==7,"all original cube road segments are represented");
+            unsigned car_sprite_count=0,car_descriptor_mask=0;
+            const std::uint32_t native_car_flare_hashes[3]={0x8868656FU,0x88D8E8A2U,0x3394FE62U};
+            for(const auto& draw:cube_commands.owning_draws())if(draw.frontend_sprite_kind) {
+                ++car_sprite_count;car_descriptor_mask|=1U<<(draw.frontend_sprite_kind-1);
+                check(draw.frontend_sprite_kind<=3 && draw.frontend_sprite_view==1,
+                    "original bounded car flare descriptors belong to primary view");
+                const auto& texture=cube_commands.resource_table().resources.at(draw.texture_resource);
+                check(texture.bytes!=0 && texture.texture_hash==native_car_flare_hashes[draw.frontend_sprite_kind-1],
+                    "original inner outer and tail flare textures bound to actual car markers");
+                check(!draw.pipeline.depth_write && draw.material.environment_range[3]==2,
+                    "native car flare additive no-write and per-draw original color opt-in");
+            }
+            check(car_sprite_count==6 && car_descriptor_mask==7,
+                "all original installed preset head pairs and tail markers retained");
             unsigned native_glows[6]={2,2,0,2,2,1},active_glows[6]={};
-            for(const auto& draw:cube_commands.frontend_cube_draws)if(draw.frontend_sprite_view && draw.material.alpha[0]>0)
+            for(const auto& draw:cube_commands.frontend_cube_draws)if(draw.frontend_sprite_kind==0 && draw.frontend_sprite_view && draw.material.alpha[0]>0)
                 ++active_glows[draw.frontend_sprite_view-10];
             for(unsigned face=0;face<6;++face)check(active_glows[face]==native_glows[face],
                 "native actual cube frustum streetlamp visibility per face");
             unsigned floor_glows=0,primary_glows=0;
             const RecordedDraw* native_floor_glow=nullptr;
-            for(const auto& draw:cube_commands.reflections)if(draw.frontend_sprite_view && draw.material.alpha[0]>0) {
+            for(const auto& draw:cube_commands.reflections)if(draw.frontend_sprite_kind==0 && draw.frontend_sprite_view && draw.material.alpha[0]>0) {
                 ++floor_glows;if(!native_floor_glow)native_floor_glow=&draw;
             }
-            for(const auto& draw:cube_commands.owning_draws())if(draw.frontend_sprite_view && draw.material.alpha[0]>0)++primary_glows;
+            for(const auto& draw:cube_commands.owning_draws())if(draw.frontend_sprite_kind==0 && draw.frontend_sprite_view && draw.material.alpha[0]>0)++primary_glows;
             check(floor_glows==5 && primary_glows==0,"initial native primary point/floor box culling, not mode suppression");
             check(native_floor_glow && native_floor_glow->instance==6,"native first visible floor marker and segment");
             if(native_floor_glow) {

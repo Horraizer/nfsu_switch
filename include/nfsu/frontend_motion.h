@@ -16,6 +16,11 @@ struct FrontendRoadGlow {
 bool frontend_road_glow(const float (&point)[3],const float (&toward_eye)[3],
     const float (&right)[3],const float (&up)[3],float facing,float depth_scale,
     unsigned mode,FrontendRoadGlow& out) noexcept;
+// Original5443F0 type0 inner/outer, type1 tail, or type9 road descriptor.
+// Type0/1 caller supplies actual marker facing and native opacity.
+bool frontend_car_glow(const float (&point)[3],const float (&toward_eye)[3],
+    const float (&right)[3],const float (&up)[3],float facing,float depth_scale,
+    unsigned mode,unsigned descriptor,float opacity,FrontendRoadGlow& out) noexcept;
 struct FrontendRoadPlacement {
     unsigned group = 0;
     unsigned family = 0; // 0: _A, 1: _Z, 2: _Y, from 0x4AE530.

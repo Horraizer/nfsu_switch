@@ -271,21 +271,27 @@ bool load_scene_assets(const std::filesystem::path& root,unsigned width,unsigned
     if(!decode_render_texture_sources({source,global_source},RenderTextureLimits{},textures,error)) return false;
     if(!prepare_car_scene(geometry,textures,selection,SceneLimits{},tunnel,error)) return false;
     if(sprites) {
-        GeometryReport sprite_geometry;Mesh quad;quad.index=0;quad.name="_FE_ROAD_GLOW";quad.valid=true;
-        quad.texture_hashes.push_back(0x3394FE62U);
-        for(unsigned i=0;i<4;++i) {
-            MeshVertex v;v.px=i==0 || i==3?-1:1;v.py=i<2?1:-1;
-            v.u=i==0 || i==3?0:1;v.v=i<2?0:1;
-            v.color[0]=110;v.color[1]=100;v.color[2]=75;v.color[3]=255;
-            quad.vertices.push_back(v);
+        GeometryReport sprite_geometry;
+        const std::uint32_t hashes[3]={0x3394FE62U,0x8868656FU,0x88D8E8A2U};
+        const char* names[3]={"_FE_ROAD_GLOW","_FE_CAR_GLOW0","_FE_CAR_GLOW1"};
+        for(unsigned kind=0;kind<3;++kind) {
+            Mesh quad;quad.index=kind;quad.name=names[kind];quad.valid=true;
+            quad.texture_hashes.push_back(hashes[kind]);
+            for(unsigned i=0;i<4;++i) {
+                MeshVertex v;v.px=i==0 || i==3?-1:1;v.py=i<2?1:-1;
+                v.u=i==0 || i==3?0:1;v.v=i<2?0:1;
+                v.color[0]=110;v.color[1]=100;v.color[2]=75;v.color[3]=255;
+                quad.vertices.push_back(v);
+            }
+            quad.triangles={{0,1,2},{0,2,3}};MeshMaterial material;material.index_count=6;material.raw[12]=6;
+            quad.materials.push_back(material);sprite_geometry.meshes.push_back(std::move(quad));
         }
-        quad.triangles={{0,1,2},{0,2,3}};MeshMaterial material;material.index_count=6;material.raw[12]=6;
-        quad.materials.push_back(material);sprite_geometry.meshes.push_back(std::move(quad));
         if(!prepare_car_scene(sprite_geometry,textures,MeshSelection{},SceneLimits{},*sprites,error))return false;
-        if(sprites->textures.size()!=1 || !sprites->textures[0].usable()) {
-            error="original HEADLIGHTGLOW texture absent";return false;
+        for(const auto& draw:sprites->draws)if(draw.binding!=BindingKind::resolved) {
+            error="original car/road flare texture absent";return false;
         }
     }
+
     if(capture) {
         MeshSelection cube_selection;
         for(const auto& mesh:geometry.meshes)if(mesh.name=="TRFE_ROAD02_Y")
@@ -345,10 +351,12 @@ bool load_scene_assets(const std::filesystem::path& root,unsigned width,unsigned
 namespace {
 bool draw_frontend_road_sprites(Frame& target,const RenderOptions& options,
     const CameraFrame& camera,const std::vector<RecordedDraw>& draws,unsigned view,
-    const RenderTexture& texture,std::string& error) {
+    const PreparedCarScene& sprites,std::string& error) {
     RenderStats stats;Rasterizer raster(target,options,RenderLimits{},stats);
     for(const auto& draw:draws)if(draw.frontend_sprite_view==view && draw.material.alpha[0]>0) {
-        RasterMaterial material;material.texture=&texture;material.blend=RenderBlendMode::additive;
+        const unsigned descriptor=draw.frontend_sprite_kind==1?1:draw.frontend_sprite_kind==2?2:0;
+        const auto& source=sprites.draws.at(descriptor);
+        RasterMaterial material;material.texture=&sprites.textures.at(source.texture);material.blend=RenderBlendMode::additive;
         material.depth_write=false;material.linear_filter=true;material.alpha_scale=draw.material.alpha[0];
         ClipVertex corners[4];const int signs[4][2]={{-1,1},{1,1},{1,-1},{-1,-1}};
         for(unsigned i=0;i<4;++i) {
@@ -356,7 +364,9 @@ bool draw_frontend_road_sprites(Frame& target,const RenderOptions& options,
                 signs[i][0]*draw.placement.rows[axis]+signs[i][1]*draw.placement.rows[8+axis];
             corners[i]=project_point(camera,{raw[0],raw[2],-raw[1]});
             corners[i].u=i==0 || i==3?0:1;corners[i].v=i<2?0:1;
-            corners[i].r=110;corners[i].g=100;corners[i].b=75;
+            corners[i].r=draw.material.environment_range[3]>1.5F?draw.material.environment_color[0]:110;
+            corners[i].g=draw.material.environment_range[3]>1.5F?draw.material.environment_color[1]:100;
+            corners[i].b=draw.material.environment_range[3]>1.5F?draw.material.environment_color[2]:75;
         }
         const ClipVertex a[3]={corners[0],corners[1],corners[2]},b[3]={corners[0],corners[2],corners[3]};
         if(!raster.draw_triangle(a,material,0x7FFE0000U,error) ||
@@ -368,6 +378,9 @@ bool draw_frontend_road_sprites(Frame& target,const RenderOptions& options,
 struct FrontendGpuScene::Impl {
     PreparedCarScene tunnel,capture,floor,sprites;
     std::vector<MeshMarker> road_markers;
+    struct CarGlow {float point[3],normal[3];unsigned descriptor;float opacity;};
+    std::vector<CarGlow> car_glows;
+    std::size_t car_sprite_start=0;
     std::size_t sprite_start=0,cube_sprite_start=0,floor_sprite_start=0;
     CameraFrame floor_camera;
     std::size_t floor_mesh=kNoHandle;
@@ -513,6 +526,40 @@ bool FrontendGpuScene::load(const std::filesystem::path& root,unsigned width,uns
         auto draw=sprites[p.sprite_start];draw.instance=i;draw.frontend_sprite_view=face+10;
         p.commands.frontend_cube_draws.push_back(draw);
     }
+    // FE RenderCar wrapper56A040 constructs56A130 with null owner.
+    // Original56D8D0 therefore selects head1 and resting tail6B5DA0=.7.
+    // Its type3 owner branch is a separate state, not an FE-name default.
+    for(const auto& marker:p.car.report.markers) {
+        const bool head=marker.name_hash==0x9DB90133U || marker.name_hash==0xD09091C6U;
+        const bool tail=marker.name_hash==0x31A66786U || marker.name_hash==0xA2A2FC7CU || marker.name_hash==0xBF700A79U;
+        if(!head && !tail)continue;
+        const auto& geometry=marker.geometry_source==0?p.car.car_geometry:p.car.stock_geometry.at(marker.geometry_source-1);
+        const auto& record=geometry.meshes.at(marker.source_mesh).markers.at(marker.index);
+        for(unsigned descriptor=head?0:2;descriptor<(head?2:3);++descriptor) {
+            Impl::CarGlow glow;glow.descriptor=descriptor;glow.opacity=head?1:.699999988079071F;
+            for(unsigned axis=0;axis<3;++axis) {
+                glow.point[axis]=record.matrix[12+axis];glow.normal[axis]=record.matrix[8+axis];
+            }
+            p.car_glows.push_back(glow);
+        }
+    }
+    if(p.car_glows.empty()){error="original FE car flare markers absent";return false;}
+    RecordedCommands car_sprites;
+    if(!record_car_commands(p.sprites,sprite_options,RenderLimits{},kNoHandle,car_sprites,error))return false;
+    const auto templates=car_sprites.owning_draws();car_sprites.owning_draws().clear();
+    for(unsigned i=0;i<p.car_glows.size();++i) {
+        const unsigned descriptor=p.car_glows[i].descriptor;
+        auto draw=templates.at(descriptor==0?1:descriptor==1?2:0);
+        draw.name="_FE_CAR_GLOW"+std::to_string(descriptor);draw.instance=i;draw.frontend_sprite_view=1;draw.frontend_sprite_kind=descriptor+1;
+        for(std::size_t variant=0;variant<draw.program->variant_count;++variant)
+            if(std::string(draw.program->variants[variant].name)=="additive")draw.pipeline=draw.program->variants[variant];
+        draw.pipeline.depth_write=false;draw.material.environment_range[3]=2;
+        car_sprites.owning_draws().push_back(draw);
+    }
+    p.car_sprite_start=p.commands.owning_draws().size();
+    RecordedCommands combined_car_sprites;
+    if(!combine_race_commands(std::move(p.commands),car_sprites,combined_car_sprites,error))return false;
+    p.commands=std::move(combined_car_sprites);
     p.commands.frontend_light=p.lighting;p.commands.frontend_light_enabled=true;
     p.ready=true;impl_.swap(next);return frame(0,0,error);
 }
@@ -600,10 +647,13 @@ bool FrontendGpuScene::frame(float seconds,std::uint32_t ticks,std::string& erro
     const auto update_sprite=[&](RecordedDraw& draw,const CameraFrame& camera) {
         const auto view=draw.frontend_sprite_view;
         std::array<FrontendRoadPlacement,5> copies;p.road.placements(view,copies);
-        const auto& marker=p.road_markers.at(draw.instance%4);
-        const auto& copy=copies.at(draw.instance/4);
-        const float point[3]={marker.matrix[12]+copy.longitudinal,marker.matrix[13],
-            view==4?-marker.matrix[14]:marker.matrix[14]+copy.vertical};
+        const bool car_sprite=draw.frontend_sprite_kind!=0;
+        const auto& marker=p.road_markers.at(car_sprite?0:draw.instance%4);
+        const auto& copy=copies.at(car_sprite?0:draw.instance/4);
+        float point[3];
+        for(unsigned axis=0;axis<3;++axis)point[axis]=car_sprite?p.car_glows.at(draw.instance).point[axis]:marker.matrix[12+axis];
+        if(car_sprite)point[2]+=p.car_root_height;
+        else {point[0]+=copy.longitudinal;point[2]=view==4?-point[2]:point[2]+copy.vertical;}
         const double world[3]={point[0],point[2],-point[1]};
         const double delta[3]={world[0]-camera.eye.x,world[1]-camera.eye.y,world[2]-camera.eye.z};
         const double distance2=delta[0]*delta[0]+delta[1]*delta[1]+delta[2]*delta[2];
@@ -632,13 +682,21 @@ bool FrontendGpuScene::frame(float seconds,std::uint32_t ticks,std::string& erro
         const float up[3]={float(-camera.up.x),float(camera.up.z),float(-camera.up.y)};
         // Original5447C0 mode2 mirrors the marker normal Z. Its road
         // mode0/1 facing vector remains zero at544CA3, not the marker normal.
-        double dot=0;if(mode==2)for(unsigned axis=0;axis<3;++axis)
+        double dot=0;
+        if(car_sprite)for(unsigned axis=0;axis<3;++axis)
+            dot+=toward_eye[axis]*double(p.car_glows.at(draw.instance).normal[axis]);
+        else if(mode==2)for(unsigned axis=0;axis<3;++axis)
             dot+=toward_eye[axis]*double(marker.matrix[8+axis])*(axis==2?-1:1);
         // Original40DCB0 uses main display width701034/2, not cube/floor capture width.
         const auto fov=static_cast<std::uint16_t>((mode==1?0x4000U:12463U)/2);
         const double denominator=(p.options.width/2)*double(frontend_fixed_sine(fov+0x4000U))/frontend_fixed_sine(fov);
         FrontendRoadGlow quad;
-        visible=visible && frontend_road_glow(point,toward_eye,right,up,float(std::max(0.,dot)),
+        if(car_sprite) {
+            const auto& glow=p.car_glows.at(draw.instance);
+            visible=visible && frontend_car_glow(point,toward_eye,right,up,float(std::max(0.,dot)),
+                float(depth/denominator),mode,glow.descriptor,glow.opacity,quad);
+            for(unsigned c=0;c<3;++c)draw.material.environment_color[c]=quad.rgba[c];
+        } else visible=visible && frontend_road_glow(point,toward_eye,right,up,float(std::max(0.,dot)),
             float(depth/denominator),mode,quad);
         auto& rows=draw.placement.rows;std::fill_n(rows,16,0);rows[15]=1;
         if(visible)for(unsigned axis=0;axis<3;++axis) {
@@ -711,7 +769,7 @@ bool FrontendGpuScene::render_reference(std::vector<unsigned char>& rgba,std::st
         options.background[0]=options.background[1]=options.background[2]=0;options.background[3]=255;
         if(!render_scene(capture,options,RenderLimits{},cube[face],capture_stats,error) ||
             !draw_frontend_road_sprites(cube[face],options,p.cube_cameras[face],p.commands.frontend_cube_draws,
-                face+10,p.sprites.textures.at(0),error))return false;
+                face+10,p.sprites,error))return false;
     }
     auto floor=p.floor;floor.profile=SelectionProfile::stock_car;
     floor.selectors.clear();floor.instances.clear();for(auto& mesh:floor.meshes)mesh.selector=kNoHandle;
@@ -727,7 +785,7 @@ bool FrontendGpuScene::render_reference(std::vector<unsigned char>& rgba,std::st
     floor_options.background[0]=floor_options.background[1]=floor_options.background[2]=0;floor_options.background[3]=255;
     if(!render_scene(floor,floor_options,RenderLimits{},floor_frame,capture_stats,error) ||
         !draw_frontend_road_sprites(floor_frame,floor_options,p.floor_camera,p.commands.reflections,
-            4,p.sprites.textures.at(0),error))return false;
+            4,p.sprites,error))return false;
     Frame output,car_frame;RenderStats stats;
     auto car_options=p.options;car_options.frontend_lighting=&p.lighting;car_options.frontend_cube=cube.data();
     auto room_options=p.options;room_options.car_shading=false;
@@ -741,7 +799,7 @@ bool FrontendGpuScene::render_reference(std::vector<unsigned char>& rgba,std::st
     CameraFrame primary;
     if(!make_camera_frame(p.options.camera,p.options.width,p.options.height,primary,error) ||
         !draw_frontend_road_sprites(combined,p.options,primary,p.commands.owning_draws(),
-            1,p.sprites.textures.at(0),error))return false;
+            1,p.sprites,error))return false;
     rgba=combined.rgba();
     return true;
 }
