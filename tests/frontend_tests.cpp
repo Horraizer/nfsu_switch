@@ -1,4 +1,6 @@
 #include "nfsu/frontend.h"
+#include "nfsu/frontend_scene.h"
+#include "nfsu/stock_frame.h"
 #include "nfsu/frontend_motion.h"
 #include "nfsu/frontend_preset.h"
 #include "nfsu/race_events.h"
@@ -98,6 +100,26 @@ int main(int argc,char** argv) {
                 const auto expected=panel==2 && decal==0?0xB8949CAFU:
                     (panel==3 || panel==4) && decal<4?native_doors[decal]:0x66994F4AU;
                 check(sponsors[panel][decal]==expected,"native original 56C3D0 sponsor substitutions");
+            }
+            CarAssets skyline_assets;
+            check(load_car_assets(root/"Global/GLOBALB.BUN","SKYLINE",skyline_assets,error),error.c_str());
+            StockFrameInputs skyline_inputs;StockFrame skyline;
+            check(read_car_frame_inputs(root,skyline_assets,skyline_inputs,true,error),error.c_str());
+            auto skyline_request=stock_car_request("SKYLINE");
+            skyline_request.installed_parts=installed;skyline_request.pass=CarDrawPass::front_end;
+            auto skyline_skin=stock_car_skin("SKYLINE");skyline_skin.selection=skin;
+            check(prepare_stock_frame(skyline_inputs,skyline_request,skyline_skin,skyline,error,true),error.c_str());
+            check(bind_frontend_sponsors(skyline_inputs,installed,skyline,error),error.c_str());
+            for(unsigned slot:{26U,27U}) {
+                unsigned bound=0;
+                for(const auto& instance:skyline.scene.instances)if(instance.part_slot==slot)
+                    for(const auto& draw:skyline.scene.draws)if(draw.mesh==instance.mesh && draw.drawable)
+                        for(auto hash:native_doors)if(draw.texture_hash==hash) {
+                            check(draw.binding==BindingKind::resolved &&
+                                skyline.scene.textures.at(draw.texture).claims_hash(hash),
+                                "widebody door uses native sponsor texture pixels");++bound;
+                        }
+                check(bound==4,"original widebody door renders four selected sponsors");
             }
             audio::FrontendSfx sfx;
             check(sfx.load(root,error),error.c_str());

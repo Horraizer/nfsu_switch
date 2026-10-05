@@ -155,7 +155,22 @@ a prior static view hiding it does not qualify a moving no-fallback scene.
 Sponsor alias consumer 0x56C3D0 selects NAME plus panel SHAPE suffixes
 (_SQUARE/_RECT/_WIDE), not a guessed sponsor TEXTURE attribute. Native witness
 results identify SPARCO_WHITE_WIDE on the rear window and KENWOOD/NX/SPARCO/HKS
-_WHITE_RECT on the doors; their draw bindings are not yet connected.
+_WHITE_RECT on the doors. Genuine CarRenderInfo constructor 0x56A130 binds
+these replacement arrays at 0x56AA9A..0x56AAC9: installed slots19..29 use
+panel=slot-19, with four subtracted for wide slots26..29. The latter therefore
+use panels3..6, rather than an invented widebody mapping. The frontend now
+substitutes selected sponsor hashes and original texture pixels on those
+prepared draws. DEFAULTALPHA entries retain the native empty-decal behavior.
+`nfsu_frontend_retail` checks that both actual widebody door meshes resolve
+all four native sponsor textures after skin preparation. Generic stock scene
+and GLM helper semantics are unchanged.
+
+The resident FrontendGpuScene scaffold records road/car resources once and
+updates the five native road placements through command transforms. It is
+not connected to live presentation yet and refuses unresolved drawable
+textures as a diagnostic. That refusal is not final user experience. Camera
+orbit, wheel motion, required effects and measured input timings still need
+their original consumers and live integration.
 
 Original FE_COMMON logical up/down/select/back dispatch is implemented with
 native entries 0/1/4/5. `tools/frontend66_sound_native.py <retail-root>` executes the original sound
