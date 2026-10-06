@@ -10,6 +10,7 @@ def check(root,shaders,source=None):
     if not all('checkpoint("'+label+'")' in block for label in labels):raise ValueError('staged fence missing')
     if block.count('clear_probe();')!=3:raise ValueError('diagnostic pixels/depth not cleared before next real draw')
     if 'std::memcmp' not in block or 'instance%256' not in block:raise ValueError('address/copy contract missing')
+    if 'cmd.bindVtxAttribState(std::array<DkVtxAttribState,0>{});' not in block or 'cmd.bindVtxBufferState(std::array<DkVtxBufferState,0>{});' not in block:raise ValueError('procedural vertex fetch not disabled by SDK defaults')
     if 'previous=nullptr;' not in block:raise ValueError('real draw shader state not restored')
     for name in ['frontend_probe.vert','frontend_probe.frag','frontend_probe_textured.frag']:
         src=(root/'switch/diagnostic_shaders'/(name+'.glsl')).read_text()

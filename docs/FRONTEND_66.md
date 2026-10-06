@@ -701,3 +701,21 @@ The option defaults OFF; all authored effects remain. Diagnostic shader
 assets are always packaged to keep actual-path checks complete, but load
 and execute only in opted-in frontend capture. Native build graph is
 unchanged. No preflight result establishes original-menu acceptance.
+
+### Fixed vertex holes after procedural-stage hardware failure
+
+At a75a177, console target clear completed but the procedural constant probe
+failed before mesh/texture stages. Inspection found supplied zero vertex
+attribute descriptors were not disabled: isFixed was zero and size zero has
+no valid SDK enum. The installed header layout and upstream
+source/maxwell/gpu_3d_vbo.cpp show supplied descriptors are copied raw;
+omitted trailing descriptors use isFixed=1, size1x32, Float.
+https://github.com/devkitPro/deko3d/blob/master/source/maxwell/gpu_3d_vbo.cpp
+
+Real draws now initialize every hole to that canonical fixed descriptor and
+overwrite authored locations, preserving frontend0,2,3. The procedural
+probe supplies zero attributes and buffers, letting the SDK generate fixed
+attribute defaults and disable every buffer. Existing source contract tests
+reject the old zero-hole state. This corrects a proven malformed API state;
+hardware fault closure still requires a console run. The earlier claim that
+zero Type_None holes were disabled was incorrect.

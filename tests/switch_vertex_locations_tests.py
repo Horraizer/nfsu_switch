@@ -7,7 +7,8 @@ def check(source,manifests):
     end=source.index('out.bindVtxBufferState(',begin)
     block=source[begin:end]
     if 'attributes[input.location]' not in block:raise ValueError('location-indexed fill absent')
-    # This conversion sends every location including initialized None holes.
+    # Supplied holes must match SDK-generated fixed, valid-format defaults.
+    if "for(auto& attribute:attributes)attribute={0,1,0,DkVtxAttribSize_1x32,DkVtxAttribType_Float,0};" not in block:raise ValueError("zero hole enables invalid vertex fetch")
     if 'out.bindVtxAttribState(attributes);' not in block:raise ValueError('location span truncated')
     for path in manifests:
         locations=[int(x) for x in re.findall(r'^attribute location=(\d+)',path.read_text(),re.M)]
@@ -29,5 +30,9 @@ def main():
     try:check(bad,manifests)
     except ValueError:print('PASS negative control rejects truncated sparse normal location')
     else:raise ValueError('negative control accepted')
+    bad=source.replace('for(auto& attribute:attributes)attribute={0,1,0,DkVtxAttribSize_1x32,DkVtxAttribType_Float,0};','',1)
+    try:check(bad,manifests)
+    except ValueError:print('PASS negative control rejects old zero-filled supplied holes')
+    else:raise ValueError('zero-hole negative control accepted')
     print('PASS actual recorder span covers all authored shader locations including FE0,2,3; holes disabled')
 if __name__=='__main__':main()

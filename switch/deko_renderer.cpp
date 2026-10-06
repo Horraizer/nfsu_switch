@@ -738,6 +738,7 @@ struct DekoRenderer::Impl {
             out.bindColorWriteState(write); out.bindBlendStates(0, blend); out.bindDepthStencilState(z);
             out.setAlphaRef(state.alpha_ref/255.0F);
             std::array<DkVtxAttribState, 4> attributes{};
+            for(auto& attribute:attributes)attribute={0,1,0,DkVtxAttribSize_1x32,DkVtxAttribType_Float,0};
             for (std::size_t a = 0; a < draw.program->attribute_count; ++a) {
                 const auto& input = draw.program->attributes[a];
                 const bool byte = input.format == sm::VertexFormat::unorm8x4;
@@ -747,7 +748,8 @@ struct DekoRenderer::Impl {
             }
             // Attribute locations can be sparse (FE car: 0, 2, 3). The
             // API count covers locations, not the number of manifest records.
-            // Zero initialized holes have DkVtxAttribType_None.
+            // Match SDK trailing defaults: holes are fixed valid float slots,
+            // not zero descriptors with an invalid size and active fetch.
             out.bindVtxAttribState(attributes);
             out.bindVtxBufferState(DkVtxBufferState{draw.program->buffers[0].stride, 0});
         }
@@ -1002,7 +1004,8 @@ struct DekoRenderer::Impl {
                         dk::ColorWriteState write;write.setMask(0,DkColorMask_RGBA);
                         dk::DepthStencilState depth;depth.setDepthTestEnable(false).setDepthWriteEnable(false);
                         cmd.bindRasterizerState(raster);cmd.bindColorState(color);cmd.bindColorWriteState(write);
-                        cmd.bindDepthStencilState(depth);cmd.bindVtxAttribState(std::array<DkVtxAttribState,4>{});
+                        cmd.bindDepthStencilState(depth);cmd.bindVtxAttribState(std::array<DkVtxAttribState,0>{});
+                        cmd.bindVtxBufferState(std::array<DkVtxBufferState,0>{});
                         cmd.draw(DkPrimitive_Triangles,3,1,0,0);
                         if(!checkpoint("preflight procedural constant"))return false;
                         clear_probe();
