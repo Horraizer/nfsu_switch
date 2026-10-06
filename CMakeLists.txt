@@ -1658,6 +1658,30 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_deko_draw_order_tests)
     add_test(NAME nfsu_deko_draw_order_tests COMMAND nfsu_deko_draw_order_tests)
 
+    # Compile the actual GLSL scalar glow equations as C++ for byte parity.
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/shaders/textured_opaque.frag.glsl")
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/shaders/textured_opaque.frag.glsl" glow_source)
+    set(glow_equations "")
+    foreach(name channel alpha)
+        string(REGEX MATCH "uint frontend_glow_${name}[^}]+}" equation "${glow_source}")
+        if(NOT equation)
+            message(FATAL_ERROR "Missing actual frontend glow ${name} equation")
+        endif()
+        string(REPLACE "uint" "std::uint32_t" equation "${equation}")
+        string(REGEX REPLACE "([0-9]+[.][0-9]+)" "\\1F" equation "${equation}")
+        string(APPEND glow_equations "${equation}\n")
+    endforeach()
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/frontend_glow_equations.h" "${glow_equations}")
+    add_executable(nfsu_frontend_glow_fast_tests tests/frontend_glow_fast_tests.cpp)
+    target_include_directories(nfsu_frontend_glow_fast_tests PRIVATE include ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    add_dependencies(nfsu_frontend_glow_fast_tests nfsu_shader_manifest)
+    nfsu_enable_warnings(nfsu_frontend_glow_fast_tests)
+    add_test(NAME nfsu_frontend_glow_fast_tests COMMAND nfsu_frontend_glow_fast_tests)
+    add_test(NAME nfsu_frontend_glow_source_tests
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend_glow_source_tests.py
+            --root ${CMAKE_CURRENT_SOURCE_DIR})
+
     add_executable(nfsu_deko_scene_target_tests tests/deko_scene_target_tests.cpp)
     target_include_directories(nfsu_deko_scene_target_tests PRIVATE include)
     nfsu_enable_warnings(nfsu_deko_scene_target_tests)

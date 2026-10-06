@@ -1,3 +1,4 @@
+#include "nfsu/frontend_glow_fast.h"
 #include "deko_renderer.h"
 #include "frontend_startup_trace.h"
 #include "nfsu/frontend.h"
@@ -708,7 +709,11 @@ struct DekoRenderer::Impl {
             const auto view = source.draw_view(i);
             const auto index = i - first_dynamic;
             std::memcpy(data + (1+2*index)*256, &view.placement, sizeof(DrawInstanceUniform));
-            std::memcpy(data + (2+2*index)*256, &view.material, sizeof(DrawMaterialUniform));
+            // Copy a private GPU payload; the recorded retail material stays intact.
+            auto material=view.material;
+            if(source.frontend_light_enabled && frontend_glow_fast(view,source.frame))
+                material.fallback[3]=3;
+            std::memcpy(data + (2+2*index)*256, &material, sizeof(DrawMaterialUniform));
         }
     }
 
@@ -1130,6 +1135,10 @@ struct DekoRenderer::Impl {
             }
             const auto view = commands->draw_view(i);
             const auto index = i - first_dynamic;
+            // Zero source alpha contributes no RGB, alpha or depth under
+            // this validated additive state. Keep original uniform indices
+            // and the last emitted draw for fixed-state reuse.
+            if(frontend && frontend_glow_no_output(view,commands->frame))continue;
             if(diagnose && previous_dynamic &&
                 previous_dynamic->program!=view.definition.program) {
                 if(!checkpoint(previous_dynamic->program->name))return false;

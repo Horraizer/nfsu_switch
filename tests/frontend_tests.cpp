@@ -1,3 +1,4 @@
+#include "nfsu/frontend_glow_fast.h"
 #include "nfsu/frontend.h"
 #include "nfsu/frontend_scene.h"
 #include "nfsu/track.h"
@@ -650,6 +651,25 @@ int main(int argc,char** argv) {
                     if(frame!=60 && frame!=420)continue;
                     if(!reference_scene.render_reference(reference_pixels,error))
                         throw std::runtime_error("moving reference render: "+error);
+                    // Independently render the same real camera/time with
+                    // only equation-proven no-output draws removed. Other
+                    // passes, placements, textures and uniforms stay intact.
+                    auto& recorded=const_cast<RecordedCommands&>(reference_scene.commands());
+                    auto saved_draws=recorded.owning_draws();
+                    unsigned fast=0,removed=0;
+                    for(std::size_t i=0;i<recorded.draw_count();++i)
+                        fast+=frontend_glow_fast(recorded.draw_view(i),recorded.frame);
+                    auto& candidates=recorded.owning_draws();
+                    candidates.erase(std::remove_if(candidates.begin(),candidates.end(),[&](const RecordedDraw& d) {
+                        const RecordedDrawView view{d,d.instance,d.placement,d.material,false};
+                        const bool skip=frontend_glow_no_output(view,recorded.frame);removed+=skip;return skip;
+                    }),candidates.end());
+                    std::vector<unsigned char> candidate_pixels;
+                    const bool rendered=reference_scene.render_reference(candidate_pixels,error);
+                    candidates=std::move(saved_draws);
+                    check(rendered,error.c_str());
+                    check(fast>0 && removed>0,"real menu exercises specialization and zero-output selection");
+                    check(candidate_pixels==reference_pixels,"real menu frame60/420 no-output elimination RGBA parity");
                     check(reference_pixels.size()==1280ULL*720*4,
                         "moving reference scene writes a complete RGBA frame");
                     bool visible=false;

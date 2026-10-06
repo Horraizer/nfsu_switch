@@ -46,6 +46,18 @@ layout (std140, binding = 2) uniform Material {
 layout (binding = 0) uniform sampler2D baseTexture;
 layout (binding = 1) uniform sampler2D reflectionTexture;
 
+// Renderer-only marker fallback.w=3 selects a validated main-view FE glow.
+// The executable parity test compiles these actual scalar GLSL functions.
+uint frontend_glow_channel(uint texel, float vertex_byte)
+{
+    uint vertex = uint(clamp(floor(vertex_byte + 0.5), 0.0, 255.0));
+    return (texel * vertex + 127u) / 255u;
+}
+uint frontend_glow_alpha(uint texel, float alpha_scale)
+{
+    return uint(clamp(float(texel) * alpha_scale + 0.5, 0.0, 255.0));
+}
+
 void main()
 {
     vec2 uv = inTexcoord;
@@ -66,6 +78,15 @@ void main()
         return;
     }
     uvec4 texel = uvec4(texture(baseTexture, uv) * 255.0 + 0.5);
+    if (material.fallback.w == 3.0) {
+        vec3 vertex_byte = material.environment_range.w > 1.5 ?
+            material.environment_color.rgb : inColor.rgb * 255.0;
+        outColor = vec4(vec3(frontend_glow_channel(texel.r, vertex_byte.r),
+                            frontend_glow_channel(texel.g, vertex_byte.g),
+                            frontend_glow_channel(texel.b, vertex_byte.b)) / 255.0,
+                        float(frontend_glow_alpha(texel.a, material.alpha.x)) / 255.0);
+        return;
+    }
     // This shader is selected only when the frame alpha cutoff is zero and
     // the material alpha test is off, so it has no fragment discard.
 
