@@ -80,6 +80,7 @@ struct DekoRenderer::Impl {
     std::vector<UploadHandle> handles;
     std::vector<UploadRecord> records;
     std::vector<dk::Image> textures;
+    std::size_t first_texture=kNoHandle;
     std::vector<ArenaAllocation> padded_staging;
     ArenaAllocation uniform_allocation;
     bool uniform_live = false;
@@ -434,6 +435,7 @@ struct DekoRenderer::Impl {
                             r.data, static_cast<std::size_t>(r.bytes));
                 continue;
             }
+            if(first_texture==kNoHandle)first_texture=i;
             auto offset = placement.staging.offset;
             TextureCopyPlan copy;
             if (!plan_texture_copy(r, copy, error)) return false;
@@ -925,6 +927,13 @@ struct DekoRenderer::Impl {
         cmd.bindSamplerDescriptorSet(descriptors.getGpuAddr()+sampler_offset, (reflection_ready || frontend_cube_ready) ? 3 : 2);
         cmd.barrier(DkBarrier_None, DkInvalidateFlags_Shader | DkInvalidateFlags_Descriptors);
         if(frontend_cube_ready) {
+            // Both basic fragment stages declare sampler1. Define its handle
+            // even for capture frames whose reflection branch is inactive.
+            // This table entry is an ordinary uploaded asset, never the
+            // capture target being written. Authored active bindings override
+            // it after capture exactly as before.
+            if(first_texture==kNoHandle){error="frontend capture has no safe uploaded texture";return false;}
+            cmd.bindTextures(DkStage_Fragment,1,dkMakeTextureHandle(static_cast<std::uint32_t>(first_texture),2));
             if(commands->frontend_cube_draws.size()!=frontend_cube_capacity){error="frontend cube draw capacity changed";return false;}
             dk::ImageView color{frontend_cube_color},z{frontend_cube_depth};
             cmd.bindRenderTargets(&color,&z);

@@ -556,5 +556,9 @@ if(NFSU_BUILD_TESTS)
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/switch_frontend_pass_diagnostics_tests.py
             --source ${CMAKE_CURRENT_SOURCE_DIR}/deko_renderer.cpp)
     set_tests_properties(nfsu_switch_frontend_pass_diagnostics PROPERTIES TIMEOUT 60)
+    add_test(NAME nfsu_switch_frontend_samplers
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/switch_frontend_sampler_tests.py
+            --root ${PROJECT_SOURCE_DIR})
+    set_tests_properties(nfsu_switch_frontend_samplers PROPERTIES TIMEOUT 60)
 
 endif()

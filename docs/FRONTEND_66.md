@@ -658,3 +658,21 @@ fixed-state cache. The first draw logs actual resource IDs and index range.
 All effects remain. Actual native source validation of the first face's
 six road and twelve sprite draws passes, including raw index bounds; this
 is CPU evidence and does not prove GPU addresses or target state valid.
+
+At 0ecd504 hardware target bind/clear succeeds and the first road solid
+fails before sprites. Both basic fragment stages statically declare
+sampler1, but capture did not bind it before that draw. The renderer now
+defines it with the first ordinary image already uploaded from the source
+resource table, never a currently written capture target. Authored active
+cube/floor sampling overrides this inactive-path handle as before. The
+Switch-only nfsu_switch_frontend_samplers regression derives requirements
+from both actual GLSL stages and recorder bindings, with missing-handle,
+render-target alias and nontexture-source negative controls. This corrects
+resource completeness; hardware cause/closure remains unproven. No
+preflight or visible effect substitution is added.
+
+The actual basic DKSH raw/processed audit confirms derivative processing
+changes only the compiler multiplier from zero to one in its designated
+constant range; instruction bytes are unchanged. The vertex blob is
+identical. This excludes an instruction-patching explanation for those
+artifacts, without validating the hardware shader execution.
