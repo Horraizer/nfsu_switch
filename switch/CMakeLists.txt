@@ -132,6 +132,26 @@ foreach(manifest IN LISTS NFSU_SHADER_MANIFESTS)
 endforeach()
 
 add_custom_target(nfsu_switch_shaders ALL DEPENDS ${NFSU_SHADER_STAMPS})
+# Separate diagnostic stages; no production manifest or native build change.
+set(NFSU_FRONTEND_PROBE_STAGES frontend_probe.vert frontend_probe.frag frontend_probe_textured.frag)
+set(NFSU_FRONTEND_PROBE_BLOBS "")
+foreach(stage IN LISTS NFSU_FRONTEND_PROBE_STAGES)
+    if(stage MATCHES "[.]vert$")
+        set(kind vert)
+    else()
+        set(kind frag)
+    endif()
+    set(blob ${NFSU_SHADER_OUTPUT}/${stage}.dksh)
+    add_custom_command(OUTPUT ${blob} ${NFSU_SHADER_OUTPUT}/${stage}.tgsi
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${NFSU_SHADER_OUTPUT}
+        COMMAND ${NX_UAM_EXE} -s ${kind} -o ${blob} -t ${NFSU_SHADER_OUTPUT}/${stage}.tgsi
+            ${CMAKE_CURRENT_SOURCE_DIR}/diagnostic_shaders/${stage}.glsl
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/diagnostic_shaders/${stage}.glsl ${NX_UAM_EXE}
+        VERBATIM)
+    list(APPEND NFSU_FRONTEND_PROBE_BLOBS ${blob})
+endforeach()
+add_custom_target(nfsu_switch_frontend_probe_shaders ALL DEPENDS ${NFSU_FRONTEND_PROBE_BLOBS})
+
 
 if(NFSU_BUILD_TESTS)
     add_test(NAME nfsu_uam_derivatives_tests
@@ -455,6 +475,7 @@ if(NOT NFSU_RACE_BUILD_TAG MATCHES "^[A-Za-z0-9._-]+$")
     message(FATAL_ERROR "NFSU_RACE_BUILD_TAG must be an ASCII identifier")
 endif()
 # Opt-in hardware diagnostic: SDK argument checks plus immediate callback log.
+option(NFSU_SWITCH_FRONTEND_PREFLIGHT "Run isolated first-mesh GPU diagnostic stages" OFF)
 option(NFSU_SWITCH_DEKO_DEBUG "Use deko3d debug validation for the race application" OFF)
 set(NFSU_SWITCH_RACE_DEKO_LIBRARY deko3d)
 if(NFSU_SWITCH_DEKO_DEBUG)
@@ -465,12 +486,15 @@ target_link_libraries(nfsu_switch_race PRIVATE nfsu_race_run nfsu_race_hud nfsu_
 if(NFSU_SWITCH_DEKO_DEBUG)
     target_compile_definitions(nfsu_switch_race PRIVATE NFSU_DEKO_DEBUG_DIAGNOSTICS=1)
 endif()
+if(NFSU_SWITCH_FRONTEND_PREFLIGHT)
+    target_compile_definitions(nfsu_switch_race PRIVATE NFSU_FRONTEND_PREFLIGHT=1)
+endif()
 target_compile_definitions(nfsu_switch_race PRIVATE NFSU_RACE_BUILD_TAG="${NFSU_RACE_BUILD_TAG}")
 set_target_properties(nfsu_switch_race PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
 nfsu_enable_warnings(nfsu_switch_race)
 set(NFSU_RACE_ROMFS ${CMAKE_CURRENT_BINARY_DIR}/race_romfs)
 set(NFSU_RACE_ASSETS "")
-foreach(stage IN ITEMS placed.vert textured.frag textured_opaque.frag frontend_ui.vert frontend_ui.frag fallback.frag car_shaded.vert car_shaded.frag frontend_car.vert frontend_car.frag sky.vert sky.frag)
+foreach(stage IN ITEMS placed.vert textured.frag textured_opaque.frag frontend_ui.vert frontend_ui.frag fallback.frag car_shaded.vert car_shaded.frag frontend_car.vert frontend_car.frag sky.vert sky.frag ${NFSU_FRONTEND_PROBE_STAGES})
     set(blob ${NFSU_RACE_ROMFS}/shaders/${stage}.dksh)
     add_custom_command(OUTPUT ${blob}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${NFSU_RACE_ROMFS}/shaders
@@ -560,5 +584,9 @@ if(NFSU_BUILD_TESTS)
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/switch_frontend_sampler_tests.py
             --root ${PROJECT_SOURCE_DIR})
     set_tests_properties(nfsu_switch_frontend_samplers PROPERTIES TIMEOUT 60)
+    add_test(NAME nfsu_switch_frontend_preflight_contract
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/switch_frontend_preflight_tests.py
+            --root ${PROJECT_SOURCE_DIR} --shaders ${NFSU_SHADER_OUTPUT})
+    set_tests_properties(nfsu_switch_frontend_preflight_contract PROPERTIES TIMEOUT 60)
 
 endif()

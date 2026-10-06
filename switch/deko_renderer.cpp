@@ -100,6 +100,9 @@ struct DekoRenderer::Impl {
     DekoSceneTarget scene_target;
     dk::Shader vertex, textured, textured_opaque, fallback, frontend_vertex, frontend_fragment;
     dk::Shader frontend_car_vertex, frontend_car_fragment;
+#if defined(NFSU_FRONTEND_PREFLIGHT)
+    dk::Shader probe_vertex,probe_constant,probe_textured;
+#endif
     dk::Shader car_vertex, car_fragment, sky_vertex, sky_fragment;
     const RecordedCommands* commands = nullptr;
     const PreparedCommandSource* package = nullptr;
@@ -534,6 +537,11 @@ struct DekoRenderer::Impl {
             std::memcpy(static_cast<unsigned char*>(descriptors.getCpuAddr())+plan.sampler_offset,&descriptor,sizeof descriptor);
             frontend_cube_ready=true;
         }
+#if defined(NFSU_FRONTEND_PREFLIGHT)
+        if(frontend_cube_ready && (!shader("frontend_probe.vert",DkStage_Vertex,probe_vertex,error) ||
+            !shader("frontend_probe.frag",DkStage_Fragment,probe_constant,error) ||
+            !shader("frontend_probe_textured.frag",DkStage_Fragment,probe_textured,error)))return false;
+#endif
         if (!block(2*256,kDataFlags,"frontend light uniforms",frontend_light_uniforms,error))return false;
         write_uniforms(source, 0);
         if (!shader("frontend_car.vert",DkStage_Vertex,frontend_car_vertex,error) ||
@@ -688,7 +696,7 @@ struct DekoRenderer::Impl {
     template<class Recorder>
     void emit_draw(Recorder& out, const RecordedDraw& draw,
                    std::uint64_t instance_addr, std::uint64_t material_addr,
-                   bool bind_fixed_state = true) {
+                   bool bind_fixed_state = true,dk::Shader* fragment_override=nullptr) {
         const auto& state = draw.pipeline;
         const bool has_texture = draw.texture_resource != kNoHandle;
         const bool cutout = deko_textured_uses_cutout_shader(
@@ -700,6 +708,7 @@ struct DekoRenderer::Impl {
         dk::Shader* fragment = frontend ? &frontend_car_fragment : shaded ? &car_fragment : sky ? &sky_fragment :
             !has_texture ? &fallback :
             cutout ? &textured : &textured_opaque;
+        if(fragment_override)fragment=fragment_override;
         if (bind_fixed_state)
             out.bindShaders(DkStageFlag_GraphicsMask,
                             {frontend ? &frontend_car_vertex : shaded ? &car_vertex : sky ? &sky_vertex : &vertex, fragment});
@@ -964,6 +973,47 @@ struct DekoRenderer::Impl {
                         "frontend GPU first cube draw: face%u %s %s vertex%zu index%zu texture%zu first%u count%u\n",
                         face,draw.name.c_str(),draw.program->name,draw.vertex_resource,draw.index_resource,
                         draw.texture_resource,draw.first_index,draw.index_count);
+#if defined(NFSU_FRONTEND_PREFLIGHT)
+                    if(diagnose && face==0 && !emitted) {
+                        const auto& vb=records.at(draw.vertex_resource).placement;
+                        const auto& ib=records.at(draw.index_resource).placement;
+                        const auto& resources=commands->resource_table().resources;
+                        const auto& vr=resources.at(draw.vertex_resource);
+                        const auto& ir=resources.at(draw.index_resource);
+                        const auto instance=cube+(6+2*i)*256,material=cube+(7+2*i)*256;
+                        if(vb.offset+vb.size>buffers.getSize() || ib.offset+ib.size>buffers.getSize() ||
+                            vb.offset%4 || ib.offset%2 || instance%256 || material%256 ||
+                            material+sizeof(DrawMaterialUniform)>frontend_cube_uniforms.getGpuAddr()+frontend_cube_uniforms.getSize() ||
+                            vr.bytes>vb.size || ir.bytes>ib.size ||
+                            std::memcmp(static_cast<unsigned char*>(buffers.getCpuAddr())+vb.offset,vr.data,vr.bytes) ||
+                            std::memcmp(static_cast<unsigned char*>(buffers.getCpuAddr())+ib.offset,ir.data,ir.bytes)) {
+                            error="first mesh GPU buffer address/copy contract failed";return false;
+                        }
+                        std::printf("frontend GPU bindings: vertex%llX+%llu index%llX+%llu frame%llX instance%llX material%llX\n",
+                            (unsigned long long)(buffers.getGpuAddr()+vb.offset),(unsigned long long)vb.size,
+                            (unsigned long long)(buffers.getGpuAddr()+ib.offset),(unsigned long long)ib.size,
+                            (unsigned long long)(cube+face*256),(unsigned long long)instance,(unsigned long long)material);
+                        const auto clear_probe=[&] {
+                            cmd.clearColor(0,DkColorMask_RGBA,0,0,0,1);cmd.clearDepthStencil(true,1,0,0);
+                        };
+                        cmd.bindShaders(DkStageFlag_GraphicsMask,{&probe_vertex,&probe_constant});
+                        dk::RasterizerState raster;raster.setCullMode(DkFace_None);
+                        dk::ColorState color;color.setBlendEnable(0,false).setAlphaCompareOp(DkCompareOp_Always);
+                        dk::ColorWriteState write;write.setMask(0,DkColorMask_RGBA);
+                        dk::DepthStencilState depth;depth.setDepthTestEnable(false).setDepthWriteEnable(false);
+                        cmd.bindRasterizerState(raster);cmd.bindColorState(color);cmd.bindColorWriteState(write);
+                        cmd.bindDepthStencilState(depth);cmd.bindVtxAttribState(std::array<DkVtxAttribState,4>{});
+                        cmd.draw(DkPrimitive_Triangles,3,1,0,0);
+                        if(!checkpoint("preflight procedural constant"))return false;
+                        clear_probe();
+                        emit_draw(cmd,draw,instance,material,true,&probe_constant);
+                        if(!checkpoint("preflight actual mesh constant"))return false;
+                        clear_probe();
+                        emit_draw(cmd,draw,instance,material,true,&probe_textured);
+                        if(!checkpoint("preflight actual mesh texture0"))return false;
+                        clear_probe();previous=nullptr;
+                    }
+#endif
                     emit_draw(cmd,draw,cube+(6+2*i)*256,cube+(7+2*i)*256,
                         !previous || !same_fixed_state(*previous,draw));previous=&draw;
                     if(!emitted++) {

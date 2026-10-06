@@ -676,3 +676,28 @@ changes only the compiler multiplier from zero to one in its designated
 constant range; instruction bytes are unchanged. The vertex blob is
 identical. This excludes an instruction-patching explanation for those
 artifacts, without validating the hardware shader execution.
+
+At 3c4ee11 hardware still fails the first solid. The opt-in
+-DNFSU_SWITCH_FRONTEND_PREFLIGHT=ON diagnostic runs three fenced stages
+before the unchanged authored first draw:
+
+- Procedural triangle plus truly constant fragment: no VBO/IBO, UBO,
+  texture or derivatives. Tests minimal shader load/raster/target execution.
+- Actual first mesh with placed.vert and constant fragment: tests its
+  vertex/index resources and vertex frame/instance uniforms, with no
+  fragment texture/material/derivative consumption.
+- Actual first mesh with sampler0-only fragment: additionally tests base
+  texture sampling, without complex material, derivatives or reflection.
+
+The target color/depth is cleared between stages and before the authored
+draw; shader/fixed state is rebound. Runtime checks compare actual uploaded
+VBO/IBO CPU bytes and validate/log GPU address extents/alignment. These CPU
+checks do not prove GPU execution. The PC preflight test verifies compiled
+TGSI resource interfaces, DKSH bounds/stages/scratch and source boundaries;
+NRO tests check actual embedded files. Only hardware executes deko3d.
+The procedural stage avoids array compiler constants, and the constant
+fragment is separate from fallback.frag, which uses material/derivatives.
+The option defaults OFF; all authored effects remain. Diagnostic shader
+assets are always packaged to keep actual-path checks complete, but load
+and execute only in opted-in frontend capture. Native build graph is
+unchanged. No preflight result establishes original-menu acceptance.
