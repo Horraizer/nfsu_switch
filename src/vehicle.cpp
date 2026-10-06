@@ -811,7 +811,7 @@ VehicleModel::VehicleModel(const VehicleSpec& spec) : spec_(spec) {
     const VehicleApproximations& a = spec_.approx;
     const double approx_values[] = {
         a.unit_scale, a.wheel_inertia, a.brake_torque_front, a.brake_torque_rear,
-        a.handbrake_torque, a.max_steer, a.steer_speed_reference, a.steer_rate,
+        a.max_steer, a.steer_speed_reference, a.steer_rate,
         a.longitudinal_stiffness, a.cornering_stiffness_front, a.cornering_stiffness_rear,
         a.slip_speed_floor,
         a.rolling_resistance, a.rolling_fade_speed, a.bump_stop_rate, a.probe_lift,
@@ -1089,7 +1089,12 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     VehicleState s = state;
 
     const double throttle = sanitize(raw_input.throttle, 0.0, 1.0);
-    const double brake = sanitize(raw_input.brake, 0.0, 1.0);
+    // 0x00461E45: the brake the wheels see is one axis - the service input
+    // where any is applied, else the handbrake's full value. The handbrake
+    // has no torque path of its own, so it cannot lock the driven wheels at
+    // speed and pin the wheel-derived engine speed at idle.
+    const double brake = raw_input.handbrake && raw_input.brake <= 0.0 ? 1.0 :
+        sanitize(raw_input.brake, 0.0, 1.0);
     const double steer = sanitize(raw_input.steer, -1.0, 1.0);
 
     Mat3 r = rotation(s.orientation);
@@ -1214,10 +1219,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         const double final_drive =
             static_cast<double>(k < 2 ? h.final_drive_front : h.final_drive_rear);
         const double drive = final_drive * gear_ratio * engine_torque * fraction * 0.5;
-        double brake_torque = brake * (k < 2 ? a.brake_torque_front : a.brake_torque_rear);
-        if (raw_input.handbrake && k >= 2) {
-            brake_torque = brake_torque + a.handbrake_torque;
-        }
+        const double brake_torque = brake * (k < 2 ? a.brake_torque_front : a.brake_torque_rear);
         out.drive_torque = drive;
         out.compression = wheel.compression;
         out.contact = wheel.contact;

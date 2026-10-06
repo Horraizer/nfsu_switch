@@ -390,7 +390,11 @@ the default controls, the recovered camera rules with the default
 approximations, POV 0, at rest at the origin facing +x, automatic gearbox -
 the demonstration's 1380 records, 1689120 bytes, hash to
 
-    7030E676B13DD4F09525EFEF5D7A076C395F401C3692AD2F72D89B1871D275D9
+    32A44635293BA59D737718B43A5C1938BFB46E1FFD6752093AA5C97EDDB8FAD7
+
+It was 7030E676...275D9 until the handbrake fix (docs/VEHICLE.md): the
+demonstration's one second of handbrake became the brake axis at its full
+value (0x00461E45) instead of an added rear lock torque.
 
 `kDrivePinnedDemoSha256` holds it; `nfsu_drive_tests` requires it in each
 desktop build, and `nfsu_probe_drive_replay_guards` requires the probe to
@@ -470,12 +474,12 @@ camera, its left side in view.
 
 In CTest, `nfsu_probe_drive_replay_guards` renders frames 690 and 1380 at
 160x90 from the synthetic stock-frame inputs `nfsu_stock_frame_tests`
-writes, and pins them in every desktop build:
-`ED60C57AF156E5A8E2850A85DAF8998F883DBE1EF34A15465BB1C8E23B1D3FB3` and
-`F9CAA668F9ADAA7F495B037261586EF4DB3A16BDA695D0CB46C55B3856C1F313`, each
-equal to CMake's own `file(SHA256)` of the TGA written. Issue #201 also
-re-pins frame 690 for the same stock lateral matrix correction; frame
-1380 is unchanged.
+writes, and pins them in every desktop build, each equal to CMake's own
+`file(SHA256)` of the TGA written; the pins live in that test. Issue #201
+re-pinned frame 690 for the stock lateral matrix correction. The
+handbrake fix moved frame 1380 - the demonstration's handbrake second is
+the brake axis at full value (0x00461E45), so every pose after it shifts -
+and left frame 690, before the handbrake segment, unchanged.
 
 ## Determinism
 

@@ -46,10 +46,16 @@ if(NOT EXISTS "${TESTS}")
     message(FATAL_ERROR "nfsu_drive_tests was not found beside ${PROBE}")
 endif()
 
-# The pins.
-set(demo_stream "7030E676B13DD4F09525EFEF5D7A076C395F401C3692AD2F72D89B1871D275D9")
+# The pins. demo_stream moved with the handbrake fix: the demonstration's
+# handbrake second is the brake axis at full value (0x00461E45), not an
+# added rear lock torque (docs/CONTROLS_CAMERA.md).
+set(demo_stream "32A44635293BA59D737718B43A5C1938BFB46E1FFD6752093AA5C97EDDB8FAD7")
 set(fixture_frame_690 "635F697394CEA385425415E96A6A9C08CF0E44BDCC2534F1C73D728802565B4C")
-set(fixture_frame_1380 "888AC9AD2427257D2396958FA74E6C21C1D466FDA58A1CD413B80ED825049F1B")
+# Frame 1380 moved with the handbrake fix: the demonstration's handbrake
+# second is the brake axis at full value (0x00461E45), so the car no longer
+# skids backward-locked through it and every later pose shifts; frame 690,
+# before the handbrake segment, is unchanged.
+set(fixture_frame_1380 "6786253ECEC1693FAC43A22DF89A428EE755C49ED20138941A696DD61B663320")
 
 file(REMOVE_RECURSE "${WORK}")
 if(EXISTS "${WORK}")

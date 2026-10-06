@@ -995,22 +995,44 @@ void test_grip_limit() {
     check(ay[3] > ay[2], "the limit lies past the default full input: " + num(ay[2]) + " -> " +
                              num(ay[3]));
 
-    // The handbrake locks the rear wheels, which then slide, and the car
-    // yaws faster than it would on the same steer without it.
+    // 0x00461E45: the handbrake is the brake axis at its full value, not a
+    // torque of its own. Pulled at speed the rear wheels keep rolling, the
+    // wheel-derived engine speed stays above idle while the car still
+    // moves, and a straight pull stops the car exactly like the full
+    // service brake does.
     const nfsu::VehicleModel model = stock_model();
-    const std::vector<nfsu::VehicleTelemetry> plain = run_steady(model, 20.0, 0.4, 480);
     const std::vector<nfsu::VehicleTelemetry> pulled = run_steady(model, 20.0, 0.4, 480, true);
-    bool handbrake_slid = false;
+    const double idle = static_cast<double>(nfsu::stock_240sx_handling().idle_rpm);
+    bool rear_rolling = true;
+    bool engine_above_idle = true;
     for (std::size_t i = 240; i < 300; ++i) {
-        handbrake_slid =
-            handbrake_slid || (pulled[i].wheels[2].sliding && pulled[i].wheels[3].sliding);
+        rear_rolling = rear_rolling && pulled[i].wheels[2].spin > 1.0 &&
+                       pulled[i].wheels[3].spin > 1.0;
+        engine_above_idle = engine_above_idle && (pulled[i].forward_speed < 5.0 ||
+                                                  pulled[i].engine_rpm > idle + 100.0);
     }
-    check(handbrake_slid, "the handbrake slides the rear wheels");
-    check(pulled[300].wheels[2].spin == 0.0 && pulled[300].wheels[3].spin == 0.0,
-          "the handbrake holds the rear wheels still");
-    check(pulled[300].angular_velocity.z > plain[300].angular_velocity.z * 1.2,
-          "the handbrake turns the car in: " + num(pulled[300].angular_velocity.z) +
-              " against " + num(plain[300].angular_velocity.z));
+    check(rear_rolling, "the handbrake leaves the rear wheels rolling");
+    check(engine_above_idle,
+          "the handbrake does not pin the engine at idle while the car moves");
+    nfsu::VehicleScript braked;
+    braked.name = "braked";
+    braked.speed = 100.0 / 3.6;
+    braked.segments.push_back(nfsu::VehicleScriptSegment{960, nfsu::VehicleInput{}});
+    braked.segments.back().input.brake = 1.0;
+    nfsu::VehicleScript handbraked = braked;
+    handbraked.name = "handbraked";
+    handbraked.segments.back().input.brake = 0.0;
+    handbraked.segments.back().input.handbrake = true;
+    const std::vector<nfsu::VehicleTelemetry> braked_run =
+        run_script(model, braked, braked.total_steps());
+    const std::vector<nfsu::VehicleTelemetry> pulled_run =
+        run_script(model, handbraked, handbraked.total_steps());
+    bool same_stop = braked_run.size() == pulled_run.size();
+    for (std::size_t i = 0; same_stop && i < braked_run.size(); ++i) {
+        same_stop = braked_run[i].position.x == pulled_run[i].position.x &&
+                    braked_run[i].forward_speed == pulled_run[i].forward_speed;
+    }
+    check(same_stop, "a handbrake pull stops exactly like the full brake");
 }
 
 // Every full-input run a digital gamepad can ask for - the Switch's ZR and

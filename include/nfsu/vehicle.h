@@ -260,10 +260,10 @@ struct VehicleApproximations {
     // Brake torque per wheel at full brake input, N m: below what the
     // recovered static friction holds on each axle at the loads full braking
     // puts on it, so no wheel locks, and about 1.05 g from the brakes alone.
+    // The handbrake has no torque of its own: 0x00461E45 makes it the brake
+    // axis at its full value when no service brake is applied.
     double brake_torque_front = 1400.0;
     double brake_torque_rear = 450.0;
-    // Handbrake torque on each rear wheel, N m.
-    double handbrake_torque = 3000.0;
     // Road-wheel steering lock at standstill, rad, and the speed at which
     // the lock has halved, m/s: lock(v) = max_steer / (1 + (v / ref)^2).
     // Falling with the square of the speed keeps what a full input asks of
@@ -535,7 +535,7 @@ void encode_vehicle_telemetry(const VehicleTelemetry& record,
 // and Release builds produce it: the pin docs/VEHICLE.md records, which
 // nfsu_vehicle_tests requires and nfsu_switch_vehicle compares the
 // console's run against.
-constexpr const char* kVehiclePinnedMixedSha256 = "B9EE418C4829E3ACC12EFC906EFD89A6381376E4E334EDD82AE7E9F37DFCF8E3";
+constexpr const char* kVehiclePinnedMixedSha256 = "9329E10C2C041424971C209B7E101389500FD5E85CF7F4729358CDFBFE8DF41F";
 
 // SHA-256 over the encoded records of a run, in step order.
 class VehicleTelemetryHash {
