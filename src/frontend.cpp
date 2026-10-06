@@ -331,9 +331,21 @@ struct FrontendArt::Impl {
         last_selection=selected;
     }
 
-    Object sample(const Object& original) const {
-        Object o=original;
-        if(!temporal && !o.chyron)return o;
+    struct SampledObject {std::uint64_t generation=0;Object pose;};
+    mutable std::map<const Object*,SampledObject> sampled_objects;
+    mutable std::uint64_t sample_generation=0;
+    const Object& sample(const Object& original) const {
+        if(!temporal && !original.chyron)return original;
+        auto inserted=sampled_objects.try_emplace(&original);
+        auto& cached=inserted.first->second;
+        if(!inserted.second && cached.generation==sample_generation)return cached.pose;
+        if(inserted.second)cached.pose=original;
+        // Immutable authored scripts/labels stay resident. Only animated pose
+        // fields reset each draw, before evaluating exactly the original keys.
+        auto& o=cached.pose;o.color=original.color;
+        o.x=original.x;o.y=original.y;o.z=original.z;
+        o.w=original.w;o.h=original.h;o.qz=original.qz;o.qw=original.qw;
+        cached.generation=sample_generation;
         for(const auto& loop:o.loops) {
             const unsigned tick=unsigned(ui_ticks%loop.duration);
             auto next=std::lower_bound(loop.keys.begin(),loop.keys.end(),int(tick),
@@ -405,7 +417,7 @@ struct FrontendArt::Impl {
             if(it==objects.end()) throw std::runtime_error("frontend parent absent");
             parent=transform(*it,depth+1);
         }
-        const auto current=sample(o);
+        const auto& current=sample(o);
         return combine(parent,current,current.type==2 || current.type==5);
     }
     std::array<unsigned,4> parent_color(const Object& o,std::array<unsigned,4> color,unsigned depth=0) const {
@@ -413,7 +425,7 @@ struct FrontendArt::Impl {
         if(depth>32)throw std::runtime_error("frontend parent color cycle");
         const auto it=std::find_if(objects.begin(),objects.end(),[&](const Object& p){return p.id==o.parent;});
         if(it==objects.end())throw std::runtime_error("frontend color parent absent");
-        const auto parent=sample(*it);
+        const auto& parent=sample(*it);
         const auto effective=parent_color(parent,parent.color,depth+1);
         // Genuine4F1810..4F1D76 parent channel multiplication before /2 pack.
         for(unsigned c=0;c<4;++c)color[c]=(color[c]*effective[c]+128)>>8;
@@ -582,11 +594,12 @@ void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu) const {
     if(p.chyron.update(song_tick)==FrontendChyron::Action::hide)
         for(const auto& object:p.objects)if(object.chyron)p.start_named_state(object,"Hide",p.ui_ticks);
 
+    ++p.sample_generation;
     std::vector<std::size_t> order(p.objects.size());for(std::size_t i=0;i<order.size();++i) order[i]=i;
     std::stable_sort(order.begin(),order.end(),[&](std::size_t a,std::size_t b) {return p.transform(p.objects[a]).z>p.transform(p.objects[b]).z;});
     const unsigned hashes[]={0xe2a5c626,0x1f3bdb88,0x1abedeb1,0,bin_hash("ARROW3"),bin_hash("CIRCLE"),0x868a1fcf,bin_hash("NFSU_LOGO")};
     for(auto i:order) {
-        const auto o=p.sample(p.objects[i]);if((o.chyron && !p.chyron.visible()) || !p.visible(o,menu.selected()) || o.type==5 || o.name=="NFSU_logo") continue;
+        const auto& o=p.sample(p.objects[i]);if((o.chyron && !p.chyron.visible()) || !p.visible(o,menu.selected()) || o.type==5 || o.name=="NFSU_logo") continue;
         auto color=o.color;
         // Original steady states from UnHighlight/Highlight, after Init fades.
         if(!p.temporal && !o.chyron && !color[3] && (o.type==2 || o.type==5)) color[3]=255;
