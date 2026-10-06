@@ -82,7 +82,8 @@ int main() {
         record.accumulated_impulse=p.before;record.magnitude_sum=p.before_sum;
         check(accumulate_contact_hit(record,p.current,{1,2,3},4,5),p.name);
         check(same(record.accumulated_impulse,p.after)&&record.magnitude_sum==p.after_sum,p.name);
-        check(record.timestamp==5&&record.point==ContactVector{1,2,3}&&record.tangent_speed==4,"record metadata");
+        check(record.last_hit_tick==5&&record.creation_tick==0
+              &&record.point==ContactVector{1,2,3}&&record.tangent_speed==4,"record metadata");
     }
     for(const auto& p:kPairPins) {
         ContactGeometry prepared;

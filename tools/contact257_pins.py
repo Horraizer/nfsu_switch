@@ -68,6 +68,13 @@ def generate(report):
         lines.append('    {"%s", %s, %s, %s, %s},'%(case['name'],
             body(case['before']),number(case['raw_mass']),number(case['speed_limit']),
             body(case['after'])))
+    lines+=['};','static const RecordTickPin kRecordTickPins[] = {']
+    for case in report['native']['record_tick_cases']:
+        initial,after=case['initialized'],case['after']
+        lines.append('    {"%s", %sU, %sU, %sU, %sU, %s, %s, %s},'%(
+            case['name'],case['creation_input'],case['current_input'],
+            initial['creation_tick'],after['last_hit_tick'],vector(initial['initial_point']),
+            vector(initial['point']),number(initial['tangent_speed'])))
     return '\n'.join(lines+['};',''])
 
 

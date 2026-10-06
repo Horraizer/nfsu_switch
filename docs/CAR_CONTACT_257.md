@@ -174,9 +174,10 @@ executable throughout execution. Failed/incomplete cases produce no report.
 
 ## Closed integration gates and remaining acceptance
 
-No authenticated live-car admission/cadence or final kinematic publication
-episode is available in PR308 or this work. Retail hull preparation is now
-executed under explicit synthetic pair poses. The original effects tail is
+No authenticated live-car admission or scheduler capture is available in PR308
+or this work. The controlled queued witness executes original admission and
+physics notification/publication under explicit actor/world fixtures. Retail
+hull preparation executes under supplied pair poses. The original effects tail is
 still omitted by the witness and is not assumed inert. The hard callback's
 non-opposing branch requires caller-authenticated physical bounds; optional
 config and alternate/race modes remain
@@ -185,10 +186,10 @@ state1 is supported under the witness contract; broader repeated-contact record
 creation/reset/lifetime remains unimplemented. Unsupported paths return a named callback gap
 rather than inventing controller/handling state.
 
-Before production integration, capture a correlated original contact and matched
-no-contact episode with real body/shape identities, hulls, pair admission/order,
-preparation, callback effects and the subsequent refresh/publication phase.
-Then implement the necessary unsupported callbacks and real prepared-pair
+Before production integration, extend the controlled contact and matched
+no-contact episodes to live actor/world ownership and scheduler placement,
+including full callback effects. Then implement the unsupported callbacks and
+shared hull admission/prepared-pair
 adapter. The prepared solve modifies momenta and collision state; the explicit
 refresh can update velocity caches, but final actor velocity, yaw and integrated
 pose require the original notification/publication and scheduler contract.

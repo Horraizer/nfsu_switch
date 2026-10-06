@@ -115,9 +115,12 @@ def main():
             case['world_seed_after']=m.get(native.CONFIG+0x12D0)
             result['cases'].append(case)
         native.fixture=fixture
-        from contact257_retail import refresh_cases
+        from contact257_retail import refresh_cases,record_tick_cases
         result['refresh_cases']=refresh_cases(image,native)
         for case in result['refresh_cases']:
+            result['cache']['executed'].update(case.pop('executed'))
+        result['record_tick_cases']=record_tick_cases(image,native)
+        for case in result['record_tick_cases']:
             result['cache']['executed'].update(case.pop('executed'))
         source_text,blocks=execution_source(image,result)
         report=dict(schema='contact256-v1',input=dict(size=size,sha256=sha),

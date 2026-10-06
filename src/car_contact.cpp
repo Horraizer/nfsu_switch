@@ -89,12 +89,22 @@ bool prepare_car_contact_geometry(const ContactVector& witness_a,
     geometry=next;
     return true;
 }
+bool initialize_car_contact_record(ContactRecord& record,
+    const ContactVector& initial_point, std::uint32_t tick) noexcept {
+    if (!finite(initial_point)) return false;
+    ContactRecord next=record;
+    next.state_gate=false;
+    next.accumulated_impulse={};next.magnitude_sum=0;
+    next.creation_tick=tick;next.last_hit_tick=tick;
+    next.initial_point=initial_point;
+    record=next;
+    return true;
+}
 bool accumulate_contact_hit(ContactRecord& record, const ContactVector& current,
                             const ContactVector& point, float tangent_speed,
-                            float timestamp) noexcept {
+                            std::uint32_t tick) noexcept {
     if (!finite(current) || !finite(point) || !finite(record.accumulated_impulse)
-        || !std::isfinite(record.magnitude_sum) || !std::isfinite(tangent_speed)
-        || !std::isfinite(timestamp)) return false;
+        || !std::isfinite(record.magnitude_sum) || !std::isfinite(tangent_speed)) return false;
     ContactRecord out = record;
     for (unsigned i = 0; i < 3; ++i) out.accumulated_impulse[i] += current[i];
     // At this boundary original norm sums x*x + z*z + y*y.
@@ -102,7 +112,7 @@ bool accumulate_contact_hit(ContactRecord& record, const ContactVector& current,
     const float z = current[2] * current[2];
     const float y = current[1] * current[1];
     out.magnitude_sum += static_cast<float>(det_sqrt(static_cast<double>((x + z) + y)));
-    out.timestamp = timestamp;
+    out.last_hit_tick = tick;
     out.point = point;
     out.tangent_speed = tangent_speed;
     if (!finite(out.accumulated_impulse) || !std::isfinite(out.magnitude_sum)) return false;
@@ -239,7 +249,7 @@ bool calculate_car_contact_response(const ContactBody& a, const ContactBody& b,
 
 ContactResolution resolve_prepared_car_contact(ContactBody& a, ContactBody& b,
     ContactRecord& record, bool admitted, const ContactGeometry& geometry,
-    float timestamp, ContactResponse& response,
+    std::uint32_t tick, ContactResponse& response,
     ContactCallbackContext* witnessed_callback) noexcept {
     if (!admitted) { response = {}; return ContactResolution::not_admitted; }
     ContactResponse calculated;
@@ -263,7 +273,7 @@ ContactResolution resolve_prepared_car_contact(ContactBody& a, ContactBody& b,
     ContactRecord next_record=record;
     ContactCallbackContext callback = witnessed_callback ? *witnessed_callback : ContactCallbackContext{};
     if (!accumulate_contact_hit(next_record,calculated.current_impulse,geometry.point,
-                               calculated.tangent_speed,timestamp)) return ContactResolution::refused;
+                               calculated.tangent_speed,tick)) return ContactResolution::refused;
     ContactVector arm_a=calculated.arm_a, arm_b=calculated.arm_b;
     if (hard) {
         // Both car kinds satisfy original 004663A0 eligibility. The

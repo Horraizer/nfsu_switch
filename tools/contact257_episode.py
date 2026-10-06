@@ -122,8 +122,8 @@ def episode(image,n,retail_data,decoded,offset,velocity_a,velocity_b):
  result['records_after_response']=[m.get(entry['pair']+0x264) for entry in pairs]
  result['records']=[dict(address=hex(record),gate=m.get(record+0x10),
   point=n.vector(m,record+0x20),accumulated=n.vector(m,record+0x50),
-  magnitude_sum=m.get(record+0x60,'f'),timestamp=m.get(record+8),
-  previous_timestamp=m.get(record+0xc)) for record in result['records_after_response']]
+  magnitude_sum=m.get(record+0x60,'f'),creation_tick=m.get(record+8),
+  last_hit_tick=m.get(record+0xc)) for record in result['records_after_response']]
  result['geometry']=geometry;result['phases']=phases
  result['hits']=hits;result['applied']=applied;result['after_response']=actual_snapshot(m)
  result['physics_after']=[dict(active=m.get(b+0x60),physics=m.get(b+0x68),rigid=m.get(b+0x6c)) for b in (n.BODY_A,n.BODY_B)]

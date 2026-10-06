@@ -42,6 +42,39 @@ def inputs(root):
     return data
 
 
+def record_tick_cases(image, native):
+    """Authenticated numeric constructor slices and raw last-hit DWORD copy.
+
+    World-list ownership, allocation/counters and optional callbacks are outside
+    these field-only boundaries. No time unit or scheduler rate is inferred.
+    """
+    cases=[]
+    for name,creation,current in (
+        ('tick_normal',4000,4001),('tick_float_boundary',16777217,16777219),
+        ('tick_max',0xFFFFFFFE,0xFFFFFFFF),('tick_wrap',0xFFFFFFFF,0)):
+        m=native.fixture(image,(3.,.7,0.),(0.,0.,0.),(0.,0.,0.))
+        record=native.RECORD
+        native.vector(m,record+0x30,(7.,8.,9.));m.put(record+0x40,.25,'f')
+        native.vector(m,record+0x50,(9.,8.,7.));m.put(record+0x60,12.,'f')
+        m.put(record+0x10,1);native.vector(m,native.POINT,(1.,2.,3.))
+        m.put(0x73AD34,creation)
+        m.run(0x465640,end=0x465655,esi=record,eax=native.PAIR)
+        m.run(0x46565F,end=0x465662,esi=record,ebx=0)
+        m.run(0x465671,end=0x46568B,esi=record,edx=native.POINT,ebx=0)
+        m.run(0x4656AA,end=0x4656BA,esi=record,ebx=0)
+        def fields():
+            return dict(creation_tick=m.get(record+8),last_hit_tick=m.get(record+0xC),
+                initial_point=native.vector(m,record+0x20),point=native.vector(m,record+0x30),
+                tangent_speed=m.get(record+0x40,'f'),accumulated=native.vector(m,record+0x50),
+                magnitude_sum=m.get(record+0x60,'f'),state_gate=m.get(record+0x10))
+        initialized=fields()
+        m.put(0x73AD34,current)
+        m.run(0x46588E,end=0x465897,ebx=record)
+        cases.append(dict(name=name,creation_input=creation,current_input=current,
+            initialized=initialized,after=fields(),executed=m.executed,hooks=m.events))
+    return cases
+
+
 def refresh_cases(image, native):
     """Original explicit refresh phase; no scheduler/publication placement claim."""
     cases=[]

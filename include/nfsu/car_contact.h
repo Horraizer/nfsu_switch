@@ -22,15 +22,21 @@ struct ContactRecord {
     bool state_gate = false;
     ContactVector accumulated_impulse{};
     float magnitude_sum = 0;
-    float timestamp = 0;
+    std::uint32_t creation_tick = 0, last_hit_tick = 0;
+    ContactVector initial_point{};
     ContactVector point{};
     float tangent_speed = 0;
 };
+// Numeric record initialization from 00465640, excluding world-list ownership,
+// allocation, counters and optional callbacks. Current-hit point/tangent fields
+// are preserved, as the original constructor does not initialize them.
+bool initialize_car_contact_record(ContactRecord& record,
+    const ContactVector& initial_point, std::uint32_t tick) noexcept;
 // Port of 00465830 up to, but excluding, its state callback at 004658B0.
 // Current impulse remains the caller's distinct input; no severity is inferred.
 bool accumulate_contact_hit(ContactRecord& record, const ContactVector& current,
                             const ContactVector& point, float tangent_speed,
-                            float timestamp) noexcept;
+                            std::uint32_t tick) noexcept;
 // Port of the car mass/state scaling and rigid momentum application:
 // 0046A260..0046A318 and 00584F60..0058509D. Optional actor effects excluded.
 // No admission, geometry, impulse calculation, callback, or velocity publication.
@@ -87,6 +93,6 @@ enum class ContactResolution { refused, not_admitted, non_closing, applied, need
 // outside this API; caller must establish this witnessed mode before entry.
 ContactResolution resolve_prepared_car_contact(ContactBody& a, ContactBody& b,
     ContactRecord& record, bool admitted, const ContactGeometry& geometry,
-    float timestamp, ContactResponse& response,
+    std::uint32_t tick, ContactResponse& response,
     ContactCallbackContext* witnessed_callback = nullptr) noexcept;
 }
