@@ -1705,6 +1705,11 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_frontend_tests PRIVATE nfsu_frontend nfsu_frontend_music nfsu_race_run nfsu_posix_file_system)
     nfsu_enable_warnings(nfsu_frontend_tests)
     add_test(NAME nfsu_frontend_tests COMMAND nfsu_frontend_tests)
+    add_executable(nfsu_startup_journal_tests tests/startup_journal_tests.cpp)
+    target_include_directories(nfsu_startup_journal_tests PRIVATE include)
+    nfsu_enable_warnings(nfsu_startup_journal_tests)
+    add_test(NAME nfsu_startup_journal_tests COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/startup_journal_tests.py $<TARGET_FILE:nfsu_startup_journal_tests>)
     add_executable(nfsu_frontend_music_transition_tests tests/frontend_music_transition_tests.cpp
         src/frontend_music.cpp src/frontend_sfx.cpp)
     target_link_libraries(nfsu_frontend_music_transition_tests PRIVATE nfsu_audio_playback nfsu_sha256)

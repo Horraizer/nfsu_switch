@@ -14,6 +14,7 @@
 #include "nfsu/frontend_scene.h"
 #include "nfsu/frontend_music.h"
 #include "nfsu/intro_movie.h"
+#include "frontend_startup_trace.h"
 #include <switch.h>
 #include <arpa/inet.h>
 #include <unistd.h>
@@ -773,6 +774,7 @@ int main(int argc, char** argv) {
     padConfigureInput(1,HidNpadStyleSet_NpadStandard); PadState pad; padInitializeDefault(&pad);
     {
         Screen screen; if (!screen.open()) return 1;
+        StartupJournal startup_journal;StartupJournal* active_trace=nullptr;
         try {
             // Shaders belong to both frontend and race. Keep this mount
             // alive through menu -> race -> menu and until all renderers close.
@@ -789,6 +791,7 @@ int main(int argc, char** argv) {
             std::string sky = "on";
             std::uint32_t scene_height = 0;
             bool gpu_boost = true;
+            bool startup_trace=false;
             bool glows = false;
             bool wet_road_reflections = false;
             bool explicit_performance = false, handling_telemetry = false;
@@ -817,6 +820,7 @@ int main(int argc, char** argv) {
                 }
                 else if (arg == "--panel") panel = true;
                 else if (arg == "--profile-frame") profile_frame = true;
+                else if (arg == "--frontend-startup-trace") startup_trace=true;
                 else if (arg == "--hud-trace") hud_trace = true;
             else if (arg == "--no-hud") hud = false;
                 else if (arg == "--scene-height" && i+1 < argc &&
@@ -850,6 +854,23 @@ int main(int argc, char** argv) {
             else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--hud-trace] [--no-hud] [--sky on|off|early] [--scene-height 720|540|450|360] [--gpu-boost on|off] [--particles=on|--particles=off] [--tuned] [--glows] [--car NAME] [--car-shading on|off] [--texture-filter legacy|linear] [--wet-road-reflections on|off]");
             }
             require(!(panel && profile_frame),"--profile-frame requires direct presentation");
+            require(!startup_trace || !selected,"--frontend-startup-trace requires menu startup");
+            if(startup_trace) {
+                const auto retail_directory=std::filesystem::path(root).lexically_normal().generic_string();
+                require(retail_directory!="sdmc:" && retail_directory!="sdmc:/",
+                    "startup journal must stay outside the retail root");
+                bool opened=false;char path[96];
+                for(unsigned attempt=0;attempt<64;++attempt) {
+                    std::snprintf(path,sizeof path,"sdmc:/nfsu-menu-startup-%04u.log",attempt);
+                    if(startup_journal.open(path)) {opened=true;break;}
+                    if(errno!=EEXIST)break;
+                }
+                require(opened,startup_journal.error());active_trace=&startup_journal;
+                char identity[256];
+                std::snprintf(identity,sizeof identity,"baseline=d00d897 diagnostic=r18 requested_height=%lu boost=%s profile=%s journal=%s timing_perturbed=1",
+                    (unsigned long)scene_height,gpu_boost?"on":"off",profile_frame?"on":"off",path);
+                if(!startup_journal.mark("enabled",identity))throw std::runtime_error(startup_journal.error());
+            }
             require(!hud_trace || (hud && !panel),"--hud-trace requires HUD and direct presentation");
             require(!(tuned && car_name!="240SX"),
                     "the --tuned preset is the 240SX's own part set; it cannot dress car type "+car_name);
@@ -866,6 +887,9 @@ int main(int argc, char** argv) {
                     gpu_boost,hud,hud_trace,explicit_performance ? &performance : nullptr,
                     handling_telemetry,steering,selected_car,screen,pad);
             } else {
+                std::string trace_error;
+                const auto trace=[&](const char* stage) {require(trace_frontend_startup(active_trace,stage,trace_error),trace_error);};
+                trace("intro.before");
                 const auto intro=play_original_intro(root,[&] {
                     if (!appletMainLoop()) return IntroControl::quit;
                     padUpdate(&pad); const auto down=padGetButtonsDown(&pad);
@@ -873,12 +897,17 @@ int main(int argc, char** argv) {
                     if (down&(HidNpadButton_A|HidNpadButton_B)) return IntroControl::skip;
                     return IntroControl::continue_playback;
                 },[&](const MovieFrame& frame) { screen.movie(frame); });
+                trace("intro.after");
                 if (intro.outcome==IntroOutcome::quit) throw Cancel{};
                 FrontendArt art; std::string frontend_error;
                 screen.show({"Loading original frontend..."});
+                trace("art.load.before");
                 require(art.load(root,frontend_error,false),frontend_error);
+                trace("art.load.after");
                 FrontendGpuScene frontend_scene;
+                trace("scene.load.before");
                 require(frontend_scene.load(root,width,height,frontend_error),frontend_error);
+                trace("scene.load.after");
                 FrontendUiFrame frontend_ui;
                 // Match the launch power/scene policy while the menu is live.
                 // Restore it after renderer shutdown before handing race its
@@ -888,21 +917,34 @@ int main(int argc, char** argv) {
                 FrontendPresentationStats frontend_presentation_stats;
                 const auto open_frontend=[&] {
                     frontend_presentation_stats.reset();
+                    trace("power.before");
                     frontend_gpu_profile=std::make_unique<HandheldGpuProfile>(gpu_boost);
+                    trace("power.after");
+                    if(active_trace) {
+                        const auto clocks=read_clocks();char detail[256];
+                        std::snprintf(detail,sizeof detail,"read_only=1 configuration_ok=%u configuration=%lu cpu_ok=%u cpu_hz=%lu gpu_ok=%u gpu_hz=%lu emc_ok=%u emc_hz=%lu",
+                            (unsigned)clocks.configuration_ok,(unsigned long)clocks.configuration,(unsigned)clocks.cpu_bus_ok,(unsigned long)clocks.cpu_bus_hz,
+                            (unsigned)clocks.gpu_ok,(unsigned long)clocks.gpu_hz,(unsigned)clocks.emc_ok,(unsigned long)clocks.emc_hz);
+                        if(!active_trace->mark("clocks.actual",detail))throw std::runtime_error(active_trace->error());
+                    }
                     const bool menu_docked=appletGetOperationMode()==AppletOperationMode_Console;
                     const auto menu_height=deko_effective_scene_height(scene_height,menu_docked,true);
                     std::printf("MENU POLICY gpu_boost=%s requested_height=%lu effective_height=%lu (configuration, not measured clocks)\n",
                         gpu_boost?"on":"off",static_cast<unsigned long>(scene_height),static_cast<unsigned long>(menu_height));
-                    screen.close();
+                    trace("screen.close.before");screen.close();trace("screen.close.after");
                     frontend_renderer=std::make_unique<DekoRenderer>();
-                    require(frontend_renderer->open_frontend(frontend_scene.commands(),art.atlas(),frontend_error,menu_height,profile_frame),frontend_error);
+                    trace("renderer.open.before");
+                    require(frontend_renderer->open_frontend(frontend_scene.commands(),art.atlas(),frontend_error,menu_height,profile_frame,active_trace),frontend_error);
+                    trace("renderer.ready");
                 };
                 open_frontend();
                 FrontendClock frontend_clock;
                 FrontendAppletClockHook frontend_clock_hook(frontend_clock,frontend_presentation_stats);
                 FrontendMenu menu;
                 audio::FrontendMusic music;
+                trace("music.start.before");
                 if(!music.start(root,frontend_error)) menu.notice("MUSIC: "+frontend_error);
+                trace("music.start.after");
                 if (intro.outcome==IntroOutcome::error) {
                     std::printf("INTRO ERROR: %s\n",intro.error.c_str());
                     menu.notice(std::string("INTRO: ")+intro.error);
@@ -966,15 +1008,24 @@ int main(int argc, char** argv) {
                     const auto scene_begin=armGetSystemTick();
                     const auto elapsed_ns=frontend_clock.sample(armTicksToNs(scene_begin));
                     const auto original_ticks=frontend_clock.original_ticks();
+                    trace("frame.scene.before");
                     require(frontend_scene.frame(static_cast<float>(elapsed_ns/1000000000.0),original_ticks,frontend_error),frontend_error);
+                    trace("frame.scene.after");
                     const auto scene_done=armGetSystemTick();
                     art.advance(static_cast<float>(elapsed_ns/1000000000.0));
-                    art.record_ui(width,height,menu,frontend_ui);
+                    trace("frame.ui.before");art.record_ui(width,height,menu,frontend_ui);trace("frame.ui.after");
                     const auto ui_done=armGetSystemTick();
                     DekoUpdateTiming update_timing;
+                    trace("frame.update.before");
                     require(frontend_renderer->update(frontend_scene.commands(),frontend_error,&update_timing),frontend_error);
+                    trace("frame.update.after");
                     DekoPresentTiming present_timing;
                     require(frontend_renderer->present_frontend(frontend_ui,frontend_error,&present_timing),frontend_error);
+                    trace("frame.present.returned");
+                    if(active_trace) {
+                        if(!startup_journal.close())throw std::runtime_error(startup_journal.error());
+                        active_trace=nullptr;
+                    }
                     const auto presented=armGetSystemTick();
                     FrontendPresentationWindow presentation_window;
                     if(!profile_frame && frontend_presentation_stats.sample(armTicksToNs(presented),presentation_window)) {
@@ -992,7 +1043,12 @@ int main(int argc, char** argv) {
                 require(frontend_renderer->close(frontend_error),frontend_error);
             }
         } catch (const Cancel&) {
+            if(active_trace && !startup_journal.close()) {std::fprintf(stderr,"ERROR: %s\n",startup_journal.error());std::fflush(stderr);}
         } catch (const std::exception& e) {
+            if(active_trace && !startup_journal.mark("exception.caught",e.what())) {
+                std::fprintf(stderr,"ERROR: %s\n",startup_journal.error());std::fflush(stderr);
+            }
+            if(active_trace && !startup_journal.close()) {std::fprintf(stderr,"ERROR: %s\n",startup_journal.error());std::fflush(stderr);}
             std::printf("ERROR: %s\n",e.what()); std::fflush(stdout);
             auto lines = wrap_screen_text(e.what(),105); lines.insert(lines.begin(),"NFSU RACE STOPPED - NO SUCCESS RESULT");
             lines.push_back("Photograph this error. + exits.");

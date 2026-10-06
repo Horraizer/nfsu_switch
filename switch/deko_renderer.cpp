@@ -1,4 +1,5 @@
 #include "deko_renderer.h"
+#include "frontend_startup_trace.h"
 #include "nfsu/frontend.h"
 #include "nfsu/memory_budget.h"
 #include "nfsu/draw_execution.h"
@@ -59,8 +60,13 @@ struct DekoRenderer::Impl {
     dk::MemBlock buffers, images, staging, uniforms, static_uniforms, descriptors, readback;
     dk::MemBlock query_memory,frontend_query_memory;
     bool frontend_profile_passes=false;
+    StartupJournal* startup_journal=nullptr;
+    bool trace(const char* stage,std::string& error,const char* name="none",std::uint64_t bytes=0) {
+        return trace_frontend_startup(startup_journal,stage,error,name,bytes,gpu_bytes);
+    }
     std::array<bool,2> frontend_query_pending{};
     unsigned frontend_profile_samples=0;
+    std::size_t frontend_car_begin=0,frontend_car_end=0;
     dk::MemBlock hud_image_memory, hud_staging, hud_vertices, hud_indices;
     dk::MemBlock hud_uniforms, hud_descriptors;
     dk::Image hud_image;
@@ -155,6 +161,7 @@ struct DekoRenderer::Impl {
     bool block(std::uint64_t bytes, std::uint32_t flags, const char* name,
                dk::MemBlock& out, std::string& error) {
         bytes = align_up(bytes ? bytes : 1, DK_MEMBLOCK_ALIGNMENT);
+        if(!trace("allocation.before",error,name,bytes))return false;
         if (bytes > kMaxUploadResourceBytes || gpu_bytes + bytes > kGpuBudgetPlaceholder) {
             error = std::string(name) + ": GPU memory budget exceeded"; return false;
         }
@@ -167,6 +174,7 @@ struct DekoRenderer::Impl {
         out = memory;
         blocks.push_back(std::move(memory));
         gpu_bytes += bytes;
+        if(!trace("allocation.after",error,name,bytes))return false;
         return true;
     }
 
@@ -575,21 +583,29 @@ struct DekoRenderer::Impl {
             auto& color = colors[i];
             dk::MemBlock memory;
             if (!block(color_layout.getSize(), kImageFlags, "present image", memory, error)) return false;
+            if(!trace("image.initialize.before",error,"present image",color_layout.getSize()))return false;
             color.initialize(color_layout, memory, 0);
+            if(!trace("image.initialize.after",error,"present image",color_layout.getSize()))return false;
             if (scene_target.upscale) {
                 dk::MemBlock scene_memory;
                 if (!block(scene_layout.getSize(), kImageFlags, "scene image", scene_memory, error)) return false;
+                if(!trace("image.initialize.before",error,"scene image",scene_layout.getSize()))return false;
                 scene_colors[i].initialize(scene_layout, scene_memory, 0);
+                if(!trace("image.initialize.after",error,"scene image",scene_layout.getSize()))return false;
             }
         }
         for (std::size_t i = 0; i < (presentation ? 2U : 1U); ++i) {
             dk::MemBlock depth_memory;
             if (!block(depth_layout.getSize(), kImageFlags, "depth image", depth_memory, error)) return false;
+            if(!trace("image.initialize.before",error,"depth image",depth_layout.getSize()))return false;
             depths[i].initialize(depth_layout, depth_memory, 0);
+            if(!trace("image.initialize.after",error,"depth image",depth_layout.getSize()))return false;
         }
         if (presentation) {
             const std::array<const DkImage*, 2> targets{&colors[0], &colors[1]};
+            if(!trace("swapchain.before",error))return false;
             swapchain = dk::SwapchainMaker{device, nwindowGetDefault(), targets}.create();
+            if(!trace("swapchain.after",error))return false;
             if (!swapchain || !healthy(error)) {
                 if (error.empty()) error = "deko3d swapchain creation failed";
                 return false;
@@ -910,16 +926,22 @@ struct DekoRenderer::Impl {
     void consume_frontend_query(std::size_t slot) {
         if(!frontend_query_pending[slot])return;
         frontend_query_pending[slot]=false;
-        const auto* words=static_cast<const std::uint64_t*>(frontend_query_memory.getCpuAddr())+slot*20;
+        const auto* words=static_cast<const std::uint64_t*>(frontend_query_memory.getCpuAddr())+slot*24;
         double elapsed[9]{};
         for(unsigned i=0;i<9;++i) {
             const auto a=words[i*2+1],b=words[(i+1)*2+1];
             if(!a || b<a){std::printf("MENU GPU invalid timestamp sample\n");return;}
             elapsed[i]=dkTimestampToNs(b-a)/1000000.0;
         }
+        const auto road_end=words[21],car_end=words[23];
+        if(road_end<words[15] || car_end<road_end || words[17]<car_end) {
+            std::printf("MENU GPU invalid main span timestamp sample\n");return;
+        }
         if(++frontend_profile_samples<=3 || frontend_profile_samples%60==0)
-            std::printf("MENU GPU timestamp_ms cube0=%.3f cube1=%.3f cube2=%.3f cube3=%.3f cube4=%.3f cube5=%.3f floor=%.3f main_upscale=%.3f ui=%.3f (profile barriers enabled)\n",
-                elapsed[0],elapsed[1],elapsed[2],elapsed[3],elapsed[4],elapsed[5],elapsed[6],elapsed[7],elapsed[8]);
+            std::printf("MENU GPU timestamp_ms cube0=%.3f cube1=%.3f cube2=%.3f cube3=%.3f cube4=%.3f cube5=%.3f floor=%.3f main_upscale=%.3f ui=%.3f main_road=%.3f main_car=%.3f main_sprites_upscale=%.3f (profile barriers enabled)\n",
+                elapsed[0],elapsed[1],elapsed[2],elapsed[3],elapsed[4],elapsed[5],elapsed[6],elapsed[7],elapsed[8],
+                dkTimestampToNs(road_end-words[15])/1000000.0,dkTimestampToNs(car_end-road_end)/1000000.0,
+                dkTimestampToNs(words[17]-car_end)/1000000.0);
     }
 
     bool record_frame(const dk::Image& target, std::size_t slot,
@@ -959,7 +981,7 @@ struct DekoRenderer::Impl {
             if(!frontend || !frontend_profile_passes)return;
             if(point)cmd.barrier(DkBarrier_Fragments,0);
             cmd.reportCounter(point?DkCounter_Timestamp:DkCounter_TimestampPipelineTop,
-                frontend_query_memory.getGpuAddr()+slot*160+point*16);
+                frontend_query_memory.getGpuAddr()+slot*192+point*16);
         };
         mark_frontend(0);
         const auto base = uniforms.getGpuAddr() + uniform_allocation.offset + slot * uniform_stride;
@@ -1101,6 +1123,10 @@ struct DekoRenderer::Impl {
         const auto first_dynamic = package ? commands->static_track_draw_count() : 0;
         const RecordedDraw* previous_dynamic = nullptr;
         for (std::size_t i = first_dynamic; i < commands->draw_count(); ++i) {
+            if(frontend && frontend_profile_passes) {
+                if(i==frontend_car_begin)mark_frontend(10);
+                if(i==frontend_car_end)mark_frontend(11);
+            }
             const auto view = commands->draw_view(i);
             const auto index = i - first_dynamic;
             if(diagnose && previous_dynamic &&
@@ -1119,6 +1145,7 @@ struct DekoRenderer::Impl {
             previous_dynamic = &view.definition;
         }
         cmd.barrier(DkBarrier_Fragments, 0);
+        if(frontend && frontend_profile_passes && frontend_car_end==commands->draw_count())mark_frontend(11);
         if(!checkpoint(previous_dynamic?previous_dynamic->program->name:"main scene"))return false;
         if (scene_target.upscale) {
             // Complete rendering before the 2D engine reads this slot. The
@@ -1156,7 +1183,9 @@ struct DekoRenderer::Impl {
             return false;
         }
         auto stage = armGetSystemTick();
+        if(!trace("present.acquire.before",error))return false;
         const int slot = queue.acquireImage(swapchain);
+        if(!trace("present.acquire.after",error))return false;
         if (!healthy(error) || slot < 0 || slot >= 2) {
             if (error.empty()) error = "deko3d swapchain image acquisition failed";
             return false;
@@ -1164,7 +1193,9 @@ struct DekoRenderer::Impl {
         if (timing) timing->acquire_ms = elapsed_ms(stage);
         stage = armGetSystemTick();
         if (frame_in_flight[slot]) {
+            if(!trace("present.fence.before",error))return false;
             const auto result = frame_fences[slot].wait();
+            if(!trace("present.fence.after",error))return false;
             if (result != DkResult_Success) {
                 error = "deko3d frame fence wait failed: " + std::to_string(static_cast<unsigned>(result));
                 return false;
@@ -1181,27 +1212,36 @@ struct DekoRenderer::Impl {
             query_generations[slot] = profile_generation;
         }
         if(frontend && frontend_profile_passes)
-            std::memset(static_cast<unsigned char*>(frontend_query_memory.getCpuAddr())+slot*160,0,160);
+            std::memset(static_cast<unsigned char*>(frontend_query_memory.getCpuAddr())+slot*192,0,192);
         stage = armGetSystemTick();
         write_uniforms(*commands, slot);
         if (timing) timing->uniform_write_ms = elapsed_ms(stage);
         stage = armGetSystemTick();
+        if(!trace("present.record.before",error))return false;
         if (!record_frame(colors[slot],slot,hud_frame,error,frontend)) return false;
+        if(!trace("present.record.after",error))return false;
         if (timing) timing->record_ms = elapsed_ms(stage);
         stage = armGetSystemTick();
         const auto list = cmd.finishList();
         if (!healthy(error)) return false;
         if (timing) timing->finish_ms = elapsed_ms(stage);
         stage = armGetSystemTick();
+        if(!trace("present.submit.before",error))return false;
         queue.submitCommands(list);
+        if(!trace("present.submit.after",error))return false;
         queue.signalFence(frame_fences[slot]);
+        if(!trace("present.queue.before",error))return false;
         queue.presentImage(swapchain, slot);
+        if(!trace("present.queue.after",error))return false;
+        if(!trace("present.flush.before",error))return false;
         queue.flush();
+        if(!trace("present.flush.after",error))return false;
         frame_in_flight[slot] = true;
         query_pending[slot] = profile_enabled;
         frontend_query_pending[slot]=frontend && frontend_profile_passes;
         ++fence_number;
         if (timing) timing->submit_ms = elapsed_ms(stage);
+        startup_journal=nullptr;
         return healthy(error);
     }
 
@@ -1294,10 +1334,32 @@ bool DekoRenderer::open(const RecordedCommands& commands, std::string& error, bo
                              opaque_first, sky_with_opaque, scene_height, hud_atlas); }
     catch (const std::bad_alloc&) { error = "not enough memory for deko3d renderer"; return false; }
 }
-bool DekoRenderer::open_frontend(const RecordedCommands& commands,const FrontendUiAtlas& atlas,std::string& error,std::uint32_t scene_height,bool profile_passes) {
+bool DekoRenderer::open_frontend(const RecordedCommands& commands,const FrontendUiAtlas& atlas,std::string& error,std::uint32_t scene_height,bool profile_passes,StartupJournal* startup_journal) {
+    impl_->startup_journal=startup_journal;
     if(!open(commands,error,true,0,false,true,false,scene_height))return false;
     impl_->frontend_profile_passes=profile_passes;
-    if(profile_passes && !impl_->block(320,DkMemBlockFlags_CpuUncached|DkMemBlockFlags_GpuUncached,
+    if(profile_passes) {
+        auto& begin=impl_->frontend_car_begin;auto& end=impl_->frontend_car_end;
+        begin=0;
+        while(begin<commands.draw_count() && std::strcmp(commands.draw_view(begin).definition.program->name,"frontend_car_textured"))++begin;
+        end=begin;
+        while(end<commands.draw_count() && !std::strcmp(commands.draw_view(end).definition.program->name,"frontend_car_textured"))++end;
+        if(begin==end) {error="frontend profile car span absent";return false;}
+        for(std::size_t i=end;i<commands.draw_count();++i)
+            if(!std::strcmp(commands.draw_view(i).definition.program->name,"frontend_car_textured")) {error="frontend profile car span not contiguous";return false;}
+        for(std::size_t first=0;first<commands.draw_count();) {
+            const auto& draw=commands.draw_view(first).definition;
+            std::size_t last=first,triangles=0,blended=0,depth_write=0;
+            while(last<commands.draw_count() && commands.draw_view(last).definition.program==draw.program) {
+                const auto& current=commands.draw_view(last++).definition;
+                triangles+=current.index_count/3;blended+=current.pipeline.blend;depth_write+=current.pipeline.depth_write;
+            }
+            std::printf("MENU GPU main span first=%zu end=%zu program=%s draws=%zu triangles=%zu blended=%zu depth_write=%zu\n",
+                first,last,draw.program->name,last-first,triangles,blended,depth_write);first=last;
+        }
+        std::fflush(stdout);
+    }
+    if(profile_passes && !impl_->block(384,DkMemBlockFlags_CpuUncached|DkMemBlockFlags_GpuUncached,
         "frontend pass timestamp reports",impl_->frontend_query_memory,error)) {
         const auto failure=error;std::string cleanup;close(cleanup);error=failure;return false;
     }

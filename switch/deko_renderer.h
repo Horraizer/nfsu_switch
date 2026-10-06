@@ -10,6 +10,7 @@
 namespace nfsu {
 struct FrontendUiAtlas;
 struct FrontendUiFrame;
+class StartupJournal;
 struct DekoPresentTiming {
     double acquire_ms = 0;
     double fence_wait_ms = 0;
@@ -57,7 +58,7 @@ public:
               std::uint32_t scene_height = 0,
               const RaceHudAtlas* hud_atlas = nullptr);
     bool open_frontend(const RecordedCommands& commands,const FrontendUiAtlas& atlas,std::string& error,
-                       std::uint32_t scene_height=0,bool profile_passes=false);
+                       std::uint32_t scene_height=0,bool profile_passes=false,StartupJournal* startup_journal=nullptr);
     bool present_frontend(const FrontendUiFrame& frame,std::string& error,DekoPresentTiming* timing=nullptr);
     // Mode changes replace the swapchain and its scene/depth images after
     // waiting for GPU work. Resident assets are uploaded again on this rare path.
