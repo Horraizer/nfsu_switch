@@ -352,7 +352,8 @@ namespace {
 bool draw_frontend_road_sprites(Frame& target,const RenderOptions& options,
     const CameraFrame& camera,const std::vector<RecordedDraw>& draws,unsigned view,
     const PreparedCarScene& sprites,std::string& error) {
-    RenderStats stats;Rasterizer raster(target,options,RenderLimits{},stats);
+    const RenderLimits limits;
+    RenderStats stats;Rasterizer raster(target,options,limits,stats);
     for(const auto& draw:draws)if(draw.frontend_sprite_view==view && draw.material.alpha[0]>0) {
         const unsigned descriptor=draw.frontend_sprite_kind==1?1:draw.frontend_sprite_kind==2?2:0;
         const auto& source=sprites.draws.at(descriptor);

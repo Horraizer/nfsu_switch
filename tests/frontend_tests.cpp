@@ -610,6 +610,36 @@ int main(int argc,char** argv) {
             check(std::all_of(rolling_copies.begin(),rolling_copies.end(),[](bool b){return b;}) &&
                 std::all_of(stationary_brakes.begin(),stationary_brakes.end(),[](bool b){return b;}),
                 "native rolling witness covers all four wheels and all four stationary brakes");
+            // Render the actual moving scene at the same phases as the menu
+            // diagnostic. This reaches road/car sprites in cube, floor and
+            // primary views, including their borrowed Rasterizer limits.
+            {
+                FrontendGpuScene reference_scene;
+                if(!reference_scene.load(root,1280,720,error))
+                    throw std::runtime_error("reference scene load: "+error);
+                std::vector<unsigned char> first_frame,reference_pixels;
+                for(unsigned frame=1;frame<=420;++frame) {
+                    if(!reference_scene.frame(1.F/60,frame*4000ULL/60,error))
+                        throw std::runtime_error("reference scene advance: "+error);
+                    if(frame!=60 && frame!=420)continue;
+                    if(!reference_scene.render_reference(reference_pixels,error))
+                        throw std::runtime_error("moving reference render: "+error);
+                    check(reference_pixels.size()==1280ULL*720*4,
+                        "moving reference scene writes a complete RGBA frame");
+                    bool visible=false;
+                    for(std::size_t pixel=0;pixel<reference_pixels.size();pixel+=4) {
+                        check(reference_pixels[pixel+3]==255,
+                            "moving reference scene writes opaque composed pixels");
+                        visible|=reference_pixels[pixel]!=0 || reference_pixels[pixel+1]!=0 ||
+                            reference_pixels[pixel+2]!=0;
+                    }
+                    check(visible,"moving reference scene includes visible authored geometry");
+                    if(frame==60)first_frame=reference_pixels;
+                    else check(reference_pixels!=first_frame,
+                        "advanced reference scene changes its rendered pixels");
+                }
+                std::cout << "PASS: moving menu reference renders at frames 60 and 420\n";
+            }
             audio::FrontendSfx sfx;
             check(sfx.load(root,error),error.c_str());
             std::vector<std::int16_t> unchanged(1024*2,1234);
