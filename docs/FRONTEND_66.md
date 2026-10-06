@@ -742,7 +742,11 @@ by nfsu_frontend_tests against FrontendChyron.
 The menu now starts an announcement on metadata change, preserves its clock
 across repeated per-frame metadata, and explicitly announces a music restart
 on menu reentry. The original late-update Hide-before-close ordering and
-tick subtraction wrap are covered. This WIP connects the package lifetime;
-authored GLOBALB Chyron Show/Hide child animation is still pending, followed
-by rim shading and measured full-effects menu performance. It is not a final
-menu acceptance candidate.
+tick subtraction wrap are covered. The authenticated GLOBALB Chyron package
+now supplies its own objects, hierarchy, font/resource bindings and nonloop
+Show/Hide keys. The same oracle executes genuine4FC100 with supplied phases
+and actual child FI/Kd bytes, including zero-duration FI position tracks.
+The source regression checks original delayed text fade, Hide fade, closure
+and same-song reentry. Main-menu first-advance Init does not replace the
+separately controlled announcement state. Rim shading and measured full-effects
+menu performance remain pending; this is not a final acceptance candidate.

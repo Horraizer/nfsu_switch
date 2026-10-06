@@ -22,3 +22,44 @@ for tick,hide_started in [(20799,0),(20800,0),(20801,0),(24799,1),(24800,1),(248
  assert m.uc.mem_read(obj+0x45,1)[0]==(0 if hide_started and tick>=24800 else 1)
  print(tick,'hide_started',hide_started,'flags',bytes(m.uc.mem_read(obj+0x44,2)).hex(),'calls',calls)
 print('Native callback executed; Hide-selection and package-close calls are explicit boundary stubs, not whole retail startup')
+
+# Execute genuine nonloop arithmetic using authored Chyron child FI/Kd bytes.
+# Script phase is supplied; no native package dispatch is claimed here.
+import struct
+f=(root/'Global/GLOBALB.BUN').read_bytes()
+assert hashlib.sha256(f).hexdigest()=='39df38fac2be7ca0f0d0a92e0113caaeda5b1c60e14436c612b3d0874afc8db9'
+for objpos in (0x2392d0,0x239d50,0x23aa6c):
+ n=struct.unpack_from('<I',f,objpos+12)[0]
+ outer=struct.unpack_from('<I',f,objpos+4)[0]
+ data=f[objpos+16+n:objpos+8+outer];q=0
+ while q+8<=len(data):
+  length=struct.unpack_from('<I',data,q+4)[0];chunk=data[q+8:q+8+length];q+=8+length
+  if data[q-length-8:q-length-4]!=b'Scrp':continue
+  fields=[];r=0
+  while r<len(chunk):
+   size=struct.unpack_from('<H',chunk,r+2)[0];fields.append((chunk[r:r+2],chunk[r+4:r+4+size]));r+=4+size
+  name=next(v.split(bytes(1))[0] for t,v in fields if t==b'Sn')
+  if name not in (b'Show',b'Hide'):continue
+  fi=None;target=0
+  for tag,value in fields:
+   if tag==b'FI':fi=value
+   if tag==b'To':target=struct.unpack('<I',value)[0]
+   if tag!=b'Kd':continue
+   stride=16 if fi[0]==4 else 20
+   for tick in (0,40,80,480,600,840,870,900):
+    m=Machine(im);frame=0x1001000;out=0x1002000
+    m.uc.mem_write(frame,fi);m.uc.mem_write(frame+0x18,value[4:stride])
+    keys=[value[i:i+stride] for i in range(stride,len(value),stride)]
+    nodes=[0x1003000+i*64 for i in range(len(keys))]
+    m.write(frame+0x30,nodes[0] if nodes else 0);m.write(frame+0x34,nodes[-1] if nodes else 0)
+    for i,node in enumerate(nodes):
+     m.write(node+4,nodes[i+1] if i+1<len(nodes) else 0);m.write(node+8,nodes[i-1] if i else 0);m.uc.mem_write(node+12,keys[i])
+    m.run(0x4fc100,(frame,tick,out))
+    result=struct.unpack('<4i' if fi[0]==6 else '<3f',m.uc.mem_read(out,16 if fi[0]==6 else 12))
+    if objpos==0x2392d0 and target==0:
+     expected={0:0,40:0,80:0,480:0,600:0,840:0,870:110,900:220} if name==b'Show' else {0:255,40:128,80:0,480:0,600:0,840:0,870:0,900:0}
+     assert result==(242,233,207,expected[tick])
+    if objpos==0x23aa6c and name==b'Show' and target==7 and tick==900:
+     assert fi[4:]==bytes(4) and result==(182.,8.,30.)
+    print('CHYRON_KEY',hex(objpos),name.decode(),target,fi.hex(),tick,result)
+print('PASS genuine Chyron child Show/Hide text keys and zero-FI-duration position at supplied phases')

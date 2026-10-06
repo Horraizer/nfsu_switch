@@ -782,6 +782,30 @@ int main(int argc,char** argv) {
                 check(title_present==(expected!=0) && title_alpha==expected,
                       "native title Init zero, midpoint and endpoint alpha survive UI draw");
             }
+            // Original Chyron text keys: genuine4FC100 at840/870/900 returns
+            // alpha0/110/220, Hide0/40/80 returns255/128/0. Parent255
+            // modulation then native half-byte packing gives0/110/218 and
+            // 254/128/0. The controller clocks are separately witnessed.
+            FrontendArt chyron_art;FrontendMenu chyron_menu;
+            check(chyron_art.load(root,error,false),error.c_str());
+            const auto chyron_alpha=[&]() {
+                chyron_art.record_ui(1280,720,chyron_menu,ui);
+                unsigned alpha=0;
+                for(const auto& v:ui.vertices)if(v.py>560 &&
+                    v.color[0]==206 && v.color[1]==232 && v.color[2]==240)
+                    alpha=std::max(alpha,unsigned(v.color[3]));
+                return alpha;
+            };
+            check(chyron_alpha()==0,"Chyron Show starts with invisible original text");
+            chyron_art.advance(840.25F/1200);check(chyron_alpha()==0,"Chyron Show original delayed text key");
+            chyron_art.advance(30.F/1200);check(chyron_alpha()==110,"Chyron Show native text midpoint");
+            chyron_art.advance(30.F/1200);check(chyron_alpha()==218,"Chyron Show native text endpoint");
+            chyron_art.advance(4.451F);check(chyron_alpha()==254,"native controller starts Chyron Hide with authored alpha");
+            chyron_art.advance(40.F/1200);check(chyron_alpha()==128,"Chyron Hide native text midpoint");
+            chyron_art.advance(40.F/1200);check(chyron_alpha()==0,"Chyron Hide original zero-alpha endpoint");
+            chyron_art.advance(1.F);check(chyron_alpha()==0,"closed Chyron removes metadata glyphs");
+            chyron_menu.announce_song();check(chyron_alpha()==0,"same-song reentry restarts Show invisible key");
+            chyron_art.advance(.75F);check(chyron_alpha()==218,"same-song reentry follows authored Show keys again");
             FrontendArt description_art;FrontendMenu description_menu;
             check(description_art.load(root,error,false),error.c_str());
             const auto description_alpha=[&]() {

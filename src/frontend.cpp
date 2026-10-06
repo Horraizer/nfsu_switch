@@ -33,7 +33,7 @@ struct UiKey {int tick=0;std::array<double,4> value{};};
 struct UiLoop {unsigned kind=0,target=0,duration=0;std::array<double,4> base{};std::vector<UiKey> keys;};
 struct UiState {std::string name;std::vector<UiLoop> tracks;std::vector<std::array<unsigned,3>> events;};
 struct Object {
-    unsigned id=0,parent=0,type=0,resource=0,justification=0;
+    unsigned id=0,parent=0,type=0,resource=0,justification=0;bool chyron=false;
     std::string name,text;
     std::vector<UiLoop> loops;
     std::vector<UiState> states;
@@ -103,7 +103,7 @@ void load_ui_states(const unsigned char* data,std::size_t length,Object& object)
     for(std::size_t at=0;at+8<=length;) {
         const unsigned n=dword(data+at+4);if(n>length-at-8)throw std::runtime_error("frontend state chunk truncated");
         if(!std::memcmp(data+at,"Scrp",4)) {
-            UiState state;UiLoop track;bool nonloop=false;
+            UiState state;UiLoop track;bool nonloop=false;unsigned state_duration=0;
             for(std::size_t field=at+8;field<at+8+n;) {
                 if(at+8+n-field<4)throw std::runtime_error("frontend state field truncated");
                 const auto* tag=data+field;const unsigned size=word(tag+2);const auto* v=tag+4;
@@ -111,10 +111,11 @@ void load_ui_states(const unsigned char* data,std::size_t length,Object& object)
                 if(!std::memcmp(tag,"Sn",2))state.name=ascii(v,size);
                 const bool selection=state.name=="HighLight" || state.name=="UnHighLight";
                 const bool text_entry=object.type==2 && (state.name=="Init" || state.name=="FadeIn");
-                const bool retained=selection || text_entry;
-                if(!std::memcmp(tag,"Sh",2) && size==16)nonloop=dword(v+8)==0;
+                const bool retained=selection || text_entry || (object.chyron && (state.name=="Init" || state.name=="Show" || state.name=="Hide"));
+                if(!std::memcmp(tag,"Sh",2) && size==16){nonloop=dword(v+8)==0;state_duration=dword(v+4);}
                 if(!std::memcmp(tag,"FI",2) && size==8) {
                     track=UiLoop{};track.kind=v[0];track.duration=dword(v+4)&0xffffff;
+                    if(object.chyron && !track.duration)track.duration=state_duration;
                     if(retained && (!nonloop || v[1]!=(track.kind==4?12:16) || v[2]!=1 || v[3]!=0))
                         throw std::runtime_error("unsupported native selection frame");
                 }
@@ -144,10 +145,48 @@ void load_ui_states(const unsigned char* data,std::size_t length,Object& object)
                 field+=size+4;
             }
             if(state.name=="HighLight" || state.name=="UnHighLight" ||
-               (object.type==2 && (state.name=="Init" || state.name=="FadeIn")))object.states.push_back(std::move(state));
+               (object.type==2 && (state.name=="Init" || state.name=="FadeIn")) ||
+               (object.chyron && (state.name=="Init" || state.name=="Show" || state.name=="Hide")))object.states.push_back(std::move(state));
         }
         at+=n+8;
     }
+}
+Object decode_ui_object(const std::vector<unsigned char>& fng,std::size_t pos,bool chyron=false) {
+            const auto n=dword(fng.data()+pos+12);
+            if(std::memcmp(fng.data()+pos+8,"ObjD",4) || n>fng.size()-pos-16) throw std::runtime_error("invalid FNG object");
+            Object o;o.chyron=chyron;std::size_t at=pos+16,end=at+n;
+            while(at<end) {
+                if(end-at<4) throw std::runtime_error("truncated FNG field");
+                const auto* tag=fng.data()+at;const auto size=word(tag+2);const auto* v=tag+4;
+                if(size>end-at-4) throw std::runtime_error("FNG field outside object");
+                if(!std::memcmp(tag,"Ot",2) && size==4) o.type=dword(v);
+                else if(!std::memcmp(tag,"On",2)) o.name=ascii(v,size);
+                else if(!std::memcmp(tag,"OP",2) && size==16) {o.id=dword(v);o.resource=word(v+12);}
+                else if(!std::memcmp(tag,"PA",2) && size==4) o.parent=dword(v);
+                else if(!std::memcmp(tag,"Sj",2) && size==4) o.justification=dword(v);
+                else if(!std::memcmp(tag,"St",2)) {for(unsigned i=0;i+1<size && word(v+i);i+=2) {if(word(v+i)>126) throw std::runtime_error("non-ASCII menu label");o.text+=char(word(v+i));}}
+                else if(!std::memcmp(tag,"SA",2) && size>=64) {
+                    for(unsigned i=0;i<4;++i) o.color[i]=dword(v+i*4);
+                    o.x=real(v+28);o.y=real(v+32);o.z=real(v+36);o.qz=real(v+48);o.qw=real(v+52);
+                    o.w=real(v+56);o.h=real(v+60);
+                    if(size>=84) for(unsigned i=0;i<4;++i) o.uv[i]=real(v+68+i*4);
+                    if(o.type==9) {
+                        if(size<148) throw std::runtime_error("original colored backing corners absent");
+                        for(unsigned corner=0;corner<4;++corner) for(unsigned c=0;c<4;++c)
+                            o.corner_colors[corner][c]=dword(v+84+corner*16+c*4);
+                    }
+                }
+                at+=4+size;
+            }
+            if(o.id==0xa17c) {
+                // MU_Main_PC MenuScreen Init Kd origin, final delta zero.
+                o.x=-5.6F;o.y=-111.155F;o.z=118.75F;
+            }
+            const std::size_t outer=dword(fng.data()+pos+4);
+            if(outer<n+8 || outer>fng.size()-pos-8)throw std::runtime_error("frontend object script package invalid");
+            load_ui_loops(fng.data()+pos+16+n,outer-n-8,o);
+            load_ui_states(fng.data()+pos+16+n,outer-n-8,o);
+    return o;
 }
 struct Transform {float a=1,b=0,c=0,d=1,x=0,y=0,z=0;};
 Transform combine(const Transform& p,const Object& o,bool scale) {
@@ -294,7 +333,7 @@ struct FrontendArt::Impl {
 
     Object sample(const Object& original) const {
         Object o=original;
-        if(!temporal)return o;
+        if(!temporal && !o.chyron)return o;
         for(const auto& loop:o.loops) {
             const unsigned tick=unsigned(ui_ticks%loop.duration);
             auto next=std::lower_bound(loop.keys.begin(),loop.keys.end(),int(tick),
@@ -370,7 +409,7 @@ struct FrontendArt::Impl {
         return combine(parent,current,current.type==2 || current.type==5);
     }
     std::array<unsigned,4> parent_color(const Object& o,std::array<unsigned,4> color,unsigned depth=0) const {
-        if(!temporal || !o.parent)return color;
+        if((!temporal && !o.chyron) || !o.parent)return color;
         if(depth>32)throw std::runtime_error("frontend parent color cycle");
         const auto it=std::find_if(objects.begin(),objects.end(),[&](const Object& p){return p.id==o.parent;});
         if(it==objects.end())throw std::runtime_error("frontend color parent absent");
@@ -437,44 +476,20 @@ bool FrontendArt::load(const std::filesystem::path& root,std::string& error,bool
         for(std::size_t pos=0;pos+16<=fng.size();++pos) {
             if(std::memcmp(fng.data()+pos,"FOb\xEA",4)) continue;
             const auto n=dword(fng.data()+pos+12);
-            if(std::memcmp(fng.data()+pos+8,"ObjD",4) || n>fng.size()-pos-16) throw std::runtime_error("invalid FNG object");
-            Object o;std::size_t at=pos+16,end=at+n;
-            while(at<end) {
-                if(end-at<4) throw std::runtime_error("truncated FNG field");
-                const auto* tag=fng.data()+at;const auto size=word(tag+2);const auto* v=tag+4;
-                if(size>end-at-4) throw std::runtime_error("FNG field outside object");
-                if(!std::memcmp(tag,"Ot",2) && size==4) o.type=dword(v);
-                else if(!std::memcmp(tag,"On",2)) o.name=ascii(v,size);
-                else if(!std::memcmp(tag,"OP",2) && size==16) {o.id=dword(v);o.resource=word(v+12);}
-                else if(!std::memcmp(tag,"PA",2) && size==4) o.parent=dword(v);
-                else if(!std::memcmp(tag,"Sj",2) && size==4) o.justification=dword(v);
-                else if(!std::memcmp(tag,"St",2)) {for(unsigned i=0;i+1<size && word(v+i);i+=2) {if(word(v+i)>126) throw std::runtime_error("non-ASCII menu label");o.text+=char(word(v+i));}}
-                else if(!std::memcmp(tag,"SA",2) && size>=64) {
-                    for(unsigned i=0;i<4;++i) o.color[i]=dword(v+i*4);
-                    o.x=real(v+28);o.y=real(v+32);o.z=real(v+36);o.qz=real(v+48);o.qw=real(v+52);
-                    o.w=real(v+56);o.h=real(v+60);
-                    if(size>=84) for(unsigned i=0;i<4;++i) o.uv[i]=real(v+68+i*4);
-                    if(o.type==9) {
-                        if(size<148) throw std::runtime_error("original colored backing corners absent");
-                        for(unsigned corner=0;corner<4;++corner) for(unsigned c=0;c<4;++c)
-                            o.corner_colors[corner][c]=dword(v+84+corner*16+c*4);
-                    }
-                }
-                at+=4+size;
-            }
-            if(o.id==0xa17c) {
-                // MU_Main_PC MenuScreen Init Kd origin, final delta zero.
-                o.x=-5.6F;o.y=-111.155F;o.z=118.75F;
-            }
-            const std::size_t outer=dword(fng.data()+pos+4);
-            if(outer<n+8 || outer>fng.size()-pos-8)throw std::runtime_error("frontend object script package invalid");
-            load_ui_loops(fng.data()+pos+16+n,outer-n-8,o);
-            load_ui_states(fng.data()+pos+16+n,outer-n-8,o);
+            Object o=decode_ui_object(fng,pos);
             out.objects.push_back(std::move(o));pos+=15+n;
         }
         if(out.objects.size()!=161) throw std::runtime_error("main menu object count changed");
         read_image("Global/GLOBALB.BUN",global);
         if(sha256_hex(sha256(global.data(),global.size()))!="39DF38FAC2BE7CA0F0D0A92E0113CAAEDA5B1C60E14436C612B3D0874AFC8DB9") throw std::runtime_error("original global frontend identity mismatch");
+        // Authenticated uncompressed Chyron.fng object package in GLOBALB.
+        // Its resource list binds font0, EA logo1, White16x16=2,45Corner=3.
+        for(std::size_t pos=0x23912c;pos<0x23b640;) {
+            if(pos+16>global.size() || std::memcmp(global.data()+pos,"FOb\xEA",4))
+                throw std::runtime_error("original Chyron object package absent");
+            const auto outer=dword(global.data()+pos+4);
+            out.objects.push_back(decode_ui_object(global,pos,true));pos+=8+outer;
+        }
         read_image("Global/GLOBALA.BUN",font_global);
         read_image("Languages/English.bin",language);read_image("Languages/LanguageTextures.bin",language_textures);
         if(sha256_hex(sha256(font_global.data(),font_global.size()))!="1502D9305F37E51503D4C4E57CAE32890059497AC450FEEE6D72B50323568953") throw std::runtime_error("original global font identity mismatch");
@@ -541,7 +556,7 @@ void FrontendArt::advance(float seconds) {
     if(!std::isfinite(seconds) || seconds<0 || seconds>60)throw std::runtime_error("invalid frontend UI time step");
     // 4F5CF0 multiplies original frame seconds73AD38 by1200 then truncates.
     if(!impl_->temporal) {
-        for(const auto& object:impl_->objects)if(object.type==2)
+        for(const auto& object:impl_->objects)if(object.type==2 && !object.chyron)
             impl_->start_named_state(object,"Init",0);
     }
     impl_->temporal=true;impl_->ui_ticks+=static_cast<unsigned>(double(seconds)*1200);
@@ -556,20 +571,34 @@ void FrontendArt::record_ui(unsigned width,unsigned height,const FrontendMenu& m
 void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu) const {
     const auto& p=*this;
     p.select(menu.selected());
+    const auto song_tick=static_cast<std::uint32_t>(p.chyron_ticks);
+    if(p.song_revision!=menu.song_revision()) {
+        p.chyron.show(song_tick);p.song_revision=menu.song_revision();
+        for(const auto& object:p.objects)if(object.chyron) {
+            p.start_named_state(object,"Init",p.ui_ticks);
+            p.start_named_state(object,"Show",p.ui_ticks);
+        }
+    }
+    if(p.chyron.update(song_tick)==FrontendChyron::Action::hide)
+        for(const auto& object:p.objects)if(object.chyron)p.start_named_state(object,"Hide",p.ui_ticks);
+
     std::vector<std::size_t> order(p.objects.size());for(std::size_t i=0;i<order.size();++i) order[i]=i;
     std::stable_sort(order.begin(),order.end(),[&](std::size_t a,std::size_t b) {return p.transform(p.objects[a]).z>p.transform(p.objects[b]).z;});
     const unsigned hashes[]={0xe2a5c626,0x1f3bdb88,0x1abedeb1,0,bin_hash("ARROW3"),bin_hash("CIRCLE"),0x868a1fcf,bin_hash("NFSU_LOGO")};
     for(auto i:order) {
-        const auto o=p.sample(p.objects[i]);if(!p.visible(o,menu.selected()) || o.type==5 || o.name=="NFSU_logo") continue;
+        const auto o=p.sample(p.objects[i]);if((o.chyron && !p.chyron.visible()) || !p.visible(o,menu.selected()) || o.type==5 || o.name=="NFSU_logo") continue;
         auto color=o.color;
         // Original steady states from UnHighlight/Highlight, after Init fades.
-        if(!p.temporal && !color[3] && (o.type==2 || o.type==5)) color[3]=255;
+        if(!p.temporal && !o.chyron && !color[3] && (o.type==2 || o.type==5)) color[3]=255;
         if(!color[3]) continue;
         const auto m=p.transform(p.objects[i]);
-        if((o.type==1 || o.type==9) && m.y>150) continue;
+        if(!o.chyron && (o.type==1 || o.type==9) && m.y>150) continue;
         if(o.type==2) {
-            if(o.resource!=3 && o.resource!=8) continue;
+            if(o.chyron?o.resource!=0:(o.resource!=3 && o.resource!=8)) continue;
             std::string label=o.text;
+            if(o.chyron && o.name=="ArtistName")label=menu.artist();
+            else if(o.chyron && o.name=="TrackTitle")label=menu.title();
+            else if(o.chyron && o.name=="AlbumTitle")label=menu.album();
             const bool underground=o.name=="UndergroundMode",free=o.name=="QuickRace";
             if(free) label="FREE DRIVING";
             if(o.name=="Customize") label="CUSTOMIZE RIDE";
@@ -578,9 +607,10 @@ void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu) const {
             else if(o.name=="STATISTICS" || o.name=="Options" || o.name=="Customize" || o.name=="Online")
                 color={{110,110,110,p.temporal?(color[3]*180+127)/255:180}};
             color=p.parent_color(o,color);
-            p.text(image,o,m,label,color,o.resource);
-        } else if((o.type==1 || o.type==9) && o.resource<8) {
-            const auto tex=p.textures.find(hashes[o.resource]);if(tex==p.textures.end()) continue;
+            p.text(image,o,m,label,color,o.chyron?3:o.resource);
+        } else if((o.type==1 || o.type==9) && o.resource<(o.chyron?4U:8U)) {
+            const unsigned chyron_hashes[]={0,0x5ed3f261,0xe2a5c626,0x1abedeb1};
+            const auto tex=p.textures.find(o.chyron?chyron_hashes[o.resource]:hashes[o.resource]);if(tex==p.textures.end()) continue;
             color=p.parent_color(o,color);
             auto corners=o.corner_colors;
             if(o.type==9)for(auto& corner:corners)corner=p.parent_color(o,corner);
@@ -593,28 +623,7 @@ void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu) const {
         if(tex!=p.textures.end()) quad(image,tex->second,p.transform(o),
             -o.w/2,-o.h/2,o.w,o.h,o.uv,o.color);
     }
-    const auto song_tick=static_cast<std::uint32_t>(p.chyron_ticks);
-    if(p.song_revision!=menu.song_revision()) {
-        p.chyron.show(song_tick);p.song_revision=menu.song_revision();
-    }
-    p.chyron.update(song_tick);
     Object help;help.justification=0;
-    if(p.chyron.visible()) {
-    // Chyron.fng's original EA logo, 276x58 backing and proportional font.
-    // Anchor its authored 640x480 banner inside the Switch safe area; no
-    // desktop or Steam overlay is part of the game UI.
-    const auto white=p.textures.find(0xe2a5c626U);
-    const auto logo=p.textures.find(0x5ed3f261U);
-    Transform bar;bar.x=-138;bar.y=171;
-    if(white!=p.textures.end()) quad(image,white->second,bar,-138,-29,276,58,{{0,0,1,1}},{{192,128,0,230}});
-    Transform badge;badge.x=-269;badge.y=171;
-    if(logo!=p.textures.end()) quad(image,logo->second,badge,-31,-31,62,62,{{0,0,1,1}},{{255,255,255,255}});
-    Transform banner;banner.x=-228;banner.y=148;banner.a=.7F;banner.d=.7F;
-    p.text(image,help,banner,menu.artist(),{{242,233,207,255}},3);
-    banner.y+=15;banner.a=.6F;banner.d=.6F;
-    p.text(image,help,banner,"\""+menu.title()+"\"",{{242,233,207,255}},3);
-    banner.y+=14;p.text(image,help,banner,menu.album(),{{242,233,207,255}},3);
-    }
     Transform footer;footer.x=-266;footer.y=219;
     p.text(image,help,footer,"A: Enter   B: Exit    Other modes locked",{{242,233,207,255}},8);
     if(!menu.notice().empty()) {
