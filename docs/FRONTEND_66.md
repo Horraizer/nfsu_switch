@@ -637,3 +637,15 @@ change scheduling: a successful diagnostic can locate an ordering defect,
 but cannot by itself validate the original unsplit frame. The
 nfsu_switch_frontend_pass_diagnostics source contract has negative controls
 for missing waits, unbounded diagnostics and omitted floor isolation.
+
+At 80b9eef hardware fails during cube face0 before any face completes;
+floor/main/car/UI are not reached. The next diagnostic uses the installed
+deko3d validating library, selected only for the race application by
+-DNFSU_SWITCH_DEKO_DEBUG=ON. The default remains the ordinary library.
+The existing DeviceMaker error callback writes validating SDK context and
+message immediately to stderr without allocating or touching UI. Verify
+the actual race link uses deko3dd; the option alone is not evidence.
+Existing pass fences and all authored effects remain. Both basic textured
+TGSI stages retain sampler1 inside conditional UIF; this does not prove
+native hoisting or make an unbound slot the confirmed fault. No texture
+substitution is made before obtaining the validating SDK evidence.

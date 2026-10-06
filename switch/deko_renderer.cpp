@@ -17,6 +17,9 @@
 #include <new>
 #include <utility>
 #include <vector>
+#if defined(NFSU_DEKO_DEBUG_DIAGNOSTICS)
+#include <unistd.h>
+#endif
 
 namespace nfsu {
 namespace {
@@ -126,6 +129,12 @@ struct DekoRenderer::Impl {
         // No allocation, exception or UI operation from a driver callback.
         std::snprintf(self.diagnostic, sizeof self.diagnostic, "deko3d %s (%u): %s",
             context ? context : "unknown", static_cast<unsigned>(result), message ? message : "failure");
+#if defined(NFSU_DEKO_DEBUG_DIAGNOSTICS)
+        // The validating SDK can report before the outer healthy() check.
+        // Write immediately without allocating or touching presentation UI.
+        ::write(STDERR_FILENO,self.diagnostic,std::strlen(self.diagnostic));
+        ::write(STDERR_FILENO,"\n",1);
+#endif
     }
 
     bool healthy(std::string& error) {
