@@ -922,7 +922,11 @@ struct DekoRenderer::Impl {
         // Diagnose the first live FE frame without dropping any pass. Waiting
         // completes each command-memory use before begin() reuses that slot.
         // Later frames keep the ordinary asynchronous presentation path.
+        #if defined(NFSU_FRONTEND_PREFLIGHT)
         const bool diagnose=frontend && frontend_first_frame;
+#else
+        constexpr bool diagnose=false;
+#endif
         const auto checkpoint=[&](const char* pass) {
             if(!diagnose)return true;
             std::printf("frontend GPU first frame: submit %s\n",pass);

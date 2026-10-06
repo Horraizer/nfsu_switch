@@ -3,7 +3,9 @@ from pathlib import Path
 import argparse
 
 def check(source):
-    start=source.index('const bool diagnose=frontend && frontend_first_frame;')
+    gate='#if defined(NFSU_FRONTEND_PREFLIGHT)\n        const bool diagnose=frontend && frontend_first_frame;\n#else\n        constexpr bool diagnose=false;\n#endif'
+    if gate not in source:raise ValueError('production diagnostic not disabled by compile option')
+    start=source.index(gate)
     end=source.index('if (profile_enabled)',start)
     helper=source[start:end]
     if 'if(!diagnose)return true;' not in helper:raise ValueError('later frames would block')
@@ -19,7 +21,7 @@ def check(source):
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--source',type=Path,required=True)
     source=parser.parse_args().source.read_text();check(source)
-    for label,old,new in [('missing wait','fence.wait()','DkResult_Success'),('unbounded diagnostic','if(!diagnose)return true;',''),('missing floor isolation','checkpoint("floor reflection")','checkpoint("other")'),('missing target clear isolation','checkpoint("cube target bind/clear")','checkpoint("other")')]:
+    for label,old,new in [('production diagnostic enabled','constexpr bool diagnose=false;','constexpr bool diagnose=true;'),('missing wait','fence.wait()','DkResult_Success'),('unbounded diagnostic','if(!diagnose)return true;',''),('missing floor isolation','checkpoint("floor reflection")','checkpoint("other")'),('missing target clear isolation','checkpoint("cube target bind/clear")','checkpoint("other")')]:
         try:check(source.replace(old,new,1))
         except ValueError:print('PASS negative control: '+label)
         else:raise ValueError('negative control accepted: '+label)

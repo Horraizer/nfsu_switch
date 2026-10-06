@@ -4,7 +4,7 @@ import argparse,re,struct
 
 def check(root,shaders,source=None):
     if source is None:source=(root/'switch/deko_renderer.cpp').read_text()
-    begin=source.index('#if defined(NFSU_FRONTEND_PREFLIGHT)',source.index('bool record_frame('))
+    begin=source.rindex('#if defined(NFSU_FRONTEND_PREFLIGHT)',0,source.index('if(diagnose && face==0 && !emitted)'))
     end=source.index('#endif',begin);block=source[begin:end]
     labels=['preflight procedural constant','preflight actual mesh constant','preflight actual mesh texture0']
     if not all('checkpoint("'+label+'")' in block for label in labels):raise ValueError('staged fence missing')

@@ -719,3 +719,13 @@ attribute defaults and disable every buffer. Existing source contract tests
 reject the old zero-hole state. This corrects a proven malformed API state;
 hardware fault closure still requires a console run. The earlier claim that
 zero Type_None holes were disabled was incorrect.
+
+### Production first-frame cleanup after console stage pass
+
+At 19ce63e the coordinator's console r12 log records all procedural, mesh,
+texture, cube, floor, car and UI stages completing without a GPU error.
+All first-frame pass splitting, waits and logs now require
+NFSU_SWITCH_FRONTEND_PREFLIGHT=ON. Default OFF keeps the complete authored
+graph unsplit, with no probe draws or diagnostic fences. The debug SDK option
+also defaults OFF. Existing diagnostic tests reject enabling diagnose in the
+production branch. Normal unsplit console visual acceptance remains required.
