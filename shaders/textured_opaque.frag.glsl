@@ -58,6 +58,19 @@ uint frontend_glow_alpha(uint texel, float alpha_scale)
     return uint(clamp(float(texel) * alpha_scale + 0.5, 0.0, 255.0));
 }
 
+// Renderer-only markers 4/5 remove zero environment and angle-alpha terms.
+// Marker 5 keeps the original geometric flat shade; 4 was already unlit.
+uint race_effect_channel(uint texel, float vertex_byte, bool modulate, uint shade)
+{
+    uint vertex = uint(clamp(floor(vertex_byte + 0.5), 0.0, 255.0));
+    uint color = modulate ? (texel * vertex + 127u) / 255u : texel;
+    return min(255u, (color * shade + 128u) >> 8u);
+}
+uint race_effect_alpha(uint texel, float alpha_scale)
+{
+    return uint(clamp(float(texel) * alpha_scale + 0.5, 0.0, 255.0));
+}
+
 void main()
 {
     vec2 uv = inTexcoord;
@@ -89,6 +102,33 @@ void main()
     }
     // This shader is selected only when the frame alpha cutoff is zero and
     // the material alpha test is off, so it has no fragment discard.
+
+    if (material.fallback.w == 4.0 || material.fallback.w == 5.0) {
+        uint shade = 256u;
+        if (material.fallback.w == 5.0 && (frame.options.z & 1u) != 0u) {
+            vec3 to_eye = frame.eye.xyz - inWorld;
+            vec3 normal = cross(dFdx(inWorld), dFdy(inWorld));
+            bool has_normal = dot(normal, normal) > 0.0;
+            if (has_normal) {
+                normal = normalize(normal);
+                if (dot(normal, to_eye) < 0.0) {
+                    normal = -normal;
+                }
+            }
+            if (has_normal) {
+                float k = 0.35 + 0.65 * max(0.0, dot(normal, frame.light.xyz));
+                shade = uint(floor(clamp(k, 0.0, 1.0) * 256.0 + 0.5));
+            }
+        }
+        bool modulate = frame.options.y != 0u || material.environment_range.w > 0.5;
+        vec3 vertex_byte = material.environment_range.w > 1.5 ?
+            material.environment_color.rgb : inColor.rgb * 255.0;
+        outColor = vec4(vec3(race_effect_channel(texel.r, vertex_byte.r, modulate, shade),
+                            race_effect_channel(texel.g, vertex_byte.g, modulate, shade),
+                            race_effect_channel(texel.b, vertex_byte.b, modulate, shade)) / 255.0,
+                        float(race_effect_alpha(texel.a, material.alpha.x)) / 255.0);
+        return;
+    }
 
     // The eye-facing geometric normal of the triangle, shared by the flat
     // shade and by vdotn. The reference takes it from the three placed

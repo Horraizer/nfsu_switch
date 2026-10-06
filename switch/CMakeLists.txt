@@ -597,3 +597,9 @@ if(NFSU_BUILD_TESTS)
     set_tests_properties(nfsu_switch_frontend_preflight_contract PROPERTIES TIMEOUT 60)
 
 endif()
+
+if(NFSU_BUILD_TESTS)
+    add_test(NAME nfsu_race_effect_source_tests
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/race_effect_source_tests.py
+            --root ${CMAKE_SOURCE_DIR})
+endif()

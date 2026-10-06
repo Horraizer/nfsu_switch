@@ -1682,6 +1682,34 @@ if(NFSU_BUILD_TESTS)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend_glow_source_tests.py
             --root ${CMAKE_CURRENT_SOURCE_DIR})
 
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/shaders/textured_opaque.frag.glsl" race_effect_source)
+    set(race_effect_equations "")
+    foreach(name channel alpha)
+        string(REGEX MATCH "uint race_effect_${name}[^}]+}" equation "${race_effect_source}")
+        if(NOT equation)
+            message(FATAL_ERROR "Missing actual race effect ${name} equation")
+        endif()
+        string(REPLACE "uint" "std::uint32_t" equation "${equation}")
+        string(REGEX REPLACE "([0-9]+[.][0-9]+)" "\\1F" equation "${equation}")
+        string(APPEND race_effect_equations "${equation}\n")
+    endforeach()
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/race_effect_equations.h" "${race_effect_equations}")
+    add_executable(nfsu_race_effect_fast_tests tests/race_effect_fast_tests.cpp)
+    target_include_directories(nfsu_race_effect_fast_tests PRIVATE include ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    add_dependencies(nfsu_race_effect_fast_tests nfsu_shader_manifest)
+    nfsu_enable_warnings(nfsu_race_effect_fast_tests)
+    add_test(NAME nfsu_race_effect_fast_tests COMMAND nfsu_race_effect_fast_tests)
+
+add_test(NAME nfsu_race_effect_source_tests
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/race_effect_source_tests.py
+        --root ${CMAKE_CURRENT_SOURCE_DIR})
+
+
+    add_executable(nfsu_race_effect_retail_tests tests/race_effect_retail_tests.cpp)
+    target_include_directories(nfsu_race_effect_retail_tests PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    target_link_libraries(nfsu_race_effect_retail_tests PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_arg_path)
+    nfsu_enable_warnings(nfsu_race_effect_retail_tests)
+
     add_executable(nfsu_deko_scene_target_tests tests/deko_scene_target_tests.cpp)
     target_include_directories(nfsu_deko_scene_target_tests PRIVATE include)
     nfsu_enable_warnings(nfsu_deko_scene_target_tests)
@@ -2127,6 +2155,17 @@ if(NFSU_BUILD_TESTS)
             nfsu_probe_asset_check_retail_event-1
             PROPERTIES LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only
             TIMEOUT 1800)
+
+        foreach(filter legacy linear)
+            foreach(shading generic shaded)
+                set(effect_test "nfsu_race_effect_retail_${filter}_${shading}")
+                add_test(NAME ${effect_test} COMMAND nfsu_race_effect_retail_tests
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
+                    "${NFSU_RETAIL_ROOT}" ${filter} ${shading})
+                set_tests_properties(${effect_test} PROPERTIES LABELS retail
+                    FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 1800)
+            endforeach()
+        endforeach()
 
         # The whole race with every frame's cached commands compared with the
         # reference path, and every sample of the track slice's path.

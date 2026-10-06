@@ -1,4 +1,5 @@
 #include "nfsu/frontend_glow_fast.h"
+#include "nfsu/race_effect_fast.h"
 #include "deko_renderer.h"
 #include "frontend_startup_trace.h"
 #include "nfsu/frontend.h"
@@ -701,7 +702,9 @@ struct DekoRenderer::Impl {
             for (std::size_t i = 0; i < source.reflection_draw_count() && i < reflection_limit; ++i) {
                 const auto& draw = source.reflection_draw(i);
                 std::memcpy(reflected+(1+2*i)*256, &draw.placement, sizeof draw.placement);
-                std::memcpy(reflected+(2+2*i)*256, &draw.material, sizeof draw.material);
+                auto material=source.frontend_light_enabled ? draw.material :
+                    race_effect_gpu_material(draw,draw.material);
+                std::memcpy(reflected+(2+2*i)*256, &material, sizeof material);
             }
         }
         const auto first_dynamic = package ? source.static_track_draw_count() : 0;
@@ -713,6 +716,8 @@ struct DekoRenderer::Impl {
             auto material=view.material;
             if(source.frontend_light_enabled && frontend_glow_fast(view,source.frame))
                 material.fallback[3]=3;
+            else if(!source.frontend_light_enabled)
+                material=race_effect_gpu_material(view.definition,view.material);
             std::memcpy(data + (2+2*index)*256, &material, sizeof(DrawMaterialUniform));
         }
     }
@@ -795,9 +800,12 @@ struct DekoRenderer::Impl {
         auto* data = static_cast<unsigned char*>(static_uniforms.getCpuAddr());
         for (std::size_t i = 0; i < static_instances; ++i)
             std::memcpy(data + i*256, &source.static_track_instance(i), sizeof(DrawInstanceUniform));
-        for (std::size_t i = 0; i < static_definitions.size(); ++i)
-            std::memcpy(data + (static_instances+i)*256, &static_definitions[i]->material,
-                        sizeof(DrawMaterialUniform));
+        for (std::size_t i = 0; i < static_definitions.size(); ++i) {
+            const auto& draw=*static_definitions[i];
+            const auto material=source.frontend_light_enabled ? draw.material :
+                race_effect_gpu_material(draw,draw.material);
+            std::memcpy(data + (static_instances+i)*256, &material, sizeof material);
+        }
         if (static_definitions.empty()) return true;
         const auto bytes = 65536ULL + draw_capacity*4096ULL;
         for (std::size_t slot = 0; slot < (presentation ? 2U : 1U); ++slot) {
@@ -1139,6 +1147,7 @@ struct DekoRenderer::Impl {
             // this validated additive state. Keep original uniform indices
             // and the last emitted draw for fixed-state reuse.
             if(frontend && frontend_glow_no_output(view,commands->frame))continue;
+            if(!frontend && !commands->frontend_light_enabled && race_effect_no_output(view))continue;
             if(diagnose && previous_dynamic &&
                 previous_dynamic->program!=view.definition.program) {
                 if(!checkpoint(previous_dynamic->program->name))return false;
