@@ -126,6 +126,8 @@ struct DekoRenderer::Impl {
     static void debug(void* owner, const char* context, DkResult result, const char* message) {
         if (result == DkResult_Success) return;
         auto& self = *static_cast<Impl*>(owner);
+        // Preserve the initiating fault instead of a later cascade.
+        if(self.diagnostic[0])return;
         // No allocation, exception or UI operation from a driver callback.
         std::snprintf(self.diagnostic, sizeof self.diagnostic, "deko3d %s (%u): %s",
             context ? context : "unknown", static_cast<unsigned>(result), message ? message : "failure");
