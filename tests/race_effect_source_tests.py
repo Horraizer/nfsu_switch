@@ -17,21 +17,28 @@ def block(source, token):
 def check(shaders, renderer):
     branches = []
     for index, shader in enumerate(shaders):
-        branch = block(shader, 'if (material.fallback.w == 4.0 || material.fallback.w == 5.0)')
+        branch = block(shader, 'if (race_fast)')
         branches.append(branch)
         assert branch.count('race_effect_channel(') == 3
         assert 'race_effect_alpha(texel.a, material.alpha.x)' in branch
         assert 'material.environment_color.rgb : inColor.rgb * 255.0' in branch
         assert 'frame.options.y != 0u || material.environment_range.w > 0.5' in branch
-        assert 'material.fallback.w == 5.0 && (frame.options.z & 1u) != 0u' in branch
-        assert 'uint shade = 256u;' in branch and 'return;' in branch
-        # Compare the actual geometric normal and shade operations with the
-        # original generic shader; this catches disabling/replacing lighting.
-        for token in ('vec3 to_eye =', 'vec3 normal =', 'bool has_normal =',
-                      'normal = normalize', 'if (dot(normal, to_eye)',
-                      'normal = -normal', 'float k =', 'shade = uint('):
-            original = next(line.strip() for line in shader[shader.index('// The eye-facing geometric normal'):].splitlines() if token in line)
-            assert original in branch
+        assert 'bool race_fast = material.fallback.w == 4.0 || material.fallback.w == 5.0;' in shader
+        early = block(shader, 'if (race_fast && (material.fallback.w == 4.0 || (frame.options.z & 1u) == 0u))')
+        assert 'uint shade = 256u;' in early and 'return;' in early
+        assert early.count('race_effect_channel(') == 3
+        assert early[early.index('        bool modulate ='):] == branch[branch.index('        bool modulate ='):]
+        assert shader.count('dFdx(inWorld)') == 1 and shader.count('dFdy(inWorld)') == 1
+        for operation in ('vec3 normal = cross(dFdx(inWorld), dFdy(inWorld));',
+                          'bool has_normal = dot(normal, normal) > 0.0;',
+                          'normal = normalize(normal);',
+                          'if (dot(normal, to_eye) < 0.0)', 'normal = -normal;'):
+            assert operation in shader
+        shade = block(shader, 'if ((frame.options.z & 1u)')
+        assert '(material.fallback.w < 1.5 || material.fallback.w == 5.0) && material.environment_range.w < 0.5)' in shade
+        assert 'float k = 0.35 + 0.65 * max(0.0, dot(normal, frame.light.xyz));' in shade
+        assert 'shade = uint(floor(clamp(k, 0.0, 1.0) * 256.0 + 0.5));' in shade
+        assert shader.index(early) < shader.index('vec3 normal = cross') < shader.index(shade) < shader.index(branch) < shader.index('float vdotn = 0.01;')
         assert shader.index('if (frame.options.x != 0u)') < shader.index('uvec4 texel =') < shader.index(branch)
         assert shader.index('material.environment_min.w>0.5') < shader.index(branch)
         if index == 0:
@@ -74,6 +81,7 @@ for name, old, new, shader_mutation in [
     ('alpha rounding bypass', 'race_effect_alpha(texel.a, material.alpha.x)', 'texel.a', True),
     ('vertex-color override', 'frame.options.y != 0u || material.environment_range.w > 0.5', 'true', True),
     ('flat lighting removed', 'normal = normalize(normal);', 'normal = vec3(0);', True),
+    ('flat path bypass', 'race_fast && (material.fallback.w == 4.0 || (frame.options.z & 1u) == 0u)', 'race_fast', True),
     ('static frame dependence', 'const auto material=source.frontend_light_enabled ? draw.material :', 'const auto material=commands->frame.options[2] ? draw.material :', False),
     ('dynamic upload bypass', 'race_effect_gpu_material(view.definition,view.material)', 'view.material', False),
     ('stale skipped state', 'if(!frontend && !commands->frontend_light_enabled && race_effect_no_output(view))continue;', 'previous_dynamic = &view.definition; if(!frontend && !commands->frontend_light_enabled && race_effect_no_output(view))continue;', False),
