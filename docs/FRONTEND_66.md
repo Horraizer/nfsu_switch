@@ -16,6 +16,25 @@ race lap or finish audio. `nfsu_frontend_retail` authenticates the texture input
 and drives the real track past the former race finish while checking that the
 session remains running. Regression values belong to that test.
 
+Since the owner's free-driving Skyline request, menu free driving drives the
+Eddie Skyline the menu itself displays: `resolve_free_drive_skyline`
+(include/nfsu/freeride_skyline.h) resolves the original FE_SKYLINE preset of
+FrontB through the menu's own resolvers and binds, and RaceGpuScene::load takes
+it as a RaceCarDress - an explicit request, skin and post-prepare bind - while
+keeping the race's own world pass, lighting, shadow and wheel animation. The
+Skyline's own handling record drives it. An explicit `--car`/`--tuned`
+diagnostic keeps selecting that car instead of the preset. The menu-versus-race
+selection comparison and the substitution refusals live in
+`nfsu_freeride_skyline_tests` (retail: `nfsu_freeride_skyline_retail`).
+
+The dress also reads the shared EXHAUST family pair
+(`read_exhaust_family_inputs`, Cars/EXHAUST/GEOMETRY.BIN + TEXTURES.BIN): the
+FE preset installs the ROCKET exhaust, whose only solid lives in that family
+file, so free driving draws the pipe. The menu's own loader still reads no
+family file - until its integration loads the same pair, the menu cannot draw
+that exhaust, and the comparison test carries that one documented difference.
+
+
 ## Original presentation
 
 The old grit/bitmap layout was rejected by the owner at 42f96af6. Its artifact

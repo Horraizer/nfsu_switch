@@ -1148,6 +1148,22 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_car_selection_tests)
     add_test(NAME nfsu_car_selection_tests COMMAND nfsu_car_selection_tests)
     set_tests_properties(nfsu_car_selection_tests PROPERTIES TIMEOUT 120)
+
+    # The free-driving Eddie Skyline: the FE_SKYLINE preset through the menu
+    # and dressed-race paths, their mechanical comparison, the stock
+    # substitution and unresolved-material regressions, and the Switch race
+    # load with the dress beside a live frontend scene. The unit half holds
+    # the dress misuse refusals, which run before any file is read.
+    add_executable(nfsu_freeride_skyline_tests
+        tests/freeride_skyline_tests.cpp
+    )
+
+    target_link_libraries(nfsu_freeride_skyline_tests
+        PRIVATE nfsu_frontend nfsu_race_run nfsu_race_session nfsu_stock_frame
+                nfsu_posix_file_system nfsu_arg_path nfsu_sha256)
+    nfsu_enable_warnings(nfsu_freeride_skyline_tests)
+    add_test(NAME nfsu_freeride_skyline_tests COMMAND nfsu_freeride_skyline_tests)
+    set_tests_properties(nfsu_freeride_skyline_tests PROPERTIES TIMEOUT 180)
 endif()
 
 if(NFSU_BUILD_TESTS)
@@ -1889,6 +1905,14 @@ if(NFSU_BUILD_TESTS)
         # load path with a selected car. tests/car_selection_tests.cpp.
         add_test(NAME nfsu_car_selection_retail COMMAND nfsu_car_selection_tests "${NFSU_RETAIL_ROOT}")
         set_tests_properties(nfsu_car_selection_retail PROPERTIES
+            FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 1800)
+        # The free-driving Eddie Skyline of the owner request: the FE_SKYLINE
+        # preset prepared through both the menu and the dressed race paths and
+        # compared mechanically, plus the Switch race load with the dress.
+        # tests/freeride_skyline_tests.cpp.
+        add_test(NAME nfsu_freeride_skyline_retail
+            COMMAND nfsu_freeride_skyline_tests "${NFSU_RETAIL_ROOT}")
+        set_tests_properties(nfsu_freeride_skyline_retail PROPERTIES
             FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 1800)
         # The desktop viewer's own stock-car path resolves every material
         # texture for the alias-needing cars and stays equivalent to the

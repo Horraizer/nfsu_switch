@@ -237,6 +237,25 @@ bool read_car_frame_inputs(const fs::path& root, const CarAssets& car,
     return inputs.all_read();
 }
 
+bool read_exhaust_family_inputs(const fs::path& root, StockFrameInputs& inputs) {
+    const auto read_family = [&root](StockFrameInput& input, const char* path) {
+        input.path = path;
+        input.read = false;
+        input.error.clear();
+        input.bytes.clear();
+        try {
+            input.read = read_whole_file(root / fs::path(path), input.bytes, input.error);
+        } catch (const std::exception&) {
+            input.bytes.clear();
+            input.read = false;
+            input.error = "failed to read file";
+        }
+    };
+    read_family(inputs.exhaust_geometry, "Cars/EXHAUST/GEOMETRY.BIN");
+    read_family(inputs.exhaust_textures, "Cars/EXHAUST/TEXTURES.BIN");
+    return inputs.exhaust_geometry.read && inputs.exhaust_textures.read;
+}
+
 std::string car_frame_inputs_error(const StockFrameInputs& inputs,
                                    const std::string& error,
                                    const fs::path& root) {
@@ -419,6 +438,23 @@ static bool prepare_stock_frame_impl(
                 frame.issues.push_back(at(input.path, issue.offset, issue.message));
             }
         }
+        // The opt-in EXHAUST family source, after the wheels: same parse,
+        // same retained-mesh filter on the race path, no effect at all for a
+        // caller that read no family pair.
+        if (inputs.exhaust_geometry.read) {
+            const StockFrameInput& input = inputs.exhaust_geometry;
+            GeometryLimits geometry_limits;
+            if (consumed) geometry_limits.retain_mesh = [&](const Mesh& mesh) {
+                const auto hash = bin_hash(mesh.name);
+                return std::find(retained_hashes.begin(), retained_hashes.end(), hash) != retained_hashes.end();
+            };
+            frame.stock_geometry.push_back(
+                parse_geometry(input.bytes.data(), input.bytes.size(), geometry_limits));
+            if (consumed) std::vector<unsigned char>().swap(consumed->exhaust_geometry.bytes);
+            for (const GeometryIssue& issue : frame.stock_geometry.back().issues) {
+                frame.issues.push_back(at(input.path, issue.offset, issue.message));
+            }
+        }
         if (!consumed) parse_part_tables();
         std::vector<const GeometryReport*> sources;
         sources.push_back(&frame.car_geometry);
@@ -447,6 +483,9 @@ static bool prepare_stock_frame_impl(
         }
         if (inputs.tuned) {
             shared_inputs.push_back(&inputs.wheel_textures);
+        }
+        if (inputs.exhaust_textures.read) {
+            shared_inputs.push_back(&inputs.exhaust_textures);
         }
         frame.shared_sets.reserve(shared_inputs.size());
         for (const StockFrameInput* shared_input : shared_inputs) {

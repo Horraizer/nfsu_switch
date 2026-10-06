@@ -12,6 +12,7 @@
 #include "nfsu/race_audio.h"
 #include "nfsu/frontend.h"
 #include "nfsu/frontend_scene.h"
+#include "nfsu/freeride_skyline.h"
 #include "nfsu/frontend_music.h"
 #include "nfsu/intro_movie.h"
 #include <switch.h>
@@ -351,8 +352,10 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
           bool car_shading, bool wet_road_reflections, TextureFilterMode texture_filter,
           std::uint32_t requested_height, bool gpu_boost, bool hud_mode, bool hud_trace,
           const VehicleUpgradeLevels* performance, bool handling_telemetry, RaceSteering steering,
-          const nfsu::CarAssets& selected_car, Screen& screen, PadState& pad, bool free_drive = false) {
-    selected_car_label = (tuned ? "TUNED " : "STOCK ") + selected_car.car_type_name;
+          const nfsu::CarAssets& selected_car, Screen& screen, PadState& pad, bool free_drive = false,
+          const nfsu::RaceCarDress* dress = nullptr) {
+    selected_car_label = dress!=nullptr ? "EDDIE "+selected_car.car_type_name :
+        (tuned ? "TUNED " : "STOCK ") + selected_car.car_type_name;
     car_shading_label=car_shading ? "ON static" : "OFF";
     HandheldGpuProfile gpu_profile(gpu_boost);
     bool docked = appletGetOperationMode() == AppletOperationMode_Console;
@@ -394,7 +397,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     const auto load_start = armGetSystemTick();
     require(race.prepare_metadata(root,error,&progress),error);
     require(scene.load(posix_file_system(), root, error, &progress, &progress,
-                       tuned, glows, car_shading, &selected_car), error);
+                       tuned, glows, car_shading, &selected_car, dress), error);
     screen.show({std::string(free_drive ? "Preparing free driving, " : "ASSETS PASS. Preparing event 1, ") +
                  selected_car_label + " and race course..."});
     if (!free_drive) screen.show({car_shading ? "CAR SHADING ON: static environment approximation" : "CAR SHADING OFF"});
@@ -904,6 +907,13 @@ int main(int argc, char** argv) {
                     menu.notice(std::string("INTRO: ")+intro.error);
                 }
                 bool stick_up=false,stick_down=false;
+                // Free driving drives the Eddie Skyline the menu displays,
+                // resolved once and reused across free-driving re-entries.
+                // An explicit --car/--tuned diagnostic selection keeps that
+                // car instead of the preset.
+                const bool free_drive_diagnostic = car_seen || tuned;
+                nfsu::FreeDriveSkyline free_drive_skyline;
+                bool free_drive_resolved = false;
                 FrontendAction pending=FrontendAction::none;
                 while (appletMainLoop()) {
                     if(appletGetFocusState()!=AppletFocusState_InFocus) {frontend_clock.resume();continue;}
@@ -939,10 +949,19 @@ int main(int argc, char** argv) {
                         frontend_renderer.reset();
                         frontend_gpu_profile.reset();
                         try {
+                            if (!free_drive_diagnostic && !free_drive_resolved) {
+                                std::string dress_error;
+                                if (!resolve_free_drive_skyline(root,free_drive_skyline,dress_error))
+                                    throw std::runtime_error(dress_error);
+                                free_drive_resolved = true;
+                            }
                             run(root,false,false,false,particles_enabled,sky,
                                 tuned,glows,car_shading,wet_road_reflections,texture_filter,scene_height,
                                 gpu_boost,hud,false,explicit_performance ? &performance : nullptr,
-                                handling_telemetry,steering,selected_car,screen,pad,true);
+                                handling_telemetry,steering,
+                                free_drive_resolved ? free_drive_skyline.car : selected_car,
+                                screen,pad,true,
+                                free_drive_resolved ? &free_drive_skyline.dress : nullptr);
                             menu.notice("");
                         } catch (const Cancel&) {
                             menu.notice("LOADING CANCELLED");
