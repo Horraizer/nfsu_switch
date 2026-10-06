@@ -955,8 +955,13 @@ int main(int argc, char** argv) {
                                     throw std::runtime_error(dress_error);
                                 free_drive_resolved = true;
                             }
+                            // The Eddie dress carries the menu's decoded
+                            // GLOBALB materials; free driving renders them,
+                            // so the driven car keeps its authored paint
+                            // response. Explicit --car/--tuned diagnostics
+                            // keep the --car-shading argument's control.
                             run(root,false,false,false,particles_enabled,sky,
-                                tuned,glows,car_shading,wet_road_reflections,texture_filter,scene_height,
+                                tuned,glows,car_shading||free_drive_resolved,wet_road_reflections,texture_filter,scene_height,
                                 gpu_boost,hud,false,explicit_performance ? &performance : nullptr,
                                 handling_telemetry,steering,
                                 free_drive_resolved ? free_drive_skyline.car : selected_car,
