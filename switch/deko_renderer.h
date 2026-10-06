@@ -56,7 +56,8 @@ public:
               bool opaque_first = false, bool sky_with_opaque = false,
               std::uint32_t scene_height = 0,
               const RaceHudAtlas* hud_atlas = nullptr);
-    bool open_frontend(const RecordedCommands& commands,const FrontendUiAtlas& atlas,std::string& error);
+    bool open_frontend(const RecordedCommands& commands,const FrontendUiAtlas& atlas,std::string& error,
+                       std::uint32_t scene_height=0,bool profile_passes=false);
     bool present_frontend(const FrontendUiFrame& frame,std::string& error,DekoPresentTiming* timing=nullptr);
     // Mode changes replace the swapchain and its scene/depth images after
     // waiting for GPU work. Resident assets are uploaded again on this rare path.

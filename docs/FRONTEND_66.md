@@ -763,3 +763,26 @@ shared harmonic. This preserves LocalEye, material parameters and cube rules.
 The native coefficient table and old-basis negative control are tested by
 nfsu_frontend_tests. It corrects a proven missing transform; visual acceptance
 of the owner's rim complaint still requires the console comparison.
+
+### Menu launch policy and measured-pass instrumentation
+
+The menu now applies the existing --gpu-boost and --scene-height launch
+options, with its own scoped handheld guard released after renderer shutdown
+and before race takes ownership. Native UI remains on the720 presentation
+image after the existing scene upscale; cube and floor effects are retained.
+The policy log reports requested/effective configuration, not actual clocks.
+
+--profile-frame also enables bounded menu GPU timestamps: six cube faces,
+floor reflection, main scene including upscale, and UI. Reports are consumed
+only after the corresponding frame fence; each slot owns ten16-byte reports.
+Profiling inserts fragment barriers and labels that timing perturbation.
+Default profiling OFF emits no timestamp commands or added profiling barriers.
+These source checks cannot establish console FPS; compare normal menu latency
+and opt-in per-pass measurements on the same console configuration.
+
+The UI pose cache samples each authored object once per draw, keeping its
+immutable scripts resident and reevaluating animated fields every frame.
+At623a34f the worker's local composed phase7 comparison was byte-identical
+againstbc3a84d. That PC/default-archive probe measured record_ui averaging
+1.347358ms versus3.317766ms over200 draws. This is historical CPU evidence,
+not a Switch GPU or60FPS result.

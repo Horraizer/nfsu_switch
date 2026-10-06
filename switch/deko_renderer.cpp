@@ -57,7 +57,10 @@ struct DekoRenderer::Impl {
     dk::UniqueCmdBuf cmd;
     std::array<dk::UniqueCmdBuf, 2> static_cmd;
     dk::MemBlock buffers, images, staging, uniforms, static_uniforms, descriptors, readback;
-    dk::MemBlock query_memory;
+    dk::MemBlock query_memory,frontend_query_memory;
+    bool frontend_profile_passes=false;
+    std::array<bool,2> frontend_query_pending{};
+    unsigned frontend_profile_samples=0;
     dk::MemBlock hud_image_memory, hud_staging, hud_vertices, hud_indices;
     dk::MemBlock hud_uniforms, hud_descriptors;
     dk::Image hud_image;
@@ -904,6 +907,21 @@ struct DekoRenderer::Impl {
         }
     }
 
+    void consume_frontend_query(std::size_t slot) {
+        if(!frontend_query_pending[slot])return;
+        frontend_query_pending[slot]=false;
+        const auto* words=static_cast<const std::uint64_t*>(frontend_query_memory.getCpuAddr())+slot*20;
+        double elapsed[9]{};
+        for(unsigned i=0;i<9;++i) {
+            const auto a=words[i*2+1],b=words[(i+1)*2+1];
+            if(!a || b<a){std::printf("MENU GPU invalid timestamp sample\n");return;}
+            elapsed[i]=dkTimestampToNs(b-a)/1000000.0;
+        }
+        if(++frontend_profile_samples<=3 || frontend_profile_samples%60==0)
+            std::printf("MENU GPU timestamp_ms cube0=%.3f cube1=%.3f cube2=%.3f cube3=%.3f cube4=%.3f cube5=%.3f floor=%.3f main_upscale=%.3f ui=%.3f (profile barriers enabled)\n",
+                elapsed[0],elapsed[1],elapsed[2],elapsed[3],elapsed[4],elapsed[5],elapsed[6],elapsed[7],elapsed[8]);
+    }
+
     bool record_frame(const dk::Image& target, std::size_t slot,
                       const RaceHudFrame* hud, std::string& error,const FrontendUiFrame* frontend=nullptr) {
         if (package && !prepare_visible_commands(slot, error)) return false;
@@ -937,6 +955,13 @@ struct DekoRenderer::Impl {
         };
         if (profile_enabled)
             cmd.reportCounter(DkCounter_TimestampPipelineTop, query_memory.getGpuAddr()+slot*32);
+        const auto mark_frontend=[&](unsigned point) {
+            if(!frontend || !frontend_profile_passes)return;
+            if(point)cmd.barrier(DkBarrier_Fragments,0);
+            cmd.reportCounter(point?DkCounter_Timestamp:DkCounter_TimestampPipelineTop,
+                frontend_query_memory.getGpuAddr()+slot*160+point*16);
+        };
+        mark_frontend(0);
         const auto base = uniforms.getGpuAddr() + uniform_allocation.offset + slot * uniform_stride;
         cmd.bindImageDescriptorSet(descriptors.getGpuAddr(), static_cast<std::uint32_t>(handles.size()+(reflection_ready?1:0)+(frontend_cube_ready?1:0)));
         cmd.bindSamplerDescriptorSet(descriptors.getGpuAddr()+sampler_offset, (reflection_ready || frontend_cube_ready) ? 3 : 2);
@@ -1031,6 +1056,7 @@ struct DekoRenderer::Impl {
                 }
                 char pass[32];std::snprintf(pass,sizeof pass,"cube face%u",face);
                 if(!checkpoint(pass))return false;
+                mark_frontend(face+1);
             }
             cmd.barrier(DkBarrier_Fragments,DkInvalidateFlags_Image);
             cmd.bindTextures(DkStage_Fragment,1,dkMakeTextureHandle(static_cast<std::uint32_t>(handles.size()),2));
@@ -1058,6 +1084,7 @@ struct DekoRenderer::Impl {
             cmd.barrier(DkBarrier_Fragments, DkInvalidateFlags_Image);
             if(!checkpoint("floor reflection"))return false;
         }
+        mark_frontend(7);
         if (reflection_ready) cmd.bindTextures(DkStage_Fragment, 1,
             dkMakeTextureHandle(static_cast<std::uint32_t>(handles.size()+(frontend_cube_ready?1:0)), 2));
         dk::ImageView color_view{scene_target.upscale ? scene_colors[slot] : target}, depth_view{depths[slot]};
@@ -1109,9 +1136,11 @@ struct DekoRenderer::Impl {
             cmd.setViewports(0, {{0, 0, source_width(), source_height(), 0, 1}});
             cmd.setScissors(0, {{0, 0, commands->width, commands->height}});
         }
+        mark_frontend(8);
         if (hud) emit_overlay(slot,hud->vertices.data(),hud->quads);
         if (frontend) emit_overlay(slot,frontend->vertices.data(),frontend->additive.size(),frontend->additive.data());
         if(!checkpoint("UI overlay"))return false;
+        mark_frontend(9);
         if(diagnose)frontend_first_frame=false;
         cmd.barrier(DkBarrier_Fragments, 0);
         if (profile_enabled)
@@ -1142,6 +1171,7 @@ struct DekoRenderer::Impl {
             }
             frame_in_flight[slot] = false;
             if (profile_enabled) consume_query(slot);
+            consume_frontend_query(slot);
         }
         if (timing) timing->fence_wait_ms = elapsed_ms(stage);
         if (profile_enabled) {
@@ -1150,6 +1180,8 @@ struct DekoRenderer::Impl {
             query_frames[slot] = scene_frame ? *scene_frame : DekoSceneFrame{};
             query_generations[slot] = profile_generation;
         }
+        if(frontend && frontend_profile_passes)
+            std::memset(static_cast<unsigned char*>(frontend_query_memory.getCpuAddr())+slot*160,0,160);
         stage = armGetSystemTick();
         write_uniforms(*commands, slot);
         if (timing) timing->uniform_write_ms = elapsed_ms(stage);
@@ -1167,6 +1199,7 @@ struct DekoRenderer::Impl {
         queue.flush();
         frame_in_flight[slot] = true;
         query_pending[slot] = profile_enabled;
+        frontend_query_pending[slot]=frontend && frontend_profile_passes;
         ++fence_number;
         if (timing) timing->submit_ms = elapsed_ms(stage);
         return healthy(error);
@@ -1261,8 +1294,13 @@ bool DekoRenderer::open(const RecordedCommands& commands, std::string& error, bo
                              opaque_first, sky_with_opaque, scene_height, hud_atlas); }
     catch (const std::bad_alloc&) { error = "not enough memory for deko3d renderer"; return false; }
 }
-bool DekoRenderer::open_frontend(const RecordedCommands& commands,const FrontendUiAtlas& atlas,std::string& error) {
-    if(!open(commands,error))return false;
+bool DekoRenderer::open_frontend(const RecordedCommands& commands,const FrontendUiAtlas& atlas,std::string& error,std::uint32_t scene_height,bool profile_passes) {
+    if(!open(commands,error,true,0,false,true,false,scene_height))return false;
+    impl_->frontend_profile_passes=profile_passes;
+    if(profile_passes && !impl_->block(320,DkMemBlockFlags_CpuUncached|DkMemBlockFlags_GpuUncached,
+        "frontend pass timestamp reports",impl_->frontend_query_memory,error)) {
+        const auto failure=error;std::string cleanup;close(cleanup);error=failure;return false;
+    }
     if(impl_->init_overlay(atlas.rgba,atlas.width,atlas.height,kFrontendUiMaxQuads,error))return true;
     const auto failure=std::string("frontend atlas upload: ")+error;
     std::string cleanup;close(cleanup);error=failure;return false;

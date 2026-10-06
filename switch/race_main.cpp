@@ -878,11 +878,20 @@ int main(int argc, char** argv) {
                 FrontendGpuScene frontend_scene;
                 require(frontend_scene.load(root,width,height,frontend_error),frontend_error);
                 FrontendUiFrame frontend_ui;
+                // Match the launch power/scene policy while the menu is live.
+                // Restore it after renderer shutdown before handing race its
+                // own guard. Declaration order also preserves error unwinding.
+                std::unique_ptr<HandheldGpuProfile> frontend_gpu_profile;
                 std::unique_ptr<DekoRenderer> frontend_renderer;
                 const auto open_frontend=[&] {
+                    frontend_gpu_profile=std::make_unique<HandheldGpuProfile>(gpu_boost);
+                    const bool menu_docked=appletGetOperationMode()==AppletOperationMode_Console;
+                    const auto menu_height=deko_effective_scene_height(scene_height,menu_docked,true);
+                    std::printf("MENU POLICY gpu_boost=%s requested_height=%lu effective_height=%lu (configuration, not measured clocks)\n",
+                        gpu_boost?"on":"off",static_cast<unsigned long>(scene_height),static_cast<unsigned long>(menu_height));
                     screen.close();
                     frontend_renderer=std::make_unique<DekoRenderer>();
-                    require(frontend_renderer->open_frontend(frontend_scene.commands(),art.atlas(),frontend_error),frontend_error);
+                    require(frontend_renderer->open_frontend(frontend_scene.commands(),art.atlas(),frontend_error,menu_height,profile_frame),frontend_error);
                 };
                 open_frontend();
                 FrontendClock frontend_clock;
@@ -928,6 +937,7 @@ int main(int argc, char** argv) {
                         music.stop();
                         require(frontend_renderer->close(frontend_error),frontend_error);
                         frontend_renderer.reset();
+                        frontend_gpu_profile.reset();
                         try {
                             run(root,false,false,false,particles_enabled,sky,
                                 tuned,glows,car_shading,wet_road_reflections,texture_filter,scene_height,
