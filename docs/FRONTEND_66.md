@@ -649,3 +649,12 @@ Existing pass fences and all authored effects remain. Both basic textured
 TGSI stages retain sampler1 inside conditional UIF; this does not prove
 native hoisting or make an unbound slot the confirmed fault. No texture
 substitution is made before obtaining the validating SDK evidence.
+
+The validating SDK hardware run at 8c4a0f3 reproduces cube face0 failure
+without a parameter callback diagnostic. The next controlled diagnostic
+fences target bind/clear before any draw, the first solid of each face,
+and solid/sprite or shader changes. Each split resets the next draw's
+fixed-state cache. The first draw logs actual resource IDs and index range.
+All effects remain. Actual native source validation of the first face's
+six road and twelve sprite draws passes, including raw index bounds; this
+is CPU evidence and does not prove GPU addresses or target state valid.

@@ -930,6 +930,7 @@ struct DekoRenderer::Impl {
             cmd.bindRenderTargets(&color,&z);
             cmd.setViewports(0,{{0,0,384,256,0,1}});cmd.setScissors(0,{{0,0,384,256}});
             cmd.clearColor(0,DkColorMask_RGBA,0,0,0,1);cmd.clearDepthStencil(true,1,0,0);
+            if(!checkpoint("cube target bind/clear"))return false;
             const auto cube=frontend_cube_uniforms.getGpuAddr()+slot*(6+2*frontend_cube_capacity)*256;
             // Native quality3 face mask updates all six; each logical face is
             // 128-square. Atlas packing changes neither orientation nor view.
@@ -939,11 +940,28 @@ struct DekoRenderer::Impl {
                 cmd.bindUniformBuffer(DkStage_Vertex,0,cube+face*256,sizeof(DrawFrameUniform));
                 cmd.bindUniformBuffer(DkStage_Fragment,0,cube+face*256,sizeof(DrawFrameUniform));
                 const RecordedDraw* previous=nullptr;
+                std::size_t emitted=0;
                 for(std::size_t i=0;i<commands->frontend_cube_draws.size();++i) {
                     const auto& draw=commands->frontend_cube_draws[i];
                     if(draw.frontend_sprite_view && draw.frontend_sprite_view!=face+10)continue;
+                    if(diagnose && previous && (previous->program!=draw.program ||
+                        bool(previous->frontend_sprite_view)!=bool(draw.frontend_sprite_view))) {
+                        char pass[96];std::snprintf(pass,sizeof pass,"cube face%u %s %s",face,
+                            previous->program->name,previous->frontend_sprite_view?"sprites":"solids");
+                        if(!checkpoint(pass))return false;
+                        previous=nullptr;
+                    }
+                    if(diagnose && !emitted)std::printf(
+                        "frontend GPU first cube draw: face%u %s %s vertex%zu index%zu texture%zu first%u count%u\n",
+                        face,draw.name.c_str(),draw.program->name,draw.vertex_resource,draw.index_resource,
+                        draw.texture_resource,draw.first_index,draw.index_count);
                     emit_draw(cmd,draw,cube+(6+2*i)*256,cube+(7+2*i)*256,
                         !previous || !same_fixed_state(*previous,draw));previous=&draw;
+                    if(!emitted++) {
+                        char pass[40];std::snprintf(pass,sizeof pass,"cube face%u first solid",face);
+                        if(!checkpoint(pass))return false;
+                        if(diagnose)previous=nullptr;
+                    }
                 }
                 char pass[32];std::snprintf(pass,sizeof pass,"cube face%u",face);
                 if(!checkpoint(pass))return false;
