@@ -15,6 +15,7 @@ from unicorn.x86_const import *
 parser=argparse.ArgumentParser();parser.add_argument('--retail-root',type=Path,required=True)
 parser.add_argument('--road-offset',type=float,default=None)
 parser.add_argument('--trace-accumulation',action='store_true')
+parser.add_argument('--wheel-quarter-turn',action='store_true')
 args=parser.parse_args()
 raw=(args.retail_root/'speed.exe').read_bytes()
 assert hashlib.sha256(raw).hexdigest()=='c0fad450912952f53809a54690d235aa8b4e25b9f46650693c7cbee1b4c074b7'
@@ -72,6 +73,20 @@ accumulation_hook=m.uc.hook_add(UC_HOOK_CODE,accumulation) if args.trace_accumul
 m.run(0x542e40,(0x1003000,car_matrix+0x30,0,0x78ea40),{UC_X86_REG_EAX:scene})
 if accumulation_hook is not None:m.uc.hook_del(accumulation_hook)
 m.run(0x544390,(0x78ea40,cv+0x40,scene,0x1003000),{UC_X86_REG_EAX:local,UC_X86_REG_ESI:car_matrix})
+if args.wheel_quarter_turn:
+ base_h=bytes(m.uc.mem_read(local+0x120,160))
+ m.uc.mem_write(car_matrix,struct.pack('<16f',0,0,-1,0,0,1,0,0,1,0,0,0,0,0,.20027998089790344,1))
+ m.run(0x544390,(0x78ea40,cv+0x40,scene,0x1003000),{UC_X86_REG_EAX:local,UC_X86_REG_ESI:car_matrix})
+ rotated_h=bytes(m.uc.mem_read(local+0x120,160))
+ assert base_h!=rotated_h
+ def contract(h,n,c):
+  terms=(1,n[0]*n[0],n[1]*n[1],n[2]*n[2],n[0]*n[1],n[2]*n[0],n[1]*n[2],n[0],n[1],n[2])
+  return sum(h[i*4+c]*terms[i] for i in range(10))
+ a=struct.unpack('<40f',base_h);b=struct.unpack('<40f',rotated_h)
+ for n in ((.2,.3,.7),(1.,0,0),(0,0,1.),(-.4,.6,-.2)):
+  transformed=(n[2],n[1],-n[0])
+  assert max(abs(contract(a,transformed,c)-contract(b,n,c)) for c in range(4))<2e-6
+ print('PASS native per-placement harmonic basis; unrotated block negative control differs')
 print('NATIVE_FE_LOCAL_EYE',struct.unpack('<4f',m.uc.mem_read(local+0xc0,16)))
 print('NATIVE_FE_LOCAL_HARMONIC',struct.unpack('<40f',m.uc.mem_read(local+0x120,160)))
 assert tuple(struct.unpack('<2f',m.uc.mem_read(0x6b6348,8)))==(2.7799999713897705,)*2

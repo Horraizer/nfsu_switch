@@ -750,3 +750,16 @@ The source regression checks original delayed text fade, Hide fade, closure
 and same-song reentry. Main-menu first-advance Init does not replace the
 separately controlled announcement state. Rim shading and measured full-effects
 menu performance remain pending; this is not a final acceptance candidate.
+
+### Per-placement FE wheel harmonic correction
+
+The bounded genuine544390/542400/541C90 witness, using the same FE state
+with identity and quarter-turn wheel placements, produces different local
+harmonic coefficients. --wheel-quarter-turn in the lighting oracle checks
+asymmetric contractions against the transformed shared polynomial and rejects
+the previous unrotated block. CPU and GPU now apply each actual placement to
+the diffuse normal and specular reflected direction before contracting the
+shared harmonic. This preserves LocalEye, material parameters and cube rules.
+The native coefficient table and old-basis negative control are tested by
+nfsu_frontend_tests. It corrects a proven missing transform; visual acceptance
+of the owner's rim complaint still requires the console comparison.

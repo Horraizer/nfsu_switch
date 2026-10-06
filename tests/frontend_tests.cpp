@@ -134,6 +134,37 @@ int main(int argc,char** argv) {
             }
             check(std::abs(surface[6]-expected[n][2])<1e-6,"native FE diffuse alpha remains separate");
         }
+        // Independently executed544390/542400/541C90 with the same native
+        // FE input and quarter-turn wheel placement. This coefficient table
+        // is native output, not the source polynomial transformation.
+        FrontendLighting native_wheel;
+        const float native_wheel_h[10][4]={
+            {0.35557228326797485F,0.35557228326797485F,0.35557228326797485F,0.49166592955589294F},
+            {-0.074945211410522461F,-0.074945211410522461F,-0.074945211410522461F,-0.10363014787435532F},
+            {0.034823097288608551F,0.034823097288608551F,0.034823097288608551F,0.048151478171348572F},
+            {-0.034823097288608551F,-0.034823097288608551F,-0.034823097288608551F,-0.048151478171348572F},
+            {-0.094938158988952637F,-0.094938158988952637F,-0.094938158988952637F,-0.13127529621124268F},
+            {-0.042310785502195358F,-0.042310785502195358F,-0.042310785502195358F,-0.058505043387413025F},
+            {-0.028591757640242577F,-0.028591757640242577F,-0.028591757640242577F,-0.039535120129585266F},
+            {-0.32748597860336304F,-0.32748597860336304F,-0.32748597860336304F,-0.45282971858978271F},
+            {0.16954396665096283F,0.16954396665096283F,0.16954396665096283F,0.23443613946437836F},
+            {0.22944235801696777F,0.22944235801696777F,0.22944235801696777F,0.31726035475730896F},
+        };
+        for(unsigned t=0;t<10;++t)for(unsigned c=0;c<4;++c)
+            native_wheel.harmonic[t][c]=native_wheel_h[t][c];
+        const float quarter_wheel[16]={0,0,-1,0,0,1,0,0,1,0,0,0,0,0,.20027998089790344F,1};
+        bool old_basis_differs=false;
+        for(const auto& normal:normals) {
+            double original[7],placed[7],old[7];
+            frontend_surface(native_wheel,material,position,normal,eye,original);
+            frontend_surface(lighting,material,position,normal,eye,placed,quarter_wheel);
+            frontend_surface(lighting,material,position,normal,eye,old);
+            for(unsigned c=0;c<7;++c) {
+                check(std::abs(original[c]-placed[c])<2e-6,"placed FE wheel lighting matches independently native rotated harmonic");
+                old_basis_differs |= std::abs(original[c]-old[c])>.001;
+            }
+        }
+        check(old_basis_differs,"shared unrotated FE harmonic is a negative control for rolling wheel highlights");
         const double cube_directions[6][3]={{1,.25,.5},{-1,.25,.5},{.2,1,.6},{.2,-1,.6},{.2,.4,1},{.2,.4,-1}};
         // Asymmetric projected markers from original40AD60 native face bases,
         // not the appearance of a symmetric tunnel. Native Y faces differ.

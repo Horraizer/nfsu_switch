@@ -41,7 +41,7 @@ bool frontend_cube_coordinates(const double (&direction)[3],unsigned& face,
 void frontend_local_eye(const float* placement,const double* raw_eye,float (&out)[4]) noexcept;
 void frontend_surface(const FrontendLighting& lighting,const CarShadingMaterial& material,
     const float* raw_position,const float* raw_normal,const float* local_eye,
-    double (&out)[7]) noexcept;
+    double (&out)[7],const float* placement=nullptr) noexcept;
 bool valid_car_shading_material(const CarShadingMaterial& material) noexcept;
 struct CarMaterialRecord {
     std::uint32_t hash = 0;

@@ -1585,7 +1585,7 @@ bool render_scene(
                             float local_eye[4];frontend_local_eye(transform,raw_eye,local_eye);
                             const float position[3]={source.px,source.pz,source.py};
                             const float normal[3]={source.nx,source.nz,source.ny};
-                            frontend_surface(*options.frontend_lighting,draw.shading,position,normal,local_eye,clip[k].surface);
+                            frontend_surface(*options.frontend_lighting,draw.shading,position,normal,local_eye,clip[k].surface,transform);
                             Vec3 view{local_eye[0]-position[0],local_eye[1]-position[1],local_eye[2]-position[2]};
                             if(!normalize(view))view={0,0,0};
                             const double v=std::max(.01,view.x*normal[0]+view.y*normal[1]+view.z*normal[2]);

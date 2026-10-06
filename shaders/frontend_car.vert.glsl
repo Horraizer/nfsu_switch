@@ -57,7 +57,11 @@ layout (std140, binding = 2) uniform Material {
 layout (std140, binding = 3) uniform FrontendLight {
     vec4 harmonic[10];
 } frontend;
-vec4 evaluateHarmonic(vec3 n) {
+vec4 evaluateHarmonic(vec3 local) {
+    // Native542400/541C90 supplies per-placement harmonic coefficients.
+    // Equivalent contraction of the shared basis keeps rolling-wheel
+    // lighting in its actual transformed normal/reflection frame.
+    vec3 n=local.x*instance.rows[0].xyz+local.y*instance.rows[1].xyz+local.z*instance.rows[2].xyz;
     return frontend.harmonic[0]+frontend.harmonic[1]*n.x*n.x+
         frontend.harmonic[2]*n.y*n.y+frontend.harmonic[3]*n.z*n.z+
         frontend.harmonic[4]*n.x*n.y+frontend.harmonic[5]*n.z*n.x+

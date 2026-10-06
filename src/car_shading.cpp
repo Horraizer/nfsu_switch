@@ -233,7 +233,7 @@ void frontend_local_eye(const float* placement,const double* raw_eye,float (&out
     out[3]=1;
 }
 void frontend_surface(const FrontendLighting& lighting,const CarShadingMaterial& c,
-    const float* position,const float* normal,const float* eye,double (&out)[7]) noexcept {
+    const float* position,const float* normal,const float* eye,double (&out)[7],const float* placement) noexcept {
     double view[3],squared=0;
     for(unsigned i=0;i<3;++i){view[i]=double(eye[i])-position[i];squared+=view[i]*view[i];}
     const double length=std::sqrt(squared);
@@ -241,7 +241,13 @@ void frontend_surface(const FrontendLighting& lighting,const CarShadingMaterial&
     double v=0;for(unsigned i=0;i<3;++i)v+=view[i]*normal[i];
     v=std::max(.01,v); // car.efx neither flips normals nor clamps the upper bound.
     double reflected[3];for(unsigned i=0;i<3;++i)reflected[i]=2*v*normal[i]-view[i];
-    const auto harmonic=[&](const auto* n,unsigned channel) {
+    const auto harmonic=[&](const auto* local,unsigned channel) {
+        // Genuine542400/541C90 transforms the harmonic polynomial for each
+        // placement. Contracting the shared polynomial with the transformed
+        // direction is algebraically the same operation (native oracle).
+        double n[3];
+        for(unsigned axis=0;axis<3;++axis)n[axis]=placement?
+            local[0]*placement[axis]+local[1]*placement[4+axis]+local[2]*placement[8+axis]:local[axis];
         const double terms[10]={1,n[0]*n[0],n[1]*n[1],n[2]*n[2],
             n[0]*n[1],n[2]*n[0],n[1]*n[2],n[0],n[1],n[2]};
         double value=0;for(unsigned i=0;i<10;++i)value+=lighting.harmonic[i][channel]*terms[i];
