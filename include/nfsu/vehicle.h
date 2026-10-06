@@ -535,7 +535,7 @@ void encode_vehicle_telemetry(const VehicleTelemetry& record,
 // and Release builds produce it: the pin docs/VEHICLE.md records, which
 // nfsu_vehicle_tests requires and nfsu_switch_vehicle compares the
 // console's run against.
-constexpr const char* kVehiclePinnedMixedSha256 = "9329E10C2C041424971C209B7E101389500FD5E85CF7F4729358CDFBFE8DF41F";
+constexpr const char* kVehiclePinnedMixedSha256 = "D1A186D7F3ED92AE63D0E5A4F3BEF471B3922FCB408FFD1B5DEF7C6182689A5C";
 
 // SHA-256 over the encoded records of a run, in step order.
 class VehicleTelemetryHash {

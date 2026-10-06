@@ -47,15 +47,15 @@ if(NOT EXISTS "${TESTS}")
 endif()
 
 # The pins. demo_stream moved with the handbrake fix: the demonstration's
-# handbrake second is the brake axis at full value (0x00461E45), not an
+# handbrake second is max(service, 0.5 x handbrake) (0x00474B4B), not an
 # added rear lock torque (docs/CONTROLS_CAMERA.md).
-set(demo_stream "32A44635293BA59D737718B43A5C1938BFB46E1FFD6752093AA5C97EDDB8FAD7")
+set(demo_stream "1CC5FD8A2A2BD2A7746F434CD309B99B63A20AFC7CB645A0CB2D0DCDA7BB958C")
 set(fixture_frame_690 "635F697394CEA385425415E96A6A9C08CF0E44BDCC2534F1C73D728802565B4C")
 # Frame 1380 moved with the handbrake fix: the demonstration's handbrake
-# second is the brake axis at full value (0x00461E45), so the car no longer
+# second is half the brake axis (0x00474B4B), so the car no longer
 # skids backward-locked through it and every later pose shifts; frame 690,
 # before the handbrake segment, is unchanged.
-set(fixture_frame_1380 "6786253ECEC1693FAC43A22DF89A428EE755C49ED20138941A696DD61B663320")
+set(fixture_frame_1380 "154B95E2E6D4DFC0094D671AD04869EEC10BB61872918C47BA548E63F4EB142A")
 
 file(REMOVE_RECURSE "${WORK}")
 if(EXISTS "${WORK}")

@@ -132,7 +132,7 @@ std::vector<GamepadFrame> drive_demo_recording();
 // default_drive_session_setup(), as the desktop Debug and Release builds
 // give it: docs/CONTROLS_CAMERA.md pins it and nfsu_drive_tests requires it.
 constexpr const char* kDrivePinnedDemoSha256 =
-    "32A44635293BA59D737718B43A5C1938BFB46E1FFD6752093AA5C97EDDB8FAD7";
+    "1CC5FD8A2A2BD2A7746F434CD309B99B63A20AFC7CB645A0CB2D0DCDA7BB958C";
 
 // ---------------------------------------------------------------------------
 // Showing it with the CPU reference renderer

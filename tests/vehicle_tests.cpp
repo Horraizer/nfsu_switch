@@ -995,11 +995,12 @@ void test_grip_limit() {
     check(ay[3] > ay[2], "the limit lies past the default full input: " + num(ay[2]) + " -> " +
                              num(ay[3]));
 
-    // 0x00461E45: the handbrake is the brake axis at its full value, not a
-    // torque of its own. Pulled at speed the rear wheels keep rolling, the
-    // wheel-derived engine speed stays above idle while the car still
-    // moves, and a straight pull stops the car exactly like the full
-    // service brake does.
+    // 0x00474B4B: the brake the wheels see is the larger of the service
+    // brake and half the handbrake axis; 0x00461E10 keeps that axis at the
+    // handbrake's own digital-or-analog input. Pulled at speed the rear
+    // wheels keep rolling, the wheel-derived engine speed stays above idle
+    // while the car still moves, and a straight pull brakes exactly like a
+    // half service-brake input does.
     const nfsu::VehicleModel model = stock_model();
     const std::vector<nfsu::VehicleTelemetry> pulled = run_steady(model, 20.0, 0.4, 480, true);
     const double idle = static_cast<double>(nfsu::stock_240sx_handling().idle_rpm);
@@ -1014,25 +1015,25 @@ void test_grip_limit() {
     check(rear_rolling, "the handbrake leaves the rear wheels rolling");
     check(engine_above_idle,
           "the handbrake does not pin the engine at idle while the car moves");
-    nfsu::VehicleScript braked;
-    braked.name = "braked";
-    braked.speed = 100.0 / 3.6;
-    braked.segments.push_back(nfsu::VehicleScriptSegment{960, nfsu::VehicleInput{}});
-    braked.segments.back().input.brake = 1.0;
-    nfsu::VehicleScript handbraked = braked;
+    nfsu::VehicleScript half;
+    half.name = "half";
+    half.speed = 100.0 / 3.6;
+    half.segments.push_back(nfsu::VehicleScriptSegment{960, nfsu::VehicleInput{}});
+    half.segments.back().input.brake = 0.5;
+    nfsu::VehicleScript handbraked = half;
     handbraked.name = "handbraked";
     handbraked.segments.back().input.brake = 0.0;
     handbraked.segments.back().input.handbrake = true;
-    const std::vector<nfsu::VehicleTelemetry> braked_run =
-        run_script(model, braked, braked.total_steps());
+    const std::vector<nfsu::VehicleTelemetry> half_run =
+        run_script(model, half, half.total_steps());
     const std::vector<nfsu::VehicleTelemetry> pulled_run =
         run_script(model, handbraked, handbraked.total_steps());
-    bool same_stop = braked_run.size() == pulled_run.size();
-    for (std::size_t i = 0; same_stop && i < braked_run.size(); ++i) {
-        same_stop = braked_run[i].position.x == pulled_run[i].position.x &&
-                    braked_run[i].forward_speed == pulled_run[i].forward_speed;
+    bool same_stop = half_run.size() == pulled_run.size();
+    for (std::size_t i = 0; same_stop && i < half_run.size(); ++i) {
+        same_stop = half_run[i].position.x == pulled_run[i].position.x &&
+                    half_run[i].forward_speed == pulled_run[i].forward_speed;
     }
-    check(same_stop, "a handbrake pull stops exactly like the full brake");
+    check(same_stop, "a handbrake pull brakes exactly like half brake input");
 }
 
 // Every full-input run a digital gamepad can ask for - the Switch's ZR and

@@ -165,9 +165,9 @@ endif()
 
 # The pinned telemetry of docs/VEHICLE.md, through the probe. The hash
 # moved with the handbrake fix: the handbrake segments are the brake axis
-# at full value (0x00461E45), not an added rear lock torque.
+# as max(service, 0.5 x handbrake) (0x00474B4B), not an added rear lock torque.
 nfsu_case("the mixed script" 0
-          "vehicle-sim: script mixed segments 8 steps 2400 ;telemetry: records 2400 bytes 1248000 sha256 9329E10C2C041424971C209B7E101389500FD5E85CF7F4729358CDFBFE8DF41F\n"
+          "vehicle-sim: script mixed segments 8 steps 2400 ;telemetry: records 2400 bytes 1248000 sha256 D1A186D7F3ED92AE63D0E5A4F3BEF471B3922FCB408FFD1B5DEF7C6182689A5C\n"
           "error"
           mixed --every 0)
 set(mixed_hash "${last_hash}")

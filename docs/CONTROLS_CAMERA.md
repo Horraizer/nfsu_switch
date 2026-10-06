@@ -390,11 +390,11 @@ the default controls, the recovered camera rules with the default
 approximations, POV 0, at rest at the origin facing +x, automatic gearbox -
 the demonstration's 1380 records, 1689120 bytes, hash to
 
-    32A44635293BA59D737718B43A5C1938BFB46E1FFD6752093AA5C97EDDB8FAD7
+    1CC5FD8A2A2BD2A7746F434CD309B99B63A20AFC7CB645A0CB2D0DCDA7BB958C
 
 It was 7030E676...275D9 until the handbrake fix (docs/VEHICLE.md): the
 demonstration's one second of handbrake became the brake axis at its full
-value (0x00461E45) instead of an added rear lock torque.
+value, then half of it under the recovered max rule (0x00474B4B), instead of an added rear lock torque.
 
 `kDrivePinnedDemoSha256` holds it; `nfsu_drive_tests` requires it in each
 desktop build, and `nfsu_probe_drive_replay_guards` requires the probe to
@@ -478,7 +478,7 @@ writes, and pins them in every desktop build, each equal to CMake's own
 `file(SHA256)` of the TGA written; the pins live in that test. Issue #201
 re-pinned frame 690 for the stock lateral matrix correction. The
 handbrake fix moved frame 1380 - the demonstration's handbrake second is
-the brake axis at full value (0x00461E45), so every pose after it shifts -
+half the brake axis under the recovered max rule (0x00474B4B), so every pose after it shifts -
 and left frame 690, before the handbrake segment, unchanged.
 
 ## Determinism

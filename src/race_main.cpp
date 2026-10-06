@@ -114,6 +114,10 @@ public:
     StockFrameInputs car_inputs;
     StockFrame car;
     RaceHudAtlas hud_atlas;
+    // One HUD frame across ticks: the needle state 0x00427C38 slews only
+    // when the caller keeps it, one build per tick as the original's car
+    // update does.
+    RaceHudFrame hud_frame;
     CarShadowAsset shadow;
     std::vector<PreparedInstance> base;
     CarGlowAnchors glow_anchors{};
@@ -255,9 +259,7 @@ public:
         std::vector<unsigned char> rgba = composed.rgba();
         if (particles_enabled)
             require(draw_race_particles(rgba,options,particles,error,&background,&car.frame),error);
-        RaceHudFrame hud;
-        build_race_hud_frame(session,640,360,hud);
-        composite_race_hud(hud_atlas,hud,rgba.data(),640,360,640*4);
+        composite_race_hud(hud_atlas,hud_frame,rgba.data(),640,360,640*4);
         render_cost.add(begin); return rgba;
     }
 };
@@ -448,10 +450,9 @@ int run(int argc, char** argv) {
             Clock::now().time_since_epoch()).count());
         auto begin=Clock::now(); require(session.advance(pad,error),error); simulation.add(begin);
         require(handling_log.write(session,pad,consumed_us,live),"handling telemetry write failed");
+        build_race_hud_frame(session,640,360,scene.hud_frame);
         if (hud_audit.is_open()) {
-            RaceHudFrame hud;
-            build_race_hud_frame(session,640,360,hud);
-            const auto& r=hud.readout;
+            const auto& r=scene.hud_frame.readout;
             hud_audit << session.timing().step << ',' << r.physics_step << ','
                 << double(session.timing().step)/60.0 << ',' << r.engine_rpm << ','
                 << r.wheel_rpm << ',' << r.gear << ',' << r.rotation << ','

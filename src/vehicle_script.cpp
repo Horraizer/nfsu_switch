@@ -305,9 +305,8 @@ bool builtin_vehicle_script(const std::string& name, VehicleScript& out) {
         g.push_back(segment(1200, 0.5, 0.0, 0.2));
     } else if (name == "slide") {
         // From 25 m/s: straight for half a second, full left input for
-        // three seconds, then the handbrake - the brake axis at full value,
-        // 0x00461E45 - with half the input for one second, then straight
-        // and off the handbrake.
+        // three seconds, then the handbrake - max(service, 0.5 x handbrake),
+        // 0x00474B4B - with half the input for one second, then straight
         s.speed = 25.0;
         g.push_back(segment(60, 0.3, 0.0, 0.0));
         g.push_back(segment(360, 0.3, 0.0, 1.0));

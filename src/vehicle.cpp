@@ -1,5 +1,6 @@
 #include "nfsu/vehicle.h"
 
+#include <algorithm>
 #include <cfloat>
 #include <cstring>
 
@@ -1089,12 +1090,15 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     VehicleState s = state;
 
     const double throttle = sanitize(raw_input.throttle, 0.0, 1.0);
-    // 0x00461E45: the brake the wheels see is one axis - the service input
-    // where any is applied, else the handbrake's full value. The handbrake
-    // has no torque path of its own, so it cannot lock the driven wheels at
-    // speed and pin the wheel-derived engine speed at idle.
-    const double brake = raw_input.handbrake && raw_input.brake <= 0.0 ? 1.0 :
-        sanitize(raw_input.brake, 0.0, 1.0);
+    // 0x00474B4B..0x00474B6F: the brake the wheels see is the larger of the
+    // processed service brake and half the handbrake axis. That axis is the
+    // handbrake's own merged input (0x00461E10: its digital 0x91 code wins
+    // over its analog 0x92 code, doubled and clamped to 0xFF), not the
+    // service brake; the handbrake has no torque path of its own, so it
+    // cannot lock the driven wheels at speed and pin the wheel-derived
+    // engine speed at idle.
+    const double brake = std::max(sanitize(raw_input.brake, 0.0, 1.0),
+                                  raw_input.handbrake ? 0.5 : 0.0);
     const double steer = sanitize(raw_input.steer, -1.0, 1.0);
 
     Mat3 r = rotation(s.orientation);

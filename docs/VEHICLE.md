@@ -197,13 +197,18 @@ function walks the four wheels: where the brake input exceeds 0.95
 spin is pinned to exactly zero and a per-wheel flag at engine+0xB8+4k is
 set. Under full brake, then, the original's needle follows the wheels down
 and rests at idle from the moment the driven wheels fall below 30 rad/s,
-never below it. The brake the wheels see is one axis: 0x00461E10's input
-handler stores the service byte at car+0x2A8 and the handbrake byte,
-doubled and clamped to 0xFF, at car+0x2A9, and 0x00461E45 takes the
-service byte when it is not zero, else the handbrake's. The model follows
-both rules since the tachometer fix; the pin at exactly 30 rad/s is not
-reproduced, so its full-brake engine speed still follows the road all the
-way to a stop instead of resting at idle from about 9 m/s.
+never below it. The brake the wheels see combines two axes:
+0x00474B4B..0x00474B6F takes the larger of the processed service brake and
+half the handbrake axis (0x6CC7DC = 0.5). That handbrake axis is the
+handbrake's own merged input - 0x00461E10 stores its digital code 0x91 at
+car+0x2A8 and its analog code 0x92, doubled and clamped to 0xFF, at
+car+0x2A9, and 0x00461E45 takes the digital byte when it is not zero, else
+the analog's; the service brake never passes through 0x00461E10. The model
+follows the max rule since the review of the tachometer fix (the fix's
+first round wrongly took 0x91 for the service brake and gave the handbrake
+the axis at full value); the pin at exactly 30 rad/s is not reproduced, so
+the model's full-brake engine speed still follows the road all the way to
+a stop instead of resting at idle from about 9 m/s.
 
 **The automatic gearbox** (0x004757D0..0x004759B4). Gear slots: 0 reverse,
 1 neutral, 2 first. In the automatic mode the slot is at least 2; while the
@@ -312,7 +317,7 @@ positive steer turns left, a positive yaw rate.
 | friction circle | up to the static coefficient the linear force stands; past it the force falls toward the sliding coefficient: limit = slide + (peak - slide) * peak / demand | the two coefficients are recovered; the shape between them is not |
 | wheel spin | implicit against the linear tyre, explicit once the tyre saturates; `wheel_inertia` = 1.2 kg m^2 | stable at 120 Hz with a stiff tyre |
 | brakes | `brake_torque_front` = 1400, `_rear` = 450 N m per wheel at full input | not traced; below what the recovered static friction holds on each axle at the loads full braking puts on it, so no wheel locks: about 1.05 g from the brakes, and 1.24 g on average from 100 km/h with the engine braking the automatic gearbox adds (measured below) |
-| handbrake | none of its own: the input is the brake axis at full value when no service brake is applied | RECOVERED at 0x00461E10..0x00461E55 (docs/CONTROLS_CAMERA.md); the earlier invented 3000 N m rear lock pinned wheel-derived engine speed at idle the moment it was pulled at speed, which the owner reported as the tachometer dropping toward zero |
+| handbrake | none of its own: the wheels see max(service brake, 0.5 x handbrake) | RECOVERED at 0x00474B4B..0x00474B6F over the 0x00461E10 handbrake axis (docs/CONTROLS_CAMERA.md, docs/VEHICLE.md "The brake-axis wheel pin"); the earlier invented 3000 N m rear lock pinned wheel-derived engine speed at idle the moment it was pulled at speed, which the owner reported as the tachometer dropping toward zero |
 | steering | lock = `max_steer` / (1 + (v / `steer_speed_reference`)^2) with 0.55 rad and 12 m/s; slews at `steer_rate` = 3 rad/s | not traced; the lock falls with the square of the speed so that what full input asks of the tyres changes slowly with speed, as the path radius a given acceleration allows grows with v^2. With the round-3 tyres full input corners at 0.96 to 1.34 g, under the 1.55 g limit ("Drivability") |
 | rolling resistance | 0.015 of the load, faded in over 0.5 m/s | not traced |
 | engine braking | the recovered curve times `engine_brake_scale` = 0.5, and only while the wheel rpm is above idle | at full strength it brakes the car at about 0.5 g in first gear, where the recovered gearbox keeps it below 64 km/h, and with the brake on it locked the rear wheels; below idle it would push a slow car backwards. The recovered coupling that carries it to the wheels was not reproduced, so how much reaches a wheel in the game is unknown. Even halved, it outweighs the throttle below about 0.30 at every engine speed ("Drivability" below). Kept at 0.5 in round 3: with the traction limit, which bounds engine braking at each wheel too, 0.25 gives the same spin matrix (below) |
@@ -523,10 +528,13 @@ records in step order.
 **The pin**: the built-in `mixed` script, 2400 steps from rest on flat
 ground with the stock 240SX, hashes to
 
-    9329E10C2C041424971C209B7E101389500FD5E85CF7F4729358CDFBFE8DF41F
+    D1A186D7F3ED92AE63D0E5A4F3BEF471B3922FCB408FFD1B5DEF7C6182689A5C
 
-It was B9EE418C...CF8E3 until the handbrake fix: pulling the handbrake
-became the brake axis at its full value (0x00461E45) instead of an added
+It was 9329E10C...DF41F inside the handbrake fix's first round, which
+gave the handbrake the axis at full value; the review's correction to the
+recovered rule - max(service, 0.5 x handbrake), 0x00474B4B - moved it
+again. It was B9EE418C...CF8E3 before the handbrake fix: pulling the
+handbrake stopped being an added
 3000 N m on each rear wheel, which changes every script that pulls it -
 `mixed` and `slide` - and nothing else (`brake` and `rest` keep their
 hashes). It was 20724B57...EC085 before round 3 of the review (comment
@@ -551,7 +559,7 @@ cmake --build build-release
 build-release/nfsu_probe vehicle-sim mixed --every 0
 ```
 
-Both print `telemetry: records 2400 bytes 1248000 sha256 9329E10C...DF41F`;
+Both print `telemetry: records 2400 bytes 1248000 sha256 D1A186D7...89A5C`;
 so does either with `--handling <Global/GLOBALB.BUN>` over the retail file.
 "Debug" here and below is the default configure, `CMAKE_BUILD_TYPE` empty
 (no `-O`, no `-g`), not `-DCMAKE_BUILD_TYPE=Debug`. All eight built-in
@@ -563,10 +571,10 @@ scripts give the same telemetry in both builds:
 | `accelerate` | 3660 | `9045D7A4721733863790BB3C66440B427E853D78B34C01467B60CD58DC0B652F` |
 | `brake` | 960 | `74AB8F49ED1DC642A1B40E9E1F5AF5F7578163422FB59BA6F1947EED83D83AB5` |
 | `corner` | 1200 | `08EAC862DB52F7884AD7F948AA762250F20DCAEC363048BBBAE324B74A28F278` |
-| `slide` | 780 | `26D566051DC46A908DC730FF57B8DE0C60922D379BE9CD3A17F248E95058DECF` |
+| `slide` | 780 | `7BC838CCB665B2CF70E5F6B192D770496FC30763908DA331DDF16748A9BE07AE` |
 | `top-speed` | 14400 | `E6C334F9473F80235A7C3C55D6DF09D6D20F6270069117A8FB9403EE3B051ECC` |
 | `manual` | 1800 | `6B859D78DB23BE058DDAB12986101548F1A724D5E3D0566AB376EB6FF3C3ACAA` |
-| `mixed` | 2400 | `9329E10C2C041424971C209B7E101389500FD5E85CF7F4729358CDFBFE8DF41F` |
+| `mixed` | 2400 | `D1A186D7F3ED92AE63D0E5A4F3BEF471B3922FCB408FFD1B5DEF7C6182689A5C` |
 
 ### On the console
 
@@ -657,7 +665,7 @@ same as the built-in ones.
 | acceleration | 0-100 km/h in 5.0 to 7.5 s (6.08 s); every upshift crosses its threshold; four upshifts to fifth; no downshift under full throttle; straight |
 | braking | 100-0 km/h in 25 to 35 m (31.4 m) and 1.6 to 2.6 s, never below v^2 / (2 * 1.8 * g) = 21.9 m; no wheel locks; the held brake holds; the automatic gearbox starts in second, never shifts up, shifts down only once the rpm in the old gear is below its down threshold and into a gear whose up threshold is not passed, and ends in first |
 | cornering | at 15 m/s and a steer of 0.3: left and right mirror to 1e-9; steady within 0.5%; lateral acceleration = speed * yaw rate within 2%; understeer between 0.5 and 1 of the kinematic yaw rate; no tyre sliding; load moves outward; the road wheels slew at the rate limit; 90% of the yaw rate within a second |
-| the grip limit | the stable regime, with the lock held fixed at 15 m/s: doubling it from a quarter to half the default full-input lock (0.215 rad) doubles the lateral acceleration within 5%; the default lock slides no tyre and corners at 1.36 g; 1.25, 1.5 and 2 times it slide the rear tyres and corner at the same 1.55 g within 2%, under the rear's 1.7; every run keeps within 10 degrees of its path and above 0.6 of its speed, where a spin passes 25 degrees and falls below 0.3; the handbrake, as the brake axis at full value, leaves the rear wheels rolling, keeps the wheel-derived engine speed above idle while the car moves, and stops the car exactly like the full brake |
+| the grip limit | the stable regime, with the lock held fixed at 15 m/s: doubling it from a quarter to half the default full-input lock (0.215 rad) doubles the lateral acceleration within 5%; the default lock slides no tyre and corners at 1.36 g; 1.25, 1.5 and 2 times it slide the rear tyres and corner at the same 1.55 g within 2%, under the rear's 1.7; every run keeps within 10 degrees of its path and above 0.6 of its speed, where a spin passes 25 degrees and falls below 0.3; the handbrake, as max(service, 0.5 x handbrake), leaves the rear wheels rolling, keeps the wheel-derived engine speed above idle while the car moves, and brakes exactly like half brake input |
 | the spin matrix | the 32 runs of "The spin matrix": none passes 20 degrees of sideslip above 3 m/s (the worst is 16.0); without the traction limit full throttle at full lock from 10 m/s passes 40 |
 | snap oversteer | with the lock held fixed, 1.25 times the default at 20 m/s and 1.4 times at 25 m/s steady (within 5 degrees, above 0.85 of the speed), 1.4 times at 20 m/s and 1.5 times at 25 m/s spin (past 25 degrees, below 0.3 of the speed) |
 | the tyre force height | at half input from 20 m/s, the load moved across the track puts the lateral forces at 0.4 of the centre of mass's height within 8%, which is `tyre_force_lift` = 0.6 (measured 3.2% high, 4.1% at full input, growing with the body's roll, which the balance leaves out; a lift of 0.5 or 0.7 moves it by a quarter) |
