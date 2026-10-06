@@ -30,6 +30,23 @@ int main(int argc,char** argv) {
     using namespace nfsu;
     try {
         {
+            FrontendChyron banner;banner.show(100);
+            check(banner.update(20899)==FrontendChyron::Action::none && banner.visible(),"native Chyron20799 hold boundary");
+            check(banner.update(20900)==FrontendChyron::Action::hide && banner.visible(),"native Chyron20800 starts Hide");
+            check(banner.update(24899)==FrontendChyron::Action::none && banner.visible(),"native Chyron24799 hide grace");
+            check(banner.update(24900)==FrontendChyron::Action::close && !banner.visible(),"native Chyron24800 closes package");
+            banner.show(30000);check(banner.update(30000)==FrontendChyron::Action::none && banner.visible(),"fresh Chyron announces after close");
+            FrontendChyron late;late.show(0);
+            check(late.update(40000)==FrontendChyron::Action::hide && late.visible(),"native late update starts Hide before close branch");
+            check(late.update(40000)==FrontendChyron::Action::close && !late.visible(),"native late next update closes package");
+            FrontendChyron wrap;wrap.show(0xfffffff0U);
+            check(wrap.update(0x50)==FrontendChyron::Action::none && wrap.visible(),"original unsigned tick subtraction crosses wrap");
+            FrontendMenu metadata;const auto revision=metadata.song_revision();
+            metadata.song(metadata.artist().c_str(),metadata.title().c_str(),metadata.album().c_str());
+            check(metadata.song_revision()==revision,"same per-frame metadata does not restart announcement");
+            metadata.announce_song();check(metadata.song_revision()!=revision,"same song restarted after reentry announces again");
+        }
+        {
             Frame reflected,output;RenderLimits limits;std::string error;
             const unsigned char reflected_color[4]={100,80,60,255};
             const unsigned char black[4]={0,0,0,255};

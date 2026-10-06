@@ -941,6 +941,7 @@ int main(int argc, char** argv) {
                             menu.notice(std::string("FREE DRIVING: ")+error.what());
                         }
                         if(!music.start(root,frontend_error)) menu.notice("MUSIC: "+frontend_error);
+                        else menu.announce_song();
                         stick_up=stick_down=false;
                         open_frontend();
                         frontend_clock.resume();

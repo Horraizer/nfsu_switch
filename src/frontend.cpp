@@ -253,6 +253,7 @@ struct FrontendArt::Impl {
     RaceLapHudFont large,small;
     unsigned large_hash=0,small_hash=0;
     std::uint64_t ui_ticks=0;bool temporal=false;
+    double chyron_ticks=0;mutable FrontendChyron chyron;mutable unsigned song_revision=0;
     struct ActiveState {unsigned state=0;std::uint64_t start=0;bool settled=false;};
     mutable std::map<unsigned,ActiveState> active_states;
     mutable unsigned last_selection=2;
@@ -544,6 +545,7 @@ void FrontendArt::advance(float seconds) {
             impl_->start_named_state(object,"Init",0);
     }
     impl_->temporal=true;impl_->ui_ticks+=static_cast<unsigned>(double(seconds)*1200);
+    impl_->chyron_ticks+=double(seconds)*4000;
 }
 const FrontendUiAtlas& FrontendArt::atlas() const {return impl_->atlas;}
 void FrontendArt::record_ui(unsigned width,unsigned height,const FrontendMenu& menu,FrontendUiFrame& frame) const {
@@ -591,6 +593,13 @@ void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu) const {
         if(tex!=p.textures.end()) quad(image,tex->second,p.transform(o),
             -o.w/2,-o.h/2,o.w,o.h,o.uv,o.color);
     }
+    const auto song_tick=static_cast<std::uint32_t>(p.chyron_ticks);
+    if(p.song_revision!=menu.song_revision()) {
+        p.chyron.show(song_tick);p.song_revision=menu.song_revision();
+    }
+    p.chyron.update(song_tick);
+    Object help;help.justification=0;
+    if(p.chyron.visible()) {
     // Chyron.fng's original EA logo, 276x58 backing and proportional font.
     // Anchor its authored 640x480 banner inside the Switch safe area; no
     // desktop or Steam overlay is part of the game UI.
@@ -600,12 +609,12 @@ void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu) const {
     if(white!=p.textures.end()) quad(image,white->second,bar,-138,-29,276,58,{{0,0,1,1}},{{192,128,0,230}});
     Transform badge;badge.x=-269;badge.y=171;
     if(logo!=p.textures.end()) quad(image,logo->second,badge,-31,-31,62,62,{{0,0,1,1}},{{255,255,255,255}});
-    Object help;help.justification=0;
     Transform banner;banner.x=-228;banner.y=148;banner.a=.7F;banner.d=.7F;
     p.text(image,help,banner,menu.artist(),{{242,233,207,255}},3);
     banner.y+=15;banner.a=.6F;banner.d=.6F;
     p.text(image,help,banner,"\""+menu.title()+"\"",{{242,233,207,255}},3);
     banner.y+=14;p.text(image,help,banner,menu.album(),{{242,233,207,255}},3);
+    }
     Transform footer;footer.x=-266;footer.y=219;
     p.text(image,help,footer,"A: Enter   B: Exit    Other modes locked",{{242,233,207,255}},8);
     if(!menu.notice().empty()) {

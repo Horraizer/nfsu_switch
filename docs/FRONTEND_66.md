@@ -729,3 +729,20 @@ NFSU_SWITCH_FRONTEND_PREFLIGHT=ON. Default OFF keeps the complete authored
 graph unsplit, with no probe draws or diagnostic fences. The debug SDK option
 also defaults OFF. Existing diagnostic tests reject enabling diagnose in the
 production branch. Normal unsplit console visual acceptance remains required.
+
+### Chyron lifetime correction in progress
+
+The original callback4D74C0 uses timestamp73AD3C and controller40/44/45
+fields;4D7580 starts Show and4D7610 selects ChyronGroup Hide. Native
+constructor4D7450 clears the flags. Tools/frontend66_chyron_native.py
+executes the callback with supplied controller/time and explicit Hide-select
+and package-close stubs. Its independently recorded boundaries are tested
+by nfsu_frontend_tests against FrontendChyron.
+
+The menu now starts an announcement on metadata change, preserves its clock
+across repeated per-frame metadata, and explicitly announces a music restart
+on menu reentry. The original late-update Hide-before-close ordering and
+tick subtraction wrap are covered. This WIP connects the package lifetime;
+authored GLOBALB Chyron Show/Hide child animation is still pending, followed
+by rim shading and measured full-effects menu performance. It is not a final
+menu acceptance candidate.

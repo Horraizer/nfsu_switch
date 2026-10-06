@@ -16,12 +16,17 @@ public:
     unsigned selected() const { return selected_; }
     void notice(std::string text) { notice_=std::move(text); }
     const std::string& notice() const { return notice_; }
-    void song(const char* artist,const char* title,const char* album) {artist_=artist;title_=title;album_=album;}
+    void song(const char* artist,const char* title,const char* album) {
+        if(artist_!=artist || title_!=title || album_!=album)++song_revision_;
+        artist_=artist;title_=title;album_=album;
+    }
+    void announce_song() {++song_revision_;}
+    unsigned song_revision() const {return song_revision_;}
     const std::string& artist() const {return artist_;}
     const std::string& title() const {return title_;}
     const std::string& album() const {return album_;}
 private:
-    unsigned selected_=0;
+    unsigned selected_=0,song_revision_=1;
     std::string notice_;
     std::string artist_="Lil Jon & the Eastside Boyz",title_="Get Low",album_="Kings of Crunk";
 };
@@ -40,6 +45,27 @@ public:
     std::uint32_t original_ticks() const {return static_cast<std::uint32_t>(active_ns_/250000);}
 private:
     std::uint64_t previous_=0,active_ns_=0;bool anchored_=false;
+};
+// Original Chyron controller4D74C0: supplied timestamp uses4000Hz game ticks.
+// A fresh package starts with constructor4D7450 flags cleared. Native Show
+// refreshes the timestamp; an interruption during Hide retains its flag.
+class FrontendChyron {
+public:
+    enum class Action {none,hide,close};
+    void show(std::uint32_t ticks) {
+        if(!visible_)hiding_=false;
+        shown_=ticks;visible_=true;
+    }
+    Action update(std::uint32_t ticks) {
+        const float elapsed=float(static_cast<std::int32_t>(ticks-shown_))*.00025F;
+        if(!visible_ || !(elapsed>5.2F))return Action::none;
+        if(!hiding_){hiding_=true;return Action::hide;}
+        if(elapsed>6.2F){visible_=false;return Action::close;}
+        return Action::none;
+    }
+    bool visible() const {return visible_;}
+private:
+    std::uint32_t shown_=0;bool visible_=false,hiding_=false;
 };
 constexpr std::size_t kFrontendUiMaxQuads=2048;
 struct FrontendUiAtlas {
