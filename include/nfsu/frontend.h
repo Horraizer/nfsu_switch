@@ -46,6 +46,36 @@ public:
 private:
     std::uint64_t previous_=0,active_ns_=0;bool anchored_=false;
 };
+// Normal-path intervals between successful presentation returns. This measures
+// sustained CPU presentation cadence, not scanout timestamps or GPU clocks.
+struct FrontendPresentationWindow {
+    std::uint64_t intervals=0,elapsed_ns=0,max_ns=0;
+    double mean_ms() const {return intervals?double(elapsed_ns)/intervals/1000000:0;}
+    double fps() const {return elapsed_ns?double(intervals)*1000000000/elapsed_ns:0;}
+};
+class FrontendPresentationStats {
+public:
+    void reset() {anchored_=false;warming_=true;window_={};}
+    bool sample(std::uint64_t now_ns,FrontendPresentationWindow& result) {
+        if(!anchored_ || now_ns<previous_) {
+            reset();anchored_=true;previous_=warmup_start_=now_ns;return false;
+        }
+        const auto interval=now_ns-previous_;previous_=now_ns;
+        if(warming_) {
+            if(now_ns-warmup_start_>=1000000000ULL)warming_=false;
+            return false;
+        }
+        if(!interval)return false;
+        ++window_.intervals;window_.elapsed_ns+=interval;
+        if(interval>window_.max_ns)window_.max_ns=interval;
+        if(window_.elapsed_ns<2000000000ULL)return false;
+        result=window_;window_={};return true;
+    }
+private:
+    std::uint64_t previous_=0,warmup_start_=0;
+    bool anchored_=false,warming_=true;
+    FrontendPresentationWindow window_;
+};
 // Original Chyron controller4D74C0: supplied timestamp uses4000Hz game ticks.
 // A fresh package starts with constructor4D7450 flags cleared. Native Show
 // refreshes the timestamp; an interruption during Hide retains its flag.

@@ -609,8 +609,14 @@ void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu) const {
         if(o.type==2) {
             if(o.chyron?o.resource!=0:(o.resource!=3 && o.resource!=8)) continue;
             std::string label=o.text;
-            if(o.chyron && o.name=="ArtistName")label=menu.artist();
-            else if(o.chyron && o.name=="TrackTitle")label=menu.title();
+            // Genuine 4D76A0 -> 4D7580 targets F5387816 with artist and
+            // 11DB9E17 with the quoted title; authored names are reversed.
+            if(o.chyron && o.name=="TrackTitle")label=menu.artist();
+            else if(o.chyron && o.name=="ArtistName") {
+                label=menu.title();
+                if(label.size()<2 || label.front()!='"' || label.back()!='"')
+                    label="\""+label+"\"";
+            }
             else if(o.chyron && o.name=="AlbumTitle")label=menu.album();
             const bool underground=o.name=="UndergroundMode",free=o.name=="QuickRace";
             if(free) label="FREE DRIVING";

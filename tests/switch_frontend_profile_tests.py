@@ -20,13 +20,24 @@ def check(root,renderer,main):
     assert 'deko_effective_scene_height(scene_height,menu_docked,true)' in main
     assert 'art.atlas(),frontend_error,menu_height,profile_frame)' in main
     assert 'std::make_unique<HandheldGpuProfile>(gpu_boost)' in main
+    # Normal cadence reads only an existing post-present timestamp. It adds
+    # no GPU command, wait or barrier and excludes opt-in profiling runs.
+    counter=main[main.index('FrontendPresentationWindow presentation_window;'):main.index('if(menu.selected()!=previous_selection) {',main.index('FrontendPresentationWindow presentation_window;'))]
+    assert '!profile_frame && frontend_presentation_stats.sample(armTicksToNs(presented),presentation_window)' in counter
+    assert main.index('present_frontend(frontend_ui,frontend_error,&present_timing)')<main.index('const auto presented=armGetSystemTick();')<main.index('FrontendPresentationWindow presentation_window;')
+    assert all(word not in counter for word in ('wait','barrier','renderer->','armGetSystemTick'))
+    opening=main[main.index('const auto open_frontend=[&]'):main.index('open_frontend();')]
+    assert 'frontend_presentation_stats.reset();' in opening
+    assert 'self.clock_.resume();self.stats_.reset();' in main
+    assert 'MENU PRESENT measured_intervals=' in counter and 'measured_fps=' in counter
+    assert 'configuration, not measured clocks' in main
     # The existing upscale path puts UI on native presentation target.
     upscale=renderer[renderer.index('if (scene_target.upscale) {',renderer.index('bool record_frame(')):renderer.index('mark_frontend(9);')]
     assert upscale.index('cmd.bindRenderTargets(&present_view, nullptr);')<upscale.index('emit_overlay(slot,frontend->vertices.data()')
 
 p=argparse.ArgumentParser();p.add_argument('--root',type=Path,required=True);root=p.parse_args().root
 r=(root/'switch/deko_renderer.cpp').read_text();m=(root/'switch/race_main.cpp').read_text();check(root,r,m)
-for name,bad_r,bad_m in [('profiling always on',r.replace('if(!frontend || !frontend_profile_passes)return;',''),m),('timestamp overlap',r.replace('slot*160+point*16','slot*32+point*16'),m),('power guard held into race',r,m.replace('frontend_gpu_profile.reset();','')),('UI target lowered',r.replace('cmd.bindRenderTargets(&present_view, nullptr);',''),m)]:
+for name,bad_r,bad_m in [('profiling always on',r.replace('if(!frontend || !frontend_profile_passes)return;',''),m),('timestamp overlap',r.replace('slot*160+point*16','slot*32+point*16'),m),('power guard held into race',r,m.replace('frontend_gpu_profile.reset();','')),('UI target lowered',r.replace('cmd.bindRenderTargets(&present_view, nullptr);',''),m),('profile counter mixed in',r,m.replace('!profile_frame && frontend_presentation_stats.sample','frontend_presentation_stats.sample')),('reentry counter not reset',r,m.replace('frontend_presentation_stats.reset();','')),('extra counter GPU wait',r,m.replace('FrontendPresentationWindow presentation_window;','FrontendPresentationWindow presentation_window; frontend_renderer->wait();'))]:
     try:check(root,bad_r,bad_m)
     except (AssertionError,ValueError):print('PASS negative control: '+name)
     else:raise AssertionError('negative control accepted: '+name)

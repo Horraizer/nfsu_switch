@@ -5,7 +5,7 @@ sys.path.insert(0,str(Path.cwd()/'tools'))
 from event0_trace import Image
 from hud254_native import Machine
 from unicorn import UC_HOOK_CODE
-from unicorn.x86_const import UC_X86_REG_ECX,UC_X86_REG_EIP,UC_X86_REG_ESP
+from unicorn.x86_const import UC_X86_REG_EAX,UC_X86_REG_EDI,UC_X86_REG_ECX,UC_X86_REG_EIP,UC_X86_REG_ESP
 parser=argparse.ArgumentParser();parser.add_argument('--retail-root',type=Path,required=True)
 root=parser.parse_args().retail_root
 b=(root/'speed.exe').read_bytes()
@@ -22,6 +22,31 @@ for tick,hide_started in [(20799,0),(20800,0),(20801,0),(24799,1),(24800,1),(248
  assert m.uc.mem_read(obj+0x45,1)[0]==(0 if hide_started and tick>=24800 else 1)
  print(tick,'hide_started',hide_started,'flags',bytes(m.uc.mem_read(obj+0x44,2)).hex(),'calls',calls)
 print('Native callback executed; Hide-selection and package-close calls are explicit boundary stubs, not whole retail startup')
+
+# Execute the original song metadata dispatcher/controller with authenticated
+# table pointers. Lookup and Show are bounded stubs; text target/hash and
+# incoming strings are captured from actual 4D76A0 -> 4D7580 instructions.
+for song_index in (0,19):
+ m=Machine(im);component=0x1001000;package=0x1002000
+ m.write(package+0x14,component);m.write(component+0xc,0x6c2b28)
+ m.uc.mem_write(0x735e1c,b'\x01');calls=[]
+ def text_hook(uc,at,size,_):
+  sp=uc.reg_read(UC_X86_REG_ESP)
+  if at==0x4f3f90:
+   uc.reg_write(UC_X86_REG_EAX,package)
+   uc.reg_write(UC_X86_REG_EIP,m.integer(sp));uc.reg_write(UC_X86_REG_ESP,sp+8)
+  elif at in (0x4f6850,0x4f6bd0):
+   if at==0x4f6850:
+    calls.append((uc.reg_read(UC_X86_REG_EDI),m.text(m.integer(sp+4))))
+   uc.reg_write(UC_X86_REG_EIP,m.integer(sp));uc.reg_write(UC_X86_REG_ESP,sp+4)
+ m.uc.hook_add(UC_HOOK_CODE,text_hook)
+ args=tuple(m.integer(0x6f4d08+song_index*16+j*4) for j in range(3))+(0x6b9172,)
+ title,artist,album=[m.text(p) for p in args[:3]]
+ assert title.startswith('"') and title.endswith('"')
+ m.run(0x4d76a0,args)
+ assert calls==[(0xf5387816,artist),(0x48097852,album),(0x11db9e17,title)]
+ print('CHYRON_TEXT',song_index,calls)
+print('PASS native TrackTitle receives artist, ArtistName receives quoted title, AlbumTitle receives album')
 
 # Execute genuine nonloop arithmetic using authored Chyron child FI/Kd bytes.
 # Script phase is supplied; no native package dispatch is claimed here.

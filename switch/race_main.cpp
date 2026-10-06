@@ -34,15 +34,17 @@ const char* car_shading_label="OFF";
 using namespace nfsu;
 class FrontendAppletClockHook {
 public:
-    explicit FrontendAppletClockHook(FrontendClock& clock):clock_(clock) {
+    explicit FrontendAppletClockHook(FrontendClock& clock,FrontendPresentationStats& stats):clock_(clock),stats_(stats) {
         appletHook(&cookie_,[](AppletHookType event,void* state) {
-            if(event==AppletHookType_OnResume || event==AppletHookType_OnFocusState)
-                static_cast<FrontendClock*>(state)->resume();
-        },&clock_);
+            if(event==AppletHookType_OnResume || event==AppletHookType_OnFocusState) {
+                auto& self=*static_cast<FrontendAppletClockHook*>(state);
+                self.clock_.resume();self.stats_.reset();
+            }
+        },this);
     }
     ~FrontendAppletClockHook() {appletUnhook(&cookie_);}
 private:
-    FrontendClock& clock_;AppletHookCookie cookie_{};
+    FrontendClock& clock_;FrontendPresentationStats& stats_;AppletHookCookie cookie_{};
 };
 constexpr unsigned width = 1280, height = 720;
 double ms(std::uint64_t ticks) { return armTicksToNs(ticks)/1000000.0; }
@@ -883,7 +885,9 @@ int main(int argc, char** argv) {
                 // own guard. Declaration order also preserves error unwinding.
                 std::unique_ptr<HandheldGpuProfile> frontend_gpu_profile;
                 std::unique_ptr<DekoRenderer> frontend_renderer;
+                FrontendPresentationStats frontend_presentation_stats;
                 const auto open_frontend=[&] {
+                    frontend_presentation_stats.reset();
                     frontend_gpu_profile=std::make_unique<HandheldGpuProfile>(gpu_boost);
                     const bool menu_docked=appletGetOperationMode()==AppletOperationMode_Console;
                     const auto menu_height=deko_effective_scene_height(scene_height,menu_docked,true);
@@ -895,7 +899,7 @@ int main(int argc, char** argv) {
                 };
                 open_frontend();
                 FrontendClock frontend_clock;
-                FrontendAppletClockHook frontend_clock_hook(frontend_clock);
+                FrontendAppletClockHook frontend_clock_hook(frontend_clock,frontend_presentation_stats);
                 FrontendMenu menu;
                 audio::FrontendMusic music;
                 if(!music.start(root,frontend_error)) menu.notice("MUSIC: "+frontend_error);
@@ -906,7 +910,7 @@ int main(int argc, char** argv) {
                 bool stick_up=false,stick_down=false;
                 FrontendAction pending=FrontendAction::none;
                 while (appletMainLoop()) {
-                    if(appletGetFocusState()!=AppletFocusState_InFocus) {frontend_clock.resume();continue;}
+                    if(appletGetFocusState()!=AppletFocusState_InFocus) {frontend_clock.resume();frontend_presentation_stats.reset();continue;}
                     const auto poll_begin=armGetSystemTick();
                     padUpdate(&pad); const auto down=padGetButtonsDown(&pad);
                     const auto stick=padGetStickPos(&pad,0);
@@ -972,6 +976,12 @@ int main(int argc, char** argv) {
                     DekoPresentTiming present_timing;
                     require(frontend_renderer->present_frontend(frontend_ui,frontend_error,&present_timing),frontend_error);
                     const auto presented=armGetSystemTick();
+                    FrontendPresentationWindow presentation_window;
+                    if(!profile_frame && frontend_presentation_stats.sample(armTicksToNs(presented),presentation_window)) {
+                        std::printf("MENU PRESENT measured_intervals=%llu elapsed_ms=%.3f mean_ms=%.3f max_ms=%.3f measured_fps=%.3f (normal presentation return intervals)\n",
+                            static_cast<unsigned long long>(presentation_window.intervals),presentation_window.elapsed_ns/1000000.0,
+                            presentation_window.mean_ms(),presentation_window.max_ns/1000000.0,presentation_window.fps());
+                    }
                     if(menu.selected()!=previous_selection) {
                         std::printf("MENU INPUT selected=%u selection_ms=%.3f scene_ms=%.3f ui_ms=%.3f present_ms=%.3f total_ms=%.3f acquire_ms=%.3f fence_ms=%.3f record_ms=%.3f quads=%zu\n",
                             static_cast<unsigned>(menu.selected()),ms(selection_done-poll_begin),ms(scene_done-scene_begin),

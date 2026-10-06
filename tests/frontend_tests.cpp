@@ -292,6 +292,32 @@ int main(int argc,char** argv) {
             "explicit applet resume resets anchor while keeping scene phase");
         check(frontend_clock.sample(125550000000ULL)==16666667,
             "normal frames resume from fresh applet anchor");
+        {
+            FrontendPresentationStats stats;FrontendPresentationWindow window;
+            check(!stats.sample(0,window) && !stats.sample(500000000,window) &&
+                !stats.sample(1000000000,window),"presentation startup warmup emits no partial result");
+            for(unsigned interval=1;interval<=120;++interval) {
+                const bool ready=stats.sample(1000000000ULL+interval*16666667ULL,window);
+                check(ready==(interval==120),"presentation result waits for complete two-second window");
+            }
+            check(window.intervals==120 && window.elapsed_ns==2000000040ULL && window.max_ns==16666667 &&
+                std::abs(window.mean_ms()-16.666667)<.000001 && std::abs(window.fps()-60)<.00001,
+                "normal presentation window measures interval count elapsed mean maximum and FPS");
+            std::uint64_t now=3000000040ULL;
+            for(unsigned interval=0;interval<6;++interval) {
+                now+=interval<2?500000000:250000000;
+                check(stats.sample(now,window)==(interval==5),"second presentation window is independent");
+            }
+            check(window.intervals==6 && window.elapsed_ns==2000000000ULL && window.max_ns==500000000 &&
+                window.fps()==3,"slow normal frames remain measured, including maximum interval");
+            stats.reset();
+            check(!stats.sample(now+100000000000ULL,window) &&
+                !stats.sample(now+101000000000ULL,window),"menu reentry restarts anchor and warmup");
+            check(stats.sample(now+103500000000ULL,window) && window.intervals==1 &&
+                window.elapsed_ns==2500000000ULL && window.max_ns==2500000000ULL && window.fps()==.4,
+                "long actual frame is measured rather than hidden as suspension");
+            check(!stats.sample(0,window),"backward clock resets presentation anchor");
+        }
         check(menu.update({false,false,true,false})==FrontendAction::underground,"initial Underground selection");
         check(menu.update({false,true,false,false})==FrontendAction::none,"navigation has no launch side effect");
         check(menu.update({false,false,true,false})==FrontendAction::free_drive,"free driving selection");
@@ -867,6 +893,33 @@ int main(int argc,char** argv) {
             chyron_art.advance(1.F);check(chyron_alpha()==0,"closed Chyron removes metadata glyphs");
             chyron_menu.announce_song();check(chyron_alpha()==0,"same-song reentry restarts Show invisible key");
             chyron_art.advance(.75F);check(chyron_alpha()==218,"same-song reentry follows authored Show keys again");
+            // Genuine 4D76A0 -> 4D7580 binds TrackTitle to artist and
+            // ArtistName to quoted title. Inspect actual font quads in authored
+            // package order, rather than inferring semantics from object names.
+            FrontendArt binding_art;FrontendMenu binding_menu;
+            if(!binding_art.load(root,error,false))throw std::runtime_error(error);
+            binding_menu.song("A","B","C");
+            const auto metadata_glyphs=[&]() {
+                binding_art.record_ui(1280,720,binding_menu,ui);
+                binding_art.advance(.75F);
+                binding_art.record_ui(1280,720,binding_menu,ui);
+                std::vector<std::array<float,4>> glyphs;
+                for(std::size_t i=0;i<ui.vertices.size();i+=4) {
+                    const auto& v=ui.vertices[i];
+                    if(v.py>560 && v.color[0]==206 && v.color[1]==232 && v.color[2]==240)
+                        glyphs.push_back({v.u,v.v,ui.vertices[i+2].u,ui.vertices[i+2].v});
+                }
+                return glyphs;
+            };
+            const auto bound=metadata_glyphs();
+            check(bound.size()==5,"native metadata emits artist, quoted title and album glyphs");
+            check(bound[1]==bound[3] && bound[1]!=bound[2],"title has matching surrounding quote glyphs");
+            binding_menu.song("C","B","A");const auto swapped=metadata_glyphs();
+            check(swapped.size()==5 && swapped[0]==bound[4] && swapped[4]==bound[0] &&
+                swapped[1]==bound[1] && swapped[2]==bound[2] && swapped[3]==bound[3],
+                "artist is the authored first row, quoted title second and album third");
+            binding_menu.song("A","\"B\"","C");
+            check(metadata_glyphs()==bound,"authenticated already-quoted title is not double quoted");
             FrontendArt description_art;FrontendMenu description_menu;
             check(description_art.load(root,error,false),error.c_str());
             const auto description_alpha=[&]() {
