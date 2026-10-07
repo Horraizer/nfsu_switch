@@ -171,6 +171,9 @@ struct VehicleHandling {
     std::array<float, kVehicleTorquePoints> torque{};              // +0x310, kN m
     std::array<float, kVehicleEngineBrakePoints> engine_brake{};   // +0x358, kN m
     float drag = 0.0F;                          // +0x370, kN per (m/s)^2
+    float downforce_front = 0.0F;               // +0x374, setup264
+    float downforce_rear = 0.0F;                // +0x378, setup268
+    float aero_preload = 0.0F;                  // +0x37C, setup26C
     float service_brake = 0.0F;                 // +0x384, kN m / axis
     float parking_brake = 0.0F;                 // +0x388, kN m / axis
     float brake_balance = 0.0F;                 // +0x38C, rear service fraction
@@ -206,6 +209,9 @@ constexpr std::size_t kVehicleEngineInertiaOffset = 0x30C;
 constexpr std::size_t kVehicleTorqueOffset = 0x310;
 constexpr std::size_t kVehicleEngineBrakeOffset = 0x358;
 constexpr std::size_t kVehicleDragOffset = 0x370;
+constexpr std::size_t kVehicleDownforceFrontOffset = 0x374;
+constexpr std::size_t kVehicleDownforceRearOffset = 0x378;
+constexpr std::size_t kVehicleAeroPreloadOffset = 0x37C;
 constexpr std::size_t kVehicleServiceBrakeOffset = 0x384;
 constexpr std::size_t kVehicleParkingBrakeOffset = 0x388;
 constexpr std::size_t kVehicleBrakeBalanceOffset = 0x38C;
@@ -222,9 +228,9 @@ constexpr std::size_t kVehicleYawTorqueLimitOffset = 0x398;
 // kVehicle240sxRecordBytesSha256. `nfsu_probe vehicle-sim --handling`
 // compares a decoded record against this table field by field.
 VehicleHandling stock_240sx_handling();
-constexpr std::size_t kVehicle240sxRecordBytes = 348;
+constexpr std::size_t kVehicle240sxRecordBytes = 360;
 constexpr const char* kVehicle240sxRecordBytesSha256 =
-    "1830A52FDA37708F237D47C864B2AFBCA9CCE39F144452827685229B66E1A4EC";
+    "62AD341F90C46BB42CA4EDB41CC0480BE3BE88CB64A5D83F88A69895262FBBA7";
 
 struct VehicleHandlingIssue {
     // Offset of the offending field inside the record.
@@ -337,9 +343,30 @@ struct VehicleApproximations {
     std::uint32_t auto_shift_hold_steps = 36;
 };
 
+// Bounded single-car/closed-speed-scale adapter. Owner reset464C80 supplies
+// actor404=1, actor425350 initializes drafting47C=0; world426450 preserves
+// drafting0 in a single-car world. Active429B10 race scaling and traffic
+// drafting are unsupported here. These initialized7000EC/F0 values are an
+// explicit supplied configuration, not a claim about later live globals.
+struct PlayerInitialAeroConfiguration {
+    bool enabled = true;
+    float drag_gain = 2.0F;
+    float drag_arm_z = -0.1F;
+};
+
+// Cache462F90 operands.477BED latches processed throttle and PRIOR published
+// support once per outer call.479160's INITIAL1/0 context gives8=C=1;
+// noninitial scale coupling to body/engine/wheels is outside VehicleModel.
+struct PlayerAeroCache {
+    float speed_divisor = 1.0F, drag_scale = 1.0F;
+    float processed_throttle = 0.0F, support_kind = 0.0F;
+    bool enabled = true;
+};
+
 struct VehicleSpec {
     VehicleHandling handling;
     VehicleApproximations approx;
+    PlayerInitialAeroConfiguration aero;
 };
 
 // stock_240sx_handling() with the default approximations.
@@ -436,7 +463,7 @@ enum class VehicleGearbox : std::uint8_t {
 // a caller cannot put the state out of its domain. `shift` is an edge: it
 // acts on the step it is given on.
 struct VehicleInput {
-    double throttle = 0.0;
+    double throttle = 0.0; // supplied processed controls1DC in the aero adapter
     double brake = 0.0;
     double steer = 0.0;
     bool handbrake = false;
@@ -530,6 +557,9 @@ struct VehicleState {
     PlayerEngineState engine;
     PlayerGearState transmission;
     PlayerOwnerSpeeds owner_speeds; // retained until unsplit frame publication
+    PlayerAeroCache aero;
+    std::array<float, kVehicleWheelCount> aero_preloads{}; // kN, held per outer call
+    bool aero_ready = false;
     // Actual system4772E0 prepares forces after component refresh/rest handling.
     // Body storage/ground/spawn adapters remain the port's explicit3D approximation.
     VehicleVec3 prepared_force, prepared_torque;
@@ -576,6 +606,9 @@ struct VehicleWheelTelemetry {
 // One record per step, describing the state at the END of the step and the
 // forces that produced it.
 struct VehicleTelemetry {
+    PlayerAeroCache aero;
+    std::array<float, kVehicleWheelCount> aero_preloads{};
+    bool aero_ready = false;
     std::uint64_t step = 0;     // steps completed, 1 for the first step
     double simulation_seconds = 0.0;
     double solver_dt = kVehicleStepSeconds;
@@ -638,12 +671,14 @@ struct VehicleTelemetry {
 // published support/gear, engine feedback and wheel derivative inputs.
 // The380-byte rigid suffix stores seven vectors, live/snapshot matrices,
 // damping/cap, four body flags/readiness and the public pose edit marker.
-// A final8-byte suffix retains the outer-selected steering word/readiness.
+// The8-byte steering suffix is followed by72 aero bytes: four cache
+// operands, enable, four held preload values and outer readiness.
 constexpr std::size_t kVehicleTelemetryRecordBytes =
     8 + 4 * 24 + 5 * 8 + 4 + 3 * 8 + 4 + 8 + kVehicleWheelCount * (9 * 8 + 3 * 4)
     + 7 * 8 + 4 * 4 + kVehicleWheelCount * (8 + 4) + 4 * 8 + 4
     + 2 * 24 + 5 * 4 + 8 + kVehicleWheelCount * (3 * 8 + 4)
-    + 7 * 24 + 2 * 9 * 8 + 2 * 8 + 5 * 4 + 4 * 8 + 2 * 4;
+    + 7 * 24 + 2 * 9 * 8 + 2 * 8 + 5 * 4 + 4 * 8 + 2 * 4
+    + 8 * 8 + 2 * 4;
 void encode_vehicle_telemetry(const VehicleTelemetry& record,
                               std::array<std::uint8_t, kVehicleTelemetryRecordBytes>& out) noexcept;
 
@@ -720,10 +755,8 @@ private:
         double weight = 0.0;
         VehicleVec3 inertia;            // body-frame principal moments
         VehicleVec3 centre_of_mass;     // body frame
-        // Each strut's attachment point relative to the centre of mass,
-        // body frame, and its static preload (0x00475460), N.
+        // Each strut's attachment point relative to the centre of mass.
         std::array<VehicleVec3, kVehicleWheelCount> attach{};
-        std::array<double, kVehicleWheelCount> preload{};
         std::array<double, kVehicleWheelCount> radius{};
         std::array<double, 2> progressive{};
         std::array<double, 2> spring{};
@@ -734,7 +767,6 @@ private:
         std::array<double, 2> droop_limit{};
         std::array<double, 2> static_friction{};
         std::array<double, 2> sliding_friction{};
-        double drag = 0.0;
     };
 
     void initial_engine_speed(VehicleState& state) const noexcept;

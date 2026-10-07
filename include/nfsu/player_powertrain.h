@@ -132,6 +132,27 @@ void player_rigid_body_integrate(const VehicleHandling& setup,PlayerRigidBodySta
 // Original outer40BD40 changes live axes alone, after the force callback.
 void player_rigid_body_normalize(PlayerRigidBodyState& body) noexcept;
 
+// Original462F90 three force/arm applications, in kN/body metres, using
+// source binary32 order. Disabled leaves the optional drag output untouched.
+struct PlayerAeroForces {
+    std::array<PlayerRigidVector,3> forces{}, arms{};
+    float downforce = 0.0F;
+};
+PlayerAeroForces player_aero_forces(const VehicleHandling& setup,
+                                  const PlayerRigidBodyState& body,
+                                  const PlayerAeroCache& cache,
+                                  const PlayerInitialAeroConfiguration& config) noexcept;
+float player_aero_apply(const VehicleHandling& setup, PlayerRigidBodyState& body,
+                       const PlayerAeroCache& cache,
+                       const PlayerInitialAeroConfiguration& config,
+                       PlayerRigidVector* cached_drag = nullptr) noexcept;
+//477100/584B10/588520, before substeps, using PRIOR published owner speed.
+// Actor state1 gravity/CG flag are primitive operands, not VehicleModel modes.
+std::array<float,4> player_aero_preloads(const VehicleHandling& setup,
+                                       float published_forward, bool enabled,
+                                       unsigned actor_state = 0,
+                                       bool cg_enabled = true) noexcept;
+
 //47AA40 common upright/support path with cleared recovery timer and optional
 //735FCC body-pair scan disabled. Inputs are cached completed body velocities,
 // published owner support/gear, and driver throttle; genuine live actor/body

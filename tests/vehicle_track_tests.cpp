@@ -1285,7 +1285,7 @@ void test_refusals() {
 // ---------------------------------------------------------------------------
 
 void test_telemetry_layout() {
-    static_assert(nfsu::kVehicleTrackTelemetryRecordBytes == 1492, "the record is 1492 bytes");
+    static_assert(nfsu::kVehicleTrackTelemetryRecordBytes == 1564, "the record is 1564 bytes");
     nfsu::VehicleTrackTelemetry t;
     t.step = 0x0102030405060708ULL;
     t.model.step = 0x1112131415161718ULL;

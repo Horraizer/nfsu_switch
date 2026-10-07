@@ -33,6 +33,33 @@ VehicleSpec setup(const Record& record, const VehicleUpgradeLevels& levels) {
     require(make_race_vehicle_spec(record.data(),record.size(),levels,spec,error),error);
     return spec;
 }
+void check_aero_setup(const Record& original) {
+    VehicleTuning tuning;std::vector<VehicleTuningIssue> issues;
+    require(decode_vehicle_tuning(original.data(),original.size(),tuning,issues),"aero tuning source");
+    for(int a=0;a<=3;++a)for(int b=0;b<=3;++b) {
+        VehicleUpgradeLevels levels;levels.aero_a=a;levels.aero_b=b;
+        const auto spec=setup(original,levels);Record encoded{};
+        encode_vehicle_handling(spec.handling,encoded.data(),encoded.size());
+        const float fields[]{spec.handling.downforce_front,spec.handling.downforce_rear,spec.handling.aero_preload};
+        for(unsigned i=0;i<3;++i) {
+            float expected=f32(original,0x374+4*i);
+            if(b)expected=expected+tuning.aero_b[static_cast<std::size_t>(b-1)].downforce_delta[i];
+            if(a)expected=expected+tuning.aero_a[static_cast<std::size_t>(a-1)].downforce_delta[i];
+            require(fields[i]==expected&&f32(encoded,0x374+4*i)==expected,
+                    "selected B-before-A float fields survive decode/spec/encode");
+        }
+        auto omitted=spec;omitted.handling.downforce_front=0;omitted.handling.downforce_rear=0;
+        omitted.handling.aero_preload=0;
+        VehicleModel full(spec),without(omitted);VehicleState x,y;VehiclePose pose;pose.speed=20;
+        VehicleTelemetry tx,ty;VehicleInput input;
+        require(full.reset(x,pose)&&without.reset(y,pose)&&
+                full.step(x,input,VehicleFlatGround{},tx)&&without.step(y,input,VehicleFlatGround{},ty),
+                "selected aero setup force callbacks complete");
+        require(x.prepared_force.z!=y.prepared_force.z&&x.aero_preloads!=y.aero_preloads,
+                "selected aero coefficients reach both model force and moving preload");
+    }
+    std::cout<<"aero selected/tuned setup16 passed\n";
+}
 void check_levels(const Record& original) {
     VehicleHandling stock; VehicleTuning tuning;
     std::vector<VehicleHandlingIssue> hi; std::vector<VehicleTuningIssue> ti;
@@ -53,6 +80,9 @@ void check_levels(const Record& original) {
         Record applied{};
         require(apply_vehicle_tuning(original.data(),original.size(),levels,applied.data(),applied.size(),ti),
                 "apply isolated level");
+        require(h.downforce_front==f32(applied,0x374)&&h.downforce_rear==f32(applied,0x378)&&
+                h.aero_preload==f32(applied,0x37C),
+                "selected tuned aero bytes reach model handling without stock substitution");
         if (field==&VehicleUpgradeLevels::weight) {
             require(h.mass==float(double(stock.mass)*tuning.weight[n].mass_scale),"weight mass");
             require(h.centre_of_mass[0]==float(double(stock.centre_of_mass[0])+
@@ -95,7 +125,15 @@ void check_levels(const Record& original) {
                     s.sliding_friction==t.sliding_friction,"tyre fields (three lateral scales unused)");
             }
         } else {
-            require(compare_vehicle_handling(h,zero.handling)==kVehicleRecordSize,"decoded-only level does not alter solver setup");
+            auto expected=zero.handling;
+            if(field==&VehicleUpgradeLevels::aero_a||field==&VehicleUpgradeLevels::aero_b) {
+                expected.downforce_front=f32(applied,0x374);
+                expected.downforce_rear=f32(applied,0x378);
+                expected.aero_preload=f32(applied,0x37C);
+            }
+            require(compare_vehicle_handling(h,expected)==kVehicleRecordSize,
+                    "aero levels alter only their retained coefficients; other decoded-only levels remain unused, offset " +
+                    std::to_string(compare_vehicle_handling(h,expected)));
             if (field==&VehicleUpgradeLevels::nitrous) {
                 require(f32(applied,kVehicleNitrousBlockOffset)==tuning.nitrous[n].capacity &&
                     f32(applied,kVehicleNitrousBlockOffset+12)==tuning.nitrous[n].rate,"nitrous decode only");
@@ -104,7 +142,7 @@ void check_levels(const Record& original) {
                     require(f32(applied,kVehicleGripBlockOffset+4*i)==tuning.grip[n].values[i],"grip decode only");
                 else {
                     const auto delta=field==&VehicleUpgradeLevels::aero_a ? tuning.aero_a[n].downforce_delta[i] : tuning.aero_b[n].downforce_delta[i];
-                    require(f32(applied,kVehicleDownforceOffset+4*i)==float(double(f32(original,kVehicleDownforceOffset+4*i))+delta),"aero decode only");
+                    require(f32(applied,kVehicleDownforceOffset+4*i)==float(double(f32(original,kVehicleDownforceOffset+4*i))+delta),"original aero tuning addition");
                 }
             }
         }
@@ -207,7 +245,9 @@ int main(int argc,char** argv) {
         require(parse_performance_levels(performance_levels_text(levels),levels,error),"canonical CLI roundtrip");
         Record original{}; encode_vehicle_handling(stock_240sx_handling(),original.data(),original.size());
         encode_vehicle_tuning(stock_240sx_tuning(),original.data(),original.size());
-        const auto saved=original; check_levels(original); check_sessions(original);
+        const auto saved=original;check_aero_setup(original);
+        if(argc==2&&std::string(argv[1])=="--aero-only")return 0;
+        check_levels(original); check_sessions(original);
         require(original==saved,"original record never mutated");
         levels.weight=4; VehicleSpec untouched=stock_240sx_vehicle_spec();
         require(!make_race_vehicle_spec(original.data(),original.size(),levels,untouched,error),"invalid API levels refused");

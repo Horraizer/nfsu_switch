@@ -251,6 +251,8 @@ void test_record_round_trip() {
     check(get_u32(record, 0x2E8) == 0x40548B44U, "first gear 3.321 at +0x2E8");
     check(get_u32(record, 0x300) == 0x44480000U, "idle 800 at +0x300");
     check(get_u32(record, 0x370) == 0x39D1B717U, "drag 0.0004 at +0x370");
+    check(get_u32(record,0x374)==0x3E0F5C29U&&get_u32(record,0x378)==0x3E1EB852U&&
+          get_u32(record,0x37C)==0x3C23D70AU,"original stock aero field bits");
     check(get_u32(record, 0x1EC) == 0x3FE66666U, "front static friction 1.8 at +0x1EC");
     check(get_u32(record, 0x298) == 0xBE051EB8U, "front droop limit -0.13 at +0x298");
     check(get_u32(record, 0x110) == 0x3E800000U && get_u32(record, 0x114) == 0U &&
@@ -1882,8 +1884,17 @@ void test_telemetry_encoding() {
     // Then the steer angle to 184 and four wheels of 84 bytes, the last
     // wheel's sliding flag closes the original prefix. Mechanical state
     // follows it so equal displayed values cannot hide different futures.
-    check(bytes[516] == 1 && bytes[519] == 0 && nfsu::kVehicleTelemetryRecordBytes == 1252,
+    check(bytes[516] == 1 && bytes[519] == 0 && nfsu::kVehicleTelemetryRecordBytes == 1324,
           "the original wheel prefix precedes persistent mechanical state");
+    t.aero.processed_throttle=.25F;t.aero.support_kind=.75F;
+    t.aero.enabled=false;t.aero_preloads[3]=2.5F;t.aero_ready=true;
+    nfsu::encode_vehicle_telemetry(t,bytes);
+    double cached_throttle=0,cached_support=0,last_preload=0;
+    std::memcpy(&cached_throttle,bytes.data()+1268,8);
+    std::memcpy(&cached_support,bytes.data()+1276,8);
+    std::memcpy(&last_preload,bytes.data()+1312,8);
+    check(cached_throttle==.25&&cached_support==.75&&last_preload==2.5&&
+          bytes[1284]==0&&bytes[1320]==1,"held aero phase is included in canonical telemetry bytes");
     // The applied drive torque follows the recovered one in each wheel:
     // wheel 0's eighth and ninth doubles, at 184 + 56 and 184 + 64.
     t.wheels[0].drive_applied = 1.0;

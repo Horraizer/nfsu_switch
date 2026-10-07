@@ -743,4 +743,82 @@ float player_engine_publish_rpm(const VehicleHandling& h,
     return target;
 }
 
+PlayerAeroForces player_aero_forces(const VehicleHandling& h,
+                                  const PlayerRigidBodyState& body,
+                                  const PlayerAeroCache& cache,
+                                  const PlayerInitialAeroConfiguration& config) noexcept {
+    PlayerAeroForces result;
+    if (!cache.enabled) return result;
+    const auto& v = body.velocity;
+    const auto& axes = body.axes;
+    const float speed = static_cast<float>(vehicle_sqrt(
+        static_cast<double>((v[0]*v[0]+v[1]*v[1])+v[2]*v[2]))) / cache.speed_divisor;
+    const float gain = (config.drag_gain-1.0F)*(1.0F-cache.processed_throttle)+1.0F;
+    const float drag = -(((cache.drag_scale*h.drag)*speed)*gain);
+    for (unsigned j=0;j<3;++j) result.forces[0][j]=v[j]*drag;
+    if (cache.support_kind>=0.5F)
+        result.arms[0][2]=(1.0F-cache.processed_throttle)*config.drag_arm_z;
+    float up=axes[2][2]>0.0F?axes[2][2]:0.0F;
+    if (cache.support_kind>=0.5F) up=1.0F;
+    PlayerRigidVector direction{{1,0,0}};
+    if (speed>9.9999997473787516e-05F) {
+        const float inverse=1.0F/speed;
+        for (unsigned j=0;j<3;++j) direction[j]=v[j]*inverse;
+    }
+    float cosine=(direction[2]*axes[0][2]+direction[1]*axes[0][1])+direction[0]*axes[0][0];
+    if (cosine<0.0F) cosine=0.0F;
+    const float fourth=((cosine*cosine)*cosine)*cosine;
+    float front=0.0F,rear=0.0F;
+    if (cache.support_kind==0.0F) {
+        const float total=(((h.downforce_rear+h.downforce_front)*fourth)*up)*speed;
+        front=total*0.40000000596046448F;
+        rear=total*0.40999999642372131F;
+    } else {
+        front=((fourth*h.downforce_front)*up)*speed;
+        rear=((fourth*h.downforce_rear)*up)*speed;
+    }
+    const auto transform=[&axes](const PlayerRigidVector& local) {
+        PlayerRigidVector world{};
+        for (unsigned j=0;j<3;++j)
+            world[j]=(((local[2]*axes[2][j]+local[1]*axes[1][j])+local[0]*axes[0][j])+0.0F)+0.0F;
+        return world;
+    };
+    result.forces[1]=transform({{0,0,-front}});
+    result.forces[2]=transform({{0,0,-rear}});
+    result.arms[1]=transform({{1,0,0}});
+    result.arms[2]=transform({{-1,0,0}});
+    result.downforce=front+rear;
+    return result;
+}
+
+float player_aero_apply(const VehicleHandling& h,PlayerRigidBodyState& body,
+                       const PlayerAeroCache& cache,
+                       const PlayerInitialAeroConfiguration& config,
+                       PlayerRigidVector* cached_drag) noexcept {
+    if (!cache.enabled) return 0.0F;
+    const auto work=player_aero_forces(h,body,cache,config);
+    if (cached_drag) *cached_drag=work.forces[0];
+    for (unsigned k=0;k<3;++k) {
+        const auto& f=work.forces[k];const auto& arm=work.arms[k];
+        player_rigid_body_add_contact_force(body,{f[0],f[1],f[2]},
+                                           {arm[0],arm[1],arm[2]});
+    }
+    return work.downforce;
+}
+
+std::array<float,4> player_aero_preloads(const VehicleHandling& h,
+                                       float speed,bool enabled,
+                                       unsigned actor_state,bool cg_enabled) noexcept {
+    const float cg=cg_enabled?h.centre_of_mass[0]:0.0F;
+    const float front=h.wheels[0].longitudinal-cg;
+    const float rear=h.wheels[3].longitudinal-cg;
+    const float rear_share=(front/(front-rear))*0.5F;
+    const float front_share=0.5F-rear_share;
+    float aero=0.0F;
+    if (enabled) aero=(h.downforce_rear+h.downforce_front)*(speed>0.0F?speed:0.0F);
+    const float gravity=actor_state==1?12.25F:9.8000001907348633F;
+    const float total=aero*h.aero_preload+gravity*h.mass;
+    return {{total*front_share,total*front_share,total*rear_share,total*rear_share}};
+}
+
 } // namespace nfsu

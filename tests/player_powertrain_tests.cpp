@@ -560,6 +560,62 @@ void original_strut_partner_epoch() {
           c.wheels[1].compression==d.wheels[1].compression&&ta.wheels[1].load==tb.wheels[1].load,
           "second strut consumes its already-updated partner despite different prior first-strut states");
 }
+void original_aero_and_outer_epoch() {
+    using namespace nfsu;
+    const auto h=stock_240sx_handling();PlayerRigidBodyState body;
+    body.velocity={{20,0,0}};body.force={{0,0,-11.956000328063965F}};
+    PlayerAeroCache cache;cache.support_kind=1.0F;
+    PlayerInitialAeroConfiguration configuration;
+    // Actual original462F90 identity20m/s, support1/throttle0 witness.
+    PlayerRigidVector drag{};
+    const float downforce=player_aero_apply(h,body,cache,configuration,&drag);
+    check(drag[0]==-0.3199999928474426F&&downforce==5.899999618530273F&&
+          body.force[2]==-17.856000900268555F&&body.torque[1]==-0.26799988746643066F,
+          "original three aero applications include support-dependent drag moment");
+    cache.processed_throttle=0.4F;body.force={{0,0,-11.956000328063965F}};body.torque={};
+    player_aero_apply(h,body,cache,configuration,&drag);
+    check(drag[0]==-0.25599998235702515F&&body.torque[1]==-0.284639835357666F,
+          "original processed throttle changes both gain and drag arm");
+    cache.support_kind=0;const auto unsupported=player_aero_forces(h,body,cache,configuration);
+    check(unsupported.forces[1][2]==-2.3600003719329834F&&
+          unsupported.forces[2][2]==-2.4190001487731934F&&unsupported.arms[0][2]==0,
+          "zero-support original sum coefficients and asymmetric shares");
+    const auto before=body;cache.enabled=false;drag={{7,8,9}};
+    check(player_aero_apply(h,body,cache,configuration,&drag)==0&&drag==PlayerRigidVector{{7,8,9}}&&
+          body.force==before.force&&body.torque==before.torque,
+          "disabled original aero preserves body and optional drag output");
+    const auto preload=player_aero_preloads(h,100,true);
+    check(preload==std::array<float,4>{{3.2621543407440186F,3.2621543407440186F,
+                                     2.8633458614349365F,2.8633458614349365F}},
+          "original477100 moving preload witness preserves float order");
+    check(player_aero_preloads(h,-20,true)==player_aero_preloads(h,0,true)&&
+          player_aero_preloads(h,100,false)==player_aero_preloads(h,0,true),
+          "reverse and disabled contexts omit speed preload");
+
+    auto spec=stock_240sx_vehicle_spec();VehicleModel model(spec);VehicleState state;
+    VehiclePose pose;pose.speed=20;VehicleTelemetry telemetry;VehicleInput input;input.throttle=.25;
+    check(model.reset(state,pose)&&model.step(state,input,VehicleFlatGround{},telemetry,0,1.0/240.0,true),
+          "initial aero writer and force preparation complete");
+    const auto held=state.aero_preloads;
+    check(state.aero_ready&&state.aero.speed_divisor==1&&state.aero.drag_scale==1&&
+          state.aero.processed_throttle==.25F&&state.aero.support_kind==1,
+          "named initial1/draft0 adapter seeds support from supplied spawn probes");
+    state.owner_speeds.forward=100;state.published_support=1;input.throttle=.75;
+    check(model.step(state,input,VehicleFlatGround{},telemetry,0,1.0/240.0,false)&&
+          state.aero.processed_throttle==.25F&&state.aero.support_kind==1&&state.aero_preloads==held,
+          "inner slices retain outer cache and published-speed preload");
+    check(model.step(state,input,VehicleFlatGround{},telemetry,0,1.0/240.0,true)&&
+          state.aero.processed_throttle==.75F&&state.aero.support_kind==.25F&&
+          state.aero_preloads==preload,
+          "next outer call consumes prior published support and owner speed");
+    state.aero.speed_divisor=2;
+    check(!model.step(state,input,VehicleFlatGround{},telemetry,0,1.0/240.0,false),
+          "noninitial scale requiring body/engine/wheel coupling is refused");
+    spec.aero.enabled=false;VehicleModel disabled(spec);VehicleState disabled_state;
+    check(disabled.reset(disabled_state,pose)&&disabled.step(disabled_state,input,VehicleFlatGround{},telemetry)&&
+          !disabled_state.aero.enabled&&disabled_state.aero_preloads==player_aero_preloads(h,20,false),
+          "explicit disabled model context omits downforce and moving preload");
+}
 } // namespace
 
 int main() {
@@ -573,6 +629,7 @@ int main() {
     original_front_steering_epoch();
     original_contact_force_and_tyre_wrap();
     original_strut_partner_epoch();
+    original_aero_and_outer_epoch();
     if (failures) {std::cerr<<failures<<" player powertrain test failure(s)\n";return 1;}
     std::cout<<"player powertrain tests passed\n";
 }

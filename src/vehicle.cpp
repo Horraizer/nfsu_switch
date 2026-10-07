@@ -109,6 +109,14 @@ bool state_finite(const VehicleState& s) noexcept {
              finite(w.history_torque) && w.spin_direction>=0 && w.spin_direction<=2&&
              finite(w.prepared_torque)&&finite(w.prepared_force_long)&&finite(w.prepared_slip);
     }
+    ok=ok&&finite(s.aero.speed_divisor)&&finite(s.aero.drag_scale)&&
+       finite(s.aero.processed_throttle)&&finite(s.aero.support_kind);
+    // Noninitial479160 scales would also change body, engine and wheels.
+    // Reject them in this explicitly bounded VehicleModel adapter.
+    if(s.aero_ready) ok=ok&&s.aero.speed_divisor==1.0F&&s.aero.drag_scale==1.0F&&
+        s.aero.processed_throttle>=0.0F&&s.aero.processed_throttle<=1.0F&&
+        s.aero.support_kind>=0.0F&&s.aero.support_kind<=1.0F;
+    for(float value:s.aero_preloads) ok=ok&&finite(value);
     return ok;
 }
 
@@ -370,6 +378,9 @@ void visit_floats(Handling& h, Visitor&& visit) {
         visit(kVehicleEngineBrakeOffset + i * 4, h.engine_brake[i]);
     }
     visit(kVehicleDragOffset, h.drag);
+    visit(kVehicleDownforceFrontOffset, h.downforce_front);
+    visit(kVehicleDownforceRearOffset, h.downforce_rear);
+    visit(kVehicleAeroPreloadOffset, h.aero_preload);
     visit(kVehicleServiceBrakeOffset, h.service_brake);
     visit(kVehicleParkingBrakeOffset, h.parking_brake);
     visit(kVehicleBrakeBalanceOffset, h.brake_balance);
@@ -629,6 +640,9 @@ VehicleHandling stock_240sx_handling() {
     h.torque = {0.14F, 0.15F, 0.16F, 0.18F, 0.21F, 0.22F, 0.19F, 0.165F, 0.145F};
     h.engine_brake = {0.12F, 0.18F, 0.13F};
     h.drag = 0.0004F;
+    h.downforce_front = 0.14F;
+    h.downforce_rear = 0.155F;
+    h.aero_preload = 0.01F;
     h.service_brake = 0.4F;
     h.parking_brake = 0.5F;
     h.brake_balance = 0.5F;
@@ -729,6 +743,12 @@ bool check_vehicle_handling(const VehicleHandling& h,
     if (h.drag < 0.0F) {
         add_issue(issues, kVehicleDragOffset, "the drag must not be negative");
     }
+    if (h.downforce_front < 0.0F)
+        add_issue(issues,kVehicleDownforceFrontOffset,"front downforce must not be negative");
+    if (h.downforce_rear < 0.0F)
+        add_issue(issues,kVehicleDownforceRearOffset,"rear downforce must not be negative");
+    if (h.aero_preload < 0.0F)
+        add_issue(issues,kVehicleAeroPreloadOffset,"aero preload must not be negative");
     if (h.yaw_torque_limit < 0.0F) {
         add_issue(issues, kVehicleYawTorqueLimitOffset, "the yaw torque limit must not be negative");
     }
@@ -973,6 +993,11 @@ void encode_vehicle_telemetry(const VehicleTelemetry& r,
     e.f64(r.rigid_orientation.w);e.f64(r.rigid_orientation.x);
     e.f64(r.rigid_orientation.y);e.f64(r.rigid_orientation.z);
     e.u32(r.steering_word);e.u32(r.steering_word_ready?1U:0U);
+    e.f64(r.aero.speed_divisor);e.f64(r.aero.drag_scale);
+    e.f64(r.aero.processed_throttle);e.f64(r.aero.support_kind);
+    e.u32(r.aero.enabled?1U:0U);
+    for(float value:r.aero_preloads) e.f64(value);
+    e.u32(r.aero_ready?1U:0U);
 }
 
 void VehicleTelemetryHash::add(const VehicleTelemetry& record) noexcept {
@@ -998,6 +1023,10 @@ VehicleModel::VehicleModel(const VehicleSpec& spec) : spec_(spec) {
         return;
     }
     const VehicleApproximations& a = spec_.approx;
+    if (!finite(spec_.aero.drag_gain) || !finite(spec_.aero.drag_arm_z)) {
+        error_ = "supplied initial aero globals must be finite";
+        return;
+    }
     const double approx_values[] = {
         a.unit_scale, a.wheel_inertia, a.brake_torque_front, a.brake_torque_rear,
         a.max_steer, a.steer_speed_reference, a.steer_rate,
@@ -1040,23 +1069,7 @@ VehicleModel::VehicleModel(const VehicleSpec& spec) : spec_(spec) {
                            d_.centre_of_mass);
         d_.radius[k] = static_cast<double>(h.wheels[k].radius);
     }
-    // 0x00475460: the static preload of each strut, in its own operation
-    // order. With the retail flag at 0x006FFDE4 set, cg is the centre of
-    // mass's first component; a = wheel 0 - cg, L = a - (wheel 3 - cg),
-    // rear = a / L * 0.5 per rear wheel, front = 0.5 - rear per front wheel,
-    // each times the weight. The recovered total also adds a speed term,
-    // the argument times +0x37C, which is not reproduced (its argument,
-    // built at 0x004745E6..0x00474610, was not traced), so this is the
-    // preload at rest.
-    const double cg = static_cast<double>(h.centre_of_mass[0]);
-    const double to_front = static_cast<double>(h.wheels[0].longitudinal) - cg;
-    const double to_rear = static_cast<double>(h.wheels[3].longitudinal) - cg;
-    const double wheelbase = to_front - to_rear;
-    const double rear_share = to_front / wheelbase * 0.5;
-    const double front_share = 0.5 - rear_share;
-    for (std::size_t k = 0; k < kVehicleWheelCount; ++k) {
-        d_.preload[k] = d_.weight * (k < 2 ? front_share : rear_share);
-    }
+    //477100 supplies binary32 speed-dependent preload once per outer call.
     for (std::size_t axle = 0; axle < 2; ++axle) {
         const VehicleAxleStrut& s = h.struts[axle];
         d_.progressive[axle] = static_cast<double>(s.progressive);
@@ -1069,7 +1082,6 @@ VehicleModel::VehicleModel(const VehicleSpec& spec) : spec_(spec) {
         d_.static_friction[axle] = static_cast<double>(h.tyres[axle].static_friction);
         d_.sliding_friction[axle] = static_cast<double>(h.tyres[axle].sliding_friction);
     }
-    d_.drag = static_cast<double>(h.drag) * unit;
 
     // The shift tables of 0x0046D1C0, for the retail flag at 0x00700030
     // (1: search the torque curves for the crossing).
@@ -1256,6 +1268,17 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     // Selector1 has separate service and parking paths47792A/477953.
     const double brake = sanitize(raw_input.brake, 0.0, 1.0);
     const double steer = sanitize(raw_input.steer, -1.0, 1.0);
+    if (select_request || !s.aero_ready) {
+        //477BED and477100 precede the inner loop.479160's demonstrated
+        // INITIAL1/0 coupling leaves body/engine/wheel scales at1. This
+        // named adapter excludes active race scaling and traffic drafting.
+        s.aero = PlayerAeroCache{};
+        s.aero.enabled = spec_.aero.enabled;
+        s.aero.processed_throttle = static_cast<float>(throttle);
+        s.aero.support_kind = static_cast<float>(s.published_support)*0.25F;
+        s.aero_preloads = player_aero_preloads(h,s.owner_speeds.forward,s.aero.enabled);
+        s.aero_ready = true;
+    }
 
     rigid_import_public(h,s);
     const bool original_steering=raw_input.road_steering&&raw_input.road_angle_word_valid;
@@ -1399,7 +1422,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             const double positive = x > 0.0 ? x : 0.0;
             double f = (d_.progressive[axle] * positive + 1.0) * d_.spring[axle] * x;
             f = f + (rate > 0.0 ? d_.damping_bump[axle] : d_.damping_rebound[axle]) * rate;
-            f = f + d_.preload[k];
+            f = f + static_cast<double>(s.aero_preloads[k])*a.unit_scale;
             //46ABD0 refreshes the factory's ascending strut list.588580
             // consumes its partner immediately: the first strut in each
             // axle sees the previous compression, the second the new one.
@@ -1478,6 +1501,10 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             s.published_support=0;
             for(const auto& wheel:s.wheels) s.published_support+=wheel.contact?1U:0U;
             s.published_gear=s.gear;
+            // Supplied moving-spawn force preparation: initial ground probes
+            // seed support before the first aero callback. This retains the
+            // diagnosed port epoch, not authentic actor activation timing.
+            s.aero.support_kind=static_cast<float>(s.published_support)*0.25F;
         }
         s.body_rest_state=player_body_rest_state(s.velocity,s.angular_velocity,
             static_cast<float>(forward.z),static_cast<float>(left.z),static_cast<float>(throttle),
@@ -1523,8 +1550,12 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             wheel_out[k].drive_torque=static_cast<double>(work[k].torque)*a.unit_scale;
             player_wheel_prepare(h,k,work[k]);
         }
-        const double speed=vehicle_sqrt(dot(s.velocity,s.velocity));
-        force=add(force,scale(s.velocity,-d_.drag*speed));
+        PlayerRigidBodyState aero_body=s.rigid_body;
+        aero_body.force=rigid_vector(scale(force,1.0/a.unit_scale));
+        aero_body.torque={};
+        player_aero_apply(h,aero_body,s.aero,spec_.aero);
+        force=scale(public_vector(aero_body.force),a.unit_scale);
+        torque=scale(public_vector(aero_body.torque),a.unit_scale);
         const VehicleVec3 local_force=r.apply_transpose(force);
         for (unsigned iteration=0;iteration<5;++iteration) {
             player_body_wheel_constraints(h,work,static_cast<float>(local_force.x/a.unit_scale),
@@ -1535,7 +1566,8 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         for (std::size_t k=0;k<4;++k) player_wheel_limit(h,k,work[k]);
         player_engine_feedback_finalize(h,s.gear,s.transmission,s.engine,work,static_cast<float>(throttle),crank);
         PlayerRigidBodyState contact_body;
-        contact_body.force=rigid_vector(scale(force,1.0/a.unit_scale));contact_body.torque={};
+        contact_body.force=rigid_vector(scale(force,1.0/a.unit_scale));
+        contact_body.torque=rigid_vector(scale(torque,1.0/a.unit_scale));
         for (std::size_t k=0;k<4;++k) {
             auto& wheel=s.wheels[k];auto& out=wheel_out[k];const auto& w=work[k];
             wheel.spin=w.spin;wheel.brake_locked=w.locked;wheel.history_torque=w.history_torque;
@@ -1634,6 +1666,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     t.engine_torque = engine_torque;
     t.engine=s.engine;t.transmission=s.transmission;
     t.owner_speeds=s.owner_speeds;
+    t.aero=s.aero;t.aero_preloads=s.aero_preloads;t.aero_ready=s.aero_ready;
     t.rigid_body=s.rigid_body;t.rigid_body_ready=s.rigid_body_ready;t.rigid_orientation=s.rigid_orientation;
     t.steering_word=s.steering_word;t.steering_word_ready=s.steering_word_ready;
     t.prepared_force=s.prepared_force;t.prepared_torque=s.prepared_torque;
