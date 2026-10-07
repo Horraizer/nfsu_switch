@@ -244,27 +244,82 @@ bool combine_race_commands(RecordedCommands track, const RecordedCommands& car,
 bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& root,
                         std::string& error, AssetCheckObserver* observer,
                         TrackSliceLoadObserver* loading, bool tuned, bool glows,
-                        bool car_shading, std::uint32_t event_number) {
+                        bool car_shading, const CarAssets* car, const RaceCarDress* dress,
+                        std::uint32_t event_number) {
     if (ready_) { error = "race scene is already loaded"; return false; }
+    // The misuse refusals run before any file is read, so a caller that
+    // cannot reach retail data still sees the sentence.
+    if (tuned && dress != nullptr) {
+        error = "the tuned preset and an explicit dress are exclusive; pass one";
+        return false;
+    }
+    if (dress != nullptr && (dress->request == nullptr || dress->skin == nullptr)) {
+        error = "a dress needs both a request and a skin";
+        return false;
+    }
+    if (dress != nullptr && dress->request->car_type_name.empty()) {
+        error = "a dress request needs the car type it was authored for";
+        return false;
+    }
     tuned_ = tuned;
+    dressed_ = dress != nullptr;
     glows_enabled_ = glows;
     car_shading_=car_shading;
+    CarAssets selection;
+    if (car != nullptr) {
+        selection = *car;
+    } else if (!load_car_assets(root / "Global/GLOBALB.BUN",
+                                dress != nullptr ? dress->request->car_type_name : "240SX",
+                                selection, error)) {
+        return false;
+    }
+    if (tuned && selection.car_type_name != "240SX") {
+        error = "the tuned preset is the 240SX's own part set; it cannot dress car type " +
+                selection.car_type_name;
+        return false;
+    }
+    if (dress != nullptr && dress->request->car_type_name != selection.car_type_name) {
+        error = "the dress was authored for car type " + dress->request->car_type_name +
+                " and cannot dress car type " + selection.car_type_name;
+        return false;
+    }
     // Car source files and their decoded preparation are temporary. Complete
     // that work before streaming the track so neither source set overlaps the
     // other's allocation peak. Only the prepared car scene survives this scope.
     if (loading) loading->checkpoint("car input");
     {
         StockFrameInputs inputs;
-        if (!read_stock_frame_inputs(root, inputs, tuned)) {
-            error = inputs.read_error(root);
+        // A false return covers both a refused selection and a pack that was
+        // not copied; either way the message names the cause (review F1 of
+        // issue #315's first round). A dress reads the tuned extras as well:
+        // its authored wheels and vinyls are not optional inputs.
+        if (!read_car_frame_inputs(root, selection, inputs, tuned || dressed_, error)) {
+            error = car_frame_inputs_error(inputs, error, root);
+            return false;
+        }
+        // A dress can install parts whose solids live only in the shared
+        // EXHAUST family file (the FE_SKYLINE ROCKET exhaust); the family
+        // pair is the dress's own input, refused by name when absent.
+        if (dress != nullptr && !read_exhaust_family_inputs(root, inputs)) {
+            const StockFrameInput& missing = inputs.exhaust_geometry.read
+                ? inputs.exhaust_textures : inputs.exhaust_geometry;
+            error = "the dress needs the shared exhaust family: " + missing.path + ": " +
+                    (missing.error.empty() ? std::string("not read") : missing.error);
             return false;
         }
         if (loading) loading->checkpoint("car preparation");
         StockFrame stock;
-        if (!prepare_race_car_frame(inputs, root, tuned ? tuned_240sx_request() : stock_240sx_request(),
-                tuned ? tuned_240sx_skin() : stock_240sx_skin(), stock, error,
-                car_shading_)) return false;
-        if (!prepare_car_shadow(inputs, stock.car_pack, shadow_asset_, error)) return false;
+        if (dress != nullptr) {
+            if (!prepare_race_car_frame(inputs, root, *dress->request, *dress->skin,
+                                        stock, error, car_shading_)) return false;
+            if (dress->bind != nullptr &&
+                !dress->bind(stock, inputs, *dress->request, error, dress->user)) return false;
+        } else if (!prepare_race_car_frame(inputs, root,
+                tuned ? tuned_240sx_request() : stock_car_request(selection.car_type_name),
+                tuned ? tuned_240sx_skin() : stock_car_skin(selection.car_type_name),
+                stock, error, car_shading_)) return false;
+        if (!prepare_car_shadow(selection.car_type_name, inputs, stock.car_pack,
+                                shadow_asset_, error)) return false;
         if (glows_enabled_) glow_anchors_ = collect_car_glow_anchors(stock);
         if (loading) loading->checkpoint("car prepared");
         skin_source_ = stock.skin_binding.source;
@@ -433,9 +488,10 @@ bool RaceGpuScene::prepare_frame_cache(std::string& error) {
     if (particles_enabled_ && !append_particle_commands(car_templates_,error)) return false;
     if (!validate_recorded_commands(car_templates_,error)) return false;
     if (!record_car_shadow_commands(shadow_asset_, {}, race_render_options(sky_), shadow_templates_, error)) return false;
-    if (tuned_) for (const auto& draw : car_templates_.owning_draws()) {
+    if (tuned_ || dressed_) for (const auto& draw : car_templates_.owning_draws()) {
         if (draw.index_count && draw.texture_resource == kNoHandle) {
-            error = "tuned race car has fallback triangles: " + draw.name;
+            error = tuned_ ? "tuned race car has fallback triangles: " + draw.name
+                           : "dressed race car has fallback triangles: " + draw.name;
             return false;
         }
     }

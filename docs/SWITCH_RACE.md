@@ -1,7 +1,12 @@
 # Event 1 on Switch (#196)
 
-`nfsu_switch_race.nro` runs the selected 240SX through event 1's forward
-track-1003 circuit for two laps. It uses `RaceSession` from #192, the #59
+`nfsu_switch_race.nro` runs the selected car through event 1's forward
+track-1003 circuit for two laps. Issue #315 selects the car with `--car NAME`
+from the 20 playable racers of the retail car type table - the event0 player
+car is `--car INTEGRA`, its rivals `--car ECLIPSE|SUPRA|CELICA` - each with
+its own geometry, textures, parts, wheel table, skin, shadow texture and
+handling record; without `--car` it is the stock 240SX, unchanged. It uses
+`RaceSession` from #192, the #59
 controls and chase camera, #157 residency, and #198's deko3d track path with
 #171 native DXT. The race also uses the command cache merged in #206 and
 the bounded track loader merged in #207.
@@ -26,8 +31,13 @@ The menu offers A for live driving, X for replay and Y to toggle the
 diagnostic panel. Direct presentation is the default. With nxlink, optional
 arguments are `[sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame]
 [--sky on|off|early] [--particles=on|--particles=off] [--tuned]
-[--glows] [--car-shading on|off] [--wet-road-reflections on|off]`.
-`--profile-frame` requires direct presentation.
+[--car NAME] [--glows] [--car-shading on|off] [--wet-road-reflections on|off]`.
+`--profile-frame` requires direct presentation. `--car NAME` resolves the
+name against the car type table of the installed `Global/GLOBALB.BUN`, so a
+selected racer's own three files must also sit under `sdmc:/nfsu/Cars/<NAME>`
+(`GEOMETRY.BIN`, `TEXTURES.BIN`, `VINYLS.BIN`; the stock car's six-file set
+still covers the 240SX). `--tuned` stays the 240SX's own preset and is
+refused with any other car.
 Issue #253 adds `--hud-trace` for a logged submitted HUD state on each direct
 frame. It requires HUD enabled and disables the menu panel toggle. Its
 timestamp is submission time, not scanout; logging changes frame cost and
@@ -368,3 +378,24 @@ a photograph of the tuned car racing and paired GPU SCENE replay pages for
 stock and tuned at the same build, mode and uninterrupted game-tick window.
 The target remains 60 fps; there is no alternate simulation rate or 30 fps
 acceptance mode.
+
+## Integrated live steering default
+
+Ordinary menu free driving and standalone `--live` select `recovered1` unless
+an explicit `--steering` override is supplied. The startup diagnostic prints
+the selected path. Explicit `--replay` retains the historical `baseline` path
+for its recorded simulation pins; it does not qualify current live handling.
+Console acceptance must exercise the ordinary menu entry with the integrated
+tyres, including braking, rear slip, reset and return/reentry. No original
+live steering predicate or complete wheel-coupling fidelity is inferred from
+this port default policy.
+
+The ordinary live/menu profile also enables glows, car shading and the existing
+wet-road reflection pass. Explicit `--glows=off`, `--car-shading off` and
+`--wet-road-reflections off` keep diagnostic overrides available. Bare
+`--glows` remains compatible. Replay defaults retain their prior effect
+selection for regression pins. The desktop race `--live` path follows the
+same live defaults; the desktop car viewer is a separate inspection tool.
+These effects retain their documented approximations, including the static
+car environment approximation; no dynamic environment-cube completion is
+claimed.

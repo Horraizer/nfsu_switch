@@ -8,13 +8,14 @@
 #include <cstdio>
 #include <cstring>
 #include <exception>
+#include <filesystem>
 #include <string>
 
 namespace {
 class Report {
     Framebuffer fb_{};
     bool open_ = false;
-    char text_[2048] = "NFSU #147: loading stock 240SX. Results appear on this screen.";
+    char text_[2048] = "NFSU #147: loading the stock car. Results appear on this screen.";
 public:
     ~Report() { if (open_) framebufferClose(&fb_); }
     void line(const char* message) {
@@ -69,21 +70,38 @@ bool run(int argc, char** argv, PadState& pad, Report& report, std::string& erro
     struct RomfsGuard { ~RomfsGuard() { romfsExit(); } } romfs_guard;
     bool painted = true, tuned = false, hud = false, have_root = false;
     std::string root = "sdmc:/nfsu";
+    std::string car_name = "240SX";
     for (int i=1; i<argc; ++i) {
         if (!argv[i] || !argv[i][0]) continue;
         const std::string argument = argv[i];
         if (argument == "--unpainted") painted = false;
         else if (argument == "--tuned") tuned = true;
         else if (argument == "--hud") hud = true;
+        else if (argument == "--car" && i+1 < argc && argv[i+1]) car_name = argv[++i];
         else if (!have_root && argument[0] != '-') { root = argument; have_root = true; }
         else { error = "unknown argument: " + argument; return false; }
     }
     if (tuned) painted = true;
+    nfsu::CarAssets selected_car;
+    if (!nfsu::load_car_assets(std::filesystem::path(root) / "Global/GLOBALB.BUN",
+                               car_name, selected_car, error)) {
+        error = "car selection: " + error; return false;
+    }
+    if (tuned && !nfsu::tuned_preset_available_for(selected_car)) {
+        error = "the --tuned preset is the 240SX's own part set; it cannot dress car type " +
+                selected_car.car_type_name;
+        return false;
+    }
     nfsu::StockFrame stock;
     {
-        report.line(("NFSU #147: reading six inputs under " + root).c_str());
+        report.line(("NFSU #147: reading the inputs of " + selected_car.car_type_name +
+                     " under " + root).c_str());
         nfsu::StockFrameInputs inputs;
-        if (!nfsu::read_stock_frame_inputs(root, inputs, tuned)) {
+        std::string read_error;
+        const bool read = nfsu::read_car_frame_inputs(root, selected_car, inputs, tuned,
+                                                      read_error);
+        if (!read_error.empty()) { error = read_error; return false; }
+        if (!read) {
             for (const auto& f : inputs.files) if (!f.read) error += f.path + ": " + f.error + "\n";
             if (tuned && !inputs.wheel_geometry.read)
                 error += inputs.wheel_geometry.path + ": " + inputs.wheel_geometry.error + "\n";
@@ -94,9 +112,9 @@ bool run(int argc, char** argv, PadState& pad, Report& report, std::string& erro
             return false;
         }
         if (!nfsu::prepare_stock_frame(inputs,
-                tuned ? nfsu::tuned_240sx_request() : nfsu::stock_240sx_request(),
+                tuned ? nfsu::tuned_240sx_request() : nfsu::stock_car_request(selected_car.car_type_name),
                 tuned ? nfsu::tuned_240sx_skin() :
-                painted ? nfsu::stock_240sx_skin() : nfsu::StockFrameSkin{}, stock, error)) return false;
+                painted ? nfsu::stock_car_skin(selected_car.car_type_name) : nfsu::StockFrameSkin{}, stock, error)) return false;
         if (!stock.inputs_ok) {
             error = "stock input issues:\n";
             for (const auto& issue : stock.issues) error += issue + "\n";

@@ -529,6 +529,88 @@ pre-existing geometry rejections listed above and prepare their scenes
 anyway. The 15 traffic vehicles have 5 installed slots, 4 of them with a
 model, and draw 3 in 9 instances.
 
+### Car selection through the retail table (issue #315)
+
+`nfsu::resolve_car_assets` / `load_car_assets`
+(`include/nfsu/car_assets.h`) turn a car type name into that car's own
+inputs. The name is matched byte for byte against the 0x00034600 records,
+and the class field +0xC54 (0 racer, 2 traffic, per
+[`FORMATS.md`](FORMATS.md)) is the original classification the layer
+enforces: a traffic-only vehicle is refused, never silently resolved to a
+racer. The record's geometry path (`CARS\<NAME>\GEOMETRY.BIN` in its
+spelling) is normalized to the installation's relative form
+(`Cars/<NAME>/GEOMETRY.BIN`); `TEXTURES.BIN` and `VINYLS.BIN` come from the
+same directory, the one triplet every one of the 39 retail `Cars/*`
+directories holds. The runtime path formatting of those two names was not
+traced in speed.exe; the loaders fail with the per-car path named if an
+installation ever differs.
+
+`read_car_frame_inputs` reads the nine files a selected car needs (its own
+three, `Global/GLOBALB.BUN`, shared `Cars/TEXTURES.BIN`, `Cars/BRAKES`,
+`Cars/PLATES`, and for the tuned route `Cars/WHEELS` geometry and textures),
+`stock_car_request`/`stock_car_skin` are the per-car forms of the 240SX
+preset functions, and `RaceRun::set_car` plus the `--car NAME` options of
+`nfsu_race`, `nfsu_switch_race.nro` and `nfsu_switch_car.nro` select through
+it. The default without a selection stays the pinned 240SX paths and the
+built-in 240SX spec, so the baseline replay and frame pins are untouched; a
+selected car drives the handling record decoded from its own car type
+record (`load_race_vehicle_spec`). The shadow texture is the car's own
+`<NAME>_SHADOWIG`, one 128x64 DXT3 image in every retail car directory.
+
+`tests/car_selection_tests.cpp` pins, for each of the 20 racers, the painted
+stock frame through the per-car paths, a bounded deterministic proving-ground
+drive of its own handling record, and the event0 player car's race sequence
+through the Switch race's load path; it also covers A/B/A reload isolation,
+absent-pack and invalid-name refusals, and the tuned-preset rule.
+
+### Runtime lamp and window name resolution (issue #315 round 3)
+
+Two name systems the executable resolves at draw time, recovered from
+`speed.exe` and the retail packs:
+
+- **Lamps.** The stock lamp meshes reference per-position texture names,
+  `<car>_KIT00_<lamp><position>` with lamp `HEADLIGHT` or `BRAKELIGHT` and
+  position `_LEFT`, `_RIGHT`, `_CENTRE`, `_GLASS_LEFT`, `_GLASS_RIGHT` or
+  `_GLASS_CENTRE`. The suffix strings sit at 0x006BA0A4..0x006BA120, and
+  the builder at 0x00580E40..0x00580F70 hashes them onto the car object's
+  lamp slots at +0x3E0..+0x408. Every retail car pack ships the state
+  records `<base>_OFF`, `_ON`, `_DAMAGE0`, `_GLASS_OFF`, `_GLASS_ON` and
+  `_GLASS_DAMAGE0`; nine packs (GOLF, NEON, TIBURON, SENTRA, 240SX, SKYLINE
+  among them) also ship records under the position names themselves. The
+  lamp state controller at 0x00583479 onward picks the state per lamp from
+  the world light level and braking. A static scene shows the resting
+  state, so `nfsu::alias_stock_lamp_textures` rewrites a position-name hash
+  to `<base>_OFF` / `<base>_GLASS_OFF`, but only when no loaded source
+  holds the position record and one holds the state record - the nine
+  cars with in-pack position records, and the 240SX frame pins with them,
+  pass through untouched.
+- **Windows.** The constructor at 0x0056A7C8..0x0056A804 installs the six
+  second-layer window-slot names beside the `WINDOW_FRONT` family the stock
+  alias has mapped since #223 (0x90E09671, 0x13EE21F2, 0xD689A31B,
+  0xB8F3415C, 0x2433DF4E, 0xF95D432F, names unknown - no texture record
+  with any of them exists anywhere in the installation); the 350Z and
+  CELICA base meshes reference four of them. The rewrite at
+  0x0056CA60..0x0056CAC2 fills the first-layer destinations from the table
+  at 0x006F1B48 and the second-layer destinations at +0x60 from the table
+  at 0x006F1B58 - `WINDOW` and `WINDOW2` respectively, plus their
+  `_DAMAGE0..2` variants selected per window by a two-bit damage state
+  (0x0056CA87 initializes the index to 0 undamaged). The static undamaged
+  binding therefore keeps the two layers apart: the first six names map to
+  `WINDOW`, the six second-layer names to `WINDOW2`, which
+  `alias_stock_window_textures` now does. Round 4 of the review caught the
+  first version of this alias mapping all twelve to `WINDOW`.
+
+`StockFrame::lamp_texture_aliases` reports how many hashes the lamp
+resolution rewrote, and the per-car regression asserts that no drawable
+material group of any racer remains without a resolved texture (round 3's
+checkerboard defect: SUPRA 9, CELICA 25, ECLIPSE 10 drawable groups drew
+the diagnostic checker at the reviewed head; all twenty are zero now), that
+the 350Z and CELICA second-layer windows draw WINDOW2 rather than WINDOW
+(round 4 F1), and - because the desktop viewer loads its own sources -
+`nfsu_viewer_car_materials_retail` drives the real viewer command line for
+CELICA and SUPRA and requires the same zero unresolved groups plus the
+viewer/frame hash equivalence on CELICA (round 4 F2).
+
 ### Still open after this slice
 
 - The pixel size itself: `[view+0xC]` in 0x545180 was not traced to a

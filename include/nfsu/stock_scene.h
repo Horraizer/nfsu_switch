@@ -8,6 +8,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,17 @@ namespace nfsu {
 // GLOBALB.BUN. Apply this to parsed geometry before collecting wanted
 // texture hashes and preparing the scene.
 void alias_stock_window_textures(GeometryReport& geometry) noexcept;
+
+// The stock lamp position-name resolution (issue #315): rewrites
+// <car>_KIT00_<lamp>_{LEFT,RIGHT,CENTRE,GLASS_LEFT,GLASS_RIGHT,GLASS_CENTRE}
+// hashes to the resting <...>_OFF / <...>_GLASS_OFF records the game's
+// runtime lamp state system selects from, but only when `present` - every
+// texture hash the loaded sources hold - lacks the position record and
+// holds the state record. Returns how many hashes it rewrote. See
+// src/stock_scene.cpp for the executable evidence.
+std::size_t alias_stock_lamp_textures(const std::set<std::uint32_t>& present,
+                                      const std::string& car_type_name,
+                                      GeometryReport& geometry) noexcept;
 
 // The car-part profile of PreparedCarScene: the recovered stock part set
 // (include/nfsu/car_parts.h), the per-LOD mesh hash of every installed part

@@ -1,5 +1,6 @@
 #include "nfsu/vehicle.h"
 
+#include <algorithm>
 #include <cfloat>
 #include <cstring>
 
@@ -332,7 +333,49 @@ double vehicle_sqrt(double x) noexcept {
     return y * scale_back;
 }
 
+// Range reduction keeps the alternating atan series within |z| <= sqrt(2)-1.
+// The omitted term is bounded by |z|^43/43 (< 9e-19). Reciprocal reduction
+// avoids squaring extreme inputs and preserves saturation at infinite slip.
+double vehicle_atan(double x) noexcept {
+    constexpr double pi_over_two = 1.57079632679489661923;
+    constexpr double pi_over_four = 0.78539816339744830962;
+    if (x != x) return 0.0;
+    const bool negative = x < 0.0;
+    double z = negative ? -x : x;
+    const bool reciprocal = z > 1.0;
+    if (reciprocal) z = 1.0 / z;
+    const bool shifted = z > 0.41421356237309504880;
+    if (shifted) z = (z - 1.0) / (z + 1.0);
+    const double z2 = z * z;
+    double polynomial = 1.0 / 41.0;
+    for (int denominator = 39; denominator >= 1; denominator -= 2)
+        polynomial = 1.0 / static_cast<double>(denominator) - z2 * polynomial;
+    double angle = z * polynomial;
+    if (shifted) angle += pi_over_four;
+    if (reciprocal) angle = pi_over_two - angle;
+    return negative ? -angle : angle;
+}
+
 namespace {
+
+// The original lateral load-curve family of 0x00587740, Unicorn-verified:
+// the slip angle selects and blends seven six-point curves over x 0..10
+// (descriptors 0x7043EC..0x704464), each evaluated at the wheel's load.
+// Curve 0's values sit in BSS and read as zero at rest.
+constexpr float kLateralCurves[7][6] = {
+    {0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F},
+    {0.0F, 1.2F, 2.3F, 3.0F, 3.0F, 2.8F},
+    {0.0F, 1.7F, 3.2F, 4.3F, 5.1F, 5.2F},
+    {0.0F, 1.8F, 3.5F, 4.9F, 5.8F, 6.1F},
+    {0.0F, 1.83F, 3.6F, 5.0F, 5.96F, 6.4F},
+    {0.0F, 1.86F, 3.7F, 5.1F, 6.13F, 6.7F},
+    {0.0F, 1.9F, 3.8F, 5.2F, 6.3F, 7.1F},
+};
+
+double lateral_curve(unsigned index, double load_kn) noexcept {
+    if (index > 6) index = 6;
+    return vehicle_uniform_curve(kLateralCurves[index], 6, 0.0, 10.0, load_kn);
+}
 
 // pi/2 split so that n * kPiOver2High is exact for |n| < 2^20 (fdlibm's
 // pio2_1 and pio2_1t).
@@ -525,6 +568,10 @@ bool check_vehicle_handling(const VehicleHandling& h,
     }
     for (std::size_t a = 0; a < 2; ++a) {
         const std::size_t tyre = kVehicleTyreOffset + a * kVehicleAxleStride;
+        positive(tyre + 0x00, h.tyres[a].slip_scale, "the lateral slip divisor");
+        positive(tyre + 0x04, h.tyres[a].lateral_load_scale, "the lateral load divisor");
+        if (h.tyres[a].lateral_scale < 0.0F)
+            add_issue(issues, tyre + 0x08, "the lateral force scale must not be negative");
         positive(tyre + 0x0C, h.tyres[a].static_friction, "the static friction");
         positive(tyre + 0x10, h.tyres[a].sliding_friction, "the sliding friction");
         const std::size_t strut = kVehicleStrutOffset + a * kVehicleAxleStride;
@@ -811,7 +858,7 @@ VehicleModel::VehicleModel(const VehicleSpec& spec) : spec_(spec) {
     const VehicleApproximations& a = spec_.approx;
     const double approx_values[] = {
         a.unit_scale, a.wheel_inertia, a.brake_torque_front, a.brake_torque_rear,
-        a.handbrake_torque, a.max_steer, a.steer_speed_reference, a.steer_rate,
+        a.max_steer, a.steer_speed_reference, a.steer_rate,
         a.longitudinal_stiffness, a.cornering_stiffness_front, a.cornering_stiffness_rear,
         a.slip_speed_floor,
         a.rolling_resistance, a.rolling_fade_speed, a.bump_stop_rate, a.probe_lift,
@@ -1089,7 +1136,15 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     VehicleState s = state;
 
     const double throttle = sanitize(raw_input.throttle, 0.0, 1.0);
-    const double brake = sanitize(raw_input.brake, 0.0, 1.0);
+    // 0x00474B4B..0x00474B6F: the brake the wheels see is the larger of the
+    // processed service brake and half the handbrake axis. That axis is the
+    // handbrake's own merged input (0x00461E10: its digital 0x91 code wins
+    // over its analog 0x92 code, doubled and clamped to 0xFF), not the
+    // service brake; the handbrake has no torque path of its own, so it
+    // cannot lock the driven wheels at speed and pin the wheel-derived
+    // engine speed at idle.
+    const double brake = std::max(sanitize(raw_input.brake, 0.0, 1.0),
+                                  raw_input.handbrake ? 0.5 : 0.0);
     const double steer = sanitize(raw_input.steer, -1.0, 1.0);
 
     Mat3 r = rotation(s.orientation);
@@ -1214,10 +1269,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         const double final_drive =
             static_cast<double>(k < 2 ? h.final_drive_front : h.final_drive_rear);
         const double drive = final_drive * gear_ratio * engine_torque * fraction * 0.5;
-        double brake_torque = brake * (k < 2 ? a.brake_torque_front : a.brake_torque_rear);
-        if (raw_input.handbrake && k >= 2) {
-            brake_torque = brake_torque + a.handbrake_torque;
-        }
+        const double brake_torque = brake * (k < 2 ? a.brake_torque_front : a.brake_torque_rear);
         out.drive_torque = drive;
         out.compression = wheel.compression;
         out.contact = wheel.contact;
@@ -1276,8 +1328,27 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         const double v_lat = dot(point_velocity, across);
         const double denominator =
             absolute(v_long) > a.slip_speed_floor ? absolute(v_long) : a.slip_speed_floor;
-        const double cornering = k < 2 ? a.cornering_stiffness_front : a.cornering_stiffness_rear;
-        double fy = -cornering * load * v_lat / denominator;
+        // 0x00587740, Unicorn-verified: the slip angle (against the same
+        // floored denominator, so a car at rest has none) selects and
+        // blends the load curves - p = slip x 343.775 / slip_scale, the
+        // 240SX's 12 making p exactly half the slip in degrees - and each
+        // curve is evaluated at x = 0.8 x the wheel's load (the record's
+        // kN) / lateral_load_scale, the blend scaled by lateral_scale and
+        // 2.5 (0x6F086C). The sign returns separately at 0x00587718.
+        const VehicleAxleTyre& tyre = h.tyres[axle];
+        const double slip = vehicle_atan((v_lat < 0.0 ? -v_lat : v_lat) / denominator);
+        const double p = 343.775 * slip / static_cast<double>(tyre.slip_scale);
+        const double x = 0.8 * (load / 1000.0) /
+            static_cast<double>(tyre.lateral_load_scale);
+        double curve_force = lateral_curve(6, x);
+        if (p < 6.0) {
+            const auto idx = static_cast<unsigned>(p);
+            const double frac = p - static_cast<double>(idx);
+            curve_force = lateral_curve(idx, x) * (1.0 - frac) +
+                          lateral_curve(idx + 1, x) * frac;
+        }
+        double fy = -curve_force * static_cast<double>(tyre.lateral_scale) * 2500.0 *
+                    (v_lat < 0.0 ? -1.0 : 1.0);
         const double peak = d_.static_friction[axle] * load;
         const double slide = d_.sliding_friction[axle] * load;
 
@@ -1328,14 +1399,14 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
 
         const double fade = clamp(v_long / a.rolling_fade_speed, -1.0, 1.0);
         const double rolling = -a.rolling_resistance * load * fade;
-        const VehicleVec3 tyre = add(scale(along, fx + rolling), scale(across, fy));
-        force = add(force, tyre);
+        const VehicleVec3 tyre_force = add(scale(along, fx + rolling), scale(across, fy));
+        force = add(force, tyre_force);
         // The tyre's force acts tyre_force_lift of the way from the contact
         // up to the centre of mass's height along the body's vertical
         // (APPROXIMATION, docs/VEHICLE.md).
         const VehicleVec3 arm_tyre =
             sub(arm_contact, scale(up, dot(arm_contact, up) * a.tyre_force_lift));
-        torque = add(torque, cross(arm_tyre, tyre));
+        torque = add(torque, cross(arm_tyre, tyre_force));
 
         out.spin = spin;
         out.slip_ratio = (spin * radius - v_long) / denominator;

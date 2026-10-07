@@ -23,6 +23,23 @@ struct RaceGpuFrame {
 struct RaceFrameProfile {
     double cull_ms = 0, list_ms = 0, car_ms = 0, track_ms = 0, combine_ms = 0;
 };
+// An explicit visual configuration for the racer this scene draws, supplied by
+// a caller that links the layer which authored it. The request and skin
+// replace the stock/tuned presets load() would pick; `bind` runs after
+// prepare_race_car_frame, while the frame and its inputs are still alive, so
+// the authoring layer can apply its own post-preparation binds (the frontend
+// Skyline's runtime-skin alias and sponsor substitution). The load refuses a
+// dress whose request names another car than the selected one, so an authored
+// part set never silently dresses a different body. A dress implies the tuned
+// input extras (wheel geometry, wheel textures and the car's vinyls).
+struct RaceCarDress {
+    const StockSceneRequest* request = nullptr;
+    const StockFrameSkin* skin = nullptr;
+    bool (*bind)(StockFrame& frame, const StockFrameInputs& inputs,
+                 const StockSceneRequest& request, std::string& error,
+                 void* user) = nullptr;
+    void* user = nullptr;
+};
 class RaceGpuScene : private PreparedCommandSource {
 public:
     RaceGpuScene() = default;
@@ -42,10 +59,17 @@ public:
     // draws, for console A/B cost runs. Refused once the scene is loaded.
     bool set_sky(bool enabled) { if (ready_) return false; sky_ = enabled; return true; }
     void set_wet_road_reflections(bool enabled) noexcept { wet_road_reflections_ = enabled; }
+    // `car` selects the racer every path draws and drives (issue #315); null
+    // resolves the default 240SX through the retail car type table. The
+    // tuned visual preset stays the 240SX's own and is refused for any other
+    // car rather than silently substituted. `dress` replaces that preset with
+    // an explicit authored configuration; it is exclusive with `tuned`.
     bool load(FileSystemService& files, const std::filesystem::path& root,
               std::string& error, AssetCheckObserver* observer = nullptr,
               TrackSliceLoadObserver* loading = nullptr, bool tuned = false,
-              bool glows = false, bool car_shading = false, std::uint32_t event_number = 1);
+              bool glows = false, bool car_shading = false,
+              const CarAssets* car = nullptr, const RaceCarDress* dress = nullptr,
+              std::uint32_t event_number = 1);
     bool frame(const RaceSession& session, RaceGpuFrame& out, std::string& error,
                RaceFrameProfile* profile = nullptr, bool reference = false,
                TimingService* timer = nullptr);
@@ -64,6 +88,7 @@ private:
     std::vector<std::size_t> template_of_group_;
     bool ready_ = false;
     bool tuned_ = false; // Visual selection only; never passed to RaceSession.
+    bool dressed_ = false; // An explicit authored configuration was applied.
     TextureFilterMode texture_filter_ = TextureFilterMode::legacy;
     bool car_shading_ = false;
     bool wet_road_reflections_ = false;

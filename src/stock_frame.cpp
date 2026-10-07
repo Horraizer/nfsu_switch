@@ -186,9 +186,92 @@ bool read_stock_frame_inputs(const fs::path& root, StockFrameInputs& inputs, boo
     return inputs.all_read();
 }
 
+bool read_car_frame_inputs(const fs::path& root, const CarAssets& car,
+                           StockFrameInputs& inputs, bool tuned, std::string& error) {    if (car.car_type == kNoCarType || car.geometry_path.empty() ||
+        car.textures_path.empty() || car.vinyls_path.empty()) {
+        error = "car inputs need a car resolved through resolve_car_assets";
+        return false;
+    }
+    error.clear();
+    inputs.tuned = tuned;
+    // The same six slots, with the car's own two files in place of the
+    // 240SX's, and the same three tuned extras with the car's own vinyls.
+    static_assert(kStockFrameFileCount == 6, "the per-car reader fills six files");
+    const std::string paths[kStockFrameFileCount] = {
+        car.geometry_path,
+        car.textures_path,
+        kFilePaths[static_cast<std::size_t>(StockFrameFile::global_bun)],
+        kFilePaths[static_cast<std::size_t>(StockFrameFile::shared_car_textures)],
+        kFilePaths[static_cast<std::size_t>(StockFrameFile::brake_geometry)],
+        kFilePaths[static_cast<std::size_t>(StockFrameFile::plate_geometry)]};
+    for (std::size_t i = 0; i < kStockFrameFileCount; ++i) {
+        StockFrameInput& input = inputs.files[i];
+        input.path = paths[i];
+        input.read = false;
+        input.error.clear();
+        try {
+            input.read = read_whole_file(root / fs::path(paths[i]), input.bytes,
+                                         input.error);
+        } catch (const std::exception&) {
+            input.bytes.clear();
+            input.read = false;
+            input.error = "failed to read file";
+        }
+    }
+    const auto read_extra = [&](StockFrameInput& input, const std::string& path) {
+        input.path = path;
+        input.read = false;
+        input.error.clear();
+        input.bytes.clear();
+        if (tuned) {
+            try {
+                input.read = read_whole_file(root / fs::path(path), input.bytes, input.error);
+            } catch (const std::exception&) {
+                input.error = "failed to read file";
+            }
+        }
+    };
+    read_extra(inputs.wheel_geometry, "Cars/WHEELS/GEOMETRY.BIN");
+    read_extra(inputs.wheel_textures, "Cars/WHEELS/TEXTURES.BIN");
+    read_extra(inputs.vinyls, car.vinyls_path);
+    return inputs.all_read();
+}
+
+bool read_exhaust_family_inputs(const fs::path& root, StockFrameInputs& inputs) {
+    const auto read_family = [&root](StockFrameInput& input, const char* path) {
+        input.path = path;
+        input.read = false;
+        input.error.clear();
+        input.bytes.clear();
+        try {
+            input.read = read_whole_file(root / fs::path(path), input.bytes, input.error);
+        } catch (const std::exception&) {
+            input.bytes.clear();
+            input.read = false;
+            input.error = "failed to read file";
+        }
+    };
+    read_family(inputs.exhaust_geometry, "Cars/EXHAUST/GEOMETRY.BIN");
+    read_family(inputs.exhaust_textures, "Cars/EXHAUST/TEXTURES.BIN");
+    return inputs.exhaust_geometry.read && inputs.exhaust_textures.read;
+}
+
+std::string car_frame_inputs_error(const StockFrameInputs& inputs,
+                                   const std::string& error,
+                                   const fs::path& root) {
+    // A caller-misuse refusal already carries its sentence; a file failure
+    // left `error` empty on purpose, and the inputs' own report names every
+    // unread pack.
+    return error.empty() ? inputs.read_error(root) : error;
+}
+
 StockSceneRequest stock_240sx_request() {
+    return stock_car_request("240SX");
+}
+
+StockSceneRequest stock_car_request(const std::string& car_type_name) {
     StockSceneRequest request;
-    request.car_type_name = "240SX";
+    request.car_type_name = car_type_name;
     request.lod = 0;
     request.pass = CarDrawPass::world;
     request.place_wheels_from_culling_table = true;
@@ -205,9 +288,13 @@ StockSceneRequest tuned_240sx_request() {
 }
 
 StockFrameSkin stock_240sx_skin() {
+    return stock_car_skin("240SX");
+}
+
+StockFrameSkin stock_car_skin(const std::string& car_type_name) {
     StockFrameSkin skin;
     skin.enabled = true;
-    skin.car = "240SX";
+    skin.car = car_type_name;
     skin.selection.car_name = skin.car;
     skin.selection.doorline = SkinDoorlineSelection{SkinDoorlineVariant::plain};
     skin.selection.base_color = skin_pack_paint(30, 60, 160, 128);
@@ -351,6 +438,23 @@ static bool prepare_stock_frame_impl(
                 frame.issues.push_back(at(input.path, issue.offset, issue.message));
             }
         }
+        // The opt-in EXHAUST family source, after the wheels: same parse,
+        // same retained-mesh filter on the race path, no effect at all for a
+        // caller that read no family pair.
+        if (inputs.exhaust_geometry.read) {
+            const StockFrameInput& input = inputs.exhaust_geometry;
+            GeometryLimits geometry_limits;
+            if (consumed) geometry_limits.retain_mesh = [&](const Mesh& mesh) {
+                const auto hash = bin_hash(mesh.name);
+                return std::find(retained_hashes.begin(), retained_hashes.end(), hash) != retained_hashes.end();
+            };
+            frame.stock_geometry.push_back(
+                parse_geometry(input.bytes.data(), input.bytes.size(), geometry_limits));
+            if (consumed) std::vector<unsigned char>().swap(consumed->exhaust_geometry.bytes);
+            for (const GeometryIssue& issue : frame.stock_geometry.back().issues) {
+                frame.issues.push_back(at(input.path, issue.offset, issue.message));
+            }
+        }
         if (!consumed) parse_part_tables();
         std::vector<const GeometryReport*> sources;
         sources.push_back(&frame.car_geometry);
@@ -379,6 +483,9 @@ static bool prepare_stock_frame_impl(
         }
         if (inputs.tuned) {
             shared_inputs.push_back(&inputs.wheel_textures);
+        }
+        if (inputs.exhaust_textures.read) {
+            shared_inputs.push_back(&inputs.exhaust_textures);
         }
         frame.shared_sets.reserve(shared_inputs.size());
         for (const StockFrameInput* shared_input : shared_inputs) {
@@ -415,6 +522,26 @@ static bool prepare_stock_frame_impl(
                                            ": " + issue.message);
                 }
             }
+        }
+
+        // The runtime lamp-name resolution (issue #315): every loaded
+        // texture source is parsed by now, so the resting-state rewrite
+        // below sees exactly the hashes the decode will find.
+        {
+            std::set<std::uint32_t> present;
+            for (const TextureRecord& texture : frame.car_pack.textures) {
+                present.insert(texture.hash);
+            }
+            for (const TexturePackSet& set : frame.shared_sets) {
+                for (const TexturePack& pack : set.packs) {
+                    for (const TextureRecord& texture : pack.textures) {
+                        present.insert(texture.hash);
+                    }
+                }
+            }
+            frame.lamp_texture_aliases =
+                alias_stock_lamp_textures(present, request.car_type_name,
+                                          frame.car_geometry);
         }
 
         // "error: no valid meshes to render", exit 2.
@@ -679,8 +806,13 @@ static bool prepare_stock_frame_impl(
                 installed,
                 skin.enabled ? std::optional<std::uint32_t>(skin.selection.base_color)
                              : std::nullopt);
+            // 0x56B577..0x56B5AB: an installed WINDOW_TINT part selects the
+            // material that replaces the production glass; none installed
+            // keeps the geometry's own WINDSHIELD material.
+            const auto tint=car_part_material_hash(frame.parts,
+                frame.report.slots[115].record);
             if (!apply_car_materials(frame.scene, parts_file.bytes.data(),
-                                     parts_file.bytes.size(), paint, error)) return false;
+                                     parts_file.bytes.size(), paint, tint, error)) return false;
         }
         return true;
     } catch (const std::bad_alloc&) {

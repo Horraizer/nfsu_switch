@@ -131,7 +131,7 @@ int main(int argc, char** argv) {
         if (!check(race.set_event(event8 ? 8 : 1,error),error.c_str())) return 1;
         if (!check(race.prepare_metadata(root, error, &observer), error.c_str())) return 1;
         if (!check(scene.load(nfsu::posix_file_system(), root, error, nullptr, &observer, tuned,
-                             false,false,event8 ? 8 : 1), error.c_str())) return 1;
+                             false,false,nullptr,nullptr,event8 ? 8 : 1), error.c_str())) return 1;
         stage("scene loaded", baseline);
         std::printf("scene peak checkpoint %s, count %zu\n", observer.peak_phase, observer.checkpoints);
         if (!check(race.start(root, scene.track(), error, &observer), error.c_str())) return 1;

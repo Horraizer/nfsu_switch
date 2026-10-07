@@ -5,6 +5,7 @@
 #include "nfsu/stock_frame.h"
 
 #include <array>
+#include <string>
 
 namespace nfsu {
 
@@ -14,6 +15,9 @@ struct CarShadowAsset {
     std::array<MeshVertex, 16> vertices{};
     std::array<MeshTriangle, 18> triangles{};
     RenderTexture texture;
+    // The texture's own name, "<car>_SHADOWIG", for every message and
+    // recorded upload name about it.
+    std::string texture_name;
 };
 
 struct CarShadowPlacement {
@@ -21,8 +25,11 @@ struct CarShadowPlacement {
     float alpha = 0.0F;
 };
 
-bool prepare_car_shadow(const StockFrameInputs& inputs, const TexturePack& pack,
-                        CarShadowAsset& out, std::string& error);
+// The shadow texture is the car's own, named "<car type name>_SHADOWIG" in
+// its TEXTURES.BIN (issue #315: every retail car directory holds one). The
+// name is looked up by its bin_hash in `pack`.
+bool prepare_car_shadow(const std::string& car_type_name, const StockFrameInputs& inputs,
+                        const TexturePack& pack, CarShadowAsset& out, std::string& error);
 CarShadowPlacement place_car_shadow(const RaceSession& session) noexcept;
 CarShadowPlacement place_car_shadow(const VehicleState& state,
                                     const VehicleSpec& spec) noexcept;

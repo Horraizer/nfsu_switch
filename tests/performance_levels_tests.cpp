@@ -130,7 +130,7 @@ void check_sessions(const Record& record) {
     }
     require(changed,"upgraded replay differs for documented setup");
     const auto synthetic_hash=sha256_hex(hash.finish());
-    require(synthetic_hash=="0EEC3FC1B320C8E3D6AC25506169CFF410AE233EE9342E1D59707791D588A179","synthetic upgraded replay pin: "+synthetic_hash);
+    require(synthetic_hash=="DC99D5DD5B616524CA9051E6392829E1528DA68B5999E13F1F6C6CDF0D4BD6A8","synthetic upgraded replay pin: "+synthetic_hash);
     std::cout << "synthetic-upgrade-sha256 " << synthetic_hash << '\n';
     // Reset reuses the model and shifts; it must not apply tables again.
     const auto before=a.spec().handling;

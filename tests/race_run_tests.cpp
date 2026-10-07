@@ -176,7 +176,7 @@ int main(int argc, char** argv) {
                     pad.pads[0].axes[0] == run.steer && pad.time_us == ticks*1000000/60,
                     "replay pad differs from desktop");
         }
-        require(ticks == 48343 && replay.exhausted() && !replay.next(ticks, pad, error), "replay extent differs");
+        require(ticks == 48332 && replay.exhausted() && !replay.next(ticks, pad, error), "replay extent differs");
         RaceRun unopened;
         require(!unopened.commit(error) && !unopened.simulate({}, error), "unstarted race accepted");
         MeshVertex vertices[3]{}; std::uint16_t indices[] = {0,1,2};
@@ -305,9 +305,16 @@ int main(int argc, char** argv) {
         require(scene.cache_bytes() <= 8*kMiB,"command cache exceeded metadata limit");
         std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 8*kMiB << '\n';
         // Shading changes material uniforms, not retained command storage.
-        // Tuned selection adds one draw; four glow sprites add their templates.
-        const std::uint64_t cache_pin = (tuned ? 4333528U : 4333497U) +
-                                        (glows ? 35307U : 0U);
+        // Tuned selection adds one draw; four glow sprites add their
+        // templates. Issue #315 moved the shadow texture's name into
+        // CarShadowAsset (the car's own <NAME>_SHADOWIG, was the 240SX
+        // literal), one std::string = 32 retained bytes on both selections.
+        // FE command fields grow RecordedCommands304->1280 and
+        // RecordedDraw384->392. Two retained commands plus4225 retained
+        // draw capacities add35752 bytes. Six inline glow records add48.
+        // Layout/capacity probes separately verified both selections.
+        const std::uint64_t cache_pin = (tuned ? 4369312U : 4369281U) +
+                                        (glows ? 35355U : 0U);
         const auto initial_cache_bytes = scene.cache_bytes();
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';
@@ -496,7 +503,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         std::size_t frames = 0, max_draws = 0;
-        const std::set<std::uint64_t> inspect = {1,163,180,600,1164,6000,11344,12459,13122,24300,35396,36510,37177,48343};
+        const std::set<std::uint64_t> inspect = {1,163,180,600,1200,6000,11344,12459,13110,24300,35396,36510,37177,48332};
         const bool full = argc > 3 && std::string(argv[3]) == "--full-draws";
         const bool sampled = argc > 3 && std::string(argv[3]) == "--sample-draws";
         require(argc <= 3 || full || sampled, "unknown retail draw sampling option");
@@ -589,7 +596,7 @@ int main(int argc, char** argv) {
                 require(frame.commands.draw_count() == frame.track_draws + frame.car_draws +
                         frame.particle_draws + frame.glow_draws + 1,
                         "ground shadow, particles or glows missing");
-                if (tick == 1164) {
+                if (tick == 1200) {
                     unsigned visible_smoke=0, visible_sparks=0;
                     bool smoke_color_checked=false, spark_color_checked=false;
                     const auto& camera=frame.commands.frame;
@@ -688,7 +695,7 @@ int main(int argc, char** argv) {
                 require(deko_frame_gpfifo_bound(deko_track_list_calls(
                             static_cast<std::uint32_t>(frame.track_draws))) < kDekoGpfifoRingEntries,
                         "selected track draws exceed GPFIFO call budget");
-                if (tick == 13122) {
+                if (tick == 13110) {
                     require(race.session().animation().braking, "animation guard tick is not braking");
                     StockFrameInputs inputs;
                     require(read_stock_frame_inputs(root, inputs, tuned), "animation guard retail car inputs unavailable");

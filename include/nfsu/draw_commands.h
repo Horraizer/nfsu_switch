@@ -35,6 +35,8 @@ struct DrawMaterialUniform {
 };
 
 struct RecordedDraw {
+    unsigned frontend_sprite_kind=0; // 0: road,1/2: head inner/outer,3: tail.
+    unsigned frontend_sprite_view=0; // Optional native FE sprite view; zero is shared geometry.
     // Stable diagnostic identity; source group plus source instance, never
     // the position in the sorted list. No source mesh name is required.
     std::string name;
@@ -101,6 +103,11 @@ public:
     std::size_t reflection_draw_count() const;
     const RecordedDraw& reflection_draw(std::size_t i) const;
     DrawFrameUniform frame;
+    DrawFrameUniform frontend_floor_frame;
+    FrontendLighting frontend_light;
+    bool frontend_light_enabled=false;
+    std::array<DrawFrameUniform,6> frontend_cube_frames;
+    std::vector<RecordedDraw> frontend_cube_draws;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     unsigned char clear_color[4]{};

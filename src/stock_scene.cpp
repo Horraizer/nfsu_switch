@@ -1,5 +1,7 @@
 #include "nfsu/stock_scene.h"
 
+#include "nfsu/texture.h"
+
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -11,9 +13,12 @@ namespace nfsu {
 
 void alias_stock_window_textures(GeometryReport& geometry) noexcept {
     constexpr std::uint32_t kWindow = 0x834B8017U;
+    constexpr std::uint32_t kWindow2 = 0xECBB8329U;
     for (Mesh& mesh : geometry.meshes) {
         for (std::uint32_t& hash : mesh.texture_hashes) {
             switch (hash) {
+            // The six first-layer window-slot names, rewritten to WINDOW
+            // (0x006F1B48 table, index 0) by 0x0056CA60..0x0056CAC2.
             case 0x7B220DDFU: // WINDOW_FRONT
             case 0x1B0763A0U: // WINDOW_REAR
             case 0xE7E4EF49U: // WINDOW_LEFT_FRONT
@@ -22,11 +27,82 @@ void alias_stock_window_textures(GeometryReport& geometry) noexcept {
             case 0x0AB88F5DU: // WINDOW_RIGHT_REAR
                 hash = kWindow;
                 break;
+            // The six second-layer window-slot names the constructor at
+            // 0x0056A7C8..0x0056A804 installs into the second group, whose
+            // destinations at +0x60 the rewrite at 0x0056CAA8 fills from the
+            // second table at 0x006F1B58: WINDOW2 undamaged, plus its
+            // _DAMAGE0..2 variants. No texture record with any of these
+            // hashes exists anywhere in the installation, so the undamaged
+            // static binding is WINDOW2, not WINDOW. The 350Z and CELICA
+            // base meshes reference four of them (issue #315 rounds 3-4).
+            case 0x90E09671U: // unknown name, second-layer slot 1
+            case 0x13EE21F2U: // unknown name, second-layer slot 2
+            case 0xD689A31BU: // unknown name, second-layer slot 3
+            case 0xB8F3415CU: // unknown name, second-layer slot 4
+            case 0x2433DF4EU: // unknown name, second-layer slot 5
+            case 0xF95D432FU: // unknown name, second-layer slot 6
+                hash = kWindow2;
+                break;
             default:
                 break;
             }
         }
     }
+}
+
+std::size_t alias_stock_lamp_textures(
+    const std::set<std::uint32_t>& present,
+    const std::string& car_type_name,
+    GeometryReport& geometry) noexcept {
+    // The stock lamp meshes reference per-position texture names,
+    // <car>_KIT00_<lamp><position> with position one of _LEFT, _RIGHT,
+    // _CENTRE, _GLASS_LEFT, _GLASS_RIGHT and _GLASS_CENTRE. The suffix
+    // strings live in the executable at 0x006BA0A4..0x006BA120, and the
+    // name builder at 0x00580E40..0x00580F70 hashes them onto the car
+    // object's lamp slots. Every retail car pack holds the resting state
+    // records <base>_OFF and <base>_GLASS_OFF (with _ON and _DAMAGE0
+    // variants); nine packs, among them the 240SX's, also ship records
+    // under the position names themselves. The runtime lamp state
+    // controller (0x00583479 onward) selects the state per lamp; a static
+    // scene shows the resting one. This alias rewrites a position-name
+    // hash to its resting state record only when no loaded source holds
+    // the position record and some loaded source holds the state record,
+    // so the nine cars whose packs ship position records - and the 240SX
+    // frame pins with them - are untouched.
+    struct Rewrite {
+        const char* position;
+        const char* state;
+    };
+    constexpr Rewrite kRewrites[] = {
+        {"_LEFT", "_OFF"},         {"_RIGHT", "_OFF"},     {"_CENTRE", "_OFF"},
+        {"_GLASS_LEFT", "_GLASS_OFF"}, {"_GLASS_RIGHT", "_GLASS_OFF"},
+        {"_GLASS_CENTRE", "_GLASS_OFF"},
+    };
+    std::map<std::uint32_t, std::uint32_t> rewrites;
+    for (const char* lamp : {"HEADLIGHT", "BRAKELIGHT"}) {
+        const std::string base = car_type_name + "_KIT00_" + lamp;
+        for (const Rewrite& rewrite : kRewrites) {
+            const std::uint32_t position = bin_hash(base + rewrite.position);
+            const std::uint32_t state = bin_hash(base + rewrite.state);
+            if (!present.count(position) && present.count(state)) {
+                rewrites.emplace(position, state);
+            }
+        }
+    }
+    if (rewrites.empty()) {
+        return 0;
+    }
+    std::size_t rewritten = 0;
+    for (Mesh& mesh : geometry.meshes) {
+        for (std::uint32_t& hash : mesh.texture_hashes) {
+            const auto found = rewrites.find(hash);
+            if (found != rewrites.end()) {
+                hash = found->second;
+                ++rewritten;
+            }
+        }
+    }
+    return rewritten;
 }
 
 namespace {
@@ -344,6 +420,15 @@ bool build_stock_scene(
     std::set<std::uint32_t> ambiguous;
     std::vector<InstanceDraft> drafts;
     std::set<std::pair<std::size_t, std::size_t>> selected;
+    // 0x56F980..0x56F9A2: with RideInfo's widebody slot word nonzero - the
+    // widebody installation resolved a model - the wheel lateral comes from
+    // the cached +0x514 copy of wheel +0x20, the widened stance; the stock
+    // profile keeps the +0x510 copy of +0x1C. The selector is
+    // authenticated; the marker chain after it is not, so the placements
+    // below still report placement_exact false.
+    const bool widebody_installed =
+        std::any_of(models[kSlotWideBody].begin(), models[kSlotWideBody].end(),
+                    [](const PartModel& model) { return model.hash != 0; });
     for (std::size_t index = 0; index < kCarModelSlotCount; ++index) {
         StockSlotReport& entry = result.slots[index];
         if (entry.record == kNoCarPart) {
@@ -461,11 +546,11 @@ bool build_stock_scene(
         } else if (entry.placement == StockPlacement::wheel_table) {
             const std::array<std::size_t, kCarWheelCount>& table =
                 kind == SlotClass::wheel ? kWheelPlacements : kBrakePlacements;
-            // 0x0056F9B2..0x0056FBAC builds a lateral scale and offset
-            // from wheel +0x14 and the stock (RideInfo +0x464 == 0) choice
-            // of +0x1C. The alternative +0x20 and the wheel mesh's
-            // MARKER_BRAKE branch are not selected by this stock profile.
-            // X * H * W * Q and R * B * P are the draw chains (see
+            // 0x0056F9B2..0x0056FBAC builds a lateral scale and offset from
+            // wheel +0x14 and the lateral the +0x56F980 selector picked:
+            // +0x1C for the stock stance, +0x20 with a widebody installed.
+            // The wheel mesh's MARKER_BRAKE branch is not selected by this
+            // profile. X * H * W * Q and R * B * P are the draw chains (see
             // docs/PART_PLACEMENT.md). Spin and steering in W/B are added
             // by drive_place_instances for a moving race car.
             float turn[16];
@@ -479,9 +564,11 @@ bool build_stock_scene(
                 draft.copy = w;
                 const CarWheelPlacement& wheel = car_types.records[car_type].wheels[w];
                 const float half_width = wheel.value_14 * 0.5F;
-                const float side = wheel.value_1c > 0.0F ? 1.0F : -1.0F;
+                const float lateral =
+                    widebody_installed ? wheel.value_20 : wheel.value_1c;
+                const float side = lateral > 0.0F ? 1.0F : -1.0F;
                 float centre[3] = {placements[table[w]].position[0],
-                                   wheel.value_1c - side * half_width,
+                                   lateral - side * half_width,
                                    placements[table[w]].position[2]};
                 std::copy(std::begin(centre), std::end(centre),
                           std::begin(draft.animation_pivot));

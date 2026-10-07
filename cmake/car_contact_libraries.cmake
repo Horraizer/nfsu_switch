@@ -1,0 +1,5 @@
+add_library(nfsu_car_contact src/car_contact.cpp)
+target_include_directories(nfsu_car_contact PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(nfsu_car_contact PUBLIC cxx_std_17)
+target_link_libraries(nfsu_car_contact PUBLIC nfsu_det_sqrt)
+nfsu_enable_warnings(nfsu_car_contact)

@@ -18,8 +18,8 @@ nxlink -s --args="--event 8 --live" build-switch/switch/nfsu_switch_race.nro
 
 Use a new output path outside the retail installation. The console command
 is an owner-operated acceptance step, not a claim of a completed hardware
-run. Atlantic uses live controller input on Switch; its menu disables the
-event-1 replay shortcut. Desktop accepts a generated Atlantic input recording
+run. Atlantic requires explicit `--event 8 --live` on Switch. The existing
+frontend and its free-driving selection keep their accepted behavior. Desktop accepts a generated Atlantic input recording
 with `--event 8 --input <recording>`. No retail files or textures are bundled.
 Without `--event`, event 1 and its existing recording remain the defaults.
 
@@ -84,6 +84,8 @@ unchanged. It establishes pointer substitution, not whole-game rendering.
 residency, a nonempty GPU frame, original DEFAULTALPHA payload/state and no
 unresolved placed materials. `nfsu_circuit1005_drive_retail` drives all three
 laps through controller input and asserts normal completion without resets.
+`nfsu_circuit1005_recovered_drive_retail` repeats the complete shared-path
+check with recovered steering, the accepted live default.
 The drive uses the shared `RaceRun::simulate`/`commit` path, so every tick
 checks actual uploaded-set residency. It prepares a later GPU frame every
 6000 ticks and replays the formatted controller input through a fresh RaceRun,

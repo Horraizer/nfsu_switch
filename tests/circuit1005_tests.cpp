@@ -19,6 +19,10 @@ int main(int argc, char** argv) {
         require(!refused.set_event(6,error), "tournament selection must be refused");
         if (argc==1) { std::cout << "PASS: supported circuit selection guards\n"; return 0; }
         require(check_arguments(argc,argv,1,error),error);
+        require(argc <= 3 && (argc != 3 || std::string(argv[2]) == "--measure" ||
+                std::string(argv[2]) == "--measure-recovered"), "invalid Atlantic test mode");
+        const auto steering = argc == 3 && std::string(argv[2]) == "--measure-recovered"
+            ? RaceSteering::recovered_predicate1 : RaceSteering::baseline;
         const auto root=argument_path(argv[1]);
         SupportedRace selection;
         require(load_supported_race(root/"Frontend/FRONTB.LZC",root/"Global/GLOBALB.BUN",8,selection,error),error);
@@ -26,7 +30,7 @@ int main(int argc, char** argv) {
                 "event8 retail definition changed");
         RaceGpuScene scene;
         scene.set_wet_road_reflections(true);
-        require(scene.load(posix_file_system(),root,error,nullptr,nullptr,false,true,true,8),error);
+        require(scene.load(posix_file_system(),root,error,nullptr,nullptr,false,true,true,nullptr,nullptr,8),error);
         const auto& track=scene.track();
         std::cout << "track " << track.track_number << " sections " << track.sections
                   << " textures " << track.texture_bytes << " unresolved "
@@ -61,13 +65,14 @@ int main(int argc, char** argv) {
         RaceRun wrong;
         require(!wrong.start(root,track,error),"event1 cannot use event8 uploaded resources");
         RaceRun run;
-        require(run.set_event(8,error) && run.prepare_metadata(root,error) && run.start(root,track,error),error);
+        require(run.set_event(8,error) && run.set_steering(steering,error) && run.prepare_metadata(root,error) && run.start(root,track,error),error);
         require(!run.set_event(1,error),"active race selection cannot change");
         RaceGpuFrame frame;
         require(scene.frame(run.session(),frame,error),error);
         require(frame.commands.draw_count()!=0,"event8 GPU frame must draw");
         require(!run.matches_configured_replay(),"event8 cannot match event1 replay");
-        if (argc>2 && std::string(argv[2])=="--measure") {
+        if (argc == 3) {
+            std::cout << "steering " << race_steering_name(steering) << '\n';
             const UploadTable uploaded = frame.commands.resource_table();
             RaceRouteDriver driver(RaceDrivingLine::event8_forward);
             std::vector<RaceInputRun> recording;
@@ -91,7 +96,7 @@ int main(int argc, char** argv) {
             std::vector<RaceInputRun> decoded;
             require(parse_race_input(format_race_input(recording), decoded, error), error);
             RaceRun replay;
-            require(replay.set_event(8, error) && replay.start(root, track, error), error);
+            require(replay.set_event(8, error) && replay.set_steering(steering, error) && replay.start(root, track, error), error);
             for (const auto& input : decoded) for (std::uint32_t i = 0; i < input.ticks; ++i) {
                 const auto pad = race_input_frame(input, replay.session().timing().step);
                 require(replay.session().timing().outcome == RaceOutcome::running,

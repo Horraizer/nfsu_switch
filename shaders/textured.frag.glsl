@@ -47,11 +47,35 @@ layout (std140, binding = 2) uniform Material {
 layout (binding = 0) uniform sampler2D baseTexture;
 layout (binding = 1) uniform sampler2D reflectionTexture;
 
+// Renderer-only markers 4/5 remove zero environment and angle-alpha terms.
+// Marker 5 keeps the original geometric flat shade; 4 was already unlit.
+uint race_effect_channel(uint texel, float vertex_byte, bool modulate, uint shade)
+{
+    uint vertex = uint(clamp(floor(vertex_byte + 0.5), 0.0, 255.0));
+    uint color = modulate ? (texel * vertex + 127u) / 255u : texel;
+    return min(255u, (color * shade + 128u) >> 8u);
+}
+uint race_effect_alpha(uint texel, float alpha_scale)
+{
+    return uint(clamp(float(texel) * alpha_scale + 0.5, 0.0, 255.0));
+}
+
 void main()
 {
     vec2 uv = inTexcoord;
     if (frame.options.x != 0u) {
         uv.y = 1.0 - uv.y;
+    }
+    // Original FE worldreflect.efx: alpha is1 after the pixel equation.
+    // Retain original vertex alpha as mask, not doubled world alpha.
+    if((frame.options.z & 8u)!=0u && material.environment_min.w>0.5) {
+        vec4 diffuse=texture(baseTexture,uv);
+        vec3 delta=inWorld-frame.eye.xyz;
+        vec2 reflected_uv=vec2(0.5)+vec2(dot(frame.right.xyz,delta)*frame.projection.x,
+            -dot(frame.up.xyz,delta)*frame.projection.y)*(0.5/dot(frame.forward.xyz,delta));
+        vec3 reflection=texture(reflectionTexture,reflected_uv).rgb;
+        outColor=vec4(diffuse.rgb*inColor.rgb*2.0+inColor.a*diffuse.a*reflection,1.0);
+        return;
     }
     // The manifest selects linear/repeat for the car and nearest/repeat for
     // the track. The reference holds the resulting sample as bytes.
@@ -67,6 +91,19 @@ void main()
     if (material.alpha.w == 4.0) {
         outColor = vec4(vec3(texel.rgb) / 255.0,
                         clamp(float(texel.a) * material.alpha.x / 255.0, 0.0, 1.0));
+        return;
+    }
+
+    bool race_fast = material.fallback.w == 4.0 || material.fallback.w == 5.0;
+    if (race_fast && (material.fallback.w == 4.0 || (frame.options.z & 1u) == 0u)) {
+        uint shade = 256u;
+        bool modulate = frame.options.y != 0u || material.environment_range.w > 0.5;
+        vec3 vertex_byte = material.environment_range.w > 1.5 ?
+            material.environment_color.rgb : inColor.rgb * 255.0;
+        outColor = vec4(vec3(race_effect_channel(texel.r, vertex_byte.r, modulate, shade),
+                            race_effect_channel(texel.g, vertex_byte.g, modulate, shade),
+                            race_effect_channel(texel.b, vertex_byte.b, modulate, shade)) / 255.0,
+                        float(race_effect_alpha(texel.a, material.alpha.x)) / 255.0);
         return;
     }
 
@@ -86,9 +123,20 @@ void main()
 
     uint shade = 256u;
     if ((frame.options.z & 1u) != 0u && has_normal &&
-        material.fallback.w < 1.5 && material.environment_range.w < 0.5) {
+        (material.fallback.w < 1.5 || material.fallback.w == 5.0) && material.environment_range.w < 0.5) {
         float k = 0.35 + 0.65 * max(0.0, dot(normal, frame.light.xyz));
         shade = uint(floor(clamp(k, 0.0, 1.0) * 256.0 + 0.5));
+    }
+
+    if (race_fast) {
+        bool modulate = frame.options.y != 0u || material.environment_range.w > 0.5;
+        vec3 vertex_byte = material.environment_range.w > 1.5 ?
+            material.environment_color.rgb : inColor.rgb * 255.0;
+        outColor = vec4(vec3(race_effect_channel(texel.r, vertex_byte.r, modulate, shade),
+                            race_effect_channel(texel.g, vertex_byte.g, modulate, shade),
+                            race_effect_channel(texel.b, vertex_byte.b, modulate, shade)) / 255.0,
+                        float(race_effect_alpha(texel.a, material.alpha.x)) / 255.0);
+        return;
     }
 
     float vdotn = 0.01;
@@ -104,6 +152,8 @@ void main()
     uvec3 color = texel.rgb;
     if (frame.options.y != 0u || material.environment_range.w > 0.5) {
         uvec3 vertex = uvec3(clamp(floor(inColor.rgb * 255.0 + 0.5), 0.0, 255.0));
+        if (material.environment_range.w > 1.5)
+            vertex = uvec3(clamp(floor(material.environment_color.rgb + 0.5), 0.0, 255.0));
         color = (color * vertex + 127u) / 255u;
     }
     uvec3 value = min(uvec3(255u), (color * shade + 128u) >> 8u);
