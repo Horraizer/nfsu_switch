@@ -2695,6 +2695,41 @@ void test_ordinary_world_base_material() {
     for(const auto& draw:commands.owning_draws())check(draw.material.fallback[3]!=6,"off diagnostic preserves generic model");
 }
 
+void test_ordinary_world_fractional_sample() {
+    using namespace nfsu;
+    RenderOptions options;options.width=16;options.height=16;
+    options.material_state=MaterialStateMode::retail;
+    options.texture_filter=TextureFilterMode::linear;
+    options.shading=ShadingMode::none;
+    RenderTexture texture;texture.width=2;texture.height=2;texture.valid=true;
+    texture.rgba={0,0,0,255,1,1,1,255,0,0,0,255,1,1,1,255};
+    // Linear-repeat sample at u=0 wraps halfway between columns1 and0.
+    // Native continuous 0.5*255*2/255 ->1, not round(0.5)*2 ->2.
+    // Other coordinates and interpolated colors guard against an isolated patch.
+    const std::array<std::array<double,2>,5> samples{{{0,.5},{.125,.25},{.25,0},{.5,.5},{.75,1}}};
+    for(const auto& sample:samples)for(double vertex:{33.0,128.0,255.0,127.5})
+        for(bool ordinary:{false,true}) {
+            Frame frame;RenderStats stats;std::string error;
+            unsigned char background[4]={0,0,0,255};
+            check_ok(frame.reset(16,16,background,{},error),"fractional frame",error);
+            ClipVertex vertices[3];const double xs[3]={-1,1,0},ys[3]={-1,-1,1};
+            for(unsigned i=0;i<3;++i) {
+                auto& v=vertices[i];v.x=xs[i];v.y=ys[i];v.z=.5;v.w=1;
+                v.u=sample[0];v.v=.5;v.r=v.g=v.b=vertex;v.a=255;
+            }
+            RasterMaterial material;material.texture=&texture;material.linear_filter=true;
+            material.ordinary_world=ordinary;
+            Rasterizer raster(frame,options,{},stats);
+            check_ok(raster.draw_triangle(vertices,material,0,error),"fractional triangle",error);
+            check(frame.ids()[8*16+8]==0 && stats.fragments_written>0,"fractional probe really written");
+            const auto expected=static_cast<unsigned char>(std::floor(
+                (ordinary ? sample[1]*vertex*2.0/255.0 : sample[1])+.5));
+            const auto pixel=pixel_at(frame,8,8);
+            check(pixel==std::array<unsigned char,4>{expected,expected,expected,255},
+                ordinary ? "native continuous linear world sample" : "generic rounded sampler unchanged");
+        }
+}
+
 void test_render_drawn_bounds_match_the_frame() {
     // The reported drawn bounds against a scan of the pixels themselves.
     // The scan reads the colour buffer and not the id buffer the statistic
@@ -3427,6 +3462,7 @@ int main() {
     test_render_uv_orientation();
     test_render_vertex_colour();
     test_ordinary_world_base_material();
+    test_ordinary_world_fractional_sample();
     test_render_drawn_bounds_match_the_frame();
     test_render_reports_an_invalid_mesh();
     test_render_counts_a_degenerate_triangle();
