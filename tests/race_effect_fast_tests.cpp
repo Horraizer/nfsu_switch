@@ -27,6 +27,19 @@ int main() {
         RecordedDraw draw;draw.texture_resource=0;
         for(const auto& p:sm::kPrograms)if(std::string(p.name)=="car_textured")draw.program=&p;
         check(draw.program,"generated car program");
+        // Authenticated world.efx programmable diffuse = texture * color * 2;
+        // fixed technique agrees through Modulate2x and Lighting=False.
+        // Compile the scalar function from the actual production shader.
+        for (unsigned t : {0U, 1U, 73U, 128U, 254U, 255U})
+            for (float v : {0.F, 23.F, 33.F, 39.F, 47.F, 82.F, 94.F, 128.F, 255.F, 60.25F}) {
+                const float expected = float(t) * v * (2.F / (255.F * 255.F));
+                check(std::abs(ordinary_world_channel(float(t)/255.F,v/255.F)-expected)<.000001F,
+                      "actual ordinary world GLSL matches original continuous 2x equation");
+            }
+        draw.material.fallback[3]=6;
+        check(!race_effect_fast_marker(draw,draw.material),"world base marker cannot become generic flat race effect");
+        check(race_effect_gpu_material(draw,draw.material).fallback[3]==6,"world base marker survives GPU upload");
+        draw.material.fallback[3]=0;
         draw.pipeline.depth_write=false;draw.pipeline.color_write=sm::ColorWrite::rgb;
         draw.pipeline.blend=true;draw.pipeline.blend_src=sm::BlendFactor::src_alpha;
         draw.pipeline.blend_dst=sm::BlendFactor::one;draw.pipeline.blend_op=sm::BlendOp::add;

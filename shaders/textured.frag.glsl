@@ -60,6 +60,12 @@ uint race_effect_alpha(uint texel, float alpha_scale)
     return uint(clamp(float(texel) * alpha_scale + 0.5, 0.0, 255.0));
 }
 
+// Native world.efx base term; interpolation stays continuous until output.
+float ordinary_world_channel(float texel, float vertex)
+{
+    return texel * vertex * 2.0;
+}
+
 void main()
 {
     vec2 uv = inTexcoord;
@@ -79,10 +85,18 @@ void main()
     }
     // The manifest selects linear/repeat for the car and nearest/repeat for
     // the track. The reference holds the resulting sample as bytes.
-    uvec4 texel = uvec4(texture(baseTexture, uv) * 255.0 + 0.5);
+    vec4 sampled = texture(baseTexture, uv);
+    uvec4 texel = uvec4(sampled * 255.0 + 0.5);
     // RenderOptions::alpha_cutoff, a diagnostic on the texel alpha.
     if (texel.a < frame.options.w) {
         discard;
+    }
+    if (material.fallback.w == 6.0) {
+        outColor = vec4(ordinary_world_channel(sampled.r, inColor.r),
+                        ordinary_world_channel(sampled.g, inColor.g),
+                        ordinary_world_channel(sampled.b, inColor.b),
+                        float(race_effect_alpha(texel.a, material.alpha.x)) / 255.0);
+        return;
     }
 
     // Retail world.efx:61 modulates the ground shadow by 0x80 vertex RGB

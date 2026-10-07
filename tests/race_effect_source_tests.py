@@ -17,6 +17,16 @@ def block(source, token):
 def check(shaders, renderer):
     branches = []
     for index, shader in enumerate(shaders):
+        world = block(shader, 'if (material.fallback.w == 6.0)')
+        assert world.count('ordinary_world_channel(sampled.') == 3
+        for lane in 'rgb':
+            assert f'ordinary_world_channel(sampled.{lane}, inColor.{lane})' in world
+        assert 'float(race_effect_alpha(texel.a, material.alpha.x)) / 255.0' in world
+        assert 'return;' in world
+        assert 'return texel * vertex * 2.0;' in block(shader, 'float ordinary_world_channel(')
+        assert shader.index(world) < shader.index('vec3 normal = cross')
+        if index == 0:
+            assert shader.index('if (texel.a < frame.options.w)') < shader.index(world)
         branch = block(shader, 'if (race_fast)')
         branches.append(branch)
         assert branch.count('race_effect_channel(') == 3
@@ -78,6 +88,8 @@ shaders = [(root / 'shaders' / name).read_text() for name in ('textured.frag.gls
 renderer = (root / 'switch/deko_renderer.cpp').read_text()
 check(shaders, renderer)
 for name, old, new, shader_mutation in [
+    ('world original factor lost', 'return texel * vertex * 2.0;', 'return texel * vertex;', True),
+    ('world authored color lost', 'ordinary_world_channel(sampled.r, inColor.r)', 'ordinary_world_channel(sampled.r, 1.0)', True),
     ('alpha rounding bypass', 'race_effect_alpha(texel.a, material.alpha.x)', 'texel.a', True),
     ('vertex-color override', 'frame.options.y != 0u || material.environment_range.w > 0.5', 'true', True),
     ('flat lighting removed', 'normal = normalize(normal);', 'normal = vec3(0);', True),

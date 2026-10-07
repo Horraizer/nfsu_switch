@@ -1151,14 +1151,17 @@ bool Rasterizer::fill(
                                    id > frame_.ids_[index])))) {
                         ++stats_.fragments_depth_failed;
                     } else {
-                        if ((options_.vertex_color && !material.frontend_lighting && !material.frontend_floor) || material.sky) {
+                        if ((options_.vertex_color && !material.frontend_lighting && !material.frontend_floor) || material.sky || material.ordinary_world) {
                             const double vc[3] = {
                                 (l[0] * a->rq + l[1] * b->rq + l[2] * c->rq) * iq,
                                 (l[0] * a->gq + l[1] * b->gq + l[2] * c->gq) * iq,
                                 (l[0] * a->bq + l[1] * b->bq + l[2] * c->bq) * iq};
                             for (int k = 0; k < 3; ++k) {
-                                color[k] = std::min(255U, (color[k] * channel(vc[k]) *
-                                    ((material.sky || material.frontend_floor) ? 2U : 1U) + 127U) / 255U);
+                                if (material.ordinary_world)
+                                    color[k] = channel(color[k] * vc[k] * (2.0 / 255.0));
+                                else
+                                    color[k] = std::min(255U, (color[k] * channel(vc[k]) *
+                                        ((material.sky || material.frontend_floor) ? 2U : 1U) + 127U) / 255U);
                             }
                         }
                         const std::uint32_t shade = std::min<std::uint32_t>(material.shade, 256U);

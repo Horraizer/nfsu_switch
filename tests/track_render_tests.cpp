@@ -2658,6 +2658,43 @@ void test_render_vertex_colour() {
           "vertex colour multiplies the texel: got " + describe_pixel(after));
 }
 
+void test_ordinary_world_base_material() {
+    using namespace nfsu;
+    auto fixture = town();
+    const auto list = make_list(fixture.scene, TrackDrawOrder::visible_instance);
+    const auto post = instance_of_mesh(fixture.scene, 1);
+    auto options = small_options();
+    options.material_state = MaterialStateMode::retail;
+    options.shading = ShadingMode::flat;
+    options.camera.target = Vec3{fixture.scene.instances[post].transform.translation[0], 0, 0};
+    std::uint32_t px=0, py=0;
+    check(screen_pixel_of(options.camera, options.width, options.height,
+        Vec3{options.camera.target.x-.25,.5,0},px,py),"world probe visible");
+    Frame frame; RenderStats stats; TrackRenderStats track; std::string error;
+    check_ok(render_track_draw_list(fixture.scene,list,options,{},frame,stats,track,error),"world material render",error);
+    // Source fixture texel(255,120,180), color(255,128,64). Native 2x term,
+    // independent of generic vertex-color option and directional normal.
+    check(pixel_at(frame,px,py)==std::array<unsigned char,4>{255,120,90,255},"original world 2x baked RGB");
+    const auto baked=frame.rgba();
+    options.shading=ShadingMode::none; options.vertex_color=true;
+    check_ok(render_track_draw_list(fixture.scene,list,options,{},frame,stats,track,error),"world option controls",error);
+    check(frame.rgba()==baked,"world authored base ignores substitute shade and generic color toggle");
+    RecordedCommands commands;
+    for (std::uint32_t flags : {0U,0x40U,0x80U,1U,0x41U}) {
+        for(auto& mesh:fixture.scene.region.meshes) mesh.vertex_format_flags=flags;
+        check_ok(record_track_commands(fixture.scene,list,options,{},commands,error),"world selector controls",error);
+        for(const auto& draw:commands.owning_draws())
+            check((draw.material.fallback[3]==6)==(flags==0),"only native ordinary selector gets world base");
+    }
+    for(auto& mesh:fixture.scene.region.meshes) mesh.vertex_format_flags=0;
+    options.reflection_pass=true;
+    check_ok(record_track_commands(fixture.scene,list,options,{},commands,error),"reflected pass control",error);
+    for(const auto& draw:commands.owning_draws())check(draw.material.fallback[3]!=6,"reflected producer remains unchanged");
+    options.reflection_pass=false;options.material_state=MaterialStateMode::off;
+    check_ok(record_track_commands(fixture.scene,list,options,{},commands,error),"diagnostic material control",error);
+    for(const auto& draw:commands.owning_draws())check(draw.material.fallback[3]!=6,"off diagnostic preserves generic model");
+}
+
 void test_render_drawn_bounds_match_the_frame() {
     // The reported drawn bounds against a scan of the pixels themselves.
     // The scan reads the colour buffer and not the id buffer the statistic
@@ -3219,14 +3256,16 @@ void test_sky_background_and_transparency() {
     check(pixel_at(frame,80,60) == std::array<unsigned char,4>{255,120,90,255},"alpha-test holes expose sky");
     for (std::size_t i=3;i<tex.rgba.size();i+=4) tex.rgba[i]=255;
     check_ok(render_track_draw_list(scene,list,options,{},frame,stats,track,error),"opaque foliage",error);
-    check(pixel_at(frame,80,60) == std::array<unsigned char,4>{0,200,0,255},"opaque depth occludes sky");
+    // World texel green200 * authored green128 * 2 / 255 rounds to201.
+    check(pixel_at(frame,80,60) == std::array<unsigned char,4>{0,201,0,255},"opaque baked world depth occludes sky");
     check(frame.depth()[60*160+80] < 1.0,"foliage writes depth");
     tex.alpha_test_mode = 0; tex.alpha_blend_mode = 1;
     for (std::size_t i=3;i<tex.rgba.size();i+=4) tex.rgba[i]=128;
     std::vector<ReferenceDraw> trace;
     check_ok(render_track_draw_list(scene,list,options,{},frame,stats,track,error,
         [&](const ReferenceDraw& d){trace.push_back(d);}),"sky behind glass",error);
-    check(pixel_at(frame,80,60) == std::array<unsigned char,4>{127,160,45,255},"glass blends over sky");
+    // Same source-over alpha128, over unchanged sky green120.
+    check(pixel_at(frame,80,60) == std::array<unsigned char,4>{127,161,45,255},"baked world glass blends over unchanged sky");
     RecordedCommands commands;
     check_ok(record_track_commands(scene,list,options,{},commands,error),"record sky and glass",error);
     check_ok(validate_recorded_commands(commands,error),"validate sky interface",error);
@@ -3387,6 +3426,7 @@ int main() {
     test_render_an_unusable_binding();
     test_render_uv_orientation();
     test_render_vertex_colour();
+    test_ordinary_world_base_material();
     test_render_drawn_bounds_match_the_frame();
     test_render_reports_an_invalid_mesh();
     test_render_counts_a_degenerate_triangle();

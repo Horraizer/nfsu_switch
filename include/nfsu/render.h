@@ -425,6 +425,9 @@ private:
 // shade factor is the retail material state; its defaults are the opaque
 // state, so a caller that does not set them gets the historical behaviour.
 struct RasterMaterial {
+    // Ordinary effect0 main-view base RGB: world.efx texture * color * 2.
+    // Keep alpha, sampler and other effect paths independently selected.
+    bool ordinary_world = false;
     bool car_shading = false;
     bool frontend_lighting = false;
     const Frame* frontend_cube=nullptr;

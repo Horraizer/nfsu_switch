@@ -71,6 +71,12 @@ uint race_effect_alpha(uint texel, float alpha_scale)
     return uint(clamp(float(texel) * alpha_scale + 0.5, 0.0, 255.0));
 }
 
+// Native world.efx base term; interpolation stays continuous until output.
+float ordinary_world_channel(float texel, float vertex)
+{
+    return texel * vertex * 2.0;
+}
+
 void main()
 {
     vec2 uv = inTexcoord;
@@ -90,7 +96,15 @@ void main()
         outColor=vec4(diffuse.rgb*inColor.rgb*2.0+inColor.a*diffuse.a*reflection,1.0);
         return;
     }
-    uvec4 texel = uvec4(texture(baseTexture, uv) * 255.0 + 0.5);
+    vec4 sampled = texture(baseTexture, uv);
+    uvec4 texel = uvec4(sampled * 255.0 + 0.5);
+    if (material.fallback.w == 6.0) {
+        outColor = vec4(ordinary_world_channel(sampled.r, inColor.r),
+                        ordinary_world_channel(sampled.g, inColor.g),
+                        ordinary_world_channel(sampled.b, inColor.b),
+                        float(race_effect_alpha(texel.a, material.alpha.x)) / 255.0);
+        return;
+    }
     if (material.fallback.w == 3.0) {
         vec3 vertex_byte = material.environment_range.w > 1.5 ?
             material.environment_color.rgb : inColor.rgb * 255.0;
