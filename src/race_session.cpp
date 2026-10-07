@@ -123,7 +123,7 @@ bool RaceSession::advance(const GamepadFrame& pad, std::string& error) {
             inputs_[k] = controls_.step(forward_speed(car()), car().gear, car().gearbox,recovered);
             if (recovered && !steer_input(inputs_[k],k,error)) { started_=false; return false; }
             const int previous_gear = car().gear;
-            if (!vehicle_.step(inputs_[k], track_telemetry_[k])) {
+            if (!vehicle_.step(inputs_[k], track_telemetry_[k],k==1?1.0/60.0:0.0)) {
                 started_ = false; error = vehicle_.error(); return false;
             }
             if (recovered) {

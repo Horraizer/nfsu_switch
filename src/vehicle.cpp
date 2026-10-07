@@ -1,4 +1,5 @@
 #include "nfsu/vehicle.h"
+#include "nfsu/player_powertrain.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -27,16 +28,6 @@ constexpr double kGravity = static_cast<double>(9.8F);
 // 0x006CCB78, 9.549304f = 60 / (2 pi): wheel rad/s to engine rpm at
 // 0x0047586F and 0x00475896.
 constexpr double kRadPerSecondToRpm = static_cast<double>(9.549304F);
-
-// 0x006CC960 0.2f and 0x006CC95C 0.8f: the rear drive fraction below which
-// the engine speed is read from the front wheels only, and above which from
-// the rear wheels only (0x00475850, 0x0047587D).
-constexpr double kFrontDriveBelow = static_cast<double>(0.2F);
-constexpr double kRearDriveAbove = static_cast<double>(0.8F);
-
-// 0x006CC964, 0.05f: below this throttle, at exactly idle rpm, the engine
-// gives no torque at all (0x00475601..0x00475626).
-constexpr double kIdleThrottle = static_cast<double>(0.05F);
 
 // 0x0046D1C0: the shift search starts halfway between idle and redline,
 // steps by 50 rpm (0x006B7244), gives redline - 100 (0x006CC9F8) when no
@@ -95,8 +86,14 @@ bool state_finite(const VehicleState& s) noexcept {
               finite(s.orientation.w) && finite(s.orientation.x) && finite(s.orientation.y) &&
               finite(s.orientation.z) && finite(s.steer_angle) && finite(s.engine_rpm) &&
               finite(s.wheel_rpm);
+    ok = ok && finite(s.engine.angular_speed) && finite(s.engine.feedback_torque) &&
+         finite(s.engine.throttle_multiplier) && finite(s.engine.cutoff_until) &&
+         finite(s.transmission.clutch) && finite(s.transmission.previous_slip_rpm) &&
+         finite(s.transmission.wheel_engine_speed) && s.transmission.mode>=0 && s.transmission.mode<=3;
+    ok=ok&&finite(s.transmission.up_offset)&&finite(s.transmission.down_offset);
     for (const VehicleWheelState& w : s.wheels) {
-        ok = ok && finite(w.spin) && finite(w.compression) && finite(w.previous_compression);
+        ok = ok && finite(w.spin) && finite(w.compression) && finite(w.previous_compression) &&
+             finite(w.history_torque) && w.spin_direction>=0 && w.spin_direction<=2;
     }
     return ok;
 }
@@ -263,12 +260,15 @@ void visit_floats(Handling& h, Visitor&& visit) {
     visit(kVehicleFinalRearOffset, h.final_drive_rear);
     visit(kVehicleFinalFrontOffset, h.final_drive_front);
     visit(kVehicleRearFractionOffset, h.rear_drive_fraction);
+    visit(kVehicleClutchStiffnessOffset, h.clutch_stiffness);
+    visit(kVehicleClutchRateOffset, h.clutch_rate);
     for (std::size_t g = 0; g < kVehicleGearSlots; ++g) {
         visit(kVehicleGearRatioOffset + g * 4, h.gear_ratios[g]);
     }
     visit(kVehicleIdleRpmOffset, h.idle_rpm);
     visit(kVehicleRedlineRpmOffset, h.redline_rpm);
     visit(kVehicleMaxRpmOffset, h.max_rpm);
+    visit(kVehicleEngineInertiaOffset, h.engine_inertia);
     for (std::size_t i = 0; i < kVehicleTorquePoints; ++i) {
         visit(kVehicleTorqueOffset + i * 4, h.torque[i]);
     }
@@ -276,6 +276,9 @@ void visit_floats(Handling& h, Visitor&& visit) {
         visit(kVehicleEngineBrakeOffset + i * 4, h.engine_brake[i]);
     }
     visit(kVehicleDragOffset, h.drag);
+    visit(kVehicleServiceBrakeOffset, h.service_brake);
+    visit(kVehicleParkingBrakeOffset, h.parking_brake);
+    visit(kVehicleBrakeBalanceOffset, h.brake_balance);
 }
 
 std::string hex_offset(std::size_t offset) {
@@ -362,21 +365,6 @@ namespace {
 // the slip angle selects and blends seven six-point curves over x 0..10
 // (descriptors 0x7043EC..0x704464), each evaluated at the wheel's load.
 // Curve 0's values sit in BSS and read as zero at rest.
-constexpr float kLateralCurves[7][6] = {
-    {0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F},
-    {0.0F, 1.2F, 2.3F, 3.0F, 3.0F, 2.8F},
-    {0.0F, 1.7F, 3.2F, 4.3F, 5.1F, 5.2F},
-    {0.0F, 1.8F, 3.5F, 4.9F, 5.8F, 6.1F},
-    {0.0F, 1.83F, 3.6F, 5.0F, 5.96F, 6.4F},
-    {0.0F, 1.86F, 3.7F, 5.1F, 6.13F, 6.7F},
-    {0.0F, 1.9F, 3.8F, 5.2F, 6.3F, 7.1F},
-};
-
-double lateral_curve(unsigned index, double load_kn) noexcept {
-    if (index > 6) index = 6;
-    return vehicle_uniform_curve(kLateralCurves[index], 6, 0.0, 10.0, load_kn);
-}
-
 // pi/2 split so that n * kPiOver2High is exact for |n| < 2^20 (fdlibm's
 // pio2_1 and pio2_1t).
 constexpr double kTwoOverPi = 6.36619772367581382433e-01;
@@ -498,10 +486,9 @@ double vehicle_uniform_curve(const float* values, std::size_t count, double x0,
 // ---------------------------------------------------------------------------
 
 // Source: Global/GLOBALB.BUN (SHA-256 39DF38FA...8DB9), chunk 0x00034600,
-// record 18 (240SX) at file offset 1736752. The 316 record bytes this table
-// reproduces, in offset order, hash to
-// 54394827CC13AEE7DE095524810B790A238FFC24763E7C2A2BA236A1A2430DBD
-// (kVehicle240sxRecordBytesSha256); nfsu_vehicle_tests checks it.
+// record 18 (240SX) at file offset 1736752. The reproduced bytes in offset
+// order are pinned by kVehicle240sxRecordBytesSha256; nfsu_vehicle_tests
+// reconstructs and checks them.
 VehicleHandling stock_240sx_handling() {
     VehicleHandling h;
     // +0x110.. the centre of mass.
@@ -534,15 +521,21 @@ VehicleHandling stock_240sx_handling() {
     h.final_drive_rear = 4.083F;
     h.final_drive_front = 4.083F;
     h.rear_drive_fraction = 1.0F;
+    h.clutch_stiffness = 0.04F;
     h.forward_gears = 5;
+    h.clutch_rate = 2.0F;
     h.gear_ratios = {-3.657F, 0.0F, 3.321F, 1.902F, 1.308F, 1.0F, 0.9F, 0.0F};
     // +0x300.. the engine.
     h.idle_rpm = 800.0F;
     h.redline_rpm = 7500.0F;
     h.max_rpm = 8000.0F;
+    h.engine_inertia = 0.00023F;
     h.torque = {0.14F, 0.15F, 0.16F, 0.18F, 0.21F, 0.22F, 0.19F, 0.165F, 0.145F};
     h.engine_brake = {0.12F, 0.18F, 0.13F};
     h.drag = 0.0004F;
+    h.service_brake = 0.4F;
+    h.parking_brake = 0.5F;
+    h.brake_balance = 0.5F;
     return h;
 }
 
@@ -602,6 +595,13 @@ bool check_vehicle_handling(const VehicleHandling& h,
     positive(kVehicleHeightOffset, h.height, "the height");
     positive(kVehicleFinalRearOffset, h.final_drive_rear, "the rear final drive");
     positive(kVehicleFinalFrontOffset, h.final_drive_front, "the front final drive");
+    positive(kVehicleEngineInertiaOffset, h.engine_inertia, "the engine inertia");
+    positive(kVehicleClutchStiffnessOffset, h.clutch_stiffness, "the clutch stiffness");
+    positive(kVehicleClutchRateOffset, h.clutch_rate, "the clutch rate");
+    if (h.service_brake < 0.0F || h.parking_brake < 0.0F)
+        add_issue(issues, kVehicleServiceBrakeOffset, "brake strength must not be negative");
+    if (h.brake_balance < 0.0F || h.brake_balance > 1.0F)
+        add_issue(issues, kVehicleBrakeBalanceOffset, "brake balance must be between0 and1");
     if (!(h.rear_drive_fraction >= 0.0F && h.rear_drive_fraction <= 1.0F)) {
         add_issue(issues, kVehicleRearFractionOffset,
                   "the rear drive fraction must be between 0 and 1");
@@ -831,6 +831,22 @@ void encode_vehicle_telemetry(const VehicleTelemetry& r,
         e.u32((w.contact ? 1U : 0U) | (w.brake_locked ? 2U : 0U));
         e.u32(w.sliding ? 1U : 0U);
     }
+    // Every new persistent mechanical state that can distinguish futures.
+    e.f64(r.engine.angular_speed);
+    e.f64(r.engine.throttle_multiplier);
+    e.f64(r.engine.cutoff_until);
+    e.f64(r.transmission.clutch);
+    e.f64(r.transmission.previous_slip_rpm);
+    e.f64(r.transmission.up_offset);
+    e.f64(r.transmission.down_offset);
+    e.u32(static_cast<std::uint32_t>(r.transmission.mode));
+    e.u32(static_cast<std::uint32_t>(r.transmission.requested_gear));
+    e.u32(r.transmission.rng_state);
+    e.u32(r.transmission.shift_pending?1U:0U);
+    for (std::size_t k=0;k<kVehicleWheelCount;++k) {
+        e.f64(r.wheel_history_torque[k]);
+        e.u32(static_cast<std::uint32_t>(r.wheel_spin_direction[k]));
+    }
 }
 
 void VehicleTelemetryHash::add(const VehicleTelemetry& record) noexcept {
@@ -997,89 +1013,26 @@ void vehicle_brake_pin(VehicleWheelState& wheel, double brake) noexcept {
     if (axis < 0.2F) wheel.brake_locked = false;
 }
 
-// 0x004757D0: engine speed from the driven wheels' rolling speed, then the
-// automatic gearbox's up and down loops, then the clamp to [idle, max].
-void VehicleModel::update_engine(VehicleState& state) const noexcept {
-    const VehicleHandling& h = spec_.handling;
-    const double rear = static_cast<double>(h.rear_drive_fraction);
-    const double final_rear = static_cast<double>(h.final_drive_rear);
-    const double final_front = static_cast<double>(h.final_drive_front);
-    const auto& w = state.wheels;
-    double wheel_term = 0.0;
-    const double front_term = (w[1].spin + w[0].spin) * final_rear * 0.5 * kRadPerSecondToRpm;
-    const double rear_term = (w[3].spin + w[2].spin) * final_front * 0.5 * kRadPerSecondToRpm;
-    if (rear < kFrontDriveBelow) {
-        wheel_term = front_term;
-    } else if (!(rear > kRearDriveAbove)) {
-        wheel_term = (front_term + rear_term) * 0.5;
-    } else {
-        wheel_term = rear_term;
-    }
-
-    const int top = kVehicleGearFirst + static_cast<int>(h.forward_gears) - 1;
-    const auto ratio = [&](int gear) {
-        return static_cast<double>(h.gear_ratios[static_cast<std::size_t>(gear)]);
+// Debug/track pose initialization, once per reset. The port chooses a gear
+// compatible with an imposed moving pose; this placement rule is not a
+// recovered original reset trace.478365's RPM-to-physical-state conversion
+// then runs once. Runtime steps never feed actor RPM back into the engine.
+void VehicleModel::initial_engine_speed(VehicleState& state) const noexcept {
+    const auto& h=spec_.handling;
+    const std::array<float,4> spins{{static_cast<float>(state.wheels[0].spin),
+        static_cast<float>(state.wheels[1].spin),static_cast<float>(state.wheels[2].spin),
+        static_cast<float>(state.wheels[3].spin)}};
+    const auto rpm=[&]() {
+        return static_cast<double>(player_wheel_engine_speed(h,state.gear,spins)*kPlayerRadSToRpm);
     };
-    double rpm = wheel_term * ratio(state.gear);
-    if (state.gearbox == VehicleGearbox::automatic && state.gear != kVehicleGearReverse) {
-        // 0x00475900..0x00475905 forces first gear without recomputing the
-        // speed, so the loops below and the clamp see the old slot's rpm
-        // for this one call.
-        if (state.gear < kVehicleGearFirst) {
-            state.gear = kVehicleGearFirst;
-        }
-        // The hold is an APPROXIMATION: the recovered rule shifts at once and
-        // has no hysteresis, and this model's tyre slip drops the wheel speed
-        // across an upshift by more than the rule's margin, which without a
-        // hold shifts back down on the next step.
-        if (state.shift_hold == 0) {
-            const int before = state.gear;
-            while (state.gear < top && rpm > upshift_[static_cast<std::size_t>(state.gear)]) {
-                ++state.gear;
-                rpm = wheel_term * ratio(state.gear);
-            }
-            while (state.gear > kVehicleGearFirst &&
-                   rpm < downshift_[static_cast<std::size_t>(state.gear)]) {
-                --state.gear;
-                rpm = wheel_term * ratio(state.gear);
-            }
-            if (state.gear != before) {
-                state.shift_hold = spec_.approx.auto_shift_hold_steps;
-            }
-        }
+    double speed=rpm();
+    if (state.gearbox==VehicleGearbox::automatic) {
+        const int top=kVehicleGearFirst+static_cast<int>(h.forward_gears)-1;
+        while (state.gear<top&&speed>upshift_[static_cast<std::size_t>(state.gear)]) {++state.gear;speed=rpm();}
+        while (state.gear>kVehicleGearFirst&&speed<downshift_[static_cast<std::size_t>(state.gear)]) {--state.gear;speed=rpm();}
     }
-    state.wheel_rpm = rpm;
-    const double idle = static_cast<double>(h.idle_rpm);
-    const double max = static_cast<double>(h.max_rpm);
-    state.engine_rpm = rpm < idle ? idle : (rpm > max ? max : rpm);
-}
-
-// 0x00475588..0x00475626: the torque curve under throttle less the engine
-// braking curve under the rest, nothing at all at exactly idle with the
-// throttle closed. Two APPROXIMATIONS keep that sum from doing what an engine
-// cannot: the recovered code only clamps the stored engine speed, so above
-// the maximum the throttle part is cut here to keep a manual gearbox from
-// driving past it; and the engine braking part is a drag on a crank the
-// wheels are turning, so it acts only while the wheel-derived speed is above
-// idle and never pushes a slow car backwards, and it is scaled by
-// engine_brake_scale (the recovered wheel coupling that follows at
-// 0x00475667 was not reproduced, so how much of it reaches a wheel in the
-// game is unknown).
-double VehicleModel::crank_torque(const VehicleState& state, double throttle) const noexcept {
-    const double rpm = state.engine_rpm;
-    double drive = torque_curve(rpm) * throttle;
-    if (state.wheel_rpm > static_cast<double>(spec_.handling.max_rpm)) {
-        drive = 0.0;
-    }
-    double braking = engine_brake_curve(rpm) * (1.0 - throttle) * spec_.approx.engine_brake_scale;
-    if (!(state.wheel_rpm > static_cast<double>(spec_.handling.idle_rpm))) {
-        braking = 0.0;
-    }
-    double torque = drive - braking;
-    if (!(throttle >= kIdleThrottle) && rpm == static_cast<double>(spec_.handling.idle_rpm)) {
-        torque = 0.0;
-    }
-    return torque * spec_.approx.unit_scale;
+    state.wheel_rpm=speed;
+    state.engine_rpm=clamp(speed,h.idle_rpm,h.max_rpm);
 }
 
 bool VehicleModel::reset(VehicleState& state, const VehiclePose& pose) const {
@@ -1131,16 +1084,24 @@ bool VehicleModel::reset(VehicleState& state, const VehiclePose& pose) const {
     next.steer_angle = 0.0;
     next.gearbox = pose.gearbox;
     next.gear = kVehicleGearFirst;
-    update_engine(next);
+    initial_engine_speed(next);
     next.shift_hold = 0;
+    player_engine_reset(next.engine,static_cast<float>(next.engine_rpm));
+    next.transmission.requested_gear=next.gear;
+    player_gear_seed(next.transmission,12345);
+    next.transmission.wheel_engine_speed=static_cast<float>(next.wheel_rpm)/kPlayerRadSToRpm;
     state = next;
     return true;
 }
 
 bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
-                        const VehicleGround& ground, VehicleTelemetry& telemetry) const {
+                        const VehicleGround& ground, VehicleTelemetry& telemetry,
+                        double publication_dt) const {
     if (!valid_ || !state_finite(state) || state.gear < kVehicleGearReverse ||
-        state.gear > kVehicleGearFirst + static_cast<int>(spec_.handling.forward_gears) - 1) {
+        state.gear > kVehicleGearFirst + static_cast<int>(spec_.handling.forward_gears) - 1 ||
+        !finite(publication_dt) || publication_dt<0.0 ||
+        state.transmission.requested_gear<kVehicleGearReverse ||
+        state.transmission.requested_gear>kVehicleGearFirst+static_cast<int>(spec_.handling.forward_gears)-1) {
         return false;
     }
     const VehicleHandling& h = spec_.handling;
@@ -1149,15 +1110,8 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     VehicleState s = state;
 
     const double throttle = sanitize(raw_input.throttle, 0.0, 1.0);
-    // 0x00474B4B..0x00474B6F: the brake the wheels see is the larger of the
-    // processed service brake and half the handbrake axis. That axis is the
-    // handbrake's own merged input (0x00461E10: its digital 0x91 code wins
-    // over its analog 0x92 code, doubled and clamped to 0xFF), not the
-    // service brake; the handbrake has no torque path of its own, so it
-    // cannot lock the driven wheels at speed and pin the wheel-derived
-    // engine speed at idle.
-    const double brake = std::max(sanitize(raw_input.brake, 0.0, 1.0),
-                                  raw_input.handbrake ? 0.5 : 0.0);
+    // Selector1 has separate service and parking paths47792A/477953.
+    const double brake = sanitize(raw_input.brake, 0.0, 1.0);
     const double steer = sanitize(raw_input.steer, -1.0, 1.0);
 
     Mat3 r = rotation(s.orientation);
@@ -1166,22 +1120,42 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     const VehicleVec3 up = r.column(2);
     const double forward_speed = dot(s.velocity, forward);
 
-    // Gear requests, then the engine speed for the gear now selected.
+    // Requests enter the actual clutch phases rather than changing physical
+    // gear and resetting engine speed at once.
     const int top = kVehicleGearFirst + static_cast<int>(h.forward_gears) - 1;
     if (raw_input.shift != VehicleShift::none) {
         const bool up_request = raw_input.shift == VehicleShift::up;
         if (s.gearbox == VehicleGearbox::manual) {
-            if (up_request && s.gear < top) {
-                ++s.gear;
-            } else if (!up_request && s.gear > kVehicleGearReverse) {
-                --s.gear;
+            if (up_request && s.transmission.requested_gear < top) {
+                ++s.transmission.requested_gear;
+            } else if (!up_request && s.transmission.requested_gear > kVehicleGearReverse) {
+                --s.transmission.requested_gear;
             }
         } else if (up_request && s.gear == kVehicleGearReverse) {
-            s.gear = kVehicleGearFirst;
+            s.transmission.requested_gear = kVehicleGearFirst;
         } else if (!up_request && s.gear == kVehicleGearFirst && absolute(forward_speed) < 1.0) {
-            s.gear = kVehicleGearReverse;
+            s.transmission.requested_gear = kVehicleGearReverse;
         }
-        update_engine(s);
+    }
+    if (s.gearbox==VehicleGearbox::automatic&&s.gear!=kVehicleGearReverse) {
+        if (s.gear<=kVehicleGearNeutral) s.transmission.requested_gear=kVehicleGearFirst;
+        else if (s.transmission.mode==3) {
+            //46E5B0 selection uses physical engine speed, not actor RPM.
+            const double rpm=static_cast<double>(s.engine.angular_speed*kPlayerRadSToRpm);
+            const double up=std::min(static_cast<double>(h.redline_rpm),
+                upshift_[static_cast<std::size_t>(s.gear)]+s.transmission.up_offset);
+            double down=downshift_[static_cast<std::size_t>(s.gear)]+s.transmission.down_offset;
+            double safe_down=0.0;
+            if (s.gear>kVehicleGearFirst) safe_down=
+                std::min(static_cast<double>(h.redline_rpm),upshift_[static_cast<std::size_t>(s.gear-1)]-100.0)*
+                h.gear_ratios[static_cast<std::size_t>(s.gear)]/h.gear_ratios[static_cast<std::size_t>(s.gear-1)]-200.0;
+            else down=throttle<0.2?h.idle_rpm+100.0:0.0;
+            bool support=true;
+            for (const auto& wheel:s.wheels) support=support&&wheel.contact;
+            if (rpm>=up&&s.gear<top&&support) s.transmission.requested_gear=s.gear+1;
+            else if (s.gear>kVehicleGearFirst&&rpm<down&&rpm<safe_down)
+                s.transmission.requested_gear=s.gear-1;
+        }
     }
 
     // Steering: toward the input times the speed-dependent lock, at a
@@ -1197,11 +1171,8 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     const double steer_cos = vehicle_cos(s.steer_angle);
     const double steer_sin = vehicle_sin(s.steer_angle);
 
-    // The engine's torque at the speed the previous step left, and its share
-    // at each wheel (0x0047562C..0x00475661).
-    const double engine_torque = crank_torque(s, throttle);
-    const double gear_ratio = static_cast<double>(h.gear_ratios[static_cast<std::size_t>(s.gear)]);
-    const double rear_fraction = static_cast<double>(h.rear_drive_fraction);
+    const float crank = player_engine_torque(h,s.engine,s.gear,static_cast<float>(throttle));
+    const double engine_torque = static_cast<double>(crank)*a.unit_scale;
 
     VehicleVec3 force = v3(0.0, 0.0, -d_.weight);
     VehicleVec3 torque;
@@ -1272,171 +1243,99 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         strut_force[k] = f > 0.0 ? f : 0.0;
     }
 
-    // Tyres and wheels.
-    for (std::size_t k = 0; k < kVehicleWheelCount; ++k) {
-        const std::size_t axle = k / 2;
-        VehicleWheelState& wheel = s.wheels[k];
-        VehicleWheelTelemetry& out = wheel_out[k];
-        const double radius = d_.radius[k];
-        const double fraction = k < 2 ? 1.0 - rear_fraction : rear_fraction;
-        const double final_drive =
-            static_cast<double>(k < 2 ? h.final_drive_front : h.final_drive_rear);
-        // 0x0047557A..0x00475582: the engine derivative is zero for a
-        // brake-pinned wheel. Its tyre can still exert a sliding force.
-        const double drive = wheel.brake_locked ? 0.0 :
-            final_drive * gear_ratio * engine_torque * fraction * 0.5;
-        const double brake_torque = brake * (k < 2 ? a.brake_torque_front : a.brake_torque_rear);
-        out.drive_torque = drive;
-        out.compression = wheel.compression;
-        out.contact = wheel.contact;
-        out.load = strut_force[k];
-        out.surface = hits[k].hit ? hits[k].surface : 0;
-
-        const double inertia = a.wheel_inertia;
-        const auto apply_brake = [&](double spin) {
-            if (!(brake_torque > 0.0)) {
-                return spin;
-            }
-            const double change = dt * brake_torque / inertia;
-            if (absolute(spin) <= change) {
-                return 0.0;
-            }
-            return spin > 0.0 ? spin - change : spin + change;
-        };
-
-        if (!wheel.contact) {
-            wheel.spin = apply_brake(wheel.spin + dt * drive / inertia);
-            out.spin = wheel.spin;
-            out.drive_applied = drive;
-            continue;
+    // Selector1: prepare all wheel inputs before the shared drivetrain/body
+    // constraints. The existing contact/strut adapter and force application
+    // remain explicit 3D approximations; mechanical wheel state is binary32.
+    std::array<PlayerWheelWork,4> work{};
+    std::array<VehicleVec3,4> along_axes{}, across_axes{}, tyre_arms{};
+    const float owner_speed=static_cast<float>(vehicle_sqrt(dot(s.velocity,s.velocity)));
+    for (std::size_t k=0;k<kVehicleWheelCount;++k) {
+        auto& wheel=s.wheels[k];auto& out=wheel_out[k];auto& w=work[k];
+        out.compression=wheel.compression;out.contact=wheel.contact;
+        out.load=strut_force[k];out.surface=hits[k].hit?hits[k].surface:0;
+        w.spin=static_cast<float>(wheel.spin);w.history_torque=wheel.history_torque;
+        w.spin_direction=wheel.spin_direction;w.locked=wheel.brake_locked;
+        w.contact=wheel.contact;w.load=static_cast<float>(strut_force[k]/a.unit_scale);
+        w.owner_speed=owner_speed;
+        const float balance=k<2?1.0F-h.brake_balance:h.brake_balance;
+        w.service=static_cast<float>(brake)*(balance+balance);
+        // Ordinary owner state0: rear mask1, front mask0; >0.2 adds0.5.
+        w.parking=k>=2&&raw_input.handbrake?1.5F:0.0F;
+        w.position_x=static_cast<float>(d_.attach[k].x);
+        w.position_y=static_cast<float>(d_.attach[k].y);
+        const VehicleVec3 normal=wheel.contact?hits[k].normal:up;
+        const VehicleVec3 heading=k<2?add(scale(forward,steer_cos),scale(left,steer_sin)):forward;
+        VehicleVec3 along=sub(heading,scale(normal,dot(heading,normal)));
+        const double length=vehicle_sqrt(dot(along,along));
+        if (length>1.0e-9) along=scale(along,1.0/length);
+        else along=forward;
+        const VehicleVec3 across=cross(normal,along);
+        along_axes[k]=along;across_axes[k]=across;
+        VehicleVec3 arm=d_.attach[k];arm=r.apply(arm);
+        if (wheel.contact) {
+            const VehicleVec3 from=add(attach_world[k],scale(up,a.probe_lift));
+            const VehicleVec3 contact=add(from,scale(up,-hits[k].distance));
+            arm=sub(contact,s.position);out.ground_point=contact;out.ground_normal=normal;
+            const VehicleVec3 strut=scale(normal,strut_force[k]);
+            force=add(force,strut);torque=add(torque,cross(arm,strut));
         }
-
-        const double load = strut_force[k];
-        const VehicleVec3 normal = hits[k].normal;
-        const VehicleVec3 heading =
-            k < 2 ? add(scale(forward, steer_cos), scale(left, steer_sin)) : forward;
-        VehicleVec3 along = sub(heading, scale(normal, dot(heading, normal)));
-        const double along_length = vehicle_sqrt(dot(along, along));
-        const VehicleVec3 from = add(attach_world[k], scale(up, a.probe_lift));
-        const VehicleVec3 contact = add(from, scale(up, -hits[k].distance));
-        const VehicleVec3 arm_contact = sub(contact, s.position);
-        out.ground_point = contact; out.ground_normal = normal;
-
-        // The strut's force reaches the body as the ground's reaction: along
-        // the surface normal, at the contact. Along the body's up axis it
-        // would push a pitched car along the ground at rest (APPROXIMATION of
-        // the recovered application point, which was not traced).
-        const VehicleVec3 strut = scale(normal, load);
-        force = add(force, strut);
-        torque = add(torque, cross(arm_contact, strut));
-
-        if (!(along_length > 1.0e-9)) {
-            wheel.spin = apply_brake(wheel.spin + dt * drive / inertia);
-            out.spin = wheel.spin;
-            out.drive_applied = drive;
-            continue;
-        }
-        along = scale(along, 1.0 / along_length);
-        const VehicleVec3 across = cross(normal, along);
-        const VehicleVec3 point_velocity =
-            add(s.velocity, cross(s.angular_velocity, arm_contact));
-        const double v_long = dot(point_velocity, along);
-        const double v_lat = dot(point_velocity, across);
-        const double denominator =
-            absolute(v_long) > a.slip_speed_floor ? absolute(v_long) : a.slip_speed_floor;
-        // 0x00587740, Unicorn-verified: the slip angle (against the same
-        // floored denominator, so a car at rest has none) selects and
-        // blends the load curves - p = slip x 343.775 / slip_scale, the
-        // 240SX's 12 making p exactly half the slip in degrees - and each
-        // curve is evaluated at x = 0.8 x the wheel's load (the record's
-        // kN) / lateral_load_scale, the blend scaled by lateral_scale and
-        // 2.5 (0x6F086C). The sign returns separately at 0x00587718.
-        const VehicleAxleTyre& tyre = h.tyres[axle];
-        const double slip = vehicle_atan((v_lat < 0.0 ? -v_lat : v_lat) / denominator);
-        const double p = 343.775 * slip / static_cast<double>(tyre.slip_scale);
-        const double x = 0.8 * (load / 1000.0) /
-            static_cast<double>(tyre.lateral_load_scale);
-        double curve_force = lateral_curve(6, x);
-        if (p < 6.0) {
-            const auto idx = static_cast<unsigned>(p);
-            const double frac = p - static_cast<double>(idx);
-            curve_force = lateral_curve(idx, x) * (1.0 - frac) +
-                          lateral_curve(idx + 1, x) * frac;
-        }
-        double fy = -curve_force * static_cast<double>(tyre.lateral_scale) * 2500.0 *
-                    (v_lat < 0.0 ? -1.0 : 1.0);
-        const double peak = d_.static_friction[axle] * load;
-        const double slide = d_.sliding_friction[axle] * load;
-
-        // The traction limit (APPROXIMATION): the engine's torque at this
-        // wheel, driving or braking, is held to what the peak friction
-        // leaves beside the lateral force the slip angle asks for. Where
-        // that force alone passes the peak, vehicle_sqrt's answer for a
-        // negative argument, 0, leaves the engine no torque at this wheel.
-        double applied = drive;
-        if (a.traction_limit) {
-            const double limit = vehicle_sqrt(peak * peak - fy * fy) * radius;
-            applied = clamp(drive, -limit, limit);
-        }
-        out.drive_applied = applied;
-
-        // Longitudinal: the wheel's spin solved implicitly against a linear
-        // tyre, with the brake as a friction torque that can lock it.
-        const double k_long = a.longitudinal_stiffness * load / denominator;
-        const double implicit_mass = inertia + dt * k_long * radius * radius;
-        const double base = inertia * wheel.spin + dt * (applied + k_long * radius * v_long);
-        double spin = wheel.brake_locked ? 0.0 : base / implicit_mass;
-        if (brake_torque > 0.0) {
-            if (spin == 0.0) {
-                // held
-            } else {
-                const double direction = spin > 0.0 ? 1.0 : -1.0;
-                const double braked = (base - dt * direction * brake_torque) / implicit_mass;
-                spin = braked * direction > 0.0 ? braked : 0.0;
-            }
-        }
-        double fx = k_long * (spin * radius - v_long);
-
-        // The friction circle: up to the static coefficient the linear
-        // force stands; past it the force falls toward the sliding
-        // coefficient (APPROXIMATION of the shape; the two coefficients are
-        // the tyre block's +0x0C and +0x10).
-        const double demand = vehicle_sqrt(fx * fx + fy * fy);
-        bool sliding = false;
-        if (demand > peak) {
-            const double limit = slide + (peak - slide) * (peak / demand);
-            const double factor = limit / demand;
-            fx = fx * factor;
-            fy = fy * factor;
-            sliding = true;
-            spin = wheel.brake_locked ? 0.0 :
-                apply_brake(wheel.spin + dt * (applied - fx * radius) / inertia);
-        }
-        wheel.spin = spin;
-
-        const double fade = clamp(v_long / a.rolling_fade_speed, -1.0, 1.0);
-        const double rolling = -a.rolling_resistance * load * fade;
-        const VehicleVec3 tyre_force = add(scale(along, fx + rolling), scale(across, fy));
-        force = add(force, tyre_force);
-        // The tyre's force acts tyre_force_lift of the way from the contact
-        // up to the centre of mass's height along the body's vertical
-        // (APPROXIMATION, docs/VEHICLE.md).
-        const VehicleVec3 arm_tyre =
-            sub(arm_contact, scale(up, dot(arm_contact, up) * a.tyre_force_lift));
-        torque = add(torque, cross(arm_tyre, tyre_force));
-
-        out.spin = spin;
-        out.slip_ratio = (spin * radius - v_long) / denominator;
-        out.slip_lateral = v_lat / denominator;
-        out.force_long = fx;
-        out.force_lat = fy;
-        out.sliding = sliding;
+        tyre_arms[k]=sub(arm,scale(up,dot(arm,up)*a.tyre_force_lift));
+        const VehicleVec3 point=add(s.velocity,cross(s.angular_velocity,arm));
+        const double vlong=dot(point,along),vlat=dot(point,across);
+        w.velocity_long=static_cast<float>(vlong);w.velocity_lat=static_cast<float>(vlat);
+        const VehicleVec3 local_along=r.apply_transpose(along);
+        const VehicleVec3 local_across=r.apply_transpose(across);
+        w.heading_x=static_cast<float>(local_along.x);w.heading_y=static_cast<float>(local_along.y);
+        w.side_x=static_cast<float>(local_across.x);w.side_y=static_cast<float>(local_across.y);
+        // The original standing/sliding producer uses quantized angles.
+        // The diagnostic slip ratio keeps its documented speed floor.
+        const double denominator=std::max(absolute(vlong),a.slip_speed_floor);
+        out.slip_lateral=vlat/denominator;
     }
-
-    // Aerodynamic drag, magnitude drag * v^2 as 0x0045688D reads it, against
-    // the velocity.
-    const double speed = vehicle_sqrt(dot(s.velocity, s.velocity));
-    force = add(force, scale(s.velocity, -d_.drag * speed));
+    const float solver_dt=static_cast<float>(dt);
+    s.transmission.wheel_engine_speed=player_wheel_engine_speed(h,s.gear,
+        {{work[0].spin,work[1].spin,work[2].spin,work[3].spin}});
+    const float transmitted=player_clutch_torque(h,s.engine,s.transmission,s.gear,
+                                                s.transmission.wheel_engine_speed,crank);
+    player_distribute_torque(h,s.gear,s.engine,work,transmitted);
+    for (std::size_t k=0;k<4;++k) {
+        wheel_out[k].drive_torque=static_cast<double>(work[k].torque)*a.unit_scale;
+        player_wheel_prepare(h,k,work[k]);
+    }
+    const double speed=vehicle_sqrt(dot(s.velocity,s.velocity));
+    force=add(force,scale(s.velocity,-d_.drag*speed));
+    const VehicleVec3 local_force=r.apply_transpose(force);
+    const VehicleVec3 local_torque=r.apply_transpose(torque);
+    for (unsigned iteration=0;iteration<5;++iteration) {
+        player_body_wheel_constraints(h,work,static_cast<float>(local_force.x/a.unit_scale),
+                                     static_cast<float>(local_force.y/a.unit_scale),
+                                     static_cast<float>(local_torque.z/a.unit_scale));
+        const float correction=player_coupled_correction(h,s.gear,s.engine,s.transmission,work,crank);
+        player_distribute_torque(h,s.gear,s.engine,work,correction);
+    }
+    for (std::size_t k=0;k<4;++k) player_wheel_limit(h,k,work[k]);
+    player_engine_feedback_finalize(h,s.gear,s.transmission,s.engine,work,static_cast<float>(throttle),crank);
+    std::array<float,4> wheel_rates{};
+    for (std::size_t k=0;k<4;++k) wheel_rates[k]=player_wheel_acceleration(h,k,work[k],solver_dt);
+    for (std::size_t k=0;k<4;++k) player_wheel_integrate(work[k],wheel_rates[k],solver_dt);
+    player_engine_integrate(h,s.engine,crank,solver_dt);
+    player_engine_cutoff_update(h,s.gear,s.engine,static_cast<float>(static_cast<double>(s.step+1)*dt));
+    player_gear_integrate(h,s.transmission,solver_dt);
+    player_gear_update(h,s.gear,s.transmission,s.engine,work,static_cast<float>(throttle),
+                       static_cast<float>(forward_speed));
+    for (std::size_t k=0;k<4;++k) {
+        auto& wheel=s.wheels[k];auto& out=wheel_out[k];const auto& w=work[k];
+        wheel.spin=w.spin;wheel.brake_locked=w.locked;wheel.history_torque=w.history_torque;
+        wheel.spin_direction=w.spin_direction;
+        out.spin=w.spin;out.drive_applied=static_cast<double>(w.torque)*a.unit_scale;
+        out.sliding=w.sliding;out.force_long=static_cast<double>(w.force_long)*a.unit_scale;
+        out.force_lat=static_cast<double>(w.force_lat)*a.unit_scale;
+        out.slip_ratio=(wheel.spin*d_.radius[k]-w.velocity_long)/std::max(absolute(w.velocity_long),a.slip_speed_floor);
+        if (wheel.contact) {
+            const VehicleVec3 tyre_force=add(scale(along_axes[k],out.force_long),scale(across_axes[k],out.force_lat));
+            force=add(force,tyre_force);torque=add(torque,cross(tyre_arms[k],tyre_force));
+        }
+    }
 
     // #275: 0x00474DD0..0x00474E85, car state != 1 and < 2 grounded
     // wheels. This model only meets kind-3 track bodies (state remains 0).
@@ -1470,8 +1369,9 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     if (s.shift_hold > 0) {
         --s.shift_hold;
     }
-    for (auto& wheel : s.wheels) vehicle_brake_pin(wheel, brake);
-    update_engine(s);
+    s.wheel_rpm=static_cast<double>(s.transmission.wheel_engine_speed*kPlayerRadSToRpm);
+    if (publication_dt>0.0) s.engine_rpm=player_engine_publish_rpm(h,s.engine,
+        static_cast<float>(s.engine_rpm),static_cast<float>(publication_dt));
     s.step = s.step + 1;
 
     if (!state_finite(s)) {
@@ -1490,6 +1390,11 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     t.engine_rpm = s.engine_rpm;
     t.wheel_rpm = s.wheel_rpm;
     t.engine_torque = engine_torque;
+    t.engine=s.engine;t.transmission=s.transmission;
+    for (std::size_t k=0;k<4;++k) {
+        t.wheel_history_torque[k]=s.wheels[k].history_torque;
+        t.wheel_spin_direction[k]=s.wheels[k].spin_direction;
+    }
     t.gear = s.gear;
     t.throttle = throttle;
     t.brake = brake;

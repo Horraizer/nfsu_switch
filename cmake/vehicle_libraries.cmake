@@ -24,6 +24,7 @@
 # options, is in docs/VEHICLE.md.
 add_library(nfsu_vehicle
     src/vehicle.cpp
+    src/player_powertrain.cpp
     src/steering.cpp
     src/nitrous.cpp
     src/vehicle_script.cpp

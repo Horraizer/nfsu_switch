@@ -1,11 +1,73 @@
 # Handling, tyre and RPM continuation
 
 Issue #251 continuation from accepted baseline `743ebc0`, with #324 and
-#250/#275 as explicit dependencies. This WIP candidate reproduces the
-selector3 service-brake wheel pin and records its feedback producer.
-Its universal integration is not accepted: ordinary human selector1 uses
-a different wheel lock and RPM producer. Complete original driving parity
-and hardware feel remain open. No recording or test pin has been replaced.
+#250/#275 as explicit dependencies. The current WIP gameplay candidate
+uses ordinary human selector1 engine, wheel, clutch and gearbox components.
+The earlier universal selector3 service-brake pin is removed from VehicleModel;
+its isolated primitive remains for the historical bounded witness. Physical
+engine angular speed evolves independently of actor RPM publication. Complete
+original driving parity and hardware feel remain open. Broad recording and
+gameplay pin replacement remains held.
+
+## Current gameplay integration and exact component comparisons
+
+`src/player_powertrain.cpp` ports the common stock rear-drive component
+chain with original binary32 torque units, authentic inertia and handling
+fields. The wheel producer selects standing/sliding forces, common service
+and state0 parking inputs, brake-capacity locking and ABS attenuation.
+Five planar body/wheel constraint passes interleave with the coupled torque
+correction; combined-force limiting and feedback finalization precede the
+four wheel/engine/clutch derivatives and Euler updates. Wheel torque history
+and sign, clutch phase, gear request, shift offsets and deterministic RNG
+state persist. The original falling publication bound uses the completed
+physical engine and unsplit frame interval; rising publication is direct.
+DriveSession and RaceSession supply that interval after their solver slices.
+
+`tools/handling_player_native.py` executes actual full478570 and587830,
+full gearbox construction/update and the six-component original kernel.
+Its engine/gear bytes and RNG state are restored per case, with separate
+pre-kernel and post-update wheel-equivalent speed fields. Owner magnitude
+speed, lateral velocity and initial torque history are explicit inputs.
+Geometry, longitudinal velocity, load, surface, clock and environment remain
+supplied. No external replacement hooks are allowed. These are component
+fixtures with fixed body input, not original driving trajectories.
+
+`tools/handling_player_coupled_compare.py` builds a fresh portable bridge
+and requires exact forces, torque, spin, engine feedback/acceleration,
+physical/publication RPM and completed clutch/gear/RNG state. Reports retain
+native input-report and source/binary hashes. Fresh straight, lateral and
+nonzero torque-history receipts are recorded in the worker checkpoint.
+`handling_player_engine_compare.py` separately authenticates every encoded
+stock handling field byte against the retail record.
+
+The lateral fixture exposed a concrete units bug:587407 converts the
+16-bit angle to radians before comparing it directly with tyre setup+0.
+Comparing degrees instead prematurely selected sliding on the driven axle.
+The correction uses the original564CD0/564DB0 lookup and564B10 polynomial,
+kept separate from body/camera trigonometry. ASCII lookup data is regenerated
+by `handling_player_angles_generate.py` from the authenticated executable;
+`handling_player_angle_compare.py` verifies signed/tiny vector cases and
+the entire16-bit sine domain. The standing force uses authentic587740
+operation order and load-curve family, including its separate conversion
+to degrees. Planar yaw accumulation also preserves source add/subtract
+order; grouping each cross product first changed coupled binary32 bits.
+
+`nfsu_player_powertrain_tests` covers actor/physical isolation, unsplit falling
+publication, reset and refusal preservation, torque-history/request telemetry,
+multi-step clutch phases, the selector1 full-service distinction and the
+source radians branch. The canonical telemetry appends persistent mechanics
+to the original prefix; future-distinguishing states have different bytes.
+The old vehicle tests still require attribution and correction where they
+assume selector3 locking, actor RPM equal to clamped wheel RPM or instantaneous
+gear changes. Their failures are preserved, not reported as a passing gate.
+
+Remaining approximations include the3D body/contact/suspension adapter,
+world-to-wheel heading/terrain construction, imposed moving-pose reset,
+port subdivision cadence, simulation clock and per-vehicle fixture RNG.
+Stock ordinary paths do not establish alternate descriptor assists, damage,
+nitrous or simultaneous high-speed gas/service special input branches.
+Full required gates, independent gameplay review and deferred hardware
+acceptance remain open.
 
 ## Positive model selection and conflicting producer assumptions
 
@@ -242,9 +304,9 @@ contain unused padding; the report lists every executed instruction address.
 This identifies and executes the producer, but does not establish full
 car/mode/contact/surface/device gates, force application across heading and
 terrain, actual live wheel-engine transients or original scheduler cadence.
-Those must be resolved before replacing longitudinal stiffness, inertia,
-engine-brake scale, ideal traction control or brake torque wholesale.
-No guessed grip multiplier or needle follower is introduced here.
+The current component integration above supersedes the earlier incomplete
+selector3 producer assumptions; the declared body/live boundaries remain.
+No guessed grip multiplier or needle follower is introduced.
 
 `tools/handling_feedback_chain.py` extends the selector3 witness through
 actual torque-curve constructor initialization, unlocked/locked angular
@@ -266,16 +328,16 @@ engine/wheel RPM, gear, wheel spins and rear force/sliding state.
 
 | Scenario | Port before/after evidence | Original evidence boundary |
 | --- | --- | --- |
-| Acceleration then coast | Exact sequence equivalence outside the pin | Torque/ratio consumers; complete live coupling unverified |
-| Service brake | Candidate low-spin latch, moving idle and stopped hold | Selector3 pin; selector1 has a different writer |
-| Full to half brake then release/gas | Candidate persistent lock then wheel/RPM recovery | Selector3 set/hold/release gates; port force transient approximate |
-| Handbrake then gas | Exact sequence equivalence; no new service pin | Selector3 half-axis producer/max consumer only |
-| Corner entry/hold, reversal and release | Exact sequence equivalence | Accepted recovered steering and isolated lateral-law witness |
-| Throttle corner then traction release | Exact sequence equivalence | Broad combined-demand/traction feedback remains incomplete |
-| Manual up/down | Exact sequence equivalence | Existing recovered gear/RPM rules; live shift transient unverified |
-| Reverse brake then gas | Candidate signed absolute-wheel pin and release | Selector3 reverse slot and absolute-spin gates |
-| Stopped gas/brake then release | Candidate pin prevents driven-wheel acceleration while latched | Selector3 zero derivative and completed idle clamp |
-| Pause, catch-up and reset | Existing HUD cadence tests plus reset/latch regression | Port fixed-state semantics; live original cadence unverified |
+| Acceleration then coast | Exploratory current gameplay CSV | Authentic engine/clutch primitives; original trajectory unverified |
+| Service brake | Exploratory current gameplay CSV | Selector1 capacity/ABS and publication fixtures; body trajectory unverified |
+| Full to half brake then release/gas | Exploratory current gameplay CSV | Mechanical history/phase primitives; original transient unverified |
+| Handbrake then gas | Exploratory current gameplay CSV | Separate state0 rear parking path; original trajectory unverified |
+| Corner entry/hold, reversal and release | Exploratory current gameplay CSV | Accepted steering plus original lateral component fixtures; heading/body trajectory unverified |
+| Throttle corner then traction release | Exploratory current gameplay CSV | Coupled constraints and friction limit fixtures; trajectory unverified |
+| Manual up/down | Exploratory current gameplay CSV | Clutch/gear phases and RNG; complete request cycle under original driver unverified |
+| Reverse brake then gas | Exploratory current gameplay CSV | Signed mechanics; original reverse trajectory unverified |
+| Stopped gas/brake then release | Exploratory current gameplay CSV | Ordinary component fixtures; stop/combined input acceptance remains open |
+| Pause, catch-up and reset | Targeted physical/publication/reset tests | Port frame semantics; live original cadence unverified |
 
 Native comparison and producer commands, from the assigned workspace with
 standalone Python and desktop toolchain on PATH:

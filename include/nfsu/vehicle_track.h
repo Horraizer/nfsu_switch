@@ -510,7 +510,8 @@ public:
     // checks of one 60 Hz tick and any reset they call for. False, with the
     // session left as it was, when not started or when the model refuses
     // the step.
-    bool step(const VehicleInput& input, VehicleTrackTelemetry& telemetry);
+    bool step(const VehicleInput& input, VehicleTrackTelemetry& telemetry,
+              double publication_dt = kVehicleStepSeconds);
 
     // Asks for a reset on the next tick, as the game's reset button would.
     void request_reset() noexcept;

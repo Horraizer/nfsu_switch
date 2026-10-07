@@ -27,7 +27,7 @@ int main() {
         if (name == "reverse") { pose.speed = -12; pose.gearbox = VehicleGearbox::manual; }
         if (name == "shift") pose.gearbox = VehicleGearbox::manual;
         if (!model.reset(car, pose)) return 1;
-        if (name == "reverse") car.gear = kVehicleGearReverse;
+        if (name == "reverse") car.gear = car.transmission.requested_gear = kVehicleGearReverse;
         SteeringState steering; unsigned shift_step = 0; bool shifted = false;
         for (unsigned k = 0; k < 1440; ++k) {
             VehicleInput input; std::string phase;

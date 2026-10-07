@@ -259,7 +259,8 @@ void test_record_round_trip() {
     check(get_u32(record, 0x230) == 0x3EEB4A9FU && get_u32(record, 0x244) == 0x400FC2F5U &&
               get_u32(record, 0x258) == 0x4017847BU,
           "inertia diagonal at +0x230, +0x244, +0x258");
-    check(record[0x12C] == 0x11 && record[0x2DC] == 0x11, "bytes outside the fields are untouched");
+    check(get_u32(record, 0x2DC) == 0x40000000U, "clutch rate2 at +0x2DC");
+    check(record[0x12C] == 0x11 && record[0x334] == 0x11, "bytes outside the fields are untouched");
 
     nfsu::VehicleHandling decoded;
     std::vector<nfsu::VehicleHandlingIssue> issues;
@@ -308,10 +309,10 @@ void test_record_source() {
     }
     check(bytes.size() == nfsu::kVehicle240sxRecordBytes,
           "the built-in table reproduces " + std::to_string(bytes.size()) + " record bytes");
-    check(runs == 23 && first == 0x110 && last == 0x373,
+    check(runs == 21 && first == 0x110 && last == 0x38F,
           "in " + std::to_string(runs) + " runs from byte " + std::to_string(first) +
               " to byte " + std::to_string(last) +
-              ", expected 23 runs from 272 (+0x110) to 883 (+0x373)");
+              ", expected 21 runs from 272 (+0x110) to 911 (+0x38F)");
     const std::string hash = nfsu::sha256_hex(nfsu::sha256(bytes.data(), bytes.size()));
     check(hash == nfsu::kVehicle240sxRecordBytesSha256,
           "the built-in 240SX table rebuilds the retail record's bytes: " + hash);
@@ -330,6 +331,9 @@ void test_record_refusals() {
         {"an infinite torque point",
          [&](std::vector<unsigned char>& r) { put_f32(r, 0x320, inf); }, 0x320},
         {"a zero mass", [](std::vector<unsigned char>& r) { put_f32(r, 0x220, 0.0F); }, 0x220},
+        {"a zero engine inertia", [](std::vector<unsigned char>& r) { put_f32(r, 0x30C, 0.0F); }, 0x30C},
+        {"a zero clutch stiffness", [](std::vector<unsigned char>& r) { put_f32(r, 0x2D4, 0.0F); }, 0x2D4},
+        {"a zero clutch rate", [](std::vector<unsigned char>& r) { put_f32(r, 0x2DC, 0.0F); }, 0x2DC},
         {"a zero rolling radius",
          [](std::vector<unsigned char>& r) { put_f32(r, 0x130, 0.0F); }, 0x130},
         {"idle at the redline",
@@ -1917,9 +1921,10 @@ void test_telemetry_encoding() {
     // Then three doubles: the handbrake at 172.
     check(bytes[172] == 1, "the handbrake at 172");
     // Then the steer angle to 184 and four wheels of 84 bytes, the last
-    // wheel's sliding flag in the record's last four bytes.
-    check(bytes[516] == 1 && bytes[519] == 0 && 184 + 4 * 84 == nfsu::kVehicleTelemetryRecordBytes,
-          "the last wheel's sliding flag ends the record");
+    // wheel's sliding flag closes the original prefix. Mechanical state
+    // follows it so equal displayed values cannot hide different futures.
+    check(bytes[516] == 1 && bytes[519] == 0 && nfsu::kVehicleTelemetryRecordBytes == 640,
+          "the original wheel prefix precedes persistent mechanical state");
     // The applied drive torque follows the recovered one in each wheel:
     // wheel 0's eighth and ninth doubles, at 184 + 56 and 184 + 64.
     t.wheels[0].drive_applied = 1.0;
@@ -1945,7 +1950,7 @@ void test_telemetry_encoding() {
           "contact-only wire value remains legacy1");
     t.wheels[0].contact = false;
     nfsu::encode_vehicle_telemetry(t, bytes);
-    check(bytes == legacy, "unlatched telemetry preserves every legacy byte and size");
+    check(bytes == legacy, "clearing wheel flags restores the same complete record");
 
     nfsu::VehicleTelemetryHash a;
     nfsu::VehicleTelemetryHash b;

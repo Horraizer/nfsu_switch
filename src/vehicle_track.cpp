@@ -1064,14 +1064,15 @@ void VehicleTrackSession::run_tick(VehicleState& s, const VehicleInput& input,
     }
 }
 
-bool VehicleTrackSession::step(const VehicleInput& input, VehicleTrackTelemetry& telemetry) {
+bool VehicleTrackSession::step(const VehicleInput& input, VehicleTrackTelemetry& telemetry,
+                               double publication_dt) {
     if (!valid_ || !started_) {
         return false;
     }
     VehicleState s = state_;
     VehicleTrackTelemetry t;
     const RecordingGround recording(ground_);
-    if (!model_->step(s, input, recording, t.model)) {
+    if (!model_->step(s, input, recording, t.model, publication_dt)) {
         return false;
     }
     t.wheel_surface = recording.surfaces();

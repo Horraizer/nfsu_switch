@@ -204,7 +204,8 @@ bool DriveSession::advance(const GamepadFrame& frame, std::string& error) {
     VehicleTelemetry telemetry[kDriveStepsPerFrame];
     for (std::size_t i = 0; i < kDriveStepsPerFrame; ++i) {
         inputs[i] = controls.step(forward_speed(state), state.gear, state.gearbox);
-        if (!model_->step(state, inputs[i], ground_, telemetry[i])) {
+        if (!model_->step(state, inputs[i], ground_, telemetry[i],
+                          i+1==kDriveStepsPerFrame?kDriveFrameSeconds:0.0)) {
             error = "the vehicle model stopped at frame " + std::to_string(frames_ + 1) +
                     ": its state is no longer finite";
             return false;

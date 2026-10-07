@@ -161,14 +161,20 @@ struct VehicleHandling {
     float final_drive_rear = 0.0F;              // +0x2C8, sub +0x1B8: wheels 2 and 3
     float final_drive_front = 0.0F;             // +0x2CC, sub +0x1BC: wheels 0 and 1
     float rear_drive_fraction = 0.0F;           // +0x2D0, sub +0x1C0
+    float clutch_stiffness = 0.0F;              // +0x2D4, kN m per rad/s
     std::uint32_t forward_gears = 0;            // +0x2D8, sub +0x1C8
+    float clutch_rate = 0.0F;                   // +0x2DC, 1/s
     std::array<float, kVehicleGearSlots> gear_ratios{}; // +0x2E0, sub +0x1D0
     float idle_rpm = 0.0F;                      // +0x300, sub +0x1F0
     float redline_rpm = 0.0F;                   // +0x304, sub +0x1F4
     float max_rpm = 0.0F;                       // +0x308, sub +0x1F8
+    float engine_inertia = 0.0F;                // +0x30C, tonnes m^2
     std::array<float, kVehicleTorquePoints> torque{};              // +0x310, kN m
     std::array<float, kVehicleEngineBrakePoints> engine_brake{};   // +0x358, kN m
     float drag = 0.0F;                          // +0x370, kN per (m/s)^2
+    float service_brake = 0.0F;                 // +0x384, kN m / axis
+    float parking_brake = 0.0F;                 // +0x388, kN m / axis
+    float brake_balance = 0.0F;                 // +0x38C, rear service fraction
 };
 
 // Record offsets of the fields above, for decoders and for reports.
@@ -188,30 +194,35 @@ constexpr std::size_t kVehicleShiftFractionOffset = 0x2C0;
 constexpr std::size_t kVehicleFinalRearOffset = 0x2C8;
 constexpr std::size_t kVehicleFinalFrontOffset = 0x2CC;
 constexpr std::size_t kVehicleRearFractionOffset = 0x2D0;
+constexpr std::size_t kVehicleClutchStiffnessOffset = 0x2D4;
 constexpr std::size_t kVehicleForwardGearsOffset = 0x2D8;
+constexpr std::size_t kVehicleClutchRateOffset = 0x2DC;
 constexpr std::size_t kVehicleGearRatioOffset = 0x2E0;
 constexpr std::size_t kVehicleIdleRpmOffset = 0x300;
 constexpr std::size_t kVehicleRedlineRpmOffset = 0x304;
 constexpr std::size_t kVehicleMaxRpmOffset = 0x308;
+constexpr std::size_t kVehicleEngineInertiaOffset = 0x30C;
 constexpr std::size_t kVehicleTorqueOffset = 0x310;
 constexpr std::size_t kVehicleEngineBrakeOffset = 0x358;
 constexpr std::size_t kVehicleDragOffset = 0x370;
+constexpr std::size_t kVehicleServiceBrakeOffset = 0x384;
+constexpr std::size_t kVehicleParkingBrakeOffset = 0x388;
+constexpr std::size_t kVehicleBrakeBalanceOffset = 0x38C;
 
 // The 240SX's record, index 18 of chunk 0x00034600 in the retail
 // Global/GLOBALB.BUN (SHA-256 39DF38FA...8DB9), at absolute file offset
 // 1736752. A small numeric table from a retail file, kept in the source
 // under the owner's rule of PR #169 comment 3860: it states its source and
 // the SHA-256 of the bytes it reproduces, and nfsu_vehicle_tests rebuilds
-// those bytes from it. It reproduces 316 of the record's 3216 bytes, the 79
-// fields encode_vehicle_handling writes, in 23 runs from +0x110 to +0x373
-// (docs/VEHICLE.md lists them); every other byte of the record is not held
-// here. Those 316 bytes, taken in offset order, hash to
+// those bytes from it. The fields encode_vehicle_handling writes are
+// identified by the offset constants above; every other record byte is not
+// held here. Their bytes, taken in offset order, hash to
 // kVehicle240sxRecordBytesSha256. `nfsu_probe vehicle-sim --handling`
 // compares a decoded record against this table field by field.
 VehicleHandling stock_240sx_handling();
-constexpr std::size_t kVehicle240sxRecordBytes = 316;
+constexpr std::size_t kVehicle240sxRecordBytes = 340;
 constexpr const char* kVehicle240sxRecordBytesSha256 =
-    "54394827CC13AEE7DE095524810B790A238FFC24763E7C2A2BA236A1A2430DBD";
+    "1EA0671C7E4490237EAE5DAF386535FFF0EFF70A2B823D58D1710631A3019045";
 
 struct VehicleHandlingIssue {
     // Offset of the offending field inside the record.
@@ -446,8 +457,29 @@ struct VehicleWheelState {
     double compression = 0.0;
     double previous_compression = 0.0;
     bool contact = false;
-    // Selector3 candidate: 0x004757DA locks a slow wheel until brake < 0.2.
+    // Selector1 wheel+10C, recalculated by the authentic capacity test.
     bool brake_locked = false;
+    float history_torque = 0.0F; // wheel+114, kN m
+    int spin_direction = 1;      // wheel+110
+};
+
+struct PlayerEngineState {
+    float angular_speed = 0.0F;
+    float feedback_torque = 0.0F;
+    float throttle_multiplier = 1.0F;
+    float cutoff_until = 0.0F;
+};
+
+struct PlayerGearState {
+    float clutch = 0.0F;
+    float previous_slip_rpm = 0.0F;
+    int mode = 2;
+    int requested_gear = kVehicleGearFirst;
+    float wheel_engine_speed = 0.0F;
+    float up_offset = 0.0F, down_offset = 0.0F;
+    // Deterministic fixture seed; the original game shares a global seed.
+    std::uint32_t rng_state = 12345;
+    bool shift_pending = false; // gearbox+48, request transition in progress
 };
 
 // Original selector3 brake-axis latch, after wheel integration and before
@@ -462,12 +494,14 @@ struct VehicleState {
     VehicleVec3 angular_velocity;  // world, rad/s
     std::array<VehicleWheelState, kVehicleWheelCount> wheels{};
     double steer_angle = 0.0;      // road-wheel angle of wheels 0 and 1, rad
-    double engine_rpm = 0.0;       // clamped to [idle, max], as the game stores it
-    double wheel_rpm = 0.0;        // the same before the clamp
+    double engine_rpm = 0.0;       // actor publication, distinct from engine state
+    double wheel_rpm = 0.0;        // cached gearbox-equivalent angular speed in RPM
     int gear = kVehicleGearFirst;
     VehicleGearbox gearbox = VehicleGearbox::automatic;
-    // Steps left before the automatic gearbox may shift again.
+    // Legacy compatibility field; selector1 uses transmission phases.
     std::uint32_t shift_hold = 0;
+    PlayerEngineState engine;
+    PlayerGearState transmission;
 };
 
 // Where reset() puts the car: the ground point under the centre of mass,
@@ -491,12 +525,12 @@ struct VehicleWheelTelemetry {
     VehicleVec3 ground_point, ground_normal; // diagnostic only; omitted from bytes
     double force_long = 0.0;    // N, along the wheel's heading on the ground
     double force_lat = 0.0;     // N, toward the wheel's left on the ground
-    double drive_torque = 0.0;  // N m from the engine, as the recovered split gives it
-    double drive_applied = 0.0; // N m of it that reached the wheel, after the traction limit
+    double drive_torque = 0.0;  // N m from the first clutch distribution
+    double drive_applied = 0.0; // total N m after brake and coupled corrections
     std::uint32_t surface = 0;
     bool contact = false;
     bool sliding = false;
-    bool brake_locked = false;  // persistent selector3 candidate latch
+    bool brake_locked = false;  // selector1 capacity-test lock at this step
 };
 
 // One record per step, describing the state at the END of the step and the
@@ -512,6 +546,10 @@ struct VehicleTelemetry {
     double engine_rpm = 0.0;
     double wheel_rpm = 0.0;
     double engine_torque = 0.0; // N m at the crankshaft
+    PlayerEngineState engine;
+    PlayerGearState transmission;
+    std::array<float,4> wheel_history_torque{};
+    std::array<int,4> wheel_spin_direction{};
     int gear = kVehicleGearFirst;
     double throttle = 0.0;      // the inputs as applied, after clamping
     double brake = 0.0;
@@ -531,13 +569,16 @@ struct VehicleTelemetry {
 // The fixed binary form of one record: every double as its IEEE-754 bits,
 // every integer and flag as an unsigned integer, all little-endian, in the
 // order docs/VEHICLE.md lists. The wheel contact word packs contact in bit0
-// and the brake latch in bit1, preserving every unlatched legacy byte.
+// and the wheel lock in bit1. The original520-byte prefix is followed by
+// physical engine, clutch, gear request, RNG and wheel history/sign state.
 // It is what the telemetry hash covers: the
 // step (u64), four vectors, five doubles, the gear (u32), three doubles,
 // the handbrake (u32), the steer angle, then per wheel nine doubles and
-// three u32 (surface, contact/latch flags, sliding).
+// three u32 (surface, contact/lock flags, sliding), then seven mechanical
+// doubles, four gearbox u32 and one history double/sign u32 per wheel.
 constexpr std::size_t kVehicleTelemetryRecordBytes =
-    8 + 4 * 24 + 5 * 8 + 4 + 3 * 8 + 4 + 8 + kVehicleWheelCount * (9 * 8 + 3 * 4);
+    8 + 4 * 24 + 5 * 8 + 4 + 3 * 8 + 4 + 8 + kVehicleWheelCount * (9 * 8 + 3 * 4)
+    + 7 * 8 + 4 * 4 + kVehicleWheelCount * (8 + 4);
 void encode_vehicle_telemetry(const VehicleTelemetry& record,
                               std::array<std::uint8_t, kVehicleTelemetryRecordBytes>& out) noexcept;
 
@@ -601,7 +642,8 @@ public:
     bool step(VehicleState& state,
               const VehicleInput& input,
               const VehicleGround& ground,
-              VehicleTelemetry& telemetry) const;
+              VehicleTelemetry& telemetry,
+              double publication_dt = kVehicleStepSeconds) const;
 
 private:
     struct Derived {
@@ -626,8 +668,7 @@ private:
         double drag = 0.0;
     };
 
-    void update_engine(VehicleState& state) const noexcept;
-    double crank_torque(const VehicleState& state, double throttle) const noexcept;
+    void initial_engine_speed(VehicleState& state) const noexcept;
 
     VehicleSpec spec_;
     Derived d_;

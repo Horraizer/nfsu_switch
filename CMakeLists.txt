@@ -1367,6 +1367,11 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_vehicle_tests)
     add_test(NAME nfsu_vehicle_tests COMMAND nfsu_vehicle_tests)
 
+    add_executable(nfsu_player_powertrain_tests tests/player_powertrain_tests.cpp)
+    target_link_libraries(nfsu_player_powertrain_tests PRIVATE nfsu_vehicle)
+    nfsu_enable_warnings(nfsu_player_powertrain_tests)
+    add_test(NAME nfsu_player_powertrain_tests COMMAND nfsu_player_powertrain_tests)
+
     # What `vehicle-sim` refuses, prints and exits with, over no input, over
     # script files this test writes, and over the synthetic GLOBALB.BUN
     # nfsu_vehicle_tests writes. tests/vehicle_sim_guards.cmake says what
