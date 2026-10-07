@@ -121,7 +121,10 @@ call, then the original coupled torque solver46E360. The source caller
 executes that solver count while holding the declared body/contact data.
 It then runs combined-demand limit587830 through587A90, stopping before
 the separate force-coordinate/body-application part, and integrates the
-engine and all wheel states with the original kernel and updates.
+engine and all wheel states with the original kernel and updates. The
+de534ac version used a five-component list and a partial gearbox constructor.
+The later revision adds full gearbox constructor46D390, original clutch
+derivative46DFA0 and full gearbox update46DB60 as a sixth component.
 
 Wheel headings are identity matrices, world velocity/load/surface are
 explicit synthetic inputs, and retail wheel/tyre/brake blocks and global
@@ -137,10 +140,29 @@ This narrows the previous missing coupled solve and tyre-producer boundary.
 It still does not execute the entire478570 constraint iteration body,
 derive contact velocity/load from an integrated rigid body, apply the later
 wheel/body force transforms, execute the complete gearbox update or establish
-live scheduling. It cannot validate a complete car model or justify dropping
+live scheduling. The later six-component revision does execute the complete
+gearbox update; body/constraint/cadence limits remain. It cannot validate
+a complete car model or justify dropping
 the isolated engine-only boundary above. A fixed body velocity can accelerate
 a braking wheel toward its rolling speed; that is a fixture consequence,
 not a measured whole-car acceleration under braking.
+
+Actual factory classification476CA3..476CFB chooses the stock rear-drive
+descriptor6F1098 before calling the gearbox constructor. Earlier partial
+constructor fixtures supplied synthetic6F102C, which was unused by their
+executed arithmetic. The corrected isolated-engine witness and a
+descriptor-only corrected copy of the de534ac coupled witness preserve all
+numeric row fields exactly; the worker checkpoint names the fresh receipt
+pairs and comparison. This comparison excludes the later full gearbox
+update extension, whose dynamic state is additional evidence.
+
+The full constructor requires a declared synthetic SEH page, seeded random
+context and game-state4. The fixture restores all constructor gearbox bytes
+between cases before supplying same current/requested gear, clutch fraction
+and state; inherited shift flags are not silently carried between cases.
+The original shift-table constructor and random helper execute, but the
+environment is explicitly synthetic. Changes in clutch engagement and
+retained fully coupled state are asserted as well as engine/wheel outputs.
 
 ## Original execution boundary
 

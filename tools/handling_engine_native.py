@@ -24,7 +24,8 @@ def witness(root, out):
     image=Image(data)
     m=Machine(image)
     m.allowed=[(0x46C7C0,0x46C912),(0x46C6D0,0x46C764),
-        (0x46D3B4,0x46D41E),(0x478365,0x478395),(0x46D680,0x46D6F5),
+        (0x46D3B4,0x46D41E),(0x476CA3,0x476CFC),
+        (0x478365,0x478395),(0x46D680,0x46D6F5),
         (0x46E270,0x46E356),(0x46E020,0x46E26E),
         (0x46CF80,0x46CFB8),(0x46CFF0,0x46D1B1),
         (0x583EA0,0x583F18),(0x674898,0x67490D),(0x4387E0,0x4387F6),
@@ -34,7 +35,7 @@ def witness(root, out):
     engine,setup,physics,actor,gearbox,wheels,system,vtable,output=[0x1100000+k*0x1000 for k in range(9)]
     state=actor+0x40
     m.uc.mem_write(setup,record[0x110:])
-    m.put(physics+0x58,state);m.put(physics+0x48,engine)
+    m.put(physics+0x58,state);m.put(physics+0x48,engine);m.put(physics+0x54,setup)
     m.put(0x78A344,0,'B');m.put(0x7361A8,0);m.put(0x73AD34,0)
     m.put(0x7000E4,100.0,'f')
     m.run(0x46C7C0,(state,),esi=engine,ecx=setup+0x1F0)
@@ -43,9 +44,12 @@ def witness(root, out):
     for k in range(4): m.put(physics+0x38+4*k,wheels+0x200*k)
     # Actual gearbox pointer/state constructor prefix, before table/random
     # initialization. Dynamic gear/clutch fields below are synthetic inputs.
+    m.run(0x476CA3,end=0x476CFC,ebp=physics)
+    tuning=m.reg('edx')
+    if tuning!=0x6F1098:raise RuntimeError('stock rear-drive factory class differs')
     m.put(STACK+0x28,state)
     m.run(0x46D3B4,end=0x46D41E,esi=gearbox,edi=setup+0x1B0,
-          edx=0x6F102C,ecx=engine,eax=physics+0x38)
+          edx=tuning,ecx=engine,eax=physics+0x38)
     m.put(engine+0x20,gearbox)
     if (m.get(gearbox+0x18)!=setup+0x1B0 or m.get(gearbox+0x20)!=engine
             or m.get(gearbox+0x34)!=state

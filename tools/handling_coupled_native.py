@@ -24,7 +24,7 @@ def witness(root, out):
     image=Image(data)
     m=Machine(image)
     m.allowed=[(0x46C7C0,0x46C912),(0x46C6D0,0x46C764),
-        (0x46D3B4,0x46D41E),(0x478365,0x478395),(0x46D680,0x46D6F5),
+        (0x46D390,0x46D4D1),(0x46D1C0,0x46D388),(0x46D760,0x46EA43),(0x476CA3,0x476CFC),(0x4607A0,0x4607D4),(0x478365,0x478395),(0x46D680,0x46D6F5),
         (0x46E270,0x46E356),(0x46E020,0x46E26E),
         (0x46CF80,0x46CFB8),(0x46CFF0,0x46D1B1),
         (0x583EA0,0x583F18),(0x674898,0x67490D),(0x4387E0,0x4387F6),
@@ -38,7 +38,10 @@ def witness(root, out):
     engine,setup,physics,actor,gearbox,wheels,system,vtable,output=[0x1100000+k*0x1000 for k in range(9)]
     state=actor+0x40
     m.uc.mem_write(setup,record[0x110:])
-    m.put(physics+0x58,state);m.put(physics+0x48,engine)
+    m.put(physics+0x58,state);m.put(physics+0x48,engine);m.put(physics+0x54,setup)
+    m.uc.mem_map(0,0x1000)
+    m.put(0x7361F8,0x1119000);m.put(0x1119000+0x2D0,12345)
+    m.put(0x73619C,0x111A000);m.put(0x111A000,4)
     m.put(0x78A344,0,'B');m.put(0x7361A8,0);m.put(0x73AD34,0)
     m.put(0x7000E4,100.0,'f');m.put(0x6D4AC4,0x5ABDB5)
     m.run(0x46C7C0,(state,),esi=engine,ecx=setup+0x1F0)
@@ -49,11 +52,11 @@ def witness(root, out):
         m.put(physics+0x38+4*k,obj)
         m.run(0x5868E0,(setup+0x10+0x30*k,setup+0xD0+0x20*(k//2),setup+0x270),eax=obj,ecx=state)
     m.run(0x47721B,end=0x47723F,edi=physics)
-    # Actual gearbox pointer/state constructor prefix, before table/random
-    # initialization. Dynamic gear/clutch fields below are synthetic inputs.
-    m.put(STACK+0x28,state)
-    m.run(0x46D3B4,end=0x46D41E,esi=gearbox,edi=setup+0x1B0,
-          edx=0x6F102C,ecx=engine,eax=physics+0x38)
+    # Execute actual drive-class selection at the gearbox constructor caller.
+    m.run(0x476CA3,end=0x476CFC,ebp=physics)
+    tuning=m.reg('edx')
+    m.run(0x46D390,(gearbox,setup+0x1B0,physics+0x38,state),ecx=engine,edx=tuning)
+    if tuning!=0x6F1098:raise RuntimeError('stock rear-drive factory class differs')
     m.put(engine+0x20,gearbox)
     if (m.get(gearbox+0x18)!=setup+0x1B0 or m.get(gearbox+0x20)!=engine
             or m.get(gearbox+0x34)!=state
@@ -61,7 +64,7 @@ def witness(root, out):
         raise RuntimeError('gearbox constructor identity differs')
     m.put(gearbox+0xDC,1.0,'f')
     m.put(system,vtable);m.put(vtable+4,0x46ABD0)
-    components=[wheels+0x200*k for k in range(4)]+[engine]
+    components=[wheels+0x200*k for k in range(4)]+[engine,gearbox]
     m.put(system+0xC,components[0]+4)
     for index,obj in enumerate(components):
         m.put(obj+4,components[index+1]+4 if index+1<len(components) else system+0xC)
@@ -69,6 +72,7 @@ def witness(root, out):
     # Actual helper return capture only; this does not replace its arithmetic.
     m.uc.mem_write(0x1001000,b'\xd9\x1d'+struct.pack('<I',gearbox+0x4C)+b'\xc3')
     m.allowed.append((0x1001000,0x1001007))
+    gearbox_initial=bytes(m.uc.mem_read(gearbox,0x100))
     rows=[]
     for gear in (1,2,3):
         for mode in (0,1,2,3):
@@ -76,6 +80,7 @@ def witness(root, out):
                 for throttle in (0.0,1.0):
                     for spin in (0.0,26.0,50.0):
                         axis=1.0
+                        m.uc.mem_write(gearbox,gearbox_initial)
                         m.put(state+0x3A0,5000.0,'f')
                         # Authentic construction/reset RPM-to-angular-speed
                         # slice. This is NOT called from each solver step.
@@ -83,7 +88,7 @@ def witness(root, out):
                         m.put(engine+0x78,throttle,'f');m.put(engine+0x80,1.0,'f')
                         m.put(engine+0x7C,0.0,'f');m.put(engine+0x9C,0.0,'f')
                         m.put(engine+0xBC,0.0,'f')
-                        m.put(gearbox+0x3C,gear);m.put(gearbox+0x44,mode)
+                        m.put(gearbox+0x3C,gear);m.put(gearbox+0x38,gear);m.put(gearbox+0x44,mode)
                         m.put(gearbox+0x14,clutch,'f');m.put(gearbox+0x58,0.0,'f')
                         for k in range(4):
                             obj=wheels+0x200*k
@@ -92,6 +97,7 @@ def witness(root, out):
                             m.put(obj+0x24,0.0,'f');m.put(obj+0x110,1)
                             m.put(obj+0x114,0.0,'f');m.put(obj+0x118,0.0,'f')
                             m.put(obj+0x160,0.0,'f');m.put(obj+0x16C,0.0,'f')
+                            m.put(obj+0x164,0.0,'f')
                             m.put(obj+0x170,axis,'f');m.put(obj+0x174,0.0,'f')
                             m.put(obj+0x158,3.0,'f');m.put(obj+0x155,1,'B')
                             for j,v in enumerate((1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1)):
@@ -126,7 +132,7 @@ def witness(root, out):
                         rows.append(dict(gear=gear,gearbox_mode=mode,clutch=clutch,
                             throttle=throttle,initial_wheel_spin=spin,
                             initial_engine_rad_s=prior,wheel_equivalent_engine_rad_s=m.get(gearbox+0x4C,'f'),
-                            engine_feedback_torque=feedback,wheel_total_torque=pre_torque,tyre_reaction=pre_reaction,tyre_lateral=pre_lateral,contact_slip=pre_slip,radii=radii,pre_wheel=pre_wheel,pre_lock=pre_lock,completed_wheel=[m.get(wheels+0x200*k+0x28,'f') for k in range(4)],
+                            engine_feedback_torque=feedback,completed_clutch=m.get(gearbox+0x14,'f'),completed_gearbox_mode=m.get(gearbox+0x44),factory_tuning=tuning,wheel_total_torque=pre_torque,tyre_reaction=pre_reaction,tyre_lateral=pre_lateral,contact_slip=pre_slip,radii=radii,pre_wheel=pre_wheel,pre_lock=pre_lock,completed_wheel=[m.get(wheels+0x200*k+0x28,'f') for k in range(4)],
                             engine_angular_acceleration=rate,completed_engine_rad_s=completed,
                             completed_engine_rpm=completed*conversion,exported_actor_rpm=m.get(state+0x3A0,'f'),
                             feedback_after_component_update=cleared))
@@ -152,12 +158,15 @@ def witness(root, out):
             and r['clutch']==0.5 and r['throttle']==0 and r['initial_wheel_spin']==26)
     if not (pick(0)['completed_engine_rpm'] < pick(0)['exported_actor_rpm'] < 5000
             and pick(0)['completed_wheel'][2] > pick(1)['completed_wheel'][2]
-            and any(abs(value)>0 for value in pick(0)['tyre_reaction'])):
+            and any(abs(value)>0 for value in pick(0)['tyre_reaction'])
+            and pick(0)['completed_clutch'] < 0.5
+            and pick(2)['completed_clutch'] > 0.5
+            and pick(3)['completed_gearbox_mode']==3):
         raise RuntimeError('coupled clutch/tyre/export witnesses did not distinguish states')
     report=dict(executable_sha256=EXE_SHA,globalb_sha256=BUN_SHA,
         source_head=subprocess.check_output(['git','rev-parse','HEAD']).decode('ascii').strip(),
         source_tool_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-        boundary='Actual wheel constructors/inertia writer and authentic tyre/brake producer/lock, wheel-equivalent speed, clutch distribution/coupled torque solver five passes, engine/wheel derivatives and original five-component Euler/update kernel, biased RPM export. Synthetic initial wheel speed, gear/clutch/mode/throttle, full common service inputs, authentic tyre producer587330 and combined-limit slice587830 before body force transform; declared identity wheel heading/fixed world velocity3kNload/surface0/rolling input0/timer0/boost0/damage0; no body/contact production, full gearbox update, live cadence or whole-player parity.',
+        boundary='Actual wheel constructors/inertia writer and authentic tyre/brake producer/lock, wheel-equivalent speed, clutch distribution/coupled torque solver five passes, engine/wheel/gearbox derivatives and original six-component Euler/update kernel, biased RPM export. Synthetic initial wheel speed, gear/clutch/mode/throttle, full common service inputs, authentic tyre producer587330 and combined-limit slice587830 before body force transform; declared identity wheel heading/fixed world velocity3kNload/surface0/rolling input0/timer0/boost0/damage0; actual full gearbox state update46DB60 and clutch derivative46DFA0 with declared SEH page0, seeded RNG context and game-state4; no body/contact production, live cadence or whole-player parity.',
         x87_control_word='0x007F synthetic; live configuration unverified',
         source_ranges=[dict(start='%08X'%a,end='%08X'%b,sha256=hashlib.sha256(image.read(a,b-a)).hexdigest()) for a,b in m.allowed if a<0x800000],
         synthetic_trampoline='fstp dword[gearbox+4C];ret; actual helper return capture only',
