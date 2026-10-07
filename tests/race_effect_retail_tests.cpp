@@ -140,7 +140,7 @@ void inspect(const RecordedCommands& commands,std::uint64_t tick,bool shaded,std
         std::cout<<"RACE_EFFECT tick="<<tick<<" static="<<statics<<" dynamic="<<dynamics<<" zero_particles="<<skipped
              <<" smoke="<<smoke<<" sparks="<<sparks<<" live_particles="<<live<<" glows="<<glows<<" reflected_lamps="<<lamps<<'\n';
     check(statics>0 && dynamics>0 && smoke>0 && sparks>0 && glows==4 && lamps>0,"real race eligibility witnesses missing");
-    if(tick==1164)check(live>0,"live smoke/spark witness missing");
+    if(tick==1200)check(live>0,"live smoke/spark witness missing");
 }
 }
 int main(int argc,char** argv) {
@@ -157,14 +157,14 @@ int main(int argc,char** argv) {
         check(scene.set_texture_filter(filter),"filter selection failed");check(race.prepare_metadata(root,error),error);
         check(scene.load(posix_file_system(),root,error,nullptr,nullptr,false,true,shaded),error);
         check(race.start(root,scene.track(),error),error);
-        for(unsigned tick=0;tick<=1164;++tick) {
-            if(tick==0 || tick==1 || tick==1164) {
+        for(unsigned tick=0;tick<=1200;++tick) {
+            if(tick==0 || tick==1 || tick==1200) {
                 RaceGpuFrame cached,reference;check(scene.frame(race.session(),cached,error),error);
                 check(scene.frame(race.session(),reference,error,nullptr,true),error);
                 inspect(cached.commands,tick,shaded,cached.commands.static_track_draw_count());
                 inspect(reference.commands,tick,shaded,cached.commands.static_track_draw_count());
             }
-            if(tick==1164)break;
+            if(tick==1200)break;
             GamepadFrame pad;check(replay.next(race.session().timing().step,pad,error),error);
             check(race.simulate(pad,error) && race.commit(error),error);scene.advance_particles(race.session());
         }

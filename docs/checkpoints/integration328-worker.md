@@ -5,12 +5,12 @@ role: worker
 agent: GPT-6 Codex integration worker
 updated_utc: 2026-10-07
 assignment: issue328; PR329; coordinator chat01a0f5d2-29c4-7fe2-86b4-e58d66adf088
-phase: awaiting-evidence
+phase: correction-targeted-checks-complete
 branch: codex/day20261007-integration
-head: 64a2a91d0cf4ca830bd34cc9ce527bafa385c2f0 (before this final checkpoint/pin commit)
+head: 725dda939d5746a6213fb02e5426bf34d3cfd2ad (before this review-correction commit)
 base: 83d63d9f1831b413f7020bc4cf799c40c58a87c8
 worktree: owner desktop; build/day20261007-integration-worker
-saved: published WIP64a2a91; final exact frozen head belongs in the PR handoff
+saved: frozen725dda9 review diagnostic retained; correction head belongs in the new PR handoff
 ownership: this worker remains assigned; coordinator owns review and hardware loop
 
 ## Scope and sources
@@ -84,3 +84,62 @@ hardware acceptance remain open. Included research or passing targeted
 software checks do not close those parent criteria. Normal live defaults
 are part of the candidate; hidden coordinator flags are not needed to
 select recovered1 and accepted effects.
+
+## First review corrections
+
+The reviewer inspected frozen725dda9 independently. This correction changes
+expectations and witnesses after the integrated atan/tyre corrections; it
+changes no solver, tyre, steering or damping law. The source inventory remains
+the preceding integration record, with the exact newer head in PR329.
+
+- S1: seed7 recovered modes remain supported, so their old damping witness
+  cannot activate. The original .9 rollover bound and reset checks remain.
+  A deterministic two-level road in real RaceSession now requires low support,
+  nonzero damping and nonzero pad steering simultaneously in every mode,
+  without body contacts or hidden resets. Native damping law checks remain.
+- P1: proving-ground, synthetic upgrade and all20 retail drive expectations
+  were measured again. Rest/drive proving pins and all20 frame pins stayed
+  unchanged. Full roster execution also reached the formerly hidden INTEGRA
+  race-sequence assertion; its refreshed expectation passes all subsequent
+  geometry, selected-car refusal and payload checks. No assertion removed.
+- R1: RaceRun's production verdict still compared old step/lap/finish fields
+  against the already refreshed header hashes. Only those stale numeric
+  expectations change. Car, steering, setup, pending-step, performance levels,
+  outcome, resets, lap count and sequence/step hash protections remain.
+- Animation: the fresh recording brakes at13110;13122 now has throttle.
+  Only the inspected tick changes. Actual moving-wheel and bright-lamp tests
+  remain and passed in the stock sampled RaceRun target.
+- R2: the native v2 fixture keeps its input SHA, camera and culling/writer
+  contracts. Twelve fresh CPU images and three paired poses were measured
+  using unchanged production libraries. A scratch-only measurement copy
+  explicitly reported old expectations as MEASUREMENT, never PASS. All12
+  cases then passed the real comparator with its guards intact. Existing
+  console evidence remains historical, not evidence for this new candidate.
+- E1:1164 has no live particles in the fresh replay.1200 is a demonstrated
+  active smoke witness. Only four sample-bound literals change; all four
+  filter/shading variants keep and pass cached/reference eligibility,
+  material equations, blending, zero-slot, wet-lamp and glow assertions.
+- VEHICLE_TRACK removes duplicated current test-owned hashes/counts and
+  reset measurements instead of copying new pins into documentation.
+
+Targeted commands from the actual worker path, native runtime on PATH:
+
+- `cmake --build build --target nfsu_vehicle_track_tests nfsu_performance_levels_tests nfsu_car_selection_tests nfsu_stability_tests nfsu_race_run_tests nfsu_probe nfsu_texture_filter_compare -j 1`: passed.
+- `cmake --build build --target nfsu_car_selection_tests nfsu_texture_filter_compare -j 1`: passed after coherent roster/native-v2 expectations.
+- `build/nfsu_vehicle_track_tests.exe`: `nfsu_vehicle_track_tests: all checks passed`.
+- `cmake -DPROBE=PROBE -DWORK=FRESH -P tests/vehicle_track_guards.cmake`: `-- vehicle-track guards: every case held`.
+- `build/nfsu_performance_levels_tests.exe RETAIL`: `performance levels tests: 0 failures`.
+- `build/nfsu_car_selection_tests.exe RETAIL`: `car selection tests: 0 failures`; all20 frame/drive records and later INTEGRA assertions reached.
+- `build/nfsu_race_run_tests.exe tests/recordings/event1.txt RETAIL --sample-draws`: `PASS: exact per-step stream and result; frames 814 max draws 1823`; this historical measurement at725dda9 plus only corrected verdict/test fixtures took39.52s.
+- `build/nfsu_texture_filter_compare.exe --root RETAIL --input tests/recordings/texture_filter_v2.txt --step STEP --texture-filter FILTER --car-shading SHADE --out FRESH`: all12 cases (STEP180/600/6000, FILTERlegacy/linear, SHADEoff/on) exit0; input identity, paired pose and freshly written TGA hashes verified. All guards retained.
+- Same comparator with an existing output: exit1, `FAIL: refusing to overwrite legacy-false-180.tga`; image unchanged. Initial scratch assertions expected a different message and then stderr; both failed and are not passes. Corrected combined-channel assertion passed; no comparator change.
+- Actual `tests/race_effect_retail_tests.cpp` compiled against the built production libraries with `-std=c++17 -fno-fast-math -ffp-contract=off -Wall -Wextra -Wpedantic -Iinclude -Ibuild/generated`, ASCII relative response file: all legacy/linear x generic/shaded executions passed the real cached/reference material assertions.
+- Actual final `tests/stability_tests.cpp` compiled with the same flags/library method: `stability tests: all checks passed`, including simultaneous low-support/damping/steering coverage and original seed7 bounds in all modes. This avoids a repeated full dependency build; reviewer owns ordinary CMake default/Release confirmation.
+
+Fresh native images were hashed from their files, not stale artifacts.
+Before/after full retail manifests matched. Scratch scripts/response files are
+ASCII and were executed from this actual non-ASCII workspace path. ASCII
+tracked-blob/path/mode receipts and exact correction head are in the PR handoff.
+No full default/Release/three-replay/Switch cycle is claimed by the worker:
+the owner-authorized independent reviewer retains that slot and rechecks this
+exact delta. No hardware upload, merge or issue closure occurred.

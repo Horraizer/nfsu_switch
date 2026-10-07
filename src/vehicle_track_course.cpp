@@ -228,46 +228,46 @@ std::vector<VehicleTrackScenario> proving_ground_scenarios() {
         scenario("slope", "full throttle from (152, 48) up the 8.5-degree ramp at px 192..232 "
                           "onto the plateau",
                  120.0, 0.0, 0.0, 0, {segment(780, 1.0, 0.0, 0.0)},
-                 "F568FFB6B4F99A9735E661FAEB508ABF151CA5A22E800773D16503B64DB34D5A"),
+                 "44067B93976C930399611071C2D9E1E654F0AF665A37A808D3BDCBE71848A643"),
         scenario("wall", "full throttle from (32, 80) at 45 degrees into the north wall at "
                          "pz 96, then along it",
                  0.0, 32.0, 0.0, kTurn45, {segment(480, 1.0, 0.0, 0.0)},
-                 "1B4E823836D8A5C89A4F83D469A93716C8215CCF6105FA5B1EB73C52A590183F"),
+                 "B9B4B315848D042E245E21B075E6A8C61472ABB8437D0F40B35C7BCF8187F563"),
         scenario("wall-glance", "full throttle from (32, 88) at 15 degrees into the north "
                                 "wall",
                  0.0, 40.0, 0.0, kTurn15, {segment(600, 1.0, 0.0, 0.0)},
-                 "A8CBD1B047CDB1AB1DEE241E6AE0F08C8C64452A25020A2C5D6970D6EF9FA23A"),
+                 "443829D8BE0773FD221BFB92DF5E3C3061D40D4EEECAB34BCA797BAB10C9745D"),
         scenario("wall-fast", "from (32, 88) at 35 m/s, 15 degrees into the north wall, "
                               "full throttle: an upright car above 30 m/s",
                  0.0, 40.0, 0.0, kTurn15, {segment(240, 1.0, 0.0, 0.0)},
-                 "5290BE387D92655B91ABEB16311F4ACEFFBEE5377795FD3F97EA70451DAD6517", 35.0),
+                 "D6670320A5F6045C8BC2E3E6F3877193F7A0FDD94411BA45D5AF83016E25E27E", 35.0),
         scenario("wall-square", "full throttle from (48, 80) straight at the north wall",
                  16.0, 32.0, 0.0, kTurn90, {segment(480, 1.0, 0.0, 0.0)},
-                 "EE7FCBFC75A22E6FD93E94A2333E5102CC9C9FEA059F00BE0A0333FED3938B5B"),
+                 "5951C8C7355ACB186C5FC3ACAF96635B9AA704706F5CDDF275F3F83982EC05A6"),
         scenario("wall-oblique", "full throttle from (128, 48) along -y into the oblique wall "
                                  "from (112, 8) to (160, 36)",
                  96.0, 0.0, 0.0, -kTurn90, {segment(480, 1.0, 0.0, 0.0)},
-                 "0A7ABFBAF1E1CCF928FA4A4AF4CF47D1FAFBD494944BAEEB9403999ED5683407"),
+                 "BDF62E339B53C01152B541BA871DD3B05492387EB4E3B90A3BF606249A13E4E5"),
         scenario("drop", "dropped from five metres above the start, no input", 0.0, 0.0, 5.0,
                  0, {segment(360, 0.0, 0.0, 0.0)},
-                 "42F487ED449BAC275708B0B3368C22C76BD8C3B7D55D502A3F5BB9C2F29D4D5D"),
+                 "AD556D8D302B12148ACCCE2120B6B2CEA9F5D2AEE0839DE7774F5FCA09746488"),
         scenario("leave", "full throttle from (176, 20) along -y off the open edge at pz 0, "
                           "over no cell: out of bounds, then reset",
                  144.0, -28.0, 0.0, -kTurn90, {segment(600, 1.0, 0.0, 0.0)},
-                 "CAD2A27BD41870D8E1D310EE83D041B439D1F5B4CB6874E29BC26176410C7D92"),
+                 "80623E22996DAFF39A40B8720B370FA695F8DAC54FF2EBB8D0AB9A1520D80D99"),
         scenario("zone", "0.6 throttle from (128, 60) along +y into the RESET zone at "
                          "pz 80..92",
                  96.0, 12.0, 0.0, kTurn90, {segment(600, 0.6, 0.0, 0.0)},
-                 "7B063440CD041607AB943115A820FBCFC437D1ACA765A773B2A3B202F6291491"),
+                 "2D32DB2D7F4C1894B5A4CC2E6754CCAFD9416B7BE9362D0B459868BA99CF6166"),
         scenario("zone-point", "0.6 throttle from (152, 60) along +y into the RESET_TO_POINT "
                                "zone, which sends the car to (40, 56) at 8 m/s",
                  120.0, 12.0, 0.0, kTurn90,
                  {segment(480, 0.6, 0.0, 0.0), segment(240, 0.0, 0.0, 0.0)},
-                 "1F01302B371D1F019746930FC80EFB2D7A58866B3B894A583B2DD434A009589B"),
+                 "B8214FE628881FFECAC36AAAFAB9454F0C2D7626EB502955A3BE59FD3F386894"),
         scenario("far", "at rest on the pad at (-4032, -3040), more than 5000 from the "
                         "route: off the path, then reset",
                  -4064.0, -3088.0, 0.0, 0, {segment(240, 0.0, 0.0, 0.0)},
-                 "2AA0045CB95A3CA615A140A86AA32909321D6B4265B06BFBB59D82AE5C862F27"),
+                 "6340A7032F1A09177E3145C9ED5EC98B07DE7D80B456697D258C3A353FC67201"),
     };
 }
 
