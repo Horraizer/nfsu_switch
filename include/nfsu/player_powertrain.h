@@ -113,6 +113,27 @@ VehicleVec3 player_world_wheel_force(const std::array<VehicleVec3,3>& world_axes
 //584B10 builds normal/alternate tensors;585810 selects by rigid138.
 float player_body_inverse_yaw(const VehicleHandling& setup,bool alternate) noexcept;
 
+using PlayerRigidVector = std::array<float,3>;
+using PlayerRigidMatrix = std::array<PlayerRigidVector,3>; // rotation columns
+//584800/585410/585810 common rigid state in tonnes/kN units. The matrix
+// snapshot and velocity caches precede outer40BD40 normalization. This is
+// a separate recovered component; VehicleModel still uses its old adapter.
+struct PlayerRigidBodyState {
+    PlayerRigidVector position{},momentum{},angular_momentum{},velocity{},angular_velocity{};
+    PlayerRigidVector force{},torque{};
+    PlayerRigidMatrix axes{{{{1,0,0}},{{0,1,0}},{{0,0,1}}}},snapshot_axes=axes;
+    float adaptive_damping = 0.0F;
+    float yaw_torque_limit = 0.0F; // supplied outer control, rigid1E0
+    bool linear_damping = true,angular_damping = true,alternate_yaw = false,gravity = true;
+};
+// Refresh clears force/torque then restores gravity; optional drive force
+// control1E4 is outside this common component API and must be disabled.
+void player_rigid_body_refresh(const VehicleHandling& setup,PlayerRigidBodyState& body) noexcept;
+void player_rigid_body_integrate(const VehicleHandling& setup,PlayerRigidBodyState& body,
+                                 float solver_dt) noexcept;
+// Original outer40BD40 changes live axes alone, after the force callback.
+void player_rigid_body_normalize(PlayerRigidBodyState& body) noexcept;
+
 //47AA40 common upright/support path with cleared recovery timer and optional
 //735FCC body-pair scan disabled. Inputs are cached completed body velocities,
 // published owner support/gear, and driver throttle; genuine live actor/body

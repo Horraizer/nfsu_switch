@@ -227,6 +227,110 @@ float player_body_inverse_yaw(const VehicleHandling& h,bool alternate) noexcept 
     return (h.inertia[0]*h.inertia[1])*(1.0F/determinant);
 }
 
+namespace {
+float rigid_norm(const PlayerRigidVector& v) noexcept {
+    return sqrtf((v[0]*v[0]+v[1]*v[1])+v[2]*v[2]);
+}
+PlayerRigidVector rigid_cross(const PlayerRigidVector& a,const PlayerRigidVector& b) noexcept {
+    return {{a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]}};
+}
+PlayerRigidVector rigid_normalized(PlayerRigidVector v) noexcept {
+    const float length=rigid_norm(v);
+    if(length==0.0F)return {{1,0,0}}; //5673C8
+    const float factor=1.0F/length;
+    for(float& x:v)x*=factor;
+    return v;
+}
+PlayerRigidMatrix rigid_product(const PlayerRigidMatrix& a,const PlayerRigidMatrix& b) noexcept {
+    // Exact5AC6A2 accumulation orders, shared with world wheel axes.
+    PlayerRigidMatrix result{};
+    for(unsigned c=0;c<3;++c)for(unsigned r=0;r<3;++r) {
+        const float x=b[c][0]*a[0][r],y=b[c][1]*a[1][r],z=b[c][2]*a[2][r];
+        if(c==0)result[c][r]=r==1?((y+0.0F)+z)+x:((0.0F+x)+z)+y;
+        else if(r==0)result[c][r]=((0.0F+x)+y)+z;
+        else if(r==1)result[c][r]=((z+0.0F)+y)+x;
+        else result[c][r]=((y+x)+0.0F)+z;
+    }
+    return result;
+}
+}
+
+void player_rigid_body_refresh(const VehicleHandling& h,PlayerRigidBodyState& body) noexcept {
+    const float inverse_mass=1.0F/h.mass;
+    for(unsigned k=0;k<3;++k)body.velocity[k]=body.momentum[k]*inverse_mass;
+    const float speed=rigid_norm(body.velocity);
+    if(speed>200.0F&&static_cast<double>(h.mass)>0.7) { //585880/585893
+        const float factor=200.0F/speed;
+        for(unsigned k=0;k<3;++k) {
+            body.momentum[k]*=factor;body.velocity[k]=body.momentum[k]*inverse_mass;
+        }
+    }
+    const float yaw=body.alternate_yaw?h.inertia[2]*h.alternate_yaw_scale:h.inertia[2];
+    const float inverse_determinant=1.0F/((h.inertia[1]*yaw)*h.inertia[0]);
+    PlayerRigidMatrix inverse{},transpose{};
+    inverse[0][0]=(h.inertia[1]*yaw)*inverse_determinant;
+    inverse[1][1]=(h.inertia[0]*yaw)*inverse_determinant;
+    inverse[2][2]=(h.inertia[0]*h.inertia[1])*inverse_determinant;
+    for(unsigned c=0;c<3;++c)for(unsigned r=0;r<3;++r)transpose[c][r]=body.axes[r][c];
+    const auto world=rigid_product(rigid_product(body.axes,inverse),transpose);
+    for(unsigned k=0;k<3;++k)
+        body.angular_velocity[k]=((body.angular_momentum[2]*world[2][k]+
+            body.angular_momentum[1]*world[1][k])+body.angular_momentum[0]*world[0][k])+0.0F;
+    const float omega=rigid_norm(body.angular_velocity);
+    if(omega>250.0F) { //5859B3: cache limit, momentum is retained
+        const float factor=250.0F/omega;
+        for(float& x:body.angular_velocity)x*=factor;
+    }
+    if(body.adaptive_damping<0.0F)body.adaptive_damping=0.0F;
+    body.snapshot_axes=body.axes;
+    body.force={};body.torque={};
+    if(body.gravity)body.force[2]=-(9.800000190734863F*h.mass); //7000AC
+}
+
+void player_rigid_body_integrate(const VehicleHandling& h,PlayerRigidBodyState& body,
+                                 float dt) noexcept {
+    //585410 common path with drive force control1E4 disabled. Damping
+    // acts on momentum, independently from4791F0 low-support torque.
+    static constexpr float angular_curve[6]={.05F,.05F,.25F,.7F,2.0F,5.0F}; //704478/6F08C8
+    static constexpr float adaptive_curve[8]={1.5F,1.0F,.6F,.22F,.06F,.03F,.015F,0.0F}; //70448C
+    const float omega=rigid_norm(body.angular_velocity);
+    const float angular_factor=-curve(angular_curve,6,0.0F,10.0F,omega);
+    const float velocity_parameter=rigid_norm(body.velocity)/4.0F;
+    const float angular_parameter=omega/2.0F;
+    const float parameter=angular_parameter>velocity_parameter?angular_parameter:velocity_parameter;
+    const float target=curve(adaptive_curve,8,0.0F,1.0F,parameter);
+    const float adaptive_rate=target>body.adaptive_damping?.1F:-10.0F;
+    auto force=body.force,torque=body.torque;
+    for(unsigned k=0;k<3;++k) {
+        if(body.angular_damping)torque[k]+=angular_factor*body.angular_momentum[k];
+        if(body.linear_damping) {
+            torque[k]+=-(2.0F*body.adaptive_damping)*body.angular_momentum[k];
+            force[k]+=-(8.0F*body.adaptive_damping)*body.momentum[k];
+        }
+    }
+    if(body.yaw_torque_limit!=0.0F) {
+        if(body.torque[2]>body.yaw_torque_limit)torque[2]=body.yaw_torque_limit;
+        else if(body.torque[2]<-body.yaw_torque_limit)torque[2]=-body.yaw_torque_limit;
+    }
+    //46AA40 Euler integrates derivatives taken from the old caches.
+    for(auto& axis:body.axes) {
+        const auto rate=rigid_cross(body.angular_velocity,axis);
+        for(unsigned k=0;k<3;++k)axis[k]+=dt*rate[k];
+    }
+    for(unsigned k=0;k<3;++k) {
+        body.position[k]+=dt*body.velocity[k];
+        body.momentum[k]+=dt*force[k];body.angular_momentum[k]+=dt*torque[k];
+    }
+    body.adaptive_damping+=dt*adaptive_rate;
+    player_rigid_body_refresh(h,body);
+}
+
+void player_rigid_body_normalize(PlayerRigidBodyState& body) noexcept {
+    const auto forward=rigid_normalized(body.axes[0]);
+    const auto up=rigid_normalized(rigid_cross(forward,body.axes[1]));
+    body.axes={{forward,rigid_cross(up,forward),up}};
+}
+
 void player_distribute_torque(const VehicleHandling& h, int gear,
                               PlayerEngineState& engine,
                               std::array<PlayerWheelWork,4>& w,

@@ -375,6 +375,40 @@ void completed_rest_phase() {
           state.body_gravity&&state.published_gear==kVehicleGearFirst,
           "reset clears prepared phase and pending reverse while restoring initial gravity");
 }
+void recovered_rigid_component() {
+    using namespace nfsu;
+    const auto h=stock_240sx_handling();
+    PlayerRigidBodyState body;
+    body.axes={{{{.8F,0,-.6F}},{{0,1,0}},{{.6F,0,.8F}}}};
+    body.position={{0,0,.5F}};body.angular_momentum={{1,-2,0}};body.alternate_yaw=true;
+    player_rigid_body_refresh(h,body);
+    check(body.angular_velocity==PlayerRigidVector{{1.4686863422393799F,-.8903632164001465F,-.9431172013282776F}},
+          "native stock pitched world tensor refresh");
+    body.force[1]=19.46F;
+    player_rigid_body_integrate(h,body,1.0F/120.0F);
+    check(body.position==PlayerRigidVector{{0,0,.5F}}&&
+          body.momentum==PlayerRigidVector{{0,.16216666996479034F,-.0996333435177803F}},
+          "native rigid old velocity pose and next momentum epochs");
+    check(body.angular_momentum==PlayerRigidVector{{.9995833039283752F,-1.9991666078567505F,0}}&&
+          body.angular_velocity==PlayerRigidVector{{1.4750902652740479F,-.8865600824356079F,-.9417856335639954F}},
+          "native zero torque damping and completed matrix refresh change omega");
+    check(body.axes[0]==PlayerRigidVector{{.8044518232345581F,.001055983710102737F,-.5940642952919006F}}&&
+          body.adaptive_damping==.00083333341171965F,
+          "native matrix Euler and adaptive damping state");
+    const auto snapshot=body.snapshot_axes;const auto cached_omega=body.angular_velocity;
+    player_rigid_body_normalize(body);
+    check(body.axes[0]==PlayerRigidVector{{.8044291734695435F,.001055954024195671F,-.5940476059913635F}}&&
+          body.snapshot_axes==snapshot&&body.angular_velocity==cached_omega,
+          "native outer normalization retains pre-normalization snapshot and omega cache");
+    PlayerRigidBodyState equal,above;
+    equal.alternate_yaw=true;equal.angular_momentum[2]=4;
+    player_rigid_body_refresh(h,equal);equal.yaw_torque_limit=17;equal.torque[2]=17;above=equal;
+    above.torque[2]=18;
+    player_rigid_body_integrate(h,equal,1.0F/240.0F);
+    player_rigid_body_integrate(h,above,1.0F/240.0F);
+    check(equal.angular_momentum[2]==4.070000171661377F&&above.angular_momentum[2]==4.0708332061767578F,
+          "native yaw cap equality retains damping and beyond cap replaces final derivative");
+}
 } // namespace
 
 int main() {
@@ -383,6 +417,7 @@ int main() {
     outer_slice_and_selection_phase();
     body_derivative_epoch();
     completed_rest_phase();
+    recovered_rigid_component();
     if (failures) {std::cerr<<failures<<" player powertrain test failure(s)\n";return 1;}
     std::cout<<"player powertrain tests passed\n";
 }
