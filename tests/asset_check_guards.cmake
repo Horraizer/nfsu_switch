@@ -113,7 +113,7 @@ function(nfsu_upper_hash path out_var)
     set(${out_var} "${hash}" PARENT_SCOPE)
 endfunction()
 
-set(usage_line "nfsu_probe asset-check <root> [--set <first-lap|stock-car|event-1>]")
+set(usage_line "nfsu_probe asset-check <root> [--set <first-lap|first-lap-1005|stock-car|event-1>]")
 
 # ---------------------------------------------------------------------------
 # No input files
