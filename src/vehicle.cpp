@@ -972,6 +972,7 @@ void encode_vehicle_telemetry(const VehicleTelemetry& r,
     e.u32(body.alternate_yaw?1U:0U);e.u32(body.gravity?1U:0U);e.u32(r.rigid_body_ready?1U:0U);
     e.f64(r.rigid_orientation.w);e.f64(r.rigid_orientation.x);
     e.f64(r.rigid_orientation.y);e.f64(r.rigid_orientation.z);
+    e.u32(r.steering_word);e.u32(r.steering_word_ready?1U:0U);
 }
 
 void VehicleTelemetryHash::add(const VehicleTelemetry& record) noexcept {
@@ -1257,6 +1258,12 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     const double steer = sanitize(raw_input.steer, -1.0, 1.0);
 
     rigid_import_public(h,s);
+    const bool original_steering=raw_input.road_steering&&raw_input.road_angle_word_valid;
+    if(original_steering&&(select_request||!s.steering_word_ready)) {
+        //4775E4 consumes the processed word before the solver loop.
+        // Each subsequent strut callback consumes the retained front matrices.
+        s.steering_word=raw_input.road_angle_word;s.steering_word_ready=true;
+    }
     Mat3 r = rigid_rotation(s.rigid_body.axes);
     const VehicleVec3 forward = r.column(0);
     const double forward_speed = dot(s.velocity, forward);
@@ -1313,11 +1320,21 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         target = raw_input.road_steering ?
             sanitize(raw_input.road_target,-3.14159265358979323846,3.14159265358979323846) : steer * lock;
         const double max_change = a.steer_rate * suspension_dt;
-        if (raw_input.road_steering) s.steer_angle =
+        if(original_steering) s.steer_angle=
+            static_cast<double>(static_cast<std::int16_t>(s.steering_word))*9.58738019107841e-5F;
+        else if (raw_input.road_steering) s.steer_angle =
             sanitize(raw_input.road_angle,-3.14159265358979323846,3.14159265358979323846);
         else s.steer_angle = s.steer_angle + clamp(target - s.steer_angle, -max_change, max_change);
-        const double steer_cos = vehicle_cos(s.steer_angle);
-        const double steer_sin = vehicle_sin(s.steer_angle);
+        if(!original_steering) {
+            // Qualified compatibility adapter for callers that supply radians
+            // or the approximate lock/slew instead of original controls1D0.
+            const double scaled=s.steer_angle*10430.378350470453;
+            const double rounded=scaled>=0?scaled+0.5:scaled-0.5;
+            s.steering_word=rounded>=-9223372036854775808.0&&rounded<9223372036854775808.0?
+                static_cast<std::uint16_t>(static_cast<std::int64_t>(rounded)):0;
+            s.steering_word_ready=true;
+        }
+        const auto front_axes=player_front_steering_axes(h,s.steering_word);
 
         force = v3(0.0,0.0,s.body_gravity?-d_.weight:0.0);
         torque = {};
@@ -1411,9 +1428,9 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             w.position_x=static_cast<float>(d_.attach[k].x);
             w.position_y=static_cast<float>(d_.attach[k].y);
             const VehicleVec3 normal=wheel.contact?hits[k].normal:up;
-            const float c=k<2?static_cast<float>(steer_cos):1.0F;
-            const float sn=k<2?static_cast<float>(steer_sin):0.0F;
-            const std::array<VehicleVec3,3> local_axes{{v3(c,sn,0),v3(-sn,c,0),v3(0,0,1)}};
+            const std::array<VehicleVec3,3> local_axes=k<2?front_axes[k]:
+                std::array<VehicleVec3,3>{{v3(1,0,0),v3(0,1,0),v3(0,0,1)}};
+            const float c=static_cast<float>(local_axes[0].x),sn=static_cast<float>(local_axes[0].y);
             // Original5889C5 combines local wheel axes with the rigid snapshot,
             // without projecting them onto the ground. The raw refresh snapshot
             // remains distinct from the later outer-normalized live matrix.
@@ -1607,6 +1624,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     t.engine=s.engine;t.transmission=s.transmission;
     t.owner_speeds=s.owner_speeds;
     t.rigid_body=s.rigid_body;t.rigid_body_ready=s.rigid_body_ready;t.rigid_orientation=s.rigid_orientation;
+    t.steering_word=s.steering_word;t.steering_word_ready=s.steering_word_ready;
     t.prepared_force=s.prepared_force;t.prepared_torque=s.prepared_torque;
     t.body_rest_state=s.body_rest_state;t.body_gravity=s.body_gravity;t.forces_prepared=s.forces_prepared;
     t.published_support=s.published_support;t.published_gear=s.published_gear;

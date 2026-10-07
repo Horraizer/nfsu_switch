@@ -68,6 +68,8 @@ bool RaceSession::steer_input(VehicleInput& input, int substep, std::string& err
         error = "recovered steering context refused at substep "+std::to_string(substep); return false;
     }
     input.road_steering = true;
+    input.road_angle_word_valid = true;
+    input.road_angle_word = steering_result_.angle;
     input.road_angle = double(steering_result_.angle_deg)*(3.14159265358979323846/180);
     input.road_target = double(steering_result_.target_deg)*(3.14159265358979323846/180);
     input.steer_history = steering_result_.filtered;

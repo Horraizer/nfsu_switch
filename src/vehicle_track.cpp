@@ -1120,6 +1120,7 @@ bool VehicleTrackSession::step(const VehicleInput& input, VehicleTrackTelemetry&
     t.angular_velocity = s.angular_velocity;
     t.model.rigid_body=s.rigid_body;t.model.rigid_body_ready=s.rigid_body_ready;
     t.model.rigid_orientation=s.rigid_orientation;
+    t.model.steering_word=s.steering_word;t.model.steering_word_ready=s.steering_word_ready;
     t.lap = progress_.lap;
     t.percent = progress_.coordinate.fraction * 100.0F;
     t.zone = progress_.zone;

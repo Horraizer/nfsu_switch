@@ -471,6 +471,46 @@ void recovered_rigid_runtime() {
               "nonfinite retained matrix cache is refused before integration");
     }
 }
+void original_front_steering_epoch() {
+    using namespace nfsu;const auto h=stock_240sx_handling();
+    const auto axes=player_front_steering_axes(h,4096);
+    check(axes[0][0].x==.9238796234130859F&&axes[0][0].y==.3826834261417389F&&
+          axes[1][0].x==.9498887658119202F&&axes[1][0].y==.3125891089439392F,
+          "original controls word4096 produces distinct front0/front1 matrices");
+    const auto negative=player_front_steering_axes(h,61440);
+    check(negative[0][0].x==.9498587250709534F&&negative[0][0].y==-.31258895993232727F&&
+          negative[1][0].x==.9238796234130859F&&negative[1][0].y==-.3825950026512146F,
+          "original negative word preserves native front exchange and table quantization");
+    const VehicleModel model(stock_240sx_vehicle_spec());VehicleState state;VehicleTelemetry t;
+    check(model.reset(state,{}),"front steering epoch reset");
+    state.position={0,0,.5};state.orientation={1,0,0,0};state.velocity={15,0,0};state.forces_prepared=true;
+    VehicleInput input;input.road_steering=true;input.road_angle_word_valid=true;
+    input.road_angle_word=4096;input.road_angle=-1;input.throttle=1;
+    check(model.step(state,input,VehicleFlatGround{},t,0,1.0/240.0,true),"original-word front steering slice runs");
+    const float speed=static_cast<float>(state.velocity.x);
+    const double expected0=static_cast<double>(-static_cast<float>(axes[0][0].y)*speed)/
+        (static_cast<float>(axes[0][0].x)*speed);
+    const double expected1=static_cast<double>(-static_cast<float>(axes[1][0].y)*speed)/
+        (static_cast<float>(axes[1][0].x)*speed);
+    check(t.wheels[0].slip_lateral==expected0&&t.wheels[1].slip_lateral==expected1&&expected0!=expected1,
+          "runtime front velocities consume the distinct original matrices rather than one shared basis");
+    check(state.steering_word==4096&&t.steering_word==4096&&state.steering_word_ready,
+          "runtime consumes exact original control word rather than the radian compatibility field");
+    input.road_angle_word=8192;
+    for(int k=0;k<3;++k) {
+        check(model.step(state,input,VehicleFlatGround{},t,k==2?1.0/60.0:0,1.0/240.0,false),
+              "continuing original steering callback slice runs");
+        check(state.steering_word==4096&&t.steering_word==4096,
+              "strut callbacks retain the outer-selected matrices until the next selection");
+    }
+    check(model.step(state,input,VehicleFlatGround{},t,0,1.0/240.0,true)&&state.steering_word==8192,
+          "next outer selection consumes the new processed word");
+    std::array<std::uint8_t,kVehicleTelemetryRecordBytes> a{},b{};
+    encode_vehicle_telemetry(t,a);auto changed=t;changed.steering_word=4096;encode_vehicle_telemetry(changed,b);
+    check(a!=b,"canonical state distinguishes retained steering matrix futures");
+    check(model.reset(state,{})&&!state.steering_word_ready&&state.steering_word==0,
+          "reset clears the retained original steering epoch");
+}
 } // namespace
 
 int main() {
@@ -481,6 +521,7 @@ int main() {
     completed_rest_phase();
     recovered_rigid_component();
     recovered_rigid_runtime();
+    original_front_steering_epoch();
     if (failures) {std::cerr<<failures<<" player powertrain test failure(s)\n";return 1;}
     std::cout<<"player powertrain tests passed\n";
 }

@@ -7,6 +7,12 @@ namespace {
 
 float absf(float x) noexcept { return x < 0.0F ? -x : x; }
 float sqrtf(float x) noexcept { return static_cast<float>(vehicle_sqrt(x)); }
+std::uint16_t converted_angle_word(float value) noexcept {
+    //674898's signed integer conversion supplies the low word. Invalid
+    // signed64 conversions yield the indefinite integer, whose low word is0.
+    if(!(value>=-9223372036854775808.0F&&value<9223372036854775808.0F)) return 0;
+    return static_cast<std::uint16_t>(static_cast<std::int64_t>(value));
+}
 
 std::uint16_t asin_angle(float value) noexcept {
     if (value>=1.0F) return 0x4000U;
@@ -131,6 +137,26 @@ float player_angle_sin(std::uint16_t angle) noexcept {
     result-=x7*0.00019841270113829523F;
     result+=x9*2.7557318844628753e-6F;
     return result*sign;
+}
+
+std::array<std::array<VehicleVec3,3>,2> player_front_steering_axes(
+    const VehicleHandling& h,std::uint16_t word) noexcept {
+    float angle=static_cast<float>(word)*9.58738019107841e-5F;
+    if(angle>3.141590118408203F) angle-=6.283180236816406F;
+    const bool negative=angle<0.0F;
+    const float magnitude=negative?-angle:angle;
+    const float wheelbase=h.wheels[0].longitudinal-h.wheels[3].longitudinal;
+    const float width=h.wheels[0].lateral-h.wheels[1].lateral;
+    const float outer=(magnitude*wheelbase)/(magnitude*width+wheelbase);
+    const float angles[2]={negative?-outer:angle,negative?angle:outer};
+    std::array<std::array<VehicleVec3,3>,2> axes{};
+    for(unsigned k=0;k<2;++k) {
+        const float scaled=angles[k]*10430.3779296875F;
+        const float c=player_angle_sin(converted_angle_word(scaled+16383.9990234375F));
+        const float s=player_angle_sin(converted_angle_word(scaled));
+        axes[k]={{{c,s,0},{-s,c,0},{0,0,1}}};
+    }
+    return axes;
 }
 
 PlayerOwnerSpeeds player_publish_owner_speeds(const VehicleVec3& velocity,

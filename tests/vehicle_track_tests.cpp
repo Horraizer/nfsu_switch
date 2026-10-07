@@ -1285,7 +1285,7 @@ void test_refusals() {
 // ---------------------------------------------------------------------------
 
 void test_telemetry_layout() {
-    static_assert(nfsu::kVehicleTrackTelemetryRecordBytes == 1484, "the record is 1484 bytes");
+    static_assert(nfsu::kVehicleTrackTelemetryRecordBytes == 1492, "the record is 1492 bytes");
     nfsu::VehicleTrackTelemetry t;
     t.step = 0x0102030405060708ULL;
     t.model.step = 0x1112131415161718ULL;
@@ -1302,6 +1302,7 @@ void test_telemetry_layout() {
     t.model.rigid_body.yaw_torque_limit=17;t.model.rigid_body.linear_damping=false;
     t.model.rigid_body.angular_damping=true;t.model.rigid_body.alternate_yaw=true;
     t.model.rigid_body.gravity=false;t.model.rigid_body_ready=true;t.model.rigid_orientation.z=.5;
+    t.model.steering_word=4096;t.model.steering_word_ready=true;
     t.position.x = 1.5;
     t.off_path = true;
     t.zone = -1;
@@ -1335,6 +1336,8 @@ void test_telemetry_layout() {
           bytes[8+1192]==0&&bytes[8+1196]==1&&bytes[8+1200]==1&&bytes[8+1204]==0&&
           bytes[8+1208]==1&&marker_z==.5,
           "rigid momentum snapshot controls readiness and pose marker have explicit wire positions");
+    check(bytes[8+1244]==0&&bytes[8+1245]==0x10&&bytes[8+1248]==1,
+          "outer steering word/readiness has an explicit canonical suffix");
     double x = 0.0;
     std::memcpy(&x, bytes.data() + 8 + nfsu::kVehicleTelemetryRecordBytes, sizeof(x));
     check(x == 1.5, "then the position's x");

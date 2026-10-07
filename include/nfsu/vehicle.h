@@ -444,6 +444,8 @@ struct VehicleInput {
     // #251 caller-computed road-wheel angle. When enabled, this replaces
     // the approximate lock AND slew. Legacy input/telemetry bytes omit it.
     bool road_steering = false;
+    bool road_angle_word_valid = false;
+    std::uint16_t road_angle_word = 0; // authentic processed controls1D0
     double road_angle = 0;
     double road_target = 0;
     double steer_history = 0;
@@ -538,6 +540,8 @@ struct VehicleState {
     PlayerRigidBodyState rigid_body;
     bool rigid_body_ready = false;
     VehicleQuat rigid_orientation; // detects external edits to the public pose
+    std::uint16_t steering_word = 0;
+    bool steering_word_ready = false; // original outer producer epoch
 };
 
 // Where reset() puts the car: the ground point under the centre of mass,
@@ -599,6 +603,8 @@ struct VehicleTelemetry {
     PlayerRigidBodyState rigid_body;
     bool rigid_body_ready = false;
     VehicleQuat rigid_orientation;
+    std::uint16_t steering_word = 0;
+    bool steering_word_ready = false;
     std::array<bool,4> wheel_prepared_sliding{};
     int gear = kVehicleGearFirst;
     double throttle = 0.0;      // the inputs as applied, after clamping
@@ -632,11 +638,12 @@ struct VehicleTelemetry {
 // published support/gear, engine feedback and wheel derivative inputs.
 // The380-byte rigid suffix stores seven vectors, live/snapshot matrices,
 // damping/cap, four body flags/readiness and the public pose edit marker.
+// A final8-byte suffix retains the outer-selected steering word/readiness.
 constexpr std::size_t kVehicleTelemetryRecordBytes =
     8 + 4 * 24 + 5 * 8 + 4 + 3 * 8 + 4 + 8 + kVehicleWheelCount * (9 * 8 + 3 * 4)
     + 7 * 8 + 4 * 4 + kVehicleWheelCount * (8 + 4) + 4 * 8 + 4
     + 2 * 24 + 5 * 4 + 8 + kVehicleWheelCount * (3 * 8 + 4)
-    + 7 * 24 + 2 * 9 * 8 + 2 * 8 + 5 * 4 + 4 * 8;
+    + 7 * 24 + 2 * 9 * 8 + 2 * 8 + 5 * 4 + 4 * 8 + 2 * 4;
 void encode_vehicle_telemetry(const VehicleTelemetry& record,
                               std::array<std::uint8_t, kVehicleTelemetryRecordBytes>& out) noexcept;
 

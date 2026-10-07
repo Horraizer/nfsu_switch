@@ -88,6 +88,10 @@ constexpr float kPlayerRadSToRpm = 9.549304008483887F;    // 6CCB78
 // domain. Kept separate from the existing body/camera trigonometry.
 std::uint16_t player_velocity_angle(float longitudinal,float lateral) noexcept;
 float player_angle_sin(std::uint16_t angle) noexcept;
+//4775E4/588240: controls1D0 word -> distinct front0/front1 local axes.
+// The strut callback composes these with the refreshed rigid snapshot.
+std::array<std::array<VehicleVec3,3>,2> player_front_steering_axes(
+    const VehicleHandling& setup,std::uint16_t angle) noexcept;
 
 //478A47..478A6E and478AD2..478AE8 actor speed publication, after the
 // completed outer solve. Source binary32 operation order is retained.
