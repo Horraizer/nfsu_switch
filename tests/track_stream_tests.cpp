@@ -1393,7 +1393,16 @@ void test_load_poll_and_cancel() {
           out.geometry.cost.vertices == loaded.load.geometry.cost.vertices &&
           out.objects.cost.instances == loaded.load.objects.cost.instances &&
           out.bytes_read == loaded.load.bytes_read,
-          "raw geometry released before next section; texture bytes and merge retained");
+            "raw geometry released before next section; texture bytes and merge retained");
+    limits.release_source_bytes = true;
+    check(nfsu::load_track_stream_sections_from_memory(loaded.table, loaded.selection,
+          images, limits, out, error) && out.ok(), "metadata-only sources parse and merge");
+    check(std::all_of(out.sections.begin(),out.sections.end(),
+              [](const nfsu::TrackStreamSection& s) { return s.bytes.empty(); }) &&
+          !out.sections[0].packs.packs.empty() &&
+          out.geometry.cost.vertices == loaded.load.geometry.cost.vertices &&
+          out.bytes_read == loaded.load.bytes_read,
+          "raw texture bytes can be released while source metadata and geometry survive");
     struct Cancel {};
     polls = 0;
     limits.poll = [&] { if (++polls == 3) throw Cancel{}; };

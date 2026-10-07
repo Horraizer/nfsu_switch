@@ -11,6 +11,13 @@ std::filesystem::path asset(const std::filesystem::path& root, const TrackSlice&
     return {};
 }
 }
+bool RaceRun::set_event(std::uint32_t event, std::string& error) {
+    if (metadata_ready_ || session_ || (event != 1 && event != 8)) {
+        error = "event selection must be 1 or 8 before metadata/start"; return false;
+    }
+    event_number_ = event; track_number_ = event == 1 ? 1003 : 1005;
+    return true;
+}
 bool RaceRun::set_performance_levels(const VehicleUpgradeLevels& levels, std::string& error) {
     if (metadata_ready_ || session_) { error = "performance setup must precede metadata/start"; return false; }
     // Validate levels and flags through the same application path before
@@ -31,21 +38,10 @@ bool RaceRun::set_steering(RaceSteering mode, std::string& error) {
 bool RaceRun::read_metadata(const std::filesystem::path& front, const std::filesystem::path& global,
                             std::string& error, TrackSliceLoadObserver* observer) {
     {
-        std::vector<unsigned char> bytes;
-        const auto events = load_race_event_table(front, bytes);
-        if (observer) observer->checkpoint("race event table");
-        const auto tracks = load_track_info_table(global, bytes);
+        SupportedRace race;
+        if (!load_supported_race(front, global, event_number_, race, error)) return false;
         if (observer) observer->checkpoint("race track info");
-        const auto* event = find_race_event(events, 1);
-        if (!event || event->races.size() != 1) { error = "event 1 missing or not one race"; return false; }
-        const auto& slot = event->races[0];
-        const auto* info = find_track_info(tracks, slot.track);
-        if (!info || slot.track != 1003 || slot.laps != 2 || slot.direction != 0) {
-            error = "event 1 must be forward track 1003, two laps"; return false;
-        }
-        laps_ = slot.laps;
-        direction_ = slot.direction;
-        lap_skip_ = info->lap_skip;
+        laps_ = race.slot.laps; direction_ = race.slot.direction; lap_skip_ = race.track.lap_skip;
     }
     if (observer) observer->checkpoint("race metadata released");
     metadata_ready_ = true;
@@ -63,7 +59,10 @@ bool RaceRun::start(const std::filesystem::path& root, const TrackSlice& track, 
     }
     if (!metadata_ready_ && !read_metadata(asset(root, track, "Frontend/FRONTB.LZC"),
                                              asset(root, track, "Global/GLOBALB.BUN"), error, observer)) return false;
-    const auto trackb = asset(root, track, "Tracks/TRACKB1003.lzc");
+    if (track.event_number != event_number_ || track.track_number != track_number_) {
+        error = "race and uploaded track selections differ"; return false;
+    }
+    const auto trackb = asset(root, track, ("Tracks/" + track_bundle_file_name(static_cast<std::int16_t>(track_number_))).c_str());
     if (!load_vehicle_track_course(trackb, laps_, direction_, lap_skip_, 0, course_, error)) return false;
     if (observer) observer->checkpoint("race course prepared");
     {
@@ -73,12 +72,12 @@ bool RaceRun::start(const std::filesystem::path& root, const TrackSlice& track, 
     }
     if (observer) observer->checkpoint("race zones prepared");
     TrackStreamSelection selected;
-    if (!select_track_stream_sections(table_, zones_, 1003, TrackStreamSet::permanent, selected, error)) return false;
+    if (!select_track_stream_sections(table_, zones_, track_number_, TrackStreamSet::permanent, selected, error)) return false;
     prepared_.insert(selected.records.begin(), selected.records.end());
     if (prepared_.size() != track.sections) { error = "prepared track and race residency differ"; return false; }
     TrackResidencyOptions options; options.budget_bytes = track_stream_pool_bytes(table_);
     std::vector<TrackResidencyStep> startup;
-    if (!residency_.start(table_, zones_, 1003, track_residency_table_costs(table_), options, startup, error)) return false;
+    if (!residency_.start(table_, zones_, track_number_, track_residency_table_costs(table_), options, startup, error)) return false;
     if (observer) observer->checkpoint("race residency prepared");
     const std::string version = "NFSU_RACE_STATE 1\n";
     sequence_.update(version.data(), version.size());
@@ -142,7 +141,7 @@ bool RaceRun::commit(std::string& error) {
 std::string RaceRun::sequence_hash() const { auto copy = sequence_; return sha256_hex(copy.finish()); }
 std::string RaceRun::steps_hash() const { auto copy = steps_; return sha256_hex(copy.finish()); }
 bool RaceRun::matches_event1_replay() const {
-    if (steering_ != RaceSteering::baseline) return false;
+    if (event_number_ != 1 || steering_ != RaceSteering::baseline) return false;
     if (!session_ || pending_) return false;
     if (explicit_performance_ && !performance_levels_equal(levels_,{})) return false;
     const auto& timing = session_->timing(); const auto& r = timing.racers[0];
@@ -152,7 +151,7 @@ bool RaceRun::matches_event1_replay() const {
         sequence_hash() == kEvent1SequenceHash && steps_hash() == kEvent1StepsHash;
 }
 bool RaceRun::matches_configured_replay() const {
-    if (steering_ != RaceSteering::baseline) return false;
+    if (event_number_ != 1 || steering_ != RaceSteering::baseline) return false;
     if (!explicit_performance_ || performance_levels_equal(levels_,{})) return matches_event1_replay();
     if (!session_ || pending_ || !performance_levels_equal(levels_,performance1_levels())) return false;
     const auto& timing=session_->timing(); const auto& r=timing.racers[0];
@@ -164,7 +163,7 @@ bool RaceRun::matches_configured_replay() const {
 std::vector<std::string> RaceRun::result_lines() const {
     if (!session_) return {"RACE NOT STARTED"};
     const auto& t = session_->timing(); const auto& r = t.racers[0];
-    std::vector<std::string> lines = {"event 1 track 1003 laps " + std::to_string(r.highest_lap) +
+    std::vector<std::string> lines = {"event " + std::to_string(event_number_) + " track " + std::to_string(track_number_) + " laps " + std::to_string(r.highest_lap) +
         " outcome " + race_outcome_name(t.outcome) + " steps " + std::to_string(t.step) +
         " resets " + std::to_string(session_->telemetry().resets)};
     for (int i = 1; i <= r.highest_lap && i < kRaceLapSlots; ++i)

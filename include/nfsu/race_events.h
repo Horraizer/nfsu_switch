@@ -343,4 +343,16 @@ bool race_event_available(const RaceEventTable& table,
                           const RaceEventRecord& event,
                           const std::vector<std::uint8_t>& status) noexcept;
 
+// The two explicitly supported player diagnostics. Selection is validated
+// against the owner's retail tables; this does not unlock career events.
+struct SupportedRace {
+    std::uint32_t event = 1;
+    RaceSlot slot;
+    TrackInfoRecord track;
+};
+bool load_supported_race(const std::filesystem::path& front,
+                         const std::filesystem::path& global,
+                         std::uint32_t event, SupportedRace& race,
+                         std::string& error);
+
 } // namespace nfsu

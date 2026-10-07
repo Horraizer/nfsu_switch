@@ -266,8 +266,8 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
         return;
     }
     const bool finished = race.session().timing().outcome == RaceOutcome::finished;
-    std::vector<std::string> lines = {format("NFSU EVENT 1 RESULT | BUILD %.12s | %s %s",
-        NFSU_RACE_BUILD_TAG, replay_mode ? "REPLAY" : "LIVE", panel_mode ? "PANEL" : "DIRECT")};
+    std::vector<std::string> lines = {format("NFSU EVENT %u RESULT | BUILD %.12s | %s %s",
+        race.event_number(), NFSU_RACE_BUILD_TAG, replay_mode ? "REPLAY" : "LIVE", panel_mode ? "PANEL" : "DIRECT")};
     lines.push_back(format("OUTCOME %s%s | step %llu", race_outcome_name(race.session().timing().outcome),
         paused && !finished ? " (PAUSED)" : "",
         (unsigned long long)race.session().timing().step));
@@ -310,7 +310,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
           bool particles_enabled, const std::string& sky, bool tuned, bool glows,
           bool car_shading, bool wet_road_reflections, TextureFilterMode texture_filter,
           std::uint32_t requested_height, bool gpu_boost, bool hud_mode, bool hud_trace,
-          const VehicleUpgradeLevels* performance, bool handling_telemetry, RaceSteering steering,
+          const VehicleUpgradeLevels* performance, bool handling_telemetry, RaceSteering steering, std::uint32_t event_number,
           Screen& screen, PadState& pad) {
     selected_car_label = tuned ? "TUNED" : "STOCK";
     car_shading_label=car_shading ? "ON static" : "OFF";
@@ -325,6 +325,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     std::string error;
     RaceReplay replay;
     if (replay_mode) {
+        require(event_number==1,"event 8 currently requires --live");
         const bool upgraded=performance && !performance_levels_equal(*performance,{});
         require(!upgraded || performance_levels_equal(*performance,performance1_levels()),
                 "replay supports zero levels or the documented performance1 setup; use --live for other levels");
@@ -338,6 +339,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                 texture_filter == TextureFilterMode::linear ? "linear" : "legacy");
     scene.set_particles_enabled(particles_enabled);
     RaceRun race; HeapUsage heap;
+    require(race.set_event(event_number,error),error);
     require(!replay_mode || steering==RaceSteering::baseline,"recovered steering requires --live; pinned replay uses baseline");
     require(race.set_steering(steering,error),error);
     std::printf("steering %s\n",race_steering_name(steering));
@@ -354,8 +356,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     const auto load_start = armGetSystemTick();
     require(race.prepare_metadata(root,error,&progress),error);
     require(scene.load(posix_file_system(), root, error, &progress, &progress,
-                       tuned, glows, car_shading), error);
-    screen.show({std::string("ASSETS PASS. Preparing event 1, ") +
+                       tuned, glows, car_shading, event_number), error);
+    screen.show({std::string("ASSETS PASS. Preparing event ") + std::to_string(event_number) + ", " +
                  selected_car_label + " 240SX and race course..."});
     screen.show({car_shading ? "CAR SHADING ON: static environment approximation" : "CAR SHADING OFF"});
     progress.checkpoint("race course");
@@ -523,7 +525,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             const auto info = mallinfo(); heap.observe(info.uordblks,info.arena);
             const auto& car = race.session().car();
             const double speed = vehicle_sqrt(car.velocity.x*car.velocity.x+car.velocity.y*car.velocity.y)*3.6;
-            auto hud = race_session_hud(race.session()); hud.resize(3);
+            auto hud = race_session_hud(race.session(),event_number); hud.resize(3);
             std::vector<std::string> lines = {format("NFSU #196 | PANEL | %s | %s | BUILD %.12s",
                 replay_mode?"REPLAY":"LIVE",paused?"PAUSED":finished?"FINISHED":"RUNNING",NFSU_RACE_BUILD_TAG)};
             lines.push_back("DIAGNOSTIC PANEL: frame time includes GPU readback and CPU text copy");
@@ -619,7 +621,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                                (finished && !printed_final_perf))) {
             const auto& car = race.session().car();
             const double speed = vehicle_sqrt(car.velocity.x*car.velocity.x+car.velocity.y*car.velocity.y)*3.6;
-            auto hud = race_session_hud(race.session()); hud.resize(3);
+            auto hud = race_session_hud(race.session(),event_number); hud.resize(3);
             std::printf("PERF BUILD %.12s | %s %s | frame %llu step %llu | %s | %s | %s\n",
                 NFSU_RACE_BUILD_TAG,replay_mode?"REPLAY":"LIVE",paused?"PAUSED":finished?"FINISHED":"RUNNING",
                 (unsigned long long)presented,(unsigned long long)race.session().timing().step,
@@ -744,6 +746,7 @@ int main(int argc, char** argv) {
             bool wet_road_reflections = false;
             bool explicit_performance = false, handling_telemetry = false;
             VehicleUpgradeLevels performance;
+            std::uint32_t event_number=1; bool event_seen=false;
             RaceSteering steering=RaceSteering::baseline; bool steering_seen=false;
             for (int i = 1; i < argc; ++i) {
                 const std::string arg = argv[i];
@@ -764,6 +767,11 @@ int main(int argc, char** argv) {
                 else if (arg == "--panel") panel = true;
                 else if (arg == "--profile-frame") profile_frame = true;
                 else if (arg == "--hud-trace") hud_trace = true;
+            else if (arg == "--event" && i+1<argc) {
+                const std::string value=argv[++i];
+                require(!event_seen && (value=="1" || value=="8"),"--event needs one 1 or 8");
+                event_seen=true; event_number=value=="1" ? 1 : 8;
+            }
             else if (arg == "--no-hud") hud = false;
                 else if (arg == "--scene-height" && i+1 < argc &&
                          deko_parse_scene_height(argv[i+1],scene_height)) ++i;
@@ -793,7 +801,7 @@ int main(int argc, char** argv) {
                     else throw std::runtime_error("--wet-road-reflections must be on or off");
                 }
                 else if (!root_seen && arg.rfind("--",0) != 0) { root = arg; root_seen = true; }
-            else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--hud-trace] [--no-hud] [--sky on|off|early] [--scene-height 720|540|450|360] [--gpu-boost on|off] [--particles=on|--particles=off] [--tuned] [--glows] [--car-shading on|off] [--texture-filter legacy|linear] [--wet-road-reflections on|off]");
+            else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--event 1|8] [--panel|--profile-frame] [--hud-trace] [--no-hud] [--sky on|off|early] [--scene-height 720|540|450|360] [--gpu-boost on|off] [--particles=on|--particles=off] [--tuned] [--glows] [--car-shading on|off] [--texture-filter legacy|linear] [--wet-road-reflections on|off]");
             }
             require(!(panel && profile_frame),"--profile-frame requires direct presentation");
             require(!hud_trace || (hud && !panel),"--hud-trace requires HUD and direct presentation");
@@ -803,7 +811,7 @@ int main(int argc, char** argv) {
                 if (down & HidNpadButton_A) selected = true;
                 if (down & HidNpadButton_X) { selected = true; replay = true; }
                 if ((down & HidNpadButton_Y) && !profile_frame && !hud_trace) panel = !panel;
-                screen.show({tuned ? "EVENT 1 / TUNED 240SX / TWO LAPS" : "NFSU #196 - EVENT 1 / STOCK 240SX / TWO LAPS",format("BUILD %.12s",NFSU_RACE_BUILD_TAG),
+                screen.show({event_number==8 ? "EVENT 8 / DT3 - ATLANTIC / THREE LAPS" : (tuned ? "EVENT 1 / TUNED 240SX / TWO LAPS" : "NFSU #196 - EVENT 1 / STOCK 240SX / TWO LAPS"),format("BUILD %.12s",NFSU_RACE_BUILD_TAG),
                     "A: drive with Joy-Con / Pro Controller", "X: replay the pinned desktop event1.txt", "+: exit",
                     (profile_frame || hud_trace) ? "DIRECT CAPTURE: Y panel toggle disabled" :
                         std::string("Y: diagnostic panel ")+(panel?"ON":"OFF")+" (readback and CPU text cost)",
@@ -818,7 +826,7 @@ int main(int argc, char** argv) {
             if (selected) run(root,replay,panel,profile_frame,particles_enabled,sky,
                               tuned,glows,car_shading,wet_road_reflections,texture_filter,scene_height,
                               gpu_boost,hud,hud_trace,explicit_performance ? &performance : nullptr,
-                              handling_telemetry,steering,screen,pad);
+                              handling_telemetry,steering,event_number,screen,pad);
         } catch (const Cancel&) {
         } catch (const std::exception& e) {
             std::printf("ERROR: %s\n",e.what()); std::fflush(stdout);

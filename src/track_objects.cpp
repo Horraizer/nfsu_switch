@@ -1069,6 +1069,29 @@ std::vector<std::uint32_t> track_object_mesh_hashes(
     return std::vector<std::uint32_t>(hashes.begin(), hashes.end());
 }
 
+bool retain_instanced_track_meshes(TrackRegionReport& geometry,
+                                  const TrackObjectReport& objects,
+                                  std::string& error) {
+    if (!geometry.ok() || !objects.ok()) {
+        error = "cannot reduce invalid track geometry or objects"; return false;
+    }
+    std::set<std::uint32_t> wanted;
+    for (const auto& section : objects.sections) {
+        if (!section.valid) continue;
+        for (const auto& instance : section.instances) {
+            if (instance.object_index >= section.objects.size()) {
+                error = "track instance object index outside section"; return false;
+            }
+            for (auto hash : section.objects[instance.object_index].mesh_hash)
+                if (hash) wanted.insert(hash);
+        }
+    }
+    geometry.meshes.erase(std::remove_if(geometry.meshes.begin(),geometry.meshes.end(),
+        [&](const TrackMesh& mesh) { return wanted.count(mesh.mesh_hash)==0; }),geometry.meshes.end());
+    for (std::size_t i=0; i<geometry.meshes.size(); ++i) geometry.meshes[i].index=i;
+    error.clear(); return true;
+}
+
 TrackObjectResolution resolve_track_objects(
     const TrackObjectReport& objects,
     const TrackRegionReport& region) {

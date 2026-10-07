@@ -102,6 +102,7 @@ public:
     RaceParticles particles;
     bool particles_enabled = true;
     TrackStreamFiles files;
+    std::uint32_t track_number = 1003;
     const TrackStreamTable& table;
     std::map<std::size_t,std::unique_ptr<TrackStreamLoad>> sections;
     TrackStreamLoad texture_spillover;
@@ -170,6 +171,7 @@ public:
                 section.index = objects.sections.size(); objects.sections.push_back(std::move(section));
             }
         }
+        if (track_number==1005) require(retain_instanced_track_meshes(geometry,objects,error),error);
         const auto wanted = track_region_texture_hashes(geometry);
         std::vector<RenderTextureSource> sources;
         for (const auto& entry : sections) {
@@ -181,7 +183,7 @@ public:
             std::vector<std::size_t> resident;
             for (const auto& entry : sections) resident.push_back(entry.first);
             TrackStreamSelection selected;
-            require(select_track_texture_spillover_1003(table,resident,selected,error),error);
+            require(select_track_texture_spillover_l1ra(table,resident,track_number,selected,error),error);
             TrackStreamLoadLimits limits;
             limits.max_total_bytes = kStreamingRegionBudgetPlaceholder;
             require(load_track_stream_sections(table,selected,files,limits,
@@ -263,6 +265,7 @@ public:
 int run(int argc, char** argv) {
     fs::path root,input,output,generate;
     bool live=false, smoke=false, tuned=false;
+    std::uint32_t event_number=1; bool event_seen=false;
     bool particles_enabled=true, particle_events=false;
     bool glows=false;
     TextureFilterMode texture_filter=TextureFilterMode::legacy;
@@ -284,7 +287,7 @@ int run(int argc, char** argv) {
                          "  [--out NEW_DIRECTORY --frames 180,600,6000,22000,40000]\n"
                          "  [--particles=on|--particles=off] [--particle-events] [--tuned] [--glows]\n"
                          "  [--car-shading on|off] [--texture-filter legacy|linear]\n"
-                         "  [--wet-road-reflections on|off]\n"
+                         "  [--wet-road-reflections on|off] [--event 1|8]\n"
                          "  [--performance-levels name=0..3,...] [--handling-telemetry]\n"
                          "  [--steering baseline|recovered0|recovered1]\n"
                          "  [--hud-trace] writes completed HUD states to --out/hud.csv\n"
@@ -301,7 +304,11 @@ int run(int argc, char** argv) {
         if (a=="--glows") { glows=true; continue; }
         if (a=="--hud-trace") { hud_trace=true; continue; }
         require(i+1<argc,"missing option value"); const std::string value=argv[++i];
-        if (a=="--performance-levels") {
+        if (a=="--event") {
+            require(!event_seen && (value=="1" || value=="8"),"--event needs one 1 or 8");
+            event_seen=true; event_number=value=="1" ? 1 : 8;
+        }
+        else if (a=="--performance-levels") {
             require(!explicit_performance,"duplicate --performance-levels");
             require(parse_performance_levels(value,performance,argument_error),argument_error);
             explicit_performance=true;
@@ -353,10 +360,12 @@ int run(int argc, char** argv) {
     std::vector<unsigned char> image;
     const auto events=load_race_event_table(root/"Frontend/FRONTB.LZC",image);
     const auto tracks=load_track_info_table(root/"Global/GLOBALB.BUN",image);
-    const auto* event=find_race_event(events,1);
+    const auto* event=find_race_event(events,event_number);
     require(event && event->races.size()==1,"event 1 missing or not one race");
     const auto& slot=event->races[0]; const auto* info=find_track_info(tracks,slot.track);
-    require(info && slot.track==1003 && slot.laps==2 && slot.direction==0,"event 1 is not the supported forward two-lap 1003 circuit");
+    SupportedRace selection;
+    require(load_supported_race(root/"Frontend/FRONTB.LZC",root/"Global/GLOBALB.BUN",event_number,selection,error),error);
+    require(info && slot.track==selection.slot.track,"race selection mismatch");
     const auto trackb=root/"Tracks"/track_bundle_file_name(slot.track);
     VehicleTrackCourse course;
     require(load_vehicle_track_course(trackb,slot.laps,slot.direction,info->lap_skip,0,course,error),error);
@@ -367,6 +376,7 @@ int run(int argc, char** argv) {
     TrackResidencySession residency; std::vector<TrackResidencyStep> startup;
     require(residency.start(table,zones,slot.track,costs,options,startup,error),error);
     RaceScene scene(table,particles_enabled); scene.tuned=tuned;
+    scene.track_number=static_cast<std::uint32_t>(slot.track);
     scene.files.stream=root/"Tracks"/track_stream_file_name(*info);
     scene.glows = glows;
     scene.texture_filter=texture_filter;
@@ -375,7 +385,7 @@ int run(int argc, char** argv) {
     scene.files.pack=root/"Tracks"/track_stream_pack_file_name(*info);
     scene.files.has_pack=fs::exists(scene.files.pack);
     scene.load_car(root,root/"Tracks"/track_texture_file_name(slot.track));
-    if (wet_road_reflections) require(load_wet_road_lamps(root, course.world, scene.lamps, error),error);
+    if (wet_road_reflections) require(load_wet_road_lamps(root, course.world, scene.lamps, error, slot.track),error);
     Sha256 sequence; const std::string version="NFSU_RACE_STATE 1\n";
     sequence.update(version.data(),version.size());
     for (const auto& step : startup) {
@@ -397,7 +407,7 @@ int run(int argc, char** argv) {
         sound.start(root, diagnostic);
         std::cout << "audio: " << diagnostic << '\n';
     }
-    RaceRouteDriver driver(RaceDrivingLine::event1_forward); std::vector<RaceInputRun> recording;
+    RaceRouteDriver driver(event_number==1 ? RaceDrivingLine::event1_forward : RaceDrivingLine::event8_forward); std::vector<RaceInputRun> recording;
     std::ofstream states, trajectory, hud_audit;
     if (!output.empty()) {
         require(fs::create_directory(output),"cannot create output directory");
@@ -501,7 +511,7 @@ int run(int argc, char** argv) {
     if (trajectory.is_open()) { trajectory.flush(); require(bool(trajectory),"trajectory write failed"); }
     sound.stop();
     const auto& result=session.timing().racers[0];
-    std::cout << "event 1 track 1003 laps " << result.highest_lap << " outcome " << race_outcome_name(session.timing().outcome)
+    std::cout << "event " << event_number << " track " << slot.track << " laps " << result.highest_lap << " outcome " << race_outcome_name(session.timing().outcome)
               << " steps " << session.timing().step << " resets " << resets << '\n';
     for (int i=1;i<=result.highest_lap && i<kRaceLapSlots;++i)
         std::cout << "lap " << i << " ticks " << result.lap_ticks[i] << " time " << format_race_ticks(result.lap_ticks[i]) << '\n';

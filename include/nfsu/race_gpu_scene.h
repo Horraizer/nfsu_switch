@@ -45,7 +45,7 @@ public:
     bool load(FileSystemService& files, const std::filesystem::path& root,
               std::string& error, AssetCheckObserver* observer = nullptr,
               TrackSliceLoadObserver* loading = nullptr, bool tuned = false,
-              bool glows = false, bool car_shading = false);
+              bool glows = false, bool car_shading = false, std::uint32_t event_number = 1);
     bool frame(const RaceSession& session, RaceGpuFrame& out, std::string& error,
                RaceFrameProfile* profile = nullptr, bool reference = false,
                TimingService* timer = nullptr);

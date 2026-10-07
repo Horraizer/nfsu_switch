@@ -20,10 +20,10 @@ bool wet_road_lamp_ground_height(WetRoadLamp& lamp, float ground_height) {
     return true;
 }
 bool load_wet_road_lamps(const std::filesystem::path& root, const TrackContactWorld& world,
-                         WetRoadLamps& lamps, std::string& error) {
+                         WetRoadLamps& lamps, std::string& error, std::int16_t track_number) {
     lamps = {};
     std::vector<unsigned char> bytes;
-    const auto zones = load_track_zones(root/"Tracks/TRACKB1003.lzc", bytes);
+    const auto zones = load_track_zones(root/"Tracks"/("TRACKB" + std::to_string(track_number) + ".lzc"), bytes);
     if (!zones.ok() || !world.valid) { error = "lamp source or collision invalid"; return false; }
     // 0x540F6A..0x54101D: version 3 header and aligned 80-byte records.
     for (std::size_t top = 0; top+8 <= bytes.size();) {

@@ -305,6 +305,26 @@ GamepadFrame RaceRouteDriver::sample(const RaceSession& session) {
             target[1] += static_cast<float>(offset*tangent[0]/std::max(length,1.0));
         }
         float preview[3];
+        if (line_ == RaceDrivingLine::event8_forward) {
+            // Authored test-driver offset around the northeast corner obstacle.
+            // Positive is left of the forward tangent. Controller input only.
+            double p = parameter;
+            while (p >= 33) p -= 33;
+            double offset = 0;
+            if (p > 28 && p < 31.5) {
+                offset = p < 29 ? (p-28)*10 : p > 30.5 ? (31.5-p)*10 : 10;
+            }
+            if (p > 22.8 && p < 26.5) {
+                offset = p < 23.8 ? (p-22.8)*60 : p > 24.5 ? (26.5-p)*30 : 60;
+            }
+            if (p > 3 && p < 6) {
+                offset = p < 4 ? (p-3)*35 : p > 5 ? (6-p)*35 : 35;
+            }
+            float tangent[3]; evaluate_track_path(spline,parameter,1,tangent);
+            const double length = vehicle_sqrt(double(tangent[0])*tangent[0]+double(tangent[1])*tangent[1]);
+            target[0] -= static_cast<float>(offset*tangent[1]/std::max(length,1.0));
+            target[1] += static_cast<float>(offset*tangent[0]/std::max(length,1.0));
+        }
         evaluate_track_path(spline,coord.parameter+static_cast<float>(30/std::max(norm,1.0)),1,preview);
         const double pn = vehicle_sqrt(double(preview[0])*preview[0]+double(preview[1])*preview[1]);
         const double ux = derivative[0]/std::max(norm,1.0)-preview[0]/std::max(pn,1.0);
@@ -328,7 +348,7 @@ GamepadFrame RaceRouteDriver::sample(const RaceSession& session) {
     return held_;
 }
 
-std::vector<std::string> race_session_hud(const RaceSession& session) {
+std::vector<std::string> race_session_hud(const RaceSession& session, std::uint32_t event_number) {
     RaceHud hud;
     if (!race_timing_hud(session.course().route,session.timing_config(),session.timing(),0,hud))
         return {"RACE HUD UNAVAILABLE"};
@@ -338,7 +358,7 @@ std::vector<std::string> race_session_hud(const RaceSession& session) {
         session.timing().step_ticks-r.crossing_ticks[0];
     const std::string last = r.highest_lap > 0 && r.highest_lap < kRaceLapSlots
         ? format_race_ticks(r.lap_ticks[r.highest_lap]) : "--:--.--";
-    return {"EVENT 1  LAP " + std::to_string(lap) + " / " + std::to_string(hud.laps),
+    return {"EVENT " + std::to_string(event_number) + "  LAP " + std::to_string(lap) + " / " + std::to_string(hud.laps),
         "CURRENT " + (hud.lap_time_valid ? format_race_ticks(current) : "--:--.--") + "  LAST " + last,
         hud.finished ? "FINISHED " + format_race_ticks(r.finish_ticks) :
         hud.countdown==4 ? "GO" : hud.countdown ? "COUNTDOWN " + std::to_string(hud.countdown) : "RACING",

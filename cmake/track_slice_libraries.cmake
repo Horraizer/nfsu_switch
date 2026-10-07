@@ -22,7 +22,7 @@ nfsu_enable_warnings(nfsu_track_stream)
 # contact queries with the desktop acceptance executable.
 add_library(nfsu_track_slice src/track_slice.cpp)
 target_link_libraries(nfsu_track_slice PUBLIC nfsu_track_stream nfsu_track_residency
-    nfsu_track_contact nfsu_draw_commands nfsu_assets)
+    nfsu_track_contact nfsu_draw_commands nfsu_assets nfsu_race_events nfsu_race_route)
 nfsu_enable_warnings(nfsu_track_slice)
 if(NINTENDO_SWITCH)
     set_target_properties(nfsu_track_stream nfsu_track_slice PROPERTIES

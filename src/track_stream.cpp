@@ -604,9 +604,19 @@ bool select_track_texture_spillover_1003(
     const std::vector<std::size_t>& resident,
     TrackStreamSelection& selection,
     std::string& error) {
+    return select_track_texture_spillover_l1ra(table, resident, 1003, selection, error);
+}
+
+bool select_track_texture_spillover_l1ra(
+    const TrackStreamTable& table, const std::vector<std::size_t>& resident,
+    std::uint32_t track, TrackStreamSelection& selection, std::string& error) {
     selection = TrackStreamSelection{};
-    selection.track = 1003;
+    selection.track = track;
     selection.set = TrackStreamSet::stream;
+    if (track != 1003 && track != 1005) {
+        error = "texture spillover supports L1RA circuits 1003 and 1005";
+        return false;
+    }
     if (!table.valid) {
         error = "the streaming table is not valid";
         return false;
@@ -950,7 +960,8 @@ bool load_with_reader(const TrackStreamTable& table,
             load.bytes_read += section.size;
             if (limits.poll) limits.poll();
             parse_section(section, limits);
-            if (limits.release_non_texture_bytes && section.packs.packs.empty()) {
+            if (limits.release_source_bytes ||
+                (limits.release_non_texture_bytes && section.packs.packs.empty())) {
                 std::vector<unsigned char>().swap(section.bytes);
             }
             if (limits.poll) limits.poll();

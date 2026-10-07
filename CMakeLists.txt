@@ -1672,6 +1672,10 @@ if(NFSU_BUILD_TESTS)
     endif()
     add_test(NAME nfsu_race_loader_peak_tests COMMAND nfsu_race_loader_peak_tests)
     add_executable(nfsu_race_run_tests tests/race_run_tests.cpp)
+    add_executable(nfsu_circuit1005_tests tests/circuit1005_tests.cpp)
+    target_link_libraries(nfsu_circuit1005_tests PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_arg_path)
+    nfsu_enable_warnings(nfsu_circuit1005_tests)
+    add_test(NAME nfsu_circuit1005_tests COMMAND nfsu_circuit1005_tests)
     target_link_libraries(nfsu_race_run_tests PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_platform_desktop)
     nfsu_enable_warnings(nfsu_race_run_tests)
     if(MINGW)
@@ -1809,6 +1813,10 @@ if(NFSU_BUILD_TESTS)
             message(FATAL_ERROR "NFSU_RETAIL_ROOT is not a directory: ${NFSU_RETAIL_ROOT}")
         endif()
         set(nfsu_retail_work ${CMAKE_CURRENT_BINARY_DIR}/nfsu_retail)
+        add_test(NAME nfsu_circuit1005_retail COMMAND nfsu_circuit1005_tests "${NFSU_RETAIL_ROOT}")
+        add_test(NAME nfsu_circuit1005_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" --event8)
+        set_tests_properties(nfsu_circuit1005_retail nfsu_circuit1005_loader_peak_retail PROPERTIES
+            LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 1800)
 
         add_test(NAME nfsu_retail_manifest_before
             COMMAND ${CMAKE_COMMAND} -DMODE=before
