@@ -11,9 +11,21 @@ import struct
 
 from collision256_trace import output_path
 from controller293_native import EXEC_RANGES, suite
+from controller293_strategy import RANGES as STRATEGY_RANGES, suite as strategy_suite
 from world_body_trace import Image, INPUTS, digest_file, manifest
+from controller293_planner import suite as planner_suite, inputs as planner_inputs
+from controller293_planner_ranges import RANGES as PLANNER_RANGES
+from controller293_scene_ranges import RANGES as SCENE_RANGES
+from controller293_event_rides_ranges import RANGES as RIDE_RANGES
+from controller293_scene import suite as scene_suite
+from controller293_world import suite as world_suite
+from controller293_world_ranges import RANGES as WORLD_RANGES
 
-EXTRA_RANGES = [
+EXTRA_RANGES = STRATEGY_RANGES + PLANNER_RANGES + SCENE_RANGES + RIDE_RANGES + WORLD_RANGES + [
+    ('actor-config-ride-ownership', 0x425374, 0x42538F),
+    ('actor-state-construction', 0x42538F, 0x4253A9),
+    ('actor-physical-binding', 0x4255AB, 0x4255CB),
+    ('actor-world-binding', 0x425703, 0x42571B),
     ('action17-constructor', 0x453730, 0x453754),
     ('action17-exit', 0x453830, 0x45385D),
     ('controller-constructor', 0x4620C0, 0x462228),
@@ -34,6 +46,62 @@ EXTRA_RANGES = [
 ]
 
 ASSERTIONS = {
+    0x420CBA: ('call', 'dword ptr [edx + 0xc]'),
+    0x420D39: ('call', 'dword ptr [edx + 0xc]'),
+    0x420DB2: ('call', 'dword ptr [eax + 4]'),
+    0x420DEF: ('call', '0x4267a0'),
+    0x420E3D: ('call', '0x426930'),
+    0x422555: ('mov', 'dword ptr [ecx], esi'),
+    0x422562: ('lea', 'esi, [eax + 8]'),
+    0x4233AD: ('call', '0x434b50'),
+    0x434B90: ('mov', 'dword ptr [eax], ecx'),
+    0x4355B5: ('call', '0x434b50'),
+    0x4355D7: ('mov', 'dword ptr [edi], ecx'),
+    0x4412FC: ('mov', 'dword ptr [0x736184], eax'),
+
+    0x42537D: ('add', 'edi, 0x10'),
+    0x57C8C8: ('mov', 'dword ptr [0x734588], edi'),
+    0x4B2A5D: ('mov', 'dword ptr [eax + ebx*4 + 0x44c], esi'),
+    0x57F768: ('rep movsd', 'dword ptr es:[edi], dword ptr [esi]'),
+    0x4B6100: ('rep stosd', 'dword ptr es:[edi], eax'),
+    0x4257F7: ('mov', 'byte ptr [ebx + 0x4d0], 1'),
+    0x57A310: ('mov', 'cl, byte ptr [eax + 0x4d0]'),
+    0x57A318: ('je', '0x57a320'),
+    0x41F889: ('mov', 'dword ptr [esi + 0x2d0], edx'),
+    0x4B5E36: ('mov', 'dword ptr [0x78a320], 1'),
+    0x430795: ('sub', 'ecx, eax'),
+    0x5809E3: ('mov', 'byte ptr [esi + 3], cl'),
+    0x4253A4: ('call', '0x464860'),
+    0x4255C8: ('mov', 'dword ptr [ebx + 0x20], esi'),
+    0x425715: ('mov', 'dword ptr [ebx + 0x82c], eax'),
+    0x44204F: ('mov', 'dword ptr [0x736168], ecx'),
+    0x44851F: ('mov', 'dword ptr [0x736174], ecx'),
+    0x45032D: ('rep movsd', 'dword ptr es:[edi], dword ptr [esi]'),
+    0x44B83F: ('call', 'dword ptr [eax + 0x60]'),
+    0x44B854: ('call', 'dword ptr [edx + 0x18]'),
+    0x44B857: ('mov', 'dword ptr [ebx + 0x3f8], eax'),
+    0x4623D8: ('mov', 'edi, ecx'),
+    0x4623EF: ('jne', '0x462403'),
+    0x462403: ('push', '1'),
+    0x462418: ('push', '3'),
+    0x462421: ('push', '2'),
+    0x44AA38: ('jmp', 'dword ptr [eax*4 + 0x44ab34]'),
+    0x44AA44: ('call', '0x567160'),
+    0x44AA56: ('call', '0x44a150'),
+    0x44AA5B: ('mov', 'dword ptr [edi + 0x3fc], eax'),
+    0x44A164: ('mov', 'dword ptr [esi], 0x6c98d0'),
+    0x44A1A4: ('mov', 'dword ptr [esi], 0x6c98b0'),
+    0x44A1D4: ('mov', 'dword ptr [esi], 0x6c97fc'),
+    0x44A1F0: ('fld', 'dword ptr [0x6cc98c]'),
+    0x44DCF8: ('push', '7'),
+    0x44DCFF: ('mov', 'dword ptr [esi], 0x6c9374'),
+    0x44E278: ('push', '8'),
+    0x44E27F: ('mov', 'dword ptr [esi], 0x6c920c'),
+    0x44E2F4: ('mov', 'byte ptr [esi + 0x1f0], al'),
+    0x44E2E0: ('rep stosd', 'dword ptr es:[edi], eax'),
+    0x450257: ('jne', '0x45033f'),
+    0x4502D7: ('call', '0x45b050'),
+    0x56719F: ('mov', 'dword ptr [esi + 0x10], ecx'),
     0x453736: ('push', '0x11'),
     0x45373F: ('mov', 'dword ptr [esi], 0x6c92d4'),
     0x453836: ('mov', 'eax, dword ptr [eax + 0x30]'),
@@ -92,6 +160,16 @@ ASSERTIONS = {
 }
 
 TABLES = {
+    'IsBadReadPtr-IAT': (0x697198, 0x2D2926),
+    'IsBadWritePtr-IAT': (0x69719C, 0x2D2936),
+    'strategy-selection': (0x6C8A50, 0x4623D0),
+    'strategy1-cap': (0x6C98E0, 0x44A1F0),
+    'strategy2-cap': (0x6C98C0, 0x44A1F0),
+    'strategy3-cap': (0x6C980C, 0x44A1F0),
+    'strategy1-first-action': (0x6C98E8, 0x44DCE0),
+    'strategy2-first-action': (0x6C98C8, 0x44E260),
+    'strategy3-first-action': (0x6C9814, 0x44E260),
+    'action7-update': (0x6C937C, 0x450210),
     'action17-exit': (0x6C92E0, 0x453830),
     'controller-update': (0x6C89FC, 0x462430),
     'context-accessor': (0x6C8A48, 0x44CA10),
@@ -104,6 +182,11 @@ TABLES = {
 }
 
 TOOL_FILES = ('controller293_trace.py', 'controller293_native.py', 'controller293_test.py',
+              'controller293_strategy.py', 'controller293_planner.py',
+              'controller293_planner_ranges.py',
+              'controller293_scene.py', 'controller293_scene_ranges.py', 'event0_trace.py',
+              'controller293_event_rides.py', 'controller293_event_rides_ranges.py',
+              'controller293_world.py', 'controller293_world_ranges.py',
               'physics256_native.py', 'collision256_trace.py', 'world_body_trace.py')
 
 
@@ -129,11 +212,15 @@ def source(image):
     for name, (at, expected) in TABLES.items():
         if struct.unpack('<I', image.read(at, 4))[0] != expected:
             raise ValueError('source table failed: ' + name)
+    for at, expected in ((0x6D2928, b'IsBadReadPtr\0'), (0x6D2938, b'IsBadWritePtr\0')):
+        if image.read(at, len(expected)) != expected:
+            raise ValueError('external pointer-probe import name changed')
     # Provenance hashes, not exported retail data. Includes actual curve samples,
     # descriptors, control gains, angle table, and source-backed startup inputs.
     data_spans = []
     for start, end in [(0x706098, 0x7061B8), (0x7003F8, 0x700620),
-                       (0x6B73AC, 0x6B74AC), (0x6F2280, 0x6F2880)]:
+                       (0x6B73AC, 0x6B74AC), (0x6CC98C, 0x6CC990),
+                       (0x44AB34, 0x44AB48), (0x6F2280, 0x6F2880)]:
         data_spans.append(dict(start='%08X' % start, end='%08X' % end,
                               sha256=hashlib.sha256(image.read(start, end-start)).hexdigest().upper()))
     return '\n'.join(lines) + '\n', dict(ranges=spans, data_ranges=data_spans,
@@ -144,7 +231,9 @@ def source(image):
 def negative_source(image):
     results = []
     for address, byte, expected in [(0x45EB7F, 0x85, 'source assertion failed: 0045EB7E'),
-                                    (0x44C7CB, 0x7B, 'source assertion failed: 0044C7CB')]:
+                                    (0x44C7CB, 0x7B, 'source assertion failed: 0044C7CB'),
+                                    (0x4623F0, 0x85, 'source assertion failed: 004623EF'),
+                                    (0x57A318, 0x75, 'source assertion failed: 0057A318')]:
         class ChangedRead:
             def read(self, va, size):
                 raw = bytearray(image.read(va, size))
@@ -190,16 +279,25 @@ def main():
         lines, facts = source(image)
         report = dict(input=dict(size=size, sha256=sha), source=facts,
                       negative_source_guards=negative_source(image), native=suite(image),
+                      strategy=strategy_suite(image),
+                      planner=planner_suite(image, planner_inputs(root)),
+                      scene=scene_suite(image, planner_inputs(root)),
+                      event_scene=scene_suite(image, planner_inputs(root), event_rides=True),
+                      world_phase=world_suite(image, planner_inputs(root)),
                       versions=dict(capstone=capstone.__version__, unicorn=unicorn.__version__),
                       tool_hashes={n: digest_file(Path(__file__).with_name(n)) for n in TOOL_FILES},
-                      contract='controller293-v1', original_runtime=None,
+                      contract='controller293-v6', original_runtime=None,
                       inherited_cpp_validated=False)
         (out / 'source.txt').write_text(lines, encoding='ascii')
         (out / 'report.json').write_text(json.dumps(report, ensure_ascii=True,
             allow_nan=False, indent=2) + '\n', encoding='ascii')
         print('PASS: authenticated controller source, tables and wrong-branch guards')
         print('PASS: bounded original-x86 controls captured; run controller293_test.py')
-        print('UNAVAILABLE: live event0 action/route selection, overtake/contact, full parity')
+        print('PASS: retail-backed original planner, retained action and driver witnesses')
+        print('PASS: original event metadata, paired context, history and catch-up witnesses')
+        print('PASS: original event preset/adaptive RideInfo and paired actor bindings')
+        print('PASS: original world registration, countdown and retained controller/driver phase')
+        print('UNAVAILABLE: actual event0 scene/trajectory, overtake/contact, full parity')
     finally:
         after = manifest(root)
         (out / 'after.json').write_bytes(after)
