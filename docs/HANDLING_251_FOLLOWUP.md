@@ -112,6 +112,36 @@ live cadence. `PHYSICS_DISPATCH_256.md` describes the original subdivision
 and unsplit publication interval; a gameplay implementation must preserve
 that distinction and complete the missing coupled bridge before acceptance.
 
+`tools/handling_coupled_native.py` adds the authentic four wheel constructors
+5868E0, wheel-inertia stores47721B..47723E, actual wheel derivative587170
+and component update586DA0 to the synthetic component list. It executes
+the full tyre/brake producer587330, including its internal587220 lock
+call, then the original coupled torque solver46E360. The source caller
+478570 starts its iteration loop with five passes at4785E1; the witness
+executes that solver count while holding the declared body/contact data.
+It then runs combined-demand limit587830 through587A90, stopping before
+the separate force-coordinate/body-application part, and integrates the
+engine and all wheel states with the original kernel and updates.
+
+Wheel headings are identity matrices, world velocity/load/surface are
+explicit synthetic inputs, and retail wheel/tyre/brake blocks and global
+tables supply the arithmetic. The scalar matrix implementation is selected
+as in the selector3 witness. No force or transcendental helper is replaced,
+and external hooks are forbidden. The report captures tyre forces and slip
+before component updates clear them, plus completed wheel and physical/
+exported RPM states. It requires finite wheel results, actual nonzero tyre
+reaction, no unexpected lateral force on this straight fixture, distinct
+clutch states and the front-wheel no-pin witness under full service input.
+
+This narrows the previous missing coupled solve and tyre-producer boundary.
+It still does not execute the entire478570 constraint iteration body,
+derive contact velocity/load from an integrated rigid body, apply the later
+wheel/body force transforms, execute the complete gearbox update or establish
+live scheduling. It cannot validate a complete car model or justify dropping
+the isolated engine-only boundary above. A fixed body velocity can accelerate
+a braking wheel toward its rolling speed; that is a fixture consequence,
+not a measured whole-car acceleration under braking.
+
 ## Original execution boundary
 
 The input identities are the `speed.exe`, `GLOBALB.BUN` and stock 240SX
@@ -235,6 +265,7 @@ python -B tools/handling_feedback_native.py --root RETAIL --out build/feedback-n
 python -B tools/handling_feedback_chain.py --root RETAIL --out build/feedback-chain-fresh
 python -B tools/handling_modes_native.py --root RETAIL --out build/handling-modes-fresh
 python -B tools/handling_engine_native.py --root RETAIL --out build/handling-engine-fresh
+python -B tools/handling_coupled_native.py --root RETAIL --out build/handling-coupled-fresh
 g++ -std=c++17 -O2 -ffp-contract=off -Iinclude -Ibuild/generated tools/handling_scenarios.cpp build/libnfsu_vehicle.a build/libnfsu_chase_camera.a build/libnfsu_sha256.a -o build/handling-scenarios.exe
 ```
 
