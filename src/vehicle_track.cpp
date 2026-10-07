@@ -1,6 +1,7 @@
 #include "nfsu/vehicle_track.h"
 
 #include "nfsu/det_sqrt.h"
+#include "nfsu/player_powertrain.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -699,7 +700,11 @@ void VehicleTrackSession::resolve_body(VehicleState& s, VehicleTrackTelemetry& t
     const double car_speed = vehicle_sqrt(dot(s.velocity, s.velocity));
     const auto inverse_inertia = [&](const VehicleVec3& world) {
         const VehicleVec3 body = r.apply_transpose(world);
-        return r.apply(v3(body.x / inertia_.x, body.y / inertia_.y, body.z / inertia_.z));
+        //46A0DE and58593F select the same rigid138 normal/alternate tensor
+        // for the solver and refreshed impulse response. Keep the latched
+        // outer flag; wheel constraints continue to use their normal tensor.
+        return r.apply(v3(body.x / inertia_.x, body.y / inertia_.y,
+            (body.z/unit)*player_body_inverse_yaw(model_->spec().handling,s.alternate_yaw_active)));
     };
 
     VehicleVec3 moved;

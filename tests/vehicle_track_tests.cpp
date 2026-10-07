@@ -1316,6 +1316,42 @@ void test_telemetry_layout() {
           "the record ends with the zone, -1, and the off-path flag");
 }
 
+void test_collision_tensor_selection() {
+    const auto course=proving_ground();
+    for(const bool alternate:{false,true}) {
+        nfsu::VehicleState state;
+        nfsu::VehiclePose pose;pose.ground={32,95.7,10};
+        check(stock_model().reset(state,pose),"wall tensor pose resets");
+        state.orientation={1,0,0,0};state.velocity={0,15,0};
+        state.alternate_yaw_active=alternate;
+        nfsu::VehicleTrackSession session(stock_model(),course);
+        check(session.start(state),"latched wall tensor state starts");
+        nfsu::VehicleTrackTelemetry t;
+        // A continuing slice keeps the outer flag, even when contacts now
+        // differ from the preceding frame. Both tensor choices are legal.
+        check(session.step({},t,0,1.0/240.0,false,4),"wall tensor slice runs");
+        unsigned observed=0;
+        for(const auto& event:t.contact_events) {
+            if(event.surface!=nfsu::VehicleTrackSurface::wall || !(event.approach<0)) continue;
+            const auto& a=event.arm;const auto& j=event.applied_impulse;
+            nfsu::VehicleVec3 angular{a.y*j.z-a.z*j.y,a.z*j.x-a.x*j.z,a.x*j.y-a.y*j.x};
+            const double length=speed(angular);
+            const double limit=nfsu::kVehicleTrackAngularLimit*1000;
+            const double clamp=length>limit?limit/length:1;
+            // Actual584B10/565060 and46A0C0: stock inverse yaw differs
+            // between normal and alternate;585810 uses it again at refresh.
+            const double inverse=alternate?.21119673550128937:.42239347100257874;
+            const double expected=angular.z*clamp*nfsu::kVehicleTrackAngularFactor*inverse/1000;
+            const double actual=event.angular_after.z-event.angular_before.z;
+            check(std::fabs(actual-expected)<1e-8,
+                  "wall impulse uses its latched normal or alternate yaw tensor");
+            ++observed;
+        }
+        check(observed>0,"wall tensor witness produces a closing impulse");
+        check(t.model.alternate_yaw_active==alternate,"collision does not reselect outer tensor");
+    }
+}
+
 void test_pins() {
     const nfsu::VehicleTrackCourse course = proving_ground();
     for (const nfsu::VehicleTrackScenario& s :
@@ -1364,6 +1400,7 @@ int main() {
     test_manual_and_approximations();
     test_refusals();
     test_telemetry_layout();
+    test_collision_tensor_selection();
     test_pins();
     if (failures != 0) {
         std::cout << failures << " check(s) failed\n";
