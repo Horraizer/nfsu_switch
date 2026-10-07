@@ -446,11 +446,11 @@ struct VehicleWheelState {
     double compression = 0.0;
     double previous_compression = 0.0;
     bool contact = false;
-    // 0x004757DA: near-full brake locks a slow wheel until brake < 0.2.
+    // Selector3 candidate: 0x004757DA locks a slow wheel until brake < 0.2.
     bool brake_locked = false;
 };
 
-// Original brake-axis latch, evaluated after wheel integration and before
+// Original selector3 brake-axis latch, after wheel integration and before
 // engine RPM. Gate operands use the original binary32 domains.
 void vehicle_brake_pin(VehicleWheelState& wheel, double brake) noexcept;
 
@@ -496,7 +496,7 @@ struct VehicleWheelTelemetry {
     std::uint32_t surface = 0;
     bool contact = false;
     bool sliding = false;
-    bool brake_locked = false;  // persistent original brake-axis latch
+    bool brake_locked = false;  // persistent selector3 candidate latch
 };
 
 // One record per step, describing the state at the END of the step and the
@@ -535,7 +535,7 @@ struct VehicleTelemetry {
 // It is what the telemetry hash covers: the
 // step (u64), four vectors, five doubles, the gear (u32), three doubles,
 // the handbrake (u32), the steer angle, then per wheel nine doubles and
-// three u32 (surface, contact, sliding).
+// three u32 (surface, contact/latch flags, sliding).
 constexpr std::size_t kVehicleTelemetryRecordBytes =
     8 + 4 * 24 + 5 * 8 + 4 + 3 * 8 + 4 + 8 + kVehicleWheelCount * (9 * 8 + 3 * 4);
 void encode_vehicle_telemetry(const VehicleTelemetry& record,

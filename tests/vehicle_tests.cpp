@@ -768,7 +768,8 @@ void test_acceleration() {
           "four upshifts to fifth: " + std::to_string(shifts));
 }
 
-void test_brake_pin() {
+// Selector3-derived WIP candidate; does not establish selector1 player parity.
+void test_selector3_brake_pin() {
     using namespace nfsu;
     VehicleWheelState wheel;
     const float above = std::nextafter(0.95F, 1.0F);
@@ -1926,6 +1927,25 @@ void test_telemetry_encoding() {
     check(bytes[184 + 64 + 6] == 0xF0 && bytes[184 + 64 + 7] == 0x3F && bytes[184 + 56 + 7] == 0,
           "the applied drive torque at 248");
     t.wheels[0].drive_applied = 0.0;
+    nfsu::encode_vehicle_telemetry(t, bytes);
+
+    const auto legacy = bytes;
+    const std::size_t flags_at = 184 + 9 * 8 + 4;
+    t.wheels[0].brake_locked = true;
+    nfsu::encode_vehicle_telemetry(t, bytes);
+    check(bytes[flags_at] == 2 && (bytes[flags_at] & 1U) == 0,
+          "lock-only flags do not report road contact");
+    t.wheels[0].contact = true;
+    nfsu::encode_vehicle_telemetry(t, bytes);
+    check(bytes[flags_at] == 3 && (bytes[flags_at] & 1U) != 0 && (bytes[flags_at] & 2U) != 0,
+          "contact and latch occupy independent wire bits");
+    t.wheels[0].brake_locked = false;
+    nfsu::encode_vehicle_telemetry(t, bytes);
+    check(bytes[flags_at] == 1 && (bytes[flags_at] & 2U) == 0,
+          "contact-only wire value remains legacy1");
+    t.wheels[0].contact = false;
+    nfsu::encode_vehicle_telemetry(t, bytes);
+    check(bytes == legacy, "unlatched telemetry preserves every legacy byte and size");
 
     nfsu::VehicleTelemetryHash a;
     nfsu::VehicleTelemetryHash b;
@@ -2072,7 +2092,7 @@ int main(int argc, char** argv) {
     test_idle_threshold();
     test_forced_first_gear();
     test_acceleration();
-    test_brake_pin();
+    test_selector3_brake_pin();
     test_braking();
     test_cornering();
     test_grip_limit();

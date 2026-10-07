@@ -133,7 +133,7 @@ int main() {
                 const bool pinned=session.car().wheels[2].brake_locked && session.car().wheels[3].brake_locked;
                 if(pinned) {
                     ++pinned_samples;
-                    check(t.engine_rpm==stock_240sx_handling().idle_rpm,"original brake pin exports completed idle RPM");
+                    check(t.engine_rpm==stock_240sx_handling().idle_rpm,"selector3 candidate pin exports completed idle RPM");
                 } else if(t.engine_rpm<=stock_240sx_handling().idle_rpm) ++idle_samples;
                 if(releasing && k>540 && t.engine_rpm>stock_240sx_handling().idle_rpm) ++release_samples;
             }
