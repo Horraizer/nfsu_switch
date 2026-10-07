@@ -174,6 +174,7 @@ struct VehicleHandling {
     float service_brake = 0.0F;                 // +0x384, kN m / axis
     float parking_brake = 0.0F;                 // +0x388, kN m / axis
     float brake_balance = 0.0F;                 // +0x38C, rear service fraction
+    float yaw_torque_limit = 0.0F;              // +0x398, physics setup288 / rigid1E0
 };
 
 // Record offsets of the fields above, for decoders and for reports.
@@ -208,6 +209,7 @@ constexpr std::size_t kVehicleDragOffset = 0x370;
 constexpr std::size_t kVehicleServiceBrakeOffset = 0x384;
 constexpr std::size_t kVehicleParkingBrakeOffset = 0x388;
 constexpr std::size_t kVehicleBrakeBalanceOffset = 0x38C;
+constexpr std::size_t kVehicleYawTorqueLimitOffset = 0x398;
 
 // The 240SX's record, index 18 of chunk 0x00034600 in the retail
 // Global/GLOBALB.BUN (SHA-256 39DF38FA...8DB9), at absolute file offset
@@ -220,9 +222,9 @@ constexpr std::size_t kVehicleBrakeBalanceOffset = 0x38C;
 // kVehicle240sxRecordBytesSha256. `nfsu_probe vehicle-sim --handling`
 // compares a decoded record against this table field by field.
 VehicleHandling stock_240sx_handling();
-constexpr std::size_t kVehicle240sxRecordBytes = 344;
+constexpr std::size_t kVehicle240sxRecordBytes = 348;
 constexpr const char* kVehicle240sxRecordBytesSha256 =
-    "2D1372472C5918231D8EB9C305A7EF6B4065A9A211E1A4CE06CF00C9D1CB01C7";
+    "1830A52FDA37708F237D47C864B2AFBCA9CCE39F144452827685229B66E1A4EC";
 
 struct VehicleHandlingIssue {
     // Offset of the offending field inside the record.
@@ -494,6 +496,19 @@ struct PlayerGearState {
 // engine RPM. Gate operands use the original binary32 domains.
 void vehicle_brake_pin(VehicleWheelState& wheel, double brake) noexcept;
 
+using PlayerRigidVector = std::array<float,3>;
+using PlayerRigidMatrix = std::array<PlayerRigidVector,3>; // rotation columns
+//584800/585410/585810 common rigid state in tonnes/kN units. The matrix
+// snapshot and velocity caches precede outer40BD40 normalization.
+struct PlayerRigidBodyState {
+    PlayerRigidVector position{},momentum{},angular_momentum{},velocity{},angular_velocity{};
+    PlayerRigidVector force{},torque{};
+    PlayerRigidMatrix axes{{{{1,0,0}},{{0,1,0}},{{0,0,1}}}},snapshot_axes=axes;
+    float adaptive_damping = 0.0F;
+    float yaw_torque_limit = 0.0F; // supplied outer control, rigid1E0
+    bool linear_damping = true,angular_damping = true,alternate_yaw = false,gravity = true;
+};
+
 struct VehicleState {
     std::uint64_t step = 0;
     double simulation_seconds = 0.0; // deterministic port clock, not retail world timer
@@ -520,6 +535,9 @@ struct VehicleState {
     bool body_gravity = true, forces_prepared = false;
     std::uint32_t published_support = 4; // biased owner38C / actor3CC
     int published_gear = kVehicleGearFirst; // biased owner398 / actor3D8
+    PlayerRigidBodyState rigid_body;
+    bool rigid_body_ready = false;
+    VehicleQuat rigid_orientation; // detects external edits to the public pose
 };
 
 // Where reset() puts the car: the ground point under the centre of mass,
@@ -578,6 +596,9 @@ struct VehicleTelemetry {
     std::uint32_t published_support = 4;
     int published_gear = kVehicleGearFirst;
     std::array<float,4> wheel_prepared_torque{},wheel_prepared_force_long{},wheel_prepared_slip{};
+    PlayerRigidBodyState rigid_body;
+    bool rigid_body_ready = false;
+    VehicleQuat rigid_orientation;
     std::array<bool,4> wheel_prepared_sliding{};
     int gear = kVehicleGearFirst;
     double throttle = 0.0;      // the inputs as applied, after clamping
@@ -609,10 +630,13 @@ struct VehicleTelemetry {
 // and the latched alternate-yaw flag as u32. The appended188-byte phase
 // suffix retains next-step force/torque, rest/gravity/initialization and
 // published support/gear, engine feedback and wheel derivative inputs.
+// The380-byte rigid suffix stores seven vectors, live/snapshot matrices,
+// damping/cap, four body flags/readiness and the public pose edit marker.
 constexpr std::size_t kVehicleTelemetryRecordBytes =
     8 + 4 * 24 + 5 * 8 + 4 + 3 * 8 + 4 + 8 + kVehicleWheelCount * (9 * 8 + 3 * 4)
     + 7 * 8 + 4 * 4 + kVehicleWheelCount * (8 + 4) + 4 * 8 + 4
-    + 2 * 24 + 5 * 4 + 8 + kVehicleWheelCount * (3 * 8 + 4);
+    + 2 * 24 + 5 * 4 + 8 + kVehicleWheelCount * (3 * 8 + 4)
+    + 7 * 24 + 2 * 9 * 8 + 2 * 8 + 5 * 4 + 4 * 8;
 void encode_vehicle_telemetry(const VehicleTelemetry& record,
                               std::array<std::uint8_t, kVehicleTelemetryRecordBytes>& out) noexcept;
 

@@ -1285,7 +1285,7 @@ void test_refusals() {
 // ---------------------------------------------------------------------------
 
 void test_telemetry_layout() {
-    static_assert(nfsu::kVehicleTrackTelemetryRecordBytes == 1104, "the record is 1104 bytes");
+    static_assert(nfsu::kVehicleTrackTelemetryRecordBytes == 1484, "the record is 1484 bytes");
     nfsu::VehicleTrackTelemetry t;
     t.step = 0x0102030405060708ULL;
     t.model.step = 0x1112131415161718ULL;
@@ -1297,6 +1297,11 @@ void test_telemetry_layout() {
     t.model.published_support=2;t.model.published_gear=3;t.model.engine.feedback_torque=.5F;
     t.model.wheel_prepared_torque[3]=.75F;t.model.wheel_prepared_force_long[3]=-1.0F;
     t.model.wheel_prepared_slip[3]=.125F;t.model.wheel_prepared_sliding[3]=true;
+    t.model.rigid_body.position[1]=1.25F;t.model.rigid_body.angular_momentum[2]=2.5F;
+    t.model.rigid_body.snapshot_axes[2][0]=.75F;t.model.rigid_body.adaptive_damping=.125F;
+    t.model.rigid_body.yaw_torque_limit=17;t.model.rigid_body.linear_damping=false;
+    t.model.rigid_body.angular_damping=true;t.model.rigid_body.alternate_yaw=true;
+    t.model.rigid_body.gravity=false;t.model.rigid_body_ready=true;t.model.rigid_orientation.z=.5;
     t.position.x = 1.5;
     t.off_path = true;
     t.zone = -1;
@@ -1320,6 +1325,16 @@ void test_telemetry_layout() {
     check(prepared_y==1.25&&feedback==.5&&last_slip==.125&&bytes[8+724]==1&&
           bytes[8+728]==0&&bytes[8+732]==1&&bytes[8+736]==2&&bytes[8+740]==3&&bytes[8+860]==1,
           "prepared body/feedback/last-wheel cache and published phase have explicit wire positions");
+    double rigid_position_y=0,momentum_z=0,snapshot_x=0,adaptive=0,cap=0,marker_z=0;
+    std::memcpy(&rigid_position_y,bytes.data()+8+872,8);
+    std::memcpy(&momentum_z,bytes.data()+8+928,8);
+    std::memcpy(&snapshot_x,bytes.data()+8+1152,8);
+    std::memcpy(&adaptive,bytes.data()+8+1176,8);std::memcpy(&cap,bytes.data()+8+1184,8);
+    std::memcpy(&marker_z,bytes.data()+8+1236,8);
+    check(rigid_position_y==1.25&&momentum_z==2.5&&snapshot_x==.75&&adaptive==.125&&cap==17&&
+          bytes[8+1192]==0&&bytes[8+1196]==1&&bytes[8+1200]==1&&bytes[8+1204]==0&&
+          bytes[8+1208]==1&&marker_z==.5,
+          "rigid momentum snapshot controls readiness and pose marker have explicit wire positions");
     double x = 0.0;
     std::memcpy(&x, bytes.data() + 8 + nfsu::kVehicleTelemetryRecordBytes, sizeof(x));
     check(x == 1.5, "then the position's x");
@@ -1361,6 +1376,10 @@ void test_collision_tensor_selection() {
         }
         check(observed>0,"wall tensor witness produces a closing impulse");
         check(t.model.alternate_yaw_active==alternate,"collision does not reselect outer tensor");
+        const auto& completed=session.state();
+        check(t.model.rigid_body.momentum==completed.rigid_body.momentum&&
+              t.model.rigid_body.angular_momentum==completed.rigid_body.angular_momentum,
+              "track canonical suffix retains completed collision momenta");
     }
 }
 

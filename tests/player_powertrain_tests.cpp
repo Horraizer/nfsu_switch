@@ -272,8 +272,8 @@ void body_derivative_epoch() {
               "body derivative rest slice completes");
         // Actual body-only46AA40/585410 witness: zero old velocity leaves
         // position fixed even when supplied force changes the new momentum.
-        check(state.position.x==before.position.x && state.position.y==before.position.y &&
-              state.position.z==before.position.z,
+        check(state.position.x==static_cast<float>(before.position.x) && state.position.y==static_cast<float>(before.position.y) &&
+              state.position.z==static_cast<float>(before.position.z),
               "first body position uses old velocity despite nonzero wheel force");
         check(state.velocity.y!=before.velocity.y,
               "supplied body force changes velocity when original input gate excludes rest");
@@ -282,9 +282,12 @@ void body_derivative_epoch() {
         const auto moving=state;
         check(model.step(state,VehicleInput{},VehicleFlatGround(),t,0,dt,true),
               "moving body derivative slice completes");
-        check(state.position.x==moving.position.x+moving.velocity.x*dt &&
-              state.position.y==moving.position.y+moving.velocity.y*dt &&
-              state.position.z==moving.position.z+moving.velocity.z*dt,
+        const auto integrated_position=[dt](double position,double velocity) {
+            return static_cast<float>(position)+static_cast<float>(dt)*static_cast<float>(velocity);
+        };
+        check(state.position.x==integrated_position(moving.position.x,moving.velocity.x) &&
+              state.position.y==integrated_position(moving.position.y,moving.velocity.y) &&
+              state.position.z==integrated_position(moving.position.z,moving.velocity.z),
               "position derivative keeps the pre-force velocity epoch at both intervals");
         VehiclePose pose;pose.speed=15;
         check(model.reset(state,pose),"rotation derivative moving reset");
@@ -310,7 +313,8 @@ void completed_rest_phase() {
     const VehicleModel model(stock_240sx_vehicle_spec());
     VehicleState state;VehicleTelemetry t;const VehicleFlatGround ground;
     check(model.reset(state,VehiclePose()),"rest phase reset");
-    const auto initial=state.position;
+    const VehicleVec3 initial{static_cast<float>(state.position.x),static_cast<float>(state.position.y),
+                              static_cast<float>(state.position.z)};
     for(unsigned k=0;k<480;++k)
         check(model.step(state,{},ground,t,k%4==3?1.0/60.0:0,1.0/240.0,k%4==0),"two seconds of rest slices");
     check(state.position.x==initial.x&&state.position.y==initial.y&&state.position.z==initial.z&&
@@ -372,7 +376,8 @@ void completed_rest_phase() {
     }
     state.gearbox=VehicleGearbox::manual;state.transmission.requested_gear=kVehicleGearReverse;
     check(model.reset(state,VehiclePose())&&!state.forces_prepared&&state.body_rest_state==0&&
-          state.body_gravity&&state.published_gear==kVehicleGearFirst,
+          state.body_gravity&&state.published_gear==kVehicleGearFirst&&!state.rigid_body_ready&&
+          state.rigid_body.momentum==PlayerRigidVector{}&&state.rigid_body.angular_momentum==PlayerRigidVector{},
           "reset clears prepared phase and pending reverse while restoring initial gravity");
 }
 void recovered_rigid_component() {
@@ -409,6 +414,63 @@ void recovered_rigid_component() {
     check(equal.angular_momentum[2]==4.070000171661377F&&above.angular_momentum[2]==4.0708332061767578F,
           "native yaw cap equality retains damping and beyond cap replaces final derivative");
 }
+void recovered_rigid_runtime() {
+    using namespace nfsu;
+    const auto spec=stock_240sx_vehicle_spec();const auto& h=spec.handling;
+    const VehicleModel model(spec);VehicleInput wake;wake.throttle=1;
+    for(double dt:{1.0/120.0,1.0/240.0}) for(bool alternate:{false,true}) {
+        VehicleState state;VehicleTelemetry telemetry;
+        check(model.reset(state,{}),"rigid runtime supplied state reset");
+        state.rigid_body_ready=true;state.forces_prepared=true;
+        state.alternate_yaw_active=alternate;
+        auto& body=state.rigid_body;
+        body.axes={{{{.8F,0,-.6F}},{{0,1,0}},{{.6F,0,.8F}}}};
+        body.position={{0,0,.5F}};body.angular_momentum={{1,-2,0}};
+        body.alternate_yaw=alternate;body.yaw_torque_limit=h.yaw_torque_limit;
+        player_rigid_body_refresh(h,body);body.force[1]=19.46F;
+        state.position={body.position[0],body.position[1],body.position[2]};
+        state.velocity={body.velocity[0],body.velocity[1],body.velocity[2]};
+        state.angular_velocity={body.angular_velocity[0],body.angular_velocity[1],body.angular_velocity[2]};
+        state.rigid_orientation=state.orientation;
+        state.prepared_force={body.force[0]*1000.0,body.force[1]*1000.0,body.force[2]*1000.0};
+        auto expected=body;player_rigid_body_integrate(h,expected,static_cast<float>(dt));
+        player_rigid_body_normalize(expected);
+        check(model.step(state,wake,VehicleFlatGround(),telemetry,0,dt,false),"rigid runtime slice completes");
+        check(state.body_rest_state==0&&state.rigid_body.position==expected.position&&
+              state.rigid_body.momentum==expected.momentum&&state.rigid_body.angular_momentum==expected.angular_momentum&&
+              state.rigid_body.velocity==expected.velocity&&state.rigid_body.angular_velocity==expected.angular_velocity&&
+              state.rigid_body.axes==expected.axes&&state.rigid_body.snapshot_axes==expected.snapshot_axes&&
+              state.rigid_body.adaptive_damping==expected.adaptive_damping,
+              "runtime bridge keeps recovered momentum matrix refresh and outer normalization epochs");
+        check(telemetry.rigid_body.axes==state.rigid_body.axes&&telemetry.rigid_body_ready,
+              "runtime telemetry contains completed rigid state");
+        std::array<std::uint8_t,kVehicleTelemetryRecordBytes> a{},b{};
+        encode_vehicle_telemetry(telemetry,a);auto changed=telemetry;
+        changed.rigid_body.angular_momentum[0]+=1;encode_vehicle_telemetry(changed,b);
+        check(a!=b,"canonical state distinguishes angular momentum futures");
+        changed=telemetry;changed.rigid_body.snapshot_axes[2][0]+=1;encode_vehicle_telemetry(changed,b);
+        check(a!=b,"canonical state distinguishes retained matrix snapshots");
+        changed=telemetry;changed.rigid_body.adaptive_damping+=1;encode_vehicle_telemetry(changed,b);
+        check(a!=b,"canonical state distinguishes adaptive damping futures");
+        auto edited=state;edited.velocity={4,2,0};
+        auto imported=edited.rigid_body;
+        imported.momentum={{4*h.mass,2*h.mass,0}};
+        player_rigid_body_refresh(h,imported);
+        const PlayerRigidVector old_position{{static_cast<float>(edited.position.x),
+            static_cast<float>(edited.position.y),static_cast<float>(edited.position.z)}};
+        PlayerRigidVector expected_position=old_position;
+        for(int k=0;k<3;++k) expected_position[k]+=static_cast<float>(dt)*imported.velocity[k];
+        check(model.step(edited,wake,VehicleFlatGround(),telemetry,0,dt,false)&&
+              edited.rigid_body.position==expected_position,
+              "explicit public velocity edit imports momentum and refreshes the old velocity cache");
+        auto invalid=state;invalid.rigid_body.angular_momentum[0]=std::numeric_limits<float>::quiet_NaN();
+        check(!model.step(invalid,wake,VehicleFlatGround(),telemetry,0,dt,false),
+              "nonfinite authoritative angular momentum is refused before integration");
+        invalid=state;invalid.rigid_body.snapshot_axes[2][1]=std::numeric_limits<float>::infinity();
+        check(!model.step(invalid,wake,VehicleFlatGround(),telemetry,0,dt,false),
+              "nonfinite retained matrix cache is refused before integration");
+    }
+}
 } // namespace
 
 int main() {
@@ -418,6 +480,7 @@ int main() {
     body_derivative_epoch();
     completed_rest_phase();
     recovered_rigid_component();
+    recovered_rigid_runtime();
     if (failures) {std::cerr<<failures<<" player powertrain test failure(s)\n";return 1;}
     std::cout<<"player powertrain tests passed\n";
 }

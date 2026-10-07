@@ -846,6 +846,22 @@ void VehicleTrackSession::resolve_body(VehicleState& s, VehicleTrackTelemetry& t
         angular = scale(angular, kVehicleTrackAngularFactor);
         s.velocity = add(s.velocity, scale(applied, inverse_mass));
         s.angular_velocity = add(s.angular_velocity, inverse_inertia(angular));
+        if(s.rigid_body_ready) {
+            // Keep the body's authoritative momenta through the port's existing
+            // double contact adapter. Do not reconstruct L from cached omega
+            // at the next solver slice. Collision tensor/geometry remain the
+            // separately qualified track adapter, with the latched yaw choice.
+            const double linear[3]={applied.x,applied.y,applied.z};
+            const double rotational[3]={angular.x,angular.y,angular.z};
+            const double velocity[3]={s.velocity.x,s.velocity.y,s.velocity.z};
+            const double omega[3]={s.angular_velocity.x,s.angular_velocity.y,s.angular_velocity.z};
+            for(int k=0;k<3;++k) {
+                s.rigid_body.momentum[k]+=static_cast<float>(linear[k]/unit);
+                s.rigid_body.angular_momentum[k]+=static_cast<float>(rotational[k]/unit);
+                s.rigid_body.velocity[k]=static_cast<float>(velocity[k]);
+                s.rigid_body.angular_velocity[k]=static_cast<float>(omega[k]);
+            }
+        }
         applied_total = add(applied_total, applied);
         event.applied_impulse = applied; event.accumulated_impulse = applied_total;
         event.velocity_after = s.velocity; event.angular_after = s.angular_velocity;
@@ -1102,6 +1118,8 @@ bool VehicleTrackSession::step(const VehicleInput& input, VehicleTrackTelemetry&
     t.orientation = s.orientation;
     t.velocity = s.velocity;
     t.angular_velocity = s.angular_velocity;
+    t.model.rigid_body=s.rigid_body;t.model.rigid_body_ready=s.rigid_body_ready;
+    t.model.rigid_orientation=s.rigid_orientation;
     t.lap = progress_.lap;
     t.percent = progress_.coordinate.fraction * 100.0F;
     t.zone = progress_.zone;

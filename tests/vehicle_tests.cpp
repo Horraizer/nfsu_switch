@@ -310,10 +310,10 @@ void test_record_source() {
     }
     check(bytes.size() == nfsu::kVehicle240sxRecordBytes,
           "the built-in table reproduces " + std::to_string(bytes.size()) + " record bytes");
-    check(runs == 21 && first == 0x110 && last == 0x38F,
+    check(runs == 23 && first == 0x110 && last == 0x39B,
           "in " + std::to_string(runs) + " runs from byte " + std::to_string(first) +
               " to byte " + std::to_string(last) +
-              ", expected 21 runs from 272 (+0x110) to 911 (+0x38F)");
+              ", expected 23 runs from 272 (+0x110) to 923 (+0x39B)");
     const std::string hash = nfsu::sha256_hex(nfsu::sha256(bytes.data(), bytes.size()));
     check(hash == nfsu::kVehicle240sxRecordBytesSha256,
           "the built-in 240SX table rebuilds the retail record's bytes: " + hash);
@@ -1882,7 +1882,7 @@ void test_telemetry_encoding() {
     // Then the steer angle to 184 and four wheels of 84 bytes, the last
     // wheel's sliding flag closes the original prefix. Mechanical state
     // follows it so equal displayed values cannot hide different futures.
-    check(bytes[516] == 1 && bytes[519] == 0 && nfsu::kVehicleTelemetryRecordBytes == 864,
+    check(bytes[516] == 1 && bytes[519] == 0 && nfsu::kVehicleTelemetryRecordBytes == 1244,
           "the original wheel prefix precedes persistent mechanical state");
     // The applied drive torque follows the recovered one in each wheel:
     // wheel 0's eighth and ninth doubles, at 184 + 56 and 184 + 64.

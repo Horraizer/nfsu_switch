@@ -95,6 +95,15 @@ bool state_finite(const VehicleState& s) noexcept {
     ok=ok&&finite(s.owner_speeds.forward)&&finite(s.owner_speeds.magnitude)&&s.owner_speeds.magnitude>=0.0F;
     ok=ok&&finite(s.prepared_force)&&finite(s.prepared_torque)&&s.body_rest_state<=2&&
        s.published_support<=4&&s.published_gear>=kVehicleGearReverse&&s.published_gear<static_cast<int>(kVehicleGearSlots);
+    const auto& body=s.rigid_body;
+    for(const auto& vector:{body.position,body.momentum,body.angular_momentum,body.velocity,
+                           body.angular_velocity,body.force,body.torque})
+        for(float value:vector) ok=ok&&finite(value);
+    for(const auto& matrix:{body.axes,body.snapshot_axes})
+        for(const auto& vector:matrix) for(float value:vector) ok=ok&&finite(value);
+    ok=ok&&finite(body.adaptive_damping)&&finite(body.yaw_torque_limit)&&body.yaw_torque_limit>=0.0F&&
+       finite(s.rigid_orientation.w)&&finite(s.rigid_orientation.x)&&
+       finite(s.rigid_orientation.y)&&finite(s.rigid_orientation.z);
     for (const VehicleWheelState& w : s.wheels) {
         ok = ok && finite(w.spin) && finite(w.compression) && finite(w.previous_compression) &&
              finite(w.history_torque) && w.spin_direction>=0 && w.spin_direction<=2&&
@@ -179,6 +188,85 @@ VehicleQuat normalized(const VehicleQuat& q) noexcept {
     r.y = q.y / n;
     r.z = q.z / n;
     return r;
+}
+
+PlayerRigidVector rigid_vector(const VehicleVec3& v) noexcept {
+    return {{static_cast<float>(v.x),static_cast<float>(v.y),static_cast<float>(v.z)}};
+}
+VehicleVec3 public_vector(const PlayerRigidVector& v) noexcept {
+    return v3(v[0],v[1],v[2]);
+}
+Mat3 rigid_rotation(const PlayerRigidMatrix& axes) noexcept {
+    Mat3 r;
+    for(int c=0;c<3;++c) for(int row=0;row<3;++row) r.m[row][c]=axes[c][row];
+    return r;
+}
+PlayerRigidMatrix rigid_axes(const Mat3& r) noexcept {
+    PlayerRigidMatrix axes{};
+    for(int c=0;c<3;++c) for(int row=0;row<3;++row) axes[c][row]=static_cast<float>(r.m[row][c]);
+    return axes;
+}
+bool same_quaternion(const VehicleQuat& a,const VehicleQuat& b) noexcept {
+    return a.w==b.w&&a.x==b.x&&a.y==b.y&&a.z==b.z;
+}
+bool same_vector(const VehicleVec3& a,const PlayerRigidVector& b) noexcept {
+    return static_cast<float>(a.x)==b[0]&&static_cast<float>(a.y)==b[1]&&static_cast<float>(a.z)==b[2];
+}
+VehicleQuat rigid_quaternion(const PlayerRigidMatrix& axes,const VehicleQuat& previous) noexcept {
+    // Public render pose only. The solver retains the original float matrix.
+    const Mat3 r=rigid_rotation(axes);
+    VehicleQuat q;
+    const double trace=r.m[0][0]+r.m[1][1]+r.m[2][2];
+    if(trace>0.0) {
+        const double s=2.0*vehicle_sqrt(trace+1.0);
+        q.w=0.25*s;q.x=(r.m[2][1]-r.m[1][2])/s;
+        q.y=(r.m[0][2]-r.m[2][0])/s;q.z=(r.m[1][0]-r.m[0][1])/s;
+    } else {
+        int i=r.m[1][1]>r.m[0][0]?1:0;
+        if(r.m[2][2]>r.m[i][i]) i=2;
+        const int j=(i+1)%3,k=(i+2)%3;
+        const double s=2.0*vehicle_sqrt(1.0+r.m[i][i]-r.m[j][j]-r.m[k][k]);
+        double xyz[3]{};
+        xyz[i]=0.25*s;xyz[j]=(r.m[j][i]+r.m[i][j])/s;xyz[k]=(r.m[k][i]+r.m[i][k])/s;
+        q.w=(r.m[k][j]-r.m[j][k])/s;q.x=xyz[0];q.y=xyz[1];q.z=xyz[2];
+    }
+    q=normalized(q);
+    if(q.w*previous.w+q.x*previous.x+q.y*previous.y+q.z*previous.z<0.0) {
+        q.w=-q.w;q.x=-q.x;q.y=-q.y;q.z=-q.z;
+    }
+    return q;
+}
+void rigid_public_cache(VehicleState& s) noexcept {
+    s.position=public_vector(s.rigid_body.position);
+    s.velocity=public_vector(s.rigid_body.velocity);
+    s.angular_velocity=public_vector(s.rigid_body.angular_velocity);
+}
+void rigid_import_public(const VehicleHandling& h,VehicleState& s) noexcept {
+    auto& body=s.rigid_body;
+    const bool pose_changed=!s.rigid_body_ready||!same_quaternion(s.orientation,s.rigid_orientation);
+    const bool velocity_changed=pose_changed||!same_vector(s.velocity,body.velocity);
+    const bool omega_changed=pose_changed||!same_vector(s.angular_velocity,body.angular_velocity);
+    if(pose_changed) body.axes=rigid_axes(rotation(s.orientation));
+    body.position=rigid_vector(s.position);
+    // Spawn, teleport and explicit public velocity edits are port adapters.
+    // Ordinary integration keeps P/L rather than reconstructing them from caches.
+    if(velocity_changed) {
+        const auto v=rigid_vector(s.velocity);
+        for(int k=0;k<3;++k) body.momentum[k]=v[k]*h.mass;
+    }
+    if(omega_changed) {
+        const Mat3 r=rigid_rotation(body.axes);
+        VehicleVec3 local=r.apply_transpose(s.angular_velocity);
+        local.x*=h.inertia[0];local.y*=h.inertia[1];
+        local.z*=h.inertia[2]*(s.alternate_yaw_active?h.alternate_yaw_scale:1.0F);
+        body.angular_momentum=rigid_vector(r.apply(local));
+    }
+    body.alternate_yaw=s.alternate_yaw_active;
+    body.gravity=s.body_gravity;body.yaw_torque_limit=h.yaw_torque_limit;
+    if(velocity_changed||omega_changed) {
+        player_rigid_body_refresh(h,body);rigid_public_cache(s);
+    }
+    s.rigid_body_ready=true;s.rigid_orientation=s.orientation;
 }
 
 // Little-endian readers and writers of a record, independent of the host.
@@ -285,6 +373,7 @@ void visit_floats(Handling& h, Visitor&& visit) {
     visit(kVehicleServiceBrakeOffset, h.service_brake);
     visit(kVehicleParkingBrakeOffset, h.parking_brake);
     visit(kVehicleBrakeBalanceOffset, h.brake_balance);
+    visit(kVehicleYawTorqueLimitOffset, h.yaw_torque_limit);
 }
 
 std::string hex_offset(std::size_t offset) {
@@ -543,6 +632,7 @@ VehicleHandling stock_240sx_handling() {
     h.service_brake = 0.4F;
     h.parking_brake = 0.5F;
     h.brake_balance = 0.5F;
+    h.yaw_torque_limit = 17.0F; //477C32, stock raw record+398
     return h;
 }
 
@@ -638,6 +728,9 @@ bool check_vehicle_handling(const VehicleHandling& h,
     }
     if (h.drag < 0.0F) {
         add_issue(issues, kVehicleDragOffset, "the drag must not be negative");
+    }
+    if (h.yaw_torque_limit < 0.0F) {
+        add_issue(issues, kVehicleYawTorqueLimitOffset, "the yaw torque limit must not be negative");
     }
     // The preload levers the weight between wheel 0's and wheel 3's axles
     // about the centre of mass, so each axle's pair must share one position
@@ -868,6 +961,17 @@ void encode_vehicle_telemetry(const VehicleTelemetry& r,
         e.f64(r.wheel_prepared_torque[k]);e.f64(r.wheel_prepared_force_long[k]);
         e.f64(r.wheel_prepared_slip[k]);e.u32(r.wheel_prepared_sliding[k]?1U:0U);
     }
+    const auto& body=r.rigid_body;
+    for(const auto& vector:{body.position,body.momentum,body.angular_momentum,body.velocity,
+                           body.angular_velocity,body.force,body.torque})
+        for(float value:vector) e.f64(value);
+    for(const auto& matrix:{body.axes,body.snapshot_axes})
+        for(const auto& vector:matrix) for(float value:vector) e.f64(value);
+    e.f64(body.adaptive_damping);e.f64(body.yaw_torque_limit);
+    e.u32(body.linear_damping?1U:0U);e.u32(body.angular_damping?1U:0U);
+    e.u32(body.alternate_yaw?1U:0U);e.u32(body.gravity?1U:0U);e.u32(r.rigid_body_ready?1U:0U);
+    e.f64(r.rigid_orientation.w);e.f64(r.rigid_orientation.x);
+    e.f64(r.rigid_orientation.y);e.f64(r.rigid_orientation.z);
 }
 
 void VehicleTelemetryHash::add(const VehicleTelemetry& record) noexcept {
@@ -1152,7 +1256,8 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     const double brake = sanitize(raw_input.brake, 0.0, 1.0);
     const double steer = sanitize(raw_input.steer, -1.0, 1.0);
 
-    Mat3 r = rotation(s.orientation);
+    rigid_import_public(h,s);
+    Mat3 r = rigid_rotation(s.rigid_body.axes);
     const VehicleVec3 forward = r.column(0);
     const double forward_speed = dot(s.velocity, forward);
 
@@ -1198,7 +1303,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     unsigned support=0;VehicleVec3 support_torque,force,torque;
     std::array<VehicleWheelTelemetry,kVehicleWheelCount> wheel_out{};
     const auto prepare_forces=[&](double suspension_dt) {
-        r=rotation(s.orientation);
+        r=rigid_rotation(s.rigid_body.axes);
         const VehicleVec3 forward=r.column(0),left=r.column(1),up=r.column(2);
         const double forward_speed=dot(s.velocity,forward);
         // Steering: toward the input times the speed-dependent lock, at a
@@ -1289,7 +1394,8 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         std::array<PlayerWheelWork,4> work{};
         std::array<std::array<VehicleVec3,3>,4> wheel_axes{};
         std::array<VehicleVec3,4> contact_arms{};
-        const std::array<VehicleVec3,3> body_axes{{forward,left,up}};
+        const Mat3 snapshot=rigid_rotation(s.rigid_body.snapshot_axes);
+        const std::array<VehicleVec3,3> body_axes{{snapshot.column(0),snapshot.column(1),snapshot.column(2)}};
         for (std::size_t k=0;k<kVehicleWheelCount;++k) {
             auto& wheel=s.wheels[k];auto& out=wheel_out[k];auto& w=work[k];
             out.compression=wheel.compression;out.contact=wheel.contact;
@@ -1309,9 +1415,8 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             const float sn=k<2?static_cast<float>(steer_sin):0.0F;
             const std::array<VehicleVec3,3> local_axes{{v3(c,sn,0),v3(-sn,c,0),v3(0,0,1)}};
             // Original5889C5 combines local wheel axes with the rigid snapshot,
-            // without projecting them onto the ground. The current port refreshes
-            // its rotation at each body update; body matrix arithmetic remains
-            // a separate approximation despite the recovered callback epoch.
+            // without projecting them onto the ground. The raw refresh snapshot
+            // remains distinct from the later outer-normalized live matrix.
             wheel_axes[k]=player_world_wheel_axes(body_axes,local_axes);
             const auto& along=wheel_axes[k][0];const auto& across=wheel_axes[k][1];
             const VehicleVec3 hub_local=v3(d_.attach[k].x,d_.attach[k].y,
@@ -1355,11 +1460,14 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             static_cast<float>(forward.z),static_cast<float>(left.z),static_cast<float>(throttle),
             s.published_gear,s.published_support,s.body_rest_state);
         s.body_gravity=s.body_rest_state!=2;
-        if(s.body_rest_state==2) {s.velocity={};s.angular_velocity={};}
+        s.rigid_body.gravity=s.body_gravity;
+        if(s.body_rest_state==2) {s.rigid_body.momentum={};s.rigid_body.angular_momentum={};}
         else if(s.body_rest_state==1) {
-            s.velocity=scale(s.velocity,0.94999998807907104);
-            s.angular_velocity=scale(s.angular_velocity,0.94999998807907104);
+            for(int k=0;k<3;++k) {
+                s.rigid_body.momentum[k]*=0.95F;s.rigid_body.angular_momentum[k]*=0.95F;
+            }
         }
+        if(s.body_rest_state!=0) {player_rigid_body_refresh(h,s.rigid_body);rigid_public_cache(s);}
         for(std::size_t k=0;k<4;++k) {
             auto& w=work[k];auto& wheel=s.wheels[k];
             if(s.published_support>0&&s.body_rest_state==2) w.spin=0.0F;
@@ -1432,6 +1540,8 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         if (s.published_support < 2) torque = add(torque, support_torque);
 
         s.prepared_force=force;s.prepared_torque=torque;s.forces_prepared=true;
+        s.rigid_body.force=rigid_vector(scale(force,1.0/a.unit_scale));
+        s.rigid_body.torque=rigid_vector(scale(torque,1.0/a.unit_scale));
     };
     if(!s.forces_prepared) prepare_forces(0.0);
     // Derivatives consume the previous completed force callback's data.
@@ -1451,33 +1561,17 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     player_gear_integrate(h,s.transmission,static_cast<float>(dt));
     s.simulation_seconds+=dt;
     player_engine_cutoff_update(h,s.gear,s.engine,static_cast<float>(s.simulation_seconds));
-    //5855A5/5855D0 supplies the old cached linear/angular velocities to
-    // the position/rotation derivatives.46AA40 integrates every derivative
-    // before585810 refreshes velocity from the new momentum. Quaternion
-    // storage and force arithmetic remain qualified port adapters.
-    const VehicleVec3 prior_velocity=s.velocity;
-    const VehicleVec3 prior_angular_velocity=s.angular_velocity;
-    s.velocity = add(s.velocity, scale(s.prepared_force, dt / d_.mass));
-    const VehicleVec3 body_torque = r.apply_transpose(s.prepared_torque);
-    const VehicleVec3 body_change =
-        v3(body_torque.x / d_.inertia.x, body_torque.y / d_.inertia.y,
-           (body_torque.z/a.unit_scale)*player_body_inverse_yaw(h,s.alternate_yaw_active));
-    s.angular_velocity = add(s.angular_velocity, scale(r.apply(body_change), dt));
-    s.position = add(s.position, scale(prior_velocity, dt));
-    VehicleQuat spin_q;
-    spin_q.w = 0.0;
-    spin_q.x = prior_angular_velocity.x;
-    spin_q.y = prior_angular_velocity.y;
-    spin_q.z = prior_angular_velocity.z;
-    const VehicleQuat change = multiply(spin_q, s.orientation);
-    VehicleQuat q = s.orientation;
-    q.w = q.w + change.w * (0.5 * dt);
-    q.x = q.x + change.x * (0.5 * dt);
-    q.y = q.y + change.y * (0.5 * dt);
-    q.z = q.z + change.z * (0.5 * dt);
-    s.orientation = normalized(q);
-
+    // Common585410 consumes old cached V/W, advances P/L and raw axes,
+    // then585810 refreshes before rest and the next force callback.
+    s.rigid_body.force=rigid_vector(scale(s.prepared_force,1.0/a.unit_scale));
+    s.rigid_body.torque=rigid_vector(scale(s.prepared_torque,1.0/a.unit_scale));
+    player_rigid_body_integrate(h,s.rigid_body,static_cast<float>(dt));
+    rigid_public_cache(s);
     prepare_forces(dt);
+    //40BD40 changes live axes only; refreshed snapshot/W are retained.
+    player_rigid_body_normalize(s.rigid_body);
+    s.orientation=rigid_quaternion(s.rigid_body.axes,s.orientation);
+    s.rigid_orientation=s.orientation;
 
     if (s.shift_hold > 0) {
         --s.shift_hold;
@@ -1486,7 +1580,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     if (publication_dt>0.0) s.engine_rpm=player_engine_publish_rpm(h,s.engine,
         static_cast<float>(s.engine_rpm),static_cast<float>(publication_dt));
     if (publication_dt>0.0) {
-        s.owner_speeds=player_publish_owner_speeds(s.velocity,rotation(s.orientation).column(0));
+        s.owner_speeds=player_publish_owner_speeds(s.velocity,rigid_rotation(s.rigid_body.axes).column(0));
         s.published_support=support;s.published_gear=s.gear;
     }
     s.step = s.step + 1;
@@ -1495,7 +1589,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         return false;
     }
 
-    r = rotation(s.orientation);
+    r = rigid_rotation(s.rigid_body.axes);
     VehicleTelemetry t;
     t.step = s.step;
     t.simulation_seconds = s.simulation_seconds;
@@ -1512,6 +1606,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     t.engine_torque = engine_torque;
     t.engine=s.engine;t.transmission=s.transmission;
     t.owner_speeds=s.owner_speeds;
+    t.rigid_body=s.rigid_body;t.rigid_body_ready=s.rigid_body_ready;t.rigid_orientation=s.rigid_orientation;
     t.prepared_force=s.prepared_force;t.prepared_torque=s.prepared_torque;
     t.body_rest_state=s.body_rest_state;t.body_gravity=s.body_gravity;t.forces_prepared=s.forces_prepared;
     t.published_support=s.published_support;t.published_gear=s.published_gear;
