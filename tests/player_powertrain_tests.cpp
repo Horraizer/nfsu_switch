@@ -555,6 +555,91 @@ void original_strut_binary32_witness() {
           "original nominal force floor applies after all terms");
 }
 
+void strut_numeric_domain() {
+    using namespace nfsu;
+    const auto spec=stock_240sx_vehicle_spec();const VehicleModel model(spec);
+    VehicleInput input;input.road_steering=true;input.road_angle_word_valid=true;
+    VehicleState state;VehicleTelemetry output;output.step=987;
+    check(model.reset(state,{}),"numeric domain reset");
+    const auto before=state;const auto marker=output;
+    std::array<std::uint8_t,kVehicleTelemetryRecordBytes> old_bytes{},new_bytes{};
+    encode_vehicle_telemetry(marker,old_bytes);
+    check(!model.step(state,input,VehicleFlatGround{},output,0,1e-50,true),
+          "positive double step that narrows to float zero is refused");
+    encode_vehicle_telemetry(output,new_bytes);
+    check(old_bytes==new_bytes&&state.step==before.step&&
+          state.simulation_seconds==before.simulation_seconds&&
+          state.forces_prepared==before.forces_prepared,
+          "unrepresentable solver time preserves caller state and telemetry");
+    auto twin=before;VehicleTelemetry twin_output;
+    check(model.step(state,input,VehicleFlatGround{},output,0,1.0/240.0,true)&&
+          model.step(twin,input,VehicleFlatGround{},twin_output,0,1.0/240.0,true),
+          "valid step after time refusal completes both futures");
+    encode_vehicle_telemetry(output,old_bytes);encode_vehicle_telemetry(twin_output,new_bytes);
+    check(old_bytes==new_bytes,"time refusal leaves the complete recorded future unchanged");
+    const auto normal=output;
+
+    const double smallest=std::numeric_limits<float>::denorm_min();
+    check(model.reset(state,{})&&model.step(state,input,VehicleFlatGround{},output,0,smallest,true),
+          "smallest positive binary32 solver time remains supported");
+    for(const auto& wheel:output.wheels)
+        check(wheel.contact&&std::isfinite(wheel.load)&&wheel.load>0,
+              "representable tiny flat-ground step retains finite support load");
+    check(model.reset(state,{}),"nonrepresentable rate reset");
+    state.forces_prepared=true;state.prepared_force={};state.prepared_torque={};
+    state.wheels[0].compression=.1F;
+    const auto rate_before=state;output=marker;encode_vehicle_telemetry(output,old_bytes);
+    check(!model.step(state,input,VehicleFlatGround{},output,0,smallest,true),
+          "finite time producing a nonrepresentable compression rate is refused");
+    encode_vehicle_telemetry(output,new_bytes);
+    check(old_bytes==new_bytes&&state.step==rate_before.step&&
+          state.wheels[0].compression==rate_before.wheels[0].compression&&
+          state.forces_prepared==rate_before.forces_prepared,
+          "compression-rate refusal preserves state and telemetry");
+
+    struct BumpGround final:VehicleGround {
+        double distance;
+        explicit BumpGround(double value):distance(value){}
+        VehicleGroundHit cast(const VehicleVec3&,const VehicleVec3&,double) const override {
+            VehicleGroundHit hit;hit.hit=true;hit.distance=distance;return hit;
+        }
+    };
+    const BumpGround bump(spec.approx.probe_lift+spec.handling.wheels[0].radius-.15);
+    for(double unit:{1e-40,1e-34,1e-33}) {
+        auto tiny_spec=spec;tiny_spec.approx.unit_scale=unit;const VehicleModel tiny(tiny_spec);
+        check(tiny.valid()&&tiny.reset(state,{})&&
+              tiny.step(state,input,VehicleFlatGround{},output,0,1.0/240.0,true),
+              "tiny SI display scale with inactive bump remains accepted");
+        for(unsigned k=0;k<4;++k)
+            check(output.wheels[k].contact&&std::isfinite(output.wheels[k].load)&&
+                  output.wheels[k].load>0&&
+                  float(output.wheels[k].load/unit)==float(normal.wheels[k].load/spec.approx.unit_scale),
+                  "inactive bump does not erase normalized binary32 wheel load");
+    }
+    auto tiny_spec=spec;tiny_spec.approx.unit_scale=1e-40;const VehicleModel tiny(tiny_spec);
+    check(tiny.reset(state,{}),"active unrepresentable bump reset");
+    const auto bump_before=state;output=marker;encode_vehicle_telemetry(output,old_bytes);
+    check(!tiny.step(state,input,bump,output,0,1.0/240.0,true),
+          "active bump coefficient outside binary32 range is refused");
+    encode_vehicle_telemetry(output,new_bytes);
+    check(old_bytes==new_bytes&&state.step==bump_before.step&&
+          state.simulation_seconds==bump_before.simulation_seconds&&
+          state.forces_prepared==bump_before.forces_prepared,
+          "active bump refusal preserves state and telemetry");
+    twin=bump_before;
+    check(tiny.step(state,input,VehicleFlatGround{},output,0,1.0/240.0,true)&&
+          tiny.step(twin,input,VehicleFlatGround{},twin_output,0,1.0/240.0,true),
+          "valid tiny-scale step after bump refusal completes both futures");
+    encode_vehicle_telemetry(output,old_bytes);encode_vehicle_telemetry(twin_output,new_bytes);
+    check(old_bytes==new_bytes,"bump refusal leaves the complete recorded future unchanged");
+    tiny_spec.approx.bump_stop_rate=0;const VehicleModel no_stop(tiny_spec);
+    check(no_stop.reset(state,{})&&no_stop.step(state,input,bump,output,0,1.0/240.0,true),
+          "tiny scale with explicit zero bump coefficient supports excess compression");
+    for(const auto& wheel:output.wheels)
+        check(wheel.contact&&std::isfinite(wheel.load)&&wheel.load>0,
+              "zero bump coefficient retains ordinary spring and preload support");
+}
+
 void original_strut_partner_epoch() {
     using namespace nfsu;
     auto spec=stock_240sx_vehicle_spec();
@@ -655,6 +740,7 @@ int main() {
     original_front_steering_epoch();
     original_contact_force_and_tyre_wrap();
     original_strut_binary32_witness();
+    strut_numeric_domain();
     original_strut_partner_epoch();
     original_aero_and_outer_epoch();
     if (failures) {std::cerr<<failures<<" player powertrain test failure(s)\n";return 1;}

@@ -739,8 +739,10 @@ public:
 
     // Advances by solver_dt; the legacy standalone diagnostic default is
     // kVehicleStepSeconds. Production callers subdivide their outer interval
-    // and enable request selection on its first slice only. Returns false, leaving the
-    // state untouched, on an invalid model or a state that is not finite.
+    // and enable request selection on its first slice only. solver_dt must
+    // remain positive in binary32, the component solver's time representation.
+    // Returns false, leaving state and telemetry untouched, on an invalid
+    // model/state/time or an unrepresentable active strut contribution.
     bool step(VehicleState& state,
               const VehicleInput& input,
               const VehicleGround& ground,

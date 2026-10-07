@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <cstring>
+#include <limits>
 
 // The step's determinism rests on every double operation being one IEEE-754
 // binary64 operation. FLT_EVAL_METHOD 0 is what says so; the x87 unit of a
@@ -1248,6 +1249,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         state.gear > kVehicleGearFirst + static_cast<int>(spec_.handling.forward_gears) - 1 ||
         !finite(publication_dt) || publication_dt<0.0 ||
         !finite(step_dt) || !(step_dt>0.0) || step_dt>kVehicleStepSeconds ||
+        !(static_cast<float>(step_dt)>0.0F) ||
         state.transmission.requested_gear<kVehicleGearReverse ||
         state.transmission.requested_gear>kVehicleGearFirst+static_cast<int>(spec_.handling.forward_gears)-1) {
         return false;
@@ -1428,15 +1430,23 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             const float x=static_cast<float>(wheel.compression);
             const float rate=suspension_dt>0.0?
                 (x-static_cast<float>(wheel.previous_compression))/static_cast<float>(suspension_dt):0.0F;
+            if(!finite(rate)) return false;
             //46ABD0 refreshes the factory's ascending strut list.588580
             // consumes its partner immediately: the first strut in each
             // axle sees the previous compression, the second the new one.
             const auto& partner=s.wheels[kAntiRollPartner[k]];
             const float partner_compression=static_cast<float>(k%2==0?
                 partner.previous_compression:partner.compression);
+            // The SI display scale can be much smaller than a float. Avoid
+            // narrowing an unused coefficient to infinity and multiplying
+            // it by zero. An active bump contribution must be representable.
+            if(!finite(overflow[k])||overflow[k]>std::numeric_limits<float>::max()) return false;
+            const double bump_rate=overflow[k]>0.0?a.bump_stop_rate/a.unit_scale:0.0;
+            if(!finite(bump_rate)||bump_rate>std::numeric_limits<float>::max()) return false;
             const float nominal=player_strut_nominal_force(h.struts[axle],x,rate,
                 partner_compression,s.aero_preloads[k],static_cast<float>(overflow[k]),
-                static_cast<float>(a.bump_stop_rate/a.unit_scale));
+                static_cast<float>(bump_rate));
+            if(!finite(nominal)) return false;
             strut_force[k]=static_cast<double>(nominal)*a.unit_scale;
         }
 
@@ -1608,8 +1618,9 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         s.prepared_force=force;s.prepared_torque=torque;s.forces_prepared=true;
         s.rigid_body.force=rigid_vector(scale(force,1.0/a.unit_scale));
         s.rigid_body.torque=rigid_vector(scale(torque,1.0/a.unit_scale));
+        return true;
     };
-    if(!s.forces_prepared) prepare_forces(0.0);
+    if(!s.forces_prepared&&!prepare_forces(0.0)) return false;
     // Derivatives consume the previous completed force callback's data.
     // Wheel history and sign/lock fields retain the authentic update epoch.
     for(std::size_t k=0;k<4;++k) {
@@ -1633,7 +1644,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     s.rigid_body.torque=rigid_vector(scale(s.prepared_torque,1.0/a.unit_scale));
     player_rigid_body_integrate(h,s.rigid_body,static_cast<float>(dt));
     rigid_public_cache(s);
-    prepare_forces(dt);
+    if(!prepare_forces(dt)) return false;
     //40BD40 changes live axes only; refreshed snapshot/W are retained.
     player_rigid_body_normalize(s.rigid_body);
     s.orientation=rigid_quaternion(s.rigid_body.axes,s.orientation);
