@@ -27,8 +27,14 @@ This agrees with the human1/rival3 factory evidence in
 The earlier issue324 comment8799 cleared-override mode3 statement does not
 specify the role fixture and cannot identify the ordinary human force model.
 The source `0x0042E230` conditionally switches both controller and physics
-to3. Its enclosing caller state remains to be classified; that positive
-edge does not erase the ordinary role1 selection.
+to3. Its direct caller0x42D877 lies in the view-state4 branch of42D520;
+the comparison42D837/83A excludes other view states. The actual phase
+selector42D470 chooses state2 when view+0x4AE/4AF are cleared in the
+tested active phases, state4 when4AE is set alone, and state3 when4AF is
+set. `handling_modes_native.py` executes this phase selector and branch
+test. The meanings/producers of these view flags, the complete state
+handler and live mode frequencies remain unverified. This conditional
+edge does not erase the ordinary role1 creation proof.
 
 Selector1 creates separate wheels through `0x00476A0C -> 0x005868E0`,
 with vtable0x6B9544 and derivative0x587170. Its actual brake inputs are
@@ -50,18 +56,66 @@ is direct on this branch. This is a separate source producer from427A30's
 50RPM speed-synthesis helper; it does not justify reintroducing that helper
 as an actual-engine player filter. Stock engine inertia is read from the
 authenticated record, and the witness reports the actual native outputs.
-Full engine1/clutch coupling and actual caller cadence still need recovery.
+Complete wheel/engine/gearbox coupling and actual caller cadence remain open.
 The witness executes physics constructor pointer stores0x476898..0x4768AE:
 physics+0x5C is the actual actor, +0x54 its physical setup, +0x58 actor+0x40.
 It also executes engine constructor prefix0x46C7C0..0x46C8DF, establishing
 engine+0x18 from stock physical setup+0x1F0. The subsequent angular-speed
 values are explicitly synthetic completed-state inputs, not values generated
 by an original integrated engine. Unbiased actor+0x3A0 canaries stay intact.
+The engine constructor owner argument is the biased actor+0x40, stored at
+engine+0x1C. The later witness corrects the earlier unused synthetic argument
+in the RPM-only prefix fixture and asserts this identity as well.
+
+## Selector1 engine and clutch witness
+
+`tools/handling_engine_native.py` extends that evidence through the full
+engine constructor46C7C0, including actual maximum-torque helper46C6D0.
+The stock engine and transmission blocks are read through physical
+setup+0x1F0/+0x1B0. Actual gearbox constructor pointer/state stores at
+46D3B4..46D41D bind the engine, four wheels and biased actor owner; table
+and random shift initialization after that prefix are omitted.
+
+The actual wheel-equivalent engine speed helper46D680 uses driven-wheel
+spins, the retail differential ratios and selected gear. Clutch pass46E270
+distinguishes gearbox states: states0/2 transmit a bounded angular-speed
+difference through retail clutch stiffness and declared clutch fraction;
+state1 transmits nothing in this pass; state3 transmits actual crank torque.
+Distributor46E020 subtracts the transmitted torque from engine+0x7C and
+adds gear/differential-weighted torque to unlocked wheels at+0x108. Neutral
+gear bypasses distribution. Both engine and wheel outputs are recorded.
+
+Engine derivative46CF80 consumes original crank torque46CFF0 plus feedback
+engine+0x7C, divided by actual engine inertia. The tool executes the original
+46AA40 Euler kernel and46ABD0 update walker on a synthetic engine-only
+component list. Actual update46CA90 clamps angular speed to idle/max and
+clears consumed feedback, then the actual biased-actor export478FBB is run.
+The witness requires distinct physical/exported RPM during a slipping
+clutch fall, zero transmission in neutral/decoupled cases, crank balance
+in the isolated state3 pass, finite results and feedback consumption.
+
+The construction/reset RPM initializer478365..478394 supplies starting
+engine speed. Its direct callers476EE6 and47CA1C are constructor/reset
+paths; this witness does not repeatedly copy exported RPM into the engine.
+Each matrix case resets its declared state independently. The helper's x87
+return is captured with a documented synthetic fstp/ret trampoline, without
+replacing its arithmetic. All other executed methods are original mapped
+bytes and external hooks are forbidden.
+
+This is a bounded engine/clutch witness, not a complete coupled vehicle:
+wheel speeds are held fixed; gear, clutch fraction and gearbox state are
+declared; the complete gearbox update46DB60, coupled force solve46E360,
+wheel derivatives, contacts and body integration are absent. Time is zero
+for the unrelated timed engine adaptation branch. Boost/damage are disabled.
+The supplied single-kernel interval is a synthetic input, not evidence of
+live cadence. `PHYSICS_DISPATCH_256.md` describes the original subdivision
+and unsplit publication interval; a gameplay implementation must preserve
+that distinction and complete the missing coupled bridge before acceptance.
 
 ## Original execution boundary
 
 The input identities are the `speed.exe`, `GLOBALB.BUN` and stock 240SX
-record identities already recorded in `HANDLING_GAPS.md`. Both native tools
+record identities already recorded in `HANDLING_GAPS.md`. The native tools
 authenticate them and bracket execution with complete retail content and
 metadata manifests. They use the tracked `world_body_trace.Image` PE mapper
 and `physics256_native.Machine`. No retail process is launched or modified.
@@ -180,6 +234,7 @@ python -B tools/handling_brake_compare.py --root RETAIL --probe build/brake-comp
 python -B tools/handling_feedback_native.py --root RETAIL --out build/feedback-native-fresh
 python -B tools/handling_feedback_chain.py --root RETAIL --out build/feedback-chain-fresh
 python -B tools/handling_modes_native.py --root RETAIL --out build/handling-modes-fresh
+python -B tools/handling_engine_native.py --root RETAIL --out build/handling-engine-fresh
 g++ -std=c++17 -O2 -ffp-contract=off -Iinclude -Ibuild/generated tools/handling_scenarios.cpp build/libnfsu_vehicle.a build/libnfsu_chase_camera.a build/libnfsu_sha256.a -o build/handling-scenarios.exe
 ```
 

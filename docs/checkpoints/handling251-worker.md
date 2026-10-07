@@ -1,18 +1,18 @@
 CHECKPOINT
 role: worker
 agent: GPT-6 worker handling251-followup
-updated_utc: 2026-10-07T12:17:10Z
+updated_utc: 2026-10-07T12:33:22Z
 assignment: issue251 continuation; dependencies324/250/275; coordinator chat01a0f5d2-29c4-7fe2-86b4-e58d66adf088
 phase: investigating
 branch: none; assigned eventual codex/251-handling-tyres-tach-followup; detached local work
-head: 9aba75efcc8aea7b54653aaec2209af3e8d0ab30
+head: 92a467bcf374e6ce1ae388eeaea4be7280e093b0
 base: 743ebc06b1859e7ef5bdb9ffd2a64789628b0c45
 worktree: local handling251-followup/nfsu-switch
-saved: local-only WIP9aba75e plus coherent mode-selection research delta pending next commit; publication held by explicit assignment
+saved: immutable local-only WIP92a467b under independent root-dispatched source review; later engine/clutch/view-state research delta pending next local commit; publication held by explicit assignment
 verified: clean assigned tree; protocol/recovery read; origin fetched; issue251 and issue324 comment8886 read; Capstone5.0.7 Unicorn2.1.4 available through standalone Python312
 decisions: accepted recovered1 steering, corrected lateral law and direct completed RPM/gear are baseline; no cosmetic follower will be added
 remaining: original-backed scenario comparison, coherent fixes, required native/Release/Switch/ASCII validation, independent review, deferred hardware feel
-next: save immutable local research snapshot for coordinator's independent cold source check; continue selector1 engine/clutch and exceptional mode3 caller recovery in later commits; no final gate or reharvest yet
+next: save later local engine/clutch/view-state snapshot; recover selector1 coupled force solver, gearbox update and wheel feedback into coherent gameplay correction after independent source check; no final gate or reharvest yet
 blockers: original live telemetry and Switch acceptance unavailable; bounded original execution remains possible; external publication on hold by coordinator
 ownership: assigned worker active; no subagents
 verified_followup: native original/port378 brake-latch cases PASS; original locked-wheel derivative zero; feedback producer40 synthetic cases PASS; complete retail content/metadata manifests unchanged; initial targeted vehicle/steering/HUD3/3PASS before canonical latch encoding correction; isolated current vehicle identity/wire tests PASS after correction.
@@ -26,3 +26,6 @@ object_identity: actual physics1 constructor pointer stores prove actor+40 bias 
 chain: tools/handling_feedback_chain.py --root RETAIL --out build/handling251-worker/chain-r3 PASS original selector3 producer/derivative/integration-kernel/completed-pin chain, with synthetic single-engine list, fixed body/load and strut stub; complete manifests unchanged. Not a live player runtime bridge.
 replay_followup: targeted diagnostic nfsu_race build PASS; fresh-controller-recording replay PASS finished2laps with0resets; existing current course driver with recovered1 also PASS finished2laps with0resets. Old fixed recording retained; source/body/cadence boundaries are explicit, no full fidelity claim.
 failed_fixtures: chain-r1 and modes-r1/r2/r3/r5 are failed setup/boundary attempts, not assurance; preserved. Final modes-r6 and chain-r3 return normally. Broad default exploratory gate remains failed as above; final default/Release/Switch gates unrun pending coherent gameplay source.
+engine_followup: python -B tools/handling_engine_native.py --root RETAIL --out build/handling251-worker/engine1-r4 PASS original engine1/clutch/integration/export216 declared cases; no external hooks; complete retail content/metadata manifests unchanged. Full actual engine constructor and authentic stock setup, gearbox pointer/state constructor prefix, wheel-equivalent speed46D680, clutch46E270/distributor46E020, engine derivative46CF80, engine-only46AA40 kernel/update46CA90 and biased RPM export478FBB. Gear/mode/clutch/throttle and fixed wheel speed are synthetic; full gearbox update, coupled solve/wheel/body integration and live cadence unverified. Engine1-r1/r2 are failed allow-range setup attempts, not passes; scratch-r3 and tracked-tool-r4 pass.
+mode_followup: python -B tools/handling_modes_native.py --root RETAIL --out build/handling251-worker/modes-r7 PASS48selection/576brake/27RPM plus20view-state phase/branch cases, no hooks, manifests unchanged. Actual42D470 phase selector and42D837 state4 gate qualify explicit42D877->42E230 mode3 call; cleared view4AE/4AF gives ordinary state2 in tested phases. Flag semantics/full handler/live frequencies unverified. Constructor owner argument corrected to actual actor+40 and asserted; earlier unused synthetic owner in RPM-only fixture did not affect exported slice, but was not authentic.
+immutability: root dispatched independent reviewer in own pinned handling251-review92a tree; no amendment of92a, no reviewer narrative sent. Gameplay remains unchanged after92a and universal selector3 integration remains nonaccepted. Later research is separate local scope with no external publication.
