@@ -45,6 +45,11 @@ struct OrbitCamera {
     double fov_y_deg = 35.0;
     double near_plane = 0.05;
     double far_plane = 100.0;
+    // Authored FE camera roll and independent native horizontal projection.
+    // Zero keeps the existing upright orbit/aspect-derived projection.
+    double roll_deg = 0.0;
+    double focal_x_override = 0.0;
+    double focal_y_override = 0.0;
 };
 
 constexpr double kMinPitch = -89.0;
@@ -256,9 +261,15 @@ inline bool parse_texture_filter(const std::string& text, TextureFilterMode& mod
 }
 
 struct WetRoadLamps;
+class Frame;
 struct RenderOptions {
     TextureFilterMode texture_filter = TextureFilterMode::legacy;
     bool car_shading = false; // static environment approximation; opt-in
+    const FrontendLighting* frontend_lighting = nullptr; // separate native FE consumer
+    const CameraFrame* explicit_camera = nullptr; // bounded FE cube-view consumer
+    const Frame* frontend_floor = nullptr; // native worldreflect target, borrowed
+    std::size_t frontend_floor_mesh = kNoHandle;
+    const Frame* frontend_cube = nullptr; // borrowed diagnostic capture
     const WetRoadLamps* wet_lamps = nullptr;
     std::uint32_t width = 1280;
     std::uint32_t height = 720;
@@ -415,6 +426,10 @@ private:
 // state, so a caller that does not set them gets the historical behaviour.
 struct RasterMaterial {
     bool car_shading = false;
+    bool frontend_lighting = false;
+    const Frame* frontend_cube=nullptr;
+    float frontend_environment_min[3]{};
+    float frontend_environment_range[3]{};
     // Unlit world.efx modulation, texture * vertex RGB * 2, for the sky.
     bool sky = false;
     // The retail car sampler uses linear filtering with repeat addressing.
@@ -450,6 +465,7 @@ struct RasterMaterial {
     // keeps the term. It is added to textured fragments only.
     double environment[3] = {0.0, 0.0, 0.0};
     // Borrowed reflection target; only effect-2 track solids receive it.
+    bool frontend_floor = false;
     const Frame* reflected_scene = nullptr;
 };
 

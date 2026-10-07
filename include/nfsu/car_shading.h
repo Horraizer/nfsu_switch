@@ -6,7 +6,7 @@
 #include <vector>
 
 namespace nfsu {
-// Seven std140 vectors shared by the cheap static-environment approximation.
+// Seven decoded std140 vectors shared by car render consumers.
 // Record values are decoded, not tuned. Only lighting/capture are approximated.
 struct CarShadingMaterial {
     float diffuse_min[4]{};
@@ -17,6 +17,31 @@ struct CarShadingMaterial {
     float environment_range[4]{};
     float gates[4]{}; // x: enabled, y: diffuse/specular, z: environment
 };
+// Original FE harmonic record (+0x120), supplied independently of materials.
+// The startup record below has explicit unresolved zero-BSS input assumptions;
+// it is a bounded diagnostic state, not a retail profile-default claim.
+struct FrontendLighting {
+    float harmonic[10][4]{};
+};
+struct FrontendPointLight {
+    float position[3]{};
+    float rgb[3]{};
+    float radius=23.3700008392334F;
+    float attenuation[3]{};
+};
+// Original FE main-camera/reflection basis, with explicit startup assumptions.
+// Point records come from the moving road producer, never invented lights.
+FrontendLighting frontend_point_lighting(const FrontendPointLight* lights,std::size_t count,
+    const float (&raw_car_position)[3]) noexcept;
+FrontendLighting frontend_startup_lighting() noexcept;
+// Native face projection, with samples clamped to each logical128-square
+// face's texel centers before atlas packing; unrelated tiles cannot bleed.
+bool frontend_cube_coordinates(const double (&direction)[3],unsigned& face,
+    double& u,double& v) noexcept;
+void frontend_local_eye(const float* placement,const double* raw_eye,float (&out)[4]) noexcept;
+void frontend_surface(const FrontendLighting& lighting,const CarShadingMaterial& material,
+    const float* raw_position,const float* raw_normal,const float* local_eye,
+    double (&out)[7],const float* placement=nullptr) noexcept;
 bool valid_car_shading_material(const CarShadingMaterial& material) noexcept;
 struct CarMaterialRecord {
     std::uint32_t hash = 0;

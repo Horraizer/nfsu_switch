@@ -21,11 +21,20 @@ public:
                           TrackSliceLoadObserver* observer = nullptr);
     bool set_performance_levels(const VehicleUpgradeLevels& levels, std::string& error);
     bool set_steering(RaceSteering mode, std::string& error);
+    // Port free driving: same first track and controls, no lap finish.
+    bool set_free_drive(bool enabled, std::string& error);
+    // The car every race drives, by car type name; "240SX" until this is
+    // called. Refused after metadata or a session exists, like the setters
+    // above. The name itself is validated against the retail car type table
+    // when start() reads it; a caller that wants the refusal early resolves
+    // it through load_car_assets first.
+    bool set_car(const std::string& car_type_name, std::string& error);
     bool start(const std::filesystem::path& root, const TrackSlice& track, std::string& error,
                TrackSliceLoadObserver* observer = nullptr);
     bool simulate(const GamepadFrame& pad, std::string& error);
     bool commit(std::string& error);
     const RaceSession& session() const { return *session_; }
+    const std::string& car() const noexcept { return car_; }
     const std::string& step_line() const { return step_line_; }
     std::string sequence_hash() const;
     std::string steps_hash() const;
@@ -48,7 +57,9 @@ private:
     bool metadata_ready_ = false;
     bool pending_ = false;
     bool explicit_performance_ = false;
+    bool free_drive_ = false;
     VehicleUpgradeLevels levels_;
+    std::string car_ = "240SX";
     RaceSteering steering_ = RaceSteering::baseline;
     bool read_metadata(const std::filesystem::path& front, const std::filesystem::path& global,
                        std::string& error, TrackSliceLoadObserver* observer);

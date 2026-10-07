@@ -1,0 +1,9 @@
+add_library(nfsu_frontend src/frontend.cpp src/frontend_scene.cpp src/frontend_preset.cpp src/frontend_motion.cpp)
+target_link_libraries(nfsu_frontend PUBLIC nfsu_race_events nfsu_screen_text nfsu_sha256 nfsu_race_hud nfsu_stock_frame nfsu_track nfsu_race_run)
+target_compile_features(nfsu_frontend PUBLIC cxx_std_17)
+nfsu_enable_warnings(nfsu_frontend)
+
+add_library(nfsu_frontend_music src/frontend_music.cpp src/frontend_sfx.cpp)
+target_link_libraries(nfsu_frontend_music PUBLIC nfsu_audio_playback nfsu_audio_output nfsu_sha256)
+target_compile_features(nfsu_frontend_music PUBLIC cxx_std_17)
+nfsu_enable_warnings(nfsu_frontend_music)

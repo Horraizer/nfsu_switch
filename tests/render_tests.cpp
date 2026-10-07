@@ -356,6 +356,16 @@ void test_camera() {
     bad.yaw_deg = 1e9;
     check(!nfsu::validate_camera(bad, error), "huge yaw rejected");
 
+    bad = nfsu::OrbitCamera{};
+    bad.roll_deg = std::numeric_limits<double>::quiet_NaN();
+    check(!nfsu::validate_camera(bad,error), "NaN camera roll rejected");
+    bad = nfsu::OrbitCamera{};
+    bad.focal_x_override = -1;
+    check(!nfsu::validate_camera(bad,error), "negative authored horizontal projection rejected");
+    bad = nfsu::OrbitCamera{};
+    bad.focal_y_override = std::numeric_limits<double>::infinity();
+    check(!nfsu::validate_camera(bad,error), "infinite authored vertical projection rejected");
+
     // Basis at yaw 0: looking down -X, screen right is -Z (the car's left
     // side, as seen from in front of the car), screen up is +Y.
     camera = nfsu::OrbitCamera{};

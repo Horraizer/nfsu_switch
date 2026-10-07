@@ -1,7 +1,12 @@
 # Event 1 on Switch (#196)
 
-`nfsu_switch_race.nro` runs the selected 240SX through event 1's forward
-track-1003 circuit for two laps. It uses `RaceSession` from #192, the #59
+`nfsu_switch_race.nro` runs the selected car through event 1's forward
+track-1003 circuit for two laps. Issue #315 selects the car with `--car NAME`
+from the 20 playable racers of the retail car type table - the event0 player
+car is `--car INTEGRA`, its rivals `--car ECLIPSE|SUPRA|CELICA` - each with
+its own geometry, textures, parts, wheel table, skin, shadow texture and
+handling record; without `--car` it is the stock 240SX, unchanged. It uses
+`RaceSession` from #192, the #59
 controls and chase camera, #157 residency, and #198's deko3d track path with
 #171 native DXT. The race also uses the command cache merged in #206 and
 the bounded track loader merged in #207.
@@ -26,8 +31,13 @@ The menu offers A for live driving, X for replay and Y to toggle the
 diagnostic panel. Direct presentation is the default. With nxlink, optional
 arguments are `[sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame]
 [--sky on|off|early] [--particles=on|--particles=off] [--tuned]
-[--glows] [--car-shading on|off] [--wet-road-reflections on|off]`.
-`--profile-frame` requires direct presentation.
+[--car NAME] [--glows] [--car-shading on|off] [--wet-road-reflections on|off]`.
+`--profile-frame` requires direct presentation. `--car NAME` resolves the
+name against the car type table of the installed `Global/GLOBALB.BUN`, so a
+selected racer's own three files must also sit under `sdmc:/nfsu/Cars/<NAME>`
+(`GEOMETRY.BIN`, `TEXTURES.BIN`, `VINYLS.BIN`; the stock car's six-file set
+still covers the 240SX). `--tuned` stays the 240SX's own preset and is
+refused with any other car.
 Issue #253 adds `--hud-trace` for a logged submitted HUD state on each direct
 frame. It requires HUD enabled and disables the menu panel toggle. Its
 timestamp is submission time, not scanout; logging changes frame cost and

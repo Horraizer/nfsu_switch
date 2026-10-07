@@ -94,7 +94,7 @@ struct CarWheelPlacement {
     std::uint32_t reserved_0c = 0;
     // +0x10. The distance the shadow is offset from the plane of the four
     // wheel centres (0x56b3f5), and the term 0x4b17f5 combines as
-    // (+0x10) - (+0x08) + 0.01, so it is the height of a wheel centre above
+    // (+0x10) - (+0x08) + 0.02, so it is the height of a wheel centre above
     // the ground: a rolling radius. It is NOT the visual wheel mesh's
     // radius. 240SX stores 0.288 front and 0.3135 rear while
     // 240SX_KIT00_WHEEL_A measures 0.311064 in both non-axle axes, and the

@@ -14,6 +14,7 @@ class Output {
 public:
     struct Stats {
         std::uint64_t late = 0;
+        std::uint64_t played_frames = 0;
         std::uint32_t queued_frames = 0;
         std::uint32_t work_us = 0;
     };

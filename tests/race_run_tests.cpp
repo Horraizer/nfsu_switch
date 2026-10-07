@@ -305,9 +305,16 @@ int main(int argc, char** argv) {
         require(scene.cache_bytes() <= 8*kMiB,"command cache exceeded metadata limit");
         std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 8*kMiB << '\n';
         // Shading changes material uniforms, not retained command storage.
-        // Tuned selection adds one draw; four glow sprites add their templates.
-        const std::uint64_t cache_pin = (tuned ? 4333528U : 4333497U) +
-                                        (glows ? 35307U : 0U);
+        // Tuned selection adds one draw; four glow sprites add their
+        // templates. Issue #315 moved the shadow texture's name into
+        // CarShadowAsset (the car's own <NAME>_SHADOWIG, was the 240SX
+        // literal), one std::string = 32 retained bytes on both selections.
+        // FE command fields grow RecordedCommands304->1280 and
+        // RecordedDraw384->392. Two retained commands plus4225 retained
+        // draw capacities add35752 bytes. Six inline glow records add48.
+        // Layout/capacity probes separately verified both selections.
+        const std::uint64_t cache_pin = (tuned ? 4369312U : 4369281U) +
+                                        (glows ? 35355U : 0U);
         const auto initial_cache_bytes = scene.cache_bytes();
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';

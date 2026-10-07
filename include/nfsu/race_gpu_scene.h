@@ -42,10 +42,15 @@ public:
     // draws, for console A/B cost runs. Refused once the scene is loaded.
     bool set_sky(bool enabled) { if (ready_) return false; sky_ = enabled; return true; }
     void set_wet_road_reflections(bool enabled) noexcept { wet_road_reflections_ = enabled; }
+    // `car` selects the racer every path draws and drives (issue #315); null
+    // resolves the default 240SX through the retail car type table. The
+    // tuned visual preset stays the 240SX's own and is refused for any other
+    // car rather than silently substituted.
     bool load(FileSystemService& files, const std::filesystem::path& root,
               std::string& error, AssetCheckObserver* observer = nullptr,
               TrackSliceLoadObserver* loading = nullptr, bool tuned = false,
-              bool glows = false, bool car_shading = false);
+              bool glows = false, bool car_shading = false,
+              const CarAssets* car = nullptr);
     bool frame(const RaceSession& session, RaceGpuFrame& out, std::string& error,
                RaceFrameProfile* profile = nullptr, bool reference = false,
                TimingService* timer = nullptr);
