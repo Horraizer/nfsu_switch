@@ -16,6 +16,9 @@ void publication_and_reset() {
     const VehicleModel model(stock_240sx_vehicle_spec());
     VehicleState a,b;VehiclePose pose;pose.speed=25.0;
     check(model.reset(a,pose),"moving reset");b=a;
+    check(a.transmission.mode==3&&a.transmission.clutch==1.0F&&
+          a.transmission.requested_gear==a.gear&&a.transmission.previous_slip_rpm==0.0F,
+          "original completed reset closes the clutch with matching current/requested gear");
     a.engine_rpm=7000.0;b.engine_rpm=3000.0;
     VehicleInput input;input.brake=1.0;
     VehicleTelemetry ta,tb;
@@ -41,6 +44,8 @@ void publication_and_reset() {
     check(a.wheels[2].history_torque==0.0F&&a.wheels[2].spin_direction==1&&
           !a.transmission.shift_pending&&a.engine.cutoff_until==0.0F,
           "reset clears wheel history, shift request and cutoff");
+    check(a.transmission.mode==3&&a.transmission.clutch==1.0F,
+          "stopped reset also uses authentic completed gearbox state");
     check(std::fabs(a.engine.angular_speed*kPlayerRadSToRpm-model.spec().handling.idle_rpm)<0.001F,
           "reset initializes physical angular speed once");
     const auto before=a;
@@ -131,11 +136,46 @@ void owner_speed_domains() {
     encode_vehicle_telemetry(a,ba);encode_vehicle_telemetry(b,bb);
     check(ba!=bb,"canonical telemetry retains actor speed inputs across solver slices");
 }
+
+void steered_constraint_witness() {
+    using namespace nfsu;
+    const auto h=stock_240sx_handling();
+    for (const bool rotated_body:{false,true}) {
+    std::array<PlayerWheelWork,4> wheels{};
+    for (std::size_t k=0;k<4;++k) {
+        auto& w=wheels[k];
+        w.spin=26.0F;w.contact=true;w.load=3.0F;w.service=1.0F;w.owner_speed=8.3165F;
+        const float hx=k<2?0.96F:1.0F,hy=k<2?0.28F:0.0F;
+        w.heading_x=hx;w.heading_y=hy;w.side_x=-hy;w.side_y=hx;
+        const float bx=rotated_body?0.6F:1.0F,by=rotated_body?0.8F:0.0F;
+        const float vx=rotated_body?4.9899F:8.316501835256739F,vy=rotated_body?6.6532F:0.0F;
+        const float global_hx=bx*hx-by*hy,global_hy=by*hx+bx*hy;
+        const float global_sx=bx*(-hy)-by*hx,global_sy=by*(-hy)+bx*hx;
+        w.velocity_long=vy*global_hy+vx*global_hx;
+        w.velocity_lat=vy*global_sy+vx*global_sx;
+        w.position_x=h.wheels[k].longitudinal-h.centre_of_mass[0];
+        w.position_y=h.wheels[k].lateral;
+        player_wheel_prepare(h,k,w);
+    }
+    for (unsigned pass=0;pass<5;++pass) player_body_wheel_constraints(h,wheels,0.0F,0.0F);
+    for (std::size_t k=0;k<4;++k) player_wheel_limit(h,k,wheels[k]);
+    // Original full478570/587830: neutral, initial spin26, supplied front
+    // relative basis(0.96,0.28), body identity or(0.6,0.8), stock geometry,
+    // load3/service1. Each explicit original fixture pins these force bits.
+    // B0/C0 and B0/B4 differ in this fixture; straight cases cannot expose it.
+    const std::array<float,4> original_long{{-2.1532840728759766F,-2.481177806854248F,
+                                          -3.9759674072265625F,-3.482743263244629F}};
+    const std::array<float,4> original_lat{{4.617764949798584F,4.421684741973877F,0.0F,0.0F}};
+    for (std::size_t k=0;k<4;++k)
+        check(wheels[k].force_long==original_long[k]&&wheels[k].force_lat==original_lat[k],
+              "steered original constraint witness retains distinct source matrix operands");
+    }
+}
 } // namespace
 
 int main() {
     publication_and_reset();wheel_history_and_player_brake();shift_cycle_and_differential_sync();
-    owner_speed_domains();
+    owner_speed_domains();steered_constraint_witness();
     if (failures) {std::cerr<<failures<<" player powertrain test failure(s)\n";return 1;}
     std::cout<<"player powertrain tests passed\n";
 }

@@ -33,6 +33,8 @@ void player_distribute_torque(const VehicleHandling& setup, int gear,
                               float transmitted) noexcept;
 
 // 46E360 coupled correction and4785F0..478991 planar body/wheel constraints.
+// The constraint slice includes external force, but builds its yaw moment
+// from the wheel forces only. Rigid external torque belongs to body integration.
 float player_coupled_correction(const VehicleHandling& setup, int gear,
                                 const PlayerEngineState& engine,
                                 const PlayerGearState& gearbox,
@@ -41,8 +43,7 @@ float player_coupled_correction(const VehicleHandling& setup, int gear,
 void player_body_wheel_constraints(const VehicleHandling& setup,
                                    std::array<PlayerWheelWork,4>& wheels,
                                    float external_force_x,
-                                   float external_force_y,
-                                   float external_yaw_torque) noexcept;
+                                   float external_force_y) noexcept;
 
 // 587330 ordinary owner-state0/surface0 tyre/brake producer. The caller
 // uses the original16-bit angle table and587740 standing load-curve family.

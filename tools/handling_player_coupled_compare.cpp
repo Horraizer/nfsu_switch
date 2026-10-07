@@ -11,6 +11,10 @@ int main(int argc, char** argv) {
     const float service_axis=argc>=7?std::stof(argv[6]):1.0F;
     const float owner_magnitude=argc>=8?std::stof(argv[7]):0.0F;
     const float rear_spin_spread=argc>=9?std::stof(argv[8]):0.0F;
+    const float front_heading_x=argc>=10?std::stof(argv[9]):1.0F;
+    const float front_heading_y=argc>=11?std::stof(argv[10]):0.0F;
+    const float body_heading_x=argc>=12?std::stof(argv[11]):1.0F;
+    const float body_heading_y=argc>=13?std::stof(argv[12]):0.0F;
     const auto h=nfsu::stock_240sx_handling();
     int gear=0, mode=0;
     float clutch=0, throttle=0, spin=0;
@@ -25,14 +29,21 @@ int main(int argc, char** argv) {
         for (std::size_t k=0;k<4;++k) {
             w[k].spin=k==2?spin-rear_spin_spread:k==3?spin+rear_spin_spread:spin;
             w[k].contact=true;w[k].load=3.0F;
-            w[k].service=service_axis;w[k].velocity_long=longitudinal_speed;
+            w[k].service=service_axis;
+            const float hx=k<2?front_heading_x:1.0F,hy=k<2?front_heading_y:0.0F;
+            w[k].heading_x=hx;w[k].heading_y=hy;w[k].side_x=-hy;w[k].side_y=hx;
+            const float global_hx=body_heading_x*hx-body_heading_y*hy;
+            const float global_hy=body_heading_y*hx+body_heading_x*hy;
+            const float global_sx=body_heading_x*(-hy)-body_heading_y*hx;
+            const float global_sy=body_heading_y*(-hy)+body_heading_x*hx;
+            w[k].velocity_long=lateral_speed*global_hy+longitudinal_speed*global_hx;
             w[k].owner_speed=owner_speed;
-            w[k].velocity_lat=lateral_speed;
+            w[k].velocity_lat=lateral_speed*global_sy+longitudinal_speed*global_sx;
             w[k].history_torque=history_torque;
             w[k].position_x=h.wheels[k].longitudinal-h.centre_of_mass[0];
             w[k].position_y=h.wheels[k].lateral;
         }
-        const std::array<float,4> spins{{spin,spin,spin,spin}};
+        const std::array<float,4> spins{{w[0].spin,w[1].spin,w[2].spin,w[3].spin}};
         const float equivalent=nfsu::player_wheel_engine_speed(h,gear,spins);
         gearbox.wheel_engine_speed=equivalent;
         const float crank=nfsu::player_engine_torque(h,engine,gear,throttle);
@@ -40,7 +51,7 @@ int main(int argc, char** argv) {
         nfsu::player_distribute_torque(h,gear,engine,w,transmitted);
         for (std::size_t k=0;k<4;++k) nfsu::player_wheel_prepare(h,k,w[k]);
         for (unsigned iteration=0;iteration<5;++iteration) {
-            nfsu::player_body_wheel_constraints(h,w,0.0F,0.0F,0.0F);
+            nfsu::player_body_wheel_constraints(h,w,0.0F,0.0F);
             const float correction=nfsu::player_coupled_correction(h,gear,engine,gearbox,w,crank);
             nfsu::player_distribute_torque(h,gear,engine,w,correction);
         }

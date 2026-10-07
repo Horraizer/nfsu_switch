@@ -1093,6 +1093,13 @@ bool VehicleModel::reset(VehicleState& state, const VehiclePose& pose) const {
     next.owner_speeds=player_publish_owner_speeds(next.velocity,r.column(0));
     next.transmission.requested_gear=next.gear;
     player_gear_seed(next.transmission,12345);
+    //478398..4783B5 resets current/requested gear together, closes the
+    // clutch and clears its previous slip. Ctor mode2/clutch0 is not the
+    // completed reset state; moving-pose gear/RPM placement above is still
+    // an explicit port adapter rather than a recovered spawn policy.
+    next.transmission.mode=3;
+    next.transmission.clutch=1.0F;
+    next.transmission.previous_slip_rpm=0.0F;
     next.transmission.wheel_engine_speed=static_cast<float>(next.wheel_rpm)/kPlayerRadSToRpm;
     state = next;
     return true;
@@ -1308,11 +1315,9 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     const double speed=vehicle_sqrt(dot(s.velocity,s.velocity));
     force=add(force,scale(s.velocity,-d_.drag*speed));
     const VehicleVec3 local_force=r.apply_transpose(force);
-    const VehicleVec3 local_torque=r.apply_transpose(torque);
     for (unsigned iteration=0;iteration<5;++iteration) {
         player_body_wheel_constraints(h,work,static_cast<float>(local_force.x/a.unit_scale),
-                                     static_cast<float>(local_force.y/a.unit_scale),
-                                     static_cast<float>(local_torque.z/a.unit_scale));
+                                     static_cast<float>(local_force.y/a.unit_scale));
         const float correction=player_coupled_correction(h,s.gear,s.engine,s.transmission,work,crank);
         player_distribute_torque(h,s.gear,s.engine,work,correction);
     }

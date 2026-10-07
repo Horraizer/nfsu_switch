@@ -49,7 +49,7 @@ fixtures with fixed body input, not original driving trajectories.
 and requires exact forces, torque, spin, engine feedback/acceleration,
 physical/publication RPM and completed clutch/gear/RNG state. Reports retain
 native input-report and source/binary hashes. Fresh straight, lateral and
-nonzero torque-history receipts are recorded in the worker checkpoint.
+nonzero torque-history and separately rotated body/wheel receipts are recorded in the worker checkpoint.
 `handling_player_engine_compare.py` separately authenticates every encoded
 stock handling field byte against the retail record.
 
@@ -64,6 +64,20 @@ the entire16-bit sine domain. The standing force uses authentic587740
 operation order and load-curve family, including its separate conversion
 to degrees. Planar yaw accumulation also preserves source add/subtract
 order; grouping each cross product first changed coupled binary32 bits.
+A non-identity wheel matrix exposed another concrete projection error:
+478809/478811 reads C0/B0, whereas the first port used B4/B0. The
+corrected steered constraints exactly match original fixtures. Separate
+relative front-wheel and rigid-body bases are composed with original5AC69C
+in the witness; the portable bridge preserves those separate domains.
+The same constraints transform rigid external force but form yaw moment
+from the wheel forces only. An explicit original rigid torque fixture
+exposed the unsupported extra yaw term, which was removed from this solve;
+body integration still receives external torque. Original reset tail
+478395..4783B9 closes the clutch in mode3 and clears prior slip with
+matching actor-supplied current/requested gear. Gameplay uses those fields;
+its imposed-pose gear/RPM policy and whole body reset remain unverified.
+This covers arithmetic with supplied bases, not actual contact/steering
+basis production or a live body trajectory.
 
 `nfsu_player_powertrain_tests` covers actor/physical isolation, unsplit falling
 publication, reset and refusal preservation, torque-history/request telemetry,

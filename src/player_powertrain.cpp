@@ -195,9 +195,10 @@ float player_coupled_correction(const VehicleHandling& h, int gear,
 
 void player_body_wheel_constraints(const VehicleHandling& h,
                                    std::array<PlayerWheelWork,4>& w,
-                                   float external_x, float external_y,
-                                   float external_yaw) noexcept {
-    float fx = external_x, fy = external_y, yaw = external_yaw;
+                                   float external_x, float external_y) noexcept {
+    //4785BC..4785E1 transforms rigid+110 force only. The first wheel
+    // initializes the moment; rigid+120 external torque is not read here.
+    float fx = external_x, fy = external_y, yaw = 0.0F;
     for (const auto& wheel:w) {
         const float x = wheel.heading_x*wheel.force_long+wheel.side_x*wheel.force_lat;
         const float y = wheel.heading_y*wheel.force_long+wheel.side_y*wheel.force_lat;
@@ -217,7 +218,10 @@ void player_body_wheel_constraints(const VehicleHandling& h,
         const float point_y = ay+alpha_yaw*wheel.position_x;
         const float radius=h.wheels[k].radius;
         const float rim = ((wheel.torque-radius*wheel.force_long)/kPlayerWheelInertia)*radius;
-        const float along=point_y*wheel.heading_y+point_x*wheel.heading_x;
+        //478809/478811 project with the source matrix's C0 and B0.
+        // B4 also enters force rotation, but is not this operand. Identity
+        // wheel matrices hide that distinction; a steered matrix exposes it.
+        const float along=point_y*wheel.side_x+point_x*wheel.heading_x;
         wheel.force_long += ((rim-along)/radius)*kPlayerWheelInertia;
     }
 }
