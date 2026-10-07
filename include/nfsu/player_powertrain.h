@@ -45,6 +45,13 @@ void player_body_wheel_constraints(const VehicleHandling& setup,
                                    float external_force_x,
                                    float external_force_y) noexcept;
 
+//584CD0 accumulates one world force and its contact-arm moment in binary32.
+// Force and moment have independent magnitude caps; the moment uses the
+// original supplied force before its cap. Inputs use tonnes/kN units.
+void player_rigid_body_add_contact_force(PlayerRigidBodyState& body,
+                                        const VehicleVec3& force,
+                                        const VehicleVec3& arm) noexcept;
+
 // 587330 ordinary owner-state0/surface0 tyre/brake producer. The caller
 // uses the original16-bit angle table and587740 standing load-curve family.
 void player_wheel_prepare(const VehicleHandling& setup, std::size_t wheel,

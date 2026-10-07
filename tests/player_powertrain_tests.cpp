@@ -511,6 +511,24 @@ void original_front_steering_epoch() {
     check(model.reset(state,{})&&!state.steering_word_ready&&state.steering_word==0,
           "reset clears the retained original steering epoch");
 }
+void original_contact_force_and_tyre_wrap() {
+    using namespace nfsu;
+    PlayerRigidBodyState body;body.force={{1,-2,-11.956000328063965F}};
+    body.torque={{.3F,-.4F,.5F}};
+    player_rigid_body_add_contact_force(body,{1500,0,0},{0,.075,0});
+    check(body.force==PlayerRigidVector{{1201,-2,-11.956000328063965F}}&&
+          body.torque==PlayerRigidVector{{.3F,-.4F,-99.5F}},
+          "original force cap and independent moment cap use the uncapped supplied force");
+    // Authentic full4783C0/587830 fixture: original word4096, cached V15,
+    // front0 pre-limit fields and original completed force from native-r7.
+    PlayerWheelWork wheel;wheel.force_long=.8601332306861877F;
+    wheel.force_lat=4.417034149169922F;wheel.load=3.0000014305114746F;
+    wheel.velocity_long=13.858195304870605F;wheel.velocity_lat=-5.740251541137695F;
+    wheel.sliding=true;wheel.contact=true;
+    player_wheel_limit(stock_240sx_handling(),0,wheel);
+    check(wheel.force_long==1.7051007747650146F&&wheel.force_lat==4.417034149169922F,
+          "native tyre angle wrap constants preserve the original quantized lateral drag word");
+}
 } // namespace
 
 int main() {
@@ -522,6 +540,7 @@ int main() {
     recovered_rigid_component();
     recovered_rigid_runtime();
     original_front_steering_epoch();
+    original_contact_force_and_tyre_wrap();
     if (failures) {std::cerr<<failures<<" player powertrain test failure(s)\n";return 1;}
     std::cout<<"player powertrain tests passed\n";
 }

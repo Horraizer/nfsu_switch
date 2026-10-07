@@ -31,10 +31,10 @@ std::uint16_t asin_angle(float value) noexcept {
 
 float slip_angle(float longitudinal,float lateral) noexcept {
     float angle=static_cast<float>(player_velocity_angle(longitudinal,lateral))*9.58738019107841e-5F;
-    if (angle>3.1415927410125732F) angle-=6.2831854820251465F;
+    if (angle>3.141590118408203F) angle-=6.283180236816406F;
     if (longitudinal<0.0F) {
-        angle+=3.1415927410125732F;
-        if (angle>3.1415927410125732F) angle-=6.2831854820251465F;
+        angle+=3.141590118408203F;
+        if (angle>3.141590118408203F) angle-=6.283180236816406F;
     }
     return angle;
 }
@@ -279,6 +279,28 @@ PlayerRigidMatrix rigid_product(const PlayerRigidMatrix& a,const PlayerRigidMatr
     }
     return result;
 }
+}
+
+void player_rigid_body_add_contact_force(PlayerRigidBodyState& body,
+                                        const VehicleVec3& force,const VehicleVec3& arm) noexcept {
+    const PlayerRigidVector original{{static_cast<float>(force.x),static_cast<float>(force.y),static_cast<float>(force.z)}};
+    const PlayerRigidVector point{{static_cast<float>(arm.x),static_cast<float>(arm.y),static_cast<float>(arm.z)}};
+    auto applied=original;
+    //584CF1..584D01 adds Z squared, Y squared, then X squared.
+    const float magnitude=sqrtf((applied[2]*applied[2]+applied[1]*applied[1])+applied[0]*applied[0]);
+    if(magnitude>1200.0F) {
+        const float factor=1200.0F/magnitude;
+        for(float& x:applied)x*=factor;
+    }
+    for(unsigned k=0;k<3;++k)body.force[k]+=applied[k];
+    auto moment=rigid_cross(point,original);
+    //584D84..584D98 adds Y squared, Z squared, then X squared.
+    const float torque=sqrtf((moment[1]*moment[1]+moment[2]*moment[2])+moment[0]*moment[0]);
+    if(torque>100.0F) {
+        const float factor=100.0F/torque;
+        for(float& x:moment)x*=factor;
+    }
+    for(unsigned k=0;k<3;++k)body.torque[k]+=moment[k];
 }
 
 void player_rigid_body_refresh(const VehicleHandling& h,PlayerRigidBodyState& body) noexcept {

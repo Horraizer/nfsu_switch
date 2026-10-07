@@ -1528,6 +1528,8 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         }
         for (std::size_t k=0;k<4;++k) player_wheel_limit(h,k,work[k]);
         player_engine_feedback_finalize(h,s.gear,s.transmission,s.engine,work,static_cast<float>(throttle),crank);
+        PlayerRigidBodyState contact_body;
+        contact_body.force=rigid_vector(scale(force,1.0/a.unit_scale));contact_body.torque={};
         for (std::size_t k=0;k<4;++k) {
             auto& wheel=s.wheels[k];auto& out=wheel_out[k];const auto& w=work[k];
             wheel.spin=w.spin;wheel.brake_locked=w.locked;wheel.history_torque=w.history_torque;
@@ -1541,11 +1543,14 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             if (wheel.contact) {
                 //587830 default basis1 transforms Fx/Fy/load together through
                 // the full world wheel basis.478480/584CD0 use the contact arm.
-                const VehicleVec3 wheel_force=scale(player_world_wheel_force(wheel_axes[k],
-                    w.force_long,w.force_lat,w.load),a.unit_scale);
-                force=add(force,wheel_force);torque=add(torque,cross(contact_arms[k],wheel_force));
+                const VehicleVec3 wheel_force=player_world_wheel_force(wheel_axes[k],
+                    w.force_long,w.force_lat,w.load);
+                player_rigid_body_add_contact_force(contact_body,wheel_force,contact_arms[k]);
             }
         }
+
+        force=scale(public_vector(contact_body.force),a.unit_scale);
+        torque=scale(public_vector(contact_body.torque),a.unit_scale);
 
         // Selector1 4791F0 also reads the outer-published actor3CC support.
         // This model only meets kind-3 track bodies (state remains0).
