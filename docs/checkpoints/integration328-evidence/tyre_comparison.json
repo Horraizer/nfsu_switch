@@ -1,0 +1,1689 @@
+{
+  "source_sha256": "6c70d9eafd8791953ec387a6e6d6389b2ab4d5a1a171b6c24b55e02b13b11f76",
+  "cases": 140,
+  "max_absolute_error_n": 0.0158918400593393,
+  "boundary": "Actual compiled vehicle.cpp lateral selection expression; isolated original lateral law. No full wheel coupling claim.",
+  "results": [
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 0.0,
+        "slip_radians": 0.0,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 0.0,
+        "slip_radians": 0.01,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 0.0,
+        "slip_radians": 0.05,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 0.0,
+        "slip_radians": 0.1,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 0.0,
+        "slip_radians": 0.2,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 0.0,
+        "slip_radians": 0.5,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 0.0,
+        "slip_radians": 1.5,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 1.0,
+        "slip_radians": 0.0,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 1.0,
+        "slip_radians": 0.01,
+        "original_force_kn": 0.343774676322937
+      },
+      "portable_force_n": 343.7750136603912,
+      "absolute_error_n": 0.00033733745419795014
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 1.0,
+        "slip_radians": 0.05,
+        "original_force_kn": 1.4161972999572754
+      },
+      "portable_force_n": 1416.1979643503826,
+      "absolute_error_n": 0.0006643931071721454
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 1.0,
+        "slip_radians": 0.1,
+        "original_force_kn": 1.7864787578582764
+      },
+      "portable_force_n": 1786.4791318774226,
+      "absolute_error_n": 0.00037401914619294985
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 1.0,
+        "slip_radians": 0.2,
+        "original_force_kn": 1.8891830444335938
+      },
+      "portable_force_n": 1889.1833198070526,
+      "absolute_error_n": 0.0002753734588623047
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 1.0,
+        "slip_radians": 0.5,
+        "original_force_kn": 1.899999976158142
+      },
+      "portable_force_n": 1899.999976158142,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 1.0,
+        "slip_radians": 1.5,
+        "original_force_kn": 1.899999976158142
+      },
+      "portable_force_n": 1899.999976158142,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 3.0,
+        "slip_radians": 0.0,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 3.0,
+        "slip_radians": 0.01,
+        "original_force_kn": 1.0170000791549683
+      },
+      "portable_force_n": 1017.0010621572535,
+      "absolute_error_n": 0.000983002285238399
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 3.0,
+        "slip_radians": 0.05,
+        "original_force_kn": 4.176972389221191
+      },
+      "portable_force_n": 4176.974050477147,
+      "absolute_error_n": 0.001661255955696106
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 3.0,
+        "slip_radians": 0.1,
+        "original_force_kn": 5.302676200866699
+      },
+      "portable_force_n": 5302.677016978463,
+      "absolute_error_n": 0.0008161117639247095
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 3.0,
+        "slip_radians": 0.2,
+        "original_force_kn": 5.664844989776611
+      },
+      "portable_force_n": 5664.845795333386,
+      "absolute_error_n": 0.000805556775048899
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 3.0,
+        "slip_radians": 0.5,
+        "original_force_kn": 5.699999809265137
+      },
+      "portable_force_n": 5699.999928474426,
+      "absolute_error_n": 0.00011920928955078125
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 3.0,
+        "slip_radians": 1.5,
+        "original_force_kn": 5.699999809265137
+      },
+      "portable_force_n": 5699.999928474426,
+      "absolute_error_n": 0.00011920928955078125
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 6.0,
+        "slip_radians": 0.0,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 6.0,
+        "slip_radians": 0.01,
+        "original_force_kn": 1.847788691520691
+      },
+      "portable_force_n": 1847.7906045094132,
+      "absolute_error_n": 0.0019129887223243713
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 6.0,
+        "slip_radians": 0.05,
+        "original_force_kn": 7.5958452224731445
+      },
+      "portable_force_n": 7595.84903113544,
+      "absolute_error_n": 0.0038086622953414917
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 6.0,
+        "slip_radians": 0.1,
+        "original_force_kn": 10.008028984069824
+      },
+      "portable_force_n": 10008.031367932757,
+      "absolute_error_n": 0.0023838629331294214
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 6.0,
+        "slip_radians": 0.2,
+        "original_force_kn": 10.83239459991455
+      },
+      "portable_force_n": 10832.395635545254,
+      "absolute_error_n": 0.0010356307029724121
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 6.0,
+        "slip_radians": 0.5,
+        "original_force_kn": 10.899999618530273
+      },
+      "portable_force_n": 10899.999737739563,
+      "absolute_error_n": 0.00011920928955078125
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 6.0,
+        "slip_radians": 1.5,
+        "original_force_kn": 10.899999618530273
+      },
+      "portable_force_n": 10899.999737739563,
+      "absolute_error_n": 0.00011920928955078125
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 10.0,
+        "slip_radians": 0.0,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 10.0,
+        "slip_radians": 0.01,
+        "original_force_kn": 2.1485915184020996
+      },
+      "portable_force_n": 2148.59375,
+      "absolute_error_n": 0.002231597900390625
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 10.0,
+        "slip_radians": 0.05,
+        "original_force_kn": 9.77007007598877
+      },
+      "portable_force_n": 9770.0780219088,
+      "absolute_error_n": 0.00794592002966965
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 10.0,
+        "slip_radians": 0.1,
+        "original_force_kn": 14.263381004333496
+      },
+      "portable_force_n": 14263.38579679529,
+      "absolute_error_n": 0.00479246179384063
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 10.0,
+        "slip_radians": 0.2,
+        "original_force_kn": 15.63507080078125
+      },
+      "portable_force_n": 15635.073341925938,
+      "absolute_error_n": 0.002541144687711494
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 10.0,
+        "slip_radians": 0.5,
+        "original_force_kn": 15.75
+      },
+      "portable_force_n": 15750.000476837158,
+      "absolute_error_n": 0.000476837158203125
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 10.0,
+        "slip_radians": 1.5,
+        "original_force_kn": 15.75
+      },
+      "portable_force_n": 15750.000476837158,
+      "absolute_error_n": 0.000476837158203125
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 0.0,
+        "slip_radians": 0.0,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 0.0,
+        "slip_radians": 0.01,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 0.0,
+        "slip_radians": 0.05,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 0.0,
+        "slip_radians": 0.1,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 0.0,
+        "slip_radians": 0.2,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 0.0,
+        "slip_radians": 0.5,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 0.0,
+        "slip_radians": 1.5,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 1.0,
+        "slip_radians": 0.0,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 1.0,
+        "slip_radians": 0.01,
+        "original_force_kn": 0.1718873381614685
+      },
+      "portable_force_n": 171.8875068301956,
+      "absolute_error_n": 0.00016866872709897507
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 1.0,
+        "slip_radians": 0.05,
+        "original_force_kn": 0.8594366908073425
+      },
+      "portable_force_n": 859.4375341509779,
+      "absolute_error_n": 0.0008433436353243451
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 1.0,
+        "slip_radians": 0.1,
+        "original_force_kn": 1.4161972999572754
+      },
+      "portable_force_n": 1416.1979643503826,
+      "absolute_error_n": 0.0006643931071721454
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 1.0,
+        "slip_radians": 0.2,
+        "original_force_kn": 1.7864787578582764
+      },
+      "portable_force_n": 1786.4791318774226,
+      "absolute_error_n": 0.00037401914619294985
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 1.0,
+        "slip_radians": 0.5,
+        "original_force_kn": 1.899999976158142
+      },
+      "portable_force_n": 1899.999976158142,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 1.0,
+        "slip_radians": 1.5,
+        "original_force_kn": 1.899999976158142
+      },
+      "portable_force_n": 1899.999976158142,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 3.0,
+        "slip_radians": 0.0,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 3.0,
+        "slip_radians": 0.01,
+        "original_force_kn": 0.5085000395774841
+      },
+      "portable_force_n": 508.50053107862675,
+      "absolute_error_n": 0.0004915011426191995
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 3.0,
+        "slip_radians": 0.05,
+        "original_force_kn": 2.5425002574920654
+      },
+      "portable_force_n": 2542.502655393134,
+      "absolute_error_n": 0.002397901068434294
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 3.0,
+        "slip_radians": 0.1,
+        "original_force_kn": 4.176972389221191
+      },
+      "portable_force_n": 4176.974050477147,
+      "absolute_error_n": 0.001661255955696106
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 3.0,
+        "slip_radians": 0.2,
+        "original_force_kn": 5.302676200866699
+      },
+      "portable_force_n": 5302.677016978463,
+      "absolute_error_n": 0.0008161117639247095
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 3.0,
+        "slip_radians": 0.5,
+        "original_force_kn": 5.699999809265137
+      },
+      "portable_force_n": 5699.999928474426,
+      "absolute_error_n": 0.00011920928955078125
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 3.0,
+        "slip_radians": 1.5,
+        "original_force_kn": 5.699999809265137
+      },
+      "portable_force_n": 5699.999928474426,
+      "absolute_error_n": 0.00011920928955078125
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 6.0,
+        "slip_radians": 0.0,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 6.0,
+        "slip_radians": 0.01,
+        "original_force_kn": 0.9238943457603455
+      },
+      "portable_force_n": 923.8953022547066,
+      "absolute_error_n": 0.0009564943611621857
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 6.0,
+        "slip_radians": 0.05,
+        "original_force_kn": 4.619471549987793
+      },
+      "portable_force_n": 4619.476511273534,
+      "absolute_error_n": 0.004961285741046595
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 6.0,
+        "slip_radians": 0.1,
+        "original_force_kn": 7.5958452224731445
+      },
+      "portable_force_n": 7595.84903113544,
+      "absolute_error_n": 0.0038086622953414917
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 6.0,
+        "slip_radians": 0.2,
+        "original_force_kn": 10.008028984069824
+      },
+      "portable_force_n": 10008.031367932757,
+      "absolute_error_n": 0.0023838629331294214
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 6.0,
+        "slip_radians": 0.5,
+        "original_force_kn": 10.899999618530273
+      },
+      "portable_force_n": 10899.999737739563,
+      "absolute_error_n": 0.00011920928955078125
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 6.0,
+        "slip_radians": 1.5,
+        "original_force_kn": 10.899999618530273
+      },
+      "portable_force_n": 10899.999737739563,
+      "absolute_error_n": 0.00011920928955078125
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 10.0,
+        "slip_radians": 0.0,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 10.0,
+        "slip_radians": 0.01,
+        "original_force_kn": 1.0742957592010498
+      },
+      "portable_force_n": 1074.296875,
+      "absolute_error_n": 0.0011157989501953125
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 10.0,
+        "slip_radians": 0.05,
+        "original_force_kn": 5.371479034423828
+      },
+      "portable_force_n": 5371.484375,
+      "absolute_error_n": 0.005340576171875
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 10.0,
+        "slip_radians": 0.1,
+        "original_force_kn": 9.77007007598877
+      },
+      "portable_force_n": 9770.0780219088,
+      "absolute_error_n": 0.00794592002966965
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 10.0,
+        "slip_radians": 0.2,
+        "original_force_kn": 14.263381004333496
+      },
+      "portable_force_n": 14263.38579679529,
+      "absolute_error_n": 0.00479246179384063
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 10.0,
+        "slip_radians": 0.5,
+        "original_force_kn": 15.75
+      },
+      "portable_force_n": 15750.000476837158,
+      "absolute_error_n": 0.000476837158203125
+    },
+    {
+      "input": {
+        "slip_scale": 24.0,
+        "load_scale": 1.0,
+        "force_scale": 1.0,
+        "load_kn": 10.0,
+        "slip_radians": 1.5,
+        "original_force_kn": 15.75
+      },
+      "portable_force_n": 15750.000476837158,
+      "absolute_error_n": 0.000476837158203125
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 0.0,
+        "slip_radians": 0.0,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 0.0,
+        "slip_radians": 0.01,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 0.0,
+        "slip_radians": 0.05,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 0.0,
+        "slip_radians": 0.1,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 0.0,
+        "slip_radians": 0.2,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 0.0,
+        "slip_radians": 0.5,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 0.0,
+        "slip_radians": 1.5,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 1.0,
+        "slip_radians": 0.0,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 1.0,
+        "slip_radians": 0.01,
+        "original_force_kn": 0.1718873381614685
+      },
+      "portable_force_n": 171.8875068301956,
+      "absolute_error_n": 0.00016866872709897507
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 1.0,
+        "slip_radians": 0.05,
+        "original_force_kn": 0.7080986499786377
+      },
+      "portable_force_n": 708.0989821751913,
+      "absolute_error_n": 0.0003321965535860727
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 1.0,
+        "slip_radians": 0.1,
+        "original_force_kn": 0.8932393789291382
+      },
+      "portable_force_n": 893.2395659387113,
+      "absolute_error_n": 0.00018700957309647492
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 1.0,
+        "slip_radians": 0.2,
+        "original_force_kn": 0.9445915222167969
+      },
+      "portable_force_n": 944.5916599035263,
+      "absolute_error_n": 0.00013768672943115234
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 1.0,
+        "slip_radians": 0.5,
+        "original_force_kn": 0.949999988079071
+      },
+      "portable_force_n": 949.999988079071,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 1.0,
+        "slip_radians": 1.5,
+        "original_force_kn": 0.949999988079071
+      },
+      "portable_force_n": 949.999988079071,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 3.0,
+        "slip_radians": 0.0,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 3.0,
+        "slip_radians": 0.01,
+        "original_force_kn": 0.5156619548797607
+      },
+      "portable_force_n": 515.6625204905869,
+      "absolute_error_n": 0.0005656108261291592
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 3.0,
+        "slip_radians": 0.05,
+        "original_force_kn": 2.124295949935913
+      },
+      "portable_force_n": 2124.296946525574,
+      "absolute_error_n": 0.0009965896610992786
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 3.0,
+        "slip_radians": 0.1,
+        "original_force_kn": 2.679718494415283
+      },
+      "portable_force_n": 2679.718697816134,
+      "absolute_error_n": 0.00020340085075076786
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 3.0,
+        "slip_radians": 0.2,
+        "original_force_kn": 2.8337745666503906
+      },
+      "portable_force_n": 2833.7749797105794,
+      "absolute_error_n": 0.0004130601887482044
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 3.0,
+        "slip_radians": 0.5,
+        "original_force_kn": 2.8499999046325684
+      },
+      "portable_force_n": 2849.9999642372136,
+      "absolute_error_n": 5.9604645230137976e-05
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 3.0,
+        "slip_radians": 1.5,
+        "original_force_kn": 2.8499999046325684
+      },
+      "portable_force_n": 2849.9999642372136,
+      "absolute_error_n": 5.9604645230137976e-05
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 6.0,
+        "slip_radians": 0.0,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 6.0,
+        "slip_radians": 0.01,
+        "original_force_kn": 1.0170000791549683
+      },
+      "portable_force_n": 1017.0010621572535,
+      "absolute_error_n": 0.000983002285238399
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 6.0,
+        "slip_radians": 0.05,
+        "original_force_kn": 4.176972389221191
+      },
+      "portable_force_n": 4176.974050477147,
+      "absolute_error_n": 0.001661255955696106
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 6.0,
+        "slip_radians": 0.1,
+        "original_force_kn": 5.302676200866699
+      },
+      "portable_force_n": 5302.677016978463,
+      "absolute_error_n": 0.0008161117639247095
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 6.0,
+        "slip_radians": 0.2,
+        "original_force_kn": 5.664844989776611
+      },
+      "portable_force_n": 5664.845795333386,
+      "absolute_error_n": 0.000805556775048899
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 6.0,
+        "slip_radians": 0.5,
+        "original_force_kn": 5.699999809265137
+      },
+      "portable_force_n": 5699.999928474426,
+      "absolute_error_n": 0.00011920928955078125
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 6.0,
+        "slip_radians": 1.5,
+        "original_force_kn": 5.699999809265137
+      },
+      "portable_force_n": 5699.999928474426,
+      "absolute_error_n": 0.00011920928955078125
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 10.0,
+        "slip_radians": 0.0,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 10.0,
+        "slip_radians": 0.01,
+        "original_force_kn": 1.6472535133361816
+      },
+      "portable_force_n": 1647.2551741823554,
+      "absolute_error_n": 0.0016608461737632751
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 10.0,
+        "slip_radians": 0.05,
+        "original_force_kn": 6.72288703918457
+      },
+      "portable_force_n": 6722.89060888191,
+      "absolute_error_n": 0.0035696973400263232
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 10.0,
+        "slip_radians": 0.1,
+        "original_force_kn": 8.648591995239258
+      },
+      "portable_force_n": 8648.593766118089,
+      "absolute_error_n": 0.001770878830939182
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 10.0,
+        "slip_radians": 0.2,
+        "original_force_kn": 9.432394027709961
+      },
+      "portable_force_n": 9432.395778596401,
+      "absolute_error_n": 0.0017508864402770996
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 10.0,
+        "slip_radians": 0.5,
+        "original_force_kn": 9.5
+      },
+      "portable_force_n": 9499.99988079071,
+      "absolute_error_n": 0.00011920928955078125
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 2.0,
+        "force_scale": 1.0,
+        "load_kn": 10.0,
+        "slip_radians": 1.5,
+        "original_force_kn": 9.5
+      },
+      "portable_force_n": 9499.99988079071,
+      "absolute_error_n": 0.00011920928955078125
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 0.0,
+        "slip_radians": 0.0,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 0.0,
+        "slip_radians": 0.01,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 0.0,
+        "slip_radians": 0.05,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 0.0,
+        "slip_radians": 0.1,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 0.0,
+        "slip_radians": 0.2,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 0.0,
+        "slip_radians": 0.5,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 0.0,
+        "slip_radians": 1.5,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 1.0,
+        "slip_radians": 0.0,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 1.0,
+        "slip_radians": 0.01,
+        "original_force_kn": 0.687549352645874
+      },
+      "portable_force_n": 687.5500273207824,
+      "absolute_error_n": 0.0006746749083959003
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 1.0,
+        "slip_radians": 0.05,
+        "original_force_kn": 2.832394599914551
+      },
+      "portable_force_n": 2832.395928700765,
+      "absolute_error_n": 0.0013287862143442908
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 1.0,
+        "slip_radians": 0.1,
+        "original_force_kn": 3.5729575157165527
+      },
+      "portable_force_n": 3572.958263754845,
+      "absolute_error_n": 0.0007480382923858997
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 1.0,
+        "slip_radians": 0.2,
+        "original_force_kn": 3.7783660888671875
+      },
+      "portable_force_n": 3778.366639614105,
+      "absolute_error_n": 0.0005507469177246094
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 1.0,
+        "slip_radians": 0.5,
+        "original_force_kn": 3.799999952316284
+      },
+      "portable_force_n": 3799.999952316284,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 1.0,
+        "slip_radians": 1.5,
+        "original_force_kn": 3.799999952316284
+      },
+      "portable_force_n": 3799.999952316284,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 3.0,
+        "slip_radians": 0.0,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 3.0,
+        "slip_radians": 0.01,
+        "original_force_kn": 2.0340001583099365
+      },
+      "portable_force_n": 2034.002124314507,
+      "absolute_error_n": 0.001966004570476798
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 3.0,
+        "slip_radians": 0.05,
+        "original_force_kn": 8.353944778442383
+      },
+      "portable_force_n": 8353.948100954294,
+      "absolute_error_n": 0.003322511911392212
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 3.0,
+        "slip_radians": 0.1,
+        "original_force_kn": 10.605352401733398
+      },
+      "portable_force_n": 10605.354033956926,
+      "absolute_error_n": 0.001632223527849419
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 3.0,
+        "slip_radians": 0.2,
+        "original_force_kn": 11.329689979553223
+      },
+      "portable_force_n": 11329.691590666773,
+      "absolute_error_n": 0.001611113550097798
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 3.0,
+        "slip_radians": 0.5,
+        "original_force_kn": 11.399999618530273
+      },
+      "portable_force_n": 11399.999856948853,
+      "absolute_error_n": 0.0002384185791015625
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 3.0,
+        "slip_radians": 1.5,
+        "original_force_kn": 11.399999618530273
+      },
+      "portable_force_n": 11399.999856948853,
+      "absolute_error_n": 0.0002384185791015625
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 6.0,
+        "slip_radians": 0.0,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 6.0,
+        "slip_radians": 0.01,
+        "original_force_kn": 3.695577383041382
+      },
+      "portable_force_n": 3695.5812090188265,
+      "absolute_error_n": 0.0038259774446487427
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 6.0,
+        "slip_radians": 0.05,
+        "original_force_kn": 15.191690444946289
+      },
+      "portable_force_n": 15191.69806227088,
+      "absolute_error_n": 0.007617324590682983
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 6.0,
+        "slip_radians": 0.1,
+        "original_force_kn": 20.01605796813965
+      },
+      "portable_force_n": 20016.062735865515,
+      "absolute_error_n": 0.004767725866258843
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 6.0,
+        "slip_radians": 0.2,
+        "original_force_kn": 21.6647891998291
+      },
+      "portable_force_n": 21664.791271090508,
+      "absolute_error_n": 0.0020712614059448242
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 6.0,
+        "slip_radians": 0.5,
+        "original_force_kn": 21.799999237060547
+      },
+      "portable_force_n": 21799.999475479126,
+      "absolute_error_n": 0.0002384185791015625
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 6.0,
+        "slip_radians": 1.5,
+        "original_force_kn": 21.799999237060547
+      },
+      "portable_force_n": 21799.999475479126,
+      "absolute_error_n": 0.0002384185791015625
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 10.0,
+        "slip_radians": 0.0,
+        "original_force_kn": 0.0
+      },
+      "portable_force_n": 0.0,
+      "absolute_error_n": 0.0
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 10.0,
+        "slip_radians": 0.01,
+        "original_force_kn": 4.297183036804199
+      },
+      "portable_force_n": 4297.1875,
+      "absolute_error_n": 0.00446319580078125
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 10.0,
+        "slip_radians": 0.05,
+        "original_force_kn": 19.54014015197754
+      },
+      "portable_force_n": 19540.1560438176,
+      "absolute_error_n": 0.0158918400593393
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 10.0,
+        "slip_radians": 0.1,
+        "original_force_kn": 28.526762008666992
+      },
+      "portable_force_n": 28526.77159359058,
+      "absolute_error_n": 0.00958492358768126
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 10.0,
+        "slip_radians": 0.2,
+        "original_force_kn": 31.2701416015625
+      },
+      "portable_force_n": 31270.146683851875,
+      "absolute_error_n": 0.005082289375422988
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 10.0,
+        "slip_radians": 0.5,
+        "original_force_kn": 31.5
+      },
+      "portable_force_n": 31500.000953674316,
+      "absolute_error_n": 0.00095367431640625
+    },
+    {
+      "input": {
+        "slip_scale": 12.0,
+        "load_scale": 1.0,
+        "force_scale": 2.0,
+        "load_kn": 10.0,
+        "slip_radians": 1.5,
+        "original_force_kn": 31.5
+      },
+      "portable_force_n": 31500.000953674316,
+      "absolute_error_n": 0.00095367431640625
+    }
+  ],
+  "measured_head": "8762774a9e521f127c9e331adb4a23e567d74ba2"
+}

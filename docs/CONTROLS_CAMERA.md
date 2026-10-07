@@ -59,7 +59,7 @@ guessed from order. Every value arrives as a byte.
 | steer | 0x00461840 | the digital byte (0x87) unless it is centred, 0x80, then the analog one (0x88); `(byte - 128) * -1/128`, with 0xFF read as exactly -1 so that both ends reach 1 (0x0046186E..0x004618A4) | RECOVERED |
 | throttle | 0x004618B0 | the digital byte (0x89) when it is not 0, otherwise the larger of the analog one (0x8A) and the alternate analog one (0x8B), which is scaled by 1.07 and clamped to 255 unless a flag is 1; over 255 (0x00461951..0x00461988); then, when that flag (tested again at 0x00461994) is 1, the six-point curve at 0x00700374 (0x004619A3..0x004619B1) | RECOVERED; what sets the flag was not traced |
 | brake | 0x00461DA0 | the digital byte (0x8C) when it is not 0, otherwise the larger of the two analog ones; over 255 | RECOVERED |
-| reverse | 0x004619C0 | the digital byte (0x8F) when it is not 0, otherwise the analog one (0x90), cubed under the same flag | RECOVERED; how the physics reads it was not traced |
+| reverse | 0x004619C0 | the digital byte (0x8F) when it is not 0, otherwise the analog one (0x90), cubed under the same flag | RECOVERED; the axis is registered (0x0046113A) and stored at car+0x2A4, but no driving-path consumer of it was found. The reverse the wheels feel is the gear-slot chain: the controls context's slot +0x1D4 holds -1 (automatic), 0 (reverse) or a manual gear, set by the mode setter 0x00461520, reset by 0x004615B0 (modes 1 and 3 to first, else -1), stepped by the shift handler 0x00461E70 with its table bounds, and zeroed by the processed-control machine at 0x00461C34; the physics reads it through vtable slot +0x24, whose body at 0x00424FF0 is `mov eax,[ecx+0x1D4]; ret`, into engine+0x134 at 0x00474671, and 0x004759A8 answers 0 by forcing gear slot 0 and the reverse ratio. The condition that drives the 0x00461C34 zeroing was not stack-verified; an emulator pass would settle it |
 | handbrake | 0x00461E10 | the digital byte (0x91) when it is not 0, otherwise the analog one (0x92) doubled in eight bits (0x00461E26); the clamp after it compares an 8-bit value with 0xFF and never fires, so an analog byte of 128 or more wraps | RECOVERED |
 
 Nothing in these handlers depends on speed, and nothing rate-limits the
@@ -385,21 +385,13 @@ them.
 | 930-1169 | ZL | the car stops at frame 954; after 0.25 s below 1 m/s the assist selects reverse at frame 962, and the brake drives it backwards to -63 km/h |
 | 1170-1379 | ZR | in reverse the throttle brakes; stopped, the assist selects first at frame 1268, and the car drives forward again, 35 km/h at the end |
 
-**The pin.** Through `default_drive_session_setup()` - the stock 240SX,
-the default controls, the recovered camera rules with the default
-approximations, POV 0, at rest at the origin facing +x, automatic gearbox -
-the demonstration's 1380 records, 1689120 bytes, hash to
-
-    7030E676B13DD4F09525EFEF5D7A076C395F401C3692AD2F72D89B1871D275D9
-
-`kDrivePinnedDemoSha256` holds it; `nfsu_drive_tests` requires it in each
-desktop build, and `nfsu_probe_drive_replay_guards` requires the probe to
-print it for the built-in demonstration, for the same frames read back from
-the recorded form of docs/INPUT.md, and for those with the default controls
-given as a file. The default configure (no build type, no `-O`),
-`-DCMAKE_BUILD_TYPE=Debug` and `-DCMAKE_BUILD_TYPE=Release` all give it. `nfsu_switch_drive` prints it on the console with
-`result: EQUAL to the pinned desktop stream` or `DIFFERENT from`; it has not
-run on a console yet.
+**The pin.** `kDrivePinnedDemoSha256` owns the current demonstration
+stream hash. `nfsu_drive_tests` checks it and
+`nfsu_probe_drive_replay_guards` checks the built-in, recorded and explicitly
+remapped inputs. Reproduce it with `nfsu_probe drive-replay --demo --every 0`.
+The corrected arctangent changes turning states; the handbrake follows
+max(service, half handbrake), rather than adding a rear lock torque.
+Default/Release and console agreement must be verified for the candidate.
 
 ## The probe and the frames
 
@@ -430,30 +422,28 @@ cannot give the stock frame and 4 when a step is refused. The path arguments fol
 arguments are parsed.
 
 **The frames.** `drive-replay --demo --every 0 --root <game> --render-every
-120`, 640x360. The whole report - every frame line and the stream line - is
-byte for byte the same from the default configure, `-DCMAKE_BUILD_TYPE=Debug`
-and `-DCMAKE_BUILD_TYPE=Release`, and these eleven are the pins:
+120`, 640x360. These document-only retail pins were refreshed from a
+successful default-build run at `64a2a91`, after correcting the tyre
+arctangent. The stream and written-file hashes were checked. Agreement with
+Release for this candidate remains an independent validation requirement:
 
 | Frame | POV | SHA-256 |
 | ---: | ---: | --- |
-| 120 | 0 | `2C6DE4E1104857BBF3977F20CB1F707750B1923B8F0003F734FB8519B00CD5AD` |
-| 240 | 0 | `34D7FDDE984A52C58A7536B2285482D90628A50A86405057489F22AC60F595B0` |
-| 360 | 0 | `1601A0F2293CF2387A7D829C10CEED371421AFCCA2E9B75CE1A77B7ED5751454` |
-| 480 | 0 | `AE8287EB02A9B6FD9D29A54EDC9E03C3E31C597478214F6B39057C031B852775` |
-| 600 | 0 | `02C7329D923E4F1004D28B879515AFAE20654CF86CBF86AA3087069F41ACE835` |
-| 720 | 0 | `58D7BB2895577F6CD721FE97C00D64ADC7113D0A808AE4201EA2BDFD17D36F65` |
-| 840 | 1 | `496CA5992765BEB3AD990EE65DCAEADF414423FA55D4B7EE8C2F88CC38B7D422` |
-| 960 | 1 | `29A6A1DF461C7842249E8EB51098399CBBCA10865D2F1C5036D035C6C12A898A` |
-| 1080 | 1 | `B4FE674BBE251E6D89E509723232D799F70CA8893576972D1FCF39CA2D8F5F33` |
-| 1200 | 1 | `9E18FB9C275A52D50BD08C663A0B1188BE0C393D4EC9FB2250EB5FF808DBBAC2` |
-| 1320 | 1 | `5B96764C86E0103BF5FD2FA3881BAB9A9E0765780D5DC74EB7D25DE849096189` |
+| 120 | 0 | `268D610490A6FECB4133029744E0E384F41836DCA8F1C38233F7C9AB9B40791C` |
+| 240 | 0 | `AE17A2274A8FCD54603B001BB2CA94981C4B75C348E970039562D8C0654C8389` |
+| 360 | 0 | `DF0BFAA8EB745341AA47996658FE37483CAA463F1B2B3A73EE0F5553355FA396` |
+| 480 | 0 | `B5913D420E2FD4C35D5694AD4472D31A1E0A9F555514FB263BF959F44ED2DC42` |
+| 600 | 0 | `46A418F3145D5358B289D4141F70C065FC0CA4AD5ED85872AE2E6BE61561F242` |
+| 720 | 0 | `918ACCAB755587D3284F62017816953596534405F905D4CE2C76F0502E473991` |
+| 840 | 1 | `412114436C7FC4BC4BF7EE015DA6F684F20BBA60E25C8D4DC7254DD126E33452` |
+| 960 | 1 | `B8CD4546A2AD2A772A25EF26A1110E465DF739784C3A6AB5ECD84BA9EDBA6AA6` |
+| 1080 | 1 | `59B529B58C79EE098CE72EF27E7BBE47283FA6A23D9F17D2E7B36C67A1AF0569` |
+| 1200 | 1 | `56C846310A599E141093B50A125EEF88CEC4D60404A0BBCA6CC0BAC0DB7877AA` |
+| 1320 | 1 | `D415AFC5A02CB8686AB3839DB6D0DBBF7C745C6A55D1424C9AF4DC7721B869D1` |
 
-Issue #201 re-pins frames 120 through 720 because the stock 240SX wheel
-lateral matrix now uses the retail wheel width, scale and offset instead
-of the culling-table placement. `drive-replay` does not pass an animation
-state to `drive_place_instances`, so these changes do not include wheel
-spin, steering, suspension travel or lamp brightening. The POV 1 frames
-840 through 1320 are unchanged.
+The stock lateral placement correction is retained. `drive-replay` does not
+pass a car animation state to `drive_place_instances`, so these frames do
+not qualify wheel spin, steering, suspension travel or lamp brightening.
 
 Frames 720 and 840 needed PR #162 (issue #125). Before it, the default and
 Debug builds gave `1D03ECAE...04F5` and `634293EC...39EF` for them, 12 and 51
@@ -463,19 +453,10 @@ and rounds twice. The stream those builds drove was already equal to the bit,
 so the difference was the renderer's alone; `det_sqrt` gives the one-rounding
 root in every build. That rounding fix remains part of the current pins.
 
-The stream through the same run hashes to the pin above, and every frame
-equals the SHA-256 of the file `--out` writes. Frame 870 at 1280x720,
-the handbrake turn, shows the lag: the car is turned 15 degrees from the
-camera, its left side in view.
-
-In CTest, `nfsu_probe_drive_replay_guards` renders frames 690 and 1380 at
-160x90 from the synthetic stock-frame inputs `nfsu_stock_frame_tests`
-writes, and pins them in every desktop build:
-`ED60C57AF156E5A8E2850A85DAF8998F883DBE1EF34A15465BB1C8E23B1D3FB3` and
-`F9CAA668F9ADAA7F495B037261586EF4DB3A16BDA695D0CB46C55B3856C1F313`, each
-equal to CMake's own `file(SHA256)` of the TGA written. Issue #201 also
-re-pins frame 690 for the same stock lateral matrix correction; frame
-1380 is unchanged.
+The stream through this run matches the test-owned demonstration pin.
+`nfsu_probe_drive_replay_guards` separately pins synthetic frames at 690 and
+1380, checking the printed hashes against freshly written TGAs. Both
+synthetic poses changed with the corrected arctangent.
 
 ## Determinism
 

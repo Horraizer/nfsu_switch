@@ -10,6 +10,12 @@
 #include "nfsu/screen_text.h"
 #include "nfsu/stock_view.h"
 #include "nfsu/race_audio.h"
+#include "nfsu/frontend.h"
+#include "nfsu/frontend_scene.h"
+#include "nfsu/freeride_skyline.h"
+#include "nfsu/frontend_music.h"
+#include "nfsu/intro_movie.h"
+#include "frontend_startup_trace.h"
 #include <switch.h>
 #include <arpa/inet.h>
 #include <unistd.h>
@@ -19,14 +25,29 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <stdexcept>
 
 namespace {
-const char* selected_car_label = "STOCK";
+std::string selected_car_label = "STOCK";
 const char* car_shading_label="OFF";
 using namespace nfsu;
+class FrontendAppletClockHook {
+public:
+    explicit FrontendAppletClockHook(FrontendClock& clock,FrontendPresentationStats& stats):clock_(clock),stats_(stats) {
+        appletHook(&cookie_,[](AppletHookType event,void* state) {
+            if(event==AppletHookType_OnResume || event==AppletHookType_OnFocusState) {
+                auto& self=*static_cast<FrontendAppletClockHook*>(state);
+                self.clock_.resume();self.stats_.reset();
+            }
+        },this);
+    }
+    ~FrontendAppletClockHook() {appletUnhook(&cookie_);}
+private:
+    FrontendClock& clock_;FrontendPresentationStats& stats_;AppletHookCookie cookie_{};
+};
 constexpr unsigned width = 1280, height = 720;
 double ms(std::uint64_t ticks) { return armTicksToNs(ticks)/1000000.0; }
 class SwitchTiming final : public TimingService {
@@ -108,6 +129,20 @@ public:
     void close() {
         if (opened_) { framebufferClose(&fb_); opened_ = false; }
     }
+    void movie(const MovieFrame& frame) {
+        if (!opened_ && !open()) throw std::runtime_error("framebuffer unavailable");
+        u32 stride=0; auto* pixels=static_cast<unsigned char*>(framebufferBegin(&fb_,&stride));
+        if (!pixels) throw std::runtime_error("framebuffer unavailable");
+        blit_movie(frame,pixels,width,height,stride);
+        framebufferEnd(&fb_);
+    }
+    void menu(const FrontendArt& art, const FrontendMenu& menu) {
+        if (!opened_ && !open()) throw std::runtime_error("framebuffer unavailable");
+        u32 stride=0; auto* pixels=static_cast<unsigned char*>(framebufferBegin(&fb_,&stride));
+        if (!pixels) throw std::runtime_error("framebuffer unavailable");
+        art.draw({pixels,width,height,stride},menu);
+        framebufferEnd(&fb_);
+    }
     void show(const std::vector<std::string>& lines, const std::vector<unsigned char>* rgba = nullptr) {
         if (!opened_ && !open()) throw std::runtime_error("framebuffer unavailable");
         u32 stride = 0; auto* pixels = static_cast<unsigned char*>(framebufferBegin(&fb_, &stride));
@@ -128,7 +163,7 @@ public:
     }
 };
 class Progress final : public AssetCheckObserver, public TrackSliceLoadObserver {
-    Screen& screen_; PadState& pad_; HeapUsage& heap_;
+    Screen& screen_; PadState& pad_; HeapUsage& heap_; bool frontend_;
     std::string file_; std::uint64_t previous_ = 0, last_screen_ = 0;
     void poll() {
         const auto info = mallinfo();
@@ -137,12 +172,16 @@ class Progress final : public AssetCheckObserver, public TrackSliceLoadObserver 
         if (!appletMainLoop() || (padGetButtonsDown(&pad_) & HidNpadButton_Plus)) throw Cancel{};
     }
 public:
-    Progress(Screen& screen, PadState& pad, HeapUsage& heap) : screen_(screen), pad_(pad), heap_(heap) {}
+    Progress(Screen& screen, PadState& pad, HeapUsage& heap, bool frontend = false) : screen_(screen), pad_(pad), heap_(heap), frontend_(frontend) {}
     void checkpoint(const char* phase) override {
         poll();
         const auto now = armGetSystemTick();
         if (ms(now-last_screen_) >= 100) {
             last_screen_ = now;
+            if (frontend_) {
+                screen_.show({"Loading free driving...", "+ cancels loading"});
+                return;
+            }
             screen_.show({std::string("Loading: ")+phase,
                 format("HEAP LOAD OBS HWM delta %llu / 50331648 | over %llu",
                     (unsigned long long)heap_.load_delta(), (unsigned long long)heap_.load_overrun(50331648)),
@@ -151,12 +190,17 @@ public:
     }
     void file_started(std::size_t index, std::size_t total, const AssetFile& file) override {
         poll(); previous_ = 0; file_ = file.path;
-        screen_.show({format("NFSU #196 / #47 first-lap check %zu/%zu",index+1,total),file_,"All game files read-only. + cancels."});
+        if (frontend_) screen_.show({format("Loading free driving... %zu / %zu",index+1,total),"+ cancels loading"});
+        else screen_.show({format("NFSU #196 / #47 first-lap check %zu/%zu",index+1,total),file_,"All game files read-only. + cancels."});
     }
     void file_progress(std::size_t, std::uint64_t hashed, std::uint64_t bytes) override {
         poll();
         if (hashed == bytes || hashed-previous_ >= 8*1024*1024) {
             previous_ = hashed;
+            if (frontend_) {
+                screen_.show({"Loading free driving...", "+ cancels loading"});
+                return;
+            }
             screen_.show({"#47 FIRST-LAP ASSET CHECK",file_,format("%llu / %llu bytes",
                          (unsigned long long)hashed,(unsigned long long)bytes),"+ cancels"});
         }
@@ -311,8 +355,10 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
           bool car_shading, bool wet_road_reflections, TextureFilterMode texture_filter,
           std::uint32_t requested_height, bool gpu_boost, bool hud_mode, bool hud_trace,
           const VehicleUpgradeLevels* performance, bool handling_telemetry, RaceSteering steering,
-          Screen& screen, PadState& pad) {
-    selected_car_label = tuned ? "TUNED" : "STOCK";
+          const nfsu::CarAssets& selected_car, Screen& screen, PadState& pad, bool free_drive = false,
+          const nfsu::RaceCarDress* dress = nullptr) {
+    selected_car_label = dress!=nullptr ? "EDDIE "+selected_car.car_type_name :
+        (tuned ? "TUNED " : "STOCK ") + selected_car.car_type_name;
     car_shading_label=car_shading ? "ON static" : "OFF";
     HandheldGpuProfile gpu_profile(gpu_boost);
     bool docked = appletGetOperationMode() == AppletOperationMode_Console;
@@ -320,8 +366,6 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     DekoSceneTarget scene_target;
     require(plan_deko_scene_target(width,height,!panel_mode,scene_height,scene_target),
             "--scene-height below 720 requires direct presentation (no --panel)");
-    require(R_SUCCEEDED(romfsInit()), "cannot mount race shader/replay RomFS");
-    struct Guard { ~Guard() { romfsExit(); } } guard;
     std::string error;
     RaceReplay replay;
     if (replay_mode) {
@@ -338,8 +382,10 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                 texture_filter == TextureFilterMode::linear ? "linear" : "legacy");
     scene.set_particles_enabled(particles_enabled);
     RaceRun race; HeapUsage heap;
+    require(race.set_free_drive(free_drive,error),error);
     require(!replay_mode || steering==RaceSteering::baseline,"recovered steering requires --live; pinned replay uses baseline");
     require(race.set_steering(steering,error),error);
+    require(race.set_car(selected_car.car_type_name,error),error);
     std::printf("steering %s\n",race_steering_name(steering));
     if (performance) {
         require(race.set_performance_levels(*performance,error),error);
@@ -350,14 +396,14 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     require(scene.set_sky(sky != "off"), "sky mode set after scene load");
     scene.set_wet_road_reflections(wet_road_reflections);
     const auto before = mallinfo(); heap.begin(before.uordblks,before.arena);
-    Progress progress(screen,pad,heap);
+    Progress progress(screen,pad,heap,free_drive);
     const auto load_start = armGetSystemTick();
     require(race.prepare_metadata(root,error,&progress),error);
     require(scene.load(posix_file_system(), root, error, &progress, &progress,
-                       tuned, glows, car_shading), error);
-    screen.show({std::string("ASSETS PASS. Preparing event 1, ") +
-                 selected_car_label + " 240SX and race course..."});
-    screen.show({car_shading ? "CAR SHADING ON: static environment approximation" : "CAR SHADING OFF"});
+                       tuned, glows, car_shading, &selected_car, dress), error);
+    screen.show({std::string(free_drive ? "Preparing free driving, " : "ASSETS PASS. Preparing event 1, ") +
+                 selected_car_label + " and race course..."});
+    if (!free_drive) screen.show({car_shading ? "CAR SHADING ON: static environment approximation" : "CAR SHADING OFF"});
     progress.checkpoint("race course");
     require(race.start(root,scene.track(),error,&progress),error);
     progress.checkpoint("race course prepared");
@@ -373,7 +419,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                 return R_SUCCEEDED(svcSetThreadCoreMask(threadGetCurHandle(),
                            audio_core, 1U << audio_core)) &&
                        R_SUCCEEDED(svcSetThreadPriority(threadGetCurHandle(), 0x30));
-            });
+            },free_drive);
         if (!audio_started && audio_note.empty())
             audio_note = "audio disabled: startup failed without diagnostic";
     } else audio_note = "audio disabled: render core pin failed";
@@ -388,7 +434,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     RaceGpuFrame frame; require(scene.frame(race.session(),frame,error),error);
     const double load_ms = ms(armGetSystemTick()-load_start);
     const auto after = mallinfo(); heap.finish_load(after.uordblks,after.arena);
-    screen.show({"ASSETS PASS. Uploading track and car to deko3d..."});
+    screen.show({free_drive ? "Starting free driving..." : "ASSETS PASS. Uploading track and car to deko3d..."});
     const auto upload_start = armGetSystemTick();
     if (!panel_mode) screen.close();
     docked = appletGetOperationMode() == AppletOperationMode_Console;
@@ -482,7 +528,9 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             simulation += tick_ms; simulation_ticks[ticks] = tick_ms;
             stage = armGetSystemTick(); require(race.commit(error),error);
             scene.advance_particles(race.session());
-            sound.on_tick(audio::race_audio_snapshot(race.session()));
+            auto audio_snapshot=audio::race_audio_snapshot(race.session());
+            if (free_drive) { audio_snapshot.completed_laps=0; audio_snapshot.finished=false; }
+            sound.on_tick(audio_snapshot);
             if (replay_mode) std::fputs(race.step_line().c_str(),stdout);
             residency += ms(armGetSystemTick()-stage);
             ++ticks;
@@ -707,7 +755,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         failure += "renderer close: " + close_error;
     }
     if (!failure.empty()) { std::printf("ERROR: %s\n",failure.c_str()); std::fflush(stdout); }
-    if (appletMainLoop()) {
+    if (free_drive && !failure.empty()) throw std::runtime_error(failure);
+    if (appletMainLoop() && !free_drive) {
         if (profile_stats) {
             const ProfileResultContext context{*profile_stats,renderer.gpu_profile(),heap,read_clocks(),
                 load_ms,initial_upload,scene.track().streaming_bytes,persistent,renderer.gpu_bytes(),
@@ -728,7 +777,12 @@ int main(int argc, char** argv) {
     padConfigureInput(1,HidNpadStyleSet_NpadStandard); PadState pad; padInitializeDefault(&pad);
     {
         Screen screen; if (!screen.open()) return 1;
+        StartupJournal startup_journal;StartupJournal* active_trace=nullptr;
         try {
+            // Shaders belong to both frontend and race. Keep this mount
+            // alive through menu -> race -> menu and until all renderers close.
+            require(R_SUCCEEDED(romfsInit()), "cannot mount application shader/replay RomFS");
+            struct RomfsGuard { ~RomfsGuard() { romfsExit(); } } romfs_guard;
             std::string root = "sdmc:/nfsu";
             bool tuned = false;
             bool replay = false, panel = false, profile_frame = false;
@@ -740,17 +794,23 @@ int main(int argc, char** argv) {
             std::string sky = "on";
             std::uint32_t scene_height = 0;
             bool gpu_boost = true;
-            bool glows = false;
-            bool wet_road_reflections = false;
+            bool startup_trace=false;
+            bool glows = false, glows_seen = false;
+            bool wet_road_reflections = false, wet_road_seen = false, car_shading_seen = false;
             bool explicit_performance = false, handling_telemetry = false;
             VehicleUpgradeLevels performance;
             RaceSteering steering=RaceSteering::baseline; bool steering_seen=false;
+            std::string car_name = "240SX"; bool car_seen = false;
             for (int i = 1; i < argc; ++i) {
                 const std::string arg = argv[i];
                 if (arg == "--replay") { replay = true; selected = true; }
                 else if (arg == "--live") { replay = false; selected = true; }
                 else if (arg == "--tuned") tuned = true;
                 else if (arg == "--handling-telemetry") handling_telemetry = true;
+                else if (arg == "--car" && i+1 < argc) {
+                    require(!car_seen,"duplicate --car");
+                    car_name = argv[++i]; car_seen = true;
+                }
                 else if (arg == "--steering" && i+1<argc) {
                     require(!steering_seen && parse_race_steering(argv[++i],steering),"--steering needs one baseline, recovered0 or recovered1");
                     steering_seen=true;
@@ -763,6 +823,7 @@ int main(int argc, char** argv) {
                 }
                 else if (arg == "--panel") panel = true;
                 else if (arg == "--profile-frame") profile_frame = true;
+                else if (arg == "--frontend-startup-trace") startup_trace=true;
                 else if (arg == "--hud-trace") hud_trace = true;
             else if (arg == "--no-hud") hud = false;
                 else if (arg == "--scene-height" && i+1 < argc &&
@@ -779,48 +840,251 @@ int main(int argc, char** argv) {
                 else if (arg=="--car-shading" && i+1<argc) {
                     const std::string mode=argv[++i];
                     require(mode=="on" || mode=="off","--car-shading needs on or off");
-                    car_shading=mode=="on";
+                    car_shading=mode=="on";car_shading_seen=true;
                 }
                 else if (arg == "--sky" && i+1 < argc &&
                          (std::strcmp(argv[i+1],"on") == 0 || std::strcmp(argv[i+1],"off") == 0 ||
                           std::strcmp(argv[i+1],"early") == 0)) sky = argv[++i];
-                else if (arg == "--glows") glows = true;
+                else if (arg == "--glows" || arg == "--glows=on" || arg == "--glows=off") {
+                    glows = arg != "--glows=off";glows_seen=true;
+                }
                 else if (arg == "--wet-road-reflections") {
                     if (i + 1 >= argc) throw std::runtime_error("--wet-road-reflections needs on or off");
                     const std::string value = argv[++i];
                     if (value == "on") wet_road_reflections = true;
                     else if (value == "off") wet_road_reflections = false;
                     else throw std::runtime_error("--wet-road-reflections must be on or off");
+                    wet_road_seen=true;
                 }
                 else if (!root_seen && arg.rfind("--",0) != 0) { root = arg; root_seen = true; }
-            else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--hud-trace] [--no-hud] [--sky on|off|early] [--scene-height 720|540|450|360] [--gpu-boost on|off] [--particles=on|--particles=off] [--tuned] [--glows] [--car-shading on|off] [--texture-filter legacy|linear] [--wet-road-reflections on|off]");
+            else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--hud-trace] [--no-hud] [--sky on|off|early] [--scene-height 720|540|450|360] [--gpu-boost on|off] [--particles=on|--particles=off] [--tuned] [--glows|--glows=off] [--car NAME] [--car-shading on|off] [--texture-filter legacy|linear] [--wet-road-reflections on|off]");
             }
             require(!(panel && profile_frame),"--profile-frame requires direct presentation");
-            require(!hud_trace || (hud && !panel),"--hud-trace requires HUD and direct presentation");
-            while (!selected && appletMainLoop()) {
-                padUpdate(&pad); const auto down = padGetButtonsDown(&pad);
-                if (down & HidNpadButton_Plus) throw Cancel{};
-                if (down & HidNpadButton_A) selected = true;
-                if (down & HidNpadButton_X) { selected = true; replay = true; }
-                if ((down & HidNpadButton_Y) && !profile_frame && !hud_trace) panel = !panel;
-                screen.show({tuned ? "EVENT 1 / TUNED 240SX / TWO LAPS" : "NFSU #196 - EVENT 1 / STOCK 240SX / TWO LAPS",format("BUILD %.12s",NFSU_RACE_BUILD_TAG),
-                    "A: drive with Joy-Con / Pro Controller", "X: replay the pinned desktop event1.txt", "+: exit",
-                    (profile_frame || hud_trace) ? "DIRECT CAPTURE: Y panel toggle disabled" :
-                        std::string("Y: diagnostic panel ")+(panel?"ON":"OFF")+" (readback and CPU text cost)",
-                    std::string("PARTICLES ")+(particles_enabled?"ON":"OFF"),
-                    "The #47 first-lap check runs before track streaming. Assets: "+root,
-                    "Release all controls during countdown to clear the #59 hot-plug latch.",
-                    hud ? "Direct mode shows the race HUD; PANEL keeps diagnostics." :
-                          "Race HUD disabled for paired GPU measurement.",
-                    "During the race: Y pauses, + opens results with driving-frame statistics.",
-                    "No game data is bundled or written. Replay input is bundled in RomFS."});
+            require(!startup_trace || !selected,"--frontend-startup-trace requires menu startup");
+            if(startup_trace) {
+                const auto retail_directory=std::filesystem::path(root).lexically_normal().generic_string();
+                require(retail_directory!="sdmc:" && retail_directory!="sdmc:/",
+                    "startup journal must stay outside the retail root");
+                bool opened=false;char path[96];
+                for(unsigned attempt=0;attempt<64;++attempt) {
+                    std::snprintf(path,sizeof path,"sdmc:/nfsu-menu-startup-%04u.log",attempt);
+                    if(startup_journal.open(path)) {opened=true;break;}
+                    if(errno!=EEXIST)break;
+                }
+                require(opened,startup_journal.error());active_trace=&startup_journal;
+                char identity[256];
+                std::snprintf(identity,sizeof identity,"baseline=d00d897 diagnostic=r18 requested_height=%lu boost=%s profile=%s journal=%s timing_perturbed=1",
+                    (unsigned long)scene_height,gpu_boost?"on":"off",profile_frame?"on":"off",path);
+                if(!startup_journal.mark("enabled",identity))throw std::runtime_error(startup_journal.error());
             }
-            if (selected) run(root,replay,panel,profile_frame,particles_enabled,sky,
-                              tuned,glows,car_shading,wet_road_reflections,texture_filter,scene_height,
-                              gpu_boost,hud,hud_trace,explicit_performance ? &performance : nullptr,
-                              handling_telemetry,steering,screen,pad);
+            require(!hud_trace || (hud && !panel),"--hud-trace requires HUD and direct presentation");
+            require(!(tuned && car_name!="240SX"),
+                    "the --tuned preset is the 240SX's own part set; it cannot dress car type "+car_name);
+            nfsu::CarAssets selected_car;
+            {
+                std::string car_error;
+                if (!nfsu::load_car_assets(std::filesystem::path(root)/"Global/GLOBALB.BUN",
+                                           car_name,selected_car,car_error))
+                    throw std::runtime_error("car selection: "+car_error);
+            }
+            // Ordinary live/menu driving uses the recovered steering path.
+            // Explicit replay keeps the historical baseline simulation pins.
+            if (!steering_seen) steering = replay ? RaceSteering::baseline :
+                                                   RaceSteering::recovered_predicate1;
+            if (!replay) {
+                if (!glows_seen) glows=true;
+                if (!wet_road_seen) wet_road_reflections=true;
+                if (!car_shading_seen) car_shading=true;
+            }
+            if (selected) {
+                run(root,replay,panel,profile_frame,particles_enabled,sky,
+                    tuned,glows,car_shading,wet_road_reflections,texture_filter,scene_height,
+                    gpu_boost,hud,hud_trace,explicit_performance ? &performance : nullptr,
+                    handling_telemetry,steering,selected_car,screen,pad);
+            } else {
+                std::string trace_error;
+                const auto trace=[&](const char* stage) {require(trace_frontend_startup(active_trace,stage,trace_error),trace_error);};
+                trace("intro.before");
+                const auto intro=play_original_intro(root,[&] {
+                    if (!appletMainLoop()) return IntroControl::quit;
+                    padUpdate(&pad); const auto down=padGetButtonsDown(&pad);
+                    if (down&HidNpadButton_Plus) return IntroControl::quit;
+                    if (down&(HidNpadButton_A|HidNpadButton_B)) return IntroControl::skip;
+                    return IntroControl::continue_playback;
+                },[&](const MovieFrame& frame) { screen.movie(frame); });
+                trace("intro.after");
+                if (intro.outcome==IntroOutcome::quit) throw Cancel{};
+                FrontendArt art; std::string frontend_error;
+                screen.show({"Loading original frontend..."});
+                trace("art.load.before");
+                require(art.load(root,frontend_error,false),frontend_error);
+                trace("art.load.after");
+                FrontendGpuScene frontend_scene;
+                trace("scene.load.before");
+                require(frontend_scene.load(root,width,height,frontend_error),frontend_error);
+                trace("scene.load.after");
+                FrontendUiFrame frontend_ui;
+                // Match the launch power/scene policy while the menu is live.
+                // Restore it after renderer shutdown before handing race its
+                // own guard. Declaration order also preserves error unwinding.
+                std::unique_ptr<HandheldGpuProfile> frontend_gpu_profile;
+                std::unique_ptr<DekoRenderer> frontend_renderer;
+                FrontendPresentationStats frontend_presentation_stats;
+                const auto open_frontend=[&] {
+                    frontend_presentation_stats.reset();
+                    trace("power.before");
+                    frontend_gpu_profile=std::make_unique<HandheldGpuProfile>(gpu_boost);
+                    trace("power.after");
+                    if(active_trace) {
+                        const auto clocks=read_clocks();char detail[256];
+                        std::snprintf(detail,sizeof detail,"read_only=1 configuration_ok=%u configuration=%lu cpu_ok=%u cpu_hz=%lu gpu_ok=%u gpu_hz=%lu emc_ok=%u emc_hz=%lu",
+                            (unsigned)clocks.configuration_ok,(unsigned long)clocks.configuration,(unsigned)clocks.cpu_bus_ok,(unsigned long)clocks.cpu_bus_hz,
+                            (unsigned)clocks.gpu_ok,(unsigned long)clocks.gpu_hz,(unsigned)clocks.emc_ok,(unsigned long)clocks.emc_hz);
+                        if(!active_trace->mark("clocks.actual",detail))throw std::runtime_error(active_trace->error());
+                    }
+                    const bool menu_docked=appletGetOperationMode()==AppletOperationMode_Console;
+                    const auto menu_height=deko_effective_scene_height(scene_height,menu_docked,true);
+                    std::printf("MENU POLICY gpu_boost=%s requested_height=%lu effective_height=%lu (configuration, not measured clocks)\n",
+                        gpu_boost?"on":"off",static_cast<unsigned long>(scene_height),static_cast<unsigned long>(menu_height));
+                    trace("screen.close.before");screen.close();trace("screen.close.after");
+                    frontend_renderer=std::make_unique<DekoRenderer>();
+                    trace("renderer.open.before");
+                    require(frontend_renderer->open_frontend(frontend_scene.commands(),art.atlas(),frontend_error,menu_height,profile_frame,active_trace),frontend_error);
+                    trace("renderer.ready");
+                };
+                open_frontend();
+                FrontendClock frontend_clock;
+                FrontendAppletClockHook frontend_clock_hook(frontend_clock,frontend_presentation_stats);
+                FrontendMenu menu;
+                audio::FrontendMusic music;
+                trace("music.start.before");
+                if(!music.start(root,frontend_error)) menu.notice("MUSIC: "+frontend_error);
+                trace("music.start.after");
+                if (intro.outcome==IntroOutcome::error) {
+                    std::printf("INTRO ERROR: %s\n",intro.error.c_str());
+                    menu.notice(std::string("INTRO: ")+intro.error);
+                }
+                bool stick_up=false,stick_down=false;
+                // Free driving drives the Eddie Skyline the menu displays,
+                // resolved once and reused across free-driving re-entries.
+                // An explicit --car/--tuned diagnostic selection keeps that
+                // car instead of the preset.
+                const bool free_drive_diagnostic = car_seen || tuned;
+                nfsu::FreeDriveSkyline free_drive_skyline;
+                bool free_drive_resolved = false;
+                FrontendAction pending=FrontendAction::none;
+                while (appletMainLoop()) {
+                    if(appletGetFocusState()!=AppletFocusState_InFocus) {frontend_clock.resume();frontend_presentation_stats.reset();continue;}
+                    const auto poll_begin=armGetSystemTick();
+                    padUpdate(&pad); const auto down=padGetButtonsDown(&pad);
+                    const auto stick=padGetStickPos(&pad,0);
+                    const bool up=stick.y>16000, below=stick.y<-16000;
+                    FrontendInput input;
+                    input.up=(down&HidNpadButton_Up) || (up&&!stick_up);
+                    input.down=(down&HidNpadButton_Down) || (below&&!stick_down);
+                    input.accept=down&HidNpadButton_A;
+                    input.back=down&(HidNpadButton_B|HidNpadButton_Plus);
+                    stick_up=up; stick_down=below;
+                    const auto previous_selection=menu.selected();
+                    auto action=pending==FrontendAction::none?menu.update(input):FrontendAction::none;
+                    const auto selection_done=armGetSystemTick();
+                    if(pending==FrontendAction::none && input.back) music.sound(audio::FrontendSound::back);
+                    else if(pending==FrontendAction::none && input.accept) music.sound(audio::FrontendSound::select);
+                    else if(menu.selected()!=previous_selection)
+                        music.sound(input.up?audio::FrontendSound::up:audio::FrontendSound::down);
+                    if(action==FrontendAction::exit || action==FrontendAction::free_drive) {
+                        pending=action;music.begin_stop();action=FrontendAction::none;
+                    }
+                    if(pending!=FrontendAction::none && music.stop_ready()) {
+                        action=pending;pending=FrontendAction::none;
+                    }
+                    if (action==FrontendAction::exit) {music.stop();break;}
+                    if (action==FrontendAction::underground) {
+                        menu.notice("INTRODUCTORY RACE IS NOT AVAILABLE IN THIS BUILD");
+                    } else if (action==FrontendAction::free_drive) {
+                        music.stop();
+                        require(frontend_renderer->close(frontend_error),frontend_error);
+                        frontend_renderer.reset();
+                        frontend_gpu_profile.reset();
+                        try {
+                            if (!free_drive_diagnostic && !free_drive_resolved) {
+                                std::string dress_error;
+                                if (!resolve_free_drive_skyline(root,free_drive_skyline,dress_error))
+                                    throw std::runtime_error(dress_error);
+                                free_drive_resolved = true;
+                            }
+                            // The Eddie dress carries the menu's decoded
+                            // GLOBALB materials; free driving renders them,
+                            // so the driven car keeps its authored paint
+                            // response. Explicit --car/--tuned diagnostics
+                            // keep the --car-shading argument's control.
+                            run(root,false,false,false,particles_enabled,sky,
+                                tuned,glows,car_shading||(free_drive_resolved&&!car_shading_seen),wet_road_reflections,texture_filter,scene_height,
+                                gpu_boost,hud,false,explicit_performance ? &performance : nullptr,
+                                handling_telemetry,steering,
+                                free_drive_resolved ? free_drive_skyline.car : selected_car,
+                                screen,pad,true,
+                                free_drive_resolved ? &free_drive_skyline.dress : nullptr);
+                            menu.notice("");
+                        } catch (const Cancel&) {
+                            menu.notice("LOADING CANCELLED");
+                        } catch (const std::exception& error) {
+                            std::printf("FREE DRIVE ERROR: %s\n",error.what());
+                            menu.notice(std::string("FREE DRIVING: ")+error.what());
+                        }
+                        if(!music.start(root,frontend_error)) menu.notice("MUSIC: "+frontend_error);
+                        else menu.announce_song();
+                        stick_up=stick_down=false;
+                        open_frontend();
+                        frontend_clock.resume();
+                    }
+                    const auto music_error=music.error();
+                    if(!music_error.empty()) { music.stop(); menu.notice("MUSIC: "+music_error); }
+                    const auto song=music.now_playing();menu.song(song.artist,song.title,song.album);
+                    const auto scene_begin=armGetSystemTick();
+                    const auto elapsed_ns=frontend_clock.sample(armTicksToNs(scene_begin));
+                    const auto original_ticks=frontend_clock.original_ticks();
+                    trace("frame.scene.before");
+                    require(frontend_scene.frame(static_cast<float>(elapsed_ns/1000000000.0),original_ticks,frontend_error),frontend_error);
+                    trace("frame.scene.after");
+                    const auto scene_done=armGetSystemTick();
+                    art.advance(static_cast<float>(elapsed_ns/1000000000.0));
+                    trace("frame.ui.before");art.record_ui(width,height,menu,frontend_ui);trace("frame.ui.after");
+                    const auto ui_done=armGetSystemTick();
+                    DekoUpdateTiming update_timing;
+                    trace("frame.update.before");
+                    require(frontend_renderer->update(frontend_scene.commands(),frontend_error,&update_timing),frontend_error);
+                    trace("frame.update.after");
+                    DekoPresentTiming present_timing;
+                    require(frontend_renderer->present_frontend(frontend_ui,frontend_error,&present_timing),frontend_error);
+                    trace("frame.present.returned");
+                    if(active_trace) {
+                        if(!startup_journal.close())throw std::runtime_error(startup_journal.error());
+                        active_trace=nullptr;
+                    }
+                    const auto presented=armGetSystemTick();
+                    FrontendPresentationWindow presentation_window;
+                    if(!profile_frame && frontend_presentation_stats.sample(armTicksToNs(presented),presentation_window)) {
+                        std::printf("MENU PRESENT measured_intervals=%llu elapsed_ms=%.3f mean_ms=%.3f max_ms=%.3f measured_fps=%.3f (normal presentation return intervals)\n",
+                            static_cast<unsigned long long>(presentation_window.intervals),presentation_window.elapsed_ns/1000000.0,
+                            presentation_window.mean_ms(),presentation_window.max_ns/1000000.0,presentation_window.fps());
+                    }
+                    if(menu.selected()!=previous_selection) {
+                        std::printf("MENU INPUT selected=%u selection_ms=%.3f scene_ms=%.3f ui_ms=%.3f present_ms=%.3f total_ms=%.3f acquire_ms=%.3f fence_ms=%.3f record_ms=%.3f quads=%zu\n",
+                            static_cast<unsigned>(menu.selected()),ms(selection_done-poll_begin),ms(scene_done-scene_begin),
+                            ms(ui_done-scene_done),ms(presented-ui_done),ms(presented-poll_begin),
+                            present_timing.acquire_ms,present_timing.fence_wait_ms,present_timing.record_ms,frontend_ui.additive.size());
+                    }
+                }
+                require(frontend_renderer->close(frontend_error),frontend_error);
+            }
         } catch (const Cancel&) {
+            if(active_trace && !startup_journal.close()) {std::fprintf(stderr,"ERROR: %s\n",startup_journal.error());std::fflush(stderr);}
         } catch (const std::exception& e) {
+            if(active_trace && !startup_journal.mark("exception.caught",e.what())) {
+                std::fprintf(stderr,"ERROR: %s\n",startup_journal.error());std::fflush(stderr);
+            }
+            if(active_trace && !startup_journal.close()) {std::fprintf(stderr,"ERROR: %s\n",startup_journal.error());std::fflush(stderr);}
             std::printf("ERROR: %s\n",e.what()); std::fflush(stdout);
             auto lines = wrap_screen_text(e.what(),105); lines.insert(lines.begin(),"NFSU RACE STOPPED - NO SUCCESS RESULT");
             lines.push_back("Photograph this error. + exits.");

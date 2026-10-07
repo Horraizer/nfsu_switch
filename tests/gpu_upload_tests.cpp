@@ -2572,21 +2572,25 @@ void test_car_instances_and_uniform_layout() {
         {"Material.surface_specular_range", offsetof(nfsu::DrawMaterialUniform, surface)+offsetof(nfsu::CarShadingMaterial, specular_range)},
         {"Material.surface_environment_min", offsetof(nfsu::DrawMaterialUniform, surface)+offsetof(nfsu::CarShadingMaterial, environment_min)},
         {"Material.surface_environment_range", offsetof(nfsu::DrawMaterialUniform, surface)+offsetof(nfsu::CarShadingMaterial, environment_range)},
-        {"Material.surface_gates", offsetof(nfsu::DrawMaterialUniform, surface)+offsetof(nfsu::CarShadingMaterial, gates)}};
+        {"Material.surface_gates", offsetof(nfsu::DrawMaterialUniform, surface)+offsetof(nfsu::CarShadingMaterial, gates)},
+        {"FrontendLight.harmonic", offsetof(nfsu::FrontendLighting, harmonic)}};
     for (const auto& program : nfsu::shader_manifest::kPrograms) {
-        const bool shaded=std::string(program.name)=="car_shaded_textured" ||
+        const bool frontend_car=std::string(program.name)=="frontend_car_textured";
+        const bool frontend_ui=std::string(program.name)=="frontend_ui";
+        const bool shaded=frontend_car || std::string(program.name)=="car_shaded_textured" ||
                           std::string(program.name)=="car_shaded_linear_textured";
-        check_eq(program.block_count, 3, "three uniform blocks");
+        check_eq(program.block_count, frontend_car?4:frontend_ui?2:3, "program-specific uniform block count");
         for (std::size_t i = 0; i < program.block_count; ++i) {
             const auto& b = program.blocks[i];
             const std::string name = b.name;
             const auto size = name == "Frame" ? sizeof(nfsu::DrawFrameUniform) :
                 name == "Instance" ? sizeof(nfsu::DrawInstanceUniform) :
+                name == "FrontendLight" ? sizeof(nfsu::FrontendLighting) :
                 shaded ? sizeof(nfsu::DrawMaterialUniform) : offsetof(nfsu::DrawMaterialUniform,surface);
             check_eq(b.size, size, name + ": std140 size");
-            check_eq(b.binding, name == "Frame" ? 0 : name == "Instance" ? 1 : 2, name + ": uniform binding");
+            check_eq(b.binding, name == "Frame" ? 0 : name == "Instance" ? 1 : name=="FrontendLight"?3:2, name + ": uniform binding");
         }
-        check_eq(program.member_count, shaded ? offsets.size() : offsets.size()-7, "all uniform members checked");
+        check_eq(program.member_count, frontend_car?offsets.size():frontend_ui?8:shaded?offsets.size()-1:offsets.size()-8, "all uniform members checked");
         for (std::size_t i = 0; i < program.member_count; ++i) {
             const auto& m = program.members[i];
             const auto key = std::string(m.block) + "." + m.name;
@@ -2708,7 +2712,7 @@ void test_car_shading_records_and_rendering() {
         d.flags=0x180U; store_u32(d.raw.data()+56,d.flags);
     }
     check(nfsu::apply_car_materials(paint_fixture.scene,paint_bytes.data(),
-                                    paint_bytes.size(),0x827D95A1U,error),
+                                    paint_bytes.size(),0x827D95A1U,0,error),
           "join blue CARSKIN to REGPAINTBLUE: "+error);
     check(!paint_fixture.scene.draws.empty() &&
           paint_fixture.scene.draws[0].shading.gates[0]==1.0F &&
@@ -2719,7 +2723,7 @@ void test_car_shading_records_and_rendering() {
     auto default_bytes=paint_bytes;
     put_u32(default_bytes,20,0x2C420D64U); // DEFAULT
     check(nfsu::apply_car_materials(unmatched_fixture.scene,default_bytes.data(),
-                                   default_bytes.size(),0xD6640DFFU,error),
+                                   default_bytes.size(),0xD6640DFFU,0,error),
           "unmatched paint attribute falls back to DEFAULT: "+error);
     check(!unmatched_fixture.scene.draws.empty() &&
           unmatched_fixture.scene.draws[0].shading.gates[0]==1.0F &&
@@ -2730,7 +2734,7 @@ void test_car_shading_records_and_rendering() {
     for (auto& d:scene.draws) {
         d.material_key_hash=0x12345678U; d.flags=0x180U; store_u32(d.raw.data()+56,d.flags);
     }
-    check(nfsu::apply_car_materials(scene,bytes.data(),bytes.size(),0,error),"join material keys: "+error);
+    check(nfsu::apply_car_materials(scene,bytes.data(),bytes.size(),0,0,error),"join material keys: "+error);
     for (auto& m:scene.meshes) for (auto& v:m.vertices) { v.nx=0; v.ny=1; v.nz=0; }
     nfsu::RenderOptions options; options.width=160; options.height=120;
     nfsu::Frame off,on,turned,off_again; nfsu::RenderStats stats;

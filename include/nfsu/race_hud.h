@@ -34,6 +34,7 @@ struct RaceHudFrame {
     std::uint16_t quads = 0;
     RaceHudReadout readout{};
     RaceLapHudPanel lap{};
+
 };
 
 struct RaceHudDial {

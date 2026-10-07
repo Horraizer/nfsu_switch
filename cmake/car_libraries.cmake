@@ -48,6 +48,22 @@ add_library(nfsu_core
     src/texture.cpp
 )
 
+# Data-driven car selection over the car type table (issue #315): resolves a
+# playable car's name to its own retail asset paths and classification. It
+# reads only the GLOBALB.BUN it is pointed at, with the same std::ifstream
+# loaders nfsu_core owns, so the console compiles it from this list too.
+add_library(nfsu_car_assets
+    src/car_assets.cpp
+)
+
+target_include_directories(nfsu_car_assets
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_compile_features(nfsu_car_assets PUBLIC cxx_std_17)
+target_link_libraries(nfsu_car_assets PUBLIC nfsu_core)
+nfsu_enable_warnings(nfsu_car_assets)
+
 target_include_directories(nfsu_core
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -200,7 +216,7 @@ add_library(nfsu_stock_frame
 
 target_link_libraries(nfsu_stock_frame
     PUBLIC nfsu_stock_scene nfsu_texture_decode nfsu_render nfsu_sha256
-           nfsu_runtime_skin)
+           nfsu_runtime_skin nfsu_car_assets)
 nfsu_enable_warnings(nfsu_stock_frame)
 
 # Text drawn into an RGBA8 image with a built-in 5x7 font: how the Switch
@@ -367,7 +383,7 @@ nfsu_enable_warnings(nfsu_frame_compare)
 # and the shader pipeline are left as they were.
 if(NINTENDO_SWITCH)
     set_target_properties(
-        nfsu_image nfsu_core nfsu_texture_export nfsu_scene nfsu_stock_scene
+        nfsu_image nfsu_core nfsu_car_assets nfsu_texture_export nfsu_scene nfsu_stock_scene
         nfsu_texture_decode nfsu_render nfsu_sha256 nfsu_stock_frame
         nfsu_screen_text nfsu_frame_compare nfsu_body_skin nfsu_skin_inputs nfsu_runtime_skin
         nfsu_inspect nfsu_input nfsu_input_camera nfsu_stock_view

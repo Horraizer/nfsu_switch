@@ -40,6 +40,7 @@ constexpr int kSlotSkirt = 10;
 constexpr int kSlotEngine = 12;
 constexpr int kSlotHeadlight = 13;
 constexpr int kSlotBrakelight = 14;
+constexpr int kSlotExhaust = 15;
 constexpr int kSlotBrake = 16;
 constexpr int kSlotWheel = 17;
 constexpr int kSlotLicensePlate = 18;
@@ -203,6 +204,10 @@ struct StockParts {
 // Caller-provided installed parts. An absent entry keeps the stock part.
 // This input is a viewer construct, not a decoded garage or save record.
 struct InstalledPartSelection {
+    // Native resolved RideInfo slots, including explicit empty slots. The
+    // indices refer to the same parsed database passed to selection; names
+    // remain the independent viewer override interface.
+    std::array<std::optional<std::size_t>, kCarSlotCount> records{};
     std::array<std::optional<std::string>, kCarSlotCount> names{};
 };
 

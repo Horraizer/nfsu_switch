@@ -1,0 +1,243 @@
+{
+  "issue": 328,
+  "base": "83d63d9f1831b413f7020bc4cf799c40c58a87c8",
+  "policy": "Single consolidated candidate; targeted integration checks; final full validation on frozen candidate per owner exception.",
+  "sources": [
+    {
+      "pr": 323,
+      "head": "2cf5069fed233f6485a742bc35fdaa5bf1467224",
+      "status": "included",
+      "reason": "Exact source head is an integration ancestor; final independent review and gates pending."
+    },
+    {
+      "pr": 322,
+      "head": "2f265bd8cfe7a5b08a67d7026d15f378ab691833",
+      "status": "included",
+      "reason": "Exact source head is an integration ancestor; final independent review and gates pending."
+    },
+    {
+      "pr": 319,
+      "head": "9eb9a2dfcd43354253ee7288e36324186cb5d90f",
+      "status": "included",
+      "reason": "Exact source head is an integration ancestor; final independent review and gates pending."
+    },
+    {
+      "pr": 318,
+      "head": "6eca7e1d93d0b81d76fde7d94e354f6494b40c70",
+      "status": "included",
+      "reason": "Exact source head is an integration ancestor; final independent review and gates pending."
+    },
+    {
+      "pr": 317,
+      "head": "7d3b2944ffab77e24ade44b6e6c104ce5cc7544c",
+      "status": "included",
+      "reason": "Exact source head is an integration ancestor; final independent review and gates pending."
+    },
+    {
+      "pr": 316,
+      "head": "7fb80a468ed2d1798243d751363f1c334df60b7f",
+      "status": "included",
+      "reason": "Exact source head is an integration ancestor; final independent review and gates pending."
+    },
+    {
+      "pr": 313,
+      "head": "2667c3fac7f27893a788c6226ba49f748d770b18",
+      "status": "included",
+      "reason": "Exact source head is an integration ancestor; final independent review and gates pending."
+    },
+    {
+      "pr": 309,
+      "head": "7a1f4db1080daf50a2c19f11d52d9c6bc6a43ab0",
+      "status": "included",
+      "reason": "Exact source head is an integration ancestor; final independent review and gates pending."
+    },
+    {
+      "pr": 308,
+      "head": "988bc892f643c463ba02a8c83e33b48918f889c3",
+      "status": "included",
+      "reason": "Exact source head is an integration ancestor; final independent review and gates pending."
+    },
+    {
+      "pr": 307,
+      "head": "f5a8796e6859973cb5b1a10650d3ee71ed202fa9",
+      "status": "included",
+      "reason": "Exact source head is an integration ancestor; final independent review and gates pending."
+    },
+    {
+      "pr": 288,
+      "head": "31e3af4b665b9cd4cc93d9d13dccda505f301605",
+      "status": "included",
+      "reason": "Exact source head is an integration ancestor; final independent review and gates pending."
+    },
+    {
+      "pr": 286,
+      "head": "9c462a65d8273c3cd8acf948513081767a7d61b2",
+      "status": "included",
+      "reason": "Exact source head is an integration ancestor; final independent review and gates pending."
+    },
+    {
+      "pr": 285,
+      "head": "7c6a5e30e977160105cad778b843323ac90d978e",
+      "status": "included",
+      "reason": "Exact source head is an integration ancestor; final independent review and gates pending."
+    },
+    {
+      "pr": 284,
+      "head": "f81b9320065a22d37aaecc4b8887714d58283c8b",
+      "status": "included",
+      "reason": "Exact source head is an integration ancestor; final independent review and gates pending."
+    },
+    {
+      "pr": 283,
+      "head": "c669599cf6cc802395cc2a3ab249a7985a912de2",
+      "status": "included",
+      "reason": "Exact source head is an integration ancestor; final independent review and gates pending."
+    },
+    {
+      "pr": 276,
+      "head": "be2c8a44bbaae1d9b4af4192d38dc2bf1e848774",
+      "status": "superseded-dated-navigation",
+      "reason": "Only ROADMAP/WORK_STATE navigation changes. Current base83d63d9 carries later owner two-mode scope and dated recovery index via PR321; old snapshot must not overwrite current owner direction. Original source remains preserved in PR276/history. Exact diff saved: integration328-worker-recovery-supersession.diff."
+    },
+    {
+      "pr": 272,
+      "head": "b3474e7b5e08449022bebbdca2545168155ff5d1",
+      "status": "superseded",
+      "reason": "Corrected successor PR286 head9c462a6 preserves all old Python trace functions, corrects PR272 finding6814, and adds lifecycle/streaming/native evidence. Proof: integration328-worker-props-supersession.json and docs/TRACK_PROP_LIFECYCLE.md."
+    },
+    {
+      "source": "skyline",
+      "head": "3b6ff2e9bd9d94f95016a4b1bc955bab0f930fd2",
+      "status": "included"
+    },
+    {
+      "source": "tyres-controls",
+      "head": "24e0cef5eb70fec312f81061efe8d58c1634e77e",
+      "status": "included"
+    },
+    {
+      "source": "audio-local",
+      "head": "546689a2407a1dc8814c08c9b9f6ff4959ab2d18",
+      "status": "included"
+    },
+    {
+      "source": "contact-preserved",
+      "head": "01da1176842ea0563942ee2a0e54c86c37580a0c",
+      "status": "included"
+    }
+  ],
+  "local_worker_inventory": [
+    {
+      "source_tree": "build/day20261003-b1-s3-collision256",
+      "head": "c669599cf6cc802395cc2a3ab249a7985a912de2",
+      "status": "included-by-ancestry"
+    },
+    {
+      "source_tree": "build/day20261003-b1-s4-minimap266",
+      "head": "f81b9320065a22d37aaecc4b8887714d58283c8b",
+      "status": "included-by-ancestry"
+    },
+    {
+      "source_tree": "build/day20261003-b2-s3-actors258",
+      "head": "7c6a5e30e977160105cad778b843323ac90d978e",
+      "status": "included-by-ancestry"
+    },
+    {
+      "source_tree": "build/day20261003-b2-s4-props270",
+      "head": "9c462a65d8273c3cd8acf948513081767a7d61b2",
+      "status": "included-by-ancestry"
+    },
+    {
+      "source_tree": "build/day20261003-b3-s3-physics-dispatch256",
+      "head": "31e3af4b665b9cd4cc93d9d13dccda505f301605",
+      "status": "included-by-ancestry"
+    },
+    {
+      "source_tree": "build/day20261003-b4-s4-controller293",
+      "head": "f5a8796e6859973cb5b1a10650d3ee71ed202fa9",
+      "status": "included-by-ancestry"
+    },
+    {
+      "source_tree": "build/day20261004-audio312",
+      "head": "546689a2407a1dc8814c08c9b9f6ff4959ab2d18",
+      "status": "included-by-ancestry"
+    },
+    {
+      "source_tree": "build/day20261004-contact257",
+      "head": "6eca7e1d93d0b81d76fde7d94e354f6494b40c70",
+      "status": "included-by-ancestry"
+    },
+    {
+      "source_tree": "build/day20261004-controller293-r2",
+      "head": "7fb80a468ed2d1798243d751363f1c334df60b7f",
+      "status": "included-by-ancestry"
+    },
+    {
+      "source_tree": "build/day20261004-glm-cars315",
+      "head": "9eb9a2dfcd43354253ee7288e36324186cb5d90f",
+      "status": "included-by-ancestry"
+    },
+    {
+      "source_tree": "build/day20261004-intro-media",
+      "head": "2cf5069fed233f6485a742bc35fdaa5bf1467224",
+      "status": "included-by-ancestry"
+    },
+    {
+      "source_tree": "build/day20261004-menu66",
+      "head": "a87c553a2220c7bd4d562ad12af6abc15896efb9",
+      "status": "included-by-ancestry"
+    },
+    {
+      "source_tree": "build/day20261004-menu66-output-fix",
+      "head": "b846cb829b0fbb5c7c008e5c6cbc401a76959b09",
+      "status": "included-by-ancestry"
+    },
+    {
+      "source_tree": "build/day20261004-nitrous314",
+      "head": "7d3b2944ffab77e24ade44b6e6c104ce5cc7544c",
+      "status": "included-by-ancestry"
+    },
+    {
+      "source_tree": "build/day20261006-glm-freeride-skyline",
+      "head": "3b6ff2e9bd9d94f95016a4b1bc955bab0f930fd2",
+      "status": "included-by-ancestry"
+    },
+    {
+      "source_tree": "build/day20261006-glm-menu66",
+      "head": "3c4ee11a4c6c2019f9811e0d4a9f90d16f968015",
+      "status": "included-by-ancestry"
+    },
+    {
+      "source_tree": "build/day20261006-glm-tachometer",
+      "head": "24e0cef5eb70fec312f81061efe8d58c1634e77e",
+      "status": "included-by-ancestry"
+    },
+    {
+      "source_tree": "build/day20261006-race-effect-fast",
+      "head": "f208e3af956d39248a9fa9b81f4e29d99aa1600b",
+      "status": "included-by-ancestry"
+    },
+    {
+      "source_tree": "build/night20261003-b5-s3-witness256",
+      "head": "988bc892f643c463ba02a8c83e33b48918f889c3",
+      "status": "included-by-ancestry"
+    },
+    {
+      "source_tree": "build/night20261003-b5-s4-hud-producers254",
+      "head": "7a1f4db1080daf50a2c19f11d52d9c6bc6a43ab0",
+      "status": "included-by-ancestry"
+    }
+  ],
+  "current_head": "64a2a91d0cf4ca830bd34cc9ce527bafa385c2f0",
+  "open_acceptance": {
+    "tyres": "Isolated original lateral law and units authenticated; corrected atan/domain validation and recovered1 moving-brake regression pass. Production supported sliding/release diagnostic saved; original longitudinal wheel/engine feedback and hardware handling acceptance remain open.",
+    "tach": "Signed biased-pointer native evidence issue324 comment8799 proves direct full-physics engine RPM/gear export. Pure HUD cadence/reset/pause and moving-engine brake regressions pass; owner Switch braking/needle acceptance pending.",
+    "contact257": "Numeric constructor/tick continuation completed, native/C++ targeted tests pass; production live actor/world admission/scheduler/full callbacks not supplied.",
+    "nitrous314": "Native/portable558-line comparison passes; production event0 actor clock/override/input/engine lifecycle adapter and hardware acceptance unresolved."
+  },
+  "progress": "Targeted integration checks complete. Consolidated candidate source/pins saved; final independent default/Release/retail/Switch/ASCII cycle and owner hardware acceptance pending. Head is before the checkpoint-only final source commit; exact frozen head is recorded on PR329.",
+  "supersession_evidence": {
+    "PR272": "PR286 corrects finding6814: original0x005952E2 reads tail, subsequent writes append; lookup0x0059638C follows sentinel.next and first+0x80match. Native instruction guards and synthetic prior-load/unload/reload cases replace the false prepend/last-match claim. Shape query0x005968F8 passes+0x80hash and separate+0xB0pivot. docs/TRACK_PROP_LIFECYCLE.md retains oldPR/findinglinks and limitations. Oldbranch is preserved, not merged.",
+    "PR276": "Only dated ROADMAP/WORK_STATE navigation changed. Base83d63d9 preserves newer recovery and owner two-mode decisions fromPR321. The older snapshot remains in its PR/branch; overwriting the newer state would regress navigation, so it is superseded rather than merged."
+  }
+}

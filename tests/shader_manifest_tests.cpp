@@ -145,12 +145,13 @@ const sm::Program* find_program(const Programs& programs, const std::string& nam
 }
 
 bool is_car(const sm::Program& program) {
-    return std::string(program.name).rfind("car_", 0) == 0;
+    return std::string(program.name).rfind("car_", 0) == 0 ||
+        std::string(program.name)=="frontend_car_textured";
 }
 
 bool is_textured(const sm::Program& program) {
     const std::string name = program.name;
-    return name.size() > 9 && name.compare(name.size() - 9, 9, "_textured") == 0;
+    return name=="frontend_ui" || (name.size() > 9 && name.compare(name.size() - 9, 9, "_textured") == 0);
 }
 
 // Bytes one vertex format fetches, derived here rather than read from the
@@ -221,7 +222,7 @@ const char* element_name(sm::Element element) {
 // make, which is a variant this project would be inventing.
 void test_programs_are_the_reference_draw_kinds(const Programs& programs, Reporter& r) {
     const std::set<std::string> expected = {
-        "car_fallback", "car_textured", "car_shaded_textured", "car_shaded_linear_textured", "track_linear_textured", "sky_textured",
+        "car_fallback", "car_textured", "car_shaded_textured", "car_shaded_linear_textured", "frontend_car_textured", "frontend_ui", "track_linear_textured", "sky_textured",
         "track_fallback", "track_textured"};
     std::set<std::string> got;
     for (const sm::Program& program : programs) {
@@ -334,7 +335,7 @@ void test_textures_follow_the_draw_kind(const Programs& programs, Reporter& r) {
             r.check(program.texture_count == 0, name + ": samples no texture");
             continue;
         }
-        const bool reflection = name == "track_textured" || name == "track_linear_textured" || name == "car_textured";
+        const bool reflection = name == "frontend_car_textured" || name == "track_textured" || name == "track_linear_textured" || name == "car_textured";
         const std::size_t expected_count = reflection ? 2U : 1U;
         r.check(program.texture_count == expected_count,
                 name + ": samples the expected diffuse and reflection textures");
@@ -346,7 +347,7 @@ void test_textures_follow_the_draw_kind(const Programs& programs, Reporter& r) {
                 name + ": the texture is sampled by the fragment stage");
         r.check(std::string(texture.type) == "sampler2D",
                 name + ": the texture is a sampler2D");
-        r.check(texture.filter == (name == "car_textured" || name == "track_linear_textured" || name == "car_shaded_linear_textured"
+        r.check(texture.filter == (name == "car_textured" || name == "track_linear_textured" || name == "car_shaded_linear_textured" || name == "frontend_car_textured"
                    ? sm::Filter::linear : sm::Filter::nearest),
                 name + ": the texture filter matches its effect");
         r.check(texture.wrap == sm::Wrap::repeat,
@@ -535,11 +536,12 @@ void test_shared_fixed_function_state(const Programs& programs, Reporter& r) {
             const sm::Variant& variant = program.variants[i];
             const std::string what =
                 std::string(program.name) + " variant " + variant.name;
-            r.check(variant.depth_test == sm::CompareOp::less_equal,
+            const bool ui=std::string(program.name)=="frontend_ui";
+            r.check(variant.depth_test == (ui ? sm::CompareOp::always : sm::CompareOp::less_equal),
                     what + ": the depth test is LESS_EQUAL");
             const bool world_blend = ((std::string(program.name) == "track_textured" || std::string(program.name) == "track_linear_textured") && variant.blend) ||
                                      std::string(program.name) == "sky_textured";
-            r.check(variant.depth_write == !world_blend,
+            r.check(variant.depth_write == !(world_blend || ui),
                     what + (world_blend ? ": leaves depth alone" : ": writes depth"));
             r.check(variant.color_write == sm::ColorWrite::rgb,
                     what + ": leaves the frame's alpha alone");

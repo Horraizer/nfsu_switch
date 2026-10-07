@@ -50,6 +50,49 @@ double needle_angle(const nfsu::RaceHudFrame& frame, bool red = true) {
     return angle;
 }
 
+// Geometry fixtures explicitly set the display target. Timing is tested below.
+void build_needle_fixture(const nfsu::VehicleState& car, double max, double red,
+                     std::uint32_t width, std::uint32_t height,
+                     nfsu::RaceHudFrame& frame) {
+    nfsu::build_race_hud_frame_for_car(car,max,red,width,height,frame);
+}
+
+void test_needle_cadence() {
+    nfsu::VehicleState car{};
+    car.gear=nfsu::kVehicleGearFirst;
+    nfsu::RaceHudFrame sixty,thirty,eight;
+    const auto draw=[&](nfsu::RaceHudFrame& frame) {
+        nfsu::build_race_hud_frame_for_car(car,8000,7500,1280,720,frame);
+    };
+    for (unsigned tick=1;tick<=60;++tick) {
+        car.step=tick*2;car.engine_rpm=5000+tick*50;
+        draw(sixty);
+        if (tick%2==0) draw(thirty);
+        if (tick%8==0) draw(eight);
+    }
+    // Catch-up may present once after multiple committed ticks.
+    draw(eight);
+    check(sixty.readout.rotation==thirty.readout.rotation &&
+          sixty.readout.rotation==eight.readout.rotation,
+          "presentation frequency and catch-up do not change the completed-state needle");
+    car.engine_rpm=3000;car.gear++;
+    draw(sixty);
+    check(sixty.readout.engine_rpm==3000 &&sixty.readout.gear==car.gear &&
+          sixty.readout.rotation==nfsu::race_hud_needle_rotation(3000,8000),
+          "original full physics engine RPM and gear reach the HUD together");
+    const auto paused=sixty;
+    for(unsigned present=0;present<30;++present) draw(sixty);
+    check(sixty.readout.rotation==paused.readout.rotation &&sixty.quads==paused.quads &&
+          std::memcmp(sixty.vertices.data(),paused.vertices.data(),sizeof(sixty.vertices))==0,
+          "paused and repeated frames leave all needle geometry unchanged");
+    car.step=0;car.engine_rpm=800;car.gear=nfsu::kVehicleGearFirst;
+    draw(sixty);
+    nfsu::RaceHudFrame reentry;draw(reentry);
+    check(sixty.readout.rotation==reentry.readout.rotation &&
+          std::memcmp(sixty.vertices.data(),reentry.vertices.data(),sizeof(sixty.vertices))==0,
+          "reset and fresh entry have identical geometry without stale follower state");
+}
+
 void test_needle_endpoint(const nfsu::RaceHudFrame& frame,
                           double label_x, double label_y, bool red = true) {
     const auto* face=&frame.vertices[(red ? 2 : 1)*4];
@@ -150,6 +193,8 @@ void test_dial() {
     nfsu::VehicleState car{};
     nfsu::RaceHudFrame frame;
     for (const auto& item : cases) {
+        // Each independent geometry fixture uses the completed car state.
+        frame = nfsu::RaceHudFrame{};
         const auto dial=nfsu::select_race_hud_dial(item.max,item.red);
         check(dial.lines_hash==item.lines && dial.red_hash==item.overlay,
               "retail max and redline select DYNTEX LINES and RED");
@@ -171,8 +216,7 @@ void test_dial() {
         if (item.max==8000.0 || item.max==9000.0) {
             test_needle_endpoint(frame,34.0,105.0,item.overlay!=0);
             car.engine_rpm=item.max;
-            nfsu::build_race_hud_frame_for_car(car,item.max,item.red,
-                                               1280,720,frame);
+            build_needle_fixture(car,item.max,item.red,1280,720,frame);
             test_needle_endpoint(frame,item.max==9000.0 ? 107.0 : 106.0,
                                  item.max==9000.0 ? 33.0 : 34.0,
                                  item.overlay!=0);
@@ -189,7 +233,7 @@ void test_rpm() {
          {std::pair<double,double>{0.0,44.0}, {800.0,61.1}, {7500.0,204.3125},
           {8000.0,215.0}, {9000.0,215.0}, {-100.0,44.0}}) {
         car.engine_rpm = rpm;
-        nfsu::build_race_hud_frame_for_car(car,8000,7500,1280,720,frame);
+        build_needle_fixture(car,8000,7500,1280,720,frame);
         check(std::abs(nfsu::race_hud_needle_rotation(rpm,8000)-rotation)<0.001,
               "retail stock needle rotation clamps at both endpoints");
         check(std::abs(needle_angle(frame)-(270.0-rotation))<1.0,
@@ -568,6 +612,7 @@ int main(int argc,char** argv) {
     }
     test_dial();
     test_rpm();
+    test_needle_cadence();
     test_needle_over_scale();
     test_gear_and_speed();
     test_layout_and_current_state();

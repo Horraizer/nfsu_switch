@@ -184,6 +184,52 @@ void curbs(std::ostream* output) {
     std::cout<<"PASS paired curb heights, speeds and approach angles with body contacts\n";
 }
 
+// A controlled brief edge transition: the front-left wheel starts on the
+// upper quadrant, the other wheels above the lower road. Advancing the real
+// RaceSession after GO exercises one-wheel damping before the rear-left
+// wheel reaches the upper road. Nonzero pad steering reaches every mode.
+void support_activation(std::ostream* output) {
+    VehicleTrackLayout layout;layout.name="stability-one-wheel";
+    const auto quad=[&](float x0,float y0,float x1,float y1,float z) {
+        VehicleTrackQuad q;
+        const float c[4][3]={{x0,y0,z},{x1,y0,z},{x1,y1,z},{x0,y1,z}};
+        std::memcpy(q.corner,c,sizeof(c));layout.quads.push_back(q);
+    };
+    quad(-32,-32,32,32,8);quad(0,0,32,32,10);
+    layout.loop={{{-24,-24}},{{24,-24}},{{24,24}},{{-24,24}}};layout.grid[2]=10;
+    VehicleTrackCourse course;std::string error;
+    require(build_vehicle_track_course(layout,course,error),"one-wheel course");
+    course.start.speed=20;
+    for(int mode=0;mode<3;++mode) {
+        RaceSession a(course,stock_240sx_vehicle_spec(),RaceSteering(mode));
+        RaceSession b(course,stock_240sx_vehicle_spec(),RaceSteering(mode));
+        require(a.start(error)&&b.start(error),"one-wheel sessions start");
+        bool low=false,damping=false,steering=false,steered_damping=false;double minup=1;
+        for(int tick=0;tick<174;++tick) {
+            const auto pad=race_input_frame({1,tick<163?0:gamepad_button_bit(GamepadButton::trigger_right),
+                tick<164?0:12000},tick);
+            require(a.advance(pad,error)&&b.advance(pad,error),"one-wheel sessions advance");
+            require(a.record()==b.record(),"one-wheel complete state deterministic");
+            for(const auto& t:a.physics_telemetry()) {
+                if(!t.step)continue;
+                const auto q=t.orientation;
+                minup=std::min(minup,1-2*(q.x*q.x+q.y*q.y));
+                low=low||t.model.grounded_wheels<2;
+                damping=damping||dot(t.model.low_support_torque,t.model.low_support_torque)>0;
+                steering=steering||std::fabs(t.model.steer_angle)>0;
+                steered_damping=steered_damping||(t.model.grounded_wheels<2 &&
+                    dot(t.model.low_support_torque,t.model.low_support_torque)>0 &&
+                    std::fabs(t.model.steer_angle)>0);
+                require(t.resets==0 && t.contacts==0,"edge witness has no concealed reset or hull impulse");
+                if(output)write(*output,"one-wheel-activation",mode,t);
+            }
+        }
+        require(low&&damping&&steering&&steered_damping,"actual low-support damping and pad steering exercised in every mode");
+        require(minup>.9,"one-wheel transition retains rollover safety");
+        std::cout<<"PASS one-wheel mode "<<mode<<" min-up "<<std::setprecision(17)<<minup<<" damping activated\n";
+    }
+}
+
 void retail(const std::filesystem::path& root,std::ostream* output) {
     VehicleTrackCourse course;std::string error;
     require(load_vehicle_track_course(root/"Tracks/TRACKB1003.lzc",2,0,0,0,course,error),"retail course");
@@ -205,7 +251,10 @@ void retail(const std::filesystem::path& root,std::ostream* output) {
                 if(output)write(*output,"event1-seed7",mode,t);
             }
         }
-        require(minup>.9 && saw_damping,"seed7 low-support rollover regression");
+        require(minup>.9,"seed7 rollover safety");
+        // Corrected lateral forces can keep recovered controllers supported.
+        // Their production activation coverage is the controlled edge above.
+        if(mode==0) require(saw_damping,"seed7 baseline low-support witness");
         auto pad=race_input_frame({1,gamepad_button_bit(GamepadButton::select),0},720);
         require(a.advance(pad,error)&&a.telemetry().reset==VehicleTrackReset::manual,"manual reset remains available");
         std::cout<<"PASS seed7 mode "<<mode<<" min-up "<<std::setprecision(17)<<minup<<" no automatic reset\n";
@@ -222,7 +271,7 @@ int main(int argc,char** argv) {
             else if(option=="--out") {const auto path=argument_path(argv[++i]);require(!std::filesystem::exists(path),"output must be fresh");output.open(path);require(bool(output),"output open");output<<std::setprecision(17);}
             else require(false,"unknown option");
         }
-        kernel();proving(output.is_open()?&output:nullptr);no_contact(output.is_open()?&output:nullptr);curbs(output.is_open()?&output:nullptr);
+        kernel();support_activation(output.is_open()?&output:nullptr);proving(output.is_open()?&output:nullptr);no_contact(output.is_open()?&output:nullptr);curbs(output.is_open()?&output:nullptr);
         if(!root.empty())retail(root,output.is_open()?&output:nullptr);
         if(output.is_open()){output.flush();require(bool(output),"output write");}
         std::cout<<"stability tests: all checks passed\n";return 0;

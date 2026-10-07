@@ -414,33 +414,28 @@ build/nfsu_probe vehicle-track --proving-ground <scenario>
 build-release/nfsu_probe vehicle-track --proving-ground <scenario>
 ```
 
-| Scenario | What it drives | Records | SHA-256 |
-| --- | --- | ---: | --- |
-| `rest` | at the start, the brake held for two seconds | 240 | `C67E6C0839F2CF29F89CA1381BC16A17A7DB2F9BF04944BE23A7313B814158C9` |
-| `drive` | full throttle for six seconds from (64, 48) across the seams at px 96 and 128 | 720 | `2D61E7FC354F7394BA4DC2721298041E7799D276BF3F9075C18DBB114D3BB79C` |
-| `slope` | full throttle from (152, 48) up the ramp onto the plateau | 780 | `712498B9A7053B6A1B8628AF44BF45019491DEAE5D81EE34F0A79F9DCC34FB3C` |
-| `wall` | full throttle from (32, 80) at 45 degrees into the north wall, then along it | 480 | `1B4E823836D8A5C89A4F83D469A93716C8215CCF6105FA5B1EB73C52A590183F` |
-| `wall-glance` | the same at 15 degrees from (32, 88) | 600 | `A8CBD1B047CDB1AB1DEE241E6AE0F08C8C64452A25020A2C5D6970D6EF9FA23A` |
-| `wall-fast` | from (32, 88) at 35 m/s, 15 degrees into the north wall | 240 | `5290BE387D92655B91ABEB16311F4ACEFFBEE5377795FD3F97EA70451DAD6517` |
-| `wall-square` | full throttle from (48, 80) straight at the north wall | 480 | `EE7FCBFC75A22E6FD93E94A2333E5102CC9C9FEA059F00BE0A0333FED3938B5B` |
-| `wall-oblique` | full throttle from (128, 48) along -y into the oblique wall | 480 | `0A7ABFBAF1E1CCF928FA4A4AF4CF47D1FAFBD494944BAEEB9403999ED5683407` |
-| `drop` | dropped from five metres above the start, no input | 360 | `C23FF8D9C84D990E56F36673D1494AA28DAA56222667050FD1B24E0F798DCE72` |
-| `leave` | full throttle from (176, 20) along -y off the open edge: out of bounds, reset | 600 | `34AC6A755315958245AC729D589C8AF651045D41A9F68AE75913AA1B6A28BDC7` |
-| `zone` | 0.6 throttle from (128, 60) into the `RESET` zone | 600 | `7B063440CD041607AB943115A820FBCFC437D1ACA765A773B2A3B202F6291491` |
-| `zone-point` | 0.6 throttle from (152, 60) into the `RESET_TO_POINT` zone | 720 | `1F01302B371D1F019746930FC80EFB2D7A58866B3B894A583B2DD434A009589B` |
-| `far` | at rest on the pad more than 5000 from the route: off the path, reset | 240 | `2AA0045CB95A3CA615A140A86AA32909321D6B4265B06BFBB59D82AE5C862F27` |
+| Scenario | What it drives |
+| --- | --- |
+| `rest` | at the start, the brake held for two seconds |
+| `drive` | full throttle for six seconds from (64, 48) across the seams at px 96 and 128 |
+| `slope` | full throttle from (152, 48) up the ramp onto the plateau |
+| `wall` | full throttle from (32, 80) at 45 degrees into the north wall, then along it |
+| `wall-glance` | the same at 15 degrees from (32, 88) |
+| `wall-fast` | from (32, 88) at 35 m/s, 15 degrees into the north wall |
+| `wall-square` | full throttle from (48, 80) straight at the north wall |
+| `wall-oblique` | full throttle from (128, 48) along -y into the oblique wall |
+| `drop` | dropped from five metres above the start, no input |
+| `leave` | full throttle from (176, 20) along -y off the open edge: out of bounds, reset |
+| `zone` | 0.6 throttle from (128, 60) into the `RESET` zone |
+| `zone-point` | 0.6 throttle from (152, 60) into the `RESET_TO_POINT` zone |
+| `far` | at rest on the pad more than 5000 from the route: off the path, reset |
 
-Each prints `pinned: EQUAL to docs/VEHICLE_TRACK.md` with its hash, in both
-builds; `nfsu_vehicle_track_tests` requires all thirteen and
-`nfsu_probe_vehicle_track_guards` requires the probe to print them. On the
-way, `leave` prints `bounds step 370: no collision under the car nor one unit
-along +x` and `reset step 372 out-of-bounds node 10 ground 176.000 40.000
-10.0000 heading 0x000002F4 speed 0.000`; `zone` a reset on step 510 onto
-node 15, (128, 72), heading 0x8000; `zone-point` one on step 510 to
-(40, 56) at 8.000 - the pose's speed; the velocity is 8.1 - and then
-`wrong-way-on` on step 512, because the zone faces +x where the route runs
--x along pz 72; `far` one on step 4 onto node 0. A reset line's speed is the
-pose's; every reset leaves the car moving 0.1 faster along its forward axis.
+Current record counts and hashes are owned by the proving-ground fixtures
+in `src/vehicle_track_course.cpp`, `nfsu_vehicle_track_tests` and
+`nfsu_probe_vehicle_track_guards`. The commands above print the measured
+values and compare them with those fixtures. The historical probe label
+`pinned: EQUAL to docs/VEHICLE_TRACK.md` refers to these source fixtures;
+this document no longer duplicates their current values.
 
 ### Event 1's circuit
 
@@ -454,17 +449,16 @@ build/nfsu_probe vehicle-track $R/Global/GLOBALB.BUN $R/FrontEnd/FrontB.lzc $R/T
 build-release/nfsu_probe vehicle-track $R/Global/GLOBALB.BUN $R/FrontEnd/FrontB.lzc $R/Tracks/TRACKB1003.lzc 1 <scenario>
 ```
 
-| Scenario | What it does | Records | SHA-256 |
-| --- | --- | ---: | --- |
-| `grid` | the brake held three seconds: settles, creeping 0.05 m down the 3.4-degree slope (the model's tyre is a damper at a standstill, [`VEHICLE.md`](VEHICLE.md)) | 360 | `36EF7514BA785600CB8647909664F4586A458B1E72FDF517E89C102679DEC8AD` |
-| `drive` | full throttle four seconds up the road: 77 km/h at pz 341, the start line crossed on step 132, every wheel on road | 480 | `1F5F4F438A19E6BBFD3C78D433419D9938755A90A0AC73FA58660EECCA0B821E` |
-| `wall` | turned 60 degrees left into the wall 10.6 m away: meets polygon 9374 on step 242 at 36 km/h, ends against it at 0.6 km/h | 480 | `58DD1D520E7F8451DC410984CD933DCA951D5E4F015BAF76F70F0BA39A2A316A` |
-| `wall-square` | turned 90 degrees, straight at it, over the 10 cm kerb at px 1638.5: polygon 9374 on step 231, depth 0.0786 | 360 | `90307C728F9FA8C68570108D3B3FA198727E3860CFB12D10F6F767E29B106BF0` |
-| `drop` | from five metres: the body meets road polygon 6772 on landing, step 130, and at 3 s the car rolls on at 4.4 km/h | 360 | `CF520902A784D7BD1070130FED20FC550709635AB4011BD85EBA1822813ACE61` |
-| `leave` | 20 m left of the grid and 1 up, over no cell: `bounds step 50`, then `reset step 52 out-of-bounds node 11 ground 1646.375 268.575 57.8409 heading 0x00004305 speed 0.000` | 360 | `452446A156A82F802E2B26333E5C24064C91286CABA221D63841E2E0CC324483` |
-
-The whole standard output of each, CR LF folded to LF, is the same in the
-Debug and the Release build. Every hash above is the same in both.
+The circuit scenarios are `grid`, `drive`, `wall`, `wall-square`, `drop`
+and `leave`. Their current record hashes and semantic reset/contact checks
+are checked by `nfsu_vehicle_track_circuit_retail`, which executes all six
+actual retail inputs with `nfsu_probe` and compares fresh telemetry with
+`src/vehicle_track_course.cpp`. It also requires supported grid/drive,
+start-line crossing, wall/road collision impulses without hidden resets,
+an airborne-to-supported landing, and the performed bounds reset. The test
+is registered with the read-only retail fixture in both default and Release
+gates. `nfsu_vehicle_track_tests` only checks the circuit fixture inventory;
+`nfsu_probe_vehicle_track_guards` covers missing-input refusals.
 
 ### On the console
 
@@ -518,11 +512,11 @@ Switch" rests on the census and on the model's own console run
   measurements preceded the project-wide rule. Recompiling each with the exact
   `build-switch` command, `-S` for `-c`:
 
-  | Object | As configured: fused / fmul | `-ffp-contract=off -fno-fast-math` removed: fused / fmul |
-  | --- | --- | --- |
-  | `vehicle_track.o` | 0 / 180 | 98 / 89 |
-  | `vehicle_track_course.o` | 0 / 35 | 21 / 14 |
-  | `track_contact.o` | 0 / 81 | 43 / 38 |
+| Object | As configured: fused / fmul | `-ffp-contract=off -fno-fast-math` removed: fused / fmul |
+| --- | --- | --- |
+| `vehicle_track.o` | 0 / 180 | 98 / 89 |
+| `vehicle_track_course.o` | 0 / 35 | 21 / 14 |
+| `track_contact.o` | 0 / 81 | 43 / 38 |
 
   The rest of the step and the geometry decoder now inherit the same
   project-wide contraction rule and participate in the same whole-tree

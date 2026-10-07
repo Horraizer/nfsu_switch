@@ -1,4 +1,8 @@
+#include "nfsu/frontend_glow_fast.h"
+#include "nfsu/race_effect_fast.h"
 #include "deko_renderer.h"
+#include "frontend_startup_trace.h"
+#include "nfsu/frontend.h"
 #include "nfsu/memory_budget.h"
 #include "nfsu/draw_execution.h"
 #include "nfsu/deko_gpfifo_budget.h"
@@ -16,6 +20,9 @@
 #include <new>
 #include <utility>
 #include <vector>
+#if defined(NFSU_DEKO_DEBUG_DIAGNOSTICS)
+#include <unistd.h>
+#endif
 
 namespace nfsu {
 namespace {
@@ -53,15 +60,29 @@ struct DekoRenderer::Impl {
     dk::UniqueCmdBuf cmd;
     std::array<dk::UniqueCmdBuf, 2> static_cmd;
     dk::MemBlock buffers, images, staging, uniforms, static_uniforms, descriptors, readback;
-    dk::MemBlock query_memory;
+    dk::MemBlock query_memory,frontend_query_memory;
+    bool frontend_profile_passes=false;
+    StartupJournal* startup_journal=nullptr;
+    bool trace(const char* stage,std::string& error,const char* name="none",std::uint64_t bytes=0) {
+        return trace_frontend_startup(startup_journal,stage,error,name,bytes,gpu_bytes);
+    }
+    std::array<bool,2> frontend_query_pending{};
+    unsigned frontend_profile_samples=0;
+    std::size_t frontend_car_begin=0,frontend_car_end=0;
     dk::MemBlock hud_image_memory, hud_staging, hud_vertices, hud_indices;
     dk::MemBlock hud_uniforms, hud_descriptors;
     dk::Image hud_image;
     bool hud_enabled = false;
-    dk::MemBlock reflection_uniforms;
+    dk::MemBlock reflection_uniforms, frontend_light_uniforms;
     dk::Image reflection_color, reflection_depth;
     bool reflection_ready = false;
+    dk::MemBlock frontend_cube_uniforms;
+    dk::Image frontend_cube_color,frontend_cube_depth;
+    bool frontend_cube_ready=false;
+    bool frontend_first_frame=true;
+    std::size_t frontend_cube_capacity=0;
     static constexpr std::size_t reflection_capacity = 4096;
+    std::size_t reflection_limit=reflection_capacity;
     std::uint32_t reflection_width = 160, reflection_height = 90;
     std::array<dk::MemBlock, 2> static_command_memory;
     std::array<dk::MemBlock, 2> command_memory;
@@ -70,6 +91,7 @@ struct DekoRenderer::Impl {
     std::vector<UploadHandle> handles;
     std::vector<UploadRecord> records;
     std::vector<dk::Image> textures;
+    std::size_t first_texture=kNoHandle;
     std::vector<ArenaAllocation> padded_staging;
     ArenaAllocation uniform_allocation;
     bool uniform_live = false;
@@ -87,7 +109,11 @@ struct DekoRenderer::Impl {
     std::array<dk::Image, 2> scene_colors;
     std::array<dk::Image, 2> depths;
     DekoSceneTarget scene_target;
-    dk::Shader vertex, textured, textured_opaque, fallback;
+    dk::Shader vertex, textured, textured_opaque, fallback, frontend_vertex, frontend_fragment;
+    dk::Shader frontend_car_vertex, frontend_car_fragment;
+#if defined(NFSU_FRONTEND_PREFLIGHT)
+    dk::Shader probe_vertex,probe_constant,probe_textured;
+#endif
     dk::Shader car_vertex, car_fragment, sky_vertex, sky_fragment;
     const RecordedCommands* commands = nullptr;
     const PreparedCommandSource* package = nullptr;
@@ -115,9 +141,17 @@ struct DekoRenderer::Impl {
     static void debug(void* owner, const char* context, DkResult result, const char* message) {
         if (result == DkResult_Success) return;
         auto& self = *static_cast<Impl*>(owner);
+        // Preserve the initiating fault instead of a later cascade.
+        if(self.diagnostic[0])return;
         // No allocation, exception or UI operation from a driver callback.
         std::snprintf(self.diagnostic, sizeof self.diagnostic, "deko3d %s (%u): %s",
             context ? context : "unknown", static_cast<unsigned>(result), message ? message : "failure");
+#if defined(NFSU_DEKO_DEBUG_DIAGNOSTICS)
+        // The validating SDK can report before the outer healthy() check.
+        // Write immediately without allocating or touching presentation UI.
+        ::write(STDERR_FILENO,self.diagnostic,std::strlen(self.diagnostic));
+        ::write(STDERR_FILENO,"\n",1);
+#endif
     }
 
     bool healthy(std::string& error) {
@@ -129,6 +163,7 @@ struct DekoRenderer::Impl {
     bool block(std::uint64_t bytes, std::uint32_t flags, const char* name,
                dk::MemBlock& out, std::string& error) {
         bytes = align_up(bytes ? bytes : 1, DK_MEMBLOCK_ALIGNMENT);
+        if(!trace("allocation.before",error,name,bytes))return false;
         if (bytes > kMaxUploadResourceBytes || gpu_bytes + bytes > kGpuBudgetPlaceholder) {
             error = std::string(name) + ": GPU memory budget exceeded"; return false;
         }
@@ -141,6 +176,7 @@ struct DekoRenderer::Impl {
         out = memory;
         blocks.push_back(std::move(memory));
         gpu_bytes += bytes;
+        if(!trace("allocation.after",error,name,bytes))return false;
         return true;
     }
 
@@ -224,29 +260,32 @@ struct DekoRenderer::Impl {
         return true;
     }
 
-    bool init_hud(const RaceHudAtlas& atlas, std::string& error) {
-        constexpr std::uint32_t side = kRaceHudAtlasSize;
-        constexpr std::uint32_t texel_bytes = side*side*4;
-        constexpr std::uint32_t vertex_slot_bytes =
-            sizeof(TrackVertex)*kRaceHudMaxQuads*4;
-        if (atlas.rgba.size() != texel_bytes) {
+    std::size_t overlay_capacity=0;
+    bool init_overlay(const std::vector<unsigned char>& pixels,std::uint32_t width,std::uint32_t height,
+                      std::size_t capacity,std::string& error) {
+        if(!width || !height || width>4096 || height>4096 || !capacity || capacity>kFrontendUiMaxQuads) {
+            error="overlay atlas dimensions or capacity invalid";return false;
+        }
+        const std::uint32_t texel_bytes=width*height*4;
+        const std::uint32_t vertex_slot_bytes=sizeof(TrackVertex)*capacity*4;
+        if (pixels.size() != texel_bytes) {
             error = "HUD atlas has the wrong size"; return false;
         }
         dk::ImageLayout layout;
         dk::ImageLayoutMaker{device}.setFormat(DkImageFormat_RGBA8_Unorm)
-            .setDimensions(side,side).initialize(layout);
+            .setDimensions(width,height).initialize(layout);
         if (!block(layout.getSize(),kImageFlags,"HUD image",hud_image_memory,error) ||
             !block(texel_bytes,kDataFlags,"HUD staging",hud_staging,error) ||
             !block(vertex_slot_bytes*2,kDataFlags,"HUD vertices",hud_vertices,error) ||
-            !block(kRaceHudMaxQuads*6*sizeof(std::uint16_t),kDataFlags,
+            !block(capacity*6*sizeof(std::uint16_t),kDataFlags,
                    "HUD indices",hud_indices,error) ||
             !block(3*256,kDataFlags,"HUD uniforms",hud_uniforms,error) ||
             !block(2*kDrawDescriptorBytes,kDataFlags,"HUD descriptors",hud_descriptors,error))
             return false;
         hud_image.initialize(layout,hud_image_memory,0);
-        std::memcpy(hud_staging.getCpuAddr(),atlas.rgba.data(),texel_bytes);
+        std::memcpy(hud_staging.getCpuAddr(),pixels.data(),texel_bytes);
         auto* indices=static_cast<std::uint16_t*>(hud_indices.getCpuAddr());
-        for (std::uint16_t i=0;i<kRaceHudMaxQuads;++i) {
+        for (std::uint16_t i=0;i<capacity;++i) {
             const std::uint16_t b=i*4;
             const std::uint16_t six[6]={b,static_cast<std::uint16_t>(b+1),
                 static_cast<std::uint16_t>(b+2),b,
@@ -278,15 +317,18 @@ struct DekoRenderer::Impl {
         std::memcpy(static_cast<unsigned char*>(hud_descriptors.getCpuAddr())+
                     kDrawDescriptorBytes,&sampler_descriptor,sizeof sampler_descriptor);
         begin();
-        cmd.copyBufferToImage({hud_staging.getGpuAddr(),side*4,texel_bytes},
-                              view,{0,0,0,side,side,1});
+        cmd.copyBufferToImage({hud_staging.getGpuAddr(),width*4,texel_bytes},
+                              view,{0,0,0,width,height,1});
         cmd.barrier(DkBarrier_Full,DkInvalidateFlags_Image|
                     DkInvalidateFlags_Descriptors);
         if (!submit(error)) return false;
-        hud_enabled=true;
+        overlay_capacity=capacity;hud_enabled=true;
         return true;
     }
 
+    bool init_hud(const RaceHudAtlas& atlas,std::string& error) {
+        return init_overlay(atlas.rgba,kRaceHudAtlasSize,kRaceHudAtlasSize,kRaceHudMaxQuads,error);
+    }
     float source_width() const { return static_cast<float>(commands->width); }
     float source_height() const { return static_cast<float>(commands->height); }
 
@@ -335,9 +377,10 @@ struct DekoRenderer::Impl {
             for (std::size_t i = source.static_track_draw_count(); i < source.draw_count(); ++i)
                 dynamic_definitions.push_back(&source.draw_view(i).definition);
         } else dynamic_capacity = draw_capacity;
+        reflection_limit=(source.frame.options[2]&8U)?source.reflection_draw_count():reflection_capacity;
         plan.uniform_bytes = static_cast<std::uint32_t>((1 + 2 * dynamic_capacity) * 256);
         plan.command_bytes = static_cast<std::uint32_t>(65536 +
-            (draw_capacity + source.resource_table().resources.size() + ((source.frame.options[2] & 2U) ? reflection_capacity : 0)) * 4096);
+            (draw_capacity + 6*source.frontend_cube_draws.size() + source.resource_table().resources.size() + ((source.frame.options[2] & 10U) ? reflection_limit : 0)) * 4096);
         uniform_stride = plan.uniform_bytes;
         profile_enabled = profile_frame && presentation;
         const auto uniform_bytes = std::uint64_t{uniform_stride} * (presentation ? 2 : 1);
@@ -373,7 +416,7 @@ struct DekoRenderer::Impl {
             !block(plan.staging_bytes,
                    kDataFlags, "texture staging", staging, error) ||
             !block(uniform_bytes, kDataFlags, "draw uniforms", uniforms, error) ||
-            !block(plan.descriptor_bytes + ((source.frame.options[2] & 2U) ? 64 : 0), kDataFlags, "texture descriptors", descriptors, error)) return false;
+            !block(plan.descriptor_bytes + (((source.frame.options[2] & 10U) ? 32U : 0U)+(!source.frontend_cube_draws.empty()?32U:0U)+(((source.frame.options[2] & 10U) || !source.frontend_cube_draws.empty())?32U:0U)), kDataFlags, "texture descriptors", descriptors, error)) return false;
         if (package && !block((static_instances + static_definitions.size()) * 256ULL,
                 kDataFlags, "prepared track uniforms", static_uniforms, error)) return false;
         if (!arena(buffer_arena, need.buffer_extent, error,
@@ -384,7 +427,7 @@ struct DekoRenderer::Impl {
             !ledger.create({&buffer_arena, &image_arena, &staging_arena}, layout_query, 8192, error) ||
             !ledger.upload_table(source.resource_table(), 1, handles, error)) return false;
         command_bytes[0] = plan.command_bytes;
-        command_bytes[1] = static_cast<std::uint32_t>(65536 + (draw_capacity + ((source.frame.options[2] & 2U) ? reflection_capacity : 0)) * 4096);
+        command_bytes[1] = static_cast<std::uint32_t>(65536 + (draw_capacity + 6*source.frontend_cube_draws.size() + ((source.frame.options[2] & 10U) ? reflection_limit : 0)) * 4096);
         if (!block(command_bytes[0], kDataFlags, "command memory", command_memory[0], error) ||
             (presentation && !block(command_bytes[1], kDataFlags, "second frame command memory",
                                     command_memory[1], error))) return false;
@@ -408,6 +451,7 @@ struct DekoRenderer::Impl {
                             r.data, static_cast<std::size_t>(r.bytes));
                 continue;
             }
+            if(first_texture==kNoHandle)first_texture=i;
             auto offset = placement.staging.offset;
             TextureCopyPlan copy;
             if (!plan_texture_copy(r, copy, error)) return false;
@@ -439,7 +483,7 @@ struct DekoRenderer::Impl {
             .setWrapMode(DkWrapMode_Repeat, DkWrapMode_Repeat, DkWrapMode_Repeat);
         dk::SamplerDescriptor sampler_descriptor;
         sampler_descriptor.initialize(sampler);
-        sampler_offset = plan.sampler_offset + ((source.frame.options[2] & 2U) ? 32 : 0);
+        sampler_offset = plan.sampler_offset+((source.frame.options[2]&10U)?32U:0U)+(!source.frontend_cube_draws.empty()?32U:0U);
         std::memcpy(static_cast<unsigned char*>(descriptors.getCpuAddr()) + sampler_offset,
                     &sampler_descriptor, sizeof sampler_descriptor);
         sampler.setFilter(DkFilter_Linear, DkFilter_Linear);
@@ -447,7 +491,7 @@ struct DekoRenderer::Impl {
         std::memcpy(static_cast<unsigned char*>(descriptors.getCpuAddr()) +
                         sampler_offset + kDrawDescriptorBytes,
                     &sampler_descriptor, sizeof sampler_descriptor);
-        if ((source.frame.options[2] & 2U) != 0) {
+        if ((source.frame.options[2] & 10U) != 0 || !source.frontend_cube_draws.empty()) {
         sampler.setFilter(DkFilter_Linear, DkFilter_Linear)
             .setWrapMode(DkWrapMode_ClampToEdge, DkWrapMode_ClampToEdge, DkWrapMode_ClampToEdge);
         sampler_descriptor.initialize(sampler);
@@ -467,10 +511,10 @@ struct DekoRenderer::Impl {
             error = "draw uniform reservation failed"; return false;
         }
         uniform_live = true;
-        if ((source.frame.options[2] & 2U) != 0) {
-        if (!block(2*(1+2*reflection_capacity)*256, kDataFlags, "reflection uniforms", reflection_uniforms, error)) return false;
-        reflection_width = std::min(160U, source.width);
-        reflection_height = std::max(1U, reflection_width * source.height / source.width);
+        if ((source.frame.options[2] & 10U) != 0) {
+        if (!block(2*(1+2*reflection_limit)*256, kDataFlags, "reflection uniforms", reflection_uniforms, error)) return false;
+        reflection_width = (source.frame.options[2]&8U)?320U:std::min(160U,source.width);
+        reflection_height = (source.frame.options[2]&8U)?240U:std::max(1U,reflection_width*source.height/source.width);
         dk::ImageLayout reflected_color_layout, reflected_depth_layout;
         dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender)
             .setFormat(DkImageFormat_RGBA8_Unorm).setDimensions(reflection_width, reflection_height).initialize(reflected_color_layout);
@@ -484,11 +528,37 @@ struct DekoRenderer::Impl {
         dk::ImageView reflected_view{reflection_color};
         dk::ImageDescriptor reflected_descriptor;
         reflected_descriptor.initialize(reflected_view);
-        std::memcpy(static_cast<unsigned char*>(descriptors.getCpuAddr()) + plan.sampler_offset,
+        std::memcpy(static_cast<unsigned char*>(descriptors.getCpuAddr()) + plan.sampler_offset+(!source.frontend_cube_draws.empty()?32U:0U),
                     &reflected_descriptor, sizeof reflected_descriptor);
         reflection_ready = true;
         }
+        if(!source.frontend_cube_draws.empty()) {
+            if((source.frame.options[2]&2U)!=0){error="frontend cube and race reflection targets cannot share a frame";return false;}
+            frontend_cube_capacity=source.frontend_cube_draws.size();
+            if(!block(2*(6+2*frontend_cube_capacity)*256,kDataFlags,"frontend cube uniforms",frontend_cube_uniforms,error))return false;
+            dk::ImageLayout color_layout,z_layout;
+            dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender)
+                .setFormat(DkImageFormat_RGBA8_Unorm).setDimensions(384,256).initialize(color_layout);
+            dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender)
+                .setFormat(DkImageFormat_ZF32).setDimensions(384,256).initialize(z_layout);
+            dk::MemBlock color_memory,z_memory;
+            if(!block(color_layout.getSize(),kImageFlags,"frontend cube faces",color_memory,error) ||
+               !block(z_layout.getSize(),kImageFlags,"frontend cube depth",z_memory,error))return false;
+            frontend_cube_color.initialize(color_layout,color_memory,0);
+            frontend_cube_depth.initialize(z_layout,z_memory,0);
+            dk::ImageDescriptor descriptor;descriptor.initialize(dk::ImageView{frontend_cube_color});
+            std::memcpy(static_cast<unsigned char*>(descriptors.getCpuAddr())+plan.sampler_offset,&descriptor,sizeof descriptor);
+            frontend_cube_ready=true;
+        }
+#if defined(NFSU_FRONTEND_PREFLIGHT)
+        if(frontend_cube_ready && (!shader("frontend_probe.vert",DkStage_Vertex,probe_vertex,error) ||
+            !shader("frontend_probe.frag",DkStage_Fragment,probe_constant,error) ||
+            !shader("frontend_probe_textured.frag",DkStage_Fragment,probe_textured,error)))return false;
+#endif
+        if (!block(2*256,kDataFlags,"frontend light uniforms",frontend_light_uniforms,error))return false;
         write_uniforms(source, 0);
+        if (!shader("frontend_car.vert",DkStage_Vertex,frontend_car_vertex,error) ||
+            !shader("frontend_car.frag",DkStage_Fragment,frontend_car_fragment,error))return false;
         if (!shader("car_shaded.vert", DkStage_Vertex, car_vertex, error) ||
             !shader("car_shaded.frag", DkStage_Fragment, car_fragment, error) ||
             !shader("sky.vert", DkStage_Vertex, sky_vertex, error) ||
@@ -496,6 +566,8 @@ struct DekoRenderer::Impl {
             !shader("placed.vert", DkStage_Vertex, vertex, error) ||
             !shader("textured.frag", DkStage_Fragment, textured, error) ||
             !shader("textured_opaque.frag", DkStage_Fragment, textured_opaque, error) ||
+            !shader("frontend_ui.vert", DkStage_Vertex, frontend_vertex, error) ||
+            !shader("frontend_ui.frag", DkStage_Fragment, frontend_fragment, error) ||
             !shader("fallback.frag", DkStage_Fragment, fallback, error)) return false;
         if (package && !prepare_static_commands(source, presentation, error)) return false;
         dk::ImageLayout color_layout, depth_layout, scene_layout;
@@ -513,21 +585,29 @@ struct DekoRenderer::Impl {
             auto& color = colors[i];
             dk::MemBlock memory;
             if (!block(color_layout.getSize(), kImageFlags, "present image", memory, error)) return false;
+            if(!trace("image.initialize.before",error,"present image",color_layout.getSize()))return false;
             color.initialize(color_layout, memory, 0);
+            if(!trace("image.initialize.after",error,"present image",color_layout.getSize()))return false;
             if (scene_target.upscale) {
                 dk::MemBlock scene_memory;
                 if (!block(scene_layout.getSize(), kImageFlags, "scene image", scene_memory, error)) return false;
+                if(!trace("image.initialize.before",error,"scene image",scene_layout.getSize()))return false;
                 scene_colors[i].initialize(scene_layout, scene_memory, 0);
+                if(!trace("image.initialize.after",error,"scene image",scene_layout.getSize()))return false;
             }
         }
         for (std::size_t i = 0; i < (presentation ? 2U : 1U); ++i) {
             dk::MemBlock depth_memory;
             if (!block(depth_layout.getSize(), kImageFlags, "depth image", depth_memory, error)) return false;
+            if(!trace("image.initialize.before",error,"depth image",depth_layout.getSize()))return false;
             depths[i].initialize(depth_layout, depth_memory, 0);
+            if(!trace("image.initialize.after",error,"depth image",depth_layout.getSize()))return false;
         }
         if (presentation) {
             const std::array<const DkImage*, 2> targets{&colors[0], &colors[1]};
+            if(!trace("swapchain.before",error))return false;
             swapchain = dk::SwapchainMaker{device, nwindowGetDefault(), targets}.create();
+            if(!trace("swapchain.after",error))return false;
             if (!swapchain || !healthy(error)) {
                 if (error.empty()) error = "deko3d swapchain creation failed";
                 return false;
@@ -603,15 +683,28 @@ struct DekoRenderer::Impl {
         auto* data = static_cast<unsigned char*>(uniforms.getCpuAddr()) +
             uniform_allocation.offset + slot * uniform_stride;
         std::memcpy(data, &source.frame, sizeof source.frame);
+        if(frontend_cube_ready) {
+            auto* cube=static_cast<unsigned char*>(frontend_cube_uniforms.getCpuAddr())+slot*(6+2*frontend_cube_capacity)*256;
+            for(unsigned face=0;face<6;++face)std::memcpy(cube+face*256,&source.frontend_cube_frames[face],sizeof(DrawFrameUniform));
+            for(std::size_t i=0;i<source.frontend_cube_draws.size();++i) {
+                std::memcpy(cube+(6+2*i)*256,&source.frontend_cube_draws[i].placement,sizeof(DrawInstanceUniform));
+                std::memcpy(cube+(7+2*i)*256,&source.frontend_cube_draws[i].material,sizeof(DrawMaterialUniform));
+            }
+        }
+        std::memcpy(static_cast<unsigned char*>(frontend_light_uniforms.getCpuAddr())+slot*256,
+            &source.frontend_light,sizeof source.frontend_light);
         auto mirror = source.frame;
         mirror.options[2] = (mirror.options[2] & 1U) | 4U;
+        if((source.frame.options[2]&8U)!=0)mirror=source.frontend_floor_frame;
         if (reflection_ready) {
-            auto* reflected = static_cast<unsigned char*>(reflection_uniforms.getCpuAddr()) + slot*(1+2*reflection_capacity)*256;
+            auto* reflected = static_cast<unsigned char*>(reflection_uniforms.getCpuAddr()) + slot*(1+2*reflection_limit)*256;
             std::memcpy(reflected, &mirror, sizeof mirror);
-            for (std::size_t i = 0; i < source.reflection_draw_count() && i < reflection_capacity; ++i) {
+            for (std::size_t i = 0; i < source.reflection_draw_count() && i < reflection_limit; ++i) {
                 const auto& draw = source.reflection_draw(i);
                 std::memcpy(reflected+(1+2*i)*256, &draw.placement, sizeof draw.placement);
-                std::memcpy(reflected+(2+2*i)*256, &draw.material, sizeof draw.material);
+                auto material=source.frontend_light_enabled ? draw.material :
+                    race_effect_gpu_material(draw,draw.material);
+                std::memcpy(reflected+(2+2*i)*256, &material, sizeof material);
             }
         }
         const auto first_dynamic = package ? source.static_track_draw_count() : 0;
@@ -619,27 +712,35 @@ struct DekoRenderer::Impl {
             const auto view = source.draw_view(i);
             const auto index = i - first_dynamic;
             std::memcpy(data + (1+2*index)*256, &view.placement, sizeof(DrawInstanceUniform));
-            std::memcpy(data + (2+2*index)*256, &view.material, sizeof(DrawMaterialUniform));
+            // Copy a private GPU payload; the recorded retail material stays intact.
+            auto material=view.material;
+            if(source.frontend_light_enabled && frontend_glow_fast(view,source.frame))
+                material.fallback[3]=3;
+            else if(!source.frontend_light_enabled)
+                material=race_effect_gpu_material(view.definition,view.material);
+            std::memcpy(data + (2+2*index)*256, &material, sizeof(DrawMaterialUniform));
         }
     }
 
     template<class Recorder>
     void emit_draw(Recorder& out, const RecordedDraw& draw,
                    std::uint64_t instance_addr, std::uint64_t material_addr,
-                   bool bind_fixed_state = true) {
+                   bool bind_fixed_state = true,dk::Shader* fragment_override=nullptr) {
         const auto& state = draw.pipeline;
         const bool has_texture = draw.texture_resource != kNoHandle;
         const bool cutout = deko_textured_uses_cutout_shader(
             state.alpha_test != sm::CompareOp::always, commands->frame.options[3]);
-        const bool shaded = std::strcmp(draw.program->name, "car_shaded_textured") == 0 ||
+        const bool frontend=std::strcmp(draw.program->name,"frontend_car_textured")==0;
+        const bool shaded = frontend || std::strcmp(draw.program->name, "car_shaded_textured") == 0 ||
                             std::strcmp(draw.program->name, "car_shaded_linear_textured") == 0;
         const bool sky = std::strcmp(draw.program->name, "sky_textured") == 0;
-        dk::Shader* fragment = shaded ? &car_fragment : sky ? &sky_fragment :
+        dk::Shader* fragment = frontend ? &frontend_car_fragment : shaded ? &car_fragment : sky ? &sky_fragment :
             !has_texture ? &fallback :
             cutout ? &textured : &textured_opaque;
+        if(fragment_override)fragment=fragment_override;
         if (bind_fixed_state)
             out.bindShaders(DkStageFlag_GraphicsMask,
-                            {shaded ? &car_vertex : sky ? &sky_vertex : &vertex, fragment});
+                            {frontend ? &frontend_car_vertex : shaded ? &car_vertex : sky ? &sky_vertex : &vertex, fragment});
         if (instance_addr)
             out.bindUniformBuffer(DkStage_Vertex, 1, instance_addr, sizeof(DrawInstanceUniform));
         out.bindUniformBuffer(DkStage_Fragment, 2, material_addr, sizeof(DrawMaterialUniform));
@@ -666,6 +767,7 @@ struct DekoRenderer::Impl {
             out.bindColorWriteState(write); out.bindBlendStates(0, blend); out.bindDepthStencilState(z);
             out.setAlphaRef(state.alpha_ref/255.0F);
             std::array<DkVtxAttribState, 4> attributes{};
+            for(auto& attribute:attributes)attribute={0,1,0,DkVtxAttribSize_1x32,DkVtxAttribType_Float,0};
             for (std::size_t a = 0; a < draw.program->attribute_count; ++a) {
                 const auto& input = draw.program->attributes[a];
                 const bool byte = input.format == sm::VertexFormat::unorm8x4;
@@ -673,10 +775,11 @@ struct DekoRenderer::Impl {
                     byte ? DkVtxAttribSize_4x8 : input.format == sm::VertexFormat::float32x3 ? DkVtxAttribSize_3x32 : DkVtxAttribSize_2x32,
                     byte ? DkVtxAttribType_Unorm : DkVtxAttribType_Float, 0};
             }
-            const dk::detail::ArrayProxy<DkVtxAttribState const> attrib_states(
-                static_cast<std::uint32_t>(draw.program->attribute_count),
-                attributes.data());
-            out.bindVtxAttribState(attrib_states);
+            // Attribute locations can be sparse (FE car: 0, 2, 3). The
+            // API count covers locations, not the number of manifest records.
+            // Match SDK trailing defaults: holes are fixed valid float slots,
+            // not zero descriptors with an invalid size and active fetch.
+            out.bindVtxAttribState(attributes);
             out.bindVtxBufferState(DkVtxBufferState{draw.program->buffers[0].stride, 0});
         }
         const auto& v = records[draw.vertex_resource].placement;
@@ -697,9 +800,12 @@ struct DekoRenderer::Impl {
         auto* data = static_cast<unsigned char*>(static_uniforms.getCpuAddr());
         for (std::size_t i = 0; i < static_instances; ++i)
             std::memcpy(data + i*256, &source.static_track_instance(i), sizeof(DrawInstanceUniform));
-        for (std::size_t i = 0; i < static_definitions.size(); ++i)
-            std::memcpy(data + (static_instances+i)*256, &static_definitions[i]->material,
-                        sizeof(DrawMaterialUniform));
+        for (std::size_t i = 0; i < static_definitions.size(); ++i) {
+            const auto& draw=*static_definitions[i];
+            const auto material=source.frontend_light_enabled ? draw.material :
+                race_effect_gpu_material(draw,draw.material);
+            std::memcpy(data + (static_instances+i)*256, &material, sizeof material);
+        }
         if (static_definitions.empty()) return true;
         const auto bytes = 65536ULL + draw_capacity*4096ULL;
         for (std::size_t slot = 0; slot < (presentation ? 2U : 1U); ++slot) {
@@ -773,18 +879,19 @@ struct DekoRenderer::Impl {
         return true;
     }
 
-    void emit_hud(std::size_t slot, const RaceHudFrame& frame) {
-        if (!hud_enabled || !frame.quads || frame.quads>kRaceHudMaxQuads) return;
-        constexpr std::uint32_t slot_bytes=sizeof(TrackVertex)*kRaceHudMaxQuads*4;
+    void emit_overlay(std::size_t slot,const TrackVertex* input,std::size_t quads,
+                      const unsigned char* additive=nullptr) {
+        if (!hud_enabled || !quads || quads>overlay_capacity) return;
+        const std::uint32_t slot_bytes=sizeof(TrackVertex)*overlay_capacity*4;
         auto* vertices=reinterpret_cast<TrackVertex*>(
             static_cast<unsigned char*>(hud_vertices.getCpuAddr())+slot*slot_bytes);
-        for (std::size_t i=0;i<frame.quads*4;++i) {
-            vertices[i]=frame.vertices[i];
+        for (std::size_t i=0;i<quads*4;++i) {
+            vertices[i]=input[i];
             vertices[i].px-=source_width()*0.5F;
             vertices[i].py-=source_height()*0.5F;
             vertices[i].pz=-1;
         }
-        cmd.bindShaders(DkStageFlag_GraphicsMask,{&vertex,&textured_opaque});
+        cmd.bindShaders(DkStageFlag_GraphicsMask,{additive?&frontend_vertex:&vertex,additive?&frontend_fragment:&textured_opaque});
         const auto base=hud_uniforms.getGpuAddr();
         cmd.bindUniformBuffer(DkStage_Vertex,0,base,sizeof(DrawFrameUniform));
         cmd.bindUniformBuffer(DkStage_Fragment,0,base,sizeof(DrawFrameUniform));
@@ -816,13 +923,43 @@ struct DekoRenderer::Impl {
         cmd.bindVtxAttribState(attributes);
         cmd.bindVtxBufferState(DkVtxBufferState{sizeof(TrackVertex),0});
         cmd.bindVtxBuffer(0,hud_vertices.getGpuAddr()+slot*slot_bytes,
-                          frame.quads*4*sizeof(TrackVertex));
+                          quads*4*sizeof(TrackVertex));
         cmd.bindIdxBuffer(DkIdxFormat_Uint16,hud_indices.getGpuAddr());
-        cmd.drawIndexed(DkPrimitive_Triangles,frame.quads*6,1,0,0,0);
+        for(std::size_t first=0;first<quads;) {
+            const bool add=additive && additive[first];
+            std::size_t end=first+1;
+            while(end<quads && bool(additive && additive[end])==add)++end;
+            blend.setFactors(DkBlendFactor_SrcAlpha,add?DkBlendFactor_One:DkBlendFactor_InvSrcAlpha,
+                             DkBlendFactor_One,DkBlendFactor_Zero);
+            cmd.bindBlendStates(0,blend);
+            cmd.drawIndexed(DkPrimitive_Triangles,(end-first)*6,1,first*6,0,0);first=end;
+        }
+    }
+
+    void consume_frontend_query(std::size_t slot) {
+        if(!frontend_query_pending[slot])return;
+        frontend_query_pending[slot]=false;
+        const auto* words=static_cast<const std::uint64_t*>(frontend_query_memory.getCpuAddr())+slot*26;
+        double elapsed[9]{};
+        for(unsigned i=0;i<9;++i) {
+            const auto a=words[i*2+1],b=words[(i+1)*2+1];
+            if(!a || b<a){std::printf("MENU GPU invalid timestamp sample\n");return;}
+            elapsed[i]=dkTimestampToNs(b-a)/1000000.0;
+        }
+        const auto road_end=words[21],car_end=words[23],sprites_end=words[25];
+        if(road_end<words[15] || car_end<road_end || sprites_end<car_end || words[17]<sprites_end) {
+            std::printf("MENU GPU invalid main span timestamp sample\n");return;
+        }
+        if(++frontend_profile_samples<=3 || frontend_profile_samples%60==0)
+            std::printf("MENU GPU timestamp_ms cube0=%.3f cube1=%.3f cube2=%.3f cube3=%.3f cube4=%.3f cube5=%.3f floor=%.3f main_upscale=%.3f ui=%.3f main_road=%.3f main_car=%.3f main_sprites_upscale=%.3f main_sprites=%.3f upscale=%.3f (profile barriers enabled)\n",
+                elapsed[0],elapsed[1],elapsed[2],elapsed[3],elapsed[4],elapsed[5],elapsed[6],elapsed[7],elapsed[8],
+                dkTimestampToNs(road_end-words[15])/1000000.0,dkTimestampToNs(car_end-road_end)/1000000.0,
+                dkTimestampToNs(words[17]-car_end)/1000000.0,
+                dkTimestampToNs(sprites_end-car_end)/1000000.0,dkTimestampToNs(words[17]-sprites_end)/1000000.0);
     }
 
     bool record_frame(const dk::Image& target, std::size_t slot,
-                      const RaceHudFrame* hud, std::string& error) {
+                      const RaceHudFrame* hud, std::string& error,const FrontendUiFrame* frontend=nullptr) {
         if (package && !prepare_visible_commands(slot, error)) return false;
         const auto track_draws = package ? commands->static_track_draw_count() : 0;
         const auto calls = static_cast<std::uint32_t>(static_lists[slot].size());
@@ -836,14 +973,132 @@ struct DekoRenderer::Impl {
         gpfifo_usage.last_entries = entries;
         gpfifo_usage.max_entries = std::max(gpfifo_usage.max_entries, entries);
         begin(slot);
+        // Diagnose the first live FE frame without dropping any pass. Waiting
+        // completes each command-memory use before begin() reuses that slot.
+        // Later frames keep the ordinary asynchronous presentation path.
+        #if defined(NFSU_FRONTEND_PREFLIGHT)
+        const bool diagnose=frontend && frontend_first_frame;
+#else
+        constexpr bool diagnose=false;
+#endif
+        const auto checkpoint=[&](const char* pass) {
+            if(!diagnose)return true;
+            std::printf("frontend GPU first frame: submit %s\n",pass);
+            cmd.barrier(DkBarrier_Full,DkInvalidateFlags_Image|DkInvalidateFlags_L2Cache);
+            if(!submit(error)) {error=std::string("first-frame ")+pass+": "+error;return false;}
+            std::printf("frontend GPU first frame: complete %s\n",pass);
+            begin(slot);return true;
+        };
         if (profile_enabled)
             cmd.reportCounter(DkCounter_TimestampPipelineTop, query_memory.getGpuAddr()+slot*32);
+        const auto mark_frontend=[&](unsigned point) {
+            if(!frontend || !frontend_profile_passes)return;
+            if(point)cmd.barrier(DkBarrier_Fragments,0);
+            cmd.reportCounter(point?DkCounter_Timestamp:DkCounter_TimestampPipelineTop,
+                frontend_query_memory.getGpuAddr()+slot*208+point*16);
+        };
+        mark_frontend(0);
         const auto base = uniforms.getGpuAddr() + uniform_allocation.offset + slot * uniform_stride;
-        cmd.bindImageDescriptorSet(descriptors.getGpuAddr(), static_cast<std::uint32_t>(handles.size()+(reflection_ready ? 1 : 0)));
-        cmd.bindSamplerDescriptorSet(descriptors.getGpuAddr()+sampler_offset, reflection_ready ? 3 : 2);
+        cmd.bindImageDescriptorSet(descriptors.getGpuAddr(), static_cast<std::uint32_t>(handles.size()+(reflection_ready?1:0)+(frontend_cube_ready?1:0)));
+        cmd.bindSamplerDescriptorSet(descriptors.getGpuAddr()+sampler_offset, (reflection_ready || frontend_cube_ready) ? 3 : 2);
         cmd.barrier(DkBarrier_None, DkInvalidateFlags_Shader | DkInvalidateFlags_Descriptors);
-        if ((commands->frame.options[2] & 2U) != 0) {
-            if (!reflection_ready || commands->reflection_draw_count() > reflection_capacity) {
+        if(frontend_cube_ready) {
+            // Both basic fragment stages declare sampler1. Define its handle
+            // even for capture frames whose reflection branch is inactive.
+            // This table entry is an ordinary uploaded asset, never the
+            // capture target being written. Authored active bindings override
+            // it after capture exactly as before.
+            if(first_texture==kNoHandle){error="frontend capture has no safe uploaded texture";return false;}
+            cmd.bindTextures(DkStage_Fragment,1,dkMakeTextureHandle(static_cast<std::uint32_t>(first_texture),2));
+            if(commands->frontend_cube_draws.size()!=frontend_cube_capacity){error="frontend cube draw capacity changed";return false;}
+            dk::ImageView color{frontend_cube_color},z{frontend_cube_depth};
+            cmd.bindRenderTargets(&color,&z);
+            cmd.setViewports(0,{{0,0,384,256,0,1}});cmd.setScissors(0,{{0,0,384,256}});
+            cmd.clearColor(0,DkColorMask_RGBA,0,0,0,1);cmd.clearDepthStencil(true,1,0,0);
+            if(!checkpoint("cube target bind/clear"))return false;
+            const auto cube=frontend_cube_uniforms.getGpuAddr()+slot*(6+2*frontend_cube_capacity)*256;
+            // Native quality3 face mask updates all six; each logical face is
+            // 128-square. Atlas packing changes neither orientation nor view.
+            for(unsigned face=0;face<6;++face) {
+                cmd.setViewports(0,{{float((face%3)*128),float((face/3)*128),128,128,0,1}});
+                cmd.setScissors(0,{{(face%3)*128,(face/3)*128,128,128}});
+                cmd.bindUniformBuffer(DkStage_Vertex,0,cube+face*256,sizeof(DrawFrameUniform));
+                cmd.bindUniformBuffer(DkStage_Fragment,0,cube+face*256,sizeof(DrawFrameUniform));
+                const RecordedDraw* previous=nullptr;
+                std::size_t emitted=0;
+                for(std::size_t i=0;i<commands->frontend_cube_draws.size();++i) {
+                    const auto& draw=commands->frontend_cube_draws[i];
+                    if(draw.frontend_sprite_view && draw.frontend_sprite_view!=face+10)continue;
+                    if(diagnose && previous && (previous->program!=draw.program ||
+                        bool(previous->frontend_sprite_view)!=bool(draw.frontend_sprite_view))) {
+                        char pass[96];std::snprintf(pass,sizeof pass,"cube face%u %s %s",face,
+                            previous->program->name,previous->frontend_sprite_view?"sprites":"solids");
+                        if(!checkpoint(pass))return false;
+                        previous=nullptr;
+                    }
+                    if(diagnose && !emitted)std::printf(
+                        "frontend GPU first cube draw: face%u %s %s vertex%zu index%zu texture%zu first%u count%u\n",
+                        face,draw.name.c_str(),draw.program->name,draw.vertex_resource,draw.index_resource,
+                        draw.texture_resource,draw.first_index,draw.index_count);
+#if defined(NFSU_FRONTEND_PREFLIGHT)
+                    if(diagnose && face==0 && !emitted) {
+                        const auto& vb=records.at(draw.vertex_resource).placement;
+                        const auto& ib=records.at(draw.index_resource).placement;
+                        const auto& resources=commands->resource_table().resources;
+                        const auto& vr=resources.at(draw.vertex_resource);
+                        const auto& ir=resources.at(draw.index_resource);
+                        const auto instance=cube+(6+2*i)*256,material=cube+(7+2*i)*256;
+                        if(vb.offset+vb.size>buffers.getSize() || ib.offset+ib.size>buffers.getSize() ||
+                            vb.offset%4 || ib.offset%2 || instance%256 || material%256 ||
+                            material+sizeof(DrawMaterialUniform)>frontend_cube_uniforms.getGpuAddr()+frontend_cube_uniforms.getSize() ||
+                            vr.bytes>vb.size || ir.bytes>ib.size ||
+                            std::memcmp(static_cast<unsigned char*>(buffers.getCpuAddr())+vb.offset,vr.data,vr.bytes) ||
+                            std::memcmp(static_cast<unsigned char*>(buffers.getCpuAddr())+ib.offset,ir.data,ir.bytes)) {
+                            error="first mesh GPU buffer address/copy contract failed";return false;
+                        }
+                        std::printf("frontend GPU bindings: vertex%llX+%llu index%llX+%llu frame%llX instance%llX material%llX\n",
+                            (unsigned long long)(buffers.getGpuAddr()+vb.offset),(unsigned long long)vb.size,
+                            (unsigned long long)(buffers.getGpuAddr()+ib.offset),(unsigned long long)ib.size,
+                            (unsigned long long)(cube+face*256),(unsigned long long)instance,(unsigned long long)material);
+                        const auto clear_probe=[&] {
+                            cmd.clearColor(0,DkColorMask_RGBA,0,0,0,1);cmd.clearDepthStencil(true,1,0,0);
+                        };
+                        cmd.bindShaders(DkStageFlag_GraphicsMask,{&probe_vertex,&probe_constant});
+                        dk::RasterizerState raster;raster.setCullMode(DkFace_None);
+                        dk::ColorState color;color.setBlendEnable(0,false).setAlphaCompareOp(DkCompareOp_Always);
+                        dk::ColorWriteState write;write.setMask(0,DkColorMask_RGBA);
+                        dk::DepthStencilState depth;depth.setDepthTestEnable(false).setDepthWriteEnable(false);
+                        cmd.bindRasterizerState(raster);cmd.bindColorState(color);cmd.bindColorWriteState(write);
+                        cmd.bindDepthStencilState(depth);cmd.bindVtxAttribState(std::array<DkVtxAttribState,0>{});
+                        cmd.bindVtxBufferState(std::array<DkVtxBufferState,0>{});
+                        cmd.draw(DkPrimitive_Triangles,3,1,0,0);
+                        if(!checkpoint("preflight procedural constant"))return false;
+                        clear_probe();
+                        emit_draw(cmd,draw,instance,material,true,&probe_constant);
+                        if(!checkpoint("preflight actual mesh constant"))return false;
+                        clear_probe();
+                        emit_draw(cmd,draw,instance,material,true,&probe_textured);
+                        if(!checkpoint("preflight actual mesh texture0"))return false;
+                        clear_probe();previous=nullptr;
+                    }
+#endif
+                    emit_draw(cmd,draw,cube+(6+2*i)*256,cube+(7+2*i)*256,
+                        !previous || !same_fixed_state(*previous,draw));previous=&draw;
+                    if(!emitted++) {
+                        char pass[40];std::snprintf(pass,sizeof pass,"cube face%u first solid",face);
+                        if(!checkpoint(pass))return false;
+                        if(diagnose)previous=nullptr;
+                    }
+                }
+                char pass[32];std::snprintf(pass,sizeof pass,"cube face%u",face);
+                if(!checkpoint(pass))return false;
+                mark_frontend(face+1);
+            }
+            cmd.barrier(DkBarrier_Fragments,DkInvalidateFlags_Image);
+            cmd.bindTextures(DkStage_Fragment,1,dkMakeTextureHandle(static_cast<std::uint32_t>(handles.size()),2));
+        }
+        if ((commands->frame.options[2] & 10U) != 0) {
+            if (!reflection_ready || commands->reflection_draw_count() > reflection_limit) {
                 error = "reflection resources unavailable or capacity exceeded"; return false;
             }
             dk::ImageView reflection_view{reflection_color}, reflected_z{reflection_depth};
@@ -852,7 +1107,7 @@ struct DekoRenderer::Impl {
             cmd.setScissors(0, {{0, 0, reflection_width, reflection_height}});
             cmd.clearColor(0, DkColorMask_RGBA, 0, 0, 0, 1);
             cmd.clearDepthStencil(true, 1, 0, 0);
-            const auto reflected_frame = reflection_uniforms.getGpuAddr() + slot*(1+2*reflection_capacity)*256;
+            const auto reflected_frame = reflection_uniforms.getGpuAddr() + slot*(1+2*reflection_limit)*256;
             cmd.bindUniformBuffer(DkStage_Vertex, 0, reflected_frame, sizeof(DrawFrameUniform));
             cmd.bindUniformBuffer(DkStage_Fragment, 0, reflected_frame, sizeof(DrawFrameUniform));
             const RecordedDraw* previous = nullptr;
@@ -863,9 +1118,11 @@ struct DekoRenderer::Impl {
                 previous = &draw;
             }
             cmd.barrier(DkBarrier_Fragments, DkInvalidateFlags_Image);
+            if(!checkpoint("floor reflection"))return false;
         }
+        mark_frontend(7);
         if (reflection_ready) cmd.bindTextures(DkStage_Fragment, 1,
-            dkMakeTextureHandle(static_cast<std::uint32_t>(handles.size()), 2));
+            dkMakeTextureHandle(static_cast<std::uint32_t>(handles.size()+(frontend_cube_ready?1:0)), 2));
         dk::ImageView color_view{scene_target.upscale ? scene_colors[slot] : target}, depth_view{depths[slot]};
         cmd.bindRenderTargets(&color_view, &depth_view);
         cmd.setViewports(0, {{0, 0, static_cast<float>(scene_target.width), static_cast<float>(scene_target.height), 0, 1}});
@@ -875,18 +1132,44 @@ struct DekoRenderer::Impl {
         cmd.clearDepthStencil(true, 1, 0, 0);
         cmd.bindUniformBuffer(DkStage_Vertex, 0, base, sizeof(DrawFrameUniform));
         cmd.bindUniformBuffer(DkStage_Fragment, 0, base, sizeof(DrawFrameUniform));
+        cmd.bindUniformBuffer(DkStage_Vertex,3,frontend_light_uniforms.getGpuAddr()+slot*256,sizeof(FrontendLighting));
         for (const auto list : static_lists[slot]) cmd.callList(list);
         const auto first_dynamic = package ? commands->static_track_draw_count() : 0;
         const RecordedDraw* previous_dynamic = nullptr;
         for (std::size_t i = first_dynamic; i < commands->draw_count(); ++i) {
+            if(frontend && frontend_profile_passes) {
+                if(i==frontend_car_begin)mark_frontend(10);
+                if(i==frontend_car_end)mark_frontend(11);
+            }
             const auto view = commands->draw_view(i);
             const auto index = i - first_dynamic;
+            // Zero source alpha contributes no RGB, alpha or depth under
+            // this validated additive state. Keep original uniform indices
+            // and the last emitted draw for fixed-state reuse.
+            if(frontend && frontend_glow_no_output(view,commands->frame))continue;
+            if(!frontend && !commands->frontend_light_enabled && race_effect_no_output(view))continue;
+            if(diagnose && previous_dynamic &&
+                previous_dynamic->program!=view.definition.program) {
+                if(!checkpoint(previous_dynamic->program->name))return false;
+                previous_dynamic=nullptr;
+            }
+            if(frontend_cube_ready && reflection_ready) {
+                const bool car=std::strcmp(view.definition.program->name,"frontend_car_textured")==0;
+                cmd.bindTextures(DkStage_Fragment,1,dkMakeTextureHandle(
+                    static_cast<std::uint32_t>(handles.size()+(car?0:1)),2));
+            }
             emit_draw(cmd, view.definition, base+(1+2*index)*256,
                       base+(2+2*index)*256,
                       !previous_dynamic || !same_fixed_state(*previous_dynamic, view.definition));
             previous_dynamic = &view.definition;
         }
         cmd.barrier(DkBarrier_Fragments, 0);
+        if(frontend && frontend_profile_passes && frontend_car_end==commands->draw_count())mark_frontend(11);
+        // The preceding fragment barrier already completes the sprite pass.
+        // This opt-in report reuses it; the normal path adds no GPU command.
+        if(frontend && frontend_profile_passes)
+            cmd.reportCounter(DkCounter_Timestamp,frontend_query_memory.getGpuAddr()+slot*208+12*16);
+        if(!checkpoint(previous_dynamic?previous_dynamic->program->name:"main scene"))return false;
         if (scene_target.upscale) {
             // Complete rendering before the 2D engine reads this slot. The
             // second full barrier includes its work in the timestamp span
@@ -903,7 +1186,12 @@ struct DekoRenderer::Impl {
             cmd.setViewports(0, {{0, 0, source_width(), source_height(), 0, 1}});
             cmd.setScissors(0, {{0, 0, commands->width, commands->height}});
         }
-        if (hud) emit_hud(slot,*hud);
+        mark_frontend(8);
+        if (hud) emit_overlay(slot,hud->vertices.data(),hud->quads);
+        if (frontend) emit_overlay(slot,frontend->vertices.data(),frontend->additive.size(),frontend->additive.data());
+        if(!checkpoint("UI overlay"))return false;
+        mark_frontend(9);
+        if(diagnose)frontend_first_frame=false;
         cmd.barrier(DkBarrier_Fragments, 0);
         if (profile_enabled)
             cmd.reportCounter(DkCounter_Timestamp, query_memory.getGpuAddr()+slot*32+16);
@@ -911,14 +1199,16 @@ struct DekoRenderer::Impl {
     }
 
     bool present(std::string& error, DekoPresentTiming* timing,
-                 const DekoSceneFrame* scene_frame, const RaceHudFrame* hud_frame) {
+                 const DekoSceneFrame* scene_frame, const RaceHudFrame* hud_frame,const FrontendUiFrame* frontend=nullptr) {
         if (timing) *timing = {};
         if (!swapchain || !healthy(error)) {
             if (error.empty()) error = "deko3d renderer is not open";
             return false;
         }
         auto stage = armGetSystemTick();
+        if(!trace("present.acquire.before",error))return false;
         const int slot = queue.acquireImage(swapchain);
+        if(!trace("present.acquire.after",error))return false;
         if (!healthy(error) || slot < 0 || slot >= 2) {
             if (error.empty()) error = "deko3d swapchain image acquisition failed";
             return false;
@@ -926,13 +1216,16 @@ struct DekoRenderer::Impl {
         if (timing) timing->acquire_ms = elapsed_ms(stage);
         stage = armGetSystemTick();
         if (frame_in_flight[slot]) {
+            if(!trace("present.fence.before",error))return false;
             const auto result = frame_fences[slot].wait();
+            if(!trace("present.fence.after",error))return false;
             if (result != DkResult_Success) {
                 error = "deko3d frame fence wait failed: " + std::to_string(static_cast<unsigned>(result));
                 return false;
             }
             frame_in_flight[slot] = false;
             if (profile_enabled) consume_query(slot);
+            consume_frontend_query(slot);
         }
         if (timing) timing->fence_wait_ms = elapsed_ms(stage);
         if (profile_enabled) {
@@ -941,25 +1234,37 @@ struct DekoRenderer::Impl {
             query_frames[slot] = scene_frame ? *scene_frame : DekoSceneFrame{};
             query_generations[slot] = profile_generation;
         }
+        if(frontend && frontend_profile_passes)
+            std::memset(static_cast<unsigned char*>(frontend_query_memory.getCpuAddr())+slot*208,0,208);
         stage = armGetSystemTick();
         write_uniforms(*commands, slot);
         if (timing) timing->uniform_write_ms = elapsed_ms(stage);
         stage = armGetSystemTick();
-        if (!record_frame(colors[slot],slot,hud_frame,error)) return false;
+        if(!trace("present.record.before",error))return false;
+        if (!record_frame(colors[slot],slot,hud_frame,error,frontend)) return false;
+        if(!trace("present.record.after",error))return false;
         if (timing) timing->record_ms = elapsed_ms(stage);
         stage = armGetSystemTick();
         const auto list = cmd.finishList();
         if (!healthy(error)) return false;
         if (timing) timing->finish_ms = elapsed_ms(stage);
         stage = armGetSystemTick();
+        if(!trace("present.submit.before",error))return false;
         queue.submitCommands(list);
+        if(!trace("present.submit.after",error))return false;
         queue.signalFence(frame_fences[slot]);
+        if(!trace("present.queue.before",error))return false;
         queue.presentImage(swapchain, slot);
+        if(!trace("present.queue.after",error))return false;
+        if(!trace("present.flush.before",error))return false;
         queue.flush();
+        if(!trace("present.flush.after",error))return false;
         frame_in_flight[slot] = true;
         query_pending[slot] = profile_enabled;
+        frontend_query_pending[slot]=frontend && frontend_profile_passes;
         ++fence_number;
         if (timing) timing->submit_ms = elapsed_ms(stage);
+        startup_journal=nullptr;
         return healthy(error);
     }
 
@@ -1051,6 +1356,47 @@ bool DekoRenderer::open(const RecordedCommands& commands, std::string& error, bo
     try { return impl_->open(commands, error, presentation, draw_capacity, profile_frame,
                              opaque_first, sky_with_opaque, scene_height, hud_atlas); }
     catch (const std::bad_alloc&) { error = "not enough memory for deko3d renderer"; return false; }
+}
+bool DekoRenderer::open_frontend(const RecordedCommands& commands,const FrontendUiAtlas& atlas,std::string& error,std::uint32_t scene_height,bool profile_passes,StartupJournal* startup_journal) {
+    impl_->startup_journal=startup_journal;
+    if(!open(commands,error,true,0,false,true,false,scene_height))return false;
+    impl_->frontend_profile_passes=profile_passes;
+    if(profile_passes) {
+        auto& begin=impl_->frontend_car_begin;auto& end=impl_->frontend_car_end;
+        begin=0;
+        while(begin<commands.draw_count() && std::strcmp(commands.draw_view(begin).definition.program->name,"frontend_car_textured"))++begin;
+        end=begin;
+        while(end<commands.draw_count() && !std::strcmp(commands.draw_view(end).definition.program->name,"frontend_car_textured"))++end;
+        if(begin==end) {error="frontend profile car span absent";return false;}
+        for(std::size_t i=end;i<commands.draw_count();++i)
+            if(!std::strcmp(commands.draw_view(i).definition.program->name,"frontend_car_textured")) {error="frontend profile car span not contiguous";return false;}
+        for(std::size_t first=0;first<commands.draw_count();) {
+            const auto& draw=commands.draw_view(first).definition;
+            std::size_t last=first,triangles=0,blended=0,depth_write=0;
+            while(last<commands.draw_count() && commands.draw_view(last).definition.program==draw.program) {
+                const auto& current=commands.draw_view(last++).definition;
+                triangles+=current.index_count/3;blended+=current.pipeline.blend;depth_write+=current.pipeline.depth_write;
+            }
+            std::printf("MENU GPU main span first=%zu end=%zu program=%s draws=%zu triangles=%zu blended=%zu depth_write=%zu\n",
+                first,last,draw.program->name,last-first,triangles,blended,depth_write);first=last;
+        }
+        std::fflush(stdout);
+    }
+    if(profile_passes && !impl_->block(416,DkMemBlockFlags_CpuUncached|DkMemBlockFlags_GpuUncached,
+        "frontend pass timestamp reports",impl_->frontend_query_memory,error)) {
+        const auto failure=error;std::string cleanup;close(cleanup);error=failure;return false;
+    }
+    if(impl_->init_overlay(atlas.rgba,atlas.width,atlas.height,kFrontendUiMaxQuads,error))return true;
+    const auto failure=std::string("frontend atlas upload: ")+error;
+    std::string cleanup;close(cleanup);error=failure;return false;
+}
+bool DekoRenderer::present_frontend(const FrontendUiFrame& frame,std::string& error,DekoPresentTiming* timing) {
+    if(frame.additive.size()>kFrontendUiMaxQuads || frame.vertices.size()!=frame.additive.size()*4 ||
+       std::any_of(frame.additive.begin(),frame.additive.end(),[](auto mode){return mode>1;})) {
+        error="frontend overlay frame invalid";return false;
+    }
+    if(impl_->present(error,timing,nullptr,nullptr,&frame))return true;
+    error="frontend composed frame: "+error;return false;
 }
 bool DekoRenderer::reconfigure_target(const RecordedCommands& commands, std::string& error,
                                       std::size_t draw_capacity, bool profile_frame,

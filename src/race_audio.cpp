@@ -2,6 +2,7 @@
 
 #include "nfsu/audio_playback.h"
 #include "nfsu/audio_output.h"
+#include "nfsu/frontend_music.h"
 
 #include <algorithm>
 #include <array>
@@ -222,7 +223,8 @@ RaceAudioService::~RaceAudioService() { stop(); }
 bool RaceAudioService::start(const std::filesystem::path& root,
                              std::string& diagnostic,
                              const std::function<void(const char*)>& progress,
-                             const std::function<bool()>& decoder_thread_setup) {
+                             const std::function<bool()>& decoder_thread_setup,
+                             bool original_ig_playlist) {
     auto& p = *impl_;
     if (p.active) { diagnostic = "audio already running"; return false; }
     p.collisions.clear(); p.impact_pairs = {UINT32_MAX,UINT32_MAX};
@@ -296,7 +298,7 @@ bool RaceAudioService::start(const std::filesystem::path& root,
             indexed.push_back(index_ast_segment_by_boundary(*input,
                 offsets[i], i + 1 < offsets.size() ? offsets[i + 1] : file_size));
         }
-        auto playlist = race_music_playlist(bank, indexed);
+        auto playlist = original_ig_playlist ? original_music_playlist(bank,indexed,false) : race_music_playlist(bank, indexed);
         std::string error;
         const auto track_count = playlist.size();
         p.has_music = p.stream.start_playlist(std::move(input),

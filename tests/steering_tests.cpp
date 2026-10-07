@@ -110,6 +110,34 @@ int main() {
         }
         check(saw_steer && saw_shift,"integrated corner and automatic gear transition exercised");
     }
+    // Exercise the production recovered1 path through actual pad binding,
+    // both fixed substeps, wheels and engine. A cosmetic HUD lag cannot
+    // satisfy this engine/wheel coupling regression.
+    for (const auto button:{GamepadButton::trigger_left,GamepadButton::face_south}) {
+        RaceSession session(course,stock_240sx_vehicle_spec(),RaceSteering::recovered_predicate1);
+        check(session.start(error),"production braking session starts");
+        double brake_start=0, min_up=1; unsigned moving_samples=0, idle_samples=0;
+        for (int k=0;k<644;++k) {
+            // Connect with neutral input; a held trigger on hot-plug is latched.
+            const auto buttons=k<164 ? 0 : gamepad_button_bit(k<464 ? GamepadButton::trigger_right : button);
+            const auto pad=race_input_frame({1,buttons,0},k);
+            if (!session.advance(pad,error)) { check(false,"production braking advances"); break; }
+            const auto& t=session.telemetry().model;
+            const auto q=session.car().orientation;
+            min_up=std::min(min_up,1-2*(q.x*q.x+q.y*q.y));
+            if(k==463) brake_start=t.forward_speed;
+            if(k>=464 && t.forward_speed>8) {
+                ++moving_samples;
+                if(t.engine_rpm<=stock_240sx_handling().idle_rpm) ++idle_samples;
+            }
+        }
+        check(brake_start>8 && moving_samples>10,"braking exercises a moving car");
+        check(idle_samples==0,"moving recovered1 car does not collapse to idle under brake");
+        check(min_up>.95,"straight recovered1 braking stays upright");
+        std::cout << "production brake " << gamepad_button_bit(button)
+                  << " entry-speed " << brake_start << " moving-samples " << moving_samples
+                  << " idle-samples " << idle_samples << " min-up " << min_up << '\n';
+    }
     std::cout << "steering tests: " << failures << " failures\n";
     return failures ? 1 : 0;
 }

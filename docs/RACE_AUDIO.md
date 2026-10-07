@@ -62,19 +62,19 @@ bank name from `0x006F8000` and a directory from `0x006F7EB0`. The name
 `Car_0\Eng_UG_0\` is at `0x2BEE18`. Type 13 at
 `0x00521DC3..0x00521DE7` computes `5 * group + upgrade` for the exhaust
 bank-name table at `0x006F8040` and uses the same directory table. At
-`0x0051D2F0..0x0051D351`, 28-byte event records supply type, group and
-upgrade at offsets `+0x1E8`, `+0x1EC` and `+0x1F0` relative to the owner
+`0x0051D2F0..0x0051D351`, 28-byte event records supply type, upgrade and
+group at offsets `+0x1E8`, `+0x1EC` and `+0x1F0` relative to the owner
 object for record zero. `0x00522020..0x00522044` transfers these values
 to the sound manager and performs the bank lookup.
 
-Those instructions establish bank selection after the event fields have
-been chosen. They do not establish a `240SX -> CAR_0` mapping, sample
-selection, RPM bands, throttle gain or pitch curve. The event record
-producer and the CSI/A1C event graph have not been traced. The 240SX is
-CarTypeInfo record 18 in `Global/GLOBALB.BUN` chunk `0x00034600` at file
-offset 1736752; the decoded handling fields do not identify its sound
-group. `ENGINE_EVTSYS.csi` and its `.a1c` companion name `PLAYER_CAR`,
-`AI_CAR`, and `DYNAMIC_LOAD` but do not by themselves map RPM to samples.
+The later [issue #312 investigation](AUDIO_FIDELITY_312.md) connects the
+stock 240SX descriptor through the event producer to sound group 2 and its
+CAR2 engine/exhaust banks. It also executes the native engine ABK controls,
+which differ from the port's adjacent RPM layers, and corrects the earlier
+reversed event-field description above. Actual intro-event upgrades,
+upstream audio RPM/load transitions and final output parity remain open.
+`ENGINE_EVTSYS.csi` and its `.a1c` companion name `PLAYER_CAR`, `AI_CAR`,
+and `DYNAMIC_LOAD` but do not by themselves map RPM to samples.
 The `RPMQuantizer` string at `speed.exe` file offset `0x2CA378` is reached
 from `0x00439F4B`; that reference did not establish an audio mapping.
 
@@ -82,7 +82,7 @@ The service therefore uses the following explicit approximations:
 
 | Cue | Runtime choice | Unresolved retail link |
 | --- | --- | --- |
-| Engine | `Sound/CAR_0/ENG_UG_0/C0U0_M0_ENG_MB.abk` samples 1..4 loop on slots 0..3. Adjacent layer centers are 800, 2500, 4500 and 7000 RPM with linear crossfade. Pitch is RPM divided by layer center, clamped to 0.5..2.0. Gain is `weight * (0.22 + 0.33 * throttle)`. | 240SX sound group, sample order, bands, curves and gain. |
+| Engine | `Sound/CAR_0/ENG_UG_0/C0U0_M0_ENG_MB.abk` samples 1..4 loop on slots 0..3. Adjacent layer centers are 800, 2500, 4500 and 7000 RPM with linear crossfade. Pitch is RPM divided by layer center, clamped to 0.5..2.0. Gain is `weight * (0.22 + 0.33 * throttle)`. | Known stock bank/control discrepancies in #312; actual tuned setup, live audio RPM/load and output parity remain open. |
 | Tyres | `Sound/SKIDS/SKID_PAV_MB.abk` sample 1 loops when speed exceeds 2 m/s and slip exceeds 0.25; gain is clamped to 0..0.45. | Pavement event selection and slip/gain curve. |
 | Collision | World impact module selects samples 30..42 through recovered subtype/variant counters and gain/pitch curves; world scrape uses its single carrier with recovered modulation. See [trace and adapter limits](COLLISION_AUDIO.md). | Retail pair lifetime, car/smokeable paths, voice admission, spatial settings and exact RNG/control scheduling. |
 | Music | `Sound/STRMBANK/STRM_Music_UG0_MB.abk` links to `SNDSTREAMS/STRM_Music_UG0_MB.ast`. Linked segments after segment 0 stream in bank table order and repeat at gain 0.5, ducked to 0.25 during interface cues. | Segment 0's role, playlist order and track titles. Skipping segment 0 and table order are approximations. |

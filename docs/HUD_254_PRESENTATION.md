@@ -189,6 +189,11 @@ shader/material behavior and package traversal. A real original clip/runtime
 capture is still absent. Keep `presentation_ready` false until the remaining
 producers are independently reviewed and the integrated renderer is validated.
 
+Further producer research is in [HUD_254_RUNTIME_PRODUCERS.md](HUD_254_RUNTIME_PRODUCERS.md).
+It adds profile initialization/load provenance, the serialized hierarchy and
+native package ordering, the viewport setter and the world effect contract.
+Its native memory remains synthetic; live event0 acceptance is still open.
+
 ## Reproduction
 
 Use Python 3.8+ with Capstone 5.0.7 and Unicorn 2.1.4. From the actual worktree,

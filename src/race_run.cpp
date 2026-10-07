@@ -22,11 +22,21 @@ bool RaceRun::set_performance_levels(const VehicleUpgradeLevels& levels, std::st
     if (!make_race_vehicle_spec(original.data(),original.size(),levels,checked,error)) return false;
     levels_ = levels; explicit_performance_ = true; return true;
 }
+bool RaceRun::set_free_drive(bool enabled, std::string& error) {
+    if (metadata_ready_ || session_) { error = "driving mode must precede metadata/start"; return false; }
+    free_drive_ = enabled;
+    return true;
+}
 bool RaceRun::set_steering(RaceSteering mode, std::string& error) {
     if (metadata_ready_ || session_) { error="steering must precede metadata/start"; return false; }
     if (mode != RaceSteering::baseline && mode != RaceSteering::recovered_predicate0 &&
         mode != RaceSteering::recovered_predicate1) { error="invalid steering mode"; return false; }
     steering_=mode; return true;
+}
+bool RaceRun::set_car(const std::string& car_type_name, std::string& error) {
+    if (metadata_ready_ || session_) { error="car selection must precede metadata/start"; return false; }
+    if (car_type_name.empty()) { error="car selection needs a car type name"; return false; }
+    car_=car_type_name; return true;
 }
 bool RaceRun::read_metadata(const std::filesystem::path& front, const std::filesystem::path& global,
                             std::string& error, TrackSliceLoadObserver* observer) {
@@ -43,7 +53,7 @@ bool RaceRun::read_metadata(const std::filesystem::path& front, const std::files
         if (!info || slot.track != 1003 || slot.laps != 2 || slot.direction != 0) {
             error = "event 1 must be forward track 1003, two laps"; return false;
         }
-        laps_ = slot.laps;
+        laps_ = free_drive_ ? 0 : slot.laps;
         direction_ = slot.direction;
         lap_skip_ = info->lap_skip;
     }
@@ -91,8 +101,11 @@ bool RaceRun::start(const std::filesystem::path& root, const TrackSlice& track, 
         error = "race startup differs from the uploaded permanent set"; return false;
     }
     VehicleSpec spec = stock_240sx_vehicle_spec();
-    if (explicit_performance_ && !load_race_vehicle_spec(
-            asset(root,track,"Global/GLOBALB.BUN"),"240SX",levels_,spec,error)) return false;
+    // The default 240SX keeps the built-in spec, so the pinned baseline
+    // replay is untouched; any other car - and any explicit performance
+    // levels - decode the selected car's own record from the retail table.
+    if ((explicit_performance_ || car_ != "240SX") && !load_race_vehicle_spec(
+            asset(root,track,"Global/GLOBALB.BUN"),car_,levels_,spec,error)) return false;
     session_ = std::make_unique<RaceSession>(course_,spec,steering_);
     if (observer) observer->checkpoint("race session constructed");
     const auto started = session_->start(error);
@@ -144,21 +157,25 @@ std::string RaceRun::steps_hash() const { auto copy = steps_; return sha256_hex(
 bool RaceRun::matches_event1_replay() const {
     if (steering_ != RaceSteering::baseline) return false;
     if (!session_ || pending_) return false;
+    // The pin is the 240SX player-only replay; no other car may claim it.
+    if (car_ != "240SX") return false;
     if (explicit_performance_ && !performance_levels_equal(levels_,{})) return false;
     const auto& timing = session_->timing(); const auto& r = timing.racers[0];
-    return timing.outcome == RaceOutcome::finished && timing.step == 48343 &&
+    return timing.outcome == RaceOutcome::finished && timing.step == 48332 &&
         session_->telemetry().resets == 0 && r.highest_lap == 2 &&
-        r.lap_ticks[1] == 1616320 && r.lap_ticks[2] == 1611720 && r.finish_ticks == 3228040 &&
+        r.lap_ticks[1] == 1615960 && r.lap_ticks[2] == 1611360 && r.finish_ticks == 3227320 &&
         sequence_hash() == kEvent1SequenceHash && steps_hash() == kEvent1StepsHash;
 }
 bool RaceRun::matches_configured_replay() const {
     if (steering_ != RaceSteering::baseline) return false;
+    // The performance replay is as 240SX as the baseline one.
+    if (car_ != "240SX") return false;
     if (!explicit_performance_ || performance_levels_equal(levels_,{})) return matches_event1_replay();
     if (!session_ || pending_ || !performance_levels_equal(levels_,performance1_levels())) return false;
     const auto& timing=session_->timing(); const auto& r=timing.racers[0];
-    return timing.outcome==RaceOutcome::finished && timing.step==48293 &&
+    return timing.outcome==RaceOutcome::finished && timing.step==48305 &&
         session_->telemetry().resets==0 && r.highest_lap==2 &&
-        r.lap_ticks[1]==1615440 && r.lap_ticks[2]==1609240 && r.finish_ticks==3224680 &&
+        r.lap_ticks[1]==1614600 && r.lap_ticks[2]==1610880 && r.finish_ticks==3225480 &&
         sequence_hash()==kPerformance1SequenceHash && steps_hash()==kPerformance1StepsHash;
 }
 std::vector<std::string> RaceRun::result_lines() const {
