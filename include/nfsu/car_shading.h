@@ -52,12 +52,24 @@ struct CarPartDatabase;
 // Bounded top-level GLOBALB.BUN walk. Invalid records fail transactionally.
 bool parse_car_materials(const unsigned char* bytes, std::size_t size,
                          std::vector<CarMaterialRecord>& out, std::string& error);
-// Resolve slot 30's 0x6BA02C05 attribute. A color-only skin uses the nearest
-// GLOSS_L1_COLOR swatch as its surrogate installed BASE_PAINT part.
-// Zero means no attribute; apply_car_materials then uses DEFAULT.
+// A record's own 0x6BA02C05 material attribute, or 0 when the record is
+// absent or carries none.
+std::uint32_t car_part_material_hash(const CarPartDatabase& database,
+                                     std::size_t record);
+// The BASE_PAINT material selection of 0x56B4F2..0x56B528: an installed
+// slot-30 record keeps its own material attribute, whatever the skin color
+// is. Only a configuration with a color and no installed paint record falls
+// back to the nearest GLOSS_L1_COLOR swatch as a surrogate part, which is
+// the color-only skin's stand-in. Zero means no attribute;
+// apply_car_materials then uses DEFAULT.
 std::uint32_t select_car_paint_material_hash(const CarPartDatabase& database,
     std::size_t installed_base_paint, std::optional<std::uint32_t> skin_color);
 // Join CARSKIN to the selected paint record, or DEFAULT if it is absent.
+// A nonzero window_tint_hash - the installed WINDOW_TINT part's material,
+// 0x56B577..0x56B5AB - replaces the production WINDSHIELD material wherever
+// the geometry names it (0x56F5B1..0x56F5E1); zero keeps the production
+// glass.
 bool apply_car_materials(PreparedCarScene& scene, const unsigned char* bytes,
-                         std::size_t size, std::uint32_t paint_hash, std::string& error);
+                         std::size_t size, std::uint32_t paint_hash,
+                         std::uint32_t window_tint_hash, std::string& error);
 } // namespace nfsu

@@ -1648,7 +1648,8 @@ int main(int argc, char** argv) {
                     installed,
                     skin.enabled ? std::optional<std::uint32_t>(skin.selection.base_color)
                                  : std::nullopt);
-                if (!nfsu::apply_car_materials(scene,bytes.data(),bytes.size(),paint,error)) {
+                if (!nfsu::apply_car_materials(scene,bytes.data(),bytes.size(),paint,
+                                               0,error)) {
                     std::cerr << "error: " << error << '\n'; return 2;
                 }
                 found=true; break;

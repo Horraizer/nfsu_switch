@@ -2712,7 +2712,7 @@ void test_car_shading_records_and_rendering() {
         d.flags=0x180U; store_u32(d.raw.data()+56,d.flags);
     }
     check(nfsu::apply_car_materials(paint_fixture.scene,paint_bytes.data(),
-                                    paint_bytes.size(),0x827D95A1U,error),
+                                    paint_bytes.size(),0x827D95A1U,0,error),
           "join blue CARSKIN to REGPAINTBLUE: "+error);
     check(!paint_fixture.scene.draws.empty() &&
           paint_fixture.scene.draws[0].shading.gates[0]==1.0F &&
@@ -2723,7 +2723,7 @@ void test_car_shading_records_and_rendering() {
     auto default_bytes=paint_bytes;
     put_u32(default_bytes,20,0x2C420D64U); // DEFAULT
     check(nfsu::apply_car_materials(unmatched_fixture.scene,default_bytes.data(),
-                                   default_bytes.size(),0xD6640DFFU,error),
+                                   default_bytes.size(),0xD6640DFFU,0,error),
           "unmatched paint attribute falls back to DEFAULT: "+error);
     check(!unmatched_fixture.scene.draws.empty() &&
           unmatched_fixture.scene.draws[0].shading.gates[0]==1.0F &&
@@ -2734,7 +2734,7 @@ void test_car_shading_records_and_rendering() {
     for (auto& d:scene.draws) {
         d.material_key_hash=0x12345678U; d.flags=0x180U; store_u32(d.raw.data()+56,d.flags);
     }
-    check(nfsu::apply_car_materials(scene,bytes.data(),bytes.size(),0,error),"join material keys: "+error);
+    check(nfsu::apply_car_materials(scene,bytes.data(),bytes.size(),0,0,error),"join material keys: "+error);
     for (auto& m:scene.meshes) for (auto& v:m.vertices) { v.nx=0; v.ny=1; v.nz=0; }
     nfsu::RenderOptions options; options.width=160; options.height=120;
     nfsu::Frame off,on,turned,off_again; nfsu::RenderStats stats;

@@ -141,7 +141,12 @@ bool bind_frontend_sponsors(const StockFrameInputs& inputs,const InstalledPartSe
     std::sort(wanted.begin(),wanted.end());wanted.erase(std::unique(wanted.begin(),wanted.end()),wanted.end());
     std::vector<RenderTextureSource> sources(1+car.shared_sets.size());
     sources[0].bytes=&inputs.files[1].bytes;sources[0].packs.push_back(&car.car_pack);sources[0].wanted=&wanted;
-    const std::vector<const std::vector<unsigned char>*> bytes={&inputs.files[2].bytes,&inputs.files[3].bytes,&inputs.wheel_textures.bytes};
+    // The shared sets, in preparation order: GLOBALB, Cars/TEXTURES.BIN, the
+    // tuned wheel textures, then the opt-in EXHAUST family textures a dressed
+    // configuration reads. A caller that read no family pair has three sets
+    // and never reaches the fourth entry.
+    const std::vector<const std::vector<unsigned char>*> bytes={&inputs.files[2].bytes,
+        &inputs.files[3].bytes,&inputs.wheel_textures.bytes,&inputs.exhaust_textures.bytes};
     for(std::size_t n=0;n<car.shared_sets.size();++n) {
         sources[n+1].bytes=bytes.at(n);sources[n+1].wanted=&wanted;
         sources[n+1].complete=car.shared_sets[n].complete;

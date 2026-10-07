@@ -118,6 +118,13 @@ struct StockFrameInputs {
     StockFrameInput wheel_geometry;
     StockFrameInput wheel_textures;
     StockFrameInput vinyls;
+    // The shared EXHAUST family pair, an opt-in extra no stock or tuned
+    // caller reads: an authored configuration can install an exhaust part
+    // whose only solid lives in Cars/EXHAUST/GEOMETRY.BIN (the FE_SKYLINE
+    // ROCKET exhaust). Both stay empty until read_exhaust_family_inputs
+    // fills them; nothing else in the input contract depends on them.
+    StockFrameInput exhaust_geometry;
+    StockFrameInput exhaust_textures;
 
     const StockFrameInput& file(StockFrameFile which) const noexcept {
         return files[static_cast<std::size_t>(which)];
@@ -145,6 +152,15 @@ bool read_stock_frame_inputs(const std::filesystem::path& root, StockFrameInputs
 // return value is all_read().
 bool read_car_frame_inputs(const std::filesystem::path& root, const CarAssets& car,
                            StockFrameInputs& inputs, bool tuned, std::string& error);
+
+// Reads the shared EXHAUST family pair read-only - Cars/EXHAUST/GEOMETRY.BIN
+// and Cars/EXHAUST/TEXTURES.BIN - into the optional extras of `inputs`,
+// leaving every other input untouched. A caller whose installed parts can
+// name family meshes calls this after read_car_frame_inputs; the pair is
+// consumed by the same preparation. Returns true when both files were read;
+// each failure's reason is in that input's own error field.
+bool read_exhaust_family_inputs(const std::filesystem::path& root,
+                                StockFrameInputs& inputs);
 
 // The message an application reports when read_car_frame_inputs returned
 // false: `error` itself when the call refused the caller (an unresolved

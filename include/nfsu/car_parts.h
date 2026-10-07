@@ -40,6 +40,7 @@ constexpr int kSlotSkirt = 10;
 constexpr int kSlotEngine = 12;
 constexpr int kSlotHeadlight = 13;
 constexpr int kSlotBrakelight = 14;
+constexpr int kSlotExhaust = 15;
 constexpr int kSlotBrake = 16;
 constexpr int kSlotWheel = 17;
 constexpr int kSlotLicensePlate = 18;

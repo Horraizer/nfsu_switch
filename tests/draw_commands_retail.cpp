@@ -142,7 +142,8 @@ int main(int argc, char** argv) {
                 nfsu::StockFrameImage image;
                 if (!nfsu::encode_stock_frame(stock.frame, image, error) ||
                     nfsu::sha256_hex(image.sha256) != view.sha256) {
-                    std::cerr << "FAIL: pinned detail view changed: " << view.name << '\n';
+                    std::cerr << "FAIL: pinned detail view changed: " << view.name
+                              << " got " << nfsu::sha256_hex(image.sha256) << '\n';
                     return 1;
                 }
                 std::cout << "PASS: painted retail " << view.name << " sha256 " << view.sha256 << '\n';
@@ -154,10 +155,13 @@ int main(int argc, char** argv) {
     // 35: blue body paint, BASE_A chrome and windshield alpha/reflection.
     // -45: the opposite side changes the normal/view-dependent terms.
     // 145: rear glass and lamp lenses exercise their own material records.
+    // Re-pinned for the installed-BASE_PAINT material correction (review
+    // F2): the painted stock 240SX now shades with GLOSS_L1_COLOR08's own
+    // material instead of the blue swatch surrogate.
     const char* pins[] = {
-        "FC62A538F2CC4F8202B099C0439E7361E5ECC0F4D5F8E8EF8AB48388AC8E360A", // yaw 35
-        "A53EAC9C732F7D02D31D041CA9E1EBDEBEAA20CB2E7B58F018CA48BD91237CF0", // yaw -45
-        "58FA605B74FF82E99C72FDB5041E30267D69F296283281F2705030062D15D599"}; // yaw 145
+        "E9393053240398C35B42A9E2F5E2FA253760C1A9F8D3C082E61F763B6FA2688E", // yaw 35
+        "D9E5B98EA81BC768F3F3270A889286445513DE67EFF4CC9587053E42BFCF2464", // yaw -45
+        "D3722C968311E6B0D14DCEBF07EF6A1396B49B49E370457591EAADB2C5E0EC17"}; // yaw 145
     nfsu::StockFrame shaded;
     if (!nfsu::prepare_stock_frame(inputs,nfsu::stock_240sx_request(),
                                    nfsu::stock_240sx_skin(),shaded,error,true)) {
@@ -181,13 +185,24 @@ int main(int argc, char** argv) {
         shaded.parts.records[installed_paint].name!="GLOSS_L1_COLOR08") {
         std::cerr << "FAIL: stock 240SX must install GLOSS_L1_COLOR08\n"; return 1;
     }
+    // Corrected selection semantics (review F2): an installed BASE_PAINT
+    // record keeps its own material whatever the skin color is; only a
+    // color-only configuration without an installed record falls back to the
+    // nearest GLOSS_L1 swatch as its surrogate.
+    const auto installed_hash=nfsu::car_part_material_hash(shaded.parts,installed_paint);
+    if (installed_hash==0 ||
+        nfsu::select_car_paint_material_hash(shaded.parts,installed_paint,
+            nfsu::stock_240sx_skin().selection.base_color)!=installed_hash) {
+        std::cerr << "FAIL: installed BASE_PAINT must keep its own material: 0x"
+                  << std::hex << installed_hash << std::dec << '\n'; return 1;
+    }
     const auto blue_hash=nfsu::select_car_paint_material_hash(shaded.parts,
-        installed_paint,nfsu::stock_240sx_skin().selection.base_color);
+        nfsu::kNoCarPart,nfsu::stock_240sx_skin().selection.base_color);
     if (blue_hash!=0x827D95A1U) {
         std::cerr << "FAIL: blue skin must select REGPAINTBLUE through BASE_PAINT\n"; return 1;
     }
     const auto red_hash=nfsu::select_car_paint_material_hash(shaded.parts,
-        installed_paint,nfsu::tuned_240sx_skin().selection.base_color);
+        nfsu::kNoCarPart,nfsu::tuned_240sx_skin().selection.base_color);
     if (red_hash!=0xFC329CF4U) {
         std::cerr << "FAIL: red skin must select REGPAINTRED through BASE_PAINT\n"; return 1;
     }
@@ -203,8 +218,8 @@ int main(int argc, char** argv) {
         return -1.0F;
     };
     for (const auto& draw:shaded.scene.draws) if (draw.material_key_hash==kCarSkinHash &&
-        draw.shading.specular_min[3]!=material_power(blue_hash)) {
-        std::cerr << "FAIL: blue CARSKIN must receive REGPAINTBLUE coefficients\n"; return 1;
+        draw.shading.specular_min[3]!=material_power(installed_hash)) {
+        std::cerr << "FAIL: CARSKIN must receive the installed paint coefficients\n"; return 1;
     }
     auto invalid_materials=inputs;
     auto& global=invalid_materials.files[
@@ -273,9 +288,11 @@ int main(int argc, char** argv) {
                                    red_skin,red,error,true)) {
         std::cerr << "FAIL: red shaded preparation: " << error << '\n'; return 1;
     }
+    // Corrected semantics: with the stock BASE_PAINT installed, the red skin
+    // color changes the composed surface, not the paint material.
     for (const auto& draw:red.scene.draws) if (draw.material_key_hash==kCarSkinHash &&
-        draw.shading.specular_min[3]!=material_power(red_hash)) {
-        std::cerr << "FAIL: red CARSKIN must receive REGPAINTRED coefficients\n"; return 1;
+        draw.shading.specular_min[3]!=material_power(installed_hash)) {
+        std::cerr << "FAIL: red CARSKIN must keep the installed paint coefficients\n"; return 1;
     }
     auto unmatched_parts=shaded.parts;
     auto& base=unmatched_parts.records[installed_paint];
@@ -288,7 +305,7 @@ int main(int argc, char** argv) {
         installed_paint,std::nullopt);
     if (!changed || unmatched_hash!=0xD6640DFFU ||
         !nfsu::apply_car_materials(shaded.scene,material_bytes.data(),material_bytes.size(),
-                                   unmatched_hash,error)) {
+                                   unmatched_hash,0,error)) {
         std::cerr << "FAIL: unmatched BASE_PAINT attribute must use DEFAULT: changed "
                   << changed << " hash " << std::hex << unmatched_hash << std::dec
                   << " error " << error << '\n'; return 1;
