@@ -111,7 +111,7 @@ CollisionAudioFrame CollisionScheduler::update(std::uint64_t tick, std::uint64_t
     have_tick_ = true; last_tick_ = tick; last_physics_step_ = physics_step;
     if (held) return out;
     out.processed = true;
-    count = std::min(count,std::size_t(512));
+    count = std::min(count,kCollisionContactFrameLimit);
     if (!contacts) count = 0;
     // A reset snapshot discards pre-reset contacts from the same tick.
     if (reset) count = 0;

@@ -224,6 +224,24 @@ void test_collision_clock_contract() {
     CollisionGraph graph;
     graph.impact_gain.fill(20000); graph.scrape_gain.fill(20000);
     graph.scrape_pitch.fill(4096);
+    // Four full hull batches for one continuous polygon episode. The old
+    //512 cap lost steps3/4, then expired the scrape using newest step4.
+    std::array<CollisionContact,1024> four_slices{};
+    for(std::size_t i=0;i<four_slices.size();++i) {
+        auto& c=four_slices[i];
+        c.step=1+i/256;c.pair=7;c.impulse={1,0,0};c.slide_mps=20;
+    }
+    CollisionScheduler full_frame;
+    const auto complete=full_frame.update(1,4,four_slices.data(),four_slices.size(),graph);
+    check(complete.impacts.size()==4 && complete.scrapes.size()==1 &&
+          complete.impacts.front().start && !complete.impacts.back().start,
+          "contacts beyond512 preserve newest slice and continuous scrape episode");
+    for(auto& c:four_slices) c.other_kind=0;
+    four_slices.back().other_kind=3;
+    CollisionScheduler last_contact;
+    const auto last=last_contact.update(1,4,four_slices.data(),four_slices.size(),graph);
+    check(last.impacts.size()==1 && last.scrapes.size()==1 && last.impacts[0].pair==7,
+          "last bounded contact at index1023 reaches the scheduler");
     for (int i=0;i<10;++i) {
         graph.scrape_gain_targets[i]=std::int16_t(15000+i*1000);
         graph.scrape_pitch_targets[i]=std::int16_t(200+i*10);

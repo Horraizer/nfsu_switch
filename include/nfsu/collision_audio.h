@@ -2,10 +2,15 @@
 
 #include "nfsu/vehicle_track.h"
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
 namespace nfsu::audio {
+
+// Port input bound: four solver slices, each with at most256 hull contacts.
+// This is a memory/work limit, not a recovered retail admission policy.
+constexpr std::size_t kCollisionContactFrameLimit = 1024;
 
 // Typed copied input. Kind values match retail body +0x15. There is no
 // simulated actor pointer, simulation RNG, or mutable state reference.
@@ -51,7 +56,7 @@ struct CollisionAudioFrame {
 
 // Retail selectors and bank curves; explicitly port-side contact episodes,
 // two output scrape voices, graph update at 60 Hz, and private RNG seed/order.
-// Episodes reset after a gap in observed 120 Hz polygon contact. This is NOT
+// Episodes reset after a gap in observed solver-slice polygon contact. This is NOT
 // a recovered retail body-pair lifetime or global admission algorithm.
 class CollisionScheduler {
 public:

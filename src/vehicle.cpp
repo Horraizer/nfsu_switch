@@ -1384,19 +1384,24 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         vehicle_low_support_torque(s.angular_velocity, d_.mass, support, 0);
     if (support < 2) torque = add(torque, support_torque);
 
-    // Semi-implicit Euler.
+    //5855A5/5855D0 supplies the old cached linear/angular velocities to
+    // the position/rotation derivatives.46AA40 integrates every derivative
+    // before585810 refreshes velocity from the new momentum. Quaternion
+    // storage and force activation remain qualified port adapters.
+    const VehicleVec3 prior_velocity=s.velocity;
+    const VehicleVec3 prior_angular_velocity=s.angular_velocity;
     s.velocity = add(s.velocity, scale(force, dt / d_.mass));
     const VehicleVec3 body_torque = r.apply_transpose(torque);
     const VehicleVec3 body_change =
         v3(body_torque.x / d_.inertia.x, body_torque.y / d_.inertia.y,
            (body_torque.z/a.unit_scale)*player_body_inverse_yaw(h,s.alternate_yaw_active));
     s.angular_velocity = add(s.angular_velocity, scale(r.apply(body_change), dt));
-    s.position = add(s.position, scale(s.velocity, dt));
+    s.position = add(s.position, scale(prior_velocity, dt));
     VehicleQuat spin_q;
     spin_q.w = 0.0;
-    spin_q.x = s.angular_velocity.x;
-    spin_q.y = s.angular_velocity.y;
-    spin_q.z = s.angular_velocity.z;
+    spin_q.x = prior_angular_velocity.x;
+    spin_q.y = prior_angular_velocity.y;
+    spin_q.z = prior_angular_velocity.z;
     const VehicleQuat change = multiply(spin_q, s.orientation);
     VehicleQuat q = s.orientation;
     q.w = q.w + change.w * (0.5 * dt);

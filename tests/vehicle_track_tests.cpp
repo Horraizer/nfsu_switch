@@ -1285,10 +1285,13 @@ void test_refusals() {
 // ---------------------------------------------------------------------------
 
 void test_telemetry_layout() {
-    static_assert(nfsu::kVehicleTrackTelemetryRecordBytes == 760, "the record is 760 bytes");
+    static_assert(nfsu::kVehicleTrackTelemetryRecordBytes == 916, "the record is 916 bytes");
     nfsu::VehicleTrackTelemetry t;
     t.step = 0x0102030405060708ULL;
     t.model.step = 0x1112131415161718ULL;
+    t.model.simulation_seconds = 0.125;
+    t.model.solver_dt = 1.0 / 240.0;
+    t.model.alternate_yaw_active = false;
     t.position.x = 1.5;
     t.off_path = true;
     t.zone = -1;
@@ -1296,6 +1299,15 @@ void test_telemetry_layout() {
     nfsu::encode_vehicle_track_telemetry(t, bytes);
     check(bytes[0] == 0x08 && bytes[7] == 0x01, "the step is the first u64, little-endian");
     check(bytes[8] == 0x18 && bytes[15] == 0x11, "the model's record follows it");
+    std::array<std::uint8_t, nfsu::kVehicleTelemetryRecordBytes> model_bytes{};
+    nfsu::encode_vehicle_telemetry(t.model, model_bytes);
+    check(std::equal(model_bytes.begin(), model_bytes.end(), bytes.begin()+8),
+          "track record embeds the complete model record including clock and yaw flag");
+    double clock = 0.0, interval = 0.0;
+    std::memcpy(&clock, bytes.data()+8+656, sizeof(clock));
+    std::memcpy(&interval, bytes.data()+8+664, sizeof(interval));
+    check(clock==0.125 && interval==1.0/240.0 && bytes[8+672]==0,
+          "extended model fields retain their declared wire offsets");
     double x = 0.0;
     std::memcpy(&x, bytes.data() + 8 + nfsu::kVehicleTelemetryRecordBytes, sizeof(x));
     check(x == 1.5, "then the position's x");

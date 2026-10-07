@@ -15,6 +15,10 @@
 
 namespace nfsu::audio {
 
+static_assert(kDriveStepsPerFrame *
+    std::tuple_size<decltype(VehicleTrackTelemetry::audio_contacts)>::value <=
+    kCollisionContactFrameLimit, "scheduler must accept every bounded race contact");
+
 // Copied only after a race tick. It has no pointer back into RaceSession.
 struct RaceAudioSnapshot {
     double rpm = 0;

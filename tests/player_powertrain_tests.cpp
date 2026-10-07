@@ -255,12 +255,55 @@ void outer_slice_and_selection_phase() {
     other=t;other.alternate_yaw_active=!t.alternate_yaw_active;encode_vehicle_telemetry(other,b);
     check(a!=b,"canonical telemetry retains latched yaw tensor futures");
 }
+
+void body_derivative_epoch() {
+    using namespace nfsu;
+    const VehicleModel model(stock_240sx_vehicle_spec());
+    for(const double dt:{1.0/120.0,1.0/240.0}) {
+        VehicleState state;VehicleTelemetry t;
+        check(model.reset(state,VehiclePose()),"body derivative rest reset");
+        const auto before=state;
+        check(model.step(state,VehicleInput{},VehicleFlatGround(),t,0,dt,true),
+              "body derivative rest slice completes");
+        // Actual body-only46AA40/585410 witness: zero old velocity leaves
+        // position fixed even when supplied force changes the new momentum.
+        check(state.position.x==before.position.x && state.position.y==before.position.y &&
+              state.position.z==before.position.z,
+              "first body position uses old velocity despite nonzero wheel force");
+        check(state.velocity.y!=before.velocity.y,
+              "nonzero authentic standing lateral producer still changes completed velocity");
+        check(model.reset(state,VehiclePose()),"moving derivative reset");
+        state.velocity={4,2,.1};
+        const auto moving=state;
+        check(model.step(state,VehicleInput{},VehicleFlatGround(),t,0,dt,true),
+              "moving body derivative slice completes");
+        check(state.position.x==moving.position.x+moving.velocity.x*dt &&
+              state.position.y==moving.position.y+moving.velocity.y*dt &&
+              state.position.z==moving.position.z+moving.velocity.z*dt,
+              "position derivative keeps the pre-force velocity epoch at both intervals");
+        VehiclePose pose;pose.speed=15;
+        check(model.reset(state,pose),"rotation derivative moving reset");
+        state.angular_velocity={.2,-.3,.4};
+        auto turning=state;
+        VehicleInput turn;turn.steer=1;
+        check(model.step(state,VehicleInput{},VehicleFlatGround(),t,0,dt,true) &&
+              model.step(turning,turn,VehicleFlatGround(),t,0,dt,true),
+              "paired force inputs complete body slices");
+        check(state.orientation.w==turning.orientation.w &&
+              state.orientation.x==turning.orientation.x &&
+              state.orientation.y==turning.orientation.y &&
+              state.orientation.z==turning.orientation.z &&
+              state.angular_velocity.z!=turning.angular_velocity.z,
+              "different new torques cannot change this slice's old-angular-velocity rotation");
+    }
+}
 } // namespace
 
 int main() {
     publication_and_reset();wheel_history_and_player_brake();shift_cycle_and_differential_sync();
     owner_speed_domains();steered_constraint_witness();strut_hub_and_world_force_witness();
     outer_slice_and_selection_phase();
+    body_derivative_epoch();
     if (failures) {std::cerr<<failures<<" player powertrain test failure(s)\n";return 1;}
     std::cout<<"player powertrain tests passed\n";
 }
