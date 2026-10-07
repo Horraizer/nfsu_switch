@@ -269,7 +269,7 @@ int run(int argc, char** argv) {
     bool live=false, smoke=false, tuned=false;
     std::string car_name="240SX"; bool car_seen=false;
     bool particles_enabled=true, particle_events=false;
-    bool glows=false;
+    bool glows=false, glows_seen=false, wet_road_seen=false, car_shading_seen=false;
     TextureFilterMode texture_filter=TextureFilterMode::legacy;
     bool car_shading=false;
     std::set<std::size_t> frames;
@@ -287,7 +287,7 @@ int run(int argc, char** argv) {
         if (a=="--help") {
             std::cout << "nfsu_race --root RETAIL (--input RECORDING | --generate RECORDING | --live)\n"
                          "  [--out NEW_DIRECTORY --frames 180,600,6000,22000,40000]\n"
-                         "  [--particles=on|--particles=off] [--particle-events] [--tuned] [--glows]\n"
+                         "  [--particles=on|--particles=off] [--particle-events] [--tuned] [--glows|--glows=off]\n"
                          "  [--car NAME] a playable car type from the retail table; 240SX by default\n"
                          "  [--car-shading on|off] [--texture-filter legacy|linear]\n"
                          "  [--wet-road-reflections on|off]\n"
@@ -304,7 +304,9 @@ int run(int argc, char** argv) {
         if (a=="--particles=on") { particles_enabled=true; continue; }
         if (a=="--particles=off") { particles_enabled=false; continue; }
         if (a=="--particle-events") { particle_events=true; continue; }
-        if (a=="--glows") { glows=true; continue; }
+        if (a=="--glows" || a=="--glows=on" || a=="--glows=off") {
+            glows=a!="--glows=off";glows_seen=true;continue;
+        }
         if (a=="--hud-trace") { hud_trace=true; continue; }
         require(i+1<argc,"missing option value"); const std::string value=argv[++i];
         if (a=="--performance-levels") {
@@ -330,11 +332,11 @@ int run(int argc, char** argv) {
         }
         else if (a=="--car-shading") {
             require(value=="on" || value=="off","--car-shading needs on or off");
-            car_shading=value=="on";
+            car_shading=value=="on";car_shading_seen=true;
         }
         else if (a=="--wet-road-reflections") {
             require(value=="on" || value=="off", "--wet-road-reflections must be on or off");
-            wet_road_reflections = value=="on";
+            wet_road_reflections = value=="on";wet_road_seen=true;
         }
         else if (a=="--frames") {
             std::istringstream in(value); std::string token;
@@ -346,6 +348,12 @@ int run(int argc, char** argv) {
         } else throw std::runtime_error("unknown option: "+a);
     }
     require(!root.empty() && int(live)+int(!input.empty())+int(!generate.empty())==1,"choose one input mode and --root");
+    if (live) {
+        if (!steering_seen) steering=RaceSteering::recovered_predicate1;
+        if (!glows_seen) glows=true;
+        if (!wet_road_seen) wet_road_reflections=true;
+        if (!car_shading_seen) car_shading=true;
+    }
     require(frames.empty() || !output.empty(),"--frames requires --out");
     require(!hud_trace || !output.empty(),"--hud-trace requires --out");
     require(!live || (output.empty() && frames.empty()),"live mode does not export files");
@@ -450,7 +458,6 @@ int run(int argc, char** argv) {
             Clock::now().time_since_epoch()).count());
         auto begin=Clock::now(); require(session.advance(pad,error),error); simulation.add(begin);
         require(handling_log.write(session,pad,consumed_us,live),"handling telemetry write failed");
-        advance_race_hud_frame(session,scene.hud_frame);
         build_race_hud_frame(session,640,360,scene.hud_frame);
         if (hud_audit.is_open()) {
             const auto& r=scene.hud_frame.readout;

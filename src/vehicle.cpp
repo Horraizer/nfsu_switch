@@ -568,6 +568,10 @@ bool check_vehicle_handling(const VehicleHandling& h,
     }
     for (std::size_t a = 0; a < 2; ++a) {
         const std::size_t tyre = kVehicleTyreOffset + a * kVehicleAxleStride;
+        positive(tyre + 0x00, h.tyres[a].slip_scale, "the lateral slip divisor");
+        positive(tyre + 0x04, h.tyres[a].lateral_load_scale, "the lateral load divisor");
+        if (h.tyres[a].lateral_scale < 0.0F)
+            add_issue(issues, tyre + 0x08, "the lateral force scale must not be negative");
         positive(tyre + 0x0C, h.tyres[a].static_friction, "the static friction");
         positive(tyre + 0x10, h.tyres[a].sliding_friction, "the sliding friction");
         const std::size_t strut = kVehicleStrutOffset + a * kVehicleAxleStride;

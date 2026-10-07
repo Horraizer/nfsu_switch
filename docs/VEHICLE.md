@@ -326,112 +326,32 @@ positive steer turns left, a positive yaw rate.
 | automatic reverse | a down request in first below 1 m/s selects reverse, an up request in reverse selects first | RECOVERED (docs/CONTROLS_CAMERA.md, the reverse row): engine+0x134 is the controls context's gear slot +0x1D4 through vtable+0x24 (`0x00424FF0: mov eax,[ecx+0x1D4]; ret`), where -1 is the automatic mode, 0 forces the reverse slot and ratio at `0x004759A8`, and a manual gear clamps. The port's down-request-into-reverse and up-request-out follow that slot mechanism; the engage thresholds of the machine's own zeroing at `0x00461C34`, and the reverse input axis 0x8F/0x90 (car+0x2A4, no driving consumer found), remain unported |
 | surfaces | every surface uses surface 0's friction factors, 1.0 and 1.0 (table 0x006EF2F0, stride 0x94) | the track's surface ids are not decoded (issue #158) |
 
-### The spin matrix
+### Controllability and breakaway
 
-Round 3 of the review (comment 3622) found that full steering input spun
-the round-2 car. The matrix below is what chose the round-3 tyres and the
-traction limit: from each speed, full steering input with a constant
-throttle of 0, 0.5 and 1 for five seconds, and half and full brake with full
-lock from 30 m/s for four. A run spins when the body points more than 20
-degrees off its path while the car still moves faster than 3 m/s; the cells
-are the largest sideslip, in degrees, and `*` marks a spin. The 16 degrees
-at low speed are close to the kinematic sideslip of full lock at walking
-pace, atan(1.30 / 4.3) = 16.8 degrees (the centre of mass 1.30 m ahead of
-the rear axle, which turns on a 4.3 m radius): a car that coasts to a crawl
-at full lock reaches it without sliding.
+`nfsu_vehicle_tests` measures every case in the full-lock throttle/brake
+matrix and reports the complete spin count. Its low-speed assertions and
+`test_snap_oversteer` distinguish controllable inputs from breakaway in this
+model. Current values live in the test output, not a copied document table.
+The earlier matrix measured an invented linear tyre model and is not evidence
+for the recovered lateral curve family now used.
 
-Before, head 650d308 (fronts 12, rears 18, no traction limit): 15 of 32.
+The matrix exercises `VehicleModel`'s approximate raw-input steering lock.
+Production `RaceSession` with `recovered1` instead supplies road angles from
+`steering_step` through `VehicleInput::road_steering`; these paths must not be
+conflated. Meaningful production acceptance compares the same recovered1
+steering, controls and handling on the console, including braking, rear slip
+and unexpected rollovers. Passing a numerical matrix alone does not close it.
 
-| throttle | 8 | 10 | 12 | 15 | 18 | 20 | 22 | 25 | 30 | 35 m/s |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 0 | 16.1 | 16.1 | 16.1 | 16.4 | 45.9* | 74.8* | 98.0* | 143.4* | 162.7* | 82.0* |
-| 0.5 | 8.2 | 5.3 | 3.4 | 2.0 | 1.4 | 2.1 | 2.6 | 3.0 | 3.3 | 3.2 |
-| 1 | 48.8* | 56.0* | 66.0* | 89.6* | 107.8* | 122.0* | 136.6* | 3.1 | 2.9 | 2.9 |
-
-Half brake with full lock from 30 m/s: 137.5*; full brake: 29.3*.
-
-After (fronts 10, rears 20, the traction limit): 0 of 32.
-
-| throttle | 8 | 10 | 12 | 15 | 18 | 20 | 22 | 25 | 30 | 35 m/s |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 0 | 16.0 | 16.0 | 16.0 | 16.0 | 16.0 | 16.0 | 14.3 | 9.6 | 2.4 | 2.3 |
-| 0.5 | 7.9 | 5.0 | 3.2 | 1.8 | 1.1 | 1.3 | 1.7 | 2.0 | 2.1 | 2.1 |
-| 1 | 5.8 | 3.8 | 2.6 | 1.7 | 1.8 | 1.8 | 1.8 | 1.8 | 2.0 | 1.9 |
-
-Half brake with full lock from 30 m/s: 15.6; full brake: 14.4.
-
-An extended set of 46 runs adds throttles of 0.25 and 0.75 at the same
-speeds, brakes of 0.3, 0.5 and 1 with full lock from 15 to 35 m/s, and locks
-held at 1.25, 1.5, 2 and 3 times the default one at 15, 20 and 25 m/s with
-a throttle of 0.6 (where they stay within 0.55 rad). The candidates, all
-with the brakes, steering and everything else as above:
-
-| fronts / rears | lift | engine braking | traction limit | spins of 32 | of 46 | |
-| --- | ---: | ---: | --- | ---: | ---: | --- |
-| 12 / 18 | 0.6 | 0.5 | off | 15 | 23 | round 2 |
-| 10 / 20 | 0.8 | 0.25 | off | 3 | 8 | full throttle from 8, 10 and 12 m/s |
-| 10 / 20 | 0.6 | 0.5 | off | 7 | 12 | also the lift-offs from 20 to 25 m/s and half brake from 30 |
-| 12 / 18 | 0.6 | 0.5 | on | 3 | 11 | full throttle from 18 and 20 m/s, half brake from 30 |
-| 12 / 20 | 0.6 | 0.5 | on | 1 | 8 | half brake from 30 m/s |
-| 11 / 19 | 0.6 | 0.5 | on | 0 | 5 | |
-| 10 / 18 | 0.6 | 0.5 | on | 0 | 4 | |
-| 9 / 21 | 0.6 | 0.5 | on | 0 | 2 | |
-| 10 / 20 | 0.8 | 0.25 | on | 0 | 4 | |
-| 10 / 20 | 0.8 | 0.5 | on | 0 | 3 | |
-| 10 / 20 | 0.6 | 0.25 | on | 0 | 3 | |
-| **10 / 20** | **0.6** | **0.5** | **on** | **0** | **3** | **chosen** |
-
-Neither the stiffnesses nor the traction limit alone clears the 32 runs;
-together they do, and moving the lift or the engine braking then changes
-no count in either set, so both keep the values round 2 chose them for. The
-three spins left in the extended set are all locks the default steering
-cannot reach: 1.5 times the default lock at 20 m/s, and 1.5 and 2 times at
-25 m/s. Further understeer costs cornering at full input: 9 / 21 would
-clear one more extended run and give 1.15 g at 20 m/s where 10 / 20 gives
-1.28 and 11 / 19 1.43 ("Drivability").
-
-At 20, 25 and 30 m/s, past the default lock, the car snaps into oversteer
-inside a window of locks, not past a threshold. The window was swept with
-the lock held fixed at f times the default full-input lock, f from 1.00 in
-steps of 0.05 up to the largest step within the full 0.55 rad, for five
-seconds each from the speed, with `run_steady`'s speed controller; a spin
-is more than 20 degrees of sideslip while the car moves faster than
-3 m/s. The cells give f and, in brackets, the largest sideslip in
-degrees:
-
-| speed | swept | last steady sample below | spinning samples | first steady sample above |
-| --- | --- | --- | --- | --- |
-| 15 m/s | 1.00 to 2.55 | - | none (the largest sideslip is 9.6, at 1.30) | - |
-| 20 m/s | 1.00 to 3.75 | 1.25 (1.8) | every one from 1.30 (31.1) to 1.65 (22.0) | 1.70 (18.9) |
-| 25 m/s | 1.00 to 5.30 | 1.40 (2.9) | every one from 1.45 (51.5) to 2.60 (20.5) | 2.65 (18.4) |
-| 30 m/s | 1.00 to 7.25 | 1.65 (3.6) | every one from 1.70 (93.4) to 3.95 (21.0) | 4.00 (19.7) |
-
-Each edge lies between the two samples beside it, so it is known to 0.05
-times the default lock and no better. With a constant 0.6 throttle instead
-of the controller every sample falls on the same side except one: at
-30 m/s 4.00 also spins (20.7), and 4.05 is the first steady sample above
-(19.5). Just above the window the sideslip is still close to the
-20-degree mark (18.9, 18.4 and 19.7 degrees at the first steady samples);
-no sample above the window spins, and at the largest one the sideslip is
-1.6 degrees at 20 m/s, 3.0 at 25 and 4.4 at 30. `test_snap_oversteer`
-brackets the lower edge at 20 and 25 m/s: 1.25 times at 20 m/s and 1.4
-times at 25 m/s corner steadily, 1.4 times at 20 m/s and 1.5 times at
-25 m/s spin. No test pins the upper edges.
-
-The coupling of engine and wheels at 0x00475667..0x00475797 was traced
-first, since a recovered limit would beat an invented one, and not
-settled; what was read is under "What is not known". It subtracts from
-each driven wheel's torque a term scaled by that wheel's drive fraction,
-which is the shape a slip feedback would have, and its speed table gives
-0.38 to 0.42 at 8 to 12 m/s, 76 to 84% of its largest value. But the
-term also multiplies a per-wheel value whose writer was not found, so what
-it does at 8 to 12 m/s is unknown. The traction limit stands in for it,
-labelled.
+The engine-wheel feedback at `0x00475667..0x00475797` remains incomplete.
+Its per-wheel operand still lacks authenticated producer/cadence evidence,
+so the existing traction limit and force application height remain labelled
+approximations. No new stiffness or damping is introduced to hide breakaway.
 
 ### What is not known
 
-- The tyre force curves: the lateral family of 0x00587740 (six curves by
-  slip angle, blended, and a seventh past them) and the longitudinal
+- The complete wheel/tyre coupling: the lateral family of 0x00587740 is
+  now implemented with authenticated curve samples and load/angle scales;
+  its surrounding live-wheel coupling remains incomplete, as does the longitudinal
   coupling of 0x00475667..0x00475797, including the 0.008 divisor
   (0x006B71B8) and the speed table 0x00705E78. What was read of the
   coupling, the second half of the per-wheel loop of 0x00475530 (the

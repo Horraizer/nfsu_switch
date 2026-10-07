@@ -25,8 +25,11 @@ INPUTS = {
     'Sound/IG_GLOBAL/IMPACT_MB.abk': 'c1ee8237c292e2934e296caf10e7a78b25bdae8326c517d1aa034379362cc6d5',
     'Sound/IG_GLOBAL/SCRAPE_MB.abk': 'f8064c70c59bb0b6e61596de7f1a6856ea4ac48ace3a48d50849c2b4e9fecb50',
 }
+# Integration328 changes RaceAudioService::start only to select the original
+# IG playlist and extend its call signature. RPM/load and collision analytical
+# consumers below are unchanged; retain their bounded evidence classification.
 SOURCES = {
-    'src/race_audio.cpp': 'a37ccd977204e82586f2ce06ea2aa24607a88b95c864a0fd9c8fb38f53686900',
+    'src/race_audio.cpp': '2e09629b1e86ebd1db8ae417cf9e5e51559a7416c276c654e42d261e93771a32',
     'src/collision_audio.cpp': 'c5a855ff6edff52d9d3249314f790a886d97380f0a8905566baae21968cf5d5d',
     'src/audio.cpp': '3e70ffbeceb77c7023d95c008bb2f0de1d89623c76df464a5a0115eb81791f26',
     'src/audio_playback.cpp': '5d2fd0ee1ee65aea3d7569296ee3391246123ca19fc469c9f751f9d5de31b71b',

@@ -378,3 +378,24 @@ a photograph of the tuned car racing and paired GPU SCENE replay pages for
 stock and tuned at the same build, mode and uninterrupted game-tick window.
 The target remains 60 fps; there is no alternate simulation rate or 30 fps
 acceptance mode.
+
+## Integrated live steering default
+
+Ordinary menu free driving and standalone `--live` select `recovered1` unless
+an explicit `--steering` override is supplied. The startup diagnostic prints
+the selected path. Explicit `--replay` retains the historical `baseline` path
+for its recorded simulation pins; it does not qualify current live handling.
+Console acceptance must exercise the ordinary menu entry with the integrated
+tyres, including braking, rear slip, reset and return/reentry. No original
+live steering predicate or complete wheel-coupling fidelity is inferred from
+this port default policy.
+
+The ordinary live/menu profile also enables glows, car shading and the existing
+wet-road reflection pass. Explicit `--glows=off`, `--car-shading off` and
+`--wet-road-reflections off` keep diagnostic overrides available. Bare
+`--glows` remains compatible. Replay defaults retain their prior effect
+selection for regression pins. The desktop race `--live` path follows the
+same live defaults; the desktop car viewer is a separate inspection tool.
+These effects retain their documented approximations, including the static
+car environment approximation; no dynamic environment-cube completion is
+claimed.

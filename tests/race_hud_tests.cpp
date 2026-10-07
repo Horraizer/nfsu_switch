@@ -54,50 +54,43 @@ double needle_angle(const nfsu::RaceHudFrame& frame, bool red = true) {
 void converge_needle(const nfsu::VehicleState& car, double max, double red,
                      std::uint32_t width, std::uint32_t height,
                      nfsu::RaceHudFrame& frame) {
-    frame.needle_rpm = car.engine_rpm;
-    frame.needle_initialized = true;
     nfsu::build_race_hud_frame_for_car(car,max,red,width,height,frame);
 }
 
-void test_needle_slew() {
+void test_needle_cadence() {
     nfsu::VehicleState car{};
-    car.gear = nfsu::kVehicleGearFirst;
-    car.engine_rpm = 5000.0;
+    car.gear=nfsu::kVehicleGearFirst;
     nfsu::RaceHudFrame sixty,thirty,eight;
-    for (auto* frame : {&sixty,&thirty,&eight})
-        nfsu::advance_race_hud_frame_for_car(car,0,*frame);
+    const auto draw=[&](nfsu::RaceHudFrame& frame) {
+        nfsu::build_race_hud_frame_for_car(car,8000,7500,1280,720,frame);
+    };
     for (unsigned tick=1;tick<=60;++tick) {
-        car.step=tick*2; car.engine_rpm=8000.0;
-        for (auto* frame : {&sixty,&thirty,&eight})
-            nfsu::advance_race_hud_frame_for_car(car,tick,*frame);
-        nfsu::build_race_hud_frame_for_car(car,8000,7500,1280,720,sixty);
-        if (tick%2==0)
-            nfsu::build_race_hud_frame_for_car(car,8000,7500,1280,720,thirty);
-        if (tick%8==0)
-            nfsu::build_race_hud_frame_for_car(car,8000,7500,1280,720,eight);
+        car.step=tick*2;car.engine_rpm=5000+tick*50;
+        draw(sixty);
+        if (tick%2==0) draw(thirty);
+        if (tick%8==0) draw(eight);
     }
-    check(sixty.needle_rpm==8000 && thirty.needle_rpm==8000 && eight.needle_rpm==8000,
-          "zero and multiple simulation ticks per presentation have identical followers");
+    // Catch-up may present once after multiple committed ticks.
+    draw(eight);
+    check(sixty.readout.rotation==thirty.readout.rotation &&
+          sixty.readout.rotation==eight.readout.rotation,
+          "presentation frequency and catch-up do not change the completed-state needle");
     car.engine_rpm=3000;car.gear++;
-    nfsu::advance_race_hud_frame_for_car(car,61,sixty);
-    check(sixty.needle_rpm==3000,"a gear change bypasses the slew");
-    car.engine_rpm=5000;
-    for (unsigned present=0;present<30;++present) {
-        nfsu::advance_race_hud_frame_for_car(car,61,sixty);
-        nfsu::build_race_hud_frame_for_car(car,8000,7500,1280,720,sixty);
-    }
-    check(sixty.needle_rpm==3000,"paused and repeated presentations never move the follower");
-    nfsu::advance_race_hud_frame_for_car(car,62,sixty);
-    check(sixty.needle_rpm==3050,"a same-gear simulation update slews by 50 RPM");
-    car.engine_rpm=3080;
-    nfsu::advance_race_hud_frame_for_car(car,63,sixty);
-    check(sixty.needle_rpm==3080,"a target within 50 RPM settles exactly");
-    car.engine_rpm=800;car.gear=nfsu::kVehicleGearFirst;
-    nfsu::advance_race_hud_frame_for_car(car,0,sixty);
-    nfsu::RaceHudFrame reentry;
-    nfsu::advance_race_hud_frame_for_car(car,0,reentry);
-    check(sixty.needle_rpm==reentry.needle_rpm && sixty.needle_gear==reentry.needle_gear,
-          "reset and fresh race entry produce the same display state");
+    draw(sixty);
+    check(sixty.readout.engine_rpm==3000 &&sixty.readout.gear==car.gear &&
+          sixty.readout.rotation==nfsu::race_hud_needle_rotation(3000,8000),
+          "original full physics engine RPM and gear reach the HUD together");
+    const auto paused=sixty;
+    for(unsigned present=0;present<30;++present) draw(sixty);
+    check(sixty.readout.rotation==paused.readout.rotation &&sixty.quads==paused.quads &&
+          std::memcmp(sixty.vertices.data(),paused.vertices.data(),sizeof(sixty.vertices))==0,
+          "paused and repeated frames leave all needle geometry unchanged");
+    car.step=0;car.engine_rpm=800;car.gear=nfsu::kVehicleGearFirst;
+    draw(sixty);
+    nfsu::RaceHudFrame reentry;draw(reentry);
+    check(sixty.readout.rotation==reentry.readout.rotation &&
+          std::memcmp(sixty.vertices.data(),reentry.vertices.data(),sizeof(sixty.vertices))==0,
+          "reset and fresh entry have identical geometry without stale follower state");
 }
 
 void test_needle_endpoint(const nfsu::RaceHudFrame& frame,
@@ -620,7 +613,7 @@ int main(int argc,char** argv) {
     }
     test_dial();
     test_rpm();
-    test_needle_slew();
+    test_needle_cadence();
     test_needle_over_scale();
     test_gear_and_speed();
     test_layout_and_current_state();

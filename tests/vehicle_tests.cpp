@@ -345,6 +345,26 @@ void test_record_refusals() {
          [](std::vector<unsigned char>& r) { put_f32(r, 0x2D0, 1.5F); }, 0x2D0},
         {"a zero rear final drive",
          [](std::vector<unsigned char>& r) { put_f32(r, 0x2C8, 0.0F); }, 0x2C8},
+        {"a zero front lateral slip divisor",
+         [](std::vector<unsigned char>& r) { put_f32(r, 0x1E0, 0.0F); }, 0x1E0},
+        {"a negative front lateral slip divisor",
+         [](std::vector<unsigned char>& r) { put_f32(r, 0x1E0, -1.0F); }, 0x1E0},
+        {"a zero front lateral load divisor",
+         [](std::vector<unsigned char>& r) { put_f32(r, 0x1E4, 0.0F); }, 0x1E4},
+        {"a negative front lateral load divisor",
+         [](std::vector<unsigned char>& r) { put_f32(r, 0x1E4, -1.0F); }, 0x1E4},
+        {"a negative front lateral force scale",
+         [](std::vector<unsigned char>& r) { put_f32(r, 0x1E8, -1.0F); }, 0x1E8},
+        {"a zero rear lateral slip divisor",
+         [](std::vector<unsigned char>& r) { put_f32(r, 0x200, 0.0F); }, 0x200},
+        {"a negative rear lateral slip divisor",
+         [](std::vector<unsigned char>& r) { put_f32(r, 0x200, -1.0F); }, 0x200},
+        {"a zero rear lateral load divisor",
+         [](std::vector<unsigned char>& r) { put_f32(r, 0x204, 0.0F); }, 0x204},
+        {"a negative rear lateral load divisor",
+         [](std::vector<unsigned char>& r) { put_f32(r, 0x204, -1.0F); }, 0x204},
+        {"a negative rear lateral force scale",
+         [](std::vector<unsigned char>& r) { put_f32(r, 0x208, -1.0F); }, 0x208},
         {"a zero front static friction",
          [](std::vector<unsigned char>& r) { put_f32(r, 0x1EC, 0.0F); }, 0x1EC},
         {"a negative rear sliding friction",
@@ -390,6 +410,15 @@ void test_record_refusals() {
 }
 
 void test_model_refusals() {
+    // New lateral divisors must fail before reset or any standstill force.
+    for (unsigned axle=0;axle<2;++axle) for (float value : {0.0F,-1.0F}) {
+        auto invalid=nfsu::stock_240sx_vehicle_spec();
+        invalid.handling.tyres[axle].slip_scale=value;
+        const nfsu::VehicleModel model(invalid);
+        nfsu::VehicleState untouched;untouched.position.y=123.0;
+        check(!model.valid() &&!model.reset(untouched,nfsu::VehiclePose{}) &&
+              untouched.position.y==123.0,"invalid slip divisor refuses model and standstill reset");
+    }
     nfsu::VehicleSpec spec = nfsu::stock_240sx_vehicle_spec();
     spec.handling.mass = 0.0F;
     const nfsu::VehicleModel zero_mass(spec);

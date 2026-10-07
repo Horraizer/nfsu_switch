@@ -248,28 +248,6 @@ bool load_race_hud_atlas(const std::filesystem::path& root,
     return true;
 }
 
-void advance_race_hud_frame_for_car(const VehicleState& car, std::uint64_t tick,
-                                     RaceHudFrame& frame) noexcept {
-    if (frame.needle_initialized && tick == frame.needle_tick) return;
-    if (!frame.needle_initialized || tick < frame.needle_tick) {
-        frame.needle_rpm = 0.0;
-        frame.needle_gear = kVehicleGearNeutral;
-    }
-    const double target = std::isfinite(car.engine_rpm) ? car.engine_rpm : 0.0;
-    // Native helper 0x427BAB/0x427BAE bypasses the follower on gear change.
-    // Applying that bounded rule to the port engine target is an adaptation,
-    // not proof of the original live-player producer or its cadence.
-    if (car.gear != frame.needle_gear) frame.needle_rpm = target;
-    else frame.needle_rpm += std::clamp(target - frame.needle_rpm, -50.0, 50.0);
-    frame.needle_tick = tick;
-    frame.needle_gear = car.gear;
-    frame.needle_initialized = true;
-}
-
-void advance_race_hud_frame(const RaceSession& session, RaceHudFrame& frame) noexcept {
-    advance_race_hud_frame_for_car(session.car(), session.timing().step, frame);
-}
-
 void build_race_hud_frame(const RaceSession& session,
                           std::uint32_t width, std::uint32_t height,
                           RaceHudFrame& frame) noexcept {
@@ -289,7 +267,7 @@ void build_race_hud_frame_for_car(const VehicleState& car,
     const double mps=vehicle_sqrt(car.velocity.x*car.velocity.x+
                                   car.velocity.y*car.velocity.y);
     frame.readout={car.step,car.engine_rpm,car.wheel_rpm,max_rpm,redline_rpm,
-        race_hud_needle_rotation(frame.needle_initialized ? frame.needle_rpm : car.engine_rpm,max_rpm),car.gear,
+        race_hud_needle_rotation(car.engine_rpm,max_rpm),car.gear,
         static_cast<int>(std::min(999.0,mps*2.237))};
     if (!width || !height) return;
     // Preserve the 720p presentation canvas. Reference 1280x800 captures are

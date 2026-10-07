@@ -527,7 +527,6 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             const double tick_ms = ms(armGetSystemTick()-stage);
             simulation += tick_ms; simulation_ticks[ticks] = tick_ms;
             stage = armGetSystemTick(); require(race.commit(error),error);
-            advance_race_hud_frame(race.session(),hud_frame);
             scene.advance_particles(race.session());
             auto audio_snapshot=audio::race_audio_snapshot(race.session());
             if (free_drive) { audio_snapshot.completed_laps=0; audio_snapshot.finished=false; }
@@ -796,8 +795,8 @@ int main(int argc, char** argv) {
             std::uint32_t scene_height = 0;
             bool gpu_boost = true;
             bool startup_trace=false;
-            bool glows = false;
-            bool wet_road_reflections = false;
+            bool glows = false, glows_seen = false;
+            bool wet_road_reflections = false, wet_road_seen = false, car_shading_seen = false;
             bool explicit_performance = false, handling_telemetry = false;
             VehicleUpgradeLevels performance;
             RaceSteering steering=RaceSteering::baseline; bool steering_seen=false;
@@ -841,21 +840,24 @@ int main(int argc, char** argv) {
                 else if (arg=="--car-shading" && i+1<argc) {
                     const std::string mode=argv[++i];
                     require(mode=="on" || mode=="off","--car-shading needs on or off");
-                    car_shading=mode=="on";
+                    car_shading=mode=="on";car_shading_seen=true;
                 }
                 else if (arg == "--sky" && i+1 < argc &&
                          (std::strcmp(argv[i+1],"on") == 0 || std::strcmp(argv[i+1],"off") == 0 ||
                           std::strcmp(argv[i+1],"early") == 0)) sky = argv[++i];
-                else if (arg == "--glows") glows = true;
+                else if (arg == "--glows" || arg == "--glows=on" || arg == "--glows=off") {
+                    glows = arg != "--glows=off";glows_seen=true;
+                }
                 else if (arg == "--wet-road-reflections") {
                     if (i + 1 >= argc) throw std::runtime_error("--wet-road-reflections needs on or off");
                     const std::string value = argv[++i];
                     if (value == "on") wet_road_reflections = true;
                     else if (value == "off") wet_road_reflections = false;
                     else throw std::runtime_error("--wet-road-reflections must be on or off");
+                    wet_road_seen=true;
                 }
                 else if (!root_seen && arg.rfind("--",0) != 0) { root = arg; root_seen = true; }
-            else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--hud-trace] [--no-hud] [--sky on|off|early] [--scene-height 720|540|450|360] [--gpu-boost on|off] [--particles=on|--particles=off] [--tuned] [--glows] [--car NAME] [--car-shading on|off] [--texture-filter legacy|linear] [--wet-road-reflections on|off]");
+            else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--panel|--profile-frame] [--hud-trace] [--no-hud] [--sky on|off|early] [--scene-height 720|540|450|360] [--gpu-boost on|off] [--particles=on|--particles=off] [--tuned] [--glows|--glows=off] [--car NAME] [--car-shading on|off] [--texture-filter legacy|linear] [--wet-road-reflections on|off]");
             }
             require(!(panel && profile_frame),"--profile-frame requires direct presentation");
             require(!startup_trace || !selected,"--frontend-startup-trace requires menu startup");
@@ -884,6 +886,15 @@ int main(int argc, char** argv) {
                 if (!nfsu::load_car_assets(std::filesystem::path(root)/"Global/GLOBALB.BUN",
                                            car_name,selected_car,car_error))
                     throw std::runtime_error("car selection: "+car_error);
+            }
+            // Ordinary live/menu driving uses the recovered steering path.
+            // Explicit replay keeps the historical baseline simulation pins.
+            if (!steering_seen) steering = replay ? RaceSteering::baseline :
+                                                   RaceSteering::recovered_predicate1;
+            if (!replay) {
+                if (!glows_seen) glows=true;
+                if (!wet_road_seen) wet_road_reflections=true;
+                if (!car_shading_seen) car_shading=true;
             }
             if (selected) {
                 run(root,replay,panel,profile_frame,particles_enabled,sky,
@@ -1008,7 +1019,7 @@ int main(int argc, char** argv) {
                             // response. Explicit --car/--tuned diagnostics
                             // keep the --car-shading argument's control.
                             run(root,false,false,false,particles_enabled,sky,
-                                tuned,glows,car_shading||free_drive_resolved,wet_road_reflections,texture_filter,scene_height,
+                                tuned,glows,car_shading||(free_drive_resolved&&!car_shading_seen),wet_road_reflections,texture_filter,scene_height,
                                 gpu_boost,hud,false,explicit_performance ? &performance : nullptr,
                                 handling_telemetry,steering,
                                 free_drive_resolved ? free_drive_skyline.car : selected_car,
