@@ -1400,7 +1400,13 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             double f = (d_.progressive[axle] * positive + 1.0) * d_.spring[axle] * x;
             f = f + (rate > 0.0 ? d_.damping_bump[axle] : d_.damping_rebound[axle]) * rate;
             f = f + d_.preload[k];
-            f = f + (x - s.wheels[kAntiRollPartner[k]].compression) * d_.anti_roll[axle];
+            //46ABD0 refreshes the factory's ascending strut list.588580
+            // consumes its partner immediately: the first strut in each
+            // axle sees the previous compression, the second the new one.
+            const auto& partner=s.wheels[kAntiRollPartner[k]];
+            const double partner_compression=k%2==0?
+                partner.previous_compression:partner.compression;
+            f = f + (x - partner_compression) * d_.anti_roll[axle];
             f = f + overflow[k] * a.bump_stop_rate;
             strut_force[k] = f > 0.0 ? f : 0.0;
         }

@@ -529,6 +529,37 @@ void original_contact_force_and_tyre_wrap() {
     check(wheel.force_long==1.7051007747650146F&&wheel.force_lat==4.417034149169922F,
           "native tyre angle wrap constants preserve the original quantized lateral drag word");
 }
+void original_strut_partner_epoch() {
+    using namespace nfsu;
+    auto spec=stock_240sx_vehicle_spec();
+    for(auto& w:spec.handling.wheels) w.vertical=spec.handling.centre_of_mass[2]-.25F;
+    const VehicleModel model(spec);VehicleState a;VehicleTelemetry ta,tb;
+    check(model.reset(a,{}),"strut partner epoch reset");
+    a.position={0,0,.5};a.velocity={};a.orientation={1,0,0,0};
+    a.forces_prepared=true;a.prepared_force={};a.prepared_torque={};a.body_rest_state=0;
+    a.wheels[0].compression=.04F;a.wheels[1].compression=0;
+    auto b=a;b.wheels[1].compression=-.02F;
+    auto c=a;auto d=a;d.wheels[0].compression=-.02F;
+    VehicleInput input;input.throttle=1;input.road_steering=true;
+    input.road_angle_word_valid=true;input.road_angle_word=0;
+    check(model.step(a,input,VehicleFlatGround{},ta,0,1.0/240.0,true)&&
+          model.step(b,input,VehicleFlatGround{},tb,0,1.0/240.0,true),
+          "strut partner epoch twin callbacks complete");
+    check(a.wheels[0].compression==b.wheels[0].compression&&
+          a.wheels[1].compression==b.wheels[1].compression&&ta.wheels[0].contact&&tb.wheels[0].contact,
+          "same query produces matching new compressions despite different prior partner states");
+    // Full original588580/46ABD0 witnesses retain that prior partner
+    // dependency. The nominal force law remains the qualified double adapter.
+    const double expected=double(.02F)*spec.handling.struts[0].anti_roll*spec.approx.unit_scale;
+    check(std::abs((tb.wheels[0].load-ta.wheels[0].load)-expected)<1e-9,
+          "first strut force consumes the previous partner rather than all-new compression");
+    check(model.step(c,input,VehicleFlatGround{},ta,0,1.0/240.0,true)&&
+          model.step(d,input,VehicleFlatGround{},tb,0,1.0/240.0,true),
+          "second strut partner epoch twin callbacks complete");
+    check(c.wheels[0].compression==d.wheels[0].compression&&
+          c.wheels[1].compression==d.wheels[1].compression&&ta.wheels[1].load==tb.wheels[1].load,
+          "second strut consumes its already-updated partner despite different prior first-strut states");
+}
 } // namespace
 
 int main() {
@@ -541,6 +572,7 @@ int main() {
     recovered_rigid_runtime();
     original_front_steering_epoch();
     original_contact_force_and_tyre_wrap();
+    original_strut_partner_epoch();
     if (failures) {std::cerr<<failures<<" player powertrain test failure(s)\n";return 1;}
     std::cout<<"player powertrain tests passed\n";
 }
