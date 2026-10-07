@@ -238,6 +238,7 @@ void outer_slice_and_selection_phase() {
     check(state.transmission.requested_gear==kVehicleGearFirst+1,"held outer shift is consumed only once");
     check(model.reset(state,VehiclePose()),"airborne flag reset");
     for(auto& wheel:state.wheels) wheel.contact=false;
+    state.published_support=0;
     input={};
     check(model.step(state,input,VehicleFlatGround(),t,0,1.0/240.0,true)&&!state.alternate_yaw_active,
           "outer zero-support count selects normal yaw tensor");
@@ -262,8 +263,12 @@ void body_derivative_epoch() {
     for(const double dt:{1.0/120.0,1.0/240.0}) {
         VehicleState state;VehicleTelemetry t;
         check(model.reset(state,VehiclePose()),"body derivative rest reset");
+        // Isolate the original body-only kernel from the separately recovered
+        // post-refresh rest callback: supplied prepared force and input wake.
+        state.forces_prepared=true;state.prepared_force={0,19460,0};
+        VehicleInput wake;wake.throttle=1;
         const auto before=state;
-        check(model.step(state,VehicleInput{},VehicleFlatGround(),t,0,dt,true),
+        check(model.step(state,wake,VehicleFlatGround(),t,0,dt,true),
               "body derivative rest slice completes");
         // Actual body-only46AA40/585410 witness: zero old velocity leaves
         // position fixed even when supplied force changes the new momentum.
@@ -271,7 +276,7 @@ void body_derivative_epoch() {
               state.position.z==before.position.z,
               "first body position uses old velocity despite nonzero wheel force");
         check(state.velocity.y!=before.velocity.y,
-              "nonzero authentic standing lateral producer still changes completed velocity");
+              "supplied body force changes velocity when original input gate excludes rest");
         check(model.reset(state,VehiclePose()),"moving derivative reset");
         state.velocity={4,2,.1};
         const auto moving=state;
@@ -284,9 +289,11 @@ void body_derivative_epoch() {
         VehiclePose pose;pose.speed=15;
         check(model.reset(state,pose),"rotation derivative moving reset");
         state.angular_velocity={.2,-.3,.4};
+        state.forces_prepared=true;state.prepared_torque={0,0,1000};
         auto turning=state;
-        VehicleInput turn;turn.steer=1;
-        check(model.step(state,VehicleInput{},VehicleFlatGround(),t,0,dt,true) &&
+        turning.prepared_torque={0,0,-1000};
+        VehicleInput turn;turn.throttle=1;turn.steer=1;
+        check(model.step(state,wake,VehicleFlatGround(),t,0,dt,true) &&
               model.step(turning,turn,VehicleFlatGround(),t,0,dt,true),
               "paired force inputs complete body slices");
         check(state.orientation.w==turning.orientation.w &&
@@ -294,8 +301,79 @@ void body_derivative_epoch() {
               state.orientation.y==turning.orientation.y &&
               state.orientation.z==turning.orientation.z &&
               state.angular_velocity.z!=turning.angular_velocity.z,
-              "different new torques cannot change this slice's old-angular-velocity rotation");
+              "different prepared torques cannot change this slice's old-angular-velocity rotation");
     }
+}
+
+void completed_rest_phase() {
+    using namespace nfsu;
+    const VehicleModel model(stock_240sx_vehicle_spec());
+    VehicleState state;VehicleTelemetry t;const VehicleFlatGround ground;
+    check(model.reset(state,VehiclePose()),"rest phase reset");
+    const auto initial=state.position;
+    for(unsigned k=0;k<480;++k)
+        check(model.step(state,{},ground,t,k%4==3?1.0/60.0:0,1.0/240.0,k%4==0),"two seconds of rest slices");
+    check(state.position.x==initial.x&&state.position.y==initial.y&&state.position.z==initial.z&&
+          state.velocity.x==0&&state.velocity.y==0&&state.velocity.z==0&&state.body_rest_state==2,
+          "original post-refresh rest transition holds body pose despite standing forces");
+    check(state.prepared_force.y!=0&&state.forces_prepared,
+          "rest retains authentic next standing force rather than suppressing the producer");
+    VehicleInput gas;gas.throttle=1;
+    check(model.step(state,gas,ground,t,0,1.0/240.0,true)&&state.body_rest_state==0&&state.body_gravity,
+          "first-gear throttle wakes genuine rest transition and restores gravity");
+    check(state.velocity.x!=0||state.velocity.y!=0,"wake preserves force-created momentum");
+    VehiclePose moving;moving.speed=15;
+    check(model.reset(state,moving),"coast rest phase reset");
+    check(model.step(state,{},ground,t,0,1.0/240.0,true)&&state.body_rest_state==0&&state.velocity.x>14,
+          "coasting at speed retains momentum and excludes sleep");
+    VehiclePose airborne;airborne.ground.z=3;
+    check(model.reset(state,airborne),"airborne rest phase reset");
+    const double height=state.position.z;
+    for(unsigned k=0;k<8;++k)
+        check(model.step(state,{},ground,t,k%4==3?1.0/60.0:0,1.0/240.0,k%4==0),"airborne gravity slice");
+    check(state.published_support==0&&state.body_rest_state==0&&state.body_gravity&&
+          state.velocity.z<0&&state.position.z<height,"unsupported spawn adapter falls with gravity");
+    check(model.reset(state,VehiclePose()),"published support phase reset");
+    state.forces_prepared=true;state.published_support=0;
+    check(model.step(state,{},ground,t,0,1.0/240.0,false)&&state.published_support==0&&state.body_rest_state==0,
+          "new contacts do not rewrite the original published support between outer exports");
+    check(model.step(state,{},ground,t,1.0/60.0,1.0/240.0,false)&&state.published_support==4,
+          "outer export publishes completed support");
+    state.published_gear=kVehicleGearNeutral;
+    check(model.step(state,gas,ground,t,0,1.0/240.0,false)&&state.published_gear==kVehicleGearNeutral&&
+          state.body_rest_state==2,"rest uses published neutral gear between exports");
+    check(model.step(state,gas,ground,t,1.0/60.0,1.0/240.0,false)&&state.published_gear==state.gear,
+          "outer export publishes completed gear");
+    check(model.step(state,gas,ground,t,0,1.0/240.0,true)&&state.body_rest_state==0,
+          "next original input gate observes the published drive gear");
+    std::array<std::uint8_t,kVehicleTelemetryRecordBytes> a{},b{};
+    encode_vehicle_telemetry(t,a);auto other=t;other.prepared_force.y+=1;encode_vehicle_telemetry(other,b);
+    check(a!=b,"canonical record distinguishes next body force futures");
+    other=t;other.engine.feedback_torque+=1;encode_vehicle_telemetry(other,b);
+    check(a!=b,"canonical record distinguishes persistent next engine feedback");
+    other=t;other.wheel_prepared_slip[3]+=1;encode_vehicle_telemetry(other,b);
+    check(a!=b,"canonical record distinguishes next wheel derivative slip");
+    check(model.reset(state,moving),"prepared future pair reset");
+    state.forces_prepared=true;auto twin=state;twin.prepared_force.y=1220;
+    VehicleTelemetry twin_t;
+    check(model.step(state,gas,ground,t,0,1.0/240.0,true)&&
+          model.step(twin,gas,ground,twin_t,0,1.0/240.0,true),"prepared future pair runs");
+    check(state.position.x==twin.position.x&&state.position.y==twin.position.y&&
+          std::fabs((twin.velocity.y-state.velocity.y)-1.0/240.0)<1e-9,
+          "identical body pose/velocity with different cached force has the predicted next velocity");
+    auto continued=state;
+    for(unsigned k=0;k<80;++k) {
+        VehicleInput input=gas;input.brake=k>=40?1:0;input.handbrake=k>=60;
+        check(model.step(state,input,ground,t,k%4==3?1.0/60.0:0,1.0/240.0,k%4==0)&&
+              model.step(continued,input,ground,twin_t,k%4==3?1.0/60.0:0,1.0/240.0,k%4==0),
+              "saved prepared state continues through gas/service/parking slices");
+        encode_vehicle_telemetry(t,a);encode_vehicle_telemetry(twin_t,b);
+        check(a==b,"saved state retains every prepared phase/cache future during continuation");
+    }
+    state.gearbox=VehicleGearbox::manual;state.transmission.requested_gear=kVehicleGearReverse;
+    check(model.reset(state,VehiclePose())&&!state.forces_prepared&&state.body_rest_state==0&&
+          state.body_gravity&&state.published_gear==kVehicleGearFirst,
+          "reset clears prepared phase and pending reverse while restoring initial gravity");
 }
 } // namespace
 
@@ -304,6 +382,7 @@ int main() {
     owner_speed_domains();steered_constraint_witness();strut_hub_and_world_force_witness();
     outer_slice_and_selection_phase();
     body_derivative_epoch();
+    completed_rest_phase();
     if (failures) {std::cerr<<failures<<" player powertrain test failure(s)\n";return 1;}
     std::cout<<"player powertrain tests passed\n";
 }

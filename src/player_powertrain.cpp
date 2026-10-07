@@ -201,6 +201,24 @@ VehicleVec3 player_world_wheel_force(const std::array<VehicleVec3,3>& axes,
              longitudinal*static_cast<float>(axes[0].z))+0.0F};
 }
 
+unsigned player_body_rest_state(const VehicleVec3& velocity,const VehicleVec3& angular,
+                               float forward_vertical,float left_vertical,
+                               float throttle,int published_gear,
+                               unsigned support,unsigned prior_state,
+                               bool recovery_active) noexcept {
+    if (throttle>0.30000001192092896F&&published_gear!=kVehicleGearNeutral&&support>0) return 0;
+    const auto magnitude=[](const VehicleVec3& v) {
+        const float x=static_cast<float>(v.x),y=static_cast<float>(v.y),z=static_cast<float>(v.z);
+        return sqrtf((x*x+y*y)+z*z);
+    };
+    const float speed=magnitude(velocity),omega=magnitude(angular);
+    if (speed>0.69999998807907104F||omega>0.69999998807907104F) return 0;
+    if ((absf(forward_vertical)>0.15000000596046448F||
+         absf(left_vertical)>0.15000000596046448F)&&support>0) return 0;
+    if (recovery_active||(!support&&prior_state!=2)) return 0;
+    return speed<=0.25F&&omega<=0.25F?2U:1U;
+}
+
 float player_body_inverse_yaw(const VehicleHandling& h,bool alternate) noexcept {
     //565060 inverts the full diagonal tensor by cofactors and determinant.
     // Simplifying this to1/yaw changes the authenticated binary32 result.

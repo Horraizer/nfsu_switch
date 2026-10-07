@@ -113,6 +113,17 @@ VehicleVec3 player_world_wheel_force(const std::array<VehicleVec3,3>& world_axes
 //584B10 builds normal/alternate tensors;585810 selects by rigid138.
 float player_body_inverse_yaw(const VehicleHandling& setup,bool alternate) noexcept;
 
+//47AA40 common upright/support path with cleared recovery timer and optional
+//735FCC body-pair scan disabled. Inputs are cached completed body velocities,
+// published owner support/gear, and driver throttle; genuine live actor/body
+// pair production remains outside this explicit port adapter.
+unsigned player_body_rest_state(const VehicleVec3& velocity,
+                               const VehicleVec3& angular_velocity,
+                               float forward_vertical,float left_vertical,
+                               float throttle,int published_gear,
+                               unsigned published_support,unsigned prior_state,
+                               bool recovery_active = false) noexcept;
+
 // Constructor/reset conversion478365. Not a recurring display feedback.
 void player_engine_reset(PlayerEngineState& engine, float rpm) noexcept;
 

@@ -461,6 +461,9 @@ struct VehicleWheelState {
     bool brake_locked = false;
     float history_torque = 0.0F; // wheel+114, kN m
     int spin_direction = 1;      // wheel+110
+    // Prepared by4783C0 after updates, consumed by next587170 derivative.
+    float prepared_torque = 0.0F, prepared_force_long = 0.0F, prepared_slip = 0.0F;
+    bool prepared_sliding = false;
 };
 
 struct PlayerEngineState {
@@ -510,6 +513,13 @@ struct VehicleState {
     PlayerEngineState engine;
     PlayerGearState transmission;
     PlayerOwnerSpeeds owner_speeds; // retained until unsplit frame publication
+    // Actual system4772E0 prepares forces after component refresh/rest handling.
+    // Body storage/ground/spawn adapters remain the port's explicit3D approximation.
+    VehicleVec3 prepared_force, prepared_torque;
+    std::uint32_t body_rest_state = 0;
+    bool body_gravity = true, forces_prepared = false;
+    std::uint32_t published_support = 4; // biased owner38C / actor3CC
+    int published_gear = kVehicleGearFirst; // biased owner398 / actor3D8
 };
 
 // Where reset() puts the car: the ground point under the centre of mass,
@@ -562,6 +572,13 @@ struct VehicleTelemetry {
     PlayerOwnerSpeeds owner_speeds;
     std::array<float,4> wheel_history_torque{};
     std::array<int,4> wheel_spin_direction{};
+    VehicleVec3 prepared_force, prepared_torque;
+    std::uint32_t body_rest_state = 0;
+    bool body_gravity = true, forces_prepared = false;
+    std::uint32_t published_support = 4;
+    int published_gear = kVehicleGearFirst;
+    std::array<float,4> wheel_prepared_torque{},wheel_prepared_force_long{},wheel_prepared_slip{};
+    std::array<bool,4> wheel_prepared_sliding{};
     int gear = kVehicleGearFirst;
     double throttle = 0.0;      // the inputs as applied, after clamping
     double brake = 0.0;
@@ -589,10 +606,13 @@ struct VehicleTelemetry {
 // three u32 (surface, contact/lock flags, sliding), then seven mechanical
 // doubles, four gearbox u32, one history double/sign u32 per wheel and
 // two owner speed doubles, the accumulated port clock and solver interval,
-// and the latched alternate-yaw flag as u32.
+// and the latched alternate-yaw flag as u32. The appended188-byte phase
+// suffix retains next-step force/torque, rest/gravity/initialization and
+// published support/gear, engine feedback and wheel derivative inputs.
 constexpr std::size_t kVehicleTelemetryRecordBytes =
     8 + 4 * 24 + 5 * 8 + 4 + 3 * 8 + 4 + 8 + kVehicleWheelCount * (9 * 8 + 3 * 4)
-    + 7 * 8 + 4 * 4 + kVehicleWheelCount * (8 + 4) + 4 * 8 + 4;
+    + 7 * 8 + 4 * 4 + kVehicleWheelCount * (8 + 4) + 4 * 8 + 4
+    + 2 * 24 + 5 * 4 + 8 + kVehicleWheelCount * (3 * 8 + 4);
 void encode_vehicle_telemetry(const VehicleTelemetry& record,
                               std::array<std::uint8_t, kVehicleTelemetryRecordBytes>& out) noexcept;
 

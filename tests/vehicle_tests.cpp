@@ -1882,7 +1882,7 @@ void test_telemetry_encoding() {
     // Then the steer angle to 184 and four wheels of 84 bytes, the last
     // wheel's sliding flag closes the original prefix. Mechanical state
     // follows it so equal displayed values cannot hide different futures.
-    check(bytes[516] == 1 && bytes[519] == 0 && nfsu::kVehicleTelemetryRecordBytes == 676,
+    check(bytes[516] == 1 && bytes[519] == 0 && nfsu::kVehicleTelemetryRecordBytes == 864,
           "the original wheel prefix precedes persistent mechanical state");
     // The applied drive torque follows the recovered one in each wheel:
     // wheel 0's eighth and ninth doubles, at 184 + 56 and 184 + 64.

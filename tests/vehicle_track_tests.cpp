@@ -1285,13 +1285,18 @@ void test_refusals() {
 // ---------------------------------------------------------------------------
 
 void test_telemetry_layout() {
-    static_assert(nfsu::kVehicleTrackTelemetryRecordBytes == 916, "the record is 916 bytes");
+    static_assert(nfsu::kVehicleTrackTelemetryRecordBytes == 1104, "the record is 1104 bytes");
     nfsu::VehicleTrackTelemetry t;
     t.step = 0x0102030405060708ULL;
     t.model.step = 0x1112131415161718ULL;
     t.model.simulation_seconds = 0.125;
     t.model.solver_dt = 1.0 / 240.0;
     t.model.alternate_yaw_active = false;
+    t.model.prepared_force.y=1.25;t.model.prepared_torque.z=3.5;
+    t.model.body_rest_state=1;t.model.body_gravity=false;t.model.forces_prepared=true;
+    t.model.published_support=2;t.model.published_gear=3;t.model.engine.feedback_torque=.5F;
+    t.model.wheel_prepared_torque[3]=.75F;t.model.wheel_prepared_force_long[3]=-1.0F;
+    t.model.wheel_prepared_slip[3]=.125F;t.model.wheel_prepared_sliding[3]=true;
     t.position.x = 1.5;
     t.off_path = true;
     t.zone = -1;
@@ -1302,12 +1307,19 @@ void test_telemetry_layout() {
     std::array<std::uint8_t, nfsu::kVehicleTelemetryRecordBytes> model_bytes{};
     nfsu::encode_vehicle_telemetry(t.model, model_bytes);
     check(std::equal(model_bytes.begin(), model_bytes.end(), bytes.begin()+8),
-          "track record embeds the complete model record including clock and yaw flag");
+          "track record embeds the complete model record including prepared derivative phases");
     double clock = 0.0, interval = 0.0;
     std::memcpy(&clock, bytes.data()+8+656, sizeof(clock));
     std::memcpy(&interval, bytes.data()+8+664, sizeof(interval));
     check(clock==0.125 && interval==1.0/240.0 && bytes[8+672]==0,
           "extended model fields retain their declared wire offsets");
+    double prepared_y=0,feedback=0,last_slip=0;
+    std::memcpy(&prepared_y,bytes.data()+8+684,sizeof(prepared_y));
+    std::memcpy(&feedback,bytes.data()+8+744,sizeof(feedback));
+    std::memcpy(&last_slip,bytes.data()+8+852,sizeof(last_slip));
+    check(prepared_y==1.25&&feedback==.5&&last_slip==.125&&bytes[8+724]==1&&
+          bytes[8+728]==0&&bytes[8+732]==1&&bytes[8+736]==2&&bytes[8+740]==3&&bytes[8+860]==1,
+          "prepared body/feedback/last-wheel cache and published phase have explicit wire positions");
     double x = 0.0;
     std::memcpy(&x, bytes.data() + 8 + nfsu::kVehicleTelemetryRecordBytes, sizeof(x));
     check(x == 1.5, "then the position's x");
