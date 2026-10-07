@@ -19,27 +19,6 @@ int main(int argc, char** argv) {
         if (argc==1) { std::cout << "PASS: supported circuit selection guards\n"; return 0; }
         require(check_arguments(argc,argv,1,error),error);
         const auto root=argument_path(argv[1]);
-        VehicleTrackCourse course;
-        require(load_vehicle_track_course(root/"Tracks/TRACKB1005.lzc",3,0,0,0,course,error),error);
-        if (argc>2 && std::string(argv[2])=="--measure") {
-            RaceSession race(course,stock_240sx_vehicle_spec()); require(race.start(error),error);
-            RaceRouteDriver driver(RaceDrivingLine::event8_forward);
-            std::uint32_t resets = 0;
-            while (race.timing().outcome==RaceOutcome::running && race.timing().step<120000) {
-                require(race.advance(driver.sample(race),error),error);
-                resets = race.telemetry().resets;
-                if (race.timing().step%6000==0) {
-                    const auto& car=race.car();
-                    std::cout << race.timing().step << " p " << race.progress().coordinate.parameter
-                              << " xy " << car.position.x << ' ' << car.position.y
-                              << " lap " << race.timing().racers[0].highest_lap << '\n';
-                }
-            }
-            require(race.timing().outcome==RaceOutcome::finished,"driver did not finish");
-            std::cout << "finish ticks " << race.timing().step << " resets " << resets << '\n';
-            require(resets == 0, "event8 driver must finish without resets");
-            std::cout << "PASS: event8 full three-lap controller drive\n"; return 0;
-        }
         SupportedRace selection;
         require(load_supported_race(root/"Frontend/FRONTB.LZC",root/"Global/GLOBALB.BUN",8,selection,error),error);
         require(selection.slot.track==1005 && selection.slot.laps==3 && selection.slot.direction==0,
@@ -87,6 +66,42 @@ int main(int argc, char** argv) {
         require(scene.frame(run.session(),frame,error),error);
         require(frame.commands.draw_count()!=0,"event8 GPU frame must draw");
         require(!run.matches_configured_replay(),"event8 cannot match event1 replay");
+        if (argc>2 && std::string(argv[2])=="--measure") {
+            RaceRouteDriver driver(RaceDrivingLine::event8_forward);
+            std::vector<RaceInputRun> recording;
+            while (run.session().timing().outcome == RaceOutcome::running &&
+                   run.session().timing().step < kRaceInputMaxTicks) {
+                const auto pad = driver.sample(run.session());
+                append_race_input(recording, pad);
+                require(run.simulate(pad, error) && run.commit(error), error);
+                require(run.session().telemetry().resets == 0, "event8 drive reset");
+                if (run.session().timing().step % 6000 == 0) {
+                    require(scene.frame(run.session(), frame, error), error);
+                    require(frame.commands.draw_count() != 0, "later event8 GPU frame empty");
+                    std::cout << "shared tick " << run.session().timing().step
+                              << " lap " << run.session().timing().racers[0].highest_lap
+                              << " draws " << frame.commands.draw_count() << '\n';
+                }
+            }
+            require(run.session().timing().outcome == RaceOutcome::finished,
+                    "shared event8 drive did not finish");
+            std::vector<RaceInputRun> decoded;
+            require(parse_race_input(format_race_input(recording), decoded, error), error);
+            RaceRun replay;
+            require(replay.set_event(8, error) && replay.start(root, track, error), error);
+            for (const auto& input : decoded) for (std::uint32_t i = 0; i < input.ticks; ++i) {
+                const auto pad = race_input_frame(input, replay.session().timing().step);
+                require(replay.session().timing().outcome == RaceOutcome::running,
+                        "shared recording has trailing input");
+                require(replay.simulate(pad, error) && replay.commit(error), error);
+            }
+            require(replay.session().timing().outcome == RaceOutcome::finished &&
+                    replay.sequence_hash() == run.sequence_hash() && replay.steps_hash() == run.steps_hash(),
+                    "shared event8 recording/state fidelity differs");
+            require(scene.frame(replay.session(), frame, error) && frame.commands.draw_count() != 0,
+                    "shared event8 finish frame empty");
+            std::cout << "PASS: event8 full RaceRun three-lap drive, residency, later frames and input/state replay\n";
+        }
         std::cout << "PASS: event8 retail selection, GPU inputs, collision/start and residency\n";
         return 0;
     } catch (const std::exception& e) { std::cerr << "FAIL: " << e.what() << '\n'; return 1; }

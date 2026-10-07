@@ -84,6 +84,10 @@ unchanged. It establishes pointer substitution, not whole-game rendering.
 residency, a nonempty GPU frame, original DEFAULTALPHA payload/state and no
 unresolved placed materials. `nfsu_circuit1005_drive_retail` drives all three
 laps through controller input and asserts normal completion without resets.
+The drive uses the shared `RaceRun::simulate`/`commit` path, so every tick
+checks actual uploaded-set residency. It prepares a later GPU frame every
+6000 ticks and replays the formatted controller input through a fresh RaceRun,
+requiring identical sequence and per-step hashes and a nonempty finish frame.
 The test driver uses authored obstacle offsets, an approximation for
 repeatable testing; it changes no physics, pose or route state. Runtime and
 frame pins belong to tests, not this document. Existing event-1 retail tests

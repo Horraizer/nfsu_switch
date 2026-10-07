@@ -26,7 +26,9 @@ bool load_supported_race(const std::filesystem::path& front,
     const auto* event = find_race_event(events, number);
     if (!events.ok() || !tracks.ok() || !event || event->races.size() != 1 ||
         event->type != static_cast<std::uint32_t>(RaceType::circuit)) {
-        error = "supported event must be one valid circuit race"; return false;
+        error = number == 1 ? "event 1 missing or not one race" :
+                              "supported event must be one valid circuit race";
+        return false;
     }
     const auto& slot = event->races.front();
     const auto* info = find_track_info(tracks, slot.track);
