@@ -41,6 +41,12 @@ does not depend on that paragraph.
 
 ## Live driver update and unresolved integration placement
 
+Follow-on: [PHYSICS_DISPATCH_256.md](PHYSICS_DISPATCH_256.md) resolves the
+positive body-to-actor-to-physics dispatch and distinguishes selectors1/3,
+their dt domains and publication. The historical scope below and the
+`collision256_trace.py` null fields describe this earlier probe only. The
+new probe is `physics256_trace.py`; original runtime cadence remains unknown.
+
 The live call is `0x00447969 -> 0x00420B40`. Its second argument comes
 from the returned time at `0x00447939` (`0x0043A8A0`), after
 `0x0044792B -> 0x00420110`. Record the actual argument; neither the
