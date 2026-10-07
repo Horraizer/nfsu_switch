@@ -36,12 +36,19 @@ file(MAKE_DIRECTORY "${WORK}")
 
 set(viewer_painted_sha_240sx "FE7506F173A871A208F94451DFC71A3F3AEBF1EBE677C28AF2B73AD9CEA3AEE8")
 # The stock-frame path's pinned CELICA frame (tests/car_selection_tests.cpp,
-# round-4 row). Requiring the viewer's own CELICA render to hash the same is
+# round-4 row, default yaw 35). Requiring the viewer's own CELICA render to hash the same is
 # the cross-path equivalence of include/nfsu/stock_frame.h, held for a car
 # that needs the lamp aliases and the second-layer windows.
 set(viewer_painted_sha_celica "F2B4DE7423EFC47EA469D2CCDE040435C041C4E789DBAD5EC22E8D1B8D0F00DC")
 
-function(run_viewer label car out var_result var_output var_error)
+set(viewer_painted_sha_CELICA_0 "2640BBAD75B135BEBAD6B92F04AEB0BDB9DCE3F91192AD65687796A34F846B6E")
+set(viewer_painted_sha_CELICA_180 "256C042237376A0FFEE8AAE3DD71274072611B98B181C8CF2D42A6ECE85475B2")
+set(viewer_painted_sha_SUPRA_180 "91B0BCE30CC97449504EF83F2CF31D4E5461FD95100F451D9C68638A1AACF5AA")
+set(viewer_painted_sha_240SX_0 "43BA2CE0D4940C65298EB2C3BD9135CCA59DA17FF90E4E5D0F8D00044456370B")
+set(viewer_painted_sha_CELICA_35 "F2B4DE7423EFC47EA469D2CCDE040435C041C4E789DBAD5EC22E8D1B8D0F00DC")
+set(viewer_painted_sha_240SX_35 "FE7506F173A871A208F94451DFC71A3F3AEBF1EBE677C28AF2B73AD9CEA3AEE8")
+
+function(run_viewer car yaw out var_result var_output var_error)
     execute_process(
         COMMAND "${VIEWER}"
                 "${ROOT}/Cars/${car}/GEOMETRY.BIN" "${ROOT}/Cars/${car}/TEXTURES.BIN"
@@ -52,7 +59,7 @@ function(run_viewer label car out var_result var_output var_error)
                 --stock-parts "${ROOT}/Global/GLOBALB.BUN"
                 --stock-geometry "${ROOT}/Cars/BRAKES/GEOMETRY.BIN"
                 --stock-geometry "${ROOT}/Cars/PLATES/GEOMETRY.BIN"
-                --place-wheels
+                --place-wheels --yaw ${yaw}
                 --skin-car ${car} --skin-doorline plain --skin-base 30 60 160 128
         RESULT_VARIABLE ${var_result}
         OUTPUT_VARIABLE ${var_output}
@@ -62,13 +69,16 @@ function(run_viewer label car out var_result var_output var_error)
     set(${var_error} ${${var_error}} PARENT_SCOPE)
 endfunction()
 
-foreach(case IN ITEMS "CELICA;0" "CELICA;180" "SUPRA;180" "240SX;0")
+foreach(case IN ITEMS "CELICA;0" "CELICA;180" "SUPRA;180" "240SX;0" "CELICA;35" "240SX;35")
     list(GET case 0 car)
     list(GET case 1 yaw)
     set(out "${WORK}/${car}_${yaw}.tga")
-    run_viewer("${car}@${yaw}" ${car} "${out}" result output error_out)
+    run_viewer(${car} ${yaw} "${out}" result output error_out)
     string(REPLACE "\r\n" "\n" output "${output}")
     string(REPLACE "\r\n" "\n" error_out "${error_out}")
+    if(NOT output MATCHES "\ncamera: yaw ${yaw}([.]0+)? pitch ")
+        message(FATAL_ERROR "${car}@${yaw}: viewer did not use the requested yaw:\n${output}")
+    endif()
     # Exit 0 is a clean run. Exit 3 is the viewer's own "issues were
     # reported with the inputs" status, which SUPRA takes for its
     # documented pre-existing mesh rejections (docs/CAR_SCENE.md: three
@@ -110,24 +120,28 @@ foreach(case IN ITEMS "CELICA;0" "CELICA;180" "SUPRA;180" "240SX;0")
     endif()
     file(SHA256 "${out}" hash)
     string(TOUPPER "${hash}" hash)
-    if(car STREQUAL "240SX")
+    if(car STREQUAL "240SX" AND yaw EQUAL 35)
         if(NOT result EQUAL 0)
-            message(FATAL_ERROR "240SX@0: the baseline exited ${result}, not 0:\n${error_out}")
+            message(FATAL_ERROR "240SX@35: the baseline exited ${result}, not 0:\n${error_out}")
         endif()
         if(NOT hash STREQUAL "${viewer_painted_sha_240sx}")
             message(FATAL_ERROR
-                "240SX@0: the viewer's painted frame is ${hash}, pinned ${viewer_painted_sha_240sx}")
+                "240SX@35: the viewer's painted frame is ${hash}, pinned ${viewer_painted_sha_240sx}")
         endif()
     endif()
-    if(car STREQUAL "CELICA" AND yaw EQUAL 0)
+    if(car STREQUAL "CELICA" AND yaw EQUAL 35)
         if(NOT result EQUAL 0)
-            message(FATAL_ERROR "CELICA@0: exited ${result}, not 0:\n${error_out}")
+            message(FATAL_ERROR "CELICA@35: exited ${result}, not 0:\n${error_out}")
         endif()
         if(NOT hash STREQUAL "${viewer_painted_sha_celica}")
             message(FATAL_ERROR
-                "CELICA@0: the viewer's painted frame is ${hash}, but the stock-frame path "
+                "CELICA@35: the viewer's painted frame is ${hash}, but the stock-frame path "
                 "pins ${viewer_painted_sha_celica}; the two paths diverged")
         endif()
+    endif()
+    set(pin_name "viewer_painted_sha_${car}_${yaw}")
+    if(NOT hash STREQUAL "${${pin_name}}")
+        message(FATAL_ERROR "${car}@${yaw}: frame ${hash}, pinned ${${pin_name}}")
     endif()
     message(STATUS "viewer materials: ${car}@${yaw}: ${CMAKE_MATCH_2} groups resolved, 0 unresolved, sha256 ${hash}")
 endforeach()

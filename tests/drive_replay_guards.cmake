@@ -49,13 +49,10 @@ endif()
 # The pins. demo_stream moved with the handbrake fix: the demonstration's
 # handbrake second is max(service, 0.5 x handbrake) (0x00474B4B), not an
 # added rear lock torque (docs/CONTROLS_CAMERA.md).
-set(demo_stream "9E00A0F4998E0A9136F76B98781AF5EA623E3D7C07CF027692878D8FBD6752F7")
-set(fixture_frame_690 "635F697394CEA385425415E96A6A9C08CF0E44BDCC2534F1C73D728802565B4C")
-# Frame 1380 moved with the handbrake fix: the demonstration's handbrake
-# second is half the brake axis (0x00474B4B), so the car no longer
-# skids backward-locked through it and every later pose shifts; frame 690,
-# before the handbrake segment, is unchanged.
-set(fixture_frame_1380 "154B95E2E6D4DFC0094D671AD04869EEC10BB61872918C47BA548E63F4EB142A")
+set(demo_stream "C90225CC4B54694EBA81681A485B66BD6AF663A815EA12DD5EE9EAB10D4D44FE")
+set(fixture_frame_690 "BDC6077DA3E3815FF1B78905C3F1F7144522501072CC2BFEAF67EBD9B1B6CF5D")
+# Both synthetic poses changed with the corrected full-domain arctangent.
+set(fixture_frame_1380 "C84E0860160AEC9FF48BAB32482E49D3071A64E5152A0C35A2D858331B524A06")
 
 file(REMOVE_RECURSE "${WORK}")
 if(EXISTS "${WORK}")

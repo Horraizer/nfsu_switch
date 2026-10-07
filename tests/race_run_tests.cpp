@@ -503,7 +503,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         std::size_t frames = 0, max_draws = 0;
-        const std::set<std::uint64_t> inspect = {1,163,180,600,1300,6000,11344,12459,13122,24300,35396,36510,37177,48332};
+        const std::set<std::uint64_t> inspect = {1,163,180,600,1200,6000,11344,12459,13122,24300,35396,36510,37177,48332};
         const bool full = argc > 3 && std::string(argv[3]) == "--full-draws";
         const bool sampled = argc > 3 && std::string(argv[3]) == "--sample-draws";
         require(argc <= 3 || full || sampled, "unknown retail draw sampling option");
@@ -596,7 +596,7 @@ int main(int argc, char** argv) {
                 require(frame.commands.draw_count() == frame.track_draws + frame.car_draws +
                         frame.particle_draws + frame.glow_draws + 1,
                         "ground shadow, particles or glows missing");
-                if (tick == 1300) {
+                if (tick == 1200) {
                     unsigned visible_smoke=0, visible_sparks=0;
                     bool smoke_color_checked=false, spark_color_checked=false;
                     const auto& camera=frame.commands.frame;

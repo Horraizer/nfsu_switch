@@ -43,7 +43,7 @@ def main():
     require(root != output and root not in output.parents, "output is inside retail installation")
     require(Path("E:/Games").resolve() not in output.parents, "output is inside E:/Games")
     steps = sorted(set(map(int, args.frames.split(","))) | (set(range(6000, 6121, 4)) if args.motion else set()))
-    require(all(0 < step <= 48336 for step in steps), "frame tick out of range")
+    require(all(0 < step <= STEPS[-1] for step in steps), "frame tick out of range")
     expected = {}
     if args.expected:
         for row in args.expected.read_text(encoding="ascii").splitlines():

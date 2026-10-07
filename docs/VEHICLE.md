@@ -578,75 +578,31 @@ three.
 
 ## Drivability
 
-What the model does with the default approximations, measured with the
-built-in scripts, for #59 to map a controller onto:
+`nfsu_vehicle_tests` covers standing starts, braking, approximate steering,
+traction saturation and breakaway. Its full-lock matrix is a measurement of
+the approximate steering mode, not a qualification of production controls.
+`nfsu_steering_tests` exercises the recovered native steering pins, the actual
+RaceSession pad path, and moving-car service/handbrake engine-speed behavior.
 
-- **Standing start**, full throttle, automatic: 0-100 km/h in 6.08 s;
-  upshifts at 59, 107, 152 and 189 km/h (the wheel rpm includes the driven
-  tyres' slip, so these are a little below the thresholds' road speeds).
-  Top speed 232.5 km/h in fifth after two minutes, drag-limited. Round 3
-  changed none of this: in a straight line the traction limit does not
-  hold the drive back.
-- **Braking** from 100 km/h at full brake: 31.4 m in 2.29 s, a mean of
-  1.24 g - the brakes alone give about 1.05 g, and the automatic gearbox's
-  downshifts add engine braking. From 150 km/h 72.9 m, from 200 km/h
-  131.0 m. No wheel locks. Unchanged in round 3.
-- **Cornering** at full input, held at speed: 1.13 g at 10 m/s, 1.34 at
-  15, 1.28 at 20, 1.13 at 25, 0.96 at 30, 0.81 at 35 and 0.68 at 40.
-  Round 2 gave 1.24, 1.59, 1.64, 1.48 and 1.32 from 10 to 30 m/s. Review
-  comment 3666 measured 1.09, 1.34, 1.30, 1.15, 0.98 and 0.69 g at 10, 15,
-  20, 25, 30 and 40 m/s with its own speed controller; the small
-  differences are the controllers. The car's limit is about 1.55 g, from
-  the recovered friction, 1.8 front and 1.7 rear, used as a Coulomb
-  coefficient; a stock 240SX manages about 0.85 g. The default steering
-  reaches it only at about 1.25 times its lock, so from 10 to 30 m/s full
-  input leaves 0.2 to 0.6 g in hand, which is the margin that keeps it
-  out of the snap window. That window's lower edge lies between 1.25 and
-  1.30 times the lock at 20 m/s, between 1.40 and 1.45 at 25 and between
-  1.65 and 1.70 at 30 ("The spin matrix"). Below the
-  limit the car understeers; the handbrake, being the brake axis at full
-  value, brakes all four wheels without locking any.
-- **For #59's driver and corner speeds**: plan with the figures above, not
-  with the 1.55 g limit. The review's pure-pursuit driver on its 1272 m
-  street course (comment 3666, its own harness, not run here) ran wide by
-  up to 25 m when it planned corners at 1.4 g, and held within 5.5 m at
-  1.1 g; understeer is the safe failure. The other way out is a
-  `steer_speed_reference` of 13 m/s instead of 12: it keeps the spin
-  matrix at 0 of 32 (3 of 46) and gives 1.43 g at 20 m/s, 1.28 at 25 and
-  1.10 at 30, for less margin to the snap window; 14 m/s spins once in the
-  32.
-- **The traction limit is an ideal traction control** (review note N17):
-  no wheel on the ground ever gets more engine torque, driving or
-  braking, than its tyre has left beside the cornering force, so the
-  model cannot power-slide the 240SX or kick its tail out on a lift-off;
-  the handbrake, as the recovered brake axis, cannot slide the rear
-  either. A Drift event that wants power
-  slides can set `traction_limit` to false, and then gets the spins the
-  spin matrix records for it (7 of 32 at full input, full throttle at
-  full lock from 8 to 12 m/s among them), which its own assists would
-  have to handle.
-- **Braking in a turn** (review note N9): full brake from 22 m/s with a
-  steer of 0.2 saturates a rear tyre on 86 of 480 steps (115 in round 2)
-  with at most 2.9 degrees of sideslip; half brake with full lock from
-  30 m/s reaches 15.6 degrees and full brake 14.4, where round 2 spun
-  (137.5 and 29.3). The extended matrix still spins nothing under braking.
-  The forward centre of mass and the 450 N m rear brakes still saturate
-  the rear first; a brake assist in #59 is no longer needed to keep the
-  car from spinning.
-- **Throttle deadband**: with the wheel rpm above idle, a throttle at or
-  below about 0.30 is net engine braking at every engine speed (the
-  break-even is 0.5 * B / (C + 0.5 * B) for torque C and engine braking B,
-  0.30 to 0.31 over the curves). From rest, 0.10 to 0.30 creeps at a few
-  km/h in first. A digital throttle is unaffected; an analogue one wants a
-  mapping that gives the lower third of its travel little weight.
+Production `recovered1` can produce supported sliding under full input.
+Sideslip above a measurement threshold alone does not prove a spin or a
+rollover. Qualification records initial speed, pedal inputs, actual speed,
+body orientation, wheel support and response to releasing the stick. Do
+not infer console controllability from an isolated flat-ground matrix.
+
+The tyre curves use the recovered load/slip scaling. Wheel inertia, the
+implicit longitudinal solve and the engine feedback interface still include
+approximations. Completing the original wheel/engine coupling and measuring
+the owner's runtime behavior remain acceptance work; no cosmetic RPM lag
+substitutes for that evidence.
 
 ## How issues #59 and #60 plug in
 
 - **#59, controls and camera.** A controller frame becomes one
   `VehicleInput` per step: throttle, brake and steer in their ranges,
   handbrake, and a shift edge. The model clamps and sanitises what it is
-  given, so a controller can pass its axes straight through. The speed-
-  dependent steering lock lives in the model, not in the controls. Run the
+  given, so a controller can pass its axes straight through. Baseline uses the model's approximate lock; production recovered steering
+  supplies the road-wheel angle through the RaceSession adapter. Run the
   model at 120 Hz regardless of the display rate - two steps per 60 Hz
   frame - and give the camera the telemetry's position, forward axis and
   velocity. The position is the centre of mass; the meshes' origin is

@@ -2073,6 +2073,16 @@ if(NFSU_BUILD_TESTS)
                     -DOUT_PARENT=${nfsu_retail_work}/race-replay-shading
                     -DCAR_SHADING=ON
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/retail_replay_check.cmake)
+        add_test(NAME nfsu_race_shading_glows_replay_check
+            COMMAND ${CMAKE_COMMAND}
+                    -DPYTHON=${Python3_EXECUTABLE}
+                    -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/race_replay_check.py
+                    -DRACE=$<TARGET_FILE:nfsu_race>
+                    "-DROOT=${NFSU_RETAIL_ROOT}"
+                    -DOUT_PARENT=${nfsu_retail_work}/race-replay-shading-glows
+                    -DCAR_SHADING=ON
+                    -DGLOWS=ON
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/retail_replay_check.cmake)
         # The stock car's recorded draws against the CPU reference trace in
         # both material modes, and the stock frame pins of
         # include/nfsu/stock_frame.h: docs/DRAW_COMMANDS.md.
@@ -2175,7 +2185,8 @@ if(NFSU_BUILD_TESTS)
             nfsu_race_run_retail_profile_reference nfsu_race_replay_check
             nfsu_race_particle_frame_guards
             nfsu_race_replay_check_glows
-            nfsu_race_shading_replay_check nfsu_draw_commands_retail
+            nfsu_race_shading_replay_check nfsu_race_shading_glows_replay_check
+            nfsu_draw_commands_retail
             nfsu_viewer_skin_shading_retail nfsu_stock_frame_retail
             nfsu_stock_frame_painted_retail nfsu_race_loader_peak_retail
             nfsu_track_loader_peak_retail nfsu_track_slice_retail
