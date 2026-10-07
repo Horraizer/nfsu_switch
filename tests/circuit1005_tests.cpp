@@ -109,6 +109,11 @@ int main(int argc, char** argv) {
             require(scene.frame(replay.session(), frame, error) && frame.commands.draw_count() != 0,
                     "shared event8 finish frame empty");
             require(validate_draw_update(uploaded, frame.commands, kTrackSliceDrawLimit, error), error);
+            std::cout << "shared finish steering " << race_steering_name(steering)
+                      << " steps " << run.session().timing().step
+                      << " laps " << run.session().timing().racers[0].highest_lap
+                      << " resets " << run.session().telemetry().resets
+                      << " sequence " << run.sequence_hash() << " steps-hash " << run.steps_hash() << '\n';
             std::cout << "PASS: event8 full RaceRun three-lap drive, residency, later frames and input/state replay\n";
         }
         std::cout << "PASS: event8 retail selection, GPU inputs, collision/start and residency\n";

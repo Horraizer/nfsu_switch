@@ -306,19 +306,24 @@ GamepadFrame RaceRouteDriver::sample(const RaceSession& session) {
         }
         float preview[3];
         if (line_ == RaceDrivingLine::event8_forward) {
-            // Authored test-driver offsets around Atlantic's road obstacles.
+            // Authored test-driver offsets from Atlantic's road corridors and poles.
             // Positive is left of the forward tangent. Controller input only.
             double p = parameter;
             while (p >= 33) p -= 33;
+            constexpr double lanes[][2] = {
+                {0,0},{3,0},{3.2,4},{3.4,14},{3.6,26},{3.8,38},{4,47},{4.2,46},
+                {4.4,35},{4.6,22},{4.8,10},{5,0},{5.4,0},{5.8,8},{6,12},{6.2,15},
+                {6.4,18},{6.6,17},{6.8,15},{7,12},{7.2,10},{7.4,8},{7.6,6},{8,3},{8.2,0},
+                {20.8,0},{21,7},{21.2,13},{21.4,13},{21.6,10},{21.8,3},{22,-5},
+                {23.2,-5},{23.4,0},{23.6,15},{23.8,38},{24,58},{24.2,64},{24.4,74},
+                {24.6,74},{24.8,59},{25,44},{25.2,29},{25.6,26},{26,15},{26.3,-6},
+                {26.6,-6},{26.8,0},{27,8},{27.4,8},{27.6,0},{28.4,0},{28.8,-10},
+                {29,-6},{29.2,5},{29.4,10},{30.5,10},{30.8,4},{31,8},{31.5,10},{31.8,6},{32,3},{32.3,0},{33,0}};
             double offset = 0;
-            if (p > 28 && p < 31.5) {
-                offset = p < 29 ? (p-28)*10 : p > 30.5 ? (31.5-p)*10 : 10;
-            }
-            if (p > 22.8 && p < 26.5) {
-                offset = p < 23.8 ? (p-22.8)*60 : p > 24.5 ? (26.5-p)*30 : 60;
-            }
-            if (p > 3 && p < 6) {
-                offset = p < 4 ? (p-3)*35 : p > 5 ? (6-p)*35 : 35;
+            for (std::size_t i=1;i<sizeof(lanes)/sizeof(*lanes);++i) {
+                if(p>lanes[i][0])continue;
+                const double fraction=(p-lanes[i-1][0])/(lanes[i][0]-lanes[i-1][0]);
+                offset=lanes[i-1][1]+fraction*(lanes[i][1]-lanes[i-1][1]);break;
             }
             float tangent[3]; evaluate_track_path(spline,parameter,1,tangent);
             const double length = vehicle_sqrt(double(tangent[0])*tangent[0]+double(tangent[1])*tangent[1]);
