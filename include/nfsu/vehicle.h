@@ -446,7 +446,13 @@ struct VehicleWheelState {
     double compression = 0.0;
     double previous_compression = 0.0;
     bool contact = false;
+    // 0x004757DA: near-full brake locks a slow wheel until brake < 0.2.
+    bool brake_locked = false;
 };
+
+// Original brake-axis latch, evaluated after wheel integration and before
+// engine RPM. Gate operands use the original binary32 domains.
+void vehicle_brake_pin(VehicleWheelState& wheel, double brake) noexcept;
 
 struct VehicleState {
     std::uint64_t step = 0;
@@ -490,6 +496,7 @@ struct VehicleWheelTelemetry {
     std::uint32_t surface = 0;
     bool contact = false;
     bool sliding = false;
+    bool brake_locked = false;  // persistent original brake-axis latch
 };
 
 // One record per step, describing the state at the END of the step and the
@@ -523,7 +530,9 @@ struct VehicleTelemetry {
 
 // The fixed binary form of one record: every double as its IEEE-754 bits,
 // every integer and flag as an unsigned integer, all little-endian, in the
-// order docs/VEHICLE.md lists. It is what the telemetry hash covers: the
+// order docs/VEHICLE.md lists. The wheel contact word packs contact in bit0
+// and the brake latch in bit1, preserving every unlatched legacy byte.
+// It is what the telemetry hash covers: the
 // step (u64), four vectors, five doubles, the gear (u32), three doubles,
 // the handbrake (u32), the steer angle, then per wheel nine doubles and
 // three u32 (surface, contact, sliding).

@@ -117,9 +117,11 @@ int main() {
         RaceSession session(course,stock_240sx_vehicle_spec(),RaceSteering::recovered_predicate1);
         check(session.start(error),"production braking session starts");
         double brake_start=0, min_up=1; unsigned moving_samples=0, idle_samples=0;
+        unsigned pinned_samples=0, release_samples=0;
         for (int k=0;k<644;++k) {
             // Connect with neutral input; a held trigger on hot-plug is latched.
-            const auto buttons=k<164 ? 0 : gamepad_button_bit(k<464 ? GamepadButton::trigger_right : button);
+            const bool releasing=button==GamepadButton::trigger_left && k>=540;
+            const auto buttons=k<164 ? 0 : gamepad_button_bit(k<464 || releasing ? GamepadButton::trigger_right : button);
             const auto pad=race_input_frame({1,buttons,0},k);
             if (!session.advance(pad,error)) { check(false,"production braking advances"); break; }
             const auto& t=session.telemetry().model;
@@ -128,11 +130,19 @@ int main() {
             if(k==463) brake_start=t.forward_speed;
             if(k>=464 && t.forward_speed>8) {
                 ++moving_samples;
-                if(t.engine_rpm<=stock_240sx_handling().idle_rpm) ++idle_samples;
+                const bool pinned=session.car().wheels[2].brake_locked && session.car().wheels[3].brake_locked;
+                if(pinned) {
+                    ++pinned_samples;
+                    check(t.engine_rpm==stock_240sx_handling().idle_rpm,"original brake pin exports completed idle RPM");
+                } else if(t.engine_rpm<=stock_240sx_handling().idle_rpm) ++idle_samples;
+                if(releasing && k>540 && t.engine_rpm>stock_240sx_handling().idle_rpm) ++release_samples;
             }
         }
         check(brake_start>8 && moving_samples>10,"braking exercises a moving car");
-        check(idle_samples==0,"moving recovered1 car does not collapse to idle under brake");
+        check(idle_samples==0,"moving recovered1 RPM stays above idle unless driven wheels are pinned");
+        if(button==GamepadButton::trigger_left)
+            check(pinned_samples>0 && release_samples>0,"production service brake reaches pin and recovers moving RPM on release");
+        else check(pinned_samples==0,"half-axis handbrake cannot activate the service-brake pin");
         check(min_up>.95,"straight recovered1 braking stays upright");
         std::cout << "production brake " << gamepad_button_bit(button)
                   << " entry-speed " << brake_start << " moving-samples " << moving_samples

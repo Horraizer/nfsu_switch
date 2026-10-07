@@ -768,6 +768,68 @@ void test_acceleration() {
           "four upshifts to fifth: " + std::to_string(shifts));
 }
 
+void test_brake_pin() {
+    using namespace nfsu;
+    VehicleWheelState wheel;
+    const float above = std::nextafter(0.95F, 1.0F);
+    for (const double speed : {-29.99, 0.0, 29.99}) {
+        wheel = {}; wheel.spin = speed;
+        vehicle_brake_pin(wheel, 0.95F);
+        check(!wheel.brake_locked && wheel.spin == speed, "brake gate equality does not pin");
+        vehicle_brake_pin(wheel, above);
+        check(wheel.brake_locked && wheel.spin == 0, "near-full brake pins either rolling direction");
+        vehicle_brake_pin(wheel, 0.5);
+        check(wheel.brake_locked, "pin persists after pedal eases to half");
+        vehicle_brake_pin(wheel, 0.2F);
+        check(wheel.brake_locked, "release gate equality holds pin");
+        vehicle_brake_pin(wheel, std::nextafter(0.2F, 0.0F));
+        check(!wheel.brake_locked, "pin releases strictly below original float threshold");
+    }
+    for (const double speed : {-30.0, 30.0, -31.0, 31.0}) {
+        wheel = {}; wheel.spin = speed;
+        vehicle_brake_pin(wheel, 1.0);
+        check(!wheel.brake_locked && wheel.spin == speed, "absolute wheel gate is strictly below30");
+    }
+    VehicleModel model = stock_model();
+    VehicleState car; VehiclePose pose; pose.speed = 8.0;
+    check(model.reset(car, pose), "brake latch moving fixture resets");
+    VehicleInput input; input.brake = 1.0; VehicleTelemetry telemetry;
+    check(model.step(car, input, VehicleFlatGround(), telemetry), "moving full brake executes");
+    check(car.wheels[2].brake_locked && car.wheels[3].brake_locked &&
+          telemetry.forward_speed > 3 && telemetry.engine_rpm == model.spec().handling.idle_rpm,
+          "slow rolling body has pinned driven wheels and completed idle RPM");
+    // Two otherwise equal present records must identify the latch, since
+    // it changes the next half-brake/throttle step even at equal wheel spin.
+    auto free_car = car;
+    auto free_telemetry = telemetry;
+    for (std::size_t k = 0; k < kVehicleWheelCount; ++k) {
+        free_car.wheels[k].brake_locked = false;
+        free_telemetry.wheels[k].brake_locked = false;
+    }
+    std::array<std::uint8_t, kVehicleTelemetryRecordBytes> pinned_bytes{}, free_bytes{};
+    encode_vehicle_telemetry(telemetry, pinned_bytes);
+    encode_vehicle_telemetry(free_telemetry, free_bytes);
+    check(pinned_bytes != free_bytes, "equal wheel spins with different latch state encode differently");
+    input.brake = 0.5; input.throttle = 1;
+    VehicleTelemetry free_next;
+    check(model.step(free_car, input, VehicleFlatGround(), free_next), "unlatched twin executes");
+    check(model.step(car, input, VehicleFlatGround(), telemetry), "held pin with throttle executes");
+    check(car.wheels[2].spin == 0 && car.wheels[3].spin == 0 &&
+          telemetry.wheels[2].drive_applied == 0 && telemetry.wheels[3].drive_applied == 0,
+          "latched wheel has zero angular derivative despite throttle");
+    check(free_car.wheels[2].spin > 0 && free_next.engine_rpm != telemetry.engine_rpm,
+          "same present spin with different latch produces different future RPM");
+    input.brake = 0;
+    check(model.step(car, input, VehicleFlatGround(), telemetry) && !car.wheels[2].brake_locked,
+          "release clears the latch after the original completed-wheel pass");
+    check(model.step(car, input, VehicleFlatGround(), telemetry) && car.wheels[2].spin > 0 &&
+          telemetry.engine_rpm > model.spec().handling.idle_rpm,
+          "moving wheel and RPM recover after release");
+    car.wheels[0].brake_locked = true;
+    check(model.reset(car, pose) && !car.wheels[0].brake_locked && !car.wheels[2].brake_locked,
+          "reset clears every wheel brake latch");
+}
+
 void test_braking() {
     const nfsu::VehicleModel model = stock_model();
     const std::vector<nfsu::VehicleTelemetry> run = run_builtin(model, "brake");
@@ -798,7 +860,16 @@ void test_braking() {
     check(distance >= 25.0 && distance <= 35.0,
           "100-0 km/h in " + num(distance) + " m, expected 25 to 35");
     check(seconds >= 1.6 && seconds <= 2.6, "100-0 km/h in " + num(seconds) + " s");
-    check(!slid, "full braking locks no wheel");
+    check(slid, "full braking reaches the recovered low-speed wheel lock");
+    bool pinned_while_moving = false;
+    for (const auto& t : run) {
+        if (t.forward_speed > 3.0 && t.wheels[2].spin == 0.0 && t.wheels[3].spin == 0.0) {
+            pinned_while_moving = true;
+            check(t.engine_rpm == model.spec().handling.idle_rpm,
+                  "recovered pinned driven wheels put completed RPM at idle");
+        }
+    }
+    check(pinned_while_moving, "service brake pins before the body has stopped");
     bool held = true;
     for (std::size_t i = static_cast<std::size_t>(stopped) + 120; i < run.size(); ++i) {
         held = held && std::fabs(run[i].forward_speed) <= 0.01;
@@ -2001,6 +2072,7 @@ int main(int argc, char** argv) {
     test_idle_threshold();
     test_forced_first_gear();
     test_acceleration();
+    test_brake_pin();
     test_braking();
     test_cornering();
     test_grip_limit();

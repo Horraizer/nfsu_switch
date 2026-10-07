@@ -828,7 +828,7 @@ void encode_vehicle_telemetry(const VehicleTelemetry& r,
         e.f64(w.drive_torque);
         e.f64(w.drive_applied);
         e.u32(w.surface);
-        e.u32(w.contact ? 1U : 0U);
+        e.u32((w.contact ? 1U : 0U) | (w.brake_locked ? 2U : 0U));
         e.u32(w.sliding ? 1U : 0U);
     }
 }
@@ -982,6 +982,19 @@ double VehicleModel::engine_brake_curve(double rpm) const noexcept {
     return vehicle_uniform_curve(h.engine_brake.data(), h.engine_brake.size(),
                                  static_cast<double>(h.idle_rpm),
                                  static_cast<double>(h.max_rpm), rpm);
+}
+
+void vehicle_brake_pin(VehicleWheelState& wheel, double brake) noexcept {
+    // 0x004757F0..0x00475845: strict comparisons and a persistent flag.
+    // The original state/input operands are floats; the port integrates
+    // doubles, so narrow only the gate operands, not the simulation state.
+    const float axis = static_cast<float>(sanitize(brake, 0.0, 1.0));
+    const float speed = static_cast<float>(absolute(wheel.spin));
+    if (axis > 0.95F && speed < 30.0F) {
+        wheel.brake_locked = true;
+        wheel.spin = 0.0;
+    }
+    if (axis < 0.2F) wheel.brake_locked = false;
 }
 
 // 0x004757D0: engine speed from the driven wheels' rolling speed, then the
@@ -1268,7 +1281,10 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         const double fraction = k < 2 ? 1.0 - rear_fraction : rear_fraction;
         const double final_drive =
             static_cast<double>(k < 2 ? h.final_drive_front : h.final_drive_rear);
-        const double drive = final_drive * gear_ratio * engine_torque * fraction * 0.5;
+        // 0x0047557A..0x00475582: the engine derivative is zero for a
+        // brake-pinned wheel. Its tyre can still exert a sliding force.
+        const double drive = wheel.brake_locked ? 0.0 :
+            final_drive * gear_ratio * engine_torque * fraction * 0.5;
         const double brake_torque = brake * (k < 2 ? a.brake_torque_front : a.brake_torque_rear);
         out.drive_torque = drive;
         out.compression = wheel.compression;
@@ -1369,7 +1385,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         const double k_long = a.longitudinal_stiffness * load / denominator;
         const double implicit_mass = inertia + dt * k_long * radius * radius;
         const double base = inertia * wheel.spin + dt * (applied + k_long * radius * v_long);
-        double spin = base / implicit_mass;
+        double spin = wheel.brake_locked ? 0.0 : base / implicit_mass;
         if (brake_torque > 0.0) {
             if (spin == 0.0) {
                 // held
@@ -1393,7 +1409,8 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             fx = fx * factor;
             fy = fy * factor;
             sliding = true;
-            spin = apply_brake(wheel.spin + dt * (applied - fx * radius) / inertia);
+            spin = wheel.brake_locked ? 0.0 :
+                apply_brake(wheel.spin + dt * (applied - fx * radius) / inertia);
         }
         wheel.spin = spin;
 
@@ -1453,6 +1470,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     if (s.shift_hold > 0) {
         --s.shift_hold;
     }
+    for (auto& wheel : s.wheels) vehicle_brake_pin(wheel, brake);
     update_engine(s);
     s.step = s.step + 1;
 
@@ -1490,6 +1508,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     for (std::size_t k = 0; k < kVehicleWheelCount; ++k) {
         t.wheels[k].spin = s.wheels[k].spin;
         t.wheels[k].compression = s.wheels[k].compression;
+        t.wheels[k].brake_locked = s.wheels[k].brake_locked;
     }
     state = s;
     telemetry = t;
