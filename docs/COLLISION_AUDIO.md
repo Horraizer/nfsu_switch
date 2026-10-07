@@ -115,10 +115,16 @@ scrape export is absent from this bank; no world-scrape fallback is proved.
 
 ## Lifetime, scope and missing evidence
 
+The later [issue #312 investigation](AUDIO_FIDELITY_312.md) adds executable
+physics-side aging and scrape-fade witnesses, plus an intensity rounding
+discrepancy. These findings do not change the current port behavior below.
+
 `0x00530A50` compares audio-record last touch using clock conversion at
 `0x006CCA38` and expiry threshold at `0x007000D8`, then `0x005307E0` marks
-expiry and starts scrape fade. This audio expiry is not proof that the
-physics pair accumulator resets on the same interval. Impact admission at
+expiry and starts scrape fade. Audio expiry alone did not prove the physics
+pair lifetime; #312 independently executes the cleanup branch at `0x00420AB0`.
+Other body-destruction paths and original-to-port pair identity remain open.
+Impact admission at
 `0x00531FF0` also suppresses competing records; its actor/pool ordering is
 not yet reproduced. No fixed ten-tick impact cooldown was found.
 
