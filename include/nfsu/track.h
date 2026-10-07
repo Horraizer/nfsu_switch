@@ -108,8 +108,12 @@ struct TrackLimits {
 
 // One decoded track mesh. Every provenance field is an absolute file
 // offset, not a region-relative one.
+constexpr std::size_t kUnknownTrackGeometryRoot = static_cast<std::size_t>(-1);
 struct TrackMesh {
     std::size_t index = 0;
+    // Report-local geometry-root identity, preserved across stream merges.
+    // Unknown for hand-built reports that did not parse an owning root.
+    std::size_t root_index = kUnknownTrackGeometryRoot;
     std::string name;
     std::uint64_t offset = 0;
     // 0x00134011 +16, the mesh name hash, matched against the

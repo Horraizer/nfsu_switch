@@ -325,8 +325,8 @@ struct TrackObjectBinding {
     std::size_t slot = 0;
     std::uint32_t hash = 0;
     // Position in TrackRegionReport::meshes, meaningful only when resolved.
-    // The lowest index among the valid meshes claiming the hash, so a
-    // duplicate name is bound the same way on every run.
+    // First valid root claiming the hash; inside a verified root the
+    // last valid loaded payload wins. Unknown roots retain first precedence.
     std::size_t mesh_index = 0;
     bool resolved = false;
 };

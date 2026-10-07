@@ -34,16 +34,22 @@ bool transform_finite(const TrackTransform& transform) noexcept {
     return finite3(transform.translation);
 }
 
-// The hash a mesh slot names is resolved against the lowest-numbered valid
-// mesh of the prepared region that carries it. PreparedTrackRegion::meshes
-// is ascending in source_index and holds only valid meshes, so the lowest
-// prepared index is the lowest source index, which is what
-// resolve_track_objects binds.
+// Match resolve_track_objects: retain first-root precedence, but use the
+// last loaded valid payload for equal hashes inside one verified root.
+// Native 0x540201 writes every such payload into the first equal-key entry.
 std::map<std::uint32_t, std::size_t> mesh_index_by_hash(
     const PreparedTrackRegion& region) {
     std::map<std::uint32_t, std::size_t> meshes;
     for (std::size_t i = 0; i < region.meshes.size(); ++i) {
-        meshes.emplace(region.meshes[i].mesh_hash, i);
+        const auto& mesh = region.meshes[i];
+        const auto bound = meshes.emplace(mesh.mesh_hash, i);
+        if (!bound.second) {
+            const auto& previous = region.meshes[bound.first->second];
+            if (mesh.has_hash_record && previous.has_hash_record &&
+                mesh.root_index != kUnknownTrackGeometryRoot &&
+                mesh.root_index == previous.root_index)
+                bound.first->second = i;
+        }
     }
     return meshes;
 }
@@ -800,7 +806,7 @@ bool validate_prepared_track_scene(
         if (found == meshes.end() || found->second != instance.mesh) {
             error = "scene instance " + std::to_string(i) + " binds " +
                     hex32(instance.mesh_hash) +
-                    " to a mesh that is not the lowest one claiming it";
+                    " to a mesh that does not match its root-aware hash binding";
             return false;
         }
         placed_hashes.insert(instance.mesh_hash);

@@ -42,6 +42,7 @@ struct TrackSceneLimits {
 // One valid source mesh, copied. Nothing refers back to the report.
 struct PreparedTrackMesh {
     std::size_t source_index = 0;
+    std::size_t root_index = kUnknownTrackGeometryRoot;
     std::uint32_t vertex_format_flags = 0;
     std::string name;
     std::uint32_t mesh_hash = 0;

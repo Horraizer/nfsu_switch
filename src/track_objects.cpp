@@ -1097,15 +1097,23 @@ TrackObjectResolution resolve_track_objects(
     const TrackRegionReport& region) {
     TrackObjectResolution resolution;
 
-    // The lowest valid mesh index per hash, so a region with two meshes of
-    // the same name binds the same one on every run.
+    // Keep the existing first-root precedence. Within that verified root,
+    // native 0x540201 overwrites the first equal-key directory entry after
+    // each successfully loaded container, so its last valid payload wins.
     std::map<std::uint32_t, std::size_t> meshes;
     for (std::size_t i = 0; i < region.meshes.size(); ++i) {
         const TrackMesh& mesh = region.meshes[i];
         if (!mesh.valid) {
             continue;
         }
-        meshes.emplace(mesh.mesh_hash, i);
+        const auto bound = meshes.emplace(mesh.mesh_hash, i);
+        if (!bound.second) {
+            const auto& previous = region.meshes[bound.first->second];
+            if (mesh.has_hash_record && previous.has_hash_record &&
+                mesh.root_index != kUnknownTrackGeometryRoot &&
+                mesh.root_index == previous.root_index)
+                bound.first->second = i;
+        }
     }
 
     std::set<std::uint32_t> unresolved;

@@ -137,6 +137,7 @@ bool prepare(
         region.meshes.emplace_back();
         PreparedTrackMesh& prepared = region.meshes.back();
         prepared.source_index = mesh.index;
+        prepared.root_index = mesh.root_index;
         prepared.vertex_format_flags = mesh.vertex_format_flags;
         prepared.name = mesh.name;
         prepared.mesh_hash = mesh.mesh_hash;

@@ -1458,6 +1458,9 @@ void test_load_and_merge() {
     for (std::size_t m = 0; m < geometry.meshes.size() && m < 5; ++m) {
         check(geometry.meshes[m].name == order[m], "merged mesh " + std::to_string(m));
         check_eq_u64(geometry.meshes[m].index, m, "merged mesh index");
+        const std::size_t roots[] = {0, 0, 1, 2, 3};
+        check_eq_u64(geometry.meshes[m].root_index, roots[m],
+                     "stream merge keeps section-local roots distinct");
     }
     if (geometry.meshes.size() == 5) {
         check(geometry.meshes[2].offset > fixture.sections[3].offset &&

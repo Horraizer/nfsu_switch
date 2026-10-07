@@ -752,6 +752,8 @@ void test_multiple_geometry_roots() {
               "mesh positions run across roots at " + std::to_string(i));
         check(report.meshes[i].has_hash_record,
               "mesh " + std::to_string(i) + " matched a hash record");
+        check(report.meshes[i].root_index == (i < 2 ? 0U : 1U),
+              "each mesh retains its own geometry root identity");
     }
     check(report.meshes.size() == 5 && report.meshes[1].name == "ROOT0_B" &&
               report.meshes[2].name == "ROOT1_A",

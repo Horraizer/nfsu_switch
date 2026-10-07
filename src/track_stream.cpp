@@ -779,6 +779,8 @@ void merge_sections(TrackStreamLoad& load, const TrackStreamLoadLimits& limits) 
             all_tables = all_tables && section.geometry.mesh_table_valid;
             const TrackRegionCost& part = section.geometry.cost;
             TrackRegionCost& total = geometry.cost;
+            const std::size_t root_base =
+                static_cast<std::size_t>(total.geometry_roots);
             total.region_bytes += part.region_bytes;
             total.chunks += part.chunks;
             total.geometry_roots += part.geometry_roots;
@@ -806,6 +808,8 @@ void merge_sections(TrackStreamLoad& load, const TrackStreamLoadLimits& limits) 
                                    section.geometry.issues.end());
             for (TrackMesh& mesh : section.geometry.meshes) {
                 mesh.index = geometry.meshes.size();
+                if (mesh.root_index != kUnknownTrackGeometryRoot)
+                    mesh.root_index += root_base;
                 geometry.meshes.push_back(std::move(mesh));
             }
             section.mesh_count = geometry.meshes.size() - section.first_mesh;

@@ -1390,7 +1390,7 @@ void test_build_is_deterministic() {
 // The twin claims BARRIER_A's hash and has its exact shape - same vertex
 // and face counts, same two material groups, same textures. Only its
 // position in the region differs, which is what makes it the fixture for
-// the lowest-mesh rule: every count a validator recomputes is the same
+// the binding rule: every count a validator recomputes is the same
 // whichever of the two an instance binds, so nothing but the rule itself
 // can tell a wrong binding from a right one.
 std::vector<MeshSpec> twin_meshes() {
@@ -1401,11 +1401,13 @@ std::vector<MeshSpec> twin_meshes() {
     return meshes;
 }
 
-// A duplicate mesh hash binds to the lowest-numbered valid mesh, which is
-// what resolve_track_objects binds, so the two layers never disagree about
-// an instance.
-void test_duplicate_hash_binds_the_lowest_mesh() {
-    const Fixture fixture = make_fixture(twin_meshes(), town_sections());
+// Equal hashes in one verified root select the last valid loaded payload.
+void test_duplicate_hash_binds_the_last_payload_in_one_root() {
+    auto meshes = twin_meshes();
+    meshes[3].vertex_count = 9;
+    meshes[3].face_count = 4;
+    meshes[3].materials = {MaterialSpec{3, 0}, MaterialSpec{9, 1}};
+    const Fixture fixture = make_fixture(meshes, town_sections());
     nfsu::PreparedTrackScene scene;
     std::string error;
     check(nfsu::build_track_scene(fixture.geometry, fixture.objects,
@@ -1422,8 +1424,11 @@ void test_duplicate_hash_binds_the_lowest_mesh() {
     if (scene.instances.size() != 5) {
         return;
     }
-    check(scene.instances[0].mesh == 0,
-          "the instance binds the lowest mesh claiming the hash, not the twin");
+    check(scene.instances[0].mesh == 3 &&
+              scene.region.meshes[3].root_index == 0 &&
+              scene.region.meshes[3].vertices.size() == 9 &&
+              scene.region.meshes[3].triangles.size() == 4,
+          "the instance selects the later payload, with its distinct geometry");
 
     const nfsu::TrackObjectResolution resolution =
         nfsu::resolve_track_objects(fixture.objects, fixture.geometry);
@@ -1444,6 +1449,98 @@ void test_duplicate_hash_binds_the_lowest_mesh() {
               fixture.geometry.meshes[bound].name ==
                   scene.region.meshes[scene.instances[0].mesh].name,
           "resolve_track_objects binds the same mesh for that hash");
+}
+
+void test_duplicate_binding_preserves_root_and_validity_boundaries() {
+    auto meshes = twin_meshes();
+    meshes[3].vertex_count = 9;
+    meshes[3].face_count = 4;
+    meshes[3].materials = {MaterialSpec{3, 0}, MaterialSpec{9, 1}};
+    Fixture fixture = make_fixture(meshes, town_sections());
+    MeshSpec foreign = meshes[3];
+    foreign.name = "OTHER_ROOT";
+    foreign.vertex_count = 12;
+    foreign.face_count = 5;
+    foreign.materials = {MaterialSpec{3, 0}, MaterialSpec{12, 1}};
+    const Bytes tail = build_geometry({foreign}, fixture.geometry_bytes.size());
+    fixture.geometry_bytes.insert(fixture.geometry_bytes.end(),
+                                  tail.begin(), tail.end());
+    fixture.geometry = nfsu::parse_track_region(fixture.geometry_bytes.data(),
+                                                fixture.geometry_bytes.size(), kGeometryBase);
+    check(fixture.geometry.meshes.size() == 5 &&
+              fixture.geometry.mesh_table_valid &&
+              fixture.geometry.meshes[0].root_index == 0 &&
+              fixture.geometry.meshes[3].root_index == 0 &&
+              fixture.geometry.meshes[4].root_index == 1,
+          "two parsed roots retain distinct identities despite an equal hash");
+    if (fixture.geometry.meshes.size() != 5) return;
+
+    const auto expect_binding = [](const Fixture& input, std::size_t source,
+                                   const std::string& label) {
+        nfsu::PreparedTrackScene scene;
+        std::string error;
+        const bool built = nfsu::build_track_scene(
+            input.geometry, input.objects, input.textures,
+            nfsu::TrackSceneOptions{}, scene, error);
+        check(built, label + ": scene builds: " + error);
+        check(scene.instances.size() == 5, label + ": five instances placed");
+        if (!built || scene.instances.size() != 5) return;
+        const auto& selected = scene.region.meshes[scene.instances[0].mesh];
+        const auto& expected = input.geometry.meshes[source];
+        check(selected.source_index == source && selected.name == expected.name &&
+                  selected.vertices.size() == expected.vertices.size() &&
+                  selected.triangles.size() == expected.triangles.size(),
+              label + ": scene selects the expected actual payload");
+        check(scene.region.meshes[scene.instances[1].mesh].name == "BARRIER_B" &&
+                  scene.region.meshes[scene.instances[2].mesh].name == "LAMP",
+              label + ": singleton bindings remain unchanged");
+        const auto resolved = nfsu::resolve_track_objects(input.objects,
+                                                         input.geometry);
+        std::size_t matching = 0;
+        for (const auto& binding : resolved.bindings) {
+            if (binding.hash == kMeshA) {
+                ++matching;
+                check(binding.resolved && binding.mesh_index == source,
+                      label + ": raw resolver agrees on every duplicate binding");
+            }
+        }
+        check(matching != 0, label + ": duplicate bindings were exercised");
+        nfsu::TrackDrawList list;
+        std::vector<nfsu::TrackVisibleInstance> visible(1);
+        visible[0].section_index = 0;
+        visible[0].instance_index = 0;
+        check(nfsu::build_track_draw_list(scene, visible,
+                                          nfsu::TrackDrawListOptions{}, list, error),
+              label + ": the selected payload produces a draw list: " + error);
+        std::uint64_t indices = 0;
+        for (const auto& entry : list.entries)
+            indices += scene.region.draws[entry.draw].index_count;
+        check(indices == expected.triangles.size() * 3,
+              label + ": emitted indices cover the selected geometry");
+    };
+    expect_binding(fixture, 3, "last inside first root, not last globally");
+    Fixture invalid = fixture;
+    invalid.geometry.meshes[3].valid = false;
+    expect_binding(invalid, 0, "a refused later payload does not overwrite");
+    Fixture unknown = fixture;
+    for (auto& mesh : unknown.geometry.meshes)
+        mesh.root_index = nfsu::kUnknownTrackGeometryRoot;
+    expect_binding(unknown, 0, "unknown roots retain first valid precedence");
+    Fixture unverified = fixture;
+    for (auto& mesh : unverified.geometry.meshes)
+        mesh.has_hash_record = false;
+    expect_binding(unverified, 0, "unverified roots retain first valid precedence");
+    Fixture unverified_first = fixture;
+    unverified_first.geometry.meshes[0].has_hash_record = false;
+    expect_binding(unverified_first, 0,
+                   "an unverified first payload keeps its earlier precedence");
+    Fixture unverified_later = fixture;
+    unverified_later.geometry.meshes[3].has_hash_record = false;
+    expect_binding(unverified_later, 0,
+                   "an unverified later payload cannot overwrite");
+    Fixture refused_first = fixture;
+    refused_first.geometry.meshes[0].valid = false;
+    expect_binding(refused_first, 3, "a later valid payload resolves a refused first");
 }
 
 void test_draw_list_refuses_a_foreign_visible_set() {
@@ -1848,11 +1945,8 @@ void test_validate_scene_rejects_tampering() {
     }
 }
 
-// The lowest-mesh rule, isolated. The twin has BARRIER_A's hash and its
-// exact shape, so rebinding an instance to it changes no count a validator
-// recomputes: the witnesses and the drawn-mesh totals are moved with it, and
-// what is left wrong is only that the instance bound the higher of the two
-// meshes claiming its hash.
+// Equal-shape payloads isolate binding from cost validation. Rebinding to
+// the earlier payload and moving its count witnesses must still be rejected.
 void test_validate_scene_rejects_the_wrong_duplicate() {
     const Fixture fixture = make_fixture(twin_meshes(), town_sections());
     nfsu::PreparedTrackScene good;
@@ -1869,15 +1963,14 @@ void test_validate_scene_rejects_the_wrong_duplicate() {
     }
 
     nfsu::PreparedTrackScene bad = good;
-    bad.instances[0].mesh = 3;
-    // Instance 3 is the other copy of BARRIER_A, so it becomes mesh 0's
-    // first instance, and instance 0 becomes the twin's.
-    bad.first_instance_of_mesh[0] = 3;
-    bad.first_instance_of_mesh[3] = 0;
+    bad.instances[0].mesh = 0;
+    // Instance 3 still uses the later payload; instance 0 now uses the earlier.
+    bad.first_instance_of_mesh[0] = 0;
+    bad.first_instance_of_mesh[3] = 3;
     bad.cost.drawn_meshes = 4;
     bad.cost.undrawn_meshes = 0;
     check(!nfsu::validate_prepared_track_scene(bad, error),
-          "an instance bound to the higher of two meshes claiming its hash"
+          "an instance bound to the earlier payload of one verified root"
           " is rejected");
 }
 
@@ -2560,7 +2653,8 @@ int main() {
     test_limits_accept_their_own_value();
     test_scene_outlives_its_inputs();
     test_build_is_deterministic();
-    test_duplicate_hash_binds_the_lowest_mesh();
+    test_duplicate_hash_binds_the_last_payload_in_one_root();
+    test_duplicate_binding_preserves_root_and_validity_boundaries();
     test_draw_list_refuses_a_foreign_visible_set();
     test_explicit_visible_set_carries_no_provenance();
     test_draw_list_limits();
