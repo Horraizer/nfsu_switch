@@ -172,7 +172,12 @@ public:
             }
         }
         if (track_number==1005) require(retain_instanced_track_meshes(geometry,objects,error),error);
-        const auto wanted = track_region_texture_hashes(geometry);
+        auto wanted = track_region_texture_hashes(geometry);
+        if (track_number == 1005) {
+            wanted.push_back(kTrackDefaultAlphaHash);
+            std::sort(wanted.begin(), wanted.end());
+            wanted.erase(std::unique(wanted.begin(), wanted.end()), wanted.end());
+        }
         std::vector<RenderTextureSource> sources;
         for (const auto& entry : sections) {
             std::vector<RenderTextureSource> part; std::vector<std::size_t> owners;
@@ -209,6 +214,7 @@ public:
         }
         RenderTextureLimits limits; limits.max_total_bytes = 512ULL*1024*1024;
         require(decode_render_texture_sources(sources,limits,textures,error),error);
+        if (track_number == 1005) require(bind_track_default_alpha(textures,0x828DCF0BU,error),error);
         TrackSceneOptions options; options.region.max_texture_bytes = limits.max_total_bytes;
         require(build_track_scene(geometry,objects,textures,options,track,error),error);
         std::vector<TrackVisibleInstance> visible;

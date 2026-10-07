@@ -30,7 +30,8 @@ struct RenderTexture {
     // The distinct hashes the record claims (see record_claims_hash), in
     // the order info +36, hash table +0, blob table +0; the first
     // claim_count entries are used. Set by the decode functions. They
-    // differ from hash only for an invalid record. Hand-built textures may
+    // differ from hash for an invalid record or an explicitly evidenced retail
+    // DEFAULTALPHA substitution (bind_track_default_alpha). Hand-built textures may
     // leave claim_count 0; hash always counts as claimed.
     std::array<std::uint32_t, 3> claims{};
     std::size_t claim_count = 0;

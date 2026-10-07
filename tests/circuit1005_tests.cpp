@@ -24,8 +24,10 @@ int main(int argc, char** argv) {
         if (argc>2 && std::string(argv[2])=="--measure") {
             RaceSession race(course,stock_240sx_vehicle_spec()); require(race.start(error),error);
             RaceRouteDriver driver(RaceDrivingLine::event8_forward);
+            std::uint32_t resets = 0;
             while (race.timing().outcome==RaceOutcome::running && race.timing().step<120000) {
                 require(race.advance(driver.sample(race),error),error);
+                resets = race.telemetry().resets;
                 if (race.timing().step%6000==0) {
                     const auto& car=race.car();
                     std::cout << race.timing().step << " p " << race.progress().coordinate.parameter
@@ -34,6 +36,8 @@ int main(int argc, char** argv) {
                 }
             }
             require(race.timing().outcome==RaceOutcome::finished,"driver did not finish");
+            std::cout << "finish ticks " << race.timing().step << " resets " << resets << '\n';
+            require(resets == 0, "event8 driver must finish without resets");
             std::cout << "PASS: event8 full three-lap controller drive\n"; return 0;
         }
         SupportedRace selection;
@@ -49,6 +53,17 @@ int main(int argc, char** argv) {
                   << track.scene.region.unresolved_hashes.size() << " streaming " << track.streaming_bytes << '\n';
         require(track.event_number==8 && track.track_number==1005 && track.sections==90,
                 "uploaded event8 selection differs");
+        require(track.scene.region.unresolved_hashes.empty(), "event8 has an unresolved placed material");
+        bool original_fallback = false;
+        for (const auto& draw : track.scene.region.draws) if (draw.texture_hash == 0x828DCF0BU) {
+            require(draw.binding == BindingKind::resolved, "power tower must use retail DEFAULTALPHA");
+            const auto& texture = track.scene.region.textures.at(draw.texture);
+            require(texture.hash == kTrackDefaultAlphaHash && texture.alpha_blend_mode == 2 &&
+                    texture.width == 32 && texture.height == 32,
+                    "power tower fallback must retain the original GLOBALB payload and state");
+            original_fallback = true;
+        }
+        require(original_fallback, "power tower fallback draw absent");
         for (auto hash : track.scene.region.unresolved_hashes)
             std::cout << "unresolved hash " << std::hex << hash << std::dec << '\n';
         for (const auto& draw : track.scene.region.draws) if (draw.binding==BindingKind::unresolved)

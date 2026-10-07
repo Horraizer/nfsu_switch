@@ -1814,8 +1814,9 @@ if(NFSU_BUILD_TESTS)
         endif()
         set(nfsu_retail_work ${CMAKE_CURRENT_BINARY_DIR}/nfsu_retail)
         add_test(NAME nfsu_circuit1005_retail COMMAND nfsu_circuit1005_tests "${NFSU_RETAIL_ROOT}")
+        add_test(NAME nfsu_circuit1005_drive_retail COMMAND nfsu_circuit1005_tests "${NFSU_RETAIL_ROOT}" --measure)
         add_test(NAME nfsu_circuit1005_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" --event8)
-        set_tests_properties(nfsu_circuit1005_retail nfsu_circuit1005_loader_peak_retail PROPERTIES
+        set_tests_properties(nfsu_circuit1005_retail nfsu_circuit1005_drive_retail nfsu_circuit1005_loader_peak_retail PROPERTIES
             LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 1800)
 
         add_test(NAME nfsu_retail_manifest_before

@@ -809,10 +809,11 @@ int main(int argc, char** argv) {
                 padUpdate(&pad); const auto down = padGetButtonsDown(&pad);
                 if (down & HidNpadButton_Plus) throw Cancel{};
                 if (down & HidNpadButton_A) selected = true;
-                if (down & HidNpadButton_X) { selected = true; replay = true; }
+                if ((down & HidNpadButton_X) && event_number == 1) { selected = true; replay = true; }
                 if ((down & HidNpadButton_Y) && !profile_frame && !hud_trace) panel = !panel;
                 screen.show({event_number==8 ? "EVENT 8 / DT3 - ATLANTIC / THREE LAPS" : (tuned ? "EVENT 1 / TUNED 240SX / TWO LAPS" : "NFSU #196 - EVENT 1 / STOCK 240SX / TWO LAPS"),format("BUILD %.12s",NFSU_RACE_BUILD_TAG),
-                    "A: drive with Joy-Con / Pro Controller", "X: replay the pinned desktop event1.txt", "+: exit",
+                    "A: drive with Joy-Con / Pro Controller",
+                    event_number == 1 ? "X: replay the pinned desktop event1.txt" : "Atlantic: live controller input", "+: exit",
                     (profile_frame || hud_trace) ? "DIRECT CAPTURE: Y panel toggle disabled" :
                         std::string("Y: diagnostic panel ")+(panel?"ON":"OFF")+" (readback and CPU text cost)",
                     std::string("PARTICLES ")+(particles_enabled?"ON":"OFF"),

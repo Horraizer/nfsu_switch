@@ -6,6 +6,10 @@ through event 1: track 1003, two laps, forward. It reads that selection from
 the owner's FRONTB/GLOBALB tables and refuses a different event definition.
 No retail asset is included here. The recording is controller input only.
 
+Issue #327 also adds `--event 8`, the original `DT3 - Atlantic` circuit on
+track 1005. See [Atlantic](ATLANTIC.md) for its selection, retail provenance,
+desktop/Switch commands and remaining hardware acceptance.
+
 ## Run
 
 Build with the usual desktop CMake configuration. Substitute the local

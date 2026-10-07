@@ -83,7 +83,7 @@ void append_race_input(std::vector<RaceInputRun>& runs, const GamepadFrame& pad)
 enum class RaceDrivingLine { progress_spline, event1_forward, event8_forward };
 
 // Pure pursuit with curvature braking, 10 Hz decisions and quantized steering.
-// Event 1 selects authored lane offsets; other courses follow their spline.
+// Events 1 and 8 select authored test-driver offsets; other courses follow their spline.
 // This changes controller values only, never pose, progress or reset state.
 class RaceRouteDriver {
 public:

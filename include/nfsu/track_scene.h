@@ -11,6 +11,13 @@
 
 namespace nfsu {
 
+// Retail solid lookup substitutes GLOBALB DEFAULTALPHA when a hash is absent
+// (speed.exe 0x53F9C0 and 0x54622F). Apply only to a verified absent hash;
+// an existing, ambiguous or unusable claim is never overwritten.
+inline constexpr std::uint32_t kTrackDefaultAlphaHash = 0x66994F4AU;
+bool bind_track_default_alpha(RenderTextureSet& textures, std::uint32_t missing_hash,
+                              std::string& error);
+
 // A backend-neutral, validated draw list for one bounded track region,
 // plus the cost statistics a desktop or deko3d backend needs to size its
 // buffers. It is the track counterpart of PreparedCarScene: material

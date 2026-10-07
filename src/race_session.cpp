@@ -306,7 +306,7 @@ GamepadFrame RaceRouteDriver::sample(const RaceSession& session) {
         }
         float preview[3];
         if (line_ == RaceDrivingLine::event8_forward) {
-            // Authored test-driver offset around the northeast corner obstacle.
+            // Authored test-driver offsets around Atlantic's road obstacles.
             // Positive is left of the forward tangent. Controller input only.
             double p = parameter;
             while (p >= 33) p -= 33;

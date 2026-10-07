@@ -4,6 +4,7 @@
 #include "nfsu/race_route.h"
 #include "nfsu/texture_decode.h"
 
+#include <algorithm>
 #include <cmath>
 #include <utility>
 
@@ -83,7 +84,12 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
             section.objects = {};
             if (section.packs.packs.empty()) std::vector<unsigned char>().swap(section.bytes);
         }
-        const auto wanted = track_region_texture_hashes(load.geometry);
+        auto wanted = track_region_texture_hashes(load.geometry);
+        if (event_number == 8) {
+            wanted.push_back(kTrackDefaultAlphaHash);
+            std::sort(wanted.begin(), wanted.end());
+            wanted.erase(std::unique(wanted.begin(), wanted.end()), wanted.end());
+        }
         std::vector<RenderTextureSource> sources;
         std::vector<std::size_t> owners;
         track_stream_texture_sources(load, &wanted, sources, owners);
@@ -173,6 +179,7 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         };
         RenderTextureSet textures;
         if (!decode_render_texture_sources(sources, texture_limits, textures, error)) return false;
+        if (event_number == 8 && !bind_track_default_alpha(textures, 0x828DCF0BU, error)) return false;
         checkpoint("textures decoded");
         // RenderTexture owns every retained block. No scene preparation
         // consults the pack parser or its borrowed source bytes again.
