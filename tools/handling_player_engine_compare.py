@@ -55,7 +55,7 @@ def compare(root, native, out):
     original = (root/'Global/GLOBALB.BUN').read_bytes()[1736752:1736752+3216]
     if any(original[offset] != value for offset,value in encoded):
         raise RuntimeError('portable stock field bytes differ from authenticated retail record')
-    if len(encoded) != 340:
+    if len(encoded) != 344:
         raise RuntimeError('unexpected portable field coverage')
     result = dict(native_report_sha256=hashlib.sha256(data).hexdigest(),
                   native_source_head=report['source_head'],
@@ -71,7 +71,7 @@ def compare(root, native, out):
                   boundary='Original engine-only fixed-wheel matrix comparison; no whole gearbox, wheel/body integration, live cadence or gameplay acceptance.')
     (out/'report.json').write_text(json.dumps(result, ensure_ascii=True, indent=2)+'\n', encoding='ascii')
     if differences: raise RuntimeError('portable engine differs: see report.json')
-    print('PASS: portable/original engine216 exact rows and340 authenticated stock field bytes')
+    print('PASS: portable/original engine216 exact rows and344 authenticated stock field bytes')
 
 
 def main():

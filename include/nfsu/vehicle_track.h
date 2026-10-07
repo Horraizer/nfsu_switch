@@ -46,9 +46,10 @@ namespace nfsu {
 
 // Every value is the float speed.exe holds, widened exactly.
 
-// The world clock: 0x00585D70 counts 1/60 s ticks, and the model takes two
-// steps of 1/120 s a tick (docs/VEHICLE.md). The checks the game's car
-// update makes once a frame run here once a tick, after its second step.
+// Legacy standalone diagnostics take two 1/120 s steps per 1/60 s tick.
+// Production RaceSession supplies four 1/240 s slices per tick. Frame
+// checks run after the last supplied slice; reset counters retain legacy
+// diagnostic step units so that their elapsed tick durations are unchanged.
 constexpr std::uint32_t kVehicleTrackStepsPerTick = 2;
 
 // Body against track: the solver 0x0046BAE0 and the bodies' virtual
@@ -505,13 +506,16 @@ public:
     // False on an invalid session or a state that is not finite.
     bool start(const VehicleState& state);
 
-    // One step of 1/120 s: the model's step on the track's ground, then the
-    // body's collision with the track, then, on every second step, the
-    // checks of one 60 Hz tick and any reset they call for. False, with the
+    // One solver_dt slice: the model on the track's ground, then the body's
+    // collision with the track. Every steps_per_tick slices run one tick's
+    // checks and any reset they call for. False, with the
     // session left as it was, when not started or when the model refuses
     // the step.
     bool step(const VehicleInput& input, VehicleTrackTelemetry& telemetry,
-              double publication_dt = kVehicleStepSeconds);
+              double publication_dt = kVehicleStepSeconds,
+              double solver_dt = kVehicleStepSeconds,
+              bool select_request = true,
+              std::uint32_t steps_per_tick = kVehicleTrackStepsPerTick);
 
     // Asks for a reset on the next tick, as the game's reset button would.
     void request_reset() noexcept;

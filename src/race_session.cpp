@@ -118,12 +118,28 @@ bool RaceSession::advance(const GamepadFrame& pad, std::string& error) {
     RaceTimingInput timing_input;
     if (!race_car_held(timing_)) {
         if (controls_.frame_state().reset) vehicle_.request_reset();
-        for (int k = 0; k < 2; ++k) {
-            const bool recovered = steering_mode_ != RaceSteering::baseline;
-            inputs_[k] = controls_.step(forward_speed(car()), car().gear, car().gearbox,recovered);
-            if (recovered && !steer_input(inputs_[k],k,error)) { started_=false; return false; }
+        const bool recovered = steering_mode_ != RaceSteering::baseline;
+        // Filtering remains a qualified two120Hz-update port adapter. The
+        // completed steering/input is transferred once before four physics
+        // slices, as the observed original pre-loop transfer requires.
+        auto first=controls_.step(forward_speed(car()),car().gear,car().gearbox,recovered);
+        if(recovered) {
+            if(!steer_input(first,0,error)) {started_=false;return false;}
+            ++steering_steps_;
+        }
+        auto held=controls_.step(forward_speed(car()),car().gear,car().gearbox,recovered);
+        if(recovered) {
+            if(!steer_input(held,1,error)) {started_=false;return false;}
+            ++steering_steps_;
+        }
+        if(first.shift!=VehicleShift::none) held.shift=first.shift;
+        for (std::size_t k = 0; k < kDriveStepsPerFrame; ++k) {
+            inputs_[k]=held;
+            if(k) inputs_[k].shift=VehicleShift::none;
             const int previous_gear = car().gear;
-            if (!vehicle_.step(inputs_[k], track_telemetry_[k],k==1?1.0/60.0:0.0)) {
+            if (!vehicle_.step(inputs_[k], track_telemetry_[k],
+                k+1==kDriveStepsPerFrame?kDriveFrameSeconds:0.0,
+                kDriveSolverSeconds,k==0,kDriveStepsPerFrame)) {
                 started_ = false; error = vehicle_.error(); return false;
             }
             if (recovered) {
@@ -132,11 +148,10 @@ bool RaceSession::advance(const GamepadFrame& pad, std::string& error) {
                 } else if (previous_gear != car().gear) {
                     shift_step_ = steering_steps_; shifted_=true;
                 }
-                ++steering_steps_;
             }
             for (std::size_t w = 0; w < kVehicleWheelCount; ++w) {
                 double phase = animation_.wheel_phase[w] +
-                    car().wheels[w].spin * kVehicleStepSeconds;
+                    car().wheels[w].spin * kDriveSolverSeconds;
                 while (phase > 3.14159265358979323846)
                     phase -= 6.28318530717958647692;
                 while (phase < -3.14159265358979323846)
@@ -150,7 +165,7 @@ bool RaceSession::advance(const GamepadFrame& pad, std::string& error) {
     } else {
         // Hold the grid pose, including gravity, until the countdown says GO.
         // Still sample controls, so hot-plug latches and button releases work.
-        for (int k = 0; k < 2; ++k) {
+        for (std::size_t k = 0; k < kDriveStepsPerFrame; ++k) {
             inputs_[k] = {};
             track_telemetry_[k].position = car().position;
             track_telemetry_[k].orientation = car().orientation;
@@ -168,7 +183,8 @@ bool RaceSession::advance(const GamepadFrame& pad, std::string& error) {
 }
 
 void RaceSession::encode() {
-    VehicleTelemetry telemetry[2] = {track_telemetry_[0].model, track_telemetry_[1].model};
+    VehicleTelemetry telemetry[kDriveStepsPerFrame];
+    for(std::size_t k=0;k<kDriveStepsPerFrame;++k) telemetry[k]=track_telemetry_[k].model;
     encode_drive_frame(timing_.step, inputs_, telemetry, view_, controls_.frame_state(), record_);
     for (const auto& t : track_telemetry_) {
         std::array<std::uint8_t, kVehicleTrackTelemetryRecordBytes> bytes{};

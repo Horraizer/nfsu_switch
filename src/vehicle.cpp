@@ -82,7 +82,8 @@ bool finite(const VehicleVec3& v) noexcept {
 }
 
 bool state_finite(const VehicleState& s) noexcept {
-    bool ok = finite(s.position) && finite(s.velocity) && finite(s.angular_velocity) &&
+    bool ok = finite(s.simulation_seconds) && s.simulation_seconds>=0.0 &&
+              finite(s.position) && finite(s.velocity) && finite(s.angular_velocity) &&
               finite(s.orientation.w) && finite(s.orientation.x) && finite(s.orientation.y) &&
               finite(s.orientation.z) && finite(s.steer_angle) && finite(s.engine_rpm) &&
               finite(s.wheel_rpm);
@@ -247,6 +248,7 @@ void visit_floats(Handling& h, Visitor&& visit) {
     for (std::size_t i = 0; i < 3; ++i) {
         visit(kVehicleInertiaOffset + i * kVehicleInertiaStride, h.inertia[i]);
     }
+    visit(kVehicleAlternateYawScaleOffset, h.alternate_yaw_scale);
     for (std::size_t a = 0; a < 2; ++a) {
         const std::size_t base = kVehicleStrutOffset + a * kVehicleAxleStride;
         visit(base + 0x00, h.struts[a].progressive);
@@ -514,6 +516,7 @@ VehicleHandling stock_240sx_handling() {
     h.height = 1.29F;
     // +0x230, +0x244, +0x258: the inertia diagonal.
     h.inertia = {0.4595537F, 2.2462742F, 2.367461F};
+    h.alternate_yaw_scale = 2.0F;
     // +0x280 front and +0x2A0 rear struts.
     h.struts[0] = VehicleAxleStrut{5.4F, 35.0F, 5.4F, 5.8F, 37.0F, 0.125F, -0.13F};
     h.struts[1] = VehicleAxleStrut{5.1F, 30.0F, 5.0F, 5.65F, 30.0F, 0.125F, -0.13F};
@@ -594,6 +597,7 @@ bool check_vehicle_handling(const VehicleHandling& h,
     positive(kVehicleLengthOffset, h.length, "the length");
     positive(kVehicleWidthOffset, h.width, "the width");
     positive(kVehicleHeightOffset, h.height, "the height");
+    positive(kVehicleAlternateYawScaleOffset, h.alternate_yaw_scale, "the alternate yaw scale");
     positive(kVehicleFinalRearOffset, h.final_drive_rear, "the rear final drive");
     positive(kVehicleFinalFrontOffset, h.final_drive_front, "the front final drive");
     positive(kVehicleEngineInertiaOffset, h.engine_inertia, "the engine inertia");
@@ -850,6 +854,9 @@ void encode_vehicle_telemetry(const VehicleTelemetry& r,
     }
     e.f64(r.owner_speeds.forward);
     e.f64(r.owner_speeds.magnitude);
+    e.f64(r.simulation_seconds);
+    e.f64(r.solver_dt);
+    e.u32(r.alternate_yaw_active?1U:0U);
 }
 
 void VehicleTelemetryHash::add(const VehicleTelemetry& record) noexcept {
@@ -1107,18 +1114,28 @@ bool VehicleModel::reset(VehicleState& state, const VehiclePose& pose) const {
 
 bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
                         const VehicleGround& ground, VehicleTelemetry& telemetry,
-                        double publication_dt) const {
+                        double publication_dt, double step_dt, bool select_request) const {
     if (!valid_ || !state_finite(state) || state.gear < kVehicleGearReverse ||
         state.gear > kVehicleGearFirst + static_cast<int>(spec_.handling.forward_gears) - 1 ||
         !finite(publication_dt) || publication_dt<0.0 ||
+        !finite(step_dt) || !(step_dt>0.0) || step_dt>kVehicleStepSeconds ||
         state.transmission.requested_gear<kVehicleGearReverse ||
         state.transmission.requested_gear>kVehicleGearFirst+static_cast<int>(spec_.handling.forward_gears)-1) {
         return false;
     }
     const VehicleHandling& h = spec_.handling;
     const VehicleApproximations& a = spec_.approx;
-    const double dt = kVehicleStepSeconds;
+    const double dt = step_dt;
     VehicleState s = state;
+    if(select_request) {
+        //4776FC/477714: ordinary state0 selects alternate yaw unless its
+        // previous contact count is zero. The flag is set before the solve
+        // and retained across all slices. Kind3-only port collision remains
+        // state0; state1 car-versus-car activation is outside this adapter.
+        unsigned contacts=0;
+        for(const auto& wheel:s.wheels) contacts+=wheel.contact?1U:0U;
+        s.alternate_yaw_active=contacts!=0;
+    }
 
     const double throttle = sanitize(raw_input.throttle, 0.0, 1.0);
     // Selector1 has separate service and parking paths47792A/477953.
@@ -1134,7 +1151,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     // Requests enter the actual clutch phases rather than changing physical
     // gear and resetting engine speed at once.
     const int top = kVehicleGearFirst + static_cast<int>(h.forward_gears) - 1;
-    if (raw_input.shift != VehicleShift::none) {
+    if (select_request && raw_input.shift != VehicleShift::none) {
         const bool up_request = raw_input.shift == VehicleShift::up;
         if (s.gearbox == VehicleGearbox::manual) {
             if (up_request && s.transmission.requested_gear < top) {
@@ -1148,7 +1165,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             s.transmission.requested_gear = kVehicleGearReverse;
         }
     }
-    if (s.gearbox==VehicleGearbox::automatic&&s.gear!=kVehicleGearReverse) {
+    if (select_request && s.gearbox==VehicleGearbox::automatic&&s.gear!=kVehicleGearReverse) {
         if (s.gear<=kVehicleGearNeutral) s.transmission.requested_gear=kVehicleGearFirst;
         else if (s.transmission.mode==3) {
             //46E5B0 selection uses physical engine speed, not actor RPM.
@@ -1258,7 +1275,9 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     // constraints. The existing contact/strut adapter and force application
     // remain explicit 3D approximations; mechanical wheel state is binary32.
     std::array<PlayerWheelWork,4> work{};
-    std::array<VehicleVec3,4> along_axes{}, across_axes{}, tyre_arms{};
+    std::array<std::array<VehicleVec3,3>,4> wheel_axes{};
+    std::array<VehicleVec3,4> contact_arms{};
+    const std::array<VehicleVec3,3> body_axes{{forward,left,up}};
     for (std::size_t k=0;k<kVehicleWheelCount;++k) {
         auto& wheel=s.wheels[k];auto& out=wheel_out[k];auto& w=work[k];
         out.compression=wheel.compression;out.contact=wheel.contact;
@@ -1274,29 +1293,36 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         w.position_x=static_cast<float>(d_.attach[k].x);
         w.position_y=static_cast<float>(d_.attach[k].y);
         const VehicleVec3 normal=wheel.contact?hits[k].normal:up;
-        const VehicleVec3 heading=k<2?add(scale(forward,steer_cos),scale(left,steer_sin)):forward;
-        VehicleVec3 along=sub(heading,scale(normal,dot(heading,normal)));
-        const double length=vehicle_sqrt(dot(along,along));
-        if (length>1.0e-9) along=scale(along,1.0/length);
-        else along=forward;
-        const VehicleVec3 across=cross(normal,along);
-        along_axes[k]=along;across_axes[k]=across;
-        VehicleVec3 arm=d_.attach[k];arm=r.apply(arm);
+        const float c=k<2?static_cast<float>(steer_cos):1.0F;
+        const float sn=k<2?static_cast<float>(steer_sin):0.0F;
+        const std::array<VehicleVec3,3> local_axes{{v3(c,sn,0),v3(-sn,c,0),v3(0,0,1)}};
+        // Original5889C5 combines local wheel axes with the rigid snapshot,
+        // without projecting them onto the ground. The current port refreshes
+        // its rotation at each body update; original full update ordering is
+        // still a separate integration contract.
+        wheel_axes[k]=player_world_wheel_axes(body_axes,local_axes);
+        const auto& along=wheel_axes[k][0];const auto& across=wheel_axes[k][1];
+        const VehicleVec3 hub_local=v3(d_.attach[k].x,d_.attach[k].y,
+            static_cast<float>(d_.attach[k].z)+static_cast<float>(wheel.compression));
+        const VehicleVec3 hub_arm=r.apply(hub_local);
+        VehicleVec3 arm=hub_arm;
         if (wheel.contact) {
             const VehicleVec3 from=add(attach_world[k],scale(up,a.probe_lift));
             const VehicleVec3 contact=add(from,scale(up,-hits[k].distance));
             arm=sub(contact,s.position);out.ground_point=contact;out.ground_normal=normal;
-            const VehicleVec3 strut=scale(normal,strut_force[k]);
-            force=add(force,strut);torque=add(torque,cross(arm,strut));
         }
-        tyre_arms[k]=sub(arm,scale(up,dot(arm,up)*a.tyre_force_lift));
-        const VehicleVec3 point=add(s.velocity,cross(s.angular_velocity,arm));
-        const double vlong=dot(point,along),vlat=dot(point,across);
-        w.velocity_long=static_cast<float>(vlong);w.velocity_lat=static_cast<float>(vlat);
-        const VehicleVec3 local_along=r.apply_transpose(along);
-        const VehicleVec3 local_across=r.apply_transpose(across);
-        w.heading_x=static_cast<float>(local_along.x);w.heading_y=static_cast<float>(local_along.y);
-        w.side_x=static_cast<float>(local_across.x);w.side_y=static_cast<float>(local_across.y);
+        contact_arms[k]=arm;
+        //588900 uses the strut hub for velocity.478480 applies the combined
+        // wheel force at contact instead; the fitted tyre-force lift is unused.
+        const VehicleVec3 point=player_hub_velocity(body_axes,hub_local,s.velocity,s.angular_velocity);
+        const auto resolve=[&point](const VehicleVec3& axis) {
+            return (static_cast<float>(point.z)*static_cast<float>(axis.z)+
+                    static_cast<float>(point.y)*static_cast<float>(axis.y))+
+                    static_cast<float>(point.x)*static_cast<float>(axis.x);
+        };
+        const float vlong=resolve(along),vlat=resolve(across);
+        w.velocity_long=vlong;w.velocity_lat=vlat;
+        w.heading_x=c;w.heading_y=sn;w.side_x=-sn;w.side_y=c;
         // The original standing/sliding producer uses quantized angles.
         // The diagnostic slip ratio keeps its documented speed floor.
         const double denominator=std::max(absolute(vlong),a.slip_speed_floor);
@@ -1327,7 +1353,8 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     for (std::size_t k=0;k<4;++k) wheel_rates[k]=player_wheel_acceleration(h,k,work[k],solver_dt);
     for (std::size_t k=0;k<4;++k) player_wheel_integrate(work[k],wheel_rates[k],solver_dt);
     player_engine_integrate(h,s.engine,crank,solver_dt);
-    player_engine_cutoff_update(h,s.gear,s.engine,static_cast<float>(static_cast<double>(s.step+1)*dt));
+    s.simulation_seconds += dt;
+    player_engine_cutoff_update(h,s.gear,s.engine,static_cast<float>(s.simulation_seconds));
     player_gear_integrate(h,s.transmission,solver_dt);
     player_gear_update(h,s.gear,s.transmission,s.engine,work,static_cast<float>(throttle),
                        s.owner_speeds.magnitude);
@@ -1340,8 +1367,11 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         out.force_lat=static_cast<double>(w.force_lat)*a.unit_scale;
         out.slip_ratio=(wheel.spin*d_.radius[k]-w.velocity_long)/std::max(absolute(w.velocity_long),a.slip_speed_floor);
         if (wheel.contact) {
-            const VehicleVec3 tyre_force=add(scale(along_axes[k],out.force_long),scale(across_axes[k],out.force_lat));
-            force=add(force,tyre_force);torque=add(torque,cross(tyre_arms[k],tyre_force));
+            //587830 default basis1 transforms Fx/Fy/load together through
+            // the full world wheel basis.478480/584CD0 use the contact arm.
+            const VehicleVec3 wheel_force=scale(player_world_wheel_force(wheel_axes[k],
+                w.force_long,w.force_lat,w.load),a.unit_scale);
+            force=add(force,wheel_force);torque=add(torque,cross(contact_arms[k],wheel_force));
         }
     }
 
@@ -1358,7 +1388,8 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     s.velocity = add(s.velocity, scale(force, dt / d_.mass));
     const VehicleVec3 body_torque = r.apply_transpose(torque);
     const VehicleVec3 body_change =
-        v3(body_torque.x / d_.inertia.x, body_torque.y / d_.inertia.y, body_torque.z / d_.inertia.z);
+        v3(body_torque.x / d_.inertia.x, body_torque.y / d_.inertia.y,
+           (body_torque.z/a.unit_scale)*player_body_inverse_yaw(h,s.alternate_yaw_active));
     s.angular_velocity = add(s.angular_velocity, scale(r.apply(body_change), dt));
     s.position = add(s.position, scale(s.velocity, dt));
     VehicleQuat spin_q;
@@ -1391,6 +1422,9 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     r = rotation(s.orientation);
     VehicleTelemetry t;
     t.step = s.step;
+    t.simulation_seconds = s.simulation_seconds;
+    t.solver_dt = dt;
+    t.alternate_yaw_active = s.alternate_yaw_active;
     t.position = s.position;
     t.velocity = s.velocity;
     t.forward = r.column(0);

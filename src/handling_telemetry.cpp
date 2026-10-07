@@ -10,7 +10,7 @@ bool HandlingTelemetryLog::write(const RaceSession& session, const GamepadFrame&
         if (std::fputs("handling-v2 tick,frame,physics,substep,connected,raw_steer_axis,raw_buttons,sample_age_us,filtered_steer,requested_road_rad,actual_road_rad,yaw_world_rad_s,body_slip_rad,gear_slot,engine_rpm,camera_heading_rad,forward_speed_m_s,raw_bound_steer,steer_limit_deg,steer_rate_deg_s,steer_shift_factor,steering_mode,w0_load_N,w0_slip_ratio,w0_slip_lateral,w0_requested_Nm,w0_applied_Nm,w0_contact,w1_load_N,w1_slip_ratio,w1_slip_lateral,w1_requested_Nm,w1_applied_Nm,w1_contact,w2_load_N,w2_slip_ratio,w2_slip_lateral,w2_requested_Nm,w2_applied_Nm,w2_contact,w3_load_N,w3_slip_ratio,w3_slip_lateral,w3_requested_Nm,w3_applied_Nm,w3_contact\n",output_) < 0) return false;
         header_ = true;
     }
-    for (std::size_t k = 0; k < 2 && rows_ < kMaxRows; ++k) {
+    for (std::size_t k = 0; k < session.physics_telemetry().size() && rows_ < kMaxRows; ++k) {
         const auto& track = session.physics_telemetry()[k];
         const auto& t = track.model;
         std::fprintf(output_,"handling %llu,",static_cast<unsigned long long>(session.timing().step));

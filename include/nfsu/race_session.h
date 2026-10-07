@@ -17,7 +17,7 @@ private:
     const TrackContactWorld& world_;
 };
 
-// Event-1 integration: one pad tick at 60 Hz, two collision steps at 120 Hz,
+// Event-1 integration: one pad tick at60Hz, four physics/collision slices,
 // route events, race timing, then chase camera. No wall clock or file access.
 // The course must outlive the session. Failure is terminal for this session.
 class RaceSession {
@@ -34,8 +34,8 @@ public:
     const RaceTimingConfig& timing_config() const { return timing_config_; }
     const ChaseCameraView& camera() const { return view_; }
     const VehicleSpec& spec() const { return spec_; }
-    const VehicleTrackTelemetry& telemetry() const { return track_telemetry_[1]; }
-    const std::array<VehicleTrackTelemetry,2>& physics_telemetry() const { return track_telemetry_; }
+    const VehicleTrackTelemetry& telemetry() const { return track_telemetry_.back(); }
+    const std::array<VehicleTrackTelemetry,kDriveStepsPerFrame>& physics_telemetry() const { return track_telemetry_; }
     const std::vector<std::uint8_t>& record() const { return record_; }
     const VehicleTrackCourse& course() const { return course_; }
     RaceSteering steering_mode() const { return steering_mode_; }
@@ -54,8 +54,8 @@ private:
     RaceTimingConfig timing_config_;
     RaceTimingState timing_;
     std::vector<RaceTimingEvent> timing_events_;
-    VehicleInput inputs_[2]{};
-    std::array<VehicleTrackTelemetry,2> track_telemetry_{};
+    VehicleInput inputs_[kDriveStepsPerFrame]{};
+    std::array<VehicleTrackTelemetry,kDriveStepsPerFrame> track_telemetry_{};
     std::vector<std::uint8_t> record_;
     CarAnimationState animation_;
     bool started_ = false;

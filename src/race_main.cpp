@@ -476,8 +476,8 @@ int run(int argc, char** argv) {
             std::cout << "particle tick " << session.timing().step << " physics "
                       << scene.particles.step() << " smoke " << scene.particles.smoke_count()
                       << " sparks " << scene.particles.spark_count() << " impulses "
-                      << (session.physics_telemetry()[0].impulses+
-                          session.physics_telemetry()[1].impulses) << '\n';
+                      << [&session] {std::uint64_t sum=0;for(const auto& t:session.physics_telemetry()) sum+=t.impulses;return sum;}()
+                      << '\n';
         if (live && !smoke) sound.on_tick(audio::race_audio_snapshot(session));
         resets=session.telemetry().resets;
         if (trajectory.is_open()) for (const auto& t : session.physics_telemetry()) {

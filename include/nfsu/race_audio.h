@@ -22,9 +22,10 @@ struct RaceAudioSnapshot {
     double speed_mps = 0;
     double wheel_slip = 0;
     std::uint64_t tick = 0;
-    // Latest 120 Hz physics step, independent of countdown/race tick epoch.
+    // Latest solver slice, independent of countdown/race tick epoch.
     std::uint64_t physics_step = 0;
-    std::array<CollisionContact, 512> contacts{};
+    std::array<CollisionContact, kDriveStepsPerFrame *
+        std::tuple_size<decltype(VehicleTrackTelemetry::audio_contacts)>::value> contacts{};
     std::size_t contact_count = 0;
     bool collision_reset = false;
     int countdown = 0;

@@ -18,22 +18,25 @@
 namespace nfsu {
 
 // The loop issue #59 adds between a controller and a frame: one controller
-// frame in, the controls, two vehicle steps, the chase camera, and a record
+// frame in, the controls, four vehicle slices, the chase camera, and a record
 // of all of it hashed, so that a recorded input stream pins everything it
 // drives. Also what the CPU reference renderer needs to show the result: the
 // car placed at its pose, the camera turned into the renderer's camera, and
 // a flat ground to see the motion against. docs/CONTROLS_CAMERA.md.
 //
 // The fixed rate. One controller frame is one 1/60 s tick, the rate the
-// console samples its pads at and the game's own world tick (0x00585D70,
-// docs/VEHICLE.md); the vehicle runs two of its 1/120 s steps in each and
+// port samples its pads at. With a supplied 1/60 s interval the observed
+// ordinary selector1 branch subdivides it
+// into four 1/240 s physics slices with one unsplit publication, and
 // the camera one 1/60 s update. A frame's time field is not read: a replay
 // is one tick per recorded frame, whatever the clock said, and so is the
-// live loop that recorded it. Nothing here reads a clock.
+// live loop that recorded it. Nothing here reads a clock. This fixes the
+// port cadence; it does not establish an original live world rate.
 
 constexpr std::uint32_t kDriveFramesPerSecond = 60;
-constexpr std::uint32_t kDriveStepsPerFrame = kVehicleStepsPerSecond / kDriveFramesPerSecond;
+constexpr std::uint32_t kDriveStepsPerFrame = 4; //477D56 interval/.0044 +1
 constexpr double kDriveFrameSeconds = 1.0 / 60.0;
+constexpr double kDriveSolverSeconds = kDriveFrameSeconds/kDriveStepsPerFrame;
 
 // One frame's record, as the hash reads it: the frame number (u64); per
 // vehicle step the input as applied (throttle, brake, steer as doubles, the
@@ -82,7 +85,7 @@ public:
     // set, when any of them refuses.
     bool start(const DriveSessionSetup& setup, std::string& error);
 
-    // One tick: the controls read the frame, the vehicle takes two steps
+    // One tick: the controls read the frame, the vehicle takes four slices
     // over flat ground at height 0 (issue #60 supplies the track), the camera
     // takes the camera edge and then one update, and the frame's record is
     // hashed. False, with error set, when a step or the camera refuses; the

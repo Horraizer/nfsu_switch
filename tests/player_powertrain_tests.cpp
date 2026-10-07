@@ -171,11 +171,96 @@ void steered_constraint_witness() {
               "steered original constraint witness retains distinct source matrix operands");
     }
 }
+
+void strut_hub_and_world_force_witness() {
+    using namespace nfsu;
+    const std::array<VehicleVec3,3> identity{{{1,0,0},{0,1,0},{0,0,1}}};
+    const std::array<VehicleVec3,3> pitch{{{.96,0,-.28},{0,1,0},{.28,0,.96}}};
+    const auto plain=player_hub_velocity(identity,{1.14,.73,-.33},{4,2,.1},{.2,-.3,.4});
+    const auto pitched=player_hub_velocity(pitch,{1.14,.73,-.33},{4,2,.1},{.2,-.3,.4});
+    // Original588900..5889C2, supplied current matrices and hub arm.
+    check(plain.x==3.806999921798706&&plain.y==2.5220000743865967&&
+          plain.z==.5880000591278076,"original hub velocity uses current rigid rotation");
+    check(pitched.x==3.8987998962402344&&pitched.y==2.5279998779296875&&
+          pitched.z==.5466000437736511,"pitched original hub velocity retains float order");
+    const auto at_contact=player_hub_velocity(identity,{1.14,.73,-.63},{4,2,.1},{.2,-.3,.4});
+    check(at_contact.y!=plain.y,"contact arm cannot substitute for hub velocity input");
+    const std::array<VehicleVec3,3> yaw{{{.6,.8,0},{-.8,.6,0},{0,0,1}}};
+    const auto snapshot=player_world_wheel_axes(yaw,identity);
+    check(snapshot[0].x==static_cast<double>(.6F)&&snapshot[0].y==static_cast<double>(.8F)&&
+          snapshot[1].x==static_cast<double>(-.8F),"world wheel basis uses supplied rigid snapshot");
+    const std::array<VehicleVec3,3> delivery_pitch{{{.8,0,-.6},{0,1,0},{.6,0,.8}}};
+    const auto force=player_world_wheel_force(delivery_pitch,1,2,3);
+    // Full587830 default basis1, independently executed by the reviewer.
+    check(force.x==2.6000001430511475&&force.y==2&&force.z==1.8000000715255737,
+          "original full wheel force includes Fx Fy load through pitched world axes");
+    const auto h=stock_240sx_handling();
+    check(player_body_inverse_yaw(h,false)==.42239347100257874F&&
+          player_body_inverse_yaw(h,true)==.21119673550128937F,
+          "original normal and alternate yaw response remain distinct from wheel constraints");
+}
+
+void outer_slice_and_selection_phase() {
+    using namespace nfsu;
+    const VehicleModel model(stock_240sx_vehicle_spec());
+    VehiclePose pose;pose.speed=25;
+    VehicleState state;check(model.reset(state,pose),"cadence pose reset");
+    const auto cached=state.owner_speeds;const double published=state.engine_rpm;
+    VehicleInput input;input.brake=1;
+    VehicleTelemetry t;
+    for(unsigned k=0;k<4;++k) {
+        check(model.step(state,input,VehicleFlatGround(),t,k==3?1.0/60.0:0.0,1.0/240.0,k==0),
+              "four original-branch slices complete one outer interval");
+        check(t.solver_dt==1.0/240.0,"telemetry identifies actual integration interval");
+        if(k<3) check(state.engine_rpm==published&&state.owner_speeds.forward==cached.forward&&
+                     state.owner_speeds.magnitude==cached.magnitude,"only last slice publishes completed owner fields");
+    }
+    check(state.step==4&&std::fabs(state.simulation_seconds-1.0/60.0)<1e-15,
+          "four slices advance elapsed clock by one frame rather than four legacy steps");
+    check(state.owner_speeds.magnitude!=cached.magnitude,"outer publication follows all four completed slices");
+    check(model.reset(state,VehiclePose()),"selection phase reset");
+    input={};input.throttle=1;
+    check(model.step(state,input,VehicleFlatGround(),t,0,1.0/240.0,true),"first pre-loop selection slice");
+    state.engine.angular_speed=8000.0F*kPlayerRpmToRadS;
+    state.transmission.mode=3;state.transmission.clutch=1;
+    const auto request=state.transmission.requested_gear;
+    auto reselection=state;
+    check(model.step(state,input,VehicleFlatGround(),t,0,1.0/240.0,false)&&
+          state.transmission.requested_gear==request,
+          "RPM threshold crossing between slices cannot reselect the request");
+    check(model.step(reselection,input,VehicleFlatGround(),t,0,1.0/240.0,true)&&
+          reselection.transmission.requested_gear==request+1,
+          "same above-threshold input selects at the next outer selection boundary");
+    check(model.reset(state,VehiclePose()),"manual edge reset");
+    state.gearbox=VehicleGearbox::manual;input.shift=VehicleShift::up;
+    for(unsigned k=0;k<4;++k)
+        check(model.step(state,input,VehicleFlatGround(),t,0,1.0/240.0,k==0),"manual held outer edge slices");
+    check(state.transmission.requested_gear==kVehicleGearFirst+1,"held outer shift is consumed only once");
+    check(model.reset(state,VehiclePose()),"airborne flag reset");
+    for(auto& wheel:state.wheels) wheel.contact=false;
+    input={};
+    check(model.step(state,input,VehicleFlatGround(),t,0,1.0/240.0,true)&&!state.alternate_yaw_active,
+          "outer zero-support count selects normal yaw tensor");
+    check(model.step(state,input,VehicleFlatGround(),t,0,1.0/240.0,false)&&!state.alternate_yaw_active,
+          "support regained during a slice does not change latched outer tensor");
+    check(model.step(state,input,VehicleFlatGround(),t,0,1.0/240.0,true)&&state.alternate_yaw_active,
+          "next supported outer boundary selects alternate tensor");
+    const auto before=state;
+    check(!model.step(state,input,VehicleFlatGround(),t,0,0,false)&&state.step==before.step&&
+          state.simulation_seconds==before.simulation_seconds,"invalid solver interval refusal is atomic");
+    VehicleTelemetry other=t;other.simulation_seconds+=1;
+    std::array<std::uint8_t,kVehicleTelemetryRecordBytes> a{},b{};
+    encode_vehicle_telemetry(t,a);encode_vehicle_telemetry(other,b);
+    check(a!=b,"canonical telemetry retains cutoff clock futures");
+    other=t;other.alternate_yaw_active=!t.alternate_yaw_active;encode_vehicle_telemetry(other,b);
+    check(a!=b,"canonical telemetry retains latched yaw tensor futures");
+}
 } // namespace
 
 int main() {
     publication_and_reset();wheel_history_and_player_brake();shift_cycle_and_differential_sync();
-    owner_speed_domains();steered_constraint_witness();
+    owner_speed_domains();steered_constraint_witness();strut_hub_and_world_force_witness();
+    outer_slice_and_selection_phase();
     if (failures) {std::cerr<<failures<<" player powertrain test failure(s)\n";return 1;}
     std::cout<<"player powertrain tests passed\n";
 }

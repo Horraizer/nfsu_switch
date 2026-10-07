@@ -88,6 +88,16 @@ int main() {
         check(spark_hash=="81E40F7D52F5AAC18E3A395BC27EC0B5D26663A19E25F3AB90C0D8F1A52236A3",
               "wall-hit reference frame moved");
         check(spark_hash!=frame_hash(below),"spark frame equals an empty frame");
+        nfsu::RaceParticle legacy=wall.spark(0),micro=legacy;
+        micro.solver_dt=1.0/240.0;
+        nfsu::VehicleVec3 legacy_at,micro_at;double legacy_size=0,micro_size=0,legacy_alpha=0,micro_alpha=0;
+        check(nfsu::race_particle_visual(legacy,legacy.born_step+12,legacy_at,legacy_size,legacy_alpha)&&
+              nfsu::race_particle_visual(micro,micro.born_step+24,micro_at,micro_size,micro_alpha)&&
+              legacy_at.x==micro_at.x&&legacy_at.y==micro_at.y&&legacy_at.z==micro_at.z&&
+              legacy_size==micro_size&&legacy_alpha==micro_alpha,
+              "doubling physics slices preserves particle age and fade in seconds");
+        check(!nfsu::race_particle_visual(micro,micro.born_step+36,micro_at,micro_size,micro_alpha),
+              "240Hz spark expires after unchanged .15 seconds");
         auto reset=sample(2);
         reset.reset=nfsu::VehicleTrackReset::zone;
         wall.advance(reset,spec);

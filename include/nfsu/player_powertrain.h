@@ -94,6 +94,25 @@ float player_angle_sin(std::uint16_t angle) noexcept;
 PlayerOwnerSpeeds player_publish_owner_speeds(const VehicleVec3& velocity,
                                             const VehicleVec3& forward) noexcept;
 
+//588900..5889C2 resolves the strut hub arm through the CURRENT rigid
+// rotation, then adds angular cross-arm velocity to rigid linear velocity.
+// A tyre's contact arm is a separate force-application input.
+VehicleVec3 player_hub_velocity(const std::array<VehicleVec3,3>& current_axes,
+                               const VehicleVec3& local_hub_arm,
+                               const VehicleVec3& linear_velocity,
+                               const VehicleVec3& angular_velocity) noexcept;
+
+//5889C5..5889E7 and5AC6A2 combine local wheel and rigid snapshot axes.
+//587830's default force basis resolves Fx/Fy/load in those world axes.
+std::array<VehicleVec3,3> player_world_wheel_axes(
+    const std::array<VehicleVec3,3>& snapshot_axes,
+    const std::array<VehicleVec3,3>& local_wheel_axes) noexcept;
+VehicleVec3 player_world_wheel_force(const std::array<VehicleVec3,3>& world_axes,
+                                    float longitudinal, float lateral,
+                                    float load) noexcept;
+//584B10 builds normal/alternate tensors;585810 selects by rigid138.
+float player_body_inverse_yaw(const VehicleHandling& setup,bool alternate) noexcept;
+
 // Constructor/reset conversion478365. Not a recurring display feedback.
 void player_engine_reset(PlayerEngineState& engine, float rpm) noexcept;
 

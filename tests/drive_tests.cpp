@@ -1336,6 +1336,30 @@ void test_session() {
     // The recorded form replays to the same stream.
     std::vector<nfsu::GamepadFrame> parsed;
     std::string error;
+    // A pad timestamp is replay metadata, not elapsed solver time. These
+    // checks catch a retained two-slice loop or a wall-clock catch-up loop.
+    nfsu::DriveSession cadence, distant_clock;
+    check(cadence.start(setup, error) && distant_clock.start(setup, error),
+          "cadence sessions start: " + error);
+    auto ordinary_pad = demo[0];
+    auto distant_pad = ordinary_pad;
+    distant_pad.time_us = 900000000;
+    check(cadence.advance(ordinary_pad, error) && distant_clock.advance(distant_pad, error),
+          "one input frame advances: " + error);
+    check(cadence.state().step == 4 &&
+              near(cadence.state().simulation_seconds, 1.0 / 60.0, 1e-12) &&
+              cadence.telemetry().solver_dt == 1.0 / 240.0 &&
+              cadence.hashed_bytes() == nfsu::kDriveFrameRecordBytes,
+          "one free-drive frame completes four slices and one record");
+    ordinary_pad.time_us = 16666;
+    distant_pad.time_us = 1800000000;
+    check(cadence.advance(ordinary_pad, error) && distant_clock.advance(distant_pad, error),
+          "second input frame advances: " + error);
+    check(cadence.frames() == 2 && cadence.state().step == 8 &&
+              near(cadence.state().simulation_seconds, 2.0 / 60.0, 1e-12) &&
+              cadence.hashed_bytes() == 2 * nfsu::kDriveFrameRecordBytes &&
+              cadence.finish() == distant_clock.finish(),
+          "a distant timestamp adds no catch-up physics or replay difference");
     const bool recorded = nfsu::parse_input_recording(nfsu::format_input_recording(demo), parsed, error);
     check(recorded, "the demonstration's recorded form parses: " + error);
     check(run_demo(setup, parsed).digest == a.digest, "and replays to the same stream");

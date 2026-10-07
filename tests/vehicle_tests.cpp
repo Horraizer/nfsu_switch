@@ -260,6 +260,7 @@ void test_record_round_trip() {
               get_u32(record, 0x258) == 0x4017847BU,
           "inertia diagonal at +0x230, +0x244, +0x258");
     check(get_u32(record, 0x2DC) == 0x40000000U, "clutch rate2 at +0x2DC");
+    check(get_u32(record, 0x270) == 0x40000000U, "alternate yaw scale2 at +0x270");
     check(record[0x12C] == 0x11 && record[0x334] == 0x11, "bytes outside the fields are untouched");
 
     nfsu::VehicleHandling decoded;
@@ -386,6 +387,7 @@ void test_record_refusals() {
         {"a centre of mass behind the rear axle",
          [](std::vector<unsigned char>& r) { put_f32(r, 0x110, -1.5F); }, 0x110},
         {"a zero yaw inertia", [](std::vector<unsigned char>& r) { put_f32(r, 0x258, 0.0F); }, 0x258},
+        {"a zero alternate yaw scale", [](std::vector<unsigned char>& r) { put_f32(r, 0x270, 0.0F); }, 0x270},
         {"a NaN roll inertia", [&](std::vector<unsigned char>& r) { put_f32(r, 0x230, nan); }, 0x230},
         {"unequal rear longitudinals",
          [](std::vector<unsigned char>& r) { put_f32(r, 0x1B0, -1.0F); }, 0x180},
@@ -1880,7 +1882,7 @@ void test_telemetry_encoding() {
     // Then the steer angle to 184 and four wheels of 84 bytes, the last
     // wheel's sliding flag closes the original prefix. Mechanical state
     // follows it so equal displayed values cannot hide different futures.
-    check(bytes[516] == 1 && bytes[519] == 0 && nfsu::kVehicleTelemetryRecordBytes == 656,
+    check(bytes[516] == 1 && bytes[519] == 0 && nfsu::kVehicleTelemetryRecordBytes == 676,
           "the original wheel prefix precedes persistent mechanical state");
     // The applied drive torque follows the recovered one in each wheel:
     // wheel 0's eighth and ninth doubles, at 184 + 56 and 184 + 64.

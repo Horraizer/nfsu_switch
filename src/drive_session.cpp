@@ -202,10 +202,18 @@ bool DriveSession::advance(const GamepadFrame& frame, std::string& error) {
     controls.update(frame);
     VehicleInput inputs[kDriveStepsPerFrame];
     VehicleTelemetry telemetry[kDriveStepsPerFrame];
+    // Preserve the port's two120Hz filter updates as a qualified control
+    // adapter. Transfer the completed input once before the outer solve;
+    // original4775E4 does not refresh steering between physics slices.
+    const auto first=controls.step(forward_speed(state),state.gear,state.gearbox);
+    auto held=controls.step(forward_speed(state),state.gear,state.gearbox);
+    if(first.shift!=VehicleShift::none) held.shift=first.shift;
     for (std::size_t i = 0; i < kDriveStepsPerFrame; ++i) {
-        inputs[i] = controls.step(forward_speed(state), state.gear, state.gearbox);
+        inputs[i]=held;
+        if(i) inputs[i].shift=VehicleShift::none;
         if (!model_->step(state, inputs[i], ground_, telemetry[i],
-                          i+1==kDriveStepsPerFrame?kDriveFrameSeconds:0.0)) {
+                          i+1==kDriveStepsPerFrame?kDriveFrameSeconds:0.0,
+                          kDriveSolverSeconds,i==0)) {
             error = "the vehicle model stopped at frame " + std::to_string(frames_ + 1) +
                     ": its state is no longer finite";
             return false;

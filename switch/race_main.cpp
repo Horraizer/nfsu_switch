@@ -576,7 +576,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                 replay_mode?"REPLAY":"LIVE",paused?"PAUSED":finished?"FINISHED":"RUNNING",NFSU_RACE_BUILD_TAG)};
             lines.push_back("DIAGNOSTIC PANEL: frame time includes GPU readback and CPU text copy");
             lines.push_back(hud[0]+" | "+hud[1]+" | "+hud[2]);
-            lines.push_back(format("%.1f KM/H | gear %d | pad %s | step %llu | physics 120 Hz / pad 60 Hz | catch-up %u",
+            lines.push_back(format("%.1f KM/H | gear %d | pad %s | step %llu | physics 240 Hz / pad 60 Hz | catch-up %u",
                 speed,int(car.gear),connected?"CONNECTED":"DISCONNECTED - NEUTRAL",(unsigned long long)race.session().timing().step,ticks));
             lines.push_back(format("SIM %.2f ms | RES/HASH/LOG %.2f ms | CULL/RECORD %.2f ms | UPLOAD/CONSTANTS %.2f ms",
                 simulation,residency,record,upload));

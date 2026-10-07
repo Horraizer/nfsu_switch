@@ -1065,14 +1065,15 @@ void VehicleTrackSession::run_tick(VehicleState& s, const VehicleInput& input,
 }
 
 bool VehicleTrackSession::step(const VehicleInput& input, VehicleTrackTelemetry& telemetry,
-                               double publication_dt) {
-    if (!valid_ || !started_) {
+                               double publication_dt,double solver_dt,bool select_request,
+                               std::uint32_t steps_per_tick) {
+    if (!valid_ || !started_ || steps_per_tick==0) {
         return false;
     }
     VehicleState s = state_;
     VehicleTrackTelemetry t;
     const RecordingGround recording(ground_);
-    if (!model_->step(s, input, recording, t.model, publication_dt)) {
+    if (!model_->step(s, input, recording, t.model, publication_dt,solver_dt,select_request)) {
         return false;
     }
     t.wheel_surface = recording.surfaces();
@@ -1084,7 +1085,7 @@ bool VehicleTrackSession::step(const VehicleInput& input, VehicleTrackTelemetry&
     }
     ++steps_;
     t.step = steps_;
-    if (steps_ % kVehicleTrackStepsPerTick == 0) {
+    if (steps_ % steps_per_tick == 0) {
         t.tick = true;
         ++ticks_;
         run_tick(s, input, t);

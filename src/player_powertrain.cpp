@@ -143,6 +143,72 @@ PlayerOwnerSpeeds player_publish_owner_speeds(const VehicleVec3& velocity,
     return result;
 }
 
+VehicleVec3 player_hub_velocity(const std::array<VehicleVec3,3>& axes,
+                               const VehicleVec3& local_hub,
+                               const VehicleVec3& linear,
+                               const VehicleVec3& angular) noexcept {
+    const float x=static_cast<float>(local_hub.x),y=static_cast<float>(local_hub.y),
+                z=static_cast<float>(local_hub.z);
+    //5ABDB5: accumulate the z and y terms before x; matrix translation
+    // is zero for the rotation used to resolve this relative hub arm.
+    const float ax=(z*static_cast<float>(axes[2].x)+y*static_cast<float>(axes[1].x))+
+                   x*static_cast<float>(axes[0].x);
+    const float ay=(z*static_cast<float>(axes[2].y)+y*static_cast<float>(axes[1].y))+
+                   x*static_cast<float>(axes[0].y);
+    const float az=(z*static_cast<float>(axes[2].z)+y*static_cast<float>(axes[1].z))+
+                   x*static_cast<float>(axes[0].z);
+    const float ox=static_cast<float>(angular.x),oy=static_cast<float>(angular.y),
+                oz=static_cast<float>(angular.z);
+    return {(az*oy-ay*oz)+static_cast<float>(linear.x),
+            (ax*oz-az*ox)+static_cast<float>(linear.y),
+            (ay*ox-ax*oy)+static_cast<float>(linear.z)};
+}
+
+std::array<VehicleVec3,3> player_world_wheel_axes(
+    const std::array<VehicleVec3,3>& snapshot,
+    const std::array<VehicleVec3,3>& local) noexcept {
+    std::array<VehicleVec3,3> result{};
+    //5AC6A2 is a binary32 matrix product with distinct accumulation
+    // orders per output component. Only its rotation columns are needed.
+    const auto component=[](const VehicleVec3& v,unsigned k) {
+        return static_cast<float>(k==0?v.x:k==1?v.y:v.z);
+    };
+    for(unsigned c=0;c<3;++c) {
+        float row[3];
+        for(unsigned r=0;r<3;++r) {
+            const float x=component(local[c],0)*component(snapshot[0],r);
+            const float y=component(local[c],1)*component(snapshot[1],r);
+            const float z=component(local[c],2)*component(snapshot[2],r);
+            if(c==0) row[r]=r==1?((y+0.0F)+z)+x:((0.0F+x)+z)+y;
+            else if(r==0) row[r]=((0.0F+x)+y)+z;
+            else if(r==1) row[r]=((z+0.0F)+y)+x;
+            else row[r]=((y+x)+0.0F)+z;
+        }
+        result[c]={row[0],row[1],row[2]};
+    }
+    return result;
+}
+
+VehicleVec3 player_world_wheel_force(const std::array<VehicleVec3,3>& axes,
+                                    float longitudinal,float lateral,float load) noexcept {
+    //5ABDB5 transform used by587830 default6F0874=1. The wheel frame
+    // rotation has zero translation; all three force components contribute.
+    return {((load*static_cast<float>(axes[2].x)+lateral*static_cast<float>(axes[1].x))+
+             longitudinal*static_cast<float>(axes[0].x))+0.0F,
+            ((load*static_cast<float>(axes[2].y)+lateral*static_cast<float>(axes[1].y))+
+             longitudinal*static_cast<float>(axes[0].y))+0.0F,
+            ((load*static_cast<float>(axes[2].z)+lateral*static_cast<float>(axes[1].z))+
+             longitudinal*static_cast<float>(axes[0].z))+0.0F};
+}
+
+float player_body_inverse_yaw(const VehicleHandling& h,bool alternate) noexcept {
+    //565060 inverts the full diagonal tensor by cofactors and determinant.
+    // Simplifying this to1/yaw changes the authenticated binary32 result.
+    const float yaw=alternate?h.inertia[2]*h.alternate_yaw_scale:h.inertia[2];
+    const float determinant=(h.inertia[1]*yaw)*h.inertia[0];
+    return (h.inertia[0]*h.inertia[1])*(1.0F/determinant);
+}
+
 void player_distribute_torque(const VehicleHandling& h, int gear,
                               PlayerEngineState& engine,
                               std::array<PlayerWheelWork,4>& w,
@@ -209,7 +275,7 @@ void player_body_wheel_constraints(const VehicleHandling& h,
     }
     const float inverse_mass = 1.0F/h.mass;
     const float ax = fx*inverse_mass, ay = inverse_mass*fy;
-    const float inverse_yaw_inertia = 1.0F/h.inertia[2];
+    const float inverse_yaw_inertia = player_body_inverse_yaw(h,false);
     const float alpha_yaw = yaw/(1.0F/inverse_yaw_inertia);
     for (std::size_t k=0;k<w.size();++k) {
         auto& wheel=w[k];

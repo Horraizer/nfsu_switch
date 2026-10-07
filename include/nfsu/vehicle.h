@@ -39,12 +39,10 @@ namespace nfsu {
 // The fixed step
 // ---------------------------------------------------------------------------
 
-// 120 steps per second, two per tick of the game's 60 Hz world clock
-// (0x00585D70 counts 1/60 s ticks: RECOVERED). The halving is an
-// APPROXIMATION chosen for stability: the recovered struts are stiff
-// (35 kN/m with a progressive term) and the tyre-to-wheel coupling is stiffer
-// still, and 120 Hz keeps every explicit term well inside its stability
-// bound while still dividing the 60 Hz display rate evenly.
+// Legacy standalone diagnostics use120Hz and preserve their script step
+// units. Production Drive/Race callers explicitly supply the observed
+// selector1 four-slice1/240 interval and one1/60 outer publication. The
+// diagnostic default is not evidence of original live solver cadence.
 constexpr std::uint32_t kVehicleStepsPerSecond = 120;
 constexpr double kVehicleStepSeconds = 1.0 / 120.0;
 
@@ -156,6 +154,7 @@ struct VehicleHandling {
     // at pointer +0x10. The other twelve entries are zero in every retail
     // record.
     std::array<float, 3> inertia{};
+    float alternate_yaw_scale = 1.0F;           // +0x270; rigid properties+50
     std::array<VehicleAxleStrut, 2> struts{};   // [0] front, [1] rear
     float shift_fraction = 0.0F;                // +0x2C0
     float final_drive_rear = 0.0F;              // +0x2C8, sub +0x1B8: wheels 2 and 3
@@ -181,6 +180,7 @@ struct VehicleHandling {
 constexpr std::size_t kVehicleCentreOfMassOffset = 0x110;
 constexpr std::size_t kVehicleInertiaOffset = 0x230;
 constexpr std::size_t kVehicleInertiaStride = 0x14;
+constexpr std::size_t kVehicleAlternateYawScaleOffset = 0x270;
 constexpr std::size_t kVehicleWheelOffset = 0x120;
 constexpr std::size_t kVehicleWheelStride = 0x30;
 constexpr std::size_t kVehicleTyreOffset = 0x1E0;
@@ -220,9 +220,9 @@ constexpr std::size_t kVehicleBrakeBalanceOffset = 0x38C;
 // kVehicle240sxRecordBytesSha256. `nfsu_probe vehicle-sim --handling`
 // compares a decoded record against this table field by field.
 VehicleHandling stock_240sx_handling();
-constexpr std::size_t kVehicle240sxRecordBytes = 340;
+constexpr std::size_t kVehicle240sxRecordBytes = 344;
 constexpr const char* kVehicle240sxRecordBytesSha256 =
-    "1EA0671C7E4490237EAE5DAF386535FFF0EFF70A2B823D58D1710631A3019045";
+    "2D1372472C5918231D8EB9C305A7EF6B4065A9A211E1A4CE06CF00C9D1CB01C7";
 
 struct VehicleHandlingIssue {
     // Offset of the offending field inside the record.
@@ -493,6 +493,8 @@ void vehicle_brake_pin(VehicleWheelState& wheel, double brake) noexcept;
 
 struct VehicleState {
     std::uint64_t step = 0;
+    double simulation_seconds = 0.0; // deterministic port clock, not retail world timer
+    bool alternate_yaw_active = true; // rigid138, latched at outer selection
     VehicleVec3 position;          // centre of mass, world
     VehicleQuat orientation;       // body to world
     VehicleVec3 velocity;          // world, m/s
@@ -543,6 +545,9 @@ struct VehicleWheelTelemetry {
 // forces that produced it.
 struct VehicleTelemetry {
     std::uint64_t step = 0;     // steps completed, 1 for the first step
+    double simulation_seconds = 0.0;
+    double solver_dt = kVehicleStepSeconds;
+    bool alternate_yaw_active = true;
     VehicleVec3 position;
     VehicleVec3 velocity;
     VehicleVec3 forward;        // the body's +x axis, world
@@ -583,10 +588,11 @@ struct VehicleTelemetry {
 // the handbrake (u32), the steer angle, then per wheel nine doubles and
 // three u32 (surface, contact/lock flags, sliding), then seven mechanical
 // doubles, four gearbox u32, one history double/sign u32 per wheel and
-// two owner speed doubles.
+// two owner speed doubles, the accumulated port clock and solver interval,
+// and the latched alternate-yaw flag as u32.
 constexpr std::size_t kVehicleTelemetryRecordBytes =
     8 + 4 * 24 + 5 * 8 + 4 + 3 * 8 + 4 + 8 + kVehicleWheelCount * (9 * 8 + 3 * 4)
-    + 7 * 8 + 4 * 4 + kVehicleWheelCount * (8 + 4) + 2 * 8;
+    + 7 * 8 + 4 * 4 + kVehicleWheelCount * (8 + 4) + 4 * 8 + 4;
 void encode_vehicle_telemetry(const VehicleTelemetry& record,
                               std::array<std::uint8_t, kVehicleTelemetryRecordBytes>& out) noexcept;
 
@@ -645,13 +651,17 @@ public:
     // false on an invalid model or a non-finite pose.
     bool reset(VehicleState& state, const VehiclePose& pose) const;
 
-    // Advances the state by kVehicleStepSeconds. Returns false, leaving the
+    // Advances by solver_dt; the legacy standalone diagnostic default is
+    // kVehicleStepSeconds. Production callers subdivide their outer interval
+    // and enable request selection on its first slice only. Returns false, leaving the
     // state untouched, on an invalid model or a state that is not finite.
     bool step(VehicleState& state,
               const VehicleInput& input,
               const VehicleGround& ground,
               VehicleTelemetry& telemetry,
-              double publication_dt = kVehicleStepSeconds) const;
+              double publication_dt = kVehicleStepSeconds,
+              double solver_dt = kVehicleStepSeconds,
+              bool select_request = true) const;
 
 private:
     struct Derived {

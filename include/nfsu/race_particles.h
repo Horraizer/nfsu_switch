@@ -11,12 +11,14 @@
 namespace nfsu {
 
 // Visual state only. It is never encoded into RaceSession or fed into physics.
-// Emission is a function of the fixed 120 Hz step, wheel and contact record.
+// Smoke emission keeps a120Hz visual cadence while physics supplies its
+// own interval. Particle lifetimes use elapsed time, not a fixed slice count.
 enum class RaceParticleKind : std::uint8_t { smoke, spark };
 
 struct RaceParticle {
     RaceParticleKind kind = RaceParticleKind::smoke;
     std::uint64_t born_step = 0;
+    double solver_dt = kVehicleStepSeconds;
     VehicleVec3 origin;
     VehicleVec3 velocity;
     double size = 0.0; // initial diameter in metres

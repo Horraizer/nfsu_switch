@@ -157,7 +157,7 @@ CollisionAudioFrame CollisionScheduler::update(std::uint64_t tick, std::uint64_t
         }
     }
     // Last observation for each pair drives the continuous graph once per
-    // audio tick; two physics substeps do not advance oscillators twice.
+    // audio tick; physics slices do not advance oscillators separately.
     for (auto& p : pairs_) {
         if (!p.used || newest > p.last_step+1) { p.used = false; continue; }
         const CollisionContact* c = nullptr;

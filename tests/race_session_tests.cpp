@@ -37,6 +37,8 @@ int main() {
         const auto pad=race_input_frame({1,0,0},countdown++);
         check(a.advance(pad,error) && b.advance(pad,error),"countdown steps");
         check(a.car().position.x==origin.x && a.car().position.z==origin.z,"countdown holds grid including gravity");
+        check(a.car().step==0 && a.car().simulation_seconds==0,
+              "held countdown does not consume solver clock");
         check(a.record()==b.record(),"countdown deterministic");
     }
     check(countdown>0 && countdown<1000,"countdown reaches GO");
@@ -46,15 +48,30 @@ int main() {
         auto pad=race_input_frame({1,gas,0},countdown+i);
         check(a.advance(pad,error) && b.advance(pad,error),"driving steps");
         check(a.record()==b.record(),"every integrated step is deterministic");
+        if(i==0) {
+            check(a.physics_telemetry().size()==4,"original ordinary branch exposes four slice records");
+            for(std::size_t k=0;k<a.physics_telemetry().size();++k) {
+                const auto& slice=a.physics_telemetry()[k];
+                check(slice.model.solver_dt==1.0/240.0,"race uses source-backed solver interval");
+                check(slice.tick==(k==3),"track checks run once after the fourth slice");
+            }
+        }
     }
     check(a.car().position.x>origin.x+1,"neutral countdown then gas really moves the car");
-    check(a.telemetry().step==240,"two collision steps per input tick");
+    check(a.telemetry().step==480,"four collision slices per input tick preserve two seconds of race time");
     const auto prior=a.camera().pov;
     auto pad=race_input_frame({1,gamepad_button_bit(GamepadButton::face_north)|gamepad_button_bit(GamepadButton::select),0},500);
     check(a.advance(pad,error),"camera and manual reset accepted");
     check(a.camera().pov!=prior,"camera cycles once");
     check(a.telemetry().resets==1,"manual reset reaches collision session");
+    for(std::size_t k=0;k<a.physics_telemetry().size();++k)
+        check((a.physics_telemetry()[k].reset!=VehicleTrackReset::none)==(k==3),
+              "manual reset runs only at the final outer slice");
+    check(a.car().step==0 && a.car().simulation_seconds==0,
+          "manual reset restarts the mechanical clock");
     check(a.advance(pad,error) && a.telemetry().resets==1,"holding reset does not reset every tick");
+    check(a.car().step==4 && std::abs(a.car().simulation_seconds-1.0/60.0)<1e-12,
+          "held reset resumes exactly one outer interval");
     check(race_session_hud(a).size()==4,"minimal HUD available");
     RaceCameraWorld camera(course.world);
     check(camera.clear_fraction({32,48,20},{32,48,0})<1,"camera segment hits synthetic road");

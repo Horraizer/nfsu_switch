@@ -38,13 +38,12 @@ def witness(root, out, owner_speed=0.0, lateral_speed=0.0, history_torque=0.0,
         (0x586710,0x586762),(0x587170,0x58721E),(0x586DA0,0x586F0D),
         (0x564B10,0x564C00),(0x46E360,0x46E435),(0x46D9F0,0x46DAB5),
         (0x587330,0x587822),(0x587830,0x587DD7),(0x478570,0x4789C8),(0x46E440,0x46E53F),(0x401C80,0x401CAD),(0x454F30,0x454FE6),(0x587220,0x587330),
-        (0x565230,0x5652FF),(0x5ABDAF,0x5ABF00),(0x5AC69C,0x5AC8D8),(0x564CD0,0x564F20)]
+        (0x565230,0x5652FF),(0x5ABDAF,0x5ABF00),(0x5AC69C,0x5AC8D8),(0x564CD0,0x564F20),
+        (0x584B10,0x584B72),(0x565060,0x565227),(0x401CD0,0x401DF5)]
     engine,setup,physics,actor,gearbox,wheels,system,vtable,output=[0x1100000+k*0x1000 for k in range(9)]
     state=actor+0x40
     rigid,carbody,struts=0x111B000,0x111C000,0x111D000
     m.put(physics+0x20,rigid);m.put(physics+0x5C,actor);m.put(actor+0x3C,carbody)
-    m.put(rigid+0x144,struct.unpack_from("<f",record,0x220)[0],"f")
-    m.put(rigid+0x178,1.0/struct.unpack_from("<f",record,0x258)[0],"f")
     m.put(rigid+0x128,external_yaw,'f')
     for j,v in enumerate((body_heading_x,body_heading_y,0,0,-body_heading_y,body_heading_x,0,0,0,0,1,0,0,0,0,1)):
         m.put(rigid+0x30+4*j,float(v),"f")
@@ -59,6 +58,10 @@ def witness(root, out, owner_speed=0.0, lateral_speed=0.0, history_torque=0.0,
     m.put(0x73619C,0x111A000);m.put(0x111A000,4)
     m.put(0x78A344,0,'B');m.put(0x7361A8,0);m.put(0x73AD34,0)
     m.put(0x7000E4,100.0,'f');m.put(0x6D4AC4,0x5ABDB5);m.put(0x6D4ACC,0x5AC6A2)
+    # Actual rigid property writer/inverse tensor, including565060 float
+    # determinant/cofactor order. A supplied scalar1/yaw is not equivalent.
+    m.put(rigid+0x14,setup+0x110)
+    m.run(0x584B10,esi=rigid)
     m.run(0x46C7C0,(state,),esi=engine,ecx=setup+0x1F0)
     if m.get(engine+0x18)!=setup+0x1F0 or m.get(engine+0x1C)!=state:
         raise RuntimeError('engine constructor identity differs')

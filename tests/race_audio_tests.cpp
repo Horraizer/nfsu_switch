@@ -161,7 +161,9 @@ void test_live_collision_clock() {
         const auto pad=race_input_frame({1,buttons,0},countdown+n);
         check(race.advance(pad,error) && silent.advance(pad,error),"audio wall race advances");
         const auto snapshot=race_audio_snapshot(race);
-        check(snapshot.physics_step==race.telemetry().step && snapshot.tick>snapshot.physics_step/2,"real countdown leaves distinct clock epochs");
+        check(snapshot.physics_step==race.telemetry().step &&
+              snapshot.tick>snapshot.physics_step/kDriveStepsPerFrame,
+              "real countdown leaves distinct clock epochs");
         std::size_t copied=0;
         for (const auto& step : race.physics_telemetry()) {
             for (std::size_t k=0;k<step.audio_contact_count;++k) {
@@ -172,7 +174,7 @@ void test_live_collision_clock() {
                       "snapshot preserves physical contact identity, clock and value");
             }
         }
-        check(copied==snapshot.contact_count,"snapshot copies both physics substeps");
+        check(copied==snapshot.contact_count,"snapshot copies all physics slices");
         const auto events=scheduler.update(snapshot.tick,snapshot.physics_step,snapshot.contacts.data(),snapshot.contact_count,
                                            graph,snapshot.collision_reset);
         if (reset) {
@@ -184,7 +186,7 @@ void test_live_collision_clock() {
             for (const auto& voice : events.impacts) {
                 ++impacts;
                 // Find this impact's observation in substep order. There can
-                // be two updates for one polygon in the same audio frame.
+                // be several updates for one polygon in the same audio frame.
                 auto& last=last_contact[voice.pair];
                 const CollisionContact* observed=nullptr;
                 for (std::size_t k=0;k<snapshot.contact_count;++k)
