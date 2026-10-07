@@ -22,6 +22,19 @@ and sign, clutch phase, gear request, shift offsets and deterministic RNG
 state persist. The original falling publication bound uses the completed
 physical engine and unsplit frame interval; rising publication is direct.
 DriveSession and RaceSession supply that interval after their solver slices.
+The same outer publisher stores signed forward speed at biased owner+390
+and speed magnitude at+394. The wheel's low-speed branch and gearbox's
+differential synchronization consume these distinct cached fields on the
+next solve; they are not recomputed from each intermediate body slice.
+The initial port inference had the two domains reversed; isolated original
+store execution and cached-field regression identify the correction.
+
+Unequal-wheel cases also exposed a capacity-demand operand error. The push
+at587585 shifts temporary stack offsets; the argument passed to587220 is
+the longitudinal fraction of velocity-based friction demand, not a lateral
+fraction divided by slip magnitude. The corrected producer retains the
+original sampled rolling rear wheel under full service; failed comparisons
+and fresh exact low/high magnitude comparisons remain in the checkpoint.
 
 `tools/handling_player_native.py` executes actual full478570 and587830,
 full gearbox construction/update and the six-component original kernel.

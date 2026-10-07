@@ -91,6 +91,7 @@ bool state_finite(const VehicleState& s) noexcept {
          finite(s.transmission.clutch) && finite(s.transmission.previous_slip_rpm) &&
          finite(s.transmission.wheel_engine_speed) && s.transmission.mode>=0 && s.transmission.mode<=3;
     ok=ok&&finite(s.transmission.up_offset)&&finite(s.transmission.down_offset);
+    ok=ok&&finite(s.owner_speeds.forward)&&finite(s.owner_speeds.magnitude)&&s.owner_speeds.magnitude>=0.0F;
     for (const VehicleWheelState& w : s.wheels) {
         ok = ok && finite(w.spin) && finite(w.compression) && finite(w.previous_compression) &&
              finite(w.history_torque) && w.spin_direction>=0 && w.spin_direction<=2;
@@ -847,6 +848,8 @@ void encode_vehicle_telemetry(const VehicleTelemetry& r,
         e.f64(r.wheel_history_torque[k]);
         e.u32(static_cast<std::uint32_t>(r.wheel_spin_direction[k]));
     }
+    e.f64(r.owner_speeds.forward);
+    e.f64(r.owner_speeds.magnitude);
 }
 
 void VehicleTelemetryHash::add(const VehicleTelemetry& record) noexcept {
@@ -1087,6 +1090,7 @@ bool VehicleModel::reset(VehicleState& state, const VehiclePose& pose) const {
     initial_engine_speed(next);
     next.shift_hold = 0;
     player_engine_reset(next.engine,static_cast<float>(next.engine_rpm));
+    next.owner_speeds=player_publish_owner_speeds(next.velocity,r.column(0));
     next.transmission.requested_gear=next.gear;
     player_gear_seed(next.transmission,12345);
     next.transmission.wheel_engine_speed=static_cast<float>(next.wheel_rpm)/kPlayerRadSToRpm;
@@ -1248,7 +1252,6 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     // remain explicit 3D approximations; mechanical wheel state is binary32.
     std::array<PlayerWheelWork,4> work{};
     std::array<VehicleVec3,4> along_axes{}, across_axes{}, tyre_arms{};
-    const float owner_speed=static_cast<float>(vehicle_sqrt(dot(s.velocity,s.velocity)));
     for (std::size_t k=0;k<kVehicleWheelCount;++k) {
         auto& wheel=s.wheels[k];auto& out=wheel_out[k];auto& w=work[k];
         out.compression=wheel.compression;out.contact=wheel.contact;
@@ -1256,7 +1259,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         w.spin=static_cast<float>(wheel.spin);w.history_torque=wheel.history_torque;
         w.spin_direction=wheel.spin_direction;w.locked=wheel.brake_locked;
         w.contact=wheel.contact;w.load=static_cast<float>(strut_force[k]/a.unit_scale);
-        w.owner_speed=owner_speed;
+        w.owner_speed=s.owner_speeds.forward;
         const float balance=k<2?1.0F-h.brake_balance:h.brake_balance;
         w.service=static_cast<float>(brake)*(balance+balance);
         // Ordinary owner state0: rear mask1, front mask0; >0.2 adds0.5.
@@ -1322,7 +1325,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     player_engine_cutoff_update(h,s.gear,s.engine,static_cast<float>(static_cast<double>(s.step+1)*dt));
     player_gear_integrate(h,s.transmission,solver_dt);
     player_gear_update(h,s.gear,s.transmission,s.engine,work,static_cast<float>(throttle),
-                       static_cast<float>(forward_speed));
+                       s.owner_speeds.magnitude);
     for (std::size_t k=0;k<4;++k) {
         auto& wheel=s.wheels[k];auto& out=wheel_out[k];const auto& w=work[k];
         wheel.spin=w.spin;wheel.brake_locked=w.locked;wheel.history_torque=w.history_torque;
@@ -1372,6 +1375,8 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     s.wheel_rpm=static_cast<double>(s.transmission.wheel_engine_speed*kPlayerRadSToRpm);
     if (publication_dt>0.0) s.engine_rpm=player_engine_publish_rpm(h,s.engine,
         static_cast<float>(s.engine_rpm),static_cast<float>(publication_dt));
+    if (publication_dt>0.0) s.owner_speeds=player_publish_owner_speeds(s.velocity,
+        rotation(s.orientation).column(0));
     s.step = s.step + 1;
 
     if (!state_finite(s)) {
@@ -1391,6 +1396,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     t.wheel_rpm = s.wheel_rpm;
     t.engine_torque = engine_torque;
     t.engine=s.engine;t.transmission=s.transmission;
+    t.owner_speeds=s.owner_speeds;
     for (std::size_t k=0;k<4;++k) {
         t.wheel_history_torque[k]=s.wheels[k].history_torque;
         t.wheel_spin_direction[k]=s.wheels[k].spin_direction;

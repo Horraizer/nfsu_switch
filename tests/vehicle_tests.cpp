@@ -795,44 +795,10 @@ void test_selector3_brake_pin() {
         vehicle_brake_pin(wheel, 1.0);
         check(!wheel.brake_locked && wheel.spin == speed, "absolute wheel gate is strictly below30");
     }
-    VehicleModel model = stock_model();
-    VehicleState car; VehiclePose pose; pose.speed = 8.0;
-    check(model.reset(car, pose), "brake latch moving fixture resets");
-    VehicleInput input; input.brake = 1.0; VehicleTelemetry telemetry;
-    check(model.step(car, input, VehicleFlatGround(), telemetry), "moving full brake executes");
-    check(car.wheels[2].brake_locked && car.wheels[3].brake_locked &&
-          telemetry.forward_speed > 3 && telemetry.engine_rpm == model.spec().handling.idle_rpm,
-          "slow rolling body has pinned driven wheels and completed idle RPM");
-    // Two otherwise equal present records must identify the latch, since
-    // it changes the next half-brake/throttle step even at equal wheel spin.
-    auto free_car = car;
-    auto free_telemetry = telemetry;
-    for (std::size_t k = 0; k < kVehicleWheelCount; ++k) {
-        free_car.wheels[k].brake_locked = false;
-        free_telemetry.wheels[k].brake_locked = false;
-    }
-    std::array<std::uint8_t, kVehicleTelemetryRecordBytes> pinned_bytes{}, free_bytes{};
-    encode_vehicle_telemetry(telemetry, pinned_bytes);
-    encode_vehicle_telemetry(free_telemetry, free_bytes);
-    check(pinned_bytes != free_bytes, "equal wheel spins with different latch state encode differently");
-    input.brake = 0.5; input.throttle = 1;
-    VehicleTelemetry free_next;
-    check(model.step(free_car, input, VehicleFlatGround(), free_next), "unlatched twin executes");
-    check(model.step(car, input, VehicleFlatGround(), telemetry), "held pin with throttle executes");
-    check(car.wheels[2].spin == 0 && car.wheels[3].spin == 0 &&
-          telemetry.wheels[2].drive_applied == 0 && telemetry.wheels[3].drive_applied == 0,
-          "latched wheel has zero angular derivative despite throttle");
-    check(free_car.wheels[2].spin > 0 && free_next.engine_rpm != telemetry.engine_rpm,
-          "same present spin with different latch produces different future RPM");
-    input.brake = 0;
-    check(model.step(car, input, VehicleFlatGround(), telemetry) && !car.wheels[2].brake_locked,
-          "release clears the latch after the original completed-wheel pass");
-    check(model.step(car, input, VehicleFlatGround(), telemetry) && car.wheels[2].spin > 0 &&
-          telemetry.engine_rpm > model.spec().handling.idle_rpm,
-          "moving wheel and RPM recover after release");
-    car.wheels[0].brake_locked = true;
-    check(model.reset(car, pose) && !car.wheels[0].brake_locked && !car.wheels[2].brake_locked,
-          "reset clears every wheel brake latch");
+    // Selector3 applicability is isolated here. Player capacity/history and
+    // publication are covered by nfsu_player_powertrain_tests and original
+    // selector1 component comparisons; no universal player pin is asserted.
+
 }
 
 void test_braking() {
@@ -865,16 +831,7 @@ void test_braking() {
     check(distance >= 25.0 && distance <= 35.0,
           "100-0 km/h in " + num(distance) + " m, expected 25 to 35");
     check(seconds >= 1.6 && seconds <= 2.6, "100-0 km/h in " + num(seconds) + " s");
-    check(slid, "full braking reaches the recovered low-speed wheel lock");
-    bool pinned_while_moving = false;
-    for (const auto& t : run) {
-        if (t.forward_speed > 3.0 && t.wheels[2].spin == 0.0 && t.wheels[3].spin == 0.0) {
-            pinned_while_moving = true;
-            check(t.engine_rpm == model.spec().handling.idle_rpm,
-                  "recovered pinned driven wheels put completed RPM at idle");
-        }
-    }
-    check(pinned_while_moving, "service brake pins before the body has stopped");
+    check(slid, "full braking reaches the original tyre sliding branch");
     bool held = true;
     for (std::size_t i = static_cast<std::size_t>(stopped) + 120; i < run.size(); ++i) {
         held = held && std::fabs(run[i].forward_speed) <= 0.01;
@@ -1923,7 +1880,7 @@ void test_telemetry_encoding() {
     // Then the steer angle to 184 and four wheels of 84 bytes, the last
     // wheel's sliding flag closes the original prefix. Mechanical state
     // follows it so equal displayed values cannot hide different futures.
-    check(bytes[516] == 1 && bytes[519] == 0 && nfsu::kVehicleTelemetryRecordBytes == 640,
+    check(bytes[516] == 1 && bytes[519] == 0 && nfsu::kVehicleTelemetryRecordBytes == 656,
           "the original wheel prefix precedes persistent mechanical state");
     // The applied drive torque follows the recovered one in each wheel:
     // wheel 0's eighth and ninth doubles, at 184 + 56 and 184 + 64.

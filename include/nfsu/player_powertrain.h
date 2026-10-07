@@ -15,7 +15,7 @@ struct PlayerWheelWork {
     float spin = 0.0F, history_torque = 0.0F;
     float torque = 0.0F, force_long = 0.0F, force_lat = 0.0F;
     float load = 0.0F, velocity_long = 0.0F, velocity_lat = 0.0F;
-    float owner_speed = 0.0F; // owner+390 used by low-speed friction branch
+    float owner_speed = 0.0F; // signed owner+390 used by low-speed friction
     float slip = 0.0F;
     float service = 0.0F, parking = 0.0F;
     float heading_x = 1.0F, heading_y = 0.0F;
@@ -69,7 +69,7 @@ void player_gear_integrate(const VehicleHandling& setup, PlayerGearState& gearbo
 void player_gear_update(const VehicleHandling& setup, int& gear,
                         PlayerGearState& gearbox, PlayerEngineState& engine,
                         std::array<PlayerWheelWork,4>& wheels,
-                        float throttle, float owner_forward_speed = 0.0F) noexcept;
+                        float throttle, float owner_speed_magnitude = 0.0F) noexcept;
 //46D760 arithmetic. The seed is an explicit deterministic port state, not
 // recovered live world RNG identity. Constructor consumes two values before
 // setting the random offset bounds; subsequent shifts use [-100,0].
@@ -87,6 +87,11 @@ constexpr float kPlayerRadSToRpm = 9.549304008483887F;    // 6CCB78
 // domain. Kept separate from the existing body/camera trigonometry.
 std::uint16_t player_velocity_angle(float longitudinal,float lateral) noexcept;
 float player_angle_sin(std::uint16_t angle) noexcept;
+
+//478A47..478A6E and478AD2..478AE8 actor speed publication, after the
+// completed outer solve. Source binary32 operation order is retained.
+PlayerOwnerSpeeds player_publish_owner_speeds(const VehicleVec3& velocity,
+                                            const VehicleVec3& forward) noexcept;
 
 // Constructor/reset conversion478365. Not a recurring display feedback.
 void player_engine_reset(PlayerEngineState& engine, float rpm) noexcept;

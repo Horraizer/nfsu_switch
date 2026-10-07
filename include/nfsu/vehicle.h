@@ -470,6 +470,11 @@ struct PlayerEngineState {
     float cutoff_until = 0.0F;
 };
 
+struct PlayerOwnerSpeeds {
+    float forward = 0.0F;   // biased actor+390, signed velocity dot forward
+    float magnitude = 0.0F; // biased actor+394, velocity norm
+};
+
 struct PlayerGearState {
     float clutch = 0.0F;
     float previous_slip_rpm = 0.0F;
@@ -502,6 +507,7 @@ struct VehicleState {
     std::uint32_t shift_hold = 0;
     PlayerEngineState engine;
     PlayerGearState transmission;
+    PlayerOwnerSpeeds owner_speeds; // retained until unsplit frame publication
 };
 
 // Where reset() puts the car: the ground point under the centre of mass,
@@ -548,6 +554,7 @@ struct VehicleTelemetry {
     double engine_torque = 0.0; // N m at the crankshaft
     PlayerEngineState engine;
     PlayerGearState transmission;
+    PlayerOwnerSpeeds owner_speeds;
     std::array<float,4> wheel_history_torque{};
     std::array<int,4> wheel_spin_direction{};
     int gear = kVehicleGearFirst;
@@ -575,10 +582,11 @@ struct VehicleTelemetry {
 // step (u64), four vectors, five doubles, the gear (u32), three doubles,
 // the handbrake (u32), the steer angle, then per wheel nine doubles and
 // three u32 (surface, contact/lock flags, sliding), then seven mechanical
-// doubles, four gearbox u32 and one history double/sign u32 per wheel.
+// doubles, four gearbox u32, one history double/sign u32 per wheel and
+// two owner speed doubles.
 constexpr std::size_t kVehicleTelemetryRecordBytes =
     8 + 4 * 24 + 5 * 8 + 4 + 3 * 8 + 4 + 8 + kVehicleWheelCount * (9 * 8 + 3 * 4)
-    + 7 * 8 + 4 * 4 + kVehicleWheelCount * (8 + 4);
+    + 7 * 8 + 4 * 4 + kVehicleWheelCount * (8 + 4) + 2 * 8;
 void encode_vehicle_telemetry(const VehicleTelemetry& record,
                               std::array<std::uint8_t, kVehicleTelemetryRecordBytes>& out) noexcept;
 

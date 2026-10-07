@@ -28,7 +28,9 @@ def compare(root, native, out):
     if build.returncode:raise RuntimeError('portable build failed')
     inputs=''.join('%d %d %.9g %.9g %.9g\n'%(r['gear'],r['gearbox_mode'],r['clutch'],r['throttle'],r['initial_wheel_spin']) for r in rows)
     run=subprocess.run([str(binary),str(report['owner_speed']),str(report.get('lateral_speed',0.0)),
-                        str(report.get('initial_history_torque',0.0))],input=inputs,capture_output=True,text=True)
+                        str(report.get('initial_history_torque',0.0)),str(report.get('longitudinal_speed',8.316501835256739)),
+                        str(report.get('initial_rpm',5000.0)),str(report.get('service_axis',1.0)),
+                        str(report.get('owner_magnitude',0.0)),str(report.get('rear_spin_spread',0.0))],input=inputs,capture_output=True,text=True)
     (out/'portable.csv').write_text(run.stdout,encoding='ascii')
     if run.returncode or run.stderr or len(run.stdout.splitlines())!=len(rows):raise RuntimeError('fresh portable rows missing')
     differences=[]

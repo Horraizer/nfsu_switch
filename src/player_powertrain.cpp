@@ -133,6 +133,16 @@ float player_angle_sin(std::uint16_t angle) noexcept {
     return result*sign;
 }
 
+PlayerOwnerSpeeds player_publish_owner_speeds(const VehicleVec3& velocity,
+                                            const VehicleVec3& forward) noexcept {
+    const float x=static_cast<float>(velocity.x),y=static_cast<float>(velocity.y),z=static_cast<float>(velocity.z);
+    const float fx=static_cast<float>(forward.x),fy=static_cast<float>(forward.y),fz=static_cast<float>(forward.z);
+    PlayerOwnerSpeeds result;
+    result.magnitude=sqrtf((x*x+z*z)+y*y);
+    result.forward=(z*fz+y*fy)+x*fx;
+    return result;
+}
+
 void player_distribute_torque(const VehicleHandling& h, int gear,
                               PlayerEngineState& engine,
                               std::array<PlayerWheelWork,4>& w,
@@ -230,7 +240,12 @@ void player_wheel_prepare(const VehicleHandling& h, std::size_t k,
         const float scale=(1.0F/magnitude)*h.tyres[k/2].sliding_friction;
         const float force_scale=scale*w.load;
         const float capacity=(parking+service)*1.2F;
-        const float demand=absf(w.spin)*0.1F+h.wheels[k].radius*(force_scale*absf(w.velocity_lat));
+        //58759A..5875C7 supplies the LONGITUDINAL fraction of the
+        // velocity magnitude to587220, independently of slip magnitude.
+        // Its temporary push shifts stack operands by four bytes.
+        const float velocity_magnitude=sqrtf(w.velocity_long*w.velocity_long+w.velocity_lat*w.velocity_lat);
+        const float requested=((1.0F/velocity_magnitude)*h.tyres[k/2].sliding_friction*w.load)*absf(w.velocity_long);
+        const float demand=absf(w.spin)*0.1F+h.wheels[k].radius*requested;
         if (capacity > demand) { w.spin=0.0F; w.locked=capacity>1.0F; }
         else w.locked=false;
         //587407 multiplies the16-bit angle by6CC980 (radians/unit).
@@ -321,7 +336,7 @@ void player_gear_integrate(const VehicleHandling& h,PlayerGearState& gearbox,flo
 
 void player_gear_update(const VehicleHandling& h,int& gear,PlayerGearState& box,
                         PlayerEngineState& engine,std::array<PlayerWheelWork,4>& w,
-                        float throttle,float owner_forward_speed) noexcept {
+                        float throttle,float owner_speed_magnitude) noexcept {
     box.wheel_engine_speed=wheel_speed(h,gear,w);
     const auto needs_disengage=[&]() {
         return throttle<0.3F && box.wheel_engine_speed<=h.idle_rpm*kPlayerRpmToRadS+0.0001F;
@@ -337,9 +352,9 @@ void player_gear_update(const VehicleHandling& h,int& gear,PlayerGearState& box,
                     const float change=difference/(ratio*final_drive);
                     //46D8B0: average the driven pair below40 mph, or when
                     // neither wheel contacts. Above that gate preserve each
-                    // wheel's differential speed. Owner+394 is supplied by
-                    // the caller independently of owner+390's magnitude.
-                    if (owner_forward_speed*2.237F<40.0F||(!w[left].contact&&!w[right].contact)) {
+                    // wheel's differential speed. Owner+394 is the published
+                    // magnitude, independently of owner+390's signed speed.
+                    if (owner_speed_magnitude*2.237F<40.0F||(!w[left].contact&&!w[right].contact)) {
                         const float average=(w[right].spin+w[left].spin)*0.5F;
                         w[left].spin=average+change;w[right].spin=average+change;
                     } else {w[left].spin+=change;w[right].spin+=change;}
