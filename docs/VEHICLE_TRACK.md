@@ -340,7 +340,8 @@ reports the reset and cannot perform it.
 
 ### Telemetry
 
-One record per step, 760 bytes: the step, the model's own 520-byte record
+One record per step, sized by `kVehicleTrackTelemetryRecordBytes`: the step,
+the model's own record sized by `kVehicleTelemetryRecordBytes`
 (the car before its body met the track), then the state the next step starts
 from - position, orientation, velocity, angular velocity, after the body's
 contacts and any reset - what each wheel's cast met, the hull's hits, the
@@ -548,7 +549,7 @@ took 22.6 microseconds a step there ([`VEHICLE.md`](VEHICLE.md)).
 | the separation | the retail sequence in float, 0.005 to 1.55; the first try that reaches a depth across a wall; nothing past the twentieth; the vertical hold at +-0.15 up and down; a slanted normal |
 | the ground | a column onto road 1 down, facing up, surface 0; the distance from an unrounded start; a start on the road; the ramp's height and normal; five seams and corners; walls refused, head-on and slanted; clear; outside, west and past the open edge; seven malformed or overlong casts refused; a world that is not valid |
 | road | at rest the course follows `VehicleFlatGround` within 1e-6 with and without the body, no hull hit, every wheel on road |
-| seams | across the seams every wheel finds road every step and the body moves less than 2 mm |
+| seams | `test_seams` pairs the enabled track and flat model at the same spawn and controls; every step runs, every wheel finds road, no hull hit, both seams crossed; the height residual meets the unchanged test limit while absolute excursion is printed; raised and lowered valid-format slab negatives violate the same residual predicate |
 | slope | on the ramp the car rides half a metre over it and reaches the plateau; the brake holds it to a creep |
 | walls at 15, 45 and 90 degrees, at 35 m/s, and oblique | contacts and impulses; no hull point ends a step more than 0.12 beyond the wall; the centre of mass stays 0.7 from it; the first contact is with a wall; square on, the car ends at rest against it; at 15 and 45 degrees it ends along it, moving; at 35 m/s it slides on above 25 m/s, turning at most 2 rad/s |
 | airborne and landing | over clear air; lands; no hull point 5 cm into the road; at rest three seconds later |
@@ -563,7 +564,7 @@ took 22.6 microseconds a step there ([`VEHICLE.md`](VEHICLE.md)).
 | the square root | `det_sqrt` against fourteen correctly rounded roots as bits - five of them rounded up - and on +-0, infinity, NaN and negatives |
 | the reset button and the approximations | a request is performed once on the next tick; upside down and stuck reset when on and never when off; the first lap's approximations are the defaults with the upside-down reset on after 120 steps |
 | refusals | a course whose collision is not valid, a model that is not, an empty hull, 257 points, a NaN point, a negative approximation, a step before the start, a state or a pose that is not finite; no route: the reset reported, not performed; a triangle's degenerate half never met; the image builder's refusals |
-| determinism | the record's layout, 760 bytes; every proving-ground pin; the same run twice |
+| determinism | the record's layout from `kVehicleTrackTelemetryRecordBytes`; every proving-ground pin; the same run twice |
 
 `nfsu_probe_vehicle_track_guards` drives the command: 15 refusals of
 arguments, missing tables, every proving-ground scenario against its pin,

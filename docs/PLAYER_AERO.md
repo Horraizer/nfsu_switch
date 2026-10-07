@@ -69,3 +69,36 @@ decoded-only grip assertion remains unresolved. The straight-brake criterion,
 other integrated assertions and existing replay pins remain unchanged.
 Final default/Release/retail, merged-result, Switch and hardware acceptance
 are still required before a functionality claim.
+
+## Road-only seam check and original comparison limits
+
+At `23749d3`, the unchanged absolute-height assertion in `test_seams`
+failed after aero integration. The original failed test and supplementary
+evidence remain immutable. After the independent A1 supplement, the
+coordinator explicitly authorized replacing that road-only obligation with
+the height difference from an enabled flat-plane reference. This changes
+what the seam test measures, not its threshold or the production physics.
+
+`test_seams` in `nfsu_vehicle_track_tests` uses the same enabled stock spec,
+spawn and input sequence in the track session and flat reference. It checks
+every paired step, road contacts, no hull collision and actual crossings.
+The original sampling window and limit are retained in the test. Absolute
+height excursion is still printed as a diagnostic. Raised and lowered
+valid-format slab fixtures must violate the same residual predicate while
+the contact and crossing checks continue to pass. The focused command is
+`nfsu_vehicle_track_tests --seams-only`.
+
+Both runs share `VehicleModel`, so agreement is a road-query/geometry check,
+not independent handling fidelity. Original-backed aero/tyre/suspension
+comparisons, strict straight braking and all other behavior criteria and
+gameplay pins remain separate obligations.
+
+The native sag supplement at `23749d3` supplied identity axes read from the
+port's unready rigid cache. The port imports its pitched public quaternion
+before preparing forces; the native fixture prepared with identity instead.
+Any earlier claim of the same initialized physical pose is withdrawn. The
+experiment demonstrates original method coupling in that declared context,
+not equal initialized orientation or whole-trajectory equivalence. Later
+gear divergence, explicitly supplied controls/publication and differing
+flat-plane float context remain limitations. The prior packets are preserved
+unchanged; no stronger pose comparison is claimed or remeasured here.

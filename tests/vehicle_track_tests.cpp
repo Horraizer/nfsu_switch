@@ -404,27 +404,117 @@ void test_road_matches_flat_ground() {
     }
 }
 
-void test_seams() {
-    const nfsu::VehicleTrackCourse course = proving_ground();
-    const std::vector<nfsu::VehicleTrackTelemetry> r = run(course, scenario("drive"));
+struct SeamComparison {
+    std::uint64_t steps = 0;
+    std::uint64_t samples = 0;
     bool road = true;
     double low = 1e9;
     double high = -1e9;
+    double flat_low = 1e9;
+    double flat_high = -1e9;
+    double residual = 0.0;
     std::uint32_t hull_hits = 0;
-    for (std::size_t i = 60; i < r.size(); ++i) {
-        for (nfsu::VehicleTrackSurface s : r[i].wheel_surface) {
-            road = road && s == nfsu::VehicleTrackSurface::road;
-        }
-        low = std::min(low, r[i].position.z);
-        high = std::max(high, r[i].position.z);
-        hull_hits += r[i].hull_hits;
+    double first_x = 0.0;
+    double last_x = 0.0;
+};
+
+constexpr double kSeamResidualLimit = 0.002;
+
+SeamComparison compare_seams(const nfsu::VehicleTrackCourse& course,
+                             const nfsu::VehicleTrackScenario& drive,
+                             const nfsu::VehiclePose& pose,
+                             const std::string& label) {
+    const nfsu::VehicleModel& model = stock_model();
+    check(model.spec().aero.enabled, label + ": the common stock spec enables aero");
+    nfsu::VehicleTrackSession session(model, course);
+    nfsu::VehicleState flat;
+    SeamComparison out;
+    if (!session.start(pose) || !model.reset(flat, pose)) {
+        check(false, label + ": both runs start at the same pose");
+        return out;
     }
-    check(road, "driving across the seams every wheel finds road on every step");
-    check(high - low < 0.002, "across the seams the body rises and falls less than 2 mm, got " +
-                                  text(high - low));
-    check(hull_hits == 0, "across the seams the hull meets nothing");
-    check(!r.empty() && r.front().position.x < 96.0 && r.back().position.x > 128.0,
-          "the drive crosses the seams at px 96 and 128");
+    const nfsu::VehicleFlatGround ground(pose.ground.z);
+    for (std::uint64_t i = 0; i < drive.script.total_steps(); ++i) {
+        const nfsu::VehicleInput input = drive.script.input_at(i);
+        nfsu::VehicleTrackTelemetry track;
+        nfsu::VehicleTelemetry reference;
+        if (!session.step(input, track) || !model.step(flat, input, ground, reference)) {
+            check(false, label + ": paired step " + std::to_string(i + 1) + " runs");
+            return out;
+        }
+        check(track.model.aero.enabled && reference.aero.enabled,
+              label + ": aero remains enabled in both callbacks");
+        if (i == 0) out.first_x = track.position.x;
+        out.last_x = track.position.x;
+        ++out.steps;
+        for (nfsu::VehicleTrackSurface surface : track.wheel_surface)
+            out.road = out.road && surface == nfsu::VehicleTrackSurface::road;
+        out.hull_hits += track.hull_hits;
+        if (i >= 60) {
+            ++out.samples;
+            out.low = std::min(out.low, track.position.z);
+            out.high = std::max(out.high, track.position.z);
+            out.flat_low = std::min(out.flat_low, reference.position.z);
+            out.flat_high = std::max(out.flat_high, reference.position.z);
+            out.residual = std::max(out.residual,
+                                    std::fabs(track.position.z - reference.position.z));
+        }
+    }
+    check(out.steps == 720 && out.samples == 660, label + ": all paired drive steps run");
+    check(out.road, label + ": every wheel finds road on every step");
+    check(out.hull_hits == 0, label + ": the hull meets nothing");
+    check(out.first_x < 96.0 && out.last_x > 128.0,
+          label + ": the drive crosses the seams at px 96 and 128");
+    std::cout << label << ": absolute track excursion " << text(out.high - out.low)
+              << ", flat excursion " << text(out.flat_high - out.flat_low)
+              << ", max paired height residual " << text(out.residual) << '\n';
+    return out;
+}
+
+nfsu::VehicleTrackCourse seam_step_course(float offset) {
+    nfsu::VehicleTrackLayout layout;
+    layout.name = offset > 0.0F ? "raised-seam" : "lowered-seam";
+    layout.grid[0] = 64.0F;
+    layout.grid[1] = 48.0F;
+    layout.grid[2] = 10.0F;
+    for (float x = 0.0F; x < 192.0F; x += 32.0F) {
+        for (float y = 0.0F; y < 96.0F; y += 32.0F) {
+            const float height = 10.0F + (x == 96.0F ? offset : 0.0F);
+            const float corners[4][3] = {{x, y, height}, {x + 32.0F, y, height},
+                                       {x + 32.0F, y + 32.0F, height},
+                                       {x, y + 32.0F, height}};
+            nfsu::VehicleTrackQuad quad;
+            std::memcpy(quad.corner, corners, sizeof(corners));
+            layout.quads.push_back(quad);
+        }
+    }
+    nfsu::VehicleTrackCourse course;
+    std::string error;
+    check(nfsu::build_vehicle_track_course(layout, course, error),
+          layout.name + ": the valid-format seam course builds: " + error);
+    return course;
+}
+
+void test_seams() {
+    const nfsu::VehicleTrackCourse course = proving_ground();
+    const nfsu::VehicleTrackScenario drive = scenario("drive");
+    const nfsu::VehiclePose pose = nfsu::vehicle_track_scenario_pose(course.start, drive);
+    // Road-only obligation: the common enabled model carries speed-dependent
+    // suspension sag on both surfaces. This pair is not a handling oracle.
+    const SeamComparison ordinary = compare_seams(course, drive, pose, "seams");
+    check(ordinary.residual < kSeamResidualLimit,
+          "across the seams the extra motion over flat stays below 2 mm, got " +
+              text(ordinary.residual));
+    // Two grid-valid discontinuities must fail that SAME road predicate even
+    // with road contact, no hull collision and actual crossings preserved.
+    for (const float offset : {2.0F / 256.0F, -2.0F / 256.0F}) {
+        const std::string label = offset > 0.0F ? "raised seam" : "lowered seam";
+        const SeamComparison negative =
+            compare_seams(seam_step_course(offset), drive, pose, label);
+        check(!(negative.residual < kSeamResidualLimit),
+              label + ": the road-height predicate detects the discontinuity, got " +
+                  text(negative.residual));
+    }
 }
 
 void test_slope() {
@@ -1408,9 +1498,22 @@ void test_pins() {
     }
 }
 
+int test_result() {
+    if (failures != 0) {
+        std::cout << failures << " check(s) failed\n";
+        return 1;
+    }
+    std::cout << "nfsu_vehicle_track_tests: all checks passed\n";
+    return 0;
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc == 2 && std::string(argv[1]) == "--seams-only") {
+        test_seams();
+        return test_result();
+    }
     test_hull_source();
     test_contact_sqrt();
     test_separation();
@@ -1436,10 +1539,5 @@ int main() {
     test_telemetry_layout();
     test_collision_tensor_selection();
     test_pins();
-    if (failures != 0) {
-        std::cout << failures << " check(s) failed\n";
-        return 1;
-    }
-    std::cout << "nfsu_vehicle_track_tests: all checks passed\n";
-    return 0;
+    return test_result();
 }
