@@ -527,6 +527,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             const double tick_ms = ms(armGetSystemTick()-stage);
             simulation += tick_ms; simulation_ticks[ticks] = tick_ms;
             stage = armGetSystemTick(); require(race.commit(error),error);
+            advance_race_hud_frame(race.session(),hud_frame);
             scene.advance_particles(race.session());
             auto audio_snapshot=audio::race_audio_snapshot(race.session());
             if (free_drive) { audio_snapshot.completed_laps=0; audio_snapshot.finished=false; }

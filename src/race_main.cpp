@@ -450,6 +450,7 @@ int run(int argc, char** argv) {
             Clock::now().time_since_epoch()).count());
         auto begin=Clock::now(); require(session.advance(pad,error),error); simulation.add(begin);
         require(handling_log.write(session,pad,consumed_us,live),"handling telemetry write failed");
+        advance_race_hud_frame(session,scene.hud_frame);
         build_race_hud_frame(session,640,360,scene.hud_frame);
         if (hud_audit.is_open()) {
             const auto& r=scene.hud_frame.readout;

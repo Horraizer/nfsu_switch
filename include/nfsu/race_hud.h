@@ -34,13 +34,13 @@ struct RaceHudFrame {
     std::uint16_t quads = 0;
     RaceHudReadout readout{};
     RaceLapHudPanel lap{};
-    // 0x00427BB0..0x00427C41: the tach the HUD shows is this state, which
-    // each update moves toward the engine speed by at most 50 rpm
-    // (0x700DAC); the needle consumer 0x004A0FAF reads it, never the raw
-    // engine field. The caller keeps one frame across updates; a fresh
-    // frame starts at zero and sweeps up, as the original's zeroed state
-    // does at startup.
+    // Bounded port display state; advanced once per simulation update.
+    // The speed-synthesized native helper bypasses its 50-RPM follower
+    // when gear changes. Original live-player producer cadence remains open.
     double needle_rpm = 0;
+    std::uint64_t needle_tick = 0;
+    int needle_gear = kVehicleGearNeutral;
+    bool needle_initialized = false;
 };
 
 struct RaceHudDial {
@@ -54,6 +54,11 @@ double race_hud_needle_rotation(double rpm, double max_rpm) noexcept;
 
 bool load_race_hud_atlas(const std::filesystem::path& root,
                          RaceHudAtlas& atlas, std::string& error);
+// Update the bounded display follower at a simulation boundary, including
+// every catch-up tick. Repeating a tick is inert; decreasing ticks reset it.
+void advance_race_hud_frame(const RaceSession& session, RaceHudFrame& frame) noexcept;
+void advance_race_hud_frame_for_car(const VehicleState& car, std::uint64_t tick,
+                                     RaceHudFrame& frame) noexcept;
 // Writes fixed-capacity vertices, reading only the completed race state.
 // FEng local geometry under the measured anchor in docs/HUD_253.md.
 void build_race_hud_frame(const RaceSession& session,

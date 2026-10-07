@@ -262,8 +262,8 @@ struct VehicleApproximations {
     // Brake torque per wheel at full brake input, N m: below what the
     // recovered static friction holds on each axle at the loads full braking
     // puts on it, so no wheel locks, and about 1.05 g from the brakes alone.
-    // The handbrake has no torque of its own: 0x00461E45 makes it the brake
-    // axis at its full value when no service brake is applied.
+    // 0x00474B4B..0x00474B6F selects max(service brake, half handbrake).
+    // Other original handbrake consumers remain a separate recovery scope.
     double brake_torque_front = 1400.0;
     double brake_torque_rear = 450.0;
     // Road-wheel steering lock at standstill, rad, and the speed at which
