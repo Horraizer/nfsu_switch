@@ -60,7 +60,7 @@ if(NOT result EQUAL 0)
 endif()
 # The script prints one PASS line per executable when every pin held; an
 # exit status of 0 without it is not a pass.
-if(NOT output MATCHES "(^|\n)PASS [^\n]*48343 step hashes, result, ${expected_frames} frames, clean 120 Hz trajectory, generated recording")
+if(NOT output MATCHES "(^|\n)PASS [^\n]*48314 step hashes, result, ${expected_frames} frames, clean 120 Hz trajectory, generated recording")
     message(FATAL_ERROR "FAIL: race_replay_check.py exited 0 without its PASS line")
 endif()
 if(NOT output MATCHES "PASS wet replay:")

@@ -390,7 +390,7 @@ the default controls, the recovered camera rules with the default
 approximations, POV 0, at rest at the origin facing +x, automatic gearbox -
 the demonstration's 1380 records, 1689120 bytes, hash to
 
-    1CC5FD8A2A2BD2A7746F434CD309B99B63A20AFC7CB645A0CB2D0DCDA7BB958C
+    9E00A0F4998E0A9136F76B98781AF5EA623E3D7C07CF027692878D8FBD6752F7
 
 It was 7030E676...275D9 until the handbrake fix (docs/VEHICLE.md): the
 demonstration's one second of handbrake became the brake axis at its full

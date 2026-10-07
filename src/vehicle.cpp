@@ -335,6 +335,44 @@ double vehicle_sqrt(double x) noexcept {
 
 namespace {
 
+// The original lateral load-curve family of 0x00587740, Unicorn-verified:
+// the slip angle selects and blends seven six-point curves over x 0..10
+// (descriptors 0x7043EC..0x704464), each evaluated at the wheel's load.
+// Curve 0's values sit in BSS and read as zero at rest.
+constexpr float kLateralCurves[7][6] = {
+    {0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F},
+    {0.0F, 1.2F, 2.3F, 3.0F, 3.0F, 2.8F},
+    {0.0F, 1.7F, 3.2F, 4.3F, 5.1F, 5.2F},
+    {0.0F, 1.8F, 3.5F, 4.9F, 5.8F, 6.1F},
+    {0.0F, 1.83F, 3.6F, 5.0F, 5.96F, 6.4F},
+    {0.0F, 1.86F, 3.7F, 5.1F, 6.13F, 6.7F},
+    {0.0F, 1.9F, 3.8F, 5.2F, 6.3F, 7.1F},
+};
+
+double lateral_curve(unsigned index, double load_kn) noexcept {
+    if (index > 6) index = 6;
+    return vehicle_uniform_curve(kLateralCurves[index], 6, 0.0, 10.0, load_kn);
+}
+
+// fdlibm's atan polynomial for the slip angle: the curves saturate past
+// twelve degrees, so the near-pi/2 branch's precision never matters here.
+double vehicle_atan(double x) noexcept {
+    constexpr double p4 = 1.66666666666666657415e-01;
+    constexpr double p3 = -3.25565818622400915405e-01;
+    constexpr double p2 = 2.01212532134862925881e-01;
+    constexpr double p1 = -4.00555345006794114027e-02;
+    constexpr double q5 = 1.0;
+    constexpr double q4 = -4.61957515705297486922e-01;
+    constexpr double q3 = 8.53968919389580243608e-01;
+    constexpr double q2 = -8.01102944441053435128e-01;
+    constexpr double q1 = 5.25120349111829527114e-01;
+    constexpr double q0 = -1.68917721912874042760e-01;
+    if (!finite(x)) return 0.0;
+    const double x2 = x * x;
+    return x * (1.0 + x2 * (p4 + x2 * (p3 + x2 * (p2 + x2 * p1)))) /
+        (1.0 + x2 * (q5 + x2 * (q4 + x2 * (q3 + x2 * (q2 + x2 * (q1 + x2 * q0))))));
+}
+
 // pi/2 split so that n * kPiOver2High is exact for |n| < 2^20 (fdlibm's
 // pio2_1 and pio2_1t).
 constexpr double kTwoOverPi = 6.36619772367581382433e-01;
@@ -1282,8 +1320,27 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         const double v_lat = dot(point_velocity, across);
         const double denominator =
             absolute(v_long) > a.slip_speed_floor ? absolute(v_long) : a.slip_speed_floor;
-        const double cornering = k < 2 ? a.cornering_stiffness_front : a.cornering_stiffness_rear;
-        double fy = -cornering * load * v_lat / denominator;
+        // 0x00587740, Unicorn-verified: the slip angle (against the same
+        // floored denominator, so a car at rest has none) selects and
+        // blends the load curves - p = slip x 343.775 / slip_scale, the
+        // 240SX's 12 making p exactly half the slip in degrees - and each
+        // curve is evaluated at x = 0.8 x the wheel's load (the record's
+        // kN) / lateral_load_scale, the blend scaled by lateral_scale and
+        // 2.5 (0x6F086C). The sign returns separately at 0x00587718.
+        const VehicleAxleTyre& tyre = h.tyres[axle];
+        const double slip = vehicle_atan((v_lat < 0.0 ? -v_lat : v_lat) / denominator);
+        const double p = 343.775 * slip / static_cast<double>(tyre.slip_scale);
+        const double x = 0.8 * (load / 1000.0) /
+            static_cast<double>(tyre.lateral_load_scale);
+        double curve_force = lateral_curve(6, x);
+        if (p < 6.0) {
+            const auto idx = static_cast<unsigned>(p);
+            const double frac = p - static_cast<double>(idx);
+            curve_force = lateral_curve(idx, x) * (1.0 - frac) +
+                          lateral_curve(idx + 1, x) * frac;
+        }
+        double fy = -curve_force * static_cast<double>(tyre.lateral_scale) * 2500.0 *
+                    (v_lat < 0.0 ? -1.0 : 1.0);
         const double peak = d_.static_friction[axle] * load;
         const double slide = d_.sliding_friction[axle] * load;
 
@@ -1334,14 +1391,14 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
 
         const double fade = clamp(v_long / a.rolling_fade_speed, -1.0, 1.0);
         const double rolling = -a.rolling_resistance * load * fade;
-        const VehicleVec3 tyre = add(scale(along, fx + rolling), scale(across, fy));
-        force = add(force, tyre);
+        const VehicleVec3 tyre_force = add(scale(along, fx + rolling), scale(across, fy));
+        force = add(force, tyre_force);
         // The tyre's force acts tyre_force_lift of the way from the contact
         // up to the centre of mass's height along the body's vertical
         // (APPROXIMATION, docs/VEHICLE.md).
         const VehicleVec3 arm_tyre =
             sub(arm_contact, scale(up, dot(arm_contact, up) * a.tyre_force_lift));
-        torque = add(torque, cross(arm_tyre, tyre));
+        torque = add(torque, cross(arm_tyre, tyre_force));
 
         out.spin = spin;
         out.slip_ratio = (spin * radius - v_long) / denominator;

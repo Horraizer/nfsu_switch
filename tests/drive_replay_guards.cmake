@@ -49,7 +49,7 @@ endif()
 # The pins. demo_stream moved with the handbrake fix: the demonstration's
 # handbrake second is max(service, 0.5 x handbrake) (0x00474B4B), not an
 # added rear lock torque (docs/CONTROLS_CAMERA.md).
-set(demo_stream "1CC5FD8A2A2BD2A7746F434CD309B99B63A20AFC7CB645A0CB2D0DCDA7BB958C")
+set(demo_stream "9E00A0F4998E0A9136F76B98781AF5EA623E3D7C07CF027692878D8FBD6752F7")
 set(fixture_frame_690 "635F697394CEA385425415E96A6A9C08CF0E44BDCC2534F1C73D728802565B4C")
 # Frame 1380 moved with the handbrake fix: the demonstration's handbrake
 # second is half the brake axis (0x00474B4B), so the car no longer
