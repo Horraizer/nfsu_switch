@@ -2,6 +2,7 @@
 #include "nfsu/race_events.h"
 #include "nfsu/posix_file_system.h"
 #include "nfsu/arg_path.h"
+#include "nfsu/draw_execution.h"
 #include <iostream>
 #include <stdexcept>
 
@@ -67,6 +68,7 @@ int main(int argc, char** argv) {
         require(frame.commands.draw_count()!=0,"event8 GPU frame must draw");
         require(!run.matches_configured_replay(),"event8 cannot match event1 replay");
         if (argc>2 && std::string(argv[2])=="--measure") {
+            const UploadTable uploaded = frame.commands.resource_table();
             RaceRouteDriver driver(RaceDrivingLine::event8_forward);
             std::vector<RaceInputRun> recording;
             while (run.session().timing().outcome == RaceOutcome::running &&
@@ -78,6 +80,7 @@ int main(int argc, char** argv) {
                 if (run.session().timing().step % 6000 == 0) {
                     require(scene.frame(run.session(), frame, error), error);
                     require(frame.commands.draw_count() != 0, "later event8 GPU frame empty");
+                    require(validate_draw_update(uploaded, frame.commands, kTrackSliceDrawLimit, error), error);
                     std::cout << "shared tick " << run.session().timing().step
                               << " lap " << run.session().timing().racers[0].highest_lap
                               << " draws " << frame.commands.draw_count() << '\n';
@@ -100,6 +103,7 @@ int main(int argc, char** argv) {
                     "shared event8 recording/state fidelity differs");
             require(scene.frame(replay.session(), frame, error) && frame.commands.draw_count() != 0,
                     "shared event8 finish frame empty");
+            require(validate_draw_update(uploaded, frame.commands, kTrackSliceDrawLimit, error), error);
             std::cout << "PASS: event8 full RaceRun three-lap drive, residency, later frames and input/state replay\n";
         }
         std::cout << "PASS: event8 retail selection, GPU inputs, collision/start and residency\n";
