@@ -318,7 +318,7 @@ positive steer turns left, a positive yaw rate.
 | wheel spin | implicit against the linear tyre, explicit once the tyre saturates; `wheel_inertia` = 1.2 kg m^2 | stable at 120 Hz with a stiff tyre |
 | brakes | `brake_torque_front` = 1400, `_rear` = 450 N m per wheel at full input | the recovered brake itself is traced now: 0x00475699..0x004756C0 makes it spin-proportional damping, -0.5 x brake x clamp(spin, +-20) in the record's torque units (500 N m per rad/s of clamped wheel speed at the full axis, the same on every wheel), answered by the pin rule above. Implementing that damping alone was tried and reverted the same day: with the engine-wheel feedback operand unrecovered (engine+0x74+8k, whose writer no static scan has found), the damping alone locks all four wheels almost at once - 100-0 km/h in 24.0 m with every wheel sliding, and the handbrake re-locks the driven wheels, resurrecting the tachometer drop the first round fixed. The invented constants stay until the feedback term is recovered; the measured attempt is in build/tach-glm of the tachometer worktree |
 | handbrake | none of its own: the wheels see max(service brake, 0.5 x handbrake) | RECOVERED at 0x00474B4B..0x00474B6F over the 0x00461E10 handbrake axis (docs/CONTROLS_CAMERA.md, docs/VEHICLE.md "The brake-axis wheel pin"); the earlier invented 3000 N m rear lock pinned wheel-derived engine speed at idle the moment it was pulled at speed, which the owner reported as the tachometer dropping toward zero |
-| steering | lock = `max_steer` / (1 + (v / `steer_speed_reference`)^2) with 0.55 rad and 12 m/s; slews at `steer_rate` = 3 rad/s | not traced; the lock falls with the square of the speed so that what full input asks of the tyres changes slowly with speed, as the path radius a given acceleration allows grows with v^2. With the round-3 tyres full input corners at 0.96 to 1.34 g, under the 1.55 g limit ("Drivability") |
+| steering | lock = `max_steer` / (1 + (v / `steer_speed_reference`)^2) with 0.55 rad and 12 m/s; slews at `steer_rate` = 3 rad/s | not traced; the lock falls with the square of the speed so that what full input asks of the tyres changes slowly with speed, as the path radius a given acceleration allows grows with v^2. `nfsu_vehicle_tests` checks the approximate input path; production `recovered1` uses the separate recovered steering path |
 | rolling resistance | 0.015 of the load, faded in over 0.5 m/s | not traced |
 | engine braking | the recovered curve times `engine_brake_scale` = 0.5, and only while the wheel rpm is above idle | at full strength it brakes the car at about 0.5 g in first gear, where the recovered gearbox keeps it below 64 km/h, and with the brake on it locked the rear wheels; below idle it would push a slow car backwards. The recovered coupling that carries it to the wheels was not reproduced, so how much reaches a wheel in the game is unknown. Even halved, it outweighs the throttle below about 0.30 at every engine speed ("Drivability" below). Kept at 0.5 in round 3: with the traction limit, which bounds engine braking at each wheel too, 0.25 gives the same spin matrix (below) |
 | rev limiter | the throttle part of the crank torque is cut while the wheel rpm exceeds the maximum | the recovered code only clamps the stored engine speed; without a cut a manual first gear drives on past it |
@@ -445,61 +445,20 @@ every double as its IEEE-754 bits, every integer and flag as a u32 - in
 that order; `VehicleTelemetryHash` is the SHA-256 (`nfsu/sha256.h`) of the
 records in step order.
 
-**The pin**: the built-in `mixed` script, 2400 steps from rest on flat
-ground with the stock 240SX, hashes to
-
-    39F24A97C9D29386A16A5F7206DA1A86D45B48D79491584AE6B7E2D4DE439078
-
-It was D1A186D7...89A5C until the recovered tyre curves landed (round
-7): real lateral forces change the telemetry of every script that turns.
-`brake` and `rest` keep their hashes: a straight stop and a car at rest
-hold slip angles under the first curve, so the family sees the zero
-curve. It was
-9329E10C...DF41F inside the handbrake fix's first round, which
-gave the handbrake the axis at full value; the review's correction to the
-recovered rule - max(service, 0.5 x handbrake), 0x00474B4B - moved it
-again. It was B9EE418C...CF8E3 before the handbrake fix: pulling the
-handbrake stopped being an added
-3000 N m on each rear wheel, which changes every script that pulls it -
-`mixed` and `slide` - and nothing else (`brake` and `rest` keep their
-hashes). It was 20724B57...EC085 before round 3 of the review (comment
-3622): the record grew by the applied drive torque, 32 bytes, which
-changes every script's hash, `rest` included, and the cornering
-stiffnesses and the traction limit change the telemetry of every script
-that turns or drives. Before that it was 85900502...0ADD5, until the fix
-round of review comment 3579: the strut preload and the recovered centre
-of mass, inertia, tyre force height and brakes changed every script's
-telemetry.
-
-`kVehiclePinnedMixedSha256` holds it; `nfsu_vehicle_tests` requires it and
-`nfsu_probe_vehicle_sim_guards` requires the probe to print it. Reproduce:
+The built-in `mixed` script's current pin is owned by
+`kVehiclePinnedMixedSha256`. `nfsu_vehicle_tests` and
+`nfsu_probe_vehicle_sim_guards` check it. The tyre curve, handbrake and
+arithmetic changes affect these recordings; current hashes belong in those
+tests, not in this document. Reproduce the telemetry with:
 
 ```text
-cmake -S . -B build -G Ninja
-cmake --build build
 build/nfsu_probe vehicle-sim mixed --every 0
-
-cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build-release
 build-release/nfsu_probe vehicle-sim mixed --every 0
 ```
 
-Both print `telemetry: records 2400 bytes 1248000 sha256 39F24A97...4078`;
-so does either with `--handling <Global/GLOBALB.BUN>` over the retail file.
-"Debug" here and below is the default configure, `CMAKE_BUILD_TYPE` empty
-(no `-O`, no `-g`), not `-DCMAKE_BUILD_TYPE=Debug`. All eight built-in
-scripts give the same telemetry in both builds:
-
-| Script | Records | SHA-256 |
-| --- | ---: | --- |
-| `rest` | 240 | `5C8E9F6D82A8F6CD9F9A8F551B630DD84E17C10C2D63B0F283721FDD56D25374` |
-| `accelerate` | 3660 | `9045D7A4721733863790BB3C66440B427E853D78B34C01467B60CD58DC0B652F` |
-| `brake` | 960 | `74AB8F49ED1DC642A1B40E9E1F5AF5F7578163422FB59BA6F1947EED83D83AB5` |
-| `corner` | 1200 | `08EAC862DB52F7884AD7F948AA762250F20DCAEC363048BBBAE324B74A28F278` |
-| `slide` | 780 | `2801F98C4916F0694F426E416D06776CD57714D4206C706F0D20167EBB11C863` |
-| `top-speed` | 14400 | `E6C334F9473F80235A7C3C55D6DF09D6D20F6270069117A8FB9403EE3B051ECC` |
-| `manual` | 1800 | `6B859D78DB23BE058DDAB12986101548F1A724D5E3D0566AB376EB6FF3C3ACAA` |
-| `mixed` | 2400 | `39F24A97C9D29386A16A5F7206DA1A86D45B48D79491584AE6B7E2D4DE439078` |
+The probe accepts `--handling <Global/GLOBALB.BUN>` to compare the retail
+handling with the built-in record. Default and Release agreement must be
+verified at the same candidate head.
 
 ### On the console
 
@@ -508,7 +467,7 @@ scripts through the AArch64 compile of the same sources and options, prints
 each hash and its run time, and for `mixed` prints `result: EQUAL to the
 pinned desktop telemetry` or `DIFFERENT from`. The Switch CTest suite runs
 on the build machine, which cannot execute AArch64 code, so it asserts the
-census above and the NRO's structure, not the hash. It is run with
+script census and the NRO's structure, not execution of the model. It is run with
 
 ```text
 nxlink -s build-switch/switch/nfsu_switch_vehicle.nro
@@ -516,17 +475,10 @@ nxlink -s build-switch/switch/nfsu_switch_vehicle.nro
 
 and the `result:` line read off the screen.
 
-**On the owner's Switch** (2026-09-26, PR #169 comment 3856): the NRO built
-from 5521427, the head that passed review, printed the eight hashes of the
-table above, every one of them, and `result: EQUAL to the pinned desktop
-telemetry`. The model gives bit-identical telemetry on the console and the
-desktop for every built-in script. `top-speed`, 14400 steps, took 326 ms
-there: about 22.6 microseconds a step. A later head can give a different
-NRO file with the same instructions: the build ID the NRO carries at +0x40
-is a hash over the whole ELF, debug information included, so a moved
-comment or an unused declaration in a header changes it. Whether a later
-NRO still runs the model that ran on the console is a question for the
-instructions of its objects, not for the file's hash.
+Historical console evidence at `5521427` is recorded in
+[PR 169 comment 3856](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/169#issuecomment-3856).
+That measurement does not establish telemetry agreement or timing for the
+current model. A new candidate requires a new hardware run.
 
 ## Scripted input
 

@@ -443,7 +443,7 @@ int run(int argc, char** argv) {
         trajectory.open(output/"trajectory.csv",std::ios::binary);
         require(bool(trajectory),"cannot create trajectory audit");
         trajectory.imbue(std::locale::classic()); trajectory << std::setprecision(17);
-        trajectory << "tick,physics,lap,x,y,z,speed,up,contacts,road_wheels,resets\n";
+        trajectory << "tick,physics,lap,x,y,z,speed,up,contacts,road_wheels,resets,road_alignment\n";
         if (hud_trace) {
             hud_audit.open(output/"hud.csv",std::ios::binary);
             require(bool(hud_audit),"cannot create HUD audit");
@@ -484,11 +484,21 @@ int run(int argc, char** argv) {
             if (!t.step) continue; // Countdown holds the pose without physics.
             const auto& q=t.orientation;
             const double up=1-2*(q.x*q.x+q.y*q.y);
+            const VehicleVec3 body_up={2*(q.x*q.z+q.w*q.y),2*(q.y*q.z-q.w*q.x),up};
+            double road_alignment=1;
+            unsigned support=0;
+            for (const auto& wheel:t.model.wheels) if(wheel.contact) {
+                const auto n=wheel.ground_normal;
+                const double length=vehicle_sqrt(n.x*n.x+n.y*n.y+n.z*n.z);
+                const double alignment=length>0 ? (body_up.x*n.x+body_up.y*n.y+body_up.z*n.z)/length : -1;
+                road_alignment=std::min(road_alignment,alignment); ++support;
+            }
+            if(!support) road_alignment=-1;
             const double v=vehicle_sqrt(t.velocity.x*t.velocity.x+t.velocity.y*t.velocity.y);
             const auto wheels=std::count(t.wheel_surface.begin(),t.wheel_surface.end(),VehicleTrackSurface::road);
             trajectory << session.timing().step << ',' << t.step << ',' << t.lap << ','
                 << t.position.x << ',' << t.position.y << ',' << t.position.z << ','
-                << v << ',' << up << ',' << t.contacts << ',' << wheels << ',' << t.resets << '\n';
+                << v << ',' << up << ',' << t.contacts << ',' << wheels << ',' << t.resets << ',' << road_alignment << '\n';
         }
         begin=Clock::now(); const auto& car=session.car();
         TrackResidencySample sample; sample.position[0]=float(car.position.x); sample.position[1]=float(car.position.y);

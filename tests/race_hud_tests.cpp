@@ -51,7 +51,7 @@ double needle_angle(const nfsu::RaceHudFrame& frame, bool red = true) {
 }
 
 // Geometry fixtures explicitly set the display target. Timing is tested below.
-void converge_needle(const nfsu::VehicleState& car, double max, double red,
+void build_needle_fixture(const nfsu::VehicleState& car, double max, double red,
                      std::uint32_t width, std::uint32_t height,
                      nfsu::RaceHudFrame& frame) {
     nfsu::build_race_hud_frame_for_car(car,max,red,width,height,frame);
@@ -193,8 +193,7 @@ void test_dial() {
     nfsu::VehicleState car{};
     nfsu::RaceHudFrame frame;
     for (const auto& item : cases) {
-        // Each case starts from the zeroed needle state, not the previous
-        // case's: the slew otherwise carries the last case's rpm over.
+        // Each independent geometry fixture uses the completed car state.
         frame = nfsu::RaceHudFrame{};
         const auto dial=nfsu::select_race_hud_dial(item.max,item.red);
         check(dial.lines_hash==item.lines && dial.red_hash==item.overlay,
@@ -217,7 +216,7 @@ void test_dial() {
         if (item.max==8000.0 || item.max==9000.0) {
             test_needle_endpoint(frame,34.0,105.0,item.overlay!=0);
             car.engine_rpm=item.max;
-            converge_needle(car,item.max,item.red,1280,720,frame);
+            build_needle_fixture(car,item.max,item.red,1280,720,frame);
             test_needle_endpoint(frame,item.max==9000.0 ? 107.0 : 106.0,
                                  item.max==9000.0 ? 33.0 : 34.0,
                                  item.overlay!=0);
@@ -234,7 +233,7 @@ void test_rpm() {
          {std::pair<double,double>{0.0,44.0}, {800.0,61.1}, {7500.0,204.3125},
           {8000.0,215.0}, {9000.0,215.0}, {-100.0,44.0}}) {
         car.engine_rpm = rpm;
-        converge_needle(car,8000,7500,1280,720,frame);
+        build_needle_fixture(car,8000,7500,1280,720,frame);
         check(std::abs(nfsu::race_hud_needle_rotation(rpm,8000)-rotation)<0.001,
               "retail stock needle rotation clamps at both endpoints");
         check(std::abs(needle_angle(frame)-(270.0-rotation))<1.0,

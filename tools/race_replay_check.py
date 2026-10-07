@@ -166,8 +166,15 @@ def main():
                     "trajectory does not cover both substeps in order")
             require(int(sample["contacts"]) == 0 and int(sample["resets"]) == 0,
                     "body contact or reset in trajectory")
-            require(float(sample["up"]) >= 0.98 and int(sample["road_wheels"]) >= 1,
-                    "tilted or airborne car in trajectory")
+            # World-up alone rejects a correctly banked car on inclined road.
+            # Retain the same angular limit against every supporting road
+            # normal; the exception requires all four road wheels and an
+            # upward body. Missing/invalid normals cannot qualify.
+            upright = float(sample["up"]) >= 0.98 or (
+                int(sample["road_wheels"]) == 4 and float(sample["up"]) > 0 and
+                float(sample["road_alignment"]) >= 0.98)
+            require(upright and int(sample["road_wheels"]) >= 1,
+                    "tilted relative to road or airborne car in trajectory")
             if int(sample["tick"]) > 600:
                 require(float(sample["speed"]) >= 5, "slow/stalled car after launch")
         for tick, expected in zip(frame_steps, frames):
