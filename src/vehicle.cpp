@@ -1369,7 +1369,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         std::array<double, kVehicleWheelCount> raw_compression{};
         for (std::size_t k = 0; k < kVehicleWheelCount; ++k) {
             const std::size_t axle = k / 2;
-            attach_world[k] = add(s.position, r.apply(d_.attach[k]));
+            attach_world[k] = public_vector(player_strut_attachment(h,k,s.rigid_body));
             const VehicleVec3 from = add(attach_world[k], scale(up, a.probe_lift));
             const VehicleVec3 down = scale(up, -1.0);
             const double length = a.probe_lift + d_.radius[k] - d_.droop_limit[axle];
@@ -1388,9 +1388,17 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
                     hits[k].normal = scale(n, 1.0 / n_length);
                 }
             }
-            raw_compression[k] = hits[k].hit
-                                     ? d_.radius[k] - (hits[k].distance - a.probe_lift)
-                                     : d_.droop_limit[axle] - 1.0;
+            // The virtual segment remains a port ground-query adapter.
+            // Convert its signed along-up gap before adding the radius, as
+            //587070/588607 do at the declared binary32 witness precision.
+            // This agrees with the cached-flat-quad witness; it does not
+            // replace the retail height/material/world-query producers.
+            if(hits[k].hit) {
+                const float gap=static_cast<float>(a.probe_lift-hits[k].distance);
+                raw_compression[k]=h.wheels[k].radius+gap;
+            } else {
+                raw_compression[k]=d_.droop_limit[axle]-1.0;
+            }
         }
         std::array<double, kVehicleWheelCount> strut_force{};
         std::array<double, kVehicleWheelCount> overflow{};
@@ -1417,21 +1425,19 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             if (!wheel.contact) {
                 continue;
             }
-            const double x = wheel.compression;
-            const double rate = suspension_dt>0.0?(x - wheel.previous_compression) / suspension_dt:0.0;
-            const double positive = x > 0.0 ? x : 0.0;
-            double f = (d_.progressive[axle] * positive + 1.0) * d_.spring[axle] * x;
-            f = f + (rate > 0.0 ? d_.damping_bump[axle] : d_.damping_rebound[axle]) * rate;
-            f = f + static_cast<double>(s.aero_preloads[k])*a.unit_scale;
+            const float x=static_cast<float>(wheel.compression);
+            const float rate=suspension_dt>0.0?
+                (x-static_cast<float>(wheel.previous_compression))/static_cast<float>(suspension_dt):0.0F;
             //46ABD0 refreshes the factory's ascending strut list.588580
             // consumes its partner immediately: the first strut in each
             // axle sees the previous compression, the second the new one.
             const auto& partner=s.wheels[kAntiRollPartner[k]];
-            const double partner_compression=k%2==0?
-                partner.previous_compression:partner.compression;
-            f = f + (x - partner_compression) * d_.anti_roll[axle];
-            f = f + overflow[k] * a.bump_stop_rate;
-            strut_force[k] = f > 0.0 ? f : 0.0;
+            const float partner_compression=static_cast<float>(k%2==0?
+                partner.previous_compression:partner.compression);
+            const float nominal=player_strut_nominal_force(h.struts[axle],x,rate,
+                partner_compression,s.aero_preloads[k],static_cast<float>(overflow[k]),
+                static_cast<float>(a.bump_stop_rate/a.unit_scale));
+            strut_force[k]=static_cast<double>(nominal)*a.unit_scale;
         }
 
         // Selector1: prepare all wheel inputs before the shared drivetrain/body

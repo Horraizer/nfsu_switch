@@ -110,6 +110,35 @@ float standing_lateral(const VehicleHandling& h,std::size_t k,const PlayerWheelW
 
 } // namespace
 
+PlayerRigidVector player_strut_attachment(const VehicleHandling& h,
+                                          std::size_t wheel,
+                                          const PlayerRigidBodyState& body) noexcept {
+    const auto& w=h.wheels[wheel];
+    const PlayerRigidVector local{{w.longitudinal-h.centre_of_mass[0],
+                                  w.lateral-h.centre_of_mass[1],
+                                  w.vertical-h.centre_of_mass[2]}};
+    PlayerRigidVector point{};
+    for(unsigned j=0;j<3;++j) {
+        const float zy=local[2]*body.axes[2][j]+local[1]*body.axes[1][j];
+        const float rotated=zy+local[0]*body.axes[0][j];
+        point[j]=rotated+body.position[j];
+    }
+    return point;
+}
+
+float player_strut_nominal_force(const VehicleAxleStrut& h,
+                                 float x, float rate, float partner,
+                                 float preload, float overflow,
+                                 float bump_rate) noexcept {
+    const float positive=x>0.0F?x:0.0F;
+    const float spring=((h.progressive*positive+1.0F)*h.spring)*x;
+    float force=(rate>0.0F?h.damping_bump:h.damping_rebound)*rate+spring;
+    force+=preload;
+    const float extra=(x-partner)*h.anti_roll+bump_rate*overflow;
+    force+=extra;
+    return force>0.0F?force:0.0F;
+}
+
 std::uint16_t player_velocity_angle(float longitudinal,float lateral) noexcept {
     const float x=absf(longitudinal),y=absf(lateral);
     const float square=longitudinal*longitudinal+lateral*lateral;

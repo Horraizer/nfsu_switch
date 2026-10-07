@@ -25,6 +25,19 @@ struct PlayerWheelWork {
     bool contact = false, locked = false, sliding = false;
 };
 
+//588580/5ABDB5 strut attachment relative to CG, then live rigid axes and
+// body position. The original rigid matrix has no extra translation here.
+PlayerRigidVector player_strut_attachment(const VehicleHandling& setup,
+                                          std::size_t wheel,
+                                          const PlayerRigidBodyState& body) noexcept;
+//5889EC nominal contact force in kN, including the immediate partner epoch
+// supplied by the caller. Ground lookup, limits/contact and excess cap are
+// caller-owned adapters; this function does not perform a world query.
+float player_strut_nominal_force(const VehicleAxleStrut& setup,
+                                 float compression, float rate,
+                                 float partner_compression, float preload,
+                                 float overflow, float bump_rate) noexcept;
+
 // 46E020 ordinary owner-state0 differential bias, including contact flags,
 // unequal wheel speeds and original locked-wheel exclusion.
 void player_distribute_torque(const VehicleHandling& setup, int gear,

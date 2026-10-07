@@ -529,6 +529,32 @@ void original_contact_force_and_tyre_wrap() {
     check(wheel.force_long==1.7051007747650146F&&wheel.force_lat==4.417034149169922F,
           "native tyre angle wrap constants preserve the original quantized lateral drag word");
 }
+void original_strut_binary32_witness() {
+    using namespace nfsu;
+    const auto h=stock_240sx_handling();PlayerRigidBodyState body;
+    // Actual588580/587070/5889EC supplied first-brake callback. Public
+    // quaternion was imported before preparation; live x87 mode is unproved.
+    body.position={{0,0,0.4999089539051056F}};
+    body.axes={{{{0.999945342540741F,0,-0.01045604795217514F}},
+                {{0,1,0}},{{0.01045604795217514F,0,0.999945342540741F}}}};
+    check(player_strut_attachment(h,0,body)==
+          PlayerRigidVector{{1.1378464698791504F,0.7300000190734863F,0.2879999876022339F}},
+          "original strut attachment rounds local transform before body position");
+    check(player_strut_nominal_force(h.struts[0],-1.5735626220703125e-5F,0,0,
+          3.2054226398468018F,0,200)==3.204289674758911F,
+          "original initial strut preload/spring/prior partner preserve binary32 order");
+    // Actual isolated5889EC witnesses include nonlinear spring, damping,
+    // different partner and overflow. Their source inputs are fixture bounds.
+    check(player_strut_nominal_force(h.struts[0],.1F,1,.1F,2.989000082015991F,.02F,200)==
+          17.77899932861328F,
+          "original front spring damping and bump-stop grouping");
+    check(player_strut_nominal_force(h.struts[1],.1F,1,.04F,2.989000082015991F,.02F,200)==
+          18.319000244140625F,
+          "original rear anti-roll and bump terms join together");
+    check(player_strut_nominal_force(h.struts[0],-.02F,-1,-.02F,2.989000082015991F,0,0)==0,
+          "original nominal force floor applies after all terms");
+}
+
 void original_strut_partner_epoch() {
     using namespace nfsu;
     auto spec=stock_240sx_vehicle_spec();
@@ -548,10 +574,10 @@ void original_strut_partner_epoch() {
     check(a.wheels[0].compression==b.wheels[0].compression&&
           a.wheels[1].compression==b.wheels[1].compression&&ta.wheels[0].contact&&tb.wheels[0].contact,
           "same query produces matching new compressions despite different prior partner states");
-    // Full original588580/46ABD0 witnesses retain that prior partner
-    // dependency. The nominal force law remains the qualified double adapter.
-    const double expected=double(.02F)*spec.handling.struts[0].anti_roll*spec.approx.unit_scale;
-    check(std::abs((tb.wheels[0].load-ta.wheels[0].load)-expected)<1e-9,
+    // Actual5889EC with these completed query/rate/preload operands and
+    // distinct prior partners0/-.02 supplies the two binary32 nominal pins.
+    check(ta.wheels[0].load==double(3.4085021018981934F)*spec.approx.unit_scale&&
+          tb.wheels[0].load==double(4.148501873016357F)*spec.approx.unit_scale,
           "first strut force consumes the previous partner rather than all-new compression");
     check(model.step(c,input,VehicleFlatGround{},ta,0,1.0/240.0,true)&&
           model.step(d,input,VehicleFlatGround{},tb,0,1.0/240.0,true),
@@ -628,6 +654,7 @@ int main() {
     recovered_rigid_runtime();
     original_front_steering_epoch();
     original_contact_force_and_tyre_wrap();
+    original_strut_binary32_witness();
     original_strut_partner_epoch();
     original_aero_and_outer_epoch();
     if (failures) {std::cerr<<failures<<" player powertrain test failure(s)\n";return 1;}
