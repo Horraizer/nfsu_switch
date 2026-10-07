@@ -163,9 +163,11 @@ if(NOT rest_hash_length EQUAL 64)
     nfsu_fail("the rest run printed no 64-digit telemetry hash: '${rest_hash}'")
 endif()
 
-# The pinned telemetry of docs/VEHICLE.md, through the probe.
+# The pinned telemetry of docs/VEHICLE.md, through the probe. The hash
+# moved with the handbrake fix: the handbrake segments are the brake axis
+# as max(service, 0.5 x handbrake) (0x00474B4B), not an added rear lock torque.
 nfsu_case("the mixed script" 0
-          "vehicle-sim: script mixed segments 8 steps 2400 ;telemetry: records 2400 bytes 1248000 sha256 B9EE418C4829E3ACC12EFC906EFD89A6381376E4E334EDD82AE7E9F37DFCF8E3\n"
+          "vehicle-sim: script mixed segments 8 steps 2400 ;telemetry: records 2400 bytes 1248000 sha256 39F24A97C9D29386A16A5F7206DA1A86D45B48D79491584AE6B7E2D4DE439078\n"
           "error"
           mixed --every 0)
 set(mixed_hash "${last_hash}")

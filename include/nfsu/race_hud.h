@@ -34,6 +34,13 @@ struct RaceHudFrame {
     std::uint16_t quads = 0;
     RaceHudReadout readout{};
     RaceLapHudPanel lap{};
+    // 0x00427BB0..0x00427C41: the tach the HUD shows is this state, which
+    // each update moves toward the engine speed by at most 50 rpm
+    // (0x700DAC); the needle consumer 0x004A0FAF reads it, never the raw
+    // engine field. The caller keeps one frame across updates; a fresh
+    // frame starts at zero and sweeps up, as the original's zeroed state
+    // does at startup.
+    double needle_rpm = 0;
 };
 
 struct RaceHudDial {

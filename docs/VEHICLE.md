@@ -190,6 +190,26 @@ speed is it clamped to [idle, max]. The pairing of the finals with the
 wheels here is the opposite of the wheel torque's; every retail racer has
 equal finals, so it changes nothing, and the model keeps both as read.
 
+**The brake-axis wheel pin** (0x004757DA..0x00475845, recovered while
+fixing the tachometer drop). Before the engine speed is derived, the same
+function walks the four wheels: where the brake input exceeds 0.95
+(0x006CC968) and a wheel's spin is slower than 30 rad/s (0x006B719C), the
+spin is pinned to exactly zero and a per-wheel flag at engine+0xB8+4k is
+set. Under full brake, then, the original's needle follows the wheels down
+and rests at idle from the moment the driven wheels fall below 30 rad/s,
+never below it. The brake the wheels see combines two axes:
+0x00474B4B..0x00474B6F takes the larger of the processed service brake and
+half the handbrake axis (0x6CC7DC = 0.5). That handbrake axis is the
+handbrake's own merged input - 0x00461E10 stores its digital code 0x91 at
+car+0x2A8 and its analog code 0x92, doubled and clamped to 0xFF, at
+car+0x2A9, and 0x00461E45 takes the digital byte when it is not zero, else
+the analog's; the service brake never passes through 0x00461E10. The model
+follows the max rule since the review of the tachometer fix (the fix's
+first round wrongly took 0x91 for the service brake and gave the handbrake
+the axis at full value); the pin at exactly 30 rad/s is not reproduced, so
+the model's full-brake engine speed still follows the road all the way to
+a stop instead of resting at idle from about 9 m/s.
+
 **The automatic gearbox** (0x004757D0..0x004759B4). Gear slots: 0 reverse,
 1 neutral, 2 first. In the automatic mode the slot is at least 2; while the
 slot is below the top and the wheel rpm exceeds up[slot], shift up; then
@@ -291,19 +311,19 @@ positive steer turns left, a positive yaw rate.
 | anti-roll order | both wheels' current compressions | the recovered loop runs wheel by wheel, so wheel 0 sees wheel 1's previous value; the model is symmetric instead |
 | bump stop | `bump_stop_rate` = 200 kN/m on the compression beyond the limit | the recovered code stores the excess, x - 0.125, per wheel (0x00475ACA), but what reads it was not traced. With the preload the car has the full 125 mm of bump travel at rest; a 3 m drop reaches the stop |
 | tyre, longitudinal | `longitudinal_stiffness` = 12 per unit slip ratio, times the load | the recovered longitudinal coupling (0x00475667..0x00475797) was not reproduced |
-| tyre, lateral | `cornering_stiffness_front` = 10, `_rear` = 20 per unit tan(slip angle), times the load | the recovered lateral curve family (0x00587740, curves at 0x006F084C and 0x007043D8) was not reproduced. Chosen by the spin matrix below: with the traction limit, a front of 12 still spins the car under half brake at full lock from 30 m/s (32.8 degrees of sideslip with a rear of 18, 27.5 with 20), 11 clears it by 2 degrees (18.0) and 10 by 4.4 (15.6); at a front of 10 a rear of 20 against 18 clears the same 32 runs with one fewer spin past the default lock (3 of 46 against 4). Round 2 had 12 and 18. The rear is twice the front, so the car understeers below the limit |
+| tyre, lateral | RECOVERED and implemented (0x00587740, Unicorn-verified): the slip angle blends seven load curves - p = slip x 343.775/slip_scale, the 240SX's 12 making p half the slip in degrees, curve k covering 2k..2k+2 - each evaluated at x = 0.8 x wheel load kN / lateral_load_scale, the blend x lateral_scale x 2.5; curve 0's BSS values are zero so force leaves zero with slip; the friction circle then scales both components. The old invented stiffnesses (10 front / 20 rear) are gone: the real curves give 1.69 g saturating grip where the linear model gave 1.36, curve 1 dipping past its peak, and full lock rotates the car above 18 m/s - the recovered breakaway the owner felt as a live rear end |
 | traction limit | `traction_limit` on: the engine's torque at each wheel on the ground, driving or braking, is clamped to radius * sqrt((mu_static * load)^2 - Fy^2), where Fy is the lateral force the slip angle asks for; nothing where Fy alone reaches the peak | an ideal traction control. Without it, full throttle at full lock from 8 to 12 m/s spins whatever the tyre stiffnesses (61 to 79 degrees at 10/20), and so does a lift-off at full lock from 20 to 25 m/s at 10/20 (26 to 28 degrees), because engine braking at the rear takes grip the cornering force needs. The recovered coupling of engine and wheels, 0x00475667..0x00475797, was traced only in part ("What is not known") and is not reproduced, so how the game keeps its cars from this is unknown |
 | slip denominator | never below `slip_speed_floor` = 2 m/s | the tyre is a damper, not a division by zero, at a standstill |
 | friction circle | up to the static coefficient the linear force stands; past it the force falls toward the sliding coefficient: limit = slide + (peak - slide) * peak / demand | the two coefficients are recovered; the shape between them is not |
 | wheel spin | implicit against the linear tyre, explicit once the tyre saturates; `wheel_inertia` = 1.2 kg m^2 | stable at 120 Hz with a stiff tyre |
-| brakes | `brake_torque_front` = 1400, `_rear` = 450 N m per wheel at full input | not traced; below what the recovered static friction holds on each axle at the loads full braking puts on it, so no wheel locks: about 1.05 g from the brakes, and 1.24 g on average from 100 km/h with the engine braking the automatic gearbox adds (measured below) |
-| handbrake | 3000 N m on each rear wheel | not traced; enough to lock them |
+| brakes | `brake_torque_front` = 1400, `_rear` = 450 N m per wheel at full input | the recovered brake itself is traced now: 0x00475699..0x004756C0 makes it spin-proportional damping, -0.5 x brake x clamp(spin, +-20) in the record's torque units (500 N m per rad/s of clamped wheel speed at the full axis, the same on every wheel), answered by the pin rule above. Implementing that damping alone was tried and reverted the same day: with the engine-wheel feedback operand unrecovered (engine+0x74+8k, whose writer no static scan has found), the damping alone locks all four wheels almost at once - 100-0 km/h in 24.0 m with every wheel sliding, and the handbrake re-locks the driven wheels, resurrecting the tachometer drop the first round fixed. The invented constants stay until the feedback term is recovered; the measured attempt is in build/tach-glm of the tachometer worktree |
+| handbrake | none of its own: the wheels see max(service brake, 0.5 x handbrake) | RECOVERED at 0x00474B4B..0x00474B6F over the 0x00461E10 handbrake axis (docs/CONTROLS_CAMERA.md, docs/VEHICLE.md "The brake-axis wheel pin"); the earlier invented 3000 N m rear lock pinned wheel-derived engine speed at idle the moment it was pulled at speed, which the owner reported as the tachometer dropping toward zero |
 | steering | lock = `max_steer` / (1 + (v / `steer_speed_reference`)^2) with 0.55 rad and 12 m/s; slews at `steer_rate` = 3 rad/s | not traced; the lock falls with the square of the speed so that what full input asks of the tyres changes slowly with speed, as the path radius a given acceleration allows grows with v^2. With the round-3 tyres full input corners at 0.96 to 1.34 g, under the 1.55 g limit ("Drivability") |
 | rolling resistance | 0.015 of the load, faded in over 0.5 m/s | not traced |
 | engine braking | the recovered curve times `engine_brake_scale` = 0.5, and only while the wheel rpm is above idle | at full strength it brakes the car at about 0.5 g in first gear, where the recovered gearbox keeps it below 64 km/h, and with the brake on it locked the rear wheels; below idle it would push a slow car backwards. The recovered coupling that carries it to the wheels was not reproduced, so how much reaches a wheel in the game is unknown. Even halved, it outweighs the throttle below about 0.30 at every engine speed ("Drivability" below). Kept at 0.5 in round 3: with the traction limit, which bounds engine braking at each wheel too, 0.25 gives the same spin matrix (below) |
 | rev limiter | the throttle part of the crank torque is cut while the wheel rpm exceeds the maximum | the recovered code only clamps the stored engine speed; without a cut a manual first gear drives on past it |
 | shift hold | `auto_shift_hold_steps` = 36 (0.3 s) after an automatic shift | the recovered rule has no hysteresis, and this model's tyre slip drops the wheel rpm across an upshift by more than the rule's margin, which shifted straight back down |
-| automatic reverse | a down request in first below 1 m/s selects reverse, an up request in reverse selects first | the recovered reverse is a mode (engine +0x134 = 0) whose control was not traced |
+| automatic reverse | a down request in first below 1 m/s selects reverse, an up request in reverse selects first | RECOVERED (docs/CONTROLS_CAMERA.md, the reverse row): engine+0x134 is the controls context's gear slot +0x1D4 through vtable+0x24 (`0x00424FF0: mov eax,[ecx+0x1D4]; ret`), where -1 is the automatic mode, 0 forces the reverse slot and ratio at `0x004759A8`, and a manual gear clamps. The port's down-request-into-reverse and up-request-out follow that slot mechanism; the engage thresholds of the machine's own zeroing at `0x00461C34`, and the reverse input axis 0x8F/0x90 (car+0x2A4, no driving consumer found), remain unported |
 | surfaces | every surface uses surface 0's friction factors, 1.0 and 1.0 (table 0x006EF2F0, stride 0x94) | the track's surface ids are not decoded (issue #158) |
 
 ### The spin matrix
@@ -508,15 +528,28 @@ records in step order.
 **The pin**: the built-in `mixed` script, 2400 steps from rest on flat
 ground with the stock 240SX, hashes to
 
-    B9EE418C4829E3ACC12EFC906EFD89A6381376E4E334EDD82AE7E9F37DFCF8E3
+    39F24A97C9D29386A16A5F7206DA1A86D45B48D79491584AE6B7E2D4DE439078
 
-It was 20724B57...EC085 before round 3 of the review (comment 3622): the
-record grew by the applied drive torque, 32 bytes, which changes every
-script's hash, `rest` included, and the cornering stiffnesses and the
-traction limit change the telemetry of every script that turns or drives.
-Before that it was 85900502...0ADD5, until the fix round of review comment
-3579: the strut preload and the recovered centre of mass, inertia, tyre
-force height and brakes changed every script's telemetry.
+It was D1A186D7...89A5C until the recovered tyre curves landed (round
+7): real lateral forces change the telemetry of every script that turns.
+`brake` and `rest` keep their hashes: a straight stop and a car at rest
+hold slip angles under the first curve, so the family sees the zero
+curve. It was
+9329E10C...DF41F inside the handbrake fix's first round, which
+gave the handbrake the axis at full value; the review's correction to the
+recovered rule - max(service, 0.5 x handbrake), 0x00474B4B - moved it
+again. It was B9EE418C...CF8E3 before the handbrake fix: pulling the
+handbrake stopped being an added
+3000 N m on each rear wheel, which changes every script that pulls it -
+`mixed` and `slide` - and nothing else (`brake` and `rest` keep their
+hashes). It was 20724B57...EC085 before round 3 of the review (comment
+3622): the record grew by the applied drive torque, 32 bytes, which
+changes every script's hash, `rest` included, and the cornering
+stiffnesses and the traction limit change the telemetry of every script
+that turns or drives. Before that it was 85900502...0ADD5, until the fix
+round of review comment 3579: the strut preload and the recovered centre
+of mass, inertia, tyre force height and brakes changed every script's
+telemetry.
 
 `kVehiclePinnedMixedSha256` holds it; `nfsu_vehicle_tests` requires it and
 `nfsu_probe_vehicle_sim_guards` requires the probe to print it. Reproduce:
@@ -531,7 +564,7 @@ cmake --build build-release
 build-release/nfsu_probe vehicle-sim mixed --every 0
 ```
 
-Both print `telemetry: records 2400 bytes 1248000 sha256 B9EE418C...CF8E3`;
+Both print `telemetry: records 2400 bytes 1248000 sha256 39F24A97...4078`;
 so does either with `--handling <Global/GLOBALB.BUN>` over the retail file.
 "Debug" here and below is the default configure, `CMAKE_BUILD_TYPE` empty
 (no `-O`, no `-g`), not `-DCMAKE_BUILD_TYPE=Debug`. All eight built-in
@@ -543,10 +576,10 @@ scripts give the same telemetry in both builds:
 | `accelerate` | 3660 | `9045D7A4721733863790BB3C66440B427E853D78B34C01467B60CD58DC0B652F` |
 | `brake` | 960 | `74AB8F49ED1DC642A1B40E9E1F5AF5F7578163422FB59BA6F1947EED83D83AB5` |
 | `corner` | 1200 | `08EAC862DB52F7884AD7F948AA762250F20DCAEC363048BBBAE324B74A28F278` |
-| `slide` | 780 | `07C5C60E2CF00197D9BC1E4DD7AE298674090E9ABD009BBE1D0160E145D21D43` |
+| `slide` | 780 | `2801F98C4916F0694F426E416D06776CD57714D4206C706F0D20167EBB11C863` |
 | `top-speed` | 14400 | `E6C334F9473F80235A7C3C55D6DF09D6D20F6270069117A8FB9403EE3B051ECC` |
 | `manual` | 1800 | `6B859D78DB23BE058DDAB12986101548F1A724D5E3D0566AB376EB6FF3C3ACAA` |
-| `mixed` | 2400 | `B9EE418C4829E3ACC12EFC906EFD89A6381376E4E334EDD82AE7E9F37DFCF8E3` |
+| `mixed` | 2400 | `39F24A97C9D29386A16A5F7206DA1A86D45B48D79491584AE6B7E2D4DE439078` |
 
 ### On the console
 
@@ -637,7 +670,7 @@ same as the built-in ones.
 | acceleration | 0-100 km/h in 5.0 to 7.5 s (6.08 s); every upshift crosses its threshold; four upshifts to fifth; no downshift under full throttle; straight |
 | braking | 100-0 km/h in 25 to 35 m (31.4 m) and 1.6 to 2.6 s, never below v^2 / (2 * 1.8 * g) = 21.9 m; no wheel locks; the held brake holds; the automatic gearbox starts in second, never shifts up, shifts down only once the rpm in the old gear is below its down threshold and into a gear whose up threshold is not passed, and ends in first |
 | cornering | at 15 m/s and a steer of 0.3: left and right mirror to 1e-9; steady within 0.5%; lateral acceleration = speed * yaw rate within 2%; understeer between 0.5 and 1 of the kinematic yaw rate; no tyre sliding; load moves outward; the road wheels slew at the rate limit; 90% of the yaw rate within a second |
-| the grip limit | the stable regime, with the lock held fixed at 15 m/s: doubling it from a quarter to half the default full-input lock (0.215 rad) doubles the lateral acceleration within 5%; the default lock slides no tyre and corners at 1.36 g; 1.25, 1.5 and 2 times it slide the rear tyres and corner at the same 1.55 g within 2%, under the rear's 1.7; every run keeps within 10 degrees of its path and above 0.6 of its speed, where a spin passes 25 degrees and falls below 0.3; the handbrake locks and slides the rear wheels and turns the car in |
+| the grip limit | the stable regime, with the lock held fixed at 15 m/s: doubling it from a quarter to half the default full-input lock (0.215 rad) doubles the lateral acceleration within 5%; the default lock corners at 1.69 g on the curve family's plateau, 1.25 to 2 times it slide the rear tyres and hold 1.55 to 1.69 g under the front's 1.8, curve 1's dip past its peak pulling 1.5 and 2 times below 1.25's; every run keeps within 10 degrees of its path and above half its speed, where a rotation passes 20 degrees and falls below 0.35; the handbrake, as max(service, 0.5 x handbrake), leaves the rear wheels rolling, keeps the wheel-derived engine speed above idle while the car moves, and brakes exactly like half brake input |
 | the spin matrix | the 32 runs of "The spin matrix": none passes 20 degrees of sideslip above 3 m/s (the worst is 16.0); without the traction limit full throttle at full lock from 10 m/s passes 40 |
 | snap oversteer | with the lock held fixed, 1.25 times the default at 20 m/s and 1.4 times at 25 m/s steady (within 5 degrees, above 0.85 of the speed), 1.4 times at 20 m/s and 1.5 times at 25 m/s spin (past 25 degrees, below 0.3 of the speed) |
 | the tyre force height | at half input from 20 m/s, the load moved across the track puts the lateral forces at 0.4 of the centre of mass's height within 8%, which is `tyre_force_lift` = 0.6 (measured 3.2% high, 4.1% at full input, growing with the body's roll, which the balance leaves out; a lift of 0.5 or 0.7 moves it by a quarter) |
@@ -710,8 +743,8 @@ built-in scripts, for #59 to map a controller onto:
   out of the snap window. That window's lower edge lies between 1.25 and
   1.30 times the lock at 20 m/s, between 1.40 and 1.45 at 25 and between
   1.65 and 1.70 at 30 ("The spin matrix"). Below the
-  limit the car understeers; the handbrake slides the rear and turns it
-  in.
+  limit the car understeers; the handbrake, being the brake axis at full
+  value, brakes all four wheels without locking any.
 - **For #59's driver and corner speeds**: plan with the figures above, not
   with the 1.55 g limit. The review's pure-pursuit driver on its 1272 m
   street course (comment 3666, its own harness, not run here) ran wide by
@@ -725,7 +758,8 @@ built-in scripts, for #59 to map a controller onto:
   no wheel on the ground ever gets more engine torque, driving or
   braking, than its tyre has left beside the cornering force, so the
   model cannot power-slide the 240SX or kick its tail out on a lift-off;
-  only the handbrake slides the rear. A Drift event that wants power
+  the handbrake, as the recovered brake axis, cannot slide the rear
+  either. A Drift event that wants power
   slides can set `traction_limit` to false, and then gets the spins the
   spin matrix records for it (7 of 32 at full input, full throttle at
   full lock from 8 to 12 m/s among them), which its own assists would

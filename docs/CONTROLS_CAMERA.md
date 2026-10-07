@@ -59,7 +59,7 @@ guessed from order. Every value arrives as a byte.
 | steer | 0x00461840 | the digital byte (0x87) unless it is centred, 0x80, then the analog one (0x88); `(byte - 128) * -1/128`, with 0xFF read as exactly -1 so that both ends reach 1 (0x0046186E..0x004618A4) | RECOVERED |
 | throttle | 0x004618B0 | the digital byte (0x89) when it is not 0, otherwise the larger of the analog one (0x8A) and the alternate analog one (0x8B), which is scaled by 1.07 and clamped to 255 unless a flag is 1; over 255 (0x00461951..0x00461988); then, when that flag (tested again at 0x00461994) is 1, the six-point curve at 0x00700374 (0x004619A3..0x004619B1) | RECOVERED; what sets the flag was not traced |
 | brake | 0x00461DA0 | the digital byte (0x8C) when it is not 0, otherwise the larger of the two analog ones; over 255 | RECOVERED |
-| reverse | 0x004619C0 | the digital byte (0x8F) when it is not 0, otherwise the analog one (0x90), cubed under the same flag | RECOVERED; how the physics reads it was not traced |
+| reverse | 0x004619C0 | the digital byte (0x8F) when it is not 0, otherwise the analog one (0x90), cubed under the same flag | RECOVERED; the axis is registered (0x0046113A) and stored at car+0x2A4, but no driving-path consumer of it was found. The reverse the wheels feel is the gear-slot chain: the controls context's slot +0x1D4 holds -1 (automatic), 0 (reverse) or a manual gear, set by the mode setter 0x00461520, reset by 0x004615B0 (modes 1 and 3 to first, else -1), stepped by the shift handler 0x00461E70 with its table bounds, and zeroed by the processed-control machine at 0x00461C34; the physics reads it through vtable slot +0x24, whose body at 0x00424FF0 is `mov eax,[ecx+0x1D4]; ret`, into engine+0x134 at 0x00474671, and 0x004759A8 answers 0 by forcing gear slot 0 and the reverse ratio. The condition that drives the 0x00461C34 zeroing was not stack-verified; an emulator pass would settle it |
 | handbrake | 0x00461E10 | the digital byte (0x91) when it is not 0, otherwise the analog one (0x92) doubled in eight bits (0x00461E26); the clamp after it compares an 8-bit value with 0xFF and never fires, so an analog byte of 128 or more wraps | RECOVERED |
 
 Nothing in these handlers depends on speed, and nothing rate-limits the
@@ -390,7 +390,11 @@ the default controls, the recovered camera rules with the default
 approximations, POV 0, at rest at the origin facing +x, automatic gearbox -
 the demonstration's 1380 records, 1689120 bytes, hash to
 
-    7030E676B13DD4F09525EFEF5D7A076C395F401C3692AD2F72D89B1871D275D9
+    9E00A0F4998E0A9136F76B98781AF5EA623E3D7C07CF027692878D8FBD6752F7
+
+It was 7030E676...275D9 until the handbrake fix (docs/VEHICLE.md): the
+demonstration's one second of handbrake became the brake axis at its full
+value, then half of it under the recovered max rule (0x00474B4B), instead of an added rear lock torque.
 
 `kDrivePinnedDemoSha256` holds it; `nfsu_drive_tests` requires it in each
 desktop build, and `nfsu_probe_drive_replay_guards` requires the probe to
@@ -470,12 +474,12 @@ camera, its left side in view.
 
 In CTest, `nfsu_probe_drive_replay_guards` renders frames 690 and 1380 at
 160x90 from the synthetic stock-frame inputs `nfsu_stock_frame_tests`
-writes, and pins them in every desktop build:
-`ED60C57AF156E5A8E2850A85DAF8998F883DBE1EF34A15465BB1C8E23B1D3FB3` and
-`F9CAA668F9ADAA7F495B037261586EF4DB3A16BDA695D0CB46C55B3856C1F313`, each
-equal to CMake's own `file(SHA256)` of the TGA written. Issue #201 also
-re-pins frame 690 for the same stock lateral matrix correction; frame
-1380 is unchanged.
+writes, and pins them in every desktop build, each equal to CMake's own
+`file(SHA256)` of the TGA written; the pins live in that test. Issue #201
+re-pinned frame 690 for the stock lateral matrix correction. The
+handbrake fix moved frame 1380 - the demonstration's handbrake second is
+half the brake axis under the recovered max rule (0x00474B4B), so every pose after it shifts -
+and left frame 690, before the handbrake segment, unchanged.
 
 ## Determinism
 
