@@ -276,25 +276,25 @@ std::vector<VehicleTrackScenario> circuit_scenarios() {
     return {
         scenario("grid", "on grid slot 0, the brake held for three seconds", 0.0, 0.0, 0.0, 0,
                  {segment(360, 0.0, 1.0, 0.0)},
-                 "36EF7514BA785600CB8647909664F4586A458B1E72FDF517E89C102679DEC8AD"),
+                 "AEA0F8766D3A88CEF6BDC133570E7196095B75FC8980A7F72BC8404C31EAFDEF"),
         scenario("drive", "full throttle for four seconds from the grid along the road", 0.0,
                  0.0, 0.0, 0, {segment(480, 1.0, 0.0, 0.0)},
-                 "1F5F4F438A19E6BBFD3C78D433419D9938755A90A0AC73FA58660EECCA0B821E"),
+                 "F1D2B78F4FCC2A1B591392BB9CB9243DAA9B2CC6130CC553D0E6C0D0CB72015A"),
         scenario("wall", "full throttle from the grid turned 60 degrees left, into the wall "
                          "10.6 m to the left, then along it",
                  0.0, 0.0, 0.0, kTurn60, {segment(480, 1.0, 0.0, 0.0)},
-                 "58DD1D520E7F8451DC410984CD933DCA951D5E4F015BAF76F70F0BA39A2A316A"),
+                 "00C09F45E857B2F0D98BF378989D8478BD3B05205149A949820E9A0A098E7820"),
         scenario("wall-square", "full throttle from the grid turned 90 degrees left, "
                                 "straight at that wall",
                  0.0, 0.0, 0.0, kTurn90, {segment(360, 1.0, 0.0, 0.0)},
-                 "90307C728F9FA8C68570108D3B3FA198727E3860CFB12D10F6F767E29B106BF0"),
+                 "EA840FAA7F5CBDBC700C6B68B4AEAD342F0AED63D6DA687F8F83BA5A529ABDDB"),
         scenario("drop", "dropped from five metres above the grid, no input", 0.0, 0.0, 5.0, 0,
                  {segment(360, 0.0, 0.0, 0.0)},
-                 "09366F932463BF2635D337B550D66919668948F8FCBE7A9CB5CDA1F6D4F4DEE5"),
+                 "B84FBE418214241190BB6CB3519B717AABBC122BD6E45566F8FAE017E03D5158"),
         scenario("leave", "20 m left of the grid, over no collision cell, no input: it falls, "
                           "is out of bounds, and is reset",
                  0.0, 20.0, 1.0, 0, {segment(360, 0.0, 0.0, 0.0)},
-                 "452446A156A82F802E2B26333E5C24064C91286CABA221D63841E2E0CC324483"),
+                 "3F95D4D51E3006F4B8C811B8E6F427CEC3B7425F7DFFDD4DB98E5EB6F731ABA4"),
     };
 }
 

@@ -7,10 +7,10 @@ updated_utc: 2026-10-07
 assignment: issue328; PR329; coordinator chat01a0f5d2-29c4-7fe2-86b4-e58d66adf088
 phase: correction-targeted-checks-complete
 branch: codex/day20261007-integration
-head: 725dda939d5746a6213fb02e5426bf34d3cfd2ad (before this review-correction commit)
+head: fe818cc5c539850f2c6bcf4b3d562c5004ce37cc (before this circuit-coverage correction commit)
 base: 83d63d9f1831b413f7020bc4cf799c40c58a87c8
 worktree: owner desktop; build/day20261007-integration-worker
-saved: frozen725dda9 review diagnostic retained; correction head belongs in the new PR handoff
+saved: frozen725dda9 and fe818cc review receipts retained; next exact head is in the PR handoff
 ownership: this worker remains assigned; coordinator owns review and hardware loop
 
 ## Scope and sources
@@ -143,3 +143,42 @@ tracked-blob/path/mode receipts and exact correction head are in the PR handoff.
 No full default/Release/three-replay/Switch cycle is claimed by the worker:
 the owner-authorized independent reviewer retains that slot and rechecks this
 exact delta. No hardware upload, merge or issue closure occurred.
+
+## C1 actual retail circuit coverage
+
+Independent review identified a false coverage statement: the synthetic
+vehicle-track unit checks only circuit inventory and pin lengths, while the
+probe guard tests missing retail input. Neither executed the six real circuit
+scenarios. Fresh actual runs at fe818cc confirmed every circuit expectation
+was stale after the integrated physics corrections. All six emitted complete
+records and retained intended behavior; no runtime stepping changed here.
+
+This correction updates only the six circuit source hashes and adds
+`nfsu_vehicle_track_circuit_retail`. The new Python test executes every real
+scenario, requires successful nonempty fresh process output and complete
+record counts, compares emitted hashes against the source fixtures, and
+requires supported grid/drive without resets, the start-line crossing, real
+wall/road impulses without concealed resets, airborne-to-supported landing,
+and one performed bounds reset. Expected wall/road polygon identity stays
+in the test. No producer assertion or reset/contact check is removed.
+CMake registers the test under the read-only retail fixture in both default
+and Release configurations. Documentation accurately distinguishes actual
+coverage from inventory/refusal checks; prior unintended indentation of
+three Markdown math lines is restored from725dda9.
+
+Targeted verification from the actual worker path with the native runtime:
+
+- Fresh `build/nfsu_probe.exe vehicle-track RETAIL/Global/GLOBALB.BUN RETAIL/FrontEnd/FrontB.lzc RETAIL/Tracks/TRACKB1003.lzc 1 SCENARIO --every 0`, for grid/drive/wall/wall-square/drop/leave: all exit0, complete records, concrete contact/reset/support evidence; full retail manifests unchanged.
+- `cmake -S . -B build -G Ninja -DNFSU_RETAIL_ROOT=RETAIL`: configure/generate passed.
+- `cmake --build build --target nfsu_probe -j 1`: passed.
+- `ctest --test-dir build -R ^nfsu_vehicle_track_circuit_retail$ --output-on-failure`: `100% tests passed, 0 tests failed out of 3`; before manifest, six-scenario gate and after manifest passed, no skip.
+- Standalone Python312 `-B tests/vehicle_track_circuit_retail.py --probe build/nfsu_probe.exe --root RETAIL --references src/vehicle_track_course.cpp`: `PASS: all six real retail circuit scenarios`; actual workspace automation smoke passed.
+- Same test with an own scratch copy of fe818cc source references: nonzero exit with `grid: actual circuit hash differs from source fixture`; negative check detects stale references after a successful real producer invocation.
+
+The first local receipt writer rejected the non-ASCII CTest workspace banner
+while encoding its log as ASCII. It was not a test verdict. The corrected
+receipt encodes display characters as ASCII escapes, never reconstructs a
+path from stdout, and the repeated gate passed. No generated automation
+embeds the workspace path. Byte/path scans and commit-head receipts are in
+the PR handoff. Only the targeted default gate ran here; independent Release,
+exact-head re-review and final Switch artifact remain reviewer-owned.

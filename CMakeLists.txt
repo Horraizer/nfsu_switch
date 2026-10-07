@@ -1946,6 +1946,14 @@ if(NFSU_BUILD_TESTS)
         add_test(NAME nfsu_minimap_retail COMMAND nfsu_minimap_tests --retail "${NFSU_RETAIL_ROOT}")
         set_tests_properties(nfsu_minimap_retail PROPERTIES
             FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 180)
+        add_test(NAME nfsu_vehicle_track_circuit_retail
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/vehicle_track_circuit_retail.py
+                --probe $<TARGET_FILE:nfsu_probe>
+                --root "${NFSU_RETAIL_ROOT}"
+                --references ${CMAKE_CURRENT_SOURCE_DIR}/src/vehicle_track_course.cpp)
+        set_tests_properties(nfsu_vehicle_track_circuit_retail PROPERTIES
+            FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 600)
         add_test(NAME nfsu_stability_retail COMMAND nfsu_stability_tests --root "${NFSU_RETAIL_ROOT}")
         add_test(NAME nfsu_frontend_retail COMMAND nfsu_frontend_tests "${NFSU_RETAIL_ROOT}")
         add_test(NAME nfsu_frontend_music_transition_retail COMMAND nfsu_frontend_music_transition_tests "${NFSU_RETAIL_ROOT}")

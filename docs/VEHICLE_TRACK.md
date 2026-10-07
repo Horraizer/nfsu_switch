@@ -147,13 +147,13 @@ velocity of the contact point along it:
   whose up axis has a vertical part above 0.7 ([0x006CCA04]) - upright -
   slides with **0.1** (0x0046C00C..0x0046C0A3). The friction impulse is
   mu j along the contact point's tangential velocity vt, reversed, scaled by
-|vt| below 1 m/s ([0x007000A8], 0x0046C0E4..0x0046C0FB) and nothing below
+  |vt| below 1 m/s ([0x007000A8], 0x0046C0E4..0x0046C0FB) and nothing below
   1e-5 ([0x006CCB7C]);
 - an upright car faster than 30 m/s ([0x006CCAC0]) against such a body
   (0x0046C223..0x0046C3D9) loses a horizontal impulse of 0.4 t m/s
   ([0x006B7258]) against its velocity, and its arm is shortened by
-|J| / (|J| + v / 1.75) ([0x006B7260]), J in t m/s, v in m/s, when
-|J| + v > 1: at speed a wall costs a little and turns the car less;
+  |J| / (|J| + v / 1.75) ([0x006B7260]), J in t m/s, v in m/s, when
+  |J| + v > 1: at speed a wall costs a little and turns the car less;
 - the four-wheel lever blocks (0x0046C3FE..0x0046C52C), which for a car
   with all four wheels on the ground (+0x3CC is 4) drop the arm's part along
   its up axis, run only when the collision record's +0x10 is set
@@ -451,9 +451,14 @@ build-release/nfsu_probe vehicle-track $R/Global/GLOBALB.BUN $R/FrontEnd/FrontB.
 
 The circuit scenarios are `grid`, `drive`, `wall`, `wall-square`, `drop`
 and `leave`. Their current record hashes and semantic reset/contact checks
-are owned by `nfsu_vehicle_track_tests`, `nfsu_probe_vehicle_track_guards`
-and the course fixtures. Run the commands above for measured results;
-independent default and Release gates verify both configurations.
+are checked by `nfsu_vehicle_track_circuit_retail`, which executes all six
+actual retail inputs with `nfsu_probe` and compares fresh telemetry with
+`src/vehicle_track_course.cpp`. It also requires supported grid/drive,
+start-line crossing, wall/road collision impulses without hidden resets,
+an airborne-to-supported landing, and the performed bounds reset. The test
+is registered with the read-only retail fixture in both default and Release
+gates. `nfsu_vehicle_track_tests` only checks the circuit fixture inventory;
+`nfsu_probe_vehicle_track_guards` covers missing-input refusals.
 
 ### On the console
 
