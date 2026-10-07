@@ -92,9 +92,11 @@ void main()
         discard;
     }
     if (material.fallback.w == 6.0) {
-        outColor = vec4(ordinary_world_channel(sampled.r, inColor.r),
+        // Raw track D3DCOLOR is little-endian BGRA; the native declaration
+        // expands it to RGBA before world.efx sees the authored color.
+        outColor = vec4(ordinary_world_channel(sampled.r, inColor.b),
                         ordinary_world_channel(sampled.g, inColor.g),
-                        ordinary_world_channel(sampled.b, inColor.b),
+                        ordinary_world_channel(sampled.b, inColor.r),
                         float(race_effect_alpha(texel.a, material.alpha.x)) / 255.0);
         return;
     }

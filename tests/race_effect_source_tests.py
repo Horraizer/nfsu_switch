@@ -19,8 +19,8 @@ def check(shaders, renderer):
     for index, shader in enumerate(shaders):
         world = block(shader, 'if (material.fallback.w == 6.0)')
         assert world.count('ordinary_world_channel(sampled.') == 3
-        for lane in 'rgb':
-            assert f'ordinary_world_channel(sampled.{lane}, inColor.{lane})' in world
+        for lane, stored in [('r','b'),('g','g'),('b','r')]:
+            assert f'ordinary_world_channel(sampled.{lane}, inColor.{stored})' in world
         assert 'float(race_effect_alpha(texel.a, material.alpha.x)) / 255.0' in world
         assert 'return;' in world
         assert 'return texel * vertex * 2.0;' in block(shader, 'float ordinary_world_channel(')
@@ -89,7 +89,8 @@ renderer = (root / 'switch/deko_renderer.cpp').read_text()
 check(shaders, renderer)
 for name, old, new, shader_mutation in [
     ('world original factor lost', 'return texel * vertex * 2.0;', 'return texel * vertex;', True),
-    ('world authored color lost', 'ordinary_world_channel(sampled.r, inColor.r)', 'ordinary_world_channel(sampled.r, 1.0)', True),
+    ('world authored color lost', 'ordinary_world_channel(sampled.r, inColor.b)', 'ordinary_world_channel(sampled.r, 1.0)', True),
+    ('world native D3DCOLOR swizzle lost', 'ordinary_world_channel(sampled.r, inColor.b)', 'ordinary_world_channel(sampled.r, inColor.r)', True),
     ('alpha rounding bypass', 'race_effect_alpha(texel.a, material.alpha.x)', 'texel.a', True),
     ('vertex-color override', 'frame.options.y != 0u || material.environment_range.w > 0.5', 'true', True),
     ('flat lighting removed', 'normal = normalize(normal);', 'normal = vec3(0);', True),

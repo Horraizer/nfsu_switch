@@ -2672,9 +2672,10 @@ void test_ordinary_world_base_material() {
         Vec3{options.camera.target.x-.25,.5,0},px,py),"world probe visible");
     Frame frame; RenderStats stats; TrackRenderStats track; std::string error;
     check_ok(render_track_draw_list(fixture.scene,list,options,{},frame,stats,track,error),"world material render",error);
-    // Source fixture texel(255,120,180), color(255,128,64). Native 2x term,
+    // Source fixture texel RGB(255,120,180), stored BGRA(255,128,64,255).
+    // D3DCOLOR expands native RGB(64,128,255). Native 2x term,
     // independent of generic vertex-color option and directional normal.
-    check(pixel_at(frame,px,py)==std::array<unsigned char,4>{255,120,90,255},"original world 2x baked RGB");
+    check(pixel_at(frame,px,py)==std::array<unsigned char,4>{128,120,255,255},"original D3DCOLOR world 2x baked RGB");
     const auto baked=frame.rgba();
     options.shading=ShadingMode::none; options.vertex_color=true;
     check_ok(render_track_draw_list(fixture.scene,list,options,{},frame,stats,track,error),"world option controls",error);

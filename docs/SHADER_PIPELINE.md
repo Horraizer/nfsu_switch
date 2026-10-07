@@ -133,6 +133,14 @@ lighting. `RasterMaterial::ordinary_world` implements the same CPU reference
 term, rounding only its final channel. Generic `vertex_color` and `shading`
 options do not replace this material's authored base.
 
+The original declaration builder at `0x40E212..0x40E2A9` selects COLOR type4
+at offset12 for this format. [D3DDECLTYPE_D3DCOLOR](https://learn.microsoft.com/en-us/windows/win32/direct3d9/d3ddecltype)
+expands packed ARGB to RGBA; little-endian stored bytes are BGRA. Raw buffers
+remain unchanged. Only this ordinary-world base reads stored lanes2,1,0
+as RGB; both CPU and GPU retain the alpha lane. The non-gray original
+`XO_CARWALLA_1B_00` input in `nfsu_ordinary_world_retail` guards this conversion,
+which grayscale inputs cannot distinguish.
+
 This correction covers base RGB. Alpha/state and the selected sampler policy
 are retained. Original diffuse samplers declare linear mip/min/mag filtering;
 the default port track sampler remains nearest and exposes only the loaded

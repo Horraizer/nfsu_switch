@@ -1162,7 +1162,7 @@ bool Rasterizer::fill(
                             for (int k = 0; k < 3; ++k) {
                                 if (material.ordinary_world)
                                     color[k] = channel((material.linear_filter && !fallback ?
-                                        continuous_rgb[k] : color[k]) * vc[k] * (2.0 / 255.0));
+                                        continuous_rgb[k] : color[k]) * vc[2-k] * (2.0 / 255.0));
                                 else
                                     color[k] = std::min(255U, (color[k] * channel(vc[k]) *
                                         ((material.sky || material.frontend_floor) ? 2U : 1U) + 127U) / 255U);

@@ -70,8 +70,8 @@ struct TrackVertex {
     float py = 0.0F;
     float pz = 0.0F;
     // Bytes 12..15 as stored. The retail declaration calls them one
-    // D3DCOLOR; the byte order and the meaning are unknown, exactly as
-    // they are for MeshVertex::color.
+    // D3DCOLOR. Its little-endian bytes are BGRA; the original declaration
+    // expands them to RGBA. Retain the stored order in this raw structure.
     std::uint8_t color[4] = {0, 0, 0, 0};
     float u = 0.0F;
     float v = 0.0F;
