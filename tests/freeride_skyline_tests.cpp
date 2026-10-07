@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <iterator>
@@ -250,6 +251,97 @@ void retail_checks(const std::filesystem::path& root) {
     require(race.report.pass==CarDrawPass::world && menu.report.pass==CarDrawPass::front_end,
         "each frame keeps its own pass");
     compare_menu_and_race(menu,race);
+
+    // Review corrections R2 (F1/F2/F3): the authored selections themselves,
+    // not only menu/race equality.
+    {
+        // F2: the installed BASE_PAINT record keeps its own material; the
+        // nearest-swatch surrogate stays a color-only fallback. FE_SKYLINE
+        // slot 30 is record METAL_L3_TEST04, material C248EAE7; the Eddie
+        // color's nearest GLOSS_L1 swatch would be FC329CF4.
+        const auto installed_paint=race.report.slots[30].record;
+        require(installed_paint!=kNoCarPart,"the preset installs a BASE_PAINT record");
+        require(car_part_material_hash(database,installed_paint)==0xC248EAE7U,
+            "the installed Eddie paint material is METAL_L3_TEST04's C248EAE7");
+        require(select_car_paint_material_hash(database,installed_paint,
+            dress.skin.selection.base_color)==0xC248EAE7U,
+            "the installed paint material wins over the skin color");
+        require(select_car_paint_material_hash(database,kNoCarPart,
+            dress.skin.selection.base_color)==0xFC329CF4U,
+            "a color-only selection keeps the nearest GLOSS_L1 surrogate");
+        std::vector<CarMaterialRecord> materials;
+        {
+            std::vector<unsigned char> globals;
+            std::vector<RaceTableIssue> issues;
+            require(load_race_image(root/"Global/GLOBALB.BUN",globals,issues),
+                    "read GLOBALB for the material records");
+            require(parse_car_materials(globals.data(),globals.size(),materials,error),
+                    "parse material records: "+error);
+        }
+        const auto record_of=[&](std::uint32_t hash)->const CarShadingMaterial* {
+            for (const auto& r:materials) if (r.hash==hash) return &r.values;
+            return nullptr;
+        };
+        // Gates are rewritten per material group after the join, so equality
+        // is asserted on the six coefficient vectors alone.
+        const auto same_coefficients=[](const CarShadingMaterial& a,
+                                        const CarShadingMaterial& b) {
+            const auto same=[](const float* u,const float* v) {
+                return std::memcmp(u,v,4*sizeof(float))==0;
+            };
+            return same(a.diffuse_min,b.diffuse_min) && same(a.diffuse_range,b.diffuse_range) &&
+                same(a.specular_min,b.specular_min) && same(a.specular_range,b.specular_range) &&
+                same(a.environment_min,b.environment_min) &&
+                same(a.environment_range,b.environment_range);
+        };
+        const auto* authored_paint=record_of(0xC248EAE7U);
+        const auto* authored_tint=record_of(0xB3645F81U);
+        const auto* production_glass=record_of(0x471A1DCAU);
+        require(authored_paint && authored_tint && production_glass,
+            "the authored paint, tint and production glass records decode");
+        bool paint_draw=false,tint_draw=false;
+        for (const auto& draw:race.scene.draws) {
+            if (draw.shading.gates[0]==0) continue;
+            if (same_coefficients(draw.shading,*authored_paint)) paint_draw=true;
+            if (same_coefficients(draw.shading,*authored_tint)) tint_draw=true;
+        }
+        require(paint_draw,"CARSKIN draws carry the authored paint material");
+        // F1: the installed WINDOW_TINT (slot 115, DARK TINT ORANGE)
+        // replaces the production WINDSHIELD material 471A1DCA on glass
+        // groups; removing the tint keeps the production glass.
+        require(tint_draw,"glass draws carry the installed orange tint material");
+        require(race.report.slots[115].record!=kNoCarPart,
+            "the preset installs a WINDOW_TINT record");
+        require(car_part_material_hash(database,race.report.slots[115].record)==
+            0xB3645F81U,"the installed tint selects B3645F81");
+        {
+            FreeDriveSkyline untinted;
+            require(resolve_free_drive_skyline(root,untinted,error),
+                "resolve the dress for the tint removal: "+error);
+            untinted.request.installed_parts.records[115].reset();
+            StockFrame plain;
+            require(prepare_race_frame(root,untinted,plain,error),
+                "prepare the dress without the tint: "+error);
+            bool glass_kept=false;
+            for (const auto& draw:plain.scene.draws)
+                if (same_coefficients(draw.shading,*production_glass)) glass_kept=true;
+            require(glass_kept,"without the tint the glass keeps the production material");
+        }
+        // F3: the MANTIS widebody widens the wheel stance - the lateral comes
+        // from wheel +0x20 (cached at CarRenderInfo+0x514), not the stock
+        // +0x1C. Skyline stores +/-0.87838/+0.88514 in +0x1C and
+        // +/-0.96283/+0.98310 in +0x20.
+        const auto& wheels=race.car_types.records[race.report.car_type].wheels;
+        for (const auto& instance:race.scene.instances) {
+            if (instance.part_slot!=kSlotWheel) continue;
+            const auto& wheel=wheels[instance.copy%kCarWheelCount];
+            const float lateral=wheel.value_20;
+            const float side=lateral>0.0F?1.0F:-1.0F;
+            const float expected=lateral-side*wheel.value_14*0.5F;
+            require(std::abs(instance.animation_pivot[1]-expected)<1e-5F,
+                "the widebody wheel pivot uses the +0x20 lateral");
+        }
+    }
 
     // No unresolved drawable material in the dressed race scene: no checker
     // textures, no silent part fallback.

@@ -22,44 +22,54 @@ std::uint32_t hash_name(const char* s) {
     return h;
 }
 }
-std::uint32_t select_car_paint_material_hash(const CarPartDatabase& database,
-    std::size_t installed_base_paint, std::optional<std::uint32_t> skin_color) {
-    if (!database.ok()) return 0;
-    std::size_t chosen=installed_base_paint;
-    if (skin_color) {
-        std::uint64_t best=~std::uint64_t{0};
-        chosen=kNoCarPart;
-        for (const auto& part:database.records) {
-            if (part.slot!=30 || part.name.rfind("GLOSS_L1_COLOR",0)!=0) continue;
-            std::uint32_t color=0;
-            unsigned found=0;
-            for (std::int16_t i=0;i<part.attribute_count;++i) {
-                const auto& a=database.attributes[part.attribute_index+static_cast<std::size_t>(i)];
-                unsigned shift=0;
-                if (a.key==hash_name("RED")) { shift=0; found|=1; }
-                else if (a.key==hash_name("GREEN")) { shift=8; found|=2; }
-                else if (a.key==hash_name("BLUE")) { shift=16; found|=4; }
-                else if (a.key==hash_name("GLOSS")) { shift=24; found|=8; }
-                else continue;
-                color|=(a.value&255U)<<shift;
-            }
-            if (found!=15) continue;
-            std::uint64_t distance=0;
-            for (unsigned shift:{0U,8U,16U,24U}) {
-                const auto delta=static_cast<int>((color>>shift)&255U)-
-                                 static_cast<int>((*skin_color>>shift)&255U);
-                distance+=static_cast<std::uint64_t>(delta*delta);
-            }
-            if (distance<best) { best=distance; chosen=part.index; }
-        }
-    }
-    if (chosen>=database.records.size()) return 0;
-    const auto& part=database.records[chosen];
+std::uint32_t car_part_material_hash(const CarPartDatabase& database,
+                                     std::size_t record) {
+    if (!database.ok() || record>=database.records.size()) return 0;
+    const auto& part=database.records[record];
     for (std::int16_t i=0;i<part.attribute_count;++i) {
         const auto& a=database.attributes[part.attribute_index+static_cast<std::size_t>(i)];
         if (a.key==0x6BA02C05U) return a.value;
     }
     return 0;
+}
+std::uint32_t select_car_paint_material_hash(const CarPartDatabase& database,
+    std::size_t installed_base_paint, std::optional<std::uint32_t> skin_color) {
+    if (!database.ok()) return 0;
+    // 0x56B4F2..0x56B528 keeps the installed BASE_PAINT record's own
+    // material; the nearest-swatch surrogate below stands in only for a
+    // color-only skin that installed no paint record.
+    std::size_t chosen=installed_base_paint;
+    if (car_part_material_hash(database,chosen)==0) {
+        chosen=kNoCarPart;
+        if (skin_color) {
+            std::uint64_t best=~std::uint64_t{0};
+            for (const auto& part:database.records) {
+                if (part.slot!=30 || part.name.rfind("GLOSS_L1_COLOR",0)!=0) continue;
+                std::uint32_t color=0;
+                unsigned found=0;
+                for (std::int16_t i=0;i<part.attribute_count;++i) {
+                    const auto& a=database.attributes[part.attribute_index+static_cast<std::size_t>(i)];
+                    unsigned shift=0;
+                    if (a.key==hash_name("RED")) { shift=0; found|=1; }
+                    else if (a.key==hash_name("GREEN")) { shift=8; found|=2; }
+                    else if (a.key==hash_name("BLUE")) { shift=16; found|=4; }
+                    else if (a.key==hash_name("GLOSS")) { shift=24; found|=8; }
+                    else continue;
+                    color|=(a.value&255U)<<shift;
+                }
+                if (found!=15) continue;
+                std::uint64_t distance=0;
+                for (unsigned shift:{0U,8U,16U,24U}) {
+                    const auto delta=static_cast<int>((color>>shift)&255U)-
+                                     static_cast<int>((*skin_color>>shift)&255U);
+                    distance+=static_cast<std::uint64_t>(delta*delta);
+                }
+                if (distance<best) { best=distance; chosen=part.index; }
+            }
+        }
+    }
+    if (chosen>=database.records.size()) return 0;
+    return car_part_material_hash(database,chosen);
 }
 bool valid_car_shading_material(const CarShadingMaterial& c) noexcept {
     const float* vectors[]={c.diffuse_min,c.diffuse_range,c.specular_min,c.specular_range,
@@ -111,17 +121,25 @@ bool parse_car_materials(const unsigned char* bytes, std::size_t size,
     out=std::move(records); return true;
 }
 bool apply_car_materials(PreparedCarScene& scene, const unsigned char* bytes,
-                         std::size_t size, std::uint32_t paint_hash, std::string& error) {
+                         std::size_t size, std::uint32_t paint_hash,
+                         std::uint32_t window_tint_hash, std::string& error) {
     std::vector<CarMaterialRecord> records;
     if (!parse_car_materials(bytes,size,records,error)) return false;
     const auto wanted=paint_hash;
     bool found=false;
     for (const auto& r:records) if (r.hash==wanted) { found=true; break; }
     const auto selected=found ? wanted : hash_name("DEFAULT");
+    bool tint_found=false;
+    if (window_tint_hash!=0)
+        for (const auto& r:records) if (r.hash==window_tint_hash) { tint_found=true; break; }
+    const auto tint=tint_found ? window_tint_hash : 0;
     for (auto& draw:scene.draws) {
         auto hash=draw.material_key_hash;
         // 0x56F520/0x56F5A0 bind CARSKIN to the selected BASE_PAINT material.
         if (hash==hash_name("CARSKIN")) hash=selected;
+        // 0x56F5B1..0x56F5E1 replace the production WINDSHIELD material with
+        // the installed tint's selected material, when one is installed.
+        if (tint!=0 && hash==hash_name("WINDSHIELD")) hash=tint;
         draw.shading={};
         for (const auto& r:records) if (r.hash==hash) {
             draw.shading=r.values;

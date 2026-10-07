@@ -420,6 +420,15 @@ bool build_stock_scene(
     std::set<std::uint32_t> ambiguous;
     std::vector<InstanceDraft> drafts;
     std::set<std::pair<std::size_t, std::size_t>> selected;
+    // 0x56F980..0x56F9A2: with RideInfo's widebody slot word nonzero - the
+    // widebody installation resolved a model - the wheel lateral comes from
+    // the cached +0x514 copy of wheel +0x20, the widened stance; the stock
+    // profile keeps the +0x510 copy of +0x1C. The selector is
+    // authenticated; the marker chain after it is not, so the placements
+    // below still report placement_exact false.
+    const bool widebody_installed =
+        std::any_of(models[kSlotWideBody].begin(), models[kSlotWideBody].end(),
+                    [](const PartModel& model) { return model.hash != 0; });
     for (std::size_t index = 0; index < kCarModelSlotCount; ++index) {
         StockSlotReport& entry = result.slots[index];
         if (entry.record == kNoCarPart) {
@@ -537,11 +546,11 @@ bool build_stock_scene(
         } else if (entry.placement == StockPlacement::wheel_table) {
             const std::array<std::size_t, kCarWheelCount>& table =
                 kind == SlotClass::wheel ? kWheelPlacements : kBrakePlacements;
-            // 0x0056F9B2..0x0056FBAC builds a lateral scale and offset
-            // from wheel +0x14 and the stock (RideInfo +0x464 == 0) choice
-            // of +0x1C. The alternative +0x20 and the wheel mesh's
-            // MARKER_BRAKE branch are not selected by this stock profile.
-            // X * H * W * Q and R * B * P are the draw chains (see
+            // 0x0056F9B2..0x0056FBAC builds a lateral scale and offset from
+            // wheel +0x14 and the lateral the +0x56F980 selector picked:
+            // +0x1C for the stock stance, +0x20 with a widebody installed.
+            // The wheel mesh's MARKER_BRAKE branch is not selected by this
+            // profile. X * H * W * Q and R * B * P are the draw chains (see
             // docs/PART_PLACEMENT.md). Spin and steering in W/B are added
             // by drive_place_instances for a moving race car.
             float turn[16];
@@ -555,9 +564,11 @@ bool build_stock_scene(
                 draft.copy = w;
                 const CarWheelPlacement& wheel = car_types.records[car_type].wheels[w];
                 const float half_width = wheel.value_14 * 0.5F;
-                const float side = wheel.value_1c > 0.0F ? 1.0F : -1.0F;
+                const float lateral =
+                    widebody_installed ? wheel.value_20 : wheel.value_1c;
+                const float side = lateral > 0.0F ? 1.0F : -1.0F;
                 float centre[3] = {placements[table[w]].position[0],
-                                   wheel.value_1c - side * half_width,
+                                   lateral - side * half_width,
                                    placements[table[w]].position[2]};
                 std::copy(std::begin(centre), std::end(centre),
                           std::begin(draft.animation_pivot));

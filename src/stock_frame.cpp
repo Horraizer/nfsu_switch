@@ -806,8 +806,13 @@ static bool prepare_stock_frame_impl(
                 installed,
                 skin.enabled ? std::optional<std::uint32_t>(skin.selection.base_color)
                              : std::nullopt);
+            // 0x56B577..0x56B5AB: an installed WINDOW_TINT part selects the
+            // material that replaces the production glass; none installed
+            // keeps the geometry's own WINDSHIELD material.
+            const auto tint=car_part_material_hash(frame.parts,
+                frame.report.slots[115].record);
             if (!apply_car_materials(frame.scene, parts_file.bytes.data(),
-                                     parts_file.bytes.size(), paint, error)) return false;
+                                     parts_file.bytes.size(), paint, tint, error)) return false;
         }
         return true;
     } catch (const std::bad_alloc&) {

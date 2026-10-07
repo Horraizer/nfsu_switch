@@ -370,7 +370,13 @@ aftermarket rims in `Cars/WHEELS` quantize to exact inch diameters (0.29210,
 `+0x14`, `+0x1C` and `+0x20` feed the lateral matrices described below.
 The stock branch uses `+0x1C`; the RideInfo `+0x464` selector chooses
 `+0x20` when nonzero (`0x0056F980`). The selector's stock value is inferred
-from the absence of a wide-body part, not read from a live RideInfo.
+from the absence of a wide-body part, not read from a live RideInfo. The
+selection itself is now executed both ways: `prepare_stock_car_scene` takes
+the `+0x20` lateral when the resolved wide-body slot (slot 6) produced a
+model - the widened stance of an installed wide-body kit, such as the
+FE_SKYLINE MANTIS - and `+0x1C` otherwise. Only the selector is
+authenticated; the marker chain after it remains unreproduced, so those
+placements still report `placement_exact` false.
 
 ### The suspension upgrade confirms the axle pairing
 
