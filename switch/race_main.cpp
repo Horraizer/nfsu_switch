@@ -398,6 +398,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     require(scene.set_sky(sky != "off"), "sky mode set after scene load");
     scene.set_wet_road_reflections(wet_road_reflections);
     scene.set_race_visuals(true);
+    require(scene.set_original_draw_distance(true),"draw distance setup failed");
     const auto before = mallinfo(); heap.begin(before.uordblks,before.arena);
     Progress progress(screen,pad,heap,free_drive);
     const auto load_start = armGetSystemTick();
@@ -446,7 +447,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     require(plan_deko_scene_target(width,height,!panel_mode,scene_height,scene_target),
             "invalid scene target after operation mode change");
     DekoRenderer renderer;
-    require(renderer.open(frame.commands,error,!panel_mode,kTrackSliceDrawLimit,profile_frame,true,
+    require(renderer.open(frame.commands,error,!panel_mode,scene.draw_capacity(),profile_frame,true,
                           sky == "early",scene_height,
                           hud_mode && !panel_mode ? &hud_atlas : nullptr),error);
     const double initial_upload = ms(armGetSystemTick()-upload_start);
@@ -472,7 +473,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             docked = now_docked;
             const auto next_height = deko_effective_scene_height(requested_height,docked,!panel_mode);
             if (next_height != scene_height) {
-                require(renderer.reconfigure_target(frame.commands,error,kTrackSliceDrawLimit,
+                require(renderer.reconfigure_target(frame.commands,error,scene.draw_capacity(),
                         profile_frame,sky == "early",next_height,
                         hud_mode && !panel_mode ? &hud_atlas : nullptr),error);
                 scene_height = next_height;

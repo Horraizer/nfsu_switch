@@ -345,7 +345,7 @@ struct DekoRenderer::Impl {
         DrawExecutionPlan plan;
         if (!plan_draw_execution(source, plan, error)) return false;
         draw_capacity = capacity ? capacity : source.draw_count();
-        if (draw_capacity < source.draw_count() || draw_capacity > 2047) {
+        if (draw_capacity < source.draw_count() || draw_capacity > 4096) {
             error = "invalid reserved draw capacity"; return false;
         }
         package = source.package_identity();

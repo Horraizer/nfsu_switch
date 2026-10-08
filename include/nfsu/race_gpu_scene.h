@@ -7,6 +7,7 @@
 #include "nfsu/light_glows.h"
 #include "nfsu/track_reflections.h"
 #include "nfsu/headlights.h"
+#include "nfsu/track_zones.h"
 
 namespace nfsu {
 // One combined command stream: track then car, one camera and one depth
@@ -59,6 +60,11 @@ public:
     // The separate sky pass (issue 184), on by default. Off records no sky
     // draws, for console A/B cost runs. Refused once the scene is loaded.
     bool set_sky(bool enabled) { if (ready_) return false; sky_ = enabled; return true; }
+    bool set_original_draw_distance(bool enabled) {
+        if (ready_) return false;
+        original_draw_distance_ = enabled; return true;
+    }
+    std::size_t draw_capacity() const { return original_draw_distance_ ? 4096 : kTrackSliceDrawLimit; }
     void set_race_visuals(bool enabled) { if(!ready_)race_visuals_=enabled; }
     void set_wet_road_reflections(bool enabled) noexcept { wet_road_reflections_ = enabled; }
     // `car` selects the racer every path draws and drives (issue #315); null
@@ -81,6 +87,10 @@ public:
 private:
     TrackSlice track_;
     bool race_visuals_=false;
+    bool original_draw_distance_ = false;
+    TrackZoneReport visibility_zones_;
+    std::vector<TrackResidency> zone_residency_;
+    TrackResidency no_zone_{TrackResidencyRule::no_zone, {}};
     RenderTexture headlight_texture_;
     std::size_t headlight_resource_=kNoHandle;
     bool prepare_visual_frame(const RaceSession&, const CameraFrame&, RecordedCommands&, std::string&);

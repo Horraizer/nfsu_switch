@@ -550,12 +550,12 @@ const RecordedDraw& RecordedCommands::reflection_draw(std::size_t i) const {
 }
 bool record_track_reflections(const PreparedTrackScene& scene, const RenderOptions& supplied_options,
                               const UploadTable& uploads, std::vector<RecordedDraw>& draws,
-                              std::string& error, bool cull) {
+                              std::string& error, bool cull, const TrackResidency* residency) {
     draws.clear();
     auto options = supplied_options;
     options.texture_filter = TextureFilterMode::legacy;
     std::vector<TrackDrawListEntry> entries;
-    if (!track_reflection_entries(scene, options, entries, error, nullptr, cull)) return false;
+    if (!track_reflection_entries(scene, options, entries, error, nullptr, cull, residency)) return false;
     const ResourceMap resources(uploads, scene.region.meshes.size(), scene.region.textures.size());
     for (const auto& entry : entries) {
         const auto& source = scene.region.draws[entry.draw];

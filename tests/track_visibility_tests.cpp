@@ -1838,6 +1838,23 @@ void test_prepared_culler() {
                   a.screen_level == b.screen_level, "prepared visible classification matches");
         }
     }
+    for (const auto rule : {nfsu::TrackResidencyRule::zone_list, nfsu::TrackResidencyRule::no_zone,
+                            nfsu::TrackResidencyRule::every_section}) {
+        nfsu::TrackCullOptions opts; opts.residency.rule = rule;
+        for (int selected=0; selected<2; ++selected) {
+            opts.residency.zone_sections.clear();
+            if (selected) opts.residency.zone_sections.push_back(objects.sections[0].number);
+            const auto expected = cull_track_region(objects,frustum,opts);
+            check(prepared.cull(frustum,error,&opts.residency), "prepared zone selection culls");
+            const auto& actual = prepared.result();
+            check(actual.visible.size()==expected.visible.size(), "prepared zone visible count matches reference");
+            check(actual.stats.sections_resident==expected.stats.sections_resident, "prepared zone residency matches reference");
+            for (std::size_t i=0;i<std::min(actual.visible.size(),expected.visible.size());++i)
+                check(actual.visible[i].section_index==expected.visible[i].section_index &&
+                      actual.visible[i].instance_index==expected.visible[i].instance_index,
+                      "prepared zone identities match reference");
+        }
+    }
     auto broken = parse_row_region();
     broken.sections[0].nodes[0].bounds_min[0] = broken.sections[0].nodes[0].bounds_max[0];
     nfsu::PreparedTrackCull bad_containment;

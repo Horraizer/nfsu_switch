@@ -32,5 +32,6 @@ void prepare_track_reflection_cache(const PreparedTrackScene& scene, TrackReflec
 TrackTransform track_reflection_transform(const PreparedTrackInstance& instance);
 bool track_reflection_entries(const PreparedTrackScene& scene, const RenderOptions& options,
                               std::vector<TrackDrawListEntry>& entries, std::string& error,
-                              const TrackReflectionCache* cache = nullptr, bool cull = true);
+                              const TrackReflectionCache* cache = nullptr, bool cull = true,
+                              const TrackResidency* residency = nullptr);
 }

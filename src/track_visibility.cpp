@@ -534,23 +534,7 @@ namespace {
 bool section_is_resident(
     const TrackSection& section,
     const TrackResidency& residency) {
-    switch (residency.rule) {
-        case TrackResidencyRule::every_section:
-            return true;
-        case TrackResidencyRule::no_zone:
-            return track_section_resident_without_zone(section.number);
-        case TrackResidencyRule::zone_list:
-            if (track_section_always_resident(section.number)) {
-                return true;
-            }
-            for (std::uint32_t number : residency.zone_sections) {
-                if (number == section.number) {
-                    return true;
-                }
-            }
-            return false;
-    }
-    return false;
+    return track_section_is_resident(section.number, residency);
 }
 
 // One instance, past the node, through the gates 0x00445EC0 applies in its
@@ -900,7 +884,8 @@ bool PreparedTrackCull::prepare(const TrackObjectReport& objects, std::string& e
     impl_ = std::move(next);
     return true;
 }
-bool PreparedTrackCull::cull(const TrackFrustum& frustum, std::string& error) {
+bool PreparedTrackCull::cull(const TrackFrustum& frustum, std::string& error,
+                             const TrackResidency* residency) {
     error.clear();
     if (!impl_) { error = "culler is not prepared"; return false; }
     auto& c = *impl_;
@@ -915,6 +900,11 @@ bool PreparedTrackCull::cull(const TrackFrustum& frustum, std::string& error) {
         summary.section_index = i; summary.number = section.number;
         summary.letter = section.letter; summary.has_letter = section.has_letter;
         summary.instances = section.instances.size();
+        if (residency && !section_is_resident(section, *residency)) {
+            ++c.report.stats.sections_considered;
+            c.report.sections.push_back(summary);
+            continue;
+        }
         summary.resident = summary.containment_checked = true;
         ++c.report.stats.sections_considered; ++c.report.stats.sections_resident;
         cull_section_tree(section, i, c.trees[i], frustum, c.options, c.report, summary, c.stack);

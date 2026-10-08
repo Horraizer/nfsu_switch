@@ -242,6 +242,16 @@ struct TrackResidency {
     std::vector<std::uint32_t> zone_sections;
 };
 
+// Section membership shared by main-view and reflected scenery selection.
+inline bool track_section_is_resident(std::uint32_t number, const TrackResidency& r) {
+    if (r.rule == TrackResidencyRule::every_section) return true;
+    if (r.rule == TrackResidencyRule::no_zone) return track_section_resident_without_zone(number);
+    if (r.rule != TrackResidencyRule::zone_list) return false;
+    if (track_section_always_resident(number)) return true;
+    for (auto n : r.zone_sections) if (n == number) return true;
+    return false;
+}
+
 // Which visible set a caller wants.
 enum class TrackCullPolicy {
     // The recovered rule: walk the bounding tree, prune a subtree whose
@@ -413,7 +423,8 @@ public:
     PreparedTrackCull& operator=(const PreparedTrackCull&) = delete;
     bool prepare(const TrackObjectReport& objects, std::string& error,
                  const TrackCullLimits& limits = {});
-    bool cull(const TrackFrustum& frustum, std::string& error);
+    bool cull(const TrackFrustum& frustum, std::string& error,
+              const TrackResidency* residency = nullptr);
     const TrackCullReport& result() const;
     std::uint64_t memory_bytes() const;
 private:

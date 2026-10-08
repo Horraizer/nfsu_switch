@@ -39,7 +39,14 @@ bool plan_draw_execution(const RecordedCommands& c, DrawExecutionPlan& plan, std
         error = "deko3d stock executor: requires 1280x720 and at most 4096 draws and 8192 resources";
         return false;
     }
-    const std::uint64_t uniform_bytes = (1 + 2 * c.draw_count()) * kDekoUniformBufferAlignment;
+    // Prepared scenery constants live in the persistent static package.
+    // Only the animated tail consumes the per-frame transient uniform arena.
+    const auto static_draws = c.package_identity() ? c.static_track_draw_count() : 0;
+    if (static_draws > c.draw_count()) {
+        error = "prepared track count exceeds selected commands"; return false;
+    }
+    const std::uint64_t uniform_bytes =
+        (1 + 2 * (c.draw_count() - static_draws)) * kDekoUniformBufferAlignment;
     if (uniform_bytes > kTransientBudgetPlaceholder) {
         error = "draw uniforms exceed the transient budget placeholder"; return false;
     }

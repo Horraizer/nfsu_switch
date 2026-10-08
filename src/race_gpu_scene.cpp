@@ -232,7 +232,7 @@ bool combine_race_commands(RecordedCommands track, const RecordedCommands& car,
         std::memcmp(&track.frame, &car.frame, sizeof track.frame) != 0) {
         error = "track/car frame camera differs"; return false;
     }
-    if (track.owning_draws().size() + car.owning_draws().size() > kTrackSliceDrawLimit ||
+    if (track.owning_draws().size() + car.owning_draws().size() > 4096 ||
         track.owning_uploads().resources.size() + car.owning_uploads().resources.size() > kTrackSliceResourceLimit) {
         error = "combined race exceeds draw/resource capacity"; return false;
     }
@@ -344,6 +344,19 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
     }
     track_.contacts = {};
     std::vector<TrackResidencyPathPoint>().swap(track_.path);
+    if (original_draw_distance_) {
+        std::vector<unsigned char> image;
+        visibility_zones_ = load_track_zones(root / "Tracks" /
+            ("TRACKB" + std::to_string(track_.track_number) + ".LZC"), image);
+        if (!visibility_zones_.ok() || !visibility_zones_.valid) {
+            error = "race visibility zones invalid"; return false;
+        }
+        zone_residency_.resize(visibility_zones_.zones.size());
+        for (std::size_t i=0; i<zone_residency_.size(); ++i)
+            if (!track_zone_residency(visibility_zones_,i,zone_residency_[i])) {
+                error = "race visibility zone selection failed"; return false;
+            }
+    }
     // Validate command templates once while this privately owned scene is
     // immutable. GPU upload pointers stay valid for this owner's lifetime.
     if (loading) loading->checkpoint("render preparation");
@@ -411,6 +424,12 @@ std::uint64_t RaceGpuScene::cache_bytes() const {
     if (glows_enabled_) bytes += sizeof(glow_templates_) + sizeof(glow_selected_) +
         sizeof(glow_vertices_) + sizeof(glow_indices_) +
         glow_head_.rgba.capacity() + glow_tail_.rgba.capacity();
+    bytes += visibility_zones_.polygons.capacity()*sizeof(TrackZonePolygon) +
+        visibility_zones_.zones.capacity()*sizeof(TrackZone) +
+        visibility_zones_.section_lists.capacity()*sizeof(TrackZoneSectionList) +
+        zone_residency_.capacity()*sizeof(TrackResidency);
+    for (const auto& list : visibility_zones_.section_lists) bytes += list.sections.capacity()*sizeof(std::int16_t);
+    for (const auto& zone : zone_residency_) bytes += zone.zone_sections.capacity()*sizeof(std::uint32_t);
     return bytes;
 }
 bool RaceGpuScene::prepare_reflections(std::string& error) {
@@ -524,7 +543,7 @@ bool RaceGpuScene::prepare_frame_cache(std::string& error) {
     append_car_resources(combined_uploads_, car_templates_.owning_uploads());
     for (auto& draw : car_templates_.owning_draws()) rebase_car_draw(draw, car_offset);
     track_templates_.owning_uploads() = {}; shadow_templates_.owning_uploads() = {}; car_templates_.owning_uploads() = {};
-    selection_.reserve(kTrackSliceDrawLimit);
+    selection_.reserve(draw_capacity());
     return true;
 }
 
@@ -661,7 +680,7 @@ bool RaceGpuScene::select_track(const TrackCullReport& visible, RaceGpuFrame& ou
         // Keep the reference path's far-plane retry, including empty groups
         // in the list capacity test even though they emit no hardware draw.
         if (sky_draws_ + entries + 1 + car_templates_.owning_draws().size() +
-            glow_count_ > kTrackSliceDrawLimit) return true;
+            glow_count_ > draw_capacity()) return true;
         for (auto k = first; k < last; ++k) {
             const auto group = mesh_groups_[k];
             if (group >= template_of_group_.size()) { error = "prepared group is out of range"; return false; }
@@ -674,7 +693,7 @@ bool RaceGpuScene::select_track(const TrackCullReport& visible, RaceGpuFrame& ou
                 if (!scene.region.draws[group].index_count) continue;
                 error = "prepared group has no validated template"; return false;
             }
-            if (index >= track_templates_.owning_draws().size() || selection_.size() >= kTrackSliceDrawLimit) {
+            if (index >= track_templates_.owning_draws().size() || selection_.size() >= draw_capacity()) {
                 error = "prepared draw capacity exceeded"; return false;
             }
             selection_.push_back({static_cast<std::uint32_t>(handle), group, selection_.size()});
@@ -774,7 +793,8 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         error = "race car placement failed"; return false;
     }
     const auto shadow = place_car_shadow(shadow_asset_,session);
-    for (double far = 250; far >= 31.25; far *= 0.5) {
+    for (double far = original_draw_distance_ ? 10000.0 : 250.0;
+         far >= 31.25; far = original_draw_distance_ ? 0.0 : far*0.5) {
         RenderOptions options = race_render_options(sky_);
         options.texture_filter = texture_filter_;
         options.car_shading=car_shading_;
@@ -811,8 +831,14 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         camera.near_plane = float(options.camera.near_plane); camera.far_plane = float(far);
         TrackFrustum frustum;
         if (!track_frustum_look_at(camera, frustum)) { error = "race camera frustum invalid"; return false; }
+        const TrackResidency* residency = nullptr;
+        if (original_draw_distance_) {
+            const float xy[2] = {camera.eye[0], -camera.eye[2]};
+            const auto zone = find_track_zone(visibility_zones_,xy);
+            residency = zone == kTrackZoneNone ? &no_zone_ : &zone_residency_.at(zone);
+        }
         if (!reference) {
-            if (!culler_.cull(frustum,error)) return false;
+            if (!culler_.cull(frustum,error,residency)) return false;
             stage(&RaceFrameProfile::cull_ms);
             std::size_t entries = 0;
             if (!select_track(culler_.result(),out,entries,error)) return false;
@@ -822,7 +848,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
                 if (d.pipeline.blend) { sky_position_ = i; break; }
             }
             stage(&RaceFrameProfile::list_ms);
-            if (sky_draws_ + entries + 1 + car_templates_.owning_draws().size() + glow_count_ > kTrackSliceDrawLimit) continue;
+            if (sky_draws_ + entries + 1 + car_templates_.owning_draws().size() + glow_count_ > draw_capacity()) continue;
             auto& shadow_draw = shadow_templates_.owning_draws()[0];
             update_car_shadow_draw(shadow,shadow_draw);
             for (auto& draw : car_templates_.owning_draws()) {
@@ -853,7 +879,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
             reflection_selection_.clear(); lamp_draws_.clear();
             if (wet_road_reflections_) {
                 options.material_state = MaterialStateMode::retail;
-                if (!track_reflection_entries(track_.scene, options, reflection_entries_, error, &reflection_cache_)) return false;
+                if (!track_reflection_entries(track_.scene, options, reflection_entries_, error, &reflection_cache_, true, residency)) return false;
                 for (const auto& entry : reflection_entries_) {
                     const auto first = reflection_first_.at(entry.instance);
                     if (first == kNoHandle) { error = "reflection template missing"; return false; }
@@ -873,7 +899,9 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
             stage(&RaceFrameProfile::combine_ms);
             return true;
         }
-        const auto visible = cull_track_region(track_.objects, frustum);
+        TrackCullOptions cull_options;
+        if (residency) cull_options.residency = *residency;
+        const auto visible = cull_track_region(track_.objects, frustum, cull_options);
         if (!visible.ok() || !visible.policy_held) { error = "race visibility policy degraded"; return false; }
         stage(&RaceFrameProfile::cull_ms);
         TrackDrawList list;
@@ -890,7 +918,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         RecordedCommands shadow_commands;
         if (!record_car_shadow_commands(shadow_asset_, shadow, options, shadow_commands, error)) return false;
         stage(&RaceFrameProfile::car_ms);
-        if (sky_draws_ + list.entries.size() + 1 + car_commands.owning_draws().size() + glow_count_ > kTrackSliceDrawLimit) continue;
+        if (sky_draws_ + list.entries.size() + 1 + car_commands.owning_draws().size() + glow_count_ > draw_capacity()) continue;
         RecordedCommands track_commands;
         options.material_state = MaterialStateMode::retail;
         // Keep the reference resource namespace in the same order as the
@@ -935,11 +963,12 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
             if (!append_wet_lamp_uploads(lamps_, result.commands.owning_uploads(), error) ||
                 !record_track_reflections(track_.scene, options,
                                           result.commands.owning_uploads(),
-                                          result.commands.reflections, error)) return false;
+                                          result.commands.reflections, error, true, residency)) return false;
         }
         stage(&RaceFrameProfile::combine_ms);
         out = std::move(result); return true;
     }
-    error = "complete track plus car list exceeds 2047 draws at minimum far plane"; return false;
+    error = original_draw_distance_ ? "original-distance frame exceeds reserved draws; no distance fallback" :
+        "complete track plus car list exceeds 2047 draws at minimum far plane"; return false;
 }
 } // namespace nfsu

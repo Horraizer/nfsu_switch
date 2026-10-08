@@ -2122,6 +2122,18 @@ void test_render_honours_the_options() {
              "separate reflection cull succeeds", error);
     check(!reflected.empty(), "a reflection query needs no main-view visible entries");
     changed = wet_fixture;
+    for (auto& placed : changed.scene.instances) placed.section_number = 1234;
+    nfsu::TrackResidency selected;
+    selected.rule = nfsu::TrackResidencyRule::zone_list;
+    selected.zone_sections = {1235};
+    check_ok(nfsu::track_reflection_entries(changed.scene, wet, reflected, error,
+             nullptr, true, &selected), "reflection residency exclusion", error);
+    check(reflected.empty(), "unloaded section cannot appear in road reflections");
+    selected.zone_sections = {1234};
+    check_ok(nfsu::track_reflection_entries(changed.scene, wet, reflected, error,
+             nullptr, true, &selected), "reflection residency inclusion", error);
+    check(!reflected.empty(), "resident source restores its reflection");
+    changed = wet_fixture;
     changed.scene.instances[2].transform.translation[0] = 100000;
     check_ok(nfsu::track_reflection_entries(changed.scene, wet, reflected, error),
              "reflection cull rejects a remote source", error);

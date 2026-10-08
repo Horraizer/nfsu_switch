@@ -33,7 +33,8 @@ TrackTransform track_reflection_transform(const PreparedTrackInstance& instance)
 }
 bool track_reflection_entries(const PreparedTrackScene& scene, const RenderOptions& options,
                               std::vector<TrackDrawListEntry>& entries, std::string& error,
-                              const TrackReflectionCache* cache, bool cull) {
+                              const TrackReflectionCache* cache, bool cull,
+                              const TrackResidency* residency) {
     entries.clear();
     CameraFrame camera;
     if (!make_camera_frame(options.camera, options.width, options.height, camera, error)) return false;
@@ -44,6 +45,7 @@ bool track_reflection_entries(const PreparedTrackScene& scene, const RenderOptio
     std::uint64_t triangles = 0;
     for (std::size_t n = 0; n < scene.instances.size(); ++n) {
         const auto& instance = scene.instances[n];
+        if (residency && !track_section_is_resident(instance.section_number, *residency)) continue;
         if (((instance.instance_flags ^ 0x60U) & 0x50U) != 0 || instance.reflection_mesh == kNoReflectionMesh) continue;
         if (instance.reflection_mesh >= bounds.size()) { error = "reflection mesh out of range"; return false; }
         if (groups[instance.reflection_mesh].empty()) continue;

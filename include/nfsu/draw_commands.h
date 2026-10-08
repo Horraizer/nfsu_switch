@@ -174,7 +174,7 @@ bool record_lamp_reflections(const RenderOptions& options, const UploadTable& up
                              std::vector<RecordedDraw>& draws, std::string& error);
 bool record_track_reflections(const PreparedTrackScene& scene, const RenderOptions& options,
                               const UploadTable& uploads, std::vector<RecordedDraw>& draws,
-                              std::string& error, bool cull = true);
+                              std::string& error, bool cull = true, const TrackResidency* residency = nullptr);
 
 // One arena allocation, released by the caller after its last-use fence.
 // Frame at allocation.offset; draw i's Instance at offset + (1+2*i)*256,
