@@ -112,6 +112,8 @@ struct DekoRenderer::Impl {
     std::array<dk::Image, 2> depths;
     DekoSceneTarget scene_target;
     bool fxaa_enabled=false;
+    bool msaa_enabled=false;
+    dk::Image msaa_color;
     dk::Shader fxaa_vertex,fxaa_fragment;
     dk::MemBlock fxaa_descriptors;
     std::array<dk::Image,2> fxaa_colors;
@@ -349,6 +351,10 @@ struct DekoRenderer::Impl {
 #if defined(NFSU_RACE_FXAA)
         fxaa_enabled=presentation && source.race_environment;
 #endif
+#if defined(NFSU_RACE_MSAA2)
+        msaa_enabled=presentation && source.race_environment;
+#endif
+        if(fxaa_enabled && msaa_enabled) { error="select one race AA mode";return false; }
         DrawExecutionPlan plan;
         if (!plan_draw_execution(source, plan, error)) return false;
         draw_capacity = capacity ? capacity : source.draw_count();
@@ -595,12 +601,27 @@ struct DekoRenderer::Impl {
                         &descriptor,sizeof descriptor);
         }
         dk::ImageLayout color_layout, depth_layout, scene_layout;
-        const auto transfer_flags = scene_target.upscale ? DkImageFlags_Usage2DEngine : 0;
+        const auto transfer_flags = (scene_target.upscale || msaa_enabled) ? DkImageFlags_Usage2DEngine : 0;
         dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender | transfer_flags |
                                             (presentation ? DkImageFlags_UsagePresent : 0))
             .setFormat(DkImageFormat_RGBA8_Unorm).setDimensions(source.width, source.height).initialize(color_layout);
         dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender)
+            .setType(msaa_enabled?DkImageType_2DMS:DkImageType_2D)
+            .setMsMode(msaa_enabled?DkMsMode_2x:DkMsMode_1x)
             .setFormat(DkImageFormat_ZF32).setDimensions(scene_target.width, scene_target.height).initialize(depth_layout);
+        if(msaa_enabled) {
+            // One queue completes each resolve before the next clear. These
+            // GPU-only color/depth targets can be shared across frame slots,
+            // as in the SDK multisampling example; resolved images stay per slot.
+            dk::ImageLayout msaa_layout;
+            dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender|DkImageFlags_Usage2DEngine)
+                .setType(DkImageType_2DMS).setMsMode(DkMsMode_2x)
+                .setFormat(DkImageFormat_RGBA8_Unorm)
+                .setDimensions(scene_target.width,scene_target.height).initialize(msaa_layout);
+            dk::MemBlock memory;
+            if(!block(msaa_layout.getSize(),kImageFlags,"MSAA2 scene color",memory,error))return false;
+            msaa_color.initialize(msaa_layout,memory,0);
+        }
         if (scene_target.upscale || fxaa_enabled)
             dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender | DkImageFlags_Usage2DEngine)
                 .setFormat(DkImageFormat_RGBA8_Unorm).setDimensions(scene_target.width, scene_target.height)
@@ -631,7 +652,8 @@ struct DekoRenderer::Impl {
             }
         }
         if(fxaa_enabled)std::printf("RACE AA FXAA source=%ux%u search=8 subpixel=0.5 before_upscale_and_HUD=1\n",scene_target.width,scene_target.height);
-        for (std::size_t i = 0; i < (presentation ? 2U : 1U); ++i) {
+        if(msaa_enabled)std::printf("RACE AA MSAA2 source=%ux%u samples=2 FXAA=off before_upscale_and_HUD=1\n",scene_target.width,scene_target.height);
+        for (std::size_t i = 0; i < (presentation && !msaa_enabled ? 2U : 1U); ++i) {
             dk::MemBlock depth_memory;
             if (!block(depth_layout.getSize(), kImageFlags, "depth image", depth_memory, error)) return false;
             if(!trace("image.initialize.before",error,"depth image",depth_layout.getSize()))return false;
@@ -1012,6 +1034,11 @@ struct DekoRenderer::Impl {
         gpfifo_usage.last_entries = entries;
         gpfifo_usage.max_entries = std::max(gpfifo_usage.max_entries, entries);
         begin(slot);
+        if(msaa_enabled) {
+            // Cube and road-reflection targets are single-sampled.
+            cmd.bindMultisampleState(dk::MultisampleState{});
+            cmd.setSampleMask(0xFFFFFFFFU);
+        }
         // Diagnose the first live FE frame without dropping any pass. Waiting
         // completes each command-memory use before begin() reuses that slot.
         // Later frames keep the ordinary asynchronous presentation path.
@@ -1173,8 +1200,15 @@ struct DekoRenderer::Impl {
         mark_frontend(7);
         if (reflection_ready) cmd.bindTextures(DkStage_Fragment, 1,
             dkMakeTextureHandle(static_cast<std::uint32_t>(handles.size()+(frontend_cube_ready?1:0)), 2));
-        dk::ImageView color_view{(scene_target.upscale || fxaa_enabled) ? scene_colors[slot] : target}, depth_view{depths[slot]};
+        dk::ImageView color_view{msaa_enabled?msaa_color:((scene_target.upscale || fxaa_enabled)?scene_colors[slot]:target)};
+        dk::ImageView depth_view{depths[msaa_enabled?0:slot]};
         cmd.bindRenderTargets(&color_view, &depth_view);
+        if(msaa_enabled) {
+            dk::MultisampleState samples;
+            samples.setMode(DkMsMode_2x).setLocations();
+            cmd.bindMultisampleState(samples);
+            cmd.setSampleMask(0xFFFFFFFFU);
+        }
         cmd.setViewports(0, {{0, 0, static_cast<float>(scene_target.width), static_cast<float>(scene_target.height), 0, 1}});
         cmd.setScissors(0, {{0, 0, scene_target.width, scene_target.height}});
         const auto* clear = commands->clear_color;
@@ -1222,6 +1256,16 @@ struct DekoRenderer::Impl {
         if(frontend && frontend_profile_passes)
             cmd.reportCounter(DkCounter_Timestamp,frontend_query_memory.getGpuAddr()+slot*208+12*16);
         if(!checkpoint(previous_dynamic?previous_dynamic->program->name:"main scene"))return false;
+        if(msaa_enabled) {
+            // Resolve at the original scene resolution, then use the same
+            // linear upscale as the baseline. HUD is never multisampled.
+            cmd.barrier(DkBarrier_Full,DkInvalidateFlags_L2Cache);
+            dk::ImageView resolved_view{scene_target.upscale?scene_colors[slot]:target};
+            cmd.resolveImage(color_view,resolved_view);
+            cmd.barrier(DkBarrier_Full,DkInvalidateFlags_Image|DkInvalidateFlags_L2Cache);
+            cmd.bindMultisampleState(dk::MultisampleState{});
+            if(!scene_target.upscale)cmd.bindRenderTargets(&resolved_view,nullptr);
+        }
         if(fxaa_enabled) {
             // Complete scene writes before sampling. Every slot has distinct
             // input/output images; its fence protects descriptors and contents.
