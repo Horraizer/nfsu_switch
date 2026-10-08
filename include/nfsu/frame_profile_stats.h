@@ -44,7 +44,7 @@ enum class FrameProfileStage : std::size_t {
     cull, list, car, track, combine,
     update_total, update_validation, uniform_write,
     present_total, acquire, fence, command_record, finish_list, submit, present_other,
-    mallinfo, parent_sum, other, count
+    mallinfo, parent_sum, other, road_reflections, race_visuals, count
 };
 
 struct FrameProfileIdentity {

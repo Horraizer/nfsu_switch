@@ -745,6 +745,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                 set(FrameProfileStage::car,record_profile.car_ms);
                 set(FrameProfileStage::track,record_profile.track_ms);
                 set(FrameProfileStage::combine,record_profile.combine_ms);
+                set(FrameProfileStage::road_reflections,record_profile.road_reflections_ms);
+                set(FrameProfileStage::race_visuals,record_profile.race_visuals_ms);
                 set(FrameProfileStage::update_total,upload);
                 set(FrameProfileStage::update_validation,update_timing.validation_ms);
                 set(FrameProfileStage::uniform_write,present.uniform_write_ms);
@@ -794,6 +796,40 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     if (!renderer.close(close_error)) {
         if (!failure.empty()) failure += " | ";
         failure += "renderer close: " + close_error;
+    }
+    if (profile_stats) {
+        // close() drains the last asynchronous GPU reports before logging.
+        static constexpr const char* names[] = {
+            "simulation", "simulation_tick", "residency", "record_total",
+            "cull_camera", "list", "car", "track", "combine",
+            "update_total", "update_validation", "uniform_write",
+            "present_total", "acquire", "fence", "command_record", "finish_list", "submit", "present_other",
+            "mallinfo", "parent_sum", "other", "road_reflections", "race_visuals"
+        };
+        static_assert(sizeof(names)/sizeof(names[0])==FrameProfileStats::kStages);
+        std::printf("RUN_PROFILE build=%s event=%lu free_drive=%u frames=%llu CPU_us_timers=on GPU_scene_pair=on; child_stages_overlap_parents\n",
+            NFSU_RACE_BUILD_TAG,(unsigned long)event_number,unsigned(free_drive),
+            (unsigned long long)profile_stats->count());
+        const auto distribution=[](const char* kind,const char* name,const ProfileDistribution& d) {
+            const auto percentile=[&](unsigned n) {
+                const auto bin=d.percentile_bin(n);
+                return bin==ProfileDistribution::kOverflowBin ? std::string(">=100") :
+                    format("%.2f",(bin+1)*ProfileDistribution::kBinWidthMs);
+            };
+            std::printf("RUN_PROFILE %s %s samples=%llu mean_ms=%.6f p95_ms=%s p99_ms=%s max_ms=%.6f\n",
+                kind,name,(unsigned long long)d.count(),d.mean(),percentile(95).c_str(),percentile(99).c_str(),d.max());
+        };
+        for(std::size_t i=0;i<FrameProfileStats::kStages;++i)
+            distribution("CPU",names[i],profile_stats->stage(static_cast<FrameProfileStage>(i)));
+        const auto& gpu=renderer.gpu_profile();
+        distribution("GPU","scene",gpu.scene);
+        const auto worst=profile_stats->worst();
+        std::printf("RUN_PROFILE CPU_worst_tick=%llu CPU_worst_track=%u CPU_worst_car=%u GPU_first_tick=%llu GPU_last_tick=%llu GPU_worst_tick=%llu GPU_worst_track=%u GPU_worst_car=%u GPU_invalid=%llu GPU_dropped=%llu\n",
+            (unsigned long long)worst.tick,worst.track_draws,worst.car_draws,
+            (unsigned long long)gpu.first_tick,(unsigned long long)gpu.last_tick,
+            (unsigned long long)gpu.worst_tick,gpu.worst_track_draws,gpu.worst_car_draws,
+            (unsigned long long)gpu.invalid,(unsigned long long)gpu.dropped);
+        std::fflush(stdout);
     }
     if (!failure.empty()) { std::printf("ERROR: %s\n",failure.c_str()); std::fflush(stdout); }
     if (free_drive && !failure.empty()) throw std::runtime_error(failure);
@@ -1066,7 +1102,7 @@ int main(int argc, char** argv) {
                             // so the driven car keeps its authored paint
                             // response. Explicit --car/--tuned diagnostics
                             // keep the --car-shading argument's control.
-                            run(root,false,false,false,particles_enabled,sky,
+                            run(root,false,false,profile_frame,particles_enabled,sky,
                                 tuned,glows,car_shading||(free_drive_resolved&&!car_shading_seen),wet_road_reflections,texture_filter,scene_height,
                                 gpu_boost,hud,false,explicit_performance ? &performance : nullptr,
                                 handling_telemetry,steering,

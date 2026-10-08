@@ -24,6 +24,8 @@ struct RaceGpuFrame {
 };
 struct RaceFrameProfile {
     double cull_ms = 0, list_ms = 0, car_ms = 0, track_ms = 0, combine_ms = 0;
+    // Children of combine_ms, not additional parent costs.
+    double road_reflections_ms = 0, race_visuals_ms = 0;
 };
 // An explicit visual configuration for the racer this scene draws, supplied by
 // a caller that links the layer which authored it. The request and skin

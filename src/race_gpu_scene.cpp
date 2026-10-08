@@ -876,6 +876,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
             for (const auto& draw : car_templates_.owning_draws()) out.triangles += draw.index_count/3;
             out.triangles += shadow_asset_.triangles.size();
             out.triangles += 2*glow_count_;
+            const auto reflection_start = profile ? timer->now_us() : 0;
             reflection_selection_.clear(); lamp_draws_.clear();
             if (wet_road_reflections_) {
                 options.material_state = MaterialStateMode::retail;
@@ -894,7 +895,10 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
                 if (!record_lamp_reflections(options, wet_uploads_, lamp_draws_, error)) return false;
                 if (reflection_selection_.size()+lamp_draws_.size() > 4096) { error = "reflection capacity exceeded"; return false; }
             }
+            const auto visual_start = profile ? timer->now_us() : 0;
+            if (profile) profile->road_reflections_ms = (visual_start-reflection_start)/1000.0;
             if(race_visuals_ && !prepare_visual_frame(session,basis,out.commands,error))return false;
+            if (profile) profile->race_visuals_ms = (timer->now_us()-visual_start)/1000.0;
             out.commands.source_ = this; out.commands.generation_ = generation_;
             stage(&RaceFrameProfile::combine_ms);
             return true;
