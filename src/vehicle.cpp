@@ -1116,7 +1116,12 @@ VehicleModel::VehicleModel(const VehicleSpec& spec) : spec_(spec) {
                     shift = rpm;
                     break;
                 }
-                rpm = kShiftSearchStep + rpm;
+                const double advanced = kShiftSearchStep + rpm;
+                if (advanced < redline && !(advanced > rpm)) {
+                    error_ = "legacy placement shift-table search cannot advance at double precision";
+                    return;
+                }
+                rpm = advanced;
                 if (!(rpm < redline)) {
                     shift = redline - kShiftRedlineMargin;
                     break;

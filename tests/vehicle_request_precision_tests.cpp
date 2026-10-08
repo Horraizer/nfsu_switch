@@ -168,9 +168,48 @@ void domain_cases() {
     h.idle_rpm=std::numeric_limits<float>::quiet_NaN();
     check(!VehicleModel(spec).valid(),"invalid handling retains normal validation refusal");
 }
+void legacy_domain_case() {
+    auto spec=stock_240sx_vehicle_spec();auto& h=spec.handling;
+    const std::uint32_t idle_bits=1621981404U,redline_bits=1630370013U;
+    std::memcpy(&h.idle_rpm,&idle_bits,sizeof(h.idle_rpm));
+    std::memcpy(&h.redline_rpm,&redline_bits,sizeof(h.redline_rpm));
+    h.max_rpm=h.redline_rpm;h.forward_gears=2;
+    h.gear_ratios[2]=2.0F;h.gear_ratios[3]=1.0F;
+    h.torque.fill(.2F);h.torque[4]=.1F;h.torque[5]=.02F;
+    std::vector<VehicleHandlingIssue> issues;
+    check(check_vehicle_handling(h,issues),"legacy nonadvance fixture has valid handling");
+    std::array<float,kVehicleGearSlots> up{},down{};
+    check(player_request_shift_tables(h,up,down),"source helper accepts legacy nonadvance fixture");
+    const double rpm=(double(h.redline_rpm)+double(h.idle_rpm))*.5;
+    const double here=vehicle_uniform_curve(h.torque.data(),h.torque.size(),h.idle_rpm,h.max_rpm,rpm);
+    const double there=vehicle_uniform_curve(h.torque.data(),h.torque.size(),h.idle_rpm,h.max_rpm,rpm*.5)*.5;
+    check(there<=here&&rpm<h.redline_rpm&&50.0+rpm==rpm,
+          "legacy search actually requires an iteration without representable progress");
+    const VehicleModel invalid(spec);
+    check(!invalid.valid()&&invalid.error()==
+          "legacy placement shift-table search cannot advance at double precision",
+          "unsupported placement search has distinct precise refusal");
+    VehicleState state;state.step=17;state.position.x=42;state.engine_rpm=1234;
+    VehicleTelemetry t;t.step=99;
+    check(!invalid.reset(state,{})&&!invalid.step(state,{},VehicleFlatGround{},t),
+          "invalid legacy search model refuses reset and step");
+    check(state.step==17&&state.position.x==42&&state.engine_rpm==1234&&t.step==99,
+          "legacy domain refusal preserves caller state and telemetry");
+
+    h.torque[4]=.02F;
+    check(player_request_shift_tables(h,up,down),"large first crossing source helper completes");
+    const VehicleModel crossing(spec);
+    check(crossing.valid()&&crossing.upshift_rpm()[2]==rpm,
+          "legacy first crossing accepted without an unused advance");
+    h.idle_rpm=1073741568.0F;h.redline_rpm=h.max_rpm=1073741824.0F;
+    h.torque.fill(.2F);
+    const VehicleModel advancing(spec);
+    check(advancing.valid()&&advancing.upshift_rpm()[2]==double(h.redline_rpm)-100.0,
+          "completed advancing legacy placement search retains its result");
+}
 }
 int main() {
-    producer_cases();request_cases();compatibility_case();domain_cases();
+    producer_cases();request_cases();compatibility_case();domain_cases();legacy_domain_case();
     std::cout<<"SUMMARY request precision failures="<<failures<<'\n';
     if(failures)return 1;
     std::cout<<"PASS original forward producer/request precision and explicit representability domain\n";
