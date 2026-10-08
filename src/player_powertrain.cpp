@@ -50,8 +50,8 @@ float differential_share(float numerator, float denominator, bool both_contact) 
 
 float wheel_slip(const VehicleHandling& h,const std::array<PlayerWheelWork,4>& w) noexcept {
     float sum=0.0F;int count=0;
-    if (h.rear_drive_fraction>=0.001F) {sum=w[3].slip+w[2].slip;count=2;}
-    if (h.rear_drive_fraction<0.999F) {sum+=w[1].slip+w[0].slip;count+=2;}
+    if (h.rear_drive_fraction>=0.001F) {sum=w[3].cached_slip+w[2].cached_slip;count=2;}
+    if (h.rear_drive_fraction<0.999F) {sum+=w[1].cached_slip+w[0].cached_slip;count+=2;}
     return sum/static_cast<float>(count); //46D830: setup validation ensures an axle
 }
 
@@ -540,6 +540,7 @@ void player_wheel_prepare(const VehicleHandling& h, std::size_t k,
         w.torque += w.spin > 0.0F ? -parking : parking;
     }
     w.slip = h.wheels[k].radius*w.spin-w.velocity_long;
+    w.cached_slip = w.slip; //58747D stores the same raw slip into160 and164
     // ABS attenuation587483..5874CF; declared ordinary owner flag0.
     if (w.slip <= -0.5F && w.torque < 0.0F && parking == 0.0F) w.torque *= 0.15F;
     const float magnitude=sqrtf(w.velocity_lat*w.velocity_lat+w.slip*w.slip);

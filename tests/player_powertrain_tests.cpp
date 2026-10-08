@@ -107,7 +107,8 @@ void shift_cycle_and_differential_sync() {
           "completed shift consumes deterministic RNG offset");
     for (const float speed:{0.0F,30.0F}) {
         player_engine_reset(engine,6000.0F);box.mode=3;box.requested_gear=gear;
-        wheels[2].spin=20.0F;wheels[3].spin=40.0F;wheels[2].slip=wheels[3].slip=1.0F;
+        wheels[2].spin=20.0F;wheels[3].spin=40.0F;
+        wheels[2].cached_slip=wheels[3].cached_slip=1.0F;
         player_gear_update(h,gear,box,engine,wheels,1.0F,speed);
         check(speed==0.0F?wheels[2].spin==wheels[3].spin:
               std::fabs((wheels[3].spin-wheels[2].spin)-20.0F)<0.0001F,
@@ -117,6 +118,74 @@ void shift_cycle_and_differential_sync() {
     wheels[2].contact=wheels[3].contact=false;
     player_gear_update(h,gear,box,engine,wheels,1.0F,30.0F);
     check(wheels[2].spin==wheels[3].spin,"airborne driven pair uses averaged synchronization");
+}
+
+void retained_wheel_slip_epoch() {
+    using namespace nfsu;
+    const auto h=stock_240sx_handling();
+    // Actual complete46DB60 on ordinary builtin acceleration callback inputs
+    // at b706e3a, steps102/103, genuine stock constructors and explicit007F.
+    //586E3F cleared160;46D830 still reads the prior58747D copy at164.
+    const std::array<float,2> engine_speed{{83.98503112792969F,84.5802993774414F}};
+    const std::array<float,2> left_spin{{6.012031555175781F,5.998802661895752F}};
+    const std::array<float,2> right_spin{{6.012565612792969F,5.999026298522949F}};
+    const std::array<float,2> prior_left{{0.014585733413696289F,0.015639781951904297F}};
+    const std::array<float,2> prior_right{{0.014148116111755371F,0.016367316246032715F}};
+    const std::array<float,2> original_spin{{6.193748950958252F,6.237648963928223F}};
+    for(unsigned k=0;k<2;++k) {
+        PlayerEngineState engine;engine.angular_speed=engine_speed[k];
+        PlayerGearState box;box.mode=3;box.clutch=1;box.requested_gear=kVehicleGearFirst;
+        int gear=kVehicleGearFirst;std::array<PlayerWheelWork,4> wheels{};
+        wheels[2].spin=left_spin[k];wheels[3].spin=right_spin[k];
+        wheels[2].contact=wheels[3].contact=true;
+        wheels[2].cached_slip=prior_left[k];wheels[3].cached_slip=prior_right[k];
+        player_gear_update(h,gear,box,engine,wheels,1,1.8732101917266846F);
+        check(wheels[2].spin==original_spin[k]&&wheels[3].spin==original_spin[k]&&
+              box.wheel_engine_speed==engine_speed[k]&&engine.angular_speed==engine_speed[k],
+              "original launch synchronizes driven spins using retained164 with cleared160");
+        check(wheels[2].slip==0&&wheels[3].slip==0&&
+              wheels[2].cached_slip==prior_left[k]&&wheels[3].cached_slip==prior_right[k],
+              "gear update preserves both slip epochs until the wheel producer");
+        wheels[2].spin=left_spin[k];wheels[3].spin=right_spin[k];
+        wheels[2].slip=wheels[3].slip=1;
+        wheels[2].cached_slip=wheels[3].cached_slip=-1;
+        player_gear_update(h,gear,box,engine,wheels,1,0);
+        check(wheels[2].spin==left_spin[k]&&wheels[3].spin==right_spin[k],
+              "positive current160 cannot override nonpositive retained164 at gearbox update");
+        player_wheel_prepare(h,2,wheels[2]);
+        check(wheels[2].cached_slip==wheels[2].slip&&wheels[2].cached_slip>0,
+              "wheel producer replaces160 and164 together before feedback");
+    }
+    const VehicleModel model(stock_240sx_vehicle_spec());
+    for(const double dt:{1.0/120.0,1.0/240.0}) {
+        VehiclePose pose;pose.speed=2;pose.gearbox=VehicleGearbox::manual;
+        VehicleState positive,negative;VehicleTelemetry a,b;
+        check(model.reset(positive,pose),"retained slip runtime reset");
+        positive.transmission.mode=3;positive.transmission.clutch=1;
+        positive.transmission.requested_gear=positive.gear;
+        positive.engine.angular_speed=120;
+        for(auto& w:positive.wheels) w.prepared_slip=.01F;
+        negative=positive;for(auto& w:negative.wheels) w.prepared_slip=-.01F;
+        VehicleInput gas;gas.throttle=1;
+        check(model.step(positive,gas,VehicleFlatGround{},a,0,dt,true)&&
+              model.step(negative,gas,VehicleFlatGround{},b,0,dt,true),
+              "both saved slip histories complete the initial runtime callback");
+        check(positive.wheels[2].spin!=negative.wheels[2].spin&&
+              positive.transmission.wheel_engine_speed==positive.engine.angular_speed,
+              "runtime wires saved prepared slip into gearbox before new force preparation");
+        std::array<std::uint8_t,kVehicleTelemetryRecordBytes> ba{},bb{};
+        encode_vehicle_telemetry(a,ba);encode_vehicle_telemetry(b,bb);
+        check(ba!=bb,"retained slip changes the recorded completed mechanical future");
+        auto saved=positive;VehicleTelemetry resumed;
+        for(unsigned slice=0;slice<4;++slice) {
+            const double publication=slice==3?dt*4:0;
+            check(model.step(positive,gas,VehicleFlatGround{},a,publication,dt,slice==0)&&
+                  model.step(saved,gas,VehicleFlatGround{},resumed,publication,dt,slice==0),
+                  "saved slip epoch resumes across four solver slices");
+            encode_vehicle_telemetry(a,ba);encode_vehicle_telemetry(resumed,bb);
+            check(ba==bb,"completed saved state supplies identical next slip epochs and publication");
+        }
+    }
 }
 
 void owner_speed_domains() {
@@ -785,6 +854,7 @@ void original_aero_and_outer_epoch() {
 
 int main() {
     publication_and_reset();wheel_history_and_player_brake();shift_cycle_and_differential_sync();
+    retained_wheel_slip_epoch();
     owner_speed_domains();steered_constraint_witness();strut_hub_and_world_force_witness();
     outer_slice_and_selection_phase();
     body_derivative_epoch();

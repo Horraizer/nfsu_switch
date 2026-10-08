@@ -1464,6 +1464,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             out.compression=wheel.compression;out.contact=wheel.contact;
             out.load=strut_force[k];out.surface=hits[k].hit?hits[k].surface:0;
             w.spin=static_cast<float>(wheel.spin);w.history_torque=wheel.history_torque;
+            w.cached_slip=wheel.prepared_slip;
             w.spin_direction=wheel.spin_direction;w.locked=wheel.brake_locked;
             w.contact=wheel.contact;w.load=static_cast<float>(strut_force[k]/a.unit_scale);
             w.owner_speed=s.owner_speeds.forward;
@@ -1518,7 +1519,8 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             out.slip_lateral=vlat/denominator;
         }
         //46ABD0 updates the gearbox after wheel/strut component refresh. Force
-        // inputs/slip were cleared by those updates; the new producer runs later.
+        // inputs/slip160 were cleared; retained164 is the previous completed
+        // prepared_slip.58747D replaces both copies in the new producer later.
         player_gear_update(h,s.gear,s.transmission,s.engine,work,static_cast<float>(throttle),
                            s.owner_speeds.magnitude);
         if(!s.forces_prepared) {

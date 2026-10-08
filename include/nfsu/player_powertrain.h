@@ -16,7 +16,8 @@ struct PlayerWheelWork {
     float torque = 0.0F, force_long = 0.0F, force_lat = 0.0F;
     float load = 0.0F, velocity_long = 0.0F, velocity_lat = 0.0F;
     float owner_speed = 0.0F; // signed owner+390 used by low-speed friction
-    float slip = 0.0F;
+    float slip = 0.0F; // wheel+160, cleared by component refresh
+    float cached_slip = 0.0F; // wheel+164, retained until58747D writes both
     float service = 0.0F, parking = 0.0F;
     float heading_x = 1.0F, heading_y = 0.0F;
     float side_x = 0.0F, side_y = 1.0F;

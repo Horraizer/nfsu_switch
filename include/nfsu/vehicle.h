@@ -496,6 +496,8 @@ struct VehicleWheelState {
     float history_torque = 0.0F; // wheel+114, kN m
     int spin_direction = 1;      // wheel+110
     // Prepared by4783C0 after updates, consumed by next587170 derivative.
+    //58747D writes identical160/164 raw slip copies. prepared_slip also retains
+    //164 for46D830 after next component refresh clears160 alone.
     float prepared_torque = 0.0F, prepared_force_long = 0.0F, prepared_slip = 0.0F;
     bool prepared_sliding = false;
 };
