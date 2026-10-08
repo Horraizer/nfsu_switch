@@ -311,6 +311,13 @@ TrackObjectReport load_track_objects(
 std::vector<std::uint32_t> track_object_mesh_hashes(
     const TrackObjectReport& report);
 
+// Keep every LOD/fallback hash of every placed object, including the sky.
+// Drops only library meshes no valid scenery instance can select.
+// Used by the Atlantic loader before texture decoding to bound its peak.
+bool retain_instanced_track_meshes(TrackRegionReport& geometry,
+                                  const TrackObjectReport& objects,
+                                  std::string& error);
+
 // One used mesh slot of one object, bound against a decoded region.
 struct TrackObjectBinding {
     std::size_t section_index = 0;
@@ -318,8 +325,8 @@ struct TrackObjectBinding {
     std::size_t slot = 0;
     std::uint32_t hash = 0;
     // Position in TrackRegionReport::meshes, meaningful only when resolved.
-    // The lowest index among the valid meshes claiming the hash, so a
-    // duplicate name is bound the same way on every run.
+    // First valid root claiming the hash; inside a verified root the
+    // last valid loaded payload wins. Unknown roots retain first precedence.
     std::size_t mesh_index = 0;
     bool resolved = false;
 };

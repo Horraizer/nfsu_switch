@@ -550,6 +550,10 @@ bool render_track_draw_list(
             has_bound = true;
         }
         fallback_color(draw.texture_hash, raster.fallback);
+        raster.ordinary_world = raster.texture &&
+            options.material_state == MaterialStateMode::retail &&
+            !options.reflection_pass &&
+            track_vertex_format(mesh.vertex_format_flags).mask == 0;
 
         // Opaque depth rejects hidden sky pixels. Translucency must see
         // the sky as its destination colour, so stop before the first blend.
@@ -637,7 +641,7 @@ bool render_track_draw_list(
                 }
             }
             raster.shade = 256;
-            if (options.shading == ShadingMode::flat && has_normal) {
+            if (!raster.ordinary_world && options.shading == ShadingMode::flat && has_normal) {
                 const double d = normal.x * light.x + normal.y * light.y +
                                  normal.z * light.z;
                 const double k = 0.35 + 0.65 * std::max(0.0, d);

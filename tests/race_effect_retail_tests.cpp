@@ -107,7 +107,7 @@ void material_frame(const RecordedDraw& d,const DrawMaterialUniform& m,const Dra
     check(!baseline.empty() && baseline==candidate,"CPU race material RGBA frames differ");
 }
 void inspect(const RecordedCommands& commands,std::uint64_t tick,bool shaded,std::size_t static_count) {
-    std::size_t statics=0,dynamics=0,skipped=0,smoke=0,sparks=0,live=0,glows=0,lamps=0;
+    std::size_t statics=0,world_statics=0,dynamics=0,skipped=0,smoke=0,sparks=0,live=0,glows=0,lamps=0;
     Images images;
     for(std::size_t i=0;i<commands.draw_count();++i) {
         const auto view=commands.draw_view(i);const auto& d=view.definition;
@@ -115,6 +115,15 @@ void inspect(const RecordedCommands& commands,std::uint64_t tick,bool shaded,std
         auto restored=gpu;restored.fallback[3]=before.fallback[3];
         check(std::memcmp(&before,&view.material,sizeof before)==0 && std::memcmp(&before,&restored,sizeof before)==0,"GPU payload changed another material lane");
         const auto marker=race_effect_fast_marker(d,before);
+        // Ordinary static world draws use native baked RGB, not the old flat
+        // specialization. Preserve their material and prohibit no-output skips.
+        if(i<static_count && before.fallback[3]==6) {
+            ++world_statics;
+            check(d.program && (std::strcmp(d.program->name,"track_textured")==0 ||
+                std::strcmp(d.program->name,"track_linear_textured")==0),"ordinary world escaped track program");
+            check(marker==0 && !race_effect_no_output(view),"ordinary world entered generic optimization");
+            check(std::memcmp(&before,&gpu,sizeof before)==0,"ordinary world GPU payload changed");
+        }
         if(marker) {
             if(i<static_count)++statics;else ++dynamics;
             material_frame(d,before,commands.frame,commands.resource_table(),images);
@@ -137,9 +146,9 @@ void inspect(const RecordedCommands& commands,std::uint64_t tick,bool shaded,std
             material_frame(draw,draw.material,commands.frame,commands.resource_table(),images);
         }
     }
-        std::cout<<"RACE_EFFECT tick="<<tick<<" static="<<statics<<" dynamic="<<dynamics<<" zero_particles="<<skipped
+        std::cout<<"RACE_EFFECT tick="<<tick<<" static="<<statics<<" static_world="<<world_statics<<" dynamic="<<dynamics<<" zero_particles="<<skipped
              <<" smoke="<<smoke<<" sparks="<<sparks<<" live_particles="<<live<<" glows="<<glows<<" reflected_lamps="<<lamps<<'\n';
-    check(statics>0 && dynamics>0 && smoke>0 && sparks>0 && glows==4 && lamps>0,"real race eligibility witnesses missing");
+    check(world_statics>0 && dynamics>0 && smoke>0 && sparks>0 && glows==4 && lamps>0,"real race eligibility witnesses missing");
     if(tick==1200)check(live>0,"live smoke/spark witness missing");
 }
 }

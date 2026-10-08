@@ -12,6 +12,34 @@
 #include <utility>
 
 namespace nfsu {
+bool load_supported_race(const std::filesystem::path& front,
+                         const std::filesystem::path& global,
+                         std::uint32_t number, SupportedRace& race,
+                         std::string& error) {
+    race = {}; error.clear();
+    if (number != 1 && number != 8) {
+        error = "supported events are 1 (1003) and 8 (1005)"; return false;
+    }
+    std::vector<unsigned char> bytes;
+    const auto events = load_race_event_table(front, bytes);
+    const auto tracks = load_track_info_table(global, bytes);
+    const auto* event = find_race_event(events, number);
+    if (!events.ok() || !tracks.ok() || !event || event->races.size() != 1 ||
+        event->type != static_cast<std::uint32_t>(RaceType::circuit)) {
+        error = number == 1 ? "event 1 missing or not one race" :
+                              "supported event must be one valid circuit race";
+        return false;
+    }
+    const auto& slot = event->races.front();
+    const auto* info = find_track_info(tracks, slot.track);
+    if (!info || slot.track != (number == 1 ? 1003 : 1005) ||
+        slot.laps != (number == 1 ? 2 : 3) || slot.direction != 0 ||
+        info->region != "L1RA" || info->lap_skip != 0) {
+        error = "supported circuit differs from its retail selection"; return false;
+    }
+    race.event = number; race.slot = slot; race.track = *info;
+    return true;
+}
 namespace {
 
 constexpr std::uint32_t kContainerBit = 0x80000000U;

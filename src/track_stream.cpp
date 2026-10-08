@@ -604,9 +604,19 @@ bool select_track_texture_spillover_1003(
     const std::vector<std::size_t>& resident,
     TrackStreamSelection& selection,
     std::string& error) {
+    return select_track_texture_spillover_l1ra(table, resident, 1003, selection, error);
+}
+
+bool select_track_texture_spillover_l1ra(
+    const TrackStreamTable& table, const std::vector<std::size_t>& resident,
+    std::uint32_t track, TrackStreamSelection& selection, std::string& error) {
     selection = TrackStreamSelection{};
-    selection.track = 1003;
+    selection.track = track;
     selection.set = TrackStreamSet::stream;
+    if (track != 1003 && track != 1005) {
+        error = "texture spillover supports L1RA circuits 1003 and 1005";
+        return false;
+    }
     if (!table.valid) {
         error = "the streaming table is not valid";
         return false;
@@ -769,6 +779,8 @@ void merge_sections(TrackStreamLoad& load, const TrackStreamLoadLimits& limits) 
             all_tables = all_tables && section.geometry.mesh_table_valid;
             const TrackRegionCost& part = section.geometry.cost;
             TrackRegionCost& total = geometry.cost;
+            const std::size_t root_base =
+                static_cast<std::size_t>(total.geometry_roots);
             total.region_bytes += part.region_bytes;
             total.chunks += part.chunks;
             total.geometry_roots += part.geometry_roots;
@@ -796,6 +808,8 @@ void merge_sections(TrackStreamLoad& load, const TrackStreamLoadLimits& limits) 
                                    section.geometry.issues.end());
             for (TrackMesh& mesh : section.geometry.meshes) {
                 mesh.index = geometry.meshes.size();
+                if (mesh.root_index != kUnknownTrackGeometryRoot)
+                    mesh.root_index += root_base;
                 geometry.meshes.push_back(std::move(mesh));
             }
             section.mesh_count = geometry.meshes.size() - section.first_mesh;
@@ -950,7 +964,8 @@ bool load_with_reader(const TrackStreamTable& table,
             load.bytes_read += section.size;
             if (limits.poll) limits.poll();
             parse_section(section, limits);
-            if (limits.release_non_texture_bytes && section.packs.packs.empty()) {
+            if (limits.release_source_bytes ||
+                (limits.release_non_texture_bytes && section.packs.packs.empty())) {
                 std::vector<unsigned char>().swap(section.bytes);
             }
             if (limits.poll) limits.poll();

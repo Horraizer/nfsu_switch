@@ -113,7 +113,7 @@ function(nfsu_upper_hash path out_var)
     set(${out_var} "${hash}" PARENT_SCOPE)
 endfunction()
 
-set(usage_line "nfsu_probe asset-check <root> [--set <first-lap|stock-car|event-1>]")
+set(usage_line "nfsu_probe asset-check <root> [--set <first-lap|first-lap-1005|stock-car|event-1>]")
 
 # ---------------------------------------------------------------------------
 # No input files
@@ -139,7 +139,7 @@ nfsu_case("an option that is not --set" 1
           "${work}/absent" "--sets" "first-lap")
 
 nfsu_case("a set that is not one" 1
-          "error: --set must be one of first-lap stock-car event-1\n"
+          "error: --set must be one of first-lap first-lap-1005 stock-car event-1\n"
           "asset-check: root;${usage_line}"
           "${work}/absent" "--set" "second-lap")
 

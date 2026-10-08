@@ -272,6 +272,11 @@ bool select_track_texture_spillover_1003(
     TrackStreamSelection& selection,
     std::string& error);
 
+// Same explicit display-source approximation for the two L1RA circuits.
+bool select_track_texture_spillover_l1ra(
+    const TrackStreamTable& table, const std::vector<std::size_t>& resident,
+    std::uint32_t track, TrackStreamSelection& selection, std::string& error);
+
 // ---------------------------------------------------------------------------
 // Loading the selected sections
 // ---------------------------------------------------------------------------
@@ -323,6 +328,9 @@ struct TrackStreamLoadLimits {
     // Release parsed raw ranges without textures before reading the next section.
     // Diagnostics default to retaining every original byte.
     bool release_non_texture_bytes = false;
+    // Keep parsed metadata but release all raw ranges. Texture consumers must
+    // re-read each source through RenderTextureLimits::load_source.
+    bool release_source_bytes = false;
     // Optional service/measurement checkpoint; exceptions propagate to cancel.
     std::function<void()> poll;
     // Over every section read.

@@ -137,6 +137,7 @@ bool prepare(
         region.meshes.emplace_back();
         PreparedTrackMesh& prepared = region.meshes.back();
         prepared.source_index = mesh.index;
+        prepared.root_index = mesh.root_index;
         prepared.vertex_format_flags = mesh.vertex_format_flags;
         prepared.name = mesh.name;
         prepared.mesh_hash = mesh.mesh_hash;
@@ -645,6 +646,27 @@ bool validate_prepared_track_region(
         error = "the cost statistics do not match the prepared draw list";
         return false;
     }
+    return true;
+}
+
+bool bind_track_default_alpha(RenderTextureSet& textures, std::uint32_t missing_hash,
+                              std::string& error) {
+    error.clear();
+    MeshMaterial material;
+    material.texture_slot = 0;
+    const auto binding = resolve_material(std::vector<std::uint32_t>{missing_hash}, material, textures);
+    if (binding.kind != BindingKind::unresolved) return true;
+    const auto fallback = resolve_material(std::vector<std::uint32_t>{kTrackDefaultAlphaHash}, material, textures);
+    if (fallback.kind != BindingKind::resolved) {
+        error = "retail DEFAULTALPHA is unavailable for an absent track texture";
+        return false;
+    }
+    auto& texture = textures.textures[fallback.texture_index];
+    if (texture.claim_count >= texture.claims.size()) {
+        error = "retail DEFAULTALPHA alias capacity exceeded";
+        return false;
+    }
+    texture.claims[texture.claim_count++] = missing_hash;
     return true;
 }
 

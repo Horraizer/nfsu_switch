@@ -244,7 +244,8 @@ bool combine_race_commands(RecordedCommands track, const RecordedCommands& car,
 bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& root,
                         std::string& error, AssetCheckObserver* observer,
                         TrackSliceLoadObserver* loading, bool tuned, bool glows,
-                        bool car_shading, const CarAssets* car, const RaceCarDress* dress) {
+                        bool car_shading, const CarAssets* car, const RaceCarDress* dress,
+                        std::uint32_t event_number) {
     if (ready_) { error = "race scene is already loaded"; return false; }
     // The misuse refusals run before any file is read, so a caller that
     // cannot reach retail data still sees the sentence.
@@ -329,7 +330,7 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
             2 * base_.size() * sizeof(PreparedInstance);
     }
     if (loading) loading->checkpoint("car source released");
-    if (!load_track_slice(files, root, track_, error, observer, loading)) return false;
+    if (!load_track_slice(files, root, track_, error, observer, loading, event_number)) return false;
     if (car_bytes_ + track_.contacts.memory.resident_bytes > kPersistentBudgetPlaceholder) {
         error = "race car and collision exceed the persistent payload plan"; return false;
     }
@@ -337,7 +338,7 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
     // diagnostic path and contact copy before allocating that course.
     root_ = root;
     if (wet_road_reflections_) {
-        if (!load_wet_road_lamps(root, track_.contacts, lamps_, error)) return false;
+        if (!load_wet_road_lamps(root, track_.contacts, lamps_, error, static_cast<std::int16_t>(track_.track_number))) return false;
         lamps_loaded_ = true;
     }
     track_.contacts = {};
@@ -681,7 +682,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
     out = {}; error.clear();
     if (!ready_) { error = "race scene is not loaded"; return false; }
     if (wet_road_reflections_ && !lamps_loaded_) {
-        if (!load_wet_road_lamps(root_, session.course().world, lamps_, error)) return false;
+        if (!load_wet_road_lamps(root_, session.course().world, lamps_, error, static_cast<std::int16_t>(track_.track_number))) return false;
         wet_uploads_ = combined_uploads_;
         if (!append_wet_lamp_uploads(lamps_, wet_uploads_, error)) return false;
         if (!prepare_reflections(error)) return false;

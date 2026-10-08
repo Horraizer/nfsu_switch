@@ -303,9 +303,9 @@ struct PreparedTrackScene {
 // meshes of `geometry`, having prepared `geometry` and `textures` with
 // prepare_track_region first.
 //
-// A hash resolves to the lowest-numbered valid mesh of the region that
-// carries it, which is the rule resolve_track_objects uses, so the two
-// agree on every instance they both bind.
+// A hash retains first-root precedence and selects the last valid payload
+// inside that verified root, matching resolve_track_objects. Meshes without
+// verified root provenance retain first-valid precedence.
 //
 // Fails, with error set and scene left empty, on a slot outside the six, on
 // a limit, on an allocation failure or on a failed self-check;

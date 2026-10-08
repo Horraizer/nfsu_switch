@@ -80,10 +80,10 @@ std::string format_race_input(const std::vector<RaceInputRun>& runs);
 GamepadFrame race_input_frame(const RaceInputRun& run, std::uint64_t tick);
 void append_race_input(std::vector<RaceInputRun>& runs, const GamepadFrame& pad);
 
-enum class RaceDrivingLine { progress_spline, event1_forward };
+enum class RaceDrivingLine { progress_spline, event1_forward, event8_forward };
 
 // Pure pursuit with curvature braking, 10 Hz decisions and quantized steering.
-// Event 1 selects authored lane offsets; other courses follow their spline.
+// Events 1 and 8 select authored test-driver offsets; other courses follow their spline.
 // This changes controller values only, never pose, progress or reset state.
 class RaceRouteDriver {
 public:
@@ -96,7 +96,7 @@ private:
     GamepadFrame held_;
 };
 
-std::vector<std::string> race_session_hud(const RaceSession& session);
+std::vector<std::string> race_session_hud(const RaceSession& session, std::uint32_t event_number = 1);
 
 // Opaque passes rendered with the same camera, track first and car second.
 // A depth tie belongs to the car. MaterialStateMode::off is required for

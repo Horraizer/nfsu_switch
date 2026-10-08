@@ -1,7 +1,10 @@
 #include "nfsu/track_slice.h"
 #include "nfsu/draw_execution.h"
+#include "nfsu/race_events.h"
+#include "nfsu/race_route.h"
 #include "nfsu/texture_decode.h"
 
+#include <algorithm>
 #include <cmath>
 #include <utility>
 
@@ -11,11 +14,14 @@ namespace nfsu {
 
 bool load_track_slice(FileSystemService& files, const std::filesystem::path& root,
                       TrackSlice& slice, std::string& error, AssetCheckObserver* observer,
-                      TrackSliceLoadObserver* loading) {
+                      TrackSliceLoadObserver* loading, std::uint32_t event_number) {
     slice = {}; error.clear();
     TrackSlice result;
     AssetManifest manifest;
-    if (!retail_asset_manifest("first-lap", manifest) ||
+    if (event_number != 1 && event_number != 8) {
+        error = "supported track events are 1 and 8"; return false;
+    }
+    if (!retail_asset_manifest(event_number == 1 ? "first-lap" : "first-lap-1005", manifest) ||
         !check_asset_install(files, root, manifest, result.assets, error, observer)) return false;
     if (result.assets.verdict != AssetVerdict::complete) {
         error = std::string("first-lap asset check: ") + asset_verdict_name(result.assets.verdict);
@@ -27,19 +33,24 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         if (loading) loading->checkpoint(phase);
     };
     checkpoint("track table");
-    const auto path = [&](const char* relative) -> std::filesystem::path {
+    const auto path = [&](const std::string& relative) -> std::filesystem::path {
         for (const auto& file : result.assets.files)
             if (asset_names_match(file.expected.path, relative)) return root / file.found_as;
         return {};
     };
-    const auto trackb = path("Tracks/TRACKB1003.lzc");
+    SupportedRace race;
+    if (!load_supported_race(path("FrontEnd/FrontB.lzc"), path("Global/GLOBALB.BUN"),
+                             event_number, race, error)) return false;
+    result.event_number = event_number;
+    result.track_number = static_cast<std::uint32_t>(race.slot.track);
+    const auto trackb = path("Tracks/" + track_bundle_file_name(race.slot.track));
     {
         std::vector<unsigned char> image;
         const auto zones = load_track_zones(trackb, image);
         const auto table = parse_track_stream_table(image.data(), image.size());
         TrackStreamSelection selected;
         if (!zones.ok() || !table.ok() ||
-            !select_track_stream_sections(table, zones, 1003, TrackStreamSet::permanent, selected, error)) {
+            !select_track_stream_sections(table, zones, result.track_number, TrackStreamSet::permanent, selected, error)) {
             if (error.empty()) error = "invalid event-1 track table or visibility zones";
             return false;
         }
@@ -50,10 +61,11 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         TrackStreamFiles streams;
         streams.stream = path("Tracks/STREAML1RA.BUN");
         streams.has_pack = true;
-        streams.pack = path("Tracks/STREAML1RA_1003.BUN");
+        streams.pack = path("Tracks/" + track_stream_pack_file_name(race.track));
         TrackStreamLoadLimits limits;
         limits.max_total_bytes = kPersistentBudgetPlaceholder;
         limits.release_non_texture_bytes = true;
+        limits.release_source_bytes = event_number==8;
         limits.poll = [&] { checkpoint("stream sections"); };
         TrackStreamLoad load;
         if (!load_track_stream_sections(table, selected, streams, limits, load, error) || !load.ok()) {
@@ -63,6 +75,7 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         checkpoint("sections parsed and merged");
         result.sections = selected.records.size();
         result.input_bytes = load.bytes_read;
+        if (event_number==8 && !retain_instanced_track_meshes(load.geometry,load.objects,error)) return false;
         // The merged reports own their arrays. Drop per-section parser
         // copies and non-texture source ranges before texture preparation.
         std::vector<unsigned char>().swap(image);
@@ -71,7 +84,12 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
             section.objects = {};
             if (section.packs.packs.empty()) std::vector<unsigned char>().swap(section.bytes);
         }
-        const auto wanted = track_region_texture_hashes(load.geometry);
+        auto wanted = track_region_texture_hashes(load.geometry);
+        if (event_number == 8) {
+            wanted.push_back(kTrackDefaultAlphaHash);
+            std::sort(wanted.begin(), wanted.end());
+            wanted.erase(std::unique(wanted.begin(), wanted.end()), wanted.end());
+        }
         std::vector<RenderTextureSource> sources;
         std::vector<std::size_t> owners;
         track_stream_texture_sources(load, &wanted, sources, owners);
@@ -85,7 +103,7 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         }
         const std::size_t regular_sources = owners.size();
         TrackStreamSelection spillover_selection;
-        if (!select_track_texture_spillover_1003(table, selected.records,
+        if (!select_track_texture_spillover_l1ra(table, selected.records, result.track_number,
                                                  spillover_selection, error)) return false;
         TrackStreamLoad spillover;
         TrackStreamLoadLimits spillover_limits;
@@ -116,7 +134,7 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
             std::vector<unsigned char>().swap(section.bytes);
         }
         const std::size_t stream_sources = sources.size();
-        const char* names[] = {"Tracks/TEX1003TRACK.BIN", "Global/INGAMEB.BUN", "Global/GLOBALB.BUN"};
+        const std::string names[] = {"Tracks/" + track_texture_file_name(race.slot.track), "Global/INGAMEB.BUN", "Global/GLOBALB.BUN"};
         sources.resize(sources.size() + 3);
         std::vector<unsigned char> source_bytes;
         TexturePackSet source_packs;
@@ -142,8 +160,8 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
                 checkpoint("texture source parse");
                 source_packs = parse_texture_pack_set(source_bytes.data(), source_bytes.size());
             } else {
-                const char* name = names[source - stream_sources];
-                checkpoint(name);
+                const auto& name = names[source - stream_sources];
+                checkpoint(name.c_str());
                 source_packs = load_texture_pack_set(path(name), source_bytes);
             }
             if (!source_packs.complete) { problem = "incomplete track texture source"; return false; }
@@ -161,6 +179,7 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         };
         RenderTextureSet textures;
         if (!decode_render_texture_sources(sources, texture_limits, textures, error)) return false;
+        if (event_number == 8 && !bind_track_default_alpha(textures, 0x828DCF0BU, error)) return false;
         checkpoint("textures decoded");
         // RenderTexture owns every retained block. No scene preparation
         // consults the pack parser or its borrowed source bytes again.
@@ -192,8 +211,20 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
     checkpoint("collision loaded");
     std::vector<TrackResidencyVertex> vertices;
     std::vector<TrackResidencySample> samples;
-    if (!parse_track_residency_path(kTrackResidencyHandPath1003, vertices, error) ||
-        !sample_track_residency_path(vertices, 30.0, 60, samples, result.path, error)) return false;
+    if (event_number == 1) {
+        if (!parse_track_residency_path(kTrackResidencyHandPath1003, vertices, error)) return false;
+    } else {
+        std::vector<unsigned char> route_bytes;
+        const auto route = load_race_route_track(trackb, route_bytes);
+        TrackPathSpline spline;
+        if (!build_track_path_spline(route, 0, spline, error)) return false;
+        for (std::size_t i = 0; i <= spline.count*16; ++i) {
+            float point[3]; evaluate_track_path(spline, static_cast<float>(i)/16, 0, point);
+            TrackResidencyVertex vertex; vertex.slot[0] = point[0]; vertex.slot[1] = point[1];
+            vertices.push_back(vertex);
+        }
+    }
+    if (!sample_track_residency_path(vertices, 30.0, 60, samples, result.path, error)) return false;
     checkpoint("path sampled");
     slice = std::move(result);
     return true;

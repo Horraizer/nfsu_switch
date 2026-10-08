@@ -2658,6 +2658,79 @@ void test_render_vertex_colour() {
           "vertex colour multiplies the texel: got " + describe_pixel(after));
 }
 
+void test_ordinary_world_base_material() {
+    using namespace nfsu;
+    auto fixture = town();
+    const auto list = make_list(fixture.scene, TrackDrawOrder::visible_instance);
+    const auto post = instance_of_mesh(fixture.scene, 1);
+    auto options = small_options();
+    options.material_state = MaterialStateMode::retail;
+    options.shading = ShadingMode::flat;
+    options.camera.target = Vec3{fixture.scene.instances[post].transform.translation[0], 0, 0};
+    std::uint32_t px=0, py=0;
+    check(screen_pixel_of(options.camera, options.width, options.height,
+        Vec3{options.camera.target.x-.25,.5,0},px,py),"world probe visible");
+    Frame frame; RenderStats stats; TrackRenderStats track; std::string error;
+    check_ok(render_track_draw_list(fixture.scene,list,options,{},frame,stats,track,error),"world material render",error);
+    // Source fixture texel RGB(255,120,180), stored BGRA(255,128,64,255).
+    // D3DCOLOR expands native RGB(64,128,255). Native 2x term,
+    // independent of generic vertex-color option and directional normal.
+    check(pixel_at(frame,px,py)==std::array<unsigned char,4>{128,120,255,255},"original D3DCOLOR world 2x baked RGB");
+    const auto baked=frame.rgba();
+    options.shading=ShadingMode::none; options.vertex_color=true;
+    check_ok(render_track_draw_list(fixture.scene,list,options,{},frame,stats,track,error),"world option controls",error);
+    check(frame.rgba()==baked,"world authored base ignores substitute shade and generic color toggle");
+    RecordedCommands commands;
+    for (std::uint32_t flags : {0U,0x40U,0x80U,1U,0x41U}) {
+        for(auto& mesh:fixture.scene.region.meshes) mesh.vertex_format_flags=flags;
+        check_ok(record_track_commands(fixture.scene,list,options,{},commands,error),"world selector controls",error);
+        for(const auto& draw:commands.owning_draws())
+            check((draw.material.fallback[3]==6)==(flags==0),"only native ordinary selector gets world base");
+    }
+    for(auto& mesh:fixture.scene.region.meshes) mesh.vertex_format_flags=0;
+    options.reflection_pass=true;
+    check_ok(record_track_commands(fixture.scene,list,options,{},commands,error),"reflected pass control",error);
+    for(const auto& draw:commands.owning_draws())check(draw.material.fallback[3]!=6,"reflected producer remains unchanged");
+    options.reflection_pass=false;options.material_state=MaterialStateMode::off;
+    check_ok(record_track_commands(fixture.scene,list,options,{},commands,error),"diagnostic material control",error);
+    for(const auto& draw:commands.owning_draws())check(draw.material.fallback[3]!=6,"off diagnostic preserves generic model");
+}
+
+void test_ordinary_world_fractional_sample() {
+    using namespace nfsu;
+    RenderOptions options;options.width=16;options.height=16;
+    options.material_state=MaterialStateMode::retail;
+    options.texture_filter=TextureFilterMode::linear;
+    options.shading=ShadingMode::none;
+    RenderTexture texture;texture.width=2;texture.height=2;texture.valid=true;
+    texture.rgba={0,0,0,255,1,1,1,255,0,0,0,255,1,1,1,255};
+    // Linear-repeat sample at u=0 wraps halfway between columns1 and0.
+    // Native continuous 0.5*255*2/255 ->1, not round(0.5)*2 ->2.
+    // Other coordinates and interpolated colors guard against an isolated patch.
+    const std::array<std::array<double,2>,5> samples{{{0,.5},{.125,.25},{.25,0},{.5,.5},{.75,1}}};
+    for(const auto& sample:samples)for(double vertex:{33.0,128.0,255.0,127.5})
+        for(bool ordinary:{false,true}) {
+            Frame frame;RenderStats stats;std::string error;
+            unsigned char background[4]={0,0,0,255};
+            check_ok(frame.reset(16,16,background,{},error),"fractional frame",error);
+            ClipVertex vertices[3];const double xs[3]={-1,1,0},ys[3]={-1,-1,1};
+            for(unsigned i=0;i<3;++i) {
+                auto& v=vertices[i];v.x=xs[i];v.y=ys[i];v.z=.5;v.w=1;
+                v.u=sample[0];v.v=.5;v.r=v.g=v.b=vertex;v.a=255;
+            }
+            RasterMaterial material;material.texture=&texture;material.linear_filter=true;
+            material.ordinary_world=ordinary;
+            Rasterizer raster(frame,options,{},stats);
+            check_ok(raster.draw_triangle(vertices,material,0,error),"fractional triangle",error);
+            check(frame.ids()[8*16+8]==0 && stats.fragments_written>0,"fractional probe really written");
+            const auto expected=static_cast<unsigned char>(std::floor(
+                (ordinary ? sample[1]*vertex*2.0/255.0 : sample[1])+.5));
+            const auto pixel=pixel_at(frame,8,8);
+            check(pixel==std::array<unsigned char,4>{expected,expected,expected,255},
+                ordinary ? "native continuous linear world sample" : "generic rounded sampler unchanged");
+        }
+}
+
 void test_render_drawn_bounds_match_the_frame() {
     // The reported drawn bounds against a scan of the pixels themselves.
     // The scan reads the colour buffer and not the id buffer the statistic
@@ -3219,14 +3292,16 @@ void test_sky_background_and_transparency() {
     check(pixel_at(frame,80,60) == std::array<unsigned char,4>{255,120,90,255},"alpha-test holes expose sky");
     for (std::size_t i=3;i<tex.rgba.size();i+=4) tex.rgba[i]=255;
     check_ok(render_track_draw_list(scene,list,options,{},frame,stats,track,error),"opaque foliage",error);
-    check(pixel_at(frame,80,60) == std::array<unsigned char,4>{0,200,0,255},"opaque depth occludes sky");
+    // World texel green200 * authored green128 * 2 / 255 rounds to201.
+    check(pixel_at(frame,80,60) == std::array<unsigned char,4>{0,201,0,255},"opaque baked world depth occludes sky");
     check(frame.depth()[60*160+80] < 1.0,"foliage writes depth");
     tex.alpha_test_mode = 0; tex.alpha_blend_mode = 1;
     for (std::size_t i=3;i<tex.rgba.size();i+=4) tex.rgba[i]=128;
     std::vector<ReferenceDraw> trace;
     check_ok(render_track_draw_list(scene,list,options,{},frame,stats,track,error,
         [&](const ReferenceDraw& d){trace.push_back(d);}),"sky behind glass",error);
-    check(pixel_at(frame,80,60) == std::array<unsigned char,4>{127,160,45,255},"glass blends over sky");
+    // Same source-over alpha128, over unchanged sky green120.
+    check(pixel_at(frame,80,60) == std::array<unsigned char,4>{127,161,45,255},"baked world glass blends over unchanged sky");
     RecordedCommands commands;
     check_ok(record_track_commands(scene,list,options,{},commands,error),"record sky and glass",error);
     check_ok(validate_recorded_commands(commands,error),"validate sky interface",error);
@@ -3387,6 +3462,8 @@ int main() {
     test_render_an_unusable_binding();
     test_render_uv_orientation();
     test_render_vertex_colour();
+    test_ordinary_world_base_material();
+    test_ordinary_world_fractional_sample();
     test_render_drawn_bounds_match_the_frame();
     test_render_reports_an_invalid_mesh();
     test_render_counts_a_degenerate_triangle();

@@ -17,6 +17,7 @@ constexpr const char* kPerformance1StepsHash = "CB7DCA8D530172A4833A43EF29AC988E
 // No rendering, pad polling or wall clock affects the recorded state.
 class RaceRun {
 public:
+    bool set_event(std::uint32_t event, std::string& error);
     bool prepare_metadata(const std::filesystem::path& root, std::string& error,
                           TrackSliceLoadObserver* observer = nullptr);
     bool set_performance_levels(const VehicleUpgradeLevels& levels, std::string& error);
@@ -38,12 +39,14 @@ public:
     const std::string& step_line() const { return step_line_; }
     std::string sequence_hash() const;
     std::string steps_hash() const;
+    std::uint32_t event_number() const { return event_number_; }
     bool matches_event1_replay() const;
     bool matches_configured_replay() const;
     std::vector<std::string> result_lines() const;
     std::uint64_t persistent_bytes() const { return course_.world.memory.resident_bytes; }
     std::size_t resident_count() const { return resident_.size(); }
 private:
+    std::uint32_t event_number_ = 1, track_number_ = 1003;
     VehicleTrackCourse course_;
     TrackStreamTable table_;
     TrackZoneReport zones_;

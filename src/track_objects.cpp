@@ -1069,20 +1069,51 @@ std::vector<std::uint32_t> track_object_mesh_hashes(
     return std::vector<std::uint32_t>(hashes.begin(), hashes.end());
 }
 
+bool retain_instanced_track_meshes(TrackRegionReport& geometry,
+                                  const TrackObjectReport& objects,
+                                  std::string& error) {
+    if (!geometry.ok() || !objects.ok()) {
+        error = "cannot reduce invalid track geometry or objects"; return false;
+    }
+    std::set<std::uint32_t> wanted;
+    for (const auto& section : objects.sections) {
+        if (!section.valid) continue;
+        for (const auto& instance : section.instances) {
+            if (instance.object_index >= section.objects.size()) {
+                error = "track instance object index outside section"; return false;
+            }
+            for (auto hash : section.objects[instance.object_index].mesh_hash)
+                if (hash) wanted.insert(hash);
+        }
+    }
+    geometry.meshes.erase(std::remove_if(geometry.meshes.begin(),geometry.meshes.end(),
+        [&](const TrackMesh& mesh) { return wanted.count(mesh.mesh_hash)==0; }),geometry.meshes.end());
+    for (std::size_t i=0; i<geometry.meshes.size(); ++i) geometry.meshes[i].index=i;
+    error.clear(); return true;
+}
+
 TrackObjectResolution resolve_track_objects(
     const TrackObjectReport& objects,
     const TrackRegionReport& region) {
     TrackObjectResolution resolution;
 
-    // The lowest valid mesh index per hash, so a region with two meshes of
-    // the same name binds the same one on every run.
+    // Keep the existing first-root precedence. Within that verified root,
+    // native 0x540201 overwrites the first equal-key directory entry after
+    // each successfully loaded container, so its last valid payload wins.
     std::map<std::uint32_t, std::size_t> meshes;
     for (std::size_t i = 0; i < region.meshes.size(); ++i) {
         const TrackMesh& mesh = region.meshes[i];
         if (!mesh.valid) {
             continue;
         }
-        meshes.emplace(mesh.mesh_hash, i);
+        const auto bound = meshes.emplace(mesh.mesh_hash, i);
+        if (!bound.second) {
+            const auto& previous = region.meshes[bound.first->second];
+            if (mesh.has_hash_record && previous.has_hash_record &&
+                mesh.root_index != kUnknownTrackGeometryRoot &&
+                mesh.root_index == previous.root_index)
+                bound.first->second = i;
+        }
     }
 
     std::set<std::uint32_t> unresolved;

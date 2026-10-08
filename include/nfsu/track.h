@@ -70,8 +70,8 @@ struct TrackVertex {
     float py = 0.0F;
     float pz = 0.0F;
     // Bytes 12..15 as stored. The retail declaration calls them one
-    // D3DCOLOR; the byte order and the meaning are unknown, exactly as
-    // they are for MeshVertex::color.
+    // D3DCOLOR. Its little-endian bytes are BGRA; the original declaration
+    // expands them to RGBA. Retain the stored order in this raw structure.
     std::uint8_t color[4] = {0, 0, 0, 0};
     float u = 0.0F;
     float v = 0.0F;
@@ -108,8 +108,12 @@ struct TrackLimits {
 
 // One decoded track mesh. Every provenance field is an absolute file
 // offset, not a region-relative one.
+constexpr std::size_t kUnknownTrackGeometryRoot = static_cast<std::size_t>(-1);
 struct TrackMesh {
     std::size_t index = 0;
+    // Report-local geometry-root identity, preserved across stream merges.
+    // Unknown for hand-built reports that did not parse an owning root.
+    std::size_t root_index = kUnknownTrackGeometryRoot;
     std::string name;
     std::uint64_t offset = 0;
     // 0x00134011 +16, the mesh name hash, matched against the

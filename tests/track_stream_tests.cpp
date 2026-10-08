@@ -1393,7 +1393,16 @@ void test_load_poll_and_cancel() {
           out.geometry.cost.vertices == loaded.load.geometry.cost.vertices &&
           out.objects.cost.instances == loaded.load.objects.cost.instances &&
           out.bytes_read == loaded.load.bytes_read,
-          "raw geometry released before next section; texture bytes and merge retained");
+            "raw geometry released before next section; texture bytes and merge retained");
+    limits.release_source_bytes = true;
+    check(nfsu::load_track_stream_sections_from_memory(loaded.table, loaded.selection,
+          images, limits, out, error) && out.ok(), "metadata-only sources parse and merge");
+    check(std::all_of(out.sections.begin(),out.sections.end(),
+              [](const nfsu::TrackStreamSection& s) { return s.bytes.empty(); }) &&
+          !out.sections[0].packs.packs.empty() &&
+          out.geometry.cost.vertices == loaded.load.geometry.cost.vertices &&
+          out.bytes_read == loaded.load.bytes_read,
+          "raw texture bytes can be released while source metadata and geometry survive");
     struct Cancel {};
     polls = 0;
     limits.poll = [&] { if (++polls == 3) throw Cancel{}; };
@@ -1449,6 +1458,9 @@ void test_load_and_merge() {
     for (std::size_t m = 0; m < geometry.meshes.size() && m < 5; ++m) {
         check(geometry.meshes[m].name == order[m], "merged mesh " + std::to_string(m));
         check_eq_u64(geometry.meshes[m].index, m, "merged mesh index");
+        const std::size_t roots[] = {0, 0, 1, 2, 3};
+        check_eq_u64(geometry.meshes[m].root_index, roots[m],
+                     "stream merge keeps section-local roots distinct");
     }
     if (geometry.meshes.size() == 5) {
         check(geometry.meshes[2].offset > fixture.sections[3].offset &&

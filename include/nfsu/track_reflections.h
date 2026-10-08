@@ -17,7 +17,7 @@ struct WetRoadLamps {
     std::array<std::uint16_t, 6> indices{{0, 1, 2, 0, 2, 3}};
 };
 bool load_wet_road_lamps(const std::filesystem::path& root, const TrackContactWorld& world,
-                         WetRoadLamps& lamps, std::string& error);
+                         WetRoadLamps& lamps, std::string& error, std::int16_t track_number = 1003);
 bool wet_road_lamp_ground_height(WetRoadLamp& lamp, float ground_height);
 bool wet_road_lamp_placement(const WetRoadLamp& lamp, const CameraFrame& camera, TrackTransform& out);
 bool append_wet_lamp_uploads(const WetRoadLamps& lamps, UploadTable& uploads, std::string& error);

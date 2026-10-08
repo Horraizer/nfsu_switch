@@ -455,8 +455,20 @@ Every multiplication and addition that sizes a buffer is overflow-checked.
 a valid mesh of that region, producing one `TrackObjectBinding` per used
 slot in section, object and slot order. A hash no mesh claims is reported
 unresolved rather than treated as an error, because a section routinely
-names meshes that arrive with another region; when two valid meshes claim
-one hash the lowest index wins, so a run is reproducible.
+names meshes that arrive with another region. Equal hashes inside one
+verified geometry root select the last valid loaded container: native
+`0x5401EF` finds the first equal-key directory entry and `0x540201`
+overwrites its payload after each successful load. Lookup at `0x540630`
+uses the same directory search and returns that entry's payload at
+`0x540680`. This is the native hash-directory path; it does not establish
+precedence across roots or the loader's alternate linked-list path.
+
+`TrackMesh::root_index` identifies a root within one report. Stream merging
+renumbers these identities so independently parsed roots never alias. Both
+resolvers retain their existing first-valid-root precedence across roots;
+unknown or unverified provenance retains first-valid-mesh precedence. The
+root and validity boundary tests in `nfsu_track_draw_list_tests` exercise
+both raw resolution and the actual geometry emitted for a placement.
 
 It also runs the box cross-check described above for every instance whose
 slot-0 mesh resolved, and reports how many stored boxes contain their

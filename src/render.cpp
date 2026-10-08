@@ -232,7 +232,7 @@ std::uint32_t wrap_texel(double t, std::uint32_t size) noexcept {
 }
 
 void sample_linear_repeat(const RenderTexture& texture, double u, double v,
-                          std::uint32_t (&color)[4]) noexcept {
+                          std::uint32_t (&color)[4], double* continuous_rgb = nullptr) noexcept {
     if (!std::isfinite(u)) u = 0.0;
     if (!std::isfinite(v)) v = 0.0;
     // D3D's linear sample is centred on texels: normalized coordinate 0
@@ -255,8 +255,9 @@ void sample_linear_repeat(const RenderTexture& texture, double u, double v,
     for (int c = 0; c < 4; ++c) {
         const double upper = p00[c] * (1.0 - fx) + p10[c] * fx;
         const double lower = p01[c] * (1.0 - fx) + p11[c] * fx;
-        color[c] = static_cast<std::uint32_t>(std::floor(
-            upper * (1.0 - fy) + lower * fy + 0.5));
+        const double sampled = upper * (1.0 - fy) + lower * fy;
+        if (continuous_rgb && c < 3) continuous_rgb[c] = sampled;
+        color[c] = static_cast<std::uint32_t>(std::floor(sampled + 0.5));
     }
 }
 
@@ -1099,6 +1100,7 @@ bool Rasterizer::fill(
                     if (material.car_shading) for (int k=0;k<7;++k)
                         surface[k]=(l[0]*a->surface[k]+l[1]*b->surface[k]+l[2]*c->surface[k])*iq;
                     std::uint32_t color[4];
+                    double continuous_rgb[3]{};
                     std::uint32_t source_alpha = 255;
                     bool keep = true;
                     if (fallback) {
@@ -1112,7 +1114,8 @@ bool Rasterizer::fill(
                         color[3] = 255;
                     } else {
                         if (material.linear_filter) {
-                            sample_linear_repeat(*texture, u, tv, color);
+                            sample_linear_repeat(*texture, u, tv, color,
+                                material.ordinary_world ? continuous_rgb : nullptr);
                         } else {
                             const std::uint32_t tx = wrap_texel(u, texture->width);
                             const std::uint32_t ty = wrap_texel(tv, texture->height);
@@ -1151,14 +1154,18 @@ bool Rasterizer::fill(
                                    id > frame_.ids_[index])))) {
                         ++stats_.fragments_depth_failed;
                     } else {
-                        if ((options_.vertex_color && !material.frontend_lighting && !material.frontend_floor) || material.sky) {
+                        if ((options_.vertex_color && !material.frontend_lighting && !material.frontend_floor) || material.sky || material.ordinary_world) {
                             const double vc[3] = {
                                 (l[0] * a->rq + l[1] * b->rq + l[2] * c->rq) * iq,
                                 (l[0] * a->gq + l[1] * b->gq + l[2] * c->gq) * iq,
                                 (l[0] * a->bq + l[1] * b->bq + l[2] * c->bq) * iq};
                             for (int k = 0; k < 3; ++k) {
-                                color[k] = std::min(255U, (color[k] * channel(vc[k]) *
-                                    ((material.sky || material.frontend_floor) ? 2U : 1U) + 127U) / 255U);
+                                if (material.ordinary_world)
+                                    color[k] = channel((material.linear_filter && !fallback ?
+                                        continuous_rgb[k] : color[k]) * vc[2-k] * (2.0 / 255.0));
+                                else
+                                    color[k] = std::min(255U, (color[k] * channel(vc[k]) *
+                                        ((material.sky || material.frontend_floor) ? 2U : 1U) + 127U) / 255U);
                             }
                         }
                         const std::uint32_t shade = std::min<std::uint32_t>(material.shade, 256U);

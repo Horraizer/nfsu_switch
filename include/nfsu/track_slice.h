@@ -13,6 +13,8 @@ namespace nfsu {
 constexpr std::size_t kTrackSliceDrawLimit = 2047;
 constexpr std::size_t kTrackSliceResourceLimit = 8192;
 struct TrackSlice {
+    std::uint32_t event_number = 1;
+    std::uint32_t track_number = 1003;
     PreparedTrackScene scene;
     TrackObjectReport objects;
     TrackContactWorld contacts;
@@ -39,7 +41,8 @@ public:
 bool load_track_slice(FileSystemService& files, const std::filesystem::path& root,
                       TrackSlice& slice, std::string& error,
                       AssetCheckObserver* observer = nullptr,
-                      TrackSliceLoadObserver* loading = nullptr);
+                      TrackSliceLoadObserver* loading = nullptr,
+                      std::uint32_t event_number = 1);
 
 struct TrackSliceFrame {
     RecordedCommands commands;

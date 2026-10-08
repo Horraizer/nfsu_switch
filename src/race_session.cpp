@@ -323,6 +323,31 @@ GamepadFrame RaceRouteDriver::sample(const RaceSession& session) {
             target[1] += static_cast<float>(offset*tangent[0]/std::max(length,1.0));
         }
         float preview[3];
+        if (line_ == RaceDrivingLine::event8_forward) {
+            // Authored test-driver offsets from Atlantic's road corridors and poles.
+            // Positive is left of the forward tangent. Controller input only.
+            double p = parameter;
+            while (p >= 33) p -= 33;
+            constexpr double lanes[][2] = {
+                {0,0},{3,0},{3.2,4},{3.4,14},{3.6,26},{3.8,38},{4,47},{4.2,46},
+                {4.4,35},{4.6,22},{4.8,10},{5,0},{5.4,0},{5.8,8},{6,12},{6.2,15},
+                {6.4,18},{6.6,17},{6.8,15},{7,12},{7.2,10},{7.4,8},{7.6,6},{8,3},{8.2,0},
+                {20.8,0},{21,7},{21.2,13},{21.4,13},{21.6,10},{21.8,3},{22,-5},
+                {23.2,-5},{23.4,0},{23.6,15},{23.8,38},{24,58},{24.2,64},{24.4,74},
+                {24.6,74},{24.8,59},{25,44},{25.2,29},{25.6,26},{26,15},{26.3,-6},
+                {26.6,-6},{26.8,0},{27,8},{27.4,8},{27.6,0},{28.4,0},{28.8,-10},
+                {29,-6},{29.2,5},{29.4,10},{30.5,10},{30.8,4},{31,8},{31.5,10},{31.8,6},{32,3},{32.3,0},{33,0}};
+            double offset = 0;
+            for (std::size_t i=1;i<sizeof(lanes)/sizeof(*lanes);++i) {
+                if(p>lanes[i][0])continue;
+                const double fraction=(p-lanes[i-1][0])/(lanes[i][0]-lanes[i-1][0]);
+                offset=lanes[i-1][1]+fraction*(lanes[i][1]-lanes[i-1][1]);break;
+            }
+            float tangent[3]; evaluate_track_path(spline,parameter,1,tangent);
+            const double length = vehicle_sqrt(double(tangent[0])*tangent[0]+double(tangent[1])*tangent[1]);
+            target[0] -= static_cast<float>(offset*tangent[1]/std::max(length,1.0));
+            target[1] += static_cast<float>(offset*tangent[0]/std::max(length,1.0));
+        }
         evaluate_track_path(spline,coord.parameter+static_cast<float>(30/std::max(norm,1.0)),1,preview);
         const double pn = vehicle_sqrt(double(preview[0])*preview[0]+double(preview[1])*preview[1]);
         const double ux = derivative[0]/std::max(norm,1.0)-preview[0]/std::max(pn,1.0);
@@ -346,7 +371,7 @@ GamepadFrame RaceRouteDriver::sample(const RaceSession& session) {
     return held_;
 }
 
-std::vector<std::string> race_session_hud(const RaceSession& session) {
+std::vector<std::string> race_session_hud(const RaceSession& session, std::uint32_t event_number) {
     RaceHud hud;
     if (!race_timing_hud(session.course().route,session.timing_config(),session.timing(),0,hud))
         return {"RACE HUD UNAVAILABLE"};
@@ -356,7 +381,7 @@ std::vector<std::string> race_session_hud(const RaceSession& session) {
         session.timing().step_ticks-r.crossing_ticks[0];
     const std::string last = r.highest_lap > 0 && r.highest_lap < kRaceLapSlots
         ? format_race_ticks(r.lap_ticks[r.highest_lap]) : "--:--.--";
-    return {"EVENT 1  LAP " + std::to_string(lap) + " / " + std::to_string(hud.laps),
+    return {"EVENT " + std::to_string(event_number) + "  LAP " + std::to_string(lap) + " / " + std::to_string(hud.laps),
         "CURRENT " + (hud.lap_time_valid ? format_race_ticks(current) : "--:--.--") + "  LAST " + last,
         hud.finished ? "FINISHED " + format_race_ticks(r.finish_ticks) :
         hud.countdown==4 ? "GO" : hud.countdown ? "COUNTDOWN " + std::to_string(hud.countdown) : "RACING",

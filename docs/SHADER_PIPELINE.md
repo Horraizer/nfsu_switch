@@ -123,6 +123,37 @@ What a backend puts in the uniform blocks, per the reference:
 | `Material.environment_min`, `.environment_range` | `EnvmapMin`, `EnvmapRange` when the environment gate keeps the term, else zero; `environment_min.w` selects effect-2 wet track receivers |
 | `Material.environment_color` | the constant colour as bytes 0..255, and `EnvmapPower` in w |
 
+Ordinary resolved retail track draws in the main view use renderer marker6
+in `Material.fallback.w`. The original solid selector at `0x40C890` chooses
+effect0 when `track_vertex_format` reaches its mask0 row. Authenticated
+`fx/world.efx` multiplies the sampled RGB by interpolated authored vertex RGB
+and two; its fixed-function technique agrees through Modulate2x with lighting
+disabled. Both textured stages take this base path before generic geometric
+lighting. `RasterMaterial::ordinary_world` implements the same CPU reference
+term, rounding only its final channel. Generic `vertex_color` and `shading`
+options do not replace this material's authored base.
+
+The original declaration builder at `0x40E212..0x40E2A9` selects COLOR type4
+at offset12 for this format. [D3DDECLTYPE_D3DCOLOR](https://learn.microsoft.com/en-us/windows/win32/direct3d9/d3ddecltype)
+expands packed ARGB to RGBA; little-endian stored bytes are BGRA. Raw buffers
+remain unchanged. Only this ordinary-world base reads stored lanes2,1,0
+as RGB; both CPU and GPU retain the alpha lane. The non-gray original
+`XO_CARWALLA_1B_00` input in `nfsu_ordinary_world_retail` guards this conversion,
+which grayscale inputs cannot distinguish.
+
+This correction covers base RGB. Alpha/state and the selected sampler policy
+are retained. Original diffuse samplers declare linear mip/min/mag filtering;
+the default port track sampler remains nearest and exposes only the loaded
+texture level. Runtime headlight overrides, original live technique state and
+an owner-camera matched frame are not established by the base equation.
+Sky, car-format/bone/reflected-world solids, reflection-producer draws, effects
+and frontend draws keep their separate paths. The race fast-material upload
+preserves marker6. `nfsu_race_effect_fast_tests` compiles the actual scalar
+GLSL equation; `nfsu_track_render_tests` checks CPU pixels and selector/pass
+controls; `nfsu_ordinary_world_retail` checks actual event8 route-driver frame
+emissions for the barrier and scrapyard families. These are not hardware
+visual acceptance.
+
 The alpha reference 170 means the source alpha byte must exceed 0xAA. This
 stage writes the source alpha as a byte over 255, so a backend that sets
 deko3d's alpha reference to `170.5 / 255` rather than `170 / 255` keeps that

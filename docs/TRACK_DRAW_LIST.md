@@ -176,11 +176,15 @@ Three rules are applied, and only the first two are recovered:
    so neither ever resolves a solid and neither ever places an instance
    here. `SKYDOME` is in slot 0 of five retail objects, so this is not a
    hypothetical branch.
-3. **The lowest mesh claiming a hash.** A hash binds to the lowest-numbered
-   valid mesh of the prepared region that carries it. That is not a retail
-   rule; it is the rule `resolve_track_objects` already uses, adopted so the
-   two layers never disagree about an instance, and a test compares the two
-   on a region holding two meshes of the same hash.
+3. **Equal hashes within a root.** A verified geometry root binds the last
+   valid loaded payload for a hash, matching native `0x540201`'s writes to
+   the first equal-key directory entry. Preparation preserves root identity;
+   stream merging keeps separately parsed roots distinct. Across roots, and
+   with unknown or unverified provenance, existing first-valid precedence
+   remains. Cross-root native precedence is still unproved. The duplicate
+   payload tests in `nfsu_track_draw_list_tests` compare raw resolution,
+   placed geometry and emitted indices, and reject an earlier same-root
+   binding even when both payloads have identical shapes.
 
 ### What placing nothing means
 

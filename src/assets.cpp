@@ -81,6 +81,15 @@ constexpr RetailFile kRetailFiles[] = {
     {"Tracks/TRACKB1003.lzc", 433352,
      "ADA8206B5D66E3286BF582E2C7117FE0CC2BA9F6CADB756D922F7D32E7C696BA",
      "track 1003's streaming table, zones, route and collision"},
+    {"Tracks/STREAML1RA_1005.BUN", 0,
+     "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+     "track 1005's empty retail stream pack"},
+    {"Tracks/TEX1005TRACK.BIN", 1086216,
+     "CD86FEDB15B5F4CBC3E2180CBE0DECD855F7F58AACF00454B13CC175404976E1",
+     "track 1005's sky and track map textures"},
+    {"Tracks/TRACKB1005.lzc", 423196,
+     "635C53E038FA7CBE0F90B00F8089DD3D7FAD7135433AD678663EED2F4371E8A5",
+     "track 1005's streaming table, zones, route and collision"},
 };
 
 constexpr std::size_t kRetailFileCount = sizeof(kRetailFiles) / sizeof(kRetailFiles[0]);
@@ -97,6 +106,8 @@ const std::vector<RetailSet>& retail_sets() {
         {"first-lap",
          "one timed lap of event 1 in the stock 240SX (issue #159)",
          {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}},
+        {"first-lap-1005", "event 8: DT3 - Atlantic, three forward laps",
+         {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 15, 16}},
         {"stock-car", "the stock 240SX nfsu_switch_car draws", {0, 1, 2, 3, 4, 7}},
         {"event-1",
          "race 1 of Underground mode: event 1, track 1003, stream L1RA",

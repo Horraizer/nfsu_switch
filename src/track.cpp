@@ -258,6 +258,8 @@ private:
             children);
 
         const std::size_t mesh_begin = report_.meshes.size();
+        const std::size_t root_index =
+            static_cast<std::size_t>(report_.cost.geometry_roots - 1);
         std::vector<RawChunk> hash_tables;
         std::vector<RawChunk> directories;
         std::size_t header_count = 0;
@@ -298,7 +300,7 @@ private:
                 header_structure_ok = false;
                 continue;
             }
-            parse_mesh(chunk);
+            parse_mesh(chunk, root_index);
         }
         return parse_mesh_table(root, mesh_begin, report_.meshes.size(),
                                hash_tables, directories, header_count,
@@ -534,9 +536,10 @@ private:
         return true;
     }
 
-    void parse_mesh(const RawChunk& container) {
+    void parse_mesh(const RawChunk& container, std::size_t root_index) {
         TrackMesh mesh;
         mesh.index = report_.meshes.size();
+        mesh.root_index = root_index;
         mesh.offset = container.offset;
         hash_known_.push_back(false);
         parse_mesh_contents(container, mesh);

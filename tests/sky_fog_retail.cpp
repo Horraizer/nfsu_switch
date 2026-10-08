@@ -52,9 +52,9 @@ int main(int argc, char** argv) {
         TrackDrawList list; TrackDrawListOptions order; order.order=TrackDrawOrder::retail_bucket;
         require(build_track_draw_list(scene,visible,order,list,error),error);
         const char* names[] = {"overview","street"};
-        // #184 new pins: sky background, with existing retail track alpha/blend.
-        const char* pins[] = {"C98DF00ED9C13218E2F6FBEB4CF4289E74CF5A533F26CF1F32017F36B5FE03DF",
-                              "79831E2C9A6315793191E7E755BDF20C051D2258A0246C57D291C86796F4E5A6"};
+        // Original root-aware mesh binding and ordinary-world RGB; sky/alpha/blend retained.
+        const char* pins[] = {"5E07CCF2E4EC0C3EBE8A166BB2AC6220D8B3C746A6282ACE1E198131662575A9",
+                              "8DFBFAFBE8C98A9401024AC0F602AB873A283C8EA2669A47A006D577CFC1544C"};
         bool matched=true;
         for (int i=0;i<2;++i) {
             RenderOptions options;

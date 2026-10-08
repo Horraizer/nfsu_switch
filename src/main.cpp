@@ -7588,7 +7588,7 @@ struct Command {
 const Command kCommands[] = {
     {"summary", " <game-root>", "",
      [](int, char** argv) { return run_summary(nfsu::argument_path(argv[2])); }},
-    {"asset-check", " <root> [--set <first-lap|stock-car|event-1>]",
+    {"asset-check", " <root> [--set <first-lap|first-lap-1005|stock-car|event-1>]",
      "      (the retail files a set needs under root: each found by name\n"
      "       without regard to ASCII case, then checked by size and SHA-256;\n"
      "       reads nothing else and writes nothing; first-lap is the default)\n",

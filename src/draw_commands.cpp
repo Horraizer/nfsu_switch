@@ -504,6 +504,13 @@ bool record_track_commands(const PreparedTrackScene& scene, const TrackDrawList&
                 !pipeline(draw, true, texture, 0, source.texture_hash, options, error)) return false;
             draw.material.environment_min[3] =
                 track_vertex_format(scene.region.meshes[source.mesh].vertex_format_flags).mask == 0x40 ? 1.0F : 0.0F;
+            // Native effect0 (0x40C890 selector), normal main-view base.
+            // Marker6 bypasses generic directional shading and fast-effect
+            // substitution. It does not select an alpha or sampler policy.
+            if (texture && options.material_state == MaterialStateMode::retail &&
+                !options.reflection_pass &&
+                track_vertex_format(scene.region.meshes[source.mesh].vertex_format_flags).mask == 0)
+                draw.material.fallback[3] = 6.0F;
             if (sky_position == kNoHandle && draw.pipeline.blend)
                 sky_position = out.owning_draws().size();
             out.owning_draws().push_back(std::move(draw));
