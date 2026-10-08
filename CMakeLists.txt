@@ -1372,6 +1372,10 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_vehicle_gear_phase_tests PRIVATE nfsu_vehicle)
     nfsu_enable_warnings(nfsu_vehicle_gear_phase_tests)
     add_test(NAME nfsu_vehicle_gear_phase_tests COMMAND nfsu_vehicle_gear_phase_tests)
+    add_executable(nfsu_vehicle_request_gate_tests tests/vehicle_request_gate_tests.cpp)
+    target_link_libraries(nfsu_vehicle_request_gate_tests PRIVATE nfsu_vehicle)
+    nfsu_enable_warnings(nfsu_vehicle_request_gate_tests)
+    add_test(NAME nfsu_vehicle_request_gate_tests COMMAND nfsu_vehicle_request_gate_tests)
 
 
     add_executable(nfsu_vehicle_tests

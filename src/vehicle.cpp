@@ -1325,8 +1325,16 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
                 h.gear_ratios[static_cast<std::size_t>(s.gear)]/h.gear_ratios[static_cast<std::size_t>(s.gear-1)]-200.0;
             else down=throttle<0.2?h.idle_rpm+100.0:0.0;
             bool support=true;
-            for (const auto& wheel:s.wheels) support=support&&wheel.contact;
-            if (rpm>=up&&s.gear<top&&support) s.transmission.requested_gear=s.gear+1;
+            //46E6A0 checks every wheel's contact155 and CURRENT160 signed<4.
+            // At outer selection, prepared_slip is the completed58747D copy;
+            // the later component refresh has not cleared current160 yet.
+            for (const auto& wheel:s.wheels)
+                support=support&&wheel.contact&&wheel.prepared_slip<4.0F;
+            // A blocked up candidate exits selection; it does not fall through
+            // to downshift even when supplied offsets make both RPM gates true.
+            if (rpm>=up&&s.gear<top) {
+                if(support) s.transmission.requested_gear=s.gear+1;
+            }
             else if (s.gear>kVehicleGearFirst&&rpm<down&&rpm<safe_down)
                 s.transmission.requested_gear=s.gear-1;
         }
