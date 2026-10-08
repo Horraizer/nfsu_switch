@@ -109,6 +109,7 @@ bool state_finite(const VehicleState& s) noexcept {
         ok = ok && finite(w.spin) && finite(w.compression) && finite(w.previous_compression) &&
              finite(w.history_torque) && w.spin_direction>=0 && w.spin_direction<=2&&
              finite(w.prepared_torque)&&finite(w.prepared_force_long)&&finite(w.prepared_slip);
+        for(float point:w.contact_point) ok=ok&&finite(point);
     }
     ok=ok&&finite(s.aero.speed_divisor)&&finite(s.aero.drag_scale)&&
        finite(s.aero.processed_throttle)&&finite(s.aero.support_kind);
@@ -1451,8 +1452,8 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         }
 
         // Selector1: prepare all wheel inputs before the shared drivetrain/body
-        // constraints. The existing contact/strut adapter and force application
-        // remain explicit 3D approximations; mechanical wheel state is binary32.
+        // constraints. Ground queries remain the explicit port adapter;
+        // contact geometry/load and mechanical wheel state are binary32.
         std::array<PlayerWheelWork,4> work{};
         std::array<std::array<VehicleVec3,3>,4> wheel_axes{};
         std::array<VehicleVec3,4> contact_arms{};
@@ -1481,14 +1482,23 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             // remains distinct from the later outer-normalized live matrix.
             wheel_axes[k]=player_world_wheel_axes(body_axes,local_axes);
             const auto& along=wheel_axes[k][0];const auto& across=wheel_axes[k][1];
-            const VehicleVec3 hub_local=v3(d_.attach[k].x,d_.attach[k].y,
+            const VehicleVec3 hub_local=v3(static_cast<float>(d_.attach[k].x),static_cast<float>(d_.attach[k].y),
                 static_cast<float>(d_.attach[k].z)+static_cast<float>(wheel.compression));
             const VehicleVec3 hub_arm=r.apply(hub_local);
             VehicleVec3 arm=hub_arm;
+            const auto normal32=rigid_vector(normal);
+            const auto hub=player_world_wheel_hub(s.rigid_body,rigid_vector(hub_local));
+            player_wheel_contact_point(wheel.contact_point,hub,normal32,h.wheels[k].radius,wheel.contact);
+            w.load=player_wheel_contact_load(rigid_vector(across),normal32,w.load);
+            if(!finite(w.load)) return false;
             if (wheel.contact) {
+                PlayerRigidVector arm32{};
+                for(unsigned j=0;j<3;++j) arm32[j]=wheel.contact_point[j]-s.rigid_body.position[j];
+                arm=public_vector(arm32);
+                // Preserve the virtual cast intersection as query telemetry;
+                // the source hub/radius point is only the force input/cache.
                 const VehicleVec3 from=add(attach_world[k],scale(up,a.probe_lift));
-                const VehicleVec3 contact=add(from,scale(up,-hits[k].distance));
-                arm=sub(contact,s.position);out.ground_point=contact;out.ground_normal=normal;
+                out.ground_point=add(from,scale(up,-hits[k].distance));out.ground_normal=normal;
             }
             contact_arms[k]=arm;
             //588900 uses the strut hub for velocity.478480 applies the combined

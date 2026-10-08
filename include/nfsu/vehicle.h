@@ -488,6 +488,9 @@ struct VehicleWheelState {
     double compression = 0.0;
     double previous_compression = 0.0;
     bool contact = false;
+    // Source wheel+130 contact-point cache. A miss retains it; force
+    // application consumes it only on contact. Diagnostic, omitted from bytes.
+    std::array<float,3> contact_point{};
     // Selector1 wheel+10C, recalculated by the authentic capacity test.
     bool brake_locked = false;
     float history_torque = 0.0F; // wheel+114, kN m

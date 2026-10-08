@@ -256,6 +256,46 @@ VehicleVec3 player_world_wheel_force(const std::array<VehicleVec3,3>& axes,
              longitudinal*static_cast<float>(axes[0].z))+0.0F};
 }
 
+PlayerRigidVector player_world_wheel_hub(const PlayerRigidBodyState& body,
+                                         const PlayerRigidVector& local) noexcept {
+    const auto& a=body.snapshot_axes;const auto& p=body.position;
+    return {{((p[0]+local[0]*a[0][0])+local[1]*a[1][0])+local[2]*a[2][0],
+             ((p[1]+local[2]*a[2][1])+local[1]*a[1][1])+local[0]*a[0][1],
+             ((local[1]*a[1][2]+local[0]*a[0][2])+p[2])+local[2]*a[2][2]}};
+}
+
+PlayerRigidVector player_wheel_contact_point(const PlayerRigidVector& hub,
+                                             const PlayerRigidVector& normal,
+                                             float radius) noexcept {
+    const float negative_radius=-radius;
+    return {{negative_radius*normal[0]+hub[0],negative_radius*normal[1]+hub[1],
+             negative_radius*normal[2]+hub[2]}};
+}
+
+void player_wheel_contact_point(PlayerRigidVector& point,
+                                 const PlayerRigidVector& hub,
+                                 const PlayerRigidVector& normal,float radius,
+                                 bool contact) noexcept {
+    if(contact) point=player_wheel_contact_point(hub,normal,radius);
+}
+
+float player_wheel_contact_load(const PlayerRigidVector& y,
+                                 const PlayerRigidVector& n,float nominal) noexcept {
+    if(!(nominal>0.0F)) return 0.0F;
+    //586F7D..587029: (y cross n) cross y, then dot with n, z/y/x.
+    // Keep the original products rather than assuming normalized axes.
+    const float cx=n[2]*y[1]-y[2]*n[1];
+    const float cy=y[2]*n[0]-n[2]*y[0];
+    const float cz=n[1]*y[0]-y[1]*n[0];
+    const float dy=cz*y[0]-cx*y[2];
+    const float dz=cx*y[1]-cy*y[0];
+    const float dx=cy*y[2]-cz*y[1];
+    const float alignment=(dz*n[2]+dy*n[1])+dx*n[0];
+    float factor=alignment*4.0F-3.0F;
+    if(factor<0.30000001192092896F) factor=0.30000001192092896F;
+    return factor*nominal;
+}
+
 unsigned player_body_rest_state(const VehicleVec3& velocity,const VehicleVec3& angular,
                                float forward_vertical,float left_vertical,
                                float throttle,int published_gear,

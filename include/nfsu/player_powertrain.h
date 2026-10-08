@@ -134,6 +134,22 @@ std::array<VehicleVec3,3> player_world_wheel_axes(
 VehicleVec3 player_world_wheel_force(const std::array<VehicleVec3,3>& world_axes,
                                     float longitudinal, float lateral,
                                     float load) noexcept;
+//5889D8/5AC843 world hub translation uses the refreshed rigid snapshot.
+//586F10 applies radius along the ground normal;586F7D adjusts the positive
+// strut load for the world wheel-across axis. Inputs retain original units.
+PlayerRigidVector player_world_wheel_hub(const PlayerRigidBodyState& body,
+                                         const PlayerRigidVector& local_hub) noexcept;
+PlayerRigidVector player_wheel_contact_point(const PlayerRigidVector& world_hub,
+                                             const PlayerRigidVector& normal,
+                                             float radius) noexcept;
+// Full586F10 point branch: a contact writes even for nonpositive load;
+// a miss retains the caller's cached point, independently of load handling.
+void player_wheel_contact_point(PlayerRigidVector& cached_point,
+                                 const PlayerRigidVector& world_hub,
+                                 const PlayerRigidVector& normal,float radius,
+                                 bool contact) noexcept;
+float player_wheel_contact_load(const PlayerRigidVector& across,
+                                 const PlayerRigidVector& normal,float nominal) noexcept;
 //584B10 builds normal/alternate tensors;585810 selects by rigid138.
 float player_body_inverse_yaw(const VehicleHandling& setup,bool alternate) noexcept;
 

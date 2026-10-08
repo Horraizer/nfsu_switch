@@ -671,6 +671,60 @@ void original_strut_partner_epoch() {
           c.wheels[1].compression==d.wheels[1].compression&&ta.wheels[1].load==tb.wheels[1].load,
           "second strut consumes its already-updated partner despite different prior first-strut states");
 }
+void original_wheel_contact_witness() {
+    using namespace nfsu;
+    // Authentic5AC69C/586F10 initial supplied-brake callback, binary32.
+    PlayerRigidBodyState body;body.position={{0,0,.4999089539051056F}};
+    body.snapshot_axes={{{{.999945342540741F,0,-.01045604795217514F}},
+                         {{0,1,0}},{{.01045604795217514F,0,.999945342540741F}}}};
+    const auto h=stock_240sx_handling();
+    const PlayerRigidVector local{{h.wheels[0].longitudinal-h.centre_of_mass[0],
+        h.wheels[0].lateral-h.centre_of_mass[1],
+        (h.wheels[0].vertical-h.centre_of_mass[2])-1.5735626220703125e-5F}};
+    const auto hub=player_world_wheel_hub(body,local);
+    check(hub==PlayerRigidVector{{1.1378462314605713F,.7300000190734863F,.2879842519760132F}},
+          "original wheel hub translation retains snapshot matrix accumulation order");
+    check(player_wheel_contact_point(hub,{{0,0,1}},h.wheels[0].radius)==
+          PlayerRigidVector{{1.1378462314605713F,.7300000190734863F,-1.5735626220703125e-5F}},
+          "original wheel contact offsets hub by radius along ground normal");
+    check(player_wheel_contact_load({{0,1.0000035762786865F,0}},{{0,0,1}},3.204289674758911F)==
+          3.2043814659118652F,
+          "original positive load includes unnormalized front steering basis scale");
+    check(player_wheel_contact_load({{0,1,0}},{{0,0,1}},2.8125216960906982F)==2.8125216960906982F,
+          "original rear unit across axis retains its nominal load");
+    check(player_wheel_contact_load({{0,0,1}},{{0,0,1}},3.2F)==.9600000381469727F&&
+          player_wheel_contact_load({{0,1,0}},{{0,0,1}},0)==0&&
+          player_wheel_contact_load({{0,1,0}},{{0,0,1}},-2)==0,
+          "original contact alignment floor and nonpositive nominal branch");
+    PlayerRigidVector cached{{37,-11,4}};
+    player_wheel_contact_point(cached,hub,{{0,0,1}},h.wheels[0].radius,false);
+    check(cached==PlayerRigidVector{{37,-11,4}},
+          "original miss retains cached contact point independently of nominal load");
+    player_wheel_contact_point(cached,hub,{{0,0,1}},h.wheels[0].radius,true);
+    check(cached==PlayerRigidVector{{1.1378462314605713F,.7300000190734863F,-1.5735626220703125e-5F}},
+          "original contact writes point even when the separate nominal-load branch is zero");
+    // Independent source row: translated/turned body and tilted surface.
+    body.position={{.15F,-.3F,1000.125F}};
+    body.snapshot_axes={{{{.8F,.6F,0}},{{-.6F,.8F,0}},{{0,0,1}}}};
+    const auto moved=player_world_wheel_hub(body,{{1.14F,.73F,-.2F}});
+    check(moved==PlayerRigidVector{{.6240000128746033F,.968000054359436F,999.9249877929688F}}&&
+          player_wheel_contact_point(moved,{{0,.8F,.6F}},.2879999876022339F)==
+          PlayerRigidVector{{.6240000128746033F,.7376000881195068F,999.752197265625F}},
+          "original tilted contact follows surface normal with rounded world translation");
+    struct MissGround final:VehicleGround {
+        VehicleGroundHit cast(const VehicleVec3&,const VehicleVec3&,double) const noexcept override {return {};}
+    } miss;
+    VehicleModel model(stock_240sx_vehicle_spec());VehicleState state;VehicleTelemetry telemetry;
+    VehiclePose pose;pose.speed=15;VehicleInput input;
+    check(model.reset(state,pose)&&model.step(state,input,VehicleFlatGround{},telemetry,0,1.0/240.0,true),
+          "source contact cache populated by runtime contact callback");
+    const auto wheels=state.wheels;
+    check(model.step(state,input,miss,telemetry,0,1.0/240.0,true),"runtime miss callback completes");
+    for(std::size_t k=0;k<4;++k)
+        check(!state.wheels[k].contact&&state.wheels[k].contact_point==wheels[k].contact_point&&
+              telemetry.wheels[k].load==0,
+              "runtime miss retains source point cache while airborne nominal load remains zero");
+}
 void original_aero_and_outer_epoch() {
     using namespace nfsu;
     const auto h=stock_240sx_handling();PlayerRigidBodyState body;
@@ -742,6 +796,7 @@ int main() {
     original_strut_binary32_witness();
     strut_numeric_domain();
     original_strut_partner_epoch();
+    original_wheel_contact_witness();
     original_aero_and_outer_epoch();
     if (failures) {std::cerr<<failures<<" player powertrain test failure(s)\n";return 1;}
     std::cout<<"player powertrain tests passed\n";
