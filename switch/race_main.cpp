@@ -473,6 +473,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     std::vector<std::string> last_perf;
     RaceFrameStats stats, presentation_stats;
     std::uint64_t previous_driving_present = 0;
+    std::uint64_t last_heap_sample = 0, timed_heap_samples = 0;
     RaceHudFrame hud_frame;
     unsigned unpause_resets = 0;
     std::string failure;
@@ -677,9 +678,16 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                 r.engine_rpm,r.wheel_rpm,r.gear,r.rotation,r.max_rpm,r.redline_rpm);
         }
         const auto mall_start = armGetSystemTick();
-        const auto info = mallinfo();
-        mallinfo_ms = ms(armGetSystemTick()-mall_start);
-        heap.observe(info.uordblks,info.arena);
+        // Allocator traversal is diagnostic, not frame work. Preserve real
+        // snapshots every two seconds without walking the heap on every frame.
+        // These remain sampled peaks, not an allocation-exact high-water mark.
+        if (!last_heap_sample || armTicksToNs(mall_start-last_heap_sample) >= 2000000000ULL) {
+            const auto info = mallinfo();
+            mallinfo_ms = ms(armGetSystemTick()-mall_start);
+            heap.observe(info.uordblks,info.arena);
+            last_heap_sample = mall_start;
+            ++timed_heap_samples;
+        }
         frame_ms = ms(armGetSystemTick()-begin);
         measured_frame_ms = frame_ms;
         measured.present_cpu_ms = present_cpu;
@@ -774,6 +782,11 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     } catch (const std::exception& e) { failure = e.what(); }
     // Free drive returns directly to the menu, so preserve its complete
     // measured window before the local accumulators go out of scope.
+    // Final boundary snapshot is outside both driving timing windows.
+    const auto final_heap = mallinfo();
+    heap.observe(final_heap.uordblks,final_heap.arena);
+    std::printf("RUN_STATS heap_sampling=2s timed_heap_samples=%llu final_snapshot=1 peaks=sampled_not_exact\n",
+        (unsigned long long)timed_heap_samples);
     const auto measured_clocks=read_clocks();
     std::printf("RUN_STATS build=%s event=%lu height=%lu unpause_resets=%u CPU_HZ=%lu CPU_OK=%u GPU_HZ=%lu GPU_OK=%u EMC_HZ=%lu EMC_OK=%u\n",
         NFSU_RACE_BUILD_TAG,(unsigned long)event_number,(unsigned long)scene_height,unpause_resets,
