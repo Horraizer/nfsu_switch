@@ -27,3 +27,13 @@ if(BUILD_TAG STREQUAL "" OR BUILD_TAG STREQUAL "local" OR tag_position LESS 0)
     message(FATAL_ERROR "race ELF is missing its configured build tag")
 endif()
 message(STATUS "race build tag: ${BUILD_TAG}")
+
+# Verify the compiled postprocess blobs actually shipped in the race artifact.
+foreach(stage IN ITEMS fxaa.vert fxaa.frag)
+    file(READ "${SHADERS}/${stage}.dksh" blob HEX)
+    string(LENGTH "${blob}" blob_length)
+    string(FIND "${romfs}" "${blob}" found)
+    if(blob_length LESS 48 OR found LESS 0)
+        message(FATAL_ERROR "${stage}: missing or truncated packaged FXAA shader")
+    endif()
+endforeach()

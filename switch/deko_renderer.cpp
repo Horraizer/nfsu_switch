@@ -111,6 +111,10 @@ struct DekoRenderer::Impl {
     std::array<dk::Image, 2> scene_colors;
     std::array<dk::Image, 2> depths;
     DekoSceneTarget scene_target;
+    bool fxaa_enabled=false;
+    dk::Shader fxaa_vertex,fxaa_fragment;
+    dk::MemBlock fxaa_descriptors;
+    std::array<dk::Image,2> fxaa_colors;
     dk::Shader shadow_vertex, shadow_fragment;
     dk::Shader vertex, textured, textured_opaque, fallback, frontend_vertex, frontend_fragment;
     dk::Shader frontend_car_vertex, frontend_car_fragment;
@@ -342,6 +346,9 @@ struct DekoRenderer::Impl {
         if (!plan_deko_scene_target(source.width, source.height, presentation, scene_height, scene_target)) {
             error = "invalid scene resolution: scaling requires 1280x720 direct presentation"; return false;
         }
+#if defined(NFSU_RACE_FXAA)
+        fxaa_enabled=presentation && source.race_environment;
+#endif
         DrawExecutionPlan plan;
         if (!plan_draw_execution(source, plan, error)) return false;
         draw_capacity = capacity ? capacity : source.draw_count();
@@ -576,6 +583,17 @@ struct DekoRenderer::Impl {
             !shader("frontend_ui.frag", DkStage_Fragment, frontend_fragment, error) ||
             !shader("fallback.frag", DkStage_Fragment, fallback, error)) return false;
         if (package && !prepare_static_commands(source, presentation, error)) return false;
+        if(fxaa_enabled) {
+            if(!shader("fxaa.vert",DkStage_Vertex,fxaa_vertex,error) ||
+               !shader("fxaa.frag",DkStage_Fragment,fxaa_fragment,error) ||
+               !block(3*kDrawDescriptorBytes,kDataFlags,"FXAA descriptors",fxaa_descriptors,error))return false;
+            dk::Sampler sampler;
+            sampler.setFilter(DkFilter_Linear,DkFilter_Linear)
+                .setWrapMode(DkWrapMode_ClampToEdge,DkWrapMode_ClampToEdge,DkWrapMode_ClampToEdge);
+            dk::SamplerDescriptor descriptor;descriptor.initialize(sampler);
+            std::memcpy(static_cast<unsigned char*>(fxaa_descriptors.getCpuAddr())+2*kDrawDescriptorBytes,
+                        &descriptor,sizeof descriptor);
+        }
         dk::ImageLayout color_layout, depth_layout, scene_layout;
         const auto transfer_flags = scene_target.upscale ? DkImageFlags_Usage2DEngine : 0;
         dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender | transfer_flags |
@@ -583,7 +601,7 @@ struct DekoRenderer::Impl {
             .setFormat(DkImageFormat_RGBA8_Unorm).setDimensions(source.width, source.height).initialize(color_layout);
         dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender)
             .setFormat(DkImageFormat_ZF32).setDimensions(scene_target.width, scene_target.height).initialize(depth_layout);
-        if (scene_target.upscale)
+        if (scene_target.upscale || fxaa_enabled)
             dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender | DkImageFlags_Usage2DEngine)
                 .setFormat(DkImageFormat_RGBA8_Unorm).setDimensions(scene_target.width, scene_target.height)
                 .initialize(scene_layout);
@@ -594,14 +612,25 @@ struct DekoRenderer::Impl {
             if(!trace("image.initialize.before",error,"present image",color_layout.getSize()))return false;
             color.initialize(color_layout, memory, 0);
             if(!trace("image.initialize.after",error,"present image",color_layout.getSize()))return false;
-            if (scene_target.upscale) {
+            if (scene_target.upscale || fxaa_enabled) {
                 dk::MemBlock scene_memory;
                 if (!block(scene_layout.getSize(), kImageFlags, "scene image", scene_memory, error)) return false;
                 if(!trace("image.initialize.before",error,"scene image",scene_layout.getSize()))return false;
                 scene_colors[i].initialize(scene_layout, scene_memory, 0);
                 if(!trace("image.initialize.after",error,"scene image",scene_layout.getSize()))return false;
+                if(fxaa_enabled) {
+                    dk::ImageDescriptor descriptor;descriptor.initialize(dk::ImageView{scene_colors[i]});
+                    std::memcpy(static_cast<unsigned char*>(fxaa_descriptors.getCpuAddr())+i*kDrawDescriptorBytes,
+                                &descriptor,sizeof descriptor);
+                    if(scene_target.upscale) {
+                        dk::MemBlock aa_memory;
+                        if(!block(scene_layout.getSize(),kImageFlags,"FXAA scene output",aa_memory,error))return false;
+                        fxaa_colors[i].initialize(scene_layout,aa_memory,0);
+                    }
+                }
             }
         }
+        if(fxaa_enabled)std::printf("RACE AA FXAA source=%ux%u search=8 subpixel=0.5 before_upscale_and_HUD=1\n",scene_target.width,scene_target.height);
         for (std::size_t i = 0; i < (presentation ? 2U : 1U); ++i) {
             dk::MemBlock depth_memory;
             if (!block(depth_layout.getSize(), kImageFlags, "depth image", depth_memory, error)) return false;
@@ -1144,7 +1173,7 @@ struct DekoRenderer::Impl {
         mark_frontend(7);
         if (reflection_ready) cmd.bindTextures(DkStage_Fragment, 1,
             dkMakeTextureHandle(static_cast<std::uint32_t>(handles.size()+(frontend_cube_ready?1:0)), 2));
-        dk::ImageView color_view{scene_target.upscale ? scene_colors[slot] : target}, depth_view{depths[slot]};
+        dk::ImageView color_view{(scene_target.upscale || fxaa_enabled) ? scene_colors[slot] : target}, depth_view{depths[slot]};
         cmd.bindRenderTargets(&color_view, &depth_view);
         cmd.setViewports(0, {{0, 0, static_cast<float>(scene_target.width), static_cast<float>(scene_target.height), 0, 1}});
         cmd.setScissors(0, {{0, 0, scene_target.width, scene_target.height}});
@@ -1193,13 +1222,34 @@ struct DekoRenderer::Impl {
         if(frontend && frontend_profile_passes)
             cmd.reportCounter(DkCounter_Timestamp,frontend_query_memory.getGpuAddr()+slot*208+12*16);
         if(!checkpoint(previous_dynamic?previous_dynamic->program->name:"main scene"))return false;
+        if(fxaa_enabled) {
+            // Complete scene writes before sampling. Every slot has distinct
+            // input/output images; its fence protects descriptors and contents.
+            cmd.barrier(DkBarrier_Full,DkInvalidateFlags_Image|DkInvalidateFlags_L2Cache|DkInvalidateFlags_Descriptors);
+            dk::ImageView aa_view{scene_target.upscale?fxaa_colors[slot]:target};
+            cmd.bindRenderTargets(&aa_view,nullptr);
+            cmd.setViewports(0,{{0,0,float(scene_target.width),float(scene_target.height),0,1}});
+            cmd.setScissors(0,{{0,0,scene_target.width,scene_target.height}});
+            cmd.bindShaders(DkStageFlag_GraphicsMask,{&fxaa_vertex,&fxaa_fragment});
+            cmd.bindImageDescriptorSet(fxaa_descriptors.getGpuAddr(),2);
+            cmd.bindSamplerDescriptorSet(fxaa_descriptors.getGpuAddr()+2*kDrawDescriptorBytes,1);
+            cmd.bindTextures(DkStage_Fragment,0,dkMakeTextureHandle(static_cast<std::uint32_t>(slot),0));
+            dk::RasterizerState raster;raster.setCullMode(DkFace_None);
+            dk::ColorState color;color.setBlendEnable(0,false).setAlphaCompareOp(DkCompareOp_Always);
+            dk::ColorWriteState write;write.setMask(0,DkColorMask_RGBA);
+            dk::DepthStencilState depth;depth.setDepthTestEnable(false).setDepthWriteEnable(false);
+            cmd.bindRasterizerState(raster);cmd.bindColorState(color);cmd.bindColorWriteState(write);
+            cmd.bindDepthStencilState(depth);cmd.bindVtxAttribState(std::array<DkVtxAttribState,0>{});
+            cmd.draw(DkPrimitive_Triangles,3,1,0,0);
+        }
         if (scene_target.upscale) {
             // Complete rendering before the 2D engine reads this slot. The
             // second full barrier includes its work in the timestamp span
             // and makes the native-size image ready for presentation/HUD.
             cmd.barrier(DkBarrier_Full, DkInvalidateFlags_L2Cache);
             dk::ImageView present_view{target};
-            cmd.blitImage(color_view, {0, 0, 0, scene_target.width, scene_target.height, 1},
+            dk::ImageView filtered_view{fxaa_enabled?fxaa_colors[slot]:scene_colors[slot]};
+            cmd.blitImage(filtered_view, {0, 0, 0, scene_target.width, scene_target.height, 1},
                           present_view, {0, 0, 0, commands->width, commands->height, 1},
                           DkBlitFlag_FilterLinear);
             cmd.barrier(DkBarrier_Full, DkInvalidateFlags_L2Cache);

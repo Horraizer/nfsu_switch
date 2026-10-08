@@ -153,7 +153,32 @@ endforeach()
 add_custom_target(nfsu_switch_frontend_probe_shaders ALL DEPENDS ${NFSU_FRONTEND_PROBE_BLOBS})
 
 
+# Production fullscreen postprocess stages, distinct from diagnostic probes.
+set(NFSU_POSTPROCESS_STAGES fxaa.vert fxaa.frag)
+set(NFSU_POSTPROCESS_BLOBS "")
+foreach(stage IN LISTS NFSU_POSTPROCESS_STAGES)
+    if(stage MATCHES "[.]vert$")
+        set(kind vert)
+    else()
+        set(kind frag)
+    endif()
+    set(blob ${NFSU_SHADER_OUTPUT}/${stage}.dksh)
+    add_custom_command(OUTPUT ${blob} ${NFSU_SHADER_OUTPUT}/${stage}.tgsi
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${NFSU_SHADER_OUTPUT}
+        COMMAND ${NX_UAM_EXE} -s ${kind} -o ${blob} -t ${NFSU_SHADER_OUTPUT}/${stage}.tgsi
+            ${CMAKE_CURRENT_SOURCE_DIR}/postprocess_shaders/${stage}.glsl
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/postprocess_shaders/${stage}.glsl ${NX_UAM_EXE}
+        VERBATIM)
+    list(APPEND NFSU_POSTPROCESS_BLOBS ${blob})
+endforeach()
+add_custom_target(nfsu_switch_postprocess_shaders ALL DEPENDS ${NFSU_POSTPROCESS_BLOBS})
+
 if(NFSU_BUILD_TESTS)
+    foreach(stage IN LISTS NFSU_POSTPROCESS_STAGES)
+        add_test(NAME nfsu_switch_derivatives_${stage}
+            COMMAND ${Python3_EXECUTABLE} ${NFSU_SHADER_DERIVATIVES} --check
+                ${NFSU_SHADER_OUTPUT}/${stage}.dksh ${NFSU_SHADER_OUTPUT}/${stage}.tgsi)
+    endforeach()
     add_test(NAME nfsu_uam_derivatives_tests
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/uam_derivatives_tests.py)
     foreach(stage IN ITEMS placed.vert car_shadow.vert car_shadow.frag textured.frag textured_opaque.frag frontend_ui.vert frontend_ui.frag fallback.frag car_shaded.vert car_shaded.frag frontend_car.vert frontend_car.frag sky.vert sky.frag)
@@ -482,6 +507,10 @@ if(NFSU_SWITCH_DEKO_DEBUG)
     set(NFSU_SWITCH_RACE_DEKO_LIBRARY deko3dd)
 endif()
 add_executable(nfsu_switch_race race_main.cpp deko_renderer.cpp)
+option(NFSU_RACE_FXAA "Enable pre-HUD race FXAA for hardware comparison" OFF)
+if(NFSU_RACE_FXAA)
+    target_compile_definitions(nfsu_switch_race PRIVATE NFSU_RACE_FXAA=1)
+endif()
 target_link_libraries(nfsu_switch_race PRIVATE nfsu_race_run nfsu_race_hud nfsu_posix_file_system nfsu_screen_text nfsu_stock_view nfsu_race_audio nfsu_frontend nfsu_frontend_music nfsu_intro_movie ${NFSU_SWITCH_RACE_DEKO_LIBRARY})
 if(NFSU_SWITCH_DEKO_DEBUG)
     target_compile_definitions(nfsu_switch_race PRIVATE NFSU_DEKO_DEBUG_DIAGNOSTICS=1)
@@ -494,7 +523,7 @@ set_target_properties(nfsu_switch_race PROPERTIES CXX_STANDARD 17 CXX_STANDARD_R
 nfsu_enable_warnings(nfsu_switch_race)
 set(NFSU_RACE_ROMFS ${CMAKE_CURRENT_BINARY_DIR}/race_romfs)
 set(NFSU_RACE_ASSETS "")
-foreach(stage IN ITEMS placed.vert car_shadow.vert car_shadow.frag textured.frag textured_opaque.frag frontend_ui.vert frontend_ui.frag fallback.frag car_shaded.vert car_shaded.frag frontend_car.vert frontend_car.frag sky.vert sky.frag ${NFSU_FRONTEND_PROBE_STAGES})
+foreach(stage IN ITEMS placed.vert car_shadow.vert car_shadow.frag textured.frag textured_opaque.frag frontend_ui.vert frontend_ui.frag fallback.frag car_shaded.vert car_shaded.frag frontend_car.vert frontend_car.frag sky.vert sky.frag ${NFSU_FRONTEND_PROBE_STAGES} ${NFSU_POSTPROCESS_STAGES})
     set(blob ${NFSU_RACE_ROMFS}/shaders/${stage}.dksh)
     add_custom_command(OUTPUT ${blob}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${NFSU_RACE_ROMFS}/shaders
