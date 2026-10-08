@@ -3,17 +3,47 @@
 CHECKPOINT
 role: worker
 agent: Codex handling251 chat01a1161e-2ee4-7d21-9d7d-91774b3af1be
-updated_utc: 2026-10-08T05:36:50Z
+updated_utc: 2026-10-08T05:47:13Z
 assignment: issue251/item2; dependencies324/250/275; root request-only decision
 phase: awaiting independent successor review
 branch: none; detached local WIP, publication held
-head: dd55c6255b8edec121dadedb332701e38192b9ea before this WIP commit
+head: 377bec91c19f8e0eb516da039cec50e8562ead59 before guard-order fix commit
 base: dd55c6255b8edec121dadedb332701e38192b9ea
 worktree: local .codex/worktrees/handling251-followup/nfsu-switch
 saved: local-only commit and ignored build/handling251-worker evidence
 ownership: same worker active; coordinator owns follow-up and review wake
 next: root reads frozen diff first, then same independent reviewer verifies it
 blockers: publication hold; retained acceptance failures and missing full gates
+
+## Latest constructor-order correction
+
+The first frozen precision implementation at377bec91 is superseded as a review
+candidate. Worker subsequently reproduced finite unsupported handling on which
+the new builder refuses but VehicleModel enters the legacy compatibility search
+before that guard and cannot complete. The fresh matching-ABI probe printed only
+the builder refusal, then its controlled process budget expired. This is an
+incomplete host invocation, not original parity, a passed gate or a mutation kill.
+No original matrix was rerun and this probe did not open retail files.
+
+Root preserved the first483-file seal and eight new constructor witness files,
+read the eight implementation paths before this narrative, then explicitly
+authorized moving the existing refusal before the legacy table block. No reviewer
+dispatch/tree was created for known-defective377bec91. The corrected source keeps
+the legacy block's body/getters/reset unchanged for representable valid models.
+The exact finite fixture is in `nfsu_vehicle_request_precision_tests`; a bounded
+fresh process now completes invalid-model refusal twice. CTest limits this target
+to ten seconds, bounding future broken regression runs without a runtime search
+cap. A deliberately wrong-success builder already fails its assertion and skips
+the unsupported constructor so timeout cannot inflate a mutation score.
+
+Latest `request-precision-verify-r3/receipt.json` supersedes r2 for current source:
+five focused passes, fifteen original request matches, eighteen reset/getter
+outputs byte-identical, nine caught negatives/no survivors/no unknowns, retained
+energy failure. Fresh dependencies and probes were rebuilt. Constructor process
+and CTest timeout-property checks passed. Source pins and acceptance are unchanged.
+Successor seal `request-precision-successor-preservation-r2.json` verifies the old
+seal's exact copies and freezes the minimal new diff plus cumulative dd55 diff.
+Root reads cumulative diff first, then uses the same independent reviewer.
 
 Coordinator chat01a0f5d2-29c4-7fe2-86b4-e58d66adf088 authorized separate
 original float request tables on 2026-10-08. Its subsequent explicit domain
@@ -74,7 +104,7 @@ for the numeric fixtures and stored forward-table pins.
 ## Focused evidence
 
 All paths below are relative to `build/handling251-worker` in this owned tree.
-`request-precision-verify-r2/receipt.json` records exact source identities,
+`request-precision-verify-r3/receipt.json` records exact source identities,
 commands, exit codes and fresh output comparisons. Its script ran from the
 actual existing non-ASCII workspace using Path.cwd(), then the owned ASCII tree.
 The script's configured real retail root was read-only.
@@ -115,7 +145,7 @@ executed operations from reused immutable observations.
 
 `request-proposal-preservation-r1.json` and
 `request-domain-preservation-r1.json` preserve root-authorized proposals.
-Latest successor seal is `request-precision-successor-preservation-r1.json`;
+Latest successor seal is `request-precision-successor-preservation-r2.json`;
 its frozen sources, diff, archives, executables and receipts are copies rather
 than bindings to mutable build outputs. It records its own exact local head.
 The coordinator must verify the seal before reuse and read the diff before

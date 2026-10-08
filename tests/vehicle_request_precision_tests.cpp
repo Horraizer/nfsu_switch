@@ -99,6 +99,16 @@ void domain_cases() {
     check(state.step==17&&state.position.x==42&&state.engine_rpm==1234&&t.step==99,
           "invalid model refusal preserves caller state and telemetry");
 
+    h.idle_rpm=1.0e20F;h.redline_rpm=h.max_rpm=2.0e20F;
+    const bool source_refused=!player_request_shift_tables(h,up,down);
+    check(source_refused,"high-RPM source search is unsupported explicitly");
+    // A wrong-success builder negative already fails above; do not enter its
+    // unsupported legacy search and misclassify a timeout as a mutation kill.
+    if(source_refused) {
+        const VehicleModel high_invalid(spec);
+        check(!high_invalid.valid(),"constructor refuses before nonadvancing legacy search");
+    }
+
     h.idle_rpm=1073741568.0F;h.redline_rpm=h.max_rpm=1073741824.0F;
     check(player_request_shift_tables(h,up,down)&&VehicleModel(spec).valid(),
           "finite advancing large-RPM search remains accepted");

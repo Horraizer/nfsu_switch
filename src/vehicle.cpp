@@ -1085,6 +1085,11 @@ VehicleModel::VehicleModel(const VehicleSpec& spec) : spec_(spec) {
         d_.sliding_friction[axle] = static_cast<double>(h.tyres[axle].sliding_friction);
     }
 
+    // Refuse unsupported source precision before legacy compatibility search.
+    if(!player_request_shift_tables(h,request_upshift_,request_downshift_)) {
+        error_="original request shift tables require unrepresentable arithmetic or a nonadvancing search at binary32 precision";
+        return;
+    }
     // Legacy double crossing tables retained for the existing moving-pose
     // placement/getters. Original request precision is built separately.
     const double idle = static_cast<double>(h.idle_rpm);
@@ -1123,10 +1128,6 @@ VehicleModel::VehicleModel(const VehicleSpec& spec) : spec_(spec) {
             absolute(current) > kShiftRatioEpsilon ? next / current * shift : 0.0;
     }
     upshift_[static_cast<std::size_t>(top)] = redline;
-    if(!player_request_shift_tables(h,request_upshift_,request_downshift_)) {
-        error_="original request shift tables require unrepresentable arithmetic or a nonadvancing search at binary32 precision";
-        return;
-    }
     valid_ = true;
 }
 

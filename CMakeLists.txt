@@ -1381,6 +1381,7 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_vehicle_request_precision_tests PRIVATE nfsu_vehicle)
     nfsu_enable_warnings(nfsu_vehicle_request_precision_tests)
     add_test(NAME nfsu_vehicle_request_precision_tests COMMAND nfsu_vehicle_request_precision_tests)
+    set_tests_properties(nfsu_vehicle_request_precision_tests PROPERTIES TIMEOUT 10)
 
 
     add_executable(nfsu_vehicle_tests
