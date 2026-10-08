@@ -92,6 +92,10 @@ public:
     virtual const RecordedDraw& static_track_definition(std::size_t i) const = 0;
 };
 
+// Six separately culled faces, each retaining the prior 1024-draw bound.
+constexpr std::size_t kRaceCubeFaceDrawLimit = 1024;
+constexpr std::size_t kRaceCubeDrawLimit = 6*kRaceCubeFaceDrawLimit;
+
 struct RecordedCommands {
 private:
     // Borrowed source bytes: the scene must remain alive and unchanged.

@@ -282,7 +282,7 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
     }
     if(commands.frontend_light_enabled)for(const auto& vector:commands.frontend_light.harmonic)
         for(float value:vector)if(!std::isfinite(value))return fail("frontend light","nonfinite harmonic");
-    if(commands.frontend_cube_draws.size()>(commands.race_environment?1024U:256U))return fail("frontend cube","draw capacity exceeded");
+    if(commands.frontend_cube_draws.size()>(commands.race_environment?kRaceCubeDrawLimit:256U))return fail("frontend cube","draw capacity exceeded");
     if (commands.reflection_draw_count() > 4096) return fail("reflection commands", "capacity exceeded");
     for (std::size_t draw_index = 0; draw_index < commands.draw_count()+commands.reflection_draw_count()+commands.frontend_cube_draws.size(); ++draw_index) {
         const auto& d = draw_index < commands.draw_count() ? commands.draw_view(draw_index).definition :

@@ -383,7 +383,7 @@ struct DekoRenderer::Impl {
         reflection_limit=(source.frame.options[2]&8U)?source.reflection_draw_count():reflection_capacity;
         plan.uniform_bytes = static_cast<std::uint32_t>((1 + 2 * dynamic_capacity) * 256);
         plan.command_bytes = static_cast<std::uint32_t>(65536 +
-            (draw_capacity + (source.race_environment ? 1024U : 6*source.frontend_cube_draws.size()) + source.resource_table().resources.size() + ((source.frame.options[2] & 10U) ? reflection_limit : 0)) * 4096);
+            (draw_capacity + (source.race_environment ? kRaceCubeDrawLimit : 6*source.frontend_cube_draws.size()) + source.resource_table().resources.size() + ((source.frame.options[2] & 10U) ? reflection_limit : 0)) * 4096);
         uniform_stride = plan.uniform_bytes;
         profile_enabled = profile_frame && presentation;
         const auto uniform_bytes = std::uint64_t{uniform_stride} * (presentation ? 2 : 1);
@@ -430,7 +430,7 @@ struct DekoRenderer::Impl {
             !ledger.create({&buffer_arena, &image_arena, &staging_arena}, layout_query, 8192, error) ||
             !ledger.upload_table(source.resource_table(), 1, handles, error)) return false;
         command_bytes[0] = plan.command_bytes;
-        command_bytes[1] = static_cast<std::uint32_t>(65536 + (draw_capacity + (source.race_environment ? 1024U : 6*source.frontend_cube_draws.size()) + ((source.frame.options[2] & 10U) ? reflection_limit : 0)) * 4096);
+        command_bytes[1] = static_cast<std::uint32_t>(65536 + (draw_capacity + (source.race_environment ? kRaceCubeDrawLimit : 6*source.frontend_cube_draws.size()) + ((source.frame.options[2] & 10U) ? reflection_limit : 0)) * 4096);
         if (!block(command_bytes[0], kDataFlags, "command memory", command_memory[0], error) ||
             (presentation && !block(command_bytes[1], kDataFlags, "second frame command memory",
                                     command_memory[1], error))) return false;
@@ -537,7 +537,7 @@ struct DekoRenderer::Impl {
         }
         if((source.race_environment || !source.frontend_cube_draws.empty())) {
             if((source.frame.options[2]&2U)!=0 && !source.race_environment){error="frontend cube and race reflection targets cannot share a frame";return false;}
-            frontend_cube_capacity=source.race_environment ? 1024U : source.frontend_cube_draws.size();
+            frontend_cube_capacity=source.race_environment ? kRaceCubeDrawLimit : source.frontend_cube_draws.size();
             if(!block(2*(6+2*frontend_cube_capacity)*256,kDataFlags,"frontend cube uniforms",frontend_cube_uniforms,error))return false;
             dk::ImageLayout color_layout,z_layout;
             dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender)

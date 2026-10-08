@@ -114,7 +114,7 @@ private:
     bool prepare_frame_cache(std::string& error);
     bool prepare_glows(std::string& error);
     bool select_track(const TrackCullReport& visible, RaceGpuFrame& out,
-                      std::size_t& entries, std::string& error);
+                      std::size_t& entries, std::string& error, bool capture = false);
     const UploadTable& resource_table() const override { return wet_road_reflections_ ? wet_uploads_ : combined_uploads_; }
     std::size_t selected_draw_count() const override {
         return sky_draws_ + selection_.size() + 1 +
@@ -143,7 +143,7 @@ private:
     std::vector<std::uint32_t> mesh_groups_;
     struct SelectedTrackDraw { std::uint32_t instance, draw; std::size_t ordinal; };
     struct RetailGroup { std::size_t bucket = 0; unsigned char layer = 0; };
-    std::vector<SelectedTrackDraw> selection_;
+    std::vector<SelectedTrackDraw> selection_, cube_selection_;
     std::vector<RetailGroup> retail_groups_;
     std::vector<std::size_t> bucket_first_;
     std::vector<DrawInstanceUniform> track_placements_;

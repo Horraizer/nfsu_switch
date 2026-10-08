@@ -377,8 +377,10 @@ void retail_checks(const std::filesystem::path& root) {
         require(frontend.frame(1.F,60,error),"advance the frontend scene before the race");
         {
             RaceGpuScene scene;
+            scene.set_race_visuals(true);
+            require(scene.set_original_draw_distance(true),"enable original distance");
             require(scene.load(posix_file_system(),root,error,nullptr,nullptr,false,false,
-                false,&dress.car,&dress.dress),
+                true,&dress.car,&dress.dress),
                 "switch race scene with the Eddie dress: " + error);
             RaceRun run;
             require(run.set_free_drive(true,error),error);
@@ -394,6 +396,24 @@ void retail_checks(const std::filesystem::path& root) {
             }
             require(scene.frame(run.session(),frame,error),"final dressed frame: " + error);
             require(frame.car_draws!=0,"the dressed car contributes draws to the race frame");
+            // Every prepared high-quality reflection frame refreshes all faces.
+            // A face tag prevents any draw from leaking into the other views.
+            for (unsigned repeat=0;repeat<2;++repeat) {
+                require(scene.frame(run.session(),frame,error),error);
+                const auto& commands=frame.commands;
+                require(commands.race_environment && commands.cube_face_mask==63,
+                    "all six environment views refresh together");
+                std::size_t counts[6]={};
+                for (const auto& draw:commands.frontend_cube_draws) {
+                    require(draw.frontend_sprite_view>=10 && draw.frontend_sprite_view<16,
+                        "each environment draw belongs to exactly one face");
+                    ++counts[draw.frontend_sprite_view-10];
+                }
+                for (auto count:counts)
+                    require(count>0 && count<=kRaceCubeFaceDrawLimit,
+                        "each environment face has a bounded nonempty draw list");
+                require(validate_recorded_commands(commands,error),error);
+            }
             std::printf("freeride-car-payload SKYLINE %llu\n",
                 static_cast<unsigned long long>(scene.car_bytes()));
         }

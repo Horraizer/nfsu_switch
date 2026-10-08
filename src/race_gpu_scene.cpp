@@ -404,7 +404,7 @@ std::uint64_t RaceGpuScene::cache_bytes() const {
         shadow_templates_.owning_draws().capacity()*sizeof(RecordedDraw) +
         sizeof(shadow_asset_) + shadow_asset_.texture.rgba.capacity() +
         (mesh_first_.capacity()+section_first_.capacity())*sizeof(std::size_t) +
-        mesh_groups_.capacity()*sizeof(std::uint32_t) + selection_.capacity()*sizeof(SelectedTrackDraw) +
+        mesh_groups_.capacity()*sizeof(std::uint32_t) + (selection_.capacity()+cube_selection_.capacity())*sizeof(SelectedTrackDraw) +
         retail_groups_.capacity()*sizeof(RetailGroup) + bucket_first_.capacity()*sizeof(std::size_t) +
         track_placements_.capacity()*sizeof(DrawInstanceUniform);
     bytes += wet_uploads_.resources.capacity()*sizeof(UploadResource);
@@ -544,6 +544,7 @@ bool RaceGpuScene::prepare_frame_cache(std::string& error) {
     for (auto& draw : car_templates_.owning_draws()) rebase_car_draw(draw, car_offset);
     track_templates_.owning_uploads() = {}; shadow_templates_.owning_uploads() = {}; car_templates_.owning_uploads() = {};
     selection_.reserve(draw_capacity());
+    if (race_visuals_) cube_selection_.reserve(kRaceCubeFaceDrawLimit);
     return true;
 }
 
@@ -657,8 +658,11 @@ RecordedDrawView RaceGpuScene::selected_draw(std::size_t i) const {
 }
 
 bool RaceGpuScene::select_track(const TrackCullReport& visible, RaceGpuFrame& out,
-                               std::size_t& entries, std::string& error) {
-    selection_.clear(); entries = 0; out.unplaced = 0; out.triangles = 0;
+                               std::size_t& entries, std::string& error, bool capture) {
+    auto& selected = capture ? cube_selection_ : selection_;
+    const auto limit = capture ? kRaceCubeFaceDrawLimit : draw_capacity();
+    const auto extra = sky_draws_ + (capture ? 0 : 1 + car_templates_.owning_draws().size() + glow_count_);
+    selected.clear(); entries = 0; out.unplaced = 0; out.triangles = 0;
     std::fill(bucket_first_.begin(), bucket_first_.end(), kNoHandle);
     std::size_t next_bucket = 0;
     const auto& scene = track_.scene;
@@ -679,8 +683,7 @@ bool RaceGpuScene::select_track(const TrackCullReport& visible, RaceGpuFrame& ou
         entries += last-first;
         // Keep the reference path's far-plane retry, including empty groups
         // in the list capacity test even though they emit no hardware draw.
-        if (sky_draws_ + entries + 1 + car_templates_.owning_draws().size() +
-            glow_count_ > draw_capacity()) return true;
+        if (!capture && extra + entries > limit) return true;
         for (auto k = first; k < last; ++k) {
             const auto group = mesh_groups_[k];
             if (group >= template_of_group_.size()) { error = "prepared group is out of range"; return false; }
@@ -693,16 +696,17 @@ bool RaceGpuScene::select_track(const TrackCullReport& visible, RaceGpuFrame& ou
                 if (!scene.region.draws[group].index_count) continue;
                 error = "prepared group has no validated template"; return false;
             }
-            if (index >= track_templates_.owning_draws().size() || selection_.size() >= draw_capacity()) {
+            if (index >= track_templates_.owning_draws().size() ||
+                selected.size() + (capture ? sky_draws_ : 0) >= limit) {
                 error = "prepared draw capacity exceeded"; return false;
             }
-            selection_.push_back({static_cast<std::uint32_t>(handle), group, selection_.size()});
+            selected.push_back({static_cast<std::uint32_t>(handle), group, selected.size()});
             out.triangles += track_templates_.owning_draws()[index].index_count/3;
         }
     }
     // The ordinal makes equal bucket keys stable without stable_sort's
     // temporary allocation. Selection capacity is reserved once at load.
-    std::sort(selection_.begin(), selection_.end(), [this](const SelectedTrackDraw& a, const SelectedTrackDraw& b) {
+    std::sort(selected.begin(), selected.end(), [this](const SelectedTrackDraw& a, const SelectedTrackDraw& b) {
         const auto& ga = retail_groups_.at(a.draw);
         const auto& gb = retail_groups_.at(b.draw);
         if (ga.layer != gb.layer) return ga.layer < gb.layer;
@@ -734,33 +738,38 @@ bool RaceGpuScene::prepare_visual_frame(const RaceSession& session,const CameraF
     commands.race_environment=car_shading_;
     if(!car_shading_)return true;
     commands.frame.options[2]|=32U;
-    // Native quality1 descriptor schedule: one logical face per frame.
-    const unsigned face=static_cast<unsigned>((generation_-1)%6);
-    commands.cube_face_mask=1U<<face;
+    // Native quality3 descriptor schedule: all six logical faces every frame.
+    commands.cube_face_mask=63;
     const auto cameras=car_environment_cameras(basis,origin);
-    const auto& c=cameras[face];
-    auto options=race_render_options(sky_);options.width=options.height=128;options.explicit_camera=&c;
-    RecordedCommands face_state;
-    if(!record_frame_state(options,{},face_state,error))return false;
-    commands.frontend_cube_frames[face]=face_state.frame;
-    TrackCamera tc;tc.eye[0]=float(c.eye.x);tc.eye[1]=float(c.eye.y);tc.eye[2]=float(c.eye.z);
-    tc.target[0]=float(c.eye.x+c.forward.x);tc.target[1]=float(c.eye.y+c.forward.y);tc.target[2]=float(c.eye.z+c.forward.z);
-    tc.up[0]=float(c.up.x);tc.up[1]=float(c.up.y);tc.up[2]=float(c.up.z);
-    tc.aspect=1;tc.vertical_fov=1.5707963267948966F;tc.near_plane=.5F;tc.far_plane=64;
-    TrackFrustum frustum;if(!track_frustum_look_at(tc,frustum)){error="cube frustum invalid";return false;}
-    const auto visible=cull_track_region(track_.objects,frustum);
-    TrackDrawList list;TrackDrawListOptions order;order.order=TrackDrawOrder::retail_bucket;
-    if(!visible.ok() || !build_track_draw_list(track_.scene,visible.visible,order,list,error))return false;
-    auto& draws=commands.frontend_cube_draws;draws.clear();draws.reserve(1024);
-    for(std::size_t i=0;i<sky_draws_;++i)draws.push_back(track_templates_.owning_draws()[i]);
-    for(const auto& entry:list.entries) {
-        const auto ti=template_of_group_.at(entry.draw);
-        if(ti==kNoHandle)continue;
-        auto draw=track_templates_.owning_draws()[ti];draw.instance=entry.instance;
-        draw.placement=track_placements_.at(entry.instance);
-        draws.push_back(std::move(draw));
+    auto& draws=commands.frontend_cube_draws;draws.clear();draws.reserve(kRaceCubeDrawLimit);
+    for (unsigned face=0;face<6;++face) {
+        const auto& c=cameras[face];
+        auto options=race_render_options(sky_);options.width=options.height=128;options.explicit_camera=&c;
+        RecordedCommands face_state;
+        if(!record_frame_state(options,{},face_state,error))return false;
+        commands.frontend_cube_frames[face]=face_state.frame;
+        TrackCamera tc;tc.eye[0]=float(c.eye.x);tc.eye[1]=float(c.eye.y);tc.eye[2]=float(c.eye.z);
+        tc.target[0]=float(c.eye.x+c.forward.x);tc.target[1]=float(c.eye.y+c.forward.y);tc.target[2]=float(c.eye.z+c.forward.z);
+        tc.up[0]=float(c.up.x);tc.up[1]=float(c.up.y);tc.up[2]=float(c.up.z);
+        tc.aspect=1;tc.vertical_fov=1.5707963267948966F;tc.near_plane=.5F;tc.far_plane=64;
+        TrackFrustum frustum;if(!track_frustum_look_at(tc,frustum)){error="cube frustum invalid";return false;}
+        // Main-view selection is already stored. Reuse the immutable trees
+        // and precomputed instance/group/bucket lookup, with a separate output.
+        if(!culler_.cull(frustum,error))return false;
+        RaceGpuFrame capture;std::size_t entries=0;
+        if(!select_track(culler_.result(),capture,entries,error,true))return false;
+        const auto append=[&](RecordedDraw draw) {
+            // Existing capture view tag keeps each face's exact draw order.
+            draw.frontend_sprite_view=face+10;draws.push_back(std::move(draw));
+        };
+        for(std::size_t i=0;i<sky_draws_;++i)append(track_templates_.owning_draws()[i]);
+        for(const auto& entry:cube_selection_) {
+            auto draw=track_templates_.owning_draws().at(template_of_group_.at(entry.draw));
+            draw.instance=entry.instance;draw.placement=track_placements_.at(entry.instance);
+            append(std::move(draw));
+        }
     }
-    if(draws.size()>1024){error="race cube draw capacity exceeded";return false;}
+    if(draws.size()>kRaceCubeDrawLimit){error="race cube draw capacity exceeded";return false;}
     return true;
 }
 
