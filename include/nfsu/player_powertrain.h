@@ -162,6 +162,14 @@ void player_rigid_body_integrate(const VehicleHandling& setup,PlayerRigidBodySta
 // Original outer40BD40 changes live axes alone, after the force callback.
 void player_rigid_body_normalize(PlayerRigidBodyState& body) noexcept;
 
+//4791F0 selector1 low-support angular damping, using705E14 and584E00's
+// binary32 torque addition. Owner states1/2 and support>=2 bypass it.
+// Returns the applied kN m contribution for diagnostics.
+PlayerRigidVector player_low_support_apply(const VehicleHandling& setup,
+                                           PlayerRigidBodyState& body,
+                                           unsigned published_support,
+                                           unsigned owner_state) noexcept;
+
 // Original462F90 three force/arm applications, in kN/body metres, using
 // source binary32 order. Disabled leaves the optional drag output untouched.
 struct PlayerAeroForces {

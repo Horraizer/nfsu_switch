@@ -296,6 +296,26 @@ float player_wheel_contact_load(const PlayerRigidVector& y,
     return factor*nominal;
 }
 
+PlayerRigidVector player_low_support_apply(const VehicleHandling& h,
+                                           PlayerRigidBodyState& body,
+                                           unsigned support,unsigned state) noexcept {
+    if(state==1||state==2||support>=2) return {};
+    const auto& w=body.angular_velocity;
+    //47922D..479245 accumulates Z squared, X squared, then Y squared.
+    const float speed=sqrtf((w[2]*w[2]+w[0]*w[0])+w[1]*w[1]);
+    //705E14 ->705DFC, the selector1 three-pair table. The selector3
+    //705E98 table has a different zero-damping interval.
+    const float damping=speed<=0.40000000596046448F?0.0F:speed>=2.0F?20.0F:
+        ((speed-0.40000000596046448F)/(2.0F-0.40000000596046448F))*20.0F;
+    const float factor=-(damping*h.mass);
+    PlayerRigidVector applied{};
+    for(unsigned k=0;k<3;++k) {
+        applied[k]=factor*w[k];
+        body.torque[k]+=applied[k]; //584E00, no contact moment cap here
+    }
+    return applied;
+}
+
 unsigned player_body_rest_state(const VehicleVec3& velocity,const VehicleVec3& angular,
                                float forward_vertical,float left_vertical,
                                float throttle,int published_gear,

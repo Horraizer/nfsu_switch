@@ -794,6 +794,63 @@ void original_wheel_contact_witness() {
               telemetry.wheels[k].load==0,
               "runtime miss retains source point cache while airborne nominal load remains zero");
 }
+void original_low_support_witness() {
+    using namespace nfsu;
+    const auto h=stock_240sx_handling();
+    // Actual full4791F0 at977ee48 ordinary drop callback142 and leave398,
+    // supplied current W/pre-torque/support0, ownerstate0, explicit007F.
+    PlayerRigidBodyState body;
+    body.angular_velocity={{0.7440890669822693F,0.24269287288188934F,-0.03143024817109108F}};
+    body.torque={{-5.455376594909467e-9F,-3.799868864007294e-6F,-5.082597454020288e-8F}};
+    player_low_support_apply(h,body,0,0);
+    check(body.torque==PlayerRigidVector{{-4.349423408508301F,-1.4186162948608398F,0.18371915817260742F}},
+          "original selector1 drop torque uses its own705E14 table and584E00 addition");
+    body.angular_velocity={{0.6981064081192017F,0.0011218998115509748F,1.848282408900559e-5F}};
+    body.torque={{-0.041484713554382324F,-4.1653867810964584e-5F,5.897600203752518e-6F}};
+    const auto before=body;
+    player_low_support_apply(h,body,0,0);
+    check(body.torque==PlayerRigidVector{{-3.2151718139648438F,-0.005141963250935078F,-7.81278358772397e-5F}},
+          "original selector1 leave torque preserves source binary32 component additions");
+    for(const unsigned support:{0U,1U,2U,4U}) for(const unsigned state:{0U,1U,2U,3U}) {
+        auto gated=before;const auto contribution=player_low_support_apply(h,gated,support,state);
+        if(support>=2||state==1||state==2)
+            check(gated.torque==before.torque&&contribution==PlayerRigidVector{},
+                  "original selector1 support and ownerstate1/2 gates preserve torque");
+        else check(gated.torque==body.torque,"original selector1 state0/3 and support0/1 apply damping");
+    }
+    for(const float omega:{.3F,.4F}) {
+        body.angular_velocity={{omega,0,0}};body.torque={{1,-2,3}};
+        const auto contribution=player_low_support_apply(h,body,0,0);
+        check(contribution==PlayerRigidVector{}&&body.torque==PlayerRigidVector{{1,-2,3}},
+              "original selector1 zero-damping interval differs from selector3");
+    }
+    body.angular_velocity={{std::nextafter(.4F,1.0F),0,0}};body.torque={};
+    check(player_low_support_apply(h,body,0,0)[0]<0,
+          "selector1 damping begins at the first float above the source interval");
+    struct Miss final:VehicleGround {
+        VehicleGroundHit cast(const VehicleVec3&,const VehicleVec3&,double) const noexcept override {return {};}
+    } miss;
+    const VehicleModel model(stock_240sx_vehicle_spec());
+    for(const double dt:{1.0/120.0,1.0/240.0}) {
+        VehicleState state;VehicleTelemetry telemetry;
+        check(model.reset(state,VehiclePose{}),"low-support runtime reset");
+        state.angular_velocity={.3,0,0};state.published_support=0;
+        check(model.step(state,VehicleInput{},miss,telemetry,0,dt,true)&&
+              state.published_support==0&&telemetry.low_support_torque.x==0&&
+              telemetry.low_support_torque.y==0&&telemetry.low_support_torque.z==0,
+              "runtime airborne low rotation uses selector1 zero-damping interval");
+        auto saved=state;VehicleTelemetry twin;
+        std::array<std::uint8_t,kVehicleTelemetryRecordBytes> a{},b{};
+        for(unsigned k=0;k<4;++k) {
+            check(model.step(state,VehicleInput{},miss,telemetry,k==3?dt*4:0,dt,k==0)&&
+                  model.step(saved,VehicleInput{},miss,twin,k==3?dt*4:0,dt,k==0),
+                  "airborne saved angular state continues across solver/publication intervals");
+            encode_vehicle_telemetry(telemetry,a);encode_vehicle_telemetry(twin,b);
+            check(a==b,"low-support corrected angular future resumes identically");
+        }
+    }
+}
+
 void original_aero_and_outer_epoch() {
     using namespace nfsu;
     const auto h=stock_240sx_handling();PlayerRigidBodyState body;
@@ -868,6 +925,7 @@ int main() {
     original_strut_partner_epoch();
     original_wheel_contact_witness();
     original_aero_and_outer_epoch();
+    original_low_support_witness();
     if (failures) {std::cerr<<failures<<" player powertrain test failure(s)\n";return 1;}
     std::cout<<"player powertrain tests passed\n";
 }

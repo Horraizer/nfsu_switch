@@ -1618,14 +1618,14 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         force=scale(public_vector(contact_body.force),a.unit_scale);
         torque=scale(public_vector(contact_body.torque),a.unit_scale);
 
-        // Selector1 4791F0 also reads the outer-published actor3CC support.
-        // This model only meets kind-3 track bodies (state remains0).
-        // The separate zero-wheel alignment branch is not recovered here.
+        //4791F0 reads outer-published actor3CC support, with its selector1
+        // table and float torque addition. Static kind-3 contacts keep state0.
         support = 0;
         for (const auto& wheel : s.wheels) support += wheel.contact ? 1U : 0U;
-        support_torque =
-            vehicle_low_support_torque(s.angular_velocity, d_.mass, s.published_support, 0);
-        if (s.published_support < 2) torque = add(torque, support_torque);
+        contact_body.angular_velocity=s.rigid_body.angular_velocity;
+        support_torque=scale(public_vector(player_low_support_apply(h,contact_body,
+                            s.published_support,0)),a.unit_scale);
+        torque=scale(public_vector(contact_body.torque),a.unit_scale);
 
         s.prepared_force=force;s.prepared_torque=torque;s.forces_prepared=true;
         s.rigid_body.force=rigid_vector(scale(force,1.0/a.unit_scale));

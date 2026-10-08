@@ -17,10 +17,13 @@ with descriptor 0x00705E98, three binary32 pairs at 0x00705E80. The result
 is multiplied by body mass +0x144, negated, multiplied by each world angular
 velocity component, and added to world torque +0x120..+0x128.
 
-vehicle_low_support_torque implements that contribution in SI units and
-preserves the collision-state and support gates. Its numeric curve and
-native contexts are pinned in nfsu_stability_tests. VehicleModel calls it
-before its existing integration with this static-only model's state 0.
+vehicle_low_support_torque implements that selector3 contribution in SI
+units and preserves its collision-state and support gates. Its numeric
+curve and native contexts are pinned in nfsu_stability_tests. Selector1
+VehicleModel instead uses player_low_support_apply: original4791F0 reads
+a distinct table705E14, bypasses owner states1/2, and adds torque through
+584E00 in binary32. Its source pins live in nfsu_player_powertrain_tests.
+The static-only model supplies owner state0 and prior published support.
 As VEHICLE_TRACK.md records, kind-3 contacts do not set car state 1. A
 future dynamic-body integration must carry the actual state into this gate;
 it must not assume this static-only call site covers car/kind-4 contacts.
