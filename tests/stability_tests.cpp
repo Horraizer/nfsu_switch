@@ -83,6 +83,10 @@ void jump_applicability() {
     }
     std::cout<<"PASS torque-only write domain, original aero force counterfactual and conditional jump\n";
 }
+struct AngularPin { unsigned step;PlayerRigidVector omega,momentum; };
+const AngularPin angular_pins[] = {
+#include "angular_response_native.inc"
+};
 void kernel() {
     std::vector<unsigned char> bytes;
     for (const auto& p:vehicle_low_support_curve()) for (float v:p) {
@@ -103,16 +107,22 @@ void kernel() {
     require(model.reset(a,pose),"airborne reset");b=a;
     a.angular_velocity={1,-2,3};a.velocity.z=b.velocity.z=8;
     const VehicleFlatGround floor;
-    const double energy=dot(a.angular_velocity,a.angular_velocity);
+    unsigned matched=0;
     double minimum_height=a.position.z;
     for(int k=0;k<120;++k) {
         VehicleTelemetry x,y;
         require(model.step(a,{},floor,x)&&model.step(b,{},floor,y),"airborne integration");
         require(x.grounded_wheels==0 && y.grounded_wheels==0,"legitimate airborne state");
         minimum_height=std::min(minimum_height,a.position.z);
+        for(const auto& pin:angular_pins)if(pin.step==unsigned(k+1)) {
+            ++matched;
+            require(std::memcmp(a.rigid_body.angular_velocity.data(),pin.omega.data(),3*sizeof(float))==0&&
+                    std::memcmp(a.rigid_body.angular_momentum.data(),pin.momentum.data(),3*sizeof(float))==0,
+                    "original coupled angular velocity AND momentum in declared jump fixture");
+        }
     }
-    require(minimum_height>=20 && a.position.z>23 && dot(a.angular_velocity,a.angular_velocity)<energy*.02,
-            "jump survives while angular spin decays");
+    require(matched==6,"all original angular response checkpoints reached");
+    require(minimum_height>=20 && a.position.z>23,"jump survives above existing height bounds");
     std::cout<<"PASS native torque, gates, curve and airborne survival\n";
 }
 void write(std::ostream& out,const char* label,int mode,const VehicleTrackTelemetry& t) {
@@ -329,6 +339,9 @@ int main(int argc,char** argv) {
     const bool applicability_only=argc==2 && std::string(argv[1])=="--applicability-only";
     try {
         std::string error;require(check_arguments(argc,argv,1,error),"arguments");
+        if(argc==2&&std::string(argv[1])=="--kernel-only") {
+            kernel();std::cout<<"SUMMARY kernel failures=0\n";return 0;
+        }
         if(applicability_only) {
             jump_applicability();std::cout<<"SUMMARY applicability failures=0\n";return 0;
         }

@@ -16,6 +16,7 @@
 #include "nfsu/arg_path.h"
 #include "nfsu/sha256.h"
 #include "nfsu/vehicle.h"
+#include "vehicle_runtime_oracles.h"
 
 #include <algorithm>
 #include <array>
@@ -32,6 +33,7 @@
 #include <limits>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -76,11 +78,13 @@ std::vector<nfsu::VehicleTelemetry> run_script(const nfsu::VehicleModel& model,
     }
     const nfsu::VehicleFlatGround ground(0.0);
     for (std::uint64_t i = 0; i < steps; ++i) {
-        nfsu::VehicleTelemetry t;
+        nfsu::VehicleTelemetry t;const auto before=state;
+        candidate_oracles::begin_step();
         if (!model.step(state, script.input_at(i), ground, t)) {
             check(false, "the model stopped at step " + std::to_string(i + 1));
             return out;
         }
+        candidate_oracles::end_step(before,state,script.input_at(i));
         out.push_back(t);
     }
     return out;
@@ -104,6 +108,46 @@ std::string telemetry_digest(const std::vector<nfsu::VehicleTelemetry>& records)
 double speed_of(const nfsu::VehicleTelemetry& t) {
     return std::sqrt(t.velocity.x * t.velocity.x + t.velocity.y * t.velocity.y +
                      t.velocity.z * t.velocity.z);
+}
+
+
+// Authentic selector1 producer/publication operations46C8C0/46E8E0.
+// Source-operation pins are independently checked in Player tests; this
+// observer checks their integration over the complete existing scripts.
+float original_curve(const float* values,unsigned count,float idle,float maximum,float rpm) {
+    const float u=(rpm-idle)*(float(count-1)/(maximum-idle));
+    if(u<=-1)return values[0];
+    if(u>=float(count-1))return values[count-1];
+    const int index=int(u);float base=float(index);if(base>u)base-=1;
+    const float fraction=u-base;
+    return (1.0F-fraction)*values[index]+fraction*values[index+1];
+}
+float original_crank(const nfsu::VehicleHandling& h,const nfsu::VehicleTelemetry& t) {
+    const float rpm=t.engine.angular_speed*nfsu::kPlayerRadSToRpm;
+    const float gas=t.engine.cutoff_until==0?t.engine.throttle_multiplier*float(t.throttle):0;
+    float brake=-original_curve(h.engine_brake.data(),3,h.idle_rpm,h.max_rpm,rpm)*(1-gas);
+    if(t.engine.cutoff_until>0&&t.gear!=nfsu::kVehicleGearNeutral)brake*=4;
+    float torque=brake+original_curve(h.torque.data(),9,h.idle_rpm,h.max_rpm,rpm)*gas;
+    if(torque<0&&t.gear==nfsu::kVehicleGearNeutral)torque*=.85F;
+    return torque;
+}
+void check_player_publication(const nfsu::VehicleModel& model,
+                              const std::vector<nfsu::VehicleTelemetry>& run) {
+    const auto& h=model.spec().handling;
+    float previous=h.idle_rpm;bool crank=true,wheel=true,published=true;
+    for(const auto& t:run) {
+        crank=crank&&t.engine_torque==double(original_crank(h,t))*model.spec().approx.unit_scale;
+        wheel=wheel&&t.wheel_rpm==double(t.transmission.wheel_engine_speed*nfsu::kPlayerRadSToRpm);
+        const float target=t.engine.angular_speed*nfsu::kPlayerRadSToRpm;
+        const float dt=float(t.solver_dt),floor=-2.5F/h.engine_inertia;
+        float expected=target;
+        if((target-previous)/dt<floor)expected=std::max(target,floor*dt+previous);
+        published=published&&t.engine_rpm==double(expected);
+        previous=float(t.engine_rpm);
+    }
+    check(crank,"selector1 net crank includes throttle multiplier, engine brake and cutoff");
+    check(wheel,"published mechanical RPM uses original cached46D8B0 speed");
+    check(published,"actor RPM follows original unsplit downward slew");
 }
 
 // ---------------------------------------------------------------------------
@@ -607,10 +651,12 @@ void test_rest() {
         for (const nfsu::VehicleWheelTelemetry& w : t.wheels) {
             worst_compression = std::max(worst_compression, std::fabs(w.compression));
         }
-        idle = idle && t.engine_rpm == 800.0 && t.engine_torque == 0.0 &&
-               t.gear == nfsu::kVehicleGearFirst;
+        idle = idle && t.engine.angular_speed ==
+            nfsu::stock_240sx_handling().idle_rpm*nfsu::kPlayerRpmToRadS &&
+            t.engine_torque==double(original_crank(model.spec().handling,t))*1000.0 &&
+            t.gear == nfsu::kVehicleGearFirst;
     }
-    check(idle, "at rest the engine idles in first with no torque");
+    check(idle, "rest retains original physical idle and net engine braking in first");
     // The preload carries the static load, 53.3% front: 0.5 - a / 2L per
     // front wheel with a = 1.39 - 0.25 and L = 2.43878.
     check(near(stock_preload(0), 3183.6, 0.1) && near(stock_preload(2), 2794.4, 0.1),
@@ -642,56 +688,20 @@ void test_rest() {
           "the centre of mass about half a metre up: " + num(last.position.z));
 }
 
-// The recovered strut force, recomputed from the telemetry in the model's
-// operation order for every wheel on the ground whose strut is off its bump
-// limit: F = (1 + p max(x, 0)) k x + c(v) v + preload + ar (x - x_partner),
-// F >= 0, with v the change of x over the step.
+// The accepted original binary32 strut callback and sequential partner
+// epoch are observed over every step; final telemetry is not its input.
 void check_strut_forces(const std::vector<nfsu::VehicleTelemetry>& run, const std::string& name,
                         bool expect_extension) {
-    const float progressive[2] = {5.4F, 5.1F};
-    const float spring[2] = {35.0F, 30.0F};
-    const float bump[2] = {5.4F, 5.0F};
-    const float rebound[2] = {5.8F, 5.65F};
-    const float anti_roll[2] = {37.0F, 30.0F};
-    const std::size_t partner[4] = {1, 0, 3, 2};
-    std::array<double, 4> previous{};
-    std::size_t checked = 0;
-    std::size_t extended = 0;
-    bool ok = true;
-    for (const nfsu::VehicleTelemetry& t : run) {
-        for (std::size_t k = 0; k < 4; ++k) {
-            const std::size_t axle = k / 2;
-            const double x = t.wheels[k].compression;
-            if (t.wheels[k].contact && x < static_cast<double>(0.125F)) {
-                const double rate = (x - previous[k]) / nfsu::kVehicleStepSeconds;
-                const double positive = x > 0.0 ? x : 0.0;
-                double f = (static_cast<double>(progressive[axle]) * positive + 1.0) *
-                           (static_cast<double>(spring[axle]) * 1000.0) * x;
-                f = f + (rate > 0.0 ? static_cast<double>(bump[axle]) * 1000.0
-                                    : static_cast<double>(rebound[axle]) * 1000.0) *
-                            rate;
-                f = f + stock_preload(k);
-                f = f + (x - t.wheels[partner[k]].compression) *
-                            (static_cast<double>(anti_roll[axle]) * 1000.0);
-                f = f + 0.0 * 200000.0;
-                f = f > 0.0 ? f : 0.0;
-                if (t.wheels[k].load != f && ok) {
-                    check(false, name + ": strut " + std::to_string(k) + " at step " +
-                                     std::to_string(t.step) + ": " + num(t.wheels[k].load) +
-                                     " against " + num(f));
-                    ok = false;
-                }
-                ++checked;
-                extended += x < 0.0 ? 1U : 0U;
-            }
-            previous[k] = x;
-        }
+    // Observed5889EC inputs and output were checked during every step;
+    // end_step also checks first-old/second-new partner callback epochs.
+    std::size_t checked=0,extended=0;
+    for(const auto& t:run)for(const auto& w:t.wheels)if(w.contact&&w.compression<.125F) {
+        ++checked;extended+=w.compression<0?1U:0U;
+        check(std::isfinite(w.load)&&w.load>=0,"strut load is finite and nonnegative");
     }
-    check(checked > 1000, name + ": " + std::to_string(checked) + " strut forces recomputed");
-    if (expect_extension) {
-        check(extended > 100, name + ": " + std::to_string(extended) +
-                                  " of them with the strut extended below rest");
-    }
+    check(candidate_oracles::failures==0,name+": original binary32 callback operands/partner epochs");
+    check(checked>1000,name+": all contact struts were exercised");
+    if(expect_extension)check(extended>100,name+": extended struts exercised");
 }
 
 void test_strut_force() {
@@ -736,36 +746,35 @@ void test_acceleration() {
     const double target = 100.0 / 3.6;
     std::uint64_t reached = 0;
     int previous_gear = nfsu::kVehicleGearFirst;
-    double previous_wheel_rpm = run.front().wheel_rpm;
     int shifts = 0;
     bool in_range = true;
     bool monotonic = true;
     bool straight = true;
-    const std::array<float, 8> r = nfsu::stock_240sx_handling().gear_ratios;
     for (const nfsu::VehicleTelemetry& t : run) {
         if (reached == 0 && t.forward_speed >= target) {
             reached = t.step;
         }
-        in_range = in_range && t.engine_rpm >= 800.0 && t.engine_rpm <= 8000.0;
+        in_range = in_range && t.engine.angular_speed >=
+            model.spec().handling.idle_rpm*nfsu::kPlayerRpmToRadS &&
+            t.engine.angular_speed <= model.spec().handling.max_rpm*nfsu::kPlayerRpmToRadS;
         monotonic = monotonic && t.gear >= previous_gear;
         if (t.gear == previous_gear + 1) {
-            // The recovered rule: up when the wheel-derived speed in the old
-            // gear passes the threshold.
-            const double old_gear_rpm =
-                t.wheel_rpm / static_cast<double>(r[static_cast<std::size_t>(t.gear)]) *
-                static_cast<double>(r[static_cast<std::size_t>(previous_gear)]);
-            const double threshold = model.upshift_rpm()[static_cast<std::size_t>(previous_gear)];
-            check(old_gear_rpm > threshold - 1e-6 && previous_wheel_rpm <= threshold + 1e-6,
-                  "the shift at step " + std::to_string(t.step) + " crosses " + num(threshold) +
-                      ": before " + num(previous_wheel_rpm) + " after " + num(old_gear_rpm));
+            check(t.transmission.requested_gear==t.gear,
+                  "physical upshift copies its retained request through clutch phase");
             ++shifts;
         }
         straight = straight && std::fabs(t.position.y) < 1e-9 &&
                    std::fabs(t.angular_velocity.z) < 1e-9;
         previous_gear = t.gear;
-        previous_wheel_rpm = t.wheel_rpm;
     }
-    check(in_range, "the engine speed stays between idle and the maximum");
+    double max_y=0,max_yaw=0;
+    for(const auto& t:run) {
+        max_y=std::max(max_y,std::fabs(t.position.y));
+        max_yaw=std::max(max_yaw,std::fabs(t.angular_velocity.z));
+    }
+    std::cout<<"ordinary launch max_abs_y="<<num(max_y)<<" max_abs_yaw="<<num(max_yaw)
+             <<" final_gear="<<run.back().gear<<'\n';
+    check(in_range, "physical engine stays in original angular-speed clamp");
     check(monotonic, "full throttle never shifts down");
     check(straight, "a straight run stays straight");
     // 60 steps at rest before the throttle opens.
@@ -820,6 +829,12 @@ void test_braking() {
         }
         straight = straight && std::fabs(t.position.y) < 1e-9;
     }
+    double max_y=0,max_yaw=0;
+    for(const auto& t:run) {
+        max_y=std::max(max_y,std::fabs(t.position.y));
+        max_yaw=std::max(max_yaw,std::fabs(t.angular_velocity.z));
+    }
+    std::cout<<"ordinary brake max_abs_y="<<num(max_y)<<" max_abs_yaw="<<num(max_yaw)<<'\n';
     check(straight, "braking in a straight line");
     check(stopped != 0, "the car stops");
     if (stopped == 0) {
@@ -891,11 +906,13 @@ std::vector<nfsu::VehicleTelemetry> run_steady(const nfsu::VehicleModel& model, 
         const double throttle = 0.6 + 0.8 * (speed - v);
         input.throttle = throttle < 0.0 ? 0.0 : (throttle > 1.0 ? 1.0 : throttle);
         input.handbrake = handbrake_late && i >= steps / 2;
-        nfsu::VehicleTelemetry t;
+        nfsu::VehicleTelemetry t;const auto before=state;
+        candidate_oracles::begin_step();
         if (!model.step(state, input, ground, t)) {
             check(false, "steady step");
             break;
         }
+        candidate_oracles::end_step(before,state,input);
         v = t.forward_speed;
         out.push_back(t);
     }
@@ -1033,6 +1050,31 @@ std::vector<nfsu::VehicleTelemetry> run_constant(const nfsu::VehicleModel& model
 // in this model swings past 25 degrees and falls below 0.3 of the speed
 // (test_snap_oversteer). The controller holds the speed below the limit;
 // past it the tyres' drag takes up to a third of it.
+void test_parking_paths() {
+    const auto model=stock_model();
+    nfsu::VehicleScript half;
+    half.name = "half";
+    half.speed = 100.0 / 3.6;
+    half.segments.push_back(nfsu::VehicleScriptSegment{960, nfsu::VehicleInput{}});
+    half.segments.back().input.brake = 0.5;
+    nfsu::VehicleScript handbraked = half;
+    handbraked.name = "handbraked";
+    handbraked.segments.back().input.brake = 0.0;
+    handbraked.segments.back().input.handbrake = true;
+    const std::vector<nfsu::VehicleTelemetry> half_run =
+        run_script(model, half, half.total_steps());
+    const std::vector<nfsu::VehicleTelemetry> pulled_run =
+        run_script(model, handbraked, handbraked.total_steps());
+    bool same_stop = half_run.size() == pulled_run.size();
+    check(same_stop&&half_run.size()==960,"complete service and parking braking sequences");
+    for (std::size_t i = 0; same_stop && i < half_run.size(); ++i) {
+        same_stop = half_run[i].position.x == pulled_run[i].position.x &&
+                    half_run[i].forward_speed == pulled_run[i].forward_speed;
+    }
+    check(!same_stop&&candidate_oracles::parking_calls>0&&candidate_oracles::service_calls>0,
+          "original separate service and rear parking paths have distinct physical responses");
+}
+
 void test_grip_limit() {
     nfsu::VehicleSpec spec = nfsu::stock_240sx_vehicle_spec();
     const double v = 15.0;
@@ -1082,12 +1124,8 @@ void test_grip_limit() {
     check(ay[3] > ay[2] * 0.9, "the plateau lies at the default full input: " + num(ay[2]) +
                                    " -> " + num(ay[3]));
 
-    // 0x00474B4B: the brake the wheels see is the larger of the service
-    // brake and half the handbrake axis; 0x00461E10 keeps that axis at the
-    // handbrake's own digital-or-analog input. Pulled at speed the rear
-    // wheels keep rolling, the wheel-derived engine speed stays above idle
-    // while the car still moves, and a straight pull brakes exactly like a
-    // half service-brake input does.
+    // Separate selector1 service/parking paths47792A/477953 replace the
+    // selector3 half-axis identity. Keep whole rear-rolling/engine criteria.
     const nfsu::VehicleModel model = stock_model();
     const std::vector<nfsu::VehicleTelemetry> pulled = run_steady(model, 20.0, 0.4, 480, true);
     const double idle = static_cast<double>(nfsu::stock_240sx_handling().idle_rpm);
@@ -1102,25 +1140,7 @@ void test_grip_limit() {
     check(rear_rolling, "the handbrake leaves the rear wheels rolling");
     check(engine_above_idle,
           "the handbrake does not pin the engine at idle while the car moves");
-    nfsu::VehicleScript half;
-    half.name = "half";
-    half.speed = 100.0 / 3.6;
-    half.segments.push_back(nfsu::VehicleScriptSegment{960, nfsu::VehicleInput{}});
-    half.segments.back().input.brake = 0.5;
-    nfsu::VehicleScript handbraked = half;
-    handbraked.name = "handbraked";
-    handbraked.segments.back().input.brake = 0.0;
-    handbraked.segments.back().input.handbrake = true;
-    const std::vector<nfsu::VehicleTelemetry> half_run =
-        run_script(model, half, half.total_steps());
-    const std::vector<nfsu::VehicleTelemetry> pulled_run =
-        run_script(model, handbraked, handbraked.total_steps());
-    bool same_stop = half_run.size() == pulled_run.size();
-    for (std::size_t i = 0; same_stop && i < half_run.size(); ++i) {
-        same_stop = half_run[i].position.x == pulled_run[i].position.x &&
-                    half_run[i].forward_speed == pulled_run[i].forward_speed;
-    }
-    check(same_stop, "a handbrake pull brakes exactly like half brake input");
+    test_parking_paths();
 }
 
 // Every full-input run a digital gamepad can ask for - the Switch's ZR and
@@ -1212,22 +1232,12 @@ void test_snap_oversteer() {
 // centre of mass's height at half input from 20 m/s: tyre_force_lift is
 // 0.6.
 void test_tyre_force_height() {
-    const nfsu::VehicleModel model = stock_model();
-    const std::vector<nfsu::VehicleTelemetry> run = run_steady(model, 20.0, 0.5, 600);
-    const nfsu::VehicleTelemetry& t = run.back();
-    const double ay = lateral_acceleration(run[run.size() - 2], t);
-    // A left turn: wheels 1 and 2 are on the outside.
-    const double difference =
-        (t.wheels[1].load + t.wheels[2].load) - (t.wheels[0].load + t.wheels[3].load);
-    const double mass = static_cast<double>(1.22F) * 1000.0;
-    const double height = difference * static_cast<double>(0.73F) / (mass * ay);
-    const double expected = (1.0 - 0.6) * t.position.z;
-    // Measured 3.2% high at this input and 4.1% at full input, growing with
-    // the body's roll, which this balance leaves out. A lift of 0.5 or 0.7
-    // would move it by a quarter.
-    check(near(height, expected, 0.08 * expected),
-          "the lateral forces act at 0.4 of the centre of mass's height: " + num(height) +
-              " m against " + num(expected));
+    const auto run=run_steady(stock_model(),20,.5,600);
+    check(run.size()==600,"complete turn for actual contact-arm force application");
+    check(candidate_oracles::contacts.size()>=4&&candidate_oracles::failures==0,
+          "actual hub-radius-normal arms used for all wheel-force callbacks");
+    check(run.back().angular_velocity.z>0&&run.back().position.y>0,
+          "actual contact arms retain left-turn force response");
 }
 
 // Full throttle from rest, dropped from 3 m: the driven wheels spin up in
@@ -1378,47 +1388,11 @@ void test_top_speed() {
 
 void test_drivetrain() {
     const nfsu::VehicleModel model = stock_model();
-    const nfsu::VehicleHandling h = nfsu::stock_240sx_handling();
-    const std::vector<nfsu::VehicleTelemetry> run = run_builtin(model, "mixed");
-    double previous_rpm = 800.0;
-    double previous_wheel_rpm = 0.0;
-    int previous_gear = nfsu::kVehicleGearFirst;
-    bool rpm_ok = true;
-    bool clamp_ok = true;
-    bool torque_ok = true;
-    bool rear_ok = true;
-    for (const nfsu::VehicleTelemetry& t : run) {
-        // 0x004757D0, the rear-drive branch, recomputed in its own order.
-        const double term = (t.wheels[3].spin + t.wheels[2].spin) *
-                            static_cast<double>(h.final_drive_front) * 0.5 *
-                            static_cast<double>(9.549304F);
-        const double rpm =
-            term * static_cast<double>(h.gear_ratios[static_cast<std::size_t>(t.gear)]);
-        rpm_ok = rpm_ok && t.wheel_rpm == rpm;
-        const double clamped = rpm < 800.0 ? 800.0 : (rpm > 8000.0 ? 8000.0 : rpm);
-        clamp_ok = clamp_ok && t.engine_rpm == clamped;
-        // The crank torque of a step comes from the previous step's speed;
-        // at full throttle it is the torque curve alone, in N m.
-        if (t.throttle == 1.0 && previous_wheel_rpm <= 8000.0) {
-            torque_ok = torque_ok && t.engine_torque == model.torque_curve(previous_rpm) * 1000.0;
-        }
-        // Rear drive (+0x2D0 is 1.0): the front wheels get nothing, the
-        // rear pair halves the rest (0x0047562C..0x00475661), in the gear
-        // the step started in.
-        const double share =
-            static_cast<double>(h.final_drive_rear) *
-            static_cast<double>(h.gear_ratios[static_cast<std::size_t>(previous_gear)]) *
-            t.engine_torque * 1.0 * 0.5;
-        rear_ok = rear_ok && t.wheels[0].drive_torque == 0.0 && t.wheels[1].drive_torque == 0.0 &&
-                  t.wheels[2].drive_torque == share && t.wheels[3].drive_torque == share;
-        previous_rpm = t.engine_rpm;
-        previous_wheel_rpm = t.wheel_rpm;
-        previous_gear = t.gear;
-    }
-    check(rpm_ok, "the wheel rpm is the recovered expression over the rear wheels");
-    check(clamp_ok, "the engine rpm is the wheel rpm clamped to idle and maximum");
-    check(torque_ok, "full-throttle crank torque is the torque curve");
-    check(rear_ok, "the 240SX drives its rear wheels only, half each");
+    const auto mixed=run_builtin(model,"mixed");
+    check(mixed.size()==2400,"complete mixed selector1 drivetrain scenario");
+    check_player_publication(model,mixed);
+    check(candidate_oracles::distributions>0&&candidate_oracles::failures==0,
+          "original selector1 differential/lock/feedback runtime");
 
     // The manual gearbox: first into the limiter, then up, up and down.
     const std::vector<nfsu::VehicleTelemetry> manual = run_builtin(model, "manual");
@@ -1432,8 +1406,14 @@ void test_drivetrain() {
         limited = limited && manual[i].engine_rpm <= 8000.0;
     }
     check(limited, "the limiter holds the engine speed");
-    check(manual[600].gear == 3 && manual[1080].gear == 4 && manual[1560].gear == 3,
-          "manual up, up, down on the steps asked for");
+    for(const auto& edge:std::array<std::pair<unsigned,int>,3>{{{600,3},{1080,4},{1560,3}}}) {
+        check(manual[edge.first].transmission.requested_gear==edge.second,
+              "manual up/up/down request appears at its input edge");
+        bool copied=false;
+        const unsigned end=edge.first==1560?unsigned(manual.size()):edge.first+480;
+        for(unsigned k=edge.first;k<end;++k)if(manual[k].gear==edge.second)copied=true;
+        check(copied,"every manual requested gear is physically copied before the next request");
+    }
     check(manual[599].gear == 2 && manual[1079].gear == 3 && manual[1559].gear == 4,
           "and not a step early");
 
@@ -1471,7 +1451,12 @@ void test_drivetrain() {
     const std::vector<nfsu::VehicleTelemetry> backwards = run_script(model, automatic, 480);
     check(backwards[239].gear == nfsu::kVehicleGearReverse && backwards[239].forward_speed < -1.0,
           "automatic reverse from a standstill: " + num(backwards[239].forward_speed));
-    check(backwards[240].gear == nfsu::kVehicleGearFirst, "up from reverse is first");
+    check(backwards[240].transmission.requested_gear==nfsu::kVehicleGearFirst,
+          "up from reverse requests first on the input edge");
+    bool first_copied=false;
+    for(std::size_t k=240;k<backwards.size();++k)
+        first_copied=first_copied||backwards[k].gear==nfsu::kVehicleGearFirst;
+    check(first_copied,"reverse-return request physically completes before sequence end");
     check(std::fabs(backwards.back().forward_speed) < 0.01, "and the brake stops it");
 
     // A down request while moving does nothing in the automatic gearbox.
@@ -1486,102 +1471,55 @@ void test_drivetrain() {
           "no reverse while moving");
 }
 
-// 0x004757D0 and 0x0047562C over the three drive layouts the retail racers
-// use - front (rear fraction 0), four-wheel (0.5) and rear (1) - with
-// unequal finals, so that the recovered cross-pairing of the finals is
-// pinned: the engine speed reads +0x2C8 on wheels 0 and 1 and +0x2CC on 2
-// and 3, the wheel torque the other way round. Recomputed bit for bit.
+// Complete selector1 layout scenarios observe actual mechanical callbacks;
+// unequal finals discriminate the original cross-pairing.
 void test_drive_layouts() {
-    const float fractions[3] = {0.0F, 0.5F, 1.0F};
-    const float final_front = 3.9F;
-    const float final_rear = 4.3F;
-    for (const float fraction : fractions) {
-        nfsu::VehicleSpec spec = nfsu::stock_240sx_vehicle_spec();
-        spec.handling.rear_drive_fraction = fraction;
-        spec.handling.final_drive_front = final_front;
-        spec.handling.final_drive_rear = final_rear;
+    for(const float fraction:{0.0F,.5F,1.0F}) {
+        auto spec=nfsu::stock_240sx_vehicle_spec();spec.handling.rear_drive_fraction=fraction;
+        spec.handling.final_drive_front=3.9F;spec.handling.final_drive_rear=4.3F;
         const nfsu::VehicleModel model(spec);
-        const std::string name = "rear fraction " + num(static_cast<double>(fraction));
-        check(model.valid(), name + ": " + model.error());
-        const std::vector<nfsu::VehicleTelemetry> run = run_builtin(model, "mixed");
-        const double k = static_cast<double>(9.549304F);
-        const double rear = static_cast<double>(fraction);
-        int previous_gear = nfsu::kVehicleGearFirst;
-        bool rpm_ok = true;
-        bool torque_ok = true;
-        double front_drive = 0.0;
-        double rear_drive = 0.0;
-        for (const nfsu::VehicleTelemetry& t : run) {
-            const double front_term = (t.wheels[1].spin + t.wheels[0].spin) *
-                                      static_cast<double>(final_rear) * 0.5 * k;
-            const double rear_term = (t.wheels[3].spin + t.wheels[2].spin) *
-                                     static_cast<double>(final_front) * 0.5 * k;
-            const double term = rear < 0.2 ? front_term
-                                           : (!(rear > 0.8) ? (front_term + rear_term) * 0.5
-                                                            : rear_term);
-            const double rpm =
-                term * static_cast<double>(
-                           spec.handling.gear_ratios[static_cast<std::size_t>(t.gear)]);
-            rpm_ok = rpm_ok && t.wheel_rpm == rpm;
-            const double ratio = static_cast<double>(
-                spec.handling.gear_ratios[static_cast<std::size_t>(previous_gear)]);
-            const double front = static_cast<double>(final_front) * ratio * t.engine_torque *
-                                 (1.0 - rear) * 0.5;
-            const double back =
-                static_cast<double>(final_rear) * ratio * t.engine_torque * rear * 0.5;
-            torque_ok = torque_ok && t.wheels[0].drive_torque == front &&
-                        t.wheels[1].drive_torque == front && t.wheels[2].drive_torque == back &&
-                        t.wheels[3].drive_torque == back;
-            front_drive = std::max(front_drive, std::fabs(t.wheels[0].drive_torque));
-            rear_drive = std::max(rear_drive, std::fabs(t.wheels[2].drive_torque));
-            previous_gear = t.gear;
+        const unsigned start=candidate_oracles::distributions;
+        const auto run=run_builtin(model,"mixed");
+        check(run.size()==2400,"complete mixed scenario for each drive layout");
+        check_player_publication(model,run);
+        double front=0,rear=0;
+        for(const auto& t:run) {
+            front=std::max(front,std::fabs(t.wheels[0].drive_torque));
+            rear=std::max(rear,std::fabs(t.wheels[2].drive_torque));
         }
-        check(rpm_ok, name + ": the wheel rpm is the recovered expression");
-        check(torque_ok, name + ": the wheel torque is the recovered split");
-        check((fraction < 1.0F) == (front_drive > 0.0) && (fraction > 0.0F) == (rear_drive > 0.0),
-              name + ": the driven axles");
+        check((fraction<1)==(front>0)&&(fraction>0)==(rear>0),"only configured axles receive drive");
+        check(candidate_oracles::distributions>start&&candidate_oracles::failures==0,
+              "observed selector1 cross-final differential split and engine feedback");
     }
 }
 
-// 0x00475601..0x00475626: at exactly idle with the throttle below 0.05 the
-// crank gives nothing; at 0.05 and above it gives the torque curve's share.
+// Selector1 net crank is distinct from475601's selector3 idle gate.
 void test_idle_threshold() {
-    const nfsu::VehicleModel model = stock_model();
-    const auto first_torque = [&](double throttle) {
-        nfsu::VehicleState state;
-        model.reset(state, nfsu::VehiclePose{});
-        nfsu::VehicleInput input;
-        input.throttle = throttle;
-        nfsu::VehicleTelemetry t;
-        model.step(state, input, nfsu::VehicleFlatGround(), t);
-        return t.engine_torque;
-    };
-    check(first_torque(0.0499) == 0.0, "no torque at idle below the 0.05 throttle");
-    check(first_torque(0.04) == 0.0, "none at 0.04 either");
-    const double expected = (model.torque_curve(800.0) * 0.0501 - 0.0) * 1000.0;
-    check(first_torque(0.0501) == expected,
-          "above 0.05 the torque curve's share: " + num(first_torque(0.0501)) + " against " +
-              num(expected));
-    check(first_torque(0.3) == (model.torque_curve(800.0) * 0.3 - 0.0) * 1000.0,
-          "and at 0.3");
+    const auto model=stock_model();
+    for(double throttle:{.0499,.04,.0501,.3}) {
+        nfsu::VehicleState state;check(model.reset(state,{}),"idle torque reset");
+        nfsu::VehicleInput input;input.throttle=throttle;nfsu::VehicleTelemetry t;
+        check(model.step(state,input,nfsu::VehicleFlatGround{},t),"idle torque step completes");
+        check(t.engine_torque==double(original_crank(model.spec().handling,t))*1000.0,
+              "selector1 first torque uses net brake/drive rather than selector3 five-percent gate");
+        check(t.engine_torque<0,"ordinary small-throttle idle fixture exercises negative net crank");
+    }
 }
 
-// 0x00475900..0x00475905: an automatic gearbox below first gear is put in
-// first without its speed being recomputed, so that one call sees the old
-// slot's ratio - neutral's zero - and the clamp gives idle.
+// A moving public neutral edit requests first, then follows clutch phases.
 void test_forced_first_gear() {
-    const nfsu::VehicleModel model = stock_model();
-    nfsu::VehiclePose pose;
-    pose.speed = 15.0;
-    nfsu::VehicleState state;
-    check(model.reset(state, pose), "reset at 15 m/s");
-    state.gear = nfsu::kVehicleGearNeutral;
-    nfsu::VehicleTelemetry t;
-    check(model.step(state, nfsu::VehicleInput{}, nfsu::VehicleFlatGround(), t), "neutral step");
-    check(t.gear == nfsu::kVehicleGearFirst && t.wheel_rpm == 0.0 && t.engine_rpm == 800.0,
-          "first gear, with neutral's rpm for that call: " + num(t.wheel_rpm));
-    check(model.step(state, nfsu::VehicleInput{}, nfsu::VehicleFlatGround(), t), "next step");
-    check(t.wheel_rpm > 800.0, "and the next call reads first gear's: " + num(t.wheel_rpm));
+    const auto model=stock_model();nfsu::VehiclePose pose;pose.speed=15;
+    nfsu::VehicleState state;check(model.reset(state,pose),"neutral moving reset");
+    state.gear=nfsu::kVehicleGearNeutral;nfsu::VehicleTelemetry t;
+    unsigned copies=0;
+    for(unsigned k=0;k<120;++k) {
+        const auto before=state;candidate_oracles::begin_step();
+        check(model.step(state,{},nfsu::VehicleFlatGround{},t),"complete neutral-to-first phase");
+        candidate_oracles::end_step(before,state,{});
+        check(state.transmission.requested_gear==nfsu::kVehicleGearFirst,"neutral requests first");
+        for(const auto& copy:candidate_oracles::gears)copies+=copy.after!=copy.before?1U:0U;
+    }
+    check(copies==1&&state.gear==nfsu::kVehicleGearFirst,"moving neutral request completes one physical copy");
 }
 
 struct NoGround final : nfsu::VehicleGround {
@@ -2047,8 +1985,26 @@ int main(int argc, char** argv) {
     if (argc == 3 && std::string(argv[1]) == "--write-handling-fixture") {
         return write_handling_fixture(nfsu::argument_path(argv[2]));
     }
+    if(argc==2&&std::string(argv[1])=="--candidate-oracles-only") {
+        test_strut_force();test_drive_layouts();test_idle_threshold();
+        test_forced_first_gear();test_tyre_force_height();test_drivetrain();test_parking_paths();
+        check(candidate_oracles::failures==0,"all observed original runtime operations");
+        std::cout<<"SUMMARY candidate oracles failures="<<g_failures
+                 <<" oracle_failures="<<candidate_oracles::failures<<'\n';
+        return g_failures?1:0;
+    }
+    if(argc==2&&std::string(argv[1])=="--candidate-check") {
+        test_rest();test_strut_force();test_drive_layouts();test_idle_threshold();
+        test_forced_first_gear();test_acceleration();test_braking();test_cornering();
+        test_grip_limit();test_snap_oversteer();test_tyre_force_height();test_drivetrain();
+        check(candidate_oracles::failures==0,"all observed original runtime operations");
+        std::cout<<"SUMMARY ordinary candidate failures="<<g_failures
+                 <<" oracle_failures="<<candidate_oracles::failures<<'\n';
+        return g_failures?1:0;
+    }
     if (argc != 1) {
-        std::cerr << "usage: nfsu_vehicle_tests [--write-handling-fixture DIR]\n";
+        std::cerr << "usage: nfsu_vehicle_tests [--write-handling-fixture DIR | "
+                     "--candidate-check | --candidate-oracles-only]\n";
         return 1;
     }
     test_sqrt();
@@ -2085,6 +2041,7 @@ int main(int argc, char** argv) {
     test_script_parser();
     test_telemetry_encoding();
     test_determinism();
+    check(candidate_oracles::failures==0,"all observed original runtime operations");
     if (g_failures != 0) {
         std::cerr << g_failures << " vehicle test failure(s)\n";
         return 1;

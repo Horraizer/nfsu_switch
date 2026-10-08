@@ -131,8 +131,34 @@ void check_levels(const Record& original) {
                 expected.downforce_rear=f32(applied,0x378);
                 expected.aero_preload=f32(applied,0x37C);
             }
+            if(field==&VehicleUpgradeLevels::grip) {
+                // The tuning write at raw384/388 aliases selector1 service
+                // and parking setup. Check bytes AND actual brake response.
+                expected.service_brake=f32(applied,kVehicleServiceBrakeOffset);
+                expected.parking_brake=f32(applied,kVehicleParkingBrakeOffset);
+                expected.brake_balance=f32(applied,kVehicleBrakeBalanceOffset);
+                auto without=spec;
+                without.handling.service_brake=zero.handling.service_brake;
+                without.handling.parking_brake=zero.handling.parking_brake;
+                without.handling.brake_balance=zero.handling.brake_balance;
+                for(const bool parking:{false,true}) {
+                    VehicleModel selected(spec),control(without);VehicleState a,b;
+                    VehiclePose pose;pose.speed=20;VehicleInput input;
+                    input.brake=parking?0:.5;input.handbrake=parking;
+                    VehicleTelemetry ta,tb;
+                    require(selected.reset(a,pose)&&control.reset(b,pose)&&
+                        selected.step(a,input,VehicleFlatGround{},ta)&&
+                        control.step(b,input,VehicleFlatGround{},tb),"decoded brake alias step");
+                    const bool changed=parking?
+                        expected.parking_brake!=zero.handling.parking_brake:
+                        expected.service_brake!=zero.handling.service_brake;
+                    if(changed)require(ta.wheel_prepared_torque!=tb.wheel_prepared_torque||
+                        ta.wheel_prepared_force_long!=tb.wheel_prepared_force_long,
+                        "selected brake alias changes actual prepared wheel response");
+                }
+            }
             require(compare_vehicle_handling(h,expected)==kVehicleRecordSize,
-                    "aero levels alter only their retained coefficients; other decoded-only levels remain unused, offset " +
+                    "isolated aero/brake alias changes preserve unrelated handling fields, offset " +
                     std::to_string(compare_vehicle_handling(h,expected)));
             if (field==&VehicleUpgradeLevels::nitrous) {
                 require(f32(applied,kVehicleNitrousBlockOffset)==tuning.nitrous[n].capacity &&
@@ -247,7 +273,11 @@ int main(int argc,char** argv) {
         encode_vehicle_tuning(stock_240sx_tuning(),original.data(),original.size());
         const auto saved=original;check_aero_setup(original);
         if(argc==2&&std::string(argv[1])=="--aero-only")return 0;
-        check_levels(original); check_sessions(original);
+        check_levels(original);
+        if(argc==2&&std::string(argv[1])=="--aliases-only") {
+            std::cout<<"SUMMARY isolated tuning and brake aliases failures=0\n";return 0;
+        }
+        check_sessions(original);
         require(original==saved,"original record never mutated");
         levels.weight=4; VehicleSpec untouched=stock_240sx_vehicle_spec();
         require(!make_race_vehicle_spec(original.data(),original.size(),levels,untouched,error),"invalid API levels refused");

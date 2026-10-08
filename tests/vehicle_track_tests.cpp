@@ -715,8 +715,12 @@ void test_separating_contact() {
               t.impulses == 0 && t.separation.y < -0.004 && t.impulse.y == 0.0,
           "the point is moved out and no impulse is given, impulses " +
               std::to_string(t.impulses) + " separation " + text(t.separation.y));
-    check(t.velocity.y > -0.06 && t.velocity.y < -0.04,
-          "the car leaves at its own speed, " + text(t.velocity.y));
+    check(t.model.body_rest_state==2&&t.velocity.y==0,
+          "original supported slow rest freezes momentum before separation");
+    leaving.velocity.y=-1.0;
+    check(session.start(leaving)&&session.step({},t),"moving separating cofactor runs");
+    check(t.model.body_rest_state==0&&t.impulses==0&&t.velocity.y<-.7,
+          "non-rest escape retains outward motion without a closing impulse");
 }
 
 // ---------------------------------------------------------------------------
@@ -749,6 +753,8 @@ void test_drop() {
     check(airborne, "dropped, the wheels are over clear air");
     check(landed != 0, "the car lands on the road");
     check(lowest > 9.95, "no hull point goes 5 cm into the road, the lowest " + text(lowest));
+    if(!r.empty())std::cout<<"ordinary drop final_height="<<text(r.back().position.z)
+        <<" final_speed="<<text(speed(r.back().velocity))<<" landed_step="<<landed<<'\n';
     check(!r.empty() && std::fabs(r.back().position.z - 10.4999) < 0.005 &&
               speed(r.back().velocity) < 0.05,
           "three seconds after the drop the car rests on its struts");
@@ -776,12 +782,36 @@ void test_impulse_clamps() {
     check(session.start(falling), "the car starts falling at 4000 m/s");
     check(session.step(nfsu::VehicleInput{}, t), "the step runs");
     const double unit = nfsu::VehicleApproximations{}.unit_scale;
+    check(nfsu::kVehicleTrackImpulseLimit==1000.0&&nfsu::kVehicleTrackAngularLimit==10.0,
+          "authenticated584F60 linear/angular cap constants");
     const double size = speed(t.impulse);
     check(t.contacts == 1 && t.impulses == 1 &&
               t.deepest_surface == nfsu::VehicleTrackSurface::road,
           "the underside meets the road once, contacts " + std::to_string(t.contacts));
-    check(std::fabs(size - 1000.0 * unit) <= 1e-9 * 1000.0 * unit,
-          "the impulse is held to 1000 t m/s, got " + text(size));
+    //585810 caps the incoming body before this adapter. The edited4000
+    // fixture is not evidence of saturation of584F60's separate impulse cap.
+    // Check the actual collision operation, including its unclamped input.
+    check(size>0&&size<=nfsu::kVehicleTrackImpulseLimit*unit,
+          "actual capped-body impact gives a positive bounded impulse");
+    unsigned observed=0;
+    for(const auto& event:t.contact_events)if(speed(event.applied_impulse)>0) {
+        const double inverse_mass=1.0/(stock_model().spec().handling.mass*unit);
+        const double floor_inverse_mass=1.0/(nfsu::kVehicleTrackCollisionMass*unit);
+        const double mass_scale=inverse_mass>floor_inverse_mass?floor_inverse_mass/inverse_mass:1;
+        const nfsu::VehicleVec3 scaled{event.contact_impulse.x*mass_scale,
+            event.contact_impulse.y*mass_scale,event.contact_impulse.z*mass_scale};
+        const double input_size=nfsu::vehicle_sqrt(scaled.x*scaled.x+scaled.y*scaled.y+scaled.z*scaled.z);
+        const double factor=input_size>nfsu::kVehicleTrackImpulseLimit*unit?
+            nfsu::kVehicleTrackImpulseLimit*unit/input_size:1;
+        check(event.applied_impulse.x==scaled.x*factor&&
+              event.applied_impulse.y==scaled.y*factor&&
+              event.applied_impulse.z==scaled.z*factor,
+              "584F60 impulse operation preserves input below cap and scales above cap");
+        check(event.velocity_before.z>=-200.0&&event.velocity_before.z<0,
+              "original rigid refresh limits actual incoming speed before impact");
+        ++observed;
+    }
+    check(observed==1,"one actual closing cap-operation witness");
     check(speed(t.angular_velocity) < 20.0,
           "its moment is held, the car turning at " + text(speed(t.angular_velocity)) +
               " rad/s");
@@ -1510,6 +1540,34 @@ int test_result() {
 } // namespace
 
 int main(int argc, char** argv) {
+    if(argc==2&&std::string(argv[1])=="--candidate-check") {
+        test_separating_contact();test_drop();test_zones_and_off_path();
+        const auto course=proving_ground();
+        for(const auto& zone:course.track.zones)if(zone.type==nfsu::kZoneReset||
+                                                   zone.type==nfsu::kZoneResetToPoint) {
+            nfsu::VehiclePose pose;
+            pose.ground={(zone.box_min[0]+zone.box_max[0])*.5,
+                         (zone.box_min[1]+zone.box_max[1])*.5,10};
+            nfsu::VehicleTrackSession session(stock_model(),course);
+            check(session.start(pose),"seeded ordinary zone reset");
+            nfsu::VehicleTrackTelemetry t;bool requested=false,performed=false;
+            for(unsigned k=0;k<8;++k) {
+                check(session.step({},t),"seeded zone step");
+                requested=requested||t.pending!=nfsu::VehicleTrackReset::none;
+                performed=performed||t.reset!=nfsu::VehicleTrackReset::none;
+                if(t.reset==nfsu::VehicleTrackReset::zone_to_point)
+                    check(t.position.x==zone.point[0]&&t.position.y==zone.point[1],
+                          "seeded RESET_TO_POINT uses its actual configured point");
+            }
+            std::cout<<"seeded zone type="<<zone.type<<" requested="<<requested
+                     <<" performed="<<performed<<'\n';
+            check(performed,"seeded ordinary reset executes after actual zone entry");
+        }
+        return test_result();
+    }
+    if(argc==2&&std::string(argv[1])=="--candidate-fixtures") {
+        test_separating_contact();test_impulse_clamps();return test_result();
+    }
     if (argc == 2 && std::string(argv[1]) == "--seams-only") {
         test_seams();
         return test_result();

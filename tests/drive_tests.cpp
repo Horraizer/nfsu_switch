@@ -1326,7 +1326,8 @@ void test_session() {
           "every frame is recorded: " + std::to_string(a.bytes));
     check(a.digest == nfsu::kDrivePinnedDemoSha256, "the pinned demonstration: " + a.digest);
     check(a.top_speed > 34.0 && a.throttle_phase_top > 25.0,
-          "full throttle reaches past 120 km/h: " + num(a.top_speed * 3.6));
+          "full throttle speed conjuncts: overall=" + num(a.top_speed * 3.6) +
+          " km/h, throttle_phase=" + num(a.throttle_phase_top * 3.6) + " km/h");
     check(a.reversed && a.lowest_speed < -10.0,
           "the brake held at a standstill reverses the car: " + num(a.lowest_speed));
     check(a.pov_before == 0 && a.pov_after == 1, "X moves the camera from POV 0 to POV 1");
@@ -1456,6 +1457,11 @@ void test_car_animation() {
 } // namespace
 
 int main(int argc, char** argv) {
+    if(argc==2&&std::string(argv[1])=="--candidate-check") {
+        test_session();
+        std::cout<<"SUMMARY ordinary drive candidate failures="<<g_failures<<'\n';
+        return g_failures?1:0;
+    }
     if (argc == 3 && std::string(argv[1]) == "--write-demo") {
         return write_new(nfsu::argument_path(argv[2]),
                          nfsu::format_input_recording(nfsu::drive_demo_recording()));

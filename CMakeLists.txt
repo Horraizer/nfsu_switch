@@ -1384,9 +1384,20 @@ if(NFSU_BUILD_TESTS)
     set_tests_properties(nfsu_vehicle_request_precision_tests PROPERTIES TIMEOUT 10)
 
 
+    # Runtime oracle instrumentation is confined to this test object.
+    add_library(nfsu_vehicle_runtime_observer OBJECT src/vehicle.cpp)
+    target_link_libraries(nfsu_vehicle_runtime_observer PRIVATE nfsu_vehicle)
+    target_compile_definitions(nfsu_vehicle_runtime_observer PRIVATE
+        player_gear_update=nfsu_candidate_gear_update
+        player_strut_nominal_force=nfsu_candidate_strut_force
+        player_distribute_torque=nfsu_candidate_distribute
+        player_rigid_body_add_contact_force=nfsu_candidate_contact_force
+        player_wheel_prepare=nfsu_candidate_wheel_prepare
+        player_wheel_engine_speed=nfsu_candidate_wheel_speed)
+    nfsu_enable_warnings(nfsu_vehicle_runtime_observer)
     add_executable(nfsu_vehicle_tests
-        tests/vehicle_tests.cpp
-    )
+        tests/vehicle_tests.cpp tests/vehicle_runtime_oracles.cpp
+        $<TARGET_OBJECTS:nfsu_vehicle_runtime_observer>)
 
     target_link_libraries(nfsu_vehicle_tests PRIVATE nfsu_vehicle nfsu_arg_path)
     nfsu_enable_warnings(nfsu_vehicle_tests)
