@@ -722,9 +722,9 @@ public:
     const std::string& error() const noexcept { return error_; }
     const VehicleSpec& spec() const noexcept { return spec_; }
 
-    // The automatic gearbox's thresholds by gear slot, from the recovered
-    // rule at 0x0046D1C0: shift up from slot g when the wheel-derived rpm
-    // exceeds upshift_rpm()[g], down when it falls below downshift_rpm()[g].
+    // Legacy double thresholds for the port's moving-pose gear placement.
+    // Ordinary request selection uses separate original binary32 tables;
+    // these getters retain the existing placement compatibility behavior.
     const std::array<double, kVehicleGearSlots>& upshift_rpm() const noexcept { return upshift_; }
     const std::array<double, kVehicleGearSlots>& downshift_rpm() const noexcept { return downshift_; }
 
@@ -782,6 +782,8 @@ private:
     Derived d_;
     std::array<double, kVehicleGearSlots> upshift_{};
     std::array<double, kVehicleGearSlots> downshift_{};
+    std::array<float, kVehicleGearSlots> request_upshift_{};
+    std::array<float, kVehicleGearSlots> request_downshift_{};
     bool valid_ = false;
     std::string error_;
 };

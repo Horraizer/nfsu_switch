@@ -1,11 +1,27 @@
 #include "nfsu/player_powertrain.h"
 #include "nfsu/player_angle_data.h"
 #include <cstring>
+#include <cmath>
+#include <limits>
 
 namespace nfsu {
 namespace {
 
 float absf(float x) noexcept { return x < 0.0F ? -x : x; }
+//007F rounds to24 significant bits with an extended exponent. A subnormal
+// binary32 operation can lose bits the source still retains. This is only a
+// request-table representability check; it never substitutes an answer.
+bool request_binary32(float value,double exact) noexcept {
+    if(!std::isfinite(value)) return false;
+    if(absf(value)>=std::numeric_limits<float>::min()||exact==0.0) return true;
+    int exponent=0;
+    const double units=std::ldexp(std::frexp(std::abs(exact),&exponent),24);
+    double rounded=std::floor(units);
+    const double fraction=units-rounded;
+    if(fraction>0.5||(fraction==0.5&&(static_cast<unsigned>(rounded)&1U))) ++rounded;
+    const double source=std::copysign(std::ldexp(rounded,exponent-24),exact);
+    return static_cast<double>(value)==source;
+}
 float sqrtf(float x) noexcept { return static_cast<float>(vehicle_sqrt(x)); }
 std::uint16_t converted_angle_word(float value) noexcept {
     //674898's signed integer conversion supplies the low word. Invalid
@@ -752,6 +768,95 @@ void player_engine_cutoff_update(const VehicleHandling& h,int gear,
 void player_engine_reset(PlayerEngineState& engine, float rpm) noexcept {
     engine = {};
     engine.angular_speed = rpm * kPlayerRpmToRadS;
+}
+
+bool player_request_shift_tables(const VehicleHandling& h,
+    std::array<float,kVehicleGearSlots>& up,
+    std::array<float,kVehicleGearSlots>& down) noexcept {
+    std::array<float,kVehicleGearSlots> next_up{},next_down{};
+    const int top=kVehicleGearFirst+static_cast<int>(h.forward_gears)-1;
+    if(top==kVehicleGearFirst) {
+        next_up[static_cast<std::size_t>(top)]=h.redline_rpm;
+        up=next_up;down=next_down;
+        return true; // No search/curve operation is required for one gear.
+    }
+    //46D1F8 stores8/(max-idle); the descriptor's9 is its point count.
+    const float scale=8.0F/(h.max_rpm-h.idle_rpm);
+    if(!std::isfinite(scale)) return false;
+    const auto torque=[&](float rpm,float& value) {
+        // Reject an unrepresentable required583EA0 coordinate before its
+        // integer conversion. The existing curve supplies the arithmetic.
+        const float shifted=rpm-h.idle_rpm;
+        const float u=shifted*scale;
+        if(!request_binary32(shifted,double(rpm)-double(h.idle_rpm))||
+           !request_binary32(u,double(shifted)*double(scale))) return false;
+        // Check only the interpolation branch583EDA..F13 actually needs.
+        if(u>-1.0F&&u<static_cast<float>(h.torque.size()-1)) {
+            const int index=static_cast<int>(u);
+            float base=static_cast<float>(index);
+            if(base>u) base-=1.0F;
+            const float fraction=u-base,weight=1.0F-fraction;
+            const float left=weight*h.torque[static_cast<std::size_t>(index)];
+            const float right=fraction*h.torque[static_cast<std::size_t>(index+1)];
+            if(!request_binary32(left,double(weight)*double(h.torque[static_cast<std::size_t>(index)]))||
+               !request_binary32(right,double(fraction)*double(h.torque[static_cast<std::size_t>(index+1)]))||
+               !request_binary32(left+right,double(left)+double(right))) return false;
+        }
+        value=curve(h.torque.data(),static_cast<int>(h.torque.size()),
+                    h.idle_rpm,h.max_rpm,rpm);
+        return std::isfinite(value);
+    };
+    for(int g=kVehicleGearFirst;g<top;++g) {
+        const auto slot=static_cast<std::size_t>(g);
+        const float current=h.gear_ratios[slot],following=h.gear_ratios[slot+1];
+        const float sum=h.redline_rpm+h.idle_rpm;
+        if(!std::isfinite(sum)) return false;
+        float rpm=sum*0.5F,shift=h.redline_rpm-100.0F;
+        if(!request_binary32(rpm,double(sum)*0.5)) return false;
+        if(rpm<h.redline_rpm) {
+            for(;;) {
+                float here=0.0F,there=0.0F;
+                if(!torque(rpm,here)) return false;
+                if(absf(current)>1.0e-5F) {
+                    const float inverse=1.0F/current;
+                    //46D2B2 FST retains the live wide-exponent inverse as
+                    // well as its binary32 copy; require both to agree.
+                    if(!request_binary32(inverse,1.0/double(current))) return false;
+                    const float first_product=inverse*rpm;
+                    const float projected=first_product*following;
+                    if(!request_binary32(first_product,double(inverse)*double(rpm))||
+                       !request_binary32(projected,double(first_product)*double(following))||
+                       !torque(projected,there)) return false;
+                    //583EA0 ret4 removes the projected-RPM argument.
+                    //46D2C6 reads the stored inverse at restored esp+18;
+                    //46D2CA then reads next ratio at restored esp+14.
+                    const float scaled=there*inverse;
+                    if(!request_binary32(scaled,double(there)*double(inverse))) return false;
+                    const float next_torque=scaled*following;
+                    if(!request_binary32(next_torque,double(scaled)*double(following))) return false;
+                    there=next_torque;
+                }
+                if(there>here) {shift=rpm;break;}
+                const float advanced=50.0F+rpm;
+                if(!std::isfinite(advanced)||!(advanced>rpm)) return false;
+                rpm=advanced;
+                if(!(rpm<h.redline_rpm)) break;
+            }
+        }
+        next_up[slot]=shift;
+        if(absf(current)>1.0e-5F) {
+            //46D338 rounds the division before46D33C multiplies the
+            // stored up slot;46D340 stores the next down slot.
+            const float ratio=following/current;
+            const float threshold=ratio*shift;
+            if(!request_binary32(ratio,double(following)/double(current))||
+               !request_binary32(threshold,double(ratio)*double(shift))) return false;
+            next_down[slot+1]=threshold;
+        }
+    }
+    next_up[static_cast<std::size_t>(top)]=h.redline_rpm;
+    up=next_up;down=next_down;
+    return true;
 }
 
 float player_engine_torque(const VehicleHandling& h,

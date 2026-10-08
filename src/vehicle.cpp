@@ -1085,8 +1085,8 @@ VehicleModel::VehicleModel(const VehicleSpec& spec) : spec_(spec) {
         d_.sliding_friction[axle] = static_cast<double>(h.tyres[axle].sliding_friction);
     }
 
-    // The shift tables of 0x0046D1C0, for the retail flag at 0x00700030
-    // (1: search the torque curves for the crossing).
+    // Legacy double crossing tables retained for the existing moving-pose
+    // placement/getters. Original request precision is built separately.
     const double idle = static_cast<double>(h.idle_rpm);
     const double redline = static_cast<double>(h.redline_rpm);
     const int top = kVehicleGearFirst + static_cast<int>(h.forward_gears) - 1;
@@ -1123,6 +1123,10 @@ VehicleModel::VehicleModel(const VehicleSpec& spec) : spec_(spec) {
             absolute(current) > kShiftRatioEpsilon ? next / current * shift : 0.0;
     }
     upshift_[static_cast<std::size_t>(top)] = redline;
+    if(!player_request_shift_tables(h,request_upshift_,request_downshift_)) {
+        error_="original request shift tables require unrepresentable arithmetic or a nonadvancing search at binary32 precision";
+        return;
+    }
     valid_ = true;
 }
 
@@ -1315,15 +1319,19 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         if (s.gear<=kVehicleGearNeutral) s.transmission.requested_gear=kVehicleGearFirst;
         else if (s.transmission.mode==3) {
             //46E5B0 selection uses physical engine speed, not actor RPM.
-            const double rpm=static_cast<double>(s.engine.angular_speed*kPlayerRadSToRpm);
-            const double up=std::min(static_cast<double>(h.redline_rpm),
-                upshift_[static_cast<std::size_t>(s.gear)]+s.transmission.up_offset);
-            double down=downshift_[static_cast<std::size_t>(s.gear)]+s.transmission.down_offset;
-            double safe_down=0.0;
-            if (s.gear>kVehicleGearFirst) safe_down=
-                std::min(static_cast<double>(h.redline_rpm),upshift_[static_cast<std::size_t>(s.gear-1)]-100.0)*
-                h.gear_ratios[static_cast<std::size_t>(s.gear)]/h.gear_ratios[static_cast<std::size_t>(s.gear-1)]-200.0;
-            else down=throttle<0.2?h.idle_rpm+100.0:0.0;
+            const float rpm=s.engine.angular_speed*kPlayerRadSToRpm;
+            const auto slot=static_cast<std::size_t>(s.gear);
+            //46D700 stores the offset sum before applying the ordinary cap.
+            const float up_sum=s.transmission.up_offset+request_upshift_[slot];
+            const float up=std::min(h.redline_rpm,up_sum);
+            float down=s.transmission.down_offset+request_downshift_[slot];
+            float safe_down=0.0F;
+            if(s.gear>kVehicleGearFirst) {
+                const float prior_sum=request_upshift_[slot-1]-100.0F;
+                const float prior_up=std::min(h.redline_rpm,prior_sum);
+                const float ratio=h.gear_ratios[slot]/h.gear_ratios[slot-1];
+                safe_down=ratio*prior_up-200.0F; //46E63A/642/644
+            } else down=throttle<0.2?h.idle_rpm+100.0F:0.0F;
             bool support=true;
             //46E6A0 checks every wheel's contact155 and CURRENT160 signed<4.
             // At outer selection, prepared_slip is the completed58747D copy;
@@ -1335,7 +1343,8 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             if (rpm>=up&&s.gear<top) {
                 if(support) s.transmission.requested_gear=s.gear+1;
             }
-            else if (s.gear>kVehicleGearFirst&&rpm<down&&rpm<safe_down)
+            //46E6EA/F9 test AH,41 then JP: ordered LESS and EQUAL pass.
+            else if (s.gear>kVehicleGearFirst&&rpm<=down&&rpm<=safe_down)
                 s.transmission.requested_gear=s.gear-1;
         }
     }

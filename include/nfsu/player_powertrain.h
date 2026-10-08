@@ -205,6 +205,14 @@ unsigned player_body_rest_state(const VehicleVec3& velocity,
 // Constructor/reset conversion478365. Not a recurring display feedback.
 void player_engine_reset(PlayerEngineState& engine, float rpm) noexcept;
 
+// Forward request thresholds46D1C0 with ordinary700030=1 and binary32
+// arithmetic. Requires validated handling. Neutral is unused by46E5B0.
+// Failure leaves both outputs unchanged when required007F intermediates
+// cannot be represented in binary32 or a search step cannot advance.
+bool player_request_shift_tables(const VehicleHandling& setup,
+    std::array<float,kVehicleGearSlots>& up,
+    std::array<float,kVehicleGearSlots>& down) noexcept;
+
 // 46CFF0 without nitrous, damage or owner collision-state modifiers.
 float player_engine_torque(const VehicleHandling& setup,
                           const PlayerEngineState& engine, int gear,

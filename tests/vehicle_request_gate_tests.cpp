@@ -64,11 +64,11 @@ int main() {
     }
     check(changes>0&&holds>0&&actual_cases==3,"request gate coverage exercises changed and held actual requests");
     // These finite witnesses intentionally do not accept the legacy double
-    // shift-table/offset/safety arithmetic. Four separately saved original
-    // counterexamples remain OPEN (rounded up offset, down-slot neighbours,
-    // safe-down boundary). Do not erase them or infer full selection parity.
+    // shift-table/offset/safety arithmetic. The four saved precision records
+    // are checked separately by vehicle_request_precision_tests; they remain
+    // preserved. Neither finite target establishes full selection parity.
     std::cout<<"SUMMARY request gate failures="<<failures<<" changed="<<changes<<" held="<<holds<<'\n';
     if(failures)return 1;
-    std::cout<<"PASS finite current160/contact gates and up-candidate priority; threshold precision remains OPEN\n";
+    std::cout<<"PASS finite current160/contact gates and up-candidate priority; precision has a separate target\n";
     return 0;
 }
