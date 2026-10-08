@@ -253,6 +253,16 @@ void append_frame_stats(std::vector<std::string>& lines, const RaceFrameStats& s
         lines.push_back(format("MEAN ms CMD %.2f | SUBMIT %.2f",mean.command_ms,mean.submit_ms));
     }
 }
+void print_run_measurement(const char* kind, const RaceFrameStats& stats) {
+    if (!stats.count()) { std::printf("RUN_STATS %s samples=0\n",kind); return; }
+    const auto p50=percentile_text(stats,50), p95=percentile_text(stats,95),
+        p99=percentile_text(stats,99);
+    const auto mean=stats.mean();
+    std::printf("RUN_STATS %s samples=%llu mean_ms=%.6f p50_ms=%s p95_ms=%s p99_ms=%s max_ms=%.6f over_16_666667=%llu over_25=%llu over_33_333333=%llu histogram_bin_ms=0.25\n",
+        kind,(unsigned long long)stats.count(),mean.frame_ms,p50.c_str(),p95.c_str(),p99.c_str(),stats.max_ms(),
+        (unsigned long long)stats.over_one_refresh(),(unsigned long long)stats.over_budget(),
+        (unsigned long long)stats.over_two_refreshes());
+}
 void append_audio_status(std::vector<std::string>& lines,
                          const audio::RaceAudioService& sound,
                          const std::string& startup_note) {
@@ -461,7 +471,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     std::uint64_t presented = 0;
     double previous_frame = 0, previous_hud = 0;
     std::vector<std::string> last_perf;
-    RaceFrameStats stats;
+    RaceFrameStats stats, presentation_stats;
+    std::uint64_t previous_driving_present = 0;
     RaceHudFrame hud_frame;
     unsigned unpause_resets = 0;
     std::string failure;
@@ -479,7 +490,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                 scene_height = next_height;
                 require(plan_deko_scene_target(width,height,!panel_mode,scene_height,scene_target),
                         "invalid scene target on operation mode change");
-                stats.reset(); last_perf.clear();
+                stats.reset(); presentation_stats.reset(); previous_driving_present=0; last_perf.clear();
                 if (profile_stats) profile_stats->reset();
             }
             clock.reset(); previous = armGetSystemTick();
@@ -497,7 +508,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             paused = !paused;
             clock.reset();
             if (just_unpaused) {
-                stats.reset(); last_perf.clear(); ++unpause_resets;
+                stats.reset(); presentation_stats.reset(); previous_driving_present=0; last_perf.clear(); ++unpause_resets;
                 if (profile_stats) { profile_stats->reset(); renderer.reset_gpu_profile(); }
             }
         }
@@ -647,7 +658,16 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                                            frame.commands.height,hud_frame);
         require(renderer.present(error,&present,profile_frame ? &scene_frame : nullptr,
                                  hud_mode ? &hud_frame : nullptr),error);
-        present_cpu = ms(armGetSystemTick()-present_start);
+        const auto present_end = armGetSystemTick();
+        present_cpu = ms(present_end-present_start);
+        if (driving_before && !finished) {
+            if (previous_driving_present) {
+                RaceFrameSample interval;
+                interval.frame_ms=ms(present_end-previous_driving_present);
+                presentation_stats.add(interval);
+            }
+            previous_driving_present=present_end;
+        } else previous_driving_present=0;
         if (hud_trace) {
             const auto& r=hud_frame.readout;
             std::printf("HUD_FRAME present %llu tick %llu physics %llu arm-tick %llu rpm %.9f wheel-rpm %.9f gear %d rotation %.9f max %.0f redline %.0f\n",
@@ -750,6 +770,22 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         if (finished) break;
     }
     } catch (const std::exception& e) { failure = e.what(); }
+    // Free drive returns directly to the menu, so preserve its complete
+    // measured window before the local accumulators go out of scope.
+    const auto measured_clocks=read_clocks();
+    std::printf("RUN_STATS build=%s event=%lu height=%lu unpause_resets=%u CPU_HZ=%lu CPU_OK=%u GPU_HZ=%lu GPU_OK=%u EMC_HZ=%lu EMC_OK=%u\n",
+        NFSU_RACE_BUILD_TAG,(unsigned long)event_number,(unsigned long)scene_height,unpause_resets,
+        (unsigned long)measured_clocks.cpu_bus_hz,unsigned(measured_clocks.cpu_bus_ok),
+        (unsigned long)measured_clocks.gpu_hz,unsigned(measured_clocks.gpu_ok),
+        (unsigned long)measured_clocks.emc_hz,unsigned(measured_clocks.emc_ok));
+    std::printf("RUN_STATS scope=driving_only reset_on_unpause_and_resolution_change; presentation_return_intervals_are_not_GPU_timestamps_or_display_scanout\n");
+    print_run_measurement("frame_work",stats);
+    print_run_measurement("presentation_interval",presentation_stats);
+    const auto stage_mean=stats.mean();
+    std::printf("RUN_STATS mean_sim_ms=%.6f mean_residency_ms=%.6f mean_record_ms=%.6f mean_update_ms=%.6f mean_present_cpu_ms=%.6f\n",
+        stage_mean.simulation_ms,stage_mean.residency_ms,stage_mean.record_ms,
+        stage_mean.update_ms,stage_mean.present_cpu_ms);
+    std::fflush(stdout);
     // Leave the finish cue audible on the result screen. Other exits mute
     // the still-running engine and music before showing that screen.
     if (!failure.empty() || race.session().timing().outcome != RaceOutcome::finished)

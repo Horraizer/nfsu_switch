@@ -45,7 +45,8 @@ int main() {
         stats.add(sample);
     }
     const auto mean = stats.mean();
-    if (stats.count() != 4 || stats.over_budget() != 1 || stats.max_ms() != 101.0 ||
+    if (stats.count() != 4 || stats.over_budget() != 1 ||
+        stats.over_one_refresh() != 3 || stats.over_two_refreshes() != 1 || stats.max_ms() != 101.0 ||
         stats.catch_up_max() != 101 || std::abs(mean.frame_ms-36.0875) > 0.00001 ||
         mean.simulation_ms != 2.0 || mean.residency_ms != 3.0 ||
         mean.record_ms != 4.0 || mean.update_ms != 5.0 ||
@@ -58,6 +59,7 @@ int main() {
     }
     stats.reset();
     if (stats.count() != 0 || stats.over_budget() != 0 || stats.max_ms() != 0 ||
+        stats.over_one_refresh() != 0 || stats.over_two_refreshes() != 0 ||
         stats.catch_up_max() != 0 || stats.percentile_bin(50) != nfsu::RaceFrameStats::kOverflowBin) {
         std::cerr << "race frame statistics reset mismatch\n";
         return 1;
@@ -78,6 +80,15 @@ int main() {
     if (stats.count() != 1 || stats.percentile_bin(50) != 4 || stats.over_budget() != 0) {
         std::cerr << "race frame statistics resume mismatch\n";
         return 1;
+    }
+    nfsu::RaceFrameStats exact_edges;
+    for (double ms : {nfsu::RaceFrameStats::kBudgetMs,
+                      2*nfsu::RaceFrameStats::kBudgetMs,
+                      2*nfsu::RaceFrameStats::kBudgetMs+0.001}) {
+        nfsu::RaceFrameSample sample; sample.frame_ms=ms; exact_edges.add(sample);
+    }
+    if (exact_edges.over_one_refresh()!=2 || exact_edges.over_two_refreshes()!=1) {
+        std::cerr << "strict refresh thresholds mismatch\n"; return 1;
     }
     nfsu::FrameProfileStats profile;
     nfsu::FrameProfileStats::Values values{};

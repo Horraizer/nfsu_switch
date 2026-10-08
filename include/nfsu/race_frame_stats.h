@@ -31,6 +31,7 @@ class RaceFrameStats {
     RaceFrameSample sum_{};
     std::uint64_t count_ = 0;
     std::uint64_t over_budget_ = 0;
+    std::uint64_t over_one_refresh_ = 0, over_two_refreshes_ = 0;
     double max_ms_ = 0;
     unsigned catch_up_max_ = 0;
 public:
@@ -49,6 +50,8 @@ public:
         ++histogram_[bin];
         ++count_;
         if (sample.frame_ms > kOverThresholdMs) ++over_budget_;
+        if (sample.frame_ms > kBudgetMs) ++over_one_refresh_;
+        if (sample.frame_ms > 2*kBudgetMs) ++over_two_refreshes_;
         if (sample.frame_ms > max_ms_) max_ms_ = sample.frame_ms;
         if (sample.catch_up > catch_up_max_) catch_up_max_ = sample.catch_up;
         sum_.frame_ms += sample.frame_ms;
@@ -67,6 +70,8 @@ public:
     }
     std::uint64_t count() const { return count_; }
     std::uint64_t over_budget() const { return over_budget_; }
+    std::uint64_t over_one_refresh() const { return over_one_refresh_; }
+    std::uint64_t over_two_refreshes() const { return over_two_refreshes_; }
     double max_ms() const { return max_ms_; }
     unsigned catch_up_max() const { return catch_up_max_; }
     RaceFrameSample mean() const {
