@@ -11,6 +11,8 @@ layout (location = 1) in vec3 inColor;
 layout (location = 2) in vec2 inTexcoord;
 
 layout (location = 3) in vec3 inNormal;
+layout (location = 6) out vec3 outCubeDirection;
+layout (location = 7) out float outEnvironmentPower;
 layout (location = 3) out vec3 outDiffuse;
 layout (location = 4) out vec3 outAdditive;
 layout (location = 5) out float outAlphaScale;
@@ -101,6 +103,20 @@ void main()
     float horizon=max(0.0,1.0-abs(refl.y)*5.0);
     float band=max(0.0,1.0-abs(refl.x-0.35)*5.0)*horizon;
     vec3 environment=mix(vec3(0.055,0.045,0.035),vec3(0.20,0.27,0.38),sky)+0.18*horizon+0.25*band;
+    bool captured=(frame.options.z & 32u)!=0u;
+    outCubeDirection=vec3(0);outEnvironmentPower=0;
+    if(captured) {
+        vec3 rawEye=vec3(frame.eye.x,-frame.eye.z,frame.eye.y)-instance.rows[3].xyz;
+        vec3 localEye=vec3(dot(r0,rawEye),dot(r1,rawEye),dot(r2,rawEye));
+        localEye=dot(localEye,localEye)>0.0 ? normalize(localEye)*2.7799999713897705 : vec3(0);
+        vec3 lv=localEye-slot;lv=dot(lv,lv)>0.0?normalize(lv):vec3(0);
+        vec3 ln=vec3(inNormal.x,inNormal.z,inNormal.y);
+        float nv=max(.01,dot(lv,ln));vec3 lr=2.0*nv*ln-lv;
+        vec3 wr=lr.x*r0+lr.y*r1+lr.z*r2;wr=vec3(wr.x,wr.z,-wr.y);
+        outCubeDirection=vec3(dot(frame.right.xyz,wr),-dot(frame.up.xyz,wr),dot(frame.forward.xyz,wr));
+        outEnvironmentPower=positivePower(nv,material.surface_specular_range.w);
+        environment=vec3(0);
+    }
     float alpha=material.surface_gates.y*(material.surface_diffuse_min.w+v*material.surface_diffuse_range.w);
     outAlphaScale=alpha;
     outDiffuse=material.surface_gates.y*diffuse*(material.surface_diffuse_min.rgb+v*material.surface_diffuse_range.rgb);

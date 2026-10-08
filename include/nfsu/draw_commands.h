@@ -103,6 +103,10 @@ public:
     std::size_t reflection_draw_count() const;
     const RecordedDraw& reflection_draw(std::size_t i) const;
     DrawFrameUniform frame;
+    DrawFrameUniform headlight_frame;
+    std::size_t headlight_texture = kNoHandle;
+    bool race_environment = false;
+    unsigned cube_face_mask = 63;
     DrawFrameUniform frontend_floor_frame;
     FrontendLighting frontend_light;
     bool frontend_light_enabled=false;

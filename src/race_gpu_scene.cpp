@@ -320,6 +320,7 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
                 stock, error, car_shading_)) return false;
         if (!prepare_car_shadow(selection.car_type_name, inputs, stock.car_pack,
                                 shadow_asset_, error)) return false;
+        if (!prepare_car_shadow_bounds(inputs,stock,shadow_asset_,error)) return false;
         if (glows_enabled_) glow_anchors_ = collect_car_glow_anchors(stock);
         if (loading) loading->checkpoint("car prepared");
         skin_source_ = stock.skin_binding.source;
@@ -353,6 +354,20 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
         car_bytes_ += sizeof(particles_) + sizeof(particle_vertices()) +
                       sizeof(particle_indices()) + 2*particle_texture(RaceParticleKind::smoke).size();
     if (glows_enabled_ && !prepare_glows(error)) return false;
+    if(race_visuals_) {
+        if(!load_headlight_texture(root,headlight_texture_,error))return false;
+        TextureUploadShape shape;
+        if(!check_texture_upload_format(TextureUploadFormat::rgba8,headlight_texture_.width,
+            headlight_texture_.height,headlight_texture_.rgba.size(),shape,error))return false;
+        UploadResource r;r.kind=UploadResourceKind::texture;r.memory=UploadMemory::image;
+        r.name="race-car/headlights";r.data=headlight_texture_.rgba.data();r.bytes=shape.bytes;
+        r.alignment=kTextureStagingAlignment;r.element_bytes=shape.texel_bytes;r.elements=shape.bytes/shape.texel_bytes;
+        r.texture_hash=headlight_texture_.hash;r.texture=shape;
+        headlight_resource_=combined_uploads_.resources.size();combined_uploads_.resources.push_back(r);
+        ++combined_uploads_.totals.resources;++combined_uploads_.totals.textures;
+        combined_uploads_.totals.texture_bytes+=shape.bytes;
+        combined_uploads_.totals.largest_texture_bytes=std::max(combined_uploads_.totals.largest_texture_bytes,shape.bytes);
+    }
     if (loading) loading->checkpoint("render prepared");
     if (cache_bytes() > 8*kMiB) { error = "race command cache exceeds 8 MiB"; return false; }
     if (lamps_loaded_) {
@@ -678,6 +693,58 @@ bool RaceGpuScene::select_track(const TrackCullReport& visible, RaceGpuFrame& ou
     });
     return true;
 }
+bool RaceGpuScene::prepare_visual_frame(const RaceSession& session,const CameraFrame& basis,
+    RecordedCommands& commands,std::string& error) {
+    const auto q=session.car().orientation;
+    const auto rotate=[&](Vec3 v){const Vec3 a{q.y*v.z-q.z*v.y,q.z*v.x-q.x*v.z,q.x*v.y-q.y*v.x};
+        const Vec3 b{q.y*a.z-q.z*a.y,q.z*a.x-q.x*a.z,q.x*a.y-q.y*a.x};
+        return Vec3{v.x+2*(q.w*a.x+b.x),v.y+2*(q.w*a.y+b.y),v.z+2*(q.w*a.z+b.z)};};
+    const auto yup=[](Vec3 v){return Vec3{v.x,v.z,-v.y};};
+    const auto& h=session.spec().handling;
+    const auto com=rotate({h.centre_of_mass[0],h.centre_of_mass[1],h.centre_of_mass[2]});
+    const auto pos=session.car().position;
+    const auto origin=yup({pos.x-com.x,pos.y-com.y,pos.z-com.z});
+    HeadlightProjection light;
+    if(!prepare_headlight_projection(headlight_texture_,origin,yup(rotate({1,0,0})),yup(rotate({0,0,1})),light,error))return false;
+    auto& hf=commands.headlight_frame;
+    const Vec3 vectors[4]={light.eye,light.right,light.up,light.forward};
+    float* destinations[4]={hf.eye,hf.right,hf.up,hf.forward};
+    for(unsigned i=0;i<4;++i){destinations[i][0]=float(vectors[i].x);destinations[i][1]=float(vectors[i].y);destinations[i][2]=float(vectors[i].z);}
+    hf.projection[0]=float(light.focal_x);hf.projection[1]=float(light.focal_y);
+    commands.headlight_texture=headlight_resource_;commands.frame.options[2]|=16U;
+    commands.race_environment=car_shading_;
+    if(!car_shading_)return true;
+    commands.frame.options[2]|=32U;
+    // Native quality1 descriptor schedule: one logical face per frame.
+    const unsigned face=static_cast<unsigned>((generation_-1)%6);
+    commands.cube_face_mask=1U<<face;
+    const auto cameras=car_environment_cameras(basis,origin);
+    const auto& c=cameras[face];
+    auto options=race_render_options(sky_);options.width=options.height=128;options.explicit_camera=&c;
+    RecordedCommands face_state;
+    if(!record_frame_state(options,{},face_state,error))return false;
+    commands.frontend_cube_frames[face]=face_state.frame;
+    TrackCamera tc;tc.eye[0]=float(c.eye.x);tc.eye[1]=float(c.eye.y);tc.eye[2]=float(c.eye.z);
+    tc.target[0]=float(c.eye.x+c.forward.x);tc.target[1]=float(c.eye.y+c.forward.y);tc.target[2]=float(c.eye.z+c.forward.z);
+    tc.up[0]=float(c.up.x);tc.up[1]=float(c.up.y);tc.up[2]=float(c.up.z);
+    tc.aspect=1;tc.vertical_fov=1.5707963267948966F;tc.near_plane=.5F;tc.far_plane=64;
+    TrackFrustum frustum;if(!track_frustum_look_at(tc,frustum)){error="cube frustum invalid";return false;}
+    const auto visible=cull_track_region(track_.objects,frustum);
+    TrackDrawList list;TrackDrawListOptions order;order.order=TrackDrawOrder::retail_bucket;
+    if(!visible.ok() || !build_track_draw_list(track_.scene,visible.visible,order,list,error))return false;
+    auto& draws=commands.frontend_cube_draws;draws.clear();draws.reserve(1024);
+    for(std::size_t i=0;i<sky_draws_;++i)draws.push_back(track_templates_.owning_draws()[i]);
+    for(const auto& entry:list.entries) {
+        const auto ti=template_of_group_.at(entry.draw);
+        if(ti==kNoHandle)continue;
+        auto draw=track_templates_.owning_draws()[ti];draw.instance=entry.instance;
+        draw.placement=track_placements_.at(entry.instance);
+        draws.push_back(std::move(draw));
+    }
+    if(draws.size()>1024){error="race cube draw capacity exceeded";return false;}
+    return true;
+}
+
 bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::string& error, RaceFrameProfile* profile, bool reference, TimingService* timer) {
     out = {}; error.clear();
     if (!ready_) { error = "race scene is not loaded"; return false; }
@@ -706,7 +773,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
                                &session.animation())) {
         error = "race car placement failed"; return false;
     }
-    const auto shadow = place_car_shadow(session);
+    const auto shadow = place_car_shadow(shadow_asset_,session);
     for (double far = 250; far >= 31.25; far *= 0.5) {
         RenderOptions options = race_render_options(sky_);
         options.texture_filter = texture_filter_;
@@ -757,8 +824,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
             stage(&RaceFrameProfile::list_ms);
             if (sky_draws_ + entries + 1 + car_templates_.owning_draws().size() + glow_count_ > kTrackSliceDrawLimit) continue;
             auto& shadow_draw = shadow_templates_.owning_draws()[0];
-            shadow_draw.placement = shadow.transform;
-            shadow_draw.material.alpha[0] = shadow.alpha;
+            update_car_shadow_draw(shadow,shadow_draw);
             for (auto& draw : car_templates_.owning_draws()) {
                 if (draw.instance != kNoHandle) {
                     if (draw.instance >= car_.instances.size()) { error = "prepared car instance is out of range"; return false; }
@@ -802,6 +868,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
                 if (!record_lamp_reflections(options, wet_uploads_, lamp_draws_, error)) return false;
                 if (reflection_selection_.size()+lamp_draws_.size() > 4096) { error = "reflection capacity exceeded"; return false; }
             }
+            if(race_visuals_ && !prepare_visual_frame(session,basis,out.commands,error))return false;
             out.commands.source_ = this; out.commands.generation_ = generation_;
             stage(&RaceFrameProfile::combine_ms);
             return true;

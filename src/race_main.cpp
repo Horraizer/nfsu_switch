@@ -140,6 +140,7 @@ public:
                 tuned ? tuned_240sx_skin() : stock_car_skin(selection.car_type_name),
                 car,error,car_shading),error);
         require(prepare_car_shadow(selection.car_type_name,car_inputs,car.car_pack,shadow,error),error);
+        require(prepare_car_shadow_bounds(car_inputs,car,shadow,error),error);
         base = car.scene.instances;
         glow_anchors = collect_car_glow_anchors(car);
         const std::array<fs::path,3> paths = {
@@ -248,7 +249,7 @@ public:
         track_options.wet_lamps = wet_road_reflections ? &lamps : nullptr;
         track_options.material_state = MaterialStateMode::retail;
         require(render_track_draw_list(track,list,track_options,{},background,stats,track_stats,error),error);
-        const auto shadow_pose = place_car_shadow(session);
+        const auto shadow_pose = place_car_shadow(shadow,session);
         require(render_car_shadow(shadow,shadow_pose,track_options,background,stats,error),error);
         require(drive_place_instances(base,session.car(),session.spec(),car.scene.instances,
                                       &session.animation()),"car placement failed");

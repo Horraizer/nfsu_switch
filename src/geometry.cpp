@@ -751,6 +751,16 @@ private:
                 return fail(mesh, metadata.offset, text.str());
             }
         }
+        const auto solid=(metadata.payload_offset+15)&~std::uint64_t(15);
+        if (solid+0x3c<=metadata.payload_offset+metadata.payload_size) {
+            mesh.has_solid_bounds=true;
+            for(unsigned i=0;i<3;++i) {
+                mesh.solid_low[i]=read_f32_le(data_+solid+0x20+i*4);
+                mesh.solid_high[i]=read_f32_le(data_+solid+0x30+i*4);
+                mesh.has_solid_bounds=mesh.has_solid_bounds && std::isfinite(mesh.solid_low[i]) &&
+                    std::isfinite(mesh.solid_high[i]) && mesh.solid_low[i]<=mesh.solid_high[i];
+            }
+        }
         mesh.name.assign(reinterpret_cast<const char*>(name), length);
         return true;
     }

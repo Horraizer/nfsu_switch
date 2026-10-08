@@ -2579,21 +2579,22 @@ void test_car_instances_and_uniform_layout() {
         const bool frontend_ui=std::string(program.name)=="frontend_ui";
         const bool shaded=frontend_car || std::string(program.name)=="car_shaded_textured" ||
                           std::string(program.name)=="car_shaded_linear_textured";
-        check_eq(program.block_count, frontend_car?4:frontend_ui?2:3, "program-specific uniform block count");
+        const bool headlight=std::string(program.name)=="car_textured" || std::string(program.name)=="track_textured" || std::string(program.name)=="track_linear_textured";
+        check_eq(program.block_count, headlight?4:frontend_car?4:frontend_ui?2:3, "program-specific uniform block count");
         for (std::size_t i = 0; i < program.block_count; ++i) {
             const auto& b = program.blocks[i];
             const std::string name = b.name;
-            const auto size = name == "Frame" ? sizeof(nfsu::DrawFrameUniform) :
+            const auto size = (name == "Frame" || name == "Headlight") ? sizeof(nfsu::DrawFrameUniform) :
                 name == "Instance" ? sizeof(nfsu::DrawInstanceUniform) :
                 name == "FrontendLight" ? sizeof(nfsu::FrontendLighting) :
                 shaded ? sizeof(nfsu::DrawMaterialUniform) : offsetof(nfsu::DrawMaterialUniform,surface);
             check_eq(b.size, size, name + ": std140 size");
-            check_eq(b.binding, name == "Frame" ? 0 : name == "Instance" ? 1 : name=="FrontendLight"?3:2, name + ": uniform binding");
+            check_eq(b.binding, name == "Frame" ? 0 : name == "Instance" ? 1 : name=="FrontendLight"?3:name=="Headlight"?4:2, name + ": uniform binding");
         }
-        check_eq(program.member_count, frontend_car?offsets.size():frontend_ui?8:shaded?offsets.size()-1:offsets.size()-8, "all uniform members checked");
+        check_eq(program.member_count, headlight?offsets.size()-1:frontend_car?offsets.size():frontend_ui?8:shaded?offsets.size()-1:offsets.size()-8, "all uniform members checked");
         for (std::size_t i = 0; i < program.member_count; ++i) {
             const auto& m = program.members[i];
-            const auto key = std::string(m.block) + "." + m.name;
+            const auto key = (std::string(m.block)=="Headlight" ? std::string("Frame") : std::string(m.block)) + "." + m.name;
             const auto found = offsets.find(key);
             check(found != offsets.end(), key + ": known uniform member");
             if (found != offsets.end()) check_eq(m.offset, found->second, key + ": std140 offset");

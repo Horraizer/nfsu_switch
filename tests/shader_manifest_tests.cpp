@@ -222,7 +222,7 @@ const char* element_name(sm::Element element) {
 // make, which is a variant this project would be inventing.
 void test_programs_are_the_reference_draw_kinds(const Programs& programs, Reporter& r) {
     const std::set<std::string> expected = {
-        "car_fallback", "car_textured", "car_shaded_textured", "car_shaded_linear_textured", "frontend_car_textured", "frontend_ui", "track_linear_textured", "sky_textured",
+        "car_shadow_textured", "car_fallback", "car_textured", "car_shaded_textured", "car_shaded_linear_textured", "frontend_car_textured", "frontend_ui", "track_linear_textured", "sky_textured",
         "track_fallback", "track_textured"};
     std::set<std::string> got;
     for (const sm::Program& program : programs) {
@@ -335,8 +335,9 @@ void test_textures_follow_the_draw_kind(const Programs& programs, Reporter& r) {
             r.check(program.texture_count == 0, name + ": samples no texture");
             continue;
         }
-        const bool reflection = name == "frontend_car_textured" || name == "track_textured" || name == "track_linear_textured" || name == "car_textured";
-        const std::size_t expected_count = reflection ? 2U : 1U;
+        const bool headlights=name=="track_textured" || name=="track_linear_textured" || name=="car_textured";
+        const bool reflection = name=="car_shaded_textured" || name=="car_shaded_linear_textured" || name == "frontend_car_textured" || name == "track_textured" || name == "track_linear_textured" || name == "car_textured";
+        const std::size_t expected_count = headlights ? 3U : reflection ? 2U : 1U;
         r.check(program.texture_count == expected_count,
                 name + ": samples the expected diffuse and reflection textures");
         if (program.texture_count != expected_count) {
@@ -347,7 +348,7 @@ void test_textures_follow_the_draw_kind(const Programs& programs, Reporter& r) {
                 name + ": the texture is sampled by the fragment stage");
         r.check(std::string(texture.type) == "sampler2D",
                 name + ": the texture is a sampler2D");
-        r.check(texture.filter == (name == "car_textured" || name == "track_linear_textured" || name == "car_shaded_linear_textured" || name == "frontend_car_textured"
+        r.check(texture.filter == (name == "car_shadow_textured" || name == "car_textured" || name == "track_linear_textured" || name == "car_shaded_linear_textured" || name == "frontend_car_textured"
                    ? sm::Filter::linear : sm::Filter::nearest),
                 name + ": the texture filter matches its effect");
         r.check(texture.wrap == sm::Wrap::repeat,
@@ -540,7 +541,7 @@ void test_shared_fixed_function_state(const Programs& programs, Reporter& r) {
             r.check(variant.depth_test == (ui ? sm::CompareOp::always : sm::CompareOp::less_equal),
                     what + ": the depth test is LESS_EQUAL");
             const bool world_blend = ((std::string(program.name) == "track_textured" || std::string(program.name) == "track_linear_textured") && variant.blend) ||
-                                     std::string(program.name) == "sky_textured";
+                                     std::string(program.name) == "sky_textured" || std::string(program.name) == "car_shadow_textured";
             r.check(variant.depth_write == !(world_blend || ui),
                     what + (world_blend ? ": leaves depth alone" : ": writes depth"));
             r.check(variant.color_write == sm::ColorWrite::rgb,

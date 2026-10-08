@@ -77,8 +77,57 @@ float ordinary_world_channel(float texel, float vertex)
     return texel * vertex * 2.0;
 }
 
+layout (std140, binding = 4) uniform Headlight {
+    vec4 eye;
+    vec4 right;
+    vec4 up;
+    vec4 forward;
+    vec4 projection;
+    vec4 light;
+    uvec4 options;
+} headlight;
+layout (binding = 2) uniform sampler2D headlightTexture;
+float headlightMaskTexel(int i) {
+    if(i<=32 || i>=63)return 0.0;
+    return i<=48 ? 1.0 : (255.0-16.0*float(i-48))/255.0;
+}
+vec3 projectedHeadlight() {
+    if((frame.options.z & 16u)==0u)return vec3(0);
+    vec3 d=inWorld-headlight.eye.xyz;float depth=dot(d,headlight.forward.xyz);
+    if(depth<=0.0)return vec3(0);
+    vec2 uv=.5+vec2(dot(d,headlight.right.xyz)*headlight.projection.x,
+        -dot(d,headlight.up.xyz)*headlight.projection.y)/depth;
+    float x=clamp((.5+.005*depth)*64.0-.5,0.0,63.0);int i=int(x);
+    float mask=mix(headlightMaskTexel(i),headlightMaskTexel(min(i+1,63)),fract(x));
+    return texture(headlightTexture,uv).rgb*mask*vec3(.8,.8,.9);
+}
+
 void main()
 {
+    // Original world.efx reflection-source material, with BGRA declaration.
+    if (material.fallback.w == 8.0) {
+        vec2 source_uv = inTexcoord;
+        if (frame.options.x != 0u) source_uv.y = 1.0 - source_uv.y;
+        outColor = texture(baseTexture, source_uv) * vec4(inColor.bgr, inColor.a) * 2.0;
+        return;
+    }
+    // Native worldreflect receiver (effect selector 0x40). D3DCOLOR is BGRA
+    // in the stored vertex bytes; the original declaration expands it to RGB.
+    // Diffuse alpha masks reflection, not the output alpha.
+    if (material.fallback.w == 7.0) {
+        vec2 base_uv = inTexcoord;
+        if (frame.options.x != 0u) base_uv.y = 1.0 - base_uv.y;
+        vec4 dc = texture(baseTexture, base_uv);
+        vec3 reflected = vec3(0.0);
+        if ((frame.options.z & 2u) != 0u) {
+            vec3 delta = inWorld - frame.eye.xyz;
+            vec2 screen_uv = vec2(0.5) + vec2(dot(frame.right.xyz, delta) * frame.projection.x,
+                -dot(frame.up.xyz, delta) * frame.projection.y) * (0.5 / dot(frame.forward.xyz, delta));
+            reflected = texture(reflectionTexture, screen_uv).rgb;
+        }
+        outColor = vec4(dc.rgb * (inColor.bgr + projectedHeadlight()) * 2.0 + inColor.a * dc.a * reflected, 1.0);
+        return;
+    }
     vec2 uv = inTexcoord;
     if (frame.options.x != 0u) {
         uv.y = 1.0 - uv.y;
@@ -105,6 +154,7 @@ void main()
                         ordinary_world_channel(sampled.g, inColor.g),
                         ordinary_world_channel(sampled.b, inColor.r),
                         float(race_effect_alpha(texel.a, material.alpha.x)) / 255.0);
+        outColor.rgb += sampled.rgb * projectedHeadlight() * 2.0;
         return;
     }
     if (material.fallback.w == 3.0) {

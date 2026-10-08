@@ -110,6 +110,14 @@ by the reflected placement. A main-view visibility miss no longer removes
 a valid reflected source. This is not retail's exact spatial-tree/context
 query or its distance threshold; it scans the resident prepared instances.
 
+Textured source solids selecting ordinary world effect 0 now use the
+recovered world.efx equation in the reflection target: linear texture
+sampling times decoded BGRA vertex color times two, including source alpha
+before its alpha test/blend. Generic directional flat shading is bypassed.
+Other selectors and diagnostic material-off behavior retain their existing
+paths. The source material has its own renderer marker, separate from the
+main-world base and wet receiver, and cannot recursively sample reflection.
+
 The race pass also renders type-9 street-light sprites into that target,
 after solids, with additive blend, depth testing and no depth writes. Their
 reflected height comes from the collision ground query and their vertical
@@ -131,14 +139,27 @@ work but introduce temporal lag; it is not an additional user mode.
 Only solids selecting the 0x40 row sample the target. Reflection color is
 added at the screen-projected position, multiplied by perspective-correct
 vertex alpha and diffuse texel alpha. Bilinear sampling clamps at edges.
-CPU and GPU use per-fragment masks and round additions with floor(x+0.5).
-The old per-triangle strength and GPU truncation difference are gone.
+CPU and GPU use per-fragment masks. The receiver uses the original
+worldreflect base term: texture RGB times decoded D3DCOLOR RGB times two,
+plus the masked reflection. Output alpha is one; diffuse alpha only masks
+the reflection. The CPU rounds the final sum, retaining continuous linear
+texture samples until then. Stored track color bytes are BGRA.
+The receiver uses linear base sampling even with the legacy global filter
+option, and does not substitute generic directional flat lighting. Its
+base term remains active when reflections are disabled. This does not add
+mipmap selection or change source selection, placement or target resolution.
+
+The original worldheadlightreflect effect additionally projects HeadlightTex
+and HeadlightClipTex using HeadlightWVP and adds that light before multiplying
+by the road texture. The race road path does not implement this contribution;
+car lamp glow is not its substitute. Its live setup/selection remains to be
+recovered before a matching road-light implementation can be claimed.
 
 CPU/deko3d pixel equality is still approximate: software fixed-point edges,
 double versus GPU float arithmetic, hardware filter precision, and the
 existing opaque-first GPU ordering can differ. No hardware image comparison
-has been measured for this revision. Main scene diffuse lighting retains
-the port's existing rule; retail's 2x diffuse term is not introduced here.
+has been measured for this receiver revision. Original-scene appearance
+and performance remain unverified on Switch.
 
 The source target is a render pass, not a procedural light pattern. Removing
 or recoloring a selected source changes its reflection. The earlier claim

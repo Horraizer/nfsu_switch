@@ -90,6 +90,9 @@ struct Mesh {
     std::uint64_t directory_offset = 0;
     std::uint64_t directory_size = 0;
     bool has_directory_entry = false;
+    // Original 0x134011 solid-header bounds, retained after source bytes free.
+    bool has_solid_bounds = false;
+    float solid_low[3]{}, solid_high[3]{};
     std::int32_t declared_vertex_count = 0;
     std::int32_t declared_face_count = 0;
     // Absolute source offsets of aligned records and their padding lengths;

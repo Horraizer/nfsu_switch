@@ -327,6 +327,7 @@ bool render_track_draw_list(
                            error)) {
         return false;
     }
+    if(options.explicit_camera)camera=*options.explicit_camera;
     // Everything the loop below indexes is checked here, before the frame is
     // allocated: the scene's own invariants, then the list against the scene.
     for (const auto& texture : scene.region.textures) {
@@ -550,10 +551,16 @@ bool render_track_draw_list(
             has_bound = true;
         }
         fallback_color(draw.texture_hash, raster.fallback);
+        raster.wet_world = raster.texture && options.material_state == MaterialStateMode::retail &&
+            !options.reflection_pass && track_vertex_format(mesh.vertex_format_flags).mask == 0x40;
+        raster.reflected_world = raster.texture && options.material_state == MaterialStateMode::retail &&
+            options.reflection_pass && track_vertex_format(mesh.vertex_format_flags).mask == 0;
+        if (raster.wet_world || raster.reflected_world) raster.linear_filter = true;
         raster.ordinary_world = raster.texture &&
             options.material_state == MaterialStateMode::retail &&
-            !options.reflection_pass &&
-            track_vertex_format(mesh.vertex_format_flags).mask == 0;
+            ((!options.reflection_pass && track_vertex_format(mesh.vertex_format_flags).mask == 0) ||
+             raster.wet_world || raster.reflected_world);
+        if(raster.ordinary_world && !options.reflection_pass)raster.headlight=options.headlight;
 
         // Opaque depth rejects hidden sky pixels. Translucency must see
         // the sky as its destination colour, so stop before the first blend.
@@ -610,6 +617,14 @@ bool render_track_draw_list(
                 clip[k].g = source.color[1];
                 clip[k].b = source.color[2];
                 clip[k].a = source.color[3];
+                if(raster.headlight) {
+                    const auto& h=*raster.headlight;
+                    const Vec3 d{world[k].x-h.eye.x,world[k].y-h.eye.y,world[k].z-h.eye.z};
+                    // Track-only reuse of the interpolated surface lanes.
+                    clip[k].surface[0]=(d.x*h.right.x+d.y*h.right.y+d.z*h.right.z)*h.focal_x;
+                    clip[k].surface[1]=-(d.x*h.up.x+d.y*h.up.y+d.z*h.up.z)*h.focal_y;
+                    clip[k].surface[2]=d.x*h.forward.x+d.y*h.forward.y+d.z*h.forward.z;
+                }
             }
             // The same flat model the car path uses: a geometric normal,
             // flipped towards the eye, against the fixed light. A track

@@ -78,3 +78,7 @@ variant name=source_over alpha_test=always blend=on blend_src=src_alpha blend_ds
 variant name=additive alpha_test=always blend=on blend_src=src_alpha blend_dst=one blend_op=add depth_test=less_equal depth_write=on color_write=rgb cull=none
 variant name=alpha_tested_source_over alpha_test=greater alpha_ref=170 blend=on blend_src=src_alpha blend_dst=one_minus_src_alpha blend_op=add depth_test=less_equal depth_write=on color_write=rgb cull=none
 variant name=alpha_tested_additive alpha_test=greater alpha_ref=170 blend=on blend_src=src_alpha blend_dst=one blend_op=add depth_test=less_equal depth_write=on color_write=rgb cull=none
+
+varying location=6 name=cubeDirection type=vec3 interpolation=smooth
+varying location=7 name=environmentPower type=float interpolation=smooth
+texture name=environmentTexture binding=1 stage=fragment type=sampler2D filter=linear wrap=clamp_to_edge

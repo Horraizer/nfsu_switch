@@ -65,18 +65,21 @@ inline std::string compare_draws(const nfsu::RecordedCommands& commands,
             ? (r.alpha_test ? "alpha_tested_additive" : "additive")
             : (r.alpha_test ? "alpha_tested" : "opaque");
         if (!p.name || std::strcmp(p.name, variant)) return fail("shader variant");
-        const bool two_samplers = std::strcmp(d.program->name, "track_textured") == 0 ||
+        const bool three_samplers = std::strcmp(d.program->name, "track_textured") == 0 ||
                                   std::strcmp(d.program->name, "car_textured") == 0;
-        if (d.program->texture_count != (two_samplers ? 2U : textured ? 1U : 0U))
+        if (d.program->texture_count != (three_samplers ? 3U : r.car_shading ? 2U : textured ? 1U : 0U))
             return fail("sampler count");
         if (textured && (d.program->textures[0].binding != 0 ||
             d.program->textures[0].filter != (std::strcmp(d.program->name,
                 "car_textured") == 0 ? sm::Filter::linear : sm::Filter::nearest) ||
             d.program->textures[0].wrap != sm::Wrap::repeat ||
-            (d.program->texture_count == 2 &&
+            (d.program->texture_count >= 2 &&
              (d.program->textures[1].binding != 1 ||
               d.program->textures[1].filter != sm::Filter::linear ||
               d.program->textures[1].wrap != sm::Wrap::clamp_to_edge)))) return fail("sampler state");
+        if(d.program->texture_count==3 && (d.program->textures[2].binding!=2 ||
+            d.program->textures[2].filter!=sm::Filter::linear || d.program->textures[2].wrap!=sm::Wrap::clamp_to_edge))
+            return fail("headlight sampler state");
     }
     return {};
 }

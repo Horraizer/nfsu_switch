@@ -55,7 +55,7 @@ def check(shaders, renderer):
             assert shader.index('if (texel.a < frame.options.w)') < shader.index(branch)
             assert shader.index('if (material.alpha.w == 4.0)') < shader.index(branch)
     assert branches[0] == branches[1]
-    upload = block(renderer, 'void write_uniforms(')
+    upload = block(renderer, 'bool write_uniforms(')
     assert 'source.frontend_light_enabled ? draw.material :' in upload
     assert 'race_effect_gpu_material(draw,draw.material)' in upload
     assert 'else if(!source.frontend_light_enabled)' in upload

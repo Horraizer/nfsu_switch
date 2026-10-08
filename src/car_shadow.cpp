@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 namespace nfsu {
 namespace {
@@ -150,6 +151,118 @@ CarShadowPlacement place_car_shadow(const VehicleState& state,
     return out;
 }
 
+bool prepare_car_shadow_bounds(const StockFrameInputs&, const StockFrame& car,
+    CarShadowAsset& shadow, std::string& error) {
+    std::vector<std::uint32_t> loaded;
+    for(const auto& mesh:car.car_geometry.meshes)if(mesh.has_directory_entry)loaded.push_back(mesh.directory_hash);
+    for(const auto& source:car.stock_geometry)for(const auto& mesh:source.meshes)
+        if(mesh.has_directory_entry)loaded.push_back(mesh.directory_hash);
+    std::sort(loaded.begin(),loaded.end());loaded.erase(std::unique(loaded.begin(),loaded.end()),loaded.end());
+    float low[3]={std::numeric_limits<float>::max(),std::numeric_limits<float>::max(),std::numeric_limits<float>::max()};
+    float high[3]={-low[0],-low[1],-low[2]};
+    // Constructor 0x56AB08..0x56AB70 reduces LOD-A solid-header bounds
+    // for slots 0..11, including disabled models and zero absent models.
+    for(unsigned slot=0;slot<12;++slot) {
+        float a[3]{},b[3]{};const auto record=car.report.slots[slot].record;
+        if(record!=kNoCarPart) {
+            std::array<PartModel,kCarPartLodCount> models;
+            if(!resolve_part_models(car.parts.records.at(record),loaded,models,error))return false;
+            if(models[0].resolved) {
+                auto mesh=std::find_if(car.car_geometry.meshes.begin(),car.car_geometry.meshes.end(),
+                    [&](const auto& m){return m.has_directory_entry && m.directory_hash==models[0].hash;});
+                if(mesh==car.car_geometry.meshes.end()){error="shadow footprint model outside car geometry";return false;}
+                if(!mesh->has_solid_bounds){error="shadow footprint solid bounds unavailable";return false;}
+                std::copy_n(mesh->solid_low,3,a);std::copy_n(mesh->solid_high,3,b);
+            }
+        }
+        for(unsigned c=0;c<3;++c){low[c]=std::min(low[c],a[c]);high[c]=std::max(high[c],b[c]);}
+    }
+    for(unsigned c=0;c<3;++c){low[c]-=.1F;high[c]+=.1F;}
+    std::copy(low,low+3,shadow.low.begin());
+    std::copy(high,high+3,shadow.high.begin());
+    shadow.selected_bounds=true;
+    return true;
+}
+
+CarShadowPlacement project_car_shadow(const CarShadowAsset& asset, const VehicleState& state,
+    const VehicleSpec& spec, CarShadowRoadQuery query, const void* context) {
+    CarShadowPlacement out;
+    out.projected=true;
+    const auto& h=spec.handling;
+    auto q=state.orientation;
+    const double norm=std::sqrt(q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w);
+    if (!asset.selected_bounds || !query || !(norm>0) || !std::isfinite(norm)) return out;
+    q.x/=norm;q.y/=norm;q.z/=norm;q.w/=norm;
+    const auto origin=sub(state.position,rotate(q,{h.centre_of_mass[0],h.centre_of_mass[1],h.centre_of_mass[2]}));
+    row(out.transform.rows,3,origin);
+    TrackContact reference;
+    if (!query(origin,reference,context)) return out;
+    const float fade=std::clamp((static_cast<float>(origin.z)-reference.point[2])/3.0F,0.0F,1.0F);
+    const float scale=1.05F*(1.0F+0.75F*fade);
+    const auto forward=rotate(q,{1,0,0}), side=rotate(q,{0,1,0}), up=rotate(q,{0,0,1});
+    const float lx=asset.low[0]*scale,hx=asset.high[0]*scale;
+    const float ly=asset.low[1]*scale,hy=asset.high[1]*scale;
+    row(out.transform.rows,0,mul(forward,(hx-lx)*0.5F));
+    row(out.transform.rows,1,mul(side,(hy-ly)*0.5F));
+    row(out.transform.rows,2,up);
+    row(out.transform.rows,3,add(origin,add(mul(forward,(hx+lx)*0.5F),mul(side,(hy+ly)*0.5F))));
+    // 0x56EFD9: quantize the vertex alpha before world.efx doubles it.
+    const float a=std::clamp(std::nearbyint(114.0F*std::abs(static_cast<float>(up.z))*(1.0F-fade)),0.0F,254.0F);
+    out.alpha=2.0F*a/255.0F;
+    TrackContact wheels[4]{};bool wheel_ok[4]{};
+    for(unsigned i=0;i<4;++i) {
+        const auto& w=h.wheels[i];
+        wheel_ok[i]=query(add(origin,rotate(q,{w.longitudinal,w.lateral,w.vertical})),wheels[i],context);
+    }
+    constexpr unsigned fallback[16]={2,2,1,1,2,2,1,1,3,3,0,0,3,3,0,0};
+    unsigned invalid[4]{};float last=static_cast<float>(origin.z);
+    for(unsigned i=0;i<16;++i) {
+        const auto& v=asset.vertices[i];
+        const auto& m=out.transform.rows;
+        const VehicleVec3 point{v.px*m[0]+v.pz*m[4]+m[12],v.px*m[1]+v.pz*m[5]+m[13],v.px*m[2]+v.pz*m[6]+m[14]};
+        TrackContact tap;bool ok=query(point,tap,context);
+        float z=ok?tap.point[2]:last;
+        if (!ok) {
+            const auto w=fallback[i];const auto& plane=wheels[w];
+            if (wheel_ok[w] && std::abs(plane.normal[2])>1.0e-6F) {
+                z=plane.point[2]-(plane.normal[0]*(static_cast<float>(point.x)-plane.point[0])+
+                    plane.normal[1]*(static_cast<float>(point.y)-plane.point[1]))/plane.normal[2];ok=true;
+            }
+        }
+        if ((((i>>1)^i)&5)==5) z+=0.08F;
+        const float plane_delta=(static_cast<float>(point.x)-reference.point[0])*reference.normal[0]+
+            (static_cast<float>(point.y)-reference.point[1])*reference.normal[1]+(z-reference.point[2])*reference.normal[2];
+        ok=ok && std::isfinite(z) && std::abs(z-reference.point[2])<=4.0F && std::abs(plane_delta)<1.5F;
+        if(ok)last=z;else ++invalid[i/4];
+        out.road_heights[i]=last+0.04F;
+    }
+    for(unsigned r=0;r<3;++r)if(invalid[r]+invalid[r+1]<4)out.strip_mask|=1U<<r;
+    return out;
+}
+
+CarShadowPlacement place_car_shadow(const CarShadowAsset& asset, const RaceSession& session) {
+    // Rendering-only adapter. Retail 0x440A40 uses a cached road plane;
+    // this port queries the loaded collision world, not suspension contact.
+    const auto query=[](const VehicleVec3& p, TrackContact& hit, const void* context) {
+        const float point[3]={static_cast<float>(p.x),static_cast<float>(p.y),static_cast<float>(p.z)};
+        return query_track_contact_point(*static_cast<const TrackContactWorld*>(context),point,1.0F,4.0F,hit)==TrackContactStatus::hit;
+    };
+    return project_car_shadow(asset,session.car(),session.spec(),query,&session.course().world);
+}
+
+void update_car_shadow_draw(const CarShadowPlacement& p, RecordedDraw& draw) {
+    draw.placement=p.transform;
+    draw.material.alpha[0]=p.alpha;
+    draw.material.alpha[3]=4.0F;
+    if(p.projected) {
+        draw.material.alpha[1]=static_cast<float>(p.strip_mask);
+        std::copy_n(p.road_heights.data(),4,draw.material.fallback);
+        std::copy_n(p.road_heights.data()+4,4,draw.material.environment_min);
+        std::copy_n(p.road_heights.data()+8,4,draw.material.environment_range);
+        std::copy_n(p.road_heights.data()+12,4,draw.material.environment_color);
+    }
+}
+
 bool record_car_shadow_commands(const CarShadowAsset& asset,
                                 const CarShadowPlacement& placement,
                                 const RenderOptions& options,
@@ -201,7 +314,7 @@ bool record_car_shadow_commands(const CarShadowAsset& asset,
     draw.vertex_count = static_cast<std::uint32_t>(asset.vertices.size());
     draw.index_count = static_cast<std::uint32_t>(asset.triangles.size()*3);
     bool blend_variant_found = false;
-    for (const auto& p : shader_manifest::kPrograms) if (std::strcmp(p.name,"car_textured") == 0) {
+    for (const auto& p : shader_manifest::kPrograms) if (std::strcmp(p.name,asset.selected_bounds?"car_shadow_textured":"car_textured") == 0) {
         draw.program = &p;
         for (std::size_t i = 0; i < p.variant_count; ++i)
             if (std::strcmp(p.variants[i].name,"source_over") == 0) {
@@ -213,9 +326,7 @@ bool record_car_shadow_commands(const CarShadowAsset& asset,
     if (!blend_variant_found) { error = "shadow source-over variant missing"; return false; }
     draw.pipeline.depth_write = false;
     draw.pipeline.cull = shader_manifest::Cull::none;
-    draw.placement = placement.transform;
-    draw.material.alpha[0] = placement.alpha;
-    draw.material.alpha[3] = 4.0F; // the world-effect shadow branch
+    update_car_shadow_draw(placement,draw);
     out.owning_draws().push_back(draw);
     return validate_recorded_commands(out,error);
 }
@@ -232,13 +343,17 @@ bool render_car_shadow(const CarShadowAsset& asset,
     material.blend = RenderBlendMode::source_over;
     material.depth_write = false;
     material.alpha_scale = placement.alpha;
+    material.linear_filter = true;
     Rasterizer raster(frame,options,{},stats);
     for (const auto& triangle : asset.triangles) {
+        if (placement.projected && !(placement.strip_mask & (1U << (triangle.a/4)))) continue;
         const std::uint16_t indices[3] = {triangle.a,triangle.b,triangle.c};
         ClipVertex clip[3];
         for (std::size_t k = 0; k < 3; ++k) {
             const auto& vertex = asset.vertices[indices[k]];
-            clip[k] = project_point(camera,placed_vertex(vertex,placement.transform.rows));
+            auto world=placed_vertex(vertex,placement.transform.rows);
+            if (placement.projected) world.y=placement.road_heights[indices[k]];
+            clip[k] = project_point(camera,world);
             clip[k].u = vertex.u; clip[k].v = vertex.v;
         }
         if (!raster.draw_triangle(clip,material,

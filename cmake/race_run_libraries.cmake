@@ -25,3 +25,10 @@ if(NINTENDO_SWITCH)
         nfsu_race_hud nfsu_minimap PROPERTIES
         CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
 endif()
+
+if(BUILD_TESTING AND NOT NINTENDO_SWITCH)
+    add_executable(nfsu_car_shadow_projection_tests tests/car_shadow_projection_tests.cpp)
+    target_link_libraries(nfsu_car_shadow_projection_tests PRIVATE nfsu_race_run)
+    nfsu_enable_warnings(nfsu_car_shadow_projection_tests)
+    add_test(NAME nfsu_car_shadow_projection_tests COMMAND nfsu_car_shadow_projection_tests)
+endif()

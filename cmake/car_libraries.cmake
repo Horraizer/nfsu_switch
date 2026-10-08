@@ -168,13 +168,14 @@ nfsu_enable_warnings(nfsu_det_sqrt)
 # disabled so that results do not depend on FMA availability.
 add_library(nfsu_render
     src/render.cpp
+    src/headlights.cpp
 )
 
 # PUBLIC: render.h declares det_sqrt (via nfsu/det_sqrt.h) and callers that
 # link nfsu_render publicly - nfsu_track_render, and nfsu_track_probe and
 # nfsu_stock_view above it - resolve the symbol through this link, as they
 # already did when det_sqrt lived in nfsu_render itself.
-target_link_libraries(nfsu_render PUBLIC nfsu_scene nfsu_image nfsu_det_sqrt)
+target_link_libraries(nfsu_render PUBLIC nfsu_scene nfsu_image nfsu_det_sqrt nfsu_texture_decode)
 # The POSIX frame writer rolls a failed write back with
 # rollback_created_files, which nfsu_texture_export now defines
 # (src/texture_export.cpp; issue #139 split it out of nfsu_core, which used

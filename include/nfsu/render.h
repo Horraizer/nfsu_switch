@@ -3,6 +3,7 @@
 #include "nfsu/det_sqrt.h"
 #include "nfsu/scene.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -261,6 +262,15 @@ inline bool parse_texture_filter(const std::string& text, TextureFilterMode& mod
 }
 
 struct WetRoadLamps;
+struct HeadlightProjection {
+    const RenderTexture* texture = nullptr;
+    Vec3 eye, right, up, forward;
+    double focal_x = 0.0, focal_y = 0.0;
+};
+// Original 0x5707B0 normal race path and 0x40AD60 six views.
+// Input position is the selected body origin in renderer Y-up coordinates.
+std::array<CameraFrame,6> car_environment_cameras(const CameraFrame& primary,
+                                                const Vec3& body_origin);
 class Frame;
 struct RenderOptions {
     TextureFilterMode texture_filter = TextureFilterMode::legacy;
@@ -270,7 +280,9 @@ struct RenderOptions {
     const Frame* frontend_floor = nullptr; // native worldreflect target, borrowed
     std::size_t frontend_floor_mesh = kNoHandle;
     const Frame* frontend_cube = nullptr; // borrowed diagnostic capture
+    const Frame* car_cube = nullptr; // six borrowed 128x128 race environment faces
     const WetRoadLamps* wet_lamps = nullptr;
+    const HeadlightProjection* headlight = nullptr;
     std::uint32_t width = 1280;
     std::uint32_t height = 720;
     OrbitCamera camera;
@@ -428,6 +440,8 @@ struct RasterMaterial {
     // Ordinary effect0 main-view base RGB: world.efx texture * color * 2.
     // Keep alpha, sampler and other effect paths independently selected.
     bool ordinary_world = false;
+    bool wet_world = false; // worldreflect: original base color and opaque output alpha
+    bool reflected_world = false; // world.efx source: native doubled RGBA
     bool car_shading = false;
     bool frontend_lighting = false;
     const Frame* frontend_cube=nullptr;
@@ -470,6 +484,7 @@ struct RasterMaterial {
     // Borrowed reflection target; only effect-2 track solids receive it.
     bool frontend_floor = false;
     const Frame* reflected_scene = nullptr;
+    const HeadlightProjection* headlight = nullptr;
 };
 
 class Rasterizer {

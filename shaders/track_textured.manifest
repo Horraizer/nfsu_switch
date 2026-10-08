@@ -56,3 +56,13 @@ variant name=source_over alpha_test=always blend=on blend_src=src_alpha blend_ds
 variant name=additive alpha_test=always blend=on blend_src=src_alpha blend_dst=one blend_op=add depth_test=less_equal depth_write=off color_write=rgb cull=none
 variant name=alpha_tested_source_over alpha_test=greater alpha_ref=170 blend=on blend_src=src_alpha blend_dst=one_minus_src_alpha blend_op=add depth_test=less_equal depth_write=off color_write=rgb cull=none
 variant name=alpha_tested_additive alpha_test=greater alpha_ref=170 blend=on blend_src=src_alpha blend_dst=one blend_op=add depth_test=less_equal depth_write=off color_write=rgb cull=none
+
+block name=Headlight binding=4 stages=fragment size=112
+member block=Headlight name=eye type=vec4 offset=0
+member block=Headlight name=right type=vec4 offset=16
+member block=Headlight name=up type=vec4 offset=32
+member block=Headlight name=forward type=vec4 offset=48
+member block=Headlight name=projection type=vec4 offset=64
+member block=Headlight name=light type=vec4 offset=80
+member block=Headlight name=options type=uvec4 offset=96
+texture name=headlightTexture binding=2 stage=fragment type=sampler2D filter=linear wrap=clamp_to_edge

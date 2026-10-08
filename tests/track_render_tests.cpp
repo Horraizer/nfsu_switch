@@ -1,4 +1,5 @@
 #include "nfsu/geometry.h"
+#include "nfsu/headlights.h"
 #include "nfsu/track_render.h"
 #include "nfsu/draw_commands.h"
 #include "nfsu/track_reflections.h"
@@ -2680,20 +2681,177 @@ void test_ordinary_world_base_material() {
     options.shading=ShadingMode::none; options.vertex_color=true;
     check_ok(render_track_draw_list(fixture.scene,list,options,{},frame,stats,track,error),"world option controls",error);
     check(frame.rgba()==baked,"world authored base ignores substitute shade and generic color toggle");
+    // A worldreflect receiver keeps the same native base even with reflection
+    // disabled. Its texture alpha is a reflection mask, not transparency.
+    for(auto& mesh:fixture.scene.region.meshes) mesh.vertex_format_flags=0x40;
+    for(auto& texture:fixture.scene.region.textures)
+        for(std::size_t p=3;p<texture.rgba.size();p+=4)texture.rgba[p]=0;
+    options.alpha_cutoff=170;
+    options.shading=ShadingMode::flat; options.vertex_color=false;
+    check_ok(render_track_draw_list(fixture.scene,list,options,{},frame,stats,track,error),"wet native base render",error);
+    check(pixel_at(frame,px,py)==std::array<unsigned char,4>{128,120,255,255},"wet BGRA base remains opaque with zero reflection mask");
     RecordedCommands commands;
     for (std::uint32_t flags : {0U,0x40U,0x80U,1U,0x41U}) {
         for(auto& mesh:fixture.scene.region.meshes) mesh.vertex_format_flags=flags;
         check_ok(record_track_commands(fixture.scene,list,options,{},commands,error),"world selector controls",error);
         for(const auto& draw:commands.owning_draws())
             check((draw.material.fallback[3]==6)==(flags==0),"only native ordinary selector gets world base");
+        for(const auto& draw:commands.owning_draws()) {
+            check((draw.material.fallback[3]==7)==(flags==0x40),"only worldreflect selector gets native receiver equation");
+            if(flags==0x40)check(std::string(draw.program->name)=="track_linear_textured","worldreflect selects linear sampling with legacy global default");
+        }
     }
     for(auto& mesh:fixture.scene.region.meshes) mesh.vertex_format_flags=0;
     options.reflection_pass=true;
     check_ok(record_track_commands(fixture.scene,list,options,{},commands,error),"reflected pass control",error);
-    for(const auto& draw:commands.owning_draws())check(draw.material.fallback[3]!=6,"reflected producer remains unchanged");
+    for(const auto& draw:commands.owning_draws())check(draw.material.fallback[3]!=6,"reflection pass cannot use main-world marker");
     options.reflection_pass=false;options.material_state=MaterialStateMode::off;
     check_ok(record_track_commands(fixture.scene,list,options,{},commands,error),"diagnostic material control",error);
     for(const auto& draw:commands.owning_draws())check(draw.material.fallback[3]!=6,"off diagnostic preserves generic model");
+}
+
+void test_wet_world_equation() {
+    using namespace nfsu;
+    RenderOptions options; options.width=16; options.height=16;
+    options.alpha_cutoff=170;
+    RenderTexture texture; texture.width=2; texture.height=2; texture.valid=true;
+    Frame reflected; std::string error;
+    const unsigned char reflected_color[4]={80,90,100,255};
+    check_ok(reflected.reset(2,2,reflected_color,{},error),"wet reflected fixture",error);
+    for(unsigned alpha:{0U,127U,255U})for(bool reflection:{false,true}) {
+        // At u=0, linear repeat samples both columns, including fractional alpha.
+        texture.rgba={80,60,40,static_cast<unsigned char>(alpha),81,61,41,0,
+                      80,60,40,static_cast<unsigned char>(alpha),81,61,41,0};
+        Frame frame; RenderStats stats; const unsigned char background[4]={1,2,3,255};
+        check_ok(frame.reset(16,16,background,{},error),"wet equation frame",error);
+        ClipVertex vertices[3]; const double xs[3]={-1,1,0},ys[3]={-1,-1,1};
+        for(unsigned i=0;i<3;++i) {
+            auto& v=vertices[i]; v.x=xs[i];v.y=ys[i];v.z=.5;v.w=1;
+            v.u=0;v.v=.5;v.r=64;v.g=128;v.b=192;v.a=128;
+        }
+        RasterMaterial material;material.texture=&texture;material.linear_filter=true;
+        material.ordinary_world=true;material.wet_world=true;
+        material.alpha_test=true;material.alpha_ref=170;
+        if(reflection)material.reflected_scene=&reflected;
+        Rasterizer raster(frame,options,{},stats);
+        check_ok(raster.draw_triangle(vertices,material,0,error),"wet equation triangle",error);
+        const auto actual=pixel_at(frame,8,8);
+        const double rgb[3]={192,128,64},texel[3]={80.5,60.5,40.5};
+        for(unsigned k=0;k<3;++k) {
+            const auto expected=static_cast<unsigned char>(std::floor(texel[k]*rgb[k]*2/255+
+                (reflection ? reflected_color[k]*128*(alpha*.5)/(255*255) : 0)+.5));
+            check(actual[k]==expected,"wet native continuous base plus masked reflection, one final rounding");
+        }
+        check(actual[3]==255 && frame.ids()[8*16+8]==0,"wet output opaque; alpha cutoff cannot erase zero-mask road");
+    }
+}
+
+
+void test_car_environment_sampling() {
+    using namespace nfsu;
+    CameraFrame primary;primary.right={1,0,0};primary.up={0,1,0};primary.forward={0,0,-1};
+    const auto cameras=car_environment_cameras(primary,{5,6,7});
+    check(cameras[0].forward.x==1 && cameras[0].right.z==1 && cameras[0].up.y==-1 &&
+          cameras[2].forward.y==-1 && cameras[2].up.z==1 && cameras[4].forward.z==-1,
+          "car cube original face basis including Y faces");
+    for(const auto& c:cameras)check(c.eye.x==5 && c.eye.y==6+double(.95F) && c.eye.z==7 &&
+        c.focal_x==1 && c.focal_y==1 && c.near_plane==.5 && c.far_plane==64,
+        "car cube original race offset and projection");
+    std::array<Frame,6> cube;std::string error;
+    for(unsigned f=0;f<6;++f){const unsigned char color[4]={static_cast<unsigned char>(30+30*f),80,120,255};
+        check_ok(cube[f].reset(128,128,color,{},error),"cube face fixture",error);}
+    const double axes[6][3]={{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
+    RenderTexture tex;tex.width=tex.height=1;tex.valid=true;
+    RenderOptions options;options.width=options.height=16;
+    for(unsigned f=0;f<6;++f)for(unsigned alpha:{0U,128U,255U}) {
+        tex.rgba={0,0,0,static_cast<unsigned char>(alpha)};
+        Frame frame;RenderStats stats;const unsigned char bg[4]={0,0,0,255};
+        check_ok(frame.reset(16,16,bg,{},error),"cube sample frame",error);
+        ClipVertex vs[3];const double xs[3]={-1,1,0},ys[3]={-1,-1,1};
+        for(unsigned i=0;i<3;++i){auto& v=vs[i];v.x=xs[i];v.y=ys[i];v.z=.5;v.w=1;
+            v.r=axes[f][0];v.g=axes[f][1];v.b=axes[f][2];v.a=0;v.surface[6]=.5;}
+        RasterMaterial material;material.texture=&tex;material.car_shading=true;material.frontend_cube=cube.data();
+        for(unsigned k=0;k<3;++k)material.frontend_environment_min[k]=.25F;
+        Rasterizer raster(frame,options,{},stats);
+        check_ok(raster.draw_triangle(vs,material,0,error),"car captured environment sample",error);
+        const auto pixel=pixel_at(frame,8,8);
+        check(pixel[0]==static_cast<unsigned char>(std::floor(alpha*(30+30*f)/255.0*.5+.5)) &&
+              pixel[1]==static_cast<unsigned char>(std::floor(alpha*80/255.0*.5+.5)),
+              "actual cube face selection and diffuse texture plus material alpha mask");
+    }
+}
+
+void test_projected_headlight() {
+    using namespace nfsu;
+    check(headlight_clip_sample(-10)==0 && headlight_clip_sample(0)==0,
+          "headlight mask excludes behind and origin");
+    check(headlight_clip_sample(10)==1 && headlight_clip_sample(100)==0,
+          "headlight native mask plateau and end");
+    check(headlight_clip_sample(75)>0 && headlight_clip_sample(75)<1,
+          "headlight native mask fades with distance");
+    RenderTexture beam;beam.width=2;beam.height=2;beam.valid=true;
+    beam.rgba={100,100,100,255,100,100,100,255,100,100,100,255,100,100,100,255};
+    HeadlightProjection light,turned;std::string error;
+    check_ok(prepare_headlight_projection(beam,{1,2,3},{0,0,-1},{0,1,0},light,error),"headlight pose",error);
+    check_ok(prepare_headlight_projection(beam,{1,2,3},{1,0,0},{0,1,0},turned,error),"headlight turned pose",error);
+    check(light.eye.y==2.75 && light.forward.z<-.99 && turned.forward.x>.99 &&
+          light.forward.y<0 && turned.forward.y==light.forward.y,
+          "headlight follows body heading with original downward bias and height");
+    RenderTexture road=beam;
+    for(std::size_t i=0;i<road.rgba.size();i+=4)road.rgba[i]=road.rgba[i+1]=road.rgba[i+2]=80;
+    RenderOptions options;options.width=16;options.height=16;
+    for(bool enabled:{false,true})for(double distance:{-10.0,10.0,100.0}) {
+        Frame frame;RenderStats stats;const unsigned char bg[4]={0,0,0,255};
+        check_ok(frame.reset(16,16,bg,{},error),"headlight equation frame",error);
+        ClipVertex vertices[3];const double xs[3]={-1,1,0},ys[3]={-1,-1,1};
+        for(unsigned i=0;i<3;++i) {
+            auto& v=vertices[i];v.x=xs[i];v.y=ys[i];v.z=.5;v.w=1;v.u=v.v=.5;
+            v.r=v.g=v.b=64;v.a=255;v.surface[2]=distance;
+        }
+        RasterMaterial material;material.texture=&road;material.linear_filter=true;
+        material.ordinary_world=true;material.wet_world=true;
+        if(enabled)material.headlight=&light;
+        Rasterizer raster(frame,options,{},stats);
+        check_ok(raster.draw_triangle(vertices,material,0,error),"headlight projected fragment",error);
+        const auto actual=pixel_at(frame,8,8);
+        const bool lit=enabled && distance==10;
+        check(actual== (lit ? std::array<unsigned char,4>{90,90,97,255} :
+                              std::array<unsigned char,4>{40,40,40,255}),
+              "headlight original additive lighting inside texture times vertex equation");
+    }
+}
+
+void test_reflected_world_material() {
+    using namespace nfsu;
+    RenderOptions options;options.width=16;options.height=16;options.alpha_cutoff=170;
+    RenderTexture texture;texture.width=2;texture.height=2;texture.valid=true;
+    texture.rgba={80,60,40,100,81,61,41,100,80,60,40,100,81,61,41,100};
+    for(unsigned alpha:{64U,255U}) {
+        Frame frame;RenderStats stats;std::string error;const unsigned char bg[4]={0,0,0,255};
+        check_ok(frame.reset(16,16,bg,{},error),"reflection source fixture",error);
+        ClipVertex vertices[3];const double xs[3]={-1,1,0},ys[3]={-1,-1,1};
+        for(unsigned i=0;i<3;++i) {
+            auto& v=vertices[i];v.x=xs[i];v.y=ys[i];v.z=.5;v.w=1;v.u=0;v.v=.5;
+            v.r=64;v.g=128;v.b=192;v.a=alpha;
+        }
+        RasterMaterial material;material.texture=&texture;material.linear_filter=true;
+        material.ordinary_world=true;material.reflected_world=true;material.alpha_test=true;material.alpha_ref=170;
+        Rasterizer raster(frame,options,{},stats);
+        check_ok(raster.draw_triangle(vertices,material,0,error),"reflection source equation",error);
+        check((frame.ids()[8*16+8]==0)==(alpha==255),"source alpha tests native doubled texture times vertex alpha");
+        if(alpha==255)check(pixel_at(frame,8,8)==std::array<unsigned char,4>{121,61,20,255},"source uses linear sample and original BGRA double color");
+    }
+    auto fixture=floor();const auto list=make_list(fixture.scene,TrackDrawOrder::visible_instance);
+    options=small_options();options.wet_road_reflections=true;options.camera.pitch_deg=25;options.camera.target.y=2;
+    for(auto mode:{MaterialStateMode::retail,MaterialStateMode::off}) {
+        options.material_state=mode;RecordedCommands commands;std::string error;
+        check_ok(record_track_commands(fixture.scene,list,options,{},commands,error),"reflection source command recording",error);
+        check(!commands.reflections.empty(),"actual reflection source commands exist");
+        for(const auto& draw:commands.reflections) {
+            check((draw.material.fallback[3]==8)==(mode==MaterialStateMode::retail),"original reflection material only in retail mode");
+            if(mode==MaterialStateMode::retail)check(std::string(draw.program->name)=="track_linear_textured","reflection source selects native linear sampler");
+        }
+    }
 }
 
 void test_ordinary_world_fractional_sample() {
@@ -3463,6 +3621,10 @@ int main() {
     test_render_uv_orientation();
     test_render_vertex_colour();
     test_ordinary_world_base_material();
+    test_wet_world_equation();
+    test_reflected_world_material();
+    test_projected_headlight();
+    test_car_environment_sampling();
     test_ordinary_world_fractional_sample();
     test_render_drawn_bounds_match_the_frame();
     test_render_reports_an_invalid_mesh();

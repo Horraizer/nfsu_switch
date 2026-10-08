@@ -397,6 +397,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     std::printf("PARTICLES %s\n",particles_enabled?"ON":"OFF");
     require(scene.set_sky(sky != "off"), "sky mode set after scene load");
     scene.set_wet_road_reflections(wet_road_reflections);
+    scene.set_race_visuals(true);
     const auto before = mallinfo(); heap.begin(before.uordblks,before.arena);
     Progress progress(screen,pad,heap,free_drive);
     const auto load_start = armGetSystemTick();

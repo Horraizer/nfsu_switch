@@ -6,6 +6,7 @@
 #include "nfsu/car_shadow.h"
 #include "nfsu/light_glows.h"
 #include "nfsu/track_reflections.h"
+#include "nfsu/headlights.h"
 
 namespace nfsu {
 // One combined command stream: track then car, one camera and one depth
@@ -58,6 +59,7 @@ public:
     // The separate sky pass (issue 184), on by default. Off records no sky
     // draws, for console A/B cost runs. Refused once the scene is loaded.
     bool set_sky(bool enabled) { if (ready_) return false; sky_ = enabled; return true; }
+    void set_race_visuals(bool enabled) { if(!ready_)race_visuals_=enabled; }
     void set_wet_road_reflections(bool enabled) noexcept { wet_road_reflections_ = enabled; }
     // `car` selects the racer every path draws and drives (issue #315); null
     // resolves the default 240SX through the retail car type table. The
@@ -78,6 +80,10 @@ public:
     std::uint64_t cache_bytes() const;
 private:
     TrackSlice track_;
+    bool race_visuals_=false;
+    RenderTexture headlight_texture_;
+    std::size_t headlight_resource_=kNoHandle;
+    bool prepare_visual_frame(const RaceSession&, const CameraFrame&, RecordedCommands&, std::string&);
     WetRoadLamps lamps_;
     std::filesystem::path root_;
     bool lamps_loaded_ = false;
