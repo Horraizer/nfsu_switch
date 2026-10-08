@@ -1357,6 +1357,21 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_stability_tests PRIVATE nfsu_race_session nfsu_arg_path)
     nfsu_enable_warnings(nfsu_stability_tests)
     add_test(NAME nfsu_stability_tests COMMAND nfsu_stability_tests)
+    add_test(NAME nfsu_stability_applicability COMMAND nfsu_stability_tests --applicability-only)
+
+    # Test-only symbol redirection observes each gearbox callback, including
+    # initial force preparation. The wrapper forwards all operands unchanged
+    # to the original helper; the production vehicle target is unaffected.
+    add_library(nfsu_vehicle_gear_phase_observer OBJECT src/vehicle.cpp)
+    target_link_libraries(nfsu_vehicle_gear_phase_observer PRIVATE nfsu_vehicle)
+    target_compile_definitions(nfsu_vehicle_gear_phase_observer
+        PRIVATE player_gear_update=nfsu_test_player_gear_update)
+    nfsu_enable_warnings(nfsu_vehicle_gear_phase_observer)
+    add_executable(nfsu_vehicle_gear_phase_tests tests/vehicle_gear_phase_tests.cpp
+        $<TARGET_OBJECTS:nfsu_vehicle_gear_phase_observer>)
+    target_link_libraries(nfsu_vehicle_gear_phase_tests PRIVATE nfsu_vehicle)
+    nfsu_enable_warnings(nfsu_vehicle_gear_phase_tests)
+    add_test(NAME nfsu_vehicle_gear_phase_tests COMMAND nfsu_vehicle_gear_phase_tests)
 
 
     add_executable(nfsu_vehicle_tests

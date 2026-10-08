@@ -1,4 +1,5 @@
 #include "nfsu/race_session.h"
+#include "nfsu/player_powertrain.h"
 #include "nfsu/arg_path.h"
 #include "nfsu/sha256.h"
 #include <algorithm>
@@ -17,6 +18,71 @@ struct Pin { VehicleVec3 omega; double mass; unsigned wheels,state; VehicleVec3 
 const Pin pins[] = {
 #include "low_support_native.inc"
 };
+void jump_applicability() {
+    const auto h=stock_240sx_handling();
+    PlayerRigidBodyState body;
+    body.position={{2,3,4}};body.momentum={{14,2,8}};body.velocity={{12,1,8}};
+    body.angular_momentum={{4,5,6}};body.angular_velocity={{1,-2,3}};
+    body.force={{2,3,-11.956F}};body.torque={{1,2,3}};
+    body.snapshot_axes[0]={{0,1,0}};body.adaptive_damping=.05F;body.yaw_torque_limit=7;
+    body.linear_damping=false;body.alternate_yaw=true;body.gravity=false;
+    const auto before=body;
+    const auto applied=player_low_support_apply(h,body,0,0);
+    require(applied!=PlayerRigidVector{} && body.torque!=before.torque,"nonzero angular damping exercised");
+    for(unsigned k=0;k<3;++k)
+        require(body.torque[k]==before.torque[k]+applied[k],"original torque addition");
+    require(body.position==before.position && body.momentum==before.momentum &&
+            body.angular_momentum==before.angular_momentum && body.velocity==before.velocity &&
+            body.angular_velocity==before.angular_velocity && body.force==before.force &&
+            body.axes==before.axes && body.snapshot_axes==before.snapshot_axes &&
+            body.adaptive_damping==before.adaptive_damping && body.yaw_torque_limit==before.yaw_torque_limit &&
+            body.linear_damping==before.linear_damping && body.angular_damping==before.angular_damping &&
+            body.alternate_yaw==before.alternate_yaw && body.gravity==before.gravity,
+            "fixed-input low-support operation writes torque alone");
+
+    // Held actual jump step1 snapshots. Authenticated speed.exe/stock240SX:
+    // full462F90/584CD0/5ABDB5,007F, authentic476E97 cache1/1/0/0.
+    // The force pins belong to these two operations, not a whole trajectory.
+    const PlayerRigidMatrix axes[] = {
+        {{{{1.0001195669174194F,.025085769593715668F,.0062097087502479553F}},
+          {{-.025000004097819328F,1,.0083333328366279602F}},
+          {{-.0062097087502479553F,-.0080714765936136246F,1.0001195669174194F}}}},
+        {{{{.99994534254074097F,0,-.01045604795217514F}},{{0,1,0}},
+          {{.01045604795217514F,0,.99994534254074097F}}}}
+    };
+    const PlayerRigidVector original_force[] = {
+        {{-.12738347053527832F,.013702111318707466F,-13.744690895080566F}},
+        {{-.15489648282527924F,0,-13.669923782348633F}}
+    };
+    std::array<PlayerRigidVector,2> force{};
+    for(unsigned k=0;k<2;++k) {
+        PlayerRigidBodyState held;
+        held.axes=held.snapshot_axes=axes[k];
+        held.velocity={{11.998284339904785F,0,7.9067368507385254F}};
+        held.force={{0,0,-11.956000328063965F}};
+        player_aero_apply(h,held,PlayerAeroCache{},PlayerInitialAeroConfiguration{});
+        require(held.force==original_force[k],"original orientation-dependent aero force witness");
+        force[k]=held.force;
+    }
+    require(force[0]!=force[1],"equal velocity and different axes change original aero force");
+
+    // Conditional high-speed control only: common adaptive damping can couple
+    // angular and linear motion elsewhere even when aero is disabled.
+    auto spec=stock_240sx_vehicle_spec();spec.aero.enabled=false;
+    VehicleModel model(spec);VehicleState a,b;VehiclePose pose;pose.ground.z=20;pose.speed=12;
+    require(model.reset(a,pose),"conditional airborne reset");b=a;
+    a.angular_velocity={1,-2,3};a.velocity.z=b.velocity.z=8;
+    for(unsigned k=0;k<120;++k) {
+        VehicleTelemetry x,y;
+        require(model.step(a,{},VehicleFlatGround{},x)&&model.step(b,{},VehicleFlatGround{},y),
+                "conditional airborne integration");
+        require(x.grounded_wheels==0 && y.grounded_wheels==0,"conditional legitimate airborne state");
+        require(a.position.x==b.position.x && a.position.y==b.position.y && a.position.z==b.position.z &&
+                a.velocity.x==b.velocity.x && a.velocity.y==b.velocity.y && a.velocity.z==b.velocity.z,
+                "same high-speed jump has equal translation with aero disabled");
+    }
+    std::cout<<"PASS torque-only write domain, original aero force counterfactual and conditional jump\n";
+}
 void kernel() {
     std::vector<unsigned char> bytes;
     for (const auto& p:vehicle_low_support_curve()) for (float v:p) {
@@ -31,6 +97,7 @@ void kernel() {
                 std::fabs(t.z-p.torque.z)<.05,"native torque pin");
         require(dot(t,p.omega)<=0,"damping dissipates angular energy");
     }
+    jump_applicability();
     VehicleModel model(stock_240sx_vehicle_spec());VehicleState a,b;VehiclePose pose;
     pose.ground.z=20;pose.speed=12;
     require(model.reset(a,pose),"airborne reset");b=a;
@@ -42,14 +109,11 @@ void kernel() {
         VehicleTelemetry x,y;
         require(model.step(a,{},floor,x)&&model.step(b,{},floor,y),"airborne integration");
         require(x.grounded_wheels==0 && y.grounded_wheels==0,"legitimate airborne state");
-        require(a.position.x==b.position.x && a.position.y==b.position.y && a.position.z==b.position.z &&
-                a.velocity.x==b.velocity.x && a.velocity.y==b.velocity.y && a.velocity.z==b.velocity.z,
-                "angular contribution cannot change the jump trajectory");
         minimum_height=std::min(minimum_height,a.position.z);
     }
     require(minimum_height>=20 && a.position.z>23 && dot(a.angular_velocity,a.angular_velocity)<energy*.02,
             "jump survives while angular spin decays");
-    std::cout<<"PASS native torque, gates, curve and independent airborne trajectory\n";
+    std::cout<<"PASS native torque, gates, curve and airborne survival\n";
 }
 void write(std::ostream& out,const char* label,int mode,const VehicleTrackTelemetry& t) {
     const auto vec=[&](const VehicleVec3& v){out<<','<<v.x<<','<<v.y<<','<<v.z;};
@@ -262,8 +326,12 @@ void retail(const std::filesystem::path& root,std::ostream* output) {
 }
 }
 int main(int argc,char** argv) {
+    const bool applicability_only=argc==2 && std::string(argv[1])=="--applicability-only";
     try {
         std::string error;require(check_arguments(argc,argv,1,error),"arguments");
+        if(applicability_only) {
+            jump_applicability();std::cout<<"SUMMARY applicability failures=0\n";return 0;
+        }
         std::filesystem::path root;std::ofstream output;
         for(int i=1;i<argc;++i) {
             const std::string option=argv[i];require(i+1<argc,"option argument");
@@ -275,5 +343,7 @@ int main(int argc,char** argv) {
         if(!root.empty())retail(root,output.is_open()?&output:nullptr);
         if(output.is_open()){output.flush();require(bool(output),"output write");}
         std::cout<<"stability tests: all checks passed\n";return 0;
-    }catch(const std::exception& e){std::cerr<<"FAIL: "<<e.what()<<'\n';return 1;}
+    }catch(const std::exception& e){std::cerr<<"FAIL: "<<e.what()<<'\n';
+        if(applicability_only)std::cerr<<"SUMMARY applicability failures=1\n";
+        return 1;}
 }
