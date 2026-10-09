@@ -254,6 +254,8 @@ struct DriveFrameState {
     bool throttle_from_button = false;
     bool brake_from_button = false;
     bool handbrake = false;
+    // Fixed R3 hold-to-look-back control, independent of POV cycling.
+    bool look_back = false;
     // Edges, on this frame only.
     bool shift_up = false;
     bool shift_down = false;

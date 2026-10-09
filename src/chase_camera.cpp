@@ -1,5 +1,6 @@
 #include "nfsu/chase_camera.h"
 
+#include <algorithm>
 #include <cfloat>
 #include <cstddef>
 #include <cstdint>
@@ -588,18 +589,20 @@ bool ChaseCamera::reset(const ChaseCameraSubject& subject,
 bool ChaseCamera::update(const ChaseCameraSubject& subject,
                          double dt,
                          const ChaseCameraWorld& world,
-                         ChaseCameraView& view) {
+                         ChaseCameraView& view,
+                         bool look_back) {
     if (!finite(dt) || !(dt > 0.0) || dt > 0.1) {
         return false;
     }
-    return place(subject, world, dt, !started_, view);
+    return place(subject, world, dt, !started_, view, look_back);
 }
 
 bool ChaseCamera::place(const ChaseCameraSubject& subject,
                         const ChaseCameraWorld& world,
                         double dt,
                         bool snap,
-                        ChaseCameraView& view) {
+                        ChaseCameraView& view,
+                        bool look_back) {
     if (!valid_ || !finite(subject.origin) || !finite(subject.forward) ||
         !finite(subject.velocity)) {
         return false;
@@ -677,6 +680,24 @@ bool ChaseCamera::place(const ChaseCameraSubject& subject,
     view.reach = reach;
     view.near_plane = approx_.near_plane;
     view.far_plane = approx_.far_plane;
+    if (look_back) {
+        // Temporary front-of-car view. Keep the ordinary chase history and
+        // selected POV advancing so release restores this frame's normal view.
+        // Mirror horizontal offsets; retain height and downward pitch.
+        const VehicleVec3 front_arm{-arm.x,-arm.y,arm.z};
+        const VehicleVec3 front_eye=add(pivot,front_arm);
+        double clear=world.clear_fraction(pivot,front_eye);
+        if(!finite(clear)) clear=1;
+        clear=clear<0?0:clear>1?1:clear;
+        const double front_reach=clear<1&&length>0?
+            std::max(0.0,clear-approx_.collision_margin/length):1.0;
+        view.eye=add(pivot,scale(front_arm,front_reach));
+        view.forward.x=-view.forward.x;view.forward.y=-view.forward.y;
+        view.up.x=-view.up.x;view.up.y=-view.up.y;
+        view.heading=static_cast<std::uint16_t>(view.heading+0x8000U);
+        view.target=static_cast<std::uint16_t>(view.target+0x8000U);
+        view.reach=front_reach;
+    }
     return true;
 }
 

@@ -175,7 +175,8 @@ bool RaceSession::advance(const GamepadFrame& pad, std::string& error) {
     if (!step_race_timing(course_.route, timing_config_, timing_, &timing_input,
                           timing_events_, error)) { started_ = false; return false; }
     if (controls_.frame_state().camera) chase_.next_pov();
-    if (!chase_.update(chase_subject(car(), spec_), kDriveFrameSeconds, camera_world_, view_)) {
+    if (!chase_.update(chase_subject(car(), spec_), kDriveFrameSeconds, camera_world_, view_,
+                       controls_.frame_state().look_back)) {
         started_ = false; error = chase_.error(); return false;
     }
     encode();

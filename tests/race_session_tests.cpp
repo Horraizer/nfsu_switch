@@ -73,6 +73,58 @@ int main() {
     check(a.car().step==4 && std::abs(a.car().simulation_seconds-1.0/60.0)<1e-12,
           "held reset resumes exactly one outer interval");
     check(race_session_hud(a).size()==4,"minimal HUD available");
+    // R3 is held, not a POV cycle. The normal camera must keep following
+    // during the hold and return immediately to its current selected view.
+    {
+        DriveControls controls;
+        const auto rear=gamepad_button_bit(GamepadButton::stick_right);
+        auto p=race_input_frame({1,rear,0},0);
+        controls.update(p);
+        check(!controls.frame_state().look_back,"R3 hot-plug hold remains latched");
+        p.pads[0].buttons=0;controls.update(p);
+        p.pads[0].buttons=rear;controls.update(p);
+        check(controls.frame_state().look_back&&!controls.frame_state().camera,"R3 requests held rear view without cycling");
+        controls.update(p);
+        check(controls.frame_state().look_back,"R3 remains active while held");
+        p.pads[0].connected=false;controls.update(p);
+        check(!controls.frame_state().look_back,"disconnect releases rear view");
+
+        RaceSession normal(course),rear_session(course);
+        check(normal.start(error)&&rear_session.start(error),"rear camera sessions start");
+        unsigned tick=0;
+        const auto advance_pair=[&](std::uint32_t buttons,bool rear_held,int axis=0) {
+            auto n=race_input_frame({1,buttons,axis},tick++),r=n;
+            if(rear_held)r.pads[0].buttons|=rear;
+            check(normal.advance(n,error)&&rear_session.advance(r,error),"rear camera pair advances");
+            check(normal.car().position.x==rear_session.car().position.x&&
+                  normal.car().position.y==rear_session.car().position.y&&
+                  normal.car().position.z==rear_session.car().position.z,
+                  "rear camera does not change vehicle motion");
+        };
+        advance_pair(0,false);
+        while(race_car_held(normal.timing())&&tick<1000)advance_pair(0,false);
+        for(int moving=0;moving<120;++moving)advance_pair(gas,false);
+        for(int pov=0;pov<3;++pov) {
+            for(int hold=0;hold<12;++hold) {
+                advance_pair(gas,true,-6000);
+                const auto subject=chase_subject(rear_session.car(),rear_session.spec());
+                const auto& r=rear_session.camera();const auto& n=normal.camera();
+                check(r.pov==n.pov,"R3 preserves selected POV");
+                check((r.eye.x-subject.origin.x)*subject.forward.x+
+                      (r.eye.y-subject.origin.y)*subject.forward.y>0,
+                      "held rear view is ahead of the car");
+                check(r.forward.x*subject.forward.x+r.forward.y*subject.forward.y<0,
+                      "held rear view looks backward toward the front of the car");
+            }
+            advance_pair(0,false);
+            const auto& n=normal.camera();const auto& r=rear_session.camera();
+            check(r.eye.x==n.eye.x&&r.eye.y==n.eye.y&&r.eye.z==n.eye.z&&
+                  r.heading==n.heading&&r.pitch==n.pitch&&r.pov==n.pov,
+                  "release restores current ordinary view without orbit or stale history");
+            advance_pair(gamepad_button_bit(GamepadButton::face_north),false);
+            advance_pair(0,false);
+        }
+    }
     RaceCameraWorld camera(course.world);
     check(camera.clear_fraction({32,48,20},{32,48,0})<1,"camera segment hits synthetic road");
     check(camera.clear_fraction({32,48,20},{33,48,20})==1,"camera segment clear above road");

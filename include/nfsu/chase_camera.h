@@ -321,18 +321,22 @@ public:
     // Advances the camera by `dt` seconds, 0 < dt <= 0.1: the target
     // heading, the lag, the eye, the collision. False, with nothing changed,
     // on an invalid camera, a dt out of range or a subject that is not
-    // finite.
+    // finite. look_back temporarily mirrors the selected chase view to the
+    // front of the car without changing the normal view's history or POV.
+    // This projection is a port adapter, not a recovered retail rear mover.
     bool update(const ChaseCameraSubject& subject,
                 double dt,
                 const ChaseCameraWorld& world,
-                ChaseCameraView& view);
+                ChaseCameraView& view,
+                bool look_back = false);
 
 private:
     bool place(const ChaseCameraSubject& subject,
                const ChaseCameraWorld& world,
                double dt,
                bool snap,
-               ChaseCameraView& view);
+               ChaseCameraView& view,
+               bool look_back = false);
 
     ChaseCameraTable table_;
     ChaseCameraRules rules_;

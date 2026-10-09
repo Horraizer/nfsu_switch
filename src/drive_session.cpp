@@ -224,7 +224,8 @@ bool DriveSession::advance(const GamepadFrame& frame, std::string& error) {
         camera.next_pov();
     }
     ChaseCameraView view;
-    if (!camera.update(chase_subject(state, setup_.spec), kDriveFrameSeconds, world_, view)) {
+    if (!camera.update(chase_subject(state, setup_.spec), kDriveFrameSeconds, world_, view,
+                       events.look_back)) {
         error = "the chase camera refused frame " + std::to_string(frames_ + 1);
         return false;
     }

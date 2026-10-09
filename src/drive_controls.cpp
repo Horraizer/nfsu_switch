@@ -791,6 +791,7 @@ void DriveControls::update(const GamepadFrame& frame) {
     double analog[3] = {0.0, 0.0, 0.0};
     bool from_button[3] = {false, false, false};
     std::array<bool, kDriveActionCount> held{};
+    bool look_back = false;
     for (std::size_t slot = 0; slot < kMaxGamepads; ++slot) {
         const GamepadState& pad = frame.pads[slot];
         if (!pad.connected) {
@@ -805,6 +806,7 @@ void DriveControls::update(const GamepadFrame& frame) {
         }
         latched_[slot] &= buttons;
         const std::uint32_t live = buttons & ~latched_[slot];
+        look_back = look_back || (live & gamepad_button_bit(GamepadButton::stick_right)) != 0;
         for (const DriveBinding& binding : config_.bindings) {
             const std::size_t action = static_cast<std::size_t>(binding.action);
             if (binding.control.kind == GamepadControl::Kind::button) {
@@ -852,6 +854,7 @@ void DriveControls::update(const GamepadFrame& frame) {
         return held[index] && !held_[index];
     };
     state.handbrake = held[static_cast<std::size_t>(DriveAction::handbrake)];
+    state.look_back = look_back;
     state.shift_up = edge(DriveAction::shift_up);
     state.shift_down = edge(DriveAction::shift_down);
     state.camera = edge(DriveAction::camera);
