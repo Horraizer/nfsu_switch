@@ -19,6 +19,30 @@ void check(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
 
+void test_nitrous_control(const std::filesystem::path* root) {
+    using namespace nfsu::audio;
+    PcmClip clip;std::string error;
+    if(root)check(load_race_nitrous_sound(*root,clip,error),error.c_str());
+    else {clip.rate=kOutputRate;clip.channels=1;clip.pcm.assign(1024,1000);clip.loop_end=1024;}
+    Mixer mixer;bool active=false;RaceAudioSnapshot snapshot;
+    std::vector<std::int16_t> pcm(2048);
+    control_race_nitrous_sound(snapshot,clip,mixer,active);mixer.render(pcm.data(),1024);
+    check(std::all_of(pcm.begin(),pcm.end(),[](auto v){return v==0;}),"NOS inactive is silent");
+    snapshot.nitrous_active=true;control_race_nitrous_sound(snapshot,clip,mixer,active);
+    mixer.render(pcm.data(),1024);
+    check(active&&std::any_of(pcm.begin(),pcm.end(),[](auto v){return v!=0;}),"NOS activation produces PCM");
+    snapshot.nitrous_active=false;control_race_nitrous_sound(snapshot,clip,mixer,active);
+    mixer.render(pcm.data(),1024);mixer.render(pcm.data(),1024);
+    check(!active&&std::all_of(pcm.begin(),pcm.end(),[](auto v){return v==0;}),"NOS release fades to silence");
+    snapshot.nitrous_active=true;control_race_nitrous_sound(snapshot,clip,mixer,active);
+    mixer.render(pcm.data(),1024);
+    check(active&&std::any_of(pcm.begin(),pcm.end(),[](auto v){return v!=0;}),"NOS restarts");
+    snapshot.finished=true;control_race_nitrous_sound(snapshot,clip,mixer,active);
+    mixer.render(pcm.data(),1024);mixer.render(pcm.data(),1024);
+    check(!active&&std::all_of(pcm.begin(),pcm.end(),[](auto v){return v==0;}),"NOS finish mutes loop");
+    std::cout<<"race audio: nitrous activation/release/restart/finish checked\n";
+}
+
 void test_weights() {
     const auto low = nfsu::audio::engine_layer_weights(1000);
     check(std::abs(low[0] - 15.0 / 17.0) < 1e-12 &&
@@ -466,6 +490,7 @@ int main(int argc, char** argv) {
               argument_error.c_str());
         const std::filesystem::path root =
             argc == 2 ? nfsu::argument_path(argv[1]) : std::filesystem::path();
+        test_nitrous_control(argc == 2 ? &root : nullptr);
         test_retail_music_prefix(argc == 2 ? &root : nullptr);
         test_collision_graph(argc == 2 ? &root : nullptr);
         std::cout << "race audio tests passed\n";

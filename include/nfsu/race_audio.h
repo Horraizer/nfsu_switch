@@ -1,6 +1,7 @@
 #pragma once
 
 #include "nfsu/audio.h"
+#include "nfsu/audio_playback.h"
 #include "nfsu/collision_audio.h"
 #include "nfsu/race_session.h"
 
@@ -35,7 +36,14 @@ struct RaceAudioSnapshot {
     int countdown = 0;
     int completed_laps = 0;
     bool finished = false;
+    bool nitrous_active = false;
 };
+
+// Level1 original nitrous_00 bank, loop sample1. Voice11 is reserved for NOS.
+bool load_race_nitrous_sound(const std::filesystem::path& root, PcmClip& clip,
+                            std::string& error);
+void control_race_nitrous_sound(const RaceAudioSnapshot& snapshot,
+    const PcmClip& clip, Mixer& mixer, bool& was_active) noexcept;
 
 RaceAudioSnapshot race_audio_snapshot(const RaceSession& session) noexcept;
 std::array<double, 4> engine_layer_weights(double rpm) noexcept;

@@ -75,6 +75,22 @@ PcmClip load_clip(const std::filesystem::path& path, std::uint32_t index) {
 
 } // namespace
 
+bool load_race_nitrous_sound(const std::filesystem::path& root,PcmClip& clip,std::string& error) {
+    try {
+        auto loaded=load_clip(root/"Sound/NOS/Nitrous_00_MB.abk",1);
+        if(!loaded.loop_end) throw std::runtime_error("nitrous loop absent");
+        clip=std::move(loaded);error.clear();return true;
+    } catch(const std::exception& e) { error=e.what();return false; }
+}
+
+void control_race_nitrous_sound(const RaceAudioSnapshot& snapshot,
+    const PcmClip& clip,Mixer& mixer,bool& was_active) noexcept {
+    const bool active=snapshot.nitrous_active&&!snapshot.finished&&clip.valid();
+    if(active&&!was_active) mixer.play(11,&clip,true,q15(.55),65536,true);
+    else if(!active&&was_active) mixer.control(11,0,65536);
+    was_active=active;
+}
+
 RaceAudioSnapshot race_audio_snapshot(const RaceSession& session) noexcept {
     RaceAudioSnapshot snapshot;
     const auto& car = session.car();
@@ -105,6 +121,7 @@ RaceAudioSnapshot race_audio_snapshot(const RaceSession& session) noexcept {
     if (!timing.racers.empty())
         snapshot.completed_laps = timing.racers[0].highest_lap;
     snapshot.finished = timing.outcome == RaceOutcome::finished;
+    snapshot.nitrous_active = session.nitrous().active;
     return snapshot;
 }
 
@@ -161,7 +178,8 @@ std::array<double, 4> engine_layer_weights(double rpm) noexcept {
 
 struct RaceAudioService::Impl {
     std::array<PcmClip, 4> engine;
-    PcmClip skid, scrape;
+    PcmClip skid, scrape, nitrous;
+    bool has_nitrous=false, nitrous_active=false;
     std::array<PcmClip, 13> impacts;
     CollisionGraph collision;
     CollisionScheduler collisions;
@@ -229,7 +247,12 @@ bool RaceAudioService::start(const std::filesystem::path& root,
     if (p.active) { diagnostic = "audio already running"; return false; }
     p.collisions.clear(); p.impact_pairs = {UINT32_MAX,UINT32_MAX};
     p.scrape_pairs = {UINT32_MAX,UINT32_MAX};
+    p.nitrous_active=false;
+    if(progress) progress("audio nitrous");
+    std::string nitrous_error;
+    p.has_nitrous=load_race_nitrous_sound(root,p.nitrous,nitrous_error);
     std::ostringstream notes;
+    if(!p.has_nitrous) notes<<"nitrous: "<<nitrous_error<<"; ";
     const auto engine_path = root / "Sound/CAR_0/ENG_UG_0/C0U0_M0_ENG_MB.abk";
     for (std::size_t i = 0; i < p.engine.size(); ++i) {
         if (progress) progress("audio engine");
@@ -311,7 +334,7 @@ bool RaceAudioService::start(const std::filesystem::path& root,
         if (progress) progress("audio music prefill");
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
-    if (!p.has_skid && !p.has_impact && !p.has_music &&
+    if (!p.has_skid && !p.has_impact && !p.has_music && !p.has_nitrous &&
         std::none_of(p.has_engine.begin(), p.has_engine.end(), [](bool x) { return x; }) &&
         std::none_of(p.has_cue.begin(), p.has_cue.end(), [](bool x) { return x; })) {
         diagnostic = "no supported retail audio: " + notes.str();
@@ -339,6 +362,7 @@ void RaceAudioService::on_tick(const RaceAudioSnapshot& snapshot) {
     auto& p = *impl_;
     if (!p.active || p.suspended.load()) return;
     std::lock_guard<std::mutex> lock(p.mixer_mutex);
+    if(p.has_nitrous) control_race_nitrous_sound(snapshot,p.nitrous,p.mixer,p.nitrous_active);
     const auto cue = p.cues.update(snapshot);
     if (cue != RaceInterfaceCue::none) {
         const std::size_t index = cue == RaceInterfaceCue::countdown ? 0 :
@@ -419,6 +443,8 @@ void RaceAudioService::stop() {
     p.active = false;
     p.output.stop();
     p.stream.stop();
+    std::lock_guard<std::mutex> lock(p.mixer_mutex);
+    p.mixer.stop(11);p.nitrous_active=false;
 }
 
 std::string RaceAudioService::diagnostic() const {
@@ -446,6 +472,7 @@ std::size_t RaceAudioService::resident_bytes() const noexcept {
     for (const auto& clip : p.engine) bytes += clip.pcm.capacity() * sizeof(std::int16_t);
     bytes += p.skid.pcm.capacity() * sizeof(std::int16_t);
     bytes += p.scrape.pcm.capacity() * sizeof(std::int16_t);
+    bytes += p.nitrous.pcm.capacity() * sizeof(std::int16_t);
     for (const auto& clip : p.impacts) bytes += clip.pcm.capacity() * sizeof(std::int16_t);
     for (const auto& clip : p.cue_clips)
         bytes += clip.pcm.capacity() * sizeof(std::int16_t);

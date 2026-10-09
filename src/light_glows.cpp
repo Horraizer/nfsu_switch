@@ -102,6 +102,97 @@ CarGlowAnchors collect_car_glow_anchors(const StockFrame& stock) noexcept {
     return result;
 }
 
+CarExhaustAnchors collect_car_exhaust_anchors(const StockFrame& stock) noexcept {
+    CarExhaustAnchors out{};unsigned count=0;
+    for(const auto& marker:stock.report.markers) {
+        if(car_marker_role(marker.name_hash)!=CarMarkerRole::exhaust || count==out.size())continue;
+        const GeometryReport* source=marker.geometry_source==0?&stock.car_geometry:
+            marker.geometry_source-1<stock.stock_geometry.size()?&stock.stock_geometry[marker.geometry_source-1]:nullptr;
+        if(!source || marker.source_mesh>=source->meshes.size())continue;
+        const auto& mesh=source->meshes[marker.source_mesh];
+        if(marker.index>=mesh.markers.size())continue;
+        const auto& record=mesh.markers[marker.index];
+        const Vec3 local{record.translation(0),record.translation(1),record.translation(2)};
+        if(!std::isfinite(local.x)||!std::isfinite(local.y)||!std::isfinite(local.z))continue;
+        out[count++]={{local,true,{}},static_cast<unsigned>(marker.slot)};
+    }
+    return out;
+}
+
+bool load_nitrous_flame_texture(const std::filesystem::path& root,
+    RenderTexture& texture,std::string& error) {
+    texture={};std::vector<unsigned char> bytes;
+    const auto packs=load_texture_pack_set(root/"Global/INGAMEB.BUN",bytes);
+    const std::vector<std::uint32_t> wanted{0xB3095EB7U};
+    RenderTextureSource source;source.bytes=&bytes;source.wanted=&wanted;source.complete=packs.complete;
+    for(const auto& pack:packs.packs)source.packs.push_back(&pack);
+    RenderTextureSet decoded;
+    if(!decode_render_texture_sources({source},{},decoded,error))return false;
+    for(auto& candidate:decoded.textures)if(candidate.claims_hash(wanted[0])&&candidate.usable()) {
+        texture=std::move(candidate);return true;
+    }
+    error="original SFX_FIREB nitrous texture missing";return false;
+}
+
+std::array<OriginalCarGlow,3> place_nitrous_flames(const CarExhaustAnchors& anchors,
+    const PreparedCarScene& car,const CameraFrame& camera,bool active,std::uint64_t tick) noexcept {
+    std::array<OriginalCarGlow,3> out{};
+    if(!active)return out;
+    for(unsigned i=0;i<anchors.size();++i) {
+        if(!anchors[i].marker.present)continue;
+        const auto* instance=lamp_instance(car,static_cast<int>(anchors[i].slot));
+        if(!instance)continue;
+        const auto* m=instance->transform;
+        Vec3 rear{-m[0],-m[2],m[1]};const double norm=std::sqrt(dot3(rear,rear));
+        if(!(norm>0))continue;
+        rear={rear.x/norm,rear.y/norm,rear.z/norm};
+        const auto pipe=placed_slot(anchors[i].marker.slot,m);
+        const auto toward=difference(camera.eye,pipe);
+        Vec3 side{rear.y*toward.z-rear.z*toward.y,
+                  rear.z*toward.x-rear.x*toward.z,rear.x*toward.y-rear.y*toward.x};
+        double width_norm=std::sqrt(dot3(side,side));
+        if(width_norm<1e-6){side=camera.right;width_norm=std::sqrt(dot3(side,side));}
+        if(!(width_norm>0))continue;
+        // Small animated axial billboard, not a claim of native particle parity.
+        const double length=.55+.12*double((tick*7U)%11U)/10.;
+        const double width=.12+.02*double((tick*3U)%7U)/6.;
+        side={side.x*width/width_norm,side.y*width/width_norm,side.z*width/width_norm};
+        const Vec3 half{rear.x*length*.5,rear.y*length*.5,rear.z*length*.5};
+        const Vec3 center{pipe.x+half.x,pipe.y+half.y,pipe.z+half.z};
+        auto& flame=out[i];flame.texture=static_cast<unsigned>((tick/2)%4);
+        const Vec3 rows[3]={side,half,center};const unsigned offsets[3]={0,8,12};
+        for(unsigned r=0;r<3;++r){const auto off=offsets[r];flame.transform[off]=float(rows[r].x);
+            flame.transform[off+1]=float(-rows[r].z);flame.transform[off+2]=float(rows[r].y);}
+        flame.transform[15]=1;
+        std::fill(std::begin(flame.rgba),std::end(flame.rgba),255);
+    }
+    return out;
+}
+
+bool draw_nitrous_flames(Frame& frame,const RenderOptions& options,
+    const RenderTexture& texture,const std::array<OriginalCarGlow,3>& flames,
+    RenderStats& stats,std::string& error) {
+    CameraFrame camera;
+    if(!make_camera_frame(options.camera,options.width,options.height,camera,error))return false;
+    const RenderLimits limits;Rasterizer raster(frame,options,limits,stats);
+    for(unsigned i=0;i<flames.size();++i) {
+        const auto& f=flames[i];if(!f.rgba[3])continue;
+        const auto* m=f.transform;
+        const auto vertex=[&](double x,double y,double u,double v) {
+            const Vec3 raw{x*m[0]+y*m[8]+m[12],x*m[1]+y*m[9]+m[13],x*m[2]+y*m[10]+m[14]};
+            auto out=project_point(camera,{raw.x,raw.z,-raw.y});
+            out.u=(u+double(f.texture%2))*.5;out.v=(v+double(f.texture/2))*.5;return out;
+        };
+        const auto a=vertex(-1,-1,0,0),b=vertex(1,-1,1,0),c=vertex(1,1,1,1),d=vertex(-1,1,0,1);
+        const ClipVertex first[3]={a,b,c},second[3]={a,c,d};
+        RasterMaterial mat;mat.texture=&texture;mat.linear_filter=true;mat.ordinary_world=true;
+        mat.blend=RenderBlendMode::additive;mat.depth_write=false;
+        if(!raster.draw_triangle(first,mat,0x7FFE0000U+2*i,error)||
+           !raster.draw_triangle(second,mat,0x7FFE0001U+2*i,error))return false;
+    }
+    return true;
+}
+
 CarGlowSprites place_car_glows(const CarGlowAnchors& anchors,
                                const PreparedCarScene& car,
                                const CameraFrame& camera,

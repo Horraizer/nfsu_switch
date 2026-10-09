@@ -157,6 +157,13 @@ private:
     std::size_t car_draw_count_ = 0;
     bool glows_enabled_ = false;
     CarGlowAnchors glow_anchors_{};
+    CarExhaustAnchors exhaust_anchors_{};
+    RenderTexture nitrous_flame_;
+    std::array<MeshVertex,16> nitrous_vertices_{};
+    std::array<std::uint16_t,24> nitrous_indices_{};
+    RecordedDraw nitrous_template_;
+    std::array<RecordedDraw,3> nitrous_selected_{};
+    std::size_t nitrous_count_=0;
     RenderTexture glow_head_, glow_tail_;
     std::array<RenderTexture,3> original_glow_textures_;
     std::array<MeshVertex, 4> glow_vertices_{};

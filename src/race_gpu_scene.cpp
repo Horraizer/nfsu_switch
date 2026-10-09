@@ -321,7 +321,10 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
         if (!prepare_car_shadow(selection.car_type_name, inputs, stock.car_pack,
                                 shadow_asset_, error)) return false;
         if (!prepare_car_shadow_bounds(inputs,stock,shadow_asset_,error)) return false;
-        if (glows_enabled_) glow_anchors_ = collect_car_glow_anchors(stock);
+        if (glows_enabled_) {
+            glow_anchors_ = collect_car_glow_anchors(stock);
+            exhaust_anchors_ = collect_car_exhaust_anchors(stock);
+        }
         if (loading) loading->checkpoint("car prepared");
         skin_source_ = stock.skin_binding.source;
         car_ = std::move(stock.scene); base_ = car_.instances;
@@ -425,7 +428,8 @@ std::uint64_t RaceGpuScene::cache_bytes() const {
     for (const auto& d : shadow_templates_.owning_draws()) bytes += d.name.capacity()+1;
     if (glows_enabled_) bytes += sizeof(glow_templates_) + sizeof(glow_selected_) +
         sizeof(glow_vertices_) + sizeof(glow_indices_) +
-        glow_head_.rgba.capacity() + glow_tail_.rgba.capacity();
+        glow_head_.rgba.capacity() + glow_tail_.rgba.capacity() +
+        sizeof(exhaust_anchors_)+sizeof(nitrous_template_)+sizeof(nitrous_selected_);
     bytes += visibility_zones_.polygons.capacity()*sizeof(TrackZonePolygon) +
         visibility_zones_.zones.capacity()*sizeof(TrackZone) +
         visibility_zones_.section_lists.capacity()*sizeof(TrackZoneSectionList) +
@@ -557,6 +561,8 @@ bool RaceGpuScene::prepare_glows(std::string& error) {
         // Authored image payload belongs to car residency, like the other car textures.
         // The command cache counts only the descriptors borrowing it.
         for(const auto& texture:original_glow_textures_)car_bytes_+=texture.rgba.capacity();
+        if(!load_nitrous_flame_texture(root_,nitrous_flame_,error))return false;
+        car_bytes_+=nitrous_flame_.rgba.capacity();
         road_glows_.resize(lamps_.lights.size());
         if(car_bytes_>kPersistentBudgetPlaceholder){error="car glow residency exceeds payload budget";return false;}
     } else {
@@ -573,7 +579,7 @@ bool RaceGpuScene::prepare_glows(std::string& error) {
     }
     auto& table = combined_uploads_;
     glow_first_resource_ = table.resources.size();
-    if (glow_first_resource_ + (race_visuals_?5:4) > kTrackSliceResourceLimit) {
+    if (glow_first_resource_ + (race_visuals_?8:4) > kTrackSliceResourceLimit) {
         error = "glow resources exceed race resource capacity"; return false;
     }
     const auto buffer = [&](UploadResourceKind kind, const char* name,
@@ -619,6 +625,23 @@ bool RaceGpuScene::prepare_glows(std::string& error) {
     if(race_visuals_) {
         for(unsigned i=0;i<3;++i)if(!texture(original_glow_textures_[i],
             i==0?"race-glow/original-head":i==1?"race-glow/original-tail":"race-glow/original-head-outer"))return false;
+        // Four atlas cells share one immutable buffer; only first_index changes.
+        for(unsigned cell=0;cell<4;++cell) {
+            for(unsigned corner=0;corner<4;++corner) {
+                auto& v=nitrous_vertices_[4*cell+corner];v=glow_vertices_[corner];
+                v.u=(v.u+float(cell%2))*.5F;v.v=(v.v+float(cell/2))*.5F;
+            }
+            for(unsigned index=0;index<6;++index)
+                nitrous_indices_[6*cell+index]=static_cast<std::uint16_t>(4*cell+glow_indices_[index]);
+        }
+        buffer(UploadResourceKind::vertex_buffer,"race-nitrous/atlas-quads",
+            reinterpret_cast<const unsigned char*>(nitrous_vertices_.data()),
+            sizeof(nitrous_vertices_),sizeof(MeshVertex),nitrous_vertices_.size());
+        buffer(UploadResourceKind::index_buffer,"race-nitrous/atlas-indices",
+            reinterpret_cast<const unsigned char*>(nitrous_indices_.data()),
+            sizeof(nitrous_indices_),sizeof(std::uint16_t),nitrous_indices_.size());
+        car_bytes_+=sizeof(nitrous_vertices_)+sizeof(nitrous_indices_);
+        if(!texture(nitrous_flame_,"race-nitrous/SFX_FIREB"))return false;
     } else if (!texture(glow_head_, "race-glow/head") ||
         !texture(glow_tail_, "race-glow/tail")) return false;
     const sm::Program* program = nullptr;
@@ -643,6 +666,14 @@ bool RaceGpuScene::prepare_glows(std::string& error) {
         draw.pipeline.depth_write = false;
         if(race_visuals_)draw.material.alpha[3]=5;
     }
+    if(race_visuals_) {
+        nitrous_template_=glow_templates_[0];
+        nitrous_template_.name="race-nitrous/flame";
+        nitrous_template_.vertex_resource=glow_first_resource_+5;
+        nitrous_template_.index_resource=glow_first_resource_+6;
+        nitrous_template_.texture_resource=glow_first_resource_+7;
+        nitrous_template_.vertex_count=16;
+    }
     return true;
 }
 
@@ -665,7 +696,9 @@ RecordedDrawView RaceGpuScene::selected_draw(std::size_t i) const {
     if (i >= car_templates_.owning_draws().size()) {
         i -= car_templates_.owning_draws().size();
         if (i >= glow_count_) throw std::out_of_range("selected glow draw is out of range");
-        const auto& glow = i<glow_selected_.size()?glow_selected_[i]:road_glows_.at(i-glow_selected_.size());
+        const auto& glow = i<glow_selected_.size()?glow_selected_[i]:
+            i<glow_selected_.size()+road_glows_.size()?road_glows_.at(i-glow_selected_.size()):
+            nitrous_selected_.at(i-glow_selected_.size()-road_glows_.size());
         return {glow, kNoHandle, glow.placement, glow.material, false};
     }
     const auto& draw = car_templates_.owning_draws().at(i);
@@ -830,7 +863,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         options.camera.far_plane = far;
         CameraFrame basis;
         if (!make_camera_frame(options.camera, options.width, options.height, basis, error)) return false;
-        glow_count_ = 0;
+        glow_count_ = 0;nitrous_count_=0;
         if (glows_enabled_ && race_visuals_) {
             const auto sprites=place_original_car_glows(glow_anchors_,car_,basis,options.width,session.light_service_brake());
             for(const auto& sprite:sprites) {
@@ -848,6 +881,16 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
                 draw.material.alpha[0]=float(sprite.rgba[3])/255;
             }
             glow_count_+=road_glows_.size();
+            const auto flames=place_nitrous_flames(exhaust_anchors_,car_,basis,
+                session.nitrous().active&&session.timing().outcome!=RaceOutcome::finished,session.timing().step);
+            for(const auto& flame:flames)if(flame.rgba[3]) {
+                auto& draw=nitrous_selected_[nitrous_count_++];draw=nitrous_template_;
+                draw.first_index=6*flame.texture;
+                std::copy(std::begin(flame.transform),std::end(flame.transform),draw.placement.rows);
+                for(unsigned c=0;c<3;++c)draw.material.environment_color[c]=flame.rgba[c];
+                draw.material.alpha[0]=float(flame.rgba[3])/255;
+            }
+            glow_count_+=nitrous_count_;
         } else if (glows_enabled_) {
             const auto sprites = place_car_glows(glow_anchors_, car_, basis,
                                                  session.animation().braking);
@@ -1008,6 +1051,8 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
                     draw.material.alpha[0]=float(sprite.rgba[3])/255;
                     result.commands.owning_draws().push_back(std::move(draw));
                 }
+                for(std::size_t i=0;i<nitrous_count_;++i)
+                    result.commands.owning_draws().push_back(nitrous_selected_[i]);
             } else {
             const auto reference_sprites = place_car_glows(glow_anchors_, car_, basis,
                                                             session.animation().braking);
