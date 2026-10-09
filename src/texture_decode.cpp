@@ -138,6 +138,11 @@ bool decode_sources(
                         texture.problem = "invalid compressed texture size";
                         continue;
                     }
+                    const auto levels=limits.retain_mips?record.mip_count:1U;
+                    if(levels>1 && !mip_chain_size(compressed?record.format:PixelFormat::a8r8g8b8,
+                            record.width,record.height,levels,retained)) {
+                        texture.problem="invalid retained mip chain";continue;
+                    }
                     if (retained > limits.max_total_bytes ||
                         result.decoded_bytes > limits.max_total_bytes - retained) {
                         error = "decoded textures would exceed " +
@@ -163,8 +168,8 @@ bool decode_sources(
                     if (!texture_payload(bytes.data(), bytes.size(), record, payload,
                                          unused, problem, selected_palette) ||
                         !level_size(record.format, record.width, record.height, top) ||
-                        top > payload.size() ||
-                        (!compressed && (!decode_level(record.format, record.width, record.height,
+                        top > payload.size() || (compressed && retained>payload.size()) ||
+                        (!compressed && levels==1 && (!decode_level(record.format, record.width, record.height,
                                       payload.data(), static_cast<std::size_t>(top),
                                       texture.rgba, problem, selected_palette) ||
                         texture.rgba.size() != retained))) {
@@ -177,8 +182,26 @@ bool decode_sources(
                     if (compressed) {
                         texture.storage = record.format == PixelFormat::dxt1 ?
                             RenderTextureStorage::dxt1 : RenderTextureStorage::dxt3;
-                        texture.blocks.assign(payload.begin(), payload.begin() + static_cast<std::size_t>(top));
+                        texture.blocks.assign(payload.begin(), payload.begin() + static_cast<std::size_t>(retained));
+                    } else if(levels>1) {
+                        std::size_t offset=0;
+                        auto width=record.width,height=record.height;
+                        texture.rgba.reserve(static_cast<std::size_t>(retained));
+                        for(unsigned level=0;level<levels;++level) {
+                            std::uint64_t bytes=0;std::vector<unsigned char> pixels;
+                            if(!level_size(record.format,width,height,bytes) || offset>payload.size() ||
+                               bytes>payload.size()-offset ||
+                               !decode_level(record.format,width,height,payload.data()+offset,
+                                    static_cast<std::size_t>(bytes),pixels,problem,selected_palette))break;
+                            texture.rgba.insert(texture.rgba.end(),pixels.begin(),pixels.end());
+                            offset+=static_cast<std::size_t>(bytes);
+                            width=std::max<unsigned>(1,width/2);height=std::max<unsigned>(1,height/2);
+                        }
+                        if(texture.rgba.size()!=retained) {
+                            texture.rgba.clear();texture.problem="authored mip decode failed: "+problem;continue;
+                        }
                     }
+                    texture.mip_count=levels;
                     texture.width = record.width;
                     texture.height = record.height;
                     texture.valid = true;

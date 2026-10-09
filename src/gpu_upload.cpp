@@ -107,7 +107,7 @@ bool add_texture(const std::string& name, std::size_t source, const RenderTextur
     if (!texture.usable()) { error = name + ": invalid texture payload"; return false; }
     if (!check_texture_upload_format(format, texture.width,
                                      texture.height, texture.payload().size(), shape,
-                                     refusal)) {
+                                     refusal, texture.mip_count)) {
         error = name + ": " + refusal;
         return false;
     }
@@ -176,8 +176,30 @@ bool check_texture_upload_format(
     std::uint32_t height,
     std::uint64_t byte_count,
     TextureUploadShape& shape,
-    std::string& error) {
+    std::string& error, std::uint32_t mip_count) {
     shape = TextureUploadShape{};
+    if(!mip_count || mip_count>32){error="invalid texture mip count";return false;}
+    if(mip_count>1) {
+        TextureUploadShape first;
+        std::uint64_t total=0;
+        auto x=width,y=height;
+        for(std::uint32_t level=0;level<mip_count;++level) {
+            const bool bc=format==TextureUploadFormat::dxt1 || format==TextureUploadFormat::dxt3;
+            const std::uint64_t columns=bc?(std::uint64_t{x}+3)/4:x;
+            const std::uint64_t rows=bc?(std::uint64_t{y}+3)/4:y;
+            const unsigned stride=bc?(format==TextureUploadFormat::dxt1?8:16):4;
+            std::uint64_t pixels=0,bytes=0;TextureUploadShape item;
+            if(!checked_multiply(columns,rows,pixels) || !checked_multiply(pixels,stride,bytes) ||
+               !check_texture_upload_format(format,x,y,bytes,item,error) ||
+               total>kMaxUploadResourceBytes-bytes){if(error.empty())error="mip chain exceeds block limit";return false;}
+            if(!level)first=item;
+            total+=bytes;
+            if(x==1 && y==1 && level+1<mip_count){error="mip chain extends beyond 1x1";return false;}
+            x=std::max(1U,x/2);y=std::max(1U,y/2);
+        }
+        if(total!=byte_count){error="mip chain byte count mismatch";return false;}
+        shape=first;shape.bytes=total;shape.mip_count=mip_count;return true;
+    }
     const std::string named = std::string("texture format ") +
                               texture_upload_format_name(format) + " is not uploadable: ";
     switch (format) {
@@ -241,6 +263,25 @@ bool check_texture_upload_format(
     shape.row_bytes = columns * stride;
     shape.bytes = want;
     return true;
+}
+
+bool texture_upload_mip(const TextureUploadShape& chain, std::uint32_t level,
+                        TextureUploadShape& shape, std::uint64_t& offset, std::string& error) {
+    shape={};offset=0;
+    TextureUploadShape valid;
+    if(!check_texture_upload_format(chain.format,chain.width,chain.height,chain.bytes,
+                                   valid,error,chain.mip_count))return false;
+    if(level>=chain.mip_count){error="texture mip index out of range";return false;}
+    auto x=chain.width,y=chain.height;
+    for(std::uint32_t i=0;i<=level;++i) {
+        const bool bc=chain.format!=TextureUploadFormat::rgba8;
+        const auto columns=bc?(std::uint64_t{x}+3)/4:x;
+        const auto rows=bc?(std::uint64_t{y}+3)/4:y;
+        const auto bytes=columns*rows*valid.texel_bytes;
+        if(i==level)return check_texture_upload_format(chain.format,x,y,bytes,shape,error);
+        offset+=bytes;x=std::max(1U,x/2);y=std::max(1U,y/2);
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -401,7 +442,7 @@ bool bounded_image_layout(const UploadResource& texture,
     TextureUploadShape shape;
     if (texture.kind != UploadResourceKind::texture ||
         !check_texture_upload_format(texture.texture.format, texture.texture.width,
-            texture.texture.height, texture.bytes, shape, error)) {
+            texture.texture.height, texture.bytes, shape, error, texture.texture.mip_count)) {
         if (error.empty()) error = texture.name + ": expected a texture";
         return false;
     }
@@ -409,9 +450,13 @@ bool bounded_image_layout(const UploadResource& texture,
         error = texture.name + ": image exceeds the 2D dimension limit";
         return false;
     }
-    bytes = ((shape.row_bytes + 63) & ~std::uint64_t{63}) *
-            ((shape.rows() + 127) & ~std::uint64_t{127});
-    bytes = (bytes + 4095) & ~std::uint64_t{4095};
+    for(std::uint32_t level=0;level<shape.mip_count;++level) {
+        TextureUploadShape item;std::uint64_t offset=0;
+        if(!texture_upload_mip(shape,level,item,offset,error))return false;
+        const auto size=((item.row_bytes+63)&~std::uint64_t{63})*
+                        ((item.rows()+127)&~std::uint64_t{127});
+        bytes+=(size+4095)&~std::uint64_t{4095};
+    }
     alignment = kDekoMemBlockAlignment;
     return true;
 }

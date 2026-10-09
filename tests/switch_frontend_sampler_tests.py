@@ -7,7 +7,7 @@ def check(root,source):
     capture=source[start:first]
     safe='cmd.bindTextures(DkStage_Fragment,1,dkMakeTextureHandle(static_cast<std::uint32_t>(first_texture),2));'
     if safe not in capture:raise ValueError('first cube draw has undefined sampler1')
-    upload=source[source.index('textures.resize(handles.size())'):source.index('// Track samples nearest;')]
+    upload=source[source.index('textures.resize(handles.size())'):source.index('// Legacy nearest stays available.')]
     nontexture=upload.index('if (r.kind != UploadResourceKind::texture)')
     select=upload.index('if(first_texture==kNoHandle)first_texture=i;')
     if nontexture>=select or 'continue;' not in upload[nontexture:select]:raise ValueError('safe texture is not an ordinary uploaded image')

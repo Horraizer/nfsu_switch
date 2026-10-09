@@ -14,7 +14,7 @@ namespace nfsu {
 
 bool load_track_slice(FileSystemService& files, const std::filesystem::path& root,
                       TrackSlice& slice, std::string& error, AssetCheckObserver* observer,
-                      TrackSliceLoadObserver* loading, std::uint32_t event_number) {
+                      TrackSliceLoadObserver* loading, std::uint32_t event_number, bool world_mips) {
     slice = {}; error.clear();
     TrackSlice result;
     AssetManifest manifest;
@@ -140,7 +140,9 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         TexturePackSet source_packs;
         RenderTextureLimits texture_limits;
         texture_limits.gpu_blocks = true;
-        texture_limits.max_total_bytes = kStreamingRegionBudgetPlaceholder;
+        texture_limits.retain_mips = world_mips;
+        texture_limits.max_total_bytes = world_mips ?
+            kResidentRegionsPlaceholder*kStreamingRegionBudgetPlaceholder : kStreamingRegionBudgetPlaceholder;
         texture_limits.before_allocate = [&](std::uint64_t) { checkpoint("texture decoding"); };
         texture_limits.load_source = [&](std::size_t source, RenderTextureSource& descriptor,
                                          std::string& problem) {
@@ -188,6 +190,21 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         std::vector<TrackStreamSection>().swap(spillover.sections);
         TrackSceneOptions options;
         options.region.max_texture_bytes = kStreamingRegionBudgetPlaceholder;
+        std::uint64_t mip_extra=0;
+        if(world_mips)for(const auto& texture:textures.textures)if(texture.usable()) {
+            const auto format=texture.storage==RenderTextureStorage::dxt1?PixelFormat::dxt1:
+                texture.storage==RenderTextureStorage::dxt3?PixelFormat::dxt3:PixelFormat::a8r8g8b8;
+            std::uint64_t top=0;
+            if(!level_size(format,texture.width,texture.height,top) || top>texture.payload().size()) {
+                error="invalid world mip payload budget";return false;
+            }
+            mip_extra+=texture.payload().size()-top;
+        }
+        if(world_mips && (mip_extra>textures.decoded_bytes ||
+            textures.decoded_bytes-mip_extra>kStreamingRegionBudgetPlaceholder)) {
+            error="world top-level payload exceeds unchanged streaming limit";return false;
+        }
+        options.region.max_texture_bytes+=mip_extra;
         checkpoint("scene preparation");
         if (!build_track_scene(std::move(load.geometry), load.objects, std::move(textures), options, result.scene, error)) return false;
         checkpoint("scene prepared");
@@ -196,7 +213,7 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
             result.scene.region.cost.index_buffer_bytes + result.texture_bytes +
             result.scene.instances.size() * sizeof(PreparedTrackInstance);
         if (result.streaming_bytes + textures.decoded_bytes >
-            kResidentRegionsPlaceholder * kStreamingRegionBudgetPlaceholder) {
+            kResidentRegionsPlaceholder * kStreamingRegionBudgetPlaceholder + 2*mip_extra) {
             error = "track texture preparation exceeds the streaming payload plan"; return false;
         }
         result.objects = std::move(load.objects);

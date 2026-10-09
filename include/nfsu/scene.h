@@ -23,7 +23,7 @@ struct GeometryReport;
 
 enum class RenderTextureStorage { rgba8, dxt1, dxt3 };
 
-// Top level of one pack texture. Compressed blocks are opt-in for GPU use.
+// One pack texture. Compressed blocks and authored mip chains are opt-in.
 struct RenderTexture {
     // Info +36 of the record.
     std::uint32_t hash = 0;
@@ -37,6 +37,7 @@ struct RenderTexture {
     std::size_t claim_count = 0;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    std::uint32_t mip_count = 1; // Authored levels, tightly concatenated.
     std::vector<unsigned char> rgba;
     RenderTextureStorage storage = RenderTextureStorage::rgba8;
     std::vector<unsigned char> blocks;
@@ -69,7 +70,7 @@ struct RenderTexture {
 
     // True if value is hash or one of the first claim_count claims.
     bool claims_hash(std::uint32_t value) const noexcept;
-    // True if valid and exactly one payload holds the expected top level.
+    // True if valid and exactly one payload holds the complete declared chain.
     // DXT rows contain ceil(width / 4) blocks, with ceil(height / 4) rows.
     bool usable() const noexcept;
 };

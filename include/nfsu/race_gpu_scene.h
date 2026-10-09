@@ -79,7 +79,7 @@ public:
               TrackSliceLoadObserver* loading = nullptr, bool tuned = false,
               bool glows = false, bool car_shading = false,
               const CarAssets* car = nullptr, const RaceCarDress* dress = nullptr,
-              std::uint32_t event_number = 1);
+              std::uint32_t event_number = 1, bool world_mips = false);
     bool frame(const RaceSession& session, RaceGpuFrame& out, std::string& error,
                RaceFrameProfile* profile = nullptr, bool reference = false,
                TimingService* timer = nullptr);

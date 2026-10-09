@@ -1921,9 +1921,37 @@ void test_texture_decode() {
               native.textures.size() == 1 && native.textures[0].usable() &&
               native.textures[0].rgba.empty() && native.textures[0].blocks.size() == top &&
               native.decoded_bytes == top, "native DXT top level only: " + error);
+        native_limits.retain_mips=true;native_limits.max_total_bytes=top*3;
+        record.mip_count=3;
+        check(nfsu::decode_render_textures(bytes,native_pack,native_limits,native,error) &&
+              native.textures.size()==1 && native.textures[0].usable() &&
+              native.textures[0].mip_count==3 && native.decoded_bytes==top*3 &&
+              native.textures[0].blocks.back()==top*3-1,
+              "native authored DXT 4x4/2x2/1x1 levels retained exactly");
+        native_limits.max_total_bytes=top*3-1;
+        check(!nfsu::decode_render_textures(bytes,native_pack,native_limits,native,error) &&
+              native.textures.empty(),"mip budget counts tiny BC blocks too");
+        native_limits.retain_mips=false;record.mip_count=1;
         native_limits.max_total_bytes = top - 1;
         check(!nfsu::decode_render_textures(bytes, native_pack, native_limits, native, error) &&
               native.textures.empty(), "native DXT checks the budget before retaining blocks");
+    }
+
+    {
+        auto chain_pack=pack;chain_pack.textures.resize(1);
+        auto& record=chain_pack.textures[0];
+        std::vector<unsigned char> raw(84);
+        for(std::size_t i=0;i<raw.size();++i)raw[i]=static_cast<unsigned char>(i);
+        auto blob=jdlz_literals(raw);
+        record.mip_count=3;record.data_size=84;record.blob_offset=0;record.blob_size=blob.size();
+        nfsu::RenderTextureLimits chain_limits;chain_limits.retain_mips=true;
+        nfsu::RenderTextureSet chain;
+        check(nfsu::decode_render_textures(blob,chain_pack,chain_limits,chain,error) &&
+              chain.textures.size()==1 && chain.textures[0].usable() &&
+              chain.textures[0].mip_count==3 && chain.textures[0].rgba.size()==84 &&
+              chain.textures[0].rgba[64]==66 && chain.textures[0].rgba[67]==67 &&
+              chain.textures[0].rgba[80]==82 && chain.textures[0].rgba[83]==83,
+              "raw authored4x4/2x2/1x1 mip colors and alpha decode per level");
     }
 
     // One byte less: fatal, before the allocation for record 1.

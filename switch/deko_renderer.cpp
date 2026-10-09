@@ -121,6 +121,7 @@ struct DekoRenderer::Impl {
     static constexpr unsigned msaa_samples=2;
 #endif
     std::uint64_t msaa_budget_extra=0;
+    std::uint64_t mip_budget_extra=0;
 #if defined(NFSU_DEKO_DEBUG_DIAGNOSTICS)
     bool msaa_first_frame=true;
 #else
@@ -186,7 +187,7 @@ struct DekoRenderer::Impl {
                dk::MemBlock& out, std::string& error) {
         bytes = align_up(bytes ? bytes : 1, DK_MEMBLOCK_ALIGNMENT);
         if(!trace("allocation.before",error,name,bytes))return false;
-        if (bytes > kMaxUploadResourceBytes || gpu_bytes + bytes > kGpuBudgetPlaceholder + msaa_budget_extra) {
+        if (bytes > kMaxUploadResourceBytes || gpu_bytes + bytes > kGpuBudgetPlaceholder + msaa_budget_extra + mip_budget_extra) {
             error = std::string(name) + ": GPU memory budget exceeded"; return false;
         }
         dk::UniqueMemBlock memory = dk::MemBlockMaker{device, static_cast<std::uint32_t>(bytes)}
@@ -218,7 +219,8 @@ struct DekoRenderer::Impl {
                             resource.texture.format == TextureUploadFormat::dxt3 ? DkImageFormat_RGBA_BC2 :
                             DkImageFormat_RGBA8_Unorm;
         auto maker = dk::ImageLayoutMaker{device};
-        maker.setFormat(format).setDimensions(resource.texture.width, resource.texture.height);
+        maker.setFormat(format).setDimensions(resource.texture.width, resource.texture.height)
+            .setMipLevels(resource.texture.mip_count);
         if (deko_texture_needs_one_gob(resource.texture))
             maker.setFlags(DkImageFlags_CustomTileSize).setTileSize(DkTileSize_OneGob);
         maker.initialize(layout);
@@ -444,6 +446,31 @@ struct DekoRenderer::Impl {
         };
         SceneMemoryRequirement need;
         if (!upload_table_requirement(source.resource_table(), layout_query, need, error)) return false;
+        if(source.race_environment) {
+            auto top_table=source.resource_table();
+            std::uint64_t top_staging=top_table.resources.size()*32;
+            std::size_t chains=0,levels=0;
+            for(auto& resource:top_table.resources)if(resource.kind==UploadResourceKind::texture) {
+                levels+=resource.texture.mip_count;
+                if(resource.texture.mip_count>1) {
+                    ++chains;TextureUploadShape top;std::uint64_t offset=0;
+                    if(!texture_upload_mip(resource.texture,0,top,offset,error))return false;
+                    resource.texture=top;resource.bytes=top.bytes;resource.elements=top.bytes/top.texel_bytes;
+                }
+                TextureCopyPlan copy;if(!plan_texture_copy(resource,copy,error))return false;
+                top_staging+=resource.bytes+(copy.padded?copy.staging_bytes+31:0);
+            }
+            if(chains) {
+                SceneMemoryRequirement top_need;
+                if(!upload_table_requirement(top_table,layout_query,top_need,error))return false;
+                const auto actual=align_up(need.image_extent,DK_MEMBLOCK_ALIGNMENT)+align_up(plan.staging_bytes,DK_MEMBLOCK_ALIGNMENT);
+                const auto baseline=align_up(top_need.image_extent,DK_MEMBLOCK_ALIGNMENT)+align_up(top_staging,DK_MEMBLOCK_ALIGNMENT);
+                // Increase only by real image/staging costs of authored mips.
+                mip_budget_extra=actual>baseline?actual-baseline:0;
+                std::printf("WORLD MIPS chains=%zu levels=%zu extra_GPU_bytes=%llu staging_slots=%u\n",
+                    chains,levels,(unsigned long long)mip_budget_extra,plan.staging_allocations);
+            }
+        }
         if (!block(need.buffer_extent, kDataFlags, "mesh buffers", buffers, error) ||
             !block(need.image_extent, kImageFlags, "texture images", images, error) ||
             !block(plan.staging_bytes,
@@ -455,7 +482,7 @@ struct DekoRenderer::Impl {
         if (!arena(buffer_arena, need.buffer_extent, error,
                    plan.buffer_allocations) ||
             !arena(image_arena, need.image_extent, error) ||
-            !arena(staging_arena, plan.staging_bytes, error) ||
+            !arena(staging_arena, plan.staging_bytes, error, std::max(1U,plan.staging_allocations)) ||
             !arena(uniform_arena, uniform_bytes, error) ||
             !ledger.create({&buffer_arena, &image_arena, &staging_arena}, layout_query, 8192, error) ||
             !ledger.upload_table(source.resource_table(), 1, handles, error)) return false;
@@ -485,32 +512,35 @@ struct DekoRenderer::Impl {
                 continue;
             }
             if(first_texture==kNoHandle)first_texture=i;
-            auto offset = placement.staging.offset;
-            TextureCopyPlan copy;
-            if (!plan_texture_copy(r, copy, error)) return false;
-            const auto pitch = copy.row_pitch_bytes;
-            if (copy.padded) {
-                ArenaAllocation padded;
-                const auto refusal = staging_arena.allocate(copy.staging_bytes, 32, padded);
-                if (refusal != ArenaRefusal::none) {
-                    error = r.name + ": padded staging: " + arena_refusal_name(refusal); return false;
-                }
-                padded_staging.push_back(padded); offset = padded.offset;
-            }
-            auto* dst = static_cast<unsigned char*>(staging.getCpuAddr()) + offset;
-            for (std::uint32_t y = 0; y < r.texture.rows(); ++y)
-                std::memcpy(dst + y*pitch, r.data + y*r.texture.row_bytes,
-                            static_cast<std::size_t>(r.texture.row_bytes));
             textures[i].initialize(texture_layout(r), images, static_cast<std::uint32_t>(placement.placement.offset));
+            for(std::uint32_t level=0;level<r.texture.mip_count;++level) {
+                TextureCopyPlan copy;
+                if (!plan_texture_copy(r, copy, error,level)) return false;
+                auto offset=placement.staging.offset+copy.source_offset;
+                if (copy.padded) {
+                    ArenaAllocation padded;
+                    const auto refusal = staging_arena.allocate(copy.staging_bytes, 32, padded);
+                    if (refusal != ArenaRefusal::none) {
+                        error = r.name + ": padded mip staging: " + arena_refusal_name(refusal); return false;
+                    }
+                    padded_staging.push_back(padded); offset = padded.offset;
+                }
+                auto* dst = static_cast<unsigned char*>(staging.getCpuAddr()) + offset;
+                for (std::uint32_t y=0;y<copy.rows;++y)
+                    std::memcpy(dst+y*copy.row_pitch_bytes,
+                        r.data+copy.source_offset+y*copy.source_row_bytes,
+                        static_cast<std::size_t>(copy.source_row_bytes));
+                dk::ImageView level_view{textures[i]};level_view.setMipLevels(level,1);
+                cmd.copyBufferToImage({staging.getGpuAddr()+offset,copy.row_pitch_bytes,copy.layer_stride_bytes},
+                    level_view,{0,0,0,copy.width,copy.height,1});
+            }
             dk::ImageView view{textures[i]};
-            cmd.copyBufferToImage({staging.getGpuAddr() + offset, copy.row_pitch_bytes,
-                                   copy.layer_stride_bytes}, view, {0, 0, 0, r.texture.width, r.texture.height, 1});
             dk::ImageDescriptor descriptor;
             descriptor.initialize(view);
             std::memcpy(static_cast<unsigned char*>(descriptors.getCpuAddr()) + i*sizeof descriptor,
                         &descriptor, sizeof descriptor);
         }
-        // Track samples nearest; the retail car effect samples linearly.
+        // Legacy nearest stays available. Authored world mip chains use linear min/mag/mip.
         dk::Sampler sampler;
         sampler.setFilter(DkFilter_Nearest, DkFilter_Nearest)
             .setWrapMode(DkWrapMode_Repeat, DkWrapMode_Repeat, DkWrapMode_Repeat);
@@ -520,6 +550,7 @@ struct DekoRenderer::Impl {
         std::memcpy(static_cast<unsigned char*>(descriptors.getCpuAddr()) + sampler_offset,
                     &sampler_descriptor, sizeof sampler_descriptor);
         sampler.setFilter(DkFilter_Linear, DkFilter_Linear);
+        if(source.race_environment)sampler.setFilter(DkFilter_Linear,DkFilter_Linear,DkMipFilter_Linear);
         sampler_descriptor.initialize(sampler);
         std::memcpy(static_cast<unsigned char*>(descriptors.getCpuAddr()) +
                         sampler_offset + kDrawDescriptorBytes,

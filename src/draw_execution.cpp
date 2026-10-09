@@ -3,17 +3,19 @@
 
 namespace nfsu {
 
-bool plan_texture_copy(const UploadResource& r, TextureCopyPlan& plan, std::string& error) {
+bool plan_texture_copy(const UploadResource& r, TextureCopyPlan& plan, std::string& error, std::uint32_t mip_level) {
     plan = {}; error.clear();
     if (r.kind != UploadResourceKind::texture || !r.data) {
         error = r.name + ": texture copy requires a texture payload"; return false;
     }
-    TextureUploadShape shape;
+    TextureUploadShape chain,shape;
     if (!check_texture_upload_format(r.texture.format, r.texture.width,
-            r.texture.height, r.bytes, shape, error)) return false;
-    if (r.texture.row_bytes != shape.row_bytes || r.texture.bytes != shape.bytes) {
+            r.texture.height, r.bytes, chain, error,r.texture.mip_count)) return false;
+    if (r.texture.row_bytes != chain.row_bytes || r.texture.bytes != chain.bytes) {
         error = r.name + ": invalid texture shape"; return false;
     }
+    std::uint64_t source_offset=0;
+    if(!texture_upload_mip(chain,mip_level,shape,source_offset,error))return false;
     // Shape validation bounds the product to kMaxUploadResourceBytes.
     // Adding at most 31 bytes per row remains safe in uint64_t.
     const auto pitch = (shape.row_bytes + 31) & ~std::uint64_t{31};
@@ -24,7 +26,9 @@ bool plan_texture_copy(const UploadResource& r, TextureCopyPlan& plan, std::stri
     plan.row_pitch_bytes = static_cast<std::uint32_t>(pitch);
     plan.layer_stride_bytes = 0;
     plan.staging_bytes = bytes;
-    plan.padded = pitch != shape.row_bytes;
+    plan.padded = pitch != shape.row_bytes || source_offset%32!=0;
+    plan.source_offset=source_offset;plan.source_row_bytes=shape.row_bytes;
+    plan.width=shape.width;plan.height=shape.height;plan.rows=static_cast<std::uint32_t>(shape.rows());
     return true;
 }
 
@@ -63,10 +67,13 @@ bool plan_draw_execution(const RecordedCommands& c, DrawExecutionPlan& plan, std
     out.staging_bytes = c.resource_table().resources.size() * 32;
     for (const auto& r : c.resource_table().resources) {
         if (r.kind != UploadResourceKind::texture) { ++out.buffer_allocations; continue; }
-        TextureCopyPlan copy;
-        if (!plan_texture_copy(r, copy, error)) return false;
         out.staging_bytes += r.bytes;
-        if (copy.padded) out.staging_bytes += copy.staging_bytes + 31;
+        ++out.staging_allocations;
+        for(std::uint32_t level=0;level<r.texture.mip_count;++level) {
+            TextureCopyPlan copy;
+            if (!plan_texture_copy(r, copy, error,level)) return false;
+            if (copy.padded) {out.staging_bytes += copy.staging_bytes + 31;++out.staging_allocations;}
+        }
     }
     if (out.staging_bytes > kMaxUploadResourceBytes) {
         error = "texture staging exceeds block limit"; return false;
@@ -89,7 +96,7 @@ bool validate_draw_update(const UploadTable& uploaded, const RecordedCommands& n
         if (a.kind != b.kind || a.data != b.data || a.bytes != b.bytes ||
             a.element_bytes != b.element_bytes || a.elements != b.elements ||
             a.texture.format != b.texture.format || a.texture.width != b.texture.width ||
-            a.texture.height != b.texture.height || a.texture.row_bytes != b.texture.row_bytes) {
+            a.texture.height != b.texture.height || a.texture.mip_count != b.texture.mip_count || a.texture.row_bytes != b.texture.row_bytes) {
             error = "updated payload differs from uploaded resource " + std::to_string(i); return false;
         }
     }

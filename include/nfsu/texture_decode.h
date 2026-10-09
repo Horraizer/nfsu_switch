@@ -18,6 +18,7 @@ struct RenderTextureLimits {
     // Keep DXT1/DXT3 top levels in their native GPU format. CPU rendering
     // requires the default RGBA8 path. Other supported formats still decode.
     bool gpu_blocks = false;
+    bool retain_mips = false; // Keep authored chain; never generate levels.
     // Upper bound on the payload bytes of all retained top levels together.
     std::uint64_t max_total_bytes = 128ULL * 1024ULL * 1024ULL;
     // Test hook called before each retained top-level allocation.

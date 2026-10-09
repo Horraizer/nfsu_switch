@@ -127,16 +127,23 @@ bool RenderTexture::claims_hash(std::uint32_t value) const noexcept {
 }
 
 bool RenderTexture::usable() const noexcept {
-    // Both factors are below 2^32, so pixels cannot overflow.
-    const std::uint64_t pixels = std::uint64_t{width} * height;
-    if (!valid || !width || !height) return false;
-    if (storage == RenderTextureStorage::rgba8)
-        return blocks.empty() && pixels <= UINT64_MAX / 4U && rgba.size() == pixels * 4U;
-    if (storage != RenderTextureStorage::dxt1 && storage != RenderTextureStorage::dxt3)
-        return false;
-    const auto count = ((std::uint64_t{width} + 3) / 4) * ((std::uint64_t{height} + 3) / 4);
-    const unsigned stride = storage == RenderTextureStorage::dxt1 ? 8 : 16;
-    return rgba.empty() && count <= UINT64_MAX / stride && blocks.size() == count * stride;
+    if (!valid || !width || !height || !mip_count || mip_count>32) return false;
+    const bool compressed=storage==RenderTextureStorage::dxt1 || storage==RenderTextureStorage::dxt3;
+    if (!compressed && storage!=RenderTextureStorage::rgba8) return false;
+    if (compressed ? !rgba.empty() : !blocks.empty()) return false;
+    std::uint64_t bytes=0;
+    auto x=width,y=height;
+    const unsigned stride=compressed?(storage==RenderTextureStorage::dxt1?8:16):4;
+    for(std::uint32_t level=0;level<mip_count;++level) {
+        const std::uint64_t columns=compressed?(std::uint64_t{x}+3)/4:x;
+        const std::uint64_t rows=compressed?(std::uint64_t{y}+3)/4:y;
+        const auto count=columns*rows;
+        if(count>UINT64_MAX/stride || bytes>UINT64_MAX-count*stride)return false;
+        bytes+=count*stride;
+        if(x==1 && y==1 && level+1<mip_count)return false;
+        x=std::max(1U,x/2);y=std::max(1U,y/2);
+    }
+    return payload().size()==bytes;
 }
 
 bool render_alpha_test_enabled(std::uint8_t alpha_test_mode) noexcept {

@@ -34,6 +34,32 @@ int main() {
         if (!ok) { std::printf("FAIL: %s (%s)\n", name, error.c_str()); ++failures; }
     };
     check(validate_recorded_commands(good, error), "valid fixture");
+    {
+        unsigned char authored[40]{};
+        UploadResource mip;mip.kind=UploadResourceKind::texture;mip.name="authored BC mips";
+        mip.data=authored;mip.bytes=sizeof authored;
+        check(check_texture_upload_format(TextureUploadFormat::dxt1,8,4,40,mip.texture,error,4),
+              "BC8x4 chain is16+8+8+8 bytes");
+        const unsigned widths[]={8,4,2,1},heights[]={4,2,1,1},offsets[]={0,16,24,32};
+        for(unsigned level=0;level<4;++level) {
+            TextureCopyPlan copy;
+            check(plan_texture_copy(mip,copy,error,level) && copy.width==widths[level] &&
+                  copy.height==heights[level] && copy.source_offset==offsets[level] &&
+                  copy.rows==1 && copy.row_pitch_bytes==32 && copy.staging_bytes==32 && copy.padded,
+                  "each tiny BC mip has exact source span and aligned copy");
+        }
+        TextureCopyPlan copy;
+        check(!plan_texture_copy(mip,copy,error,4),"refuse out-of-range mip copy");
+        auto malformed=mip;malformed.bytes=39;
+        check(!plan_texture_copy(malformed,copy,error,0),"refuse truncated mip chain before copying");
+        TextureUploadShape bad;
+        check(!check_texture_upload_format(TextureUploadFormat::dxt1,8,4,48,bad,error,5),
+              "refuse levels beyond1x1");
+        check(deko_texture_needs_one_gob(mip.texture),"mip tail uses safe one-GOB layout");
+        auto c=good;c.owning_uploads().resources.push_back(mip);DrawExecutionPlan plan;
+        check(plan_draw_execution(c,plan,error) && plan.staging_bytes==3*32+40+4*(32+31) && plan.staging_allocations==5,
+              "staging includes the whole chain and every padded tail allocation");
+    }
     const auto refuse = [&](const char* name, const char* expected,
                             const std::function<void(RecordedCommands&)>& mutate) {
         auto c = good; mutate(c);

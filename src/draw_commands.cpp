@@ -271,7 +271,7 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
         if (r.kind == UploadResourceKind::texture) {
             TextureUploadShape shape;
             if (!check_texture_upload_format(r.texture.format, r.texture.width,
-                    r.texture.height, r.bytes, shape, error)) { error = r.name + ": " + error; return false; }
+                    r.texture.height, r.bytes, shape, error, r.texture.mip_count)) { error = r.name + ": " + error; return false; }
             if (r.texture.row_bytes != shape.row_bytes || r.texture.bytes != shape.bytes)
                 return fail(r.name, "invalid texture shape");
         } else if ((r.kind != UploadResourceKind::vertex_buffer && r.kind != UploadResourceKind::index_buffer) ||
@@ -508,7 +508,10 @@ bool record_track_commands(const PreparedTrackScene& scene, const TrackDrawList&
             auto surface_options=options;
             const bool wet_world=texture && options.material_state==MaterialStateMode::retail &&
                 !options.reflection_pass && track_vertex_format(scene.region.meshes[source.mesh].vertex_format_flags).mask==0x40;
-            if(wet_world)surface_options.texture_filter=TextureFilterMode::linear;
+            const auto world_mask=track_vertex_format(scene.region.meshes[source.mesh].vertex_format_flags).mask;
+            if(wet_world || (texture && texture->mip_count>1 &&
+                options.material_state==MaterialStateMode::retail && (world_mask==0 || world_mask==0x40)))
+                surface_options.texture_filter=TextureFilterMode::linear;
             if (!buffers(scene.region.meshes[source.mesh], source, resources, draw, error) ||
                 !pipeline(draw, true, texture, 0, source.texture_hash, surface_options, error)) return false;
             if(wet_world)draw.material.fallback[3]=7.0F;

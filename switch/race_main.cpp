@@ -414,7 +414,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     const auto load_start = armGetSystemTick();
     require(race.prepare_metadata(root,error,&progress),error);
     require(scene.load(posix_file_system(), root, error, &progress, &progress,
-                       tuned, glows, car_shading, &selected_car, dress, event_number), error);
+                       tuned, glows, car_shading, &selected_car, dress, event_number, true), error);
+    std::printf("WORLD TEXTURES authored_mips=on filter=linear_min_mag_mip\n");
     screen.show({(free_drive ? std::string("Preparing free driving, ") :
                  "ASSETS PASS. Preparing event " + std::to_string(event_number) + ", ") +
                  selected_car_label + " and race course..."});

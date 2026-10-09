@@ -59,7 +59,7 @@ constexpr std::uint64_t kMaxUploadResourceBytes = 0xFFFFF000ULL;
 // ---------------------------------------------------------------------------
 
 // RGBA8 is the desktop/default preparation path. GPU preparation may retain
-// the retail DXT1/DXT3 top level (BC1/BC2); no mip chain is uploaded.
+// retail DXT1/DXT3 blocks (BC1/BC2), optionally with authored mip levels.
 enum class TextureUploadFormat {
     // RenderTexture::rgba and RuntimeSkin::rgba: four bytes per texel in
     // R, G, B, A order, rows top to bottom, the top level only.
@@ -87,13 +87,14 @@ struct TextureUploadShape {
     std::uint64_t texel_bytes = 0;
     std::uint64_t row_bytes = 0;
     std::uint64_t bytes = 0;
+    std::uint32_t mip_count = 1;
     std::uint64_t rows() const noexcept {
         return format == TextureUploadFormat::dxt1 || format == TextureUploadFormat::dxt3 ?
                (std::uint64_t{height} + 3) / 4 : height;
     }
 };
 
-// Accepts nonzero RGBA8, DXT1 or DXT3 with exactly the top-level byte count
+// Accepts nonzero RGBA8, DXT1 or DXT3 with exactly the requested mip-chain byte count
 // and at most kMaxUploadResourceBytes. row_bytes is a row of texels for
 // RGBA8 or blocks for DXT. texel_bytes is correspondingly 4, 8 or 16.
 // Refusal leaves shape zeroed and error names the violated rule.
@@ -103,7 +104,11 @@ bool check_texture_upload_format(
     std::uint32_t height,
     std::uint64_t byte_count,
     TextureUploadShape& shape,
-    std::string& error);
+    std::string& error, std::uint32_t mip_count = 1);
+
+bool texture_upload_mip(const TextureUploadShape& chain, std::uint32_t level,
+                        TextureUploadShape& shape, std::uint64_t& offset,
+                        std::string& error);
 
 // ---------------------------------------------------------------------------
 // The resource table

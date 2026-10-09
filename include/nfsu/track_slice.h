@@ -42,7 +42,7 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
                       TrackSlice& slice, std::string& error,
                       AssetCheckObserver* observer = nullptr,
                       TrackSliceLoadObserver* loading = nullptr,
-                      std::uint32_t event_number = 1);
+                      std::uint32_t event_number = 1, bool world_mips = false);
 
 struct TrackSliceFrame {
     RecordedCommands commands;

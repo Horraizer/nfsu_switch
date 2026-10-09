@@ -245,7 +245,7 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
                         std::string& error, AssetCheckObserver* observer,
                         TrackSliceLoadObserver* loading, bool tuned, bool glows,
                         bool car_shading, const CarAssets* car, const RaceCarDress* dress,
-                        std::uint32_t event_number) {
+                        std::uint32_t event_number, bool world_mips) {
     if (ready_) { error = "race scene is already loaded"; return false; }
     // The misuse refusals run before any file is read, so a caller that
     // cannot reach retail data still sees the sentence.
@@ -331,7 +331,7 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
             2 * base_.size() * sizeof(PreparedInstance);
     }
     if (loading) loading->checkpoint("car source released");
-    if (!load_track_slice(files, root, track_, error, observer, loading, event_number)) return false;
+    if (!load_track_slice(files, root, track_, error, observer, loading, event_number, world_mips)) return false;
     if (car_bytes_ + track_.contacts.memory.resident_bytes > kPersistentBudgetPlaceholder) {
         error = "race car and collision exceed the persistent payload plan"; return false;
     }

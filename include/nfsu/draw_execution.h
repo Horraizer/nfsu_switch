@@ -13,9 +13,12 @@ struct TextureCopyPlan {
     std::uint32_t layer_stride_bytes = 0;
     std::uint64_t staging_bytes = 0;
     bool padded = false;
+    std::uint64_t source_offset = 0;
+    std::uint64_t source_row_bytes = 0;
+    std::uint32_t width = 0, height = 0, rows = 0;
 };
 bool plan_texture_copy(const UploadResource& resource, TextureCopyPlan& plan,
-                       std::string& error);
+                       std::string& error, std::uint32_t mip_level = 0);
 
 // Neutral size/limit checks before device creation. Image layout and the
 // sum of device allocations still require the backend's real SDK query.
@@ -23,6 +26,7 @@ constexpr std::uint32_t kDrawDescriptorBytes = 32;
 struct DrawExecutionPlan {
     // At least one slot; derived from the validated table, not a fixed 4096.
     std::uint32_t buffer_allocations = 0;
+    std::uint32_t staging_allocations = 0;
     std::uint64_t staging_bytes = 0;
     std::uint32_t uniform_bytes = 0;
     std::uint32_t descriptor_bytes = 0;

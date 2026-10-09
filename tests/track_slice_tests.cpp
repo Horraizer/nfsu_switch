@@ -1,4 +1,5 @@
 #include "nfsu/track_slice.h"
+#include "nfsu/draw_execution.h"
 #include "nfsu/posix_file_system.h"
 #include "nfsu/platform_fakes.h"
 #include "nfsu/heap_usage.h"
@@ -17,6 +18,40 @@ int fail(int code, const char* message) {
 
 int main(int argc, char** argv) {
     using namespace nfsu;
+    if(argc==3 && std::string(argv[2])=="--mips") {
+        for(unsigned event:{1U,8U}) {
+            TrackSlice base,mipped;std::string error;
+            if(!load_track_slice(posix_file_system(),argument_path(argv[1]),base,error,nullptr,nullptr,event,false) ||
+               !load_track_slice(posix_file_system(),argument_path(argv[1]),mipped,error,nullptr,nullptr,event,true)) {
+                std::cerr<<error<<'\n';return fail(30,"world mip retail loading");
+            }
+            const auto& a=base.scene.region.textures;const auto& b=mipped.scene.region.textures;
+            if(a.size()!=b.size() || base.scene.instances.size()!=mipped.scene.instances.size())
+                return fail(31,"mips changed resource or instance selection");
+            std::size_t chains=0,cutouts=0;std::uint64_t extra=0;
+            for(std::size_t i=0;i<a.size();++i) {
+                if(!b[i].usable() || a[i].hash!=b[i].hash || a[i].width!=b[i].width ||
+                   a[i].height!=b[i].height || a[i].storage!=b[i].storage ||
+                   a[i].alpha_test_mode!=b[i].alpha_test_mode || a[i].alpha_blend_mode!=b[i].alpha_blend_mode ||
+                   b[i].payload().size()<a[i].payload().size() ||
+                   !std::equal(a[i].payload().begin(),a[i].payload().end(),b[i].payload().begin()))
+                    return fail(32,"mip path changed top level, alpha state or binding");
+                if(b[i].mip_count>1){++chains;if(b[i].alpha_test_mode==1)++cutouts;}
+                extra+=b[i].payload().size()-a[i].payload().size();
+            }
+            TrackSliceFrame frame;
+            if(!chains || !cutouts || !extra || !make_track_slice_frame(mipped,0,0,frame,error)) {
+                std::cerr<<error<<'\n';return fail(33,"mip retail frame missing chains/cutouts");
+            }
+            DrawExecutionPlan plan;
+            if(!plan_draw_execution(frame.commands,plan,error)){
+                std::cerr<<error<<'\n';return fail(34,"mip frame upload/copy plan");
+            }
+            std::cout<<"PASS world mips event="<<event<<" textures="<<b.size()<<" chains="<<chains
+                     <<" cutouts="<<cutouts<<" extra_payload_bytes="<<extra<<" staging="<<plan.staging_bytes<<'\n';
+        }
+        return 0;
+    }
     HeapUsage heap;
     heap.begin(100, 200); heap.observe(180, 300); heap.observe(120, 300);
     heap.finish_load(140, 300); heap.observe(500, 600); heap.observe(90, 600);
