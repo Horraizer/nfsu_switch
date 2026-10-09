@@ -1046,7 +1046,7 @@ struct DekoRenderer::Impl {
         if(msaa_enabled) {
             // Cube and road-reflection targets are single-sampled.
             cmd.bindMultisampleState(dk::MultisampleState{});
-            cmd.setSampleMask(0xFFFFFFFFU);
+            cmd.setSampleMask(0xFFFFU);
         }
         // Diagnose the first live FE frame without dropping any pass. Waiting
         // completes each command-memory use before begin() reuses that slot.
@@ -1225,7 +1225,7 @@ struct DekoRenderer::Impl {
             dk::MultisampleState samples;
             samples.setMode(DkMsMode_2x).setLocations();
             cmd.bindMultisampleState(samples);
-            cmd.setSampleMask(0xFFFFFFFFU);
+            cmd.setSampleMask(0xFFFFU);
         }
         cmd.setViewports(0, {{0, 0, static_cast<float>(scene_target.width), static_cast<float>(scene_target.height), 0, 1}});
         cmd.setScissors(0, {{0, 0, scene_target.width, scene_target.height}});
