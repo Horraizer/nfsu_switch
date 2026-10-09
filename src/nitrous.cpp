@@ -1,9 +1,45 @@
 #include "nfsu/nitrous.h"
+#include "nfsu/player_powertrain.h"
 
 #include <cmath>
+#include <algorithm>
 #include <limits>
 
 namespace nfsu {
+void TurboDisplayState::update(float induction, float rpm, float idle, float maximum,
+        float effective, bool cutoff, std::uint32_t clock) noexcept {
+    if (!(induction>0) || !(maximum>idle)) return;
+    const float seconds=static_cast<float>(clock)*0.00025F;
+    const float dt=seconds-previous_seconds;
+    if (!(dt>0.01666666753590107F)) return;
+    previous_seconds=seconds;
+    const float factor=induction/0.19F;
+    const float vacuum=-0.25F*factor;
+    if (mode==0) {
+        if (effective>=0.3F) { mode=1;return; }
+        value=std::min(2.0F*((rpm-idle)/(maximum-idle)),1.0F)*vacuum;
+    } else if (mode==1) {
+        if (effective>=0.3F) {
+            const float throttle=std::min(effective,1.0F);
+            value=std::min(factor,value+((rpm-idle)/(maximum-idle))*throttle*2.0F*dt);
+        } else if (!cutoff) { mode=2;decay_seconds=dt;decay_start=value; }
+    } else if (mode==2) {
+        const float shifted=decay_seconds+1.1F;
+        const float squared=shifted*shifted;
+        const float argument=squared*squared*6.5F;
+        const auto angle=static_cast<std::uint16_t>(static_cast<std::int32_t>(argument*10430.3779296875F+16383.9990234375F));
+        float next=player_angle_sin(angle)*(decay_start/factor)/decay_seconds*0.015F+vacuum;
+        next=std::min(decay_start,std::max(next,2.0F*vacuum));
+        bool crossed=false;
+        if (crossing_value==0) crossing_value=next;
+        else if ((next>value && next<=crossing_value) || (next<=value && next>crossing_value)) {
+            if (std::abs(value-crossing_value)<0.15F) crossed=true;
+            else crossing_value=value;
+        }
+        decay_seconds+=dt;value=next;
+        if (crossed || decay_seconds>0.5F) { mode=0;crossing_value=0; }
+    }
+}
 namespace {
 constexpr double tick_seconds = static_cast<double>(0.00025000001187436282634735107421875F);
 std::int64_t signed_word(std::uint32_t value) noexcept {

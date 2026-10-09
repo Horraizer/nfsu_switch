@@ -1,4 +1,5 @@
 #include "nfsu/player_powertrain.h"
+#include "nfsu/nitrous.h"
 #include "nfsu/player_angle_data.h"
 #include <cstring>
 #include <cmath>
@@ -861,11 +862,24 @@ bool player_request_shift_tables(const VehicleHandling& h,
 
 float player_engine_torque(const VehicleHandling& h,
                           const PlayerEngineState& engine, int gear,
-                          float throttle) noexcept {
+                          float throttle, const VehicleInput* input,
+                          float nitrous_rate) noexcept {
     const float rpm = engine.angular_speed * kPlayerRadSToRpm;
     const float effective = engine.cutoff_until == 0.0F ?
         engine.throttle_multiplier * throttle : 0.0F;
-    const float drive = curve(h.torque.data(), 9, h.idle_rpm, h.max_rpm, rpm) * effective;
+    float drive = curve(h.torque.data(), 9, h.idle_rpm, h.max_rpm, rpm) * effective;
+    if (input && input->nitrous_active) {
+        NitrousCurveDescriptor descriptor;
+        if (descriptor.initialize(h.idle_rpm,h.redline_rpm)) {
+            NitrousTorqueContext context;
+            context.rpm_origin=descriptor.rpm_origin;
+            context.rpm_scale=descriptor.rpm_scale;
+            context.clock=input->nitrous_clock;
+            context.activation_seconds=input->nitrous_activation_seconds;
+            // Explicit ordinary port domain: drag and override disabled.
+            drive=nitrous_engine_torque(drive,engine.angular_speed,nitrous_rate,true,context);
+        }
+    }
     float brake = -curve(h.engine_brake.data(), 3, h.idle_rpm, h.max_rpm, rpm) *
                   (1.0F - effective);
     if (engine.cutoff_until > 0.0F && gear != kVehicleGearNeutral) brake *= 4.0F; // 6B7210

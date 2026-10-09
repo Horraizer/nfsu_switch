@@ -2,6 +2,7 @@
 #include "nfsu/car_assets.h"
 #include "nfsu/race_gpu_scene.h"
 #include "nfsu/stock_frame.h"
+#include "nfsu/vehicle_tuning.h"
 #include <filesystem>
 #include <string>
 namespace nfsu {
@@ -23,6 +24,8 @@ struct FreeDriveSkyline {
     StockSceneRequest request;
     StockFrameSkin skin;
     RaceCarDress dress;
+    // Port free-drive choice: level3 turbo/nitrous; other levels unchanged.
+    VehicleUpgradeLevels performance;
 };
 // Reads FrontB.lzc and GLOBALB.BUN read-only and fills `out`. Fails, with
 // `error` set and nothing half-applied, when either image or the Skyline

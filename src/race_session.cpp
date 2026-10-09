@@ -93,6 +93,11 @@ double RaceCameraWorld::clear_fraction(const VehicleVec3& from, const VehicleVec
 
 bool RaceSession::start(std::string& error) {
     if (started_) { error = "race session is one-shot"; return false; }
+    if (!controls_.configure(default_drive_controls_config(),spec_.nitrous.installed,error)) return false;
+    if (spec_.nitrous.installed &&
+        !nitrous_resource_.initialize(spec_.nitrous.capacity_seconds,spec_.nitrous.count)) {
+        error="installed nitrous resource refused";return false;
+    }
     if (steering_mode_ != RaceSteering::baseline && steering_mode_ != RaceSteering::recovered_predicate0 &&
         steering_mode_ != RaceSteering::recovered_predicate1) { error="invalid steering mode"; return false; }
     if (!course_.has_route || !vehicle_.valid() || !vehicle_.start(course_.start)) {
@@ -120,6 +125,12 @@ bool RaceSession::advance(const GamepadFrame& pad, std::string& error) {
         frame.handbrake;
     RaceTimingInput timing_input;
     if (!race_car_held(timing_)) {
+        nitrous_clock_=static_cast<std::uint32_t>(timing_.now_ticks);
+        // Permit the ordinary port's driving stage only. Pause does not call
+        // advance; grid controls remain sampled without spending charge.
+        if (controls_.held()) nitrous_dispatch(nitrous_resource_,nitrous_clock_,true,{});
+        else nitrous_dispatch(nitrous_resource_,nitrous_clock_,false,{});
+        nitrous_engine_.update(nitrous_resource_,nitrous_clock_);
         if (controls_.frame_state().reset) vehicle_.request_reset();
         const bool recovered = steering_mode_ != RaceSteering::baseline;
         // Keep the legacy processed-controls adapter at two120Hz updates.
@@ -128,6 +139,9 @@ bool RaceSession::advance(const GamepadFrame& pad, std::string& error) {
         // small slew below one degree back to zero during gradual turn-in.
         auto first=controls_.step(forward_speed(car()),car().gear,car().gearbox,recovered);
         auto held=controls_.step(forward_speed(car()),car().gear,car().gearbox,recovered);
+        held.nitrous_active=nitrous_engine_.active;
+        held.nitrous_clock=nitrous_clock_;
+        held.nitrous_activation_seconds=nitrous_engine_.activation_seconds;
         if(recovered) {
             if(!steer_input(held,1,error)) {started_=false;return false;}
             ++steering_steps_;
@@ -142,6 +156,7 @@ bool RaceSession::advance(const GamepadFrame& pad, std::string& error) {
                 kDriveSolverSeconds,k==0,kDriveStepsPerFrame)) {
                 started_ = false; error = vehicle_.error(); return false;
             }
+            if (track_telemetry_[k].reset!=VehicleTrackReset::none) turbo_={};
             if (recovered) {
                 if (track_telemetry_[k].reset != VehicleTrackReset::none) {
                     steering_state_={}; steering_result_={}; shifted_=false;
@@ -162,6 +177,12 @@ bool RaceSession::advance(const GamepadFrame& pad, std::string& error) {
         timing_input.events = vehicle_.events().data();
         timing_input.event_count = vehicle_.events().size();
         timing_input.speed = static_cast<float>(speed(car()));
+        const float induction=*std::max_element(spec_.induction.begin(),spec_.induction.end());
+        const auto& engine=car().engine;
+        turbo_.update(induction,engine.angular_speed*9.54930400848388671875F,
+            spec_.handling.idle_rpm,spec_.handling.max_rpm,
+            engine.cutoff_until==0?engine.throttle_multiplier*float(held.throttle):0,
+            engine.cutoff_until!=0,nitrous_clock_);
     } else {
         // Hold the grid pose, including gravity, until the countdown says GO.
         // Still sample controls, so hot-plug latches and button releases work.
@@ -174,6 +195,9 @@ bool RaceSession::advance(const GamepadFrame& pad, std::string& error) {
     timing_events_.clear();
     if (!step_race_timing(course_.route, timing_config_, timing_, &timing_input,
                           timing_events_, error)) { started_ = false; return false; }
+    if (race_car_held(timing_) || timing_.outcome!=RaceOutcome::running) {
+        nitrous_resource_.stop(nitrous_clock_);nitrous_engine_.active=false;
+    }
     if (controls_.frame_state().camera) chase_.next_pov();
     if (!chase_.update(chase_subject(car(), spec_), kDriveFrameSeconds, camera_world_, view_,
                        controls_.frame_state().look_back)) {
@@ -233,6 +257,13 @@ void RaceSession::encode() {
             u32(record_,static_cast<std::uint32_t>(v)); u32(record_,static_cast<std::uint32_t>(v>>32));
         }
         u32(record_,shifted_); f32(record_,steering_max_speed_);
+    }
+    if (spec_.nitrous.installed) {
+        u32(record_,0x31534F4E); // NOS1 extension; uninstalled recordings unchanged.
+        for (auto v:{nitrous_resource_.capacity,nitrous_resource_.step,
+                     nitrous_resource_.remaining,nitrous_resource_.started,nitrous_clock_}) u32(record_,v);
+        u32(record_,nitrous_engine_.active);f32(record_,nitrous_engine_.activation_seconds);
+        f32(record_,turbo_.value);u32(record_,static_cast<std::uint32_t>(turbo_.mode));
     }
 }
 

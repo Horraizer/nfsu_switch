@@ -19,6 +19,8 @@ bool resolve_free_drive_skyline(const std::filesystem::path& root,
     out.request = StockSceneRequest{};
     out.skin = StockFrameSkin{};
     out.dress = RaceCarDress{};
+    out.performance = {};
+    out.performance.induction = out.performance.nitrous = 3;
     // The same bounded FrontEnd read the menu's own loader makes, and the
     // default-limited GLOBALB read its preset tests make. Both buffers die
     // here; the request and skin below copy out of them.

@@ -363,10 +363,19 @@ struct PlayerAeroCache {
     bool enabled = true;
 };
 
+struct VehicleNitrousSetup {
+    bool installed = false;
+    float capacity_seconds = 0, rate = 0;
+    std::int32_t count = 0;
+};
+
 struct VehicleSpec {
     VehicleHandling handling;
     VehicleApproximations approx;
     PlayerInitialAeroConfiguration aero;
+    VehicleNitrousSetup nitrous;
+    // Applied original +334 curve, already added into handling.torque.
+    std::array<float,9> induction{};
 };
 
 // stock_240sx_handling() with the default approximations.
@@ -478,6 +487,9 @@ struct VehicleInput {
     double steer_history = 0;
     double steer_limit_deg = 0, steer_rate_deg_s = 0, steer_shift_factor = 0;
     int steering_mode = 0;
+    bool nitrous_active = false;
+    std::uint32_t nitrous_clock = 0;
+    float nitrous_activation_seconds = 0;
 };
 
 struct VehicleWheelState {

@@ -36,6 +36,8 @@ constexpr AtlasRect kLcd{272, 256, 128, 128};
 constexpr AtlasRect kUnit{400, 256, 42, 14};
 constexpr AtlasRect kLapBacking{0,448,256,64};
 constexpr AtlasRect kLapWhite{444,256,16,16};
+constexpr AtlasRect kTurboFill{512,270,128,128}, kTurboLines{640,270,64,128};
+constexpr AtlasRect kTurboNeedle{704,270,16,64}, kTurboRed1{720,270,32,32}, kTurboRed2{752,270,32,32};
 struct HudGlyph {
     AtlasRect uv;
     int width, height, bearing_x, bearing_y, advance;
@@ -147,7 +149,7 @@ bool load_lap_fonts(const std::filesystem::path& root, RaceHudAtlas& atlas,
     const auto packs=load_texture_pack_set(root/"Languages/LanguageTextures.bin",bytes);
     if (!packs.complete || !packs.ok()) { error="lap HUD language texture pack invalid"; return false; }
     constexpr const char* names[]={"conduitmditc_tt14i","font_conduitmditctt38bi","lcd_let48"};
-    constexpr const char* needed[]={" 0123456789:./-hCurrentBestFPSms", " 0123456789/Laps", "0123456789"};
+    constexpr const char* needed[]={" 0123456789:./-hCurrentBestFPSmsTurbo", " 0123456789/Laps", "0123456789"};
     int pack_x=256,pack_y=384,row_height=0;
     for (unsigned f=0;f<3;++f) {
         RaceLapHudFont font;
@@ -307,7 +309,7 @@ double race_hud_needle_rotation(double rpm, double max_rpm) noexcept {
 }
 
 bool load_race_hud_atlas(const std::filesystem::path& root,
-                         RaceHudAtlas& atlas, std::string& error, bool first_track_map) {
+                         RaceHudAtlas& atlas, std::string& error, bool first_track_map, bool boost) {
     atlas={};
     atlas.rgba.assign(kRaceHudAtlasWidth*kRaceHudAtlasSize*4, 0);
     for (const char* path : {"Global/INGAMEB.BUN", "Global/DYNTEX.BIN", "Global/GLOBALB.BUN",
@@ -349,6 +351,23 @@ bool load_race_hud_atlas(const std::filesystem::path& root,
             if (!markers.complete || !markers.ok() || !copy_texture(bytes,markers,source,atlas,error)) return false;
         }
     }
+    if (boost) {
+        std::vector<unsigned char> bytes;
+        const auto packs=load_texture_pack_set(root/"Global/INGAMEB.BUN",bytes);
+        if (!packs.complete || !packs.ok()) { error="boost HUD pack invalid";return false; }
+        for (const auto& source:std::array<SourceSpec,5>{{
+            {"Global/INGAMEB.BUN",bin_hash("3RDPERSON_TURBOFILL"),kTurboFill},
+            {"Global/INGAMEB.BUN",bin_hash("3RDPERSON_TURBOLINES"),kTurboLines},
+            {"Global/INGAMEB.BUN",bin_hash("3RDPERSON_TURBODIAL"),kTurboNeedle},
+            {"Global/INGAMEB.BUN",bin_hash("3RDPERSON_TURBORED_1"),kTurboRed1},
+            {"Global/INGAMEB.BUN",bin_hash("3RDPERSON_TURBORED_2"),kTurboRed2}}})
+            if (!copy_texture(bytes,packs,source,atlas,error)) return false;
+        for (unsigned k=0;k<6;++k) {
+            const auto name="SR_NOS_BAR6_"+std::to_string(k+1);
+            if (!copy_texture(bytes,packs,{"Global/INGAMEB.BUN",bin_hash(name),{800+int(k)*32,270,32,32}},atlas,error)) return false;
+        }
+        atlas.boost_ready=true;
+    }
     return load_lap_fonts(root,atlas,error);
 }
 
@@ -366,6 +385,8 @@ void build_race_hud_frame(const RaceSession& session, const RaceHudAtlas& atlas,
                           std::uint32_t width, std::uint32_t height,
                           RaceHudFrame& frame) noexcept {
     build_race_hud_frame(session,width,height,frame);
+    const bool turbo=*std::max_element(session.spec().induction.begin(),session.spec().induction.end())>0;
+    append_race_boost_hud(atlas,session.nitrous(),turbo,session.turbo_pressure(),width,height,frame);
     if (!atlas.lap_ready || !width || !height) return;
     const auto snapshot=race_lap_hud_snapshot(session.course().route,session.timing(),0,true);
     build_race_lap_hud_panel(snapshot,RaceLapHudLanguage{true,0},frame.lap);
@@ -419,6 +440,56 @@ void build_race_hud_frame(const RaceSession& session, const RaceHudAtlas& atlas,
             frame.vertices[q*4+v].v+=v<2?inset:-inset;
         }
     frame.lap.presentation_ready=true;
+}
+
+void append_race_boost_hud(const RaceHudAtlas& atlas, const NitrousSnapshot& nos,
+        bool turbo, float pressure, unsigned width, unsigned height, RaceHudFrame& frame) noexcept {
+    if (!atlas.boost_ready || !width || !height) return;
+    const float scale=std::min(width/1280.0F,height/720.0F), s=scale*5.0F/3.0F;
+    const float px=width-147*scale,py=height-119*scale;
+    const unsigned before=frame.quads;
+    // NOS_6 group plus child SAT centers, relative to the Tach needle.
+    // Full original artwork is retained; charge modulates segment alpha.
+    constexpr float x[6]={18,5,-14,-23,-24,-17};
+    constexpr float y[6]={-19,-27,-24,-13,4,16};
+    const float segments=nos.capacity?6.0F*float(nos.remaining)/float(nos.capacity):0;
+    if (nos.capacity) for (unsigned k=0;k<6;++k) {
+        const float filled=std::clamp(segments-float(k),0.0F,1.0F);
+        rect(frame,{800+int(k)*32,270,32,32},px+(x[k]-16)*s,py+(y[k]-16)*s,32*s,32*s,
+            {{0,255,0}},static_cast<unsigned char>(150*filled));
+    }
+    // Put NOS below scale/needle, preserving their existing painter order.
+    if (frame.quads>before && before>1) {
+        std::array<TrackVertex,kRaceHudMaxQuads*4> copy=frame.vertices;
+        const unsigned added=frame.quads-before;
+        std::copy_n(copy.begin()+before*4,added*4,frame.vertices.begin()+4);
+        std::copy_n(copy.begin()+4,(before-1)*4,frame.vertices.begin()+(added+1)*4);
+    }
+    if (!turbo) return;
+    // Original Turbo_Group and child SAT geometry, relative to Needle SAT.
+    const float gx=-15.972229F-82.36F,gy=5.263870F+27.57F;
+    const auto sprite=[&](AtlasRect uv,float cx,float cy,float w,float h,
+                          std::array<unsigned char,3> tint,unsigned char alpha) {
+        rect(frame,uv,px+(gx+cx-w*.5F)*s,py+(gy+cy-h*.5F)*s,w*s,h*s,tint,alpha);
+    };
+    sprite(kTurboFill,-5.666672F,15.166672F,128,128,{{255,255,255}},120);
+    sprite(kTurboRed1,16.333328F,-37.833328F,32,32,{{150,0,0}},150);
+    sprite(kTurboRed2,-16.666672F,12.166672F,32,32,{{150,0,0}},150);
+    sprite(kTurboLines,-1.666672F,15.166672F,64,128,{{0,128,192}},255);
+    // Ordinary 4A1460 maps -1..1 to30..219 degrees.
+    const float rotation=30.0F+(pressure+1.0F)*0.5F*189.0F;
+    rotated(frame,kTurboNeedle,px+(gx+5)*s,py+(gy-8)*s,16*s,64*s,8*s,32*s,
+        rotation*(3.14159265358979323846/180.0),{{207,233,242}});
+    const char* label="Turbo";float advance=0;
+    for (const char* c=label;*c;++c) advance+=atlas.lap_fonts[0][unsigned(*c)].advance;
+    float tx=px+(gx+8.333328F)*s-advance*.8F*s;
+    const float ty=py+(gy+7.166672F)*s;
+    for (const char* c=label;*c;++c) {
+        const auto& g=atlas.lap_fonts[0][unsigned(*c)];
+        if (g.width && g.height) rect(frame,{g.x,g.y,g.width+2,g.height+2},
+            tx+g.bearing_x*.8F*s,ty+g.bearing_y*.8F*s,g.width*.8F*s,g.height*.8F*s,{{150,190,255}},255);
+        tx+=g.advance*.8F*s;
+    }
 }
 
 void build_race_hud_frame_for_car(const VehicleState& car,

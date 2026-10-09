@@ -1,5 +1,6 @@
 #include "nfsu/vehicle.h"
 #include "nfsu/player_powertrain.h"
+#include "nfsu/nitrous.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -1025,6 +1026,14 @@ VehicleModel::VehicleModel(const VehicleSpec& spec) : spec_(spec) {
         return;
     }
     const VehicleApproximations& a = spec_.approx;
+    if (spec_.nitrous.installed) {
+        NitrousResource resource;NitrousCurveDescriptor descriptor;
+        if (!finite(spec_.nitrous.rate) || spec_.nitrous.rate<0 ||
+            !resource.initialize(spec_.nitrous.capacity_seconds,spec_.nitrous.count) ||
+            !descriptor.initialize(spec_.handling.idle_rpm,spec_.handling.redline_rpm)) {
+            error_="installed nitrous setup is invalid";return;
+        }
+    }
     if (!finite(spec_.aero.drag_gain) || !finite(spec_.aero.drag_arm_z)) {
         error_ = "supplied initial aero globals must be finite";
         return;
@@ -1590,7 +1599,8 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             wheel_out[k].slip_lateral=w.velocity_lat/std::max(absolute(w.velocity_long),a.slip_speed_floor);
         }
         force = v3(0.0,0.0,s.body_gravity?-d_.weight:0.0);
-        const float crank=player_engine_torque(h,s.engine,s.gear,static_cast<float>(throttle));
+        const float crank=player_engine_torque(h,s.engine,s.gear,static_cast<float>(throttle),
+            spec_.nitrous.installed?&raw_input:nullptr,spec_.nitrous.rate);
         engine_torque=static_cast<double>(crank)*a.unit_scale;
         s.transmission.wheel_engine_speed=player_wheel_engine_speed(h,s.gear,
             {{work[0].spin,work[1].spin,work[2].spin,work[3].spin}});
@@ -1668,7 +1678,8 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         player_wheel_integrate(w,rate,static_cast<float>(dt));
         wheel.spin=w.spin;wheel.history_torque=w.history_torque;wheel.spin_direction=w.spin_direction;
     }
-    const float derivative_crank=player_engine_torque(h,s.engine,s.gear,static_cast<float>(throttle));
+    const float derivative_crank=player_engine_torque(h,s.engine,s.gear,static_cast<float>(throttle),
+        spec_.nitrous.installed?&raw_input:nullptr,spec_.nitrous.rate);
     player_engine_integrate(h,s.engine,derivative_crank,static_cast<float>(dt));
     player_gear_integrate(h,s.transmission,static_cast<float>(dt));
     s.simulation_seconds+=dt;

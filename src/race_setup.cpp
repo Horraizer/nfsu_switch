@@ -1,6 +1,7 @@
 #include "nfsu/race_setup.h"
 #include "nfsu/part_placement.h"
 #include <fstream>
+#include <cstring>
 
 namespace nfsu {
 namespace {
@@ -76,6 +77,18 @@ bool make_race_vehicle_spec(const unsigned char* original, std::size_t size,
     VehicleSpec next; std::vector<VehicleHandlingIssue> handling_issues;
     if (!decode_vehicle_handling(applied.data(),applied.size(),next.handling,handling_issues)) {
         error = "performance handling: " + handling_issues.front().message; return false;
+    }
+    const auto word=[&](std::size_t at) {
+        return std::uint32_t(applied[at]) | std::uint32_t(applied[at+1])<<8 |
+               std::uint32_t(applied[at+2])<<16 | std::uint32_t(applied[at+3])<<24;
+    };
+    const auto real=[&](std::size_t at) { const auto bits=word(at);float f;std::memcpy(&f,&bits,4);return f; };
+    for (unsigned k=0;k<9;++k) next.induction[k]=real(0x334+4*k);
+    next.nitrous.installed=levels.nitrous>0;
+    if (next.nitrous.installed) {
+        next.nitrous.capacity_seconds=real(0x3B0);
+        next.nitrous.count=static_cast<std::int32_t>(word(0x3B4));
+        next.nitrous.rate=real(0x3BC);
     }
     const VehicleModel model(next);
     if (!model.valid()) { error = model.error(); return false; }

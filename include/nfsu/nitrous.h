@@ -99,4 +99,14 @@ struct NitrousTorqueContext {
 float nitrous_engine_torque(float base, float angular_speed, float rate,
                            bool active, const NitrousTorqueContext& context) noexcept;
 
+// Original live-engine 46CCC0 display producer. This does not multiply the
+// engine torque: the installed induction curve is already in the setup.
+struct TurboDisplayState {
+    float value = 0, previous_seconds = 0, decay_seconds = 0;
+    float decay_start = 0, crossing_value = 0;
+    int mode = 0;
+    void update(float maximum_induction, float rpm, float idle, float maximum_rpm,
+                float effective_throttle, bool cutoff, std::uint32_t clock) noexcept;
+};
+
 } // namespace nfsu

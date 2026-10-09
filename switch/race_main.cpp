@@ -445,6 +445,11 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     if (!free_drive) screen.show({car_shading ? "CAR SHADING ON: static environment approximation" : "CAR SHADING OFF"});
     progress.checkpoint("race course");
     require(race.start(root,scene.track(),error,&progress),error);
+    if (race.session().spec().nitrous.installed) {
+        const auto& nos=race.session().spec().nitrous;
+        std::printf("BOOST L=nitrous capacity_seconds=%.3f count=%ld rate=%.3f\n",
+            double(nos.capacity_seconds),static_cast<long>(nos.count),double(nos.rate));
+    }
     progress.checkpoint("race course prepared");
     audio::RaceAudioService sound;
     std::string audio_note;
@@ -465,7 +470,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     std::printf("AUDIO: %s\n", audio_note.c_str());
     RaceHudAtlas hud_atlas;
     if (hud_mode && !panel_mode)
-        require(load_race_hud_atlas(root,hud_atlas,error,event_number==1),error);
+        require(load_race_hud_atlas(root,hud_atlas,error,event_number==1,
+            race.session().spec().nitrous.installed),error);
     const auto persistent = scene.car_bytes()+race.persistent_bytes()+
         scene.track().contacts.memory.resident_bytes+scene.cache_bytes()+
         sound.resident_bytes()+hud_atlas.rgba.size();
@@ -1226,7 +1232,8 @@ int main(int argc, char** argv) {
                             // keep the --car-shading argument's control.
                             run(root,false,false,profile_frame,particles_enabled,sky,
                                 tuned,glows,car_shading||(free_drive_resolved&&!car_shading_seen),wet_road_reflections,texture_filter,scene_height,
-                                gpu_boost,hud,false,fps_overlay,explicit_performance ? &performance : nullptr,
+                                gpu_boost,hud,false,fps_overlay,explicit_performance ? &performance :
+                                    free_drive_resolved ? &free_drive_skyline.performance : nullptr,
                                 handling_telemetry,steering,
                                 free_drive_resolved ? free_drive_skyline.car : selected_car,
                                 screen,pad,true,

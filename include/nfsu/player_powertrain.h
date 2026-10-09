@@ -213,10 +213,12 @@ bool player_request_shift_tables(const VehicleHandling& setup,
     std::array<float,kVehicleGearSlots>& up,
     std::array<float,kVehicleGearSlots>& down) noexcept;
 
-// 46CFF0 without nitrous, damage or owner collision-state modifiers.
+// 46CFF0; optional original nitrous term before engine braking.
+// Damage and owner collision-state modifiers remain outside this adapter.
 float player_engine_torque(const VehicleHandling& setup,
                           const PlayerEngineState& engine, int gear,
-                          float throttle) noexcept;
+                          float throttle, const VehicleInput* input = nullptr,
+                          float nitrous_rate = 0) noexcept;
 
 // 46D680. Original near-zero/near-one axle selection and final-drive fields.
 float player_wheel_engine_speed(const VehicleHandling& setup, int gear,

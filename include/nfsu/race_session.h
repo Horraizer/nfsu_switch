@@ -4,6 +4,8 @@
 #include "nfsu/race_timing.h"
 #include "nfsu/vehicle_track.h"
 #include "nfsu/steering.h"
+#include "nfsu/nitrous.h"
+#include "nfsu/nitrous_controls.h"
 
 namespace nfsu {
 
@@ -38,6 +40,8 @@ public:
     const RaceTimingConfig& timing_config() const { return timing_config_; }
     const ChaseCameraView& camera() const { return view_; }
     const VehicleSpec& spec() const { return spec_; }
+    NitrousSnapshot nitrous() const { return nitrous_snapshot(nitrous_resource_,nitrous_clock_); }
+    float turbo_pressure() const { return turbo_.value; }
     const VehicleTrackTelemetry& telemetry() const { return track_telemetry_.back(); }
     const std::array<VehicleTrackTelemetry,kDriveStepsPerFrame>& physics_telemetry() const { return track_telemetry_; }
     const std::vector<std::uint8_t>& record() const { return record_; }
@@ -51,7 +55,11 @@ private:
     VehicleSpec spec_;
     VehicleModel model_;
     VehicleTrackSession vehicle_;
-    DriveControls controls_;
+    NitrousControls controls_;
+    NitrousResource nitrous_resource_;
+    NitrousEngineState nitrous_engine_;
+    std::uint32_t nitrous_clock_ = 0;
+    TurboDisplayState turbo_;
     ChaseCamera chase_;
     RaceCameraWorld camera_world_;
     ChaseCameraView view_;

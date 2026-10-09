@@ -28,6 +28,7 @@ struct RaceHudAtlas {
     // Small time font, large lap label/total font, LCD lap number.
     std::array<std::array<RaceHudTextGlyph,128>,3> lap_fonts{};
     bool lap_ready = false;
+    bool boost_ready = false;
     MinimapResource map;
 };
 struct RaceHudReadout {
@@ -82,7 +83,11 @@ RaceHudDial select_race_hud_dial(double max_rpm, double redline_rpm) noexcept;
 double race_hud_needle_rotation(double rpm, double max_rpm) noexcept;
 
 bool load_race_hud_atlas(const std::filesystem::path& root,
-                         RaceHudAtlas& atlas, std::string& error, bool first_track_map = false);
+                         RaceHudAtlas& atlas, std::string& error, bool first_track_map = false,
+                         bool boost = false);
+void append_race_boost_hud(const RaceHudAtlas& atlas, const NitrousSnapshot& nitrous,
+                          bool turbo_installed, float turbo_pressure, unsigned width,
+                          unsigned height, RaceHudFrame& frame) noexcept;
 // Writes fixed-capacity vertices, reading only the completed race state.
 // FEng local geometry under the measured anchor in docs/HUD_253.md.
 void build_race_hud_frame(const RaceSession& session,
