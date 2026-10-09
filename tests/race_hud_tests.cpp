@@ -121,8 +121,8 @@ void test_needle_endpoint(const nfsu::RaceHudFrame& frame,
 
 void test_face_registration(const nfsu::RaceHudFrame& frame, bool red) {
     const auto* face=&frame.vertices[(red ? 2 : 1)*4];
-    const double u0=face[0].u*512.0, v0=face[0].v*512.0;
-    const double u1=face[1].u*512.0, v1=face[2].v*512.0;
+    const double u0=face[0].u*nfsu::kRaceHudAtlasWidth, v0=face[0].v*512.0;
+    const double u1=face[1].u*nfsu::kRaceHudAtlasWidth, v1=face[2].v*512.0;
     check(std::abs((u1-u0)-256.0)<0.01 &&
           std::abs((v1-v0)-128.0)<0.01,
           "LINES samples its full 256x128 retail sprite");
@@ -133,7 +133,7 @@ void test_face_registration(const nfsu::RaceHudFrame& frame, bool red) {
           std::abs(hub_y-(601.0-pitch))<0.01,
           "decoded LINES hub uses measured anchor and recovered SAT offset");
     const auto* needle=&frame.vertices[(red ? 3 : 2)*4];
-    check(std::abs((needle[1].u-needle[0].u)*512.0-16.0)<0.01 &&
+    check(std::abs((needle[1].u-needle[0].u)*nfsu::kRaceHudAtlasWidth-16.0)<0.01 &&
           std::abs((needle[3].v-needle[0].v)*512.0-128.0)<0.01,
           "needle samples the complete 16x128 retail sprite");
     check(needle[0].color[0]==207 && needle[0].color[1]==233 &&
@@ -141,9 +141,9 @@ void test_face_registration(const nfsu::RaceHudFrame& frame, bool red) {
           "3rdPersonNeedle uses SAT 0x457C BGRA (242,233,207,255)");
     const auto* fill=&frame.vertices[0];
     const auto* overlay=&frame.vertices[1*4];
-    check(std::lround(fill[0].u*512)==0 &&
+    check(std::lround(fill[0].u*nfsu::kRaceHudAtlasWidth)==0 &&
           std::lround(fill[0].v*512)==256 &&
-          std::lround(needle[0].u*512)==256 &&
+          std::lround(needle[0].u*nfsu::kRaceHudAtlasWidth)==256 &&
           std::lround(needle[0].v*512)==256,
           "needle samples its retail atlas after the Tach face");
     check(fill[0].px==face[0].px && fill[0].py==face[0].py &&
@@ -201,11 +201,11 @@ void test_dial() {
               "retail max and redline select DYNTEX LINES and RED");
         nfsu::build_race_hud_frame_for_car(car,item.max,item.red,1280,720,frame);
         const auto face_index=(item.overlay ? 2 : 1)*4;
-        check(std::lround(frame.vertices[face_index].u*512)==item.x &&
+        check(std::lround(frame.vertices[face_index].u*nfsu::kRaceHudAtlasWidth)==item.x &&
               std::lround(frame.vertices[face_index].v*512)==item.y,
               "frame uses the selected LINES atlas slot");
         if (item.overlay) {
-            check(std::lround(frame.vertices[1*4].u*512)==item.rx &&
+            check(std::lround(frame.vertices[1*4].u*nfsu::kRaceHudAtlasWidth)==item.rx &&
                   std::lround(frame.vertices[1*4].v*512)==item.ry,
                   "frame uses the selected RED atlas slot");
         } else {
@@ -259,11 +259,11 @@ void test_needle_over_scale() {
     // An opaque synthetic scale mark crosses the real needle geometry at
     // numeral radius. This verifies compositing, not only vertex ordinals.
     nfsu::RaceHudAtlas atlas;
-    atlas.rgba.assign(512*512*4,0);
+    atlas.rgba.assign(nfsu::kRaceHudAtlasWidth*512*4,0);
     const auto white=[&](int left,int top,int width,int height) {
         for (int y=top;y<top+height;++y) for (int x=left;x<left+width;++x)
             for (int channel=0;channel<4;++channel)
-                atlas.rgba[(y*512+x)*4+channel]=255;
+                atlas.rgba[(y*nfsu::kRaceHudAtlasWidth+x)*4+channel]=255;
     };
     white(256,0,256,128); // stock LINES slot
     white(256,256,16,128); // Needle
@@ -301,11 +301,11 @@ void test_gear_and_speed() {
     nfsu::RaceHudFrame frame;
     car.gear = nfsu::kVehicleGearNeutral;
     nfsu::build_race_hud_frame_for_car(car,8000,7500,1280,720,frame);
-    check(std::lround(frame.vertices[4*4].u * 512) == 293,
+    check(std::lround(frame.vertices[4*4].u * nfsu::kRaceHudAtlasWidth) == 293,
           "neutral uses the N glyph");
     car.gear = nfsu::kVehicleGearReverse;
     nfsu::build_race_hud_frame_for_car(car,8000,7500,1280,720,frame);
-    check(std::lround(frame.vertices[4*4].u * 512) == 348,
+    check(std::lround(frame.vertices[4*4].u * nfsu::kRaceHudAtlasWidth) == 348,
           "reverse uses the R glyph");
     check(frame.quads == 9, "zero mph has one speed glyph and three unit letters");
     car.velocity.x = 45.0;
@@ -361,15 +361,15 @@ void test_layout_and_current_state() {
           std::abs(second[0].px-1125.65F)<0.01 &&
           std::abs(third[0].px-1149.65F)<0.01 &&
           std::abs((speed[1].px-speed[0].px)-13.0F)<0.01 &&
-          std::lround(speed[0].u*512)==375 &&
+          std::lround(speed[0].u*nfsu::kRaceHudAtlasWidth)==375 &&
           std::lround(speed[0].v*512)==291,
           "100 mph uses native proportional advance and padded 1 UVs");
     const auto* units=&full.vertices[8*4];
     check(std::abs(units[0].px-1192.4F)<0.01 &&
           std::abs(units[0].py-635.2833F)<0.01 &&
           std::abs((units[1].px-units[0].px)-17.3333F)<0.01 &&
-          std::lround(units[0].u*512)==400 &&
-          std::lround(units[1].u*512)==415,
+          std::lround(units[0].u*nfsu::kRaceHudAtlasWidth)==400 &&
+          std::lround(units[1].u*nfsu::kRaceHudAtlasWidth)==415,
           "MPH uses native italic M metrics and the FEng 0.8 scale");
     // A deliberately inconsistent wheel-derived value cannot override the
     // completed engine value. Reusing a frame must not retain the old gear.

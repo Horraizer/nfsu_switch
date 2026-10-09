@@ -13,9 +13,9 @@ target_link_libraries(nfsu_race_run PUBLIC nfsu_race_session nfsu_race_events
     nfsu_track_slice nfsu_stock_frame nfsu_light_glows)
 nfsu_enable_warnings(nfsu_race_run)
 add_library(nfsu_race_hud src/race_hud.cpp src/race_lap_hud.cpp
-    src/race_lap_hud_presentation.cpp)
+    src/race_lap_hud_presentation.cpp src/race_minimap_hud.cpp)
 target_link_libraries(nfsu_race_hud PUBLIC nfsu_race_session nfsu_core
-    nfsu_screen_text)
+    nfsu_screen_text nfsu_minimap)
 nfsu_enable_warnings(nfsu_race_hud)
 add_library(nfsu_minimap src/minimap.cpp)
 target_link_libraries(nfsu_minimap PUBLIC nfsu_race_events nfsu_sha256)

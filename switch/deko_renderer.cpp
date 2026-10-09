@@ -366,7 +366,7 @@ struct DekoRenderer::Impl {
     }
 
     bool init_hud(const RaceHudAtlas& atlas,std::string& error) {
-        return init_overlay(atlas.rgba,kRaceHudAtlasSize,kRaceHudAtlasSize,kRaceHudMaxQuads,error);
+        return init_overlay(atlas.rgba,kRaceHudAtlasWidth,kRaceHudAtlasSize,kRaceHudMaxQuads,error);
     }
     float source_width() const { return static_cast<float>(commands->width); }
     float source_height() const { return static_cast<float>(commands->height); }
@@ -1070,9 +1070,12 @@ struct DekoRenderer::Impl {
             static_cast<unsigned char*>(hud_vertices.getCpuAddr())+slot*slot_bytes);
         for (std::size_t i=0;i<quads*4;++i) {
             vertices[i]=input[i];
-            vertices[i].px-=source_width()*0.5F;
-            vertices[i].py-=source_height()*0.5F;
-            vertices[i].pz=-1;
+            // Positive pz is a HUD-only reciprocal homogeneous depth.
+            // Ordinary/frontend vertices keep their original unit-depth path.
+            const float depth=(!additive && input[i].pz>0)?1.0F/input[i].pz:1.0F;
+            vertices[i].px=(input[i].px-source_width()*0.5F)*depth;
+            vertices[i].py=(input[i].py-source_height()*0.5F)*depth;
+            vertices[i].pz=-depth;
         }
         cmd.bindShaders(DkStageFlag_GraphicsMask,{additive?&frontend_vertex:&vertex,additive?&frontend_fragment:&textured_opaque});
         const auto base=hud_uniforms.getGpuAddr();

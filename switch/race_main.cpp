@@ -465,7 +465,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     std::printf("AUDIO: %s\n", audio_note.c_str());
     RaceHudAtlas hud_atlas;
     if (hud_mode && !panel_mode)
-        require(load_race_hud_atlas(root,hud_atlas,error),error);
+        require(load_race_hud_atlas(root,hud_atlas,error,event_number==1),error);
     const auto persistent = scene.car_bytes()+race.persistent_bytes()+
         scene.track().contacts.memory.resident_bytes+scene.cache_bytes()+
         sound.resident_bytes()+hud_atlas.rgba.size();
@@ -501,6 +501,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     std::uint64_t last_heap_sample = 0, timed_heap_samples = 0;
     RaceHudFrame hud_frame;
     RaceFpsHistory fps_history;
+    RaceMinimapState minimap_state;
     std::uint64_t fps_previous_present=0;
     unsigned unpause_resets = 0;
     std::string failure;
@@ -703,6 +704,9 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         const auto present_start = armGetSystemTick();
         if (hud_mode) build_race_hud_frame(race.session(),hud_atlas,frame.commands.width,
                                            frame.commands.height,hud_frame);
+        if (hud_mode && hud_atlas.map.valid)
+            require(append_race_minimap(race.session(),hud_atlas,frame.commands.width,
+                    frame.commands.height,minimap_state,hud_frame),"minimap geometry invalid or HUD capacity exceeded");
         if (fps_overlay && hud_mode)
             append_race_fps_overlay(hud_atlas,fps_history,frame.commands.width,
                                     frame.commands.height,hud_frame);

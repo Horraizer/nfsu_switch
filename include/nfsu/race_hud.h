@@ -3,6 +3,7 @@
 #include "nfsu/race_session.h"
 #include "nfsu/race_lap_hud.h"
 #include "nfsu/track.h"
+#include "nfsu/minimap.h"
 
 #include <array>
 #include <cstdint>
@@ -15,6 +16,7 @@ namespace nfsu {
 // Retail texels are loaded from the user's installation at startup. This
 // atlas, and all geometry below, are transient and never serialized.
 constexpr std::uint32_t kRaceHudAtlasSize = 512;
+constexpr std::uint32_t kRaceHudAtlasWidth = 1024;
 constexpr std::size_t kRaceHudMaxQuads = 256;
 struct RaceHudTextGlyph {
     int x = 0, y = 0, width = 0, height = 0;
@@ -26,6 +28,7 @@ struct RaceHudAtlas {
     // Small time font, large lap label/total font, LCD lap number.
     std::array<std::array<RaceHudTextGlyph,128>,3> lap_fonts{};
     bool lap_ready = false;
+    MinimapResource map;
 };
 struct RaceHudReadout {
     std::uint64_t physics_step = 0;
@@ -56,6 +59,19 @@ struct RaceFpsHistory {
 void append_race_fps_overlay(const RaceHudAtlas& atlas, const RaceFpsHistory& history,
                              unsigned width, unsigned height, RaceHudFrame& frame) noexcept;
 
+struct RaceMinimapState {
+    bool initialized = false;
+    std::int32_t world_ticks = 0;
+    std::uint32_t resets = 0;
+    MapPoint direction{}, velocity{};
+};
+void update_race_minimap_direction(MapPoint target, std::int32_t ticks,
+                                   std::uint32_t resets, RaceMinimapState& state) noexcept;
+// Single currently driven player, first track. Rendering only; no actor roster.
+bool append_race_minimap(const RaceSession& session, const RaceHudAtlas& atlas,
+                         unsigned width, unsigned height, RaceMinimapState& state,
+                         RaceHudFrame& frame) noexcept;
+
 struct RaceHudDial {
     std::uint32_t lines_hash = 0;
     std::uint32_t red_hash = 0;
@@ -66,7 +82,7 @@ RaceHudDial select_race_hud_dial(double max_rpm, double redline_rpm) noexcept;
 double race_hud_needle_rotation(double rpm, double max_rpm) noexcept;
 
 bool load_race_hud_atlas(const std::filesystem::path& root,
-                         RaceHudAtlas& atlas, std::string& error);
+                         RaceHudAtlas& atlas, std::string& error, bool first_track_map = false);
 // Writes fixed-capacity vertices, reading only the completed race state.
 // FEng local geometry under the measured anchor in docs/HUD_253.md.
 void build_race_hud_frame(const RaceSession& session,

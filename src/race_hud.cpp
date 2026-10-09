@@ -90,7 +90,7 @@ bool copy_units(const std::vector<unsigned char>& bytes,
         int x=kUnit.x;
         for (const auto& letter : letters) {
             for (int y=0; y<letter.h; ++y)
-                std::memcpy(atlas.rgba.data()+((kUnit.y+y)*512+x)*4,
+                std::memcpy(atlas.rgba.data()+((kUnit.y+y)*kRaceHudAtlasWidth+x)*4,
                             rgba.data()+((letter.y+y)*256+letter.x)*4,
                             static_cast<std::size_t>(letter.w)*4);
             x+=letter.w;
@@ -125,7 +125,7 @@ bool copy_texture(const std::vector<unsigned char>& bytes,
         for (int y = 0; y < source.rect.h; ++y) {
             const auto src = rgba.data() + y * source.rect.w * 4;
             auto* dst = atlas.rgba.data() +
-                ((source.rect.y + y) * kRaceHudAtlasSize + source.rect.x) * 4;
+                ((source.rect.y + y) * kRaceHudAtlasWidth + source.rect.x) * 4;
             std::memcpy(dst, src, static_cast<std::size_t>(source.rect.w) * 4);
         }
         return true;
@@ -197,7 +197,7 @@ bool load_lap_fonts(const std::filesystem::path& root, RaceHudAtlas& atlas,
             for (int y=0;y<h;++y) for (int x=0;x<w;++x) {
                 const int sx=std::clamp(int(g.x)+x-1,0,int(tw)-1);
                 const int sy=std::clamp(int(g.y)+y-1,0,int(th)-1);
-                std::memcpy(atlas.rgba.data()+((pack_y+y)*512+pack_x+x)*4,
+                std::memcpy(atlas.rgba.data()+((pack_y+y)*kRaceHudAtlasWidth+pack_x+x)*4,
                             rgba.data()+(sy*tw+sx)*4,4);
             }
             pack_x+=w;row_height=std::max(row_height,h);
@@ -212,9 +212,9 @@ void add_quad(RaceHudFrame& frame, const AtlasRect& uv,
               std::array<unsigned char, 3> tint,
               unsigned char opacity = 255) noexcept {
     if (frame.quads == kRaceHudMaxQuads) return;
-    const float u0 = float(uv.x) / kRaceHudAtlasSize;
+    const float u0 = float(uv.x) / kRaceHudAtlasWidth;
     const float v0 = float(uv.y) / kRaceHudAtlasSize;
-    const float u1 = float(uv.x + uv.w) / kRaceHudAtlasSize;
+    const float u1 = float(uv.x + uv.w) / kRaceHudAtlasWidth;
     const float v1 = float(uv.y + uv.h) / kRaceHudAtlasSize;
     const std::array<std::array<float, 2>, 4> tex{{
         {{u0, v0}}, {{u1, v0}}, {{u1, v1}}, {{u0, v1}}
@@ -307,9 +307,9 @@ double race_hud_needle_rotation(double rpm, double max_rpm) noexcept {
 }
 
 bool load_race_hud_atlas(const std::filesystem::path& root,
-                         RaceHudAtlas& atlas, std::string& error) {
+                         RaceHudAtlas& atlas, std::string& error, bool first_track_map) {
     atlas={};
-    atlas.rgba.assign(kRaceHudAtlasSize*kRaceHudAtlasSize*4, 0);
+    atlas.rgba.assign(kRaceHudAtlasWidth*kRaceHudAtlasSize*4, 0);
     for (const char* path : {"Global/INGAMEB.BUN", "Global/DYNTEX.BIN", "Global/GLOBALB.BUN",
                              "Languages/LanguageTextures.bin"}) {
         std::vector<unsigned char> bytes;
@@ -327,6 +327,19 @@ bool load_race_hud_atlas(const std::filesystem::path& root,
             !copy_texture(bytes,set,{path,bin_hash("WHITE16X16"),kLapWhite},atlas,error)) return false;
         if (std::strcmp(path,"Languages/LanguageTextures.bin")==0 &&
             !copy_units(bytes,set,atlas,error)) return false;
+    }
+    if (first_track_map) {
+        if (!load_minimap_resource(root,atlas.map,error)) return false;
+        std::vector<unsigned char> bytes;
+        const auto packs=load_texture_pack_set(root/"Tracks/TEX1003TRACK.BIN",bytes);
+        if (!packs.complete || !packs.ok() ||
+            !copy_texture(bytes,packs,{"Tracks/TEX1003TRACK.BIN",atlas.map.hash,{513,1,256,256}},atlas,error)) return false;
+        for (const auto& source : std::array<SourceSpec,2>{{
+                {"Global/INGAMEB.BUN",0x7E22DED8,{780,1,32,32}},
+                {"Global/INGAMEB.BUN",0x72974A14,{820,1,16,16}}}}) {
+            const auto markers=load_texture_pack_set(root/source.path,bytes);
+            if (!markers.complete || !markers.ok() || !copy_texture(bytes,markers,source,atlas,error)) return false;
+        }
     }
     return load_lap_fonts(root,atlas,error);
 }
@@ -394,7 +407,7 @@ void build_race_hud_frame(const RaceSession& session, const RaceHudAtlas& atlas,
     constexpr float inset=.5F/kRaceHudAtlasSize;
     for (std::size_t q=frame.lap_first_quad;q<frame.quads;++q)
         for (unsigned v=0;v<4;++v) {
-            frame.vertices[q*4+v].u+=(v==0 || v==3)?inset:-inset;
+            frame.vertices[q*4+v].u+=(v==0 || v==3)?(.5F/kRaceHudAtlasWidth):(-.5F/kRaceHudAtlasWidth);
             frame.vertices[q*4+v].v+=v<2?inset:-inset;
         }
     frame.lap.presentation_ready=true;
@@ -549,7 +562,7 @@ void append_race_fps_overlay(const RaceHudAtlas& atlas, const RaceFpsHistory& hi
 void composite_race_hud(const RaceHudAtlas& atlas, const RaceHudFrame& frame,
                          unsigned char* rgba, std::uint32_t width,
                          std::uint32_t height, std::uint32_t pitch) noexcept {
-    if (!rgba || atlas.rgba.size() != kRaceHudAtlasSize*kRaceHudAtlasSize*4) return;
+    if (!rgba || atlas.rgba.size() != kRaceHudAtlasWidth*kRaceHudAtlasSize*4) return;
     for (std::size_t q=0;q<frame.quads;++q) {
         const auto* v=&frame.vertices[q*4];
         const float min_x=std::min({v[0].px,v[1].px,v[2].px,v[3].px});
@@ -572,19 +585,22 @@ void composite_race_hud(const RaceHudAtlas& atlas, const RaceHudFrame& frame,
                 const float w1=((c.py-a.py)*(px-c.px)+(a.px-c.px)*(py-c.py))/det;
                 const float w2=1.0F-w0-w1;
                 if (w0<0 || w1<0 || w2<0) continue;
-                const float u=w0*a.u+w1*b.u+w2*c.u;
-                const float vcoord=w0*a.v+w1*b.v+w2*c.v;
-                const int tx=std::max(0,std::min(511,static_cast<int>(u*512)));
+                const float qa=a.pz>0?a.pz:1,qb=b.pz>0?b.pz:1,qc=c.pz>0?c.pz:1;
+                const float total=w0*qa+w1*qb+w2*qc;
+                const float wa=w0*qa/total,wb=w1*qb/total,wc=w2*qc/total;
+                const float u=wa*a.u+wb*b.u+wc*c.u;
+                const float vcoord=wa*a.v+wb*b.v+wc*c.v;
+                const int tx=std::max(0,std::min(int(kRaceHudAtlasWidth)-1,static_cast<int>(u*kRaceHudAtlasWidth)));
                 const int ty=std::max(0,std::min(511,static_cast<int>(vcoord*512)));
-                const auto* source=atlas.rgba.data()+(ty*512+tx)*4;
+                const auto* source=atlas.rgba.data()+(ty*kRaceHudAtlasWidth+tx)*4;
                 std::array<unsigned char,4> filtered{};
                 if (q>=frame.lap_first_quad) {
-                    const float fx=u*512-.5F,fy=vcoord*512-.5F;
+                    const float fx=u*kRaceHudAtlasWidth-.5F,fy=vcoord*512-.5F;
                     const int ix=int(std::floor(fx)),iy=int(std::floor(fy));
                     const float ax=fx-std::floor(fx),ay=fy-std::floor(fy);
                     for (unsigned k=0;k<4;++k) {
                         const auto sample=[&](int dx,int dy) {
-                            return float(atlas.rgba[(std::clamp(iy+dy,0,511)*512+std::clamp(ix+dx,0,511))*4+k]);
+                            return float(atlas.rgba[(std::clamp(iy+dy,0,511)*kRaceHudAtlasWidth+std::clamp(ix+dx,0,int(kRaceHudAtlasWidth)-1))*4+k]);
                         };
                         filtered[k]=static_cast<unsigned char>(std::clamp(
                             (sample(0,0)*(1-ax)+sample(1,0)*ax)*(1-ay)+
@@ -593,9 +609,11 @@ void composite_race_hud(const RaceHudAtlas& atlas, const RaceHudFrame& frame,
                     source=filtered.data();
                 }
                 auto* target=rgba+y*pitch+x*4;
-                const unsigned alpha=(unsigned(source[3])*unsigned(v[0].color[3])+127)/255;
+                const auto channel=[&](int k) {return unsigned(std::clamp(
+                    wa*a.color[k]+wb*b.color[k]+wc*c.color[k]+.5F,0.0F,255.0F));};
+                const unsigned alpha=(unsigned(source[3])*channel(3)+127)/255;
                 for (int k=0;k<3;++k) {
-                    const unsigned tint=(unsigned(v[0].color[k])*unsigned(source[k])+127)/255;
+                    const unsigned tint=(channel(k)*unsigned(source[k])+127)/255;
                     target[k]=static_cast<unsigned char>((tint*alpha+
                         unsigned(target[k])*(255-alpha)+127)/255);
                 }
