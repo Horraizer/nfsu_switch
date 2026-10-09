@@ -32,7 +32,7 @@
 #include <stdexcept>
 
 namespace {
-bool ab_record=false,ab_replay=false;
+bool ab_record=false,ab_replay=false,ab_minimal=false;
 
 std::string selected_car_label = "STOCK";
 const char* car_shading_label="OFF";
@@ -391,6 +391,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         require(bool(in) && replay.load(text,error,upgraded), "bundled replay: "+error);
     }
     const bool ab_enabled=ab_record || ab_replay;
+    const bool detailed=profile_frame && !ab_minimal;
     require(!ab_enabled || (!panel_mode && !replay_mode && !handling_telemetry && !hud_trace),
             "AB needs direct live mode without per-tick logs");
     AbRoute ab_route;
@@ -483,10 +484,10 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     require(renderer.open(frame.commands,error,!panel_mode,scene.draw_capacity(),profile_frame,true,
                           sky == "early",scene_height,
                           hud_mode && !panel_mode ? &hud_atlas : nullptr),error);
-    if(ab_enabled)renderer.prepare_ab_trace();
+    if(ab_enabled)renderer.prepare_ab_trace(!ab_minimal);
     const double initial_upload = ms(armGetSystemTick()-upload_start);
     std::unique_ptr<FrameProfileStats> profile_stats;
-    if (profile_frame) profile_stats = std::make_unique<FrameProfileStats>();
+    if (detailed) profile_stats = std::make_unique<FrameProfileStats>();
     SwitchTiming profile_clock;
     std::vector<unsigned char> rgba;
     RaceTickDebt clock;
@@ -568,32 +569,32 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                 input.display_frame = display_frame;
             }
             if(ab_record)ab_frame.inputs[ticks]=AbInput::pack(input);
-            auto stage = armGetSystemTick();
+            auto stage = ab_minimal ? 0 : armGetSystemTick();
             const auto consumed_us = armTicksToNs(stage)/1000;
             require(race.simulate(input,error),error);
             require(handling_log.write(race.session(),input,consumed_us,!replay_mode),
                     "handling telemetry write failed");
-            const double tick_ms = ms(armGetSystemTick()-stage);
+            const double tick_ms = ab_minimal ? 0 : ms(armGetSystemTick()-stage);
             simulation += tick_ms; simulation_ticks[ticks] = tick_ms;
-            stage = armGetSystemTick(); require(race.commit(error),error);
+            stage = ab_minimal ? 0 : armGetSystemTick(); require(race.commit(error),error);
             scene.advance_particles(race.session());
             auto audio_snapshot=audio::race_audio_snapshot(race.session());
             if (free_drive) { audio_snapshot.completed_laps=0; audio_snapshot.finished=false; }
             sound.on_tick(audio_snapshot);
             if (replay_mode) std::fputs(race.step_line().c_str(),stdout);
-            residency += ms(armGetSystemTick()-stage);
+            if(!ab_minimal)residency += ms(armGetSystemTick()-stage);
             ++ticks;
         }
         if (ticks) {
-            auto stage = armGetSystemTick();
+            auto stage = ab_minimal ? 0 : armGetSystemTick();
             RaceGpuFrame next;
             require(scene.frame(race.session(),next,error,
-                profile_frame ? &record_profile : nullptr,false,
-                profile_frame ? &profile_clock : nullptr),error);
-            frame = std::move(next); record = ms(armGetSystemTick()-stage);
-            stage = armGetSystemTick();
-            require(renderer.update(frame.commands,error,profile_frame ? &update_timing : nullptr),error);
-            upload = ms(armGetSystemTick()-stage);
+                detailed ? &record_profile : nullptr,false,
+                detailed ? &profile_clock : nullptr),error);
+            frame = std::move(next); record = ab_minimal ? 0 : ms(armGetSystemTick()-stage);
+            stage = ab_minimal ? 0 : armGetSystemTick();
+            require(renderer.update(frame.commands,error,detailed ? &update_timing : nullptr),error);
+            upload = ab_minimal ? 0 : ms(armGetSystemTick()-stage);
         }
         if(ab_enabled) {
             ab_frame.count=ticks;ab_frame.state=race.step_line();
@@ -699,7 +700,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         const auto present_start = armGetSystemTick();
         if (hud_mode) build_race_hud_frame(race.session(),frame.commands.width,
                                            frame.commands.height,hud_frame);
-        require(renderer.present(error,&present,profile_frame ? &scene_frame : nullptr,
+        require(renderer.present(error,ab_minimal?nullptr:&present,profile_frame ? &scene_frame : nullptr,
                                  hud_mode ? &hud_frame : nullptr),error);
         const auto present_end = armGetSystemTick();
         const double ab_interval=ab_previous_present?ms(present_end-ab_previous_present):0;
@@ -721,11 +722,11 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
                 (unsigned long long)r.physics_step,(unsigned long long)present_start,
                 r.engine_rpm,r.wheel_rpm,r.gear,r.rotation,r.max_rpm,r.redline_rpm);
         }
-        const auto mall_start = armGetSystemTick();
+        const auto mall_start = ab_minimal ? 0 : armGetSystemTick();
         // Allocator traversal is diagnostic, not frame work. Preserve real
         // snapshots every two seconds without walking the heap on every frame.
         // These remain sampled peaks, not an allocation-exact high-water mark.
-        if (!last_heap_sample || armTicksToNs(mall_start-last_heap_sample) >= 2000000000ULL) {
+        if (!ab_minimal && (!last_heap_sample || armTicksToNs(mall_start-last_heap_sample) >= 2000000000ULL)) {
             const auto info = mallinfo();
             mallinfo_ms = ms(armGetSystemTick()-mall_start);
             heap.observe(info.uordblks,info.arena);
@@ -881,11 +882,12 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             ab_record?"record":"replay",(unsigned long long)presented,
             (unsigned long long)ab_route.frames.size(),unsigned(!ab_route.frames.empty() && failure.empty()&&!ab_cancelled &&
                 (!ab_replay || presented==ab_route.frames.size())),unsigned(saved),unsigned(ab_cancelled),failure.c_str());
-        std::puts("AB_CPU_COLUMNS frame,tick,triangles,ticks,track,car,glow,active,work_ms,interval_ms,sim_ms,residency_ms,record_ms,update_ms,present_ms,acquire_ms,fence_ms,uniform_ms,command_ms,finish_ms,submit_ms,heap_ms");
+        std::printf("AB_INSTRUMENTATION mode=%s state_camera_check=on route_replay=on total_gpu_pair=on\n",ab_minimal?"minimal":"detailed");
+        std::puts(ab_minimal?"AB_CPU_COLUMNS frame,tick,triangles,ticks,track,car,glow,active,work_ms,interval_ms":"AB_CPU_COLUMNS frame,tick,triangles,ticks,track,car,glow,active,work_ms,interval_ms,sim_ms,residency_ms,record_ms,update_ms,present_ms,acquire_ms,fence_ms,uniform_ms,command_ms,finish_ms,submit_ms,heap_ms");
         for(const auto& r:ab_cpu) {
             std::printf("AB_CPU %llu,%llu,%llu,%u,%u,%u,%u,%u",(unsigned long long)r.frame,
                 (unsigned long long)r.tick,(unsigned long long)r.triangles,r.ticks,r.track,r.car,r.glow,r.active);
-            for(auto t:r.ms)std::printf(",%.6f",t);
+            for(std::size_t i=0;i<(ab_minimal?2:r.ms.size());++i)std::printf(",%.6f",r.ms[i]);
             std::putchar('\n');
         }
         renderer.dump_ab_trace();std::fflush(stdout);
@@ -996,6 +998,7 @@ int main(int argc, char** argv) {
                 else if (arg == "--profile-frame") profile_frame = true;
                 else if (arg == "--ab-record") { ab_record=true;profile_frame=true; }
                 else if (arg == "--ab-replay") { ab_replay=true;profile_frame=true; }
+                else if (arg == "--ab-minimal") { ab_replay=true;ab_minimal=true;profile_frame=true; }
                 else if (arg == "--frontend-startup-trace") startup_trace=true;
                 else if (arg == "--hud-trace") hud_trace = true;
                 else if (arg == "--event" && i+1<argc) {
@@ -1129,7 +1132,7 @@ int main(int argc, char** argv) {
                     trace("screen.close.before");screen.close();trace("screen.close.after");
                     frontend_renderer=std::make_unique<DekoRenderer>();
                     trace("renderer.open.before");
-                    require(frontend_renderer->open_frontend(frontend_scene.commands(),art.atlas(),frontend_error,menu_height,profile_frame,active_trace),frontend_error);
+                    require(frontend_renderer->open_frontend(frontend_scene.commands(),art.atlas(),frontend_error,menu_height,profile_frame && !ab_minimal,active_trace),frontend_error);
                     trace("renderer.ready");
                 };
                 open_frontend();

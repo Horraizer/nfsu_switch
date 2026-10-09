@@ -54,11 +54,11 @@ def compare(a,b):
         other=b['tables']['CPU'].get(n,{})
         if any(r[k]!=other.get(k) for k in ('tick','ticks','active')):raise ValueError("Frame schedule differs")
     result={'valid':True,'route':a['route'],'clocks':a['clocks'],'paired_frames':len(a['active']),
-        'limitation':'Diagnostic barriers perturb GPU scheduling; presentation return is not display scanout. A/B differs in streetlight sprites and opaque glow shader as well as streak history.',
+        'limitation':'Paired timing differences require the build manifests for attribution. Detailed diagnostic barriers perturb GPU scheduling; presentation return is not display scanout.',
         'metrics':{}}
     for table in ('CPU','GPU'):
         for key in next(iter(a['tables'][table].values())):
-            if not key.endswith('_ms'):continue
+            if not key.endswith('_ms') or key not in next(iter(b['tables'][table].values())):continue
             av=[a['tables'][table][n][key] for n in sorted(a['active'])]
             bv=[b['tables'][table][n][key] for n in sorted(a['active'])]
             result['metrics'][table+'.'+key]={'A':stats(av),'B':stats(bv),

@@ -63,6 +63,7 @@ struct DekoRenderer::Impl {
     dk::MemBlock query_memory,frontend_query_memory;
     struct AbGpuRow { DekoSceneFrame frame; double total; std::array<double,7> stages; bool valid; };
     std::vector<AbGpuRow> ab_rows;
+    bool ab_passes=true;
     bool frontend_profile_passes=false;
     StartupJournal* startup_journal=nullptr;
     bool trace(const char* stage,std::string& error,const char* name="none",std::uint64_t bytes=0) {
@@ -841,7 +842,7 @@ struct DekoRenderer::Impl {
         gpu_profile.add_scene(value, query_frames[slot]);
         if(query_frames[slot].ordinal && ab_rows.size()<6000) {
             AbGpuRow row{query_frames[slot],value,{},true};
-            for(unsigned i=0;i<7;++i) {
+            if(ab_passes)for(unsigned i=0;i<7;++i) {
                 const auto a=words[5+2*i],b=words[7+2*i];
                 if(!a || b<a)row.valid=false;
                 else row.stages[i]=dkTimestampToNs(b-a)/1000000.0;
@@ -1183,7 +1184,7 @@ struct DekoRenderer::Impl {
         if (profile_enabled)
             cmd.reportCounter(DkCounter_TimestampPipelineTop, query_memory.getGpuAddr()+slot*160);
         const auto mark_ab=[&](unsigned point) {
-            if(!profile_enabled || !query_frames[slot].ordinal)return;
+            if(!profile_enabled || !query_frames[slot].ordinal || !ab_passes)return;
             if(point)cmd.barrier(DkBarrier_Fragments,0);
             cmd.reportCounter(point?DkCounter_Timestamp:DkCounter_TimestampPipelineTop,
                 query_memory.getGpuAddr()+slot*160+32+point*16);
@@ -1516,7 +1517,7 @@ struct DekoRenderer::Impl {
             if (error.empty()) error = "deko3d renderer is not open";
             return false;
         }
-        auto stage = armGetSystemTick();
+        auto stage = timing ? armGetSystemTick() : 0;
         if(!trace("present.acquire.before",error))return false;
         const int slot = queue.acquireImage(swapchain);
         if(!trace("present.acquire.after",error))return false;
@@ -1525,7 +1526,7 @@ struct DekoRenderer::Impl {
             return false;
         }
         if (timing) timing->acquire_ms = elapsed_ms(stage);
-        stage = armGetSystemTick();
+        stage = timing ? armGetSystemTick() : 0;
         if (frame_in_flight[slot]) {
             if(!trace("present.fence.before",error))return false;
             const auto result = frame_fences[slot].wait();
@@ -1547,19 +1548,19 @@ struct DekoRenderer::Impl {
         }
         if(frontend && frontend_profile_passes)
             std::memset(static_cast<unsigned char*>(frontend_query_memory.getCpuAddr())+slot*208,0,208);
-        stage = armGetSystemTick();
+        stage = timing ? armGetSystemTick() : 0;
         if(!write_uniforms(*commands, slot,error))return false;
         if (timing) timing->uniform_write_ms = elapsed_ms(stage);
-        stage = armGetSystemTick();
+        stage = timing ? armGetSystemTick() : 0;
         if(!trace("present.record.before",error))return false;
         if (!record_frame(colors[slot],slot,hud_frame,error,frontend)) return false;
         if(!trace("present.record.after",error))return false;
         if (timing) timing->record_ms = elapsed_ms(stage);
-        stage = armGetSystemTick();
+        stage = timing ? armGetSystemTick() : 0;
         const auto list = cmd.finishList();
         if (!healthy(error)) return false;
         if (timing) timing->finish_ms = elapsed_ms(stage);
-        stage = armGetSystemTick();
+        stage = timing ? armGetSystemTick() : 0;
         if(!trace("present.submit.before",error))return false;
         queue.submitCommands(list);
         if(!trace("present.submit.after",error))return false;
@@ -1746,13 +1747,13 @@ bool DekoRenderer::present(std::string& error, DekoPresentTiming* timing,
     error.clear();
     return impl_->present(error, timing, scene_frame, hud_frame);
 }
-void DekoRenderer::prepare_ab_trace() { impl_->ab_rows.reserve(6000); }
+void DekoRenderer::prepare_ab_trace(bool passes) { impl_->ab_passes=passes;impl_->ab_rows.reserve(6000); }
 void DekoRenderer::dump_ab_trace() const {
-    std::puts("AB_GPU_COLUMNS frame,tick,valid,total_ms,cube_ms,road_ms,main_ms,streak_resolve_ms,fxaa_ms,upscale_ms,hud_ms");
+    std::puts(impl_->ab_passes?"AB_GPU_COLUMNS frame,tick,valid,total_ms,cube_ms,road_ms,main_ms,streak_resolve_ms,fxaa_ms,upscale_ms,hud_ms":"AB_GPU_COLUMNS frame,tick,valid,total_ms");
     for(const auto& r:impl_->ab_rows) {
         std::printf("AB_GPU %llu,%llu,%u,%.6f",(unsigned long long)r.frame.ordinal,
             (unsigned long long)r.frame.tick,unsigned(r.valid),r.total);
-        for(auto t:r.stages)std::printf(",%.6f",t);
+        if(impl_->ab_passes)for(auto t:r.stages)std::printf(",%.6f",t);
         std::putchar('\n');
     }
 }

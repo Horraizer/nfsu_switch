@@ -81,7 +81,7 @@ public:
     bool present(std::string& error, DekoPresentTiming* timing = nullptr,
                  const DekoSceneFrame* scene_frame = nullptr,
                  const RaceHudFrame* hud_frame = nullptr);
-    void prepare_ab_trace();
+    void prepare_ab_trace(bool passes = true);
     void dump_ab_trace() const;
     void reset_gpu_profile();
     const DekoGpuProfile& gpu_profile() const noexcept;
