@@ -17,6 +17,7 @@ void check_nitrous_gpu_package(const std::filesystem::path& root) {
     std::cout<<std::unitbuf;
     FreeDriveSkyline dress;std::string error;
     check(resolve_free_drive_skyline(root,dress,error),error);
+    check(dress.performance.induction==1&&dress.performance.nitrous==3,"owner selected turbo one / nitrous three");
     for(const unsigned event:{1U,8U}) {
         std::cout<<"event="<<event<<" loading actual package\n";
         RaceGpuScene gpu;gpu.set_race_visuals(true);gpu.set_wet_road_reflections(true);
@@ -50,6 +51,7 @@ void check_nitrous_gpu_package(const std::filesystem::path& root) {
                 check(!view.track_instance && &view.definition==dynamic[i],"NOS changed prepared definition address/order");
                 if(view.definition.name!="race-nitrous/flame")continue;
                 ++flames;
+                check(view.material.alpha[3]==6,"exhaust must use direct emission, not light-streak history");
                 check(view.definition.first_index%6==0&&view.definition.first_index<=18,"flame cell index");
                 if(view.material.alpha[0]>0){++visible;flame_cells|=1U<<(view.definition.first_index/6);}
             }
@@ -73,7 +75,8 @@ void check_nitrous_gpu_package(const std::filesystem::path& root) {
         check(flame_cells==15,"all four atlas cells exercised without package change");
         step(gas);check(!run.session().nitrous().active,"actual L release");validate(false);
         step(gas|nos);validate(true);
-        for(unsigned i=0;i<140;++i){step(gas|nos);validate(run.session().nitrous().active);}
+        const auto drain_frames=unsigned(std::ceil(run.session().spec().nitrous.capacity_seconds*60))+4;
+        for(unsigned i=0;i<drain_frames;++i){step(gas|nos);validate(run.session().nitrous().active);}
         std::cout<<"depletion package PASS\n";
         check(run.session().nitrous().remaining==0&&!run.session().nitrous().active,"actual depletion");
         validate(false);

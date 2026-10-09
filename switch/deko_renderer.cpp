@@ -890,9 +890,8 @@ struct DekoRenderer::Impl {
         for (std::size_t i = first_dynamic; i < source.draw_count(); ++i) {
             const auto view = source.draw_view(i);
             const auto index = i - first_dynamic;
-            // Original LIGHTSTREAKS replaces direct glow submission: these
-            // same sprites are emitted exactly once into the history below.
-            if(streaks_enabled && view.material.alpha[3]==5.0F)continue;
+            // Both direct exhaust and history lights need current constants.
+            // Submission selection belongs to the draw passes below.
             std::memcpy(data + (1+2*index)*256, &view.placement, sizeof(DrawInstanceUniform));
             // Copy a private GPU payload; the recorded retail material stays intact.
             auto material=view.material;
@@ -1375,6 +1374,9 @@ struct DekoRenderer::Impl {
             // Zero source alpha contributes no RGB, alpha or depth under
             // this validated additive state. Keep original uniform indices
             // and the last emitted draw for fixed-state reuse.
+            // History lights are emitted once in the later streak pass.
+            // Direct exhaust (marker 6) stays in this main scene pass.
+            if(streaks_enabled && view.material.alpha[3]==5.0F)continue;
             if(frontend && frontend_glow_no_output(view,commands->frame))continue;
             if(!frontend && !commands->frontend_light_enabled && race_effect_no_output(view))continue;
             if(diagnose && previous_dynamic &&

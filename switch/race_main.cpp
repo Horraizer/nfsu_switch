@@ -513,6 +513,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     std::string failure;
     std::uint64_t display_frame = 0;
     try {
+    bool boost_log_l=false,boost_log_active=false;
+    std::uint64_t boost_log_step=0;
     while (appletMainLoop()) {
         if(ab_enabled && presented >= (ab_replay?ab_route.frames.size():AbRoute::limit))break;
         AbFrame ab_frame;
@@ -582,6 +584,22 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             auto stage = ab_minimal ? 0 : armGetSystemTick();
             const auto consumed_us = armTicksToNs(stage)/1000;
             require(race.simulate(input,error),error);
+            const bool boost_l=input.pads[0].connected &&
+                (input.pads[0].buttons & gamepad_button_bit(GamepadButton::shoulder_left));
+            const auto boost= race.session().nitrous();
+            const auto boost_step=race.session().timing().step;
+            if(boost_l!=boost_log_l || boost.active!=boost_log_active ||
+               (boost.active && boost_step-boost_log_step>=60)) {
+                const auto& model=race.session().physics_telemetry().back().model;
+                double wheel=0;for(const auto& w:model.wheels)wheel+=w.drive_torque;
+                std::printf("BOOST_STATE step=%llu L=%u active=%u charge=%u/%u speed_kmh=%.3f rpm=%.1f gear=%d crank_Nm=%.3f wheel_Nm=%.3f\n",
+                    (unsigned long long)boost_step,unsigned(boost_l),unsigned(boost.active),
+                    unsigned(boost.remaining),unsigned(boost.capacity),model.forward_speed*3.6,
+                    race.session().car().engine.angular_speed*9.54930400848388671875,
+                    int(race.session().car().gear),double(model.engine_torque),wheel);
+                boost_log_step=boost_step;
+            }
+            boost_log_l=boost_l;boost_log_active=boost.active;
             require(handling_log.write(race.session(),input,consumed_us,!replay_mode),
                     "handling telemetry write failed");
             const double tick_ms = ab_minimal ? 0 : ms(armGetSystemTick()-stage);

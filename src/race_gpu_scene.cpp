@@ -669,6 +669,9 @@ bool RaceGpuScene::prepare_glows(std::string& error) {
     if(race_visuals_) {
         nitrous_template_=glow_templates_[0];
         nitrous_template_.name="race-nitrous/flame";
+        // Direct exhaust emission uses the same world-effect equation,
+        // without being submitted into persistent light-streak history.
+        nitrous_template_.material.alpha[3]=6;
         nitrous_template_.vertex_resource=glow_first_resource_+5;
         nitrous_template_.index_resource=glow_first_resource_+6;
         nitrous_template_.texture_resource=glow_first_resource_+7;

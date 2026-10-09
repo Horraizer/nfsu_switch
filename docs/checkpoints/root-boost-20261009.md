@@ -215,3 +215,56 @@ directory. Levels1/1, AF4, FXAA on, MSAA off, FPS overlay off remain. No full
 matrices/reviewer/source push/merge. Corrected actual Switch L activation is
 still pending owner verification. Confirm current Netloader readiness before
 sending; do not reuse the exited boost-r4 nxlink process.
+
+
+## boost-r6: level three selection and missing Switch flame
+
+Owner reports boost-r5 no longer exits, but neither acceleration nor flame
+appears to work. Actual boost-r5 run log exited normally; it has no nitrous
+state trace, so it cannot establish whether L reached the active state.
+Hardware acceleration remains unaccepted.
+
+Confirmed Switch rendering omission: write_uniforms skipped marker5 lights
+whenever light streaks were enabled, but the later history pass still read
+those same uniform slots. The new flame inherited marker5. Successor writes
+all current dynamic constants and selects history lights in the submission
+pass instead. Flame has direct-emission marker6, with the same world-effect
+fragment equation, depth-tested in the main scene without persistent history.
+Permanent authored-pipe slots and prepared count/address guards are retained.
+
+Owner requested nitrous level3; turbo remains level1. Current retail selector
+produces capacity6 seconds, count6, rate0.5. This is longer charge, not a claim
+that the upgrade increases the original additive torque rate.
+
+Actual paired PC run at this successor, event1, same original Npad mapping,
+same gas/pose and L held for 120 frames beginning at speed74.6655km/h:
+crank163.934 versus463.213Nm; wheel1507.86 versus3838.21Nm on activation.
+After that held interval:106.725km/h baseline versus133.337km/h boosted.
+Exclude later collisions. boost-r6-ab-event1.log contains the full trajectory.
+No additional acceleration source correction was justified by this run.
+BOOST_STATE now logs actual L/active/charge/RPM/crank/wheel torque on state
+transitions and once per second during boost, to resolve the console report.
+It does not enable the FPS overlay or add per-frame logging.
+
+Targeted validation only, as explicitly requested by owner:
+- Current affected native dependencies rebuilt: boost-r6-native-build.log.
+- ctest --test-dir build --output-on-failure -R '^nfsu_race_boost_tests$':
+  PASS1/1, boost-r6-native-unit.log.
+- ctest --test-dir build --output-on-failure -R '^nfsu_race_boost(_retail)?$':
+  PASS3/3 (actual retail boost plus before/after readonly fixtures),
+  boost-r6-native-tests.log. Lifecycle covers both selected actual tracks,
+  direct flame marker, atlas, held/release/depletion/reset and fresh entry.
+- Actual original Npad mapping A/B: boost-r6-ab-event1.log, completed.
+- Actual composed PC event1/event8: flame changes1645/1917 visible pixels,
+  prepared/reference/release and original PCM activation/release PASS,
+  boost-r6-pc-event1.log and boost-r6-pc-event8.log. PNGs saved with unique
+  boost-r6 names. These are CPU frames, not deko3d hardware captures.
+- Actual SDK Release/NRO/embedded shader/frontend contract PASS3/3:
+  boost-r6-sdk-build.log, root-boost-r6-build.sh.
+- Changed source/scripts/path ASCII bytes and git diff --check; full HEAD
+  ASCII/mode scan follows local commit.
+
+Seal nfsu-boost-r6.nro and boost-r6-manifest.json. Source is local only;
+no push/merge or review agents/full matrices. AF4/FXAA-on/MSAA-off/FPS-off.
+Fresh Netloader question is pending. Next: actual Switch L activation,
+visible exhaust and acceleration acceptance, inspect BOOST_STATE trace.
