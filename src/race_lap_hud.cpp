@@ -27,13 +27,14 @@ constexpr std::array<RaceLapHudBinding, kRaceLapHudFields> bindings{{
 } // namespace
 
 RaceLapHudSnapshot race_lap_hud_snapshot(const RaceRoute& route,
-    const RaceTimingState& timing, std::size_t actor) noexcept {
+    const RaceTimingState& timing, std::size_t actor, bool allow_free_laps) noexcept {
     RaceLapHudSnapshot result;
     if (actor >= timing.racers.size() || route.finish < 0 ||
         static_cast<std::size_t>(route.finish) >= kRaceBoundaryLimit) return result;
     const auto& record = timing.racers[actor];
     // Retail highest lap is a signed byte. Reject unsupported port state.
-    if (record.highest_lap < -128 || record.highest_lap > 127 || route.laps <= 0) return result;
+    if (record.highest_lap < -128 || record.highest_lap > 127 || route.laps < 0 ||
+        (route.laps == 0 && !allow_free_laps)) return result;
     result.valid = true;
     result.generation = timing.restarts; result.step = timing.step; result.actor = actor;
     result.world_ticks = timing.step_ticks;
@@ -44,6 +45,7 @@ RaceLapHudSnapshot race_lap_hud_snapshot(const RaceRoute& route,
     result.hold_valid = record.lap_shown_valid;
     result.held_since = record.lap_shown_since; result.held_ticks = record.lap_shown_ticks;
     result.highest_lap = record.highest_lap; result.laps = route.laps;
+    result.free_laps = route.laps == 0;
     result.finished = record.status != RacerStatus::not_finished;
     return result;
 }
@@ -101,11 +103,14 @@ void build_race_lap_hud_panel(const RaceLapHudSnapshot& snapshot,
     panel = {};
     panel.snapshot = snapshot;
     if (!snapshot.valid || snapshot.highest_lap < -128 || snapshot.highest_lap > 127 ||
-        snapshot.laps <= 0) return;
+        (snapshot.laps <= 0 && !(snapshot.free_laps && snapshot.laps == 0))) return;
     for (std::size_t i = 0; i < bindings.size(); ++i)
         panel.fields[i].localized_hash = bindings[i].label_hash;
-    std::snprintf(panel.fields[4].text.data(), panel.fields[4].text.size(), "/%2d", snapshot.laps);
-    std::snprintf(panel.fields[5].text.data(), panel.fields[5].text.size(), "%2d", snapshot.highest_lap+1);
+    if (!snapshot.free_laps)
+        std::snprintf(panel.fields[4].text.data(), panel.fields[4].text.size(), "/%2d", snapshot.laps);
+    // 0x4A1874..0x4A192D: no-total circuit mode caps the displayed lap at 99.
+    const int lap = snapshot.free_laps && snapshot.highest_lap > 98 ? 98 : snapshot.highest_lap;
+    std::snprintf(panel.fields[5].text.data(), panel.fields[5].text.size(), "%2d", lap+1);
     panel.current_valid = snapshot.start_valid && snapshot.start_ticks != 0 &&
                           snapshot.start_ticks != kRaceNoTime;
     bool current_formatted = style != RaceLapHudStyle::unknown;

@@ -57,6 +57,16 @@ void test_records() {
     check(!p.current_valid,"zero current invalid despite port validity flag");
     state = RaceTimingState{}; state.restarts = 1; state.racers.resize(2); build();
     check(p.snapshot.generation == 1 && !p.current_held && text(p,5," 1"),"retry clears hold and lap");
+    route.laps=0;
+    check(!race_lap_hud_snapshot(route,state,1).valid,"free laps require explicit presentation mode");
+    build_race_lap_hud_panel(race_lap_hud_snapshot(route,state,1,true),RaceLapHudLanguage{true,0},p);
+    check(p.snapshot.free_laps && text(p,4,"") && text(p,5," 1") && p.formatting_valid,
+          "original no-total mode keeps lap number and English timers");
+    state.racers[1].highest_lap=110;
+    build_race_lap_hud_panel(race_lap_hud_snapshot(route,state,1,true),RaceLapHudLanguage{true,0},p);
+    check(text(p,5,"99") && text(p,4,""),"native no-total display caps at 99 without changing state");
+    check(state.racers[1].highest_lap==110,"free lap display never modifies progress");
+    route.laps=2;
     build_race_lap_hud_panel(race_lap_hud_snapshot(route,state,2),RaceLapHudStyle::native5,p);
     check(!p.snapshot.valid && text(p,5,"") && !p.presentation_ready,"missing actor clears old panel");
     route.finish = 5;
@@ -85,6 +95,9 @@ void test_session() {
     RaceSession read(course), control(course); RaceRouteDriver driver;
     check(read.start(error) && control.start(error),"paired sessions start");
     bool lap = false; RaceHudFrame frame;
+    // Presentation-state fixture; actual FNTF/texture loading is checked in
+    // the retail capture. Empty glyphs isolate timing from glyph metrics.
+    RaceHudAtlas atlas; atlas.lap_ready=true;
     while (read.timing().outcome == RaceOutcome::running && read.timing().step < 12000) {
         const auto pad = driver.sample(read);
         if (!read.advance(pad,error) || !control.advance(pad,error)) {
@@ -97,6 +110,10 @@ void test_session() {
               "duplicate rendering preserves physics, timing and replay");
         check(frame.lap.snapshot.step == step && !frame.lap.presentation_ready &&
               !frame.lap.formatting_valid,"production frame consumes current snapshot with unresolved gates closed");
+        build_race_hud_frame(read,atlas,1280,720,frame);
+        check(frame.lap.presentation_ready && frame.lap.formatting_valid &&
+              frame.quads>frame.lap_first_quad && read.record()==record,
+              "English live panel renders without advancing simulation or time");
         if (frame.lap.snapshot.highest_lap == 1) lap = true;
     }
     check(lap && read.timing().outcome == RaceOutcome::finished,"paired run crosses lap and finishes");

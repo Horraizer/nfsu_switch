@@ -315,7 +315,7 @@ struct DekoRenderer::Impl {
             !block(capacity*6*sizeof(std::uint16_t),kDataFlags,
                    "HUD indices",hud_indices,error) ||
             !block(3*256,kDataFlags,"HUD uniforms",hud_uniforms,error) ||
-            !block(2*kDrawDescriptorBytes,kDataFlags,"HUD descriptors",hud_descriptors,error))
+            !block(3*kDrawDescriptorBytes,kDataFlags,"HUD descriptors",hud_descriptors,error))
             return false;
         hud_image.initialize(layout,hud_image_memory,0);
         std::memcpy(hud_staging.getCpuAddr(),pixels.data(),texel_bytes);
@@ -351,6 +351,10 @@ struct DekoRenderer::Impl {
         sampler_descriptor.initialize(sampler);
         std::memcpy(static_cast<unsigned char*>(hud_descriptors.getCpuAddr())+
                     kDrawDescriptorBytes,&sampler_descriptor,sizeof sampler_descriptor);
+        sampler.setFilter(DkFilter_Linear,DkFilter_Linear);
+        sampler_descriptor.initialize(sampler);
+        std::memcpy(static_cast<unsigned char*>(hud_descriptors.getCpuAddr())+
+                    2*kDrawDescriptorBytes,&sampler_descriptor,sizeof sampler_descriptor);
         begin();
         cmd.copyBufferToImage({hud_staging.getGpuAddr(),width*4,texel_bytes},
                               view,{0,0,0,width,height,1});
@@ -1059,7 +1063,7 @@ struct DekoRenderer::Impl {
     }
 
     void emit_overlay(std::size_t slot,const TrackVertex* input,std::size_t quads,
-                      const unsigned char* additive=nullptr) {
+                      const unsigned char* additive=nullptr,std::size_t linear_from=kRaceHudMaxQuads) {
         if (!hud_enabled || !quads || quads>overlay_capacity) return;
         const std::uint32_t slot_bytes=sizeof(TrackVertex)*overlay_capacity*4;
         auto* vertices=reinterpret_cast<TrackVertex*>(
@@ -1077,7 +1081,7 @@ struct DekoRenderer::Impl {
         cmd.bindUniformBuffer(DkStage_Vertex,1,base+256,sizeof(DrawInstanceUniform));
         cmd.bindUniformBuffer(DkStage_Fragment,2,base+512,sizeof(DrawMaterialUniform));
         cmd.bindImageDescriptorSet(hud_descriptors.getGpuAddr(),1);
-        cmd.bindSamplerDescriptorSet(hud_descriptors.getGpuAddr()+kDrawDescriptorBytes,1);
+        cmd.bindSamplerDescriptorSet(hud_descriptors.getGpuAddr()+kDrawDescriptorBytes,2);
         cmd.barrier(DkBarrier_None,DkInvalidateFlags_Shader|DkInvalidateFlags_Descriptors);
         cmd.bindTextures(DkStage_Fragment,0,dkMakeTextureHandle(0,0));
         dk::RasterizerState raster;
@@ -1106,8 +1110,11 @@ struct DekoRenderer::Impl {
         cmd.bindIdxBuffer(DkIdxFormat_Uint16,hud_indices.getGpuAddr());
         for(std::size_t first=0;first<quads;) {
             const bool add=additive && additive[first];
+            const bool linear=!additive && first>=linear_from;
             std::size_t end=first+1;
-            while(end<quads && bool(additive && additive[end])==add)++end;
+            while(end<quads && bool(additive && additive[end])==add &&
+                  bool(!additive && end>=linear_from)==linear)++end;
+            cmd.bindTextures(DkStage_Fragment,0,dkMakeTextureHandle(0,linear?1:0));
             blend.setFactors(DkBlendFactor_SrcAlpha,add?DkBlendFactor_One:DkBlendFactor_InvSrcAlpha,
                              DkBlendFactor_One,DkBlendFactor_Zero);
             cmd.bindBlendStates(0,blend);
@@ -1496,7 +1503,7 @@ struct DekoRenderer::Impl {
         mark_ab(6);
         mark_frontend(8);
         if(!msaa_checkpoint("single-sample upscale"))return false;
-        if (hud) emit_overlay(slot,hud->vertices.data(),hud->quads);
+        if (hud) emit_overlay(slot,hud->vertices.data(),hud->quads,nullptr,hud->lap_first_quad);
         if (frontend) emit_overlay(slot,frontend->vertices.data(),frontend->additive.size(),frontend->additive.data());
         if(!checkpoint("UI overlay"))return false;
         if(!msaa_checkpoint("single-sample HUD"))return false;

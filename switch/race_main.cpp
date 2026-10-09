@@ -698,7 +698,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             static_cast<std::uint32_t>(frame.track_draws),
             static_cast<std::uint32_t>(frame.car_draws),driving_before && !finished,ab_enabled?display_frame:0};
         const auto present_start = armGetSystemTick();
-        if (hud_mode) build_race_hud_frame(race.session(),frame.commands.width,
+        if (hud_mode) build_race_hud_frame(race.session(),hud_atlas,frame.commands.width,
                                            frame.commands.height,hud_frame);
         require(renderer.present(error,ab_minimal?nullptr:&present,profile_frame ? &scene_frame : nullptr,
                                  hud_mode ? &hud_frame : nullptr),error);

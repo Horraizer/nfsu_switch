@@ -15,9 +15,17 @@ namespace nfsu {
 // Retail texels are loaded from the user's installation at startup. This
 // atlas, and all geometry below, are transient and never serialized.
 constexpr std::uint32_t kRaceHudAtlasSize = 512;
-constexpr std::size_t kRaceHudMaxQuads = 32;
+constexpr std::size_t kRaceHudMaxQuads = 128;
+struct RaceHudTextGlyph {
+    int x = 0, y = 0, width = 0, height = 0;
+    int bearing_x = 0, bearing_y = 0, advance = 0;
+};
 struct RaceHudAtlas {
     std::vector<unsigned char> rgba;
+    // English FNTF metrics, with glyph texels packed into unused atlas space.
+    // Small time font, large lap label/total font, LCD lap number.
+    std::array<std::array<RaceHudTextGlyph,128>,3> lap_fonts{};
+    bool lap_ready = false;
 };
 struct RaceHudReadout {
     std::uint64_t physics_step = 0;
@@ -32,6 +40,7 @@ struct RaceHudReadout {
 struct RaceHudFrame {
     std::array<TrackVertex, kRaceHudMaxQuads * 4> vertices{};
     std::uint16_t quads = 0;
+    std::uint16_t lap_first_quad = kRaceHudMaxQuads;
     RaceHudReadout readout{};
     RaceLapHudPanel lap{};
 
@@ -51,6 +60,10 @@ bool load_race_hud_atlas(const std::filesystem::path& root,
 // Writes fixed-capacity vertices, reading only the completed race state.
 // FEng local geometry under the measured anchor in docs/HUD_253.md.
 void build_race_hud_frame(const RaceSession& session,
+                          std::uint32_t width, std::uint32_t height,
+                          RaceHudFrame& frame) noexcept;
+// English single-player circuit/free-lap presentation. Does not advance time.
+void build_race_hud_frame(const RaceSession& session, const RaceHudAtlas& atlas,
                           std::uint32_t width, std::uint32_t height,
                           RaceHudFrame& frame) noexcept;
 // Pure geometry entry point for synthetic gear, speed and RPM checks.

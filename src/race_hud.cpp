@@ -1,10 +1,12 @@
 #include "nfsu/race_hud.h"
 #include "nfsu/texture.h"
+#include "nfsu/race_lap_hud_presentation.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <fstream>
 
 namespace nfsu {
 namespace {
@@ -31,6 +33,8 @@ constexpr AtlasRect kFill{0, 256, 256, 128};
 constexpr AtlasRect kNeedle{256, 256, 16, 128};
 constexpr AtlasRect kLcd{272, 256, 128, 128};
 constexpr AtlasRect kUnit{400, 256, 42, 14};
+constexpr AtlasRect kLapBacking{0,448,256,64};
+constexpr AtlasRect kLapWhite{444,256,16,16};
 struct HudGlyph {
     AtlasRect uv;
     int width, height, bearing_x, bearing_y, advance;
@@ -127,6 +131,79 @@ bool copy_texture(const std::vector<unsigned char>& bytes,
     }
     error = std::string(source.path) + ": required HUD texture absent";
     return false;
+}
+
+bool load_lap_fonts(const std::filesystem::path& root, RaceHudAtlas& atlas,
+                    std::string& error) {
+    std::ifstream stream(root/"Languages/English.bin",std::ios::binary);
+    if (!stream) { error="lap HUD English font file absent"; return false; }
+    const std::vector<unsigned char> language{std::istreambuf_iterator<char>(stream),{}};
+    const auto u32=[](const unsigned char* p) {
+        return std::uint32_t(p[0]) | std::uint32_t(p[1])<<8 |
+               std::uint32_t(p[2])<<16 | std::uint32_t(p[3])<<24;
+    };
+    std::vector<unsigned char> bytes;
+    const auto packs=load_texture_pack_set(root/"Languages/LanguageTextures.bin",bytes);
+    if (!packs.complete || !packs.ok()) { error="lap HUD language texture pack invalid"; return false; }
+    constexpr const char* names[]={"conduitmditc_tt14i","font_conduitmditctt38bi","lcd_let48"};
+    constexpr const char* needed[]={" 0123456789:./-hCurrentBest", " 0123456789/Laps", "0123456789"};
+    int pack_x=256,pack_y=384,row_height=0;
+    for (unsigned f=0;f<3;++f) {
+        RaceLapHudFont font;
+        for (std::size_t at=0;at+8<=language.size();) {
+            const auto size=u32(language.data()+at+4);
+            if (size>language.size()-at-8) { error="lap HUD font chunk truncated"; return false; }
+            const auto* p=language.data()+at+8;
+            if (u32(language.data()+at)==0x30201 && size>=640 &&
+                std::memcmp(p,names[f],std::strlen(names[f])+1)==0) {
+                const auto* end=static_cast<const unsigned char*>(std::memchr(p+256,0,256));
+                if (!end) { error="lap HUD font texture name invalid"; return false; }
+                std::string name(p+256,end);
+                for (auto& c:name) if (c>='a' && c<='z') c=char(c-'a'+'A');
+                if (!decode_lap_hud_fntf(p+512,size-512,bin_hash(name),float(p[530]+p[531]),0,1,font)) {
+                    error="lap HUD FNTF invalid"; return false;
+                }
+                break;
+            }
+            at+=8+size;
+        }
+        if (!font.known) { error="lap HUD required English font absent"; return false; }
+        std::vector<unsigned char> rgba;
+        unsigned tw=0,th=0;
+        for (const auto& pack:packs.packs) for (const auto& t:pack.textures) {
+            if (t.hash!=font.texture_hash || !t.valid) continue;
+            std::vector<unsigned char> payload; std::size_t unused=0; std::uint64_t top=0;
+            if (!texture_payload(bytes.data(),bytes.size(),t,payload,unused,error) ||
+                !level_size(t.format,t.width,t.height,top) || top>payload.size() ||
+                !decode_level(t.format,t.width,t.height,payload.data(),std::size_t(top),rgba,error)) return false;
+            tw=t.width; th=t.height;
+        }
+        if (rgba.empty()) { error="lap HUD font texture absent"; return false; }
+        for (const char* c=needed[f];*c;++c) {
+            const auto it=std::find_if(font.glyphs.begin(),font.glyphs.end(),
+                [&](const RaceLapHudGlyph& g){return g.code==unsigned(*c);});
+            if (it==font.glyphs.end()) { error="lap HUD glyph absent"; return false; }
+            const auto& g=*it;
+            auto& out=atlas.lap_fonts[f][unsigned(*c)];
+            out={0,0,int(g.width),int(g.height),g.bearing_x,g.bearing_y,g.advance};
+            if (!g.width || !g.height) continue;
+            if (g.x+g.width>tw || g.y+g.height>th) { error="lap HUD glyph outside texture"; return false; }
+            if (f==2) { out.x=kLcd.x+g.x-1; out.y=kLcd.y+g.y-1; continue; }
+            const int w=g.width+2,h=g.height+2;
+            if (pack_x+w>512) { pack_x=256;pack_y+=row_height;row_height=0; }
+            if (pack_y+h>512) { error="lap HUD atlas capacity exceeded"; return false; }
+            out.x=pack_x;out.y=pack_y;
+            for (int y=0;y<h;++y) for (int x=0;x<w;++x) {
+                const int sx=std::clamp(int(g.x)+x-1,0,int(tw)-1);
+                const int sy=std::clamp(int(g.y)+y-1,0,int(th)-1);
+                std::memcpy(atlas.rgba.data()+((pack_y+y)*512+pack_x+x)*4,
+                            rgba.data()+(sy*tw+sx)*4,4);
+            }
+            pack_x+=w;row_height=std::max(row_height,h);
+        }
+    }
+    atlas.lap_ready=true;
+    return true;
 }
 
 void add_quad(RaceHudFrame& frame, const AtlasRect& uv,
@@ -230,8 +307,9 @@ double race_hud_needle_rotation(double rpm, double max_rpm) noexcept {
 
 bool load_race_hud_atlas(const std::filesystem::path& root,
                          RaceHudAtlas& atlas, std::string& error) {
+    atlas={};
     atlas.rgba.assign(kRaceHudAtlasSize*kRaceHudAtlasSize*4, 0);
-    for (const char* path : {"Global/INGAMEB.BUN", "Global/DYNTEX.BIN",
+    for (const char* path : {"Global/INGAMEB.BUN", "Global/DYNTEX.BIN", "Global/GLOBALB.BUN",
                              "Languages/LanguageTextures.bin"}) {
         std::vector<unsigned char> bytes;
         const auto set = load_texture_pack_set(root / path, bytes);
@@ -242,10 +320,14 @@ bool load_race_hud_atlas(const std::filesystem::path& root,
         for (const auto& source : kSources)
             if (std::strcmp(path, source.path) == 0 &&
                 !copy_texture(bytes, set, source, atlas, error)) return false;
+        if (std::strcmp(path,"Global/INGAMEB.BUN")==0 &&
+            !copy_texture(bytes,set,{path,bin_hash("3RDPERSON_BOXCORNER"),kLapBacking},atlas,error)) return false;
+        if (std::strcmp(path,"Global/GLOBALB.BUN")==0 &&
+            !copy_texture(bytes,set,{path,bin_hash("WHITE16X16"),kLapWhite},atlas,error)) return false;
         if (std::strcmp(path,"Languages/LanguageTextures.bin")==0 &&
             !copy_units(bytes,set,atlas,error)) return false;
     }
-    return true;
+    return load_lap_fonts(root,atlas,error);
 }
 
 void build_race_hud_frame(const RaceSession& session,
@@ -258,11 +340,71 @@ void build_race_hud_frame(const RaceSession& session,
     build_race_lap_hud_panel(snapshot, RaceLapHudStyle::unknown, frame.lap);
 }
 
+void build_race_hud_frame(const RaceSession& session, const RaceHudAtlas& atlas,
+                          std::uint32_t width, std::uint32_t height,
+                          RaceHudFrame& frame) noexcept {
+    build_race_hud_frame(session,width,height,frame);
+    if (!atlas.lap_ready || !width || !height) return;
+    const auto snapshot=race_lap_hud_snapshot(session.course().route,session.timing(),0,true);
+    build_race_lap_hud_panel(snapshot,RaceLapHudLanguage{true,0},frame.lap);
+    if (!frame.lap.formatting_valid) return;
+    frame.lap_first_quad=frame.quads;
+    // Original 640x480 FEng root coordinates. Keep the reference's upper-left
+    // anchor and uniform scale in the port's 720p canvas, as with the gauge.
+    // This matches the supplied Deck stills; it does not emulate a widescreen mod.
+    const float scale=std::min(width/1280.0F,height/720.0F)*5.0F/3.0F;
+    const auto backing=[&](const AtlasRect& uv,float x,float y,float w,float h,unsigned char alpha) {
+        rect(frame,uv,(320+x-w*.5F)*scale,(240+y-h*.5F)*scale,w*scale,h*scale,{{0,0,0}},alpha);
+    };
+    // Reverse equal-depth package order: 3,2,1, then the text bucket.
+    backing(kLapWhite,-221,-137,156,20,254);
+    backing(kLapWhite,-221,-159,156,20,254);
+    backing(kLapBacking,-178,-192,256,64,214);
+    const auto& bindings=race_lap_hud_bindings();
+    for (int i=6;i>=0;--i) {
+        const auto& b=bindings[std::size_t(i)];
+        const unsigned font=i==5?2U:(i==4 || i==6)?1U:0U;
+        const char* text=frame.lap.fields[std::size_t(i)].text.data();
+        if (i==1) text="Current:";
+        if (i==3) text="Best:";
+        if (i==6) text="Laps";
+        // English.bin localized 0x61C9B7A2 (different from zero-best literal).
+        if (i==0 && !frame.lap.current_valid) text="--:--.--";
+        float advance=0;
+        for (const char* c=text;*c;++c) advance+=atlas.lap_fonts[font][unsigned(*c)].advance;
+        const float s=b.scale*scale;
+        float x=(320+b.x)*scale-((b.justification&2)?advance*s:0);
+        float y=(240+b.y)*scale;
+        // Native free-lap branch moves LapText beside the lap number.
+        if (i==6 && snapshot.free_laps) x=(320+bindings[5].x+10)*scale;
+        const std::array<unsigned char,3> tint{{
+            static_cast<unsigned char>(((unsigned(b.rgba[0])*255+128)>>8)/2*2),
+            static_cast<unsigned char>(((unsigned(b.rgba[1])*255+128)>>8)/2*2),
+            static_cast<unsigned char>(((unsigned(b.rgba[2])*255+128)>>8)/2*2)}};
+        for (const char* c=text;*c;++c) {
+            const auto& g=atlas.lap_fonts[font][unsigned(*c)];
+            if (g.width && g.height)
+                rect(frame,{g.x,g.y,g.width+2,g.height+2},x+g.bearing_x*s,y+g.bearing_y*s,
+                     std::max(4,g.width)*s,g.height*s,tint,254);
+            x+=g.advance*s;
+        }
+    }
+    // 0x40BEF0 applies a half-texel inset before world.efx linear sampling.
+    constexpr float inset=.5F/kRaceHudAtlasSize;
+    for (std::size_t q=frame.lap_first_quad;q<frame.quads;++q)
+        for (unsigned v=0;v<4;++v) {
+            frame.vertices[q*4+v].u+=(v==0 || v==3)?inset:-inset;
+            frame.vertices[q*4+v].v+=v<2?inset:-inset;
+        }
+    frame.lap.presentation_ready=true;
+}
+
 void build_race_hud_frame_for_car(const VehicleState& car,
                           double max_rpm, double redline_rpm,
                           std::uint32_t width, std::uint32_t height,
                           RaceHudFrame& frame) noexcept {
     frame.quads = 0;
+    frame.lap_first_quad = kRaceHudMaxQuads;
     frame.lap = {};
     const double mps=vehicle_sqrt(car.velocity.x*car.velocity.x+
                                   car.velocity.y*car.velocity.y);
@@ -390,6 +532,21 @@ void composite_race_hud(const RaceHudAtlas& atlas, const RaceHudFrame& frame,
                 const int tx=std::max(0,std::min(511,static_cast<int>(u*512)));
                 const int ty=std::max(0,std::min(511,static_cast<int>(vcoord*512)));
                 const auto* source=atlas.rgba.data()+(ty*512+tx)*4;
+                std::array<unsigned char,4> filtered{};
+                if (q>=frame.lap_first_quad) {
+                    const float fx=u*512-.5F,fy=vcoord*512-.5F;
+                    const int ix=int(std::floor(fx)),iy=int(std::floor(fy));
+                    const float ax=fx-std::floor(fx),ay=fy-std::floor(fy);
+                    for (unsigned k=0;k<4;++k) {
+                        const auto sample=[&](int dx,int dy) {
+                            return float(atlas.rgba[(std::clamp(iy+dy,0,511)*512+std::clamp(ix+dx,0,511))*4+k]);
+                        };
+                        filtered[k]=static_cast<unsigned char>(std::clamp(
+                            (sample(0,0)*(1-ax)+sample(1,0)*ax)*(1-ay)+
+                            (sample(0,1)*(1-ax)+sample(1,1)*ax)*ay+.5F,0.0F,255.0F));
+                    }
+                    source=filtered.data();
+                }
                 auto* target=rgba+y*pitch+x*4;
                 const unsigned alpha=(unsigned(source[3])*unsigned(v[0].color[3])+127)/255;
                 for (int k=0;k<3;++k) {
