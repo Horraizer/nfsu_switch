@@ -375,14 +375,20 @@ void retail_checks(const std::filesystem::path& root) {
         FrontendGpuScene frontend;
         require(frontend.load(root,1280,720,error),"load the frontend scene: " + error);
         require(frontend.frame(1.F,60,error),"advance the frontend scene before the race");
-        {
+        for (std::uint32_t event : {1U,8U}) {
             RaceGpuScene scene;
             scene.set_race_visuals(true);
+            scene.set_wet_road_reflections(true);
+            scene.set_particles_enabled(true);
             require(scene.set_original_draw_distance(true),"enable original distance");
-            require(scene.load(posix_file_system(),root,error,nullptr,nullptr,false,false,
-                true,&dress.car,&dress.dress),
-                "switch race scene with the Eddie dress: " + error);
+            const bool loaded=scene.load(posix_file_system(),root,error,nullptr,nullptr,false,true,
+                true,&dress.car,&dress.dress,event,true);
+            std::printf("freeride-full-effects event=%u cache_bytes=%llu upload_shape_bytes=%zu\n",
+                event,static_cast<unsigned long long>(scene.cache_bytes()),sizeof(TextureUploadShape));
+            require(sizeof(TextureUploadShape)==40,"mip metadata fits the original upload shape");
+            require(loaded,"switch race scene with the Eddie dress: " + error);
             RaceRun run;
+            require(run.set_event(event,error),error);
             require(run.set_free_drive(true,error),error);
             require(run.set_car("SKYLINE",error),error);
             require(run.prepare_metadata(root,error),"skyline metadata: " + error);

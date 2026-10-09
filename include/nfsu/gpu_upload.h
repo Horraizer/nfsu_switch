@@ -84,10 +84,11 @@ struct TextureUploadShape {
     TextureUploadFormat format = TextureUploadFormat::rgba8;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    // Use the existing alignment gap; upload tables contain thousands of shapes.
+    std::uint32_t mip_count = 1;
     std::uint64_t texel_bytes = 0;
     std::uint64_t row_bytes = 0;
     std::uint64_t bytes = 0;
-    std::uint32_t mip_count = 1;
     std::uint64_t rows() const noexcept {
         return format == TextureUploadFormat::dxt1 || format == TextureUploadFormat::dxt3 ?
                (std::uint64_t{height} + 3) / 4 : height;
